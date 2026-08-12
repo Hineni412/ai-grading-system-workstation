@@ -1089,6 +1089,609 @@ class SopWorkflowService:
                     transaction_hook(connection, vmk)
         return self.get_affair(token=token, affair_id=affair_id)
 
+    def sop_snapshot_for_model(self, *, token: str, affair_id: str) -> dict[str, object]:
+        """事务当前状态的安全快照，只用于发送给已配置模型的流程修订请求。"""
+        affair = self.get_affair(token=token, affair_id=affair_id)
+        steps = [
+            *list(affair.get("current_steps") or []),
+            *list(affair.get("completed_steps") or []),
+            *list(affair.get("preview_steps") or []),
+        ]
+        return {
+            "title": str(affair.get("title") or ""),
+            "summary": str(affair.get("summary") or ""),
+            "template_key": str(affair.get("template_key") or ""),
+            "state": str(affair.get("state") or ""),
+            "steps": [
+                {
+                    "key": str(step.get("key") or ""),
+                    "title": str(step.get("title") or ""),
+                    "details": str(step.get("details") or ""),
+                    "state": str(step.get("state") or ""),
+                    "safety_required": bool(step.get("safety_required")),
+                    "is_decision_point": bool(step.get("decision_key")),
+                    "depends_on": [
+                        str(item) for item in list(step.get("depends_on") or [])
+                    ],
+                    "result": (
+                        None
+                        if step.get("result") is None
+                        else str(step.get("result"))[:2000]
+                    ),
+                }
+                for step in steps
+            ],
+            "decisions": [
+                {
+                    "decision_key": str(item.get("decision_key") or ""),
+                    "selected_option": str(item.get("selected_option") or ""),
+                }
+                for item in list(affair.get("decisions") or [])
+                if isinstance(item, dict)
+            ],
+        }
+
+    @staticmethod
+    def _workspace_revision(connection: Any, affair_id: str) -> int:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM affair_events WHERE affair_id = ?",
+            (affair_id,),
+        ).fetchone()[0]
+        return max(1, int(count))
+
+    def create_sync_request(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        expected_revision: int,
+        text: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "sop.affair.sync_update")
+        if replay is not None:
+            return dict(replay)
+        clean_text = self._text(text, "同步内容", 2000)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                affair_row = self._active_affair(connection, affair_id)
+                if self._workspace_revision(connection, affair_id) != int(expected_revision):
+                    self._revision_conflict("事务")
+                payload, revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(affair_row["payload_object_id"]),
+                )
+                sync_id = uuid4().hex
+                requests = list(payload.get("sync_requests") or [])
+                requests.append({
+                    "sync_id": sync_id,
+                    "text": clean_text,
+                    "state": "queued",
+                    "created_at": _iso(),
+                })
+                payload["sync_requests"] = requests[-20:]
+                payload["updated_at"] = _iso()
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(affair_row["payload_object_id"]),
+                    object_type="affair",
+                    payload=payload,
+                    expected_revision=revision,
+                )
+                connection.execute(
+                    "UPDATE affairs SET updated_at = ? WHERE affair_id = ?",
+                    (_iso(), affair_id),
+                )
+                self._event(connection, affair_id, None, "affair.sync_requested")
+                result = {
+                    "sync_id": sync_id,
+                    "affair_revision": self._workspace_revision(connection, affair_id),
+                }
+                self._remember(
+                    connection,
+                    operation_id,
+                    "sop.affair.sync_update",
+                    result,
+                )
+        return result
+
+    def sync_request_text(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        sync_id: str,
+    ) -> str:
+        vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            affair_row = self._active_affair(connection, affair_id)
+            payload, _revision = self.repository.get(
+                connection,
+                vmk=vmk,
+                object_id=str(affair_row["payload_object_id"]),
+            )
+        for item in list(payload.get("sync_requests") or []):
+            if str(item.get("sync_id") or "") == sync_id:
+                return str(item.get("text") or "")
+        raise VaultError("sop_sync_not_found", "同步请求不存在", status_code=404)
+
+    def persist_flow_revision(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        sync_id: str,
+        assistant_message: str,
+        items: list[dict[str, object]],
+    ) -> dict[str, object]:
+        """把模型流程修订作为待审草稿写入事务；安全过滤在这里强制执行。"""
+        vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                affair_row = self._active_affair(connection, affair_id)
+                payload, revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(affair_row["payload_object_id"]),
+                )
+                revisions = list(payload.get("flow_revisions") or [])
+                existing = next(
+                    (item for item in revisions if str(item.get("sync_id") or "") == sync_id),
+                    None,
+                )
+                if existing is not None:
+                    return dict(existing)
+                sync_requests = list(payload.get("sync_requests") or [])
+                sync = next(
+                    (item for item in sync_requests if str(item.get("sync_id") or "") == sync_id),
+                    None,
+                )
+                if sync is None or str(sync.get("state") or "") != "queued":
+                    raise VaultError(
+                        "sop_sync_not_found",
+                        "同步请求不存在或已处理",
+                        status_code=404,
+                    )
+                occurrence = connection.execute(
+                    """
+                    SELECT occurrence_id FROM affair_occurrences
+                    WHERE affair_id = ? ORDER BY sequence DESC LIMIT 1
+                    """,
+                    (affair_id,),
+                ).fetchone()
+                steps = self._steps_for_occurrence(
+                    connection,
+                    vmk,
+                    str(occurrence["occurrence_id"]),
+                )
+                by_key = {str(step.get("key") or ""): step for step in steps}
+                sanitized: list[dict[str, object]] = []
+                dropped: list[dict[str, str]] = []
+                new_keys: set[str] = set()
+                for item in items:
+                    kind = str(item.get("kind") or "")
+                    item_id = str(item.get("item_id") or "")
+                    if kind == "note":
+                        text = str(item.get("text") or "").strip()
+                        if not text:
+                            dropped.append({"item_id": item_id, "reason": "空核对建议"})
+                            continue
+                        sanitized.append({
+                            "item_id": item_id,
+                            "kind": "note",
+                            "text": text[:2000],
+                            "reason": str(item.get("reason") or "")[:800],
+                            "state": "pending",
+                        })
+                        continue
+                    if kind == "add_step":
+                        title = str(item.get("title") or "").strip()
+                        if not title:
+                            dropped.append({"item_id": item_id, "reason": "新步骤缺少名称"})
+                            continue
+                        depends_on = [
+                            str(dependency) for dependency in list(item.get("depends_on") or [])
+                        ]
+                        unknown = [
+                            dependency
+                            for dependency in depends_on
+                            if dependency not in by_key and dependency not in new_keys
+                        ]
+                        if unknown:
+                            dropped.append({
+                                "item_id": item_id,
+                                "reason": f"依赖了不存在的步骤：{'、'.join(unknown)}",
+                            })
+                            continue
+                        step_key = f"ai-{item_id}"
+                        if step_key in by_key or step_key in new_keys:
+                            dropped.append({"item_id": item_id, "reason": "步骤编号冲突"})
+                            continue
+                        new_keys.add(step_key)
+                        sanitized.append({
+                            "item_id": item_id,
+                            "kind": "add_step",
+                            "step_key": step_key,
+                            "title": title[:240],
+                            "details": str(item.get("details") or "")[:4000],
+                            "depends_on": depends_on,
+                            "reason": str(item.get("reason") or "")[:800],
+                            "state": "pending",
+                        })
+                        continue
+                    if kind == "revise_step":
+                        target_key = str(item.get("target_step_key") or "")
+                        target = by_key.get(target_key)
+                        if target is None:
+                            dropped.append({"item_id": item_id, "reason": "目标步骤不存在"})
+                            continue
+                        if (
+                            str(target.get("state") or "") in _STEP_TERMINAL
+                            or str(target.get("state") or "") == "in_progress"
+                        ):
+                            dropped.append({"item_id": item_id, "reason": "目标步骤已开始或已结束"})
+                            continue
+                        if bool(target.get("safety_required")) or target.get("decision_key"):
+                            dropped.append({
+                                "item_id": item_id,
+                                "reason": "安全必做步骤和教师分流步骤不能由 AI 修改",
+                            })
+                            continue
+                        title = str(item.get("title") or "").strip()
+                        details = str(item.get("details") or "").strip()
+                        if not title and not details:
+                            dropped.append({"item_id": item_id, "reason": "没有修改内容"})
+                            continue
+                        sanitized.append({
+                            "item_id": item_id,
+                            "kind": "revise_step",
+                            "target_step_key": target_key,
+                            "title": title[:240],
+                            "details": details[:4000],
+                            "reason": str(item.get("reason") or "")[:800],
+                            "state": "pending",
+                        })
+                        continue
+                    dropped.append({"item_id": item_id, "reason": "未知的修订类型"})
+                entry = {
+                    "revision_id": uuid4().hex,
+                    "sync_id": sync_id,
+                    "source_text": str(sync.get("text") or ""),
+                    "assistant_message": str(assistant_message or "")[:2000],
+                    "items": sanitized,
+                    "dropped_items": dropped,
+                    "state": "pending_review",
+                    "created_at": _iso(),
+                    "decided_at": None,
+                    "accepted_item_ids": [],
+                }
+                revisions.append(entry)
+                payload["flow_revisions"] = revisions[-10:]
+                sync["state"] = "answered"
+                payload["sync_requests"] = sync_requests
+                payload["updated_at"] = _iso()
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(affair_row["payload_object_id"]),
+                    object_type="affair",
+                    payload=payload,
+                    expected_revision=revision,
+                )
+                connection.execute(
+                    "UPDATE affairs SET updated_at = ? WHERE affair_id = ?",
+                    (_iso(), affair_id),
+                )
+                self._event(connection, affair_id, None, "affair.flow_revision_persisted")
+                return dict(entry)
+
+    def flow_revision_for_sync(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        sync_id: str,
+    ) -> dict[str, object] | None:
+        vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            affair_row = connection.execute(
+                "SELECT payload_object_id FROM affairs WHERE affair_id = ?",
+                (affair_id,),
+            ).fetchone()
+            if affair_row is None:
+                return None
+            payload, _revision = self.repository.get(
+                connection,
+                vmk=vmk,
+                object_id=str(affair_row["payload_object_id"]),
+            )
+        for item in list(payload.get("flow_revisions") or []):
+            if str(item.get("sync_id") or "") == sync_id:
+                return dict(item)
+        return None
+
+    def mark_sync_request_failed(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        sync_id: str,
+        outcome: str,
+    ) -> None:
+        """模型失败或结果无效时，把同步请求标记为失败，保留原文供再次同步。"""
+        if outcome not in {"failed", "invalid_result"}:
+            raise ValueError("sync outcome is invalid")
+        vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                affair_row = connection.execute(
+                    "SELECT payload_object_id FROM affairs WHERE affair_id = ?",
+                    (affair_id,),
+                ).fetchone()
+                if affair_row is None:
+                    return
+                payload, revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(affair_row["payload_object_id"]),
+                )
+                sync_requests = list(payload.get("sync_requests") or [])
+                sync = next(
+                    (item for item in sync_requests if str(item.get("sync_id") or "") == sync_id),
+                    None,
+                )
+                if sync is None or str(sync.get("state") or "") != "queued":
+                    return
+                sync["state"] = outcome
+                payload["sync_requests"] = sync_requests
+                payload["updated_at"] = _iso()
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(affair_row["payload_object_id"]),
+                    object_type="affair",
+                    payload=payload,
+                    expected_revision=revision,
+                )
+
+    def decide_flow_revision(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        revision_id: str,
+        accepted_item_ids: list[str],
+        expected_revision: int,
+        operation_id: str,
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "sop.affair.flow_revision.decide")
+        if replay is not None:
+            return self.get_affair(token=token, affair_id=affair_id)
+        accepted = list(dict.fromkeys(
+            self._text(item, "条目编号", 64) for item in list(accepted_item_ids)[:20]
+        ))
+        with closing(self.database.connect()) as connection:
+            with connection:
+                affair_row = self._active_affair(connection, affair_id)
+                if self._workspace_revision(connection, affair_id) != int(expected_revision):
+                    self._revision_conflict("事务")
+                payload, revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(affair_row["payload_object_id"]),
+                )
+                revisions = list(payload.get("flow_revisions") or [])
+                entry = next(
+                    (item for item in revisions if str(item.get("revision_id") or "") == revision_id),
+                    None,
+                )
+                if entry is None:
+                    raise VaultError(
+                        "sop_flow_revision_not_found",
+                        "流程修订草稿不存在",
+                        status_code=404,
+                    )
+                already_decided = str(entry.get("state") or "") != "pending_review"
+                if not already_decided:
+                    occurrence = connection.execute(
+                        """
+                        SELECT occurrence_id FROM affair_occurrences
+                        WHERE affair_id = ? ORDER BY sequence DESC LIMIT 1
+                        """,
+                        (affair_id,),
+                    ).fetchone()
+                    occurrence_id = str(occurrence["occurrence_id"])
+                    step_rows = connection.execute(
+                        """
+                        SELECT * FROM step_instances WHERE occurrence_id = ?
+                        """,
+                        (occurrence_id,),
+                    ).fetchall()
+                    row_by_key = {
+                        str(row["template_step_key"]): row for row in step_rows
+                    }
+                    timestamp = _iso()
+                    for item in list(entry.get("items") or []):
+                        if str(item.get("item_id") or "") not in accepted:
+                            item["state"] = "discarded"
+                            continue
+                        kind = str(item.get("kind") or "")
+                        if kind == "note":
+                            item["state"] = "applied"
+                            continue
+                        if kind == "add_step":
+                            depends_on = [
+                                str(dependency) for dependency in list(item.get("depends_on") or [])
+                            ]
+                            dependency_rows = [row_by_key.get(key) for key in depends_on]
+                            if any(row is None for row in dependency_rows):
+                                item["state"] = "discarded"
+                                continue
+                            ready = all(
+                                str(row["state"]) in _STEP_TERMINAL for row in dependency_rows
+                            )
+                            step_id = uuid4().hex
+                            object_id = f"affair-step-{step_id}"
+                            definition = {
+                                "key": str(item.get("step_key") or ""),
+                                "title": str(item.get("title") or ""),
+                                "details": str(item.get("details") or ""),
+                                "required": False,
+                                "waivable": True,
+                                "safety_required": False,
+                                "depends_on": depends_on,
+                                "activation": None,
+                                "decision_key": None,
+                                "decision_prompt": None,
+                                "decision_options": [],
+                                "origin": "ai_flow_revision",
+                            }
+                            action_id = None
+                            if ready:
+                                action_id = self._create_step_action(
+                                    connection,
+                                    vmk=vmk,
+                                    plan_id=str(affair_row["plan_id"]),
+                                    definition=definition,
+                                    dependency_action_ids=[
+                                        str(row["action_id"])
+                                        for row in dependency_rows
+                                        if row is not None and row["action_id"]
+                                    ],
+                                )
+                            self.repository.put(
+                                connection,
+                                vmk=vmk,
+                                object_id=object_id,
+                                object_type="affair_step",
+                                payload={
+                                    **definition,
+                                    "state": "ready" if ready else "blocked",
+                                    "result": None,
+                                    "completed_at": None,
+                                },
+                            )
+                            connection.execute(
+                                """
+                                INSERT INTO step_instances (
+                                    step_instance_id, affair_id, occurrence_id,
+                                    template_step_key, action_id, payload_object_id,
+                                    state, is_required, is_safety_required,
+                                    created_at, updated_at
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+                                """,
+                                (
+                                    step_id,
+                                    affair_id,
+                                    occurrence_id,
+                                    str(item.get("step_key") or ""),
+                                    action_id,
+                                    object_id,
+                                    "ready" if ready else "blocked",
+                                    timestamp,
+                                    timestamp,
+                                ),
+                            )
+                            self._event(
+                                connection,
+                                affair_id,
+                                step_id,
+                                "step.created_from_revision",
+                            )
+                            item["state"] = "applied"
+                            continue
+                        if kind == "revise_step":
+                            target_key = str(item.get("target_step_key") or "")
+                            target_row = row_by_key.get(target_key)
+                            if target_row is None:
+                                item["state"] = "discarded"
+                                continue
+                            target_payload, target_revision = self.repository.get(
+                                connection,
+                                vmk=vmk,
+                                object_id=str(target_row["payload_object_id"]),
+                            )
+                            if (
+                                str(target_row["state"]) in _STEP_TERMINAL
+                                or str(target_row["state"]) == "in_progress"
+                                or bool(target_row["is_safety_required"])
+                                or target_payload.get("decision_key")
+                            ):
+                                item["state"] = "discarded"
+                                continue
+                            if str(item.get("title") or "").strip():
+                                target_payload["title"] = str(item["title"]).strip()
+                            if str(item.get("details") or "").strip():
+                                target_payload["details"] = str(item["details"]).strip()
+                            self.repository.put(
+                                connection,
+                                vmk=vmk,
+                                object_id=str(target_row["payload_object_id"]),
+                                object_type="affair_step",
+                                payload=target_payload,
+                                expected_revision=target_revision,
+                            )
+                            action_id = str(target_row["action_id"] or "")
+                            if action_id:
+                                action_row = connection.execute(
+                                    "SELECT payload_object_id FROM actions WHERE action_id = ?",
+                                    (action_id,),
+                                ).fetchone()
+                                if action_row is not None:
+                                    action_payload, action_revision = self.repository.get(
+                                        connection,
+                                        vmk=vmk,
+                                        object_id=str(action_row["payload_object_id"]),
+                                    )
+                                    action_payload["title"] = target_payload["title"]
+                                    action_payload["details"] = target_payload.get("details")
+                                    self.repository.put(
+                                        connection,
+                                        vmk=vmk,
+                                        object_id=str(action_row["payload_object_id"]),
+                                        object_type="action_item",
+                                        payload=action_payload,
+                                        expected_revision=action_revision,
+                                    )
+                            self._event(
+                                connection,
+                                affair_id,
+                                str(target_row["step_instance_id"]),
+                                "step.revised_from_revision",
+                            )
+                            item["state"] = "applied"
+                            continue
+                        item["state"] = "discarded"
+                    entry["state"] = "applied" if accepted else "discarded"
+                    entry["accepted_item_ids"] = accepted
+                    entry["decided_at"] = timestamp
+                    payload["flow_revisions"] = revisions
+                    payload["updated_at"] = timestamp
+                    self.repository.put(
+                        connection,
+                        vmk=vmk,
+                        object_id=str(affair_row["payload_object_id"]),
+                        object_type="affair",
+                        payload=payload,
+                        expected_revision=revision,
+                    )
+                    connection.execute(
+                        "UPDATE affairs SET updated_at = ? WHERE affair_id = ?",
+                        (timestamp, affair_id),
+                    )
+                    self._event(connection, affair_id, None, "affair.flow_revision_decided")
+                self._remember(
+                    connection,
+                    operation_id,
+                    "sop.affair.flow_revision.decide",
+                    {"affair_id": affair_id, "revision_id": revision_id},
+                )
+        return self.get_affair(token=token, affair_id=affair_id)
+
     def _instantiate_steps(
         self,
         connection: Any,
@@ -1159,15 +1762,11 @@ class SopWorkflowService:
         template: dict[str, Any] | None = None,
     ) -> None:
         if template is None:
-            template, _ = self._template_in_connection(
+            self._template_in_connection(
                 connection,
                 vmk,
                 str(template_version_id),
             )
-        definitions = {
-            str(item["key"]): dict(item)
-            for item in list(template["steps"])
-        }
         rows = connection.execute(
             """
             SELECT * FROM step_instances WHERE occurrence_id = ?
@@ -1178,7 +1777,13 @@ class SopWorkflowService:
         for key, row in by_key.items():
             if str(row["state"]) != "blocked":
                 continue
-            activation = definitions[key].get("activation")
+            # 步骤自身保存的定义（含流程修订后的最新文案；AI 新增步骤不在模板中）
+            definition, _definition_revision = self.repository.get(
+                connection,
+                vmk=vmk,
+                object_id=str(row["payload_object_id"]),
+            )
+            activation = definition.get("activation")
             if activation:
                 selected = self._decision_value(
                     connection,
@@ -1219,7 +1824,7 @@ class SopWorkflowService:
                         "step.superseded_by_decision",
                     )
                     continue
-            dependencies = list(definitions[key]["depends_on"])
+            dependencies = list(definition.get("depends_on") or [])
             if not all(
                 str(by_key[dependency]["state"]) in _STEP_TERMINAL
                 for dependency in dependencies
@@ -1229,7 +1834,7 @@ class SopWorkflowService:
                 connection,
                 vmk=vmk,
                 plan_id=plan_id,
-                definition=definitions[key],
+                definition=definition,
                 dependency_action_ids=[
                     str(by_key[dependency]["action_id"])
                     for dependency in dependencies

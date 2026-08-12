@@ -4,7 +4,7 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
@@ -23,7 +23,10 @@ from backend.workspaces.ai_tasks.models import (
 
 from ..errors import VaultError
 from ..intake_draft import compose_sensitive_draft
+from ..student_card_service import CORE_PROFILE_DIMENSIONS
+from .affair_flow_contract import parse_affair_flow_revision
 from .conversations import ConversationStore
+from .triage_contract import DOMAINS, HANDLING_MODES, INTENTS
 
 
 _TRIAGE_INSTRUCTION = """你是班主任事务整理助手。只返回一个 JSON 对象，不要 Markdown。顶层只能有 contract_version、assistant_message、clarification_questions、work_items。严格按下面的完整结构返回：
@@ -31,17 +34,44 @@ _TRIAGE_INSTRUCTION = """你是班主任事务整理助手。只返回一个 JSO
 
 domain 只能是 student_growth、student_support、conflict_safety、class_operations、activities_culture、school_coordination；primary_mode 和 secondary_modes 只能使用 record、plan_calendar、sop；intent 只能使用 create、append、follow_up、plan、review；safety_level 只能使用 normal、teacher_review_required、urgent_attention。time_facts 每一项都必须是对象，例如 {"text":"暑假期间计划复查"}，不能直接放字符串。subject_refs 只能原样复制当前候选中的完整 {"kind":"student","id":"...","revision":"..."} 对象；一件事务涉及多名不同学生时必须保留全部对应引用，只有同一个姓名存在多个候选时才留空并把“请选择学生”放入 missing_fields。
 
-计划与日历规则：一条输入同时包含多项同一目标下的班务时，优先形成一个 plan_calendar 工作项，在 draft 中完整返回 {"plan_title":"计划标题","summary":"计划说明","reference_at":"参考时间","final_deadline":"带时区的 ISO 日期时间","actions":[{"draft_action_id":"action-1","title":"可执行行动","details":"准备内容和完成标准","due_at":"带时区的 ISO 日期时间","depends_on_draft_action_ids":[]}]}。每个明确工作都要成为独立 action，准备、确认、执行或复查确有必要时继续细分。根据本机参考日期解释“今天、明天、前一天、9月1日”等表达，并在 time_facts 中保留推导依据。缺少具体日期、结算周期、人员范围、兑奖规则等会影响执行的信息时，在 clarification_questions 中追问；不得编造教师没有提供且无法从日期关系推出的时间。仍可先形成草稿，但不以总截止日期静默填补各行动空日期。
+计划与日历规则：一条输入同时包含多项同一目标下的班务时，优先形成一个 plan_calendar 工作项，在 draft 中完整返回 {"plan_title":"计划标题","summary":"计划说明","reference_at":"参考时间","final_deadline":"带时区的 ISO 日期时间","candidates":[{"label":"候选事项","reason":"为什么通常需要准备","suggested":true}],"actions":[{"draft_action_id":"action-1","title":"可执行行动","details":"准备内容和完成标准","due_at":"带时区的 ISO 日期时间","depends_on_draft_action_ids":[]}]}。当教师只说出目标而事项明显不完整时（例如只说"9月1日开学"），candidates 必须主动列出该类事务的常见准备工作（4 至 8 项），suggested 标记你建议默认纳入的项；教师已明确提到的事项必须进入 candidates 且 suggested=true。总截止日 final_deadline 必须与教师明确说出的目标日期一致，不得用最后一个行动的日期替代；教师没有给出目标日期时 final_deadline 留空并追问。每个明确工作都要成为独立 action，准备、确认、执行或复查确有必要时继续细分。根据本机参考日期解释“今天、明天、前一天、9月1日”等表达，并在 time_facts 中保留推导依据。缺少具体日期、结算周期、人员范围、兑奖规则等会影响执行的信息时，在 clarification_questions 中追问；不得编造教师没有提供且无法从日期关系推出的时间。仍可先形成草稿，但不以总截止日期静默填补各行动空日期。
 
 学生专业结论规则：教师报告“确诊、诊断、专业评估结论”等内容时，AI 不作诊断，只整理教师转述或已有专业材料。若专业结论来源、结论日期或书面依据未明确，record_kind 使用 reported_statement，并追问专业结论来源、日期和依据；信息齐全时才建议 professional_conclusion。draft 必须包含 record_kind、source、basis、observed_at、current_school_support、professional_recommendations、avoidances 和合并后的 profile_update；追问当前在校支持、专业建议、需要避免的做法或后续复查中最必要的内容。不得把医学或心理结论写成永久性格、能力或纪律标签。
 
 学生冲突规则：冲突、安全、受伤或异常线索必须使用 conflict_safety 和 sop，第一轮同时形成可执行初稿与最多 3 个必要追问；追问必须放在顶层 clarification_questions，不能只放入 profile_update.open_questions。冲突 SOP 的 draft 至少返回 template_key、summary、steps、to_verify。对每名已唯一匹配的学生分别返回 student_profile_updates，结构为 [{"subject_ref":{"kind":"student","id":"原样复制候选 id","revision":"原样复制候选 revision"},"include":true,"display_name":"学生显示名","record_kind":"reported_statement","source":"教师当前输入，采用前核对","basis":"事实或材料依据，未知可为空","observed_at":"已知时填写带时区的 ISO 日期时间，时刻未知则留空并追问","review_at":"教师观察或阶段性判断的复查时间","expires_at":"教师观察或阶段性判断的失效时间","record_summary":"只描述这名学生与本次事件有关的待核事实","profile_base_revision":0,"profile_update":{"summary":"合并后的当前档案摘要","dimensions":[],"open_questions":[],"support_focus":[]}}]。不要把两名学生合并成一份 profile_update，不预设责任方，不认定欺凌。后续补充必须同时修订 SOP 和各学生拟更新内容；profile_base_revision 只作占位，本机会绑定真实当前版本。
 
 若本轮是在回答上一轮追问并提供了上一轮待核对草稿，必须在其基础上修订，保留未被新事实否定的内容；明确是另一件新事项时不得合并旧草稿。你只能形成草稿，不得自动诊断、认定欺凌、决定惩戒、对外发送或结案。即时危险必须提醒教师先保护学生并联系有权角色。"""
-_PROFILE_INSTRUCTION = """当前会话从一个已选学生的档案页发起。只处理这名学生，不得改选其他学生。每次在已提供的当前档案上持续补充、修正和完善，而不是新建历史版本。若信息足以整理，返回且只返回一个 student_growth 或 student_support 的 record 工作项，并原样复制已选学生引用。draft.profile_update 必须是合并后的完整当前档案，包含非空 summary、dimensions、open_questions、support_focus；dimensions 可使用稳定核心 key，也可为学生新增简短英文 key 的个性维度。不得删除与本轮无关的已有维度。发现明显矛盾或关键缺失时，在 clarification_questions 中最多追问 3 个真正有帮助的问题；仍可把已经确定的内容形成完整更新草稿。"""
+_PROFILE_INSTRUCTION = """当前会话从一个已选学生的档案页发起。只处理这名学生，不得改选其他学生。每次在已提供的当前档案上持续补充、修正和完善，而不是新建历史版本。若信息足以整理，返回且只返回一个 student_growth 或 student_support 的 record 工作项，并原样复制已选学生引用。draft.profile_update 必须是合并后的完整当前档案，包含非空 summary、dimensions、open_questions、support_focus；dimensions 必须使用学生档案整理规则中的核心维度 key，都不合适时才可为学生新增简短英文 key。不得删除与本轮无关的已有维度。发现明显矛盾或关键缺失时，在 clarification_questions 中最多追问 3 个真正有帮助的问题；仍可把已经确定的内容形成完整更新草稿。"""
 _AUDIO_TRIAGE_INSTRUCTION = """你是班主任事务整理助手。当前最后一条用户消息包含教师录音。只返回 json 对象，contract_version 必须是 class_teacher_audio_triage.v1。先在 transcript 字段逐字转写教师说话，保留姓名、日期、数字和否定词，不推断录音中没有的内容；再返回与 class_teacher_triage.v1 相同的 assistant_message、clarification_questions、work_items。把事务分到 student_growth、student_support、conflict_safety、class_operations、activities_culture、school_coordination 六域，并选择 record、plan_calendar、sop 之一。你只能形成草稿，不得自动诊断、分析情绪、认定欺凌、决定惩戒、对外发送或结案。即时危险必须提醒教师先保护学生并联系有权角色。同名学生或无法唯一匹配时 subject_refs 留空并加入待核对项。"""
 _REVISION_INSTRUCTION = """你只调整现有班主任草稿。只返回 JSON 对象：contract_version 必须是 class_teacher_draft_revision.v1，content 只返回需要新增或改动的顶层字段，不要重复未改字段；系统会按键合并并保留未返回内容。计划 actions 只返回新增或改动项，每项必须带原 draft_action_id；SOP steps 只返回新增或改动项，每项必须带原 key，绝不能改写或删除安全必做步骤和教师分流步骤。需要修改学生档案建议时，只返回受影响学生的完整 student_profile_updates 项并保留其 subject_ref；未修改的学生不要重复返回。根据教师要求同时修订后续 SOP 与档案建议。不得正式保存、外发、诊断、作欺凌认定、决定惩戒或结案。"""
+_AFFAIR_FLOW_INSTRUCTION = """你是班主任事务流程助理。教师正在推进一个已经建立的事务处理流程，现在补充了新情况。只返回一个 JSON 对象，不要 Markdown。严格按这个结构返回：
+{"contract_version":"class_teacher_affair_flow_revision.v1","assistant_message":"给教师的简短说明","items":[{"item_id":"rev-1","kind":"add_step","title":"可执行步骤名","details":"具体做法和完成标准","depends_on":["已存在步骤key"],"reason":"为什么建议这一步"},{"item_id":"rev-2","kind":"revise_step","target_step_key":"未开始普通步骤key","title":"新步骤名","details":"新步骤说明","reason":"为什么这样改"},{"item_id":"rev-3","kind":"note","text":"提醒教师核对的建议","reason":"依据"}]}
+
+规则：kind 只能是 add_step、revise_step、note。只能新增普通步骤、修改未开始普通步骤的文案、或给出核对建议；绝不能删除或弱化安全必做步骤，绝不能改动教师分流决策点及其选项，绝不新增决策点。新步骤和修改必须基于教师补充的新情况、已完成步骤的结果和分流决定；depends_on 只能引用给定事务里已存在的步骤 key。不提惩戒、诊断、欺凌认定或对外发送建议。items 最多 5 条，没有需要调整时 items 返回一条 note 说明当前流程无需改动。"""
 _STUDENT_REFERENCE_RESELECTION_MESSAGE = "学生版本信息不一致，请重新选择"
+_PROFILE_DIMENSION_GUIDE = "、".join(
+    f"{key}（{label}）" for key, label in CORE_PROFILE_DIMENSIONS
+)
+# 档案整理规则依赖核心维度清单，维度变化时随 CORE_PROFILE_DIMENSIONS 自动同步。
+_PROFILE_ORGANIZATION_RULES = (
+    "学生档案整理规则：只要输入描述了学生情况，profile_update 必须把信息分入所有适用维度，"
+    "不能只写进 summary。核心维度固定为："
+    + _PROFILE_DIMENSION_GUIDE
+    + "。优先使用这些核心 key；都不合适时才可为学生新增简短英文 key。"
+    "dimensions 的每一项必须是包含 key、label、items 三个字段的对象，items 至少写一条具体事实；"
+    "不能只返回维度 key 名称，也不能返回空 items。"
+    "每个适用维度的 items 写教师提供的具体事实，不写空泛评价；"
+    "教师已说明有效或无效的做法必须进入 effective_methods。"
+    "support_focus 的 need、effective_methods、next_actions 必须结合这名学生的具体情况给出可执行做法"
+    "（例如利用其优势安排班级角色、约定具体提醒信号），"
+    "不得只写“多观察、多沟通、多关注”这类套话。"
+    "追问规则：clarification_questions 优先问能帮助理解学生的问题——"
+    "什么情境下表现好或差、什么方式对他有效或无效、家庭与同伴中的关键细节、教师试过的办法及效果；"
+    "只有涉及专业结论规则时才追问材料来源、日期与依据。"
+)
+# 档案整理规则对分诊与学生档案页两种会话同样生效。
+_TRIAGE_INSTRUCTION = _TRIAGE_INSTRUCTION + "\n\n" + _PROFILE_ORGANIZATION_RULES
+_PROFILE_INSTRUCTION = _PROFILE_INSTRUCTION + "\n\n" + _PROFILE_ORGANIZATION_RULES
 _STUDENT_REFERENCE_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,128}")
 _STUDENT_REFERENCE_ISSUE_CODES = frozenset(
     {"student_revision_mismatch", "unknown_student_reference"}
@@ -53,6 +83,39 @@ _FOLLOW_UP_DETAIL_PATTERN = re.compile(
     r"(?:补充|已确认|已经|目前|双方|无人受伤|没有受伤|起因|经过|后来)"
 )
 _PROFESSIONAL_REPORT_PATTERN = re.compile(r"(?:确诊|诊断|专业评估|专业结论)")
+_PROFESSIONAL_NEGATION_PATTERN = re.compile(r"(?:没有|无|未|没|并非|不是|尚无|尚未)")
+_PROFESSIONAL_NEGATION_WINDOW = 6
+_DOMAIN_ALIASES = {
+    "conflict_support": "conflict_safety",
+    "conflict": "conflict_safety",
+    "safety_incident": "conflict_safety",
+    "student_record": "student_growth",
+    "student_profile": "student_growth",
+    "growth_record": "student_growth",
+    "support": "student_support",
+    "home_school": "student_support",
+    "class_management": "class_operations",
+    "class_operation": "class_operations",
+    "daily_operations": "class_operations",
+    "activity": "activities_culture",
+    "class_activity": "activities_culture",
+    "school_cooperation": "school_coordination",
+    "coordination": "school_coordination",
+}
+_MODE_ALIASES = {
+    "plan": "plan_calendar",
+    "calendar": "plan_calendar",
+    "schedule": "plan_calendar",
+    "sop_workflow": "sop",
+    "workflow": "sop",
+}
+_INTENT_ALIASES = {
+    "new": "create",
+    "update": "append",
+    "revise": "append",
+    "ask": "follow_up",
+    "decompose": "plan",
+}
 _PROFESSIONAL_SOURCE_PATTERN = re.compile(
     r"(?:医院|医师|医生|心理中心|医疗机构|专业机构|评估机构|诊断证明|评估报告)"
 )
@@ -92,7 +155,11 @@ class ClassTeacherAITaskAdapter:
     """B Adapter; domain text stays B-owned except approved local call diagnostics."""
 
     module = "class_teacher"
-    task_kinds = {"class_teacher.intake_triage", "class_teacher.draft_revision"}
+    task_kinds = {
+        "class_teacher.intake_triage",
+        "class_teacher.draft_revision",
+        "class_teacher.affair_flow_revision",
+    }
     legacy_task_kind = "class_teacher.intake"
 
     def __init__(
@@ -102,12 +169,14 @@ class ClassTeacherAITaskAdapter:
         adoption,
         configured_model,
         student_cards,
+        sop=None,
     ) -> None:
         self.conversations = conversations
         self.class_roster = class_roster
         self.adoption = adoption
         self.configured_model = configured_model
         self.student_cards = student_cards
+        self.sop = sop
 
     def execute(
         self,
@@ -125,11 +194,14 @@ class ClassTeacherAITaskAdapter:
         )
         if self.configured_model is None:
             raise RuntimeError("class_teacher_model_unavailable")
-        diagnostic_task_kind = (
-            "class_teacher_draft_revision"
-            if task_kind.endswith("draft_revision")
-            else "class_teacher_intake"
-        )
+        if task_kind == "class_teacher.affair_flow_revision":
+            diagnostic_task_kind = "class_teacher_affair_flow_revision"
+        else:
+            diagnostic_task_kind = (
+                "class_teacher_draft_revision"
+                if task_kind.endswith("draft_revision")
+                else "class_teacher_intake"
+            )
         raw = self.configured_model.invoke_workspace_task(
             task_gateway=model_gateway,
             messages=request.messages,
@@ -149,7 +221,11 @@ class ClassTeacherAITaskAdapter:
                 task_id=task.task_id,
                 source_ref=source_ref,
                 context_refs=context_refs,
-                result=_normalize_triage_payload_compatibility(payload),
+                result=(
+                    payload
+                    if task_kind == "class_teacher.affair_flow_revision"
+                    else _normalize_triage_payload_compatibility(payload)
+                ),
             )
         except VaultError as exc:
             if exc.code.endswith("invalid_result"):
@@ -173,6 +249,26 @@ class ClassTeacherAITaskAdapter:
         return recovered
 
     def recover(self, task: StoredTask) -> AdapterResult | None:
+        if self._domain_task_kind(task) == "class_teacher.affair_flow_revision":
+            sync_ref = next(
+                (item for item in task.context_refs if item.kind == "affair_sync"),
+                None,
+            )
+            if sync_ref is None or self.sop is None:
+                return None
+            entry = self.sop.flow_revision_for_sync(
+                token="",
+                affair_id=task.source_ref.id,
+                sync_id=sync_ref.id,
+            )
+            if entry is None:
+                return None
+            return AdapterResult(
+                proposal_ref_id=str(entry["revision_id"]),
+                proposal_revision="1",
+                handoffs=(),
+                needs_input=False,
+            )
         revision_ref = next(
             (item for item in task.context_refs if item.kind == "draft_revision_request"),
             None,
@@ -237,6 +333,29 @@ class ClassTeacherAITaskAdapter:
     ) -> DomainModelRequest:
         if task_kind not in self.task_kinds:
             raise VaultError("class_teacher_task_kind_invalid", "班主任 AI 任务类型无效", status_code=422)
+        if task_kind == "class_teacher.affair_flow_revision":
+            if self.sop is None:
+                raise VaultError("class_teacher_task_kind_invalid", "班主任事务流程修订不可用", status_code=422)
+            sync_ref = next((item for item in context_refs if item.get("kind") == "affair_sync"), None)
+            if source_ref.get("kind") != "affair" or sync_ref is None:
+                raise VaultError("class_teacher_source_ref_invalid", "流程修订任务来源无效", status_code=422)
+            affair_id = str(source_ref.get("id") or "")
+            sync_id = str(sync_ref.get("id") or "")
+            snapshot = self.sop.sop_snapshot_for_model(token="", affair_id=affair_id)
+            sync_text = self.sop.sync_request_text(token="", affair_id=affair_id, sync_id=sync_id)
+            return DomainModelRequest(
+                task_kind=task_kind,
+                prompt_contract_version="class_teacher_affair_flow_revision.v1",
+                messages=(
+                    {"role": "system", "content": _AFFAIR_FLOW_INSTRUCTION},
+                    {
+                        "role": "user",
+                        "content": "事务当前状态（安全必做步骤和教师分流决策点不可改动）："
+                        + json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+                    },
+                    {"role": "user", "content": "教师补充的新情况：" + sync_text},
+                ),
+            )
         if task_kind == "class_teacher.draft_revision":
             revision_ref = next((item for item in context_refs if item.get("kind") == "draft_revision_request"), None)
             handoff_ref = next((item for item in context_refs if item.get("kind") == "handoff"), None)
@@ -447,6 +566,8 @@ class ClassTeacherAITaskAdapter:
             name = item["display_name"]
             name_counts[name] = name_counts.get(name, 0) + 1
         normalized_result = deepcopy(dict(result))
+        _canonicalize_work_item_enums(normalized_result)
+        _sanitize_profile_update_dimensions(normalized_result)
         normalized_result["clarification_questions"] = _bounded_clarification_questions(
             normalized_result.get("clarification_questions")
         )
@@ -482,6 +603,7 @@ class ClassTeacherAITaskAdapter:
         for raw_item in items if isinstance(items, list) else []:
             if not isinstance(raw_item, dict):
                 continue
+            _normalize_plan_draft(raw_item, source_text=conversation_text)
             if requested_mode is not None:
                 primary = str(raw_item.get("primary_mode") or "")
                 secondary = raw_item.get("secondary_modes")
@@ -936,6 +1058,44 @@ class ClassTeacherAITaskAdapter:
         result: Mapping[str, Any],
     ) -> dict[str, object]:
         revision_ref = next((item for item in context_refs if item.get("kind") == "draft_revision_request"), None)
+        sync_ref = next((item for item in context_refs if item.get("kind") == "affair_sync"), None)
+        if sync_ref is not None:
+            if self.sop is None:
+                raise VaultError("class_teacher_task_kind_invalid", "班主任事务流程修订不可用", status_code=422)
+            try:
+                parsed = parse_affair_flow_revision(result)
+            except VaultError as exc:
+                if exc.code.endswith("invalid_result"):
+                    self.sop.mark_sync_request_failed(
+                        token="",
+                        affair_id=str(source_ref.get("id") or ""),
+                        sync_id=str(sync_ref.get("id") or ""),
+                        outcome="invalid_result",
+                    )
+                raise
+            entry = self.sop.persist_flow_revision(
+                token="",
+                affair_id=str(source_ref.get("id") or ""),
+                sync_id=str(sync_ref.get("id") or ""),
+                assistant_message=parsed.assistant_message,
+                items=[
+                    {
+                        "item_id": item.item_id,
+                        "kind": item.kind,
+                        "target_step_key": item.target_step_key,
+                        "title": item.title,
+                        "details": item.details,
+                        "depends_on": list(item.depends_on),
+                        "reason": item.reason,
+                        "text": item.text,
+                    }
+                    for item in parsed.items
+                ],
+            )
+            return {
+                "proposal_ref": {"kind": "flow_revision", "id": entry["revision_id"], "revision": "1"},
+                "handoff_ids": [],
+            }
         if revision_ref is not None:
             request_id = str(revision_ref.get("id") or "")
             try:
@@ -976,6 +1136,19 @@ class ClassTeacherAITaskAdapter:
                 payload=normalized_result,
             )
         except VaultError as exc:
+            if exc.code == "student_profile_invalid":
+                # 模型给的档案形状无效属于“模型结果无效”，按分诊无效处理，
+                # 避免整轮落入“结果未知”。
+                self.conversations.mark_task_outcome(
+                    turn_id=turn_id,
+                    task_id=task_id,
+                    task_state="invalid_result",
+                )
+                raise VaultError(
+                    "class_teacher_triage_invalid_result",
+                    "AI 返回的学生档案格式无效",
+                    status_code=422,
+                ) from exc
             if exc.code == "class_teacher_triage_invalid_result":
                 self.conversations.mark_task_outcome(
                     turn_id=turn_id,
@@ -1019,6 +1192,16 @@ class ClassTeacherAITaskAdapter:
                 task_state="invalid_result",
             )
             return
+        if task_kind == "class_teacher.affair_flow_revision":
+            sync_ref = next((item for item in task.context_refs if item.kind == "affair_sync"), None)
+            if sync_ref is not None and task.source_ref.kind == "affair" and self.sop is not None:
+                self.sop.mark_sync_request_failed(
+                    token="",
+                    affair_id=task.source_ref.id,
+                    sync_id=sync_ref.id,
+                    outcome="invalid_result",
+                )
+            return
         turn = next((item for item in task.context_refs if item.kind == "turn"), None)
         if turn is not None:
             self.conversations.mark_task_outcome(
@@ -1048,6 +1231,125 @@ class ClassTeacherAITaskAdapter:
             return_focus_ref=str(item["work_item_id"]),
             expires_on_source_change=expires_on_source_change,
         )
+
+
+def _canonicalize_work_item_enums(result: dict[str, Any]) -> None:
+    """把模型返回的近义枚举值归一到合同取值，避免一个别名导致整轮作废。
+
+    只映射明确近义的值；仍不认识的值保持原样，由合同校验报错。
+    """
+    items = result.get("work_items")
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        domain = str(item.get("domain") or "").strip()
+        if domain and domain not in DOMAINS:
+            mapped_domain = _DOMAIN_ALIASES.get(domain)
+            if mapped_domain is not None:
+                item["domain"] = mapped_domain
+        mode = str(item.get("primary_mode") or "").strip()
+        if mode and mode not in HANDLING_MODES:
+            mapped_mode = _MODE_ALIASES.get(mode)
+            if mapped_mode is not None:
+                item["primary_mode"] = mapped_mode
+        intent = str(item.get("intent") or "").strip()
+        if intent and intent not in INTENTS:
+            mapped_intent = _INTENT_ALIASES.get(intent)
+            if mapped_intent is not None:
+                item["intent"] = mapped_intent
+
+
+def _teacher_explicit_dates(source_text: str) -> list[str]:
+    """教师原文中明确写出的月日日期（无年份时按本机参考年），用于核对计划总截止日。"""
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    dates: list[str] = []
+    for match in re.finditer(r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)", source_text):
+        year = int(match.group(1)) if match.group(1) else now.year
+        month, day = int(match.group(2)), int(match.group(3))
+        try:
+            dates.append(date(year, month, day).isoformat())
+        except ValueError:
+            continue
+    return list(dict.fromkeys(dates))
+
+
+def _normalize_plan_draft(item: dict[str, Any], *, source_text: str) -> None:
+    if str(item.get("primary_mode") or "") != "plan_calendar":
+        return
+    draft = item.get("draft")
+    if not isinstance(draft, dict):
+        return
+    raw_candidates = draft.get("candidates")
+    if raw_candidates is not None:
+        cleaned: list[dict[str, object]] = []
+        for entry in raw_candidates[:12] if isinstance(raw_candidates, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label") or "").strip()
+            if not label or len(label) > 200:
+                continue
+            cleaned.append({
+                "label": label,
+                "reason": str(entry.get("reason") or "").strip()[:400],
+                "suggested": bool(entry.get("suggested")),
+            })
+        draft["candidates"] = cleaned
+    teacher_dates = _teacher_explicit_dates(source_text)
+    if len(teacher_dates) != 1:
+        return
+    target = teacher_dates[0]
+    raw_deadline = str(draft.get("final_deadline") or "").strip()
+    if raw_deadline.startswith(target):
+        return
+    # 教师只明确说了一个日期而模型给了不同的总截止日（或漏给）：
+    # 校正回教师的日期并留痕，教师采用前仍可修改。
+    draft["final_deadline"] = f"{target}T18:00:00+08:00"
+    note = {"text": f"总截止日已按教师明确说出的目标日期 {target} 校正，采用前请核对。"}
+    facts = item.get("time_facts")
+    if isinstance(facts, list):
+        facts.append(note)
+    else:
+        item["time_facts"] = [note]
+    actions = draft.get("actions")
+    for action in actions if isinstance(actions, list) else []:
+        if not isinstance(action, dict):
+            continue
+        due = str(action.get("due_at") or "").strip()
+        if due and due[:10] > target:
+            action["due_at"] = f"{target}T18:00:00+08:00"
+
+
+def _drop_contentless_dimensions(update: object) -> None:
+    if not isinstance(update, dict):
+        return
+    dims = update.get("dimensions")
+    if not isinstance(dims, list):
+        return
+    kept: list[object] = []
+    for dim in dims:
+        if not isinstance(dim, dict):
+            continue  # 模型有时把维度写成纯 key 字符串，没有内容，直接丢弃
+        items = dim.get("items")
+        if isinstance(items, list) and not items:
+            continue  # 空维度没有内容
+        kept.append(dim)
+    update["dimensions"] = kept
+
+
+def _sanitize_profile_update_dimensions(result: dict[str, Any]) -> None:
+    """清理模型档案草稿中的无内容维度，避免一个形状瑕疵让整轮作废。"""
+    items = result.get("work_items")
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        draft = item.get("draft")
+        if not isinstance(draft, dict):
+            continue
+        _drop_contentless_dimensions(draft.get("profile_update"))
+        updates = draft.get("student_profile_updates")
+        for update in updates if isinstance(updates, list) else []:
+            if isinstance(update, dict):
+                _drop_contentless_dimensions(update.get("profile_update"))
 
 
 def _continues_previous_draft(conversation: Mapping[str, object]) -> bool:
@@ -1195,9 +1497,18 @@ def _conflict_clarification_questions(
     items: list[dict[str, Any]],
 ) -> list[str]:
     candidates: list[str] = []
-    if not re.search(r"(?:已经|已|目前已).*分开|不再接触|没有继续接触", source_text):
+    separated = re.search(
+        r"(?:已经|已|目前已|先|让|把|将)[^。；]{0,10}分开|不再接触|没有继续接触|分开处理",
+        source_text,
+    )
+    not_separated = re.search(r"(?:没|没有|未|尚未|还未)[^。；]{0,6}分开", source_text)
+    if not separated or not_separated:
         candidates.append("双方目前是否已经分开，是否仍有即时冲突风险？")
-    if not re.search(r"无人受伤|没有人受伤|均未受伤|都没受伤", source_text):
+    injury_status_known = re.search(
+        r"无人受伤|没有人受伤|均未受伤|都没受伤|没有受伤|受伤|擦伤|擦破|破皮|流血|肿痛|校医|医务室|就医",
+        source_text,
+    )
+    if not injury_status_known:
         candidates.append("是否有人受伤或需要立即联系校医、学校负责人？")
     if isinstance(existing, list):
         candidates.extend(
@@ -1228,7 +1539,11 @@ def _bounded_clarification_questions(value: object) -> list[str]:
 
 
 def _is_professional_report(source_text: str) -> bool:
-    return bool(_PROFESSIONAL_REPORT_PATTERN.search(source_text))
+    for match in _PROFESSIONAL_REPORT_PATTERN.finditer(source_text):
+        window = source_text[max(0, match.start() - _PROFESSIONAL_NEGATION_WINDOW):match.start()]
+        if not _PROFESSIONAL_NEGATION_PATTERN.search(window):
+            return True
+    return False
 
 
 def _professional_clarification_questions(
@@ -1378,12 +1693,16 @@ def _normalize_triage_payload_compatibility(
         # Some JSON-object providers echo schema-description placeholders at
         # the top level. Diagnostics confirmed these fields carry no routing,
         # safety, student, or draft semantics; all contract fields below stay
-        # strictly validated.
+        # strictly validated. profile_update/profile_base_revision only have
+        # meaning inside a work item draft; models sometimes copy the prompt
+        # example and echo them at the top level, where they are noise.
         for field in (
             "name",
             "description",
             "additionalProp1",
             "missing_fields",
+            "profile_update",
+            "profile_base_revision",
         ):
             normalized.pop(field, None)
         # JSON-object providers can echo unused schema branches under their

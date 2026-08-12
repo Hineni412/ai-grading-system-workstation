@@ -318,3 +318,195 @@ def test_close_reopen_new_occurrence_and_ai_suggestion_stays_advisory(
     assert reopened["state"] == "active"
     assert reopened["occurrence_sequence"] == 2
     assert [item["key"] for item in reopened["current_steps"]] == ["intake"]
+
+
+def _workspace_revision(service: VaultService, affair_id: str) -> int:
+    with closing(service.database.connect()) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM affair_events WHERE affair_id = ?",
+            (affair_id,),
+        ).fetchone()[0]
+    return max(1, int(count))
+
+
+def _sync_and_persist(
+    service: VaultService,
+    token: str,
+    affair: dict[str, object],
+    *,
+    items: list[dict[str, object]],
+    text: str = "合成新情况",
+) -> dict[str, object]:
+    sync = service.sop.create_sync_request(
+        token=token,
+        affair_id=str(affair["affair_id"]),
+        expected_revision=_workspace_revision(service, str(affair["affair_id"])),
+        text=text,
+        operation_id=f"sync-{text}",
+    )
+    return service.sop.persist_flow_revision(
+        token=token,
+        affair_id=str(affair["affair_id"]),
+        sync_id=str(sync["sync_id"]),
+        assistant_message="已按新情况调整流程",
+        items=items,
+    )
+
+
+def test_flow_revision_filters_unsafe_items_and_applies_accepted(tmp_path: Path) -> None:
+    service, token = _service(tmp_path)
+    template = _template(service, token)
+    affair = _affair(service, token, str(template["template_version_id"]))
+
+    entry = _sync_and_persist(
+        service,
+        token,
+        affair,
+        items=[
+            {
+                "item_id": "rev-1",
+                "kind": "add_step",
+                "title": "分别联系双方家长",
+                "details": "先电话沟通，再视情况书面告知",
+                "depends_on": ["intake"],
+                "reason": "新情况需要家校同步",
+                "text": "",
+            },
+            {
+                "item_id": "rev-2",
+                "kind": "revise_step",
+                "target_step_key": "communication",
+                "title": "分别与两名学生单独沟通",
+                "details": "不安排当面对质",
+                "reason": "避免二次冲突",
+                "text": "",
+            },
+            {
+                "item_id": "rev-3",
+                "kind": "note",
+                "text": "本周课间留意两人互动",
+                "reason": "预防升级",
+            },
+            {
+                "item_id": "rev-4",
+                "kind": "revise_step",
+                "target_step_key": "safety_handoff",
+                "title": "跳过安全交接",
+                "details": "不再交接",
+                "reason": "模型试图删除安全步骤",
+                "text": "",
+            },
+            {
+                "item_id": "rev-5",
+                "kind": "add_step",
+                "title": "依赖不存在步骤",
+                "details": "",
+                "depends_on": ["ghost-step"],
+                "reason": "",
+                "text": "",
+            },
+        ],
+    )
+
+    assert entry["state"] == "pending_review"
+    assert {item["item_id"] for item in entry["items"]} == {"rev-1", "rev-2", "rev-3"}
+    assert {item["item_id"] for item in entry["dropped_items"]} == {"rev-4", "rev-5"}
+
+    again = service.sop.persist_flow_revision(
+        token=token,
+        affair_id=str(affair["affair_id"]),
+        sync_id=str(entry["sync_id"]),
+        assistant_message="重复持久化",
+        items=[],
+    )
+    assert again["revision_id"] == entry["revision_id"]
+
+    refreshed = service.sop.get_affair(token=token, affair_id=str(affair["affair_id"]))
+    decided = service.sop.decide_flow_revision(
+        token=token,
+        affair_id=str(affair["affair_id"]),
+        revision_id=str(entry["revision_id"]),
+        accepted_item_ids=["rev-1", "rev-2", "rev-3"],
+        expected_revision=_workspace_revision(service, str(affair["affair_id"])),
+        operation_id="decide-flow-1",
+    )
+
+    ai_step = _step(decided, "ai-rev-1")
+    assert ai_step["state"] == "blocked"
+    assert ai_step["safety_required"] is False
+    assert ai_step["decision_key"] is None
+    communication = _step(decided, "communication")
+    assert communication["title"] == "分别与两名学生单独沟通"
+    safety = _step(decided, "safety_handoff")
+    assert safety["title"] == "完成合成安全交接"
+    revision_entry = next(
+        item for item in decided["flow_revisions"] if item["revision_id"] == entry["revision_id"]
+    )
+    assert revision_entry["state"] == "applied"
+    assert revision_entry["accepted_item_ids"] == ["rev-1", "rev-2", "rev-3"]
+
+    after_intake = _complete(service, token, decided, "intake")
+    assert _step(after_intake, "ai-rev-1")["state"] == "ready"
+    assert _step(after_intake, "communication")["state"] == "ready"
+
+    replayed = service.sop.decide_flow_revision(
+        token=token,
+        affair_id=str(affair["affair_id"]),
+        revision_id=str(entry["revision_id"]),
+        accepted_item_ids=["rev-1", "rev-2", "rev-3"],
+        expected_revision=_workspace_revision(service, str(affair["affair_id"])),
+        operation_id="decide-flow-2",
+    )
+    ai_steps = [
+        item
+        for item in [
+            *replayed["current_steps"],
+            *replayed["preview_steps"],
+            *replayed["completed_steps"],
+        ]
+        if item["key"] == "ai-rev-1"
+    ]
+    assert len(ai_steps) == 1
+
+
+def test_flow_revision_decide_rejects_stale_revision(tmp_path: Path) -> None:
+    service, token = _service(tmp_path)
+    template = _template(service, token)
+    affair = _affair(service, token, str(template["template_version_id"]))
+    entry = _sync_and_persist(
+        service,
+        token,
+        affair,
+        items=[{
+            "item_id": "rev-1",
+            "kind": "note",
+            "text": "合成核对建议",
+            "reason": "",
+        }],
+    )
+
+    with pytest.raises(VaultError, match="已经变化"):
+        service.sop.decide_flow_revision(
+            token=token,
+            affair_id=str(affair["affair_id"]),
+            revision_id=str(entry["revision_id"]),
+            accepted_item_ids=[],
+            expected_revision=_workspace_revision(service, str(affair["affair_id"])) - 1,
+            operation_id="decide-stale-revision",
+        )
+
+
+def test_flow_revision_snapshot_hides_nothing_but_marks_safety(tmp_path: Path) -> None:
+    service, token = _service(tmp_path)
+    template = _template(service, token)
+    affair = _affair(service, token, str(template["template_version_id"]))
+
+    snapshot = service.sop.sop_snapshot_for_model(
+        token=token,
+        affair_id=str(affair["affair_id"]),
+    )
+
+    steps = {item["key"]: item for item in snapshot["steps"]}
+    assert steps["safety_handoff"]["safety_required"] is True
+    assert steps["communication"]["safety_required"] is False
+    assert all("depends_on" in item for item in snapshot["steps"])

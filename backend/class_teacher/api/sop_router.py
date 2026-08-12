@@ -14,9 +14,12 @@ from .sop_schemas import (
     AffairCreateRequest,
     AffairDraftRequest,
     AffairDraftResponse,
+    AffairFlowRevisionDecideRequest,
     AffairListResponse,
     AffairReopenRequest,
     AffairResponse,
+    AffairSyncUpdateRequest,
+    AffairSyncUpdateResponse,
     AffairWorkspaceListResponse,
     AffairWorkspaceResponse,
     DecisionRecordRequest,
@@ -264,6 +267,61 @@ def create_sop_router() -> APIRouter:
                 operation_id=body.operation_id,
                 revision=body.revision,
                 reason=body.reason,
+            )
+        )
+
+    @router.post(
+        "/sop/affairs/{affair_id}/sync-updates",
+        response_model=AffairSyncUpdateResponse,
+    )
+    def sync_affair_update(
+        affair_id: str,
+        request: Request,
+        body: AffairSyncUpdateRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+
+        def sync():
+            services = _service(request)
+            created = services.sop.create_sync_request(
+                token="",
+                affair_id=affair_id,
+                expected_revision=body.expected_revision,
+                text=body.text,
+                operation_id=body.operation_id,
+            )
+            return services.intake.start_affair_flow_revision(
+                affair_id=affair_id,
+                affair_revision=int(created["affair_revision"]),
+                sync_id=str(created["sync_id"]),
+                operation_id=body.operation_id,
+            )
+
+        return _call(sync)
+
+    @router.post(
+        "/sop/affairs/{affair_id}/flow-revisions/{revision_id}/decide",
+        response_model=AffairResponse,
+    )
+    def decide_flow_revision(
+        affair_id: str,
+        revision_id: str,
+        request: Request,
+        body: AffairFlowRevisionDecideRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).sop.decide_flow_revision(
+                token="",
+                affair_id=affair_id,
+                revision_id=revision_id,
+                accepted_item_ids=body.accepted_item_ids,
+                expected_revision=body.expected_revision,
+                operation_id=body.operation_id,
             )
         )
 
