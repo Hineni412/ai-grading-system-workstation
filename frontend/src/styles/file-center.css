@@ -69,9 +69,9 @@
   display: grid;
   gap: var(--space-5);
   padding: var(--space-5);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
 .file-section--compact {
@@ -99,8 +99,8 @@
 .training-task {
   min-width: 0;
   padding: var(--space-4);
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-panel);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
   background: var(--color-bg-subtle);
 }
 
@@ -154,9 +154,9 @@
   gap: var(--space-4);
   overflow-y: auto;
   padding: var(--space-5);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
   box-shadow: var(--shadow-overlay);
 }
 
@@ -213,8 +213,8 @@
   gap: var(--space-3);
   margin: 0;
   padding: var(--space-4);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
 }
 
 .excel-settings-group legend {
@@ -380,8 +380,8 @@
 .file-ledger__empty,
 .file-center__empty {
   padding: var(--space-5);
-  border: var(--border-width) dashed var(--color-border-strong);
-  border-radius: var(--radius-panel);
+  border: var(--border-width) dashed var(--input);
+  border-radius: var(--radius);
   color: var(--color-text-secondary);
   text-align: center;
 }
@@ -396,6 +396,7 @@
 .file-status {
   flex: 0 0 auto;
   padding: var(--space-1) var(--space-2);
+  border: var(--border-width) solid currentColor;
   border-radius: var(--radius-tag);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
@@ -434,7 +435,7 @@
   gap: var(--space-4);
   padding: var(--space-4);
   border: var(--border-width) solid var(--color-accent);
-  border-radius: var(--radius-panel);
+  border-radius: var(--radius);
   background: var(--color-accent-subtle);
 }
 

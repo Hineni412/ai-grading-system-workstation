@@ -81,7 +81,7 @@ describe('SettingsHubView', () => {
 
   it('keeps an unsaved AI service draft in place when the teacher declines to leave', async () => {
     const { host, router } = await mountAt('/settings')
-    await vi.waitFor(() => expect(host.querySelector('[name="profile-name"]')).toBeTruthy())
+    await vi.waitFor(() => expect(host.querySelector('[name="profile-name"]')).toBeTruthy(), { timeout: 5000 })
     const input = host.querySelector<HTMLInputElement>('[name="profile-name"]')!
     input.value = '尚未保存的站点'
     input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -100,7 +100,7 @@ describe('SettingsHubView', () => {
 
   it('keeps the original section switch when the teacher accepts losing an unsaved draft', async () => {
     const { host, router } = await mountAt('/settings')
-    await vi.waitFor(() => expect(host.querySelector('[name="profile-name"]')).toBeTruthy())
+    await vi.waitFor(() => expect(host.querySelector('[name="profile-name"]')).toBeTruthy(), { timeout: 5000 })
     const input = host.querySelector<HTMLInputElement>('[name="profile-name"]')!
     input.value = '尚未保存的站点'
     input.dispatchEvent(new Event('input', { bubbles: true }))

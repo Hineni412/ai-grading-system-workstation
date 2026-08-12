@@ -10,6 +10,7 @@ import {
   type TrainingScanPage,
 } from '../../api/training'
 import { ApiError } from '../../api/errors'
+import StatusBadge from '../design-system/StatusBadge.vue'
 import TrainingAssessmentPanel from './TrainingAssessmentPanel.vue'
 
 const props = defineProps<{
@@ -203,9 +204,12 @@ async function cancelSubmission(submissionId: string): Promise<void> {
         <h4 id="training-scan-title">扫描归卷</h4>
         <p>逐页核验冻结身份；缺页、重页或身份冲突不会进入自动判定。</p>
       </div>
-      <span v-if="batch" :class="['scan-status', `is-${batch.status}`]">
-        {{ batch.status === 'ready' ? '归组完成' : '需要检查' }}
-      </span>
+      <StatusBadge
+        v-if="batch"
+        class="scan-status"
+        :tone="batch.status === 'ready' ? 'success' : 'warning'"
+        :label="batch.status === 'ready' ? '归组完成' : '需要检查'"
+      />
     </header>
 
     <template v-if="!batch">
@@ -373,8 +377,8 @@ async function cancelSubmission(submissionId: string): Promise<void> {
 .training-scan-panel {
   margin-top: 1rem;
   padding: 1rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-control);
   background: var(--color-bg-subtle);
 }
 
@@ -412,15 +416,6 @@ async function cancelSubmission(submissionId: string): Promise<void> {
 
 .scan-status {
   flex: 0 0 auto;
-  padding: 0.3rem 0.6rem;
-  border-radius: 999px;
-  background: var(--color-warning-subtle);
-  color: var(--color-warning);
-}
-
-.scan-status.is-ready {
-  background: var(--color-success-subtle);
-  color: var(--color-success);
 }
 
 .scan-upload {
@@ -443,7 +438,7 @@ async function cancelSubmission(submissionId: string): Promise<void> {
 .scan-submissions article {
   padding: 0.7rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 9px;
+  border-radius: var(--radius-control);
   background: var(--color-bg-surface);
 }
 
@@ -458,7 +453,7 @@ async function cancelSubmission(submissionId: string): Promise<void> {
   margin-top: 0.65rem;
   padding: 0.7rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 9px;
+  border-radius: var(--radius-control);
   background: var(--color-danger-subtle);
 }
 

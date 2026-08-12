@@ -9,6 +9,7 @@ import {
 } from '../../api/question-bank'
 import { useAssemblyStore } from '../../stores/assembly'
 import { useQuestionBankStore } from '../../stores/question-bank'
+import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 withDefaults(defineProps<{
@@ -107,14 +108,13 @@ function closeSimilar(): void {
         <template v-if="store.hiddenSelectionCount">，其中 {{ store.hiddenSelectionCount }} 题在其他页</template>
       </span>
       <span class="qb-selection-bar__actions">
-        <button
-          type="button"
-          class="qb-button is-primary"
+        <AppButton
+          variant="primary"
           :disabled="assembly.saveState === 'saving'"
           @click="addSelectionToAssembly"
         >
           加入试卷篮
-        </button>
+        </AppButton>
         <button type="button" class="qb-link" @click="store.clearSelection">清空选择</button>
       </span>
     </div>
@@ -214,13 +214,13 @@ function closeSimilar(): void {
     </div>
 
     <footer v-if="store.totalPages > 1" class="qb-pagination">
-      <button type="button" class="qb-button is-quiet" :disabled="store.page <= 1" @click="changePage(store.page - 1)">
+      <AppButton variant="ghost" :disabled="store.page <= 1" @click="changePage(store.page - 1)">
         上一页
-      </button>
+      </AppButton>
       <span>第 {{ store.page }} / {{ store.totalPages }} 页</span>
-      <button type="button" class="qb-button is-quiet" :disabled="store.page >= store.totalPages" @click="changePage(store.page + 1)">
+      <AppButton variant="ghost" :disabled="store.page >= store.totalPages" @click="changePage(store.page + 1)">
         下一页
-      </button>
+      </AppButton>
     </footer>
   </section>
 

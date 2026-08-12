@@ -97,9 +97,9 @@
   min-width: 0;
   gap: var(--space-4);
   padding: var(--space-5);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
 .training-scope {
@@ -462,26 +462,26 @@
 .training-paper-mode {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: .75rem;
-  margin: 1rem 0;
-  padding: .8rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: 12px;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 
 .training-paper-mode legend {
-  padding: 0 .35rem;
+  padding: 0 var(--space-1);
   font-weight: 700;
 }
 
 .training-paper-mode label {
   display: flex;
-  gap: .65rem;
+  gap: var(--space-2);
   align-items: start;
-  padding: .75rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: 10px;
-  background: white;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
   cursor: pointer;
 }
 
@@ -499,52 +499,52 @@
 
 .training-student-picker {
   display: grid;
-  gap: .8rem;
-  margin: 1rem 0;
-  padding: 1rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: 14px;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   background: var(--color-bg-subtle);
 }
 
 .training-student-picker > header {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .training-student-picker h3,
-.training-student-picker p { margin: .15rem 0; }
+.training-student-picker p { margin: var(--space-1) 0; }
 
 .training-student-filter {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: .65rem 1rem;
+  gap: var(--space-2) var(--space-4);
 }
 
-.training-student-filter label { display: flex; align-items: center; gap: .35rem; }
-.training-student-filter input { width: 4.5rem; padding: .4rem; border: 1px solid var(--color-border-strong); border-radius: 7px; }
+.training-student-filter label { display: flex; align-items: center; gap: var(--space-1); }
+.training-student-filter input { width: 4.5rem; padding: var(--space-1) var(--space-2); border: 1px solid var(--input); border-radius: var(--radius-md); }
 
 .training-student-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: .45rem;
+  gap: var(--space-2);
 }
 
 .training-student-options label {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: .6rem;
-  padding: .55rem .65rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: 9px;
-  background: white;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
   cursor: pointer;
 }
 
-.training-student-options span { display: flex; gap: .45rem; align-items: baseline; }
+.training-student-options span { display: flex; gap: var(--space-2); align-items: baseline; }
 .training-student-options small { color: var(--color-text-secondary); }
 .training-matrix-controls { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .training-column-expand { display: block; margin: 5px auto 0; border: 0; background: transparent; color: var(--color-accent); font-size: 11px; }
@@ -556,9 +556,9 @@
 
 .training-stage-rail,
 .training-history-panel {
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
 .training-stage-rail {

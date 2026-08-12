@@ -15,6 +15,7 @@ import ChapterTrainingMatrix from '../components/knowledge-training/ChapterTrain
 import KnowledgeTrainingTabs from '../components/knowledge-training/KnowledgeTrainingTabs.vue'
 import TrainingKnowledgeStructure from '../components/knowledge-training/TrainingKnowledgeStructure.vue'
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
+import AppButton from '../components/design-system/AppButton.vue'
 import { loadEvidenceScope, saveEvidenceScope } from '../features/evidence-scope/session'
 import { useSessionStore } from '../stores/session'
 import '../styles/training-recommendations.css'
@@ -365,7 +366,7 @@ onBeforeUnmount(() => studentsController?.abort())
       <p v-if="training.analysisState === 'loading'" class="status-card">正在汇总学生与知识点……</p>
       <div v-else-if="training.analysisState === 'idle'" class="status-card empty-state">
         <p>选择学生和考试范围后，开始汇总掌握度。</p>
-        <button type="button" @click="analyze">开始汇总</button>
+        <AppButton variant="primary" @click="analyze">开始汇总</AppButton>
       </div>
       <div v-else-if="training.analysisState === 'empty'" class="status-card empty-state">
         当前范围没有可用知识证据，请调整学生或考试范围。
@@ -392,8 +393,8 @@ onBeforeUnmount(() => studentsController?.abort())
             <div class="student-filter-strip__tools">
               <label>最低<input v-model.number="masteryFilterMin" type="number" min="0" max="100"><span>%</span></label>
               <label>最高<input v-model.number="masteryFilterMax" type="number" min="0" max="100"><span>%</span></label>
-              <button type="button" @click="selectFilteredStudents">选中筛选结果</button>
-              <button type="button" class="button-link" @click="selectedStudentIds = []">清空</button>
+              <AppButton @click="selectFilteredStudents">选中筛选结果</AppButton>
+              <AppButton variant="ghost" class="button-link" @click="selectedStudentIds = []">清空</AppButton>
             </div>
             <div class="student-filter-strip__roster">
               <label v-for="student in filteredStudentMasteryRows" :key="student.id">
@@ -402,14 +403,15 @@ onBeforeUnmount(() => studentsController?.abort())
                 <strong>{{ student.mastery === null ? '—' : `${Math.round(student.mastery * 100)}%` }}</strong>
               </label>
             </div>
-            <button
-              type="button"
+            <AppButton
+              variant="primary"
+              block
               class="student-filter-strip__apply"
               :disabled="!selectedStudentIds.length"
               @click="applySelectedStudents"
             >
               应用 {{ selectedStudentIds.length }} 名学生并重算群体掌握度
-            </button>
+            </AppButton>
           </section>
 
           <TrainingKnowledgeStructure
@@ -542,9 +544,9 @@ onBeforeUnmount(() => studentsController?.abort())
               <template v-if="workflowStage === 'diagnosis'">
                 <strong>{{ paperSettingsValid ? '设置完整，可以生成' : '还需完成必要设置' }}</strong>
                 <span>{{ selectedTargetKeys.length ? '生成后先进入教师审核，不会直接形成正式试卷。' : '请先选择至少一个训练知识点。' }}</span>
-                <button type="button" data-testid="generate-paper-draft" :disabled="!paperSettingsValid || draftRequestState === 'loading'" @click="generatePaperDraft">
+                <AppButton variant="primary" block data-testid="generate-paper-draft" :disabled="!paperSettingsValid || draftRequestState === 'loading'" @click="generatePaperDraft">
                   {{ draftRequestState === 'loading' ? '正在生成…' : `生成 ${expectedPaperCount} 份草稿` }}
-                </button>
+                </AppButton>
               </template>
               <template v-else>
                 <strong>草稿已生成</strong>
@@ -560,83 +562,82 @@ onBeforeUnmount(() => studentsController?.abort())
 
 <style scoped>
 .training-heading--compact { align-items: end; }
-.scope-disclosure { margin-top: 12px; }
-.scope-disclosure > summary { margin-left: auto; width: max-content; padding: 8px 13px; border: 1px solid var(--color-border-default); border-radius: 9px; background: white; color: var(--color-text-secondary); cursor: pointer; list-style: none; }
+.scope-disclosure { margin-top: var(--space-3); }
+.scope-disclosure > summary { margin-left: auto; width: max-content; padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); color: var(--color-text-secondary); cursor: pointer; list-style: none; }
 .scope-disclosure > summary::after { content: ' ▾'; }
 .scope-disclosure[open] > summary::after { content: ' ▴'; }
-.scope-disclosure > :deep(.evidence-scope) { margin-top: 10px; }
+.scope-disclosure > :deep(.evidence-scope) { margin-top: var(--space-2); }
 .training-mode-panel,
-.paper-workspace { margin-top: 18px; border: 1px solid var(--line-soft); border-radius: 18px; background: #fff; overflow: hidden; }
+.paper-workspace { margin-top: var(--space-5); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; }
 .training-mode-panel__heading,
-.paper-workspace__heading { display: flex; justify-content: space-between; gap: 24px; align-items: end; padding: 22px 26px; border-bottom: 1px solid var(--line-soft); }
+.paper-workspace__heading { display: flex; justify-content: space-between; gap: var(--space-6); align-items: end; padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--border); }
 .training-mode-panel__heading h2,
-.paper-workspace__heading h2 { margin: 4px 0 0; }
-.training-mode-panel__heading > span { color: var(--text-muted); font-size: .88rem; }
-.student-filter-strip { margin: 22px; padding: 18px; border-radius: 14px; background: #f6f8f8; }
+.paper-workspace__heading h2 { margin: var(--space-1) 0 0; }
+.training-mode-panel__heading > span { color: var(--color-text-muted); font-size: var(--font-size-dense); }
+.student-filter-strip { margin: var(--space-6); padding: var(--space-4); border-radius: var(--radius); background: var(--color-bg-subtle); }
 .student-filter-strip header,
-.student-filter-strip__tools { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.student-filter-strip__tools { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .student-filter-strip h3,
 .student-filter-strip p { margin: 0; }
-.student-filter-strip p { color: var(--text-muted); font-size: .86rem; }
-.student-filter-strip__tools { justify-content: flex-start; margin: 14px 0; }
-.student-filter-strip__tools label { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+.student-filter-strip p { color: var(--color-text-muted); font-size: var(--font-size-dense); }
+.student-filter-strip__tools { justify-content: flex-start; margin: var(--space-3) 0; }
+.student-filter-strip__tools label { display: flex; align-items: center; gap: var(--space-2); color: var(--color-text-muted); }
 .student-filter-strip__tools input { width: 66px; }
-.student-filter-strip__roster { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
-.student-filter-strip__roster > label { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; min-height: 46px; padding: 7px 10px; border: 1px solid #dce4e5; border-radius: 9px; background: #fff; cursor: pointer; }
+.student-filter-strip__roster { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--space-2); }
+.student-filter-strip__roster > label { display: grid; grid-template-columns: auto 1fr auto; gap: var(--space-2); align-items: center; min-height: 46px; padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); cursor: pointer; }
 .student-filter-strip__roster span { display: grid; line-height: 1.15; }
-.student-filter-strip__roster small { color: var(--text-muted); }
-.student-filter-strip__apply { width: 100%; margin-top: 12px; }
-.training-data-note { margin: 12px 22px 22px; color: var(--text-muted); }
-.paper-workspace__heading p { margin: 4px 0 0; color: var(--text-muted); }
+.student-filter-strip__roster small { color: var(--color-text-muted); }
+.student-filter-strip__apply { width: 100%; margin-top: var(--space-3); }
+.training-data-note { margin: var(--space-3) var(--space-6) var(--space-6); color: var(--color-text-muted); }
+.paper-workspace__heading p { margin: var(--space-1) 0 0; color: var(--color-text-muted); }
 .paper-workspace__scope { display: grid; text-align: right; }
-.paper-console { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; padding: 20px; background: #f6f8f8; }
-.paper-console__main { display: grid; min-width: 0; gap: 16px; align-content: start; }
+.paper-console { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--space-5); padding: var(--space-5); background: var(--color-bg-subtle); }
+.paper-console__main { display: grid; min-width: 0; gap: var(--space-4); align-content: start; }
 .paper-settings,
 .paper-targets,
-.paper-console__aside > section { padding: 18px; border: 1px solid var(--line-soft); border-radius: 14px; background: #fff; }
+.paper-console__aside > section { padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
 .paper-settings > header,
-.paper-targets > header { display: flex; justify-content: space-between; align-items: end; gap: 16px; }
+.paper-targets > header { display: flex; justify-content: space-between; align-items: end; gap: var(--space-4); }
 .paper-settings > header > span,
-.paper-targets > header > span { color: var(--text-muted); font-size: .8rem; }
+.paper-targets > header > span { color: var(--color-text-muted); font-size: var(--font-size-caption); }
 .paper-settings h3,
 .paper-targets h3,
-.paper-console__aside h3 { margin: 3px 0 0; }
-.paper-mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
-.paper-mode-options label { display: flex; gap: 10px; padding: 12px; border: 1px solid #dce4e5; border-radius: 10px; cursor: pointer; }
-.paper-mode-options label.is-selected { border-color: #4c8e96; background: #eaf3f3; }
+.paper-console__aside h3 { margin: var(--space-1) 0 0; }
+.paper-mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); margin: var(--space-4) 0; }
+.paper-mode-options label { display: flex; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; }
+.paper-mode-options label.is-selected { border-color: var(--primary); background: var(--accent); }
 .paper-mode-options span { display: grid; }
-.paper-mode-options small { color: var(--text-muted); }
-.paper-settings__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.paper-settings__grid label { display: grid; grid-template-columns: 1fr auto; gap: 5px; color: var(--text-muted); font-size: .82rem; }
+.paper-mode-options small { color: var(--color-text-muted); }
+.paper-settings__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-2); }
+.paper-settings__grid label { display: grid; grid-template-columns: 1fr auto; gap: var(--space-1); color: var(--color-text-muted); font-size: var(--font-size-dense); }
 .paper-settings__grid input { grid-column: 1 / -1; width: 100%; }
-.paper-settings__grid small { color: var(--text-muted); }
-.paper-ratios { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 10px; align-items: end; margin-top: 14px; padding: 12px; border-radius: 10px; background: #f5f7f7; }
-.paper-ratios label { display: grid; grid-template-columns: 1fr 22px; gap: 4px; align-items: center; }
-.paper-ratios label span { grid-column: 1 / -1; color: var(--text-muted); font-size: .78rem; }
+.paper-settings__grid small { color: var(--color-text-muted); }
+.paper-ratios { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: var(--space-2); align-items: end; margin-top: var(--space-3); padding: var(--space-3); border-radius: var(--radius-md); background: var(--color-bg-subtle); }
+.paper-ratios label { display: grid; grid-template-columns: 1fr 22px; gap: var(--space-1); align-items: center; }
+.paper-ratios label span { grid-column: 1 / -1; color: var(--color-text-muted); font-size: var(--font-size-caption); }
 .paper-ratios input { width: 100%; }
 .paper-ratios b { font-weight: 500; }
-.paper-ratios > strong { padding-bottom: 9px; white-space: nowrap; color: #246c64; }
-.paper-ratios > strong.is-error { color: #a33f3f; }
-.paper-targets__rows { display: grid; margin-top: 12px; border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; }
-.paper-targets__rows article { display: grid; grid-template-columns: 10px minmax(160px, 1fr) 52px 80px auto; gap: 10px; align-items: center; min-height: 44px; padding: 7px 10px; border-bottom: 1px solid var(--line-soft); }
+.paper-ratios > strong { padding-bottom: var(--space-2); white-space: nowrap; color: var(--color-accent); }
+.paper-ratios > strong.is-error { color: var(--destructive); }
+.paper-targets__rows { display: grid; margin-top: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.paper-targets__rows article { display: grid; grid-template-columns: 10px minmax(160px, 1fr) 52px 80px auto; gap: var(--space-2); align-items: center; min-height: 44px; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
 .paper-targets__rows article:last-child { border-bottom: 0; }
 .paper-targets__rows article > span:not(.paper-targets__status),
-.paper-targets__rows small { text-align: right; color: var(--text-muted); }
+.paper-targets__rows small { text-align: right; color: var(--color-text-muted); }
 .paper-targets__status { width: 9px; height: 28px; border-radius: 999px; }
-.paper-targets__rows button { border: 0; background: transparent; color: #8a4b45; cursor: pointer; }
-.paper-targets__empty { margin-top: 12px; padding: 16px; border: 1px dashed var(--line-soft); border-radius: 10px; color: var(--text-muted); text-align: center; }
-.paper-console__aside { position: sticky; top: calc(var(--shell-topbar-height, 64px) + 16px); display: grid; gap: 12px; align-self: start; }
-.paper-console__aside dl { margin: 14px 0; }
-.paper-console__aside dl div { display: flex; justify-content: space-between; gap: 20px; padding: 9px 0; border-bottom: 1px solid var(--line-soft); }
-.paper-console__aside dt { color: var(--text-muted); }
+.paper-targets__rows button { border: 0; background: transparent; color: var(--destructive); cursor: pointer; }
+.paper-targets__empty { margin-top: var(--space-3); padding: var(--space-4); border: 1px dashed var(--input); border-radius: var(--radius-md); color: var(--color-text-muted); text-align: center; }
+.paper-console__aside { position: sticky; top: calc(var(--shell-topbar-height, 64px) + 16px); display: grid; gap: var(--space-3); align-self: start; }
+.paper-console__aside dl { margin: var(--space-3) 0; }
+.paper-console__aside dl div { display: flex; justify-content: space-between; gap: var(--space-5); padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
+.paper-console__aside dt { color: var(--color-text-muted); }
 .paper-console__aside dd { margin: 0; font-weight: 750; }
-.paper-console__mode-note { margin: 12px 0; padding: 10px; border-radius: 9px; background: #eef5f4; color: #2b6461; font-size: .82rem; }
-.paper-console__exclude { display: flex; gap: 8px; align-items: center; }
-.paper-console__action { display: grid; gap: 7px; border-color: #8bb8b5 !important; box-shadow: 0 8px 24px rgb(31 76 82 / 8%); }
-.paper-console__action span { color: var(--text-muted); font-size: .82rem; line-height: 1.5; }
-.paper-console__action button { width: 100%; margin-top: 6px; padding: 11px; border: 0; border-radius: 9px; background: var(--color-accent); color: white; font-weight: 750; cursor: pointer; }
-.paper-console__action button:disabled { background: #b9c5c6; cursor: not-allowed; }
-.field-error { color: #a33f3f; }
+.paper-console__mode-note { margin: var(--space-3) 0; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--accent); color: var(--color-accent-active); font-size: var(--font-size-dense); }
+.paper-console__exclude { display: flex; gap: var(--space-2); align-items: center; }
+.paper-console__action { display: grid; gap: var(--space-2); border-color: var(--color-accent) !important; }
+.paper-console__action span { color: var(--color-text-muted); font-size: var(--font-size-dense); line-height: 1.5; }
+.paper-console__action button { width: 100%; margin-top: var(--space-2); }
+.field-error { color: var(--destructive); }
 @media (max-width: 1180px) {
   .student-filter-strip__roster { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .paper-console { grid-template-columns: 1fr; }

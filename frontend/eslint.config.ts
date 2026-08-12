@@ -26,4 +26,13 @@ export default defineConfigWithVueTs(
     ...pluginVitest.configs.recommended,
     files: ['src/**/__tests__/*'],
   },
+  {
+    // shadcn-vue CLI 生成的 ui 组件沿用其官方单名约定（Button、Card 等），
+    // 不在此处强制 multi-word 规则，避免重命名破坏全部引用。
+    name: 'app/shadcn-ui-components',
+    files: ['src/components/ui/**/*.vue'],
+    rules: {
+      'vue/multi-word-component-names': 'off',
+    },
+  },
 )

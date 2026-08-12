@@ -30,7 +30,7 @@
   width: min(360px, calc(100vw - var(--space-8)));
   padding: var(--space-4);
   border: var(--border-width) solid currentColor;
-  border-radius: var(--radius-overlay);
+  border-radius: var(--radius-control);
   box-shadow: var(--shadow-overlay);
   font-size: var(--font-size-dense);
 }
@@ -112,40 +112,6 @@
 .review-scoring-inspector__draft-state,
 .review-scoring-inspector__status-state {
   width: fit-content;
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-tag);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-}
-
-.review-scoring-inspector__draft-state {
-  background: var(--color-warning-subtle);
-  color: var(--color-warning);
-}
-
-.review-scoring-inspector__status-state {
-  background: var(--color-bg-selected);
-  color: var(--color-text-secondary);
-}
-
-.review-scoring-inspector__status-state.is-ai_ready {
-  background: var(--color-ai-subtle);
-  color: var(--color-ai);
-}
-
-.review-scoring-inspector__status-state.is-ai_review {
-  background: var(--color-warning-subtle);
-  color: var(--color-warning);
-}
-
-.review-scoring-inspector__status-state.is-teacher_final {
-  background: var(--color-teacher-subtle);
-  color: var(--color-teacher);
-}
-
-.review-scoring-inspector__status-state.is-failed {
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
 }
 
 .review-scoring-section {
@@ -347,12 +313,17 @@
 .review-scoring-inspector__footer button {
   min-height: var(--control-height-large);
   padding-inline: var(--space-4);
-  border: var(--border-width) solid var(--color-teacher);
+  border: var(--border-width) solid var(--color-accent);
   border-radius: var(--radius-control);
-  background: var(--color-teacher);
+  background: var(--color-accent);
   color: var(--color-bg-surface);
   font-weight: var(--font-weight-semibold);
   cursor: pointer;
+}
+
+.review-scoring-inspector__footer button:hover:not(:disabled) {
+  border-color: var(--color-accent-hover);
+  background: var(--color-accent-hover);
 }
 
 .review-scoring-inspector__footer button:disabled {

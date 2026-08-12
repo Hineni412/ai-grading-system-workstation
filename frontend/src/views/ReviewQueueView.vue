@@ -10,6 +10,7 @@ import {
   type ReviewConfirmInput,
   type ReviewItemLike,
 } from '../api/review'
+import AppButton from '../components/design-system/AppButton.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
 import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
@@ -678,15 +679,14 @@ onBeforeUnmount(() => {
         <h1 id="review-page-title" tabindex="-1">人工干预工作台</h1>
         <p>需要教师处理的答卷优先显示；高置信 AI 结果保留在队列中，也可以随时修改。</p>
       </div>
-      <button
-        type="button"
+      <AppButton
         class="review-page__run-switch"
         :disabled="sessionStore.selectedSessionId === null"
         :title="sessionStore.selectedSessionId === null ? '请先选择考试' : '进入当前考试的批改执行'"
         @click="openGradingRun"
       >
         批改执行
-      </button>
+      </AppButton>
     </header>
 
     <ReviewShortcutGuide v-if="mode === 'batch'" />

@@ -138,6 +138,26 @@ label {
   overflow-wrap: anywhere;
 }
 
+h1,
+h2,
+h3 {
+  font-family: var(--font-family-sans);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+}
+
+h3 {
+  font-size: var(--font-size-h3);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

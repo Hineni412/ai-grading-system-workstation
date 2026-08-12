@@ -33,8 +33,8 @@ const tabs: Array<{ id: ClassTeacherSurface; label: string }> = [
   gap: var(--space-1);
   min-height: 48px;
   padding: 0 var(--space-6);
-  border-bottom: var(--border-width) solid var(--color-border-default);
-  background: var(--color-bg-surface);
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
 }
 
 .surface-tabs__tab {
@@ -43,10 +43,19 @@ const tabs: Array<{ id: ClassTeacherSurface; label: string }> = [
   padding: 0 var(--space-4);
   border: 0;
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--muted-foreground);
   font: inherit;
   font-weight: var(--font-weight-medium);
   cursor: pointer;
+}
+
+.surface-tabs__tab:hover {
+  color: var(--foreground);
+}
+
+.surface-tabs__tab:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 .surface-tabs__tab::after {
@@ -54,18 +63,18 @@ const tabs: Array<{ id: ClassTeacherSurface; label: string }> = [
   right: var(--space-3);
   bottom: -1px;
   left: var(--space-3);
-  height: 3px;
-  border-radius: 3px 3px 0 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
   background: transparent;
   content: '';
 }
 
 .surface-tabs__tab.is-active {
-  color: var(--color-accent-active);
+  color: var(--primary);
 }
 
 .surface-tabs__tab.is-active::after {
-  background: var(--color-accent);
+  background: var(--primary);
 }
 
 @media (max-width: 760px) {

@@ -1,5 +1,7 @@
-/* 备课工作台页面样式（重设计版）。
-   只使用 tokens.css 变量；页面结构以 prototypes/teaching-prep-redesign-prototype.html 为准。 */
+/* 备课工作台页面样式（shadcn new-york 对齐版）。
+   颜色一律走 tailwind.css 的 shadcn 语义变量（--card/--border/--primary/--muted 等）；
+   success/warning/info/ai 等状态色语义层未覆盖，沿用 tokens.css 令牌（与 StatusBadge 同惯例）。
+   页面结构以 prototypes/teaching-prep-redesign-prototype.html 为准。 */
 
 .tp-shell {
   display: grid;
@@ -34,9 +36,9 @@
 
 /* ===== 面板与表格 ===== */
 .tp-panel {
-  background: var(--color-bg-surface);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
+  background: var(--card);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
   overflow: hidden;
 }
 
@@ -45,8 +47,8 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: 14px var(--space-5);
-  border-bottom: var(--border-width) solid var(--color-border-subtle);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--border-width) solid var(--border);
 }
 
 .tp-panel__head h2 {
@@ -57,7 +59,7 @@
 
 .tp-panel__hint {
   font-size: var(--font-size-caption);
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
 }
 
 .tp-panel__body {
@@ -72,7 +74,7 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-5);
-  border-top: var(--border-width) solid var(--color-border-subtle);
+  border-top: var(--border-width) solid var(--border);
 }
 
 .tp-grid {
@@ -81,10 +83,9 @@
 }
 
 .tp-grid th {
-  padding: 10px var(--space-4);
-  border-bottom: var(--border-width) solid var(--color-border-default);
-  background: var(--color-bg-subtle);
-  color: var(--color-text-muted);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: var(--border-width) solid var(--border);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
   text-align: left;
@@ -92,7 +93,7 @@
 
 .tp-grid td {
   padding: var(--space-3) var(--space-4);
-  border-bottom: var(--border-width) solid var(--color-border-subtle);
+  border-bottom: var(--border-width) solid var(--border);
   vertical-align: middle;
 }
 
@@ -105,7 +106,7 @@
 }
 
 .tp-grid tbody tr:hover {
-  background: var(--color-bg-subtle);
+  background: var(--muted);
 }
 
 .tp-grid__main {
@@ -123,7 +124,7 @@
 
 .tp-cell-sub {
   margin-top: 2px;
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
 }
 
@@ -162,10 +163,10 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-5);
-  padding: 18px var(--space-5);
-  background: var(--color-bg-surface);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
+  padding: var(--space-4) var(--space-5);
+  background: var(--card);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
 }
 
 .tp-semester-card__meta {
@@ -217,21 +218,29 @@
 .tp-grid input,
 .tp-form-line input,
 .tp-form-line select {
-  min-height: var(--control-height-default);
-  padding: 0 10px;
-  border: var(--border-width) solid var(--color-border-strong);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--input);
+  border-radius: calc(var(--radius) - 2px);
+  background-color: var(--card);
+  color: var(--foreground);
   font: inherit;
 }
 
+/* 下拉箭头由 base.css 全局绘制，这里只让出右侧位置 */
+.tp-field select,
+.tp-field--inline select,
+.tp-grid select,
+.tp-form-line select {
+  padding-right: var(--space-7);
+}
+
 .tp-field textarea {
-  padding: var(--space-2) 10px;
-  border: var(--border-width) solid var(--color-border-strong);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--input);
+  border-radius: calc(var(--radius) - 2px);
+  background-color: var(--card);
+  color: var(--foreground);
   font: inherit;
   line-height: var(--line-height-body);
 }
@@ -272,17 +281,17 @@
 
 .tp-muted {
   margin: 0;
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-dense);
 }
 
 .tp-error-text {
-  color: var(--color-danger);
+  color: var(--destructive);
   font-size: var(--font-size-dense);
 }
 
 .tp-danger-text {
-  color: var(--color-danger) !important;
+  color: var(--destructive) !important;
 }
 
 .tp-empty-actions {
@@ -306,8 +315,8 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
-  padding: 10px var(--space-4);
-  border-radius: var(--radius-control);
+  padding: var(--space-2) var(--space-4);
+  border-radius: calc(var(--radius) - 2px);
   font-size: var(--font-size-dense);
 }
 
@@ -322,7 +331,7 @@
 
 .tp-banner--warn {
   background: var(--color-warning-subtle);
-  color: var(--color-text-primary);
+  color: var(--foreground);
 }
 
 /* ===== 资料库：导入 ===== */
@@ -336,12 +345,12 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  min-height: var(--control-height-default);
-  padding: 0 14px;
-  border: var(--border-width) solid var(--color-border-strong);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
+  min-height: 36px;
+  padding: 0 var(--space-4);
+  border: var(--border-width) solid var(--input);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  color: var(--foreground);
   font-size: var(--font-size-dense);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
@@ -349,17 +358,17 @@
 }
 
 .tp-file-button:hover {
-  background: var(--color-bg-subtle);
+  background: var(--muted);
 }
 
 .tp-file-button--primary {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
-  color: var(--color-bg-surface);
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .tp-file-button--primary:hover {
-  background: var(--color-accent-hover);
+  background: color-mix(in srgb, var(--primary) 90%, var(--card));
 }
 
 .tp-file-button.is-disabled {
@@ -394,7 +403,7 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) 0;
-  border-bottom: var(--border-width) solid var(--color-border-subtle);
+  border-bottom: var(--border-width) solid var(--border);
 }
 
 .tp-import-row:last-child {
@@ -408,7 +417,7 @@
 }
 
 .tp-import-row__identity small {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   overflow-wrap: anywhere;
 }
 
@@ -420,12 +429,12 @@
 
 .tp-import-row__progress progress {
   flex: 1;
-  height: 6px;
-  accent-color: var(--color-accent);
+  height: var(--space-2);
+  accent-color: var(--primary);
 }
 
 .tp-import-row__progress span {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
 }
 
@@ -437,8 +446,8 @@
 /* 文件夹聚合行加淡底色与明细行缩进，区分逐份行 */
 .tp-import-row--folder {
   padding-inline: var(--space-3);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-subtle);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
 }
 
 .tp-import-row--nested {
@@ -447,19 +456,19 @@
 
 /* ===== 删除影响预览 ===== */
 .tp-deletion-preview {
-  border-top: var(--border-width) solid var(--color-border-subtle);
+  border-top: var(--border-width) solid var(--border);
 }
 
 .tp-deletion-preview__item {
   display: grid;
   gap: var(--space-2);
   padding: var(--space-4);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
 }
 
 .tp-deletion-preview__item.is-blocked {
-  border-color: var(--color-danger);
+  border-color: var(--destructive);
 }
 
 .tp-deletion-preview__item.is-succeeded {
@@ -475,7 +484,7 @@
 
 .tp-deletion-preview__item header small {
   display: block;
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   overflow-wrap: anywhere;
 }
 
@@ -516,9 +525,9 @@
   display: grid;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-subtle);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
 }
 
 .tp-mapping-job-status.is-running {
@@ -526,7 +535,7 @@
 }
 
 .tp-mapping-job-status.is-error {
-  border-color: var(--color-danger);
+  border-color: var(--destructive);
 }
 
 .tp-mapping-job-status.is-success {
@@ -549,8 +558,8 @@
 
 .tp-mapping-job-status progress {
   width: 100%;
-  height: 6px;
-  accent-color: var(--color-accent);
+  height: var(--space-2);
+  accent-color: var(--primary);
 }
 
 .tp-mapping-job-status__summary {
@@ -575,7 +584,7 @@
 }
 
 .tp-mapping-review-area {
-  border-top: var(--border-width) solid var(--color-border-subtle);
+  border-top: var(--border-width) solid var(--border);
 }
 
 .tp-mapping-group-summary {
@@ -585,15 +594,15 @@
 }
 
 .tp-mapping-group-summary small {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
 }
 
 .tp-mapping-row {
   display: grid;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
 }
 
 .tp-mapping-row.is-accepted,
@@ -623,18 +632,18 @@
 .tp-mapping-evidence-list {
   display: grid;
   gap: 2px;
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
 }
 
 .tp-mapping-apply-bar {
   justify-content: flex-end;
   padding-top: var(--space-2);
-  border-top: var(--border-width) solid var(--color-border-subtle);
+  border-top: var(--border-width) solid var(--border);
 }
 
 .tp-manual-mapping {
-  border-top: var(--border-width) solid var(--color-border-subtle);
+  border-top: var(--border-width) solid var(--border);
 }
 
 .tp-manual-mapping h3 {
@@ -648,7 +657,7 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) 0;
-  border-bottom: var(--border-width) solid var(--color-border-subtle);
+  border-bottom: var(--border-width) solid var(--border);
 }
 
 .tp-collection-batch > div {
@@ -659,7 +668,7 @@
 }
 
 .tp-collection-batch small {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
 }
 
 /* ===== 课时三栏 ===== */
@@ -674,65 +683,65 @@
   position: sticky;
   top: 92px;
   padding: var(--space-3);
-  background: var(--color-bg-surface);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
+  background: var(--card);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
 }
 
 .tp-rail__label {
   margin: 0;
-  padding: var(--space-1) var(--space-2) 10px;
-  color: var(--color-text-muted);
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
 }
 
 .tp-rail__step {
   display: flex;
-  gap: 10px;
+  gap: var(--space-3);
   align-items: flex-start;
   width: 100%;
-  padding: 10px var(--space-2);
+  padding: var(--space-2);
   border: none;
-  border-radius: var(--radius-control);
+  border-radius: calc(var(--radius) - 2px);
   background: none;
-  color: var(--color-text-primary);
+  color: var(--foreground);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
 .tp-rail__step:hover {
-  background: var(--color-bg-subtle);
+  background: var(--muted);
 }
 
 .tp-rail__step.is-active {
-  background: var(--color-accent-subtle);
+  background: var(--accent);
 }
 
 .tp-rail__num {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   flex: none;
-  border: var(--border-width) solid var(--color-border-default);
+  border: var(--border-width) solid var(--border);
   border-radius: var(--radius-circle);
-  background: var(--color-bg-subtle);
+  background: var(--muted);
   color: var(--color-text-secondary);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
 }
 
 .tp-rail__step.is-active .tp-rail__num {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
-  color: var(--color-bg-surface);
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--card);
 }
 
 .tp-rail__step.is-done .tp-rail__num {
   border-color: var(--color-success);
   background: var(--color-success);
-  color: var(--color-bg-surface);
+  color: var(--card);
 }
 
 .tp-rail__step-title {
@@ -740,20 +749,20 @@
 }
 
 .tp-rail__step.is-active .tp-rail__step-title {
-  color: var(--color-accent);
+  color: var(--primary);
 }
 
 .tp-rail__step-desc {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
 }
 
 .tp-rail__back {
   width: 100%;
   margin-top: var(--space-2);
-  padding: 10px var(--space-2);
+  padding: var(--space-2);
   border: none;
-  border-radius: var(--radius-control);
+  border-radius: calc(var(--radius) - 2px);
   background: none;
   color: var(--color-text-secondary);
   font: inherit;
@@ -762,8 +771,8 @@
 }
 
 .tp-rail__back:hover {
-  background: var(--color-bg-subtle);
-  color: var(--color-text-primary);
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 .tp-lesson-canvas {
@@ -779,14 +788,14 @@
   position: sticky;
   top: 92px;
   padding: var(--space-4);
-  background: var(--color-bg-surface);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
+  background: var(--card);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
 }
 
 .tp-inspector h3 {
-  margin: 0 0 10px;
-  color: var(--color-text-muted);
+  margin: 0 0 var(--space-2);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
 }
@@ -806,7 +815,7 @@
   display: flex;
   justify-content: space-between;
   gap: var(--space-2);
-  padding: 6px 0;
+  padding: var(--space-1) 0;
   font-size: var(--font-size-dense);
 }
 
@@ -819,13 +828,13 @@
 }
 
 .tp-inspector__action {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: var(--border-width) solid var(--color-border-subtle);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: var(--border-width) solid var(--border);
 }
 
 .tp-inspector__action p {
-  margin: 0 0 10px;
+  margin: 0 0 var(--space-2);
   color: var(--color-text-secondary);
   font-size: var(--font-size-caption);
 }
@@ -836,7 +845,7 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) 0;
-  border-bottom: var(--border-width) solid var(--color-border-subtle);
+  border-bottom: var(--border-width) solid var(--border);
 }
 
 .tp-link-row:last-child {
@@ -851,7 +860,7 @@
 }
 
 .tp-link-row__meta small {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
 }
 
 .tp-source-groups {
@@ -869,7 +878,7 @@
 }
 
 .tp-source-group__label small {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-weight: var(--font-weight-regular);
 }
 
@@ -878,11 +887,11 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2);
-  border-radius: var(--radius-control);
+  border-radius: calc(var(--radius) - 2px);
 }
 
 .tp-check-row:hover {
-  background: var(--color-bg-subtle);
+  background: var(--muted);
 }
 
 .tp-check-row > span {
@@ -891,15 +900,15 @@
 }
 
 .tp-check-row small {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
 }
 
 .tp-confirmation-summary {
   display: grid;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-subtle);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
 }
 
 .tp-confirmation-summary dl {
@@ -929,8 +938,8 @@
   display: grid;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
 }
 
 .tp-exercise-proof__fields {
@@ -943,12 +952,12 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-2);
   padding: var(--space-2);
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
 }
 
 .tp-crop-fieldset legend {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
 }
 
@@ -971,7 +980,7 @@
 }
 
 .tp-ai-waiting.is-error {
-  border-color: var(--color-danger);
+  border-color: var(--destructive);
 }
 
 .tp-ai-waiting.is-attention {
@@ -998,9 +1007,9 @@
   gap: var(--space-2);
   align-items: center;
   padding: var(--space-2);
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
   font: inherit;
   font-size: var(--font-size-caption);
   text-align: left;
@@ -1008,8 +1017,8 @@
 }
 
 .tp-slide-checker__thumbs button.is-active {
-  border-color: var(--color-accent);
-  background: var(--color-accent-subtle);
+  border-color: var(--primary);
+  background: var(--accent);
 }
 
 .tp-slide-checker__thumbs button strong {
@@ -1033,9 +1042,9 @@
 
 .tp-slide-stage {
   position: relative;
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-subtle);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
   overflow: hidden;
 }
 
@@ -1066,9 +1075,9 @@
 }
 
 .tp-change-overlay.is-delete {
-  border-color: var(--color-danger);
+  border-color: var(--destructive);
   background: var(--color-danger-subtle);
-  color: var(--color-danger);
+  color: var(--destructive);
 }
 
 .tp-change-overlay.is-insert {
@@ -1092,13 +1101,13 @@
 }
 
 .tp-operation-row {
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
   padding: var(--space-2);
 }
 
 .tp-operation-row.is-active {
-  border-color: var(--color-accent);
+  border-color: var(--primary);
 }
 
 .tp-operation-row__selector {
@@ -1119,7 +1128,7 @@
 }
 
 .tp-operation-row__selector small {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
 }
 
 .tp-operation-row fieldset {
@@ -1143,7 +1152,7 @@
 }
 
 .tp-operation-editor summary {
-  color: var(--color-accent);
+  color: var(--primary);
   cursor: pointer;
 }
 
@@ -1156,9 +1165,11 @@
 
 .tp-operation-editor input,
 .tp-operation-editor textarea {
-  padding: 6px 8px;
-  border: var(--border-width) solid var(--color-border-strong);
-  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width) solid var(--input);
+  border-radius: calc(var(--radius) - 2px);
+  background-color: var(--card);
+  color: var(--foreground);
   font: inherit;
 }
 
@@ -1168,12 +1179,12 @@
   gap: var(--space-2);
   margin-top: var(--space-2);
   padding: var(--space-2);
-  border: var(--border-width) solid var(--color-border-subtle) !important;
-  border-radius: var(--radius-control);
+  border: var(--border-width) solid var(--border) !important;
+  border-radius: calc(var(--radius) - 2px);
 }
 
 .tp-position-editor legend {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
 }
 
@@ -1192,18 +1203,18 @@
   gap: var(--space-2);
   align-items: center;
   padding: var(--space-2);
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
-  color: var(--color-text-muted);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
 }
 
 .tp-execution-phases li > span {
-  width: 10px;
-  height: 10px;
+  width: var(--space-2);
+  height: var(--space-2);
   flex: none;
   border-radius: var(--radius-circle);
-  background: var(--color-border-strong);
+  background: var(--input);
 }
 
 .tp-execution-phases li.is-complete {
@@ -1224,19 +1235,19 @@
 }
 
 .tp-execution-phases li.is-failed {
-  border-color: var(--color-danger);
-  color: var(--color-danger);
+  border-color: var(--destructive);
+  color: var(--destructive);
 }
 
 .tp-execution-phases li.is-failed > span {
-  background: var(--color-danger);
+  background: var(--destructive);
 }
 
 .tp-modified-ppt-preview {
   display: grid;
   gap: var(--space-2);
   padding: var(--space-4) var(--space-5);
-  border-top: var(--border-width) solid var(--color-border-subtle);
+  border-top: var(--border-width) solid var(--border);
 }
 
 .tp-modified-ppt-preview header {
@@ -1267,18 +1278,18 @@
 .tp-modified-ppt-preview__controls [role='list'] button {
   min-width: 28px;
   min-height: 28px;
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-tag);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 4px);
+  background: var(--card);
   font: inherit;
   font-size: var(--font-size-caption);
   cursor: pointer;
 }
 
 .tp-modified-ppt-preview__controls [role='list'] button.is-active {
-  border-color: var(--color-accent);
-  background: var(--color-accent-subtle);
-  color: var(--color-accent);
+  border-color: var(--primary);
+  background: var(--accent);
+  color: var(--primary);
 }
 
 .tp-package-list {
@@ -1287,8 +1298,8 @@
 }
 
 .tp-package-list details {
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
   padding: var(--space-2) var(--space-3);
 }
 
@@ -1314,17 +1325,17 @@
 .tp-link-button {
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
+  min-height: 32px;
   padding: 0 var(--space-2);
-  border-radius: var(--radius-control);
-  color: var(--color-accent);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--primary);
   font-size: var(--font-size-dense);
   font-weight: var(--font-weight-medium);
   text-decoration: none;
 }
 
 .tp-link-button:hover {
-  background: var(--color-accent-subtle);
+  background: var(--accent);
 }
 
 @media (max-width: 1100px) {
@@ -1366,7 +1377,7 @@
 .tp-rail__group-label {
   margin: var(--space-3) 0 var(--space-1);
   padding: 0 var(--space-2);
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   letter-spacing: 0.06em;
@@ -1380,9 +1391,9 @@
   width: 100%;
   padding: var(--space-2);
   border: none;
-  border-radius: var(--radius-control);
+  border-radius: calc(var(--radius) - 2px);
   background: none;
-  color: var(--color-text-primary);
+  color: var(--foreground);
   font: inherit;
   font-size: var(--font-size-dense);
   text-align: left;
@@ -1390,17 +1401,17 @@
 }
 
 .tp-rail__item:hover {
-  background: var(--color-bg-subtle);
+  background: var(--muted);
 }
 
 .tp-rail__item.is-active {
-  background: var(--color-accent-subtle);
-  color: var(--color-accent);
+  background: var(--accent);
+  color: var(--primary);
   font-weight: var(--font-weight-semibold);
 }
 
 .tp-rail__item.is-inactive {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
 }
 
 .tp-rail__item-name {
@@ -1411,25 +1422,25 @@
 
 .tp-rail__count {
   flex: none;
-  min-width: 22px;
-  padding: 2px 7px;
-  border-radius: var(--radius-tag);
-  background: var(--color-bg-subtle);
-  color: var(--color-text-muted);
+  min-width: 20px;
+  padding: 2px var(--space-2);
+  border-radius: calc(var(--radius) - 4px);
+  background: var(--muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   text-align: center;
 }
 
 .tp-rail__item.is-active .tp-rail__count {
-  background: var(--color-bg-surface);
-  color: var(--color-accent);
+  background: var(--card);
+  color: var(--primary);
 }
 
 .tp-rail__sub {
   margin: 0;
   padding: 2px var(--space-2) var(--space-1);
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-body);
 }
@@ -1441,16 +1452,16 @@
   align-items: center;
   width: fit-content;
   padding: var(--space-2) var(--space-4);
-  background: var(--color-bg-surface);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
+  background: var(--card);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
 }
 
 .tp-progress-strip__node {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-dense);
   font-weight: var(--font-weight-medium);
 }
@@ -1458,11 +1469,11 @@
 .tp-progress-strip__dot {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: var(--radius-circle);
-  background: var(--color-bg-subtle);
-  color: var(--color-text-muted);
+  background: var(--muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
 }
@@ -1477,25 +1488,25 @@
 }
 
 .tp-progress-strip__node.is-current {
-  color: var(--color-text-primary);
+  color: var(--foreground);
 }
 
 .tp-progress-strip__node.is-current .tp-progress-strip__dot {
-  background: var(--color-accent);
-  color: var(--color-bg-surface);
+  background: var(--primary);
+  color: var(--card);
 }
 
 .tp-progress-strip__hint {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-regular);
 }
 
 .tp-progress-strip__sep {
-  width: 34px;
+  width: var(--space-7);
   height: 2px;
   margin: 0 var(--space-3);
-  background: var(--color-border-default);
+  background: var(--border);
 }
 
 .tp-progress-strip__sep.is-done {
@@ -1513,10 +1524,10 @@
   display: grid;
   gap: 2px;
   padding: var(--space-2) var(--space-3);
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-subtle);
-  color: var(--color-text-primary);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
+  color: var(--foreground);
   font: inherit;
   font-size: var(--font-size-dense);
   line-height: var(--line-height-body);
@@ -1525,7 +1536,7 @@
 }
 
 .tp-file-cell:hover {
-  border-color: var(--color-border-strong);
+  border-color: var(--input);
 }
 
 .tp-file-cell b {
@@ -1533,15 +1544,15 @@
 }
 
 .tp-file-cell small {
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
 }
 
 /* 章级价值预告行 */
 .tp-value-hint {
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-control);
-  background: var(--color-accent-subtle);
-  color: var(--color-accent);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--accent);
+  color: var(--primary);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-relaxed);
 }
@@ -1556,17 +1567,17 @@
 
 .tp-lesson-chips span {
   padding: 4px var(--space-2);
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-subtle);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
   font-size: var(--font-size-caption);
 }
 
 /* 章折叠（课时树预览与章文件夹共用） */
 .tp-chapter-folder {
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
 }
 
 .tp-chapter-folder > summary {
@@ -1598,9 +1609,9 @@
   display: grid;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  border: var(--border-width) dashed var(--color-border-strong);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
+  border: var(--border-width) dashed var(--input);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
 }
 
 .tp-topic-box h3 {
@@ -1610,9 +1621,9 @@
 
 /* 收起的 AI 入口 */
 .tp-ai-reinfer {
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
 }
 
 .tp-ai-reinfer > summary {
@@ -1620,7 +1631,7 @@
   align-items: center;
   justify-content: space-between;
   padding: var(--space-2) var(--space-3);
-  color: var(--color-accent);
+  color: var(--primary);
   font-size: var(--font-size-dense);
   font-weight: var(--font-weight-semibold);
   cursor: pointer;
@@ -1633,7 +1644,7 @@
 
 .tp-ai-reinfer > summary::after {
   content: '›';
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
 }
 
 .tp-ai-reinfer[open] > summary::after {
@@ -1644,7 +1655,7 @@
   display: grid;
   gap: var(--space-2);
   padding: var(--space-3);
-  border-top: var(--border-width) solid var(--color-border-subtle);
+  border-top: var(--border-width) solid var(--border);
   font-size: var(--font-size-dense);
 }
 
@@ -1668,7 +1679,7 @@
 }
 
 .tp-eyebrow {
-  color: var(--color-accent);
+  color: var(--primary);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   letter-spacing: 0.1em;
