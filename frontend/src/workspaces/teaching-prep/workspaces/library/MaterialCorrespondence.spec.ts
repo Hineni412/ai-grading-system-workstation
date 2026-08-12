@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   LessonNode,
   MaterialVersion,
+  SemesterMappingPreflight,
   SemesterMappingProposal,
   SemesterMaterialRecord,
 } from '../../api/catalog'
@@ -263,6 +264,74 @@ describe('MaterialCorrespondence', () => {
     expect(host.textContent).toContain(
       '资料中有页面既没有对应到课时，模型也没有说明原因，本次整理没有产出结果。',
     )
+    app.unmount()
+  })
+
+  it('re-prepares the send scope when the cached one belongs to another book', async () => {
+    const curriculumId = 'c'.repeat(32)
+    const workbook = material('b'.repeat(32), '教辅.pdf')
+    const workbookRecord = record('w'.repeat(32), workbook, 'exercise_workbook')
+    const catalog = useTeachingPrepCatalogStore()
+    catalog.curricula = [{ id: curriculumId } as never]
+    catalog.semesters = [{ id: semesterId, curriculum_id: curriculumId } as never]
+    catalog.selectedCurriculumId = curriculumId
+    catalog.selectedSemesterId = semesterId
+    catalog.materials = [textbook, workbook]
+    catalog.semesterMaterials = [textbookRecord, workbookRecord]
+    catalog.lessonNodes = [lesson(lessonId)]
+    catalog.semesterMappingProposals = []
+    catalog.selectedMaterialId = workbook.id
+
+    const workbookPreflight: SemesterMappingPreflight = {
+      semester_id: semesterId,
+      source_state_sha256: 'e'.repeat(64),
+      will_call_model: true,
+      model_available: true,
+      model_label: '测试模型',
+      model_destination_fingerprint: 'f'.repeat(64),
+      material_count: 1,
+      unit_count: 2,
+      existing_lesson_count: 1,
+      creates_initial_tree: false,
+      automatic_retry: false,
+      evidence_strategy: 'toc_calibrated',
+      evidence_confidence: 'high',
+      scanned_unit_count: 2,
+      directory_page_image_count: 0,
+      directory_page_images_sent: false,
+      toc_entry_count: 1,
+      anchor_count: 1,
+      estimated_input_characters: 100,
+      full_page_text_sent: false,
+      evidence_issues: [],
+    }
+    vi.spyOn(teachingPrepCatalogApi, 'listReferencePptCollections').mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue(workbookPreflight)
+    // 先为教辅真实准备一次发送范围：store 里的缓存合法地属于教辅
+    await catalog.prepareSemesterMapping([workbookRecord.id])
+    expect(catalog.currentSemesterMappingPreflight?.source_state_sha256).toBe('e'.repeat(64))
+
+    const prepare = vi.spyOn(catalog, 'prepareSemesterMapping').mockResolvedValue(undefined)
+    vi.spyOn(catalog, 'openMaterial').mockResolvedValue('loaded')
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(MaterialCorrespondence, {
+      materialId: textbook.id,
+      onNotice: () => {},
+    })
+    app.mount(host)
+    await nextTick()
+    await nextTick()
+
+    // 教材的组件不得展示或复用教辅的发送范围，发送按钮保持不可用
+    expect(host.textContent).not.toContain('发送范围：')
+    const sendButton = [...host.querySelectorAll('button')]
+      .find(button => button.textContent?.includes('确认发送'))
+    expect(sendButton?.disabled).toBe(true)
+
+    host.querySelector<HTMLElement>('[data-testid="ai-reinfer"] summary')?.click()
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledWith([textbookRecord.id]))
     app.unmount()
   })
 })

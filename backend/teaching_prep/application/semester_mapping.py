@@ -747,8 +747,9 @@ def _materialize_existing_matches(
         raise TeachingPrepValidationError("too many semantic matches")
     mappings: list[dict[str, object]] = []
     assigned_pairs: set[tuple[str, str]] = set()
-    decided_lesson_refs: set[str] = set()
     covered_toc: set[str] = set()
+    merged_decisions: dict[str, dict[str, object]] = {}
+    decision_order: list[str] = []
     for raw in raw_matches:
         item = _mapping(raw, "match")
         if set(item) != {"lesson_ref", "evidence_ids", "basis"}:
@@ -784,20 +785,31 @@ def _materialize_existing_matches(
                     error_code="semester_mapping_unavailable_lesson",
                 )
             lesson_ref = next(iter(fallback_refs))
-        if lesson_ref in decided_lesson_refs:
-            raise TeachingPrepModelResponseError(
-                "semantic mapping decided an existing lesson more than once",
-                error_code="semester_mapping_duplicate_lesson_decision",
-            )
-        decided_lesson_refs.add(lesson_ref)
         basis = str(item.get("basis") or "").strip()
         if not basis or len(basis) > 120:
             raise TeachingPrepValidationError("semantic match basis is invalid")
-        if not normalized_evidence_ids:
+        decision = merged_decisions.get(lesson_ref)
+        if decision is None:
+            decision = {"basis": basis, "evidence_ids": []}
+            merged_decisions[lesson_ref] = decision
+            decision_order.append(lesson_ref)
+        decided_evidence_ids = decision["evidence_ids"]
+        for evidence_id in normalized_evidence_ids:
+            if evidence_id not in decided_evidence_ids:
+                decided_evidence_ids.append(evidence_id)
+    if set(decision_order) != existing_lessons:
+        raise TeachingPrepValidationError(
+            "semantic mapping did not decide every existing lesson"
+        )
+    for lesson_ref in decision_order:
+        decision = merged_decisions[lesson_ref]
+        basis = str(decision["basis"])
+        decided_evidence_ids = decision["evidence_ids"]
+        if not decided_evidence_ids:
             title = lesson_titles.get(lesson_ref) or "已有课时"
             uncertainties.append(f"{title}暂未对应：{basis}")
             continue
-        for toc_id in normalized_evidence_ids:
+        for toc_id in decided_evidence_ids:
             identity = (lesson_ref, toc_id)
             if identity in assigned_pairs or toc_id not in ranges_by_toc:
                 raise TeachingPrepModelResponseError(
@@ -815,10 +827,6 @@ def _materialize_existing_matches(
                     basis=basis,
                 )
             )
-    if decided_lesson_refs != existing_lessons:
-        raise TeachingPrepValidationError(
-            "semantic mapping did not decide every existing lesson"
-        )
     if ranges_by_toc and covered_toc != set(ranges_by_toc):
         uncertainties.append("部分目录行未能对应到已有课时，需教师复核。")
     return mappings

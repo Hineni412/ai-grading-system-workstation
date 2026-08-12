@@ -683,6 +683,70 @@ def test_semantic_mapping_completes_partial_existing_lesson_decisions() -> None:
     )
 
 
+def test_semantic_mapping_merges_repeated_decisions_for_one_lesson() -> None:
+    snapshot = _snapshot()
+    snapshot["lessons"] = [
+        {
+            "id": "lesson-understand",
+            "node_type": "lesson",
+            "title": "第1课时 认识勾股定理",
+        },
+        {
+            "id": "lesson-verify",
+            "node_type": "lesson",
+            "title": "第2课时 验证勾股定理",
+        },
+    ]
+    evidence = build_directory_evidence(snapshot)
+    snapshot["directory_evidence"] = evidence
+    annotations = [
+        {
+            "evidence_id": item["evidence_id"],
+            "title": str(item["title"]),
+            "chapter_title": "第一章 勾股定理",
+            "section_title": "1 探索勾股定理",
+            "kind": "section",
+        }
+        for item in evidence["toc_entries"]
+    ]
+
+    materialized = materialize_semantic_mapping_payload(
+        {
+            "annotations": annotations,
+            "matches": [
+                {
+                    "lesson_ref": "lesson-understand",
+                    "evidence_ids": ["toc-002"],
+                    "basis": "同属探索勾股定理",
+                },
+                {
+                    "lesson_ref": "lesson-verify",
+                    "evidence_ids": ["toc-002"],
+                    "basis": "同属探索勾股定理",
+                },
+                {
+                    "lesson_ref": "lesson-understand",
+                    "evidence_ids": ["toc-003"],
+                    "basis": "应用小节同属第一课时",
+                },
+            ],
+            "uncertainties": [],
+        },
+        snapshot=snapshot,
+    )
+
+    assert [item["lesson_ref"] for item in materialized["mappings"]] == [
+        "lesson-understand",
+        "lesson-understand",
+        "lesson-verify",
+    ]
+    assert [item["start_unit"] for item in materialized["mappings"]] == [
+        9,
+        15,
+        9,
+    ]
+
+
 def test_sparse_workbook_anchors_materialize_existing_lesson_page() -> None:
     snapshot = _snapshot()
     for unit in snapshot["materials"][0]["units"]:

@@ -15,6 +15,7 @@ from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from backend.teaching_prep.domain.errors import (
     TeachingPrepNotFoundError,
+    TeachingPrepConflictError,
     TeachingPrepRetryAvailableError,
 )
 from backend.teaching_prep.infrastructure.fakes import (
@@ -1220,4 +1221,50 @@ def test_semester_mapping_failure_keeps_specific_code_and_teacher_detail(
     assert snapshot.error_detail == (
         "资料中有页面既没有对应到课时，模型也没有说明原因，"
         "本次整理没有产出结果。"
+    )
+
+
+def test_semester_mapping_scope_stale_fails_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    class StaleService:
+        database_path = tmp_path / "teaching_prep.db"
+
+        def generate_semester_mapping_proposal(self, *_args, **_kwargs):
+            raise TeachingPrepConflictError(
+                "semester lessons or materials changed; "
+                "check the send scope again"
+            )
+
+    adapter = TeachingPrepAITaskAdapter(StaleService())  # type: ignore[arg-type]
+    job_store = JobStore(tmp_path / "workspace_ai.db")
+    manager = JobManager(job_store, max_workers=1, cleanup_interrupted=False)
+    coordinator = WorkspaceAITaskService(
+        store=WorkspaceAITaskStore(job_store.db_path),
+        manager=manager,
+        adapters=(("teaching_prep.semester_mapping", adapter),),
+    )
+    try:
+        prepared = coordinator.prepare(
+            "operation-r7-mapping-scope-stale",
+            PrepareRequest(
+                module="teaching_prep",
+                task_kind="teaching_prep.semester_mapping",
+                source_ref=OpaqueRef("semester", "s" * 32, "a" * 64),
+                context_refs=(OpaqueRef("material", "m" * 32, "1"),),
+                prompt_contract_version="teaching-prep-semester-mapping-v1",
+                model_destination_fingerprint="b" * 64,
+                return_target="teaching_prep.library",
+            ),
+        )
+        outcome = coordinator.run_task(prepared.task_id)
+        snapshot = coordinator.get(task_id=prepared.task_id)
+    finally:
+        manager.shutdown()
+
+    assert outcome["status"] == "failed_before_dispatch"
+    assert snapshot.error_code == "semester_mapping_scope_stale"
+    assert snapshot.error_detail == (
+        "课时树或资料在准备后已变化，本次没有发送模型请求；"
+        "重新检查发送范围后可以再次发送。"
     )
