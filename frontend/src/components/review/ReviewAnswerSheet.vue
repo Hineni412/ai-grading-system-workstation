@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
 import { reviewDraftKey, scoreIssue, useReviewDraftStore } from '../../stores/review-drafts'
 import { translateGradingReason } from '../../utils/grading-reasons'
+import StatusBadge from '../design-system/StatusBadge.vue'
 
 const props = defineProps<{
   item: ReviewItemLike
@@ -56,6 +57,14 @@ const statusLabel = computed(() => ({
   teacher_final: '教师已确认',
   failed: '处理失败',
 })[reviewItem.value.score_status])
+
+const statusTone = computed(() => ({
+  ungraded: 'neutral',
+  ai_ready: 'ai',
+  ai_review: 'warning',
+  teacher_final: 'teacher',
+  failed: 'danger',
+} as const)[reviewItem.value.score_status])
 
 function formatScore(value: number | null): string {
   return value !== null && Number.isFinite(value) ? String(value) : '—'
@@ -121,12 +130,11 @@ watch(
         <h2 :id="`review-answer-name-${position}`">{{ reviewItem.student_name }}</h2>
         <p>{{ reviewItem.student_code || '学号未提供' }} · {{ reviewItem.class_name || '班级未提供' }}</p>
       </div>
-      <span
+      <StatusBadge
         class="review-answer-sheet__status"
-        :class="`is-${reviewItem.score_status}`"
-      >
-        {{ statusLabel }}
-      </span>
+        :tone="statusTone"
+        :label="statusLabel"
+      />
     </header>
 
     <div class="review-answer-sheet__risk">

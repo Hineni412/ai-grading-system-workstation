@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 
+import AppButton from '../components/design-system/AppButton.vue'
 import StudentImportDesk from '../components/students/StudentImportDesk.vue'
 import StudentInspector from '../components/students/StudentInspector.vue'
 import StudentRosterTable from '../components/students/StudentRosterTable.vue'
@@ -70,9 +71,9 @@ onMounted(() => {
           {{ classLabel }}
         </option>
       </select>
-      <button type="button" :disabled="homeroomBusy || !homeroom" @click="saveHomeroom">
+      <AppButton variant="primary" :disabled="homeroomBusy || !homeroom" @click="saveHomeroom">
         {{ homeroomBusy ? '正在保存…' : '保存班主任班级' }}
-      </button>
+      </AppButton>
       <p v-if="homeroomMessage" role="status">{{ homeroomMessage }}</p>
     </section>
 
@@ -93,9 +94,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.homeroom-setting{display:grid;grid-template-columns:minmax(260px,1fr) minmax(180px,280px) auto;align-items:end;gap:12px;margin:0 0 20px;padding:18px 20px;border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface)}
-.homeroom-setting>div{display:grid;gap:5px}.homeroom-setting span,.homeroom-setting p{color:var(--color-text-secondary)}
-.homeroom-setting select,.homeroom-setting button{min-height:42px;padding:0 12px;border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);font:inherit}
-.homeroom-setting button{border-color:var(--color-accent);background:var(--color-accent);color:var(--color-bg-surface);font-weight:700}.homeroom-setting p{grid-column:1/-1;margin:0}
+.homeroom-setting{display:grid;grid-template-columns:minmax(260px,1fr) minmax(180px,280px) auto;align-items:end;gap:12px;margin:0 0 20px;padding:16px 20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}
+.homeroom-setting>div{display:grid;gap:4px}.homeroom-setting span,.homeroom-setting p{color:var(--muted-foreground)}
+.homeroom-setting select{min-height:36px;padding:0 12px;border:1px solid var(--input);border-radius:6px;background:var(--card);color:var(--foreground);font:inherit}
+.homeroom-setting p{grid-column:1/-1;margin:0}
 @media(max-width:800px){.homeroom-setting{grid-template-columns:1fr}.homeroom-setting p{grid-column:auto}}
 </style>

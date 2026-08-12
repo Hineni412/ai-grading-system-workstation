@@ -34,7 +34,7 @@
 .workbench-home-hero h1 {
   max-width: 900px;
   margin-block: var(--space-2);
-  font-family: "STSong", "Songti SC", serif;
+  font-family: var(--font-family-display);
   font-size: clamp(36px, 4.5vw, 64px);
   font-weight: 600;
   letter-spacing: -0.045em;
@@ -62,7 +62,6 @@
 
 .workbench-home-hero__summary strong {
   color: var(--color-text-primary);
-  font-family: Georgia, "Times New Roman", serif;
   font-size: 48px;
   font-weight: 400;
   line-height: 1;
@@ -89,8 +88,9 @@
 .workbench-workflow,
 .workbench-exam-detail,
 .workbench-no-exam {
-  border: var(--border-width) solid var(--color-border-default);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
 .workbench-focus-board {
@@ -110,7 +110,6 @@
 .workbench-exam-detail h2,
 .workbench-no-exam h2 {
   margin-block-start: var(--space-1);
-  font-family: "STSong", "Songti SC", serif;
   font-size: 28px;
   letter-spacing: -0.025em;
   line-height: var(--line-height-tight);
@@ -147,7 +146,6 @@
 .workbench-focus-list__number {
   align-self: start;
   color: var(--color-text-muted);
-  font-family: Georgia, "Times New Roman", serif;
   font-size: 20px;
 }
 
@@ -202,6 +200,7 @@
 
 .workbench-pulse .workbench-home-section-heading h2 {
   color: var(--color-bg-surface);
+  font-family: var(--font-family-display);
 }
 
 .workbench-pulse__exam {
@@ -222,7 +221,7 @@
 }
 
 .workbench-pulse__score strong {
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: var(--font-family-display);
   font-size: 64px;
   font-weight: 400;
   line-height: 1;
@@ -271,7 +270,7 @@
 .workbench-pulse__stats dd {
   margin: var(--space-1) 0 0;
   overflow-wrap: anywhere;
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: var(--font-family-display);
   font-size: 25px;
 }
 
@@ -336,7 +335,6 @@
   border-radius: 50%;
   background: var(--color-bg-surface);
   color: var(--color-accent);
-  font-family: Georgia, "Times New Roman", serif;
 }
 
 .workbench-workflow__steps strong {

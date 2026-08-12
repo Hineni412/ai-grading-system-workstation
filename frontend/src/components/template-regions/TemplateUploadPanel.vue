@@ -53,6 +53,7 @@ function assignCurrent(): void {
       </div>
       <button
         type="button"
+        class="secondary"
         data-action="swap-current-pages"
         aria-label="交换当前正反面。题框坐标保持不变，已确认题框会回到待确认状态"
         :disabled="assignmentStatus === 'saving' || status === 'uploading' || status === 'unknown'"

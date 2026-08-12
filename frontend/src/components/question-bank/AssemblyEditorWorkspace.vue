@@ -5,6 +5,7 @@ import type { AssemblyQuestion, AssemblySection } from '../../api/assembly'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useAssemblyStore } from '../../stores/assembly'
 import { useJobStore } from '../../stores/jobs'
+import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 const emit = defineEmits<{
@@ -195,7 +196,7 @@ async function deleteRecord(recordId: string): Promise<void> {
 <template>
   <div class="assembly-editor">
     <header class="assembly-editor__toolbar">
-      <button type="button" class="assembly-button" @click="emit('browse')">← 返回选题</button>
+      <AppButton variant="secondary" @click="emit('browse')">← 返回选题</AppButton>
       <div>
         <strong>{{ assembly.draft.title || '未命名试卷' }}</strong>
         <span>{{ assembly.selectedQuestionCount }} 道题 · {{ assembly.totalScore }} 已识别分值</span>
@@ -405,14 +406,13 @@ async function deleteRecord(recordId: string): Promise<void> {
         </header>
         <p>确认预览后生成文件。导出不会改写题库内容。</p>
         <div class="assembly-export-actions">
-          <button
-            type="button"
-            class="assembly-button is-primary"
+          <AppButton
+            variant="primary"
             :disabled="!assembly.canExport || assembly.submitting"
             @click="assembly.submitExport('docx')"
           >
             导出 Word
-          </button>
+          </AppButton>
         </div>
 
         <div v-if="currentJob" class="assembly-job">
@@ -429,15 +429,14 @@ async function deleteRecord(recordId: string): Promise<void> {
             >
               下载文件
             </a>
-            <button v-if="!currentJobDone" type="button" class="assembly-button" @click="jobs.cancel(currentJob.id)">取消</button>
-            <button
+            <AppButton v-if="!currentJobDone" variant="secondary" @click="jobs.cancel(currentJob.id)">取消</AppButton>
+            <AppButton
               v-if="currentJob.status === 'failed' || currentJob.status === 'cancelled'"
-              type="button"
-              class="assembly-button"
+              variant="secondary"
               @click="assembly.retryExport(currentJob.id)"
             >
               重试
-            </button>
+            </AppButton>
           </div>
         </div>
 

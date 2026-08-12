@@ -9,6 +9,7 @@ import {
   type QuestionBankTag,
 } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
+import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import TrainingCriterionReview from './TrainingCriterionReview.vue'
 import SolutionEvidenceReview from './SolutionEvidenceReview.vue'
@@ -374,27 +375,25 @@ async function removeCurrent(): Promise<void> {
             >
               {{ store.writeMessage }}
             </p>
-            <button
-              type="button"
-              class="qb-button is-primary"
+            <AppButton
+              variant="primary"
               :disabled="store.writeState === 'saving' || !validTags()"
               @click="save"
             >
               {{ store.writeState === 'saving' ? '正在保存…' : '保存标签' }}
-            </button>
+            </AppButton>
           </section>
 
           <section class="qb-danger">
             <h3>移出当前题库</h3>
             <p>题目会从活动列表隐藏，但不会物理删除标签，可立即恢复。</p>
-            <button
-              type="button"
-              class="qb-button is-danger"
+            <AppButton
+              variant="danger"
               :disabled="store.writeState === 'saving'"
               @click="removeCurrent"
             >
               删除这道题
-            </button>
+            </AppButton>
           </section>
         </template>
       </aside>

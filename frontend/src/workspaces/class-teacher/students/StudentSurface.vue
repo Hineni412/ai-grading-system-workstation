@@ -3,6 +3,7 @@ import { defineAsyncComponent, onMounted, ref, watch } from 'vue'
 
 import type { DirectorySubject } from '../api/r1'
 import { studentR1Api } from '../api/r1'
+import AppButton from '@/components/design-system/AppButton.vue'
 import StudentDirectoryPanel from './StudentDirectoryPanel.vue'
 import StudentOverviewPanel from './StudentOverviewPanel.vue'
 import SupportReviewPanel from './SupportReviewPanel.vue'
@@ -49,10 +50,10 @@ onMounted(() => { void restoreSelection() })
       :subject="selected"
     />
     <AcademicAnalysisPanel v-if="panel==='academic' && selected" :key="selected.subject_id" :subject="selected" />
-    <section v-if="panel !== 'directory' && !selected" class="reselect"><span aria-hidden="true">↶</span><h2>请重新选择学生</h2><p>刷新或直接打开此页面时，不会从网址恢复真实学生编号。请回到目录重新选择。</p><button type="button" @click="emit('navigate','directory')">返回学生目录</button></section>
+    <section v-if="panel !== 'directory' && !selected" class="reselect"><span aria-hidden="true">↶</span><h2>请重新选择学生</h2><p>刷新或直接打开此页面时，不会从网址恢复真实学生编号。请回到目录重新选择。</p><AppButton variant="primary" @click="emit('navigate','directory')">返回学生目录</AppButton></section>
   </section>
 </template>
 
 <style scoped>
-.students{display:grid;gap:var(--space-3)}.subnav{display:flex;align-items:center;gap:var(--space-1);padding:var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface)}.subnav button{min-height:38px;padding:0 var(--space-3);border:0;border-radius:var(--radius-control);background:transparent;font:inherit}.subnav button[aria-current="page"]{background:var(--color-accent-subtle);color:var(--color-accent-active);font-weight:700}.subnav span{margin-left:auto;color:var(--color-text-secondary);font-size:var(--font-size-dense)}.reselect{display:grid;place-items:center;align-content:center;min-height:460px;padding:var(--space-6);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface);text-align:center}.reselect>span{font-size:40px;color:var(--color-accent)}.reselect h2{margin-bottom:0}.reselect p{max-width:480px;color:var(--color-text-secondary)}.reselect button{min-height:40px;padding:0 var(--space-4);border:1px solid var(--color-accent);border-radius:var(--radius-control);background:var(--color-accent);color:white}@media(max-width:760px){.subnav{flex-wrap:wrap}.subnav span{width:100%;margin:var(--space-1) 0 0}}
+.students{display:grid;gap:var(--space-3)}.subnav{display:flex;align-items:center;gap:var(--space-1);padding:var(--space-2);border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.subnav button{min-height:36px;padding:0 var(--space-3);border:0;border-radius:var(--radius);background:transparent;color:var(--muted-foreground);font:inherit;cursor:pointer}.subnav button:hover{color:var(--foreground)}.subnav button[aria-current="page"]{background:var(--accent);color:var(--primary);font-weight:600}.subnav span{margin-left:auto;color:var(--color-text-secondary);font-size:var(--font-size-dense)}.reselect{display:grid;place-items:center;align-content:center;min-height:460px;padding:var(--space-6);border:1px solid var(--border);border-radius:var(--radius);background:var(--card);text-align:center}.reselect>span{font-size:40px;color:var(--primary)}.reselect h2{margin-bottom:0}.reselect p{max-width:480px;color:var(--color-text-secondary)}@media(max-width:760px){.subnav{flex-wrap:wrap}.subnav span{width:100%;margin:var(--space-1) 0 0}}
 </style>

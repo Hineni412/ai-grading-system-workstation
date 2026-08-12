@@ -24,45 +24,33 @@ test('design-system route preserves the P2-02 showcase and focus treatment', asy
   )
 
   const examInput = page.locator('#exam-name')
-  await examInput.focus()
-  await expect
-    .poll(() =>
-      examInput.evaluate((element) => {
-        const wrapper = element.closest('.el-input__wrapper')
-        return wrapper ? getComputedStyle(wrapper).boxShadow : ''
-      }),
-    )
-    .toContain('rgb(37, 99, 235)')
-  const validStyles = await examInput.evaluate((element) => {
-    const wrapper = element.closest('.el-input__wrapper')
-    return {
-      inputShadow: getComputedStyle(element).boxShadow,
-      wrapperShadow: wrapper ? getComputedStyle(wrapper).boxShadow : '',
-    }
-  })
-  expect(validStyles.inputShadow).toBe('none')
-  expect(validStyles.wrapperShadow).toContain('rgb(37, 99, 235)')
-  expect(validStyles.wrapperShadow).toContain('rgb(239, 246, 255)')
-
   const invalidInput = page.locator('#teacher-score')
+
+  // 无效字段（未聚焦）保持危险色边框，无聚焦环
+  await expect
+    .poll(() => invalidInput.evaluate((element) => getComputedStyle(element).borderColor))
+    .toBe('rgb(176, 68, 68)')
+  expect(await invalidInput.evaluate((element) => getComputedStyle(element).boxShadow)).not.toContain(
+    '0px 0px 0px 3px',
+  )
+
+  // 有效字段聚焦后显示品牌青边框与 50% 品牌青焦点环
+  await examInput.focus()
+  await expect(examInput).toBeFocused()
+  await expect
+    .poll(() => examInput.evaluate((element) => getComputedStyle(element).borderColor))
+    .toBe('rgb(19, 94, 107)')
+  await expect
+    .poll(() => examInput.evaluate((element) => getComputedStyle(element).boxShadow))
+    .toContain('/ 0.5) 0px 0px 0px 3px')
+
+  // Tab 顺序从有效字段进入无效字段，无效字段聚焦后转为 20% 危险色焦点环
   await page.keyboard.press('Tab')
   await expect(invalidInput).toBeFocused()
   await expect
-    .poll(() =>
-      invalidInput.evaluate((element) => {
-        const wrapper = element.closest('.el-input__wrapper')
-        return wrapper ? getComputedStyle(wrapper).boxShadow : ''
-      }),
-    )
-    .toContain('rgb(239, 246, 255)')
-  const invalidStyles = await invalidInput.evaluate((element) => {
-    const wrapper = element.closest('.el-input__wrapper')
-    return {
-      inputShadow: getComputedStyle(element).boxShadow,
-      wrapperShadow: wrapper ? getComputedStyle(wrapper).boxShadow : '',
-    }
-  })
-  expect(invalidStyles.inputShadow).toBe('none')
-  expect(invalidStyles.wrapperShadow).toContain('rgb(176, 68, 68)')
-  expect(invalidStyles.wrapperShadow).toContain('rgb(239, 246, 255)')
+    .poll(() => invalidInput.evaluate((element) => getComputedStyle(element).borderColor))
+    .toBe('rgb(176, 68, 68)')
+  await expect
+    .poll(() => invalidInput.evaluate((element) => getComputedStyle(element).boxShadow))
+    .toContain('/ 0.2) 0px 0px 0px 3px')
 })

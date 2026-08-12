@@ -277,7 +277,7 @@
   margin: 0;
   padding: var(--space-4);
   border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
+  border-radius: var(--radius-control);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
   text-align: center;

@@ -150,9 +150,9 @@
 .model-profiles-index,
 .model-profile-editor {
   min-width: 0;
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
 .model-profiles-index {
@@ -823,9 +823,9 @@
   grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
   align-items: stretch;
   min-height: 560px;
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
   overflow: hidden;
 }
 
@@ -1076,7 +1076,7 @@
   border-radius: var(--radius-control);
   background: var(--color-bg-subtle);
   color: var(--color-text-primary);
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-family: var(--font-family-mono);
   font-size: var(--font-size-caption);
   line-height: var(--line-height-relaxed);
   overflow-wrap: anywhere;

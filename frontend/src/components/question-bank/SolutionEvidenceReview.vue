@@ -6,6 +6,7 @@ import {
   type QuestionSolutionEvidenceResponse,
   type SolutionEvidenceFineTermLink,
 } from '../../api/question-bank'
+import StatusBadge, { type StatusTone } from '../design-system/StatusBadge.vue'
 
 const props = withDefaults(defineProps<{
   questionId: number
@@ -42,6 +43,14 @@ function statusCopy(status: QuestionSolutionEvidenceResponse['status']): string 
   return 'AI 草稿，待教师核对'
 }
 
+function statusTone(status: QuestionSolutionEvidenceResponse['status']): StatusTone {
+  if (status === 'approved') return 'teacher'
+  if (status === 'rejected') return 'danger'
+  if (status === 'superseded') return 'neutral'
+  if (status === 'stale') return 'warning'
+  return 'ai'
+}
+
 async function load(): Promise<void> {
   controller?.abort()
   controller = new AbortController()
@@ -69,9 +78,12 @@ onBeforeUnmount(() => controller?.abort())
         <p class="qb-eyebrow">SOLUTION EVIDENCE</p>
         <h3 id="solution-evidence-title">拆分点、精细词条与图谱映射</h3>
       </div>
-      <span v-if="response?.available" class="solution-evidence__status">
-        {{ statusCopy(response.status) }}
-      </span>
+      <StatusBadge
+        v-if="response?.available"
+        class="solution-evidence__status"
+        :tone="statusTone(response.status)"
+        :label="statusCopy(response.status)"
+      />
     </header>
 
     <p v-if="state === 'loading'" class="solution-evidence__empty" role="status">
@@ -152,33 +164,33 @@ onBeforeUnmount(() => controller?.abort())
 </template>
 
 <style scoped>
-.solution-evidence { display: grid; gap: var(--space-3); padding: var(--space-4); border-block: var(--border-width) solid var(--color-border-default); }
+.solution-evidence { display: grid; gap: var(--space-3); padding: var(--space-4); border-block: var(--border-width) solid var(--border); }
 .solution-evidence__heading { display: flex; align-items: start; justify-content: space-between; gap: var(--space-3); }
 .solution-evidence__heading h3,
 .solution-evidence__heading p,
 .solution-evidence__point p { margin: 0; }
-.solution-evidence__status { padding: var(--space-1) var(--space-2); border-radius: 999px; background: var(--color-warning-subtle); color: var(--color-text-secondary); font-size: var(--font-size-dense); }
+.solution-evidence__status { flex-shrink: 0; }
 .solution-evidence__empty,
 .solution-evidence__help { margin: 0; color: var(--color-text-secondary); }
-.solution-evidence__empty { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-3); background: var(--color-bg-subtle); }
+.solution-evidence__empty { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-control); background: var(--secondary); }
 .solution-evidence__parts { display: grid; gap: var(--space-3); }
-.solution-evidence__part { border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-surface); }
-.solution-evidence__part > header { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--color-bg-subtle); }
+.solution-evidence__part { border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); overflow: hidden; }
+.solution-evidence__part > header { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--secondary); }
 .solution-evidence__part > header span,
 .solution-evidence__part > header small { color: var(--color-text-secondary); font-size: var(--font-size-dense); }
 .solution-evidence__points { display: grid; }
 .solution-evidence__point { display: grid; grid-template-columns: minmax(12rem, 0.75fr) minmax(0, 1.25fr); gap: var(--space-3); padding: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-subtle); }
 .solution-evidence__point:first-child { border-block-start: 0; }
 .solution-evidence__point-title { display: flex; align-items: start; gap: var(--space-2); }
-.solution-evidence__point-title > span { display: grid; width: 1.7rem; aspect-ratio: 1; place-items: center; border-radius: 50%; background: var(--color-accent); color: var(--color-bg-surface); font-size: var(--font-size-dense); }
+.solution-evidence__point-title > span { display: grid; width: 1.7rem; aspect-ratio: 1; place-items: center; border-radius: 50%; background: var(--color-accent); color: var(--primary-foreground); font-size: var(--font-size-dense); }
 .solution-evidence__point-title p { margin-block-start: var(--space-1); color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
 .solution-evidence__terms { display: flex; flex-wrap: wrap; align-content: start; gap: var(--space-2); }
 .solution-evidence__term { display: grid; gap: 0.15rem; min-width: 9rem; padding: var(--space-2); border: var(--border-width) solid var(--color-accent); border-radius: var(--radius-control); background: var(--color-accent-subtle); }
-.solution-evidence__term[data-role='supporting_prerequisite'] { border-color: var(--color-border-default); background: var(--color-bg-subtle); }
+.solution-evidence__term[data-role='supporting_prerequisite'] { border-color: var(--border); background: var(--secondary); }
 .solution-evidence__term b,
 .solution-evidence__term small { font-size: var(--font-size-dense); }
 .solution-evidence__term small { color: var(--color-text-secondary); }
-.solution-evidence__summary { padding: var(--space-3); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
+.solution-evidence__summary { padding: var(--space-3); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--secondary); }
 .solution-evidence__summary summary { cursor: pointer; font-weight: var(--font-weight-medium); }
 .solution-evidence__summary dl { display: grid; gap: var(--space-2); margin: var(--space-3) 0 0; }
 .solution-evidence__summary dl > div { display: grid; grid-template-columns: 9rem 1fr; gap: var(--space-2); }
