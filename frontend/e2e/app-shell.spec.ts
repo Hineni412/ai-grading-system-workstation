@@ -8,6 +8,7 @@ const sessions = [
     id: 1,
     name: '七年级数学阶段检测',
     status: 'pending',
+    curriculum_volume_id: null,
     is_deleted: false,
     deleted_at: null,
     created_at: '2026-07-01T00:00:00Z',
@@ -17,6 +18,7 @@ const sessions = [
     id: 2,
     name: longSessionName,
     status: 'grading',
+    curriculum_volume_id: null,
     is_deleted: false,
     deleted_at: null,
     created_at: '2026-07-02T00:00:00Z',
@@ -174,16 +176,16 @@ test('1024 compact navigation state and geometry stay synchronized', async ({ pa
   const toggle = page.getByTestId('navigation-toggle')
   const inspector = page.getByTestId('session-inspector')
   const inspectorToggle = page.getByTestId('inspector-toggle')
-  const workbenchLabel = navigation.getByText('工作台', { exact: true })
+  const sessionsLabel = navigation.getByText('考试配置', { exact: true })
 
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-  await expect(workbenchLabel).toBeHidden()
+  await expect(sessionsLabel).toBeHidden()
   expect(await navigation.evaluate((element) => element.getBoundingClientRect().width)).toBe(60)
   expect(await inspector.evaluate((element) => element.getBoundingClientRect().width)).toBe(320)
 
   await toggle.click()
   await expect(toggle).toHaveAttribute('aria-expanded', 'true')
-  await expect(workbenchLabel).toBeVisible()
+  await expect(sessionsLabel).toBeVisible()
   expect(await navigation.evaluate((element) => element.getBoundingClientRect().width)).toBe(232)
 
   await toggle.click()

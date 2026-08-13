@@ -5,7 +5,6 @@ import {
   gradingRunRouteDefinition,
   navigationGroups,
   settingsNavigationItems,
-  workbenchRouteDefinition,
   type WorkspaceRouteDefinition,
 } from '../../navigation'
 import { useSessionStore } from '../../stores/session'
@@ -65,17 +64,6 @@ function completeNavigation(): void {
     </RouterLink>
 
     <nav class="app-sidebar__navigation" data-testid="app-navigation" aria-label="主要导航">
-      <RouterLink
-        class="app-sidebar__link app-sidebar__link--workbench"
-        :to="workbenchRouteDefinition.path"
-        :aria-label="workbenchRouteDefinition.label"
-        :aria-current="isActive(workbenchRouteDefinition) ? 'page' : undefined"
-        @click="completeNavigation"
-      >
-        <AppIcon :name="workbenchRouteDefinition.icon" />
-        <span>{{ workbenchRouteDefinition.label }}</span>
-      </RouterLink>
-
       <section
         v-for="group in navigationGroups"
         :key="group.id"

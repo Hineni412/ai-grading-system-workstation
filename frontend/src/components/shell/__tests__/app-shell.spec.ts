@@ -115,7 +115,6 @@ describe('AppShell', () => {
         (link) => [link.textContent, link.getAttribute('href')],
       ),
     ).toEqual([
-      ['工作台', '/workbench'],
       ['考试配置', '/sessions'],
       ['考试批改', '/grading'],
       ['成绩中心', '/results'],
@@ -130,7 +129,6 @@ describe('AppShell', () => {
         link => link.getAttribute('aria-label'),
       ),
     ).toEqual([
-      '工作台',
       '考试配置',
       '考试批改',
       '成绩中心',
@@ -145,17 +143,11 @@ describe('AppShell', () => {
         'aria-current',
       ),
     ).toBe('page')
-    expect(
-      host.querySelector('[data-testid="app-navigation"] a[href="/workbench"]')?.hasAttribute(
-        'aria-current',
-      ),
-    ).toBe(false)
     expect(host.querySelector('label[for="current-session"]')?.textContent).toBe('当前考试')
     expect(host.querySelector('#current-session')).not.toBeNull()
     expect(host.querySelector('label[for="current-curriculum-volume"]')?.textContent).toBe('教学学期')
     expect(host.querySelector('#current-curriculum-volume')).not.toBeNull()
     expect([...host.querySelectorAll('nav a')].map((link) => link.textContent)).toEqual([
-      '工作台',
       '考试配置',
       '考试批改',
       '成绩中心',
@@ -200,15 +192,13 @@ describe('AppShell', () => {
 
   it('navigates between truthful destinations and updates the current page', async () => {
     const { app, host, router } = await mountShell()
-    const workbenchLink = host.querySelector<HTMLAnchorElement>(
-      '[data-testid="app-navigation"] a[href="/workbench"]',
-    )!
+    const brandLink = host.querySelector<HTMLAnchorElement>('.app-sidebar__brand')!
+    expect(brandLink.getAttribute('href')).toBe('/workbench')
 
-    workbenchLink.click()
+    brandLink.click()
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
     await settleUi()
 
-    expect(workbenchLink.getAttribute('aria-current')).toBe('page')
     expect(
       host.querySelector('[data-testid="app-navigation"] a[href="/grading"]')?.hasAttribute(
         'aria-current',
