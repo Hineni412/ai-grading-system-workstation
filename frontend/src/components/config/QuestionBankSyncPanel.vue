@@ -552,7 +552,7 @@ watch(
   color: var(--color-accent);
 }
 .question-bank-sync__deferred { color: var(--color-text-secondary); }
-.question-bank-sync progress { width: 100%; accent-color: var(--color-accent); }
+.question-bank-sync progress { width: 100%; }
 .question-bank-sync__error {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-control);

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Folder, FolderOpen } from '@lucide/vue'
 
 import StatusBadge from '../../../../components/design-system/StatusBadge.vue'
+import { FileTreeFolder } from '@/components/ui/file-tree'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
 import { isBookRole, roleLabel, type LibrarySelection } from './libraryShared'
 
@@ -80,8 +82,11 @@ function select(selection: LibrarySelection): void {
       <span class="tp-rail__item-name">导入资料</span>
     </button>
 
-    <template v-if="chapterFolders.length">
-      <p class="tp-rail__group-label">课件 · {{ pptFileTotal }} 份</p>
+    <FileTreeFolder v-if="chapterFolders.length" name="课件" default-expanded>
+      <template #header="{ expanded }">
+        <component :is="expanded ? FolderOpen : Folder" :size="15" aria-hidden="true" />
+        <span>课件 · {{ pptFileTotal }} 份</span>
+      </template>
       <button
         v-for="folder in chapterFolders"
         :key="folder.key"
@@ -90,13 +95,16 @@ function select(selection: LibrarySelection): void {
         :class="{ 'is-active': isActive({ kind: 'chapter', folderKey: folder.key }) }"
         @click="select({ kind: 'chapter', folderKey: folder.key })"
       >
-        <span class="tp-rail__item-name">{{ folder.name }}</span>
+        <span class="tp-rail__item-name" :title="folder.name">{{ folder.name }}</span>
         <span class="tp-rail__count">{{ folder.files.length }}</span>
       </button>
-    </template>
+    </FileTreeFolder>
 
-    <template v-if="bookRecords.length">
-      <p class="tp-rail__group-label">书 · {{ bookRecords.length }} 本</p>
+    <FileTreeFolder v-if="bookRecords.length" name="书" default-expanded>
+      <template #header="{ expanded }">
+        <component :is="expanded ? FolderOpen : Folder" :size="15" aria-hidden="true" />
+        <span>书 · {{ bookRecords.length }} 本</span>
+      </template>
       <button
         v-for="record in bookRecords"
         :key="record.id"
@@ -105,13 +113,16 @@ function select(selection: LibrarySelection): void {
         :class="{ 'is-active': isActive({ kind: 'material', materialId: record.current_material_version_id }) }"
         @click="select({ kind: 'material', materialId: record.current_material_version_id })"
       >
-        <span class="tp-rail__item-name">{{ roleLabel(record.material_role) }} · {{ record.display_name }}</span>
+        <span class="tp-rail__item-name" :title="`${roleLabel(record.material_role)} · ${record.display_name}`">{{ roleLabel(record.material_role) }} · {{ record.display_name }}</span>
         <span class="tp-rail__count">{{ record.current_unit_count ?? 0 }} 页</span>
       </button>
-    </template>
+    </FileTreeFolder>
 
-    <template v-if="looseRecords.length || unattachedMaterials.length">
-      <p class="tp-rail__group-label">其他资料</p>
+    <FileTreeFolder v-if="looseRecords.length || unattachedMaterials.length" name="其他资料" default-expanded>
+      <template #header="{ expanded }">
+        <component :is="expanded ? FolderOpen : Folder" :size="15" aria-hidden="true" />
+        <span>其他资料</span>
+      </template>
       <button
         v-for="record in looseRecords"
         :key="record.id"
@@ -123,7 +134,7 @@ function select(selection: LibrarySelection): void {
         }"
         @click="select({ kind: 'material', materialId: record.current_material_version_id })"
       >
-        <span class="tp-rail__item-name">
+        <span class="tp-rail__item-name" :title="record.is_active ? record.display_name : `${record.display_name}（已移出）`">
           {{ record.display_name }}<template v-if="!record.is_active">（已移出）</template>
         </span>
         <span class="tp-rail__count">{{ roleLabel(record.material_role) }}</span>
@@ -136,22 +147,27 @@ function select(selection: LibrarySelection): void {
         :class="{ 'is-active': isActive({ kind: 'material', materialId: item.id }) }"
         @click="select({ kind: 'material', materialId: item.id })"
       >
-        <span class="tp-rail__item-name">{{ item.display_name }}</span>
+        <span class="tp-rail__item-name" :title="item.display_name">{{ item.display_name }}</span>
         <span class="tp-rail__count">未归类</span>
       </button>
-    </template>
+    </FileTreeFolder>
 
-    <p class="tp-rail__group-label">课时树</p>
-    <button
-      type="button"
-      class="tp-rail__item"
-      :class="{ 'is-active': isActive({ kind: 'tree' }) }"
-      data-testid="shelf-tree-entry"
-      @click="select({ kind: 'tree' })"
-    >
-      <span class="tp-rail__item-name">本学期课时树</span>
-      <StatusBadge :tone="treeBadge.tone" :label="treeBadge.label" />
-    </button>
-    <p class="tp-rail__sub">{{ treeSubLabel }}</p>
+    <FileTreeFolder name="课时树" default-expanded>
+      <template #header="{ expanded }">
+        <component :is="expanded ? FolderOpen : Folder" :size="15" aria-hidden="true" />
+        <span>课时树</span>
+      </template>
+      <button
+        type="button"
+        class="tp-rail__item"
+        :class="{ 'is-active': isActive({ kind: 'tree' }) }"
+        data-testid="shelf-tree-entry"
+        @click="select({ kind: 'tree' })"
+      >
+        <span class="tp-rail__item-name">本学期课时树</span>
+        <StatusBadge :tone="treeBadge.tone" :label="treeBadge.label" />
+      </button>
+      <p class="tp-rail__sub">{{ treeSubLabel }}</p>
+    </FileTreeFolder>
   </aside>
 </template>

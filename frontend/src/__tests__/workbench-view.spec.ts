@@ -211,7 +211,7 @@ describe('workbench view', () => {
 
     const pulse = host.querySelector('.workbench-pulse')!
     expect(pulse.textContent).toContain('七年级数学期末质量监测')
-    expect(pulse.textContent).toContain('33.33')
+    expect(pulse.textContent).toContain('33%')
     expect(pulse.textContent).toContain('12')
     expect(pulse.textContent).toContain('3')
   })

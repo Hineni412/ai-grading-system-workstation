@@ -8,6 +8,7 @@ import {
   type ReviewItemLike,
 } from '../../api/review'
 import type { EvidenceSource } from '../../composables/use-evidence-viewer'
+import { ImageCompare } from '../ui/image-compare'
 import ReviewEvidenceViewer from './ReviewEvidenceViewer.vue'
 import ReviewScoringInspector from './ReviewScoringInspector.vue'
 
@@ -33,15 +34,25 @@ const sourceOptions: readonly {
   { value: 'annotated_back', label: '标注反面', mediaKey: 'annotated_back_url' },
 ]
 const selectedSource = ref<EvidenceSource>('crop')
+const compareMode = ref(false)
 const resolvedItem = computed(() => resolveReviewItem(props.item))
 const availableSources = computed(() =>
   sourceOptions.filter((option) => Boolean(resolvedItem.value.media[option.mediaKey])),
 )
+const canCompareFront = computed(() => Boolean(
+  resolvedItem.value.media.original_front_url && resolvedItem.value.media.annotated_front_url,
+))
+
+function selectSource(source: EvidenceSource): void {
+  selectedSource.value = source
+  compareMode.value = false
+}
 
 watch(
   () => resolvedItem.value.review_item_id,
   () => {
     selectedSource.value = 'crop'
+    compareMode.value = false
   },
   { immediate: true, flush: 'sync' },
 )
@@ -79,17 +90,34 @@ const emit = defineEmits<{
           v-for="option in availableSources"
           :key="option.value"
           type="button"
-          :aria-pressed="selectedSource === option.value"
-          @click="selectedSource = option.value"
+          :aria-pressed="!compareMode && selectedSource === option.value"
+          @click="selectSource(option.value)"
         >
           {{ option.label }}
+        </button>
+        <button
+          v-if="canCompareFront"
+          type="button"
+          :aria-pressed="compareMode"
+          @click="compareMode = !compareMode"
+        >
+          对比
         </button>
       </div>
     </header>
 
     <div class="review-deep-workspace__body">
       <div class="review-deep-workspace__evidence">
+        <ImageCompare
+          v-if="compareMode"
+          class="review-deep-workspace__compare"
+          :first-image="resolvedItem.media.original_front_url ?? ''"
+          first-image-alt="原卷正面"
+          :second-image="resolvedItem.media.annotated_front_url ?? ''"
+          second-image-alt="标注正面"
+        />
         <ReviewEvidenceViewer
+          v-else
           :item="item"
           :previous-item="previousItem"
           :next-item="nextItem"

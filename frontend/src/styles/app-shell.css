@@ -342,6 +342,43 @@
   justify-content: flex-end;
 }
 
+/* 顶栏工作台 tabs：滑动 pill 指示条（位置由内联 style 测量给出） */
+.tp-workspace-tabs {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.tp-workspace-tabs button {
+  position: relative;
+  z-index: 1;
+  border-color: transparent;
+  background: transparent;
+}
+
+.tp-workspace-tabs button:hover:not(:disabled) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-accent-active);
+}
+
+.tp-workspace-tabs button.is-current {
+  color: var(--color-accent-active);
+  font-weight: var(--font-weight-medium);
+}
+
+.tp-workspace-tabs__pill {
+  position: absolute;
+  inset-block: 2px;
+  border-radius: var(--radius-control);
+  background: var(--color-bg-selected);
+  box-shadow: inset 0 0 0 var(--border-width) var(--color-accent);
+  transition:
+    left var(--duration-drawer) ease,
+    width var(--duration-drawer) ease;
+}
+
 .app-topbar__skip-link {
   position: fixed;
   inset-block-start: var(--space-2);
