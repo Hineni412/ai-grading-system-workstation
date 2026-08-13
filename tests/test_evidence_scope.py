@@ -80,3 +80,35 @@ def test_scope_supports_multiple_classes_and_rejects_cross_class_manual_include(
     normalized = resolved.normalized_scope({"mode": "class", "class_ids": ["2班"]})
     assert normalized["class_ids"] == ["2班"]
     assert len(normalized["scope_revision"]) == 64
+
+
+def test_selected_scope_preserves_requested_student_order() -> None:
+    """Selected 队列的学生顺序必须与请求一致。
+
+    前端把队列（勾选顺序）作为 student_ids 发出，并用有序子序列校验响应
+    scope.student_ids 是否与请求一致；按花名册顺序回包会让该校验失败，
+    前端随即提示“知识图谱暂时无法更新”。
+    """
+    resolved = EvidenceScopeResolver(_GradingData()).resolve(
+        scope={"mode": "selected", "student_ids": ["3", "1"]},
+        exam_scope={"mode": "current", "session_ids": [2]},
+    )
+
+    assert [str(item["id"]) for item in resolved.students] == ["3", "1"]
+    normalized = resolved.normalized_scope(
+        {"mode": "selected", "student_ids": ["3", "1"]}
+    )
+    assert normalized["student_ids"] == ["3", "1"]
+
+
+def test_selected_scope_orders_manual_include_after_requested() -> None:
+    resolved = EvidenceScopeResolver(_GradingData()).resolve(
+        scope={
+            "mode": "selected",
+            "student_ids": ["3", "1"],
+            "include_student_ids": ["2"],
+        },
+        exam_scope={"mode": "current", "session_ids": [2]},
+    )
+
+    assert [str(item["id"]) for item in resolved.students] == ["3", "1", "2"]

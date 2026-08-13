@@ -114,6 +114,9 @@ export interface GraphEvidenceItem {
   full_score: number
   score_rate: number | null
   source_kind?: 'current_exam' | 'historical_exam'
+  detail_id?: number | null
+  deduction_reason?: string
+  evidence_url?: string
   tag_context: Record<string, string[]>
   actionable_reasons: string[]
   error_counts: Record<string, Record<string, number>>
@@ -421,6 +424,10 @@ function isEvidenceItem(value: unknown): value is GraphEvidenceItem {
     && (value.source_kind === undefined
       || value.source_kind === 'current_exam'
       || value.source_kind === 'historical_exam')
+    && (value.detail_id === undefined || value.detail_id === null || isInteger(value.detail_id, true))
+    && (value.deduction_reason === undefined || typeof value.deduction_reason === 'string')
+    && (value.evidence_url === undefined
+      || (typeof value.evidence_url === 'string' && value.evidence_url.startsWith('/api/')))
     && isStringArrayMap(value.tag_context)
     && isStringArray(value.actionable_reasons)
     && isCountMap(value.error_counts)

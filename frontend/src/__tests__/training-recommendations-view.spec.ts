@@ -51,7 +51,7 @@ const diagnosis = {
     student_code: 'S012',
     student_name: '匿名学生甲',
     class_id: '七年级一班',
-    score_rate: 55,
+    score_rate: 0.55,
     weak_points: [{
       knowledge_key: 'knowledge_point:三角形全等',
       knowledge_point: '三角形全等',
@@ -269,11 +269,6 @@ async function mountView(path = '/training') {
   return { host, router }
 }
 
-function selectValue(element: HTMLSelectElement, value: string): void {
-  element.value = value
-  element.dispatchEvent(new Event('change', { bubbles: true }))
-}
-
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
@@ -343,8 +338,52 @@ describe('training recommendations view', () => {
     ;[...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.trim() === '调整')!
       .click()
-    expect(host.querySelector<HTMLDetailsElement>('.scope-disclosure')?.open).toBe(true)
+    await nextTick()
+    expect(host.textContent).toContain('指定学生')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledOnce())
+  })
+
+  it('hides students without evidence in the current section until the toggle is enabled', async () => {
+    trainingApiMock.diagnose.mockResolvedValue({
+      ...diagnosis,
+      students: [
+        diagnosis.students[0]!,
+        {
+          ...diagnosis.students[0]!,
+          student_id: '22',
+          student_code: 'S022',
+          student_name: '匿名学生乙',
+          weak_points: [],
+        },
+      ],
+    })
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('学生 × 知识点'))
+
+    expect(host.querySelectorAll('.chapter-training tbody tr')).toHaveLength(1)
+    expect(host.textContent).toContain('显示无证据学生（1）')
+    expect(host.textContent).toContain('1 名学生 · 1 个知识点')
+    const toggle = [...host.querySelectorAll<HTMLLabelElement>('.chapter-training__toggle')]
+      .find((label) => label.textContent?.includes('显示无证据学生'))!
+      .querySelector<HTMLInputElement>('input')!
+    toggle.click()
+    await nextTick()
+    expect(host.querySelectorAll('.chapter-training tbody tr')).toHaveLength(2)
+    expect(host.textContent).toContain('2 名学生 · 1 个知识点')
+  })
+
+  it('shows an empty hint when no student has evidence in the current section', async () => {
+    trainingApiMock.diagnose.mockResolvedValue({
+      ...diagnosis,
+      students: [{
+        ...diagnosis.students[0]!,
+        weak_points: [{ ...diagnosis.students[0]!.weak_points[0]!, evidence_count: 0 }],
+      }],
+    })
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('章节学生热力图'))
+
+    expect(host.textContent).toContain('当前范围所有学生都没有证据')
   })
 
   it('cancels an in-flight diagnosis and publishes only the latest class scope', async () => {
@@ -438,7 +477,7 @@ describe('training recommendations view', () => {
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
 
     const adjust = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((item) => item.textContent?.trim() === '精细调整学生')!
+      .find((item) => item.textContent?.trim() === '更多筛选')!
     adjust.click()
     await settle()
     const search = host.querySelector<HTMLInputElement>('input[aria-label="搜索学生"]')!
@@ -446,32 +485,152 @@ describe('training recommendations view', () => {
     search.value = '甲'
     search.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    selectValue(host.querySelector<HTMLSelectElement>('select[aria-label="匿名学生甲的范围决定"]')!, 'include')
+    host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生甲"]')!.click()
     await settle()
 
     search.value = '乙'
     search.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    selectValue(host.querySelector<HTMLSelectElement>('select[aria-label="匿名学生乙的范围决定"]')!, 'include')
+    host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生乙"]')!.click()
     await settle()
+    expect(host.textContent).toContain('队列 2 人')
     host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
 
-    expect(trainingApiMock.diagnose.mock.calls[1]?.[0]).toMatchObject({
-      scope: { mode: 'all', include_student_ids: ['12', '22'] },
+    const lastCall = trainingApiMock.diagnose.mock.calls[trainingApiMock.diagnose.mock.calls.length - 1]
+    expect(lastCall?.[0]).toMatchObject({
+      scope: { mode: 'selected', student_ids: ['12', '22'] },
     })
     await vi.waitFor(() => expect(host.textContent).toContain('所选 2 人'))
   })
 
-  it('uses a compact roster and a weighted structure in student mode', async () => {
+  it('hides students without a score once a score range is set', async () => {
+    fetchStudentsMock.mockResolvedValue([
+      {
+        id: 12,
+        student_code: 'S012',
+        name: '匿名学生甲',
+        class_name: '七年级一班',
+        created_at: null,
+      },
+      {
+        id: 22,
+        student_code: 'S022',
+        name: '匿名学生乙',
+        class_name: '七年级一班',
+        created_at: null,
+      },
+    ])
+    trainingApiMock.diagnose.mockResolvedValue({
+      ...diagnosis,
+      students: [
+        diagnosis.students[0]!,
+        {
+          ...diagnosis.students[0]!,
+          student_id: '22',
+          student_code: 'S022',
+          student_name: '匿名学生乙',
+          score_rate: null,
+          score_rate_source: 'none' as const,
+        },
+      ],
+    })
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
+
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.trim() === '更多筛选')!
+      .click()
+    await settle()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(2)
+
+    const minimum = host.querySelector<HTMLInputElement>('input[aria-label="最低得分率"]')!
+    minimum.value = '60'
+    minimum.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(0)
+    expect(host.textContent).toContain('当前条件下没有匹配的学生')
+
+    minimum.value = '50'
+    minimum.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const cards = [...host.querySelectorAll<HTMLElement>('.evidence-scope__card')]
+    expect(cards).toHaveLength(1)
+    expect(cards[0]!.textContent).toContain('匿名学生甲')
+    expect(cards[0]!.textContent).toContain('55%')
+  })
+
+  it('uses the shared scope filter cards and a weighted structure in student mode', async () => {
     const { host } = await mountView('/training?mode=student')
-    await vi.waitFor(() => expect(host.textContent).toContain('学生筛选与群体知识结构'))
+    await vi.waitFor(() => expect(host.textContent).toContain('群体知识结构'))
 
     expect(host.querySelector('h1')?.textContent).toBe('按学生训练')
-    expect(host.textContent).toContain('多选学生')
+    expect(host.querySelector('.student-filter-strip')).toBeNull()
+    expect(host.textContent).not.toContain('多选学生')
     expect(host.textContent).toContain('所选学生的加权知识结构')
-    expect(host.querySelectorAll('.student-filter-strip__roster > label')).toHaveLength(1)
+
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.trim() === '更多筛选')!
+      .click()
+    await settle()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(1)
+    expect(host.querySelector('.evidence-scope__card-evidence')?.getAttribute('href'))
+      .toContain('/training/evidence/12?from=student')
     expect(host.textContent).not.toContain('薄弱原因与评分证据')
+  })
+
+  it('keeps every card score rate through the merged profile cache under a selected scope', async () => {
+    fetchStudentsMock.mockResolvedValue([
+      {
+        id: 12,
+        student_code: 'S012',
+        name: '匿名学生甲',
+        class_name: '七年级一班',
+        created_at: null,
+      },
+      {
+        id: 22,
+        student_code: 'S022',
+        name: '匿名学生乙',
+        class_name: '七年级一班',
+        created_at: null,
+      },
+    ])
+    trainingApiMock.diagnose
+      .mockResolvedValueOnce({
+        ...diagnosis,
+        scope: { mode: 'all', student_ids: ['12', '22'] },
+        students: [
+          diagnosis.students[0]!,
+          {
+            ...diagnosis.students[0]!,
+            student_id: '22',
+            student_code: 'S022',
+            student_name: '匿名学生乙',
+            score_rate: 0.9,
+            weak_points: [],
+          },
+        ],
+      })
+      // 选定范围后诊断只回所选学生，乙的得分率只能来自合并缓存。
+      .mockResolvedValue(diagnosis)
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
+
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.trim() === '更多筛选')!
+      .click()
+    await settle()
+    host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生甲"]')!.click()
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
+
+    const cards = [...host.querySelectorAll<HTMLElement>('.evidence-scope__card')]
+    expect(cards).toHaveLength(2)
+    expect(cards.find((card) => card.textContent?.includes('匿名学生甲'))!.textContent).toContain('55%')
+    expect(cards.find((card) => card.textContent?.includes('匿名学生乙'))!.textContent).toContain('90%')
+    expect(host.textContent).toContain('队列 1 人')
   })
 
   it('uses the compact A paper console and carries selected targets into its summary', async () => {

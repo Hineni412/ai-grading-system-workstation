@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 
 import type { GraphQueryInput } from '../../api/graph'
 import type { SessionSummary } from '../../api/sessions'
 import type { StudentSummary } from '../../api/students'
-
-type StudentDecision = 'filter' | 'include' | 'exclude'
 
 const props = withDefaults(defineProps<{
   sessions: SessionSummary[]
@@ -16,10 +15,12 @@ const props = withDefaults(defineProps<{
   applyLabel?: string
   scoreProfiles?: Record<string, Record<string, unknown>>
   curriculumVolumeId?: string | null
+  evidenceFrom?: 'chapter' | 'student'
 }>(), {
   applyLabel: '立即更新',
   scoreProfiles: () => ({}),
   curriculumVolumeId: null,
+  evidenceFrom: 'chapter',
 })
 
 const emit = defineEmits<{
@@ -32,10 +33,10 @@ const classIds = ref<string[]>([])
 const scoreMin = ref<string>('')
 const scoreMax = ref<string>('')
 const useHistory = ref(true)
-const includeStudentIds = ref<string[]>([])
-const excludeStudentIds = ref<string[]>([])
+// 勾选即入队；队列是唯一统计候选，换筛选条件不影响队列内容。
+const queueIds = ref<string[]>([])
 const search = ref('')
-const rosterOpen = ref(false)
+const moreOpen = ref(false)
 const validationMessage = ref('')
 let synchronizing = false
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -73,9 +74,9 @@ const snapshotText = computed(() => {
   const range = scoreMin.value || scoreMax.value
     ? `得分率 ${scoreMin.value || '0'}%–${scoreMax.value || '100'}%`
     : '全部得分率'
-  const manual = includeStudentIds.value.length || excludeStudentIds.value.length
-    ? `手动 +${includeStudentIds.value.length} / −${excludeStudentIds.value.length}`
-    : '未手动调整'
+  const manual = queueIds.value.length
+    ? `队列 ${queueIds.value.length} 人`
+    : '未指定学生'
   return `${exam} · ${roster} · ${range} · ${manual} · ${useHistory.value ? '缺考参考历史' : '仅本次成绩'}`
 })
 
@@ -84,20 +85,25 @@ watch(
   (query) => {
     if (!query) return
     synchronizing = true
-    examMode.value = query.exam_scope.mode
-    manualSessionIds.value = query.exam_scope.mode === 'manual'
-      ? [...query.exam_scope.session_ids]
-      : []
-    classIds.value = query.scope.mode === 'class'
-      ? [...(query.scope.class_ids ?? (query.scope.class_id ? [query.scope.class_id] : []))]
-      : []
-    scoreMin.value = query.scope.score_rate_min === null || query.scope.score_rate_min === undefined
-      ? '' : String(Math.round(query.scope.score_rate_min * 1000) / 10)
-    scoreMax.value = query.scope.score_rate_max === null || query.scope.score_rate_max === undefined
-      ? '' : String(Math.round(query.scope.score_rate_max * 1000) / 10)
-    includeStudentIds.value = [...(query.scope.include_student_ids ?? [])]
-    excludeStudentIds.value = [...(query.scope.exclude_student_ids ?? [])]
-    useHistory.value = query.scope.use_historical_fallback !== false
+    if (query.scope.mode === 'selected') {
+      // 队列模式只回同步队列本身；用户输入的班级、得分率区间与考试条件保持原样，
+      // 避免 selected 查询回包把本地筛选输入重置。
+      queueIds.value = [...(query.scope.student_ids ?? [])]
+    } else {
+      examMode.value = query.exam_scope.mode
+      manualSessionIds.value = query.exam_scope.mode === 'manual'
+        ? [...query.exam_scope.session_ids]
+        : []
+      classIds.value = query.scope.mode === 'class'
+        ? [...(query.scope.class_ids ?? (query.scope.class_id ? [query.scope.class_id] : []))]
+        : []
+      scoreMin.value = query.scope.score_rate_min === null || query.scope.score_rate_min === undefined
+        ? '' : String(Math.round(query.scope.score_rate_min * 1000) / 10)
+      scoreMax.value = query.scope.score_rate_max === null || query.scope.score_rate_max === undefined
+        ? '' : String(Math.round(query.scope.score_rate_max * 1000) / 10)
+      queueIds.value = []
+      useHistory.value = query.scope.use_historical_fallback !== false
+    }
     void nextTick(() => { synchronizing = false })
   },
   { immediate: true, deep: true },
@@ -110,49 +116,62 @@ function rate(value: string): number | undefined {
   return parsed / 100
 }
 
-function decision(studentId: string): StudentDecision {
-  if (includeStudentIds.value.includes(studentId)) return 'include'
-  if (excludeStudentIds.value.includes(studentId)) return 'exclude'
-  return 'filter'
+function toggleStudent(studentId: string): void {
+  queueIds.value = queueIds.value.includes(studentId)
+    ? queueIds.value.filter((item) => item !== studentId)
+    : [...queueIds.value, studentId]
 }
 
-function setDecision(studentId: string, next: StudentDecision): void {
-  includeStudentIds.value = includeStudentIds.value.filter((item) => item !== studentId)
-  excludeStudentIds.value = excludeStudentIds.value.filter((item) => item !== studentId)
-  if (next === 'include') includeStudentIds.value.push(studentId)
-  if (next === 'exclude') excludeStudentIds.value.push(studentId)
+function selectAllFiltered(): void {
+  const merged = new Set(queueIds.value)
+  for (const student of cardStudents.value) merged.add(String(student.id))
+  queueIds.value = [...merged]
+}
+
+function clearQueue(): void {
+  queueIds.value = []
 }
 
 function toggleClass(className: string): void {
   classIds.value = classIds.value.includes(className)
     ? classIds.value.filter((item) => item !== className)
     : [...classIds.value, className].sort((left, right) => left.localeCompare(right, 'zh-CN'))
-  const allowed = new Set(props.students.filter((student) => (
-    !classIds.value.length || (student.class_name && classIds.value.includes(student.class_name))
-  )).map((student) => String(student.id)))
-  includeStudentIds.value = includeStudentIds.value.filter((id) => allowed.has(id))
-  excludeStudentIds.value = excludeStudentIds.value.filter((id) => allowed.has(id))
 }
 
-function sourceLabel(studentId: string): string {
-  const source = props.scoreProfiles[studentId]?.score_rate_source
-  if (source === 'current_exam') return '本次成绩'
-  if (source === 'historical_fallback') return '历史参考'
-  return '无成绩'
+function profileRate(studentId: string): number | null {
+  const raw = props.scoreProfiles[studentId]?.score_rate
+  return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : null
 }
 
-const groupedStudents = computed(() => {
-  const groups = new Map<string, StudentSummary[]>()
-  for (const student of visibleStudents.value) {
-    const manual = decision(String(student.id))
-    const label = manual === 'include'
-      ? '手动增加'
-      : manual === 'exclude'
-        ? '手动取消'
-        : sourceLabel(String(student.id))
-    groups.set(label, [...(groups.get(label) ?? []), student])
-  }
-  return [...groups.entries()]
+function rateText(studentId: string): string {
+  const value = profileRate(studentId)
+  return value === null ? '—' : `${Math.round(value * 100)}%`
+}
+
+// 与后端 _rate_matches 语义一致：设定了得分率区间时，无成绩学生不进入卡片列表。
+const cardStudents = computed(() => {
+  const minimum = rate(scoreMin.value)
+  const maximum = rate(scoreMax.value)
+  const rangeSet = (minimum !== undefined && !Number.isNaN(minimum))
+    || (maximum !== undefined && !Number.isNaN(maximum))
+  return visibleStudents.value.filter((student) => {
+    if (!rangeSet) return true
+    const value = profileRate(String(student.id))
+    if (value === null) return false
+    if (minimum !== undefined && !Number.isNaN(minimum) && value < minimum) return false
+    if (maximum !== undefined && !Number.isNaN(maximum) && value > maximum) return false
+    return true
+  })
+})
+
+const rosterVisible = computed(() => Boolean(classIds.value.length || moreOpen.value))
+
+// 队列 chips 按队列顺序解析学生；勾选只改卡片勾选态，不再把卡片移到单独的分组。
+const queuedStudents = computed(() => {
+  const byId = new Map(props.students.map((student) => [String(student.id), student]))
+  return queueIds.value
+    .map((id) => byId.get(id))
+    .filter((student): student is StudentSummary => Boolean(student))
 })
 
 function toggleSession(sessionId: number): void {
@@ -195,20 +214,28 @@ function apply(): void {
   }
   emit('apply', {
     exam_scope: examScope,
-    scope: {
-      mode: classIds.value.length ? 'class' : 'all',
-      ...(classIds.value.length ? { class_ids: [...classIds.value] } : {}),
-      ...(minimum !== undefined ? { score_rate_min: minimum } : {}),
-      ...(maximum !== undefined ? { score_rate_max: maximum } : {}),
-      include_student_ids: [...includeStudentIds.value],
-      exclude_student_ids: [...excludeStudentIds.value],
-      use_historical_fallback: useHistory.value,
-    },
+    scope: queueIds.value.length
+      ? {
+          mode: 'selected',
+          student_ids: [...queueIds.value],
+          include_student_ids: [],
+          exclude_student_ids: [],
+          use_historical_fallback: useHistory.value,
+        }
+      : {
+          mode: classIds.value.length ? 'class' : 'all',
+          ...(classIds.value.length ? { class_ids: [...classIds.value] } : {}),
+          ...(minimum !== undefined ? { score_rate_min: minimum } : {}),
+          ...(maximum !== undefined ? { score_rate_max: maximum } : {}),
+          include_student_ids: [],
+          exclude_student_ids: [],
+          use_historical_fallback: useHistory.value,
+        },
   })
 }
 
 watch(
-  [examMode, manualSessionIds, classIds, scoreMin, scoreMax, useHistory, includeStudentIds, excludeStudentIds],
+  [examMode, manualSessionIds, classIds, scoreMin, scoreMax, useHistory, queueIds],
   () => {
     if (synchronizing) return
     if (debounceTimer) clearTimeout(debounceTimer)
@@ -220,21 +247,21 @@ watch(
 onBeforeUnmount(() => {
   if (debounceTimer) clearTimeout(debounceTimer)
 })
+
+function openMoreFilters(): void {
+  moreOpen.value = true
+}
+
+defineExpose({ openMoreFilters })
 </script>
 
 <template>
   <section class="evidence-scope" aria-labelledby="evidence-scope-title">
-    <div class="evidence-scope__snapshot">
-      <div>
+    <div class="evidence-scope__quickbar">
+      <div class="evidence-scope__snapshot-text">
         <span>当前证据范围</span>
         <strong>{{ snapshotText }}</strong>
       </div>
-      <button type="button" class="quiet-button" @click="rosterOpen = !rosterOpen">
-        {{ rosterOpen ? '收起学生调整' : '精细调整学生' }}
-      </button>
-    </div>
-
-    <div class="evidence-scope__controls">
       <label>
         <span id="evidence-scope-title">考试</span>
         <select v-model="examMode">
@@ -252,19 +279,35 @@ onBeforeUnmount(() => {
           </label>
         </div>
       </details>
-      <fieldset class="evidence-scope__range">
-        <legend>得分率区间</legend>
-        <label><span>最低</span><input v-model="scoreMin" inputmode="decimal" placeholder="0" aria-label="最低得分率"><i>%</i></label>
-        <b>—</b>
-        <label><span>最高</span><input v-model="scoreMax" inputmode="decimal" placeholder="100" aria-label="最高得分率"><i>%</i></label>
-      </fieldset>
-      <label class="evidence-scope__history">
-        <input v-model="useHistory" type="checkbox">
-        <span><strong>缺考时参考历史</strong><small>仅使用目标考试之前的成绩与相似知识点证据</small></span>
-      </label>
       <button type="button" class="primary-button" data-testid="apply-evidence-scope" @click="apply">
         {{ applying ? '正在更新' : applyLabel }}
       </button>
+      <button
+        type="button"
+        class="quiet-button"
+        :aria-expanded="moreOpen"
+        @click="moreOpen = !moreOpen"
+      >
+        {{ moreOpen ? '收起筛选' : '更多筛选' }}
+      </button>
+    </div>
+
+    <div class="evidence-scope__queue" aria-label="队列">
+      <template v-if="queueIds.length">
+        <span class="evidence-scope__queue-label">队列 {{ queueIds.length }} 人：</span>
+        <ul>
+          <li v-for="student in queuedStudents" :key="student.id">
+            <span>{{ student.name }}</span>
+            <button
+              type="button"
+              :aria-label="`从队列移除${student.name}`"
+              @click="toggleStudent(String(student.id))"
+            >×</button>
+          </li>
+        </ul>
+        <button type="button" class="evidence-scope__queue-clear" @click="clearQueue">清空</button>
+      </template>
+      <p v-else class="evidence-scope__queue-empty">队列为空 · 勾选下方卡片加入</p>
     </div>
 
     <div v-if="examMode === 'manual'" class="evidence-scope__sessions">
@@ -281,38 +324,79 @@ onBeforeUnmount(() => {
       </details>
     </div>
 
-    <div v-if="rosterOpen" class="evidence-scope__roster">
-      <header>
-        <div><strong>学生精细调整</strong><p>筛选后仍可强制增加或取消某些学生；“按条件”会恢复自动判断。</p></div>
-        <input v-model="search" type="search" placeholder="搜索姓名或学号" aria-label="搜索学生">
-      </header>
-      <div class="evidence-scope__students">
-        <section v-for="[group, members] in groupedStudents" :key="group">
-          <h3>{{ group }} · {{ members.length }} 人</h3>
-          <article v-for="student in members" :key="student.id">
-            <div><strong>{{ student.name }}</strong><span>{{ student.student_code }} · {{ student.class_name || '未分班' }} · {{ sourceLabel(String(student.id)) }}</span></div>
-            <select :value="decision(String(student.id))" :aria-label="`${student.name}的范围决定`" @change="setDecision(String(student.id), ($event.target as HTMLSelectElement).value as StudentDecision)">
-              <option value="filter">按条件</option>
-              <option value="include">强制纳入</option>
-              <option value="exclude">排除</option>
-            </select>
-          </article>
-        </section>
+    <div v-if="moreOpen" class="evidence-scope__more">
+      <div class="evidence-scope__more-row">
+        <fieldset class="evidence-scope__range">
+          <legend>得分率区间</legend>
+          <label><span>最低</span><input v-model="scoreMin" inputmode="decimal" placeholder="0" aria-label="最低得分率"><i>%</i></label>
+          <b>—</b>
+          <label><span>最高</span><input v-model="scoreMax" inputmode="decimal" placeholder="100" aria-label="最高得分率"><i>%</i></label>
+        </fieldset>
+        <label class="evidence-scope__history">
+          <input v-model="useHistory" type="checkbox">
+          <span><strong>缺考时参考历史</strong><small>仅使用目标考试之前的成绩与相似知识点证据</small></span>
+        </label>
       </div>
+    </div>
+
+    <div v-if="rosterVisible" class="evidence-scope__roster">
+      <header>
+        <div><strong>指定学生</strong><p>勾选即固定进队列；换筛选条件不影响队列。队列为空时按上方条件自动圈定。</p></div>
+        <div class="evidence-scope__roster-tools">
+          <input v-model="search" type="search" placeholder="搜索姓名或学号" aria-label="搜索学生">
+          <button
+            type="button"
+            class="quiet-button"
+            :disabled="!cardStudents.length"
+            @click="selectAllFiltered"
+          >全选筛选结果</button>
+        </div>
+      </header>
+      <section class="evidence-scope__group" aria-label="筛选结果">
+        <h3>筛选结果 · {{ cardStudents.length }} 人</h3>
+        <p v-if="!cardStudents.length" class="evidence-scope__roster-empty">当前条件下没有匹配的学生。</p>
+        <div v-else class="evidence-scope__cards">
+          <label
+            v-for="student in cardStudents"
+            :key="student.id"
+            class="evidence-scope__card"
+            :class="{ 'is-checked': queueIds.includes(String(student.id)) }"
+          >
+            <input
+              type="checkbox"
+              :checked="queueIds.includes(String(student.id))"
+              :aria-label="`选择${student.name}`"
+              @change="toggleStudent(String(student.id))"
+            >
+            <span class="evidence-scope__card-name"><b>{{ student.name }}</b><small>{{ student.student_code }}</small></span>
+            <strong>{{ rateText(String(student.id)) }}</strong>
+            <RouterLink
+              class="evidence-scope__card-evidence"
+              :to="{ name: 'student-evidence', params: { studentId: student.id }, query: { from: evidenceFrom } }"
+              @click.stop
+            >证据</RouterLink>
+          </label>
+        </div>
+      </section>
     </div>
     <p v-if="validationMessage" class="evidence-scope__error" role="alert">{{ validationMessage }}</p>
   </section>
 </template>
 
 <style scoped>
-.evidence-scope { border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); overflow: hidden; }
-.evidence-scope__snapshot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; border-left: 4px solid var(--color-accent); background: var(--color-bg-subtle); }
-.evidence-scope__snapshot div { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
-.evidence-scope__snapshot span { color: var(--color-text-secondary); font-size: 12px; white-space: nowrap; }
-.evidence-scope__snapshot strong { color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.evidence-scope__controls { display: grid; grid-template-columns: minmax(130px,.7fr) minmax(150px,.8fr) minmax(250px,1.2fr) minmax(250px,1.25fr) auto; gap: 14px; align-items: end; padding: 16px; }
+.evidence-scope { border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
+.evidence-scope > :last-child { border-end-start-radius: var(--radius-control); border-end-end-radius: var(--radius-control); }
+.evidence-scope__quickbar { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; padding: 12px 16px; }
+.evidence-scope__snapshot-text { display: flex; flex: 1 1 280px; align-items: baseline; gap: 12px; min-width: 0; padding: 4px 0 4px 12px; border-left: 4px solid var(--color-accent); }
+.evidence-scope__snapshot-text span { color: var(--color-text-secondary); font-size: 12px; white-space: nowrap; }
+.evidence-scope__snapshot-text strong { color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evidence-scope__quickbar > label { flex: 0 1 170px; min-width: 140px; }
 label > span, legend { display: block; margin-bottom: 6px; color: var(--color-text-secondary); font-size: 12px; }
 select, input { width: 100%; min-height: var(--control-height-large); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-primary); padding: 8px 10px; }
+.evidence-scope__more { border-top: 1px solid var(--color-border-subtle); }
+.evidence-scope__more-row { display: flex; flex-wrap: wrap; align-items: end; gap: 24px; padding: 16px; }
+.evidence-scope__more-row .evidence-scope__range { flex: 1 1 320px; }
+.evidence-scope__more-row .evidence-scope__history { flex: 1 1 320px; }
 .evidence-scope__range { display: flex; align-items: end; gap: 7px; min-width: 0; border: 0; padding: 0; margin: 0; }
 .evidence-scope__range label { position: relative; flex: 1; }
 .evidence-scope__range label span { position: absolute; width: 1px; height: 1px; overflow: hidden; }
@@ -341,15 +425,33 @@ select, input { width: 100%; min-height: var(--control-height-large); border: 1p
 .evidence-scope__other-sessions summary { width: max-content; padding-block: 6px; cursor: pointer; }
 .evidence-scope__other-sessions > div { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 6px; }
 .evidence-scope__roster { border-top: 1px solid var(--color-border-subtle); padding: 16px; }
-.evidence-scope__roster header { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.evidence-scope__roster header { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
 .evidence-scope__roster p { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 13px; }
-.evidence-scope__roster header input { max-width: 260px; }
-.evidence-scope__students { display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 12px; max-height: 340px; overflow: auto; }
-.evidence-scope__students section { display: grid; align-content: start; gap: 6px; }
-.evidence-scope__students h3 { margin: 0; color: var(--color-text-secondary); font-size: 12px; }
-.evidence-scope__students article { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); padding: 9px 10px; }
-.evidence-scope__students article span { display: block; margin-top: 2px; color: var(--color-text-muted); font-size: 12px; }
-.evidence-scope__students article select { width: 104px; min-height: var(--control-height-default); }
+.evidence-scope__roster-tools { display: flex; align-items: center; gap: 8px; }
+.evidence-scope__roster-tools input { max-width: 260px; }
+.evidence-scope__roster-tools .quiet-button { min-height: var(--control-height-default); white-space: nowrap; }
+.evidence-scope__queue { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 16px 12px; }
+/* 队列行常显：占位文案与 chip 保持相同盒高（内容 18px + 上下 2px 内边距 + 1px 边框 = 24px），
+ * 勾选/清空时行高不变，下方内容不再纵向跳动。注意覆盖全局 button 的 min-height: 34px。 */
+.evidence-scope__queue-empty { margin: 0; padding: 3px 0; color: var(--color-text-muted); font-size: var(--font-size-caption); line-height: var(--line-height-body); }
+.evidence-scope__queue-label { color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
+.evidence-scope__queue ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.evidence-scope__queue li { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px 10px; border: 1px solid var(--color-accent); border-radius: 999px; background: var(--color-bg-selected); color: var(--color-text-primary); font-size: var(--font-size-caption); }
+.evidence-scope__queue li button { width: 18px; min-width: 18px; height: 18px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--color-text-secondary); line-height: 1; cursor: pointer; }
+.evidence-scope__queue li button:hover { background: var(--color-accent-subtle); color: var(--color-accent); }
+.evidence-scope__queue-clear { min-height: 0; padding: 2px 10px; border: 1px solid var(--color-border-default); border-radius: 999px; background: var(--color-bg-surface); color: var(--color-text-secondary); font-size: var(--font-size-caption); line-height: var(--line-height-body); cursor: pointer; }
+.evidence-scope__queue-clear:hover { border-color: var(--color-danger); color: var(--color-danger); }
+.evidence-scope__group h3 { margin: 0 0 8px; font-size: 13px; color: var(--color-text-secondary); }
+.evidence-scope__roster-empty { padding: 8px 0; }
+.evidence-scope__cards { display: grid; grid-template-columns: repeat(auto-fill,minmax(150px,1fr)); gap: 8px; max-height: 220px; overflow: auto; }
+.evidence-scope__card { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); cursor: pointer; }
+.evidence-scope__card.is-checked { border-color: var(--color-accent); background: var(--color-bg-selected); }
+.evidence-scope__card input { width: 16px; min-height: auto; }
+.evidence-scope__card-name { display: grid; min-width: 0; line-height: 1.2; }
+.evidence-scope__card-name small { color: var(--color-text-muted); }
+.evidence-scope__card > strong { color: var(--color-text-secondary); font-size: 12px; white-space: nowrap; }
+.evidence-scope__card-evidence { grid-column: 2 / -1; justify-self: start; font-size: var(--font-size-caption); color: var(--color-accent-active); text-decoration: none; }
+.evidence-scope__card-evidence:hover { text-decoration: underline; }
 .evidence-scope__error { margin: 0; padding: 0 16px 14px; color: var(--color-danger); }
-@media (max-width: 1100px) { .evidence-scope__controls { grid-template-columns: repeat(2,minmax(0,1fr)); } .primary-button { width: 100%; } }
+@media (max-width: 1100px) { .evidence-scope__quickbar > label, .evidence-scope__classes { flex: 1 1 200px; } .primary-button { width: 100%; } }
 </style>

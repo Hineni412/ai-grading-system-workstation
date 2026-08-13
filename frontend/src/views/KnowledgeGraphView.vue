@@ -173,19 +173,6 @@ onBeforeUnmount(() => {
         <p>按教材结构定位知识点；选中后才查看必要的父子、先修和相关关系。</p>
       </div>
       <div class="knowledge-graph-heading-scope">
-        <details class="scope-disclosure">
-          <summary>调整证据范围</summary>
-          <GraphScopeFilters
-            :sessions="sessionStore.sessions"
-            :current-session-id="sessionStore.selectedSessionId"
-            :students="students"
-            :model-value="activeQuery"
-            :applying="graphStore.graphState === 'loading'"
-            :score-profiles="graphStore.graph?.scope.student_score_profiles ?? {}"
-            :curriculum-volume-id="curriculumScope.selectedVolumeId"
-            @apply="applyQuery"
-          />
-        </details>
         <dl v-if="graphStore.graph" class="knowledge-graph-summary" aria-label="知识图谱汇总">
           <div><dt>知识点</dt><dd>{{ summary.total }}</dd></div>
           <div><dt>已确认关系</dt><dd>{{ summary.relationTotal }}</dd></div>
@@ -197,6 +184,19 @@ onBeforeUnmount(() => {
     </header>
 
     <KnowledgeTrainingTabs />
+
+    <GraphScopeFilters
+      class="knowledge-graph-scope-filters"
+      :sessions="sessionStore.sessions"
+      :current-session-id="sessionStore.selectedSessionId"
+      :students="students"
+      :model-value="activeQuery"
+      :applying="graphStore.graphState === 'loading'"
+      :score-profiles="graphStore.graph?.scope.student_score_profiles ?? {}"
+      :curriculum-volume-id="curriculumScope.selectedVolumeId"
+      evidence-from="chapter"
+      @apply="applyQuery"
+    />
 
     <div v-if="studentsState === 'error'" class="knowledge-graph-inline-error" role="alert">
       <p>班级和学生列表暂时无法读取</p>
@@ -256,9 +256,5 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.scope-disclosure { margin-bottom: var(--space-2); }
-.scope-disclosure > summary { margin-left: auto; width: max-content; padding: var(--space-2) var(--space-3); border: var(--border-width) solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--color-text-secondary); cursor: pointer; list-style: none; }
-.scope-disclosure > summary::after { content: ' ▾'; }
-.scope-disclosure[open] > summary::after { content: ' ▴'; }
-.scope-disclosure > :deep(.evidence-scope) { margin-top: var(--space-2); }
+.knowledge-graph-scope-filters { display: block; margin-top: var(--space-2); }
 </style>

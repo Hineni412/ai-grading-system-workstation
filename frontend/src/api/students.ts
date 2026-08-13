@@ -67,6 +67,141 @@ export async function fetchStudents(signal?: AbortSignal): Promise<StudentSummar
   }
 }
 
+export interface StudentExamResultItem {
+  detail_id: number
+  question_id: string
+  bank_question_id: number | null
+  score_awarded: number
+  max_score: number | null
+  deduction_amount: number | null
+  deduction_reason: string | null
+  error_category: string | null
+  error_summary: string | null
+  evidence_url: string
+}
+
+export interface StudentExamResultSession {
+  session_id: number
+  session_name: string
+  graded_at: string | null
+  exam_created_at: string | null
+  result_id: number
+  student_score: number
+  total_score: number
+  items: StudentExamResultItem[]
+}
+
+export interface StudentExamResultsResponse {
+  student: StudentSummary
+  sessions: StudentExamResultSession[]
+  total_sessions: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
+export interface StudentExamResultsQuery {
+  onlyDeducted?: boolean
+  page?: number
+  pageSize?: number
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || isFiniteNumber(value)
+}
+
+function isStudentExamResultItem(value: unknown): value is StudentExamResultItem {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'detail_id', 'question_id', 'bank_question_id', 'score_awarded', 'max_score',
+      'deduction_amount', 'deduction_reason', 'error_category', 'error_summary', 'evidence_url',
+    ]) &&
+    isInteger(value.detail_id, 1) &&
+    typeof value.question_id === 'string' &&
+    value.question_id.length > 0 &&
+    (value.bank_question_id === null || isInteger(value.bank_question_id, 1)) &&
+    isFiniteNumber(value.score_awarded) &&
+    isNullableNumber(value.max_score) &&
+    (value.max_score === null || value.max_score >= 0) &&
+    isNullableNumber(value.deduction_amount) &&
+    (value.deduction_amount === null || value.deduction_amount >= 0) &&
+    isNullableString(value.deduction_reason) &&
+    isNullableString(value.error_category) &&
+    isNullableString(value.error_summary) &&
+    typeof value.evidence_url === 'string' &&
+    value.evidence_url.startsWith('/api/')
+  )
+}
+
+function isStudentExamResultSession(value: unknown): value is StudentExamResultSession {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'session_id', 'session_name', 'graded_at', 'exam_created_at', 'result_id',
+      'student_score', 'total_score', 'items',
+    ]) &&
+    isInteger(value.session_id, 1) &&
+    typeof value.session_name === 'string' &&
+    isNullableString(value.graded_at) &&
+    isNullableString(value.exam_created_at) &&
+    isInteger(value.result_id, 1) &&
+    isFiniteNumber(value.student_score) &&
+    isFiniteNumber(value.total_score) &&
+    value.total_score >= 0 &&
+    Array.isArray(value.items) &&
+    value.items.every(isStudentExamResultItem)
+  )
+}
+
+export function decodeStudentExamResults(value: unknown): StudentExamResultsResponse {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['student', 'sessions', 'total_sessions', 'page', 'page_size', 'total_pages']) ||
+    !isStudentSummary(value.student) ||
+    !Array.isArray(value.sessions) ||
+    !value.sessions.every(isStudentExamResultSession) ||
+    !isInteger(value.total_sessions) ||
+    !isInteger(value.page, 1) ||
+    !isInteger(value.page_size, 1) ||
+    !isInteger(value.total_pages) ||
+    value.total_pages !== Math.ceil(value.total_sessions / value.page_size) ||
+    value.sessions.length > value.page_size
+  ) {
+    throw new Error('Invalid student exam results')
+  }
+  return value as unknown as StudentExamResultsResponse
+}
+
+export function fetchStudentExamResults(
+  studentId: string | number,
+  query: StudentExamResultsQuery = {},
+  signal?: AbortSignal,
+): Promise<StudentExamResultsResponse> {
+  const id = Number(studentId)
+  if (!isInteger(id, 1)) throw new Error('Invalid student id')
+  const page = isInteger(query.page ?? 1, 1) ? Number(query.page ?? 1) : 1
+  const pageSize = isInteger(query.pageSize ?? 10, 1) ? Number(query.pageSize ?? 10) : 10
+  const parameters = new URLSearchParams()
+  parameters.set('only_deducted', String(query.onlyDeducted !== false))
+  parameters.set('page', String(page))
+  parameters.set('page_size', String(pageSize))
+  return apiClient.request(`/api/students/${id}/exam-results?${parameters.toString()}`, {
+    decode: (value) => {
+      const response = decodeStudentExamResults(value)
+      if (response.student.id !== id || response.page !== page) {
+        throw new Error('Invalid student exam results')
+      }
+      return response
+    },
+    signal,
+  })
+}
+
 export interface StudentWorkspace {
   items: StudentSummary[]
   total: number

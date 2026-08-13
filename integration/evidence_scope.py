@@ -171,7 +171,14 @@ class EvidenceScopeResolver:
         blocked = [item for item in included if item in by_id and item not in allowed_manual_ids]
         if blocked:
             warnings.append("已忽略不属于当前班级范围的手动纳入学生。")
-        selected = [item for item in all_students if str(item["id"]) in selected_ids]
+        selected = [item for item in base if str(item["id"]) in selected_ids]
+        # 保持请求顺序：selected/student 模式按调用方给出的 student_ids 排列，
+        # 手动纳入的学生追加在后，与调用方“先选中后纳入”的顺序约定一致。
+        ordered_ids = {str(item["id"]) for item in selected}
+        for student_id in _text_list(scope.get("include_student_ids")):
+            if student_id in selected_ids and student_id not in ordered_ids:
+                selected.append(by_id[student_id])
+                ordered_ids.add(student_id)
 
         unknown = [
             item for item in [*requested, *excluded, *included] if item not in by_id
