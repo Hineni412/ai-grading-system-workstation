@@ -7,6 +7,7 @@ import { useJobStore } from '../../../stores/jobs'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../../api/jobs'
 import StatusBadge from '@/components/design-system/StatusBadge.vue'
 import AppButton from '@/components/design-system/AppButton.vue'
+import { TimelineItem, type TimelineTone } from '@/components/ui/timeline'
 import {
   canCancelTask,
   cancelTaskLabel,
@@ -128,6 +129,14 @@ function jobTone(job: JobResponse): 'neutral' | 'info' | 'success' | 'warning' |
   return 'neutral'
 }
 
+function taskTone(task: WorkspaceAITask): TimelineTone {
+  if (['failed', 'failed_before_dispatch', 'result_unknown', 'invalid_result'].includes(task.status)) return 'danger'
+  if (task.status === 'needs_input') return 'warning'
+  if (task.status === 'proposal_ready') return 'success'
+  if (['prepared', 'queued', 'running'].includes(task.status)) return 'info'
+  return 'neutral'
+}
+
 function jobLocation(job: JobResponse): string {
   if (['config_generation'].includes(job.job_type)) return '/sessions'
   if (['question_import', 'tagging_sync', 'taxonomy_suggestion'].includes(job.job_type)) return '/question-bank'
@@ -196,7 +205,9 @@ function toggleDrawer(): void {
       <button type="button" aria-label="关闭任务中心" @click="open = false">×</button>
     </header>
       <p v-if="totalCount === 0" class="workspace-ai-task-drawer__empty">当前没有任务。新任务开始后会在这里持续显示进度。</p>
-      <article v-for="task in store.orderedTasks" :key="task.task_id">
+      <div class="workspace-ai-task-drawer__timeline">
+      <TimelineItem v-for="task in store.orderedTasks" :key="task.task_id" :tone="taskTone(task)">
+      <article>
       <div class="workspace-ai-task-drawer__heading">
         <strong>{{ task.safe_title }}</strong><span>{{ task.safe_source }}</span>
       </div>
@@ -222,7 +233,9 @@ function toggleDrawer(): void {
         <AppButton v-else variant="ghost" @click="store.remove(task.task_id)">从列表移除</AppButton>
       </footer>
       </article>
-      <article v-for="job in ordinaryJobs" :key="`job-${job.id}`">
+      </TimelineItem>
+      <TimelineItem v-for="job in ordinaryJobs" :key="`job-${job.id}`" :tone="jobTone(job)">
+      <article>
       <div class="workspace-ai-task-drawer__heading">
         <strong>{{ jobTitle(job) }}</strong><StatusBadge :tone="jobTone(job)" :label="jobStatus(job)" />
       </div>
@@ -239,6 +252,8 @@ function toggleDrawer(): void {
         <AppButton v-else variant="ghost" @click="jobs.remove(job.id)">从列表移除</AppButton>
       </footer>
       </article>
+      </TimelineItem>
+      </div>
     </aside>
   </div>
 </template>
@@ -246,14 +261,15 @@ function toggleDrawer(): void {
 <style scoped>
 .workspace-ai-drawer-host{position:relative;display:flex;justify-content:flex-end}.workspace-ai-drawer-toggle{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 13px;border:1px solid var(--primary);border-radius:999px;background:var(--primary);color:var(--primary-foreground);font:inherit;font-weight:700;white-space:nowrap;cursor:pointer}
 .workspace-ai-drawer-toggle span{display:grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:var(--card);color:var(--primary)}
-.workspace-ai-task-peek{position:absolute;z-index:72;inset-block-start:calc(100% + 14px);inset-inline-end:0;display:grid;width:min(370px,calc(100vw - 24px));gap:10px;padding:16px;border:1px solid var(--border);border-inline-start:3px solid var(--primary);border-radius:var(--radius);background:var(--card);box-shadow:var(--shadow-overlay)}.workspace-ai-task-peek header,.workspace-ai-task-peek footer{display:flex;align-items:center;justify-content:space-between;gap:10px}.workspace-ai-task-peek header button{border:0;background:transparent;font-size:22px;cursor:pointer}.workspace-ai-task-peek progress{width:100%;accent-color:var(--primary)}.workspace-ai-task-peek p{margin:0;color:var(--color-text-secondary)}.workspace-ai-task-peek footer{justify-content:flex-start}
+.workspace-ai-task-peek{position:absolute;z-index:72;inset-block-start:calc(100% + 14px);inset-inline-end:0;display:grid;width:min(370px,calc(100vw - 24px));gap:10px;padding:16px;border:1px solid var(--border);border-inline-start:3px solid var(--primary);border-radius:var(--radius);background:var(--card);box-shadow:var(--shadow-overlay)}.workspace-ai-task-peek header,.workspace-ai-task-peek footer{display:flex;align-items:center;justify-content:space-between;gap:10px}.workspace-ai-task-peek header button{border:0;background:transparent;font-size:22px;cursor:pointer}.workspace-ai-task-peek progress{width:100%}.workspace-ai-task-peek p{margin:0;color:var(--color-text-secondary)}.workspace-ai-task-peek footer{justify-content:flex-start}
 .workspace-ai-task-drawer{position:fixed;inset:0 0 0 auto;z-index:70;width:min(430px,100vw);overflow:auto;padding:20px;background:var(--background);border-left:1px solid var(--border);box-shadow:var(--shadow-overlay)}
 .workspace-ai-task-drawer>header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;position:sticky;top:-20px;z-index:1;padding:20px 0 14px;background:var(--background)}
 .workspace-ai-task-drawer>header div{display:grid;gap:4px}.workspace-ai-task-drawer>header span{color:var(--muted-foreground);font-size:var(--font-size-dense)}
 .workspace-ai-task-drawer>header button{border:0;background:transparent;font-size:28px;line-height:1;cursor:pointer}
 .workspace-ai-task-drawer article{display:grid;gap:10px;margin:12px 0;padding:16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}
 .workspace-ai-task-drawer__heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.workspace-ai-task-drawer__heading span{color:var(--muted-foreground)}
-.workspace-ai-task-drawer progress{width:100%;accent-color:var(--primary)}.workspace-ai-task-drawer p,.workspace-ai-task-drawer ul{margin:0}.workspace-ai-task-drawer ul{padding-left:20px;color:var(--color-text-secondary)}
+.workspace-ai-task-drawer progress{width:100%}.workspace-ai-task-drawer p,.workspace-ai-task-drawer ul{margin:0}.workspace-ai-task-drawer ul{padding-left:20px;color:var(--color-text-secondary)}
 .workspace-ai-task-drawer footer{display:flex;flex-wrap:wrap;gap:8px}
 .workspace-ai-task-drawer__empty{padding:32px 12px;color:var(--muted-foreground);text-align:center}
+.workspace-ai-task-drawer__timeline{display:grid;gap:12px;margin:12px 0}.workspace-ai-task-drawer__timeline article{margin:0}
 </style>

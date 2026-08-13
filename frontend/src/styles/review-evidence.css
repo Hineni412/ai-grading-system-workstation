@@ -104,6 +104,19 @@
   height: 100%;
 }
 
+/* 对比模式：ImageCompare 填满证据区，盖住组件自带的固定高度 */
+.review-deep-workspace__compare {
+  height: 100%;
+  min-height: 0;
+  border-radius: 0;
+  background: var(--color-bg-subtle);
+}
+
+.review-deep-workspace__compare:focus-visible {
+  outline: none;
+  box-shadow: inset var(--focus-ring);
+}
+
 @media (max-width: 1100px) {
   .review-page.review-page--deep {
     display: block;
