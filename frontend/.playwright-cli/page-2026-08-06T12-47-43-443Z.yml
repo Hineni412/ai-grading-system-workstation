@@ -1,0 +1,42 @@
+- generic [ref=f2e4]:
+  - complementary "应用导航" [ref=f2e5]:
+    - link [ref=f2e6] [cursor=pointer]:
+      - /url: /workbench
+      - generic [ref=f2e7]: AI
+    - navigation "主要导航" [ref=f2e8]:
+      - link [ref=f2e9] [cursor=pointer]:
+        - /url: /workbench
+      - region "考试与阅卷" [ref=f2e16]:
+        - link [ref=f2e17] [cursor=pointer]:
+          - /url: /sessions
+        - link [ref=f2e22] [cursor=pointer]:
+          - /url: /grading
+        - link [ref=f2e27] [cursor=pointer]:
+          - /url: /results
+      - region "题库与组卷" [ref=f2e31]:
+        - link [ref=f2e32] [cursor=pointer]:
+          - /url: /question-bank
+        - link [ref=f2e37] [cursor=pointer]:
+          - /url: /question-assembly
+      - region "教学分析" [ref=f2e42]:
+        - link [ref=f2e43] [cursor=pointer]:
+          - /url: /knowledge-graph
+        - link [ref=f2e51] [cursor=pointer]:
+          - /url: /training
+      - region "教师工作台" [ref=f2e57]:
+        - link [ref=f2e58] [cursor=pointer]:
+          - /url: /teaching-prep
+        - link [ref=f2e64] [cursor=pointer]:
+          - /url: /class-teacher
+    - button [ref=f2e71] [cursor=pointer]
+  - banner [ref=f2e76]:
+    - link "跳到主要工作区" [ref=f2e77] [cursor=pointer]:
+      - /url: "#main-workspace"
+    - strong [ref=f2e80]: 工作台
+    - generic [ref=f2e81]:
+      - generic [ref=f2e82]: 当前考试
+      - combobox "当前考试" [disabled] [ref=f2e83]:
+        - option "未选择" [selected]
+      - button "打开考试回收站" [ref=f2e84] [cursor=pointer]
+    - status [ref=f2e89]: 正在读取考试列表
+  - main [ref=f2e90]
