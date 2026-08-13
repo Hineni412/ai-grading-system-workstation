@@ -7,6 +7,7 @@ import { workApi, type WorkNode } from '../api/work'
 import { workspaceAITaskApi } from '../../shared/ai-tasks/api'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import AppButton from '@/components/design-system/AppButton.vue'
+import { TypewriterText } from '@/components/ui/typewriter'
 import LocalVoiceInputButton from './LocalVoiceInputButton.vue'
 
 type ClassTeacherDomain =
@@ -315,7 +316,7 @@ onMounted(async () => {
             <blockquote><span>你</span>{{ turn.teacher_message }}</blockquote>
             <div class="assistant" :data-state="turn.task_state">
               <span>AI 整理</span>
-              <p v-if="turn.assistant_message">{{ turn.assistant_message }}</p>
+              <TypewriterText v-if="turn.assistant_message" tag="p" :text="turn.assistant_message" />
               <p v-else>{{ taskMessage(turn.task_state) }}</p>
               <ul v-if="turn.clarification_questions.length"><li v-for="question in turn.clarification_questions" :key="question">{{ question }}</li></ul>
             </div>

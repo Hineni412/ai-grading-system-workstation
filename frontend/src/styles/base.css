@@ -123,6 +123,38 @@ select {
   accent-color: var(--color-accent);
 }
 
+/* 原生 <progress> 统一为细圆角条形：品牌青填充 + 浅灰轨道。
+   不定态（无 value 属性）保留浏览器原生动画，仅统一填充色；
+   :where 零优先级，页面可用类选择器覆盖高度等（如扫描预检 8px）。 */
+:where(progress) {
+  accent-color: var(--color-accent);
+}
+
+:where(progress[value]) {
+  height: var(--space-1);
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--color-border-subtle);
+}
+
+:where(progress[value])::-webkit-progress-bar {
+  border-radius: 999px;
+  background: var(--color-border-subtle);
+}
+
+:where(progress[value])::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+:where(progress[value])::-moz-progress-bar {
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
 :where(button, a, input, textarea, select, [tabindex]):focus-visible {
   outline: var(--border-width) solid var(--color-accent);
   outline-offset: var(--focus-offset);
