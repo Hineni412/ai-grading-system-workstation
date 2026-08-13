@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Request, type Route, type TestInfo } from '@playwright/test'
+import { expect, test, type Page, type Route, type TestInfo } from '@playwright/test'
 
 const STORAGE_KEY = 'ai-grading:selected-session:v1'
 
@@ -7,6 +7,7 @@ const sessions = [
     id: 7,
     name: '七年级数学期末质量监测（匿名合成数据）',
     status: 'grading',
+    curriculum_volume_id: null,
     is_deleted: false,
     deleted_at: null,
     created_at: '2026-07-14T08:00:00Z',
@@ -16,6 +17,7 @@ const sessions = [
     id: 8,
     name: '八年级物理单元检测（匿名合成数据）',
     status: 'completed',
+    curriculum_volume_id: null,
     is_deleted: false,
     deleted_at: null,
     created_at: '2026-07-12T08:00:00Z',
@@ -32,20 +34,12 @@ const viewports = [
 ]
 
 interface MockOptions {
-  analysisFailure?: boolean
-  overviewFailureAfterSuccess?: boolean
-  delaySession7?: boolean
-  paginated?: boolean
+  overviewFailure?: boolean
 }
 
 interface RequestLog {
   method: string
   pathname: string
-}
-
-interface SyntheticApi {
-  requests: RequestLog[]
-  delayedSession7Settled: Promise<void>
 }
 
 function progress(sessionId: number) {
@@ -73,221 +67,11 @@ function overview(sessionId: number) {
     anomalies: sessionId === 8
       ? { unmatched_papers: 0, scan_issue_students: 0, failed_papers: 0 }
       : { unmatched_papers: 1, scan_issue_students: 1, failed_papers: 1 },
-    recent_jobs: sessionId === 8 ? [] : [{
-      id: 41,
-      job_type: 'grading',
-      status: 'running',
-      progress: 0.58,
-      stage: '评分中',
-      detail: '正在读取匿名合成答卷',
-      created_at: '2026-07-15T09:00:00Z',
-      started_at: '2026-07-15T09:01:00Z',
-      updated_at: '2026-07-15T09:32:00Z',
-      finished_at: null,
-    }],
+    recent_jobs: [],
     recent_sessions: sessions
       .filter((item) => item.id !== sessionId)
       .map((item) => ({ session: item, progress: progress(item.id) })),
     updated_at: sessionId === 8 ? '2026-07-15T10:05:00Z' : '2026-07-15T09:35:00Z',
-  }
-}
-
-function questionAnalysis(sessionId: number, className: string | null) {
-  const scopeClass = className?.trim() || null
-  return {
-    scope: { session_id: sessionId, class_name: scopeClass, question_id: null },
-    classes: ['七年级一班', '七年级二班'],
-    items: [{
-      class_name: scopeClass ?? '全部班级',
-      question_id: 'Q1',
-      max_score: 10,
-      score_rate: sessionId === 8 ? 91 : 82.5,
-      average_score: sessionId === 8 ? 9.1 : 8.25,
-      deduction_count: 4,
-      attempt_count: 12,
-      metric_status: 'ready',
-    }, {
-      class_name: scopeClass ?? '全部班级',
-      question_id: 'Q2',
-      max_score: null,
-      score_rate: null,
-      average_score: null,
-      deduction_count: 0,
-      attempt_count: 1,
-      metric_status: 'missing_max_score',
-    }],
-    total: 2,
-    page: 1,
-    page_size: 100,
-    total_pages: 1,
-  }
-}
-
-function studentAnalysis(sessionId: number, questionId: string, className: string | null) {
-  const scopeClass = className?.trim() || null
-  const isSecond = questionId === 'Q2'
-  return {
-    scope: { session_id: sessionId, class_name: scopeClass, question_id: questionId },
-    items: [{
-      result_id: sessionId * 10 + (isSecond ? 2 : 1),
-      detail_id: sessionId * 100 + (isSecond ? 2 : 1),
-      student_id: sessionId * 10 + 7,
-      student_code: `S-${sessionId}-17`,
-      student_name: isSecond ? '匿名学生乙' : '匿名学生甲（长名称验证布局）',
-      class_name: scopeClass ?? '七年级一班',
-      question_id: questionId,
-      score_awarded: isSecond ? 0 : 8,
-      max_score: isSecond ? null : 10,
-      deduction_amount: isSecond ? null : 2,
-      deduction_reason: isSecond ? null : '计算过程漏写单位',
-      needs_review: true,
-      evidence_url: `/api/sessions/${sessionId}/results/${sessionId * 10 + (isSecond ? 2 : 1)}/details/${sessionId * 100 + (isSecond ? 2 : 1)}/crop`,
-    }],
-    total: 1,
-    page: 1,
-    page_size: 100,
-    total_pages: 1,
-  }
-}
-
-function paginatedQuestionAnalysis(sessionId: number, className: string | null, page: number) {
-  const base = questionAnalysis(sessionId, className)
-  const start = page === 1 ? 1 : 101
-  const count = page === 1 ? 100 : 2
-  return {
-    ...base,
-    items: Array.from({ length: count }, (_, index) => ({
-      ...base.items[0]!,
-      question_id: `Q${start + index}`,
-    })),
-    total: 102,
-    page,
-    total_pages: 2,
-  }
-}
-
-function paginatedStudentAnalysis(
-  sessionId: number,
-  questionId: string,
-  className: string | null,
-  page: number,
-) {
-  const base = studentAnalysis(sessionId, questionId, className)
-  const start = page === 1 ? 1 : 101
-  const count = page === 1 ? 100 : 1
-  return {
-    ...base,
-    items: Array.from({ length: count }, (_, index) => {
-      const id = start + index
-      return {
-        ...base.items[0]!,
-        result_id: id,
-        detail_id: id,
-        student_id: id,
-        student_name: id === 101 ? '后续学生 101' : `学生 ${id}`,
-        evidence_url: `/api/sessions/${sessionId}/results/${id}/details/${id}/crop`,
-      }
-    }),
-    total: 101,
-    page,
-    total_pages: 2,
-  }
-}
-
-function graphResponse(sessionId: number, className: string) {
-  return {
-    response_schema_version: 'knowledge-graph-current',
-    response_version: 'a'.repeat(64),
-    scope: {
-      mode: 'class',
-      student_ids: Array.from({ length: 101 }, (_, index) => String(index + 1)),
-      class_id: className,
-    },
-    exam_scope: {
-      mode: 'current',
-      session_ids: [sessionId],
-      sessions: [{ session_id: sessionId, session_name: sessions.find((item) => item.id === sessionId)!.name }],
-    },
-    current_standard: { release_id: 'current', content_hash: 'c'.repeat(64), taxonomy_revision: 1 },
-    nodes: [{
-      stable_key: 'kp_fraction',
-      display_name: '分数运算',
-      definition: '分数的四则运算。',
-      include_scope: '分数运算',
-      exclude_scope: '小数运算',
-      curriculum_anchors: ['课程标准'],
-      observable_evidence: '能正确完成分数运算',
-      rationale: '课程内容',
-      evidence_source_ids: ['standard'],
-      mastery: { status: 'available', value: 0.78, evidence_count: 18, parameter_version: 'd'.repeat(64), reason: null },
-      evidence: { student_count: 12, item_count: 18, deduction_count: 5, tag_context: { 章节: ['数与代数'] }, error_counts: {} },
-      missing_reasons: [],
-    }],
-    edges: [],
-    coverage: { covered_items: 18, total_items: 20, missing_items: {} },
-    warnings: ['2 份作答未关联知识标签'],
-    missing: [],
-    counts: { node_count: 1, edge_count: 0, evidence_row_count: 18, missing_count: 0 },
-  }
-}
-
-function graphEvidence(sessionId: number, className: string) {
-  const common = graphResponse(sessionId, className)
-  return {
-    response_schema_version: 'knowledge-graph-evidence-current',
-    response_version: 'b'.repeat(64),
-    scope: common.scope,
-    exam_scope: common.exam_scope,
-    current_standard: common.current_standard,
-    stable_key: 'kp_fraction',
-    display_name: '分数运算',
-    items: [{
-      student_id: sessionId * 10 + 7,
-      student_code: `S-${sessionId}-17`,
-      student_name: '匿名学生甲',
-      class_id: className,
-      knowledge_key: 'kp_fraction',
-      stable_key: 'kp_fraction',
-      knowledge_label: '分数运算',
-      session_id: sessionId,
-      session_name: sessions.find((item) => item.id === sessionId)!.name,
-      question_id: 'Q1',
-      bank_question_id: 101,
-      score_awarded: 8,
-      full_score: 10,
-      score_rate: 0.8,
-      tag_context: { 章节: ['数与代数'] },
-      actionable_reasons: ['计算过程漏写单位'],
-      error_counts: {},
-    }],
-    total: 1,
-    page: 1,
-    page_size: 20,
-    total_pages: 1,
-    coverage: common.coverage,
-  }
-}
-
-function paginatedGraphEvidence(sessionId: number, className: string, page: number) {
-  const base = graphEvidence(sessionId, className)
-  const start = page === 1 ? 1 : 21
-  const count = page === 1 ? 20 : 1
-  return {
-    ...base,
-    items: Array.from({ length: count }, (_, index) => {
-      const id = start + index
-      return {
-        ...base.items[0]!,
-        student_id: id,
-        student_code: `S-${id}`,
-        student_name: id === 21 ? '后续证据学生' : `证据学生 ${id}`,
-        question_id: `Q${id}`,
-        bank_question_id: id,
-      }
-    }),
-    total: 21,
-    page,
-    total_pages: 2,
   }
 }
 
@@ -325,35 +109,65 @@ function configEditor(sessionId: number) {
   }
 }
 
-function sessionIdFrom(url: URL): number {
-  const match = url.pathname.match(/\/sessions\/(\d+)/)
-  return Number(match?.[1] ?? url.searchParams.get('session_id') ?? 7)
-}
-
-function classNameFrom(request: Request): string {
-  const body = request.postDataJSON() as { scope?: { class_id?: string } } | null
-  return body?.scope?.class_id?.trim() || '七年级一班'
+function curriculumCatalog() {
+  const volumes = [
+    ['七年级', '上学期'],
+    ['七年级', '下学期'],
+    ['八年级', '上学期'],
+    ['八年级', '下学期'],
+    ['九年级', '上学期'],
+  ] as const
+  return {
+    schema_version: 2,
+    catalog_id: 'bnu-math-2024',
+    knowledge_standard_id: 'bnu-math-2024-curriculum-knowledge-v2',
+    publisher: '北京师范大学出版社',
+    subject: '初中数学',
+    edition: '2024',
+    statistics: {
+      raw_nodes: 5,
+      excluded_nodes: 0,
+      retained_nodes: 5,
+      chapters: 5,
+      sections: 0,
+      knowledge_points: 0,
+    },
+    volumes: volumes.map(([grade, semester], index) => ({
+      id: `volume-${index + 1}`,
+      order: index + 1,
+      label: `${grade}${semester === '上学期' ? '上册' : '下册'}`,
+      grade,
+      semester,
+      textbook_version: '北师大版2024',
+      source: { provider: '组卷网' },
+      statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 },
+      chapters: [{
+        id: `chapter-${index + 1}`,
+        knowledge_id: `chapter-${index + 1}`,
+        order: 1,
+        number: '第一章',
+        title: `测试章节${index + 1}`,
+        label: `第一章 测试章节${index + 1}`,
+        kind: 'chapter',
+        display_name: `${grade}${semester === '上学期' ? '上册' : '下册'}｜第一章 测试章节${index + 1}`,
+        source_ref: {
+          node_id: `node-${index + 1}`,
+          relative_url: `/czsx/zj${index + 1}`,
+        },
+        exam_scope_values: [
+          `${grade}${semester === '上学期' ? '上册' : '下册'} 测试范围${index + 1}`,
+        ],
+        sections: [],
+      }],
+    })),
+  }
 }
 
 async function installSyntheticApi(
   page: Page,
   options: MockOptions = {},
-): Promise<SyntheticApi> {
+): Promise<RequestLog[]> {
   const requests: RequestLog[] = []
-  let overviewCalls = 0
-  let delayedSession7Completions = 0
-  let resolveDelayedSession7!: () => void
-  const delayedSession7Settled = new Promise<void>((resolve) => {
-    resolveDelayedSession7 = resolve
-  })
-  if (!options.delaySession7) resolveDelayedSession7()
-
-  async function delaySession7(sessionId: number): Promise<void> {
-    if (!options.delaySession7 || sessionId !== 7) return
-    await new Promise((resolve) => setTimeout(resolve, 250))
-    delayedSession7Completions += 1
-    if (delayedSession7Completions >= 2) resolveDelayedSession7()
-  }
 
   page.on('request', (request) => {
     const url = new URL(request.url())
@@ -379,108 +193,27 @@ async function installSyntheticApi(
       await fulfillJson(route, configEditor(Number(editorMatch[1])))
       return
     }
+    if (pathname === '/api/question-bank/curriculum') {
+      await fulfillJson(route, curriculumCatalog())
+      return
+    }
     if (pathname === '/api/workbench/overview') {
-      overviewCalls += 1
-      if (options.overviewFailureAfterSuccess && overviewCalls > 1) {
+      if (options.overviewFailure) {
         await route.fulfill({ status: 503, body: 'private synthetic failure' })
         return
       }
       const sessionId = Number(url.searchParams.get('session_id') ?? 7)
-      await delaySession7(sessionId)
       await fulfillJson(route, overview(sessionId))
-      return
-    }
-    if (/^\/api\/sessions\/\d+\/analysis\/questions$/.test(pathname)) {
-      if (options.analysisFailure) {
-        await route.fulfill({ status: 503, body: 'private synthetic analysis failure' })
-        return
-      }
-      const sessionId = sessionIdFrom(url)
-      await delaySession7(sessionId)
-      const pageNumber = Number(url.searchParams.get('page') ?? 1)
-      await fulfillJson(route, options.paginated
-        ? paginatedQuestionAnalysis(sessionId, url.searchParams.get('class_name'), pageNumber)
-        : questionAnalysis(sessionId, url.searchParams.get('class_name')))
-      return
-    }
-    if (/^\/api\/sessions\/\d+\/analysis\/questions\/[^/]+\/students$/.test(pathname)) {
-      const sessionId = sessionIdFrom(url)
-      const questionId = decodeURIComponent(pathname.split('/').at(-2) ?? 'Q1')
-      await delaySession7(sessionId)
-      const pageNumber = Number(url.searchParams.get('page') ?? 1)
-      await fulfillJson(route, options.paginated
-        ? paginatedStudentAnalysis(sessionId, questionId, url.searchParams.get('class_name'), pageNumber)
-        : studentAnalysis(sessionId, questionId, url.searchParams.get('class_name')))
-      return
-    }
-    if (/^\/api\/sessions\/\d+\/anomalies$/.test(pathname)) {
-      const pageNumber = Number(url.searchParams.get('page') ?? 1)
-      if (options.paginated) {
-        const start = pageNumber === 1 ? 1 : 101
-        const count = pageNumber === 1 ? 100 : 1
-        await fulfillJson(route, {
-          items: Array.from({ length: count }, (_, index) => {
-            const id = start + index
-            return {
-              anomaly_id: `unmatched:${id}`,
-              anomaly_type: 'unmatched_paper',
-              display_name: id === 101 ? '后续异常 101' : `异常 ${id}`,
-              student_code: null,
-              class_name: null,
-              status: 'unmatched',
-              detail: null,
-              created_at: '2026-07-15T08:00:00Z',
-            }
-          }),
-          total: 101,
-          page: pageNumber,
-          page_size: 100,
-          total_pages: 2,
-        })
-        return
-      }
-      await fulfillJson(route, {
-        items: [{
-          anomaly_id: 'unmatched:10',
-          anomaly_type: 'unmatched_paper',
-          display_name: '匿名答卷 10',
-          student_code: null,
-          class_name: null,
-          status: 'unmatched',
-          detail: null,
-          created_at: '2026-07-15T08:00:00Z',
-        }],
-        total: 1,
-        page: 1,
-        page_size: 100,
-        total_pages: 1,
-      })
       return
     }
     if (pathname === '/api/jobs') {
       await fulfillJson(route, { items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
       return
     }
-    if (pathname === '/api/graph/query') {
-      await fulfillJson(route, graphResponse(sessionIdFromGraphRequest(request), classNameFrom(request)))
-      return
-    }
-    if (pathname === '/api/graph/evidence') {
-      const body = request.postDataJSON() as { page?: number } | null
-      await fulfillJson(route, options.paginated
-        ? paginatedGraphEvidence(sessionIdFromGraphRequest(request), classNameFrom(request), body?.page ?? 1)
-        : graphEvidence(sessionIdFromGraphRequest(request), classNameFrom(request)))
-      return
-    }
     await route.fulfill({ status: 418, body: `unexpected synthetic API request: ${request.method()} ${pathname}` })
   })
 
-  return { requests, delayedSession7Settled }
-}
-
-function sessionIdFromGraphRequest(request: Request): number {
-  const body = request.postDataJSON() as { exam_scope?: { session_ids?: number[] } } | null
-  return body?.exam_scope?.session_ids?.[0] ?? 7
+  return requests
 }
 
 function trackBrowserErrors(page: Page) {
@@ -502,8 +235,8 @@ function expectOnlyExpected503(errors: ReturnType<typeof trackBrowserErrors>): v
 async function openWorkbench(page: Page, sessionId = 7): Promise<void> {
   await page.addInitScript(([key, value]) => localStorage.setItem(key, value), [STORAGE_KEY, String(sessionId)])
   await page.goto('/workbench')
-  await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible()
-  await expect(page.getByTestId('progress-action-rail')).toBeVisible()
+  await expect(page.getByRole('heading', { name: /今天先完成这三件事/ })).toBeVisible()
+  await expect(page.locator('.workbench-workflow')).toBeVisible()
 }
 
 async function expectNoHorizontalOverflow(page: Page): Promise<void> {
@@ -516,10 +249,7 @@ async function expectNoHorizontalOverflow(page: Page): Promise<void> {
 function expectReadOnlyRequests(requests: RequestLog[]): void {
   expect(requests.length).toBeGreaterThan(0)
   for (const request of requests) {
-    const allowedGraphPost = request.method === 'POST' && (
-      request.pathname === '/api/graph/query' || request.pathname === '/api/graph/evidence'
-    )
-    expect(request.method === 'GET' || allowedGraphPost, `${request.method} ${request.pathname}`).toBe(true)
+    expect(request.method, `${request.method} ${request.pathname}`).toBe('GET')
     expect(request.pathname).not.toMatch(/(?:submit|confirm|cancel|score|grading\/jobs)/)
   }
 }
@@ -534,34 +264,26 @@ async function captureVisualEvidence(page: Page, testInfo: TestInfo, width: numb
 }
 
 for (const viewport of viewports) {
-  test(`${viewport.width}x${viewport.height} keeps the workbench readable and actionable`, async ({ page }, testInfo) => {
+  test(`${viewport.width}x${viewport.height} shows the whole home loop within one screen`, async ({ page }, testInfo) => {
     const errors = trackBrowserErrors(page)
-    const { requests } = await installSyntheticApi(page)
+    const requests = await installSyntheticApi(page)
     await page.setViewportSize(viewport)
     await openWorkbench(page)
 
-    await expect(page.getByText('12 / 36 份', { exact: true })).toBeVisible()
-    await expect(page.getByText('33.33% 已批改', { exact: true })).toBeVisible()
-    await expect(page.getByText('2 道题需要核对', { exact: true })).toBeVisible()
-    await expect(page.getByText('当前显示 2 / 2 道题目；选择题目可查看学生得分与扣分证据。')).toBeVisible()
-    await expect(page.getByText('本题基于 12 份已批改作答')).toBeVisible()
-    await expect(page.getByRole('button', { name: /^Q1/ })).toContainText('82.5%')
-    await expect(page.getByRole('button', { name: /^Q2/ })).toContainText('无法计算')
-    await expect(page.getByRole('cell', { name: /匿名学生甲/ })).toBeVisible()
+    await expect(page.locator('.workbench-focus-board')).toBeVisible()
+    await expect(page.locator('.workbench-focus-list > li')).toHaveCount(3)
+    await expect(page.locator('.workbench-pulse')).toContainText('七年级数学期末质量监测')
+    await expect(page.locator('.workbench-pulse')).toContainText('33.33')
+    await expect(page.locator('.workbench-workflow')).toContainText('从一次考试，走到下一堂课')
+    await expect(page.locator('.workbench-workflow__steps > li')).toHaveCount(5)
 
-    const refresh = page.getByRole('button', { name: '刷新工作台' })
-    await refresh.focus()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('button', { name: '查看批改' })).toBeFocused()
+    await expect(page.getByText('当前考试详情', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('班级题目分析', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('最近考试', { exact: true })).toHaveCount(0)
 
-    const nodes = page.getByTestId('progress-action-rail').locator('li')
-    await expect(nodes).toHaveCount(3)
-    await expect(page.getByText('最近任务', { exact: true })).toHaveCount(0)
-    const first = await nodes.nth(0).boundingBox()
-    const second = await nodes.nth(1).boundingBox()
-    expect(first).not.toBeNull()
-    expect(second).not.toBeNull()
-    expect(Math.abs(second!.y - first!.y) < 2).toBe(viewport.width !== 1024)
+    const workflowBox = await page.locator('.workbench-workflow').boundingBox()
+    expect(workflowBox).not.toBeNull()
+    expect(workflowBox!.y + workflowBox!.height).toBeLessThanOrEqual(viewport.height)
 
     await expectNoHorizontalOverflow(page)
     await captureVisualEvidence(page, testInfo, viewport.width)
@@ -571,127 +293,32 @@ for (const viewport of viewports) {
   })
 }
 
-test('keeps overview actions available when analysis fails independently', async ({ page }) => {
+test('shows a retryable alert when the overview cannot be read', async ({ page }) => {
   const errors = trackBrowserErrors(page)
-  const options: MockOptions = { analysisFailure: true }
-  const { requests } = await installSyntheticApi(page, options)
-  await openWorkbench(page)
-
-  await expect(page.getByText('12 / 36 份', { exact: true })).toBeVisible()
-  await expect(page.getByRole('alert')).toContainText('分析数据暂时无法读取；工作台其他内容仍可使用')
-  await expect(page.getByRole('button', { name: '查看异常' })).toBeEnabled()
-
-  options.analysisFailure = false
-  await page.getByRole('button', { name: '重新加载分析' }).click()
-  await expect(page.getByText('本题基于 12 份已批改作答')).toBeVisible()
-  expectReadOnlyRequests(requests)
-  expectOnlyExpected503(errors)
-})
-
-test('retains the last successful overview after a refresh failure', async ({ page }) => {
-  const errors = trackBrowserErrors(page)
-  const { requests } = await installSyntheticApi(page, { overviewFailureAfterSuccess: true })
-  await openWorkbench(page)
-  await expect(page.getByText('12 / 36 份', { exact: true })).toBeVisible()
-
-  await page.getByRole('button', { name: '刷新工作台' }).click()
-  await expect(page.getByRole('alert')).toContainText('数据可能不是最新')
-  await expect(page.getByText('12 / 36 份', { exact: true })).toBeVisible()
-  expectReadOnlyRequests(requests)
-  expectOnlyExpected503(errors)
-})
-
-test('isolates delayed session 7 responses after quickly switching to session 8', async ({ page }) => {
-  const errors = trackBrowserErrors(page)
-  const { requests, delayedSession7Settled } = await installSyntheticApi(page, { delaySession7: true })
+  const requests = await installSyntheticApi(page, { overviewFailure: true })
   await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
   await page.goto('/workbench')
-  const sessionSelector = page.getByRole('combobox', { name: '当前考试' })
-  await expect(sessionSelector).toHaveValue('7')
-  await expect.poll(() => requests.filter((request) => (
-    request.pathname === '/api/workbench/overview' ||
-    request.pathname === '/api/sessions/7/analysis/questions'
-  )).length).toBe(2)
 
-  await sessionSelector.selectOption('8')
-  await expect(page.locator('.workbench-hero__session')).toHaveText('八年级物理单元检测（匿名合成数据）')
-  await expect(page.getByText('40 / 40 份', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: /^Q1/ })).toContainText('91%')
-  await delayedSession7Settled
-  await expect(page.getByText('40 / 40 份', { exact: true })).toBeVisible()
-  await expect(page.getByText('12 / 36 份', { exact: true })).toHaveCount(0)
-  expectReadOnlyRequests(requests)
-  expect(errors.pageErrors).toEqual([])
-  expect(errors.consoleErrors).toEqual([])
-})
-
-test('loads Graph only after class selection and supports question, student, anomaly and evidence drill-downs', async ({ page }) => {
-  const errors = trackBrowserErrors(page)
-  const { requests } = await installSyntheticApi(page)
-  await openWorkbench(page)
-
-  expect(requests.filter((request) => request.pathname === '/api/graph/query')).toEqual([])
-  await page.getByRole('combobox', { name: '班级' }).selectOption('七年级一班')
-  await expect(page.getByText('已覆盖 18 / 20 份')).toBeVisible()
-  expect(requests.filter((request) => request.pathname === '/api/graph/query')).toHaveLength(1)
-  await expect(page.getByTestId('open-knowledge-graph')).toHaveAttribute(
-    'href',
-    `/knowledge-graph?session=7&class=${encodeURIComponent('七年级一班')}`,
-  )
-
-  await page.getByRole('button', { name: /^Q2/ }).click()
-  await expect(page.getByRole('cell', { name: /匿名学生乙/ })).toBeVisible()
-  await expect(page.getByText('0 / 暂不可用')).toBeVisible()
-  const evidenceLink = page.getByRole('link', { name: '查看答卷证据' })
-  await expect(evidenceLink).toHaveAttribute('href', '/api/sessions/7/results/72/details/702/crop')
-
-  await page.getByRole('button', { name: /分数运算/ }).click()
-  await expect(page.getByRole('list', { name: '标签证据' })).toContainText('匿名学生甲 · Q1')
-  expect(requests.filter((request) => request.pathname === '/api/graph/evidence')).toHaveLength(1)
-
-  await page.getByRole('button', { name: '查看异常' }).click()
-  await expect(page.locator('section[aria-labelledby="anomaly-list-title"]')).toBeFocused()
-  await expect(page.getByText('匿名答卷 10')).toBeVisible()
+  await expect(page.locator('.workbench-inline-error')).toContainText('考试概况暂时无法读取；备课和班务入口仍可使用')
+  await expect(page.locator('.workbench-workflow')).toBeVisible()
+  await page.getByRole('button', { name: '重新加载考试概况' }).click()
+  await expect(page.locator('.workbench-inline-error')).toContainText('考试概况暂时无法读取')
 
   expectReadOnlyRequests(requests)
-  expect(errors.pageErrors).toEqual([])
-  expect(errors.consoleErrors).toEqual([])
+  expectOnlyExpected503(errors)
 })
 
-test('shows partial totals and reaches later question, student, anomaly and evidence pages', async ({ page }) => {
+test('updates the pulse card when the current exam changes', async ({ page }) => {
   const errors = trackBrowserErrors(page)
-  const { requests } = await installSyntheticApi(page, { paginated: true })
+  const requests = await installSyntheticApi(page)
   await openWorkbench(page)
+  await expect(page.locator('.workbench-pulse')).toContainText('33.33')
 
-  await expect(page.getByText('当前显示 100 / 102 道题目')).toBeVisible()
-  await page.getByRole('button', { name: '加载更多题目' }).click()
-  await expect(page.getByRole('button', { name: /^Q101/ })).toBeVisible()
-  await expect(page.getByRole('button', { name: /^Q102/ })).toBeVisible()
-  await expect(page.getByText('当前显示 102 / 102 道题目')).toBeVisible()
-  await expect(page.getByRole('button', { name: '加载更多题目' })).toHaveCount(0)
+  await page.getByRole('combobox', { name: '当前考试' }).selectOption('8')
+  await expect(page.locator('.workbench-pulse')).toContainText('八年级物理单元检测（匿名合成数据）')
+  await expect(page.locator('.workbench-pulse')).toContainText('100')
 
-  await expect(page.getByText('当前显示 100 / 101 名学生')).toBeVisible()
-  await page.getByRole('button', { name: '加载更多学生' }).click()
-  await expect(page.getByText('后续学生 101')).toBeVisible()
-  await expect(page.getByText('当前显示 101 / 101 名学生')).toBeVisible()
-  await expect(page.getByRole('button', { name: '加载更多学生' })).toHaveCount(0)
-
-  await page.getByRole('button', { name: '查看异常' }).click()
-  await expect(page.getByText('当前显示 100 / 101 条异常')).toBeVisible()
-  await page.getByRole('button', { name: '加载更多异常' }).click()
-  await expect(page.getByText('后续异常 101')).toBeVisible()
-  await expect(page.getByText('当前显示 101 / 101 条异常')).toBeVisible()
-  await expect(page.getByRole('button', { name: '加载更多异常' })).toHaveCount(0)
-
-  await page.getByRole('combobox', { name: '班级' }).selectOption('七年级一班')
-  await page.getByRole('button', { name: /分数运算/ }).click()
-  await expect(page.getByText('当前显示 20 / 21 条证据')).toBeVisible()
-  await page.getByRole('button', { name: '加载更多证据' }).click()
-  await expect(page.getByText('后续证据学生')).toBeVisible()
-  await expect(page.getByText('当前显示 21 / 21 条证据')).toBeVisible()
-  await expect(page.getByRole('button', { name: '加载更多证据' })).toHaveCount(0)
-
-  expect(requests.filter((request) => request.pathname.includes('/analysis/questions')).length).toBeGreaterThan(2)
+  expectReadOnlyRequests(requests)
   expect(errors.pageErrors).toEqual([])
   expect(errors.consoleErrors).toEqual([])
 })
