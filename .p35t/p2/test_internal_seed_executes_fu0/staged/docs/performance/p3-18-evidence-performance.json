@@ -1,0 +1,216 @@
+{
+  "candidates": [
+    {
+      "after": {
+        "p50_ms": 3.7215,
+        "p95_ms": 4.2176
+      },
+      "before": {
+        "p50_ms": 57.2179,
+        "p95_ms": 64.7216
+      },
+      "concurrency": "One process-wide lock per cache directory and atomic replacement prevent partial reads.",
+      "dataset": {
+        "cache_limit_bytes": 268435456,
+        "image_count": 1,
+        "image_height": 3200,
+        "image_width": 2400,
+        "repetition_results": [
+          {
+            "after_p50_ms": 3.731,
+            "after_p95_ms": 4.2176,
+            "before_p50_ms": 56.0224,
+            "before_p95_ms": 60.4099,
+            "cold_miss_ms": 70.9117,
+            "qualified": true,
+            "repetition": 1
+          },
+          {
+            "after_p50_ms": 3.69,
+            "after_p95_ms": 4.0332,
+            "before_p50_ms": 57.7255,
+            "before_p95_ms": 64.7738,
+            "cold_miss_ms": 67.6484,
+            "qualified": true,
+            "repetition": 2
+          }
+        ],
+        "repetitions": 2,
+        "samples": 20,
+        "source": "generated",
+        "source_bytes": 2280075,
+        "warmups": 3,
+        "workload": "same_detail_repeated_read"
+      },
+      "decision": "selected",
+      "disk_bytes": 354772,
+      "invalidation": "SHA-256 source bytes, region geometry, page and render version form the key; corrupt entries rebuild and explicit cleanup is supported.",
+      "name": "review_crop_cache",
+      "output_equivalent": true,
+      "p50_improvement_percent": 93.496,
+      "p95_change_percent": -93.483,
+      "peak_memory_bytes": 2744618,
+      "reason": "Repeated review crop reads met both latency gates with exact JPEG bytes."
+    },
+    {
+      "after": null,
+      "before": {
+        "p50_ms": 524.1121,
+        "p95_ms": 557.6806
+      },
+      "concurrency": "not_applicable",
+      "dataset": {
+        "maximum_request_local_repeat_count": 0,
+        "projection_calls_per_request": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "request_samples": 20,
+        "scale": "large_5pct",
+        "source": "generated_public_diagnosis_requests"
+      },
+      "decision": "rejected",
+      "disk_bytes": 0,
+      "invalidation": "not_applicable",
+      "name": "tag_projection_request_memo",
+      "output_equivalent": true,
+      "p50_improvement_percent": null,
+      "p95_change_percent": null,
+      "peak_memory_bytes": 0,
+      "reason": "Generated public diagnosis requests repeated no session projection identity within a request, so request-local memoization has no evidenced hit."
+    },
+    {
+      "after": {
+        "p50_ms": 693.1757,
+        "p95_ms": 719.0185
+      },
+      "before": {
+        "p50_ms": 1892.2439,
+        "p95_ms": 1963.4039
+      },
+      "concurrency": "Each concurrent batch owns a separate memo; no state is shared across requests.",
+      "dataset": {
+        "attempts_per_request": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "maximum_memo_entries": 3,
+        "maximum_repeated_image_identities": 6,
+        "peak_memory_after_bytes": 23817844,
+        "peak_memory_before_bytes": 23714725,
+        "request_samples": 20,
+        "retry_backoff_excluded": true,
+        "source": "generated_public_hybrid_retry_requests",
+        "unique_images_per_request": 3
+      },
+      "decision": "selected",
+      "disk_bytes": 0,
+      "invalidation": "SHA-256 source bytes key a memo discarded when the batch request returns.",
+      "name": "image_compression_request_memo",
+      "output_equivalent": true,
+      "p50_improvement_percent": 63.368,
+      "p95_change_percent": -63.379,
+      "peak_memory_bytes": 23817844,
+      "reason": "Generated hybrid grading retries met both latency gates with identical business output and a memo bounded to the request's unique images."
+    },
+    {
+      "after": {
+        "p50_ms": 33.9231,
+        "p95_ms": 38.5588
+      },
+      "before": {
+        "p50_ms": 16.2508,
+        "p95_ms": 21.9428
+      },
+      "concurrency": "Generated read snapshots and rolled-back writes use SQLite's normal isolation.",
+      "dataset": {
+        "candidate_disk_delta_bytes": 28872,
+        "candidate_index_create_ms": 3.7657,
+        "candidate_index_sql": "CREATE INDEX p3_18_candidate_questions_active_created ON questions(is_deleted, created_at DESC, id DESC)",
+        "query_plan_after": [
+          "SEARCH q USING INDEX p3_18_candidate_questions_active_created (is_deleted=?)",
+          "SEARCH p USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+        ],
+        "query_plan_before": [
+          "SCAN q USING INDEX idx_questions_type_deleted",
+          "SEARCH p USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+          "USE TEMP B-TREE FOR DISTINCT",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ],
+        "questions": 500,
+        "request_samples": 20,
+        "scale": "large_5pct",
+        "source": "generated_public_question_list_requests",
+        "write_p50_after_ms": 0.0428,
+        "write_p50_before_ms": 0.0105,
+        "write_p95_after_ms": 0.0534,
+        "write_p95_before_ms": 0.021
+      },
+      "decision": "rejected",
+      "disk_bytes": 28872,
+      "invalidation": "Rejected candidate; no production index or invalidation change is applied.",
+      "name": "hot_sql_index",
+      "output_equivalent": true,
+      "p50_improvement_percent": -108.747,
+      "p95_change_percent": 75.724,
+      "peak_memory_bytes": 0,
+      "reason": "The generated public question-list experiment did not meet both frozen latency gates after accounting for write and disk evidence."
+    }
+  ],
+  "code_sha": "2c27e03c3fba39ad8d859ffce8481a394cb3f963",
+  "environment": {
+    "logical_cpu_count": 16,
+    "operating_system": "Windows-11-10.0.26200-SP0",
+    "python_version": "3.12.1",
+    "sqlite_version": "3.43.1"
+  },
+  "generated_at_utc": "2026-07-25T06:29:25.463019Z",
+  "limitations": [
+    "All writes use generated data under a system temporary directory.",
+    "The benchmark is machine-specific and is not a service-level objective.",
+    "Memo decisions execute public request seams with generated inputs and a no-network fake model gateway.",
+    "The SQL candidate is measured before and after only on a generated large_5pct database.",
+    "Python tracemalloc does not include every native allocation performed inside Pillow."
+  ],
+  "package": "P3-18",
+  "thresholds": {
+    "maximum_p95_regression_percent": 5.0,
+    "minimum_p50_improvement_percent": 20.0
+  }
+}

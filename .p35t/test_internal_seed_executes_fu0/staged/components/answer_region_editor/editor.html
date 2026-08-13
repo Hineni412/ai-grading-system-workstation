@@ -1,0 +1,62 @@
+<div class="region-editor" data-role="editor-root" tabindex="0">
+  <header class="toolbar" data-role="toolbar">
+    <div class="toolbar-group">
+      <button type="button" class="tool-button" data-action="exit">退出专注模式</button>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <button type="button" class="tool-button page-button" data-page="front">正面</button>
+      <button type="button" class="tool-button page-button" data-page="back">反面</button>
+    </div>
+    <div class="toolbar-group">
+      <button type="button" class="tool-button primary-soft" data-action="create">连续框选</button>
+      <button type="button" class="tool-button" data-action="delete">删除</button>
+      <button type="button" class="tool-button" data-action="undo">撤销</button>
+      <button type="button" class="tool-button" data-action="redo">重做</button>
+    </div>
+    <div class="toolbar-group zoom-tools">
+      <button type="button" class="tool-button" data-action="fit">适应宽度</button>
+      <button type="button" class="tool-button" data-action="actual-size">100%</button>
+      <button type="button" class="tool-button icon-button" data-action="zoom-out" aria-label="缩小">−</button>
+      <output class="zoom-value" data-role="zoom-value">100%</output>
+      <button type="button" class="tool-button icon-button" data-action="zoom-in" aria-label="放大">+</button>
+    </div>
+    <div class="toolbar-group toolbar-actions">
+      <button type="button" class="tool-button" data-action="drawer">题框列表</button>
+      <button type="button" class="tool-button primary" data-action="finish">完成标定</button>
+    </div>
+  </header>
+
+  <main class="workspace" data-role="workspace">
+    <div class="canvas-shell" data-role="canvas-shell">
+      <svg
+        class="canvas"
+        data-role="canvas"
+        xmlns="http://www.w3.org/2000/svg"
+        preserveAspectRatio="xMinYMin meet"
+        aria-label="答题区域编辑画布"
+      >
+        <image data-role="page-image"></image>
+        <g data-role="regions-layer"></g>
+        <g data-role="draft-layer"></g>
+      </svg>
+      <div class="empty-page" data-role="empty-page" hidden>当前页面没有可用图像</div>
+    </div>
+
+    <aside class="drawer" data-role="drawer" hidden aria-label="题框列表">
+      <div class="drawer-header">
+        <div>
+          <strong>题框列表与映射</strong>
+          <p data-role="drawer-summary"></p>
+        </div>
+        <button type="button" class="tool-button icon-button" data-action="drawer-close" aria-label="关闭题框列表">×</button>
+      </div>
+      <div class="drawer-body" data-role="drawer-body"></div>
+    </aside>
+  </main>
+
+  <footer class="statusbar" data-role="statusbar">
+    <span data-role="status-counts"></span>
+    <span data-role="status-mode"></span>
+    <span data-role="status-next"></span>
+    <span class="status-save" data-role="status-save"></span>
+  </footer>
+</div>

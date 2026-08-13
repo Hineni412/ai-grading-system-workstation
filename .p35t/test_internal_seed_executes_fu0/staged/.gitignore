@@ -1,0 +1,45 @@
+# Python cache and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environment and secrets
+.env
+.env.*
+*.local
+
+# Logs and generated runtime data
+logs/
+# user_data remains tracked, except machine-local API credentials
+user_data/config/api_profiles.json
+
+# Packaged runtime and build outputs
+runtime/
+dist/
+build/
+node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+output/playwright/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+
+# 调试与分析产物（根目录不应再出现，杂物已归档至仓库外）
+debug_*.db
+scratch/
+analysis_outputs/
+
+# Local agent/tool session state
+.superpowers/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.worktrees/

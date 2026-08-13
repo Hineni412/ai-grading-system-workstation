@@ -1,0 +1,6 @@
+- alert [ref=e3]:
+  - heading "当前页面暂时无法显示" [level=1] [ref=e4]
+  - paragraph [ref=e5]: 当前页面的操作已中断；当前考试选择和业务数据不会改变。
+  - generic [ref=e6]:
+    - button "重新加载当前页面" [ref=e7] [cursor=pointer]
+    - button "返回工作台" [ref=e8] [cursor=pointer]

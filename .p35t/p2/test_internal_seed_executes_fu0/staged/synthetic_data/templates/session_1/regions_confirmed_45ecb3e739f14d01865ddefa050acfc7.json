@@ -1,0 +1,22 @@
+[
+  {
+    "id": 1,
+    "region_uuid": "q1-region",
+    "session_id": 1,
+    "template_id": 1,
+    "page": "front",
+    "region_order": 1,
+    "x": 10,
+    "y": 10,
+    "w": 80,
+    "h": 60,
+    "detected_question_id": null,
+    "mapped_question_id": "Q1",
+    "confidence": 0.0,
+    "is_confirmed": 1,
+    "mapping_status": "manual",
+    "multi_region_confirmed": 0,
+    "created_at": "2026-07-28 14:29:37",
+    "updated_at": "2026-07-28 14:29:37"
+  }
+]

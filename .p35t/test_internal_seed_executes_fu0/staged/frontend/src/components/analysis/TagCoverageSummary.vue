@@ -1,0 +1,215 @@
+<script setup lang="ts">
+import { onBeforeUnmount, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
+
+import {
+  fetchGraphEvidence,
+  type GraphEvidenceResponse,
+  type GraphNode,
+  type GraphRowsResponse,
+} from '../../api/graph'
+import type { ResourceState } from '../../stores/workbench'
+
+const props = defineProps<{
+  sessionId: number | null
+  className: string | null
+  graph: GraphRowsResponse | null
+  state: ResourceState
+  updatedAt: string | null
+}>()
+
+defineEmits<{
+  retry: []
+}>()
+
+const selectedNodeKey = ref<string | null>(null)
+const evidence = ref<GraphEvidenceResponse | null>(null)
+const evidenceState = ref<'idle' | 'loading' | 'ready' | 'empty' | 'stale-error' | 'error'>('idle')
+let controller: AbortController | null = null
+let generation = 0
+
+watch(
+  () => [props.sessionId, props.className, props.graph] as const,
+  () => {
+    controller?.abort()
+    controller = null
+    generation += 1
+    selectedNodeKey.value = null
+    evidence.value = null
+    evidenceState.value = 'idle'
+  },
+)
+
+onBeforeUnmount(() => controller?.abort())
+
+async function selectNode(node: GraphNode): Promise<void> {
+  await loadEvidence(node, 1, false)
+}
+
+async function loadEvidence(node: GraphNode, page: number, append: boolean): Promise<void> {
+  if (props.sessionId === null || props.className === null) return
+  const keepPrevious = (append || selectedNodeKey.value === node.knowledge_key) && evidence.value !== null
+  controller?.abort()
+  const requestController = new AbortController()
+  controller = requestController
+  const requestGeneration = ++generation
+  selectedNodeKey.value = node.knowledge_key
+  if (!keepPrevious) evidence.value = null
+  evidenceState.value = 'loading'
+  try {
+    const loaded = page === 1
+      ? await fetchGraphEvidence(
+          props.sessionId,
+          props.className,
+          node.knowledge_key,
+          requestController.signal,
+        )
+      : await fetchGraphEvidence(
+          props.sessionId,
+          props.className,
+          node.knowledge_key,
+          requestController.signal,
+          page,
+        )
+    if (requestGeneration !== generation) return
+    if (
+      loaded.knowledge_key !== node.knowledge_key ||
+      loaded.scope.mode !== 'class' ||
+      loaded.scope.class_id !== props.className ||
+      loaded.exam_scope.mode !== 'current' ||
+      loaded.exam_scope.session_ids.length !== 1 ||
+      loaded.exam_scope.session_ids[0] !== props.sessionId
+    ) throw new Error('Graph evidence scope mismatch')
+    if (append && evidence.value !== null) {
+      const seen = new Set(evidence.value.items.map((item) => `${item.session_id}\u0000${item.student_id}\u0000${item.question_id}\u0000${item.bank_question_id ?? ''}`))
+      const items = loaded.items.filter((item) => {
+        const key = `${item.session_id}\u0000${item.student_id}\u0000${item.question_id}\u0000${item.bank_question_id ?? ''}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      evidence.value = { ...loaded, items: [...evidence.value.items, ...items] }
+    } else {
+      evidence.value = loaded
+    }
+    evidenceState.value = evidence.value.items.length === 0 ? 'empty' : 'ready'
+  } catch {
+    if (requestGeneration !== generation || requestController.signal.aborted) return
+    evidenceState.value = keepPrevious ? 'stale-error' : 'error'
+  } finally {
+    if (controller === requestController) controller = null
+  }
+}
+
+function loadMoreEvidence(): void {
+  const node = props.graph?.nodes.find((item) => item.knowledge_key === selectedNodeKey.value)
+  if (node && evidence.value && evidence.value.page < evidence.value.total_pages) {
+    void loadEvidence(node, evidence.value.page + 1, true)
+  }
+}
+
+function retryEvidence(): void {
+  const node = props.graph?.nodes.find((item) => item.knowledge_key === selectedNodeKey.value)
+  if (node) void selectNode(node)
+}
+
+function displayTime(value: string | null): string {
+  return value?.replace('T', ' ').replace('Z', '') ?? '时间暂不可用'
+}
+</script>
+
+<template>
+  <section class="workbench-section tag-coverage" aria-labelledby="tag-coverage-title">
+    <header class="workbench-section__heading">
+      <div>
+        <p class="workbench-eyebrow">已有题库标签证据</p>
+        <h2 id="tag-coverage-title">知识标签覆盖</h2>
+      </div>
+      <RouterLink
+        v-if="sessionId !== null && className !== null"
+        data-testid="open-knowledge-graph"
+        class="workbench-secondary-link"
+        :to="{ name: 'knowledge-graph', query: { session: sessionId, class: className } }"
+      >
+        打开完整知识图谱
+      </RouterLink>
+    </header>
+    <p v-if="className === null" class="workbench-empty-copy">选择班级后查看知识标签覆盖</p>
+    <p
+      v-else-if="state === 'idle' || (state === 'loading' && updatedAt === null)"
+      class="workbench-state-copy"
+      role="status"
+    >
+      {{ state === 'idle' ? '正在准备标签覆盖…' : '正在读取标签覆盖…' }}
+    </p>
+    <div v-else-if="state === 'error'" class="workbench-inline-error" role="alert">
+      <p>标签覆盖暂时无法读取</p>
+      <button type="button" class="workbench-secondary-button" @click="$emit('retry')">
+        重新加载标签覆盖
+      </button>
+    </div>
+    <p v-else-if="graph === null" class="workbench-empty-copy">当前班级没有知识标签记录</p>
+    <template v-else>
+      <p v-if="state === 'loading'" class="workbench-state-copy" role="status">正在更新标签覆盖…</p>
+      <div v-if="state === 'stale-error'" class="workbench-stale" role="alert">
+        <span>标签覆盖可能不是最新 · 上次更新 {{ displayTime(updatedAt) }}</span>
+        <button type="button" class="workbench-link-button" @click="$emit('retry')">重新加载标签覆盖</button>
+      </div>
+      <p class="tag-coverage__summary">
+        已覆盖 {{ graph.coverage.covered_items }} / {{ graph.coverage.total_items }} 份
+      </p>
+      <ul v-if="graph.warnings.length" class="tag-coverage__warnings" aria-label="标签覆盖说明">
+        <li v-for="warning in graph.warnings" :key="warning">{{ warning }}</li>
+      </ul>
+      <p v-if="graph.nodes.length === 0" class="workbench-empty-copy">
+        {{ updatedAt !== null && (state === 'loading' || state === 'stale-error')
+          ? '上次成功读取时没有知识标签记录'
+          : '当前班级没有知识标签记录' }}
+      </p>
+      <ul v-else class="tag-node-list">
+        <li v-for="node in graph.nodes" :key="node.knowledge_key">
+          <button
+            type="button"
+            class="tag-node"
+            :aria-pressed="node.knowledge_key === selectedNodeKey"
+            @click="selectNode(node)"
+          >
+            <strong>{{ node.knowledge_label }}</strong>
+            <span>{{ node.item_count }} 份作答 · {{ node.deduction_count }} 条失分记录</span>
+          </button>
+        </li>
+      </ul>
+      <p v-if="evidenceState === 'loading'" class="workbench-state-copy" role="status">
+        {{ evidence === null ? '正在读取标签证据…' : '正在更新标签证据…' }}
+      </p>
+      <div v-else-if="evidenceState === 'error'" class="workbench-inline-error" role="alert">
+        <p>标签证据暂时无法读取</p>
+        <button type="button" class="workbench-secondary-button" @click="retryEvidence">重新加载标签证据</button>
+      </div>
+      <div v-else-if="evidenceState === 'stale-error'" class="workbench-stale" role="alert">
+        <span>标签证据可能不是最新</span>
+        <button type="button" class="workbench-link-button" @click="retryEvidence">重新加载标签证据</button>
+      </div>
+      <p v-else-if="evidenceState === 'empty'" class="workbench-empty-copy">当前标签没有可显示的证据</p>
+      <ol v-if="evidence" class="tag-evidence-list" aria-label="标签证据">
+        <li v-for="item in evidence.items" :key="`${item.student_id}:${item.question_id}`">
+          <strong>{{ item.student_name }} · {{ item.question_id }}</strong>
+          <span>{{ item.score_awarded }} / {{ item.full_score }} 分</span>
+          <span>{{ item.actionable_reasons.join('；') || '未记录扣分原因' }}</span>
+        </li>
+      </ol>
+      <p v-if="evidence && evidence.items.length > 0" class="analysis-summary">
+        当前显示 {{ evidence.items.length }} / {{ evidence.total }} 条证据
+      </p>
+      <button
+        v-if="evidence && evidence.page < evidence.total_pages"
+        type="button"
+        class="workbench-secondary-button"
+        :disabled="evidenceState === 'loading'"
+        @click="loadMoreEvidence"
+      >
+        {{ evidenceState === 'loading' ? '正在加载更多证据…' : '加载更多证据' }}
+      </button>
+    </template>
+  </section>
+</template>

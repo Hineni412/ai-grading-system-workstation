@@ -1,0 +1,171 @@
+{
+  "input": "D:\\AI\u9605\u5377\u7cfb\u7edf_\u5de5\u4f5c\u673a\u7248_v1.5.0\\.codex-review\\nanshan_20260730\\nanshan_before_scrub.docx",
+  "fonts_by_char_count": {
+    "Times New Roman": 12726,
+    "\u9ed1\u4f53": 2020
+  },
+  "direct_run_formatting_runs": 400,
+  "direct_paragraph_formatting_paragraphs": 335,
+  "heading_like_paragraphs_not_heading_style": [
+    {
+      "para_index": 1,
+      "text": "\u521d\u4e2d\u6570\u5b66AI\u9605\u5377\u7684\u9898\u578b\u8bef\u5dee\u4e0e\u6559\u5e08\u590d\u6838\u2014\u2014\u57fa\u4e8e78\u4efd\u4e03\u5e74\u7ea7\u7eb8\u7b14\u7b54\u5377\u7684\u5b9e\u8df5\u5206\u6790",
+      "style": "Nanshan Title"
+    },
+    {
+      "para_index": 4,
+      "text": "\u3010\u5173\u952e\u8bcd\u3011\u4eba\u5de5\u667a\u80fd\u3000\u3000\u521d\u4e2d\u6570\u5b66\u3000\u3000\u667a\u80fd\u9605\u5377\u3000\u3000\u9898\u578b\u8bef\u5dee\u3000\u3000\u6559\u5e08\u590d\u6838",
+      "style": "Nanshan Body"
+    },
+    {
+      "para_index": 23,
+      "text": "\u88681 \u8bd5\u5377\u9898\u578b\u7ed3\u6784\u4e0e\u8bc4\u5206\u4efb\u52a1\u7279\u5f81",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 27,
+      "text": "\u88682 AI \u9605\u5377\u7684\u56fe\u50cf\u8f93\u5165\u3001\u6a21\u578b\u53c2\u6570\u4e0e\u65e5\u5fd7\u8bb0\u5f55\u8bbe\u7f6e",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 34,
+      "text": "\u88683 AI \u539f\u59cb\u5206\u4e0e\u6d41\u7a0b\u6700\u7ec8\u5206\u76f8\u5bf9\u4e8e\u6559\u5e08\u624b\u6539\u5206\u7684\u603b\u5206\u5dee\u5f02\u53ca\u4e00\u81f4\u6027",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 37,
+      "text": "\u56fe1 \u6d41\u7a0b\u6700\u7ec8\u5206\u4e0e\u6559\u5e08\u624b\u6539\u5206\u7684 Bland-Altman \u4e00\u81f4\u6027\u5206\u6790",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 39,
+      "text": "\u88684 \u6392\u9664 Q10 \u4f5c\u56fe\u9898\u524d\u540e\u6d41\u7a0b\u6700\u7ec8\u5206\u4e0e\u6559\u5e08\u624b\u6539\u5206\u7684\u5dee\u5f02\u53ca\u4e00\u81f4\u6027",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 42,
+      "text": "\u56fe2 \u6392\u9664 Q10 \u524d\u540e\u6d41\u7a0b\u6700\u7ec8\u5206\u7684 Bias \u53d8\u5316",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 44,
+      "text": "\u88685 \u4e0d\u540c\u9898\u578b\u4e0b\u4e24\u79cd\u6a21\u5f0f\u6d41\u7a0b\u6700\u7ec8\u5206\u7684 MAE\u3001\u76f8\u5bf9 MAE \u4e0e Bias",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 47,
+      "text": "\u56fe3 \u4e0d\u540c\u9898\u578b\u4e0b\u4e24\u79cd AI \u6279\u6539\u6a21\u5f0f\u7684\u6807\u51c6\u5316 MAE",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 49,
+      "text": "\u88686 \u4e24\u79cd\u6a21\u5f0f\u4e2d\u201c\u9700\u8981\u590d\u6838\u201d\u5b57\u6bb5\u53ca\u76f8\u5e94\u6539\u5206\u8bb0\u5f55",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 60,
+      "text": "\u88687 \u672c\u6b21\u9898\u578b\u7ed3\u679c\u4e0e\u6682\u5b9a\u5904\u7406\u65b9\u5f0f",
+      "style": "Nanshan Caption"
+    },
+    {
+      "para_index": 100,
+      "text": "\u4f5c\u8005\u59d3\u540d\uff1a\u8d3e\u6d69\u7136",
+      "style": "Nanshan Contact"
+    },
+    {
+      "para_index": 101,
+      "text": "\u4f5c\u8005\u5355\u4f4d\uff1a\u6df1\u5733\u5927\u5b66\u9644\u5c5e\u6559\u80b2\u96c6\u56e2\u5916\u56fd\u8bed\u4e2d\u5b66",
+      "style": "Nanshan Contact"
+    },
+    {
+      "para_index": 102,
+      "text": "\u901a\u8baf\u5730\u5740\uff1a\u5e7f\u4e1c\u7701\u6df1\u5733\u5e02\u5357\u5c71\u533a\u6843\u6e90\u8857\u9053\u7559\u4ed9\u5927\u90533633\u53f7\u6df1\u5733\u5927\u5b66\u9644\u5c5e\u6559\u80b2\u96c6\u56e2\u5916\u56fd\u8bed\u4e2d\u5b66\uff08\u65b0\u6821\u533a\uff09\uff08\u90ae\u7f16\uff1a518071\uff09",
+      "style": "Nanshan Contact"
+    },
+    {
+      "para_index": 103,
+      "text": "\u8054\u7cfb\u7535\u8bdd\uff1a13201469126",
+      "style": "Nanshan Contact"
+    },
+    {
+      "para_index": 104,
+      "text": "QQ\u6216\u5fae\u4fe1\uff1a__________",
+      "style": "Nanshan Contact"
+    },
+    {
+      "para_index": 105,
+      "text": "\u7535\u5b50\u90ae\u7bb1\uff1a894189001@qq.com",
+      "style": "Nanshan Contact"
+    },
+    {
+      "para_index": 106,
+      "text": "\u9898\u53f7",
+      "style": "Normal"
+    },
+    {
+      "para_index": 107,
+      "text": "\u9898\u578b\u53ca\u6ee1\u5206",
+      "style": "Normal"
+    }
+  ],
+  "examples": {
+    "direct_paragraph_formatting": [
+      {
+        "para_index": 1,
+        "text": "\u521d\u4e2d\u6570\u5b66AI\u9605\u5377\u7684\u9898\u578b\u8bef\u5dee\u4e0e\u6559\u5e08\u590d\u6838\u2014\u2014\u57fa\u4e8e78\u4efd\u4e03\u5e74\u7ea7\u7eb8\u7b14\u7b54\u5377\u7684\u5b9e\u8df5\u5206\u6790",
+        "style": "Nanshan Title"
+      },
+      {
+        "para_index": 2,
+        "text": "\u6df1\u5733\u5927\u5b66\u9644\u5c5e\u6559\u80b2\u96c6\u56e2\u5916\u56fd\u8bed\u4e2d\u5b66\u3000\u3000\u8d3e\u6d69\u7136",
+        "style": "Nanshan Author"
+      },
+      {
+        "para_index": 3,
+        "text": "\u3010\u6458  \u8981\u3011\u4e3a\u5224\u65adAI\u9605\u5377\u5728\u521d\u4e2d\u6570\u5b66\u7eb8\u7b14\u6d4b\u9a8c\u4e2d\u7684\u5b9e\u9645\u9002\u7528\u8303\u56f4\uff0c\u4ee5\u67d0\u6821\u4e03\u5e74\u7ea778\u4efd\u914d\u5bf9\u7b54\u5377\u4e3a\u6837\u672c\uff0c\u6bd4\u8f83\u6574\u5377\u6279\u6539\u548c\u6df7\u5408\u5206\u6279\u6279\u6539\u4e24\u79cd\u65b9\u5f0f\uff0c\u5e76\u5bf9\u7167\u6559\u5e08\u624b\u6539\u5206\u5206\u6790\u603b\u5206\u8bef\u5dee\u3001\u9898\u578b\u8bef\u5dee\u548c\u590d\u6838\u65e5\u5fd7\u3002\u7ed3\u679c\u663e\u793a\uff1a\u6574\u5377\u6a21\u5f0f\u6d41\u7a0b\u6700\u7ec8\u5206\u7684MAE\u4e3a4.49\uff0c\u6574\u4f53\u504f\u9ad82",
+        "style": "Nanshan Body"
+      },
+      {
+        "para_index": 4,
+        "text": "\u3010\u5173\u952e\u8bcd\u3011\u4eba\u5de5\u667a\u80fd\u3000\u3000\u521d\u4e2d\u6570\u5b66\u3000\u3000\u667a\u80fd\u9605\u5377\u3000\u3000\u9898\u578b\u8bef\u5dee\u3000\u3000\u6559\u5e08\u590d\u6838",
+        "style": "Nanshan Body"
+      },
+      {
+        "para_index": 5,
+        "text": "\u4e00\u3001\u95ee\u9898\u63d0\u51fa",
+        "style": "Nanshan Heading 1"
+      }
+    ],
+    "direct_run_formatting": [
+      {
+        "para_index": 1,
+        "run_text": "\u521d\u4e2d\u6570\u5b66AI\u9605\u5377\u7684\u9898\u578b\u8bef\u5dee\u4e0e\u6559\u5e08\u590d\u6838\u2014\u2014\u57fa\u4e8e78\u4efd\u4e03\u5e74\u7ea7\u7eb8\u7b14\u7b54\u5377\u7684\u5b9e\u8df5\u5206\u6790",
+        "style": "Nanshan Title"
+      },
+      {
+        "para_index": 2,
+        "run_text": "\u6df1\u5733\u5927\u5b66\u9644\u5c5e\u6559\u80b2\u96c6\u56e2\u5916\u56fd\u8bed\u4e2d\u5b66\u3000\u3000\u8d3e\u6d69\u7136",
+        "style": "Nanshan Author"
+      },
+      {
+        "para_index": 3,
+        "run_text": "\u3010\u6458  \u8981\u3011",
+        "style": "Nanshan Body"
+      },
+      {
+        "para_index": 3,
+        "run_text": "\u4e3a\u5224\u65adAI\u9605\u5377\u5728\u521d\u4e2d\u6570\u5b66\u7eb8\u7b14\u6d4b\u9a8c\u4e2d\u7684\u5b9e\u9645\u9002\u7528\u8303\u56f4\uff0c\u4ee5\u67d0\u6821\u4e03\u5e74\u7ea778\u4efd\u914d\u5bf9\u7b54\u5377\u4e3a\u6837\u672c\uff0c\u6bd4\u8f83\u6574\u5377\u6279\u6539\u548c\u6df7\u5408\u5206\u6279\u6279\u6539\u4e24\u79cd\u65b9\u5f0f\uff0c\u5e76\u5bf9\u7167\u6559\u5e08\u624b\u6539\u5206\u5206\u6790\u603b\u5206\u8bef\u5dee\u3001\u9898\u578b\u8bef\u5dee\u548c",
+        "style": "Nanshan Body"
+      },
+      {
+        "para_index": 4,
+        "run_text": "\u3010\u5173\u952e\u8bcd\u3011",
+        "style": "Nanshan Body"
+      }
+    ]
+  },
+  "notes": [
+    "Direct formatting is not always wrong, but it often causes inconsistent output when templates change.",
+    "Heading-like paragraphs not using Heading styles can break TOC and accessibility."
+  ]
+}

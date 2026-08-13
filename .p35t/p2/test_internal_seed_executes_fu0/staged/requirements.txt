@@ -1,0 +1,14 @@
+# 运行依赖（下限声明）。可复现安装请配合锁定文件：
+#   pip install -r requirements.txt -c constraints.txt
+# 构建/打包依赖另见 requirements-build.txt。
+openai>=1.47.0
+python-docx>=1.1.2
+Pillow>=10.4.0
+pandas>=2.2.2
+openpyxl>=3.1.5
+streamlit>=1.44.0
+fastapi>=0.139.0
+opencv-python>=4.10.0.84
+PyMuPDF>=1.24.0
+rapidocr_onnxruntime
+pypinyin>=0.53.0
