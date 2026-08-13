@@ -2,6 +2,9 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
+import { AnimatedCircularProgressBar } from '@/components/ui/animated-circular-progress-bar'
+import { NumberTicker } from '@/components/ui/number-ticker'
+
 import QuestionAnalysisPanel from '../components/analysis/QuestionAnalysisPanel.vue'
 import StudentAnalysisDetail from '../components/analysis/StudentAnalysisDetail.vue'
 import TagCoverageSummary from '../components/analysis/TagCoverageSummary.vue'
@@ -158,6 +161,9 @@ const anomalyCount = computed(() => {
     ? null
     : value.unmatched_papers + value.scan_issue_students + value.failed_papers
 })
+
+const gradedPaperCount = computed(() => workbenchStore.overview?.progress?.graded_papers ?? null)
+const reviewItemCount = computed(() => workbenchStore.overview?.review?.item_count ?? null)
 
 const progressValue = computed(() => {
   const value = workbenchStore.overview?.progress
@@ -368,7 +374,15 @@ function loadMoreAnomalies(): void {
         </header>
         <p class="workbench-pulse__exam">{{ currentExamName }}</p>
         <div class="workbench-pulse__score">
-          <strong>{{ progressPercent ?? '—' }}</strong>
+          <AnimatedCircularProgressBar
+            v-if="progressPercent !== null"
+            class="workbench-pulse__ring size-28 text-4xl"
+            :value="progressPercent"
+            gauge-primary-color="var(--color-accent)"
+            gauge-secondary-color="var(--color-border-strong)"
+            :circle-stroke-width="8"
+          />
+          <strong v-else>—</strong>
           <span>{{ progressPercent === null ? '尚无批改进度' : '% 已批改' }}</span>
         </div>
         <div class="workbench-pulse__track" aria-hidden="true">
@@ -377,15 +391,15 @@ function loadMoreAnomalies(): void {
         <dl class="workbench-pulse__stats">
           <div>
             <dt>已批改</dt>
-            <dd>{{ workbenchStore.overview?.progress?.graded_papers ?? '—' }}<small>份</small></dd>
+            <dd><NumberTicker v-if="gradedPaperCount !== null" :value="gradedPaperCount" /><template v-else>—</template><small>份</small></dd>
           </div>
           <div>
             <dt>待复核</dt>
-            <dd>{{ workbenchStore.overview?.review?.item_count ?? '—' }}<small>项</small></dd>
+            <dd><NumberTicker v-if="reviewItemCount !== null" :value="reviewItemCount" /><template v-else>—</template><small>项</small></dd>
           </div>
           <div>
             <dt>异常</dt>
-            <dd>{{ anomalyCount ?? '—' }}<small>条</small></dd>
+            <dd><NumberTicker v-if="anomalyCount !== null" :value="anomalyCount" /><template v-else>—</template><small>条</small></dd>
           </div>
         </dl>
         <button type="button" class="workbench-pulse__link" @click="openPath('/knowledge-graph')">

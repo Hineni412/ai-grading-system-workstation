@@ -18,9 +18,15 @@
 .scan-stage__heading h2 { margin: 0; font-size: var(--font-size-h2); line-height: var(--line-height-tight); }
 .scan-stage__heading span { color: var(--color-text-muted); font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); line-height: 1; }
 .scan-stage__heading > strong { font-size: var(--font-size-caption); color: var(--color-text-secondary); }
-.scan-drop { display: grid; gap: var(--space-1); place-items: center; padding: var(--space-5); border: var(--border-width) dashed var(--input); border-radius: var(--radius); background: var(--color-bg-subtle); cursor: pointer; }
+.scan-drop { display: grid; gap: var(--space-1); place-items: center; padding: var(--space-5); border: var(--border-width) dashed var(--input); border-radius: var(--radius); background: var(--color-bg-subtle); cursor: pointer; transition: border-color var(--duration-base), background-color var(--duration-base); }
+.scan-drop:hover:not([data-disabled="true"]) { border-color: var(--color-accent); background: var(--color-accent-subtle); }
 .scan-drop[data-disabled="true"] { cursor: default; opacity: var(--opacity-disabled); }
 .scan-drop input { max-width: 100%; }
+.scan-drop__icon { display: grid; place-items: center; width: calc(var(--space-7) + var(--space-2)); height: calc(var(--space-7) + var(--space-2)); border: var(--border-width) solid var(--input); border-radius: var(--radius-control); background: var(--card); transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s ease, border-color var(--duration-base), color var(--duration-base); }
+.scan-drop span.scan-drop__icon { color: var(--color-text-muted); }
+.scan-drop__icon svg { width: var(--space-4); height: var(--space-4); }
+.scan-drop:hover:not([data-disabled="true"]) .scan-drop__icon { transform: translate(4px, -4px); border-color: var(--color-accent); box-shadow: var(--fx-shadow-card-hover); }
+.scan-drop:hover:not([data-disabled="true"]) span.scan-drop__icon { color: var(--color-accent); }
 .scan-drop span, .scan-file-list small, .scan-issue-list small, .grading-modes small { color: var(--color-text-secondary); }
 .scan-file-list, .scan-issue-list { margin-top: var(--space-3); border-top: var(--border-width) solid var(--color-border-default); }
 .scan-file-list > div, .scan-issue-list > div { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); padding: var(--space-3) 0; border-bottom: var(--border-width) solid var(--color-border-default); }
@@ -80,7 +86,7 @@
 .grading-plan__confirm button { flex: 0 0 auto; }
 .run-console { border-top: var(--border-width) solid var(--color-border-default); padding-top: var(--space-4); }
 .scan-progress { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); border-inline-start: var(--border-selected-width) solid var(--color-info); background: var(--color-info-subtle); }
-.scan-progress--run { margin-bottom: var(--space-3); border-inline-start-color: var(--color-accent); background: var(--color-accent-subtle); }
+.scan-progress--run { position: relative; margin-bottom: var(--space-3); border-inline-start-color: var(--color-accent); background: var(--color-accent-subtle); }
 .scan-progress__copy { display: flex; align-items: start; justify-content: space-between; gap: var(--space-4); }
 .scan-progress__copy > div { display: grid; gap: var(--space-1); }
 .scan-progress__copy span, .scan-progress > p { color: var(--color-text-secondary); font-size: var(--font-size-caption); }

@@ -82,7 +82,13 @@ function onFolderRoleChange(group: PendingImportFolderGroup, event: Event): void
           :class="{ 'is-disabled': queue.importBatchRunning.value || !catalog.selectedSemester }"
           title="选择整个文件夹；只收录其中的 PPTX"
         >
-          导入课件文件夹
+          <span class="tp-file-button__icon" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3.75 7.5A2.25 2.25 0 0 1 6 5.25h3.19a2.25 2.25 0 0 1 1.59.66l1.34 1.34a.75.75 0 0 0 .53.22H18a2.25 2.25 0 0 1 2.25 2.25v7.5A2.25 2.25 0 0 1 18 19.5H6a2.25 2.25 0 0 1-2.25-2.25v-9.75Z" />
+              <path d="M12 10.5v5.25m0 0-2-2m2 2 2-2" />
+            </svg>
+          </span>
+          <span class="tp-file-button__label">导入课件文件夹</span>
           <input
             type="file"
             multiple
@@ -96,7 +102,13 @@ function onFolderRoleChange(group: PendingImportFolderGroup, event: Event): void
           class="tp-file-button tp-file-button--primary"
           :class="{ 'is-disabled': queue.importBatchRunning.value }"
         >
-          选择多份资料
+          <span class="tp-file-button__icon" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 16.5V4.81m0 0L8.03 8.03M12 4.81l3.22 3.22" />
+              <path d="M3.75 15.75v1.5A2.25 2.25 0 0 0 6 19.5h12a2.25 2.25 0 0 0 2.25-2.25v-1.5" />
+            </svg>
+          </span>
+          <span class="tp-file-button__label">选择多份资料</span>
           <input
             type="file"
             multiple

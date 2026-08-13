@@ -13,7 +13,9 @@ import type {
   GradingPlanMetrics,
   ScanDecision,
 } from '../api/scan-grading'
+import AppButton from '../components/design-system/AppButton.vue'
 import StudentMatchSelect from '../components/scan-grading/StudentMatchSelect.vue'
+import { BorderBeam } from '@/components/ui/border-beam'
 import { useScanGradingStore } from '../stores/scan-grading'
 import '../styles/scan-grading.css'
 
@@ -197,6 +199,10 @@ const runStateLabel = computed(() => ({
   interrupted: '上次运行已中断', cancel_requested: '正在安全取消', cancelled: '本次运行已取消',
   completed: '本次运行已完成', failed: '本次运行有失败项',
 }[store.gradingRun?.state ?? ''] ?? store.gradingRun?.state ?? ''))
+// 边框流光只在批改实际运行（含启动与安全收尾）时显示，暂停、中断和终态立即消失。
+const gradingRunActive = computed(() => (
+  ['running', 'starting', 'pause_requested', 'cancel_requested'].includes(store.gradingRun?.state ?? '')
+))
 const selectedModeOption = computed(() => gradingModes.find((item) => item.mode === store.selectedMode) ?? null)
 const confirmPlanLabel = computed(() => {
   if (store.selectedMode === 'manual') return '进入人工批改'
@@ -561,6 +567,12 @@ watch(
         <label class="scan-drop" :data-disabled="Boolean(store.busyAction)">
           <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
             :disabled="Boolean(store.busyAction)" @change="chooseFiles">
+          <span class="scan-drop__icon" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 16.5V4.81m0 0L8.03 8.03M12 4.81l3.22 3.22" />
+              <path d="M3.75 15.75v1.5A2.25 2.25 0 0 0 6 19.5h12a2.25 2.25 0 0 0 2.25-2.25v-1.5" />
+            </svg>
+          </span>
           <strong>{{ store.uploadBatch?.state === 'frozen' && !store.replacementBatch ? '重新上传答卷' : '选择或继续添加答卷' }}</strong>
           <span>支持 PDF、JPG、PNG；重复内容会自动跳过。</span>
         </label>
@@ -800,9 +812,15 @@ watch(
               <p v-else-if="pendingCount && !confirmPending">请先勾选上方确认，未匹配的异常答卷才会在本轮安全跳过。</p>
               <p v-else-if="store.selectedMode === 'manual'">确认后只会打开人工评分工作台，不会产生 AI 请求。</p>
               <p v-else>确认后才会正式创建批改任务，并按上方估算调用 AI。</p>
-              <button type="button" data-confirm-grading-plan :disabled="!canConfirmPlan" @click="confirmPlan">
+              <AppButton
+                variant="primary"
+                data-confirm-grading-plan
+                :disabled="!canConfirmPlan"
+                ripple
+                @click="confirmPlan"
+              >
                 {{ store.gradingPlan.status === 'blocked' ? '当前计划不可执行' : confirmPlanLabel }}
-              </button>
+              </AppButton>
             </div>
           </template>
         </section>
@@ -815,6 +833,7 @@ watch(
         <div class="scan-stage__heading"><div><span>04</span><h2 id="run-title">运行与补批</h2></div><strong v-if="store.gradingRun">{{ runStateLabel }}</strong><strong v-else-if="gradingCompletedWithoutRun">批改处理已结束</strong></div>
         <div v-if="store.gradingRun" class="run-console">
           <div class="scan-progress scan-progress--run" role="status" aria-live="polite">
+            <BorderBeam v-if="gradingRunActive" :size="120" :duration="4" />
             <div class="scan-progress__copy">
               <div>
                 <strong>{{ runProgressText }}（{{ runProgress }}%）</strong>
