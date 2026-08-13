@@ -6,7 +6,6 @@ import type { GraphQueryInput } from '../api/graph'
 import { knowledgeLeafLabel } from '../api/question-bank'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import type {
-  TrainingDiagnosis,
   TrainingExamScopeRequest,
   TrainingStudentScopeRequest,
 } from '../api/training'
@@ -33,10 +32,6 @@ const training = useTrainingStore()
 const students = ref<StudentSummary[]>([])
 const referenceState = ref<ReferenceState>('loading')
 const selectedTargetKeys = ref<string[]>([])
-const selectedStudentIds = ref<string[]>([])
-const masteryFilterMin = ref(0)
-const masteryFilterMax = ref(100)
-const studentMasteryCache = ref<Record<string, number | null>>({})
 const questionCount = ref(10)
 const expectedMinutes = ref(40)
 const difficultyMin = ref(2)
@@ -48,7 +43,7 @@ const transferRatio = ref(10)
 const paperMode = ref<'individual' | 'shared'>('individual')
 const workflowStage = ref<'diagnosis' | 'draft' | 'wps' | 'scan'>('diagnosis')
 const draftRequestState = ref<'idle' | 'loading' | 'ready' | 'error' | 'editing'>('idle')
-const scopeDisclosure = ref<HTMLDetailsElement | null>(null)
+const scopeFilters = ref<InstanceType<typeof EvidenceScopeFilters> | null>(null)
 const paperDraft = ref<{ generate: () => Promise<void> } | null>(null)
 let studentsController: AbortController | null = null
 
@@ -64,7 +59,7 @@ const pageCopy = computed(() => ({
   },
   student: {
     title: '按学生训练',
-    description: '按掌握度快速筛选并多选学生，查看所选群体的加权知识结构，再确定训练范围。',
+    description: '用顶部筛选确定学生群体，查看所选群体的加权知识结构，再确定训练范围。',
   },
   paper: {
     title: '生成试卷',
@@ -74,42 +69,16 @@ const pageCopy = computed(() => ({
 
 const availableSessions = computed(() => sessionStore.sessions.filter((item) => !item.is_deleted))
 
-function profileMastery(student: TrainingDiagnosis['students'][number]): number | null {
-  const evidence = student.weak_points.reduce((total, point) => total + point.evidence_count, 0)
-  const weighted = student.weak_points.reduce((total, point) => (
-    total + point.mastery * point.evidence_count
-  ), 0)
-  return evidence ? weighted / evidence : null
-}
-
-const studentMasteryRows = computed(() => {
-  const diagnosisProfiles = new Map((training.diagnosis?.students ?? []).map((student) => [
-    student.student_id,
-    student,
-  ]))
-  const roster = students.value.length
-    ? students.value.map((student) => ({
-        id: String(student.id),
-        code: student.student_code,
-        name: student.name,
-      }))
-    : [...diagnosisProfiles.values()].map((student) => ({
-        id: student.student_id,
-        code: student.student_code,
-        name: student.student_name,
-      }))
-  return roster.map((student) => ({
-    ...student,
-    mastery: diagnosisProfiles.has(student.id)
-      ? profileMastery(diagnosisProfiles.get(student.id)!)
-      : studentMasteryCache.value[student.id] ?? null,
-  }))
+// 选定范围下 diagnosis.students 只含所选学生，卡片得分率会丢成 "—"；
+// 这里把每次诊断回来的得分率并入只增缓存。后端若在 scope 上直接给出全量
+// student_score_profiles 则优先使用。
+const profileCache = ref<Record<string, Record<string, unknown>>>({})
+const scoreProfiles = computed(() => {
+  const scopeProfiles = training.diagnosis?.scope.student_score_profiles
+  if (scopeProfiles && Object.keys(scopeProfiles).length) return scopeProfiles
+  return profileCache.value
 })
-const filteredStudentMasteryRows = computed(() => studentMasteryRows.value.filter((student) => (
-  student.mastery !== null
-  && student.mastery * 100 >= masteryFilterMin.value
-  && student.mastery * 100 <= masteryFilterMax.value
-)))
+
 const selectedStudentCount = computed(() => training.diagnosis?.students.length ?? 0)
 const scoreSourceSummary = computed(() => {
   const profiles = training.diagnosis?.students ?? []
@@ -225,29 +194,11 @@ async function applyEvidenceScope(query: GraphQueryInput): Promise<void> {
   await analyze()
 }
 
-function selectFilteredStudents(): void {
-  selectedStudentIds.value = filteredStudentMasteryRows.value.map((student) => student.id)
-}
-
-async function applySelectedStudents(): Promise<void> {
-  const active = activeEvidenceQuery.value
-  if (!active || !selectedStudentIds.value.length) return
-  await applyEvidenceScope({
-    ...active,
-    scope: {
-      ...active.scope,
-      mode: 'selected',
-      student_ids: [...selectedStudentIds.value],
-      include_student_ids: [],
-      exclude_student_ids: [],
-    },
-  })
-}
-
 function openScopeFilters(): void {
-  if (!scopeDisclosure.value) return
-  scopeDisclosure.value.open = true
-  scopeDisclosure.value.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  const filters = scopeFilters.value
+  if (!filters) return
+  filters.openMoreFilters()
+  ;(filters.$el as HTMLElement | undefined)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
 }
 
 function removeTarget(key: string): void {
@@ -293,10 +244,12 @@ async function loadStudents(): Promise<void> {
 }
 
 watch(() => training.diagnosis, (diagnosis) => {
-  const nextCache = { ...studentMasteryCache.value }
-  for (const student of diagnosis?.students ?? []) nextCache[student.student_id] = profileMastery(student)
-  studentMasteryCache.value = nextCache
-  selectedStudentIds.value = (diagnosis?.students ?? []).map((student) => student.student_id)
+  for (const student of diagnosis?.students ?? []) {
+    profileCache.value[student.student_id] = {
+      score_rate: student.score_rate ?? null,
+      score_rate_source: student.score_rate_source ?? 'none',
+    }
+  }
   const validKeys = new Set((diagnosis?.knowledge_catalog ?? []).map((item) => item.knowledge_key))
   selectedTargetKeys.value = selectedTargetKeys.value.filter((key) => validKeys.has(key))
 }, { immediate: true })
@@ -336,18 +289,20 @@ onBeforeUnmount(() => studentsController?.abort())
 
     <KnowledgeTrainingTabs />
 
-    <details ref="scopeDisclosure" v-if="referenceState !== 'error' && trainingMode !== 'paper'" class="scope-disclosure">
-      <summary>调整学生与考试范围</summary>
-      <EvidenceScopeFilters
-        :model-value="activeEvidenceQuery"
-        :students="students"
-        :sessions="availableSessions"
-        :current-session-id="sessionStore.selectedSessionId"
-        :curriculum-volume-id="curriculumScope.selectedVolumeId"
-        :applying="training.analysisState === 'loading'"
-        @apply="applyEvidenceScope"
-      />
-    </details>
+    <EvidenceScopeFilters
+      v-if="referenceState !== 'error' && trainingMode !== 'paper'"
+      ref="scopeFilters"
+      class="training-scope-filters"
+      :model-value="activeEvidenceQuery"
+      :students="students"
+      :sessions="availableSessions"
+      :current-session-id="sessionStore.selectedSessionId"
+      :curriculum-volume-id="curriculumScope.selectedVolumeId"
+      :applying="training.analysisState === 'loading'"
+      :score-profiles="scoreProfiles"
+      :evidence-from="trainingMode === 'student' ? 'student' : 'chapter'"
+      @apply="applyEvidenceScope"
+    />
 
     <p v-if="referenceState === 'error'" class="status-card error">
       学生名单暂时无法读取。请检查服务后重试；当前筛选没有被清空。
@@ -358,7 +313,7 @@ onBeforeUnmount(() => studentsController?.abort())
       <header class="training-mode-panel__heading">
         <div>
           <p class="training-eyebrow">{{ trainingMode === 'chapter' ? '01 · 章节视角' : '02 · 学生视角' }}</p>
-          <h2>{{ trainingMode === 'chapter' ? '章节学生热力图' : '学生筛选与群体知识结构' }}</h2>
+          <h2>{{ trainingMode === 'chapter' ? '章节学生热力图' : '群体知识结构' }}</h2>
         </div>
         <span>{{ scoreSourceSummary }}</span>
       </header>
@@ -382,38 +337,6 @@ onBeforeUnmount(() => studentsController?.abort())
         />
 
         <template v-else>
-          <section class="student-filter-strip" aria-labelledby="student-filter-title">
-            <header>
-              <div>
-                <h3 id="student-filter-title">多选学生</h3>
-                <p>先按总体掌握度缩小名单，再选择具体学生。</p>
-              </div>
-              <strong>{{ selectedStudentIds.length }} / {{ studentMasteryRows.length }} 人</strong>
-            </header>
-            <div class="student-filter-strip__tools">
-              <label>最低<input v-model.number="masteryFilterMin" type="number" min="0" max="100"><span>%</span></label>
-              <label>最高<input v-model.number="masteryFilterMax" type="number" min="0" max="100"><span>%</span></label>
-              <AppButton @click="selectFilteredStudents">选中筛选结果</AppButton>
-              <AppButton variant="ghost" class="button-link" @click="selectedStudentIds = []">清空</AppButton>
-            </div>
-            <div class="student-filter-strip__roster">
-              <label v-for="student in filteredStudentMasteryRows" :key="student.id">
-                <input v-model="selectedStudentIds" type="checkbox" :value="student.id">
-                <span><b>{{ student.name }}</b><small>{{ student.code }}</small></span>
-                <strong>{{ student.mastery === null ? '—' : `${Math.round(student.mastery * 100)}%` }}</strong>
-              </label>
-            </div>
-            <AppButton
-              variant="primary"
-              block
-              class="student-filter-strip__apply"
-              :disabled="!selectedStudentIds.length"
-              @click="applySelectedStudents"
-            >
-              应用 {{ selectedStudentIds.length }} 名学生并重算群体掌握度
-            </AppButton>
-          </section>
-
           <TrainingKnowledgeStructure
             v-model="selectedTargetKeys"
             :diagnosis="training.diagnosis"
@@ -562,32 +485,14 @@ onBeforeUnmount(() => studentsController?.abort())
 
 <style scoped>
 .training-heading--compact { align-items: end; }
-.scope-disclosure { margin-top: var(--space-3); }
-.scope-disclosure > summary { margin-left: auto; width: max-content; padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); color: var(--color-text-secondary); cursor: pointer; list-style: none; }
-.scope-disclosure > summary::after { content: ' ▾'; }
-.scope-disclosure[open] > summary::after { content: ' ▴'; }
-.scope-disclosure > :deep(.evidence-scope) { margin-top: var(--space-2); }
+.training-scope-filters { margin-top: var(--space-2); }
 .training-mode-panel,
-.paper-workspace { margin-top: var(--space-5); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; }
+.paper-workspace { margin-top: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; }
 .training-mode-panel__heading,
 .paper-workspace__heading { display: flex; justify-content: space-between; gap: var(--space-6); align-items: end; padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--border); }
 .training-mode-panel__heading h2,
 .paper-workspace__heading h2 { margin: var(--space-1) 0 0; }
 .training-mode-panel__heading > span { color: var(--color-text-muted); font-size: var(--font-size-dense); }
-.student-filter-strip { margin: var(--space-6); padding: var(--space-4); border-radius: var(--radius); background: var(--color-bg-subtle); }
-.student-filter-strip header,
-.student-filter-strip__tools { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-.student-filter-strip h3,
-.student-filter-strip p { margin: 0; }
-.student-filter-strip p { color: var(--color-text-muted); font-size: var(--font-size-dense); }
-.student-filter-strip__tools { justify-content: flex-start; margin: var(--space-3) 0; }
-.student-filter-strip__tools label { display: flex; align-items: center; gap: var(--space-2); color: var(--color-text-muted); }
-.student-filter-strip__tools input { width: 66px; }
-.student-filter-strip__roster { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--space-2); }
-.student-filter-strip__roster > label { display: grid; grid-template-columns: auto 1fr auto; gap: var(--space-2); align-items: center; min-height: 46px; padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); cursor: pointer; }
-.student-filter-strip__roster span { display: grid; line-height: 1.15; }
-.student-filter-strip__roster small { color: var(--color-text-muted); }
-.student-filter-strip__apply { width: 100%; margin-top: var(--space-3); }
 .training-data-note { margin: var(--space-3) var(--space-6) var(--space-6); color: var(--color-text-muted); }
 .paper-workspace__heading p { margin: var(--space-1) 0 0; color: var(--color-text-muted); }
 .paper-workspace__scope { display: grid; text-align: right; }
@@ -639,7 +544,6 @@ onBeforeUnmount(() => studentsController?.abort())
 .paper-console__action button { width: 100%; margin-top: var(--space-2); }
 .field-error { color: var(--destructive); }
 @media (max-width: 1180px) {
-  .student-filter-strip__roster { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .paper-console { grid-template-columns: 1fr; }
   .paper-console__aside { position: static; grid-template-columns: 1fr 1fr; }
 }

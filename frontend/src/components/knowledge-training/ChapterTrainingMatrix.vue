@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 
 import { knowledgeLeafLabel } from '../../api/question-bank'
 import type { TrainingDiagnosis, TrainingWeakPoint } from '../../api/training'
@@ -42,12 +43,21 @@ const chapters = computed(() => {
   return all.filter((item) => pathParts(item.knowledge_point)[0] === volume)
 })
 const sections = computed(() => catalog.value.filter((item) => item.parent_knowledge_key === activeChapterKey.value))
+const activeChapter = computed(() => chapters.value.find(
+  (item) => item.knowledge_key === activeChapterKey.value,
+) ?? null)
+// 小节为空表示整章视图：汇总每个小节的直接子点（无子点的小节取小节自身）。
 const points = computed(() => {
-  const direct = catalog.value.filter((item) => item.parent_knowledge_key === activeSectionKey.value)
-  if (direct.length) return direct
-  return activeSectionKey.value
-    ? catalog.value.filter((item) => item.knowledge_key === activeSectionKey.value)
-    : []
+  if (activeSectionKey.value) {
+    const direct = catalog.value.filter((item) => item.parent_knowledge_key === activeSectionKey.value)
+    if (direct.length) return direct
+    return catalog.value.filter((item) => item.knowledge_key === activeSectionKey.value)
+  }
+  if (!sections.value.length) return activeChapter.value ? [activeChapter.value] : []
+  return sections.value.flatMap((section) => {
+    const direct = catalog.value.filter((item) => item.parent_knowledge_key === section.knowledge_key)
+    return direct.length ? direct : [section]
+  })
 })
 const groupMap = computed(() => new Map((props.diagnosis.group_weak_points ?? []).map((item) => [
   item.knowledge_key,
@@ -61,14 +71,32 @@ const visiblePoints = computed(() => showEmptyPoints.value
   : points.value.filter((point) => (groupMap.value.get(point.knowledge_key)?.evidence_count ?? 0) > 0))
 const hiddenPointCount = computed(() => points.value.length - visiblePoints.value.length)
 
+function weakFor(studentId: string, knowledgeKey: string): TrainingWeakPoint | null {
+  return props.diagnosis.students.find((student) => student.student_id === studentId)
+    ?.weak_points.find((point) => point.knowledge_key === knowledgeKey) ?? null
+}
+
+// 默认只展示当前章/节内有证据的学生，减少拥挤；可用开关查看完整名单。
+const showEmptyStudents = ref(false)
+function studentHasEvidence(studentId: string): boolean {
+  return points.value.some((point) => (
+    (weakFor(studentId, point.knowledge_key)?.evidence_count ?? 0) > 0
+  ))
+}
+const visibleStudents = computed(() => showEmptyStudents.value
+  ? props.diagnosis.students
+  : props.diagnosis.students.filter((student) => studentHasEvidence(student.student_id)))
+const hiddenStudentCount = computed(() => props.diagnosis.students.length - visibleStudents.value.length)
+
 watch(chapters, (items) => {
   if (!items.some((item) => item.knowledge_key === activeChapterKey.value)) {
     activeChapterKey.value = items[0]?.knowledge_key ?? ''
   }
 }, { immediate: true })
+// 整章视图（空小节）始终合法；小节 key 失效时回到整章视图。
 watch(sections, (items) => {
-  if (!items.some((item) => item.knowledge_key === activeSectionKey.value)) {
-    activeSectionKey.value = items[0]?.knowledge_key ?? ''
+  if (activeSectionKey.value && !items.some((item) => item.knowledge_key === activeSectionKey.value)) {
+    activeSectionKey.value = ''
   }
 }, { immediate: true })
 watch(points, (items) => {
@@ -76,10 +104,18 @@ watch(points, (items) => {
     selectedGroupKey.value = ''
   }
 })
+watch([activeChapterKey, activeSectionKey], () => {
+  selectedCell.value = null
+  selectedGroupKey.value = ''
+})
 
-function weakFor(studentId: string, knowledgeKey: string): TrainingWeakPoint | null {
-  return props.diagnosis.students.find((student) => student.student_id === studentId)
-    ?.weak_points.find((point) => point.knowledge_key === knowledgeKey) ?? null
+function selectChapter(key: string): void {
+  activeChapterKey.value = key
+  activeSectionKey.value = ''
+}
+
+function selectSection(key: string): void {
+  activeSectionKey.value = key
 }
 
 function percent(value: number | null | undefined): string {
@@ -129,7 +165,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
     <header class="chapter-training__toolbar">
       <div>
         <strong>章节训练视图</strong>
-        <span>同一小节可查看个人明细，也可查看当前范围的群体加权结果</span>
+        <span>同一章或小节可查看个人明细，也可查看当前范围的群体加权结果</span>
       </div>
       <div class="chapter-training__modes" aria-label="章节训练展示方式">
         <button type="button" :class="{ 'is-active': viewMode === 'student' }" @click="viewMode = 'student'">学生明细</button>
@@ -139,26 +175,33 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
 
     <div class="chapter-training__body">
       <aside class="chapter-training__scope">
-        <header><strong>章节与小节</strong><span>一次只看 6 个知识点</span></header>
+        <header><strong>章节与小节</strong><span>点章名看整章汇总，点小节只看单节</span></header>
         <p v-if="!chapters.length" class="chapter-training__empty">当前学期在此范围内没有章节。</p>
         <template v-for="chapter in chapters" :key="chapter.knowledge_key">
           <button
             type="button"
             :class="{ 'is-active': chapter.knowledge_key === activeChapterKey }"
             :title="chapter.knowledge_point"
-            @click="activeChapterKey = chapter.knowledge_key"
+            @click="selectChapter(chapter.knowledge_key)"
           >
             <span>{{ chapterLabel(chapter.knowledge_point) }}</span>
             <b>{{ percent(groupMap.get(chapter.knowledge_key)?.mastery) }}</b>
           </button>
           <div v-if="chapter.knowledge_key === activeChapterKey" class="chapter-training__sections">
             <button
+              type="button"
+              :class="{ 'is-active': activeSectionKey === '' }"
+              @click="selectSection('')"
+            >
+              整章汇总
+            </button>
+            <button
               v-for="section in sections"
               :key="section.knowledge_key"
               type="button"
               :class="{ 'is-active': section.knowledge_key === activeSectionKey }"
               :title="section.knowledge_point"
-              @click="activeSectionKey = section.knowledge_key"
+              @click="selectSection(section.knowledge_key)"
             >
               {{ knowledgeLeafLabel(section.knowledge_point) }}
             </button>
@@ -169,7 +212,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
       <main class="chapter-training__main">
         <header>
           <div>
-            <span>{{ sections.find((item) => item.knowledge_key === activeSectionKey)?.knowledge_point }}</span>
+            <span>{{ activeSectionKey ? sections.find((item) => item.knowledge_key === activeSectionKey)?.knowledge_point : activeChapter?.knowledge_point }}</span>
             <h2>{{ viewMode === 'student' ? '学生 × 知识点' : '群体加权 × 知识点' }}</h2>
           </div>
           <div class="chapter-training__head-tools">
@@ -177,7 +220,11 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
               <input v-model="showEmptyPoints" type="checkbox">
               显示无证据知识点<template v-if="hiddenPointCount">（{{ hiddenPointCount }}）</template>
             </label>
-            <strong v-if="viewMode === 'student'">{{ diagnosis.students.length }} 名学生 · {{ visiblePoints.length }} 个知识点</strong>
+            <label class="chapter-training__toggle">
+              <input v-model="showEmptyStudents" type="checkbox">
+              显示无证据学生<template v-if="hiddenStudentCount">（{{ hiddenStudentCount }}）</template>
+            </label>
+            <strong v-if="viewMode === 'student'">{{ visibleStudents.length }} 名学生 · {{ visiblePoints.length }} 个知识点</strong>
             <div v-else class="chapter-training__group-scope">
               <span>统计群体</span>
               <b>{{ groupScopeLabel }}</b>
@@ -187,7 +234,10 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
         </header>
 
         <p v-if="points.length && !visiblePoints.length" class="chapter-training__empty-hint">
-          当前小节的知识点都没有证据；勾选右上角“显示无证据知识点”可查看完整内容。
+          当前范围的知识点都没有证据；勾选右上角“显示无证据知识点”可查看完整内容。
+        </p>
+        <p v-else-if="viewMode === 'student' && diagnosis.students.length && !visibleStudents.length" class="chapter-training__empty-hint">
+          当前范围所有学生都没有证据；勾选右上角“显示无证据学生”可查看完整名单。
         </p>
 
         <template v-if="viewMode === 'student'">
@@ -206,7 +256,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="student in diagnosis.students" :key="student.student_id">
+                <tr v-for="student in visibleStudents" :key="student.student_id">
                   <th scope="row"><strong>{{ student.student_name }}</strong><span>{{ student.student_code }}</span></th>
                   <td v-for="point in visiblePoints" :key="point.knowledge_key">
                     <button
@@ -257,6 +307,10 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
           <div :class="['chapter-training__score', heatClass(selectedWeak.mastery)]">{{ percent(selectedWeak.mastery) }}</div>
           <dl><div><dt>证据</dt><dd>{{ selectedWeak.evidence_count }} 条</dd></div><div><dt>考试</dt><dd>{{ selectedWeak.exam_count }} 场</dd></div></dl>
           <button type="button" @click="toggleTarget(selectedWeak.knowledge_key)">{{ modelValue.includes(selectedWeak.knowledge_key) ? '移出训练目标' : '加入训练目标' }}</button>
+          <RouterLink
+            class="chapter-training__evidence-link"
+            :to="{ name: 'student-evidence', params: { studentId: selectedStudent.student_id }, query: { from: 'chapter', knowledge: selectedWeak.knowledge_key, klabel: knowledgeLeafLabel(selectedWeak.knowledge_point) } }"
+          >查看证据详情</RouterLink>
         </template>
         <template v-else-if="viewMode === 'group' && selectedGroup">
           <span>当前群体</span>
@@ -266,7 +320,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
           <button type="button" @click="toggleTarget(selectedGroup.knowledge_key)">{{ modelValue.includes(selectedGroup.knowledge_key) ? '移出训练目标' : '加入训练目标' }}</button>
         </template>
         <template v-else>
-          <span>当前小节</span>
+          <span>当前范围</span>
           <h2>{{ viewMode === 'student' ? '选择一个掌握度格子' : '选择一行群体结果' }}</h2>
           <p>{{ viewMode === 'student' ? '查看某名学生在具体知识点上的掌握情况。' : '查看当前筛选、某个班级或全部班级的证据加权结果。' }}</p>
         </template>
@@ -338,6 +392,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
 .chapter-training__detail dl div{display:flex;justify-content:space-between;padding:.45rem 0;border-bottom:1px solid var(--color-border-default)}
 .chapter-training__detail>button{width:100%;margin:.8rem 0;padding:.6rem;border:0;border-radius:var(--radius-control);background:var(--color-accent);color:var(--primary-foreground);cursor:pointer}
 .chapter-training__detail>button:hover{background:var(--color-accent-hover)}
+.chapter-training__evidence-link{display:block;box-sizing:border-box;width:100%;margin:.8rem 0;padding:.6rem;border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);color:var(--color-accent-active);text-align:center;text-decoration:none}
 .chapter-training__detail section{margin-top:1rem;padding-top:1rem;border-top:1px solid var(--color-border-default)}
 .chapter-training__detail ul{max-height:180px;overflow:auto;padding-left:1.1rem}
 @media(max-width:1180px){.chapter-training__body{grid-template-columns:195px minmax(0,1fr)}.chapter-training__detail{grid-column:1/-1;border-top:1px solid var(--color-border-default);border-left:0}.chapter-training__groups>div>button{grid-template-columns:minmax(110px,150px) minmax(140px,1fr) 48px 76px 72px}}

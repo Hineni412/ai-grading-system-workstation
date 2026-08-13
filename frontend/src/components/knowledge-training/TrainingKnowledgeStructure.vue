@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 
 import { knowledgeLeafLabel } from '../../api/question-bank'
 import type { TrainingDiagnosis, TrainingWeakPoint } from '../../api/training'
@@ -139,6 +140,13 @@ function toggleTarget(key: string): void {
 function selectableChildren(node: KnowledgeNode): KnowledgeNode[] {
   return node.children.length ? node.children : [node]
 }
+
+// 叶子且有证据的行才提供群体错题入口；父级汇总行不重复展示。
+function hasGroupEvidence(node: KnowledgeNode): boolean {
+  return node.weak !== null
+    && node.weak.evidence_count > 0
+    && node.weak.hierarchy_kind !== 'parent_summary'
+}
 </script>
 
 <template>
@@ -211,6 +219,12 @@ function selectableChildren(node: KnowledgeNode): KnowledgeNode[] {
               <strong>{{ masteryText(point) }}</strong>
               <small v-if="point.weak">{{ point.weak.evidence_count }} 条证据</small>
               <small v-else>暂无证据，不计入群体分母</small>
+              <RouterLink
+                v-if="hasGroupEvidence(point)"
+                class="structure-point-evidence"
+                :to="{ name: 'student-evidence', params: { studentId: 'group' }, query: { mode: 'questions', knowledge: point.key, klabel: knowledgeLeafLabel(point.label), from: 'student' } }"
+                @click.stop
+              >证据</RouterLink>
             </label>
           </div>
         </article>
@@ -229,6 +243,12 @@ function selectableChildren(node: KnowledgeNode): KnowledgeNode[] {
           <strong>{{ masteryText(activeRoot) }}</strong>
           <small v-if="activeRoot.weak">{{ activeRoot.weak.evidence_count }} 条证据</small>
           <small v-else>暂无证据，不计入群体分母</small>
+          <RouterLink
+            v-if="hasGroupEvidence(activeRoot)"
+            class="structure-point-evidence"
+            :to="{ name: 'student-evidence', params: { studentId: 'group' }, query: { mode: 'questions', knowledge: activeRoot.key, klabel: knowledgeLeafLabel(activeRoot.label), from: 'student' } }"
+            @click.stop
+          >证据</RouterLink>
         </label>
       </div>
     </div>
@@ -258,8 +278,10 @@ function selectableChildren(node: KnowledgeNode): KnowledgeNode[] {
 .structure-section { overflow: hidden; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); }
 .structure-section-heading { width: 100%; display: grid; grid-template-columns: 1.2rem 1fr auto; gap: .55rem; padding: .7rem .8rem; border: 0; background: var(--color-bg-subtle); color: var(--color-text-primary); text-align: left; cursor: pointer; }
 .structure-points { display: grid; }
-.structure-point { display: grid; grid-template-columns: auto minmax(140px, .72fr) minmax(160px, 1.4fr) 3.2rem 6.8rem; align-items: center; gap: .65rem; min-height: 2.9rem; padding: .45rem .75rem; border-top: 1px solid var(--color-border-default); cursor: pointer; }
+.structure-point { display: grid; grid-template-columns: auto minmax(140px, .72fr) minmax(160px, 1.4fr) 3.2rem 6.8rem auto; align-items: center; gap: .65rem; min-height: 2.9rem; padding: .45rem .75rem; border-top: 1px solid var(--color-border-default); cursor: pointer; }
 .structure-point:hover { background: var(--color-bg-subtle); }
+.structure-point-evidence { font-size: var(--font-size-caption); color: var(--color-accent-active); text-decoration: none; white-space: nowrap; }
+.structure-point-evidence:hover { text-decoration: underline; }
 .structure-track { position: relative; height: .62rem; overflow: hidden; border-radius: 999px; background: var(--color-bg-selected); }
 .structure-track > i { display: block; height: 100%; background: var(--color-success); }
 .structure-point.is-low .structure-track > i { background: var(--color-danger); }

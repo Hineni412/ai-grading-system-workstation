@@ -90,6 +90,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/training/evidence/:studentId',
+    name: 'student-evidence',
+    component: () => import('../views/StudentEvidenceView.vue'),
+    meta: {
+      title: '学生作答证据',
+      description: '按考试场次查看学生的得分、扣分原因与作答图像证据',
+      breadcrumb: '知识与训练 / 学生作答证据',
+    },
+  },
+  {
     path: templateRegionRouteDefinition.path,
     name: templateRegionRouteDefinition.id,
     component: () => import('../views/TemplateRegionView.vue'),

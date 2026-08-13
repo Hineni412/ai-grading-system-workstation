@@ -188,6 +188,7 @@ def get_current_graph_evidence(
             page=body.page,
             page_size=body.page_size,
         )
+        _attach_assessment_evidence(payload, diagnosis_service)
     except KeyError as exc:
         raise ApiError(
             404,
@@ -425,6 +426,64 @@ def get_relation_timeline(
         relation_id=relation_id,
         timeline=list(timeline),
     )
+
+
+def _attach_assessment_evidence(
+    payload: dict[str, Any],
+    diagnosis_service: DiagnosisProfileService,
+) -> None:
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        return
+    fetch = getattr(
+        getattr(diagnosis_service, "db", None),
+        "get_active_assessment_evidence",
+        None,
+    )
+    if not callable(fetch):
+        return
+    session_ids = sorted(
+        {
+            int(item.get("session_id") or 0)
+            for item in items
+            if isinstance(item, dict)
+        }
+    )
+    student_ids = sorted(
+        {
+            int(item.get("student_id") or 0)
+            for item in items
+            if isinstance(item, dict)
+        }
+    )
+    if not session_ids or not student_ids:
+        return
+    rows = fetch(student_ids=student_ids, session_ids=session_ids)
+    index: dict[tuple[int, int, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (
+            int(row.get("session_id") or 0),
+            int(row.get("student_id") or 0),
+            str(row.get("question_id") or ""),
+        )
+        index.setdefault(key, row)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = (
+            int(item.get("session_id") or 0),
+            int(item.get("student_id") or 0),
+            str(item.get("question_id") or ""),
+        )
+        row = index.get(key)
+        if row is None:
+            continue
+        item["detail_id"] = row.get("detail_id")
+        item["deduction_reason"] = str(row.get("deduction_reason") or "")
+        item["evidence_url"] = (
+            f"/api/sessions/{key[0]}/results/{row.get('result_id')}"
+            f"/details/{row.get('detail_id')}/crop"
+        )
 
 
 def _build_profile(

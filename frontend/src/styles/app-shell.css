@@ -483,6 +483,9 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  /* 内容高度变化时纵向滚动条时隐时现会引起视口宽度变化、页面横移；
+   * 预留滚动条槽位保持内容宽度稳定。 */
+  scrollbar-gutter: stable;
   background: var(--color-bg-app);
 }
 
@@ -616,10 +619,6 @@
     overflow: visible;
   }
 
-  .app-sidebar__link--workbench {
-    grid-column: 1 / -1;
-  }
-
   .app-sidebar__settings {
     margin-top: var(--space-1);
   }
@@ -674,10 +673,6 @@
 @media (max-width: 620px) {
   .app-sidebar__navigation {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .app-sidebar__link--workbench {
-    grid-column: auto;
   }
 
   .app-sidebar__settings-links {

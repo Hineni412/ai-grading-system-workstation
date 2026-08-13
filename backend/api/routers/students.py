@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query, Request
 
 from backend.api.app import ApiError, ErrorResponse
-from backend.api.dependencies import get_student_repository, get_student_roster_module
+from backend.api.dependencies import (
+    get_grading_db,
+    get_question_bank_db_path,
+    get_student_repository,
+    get_student_roster_module,
+)
 from backend.api.schemas.students import (
     StudentDeleteResponse,
     StudentDeletionImpactResponse,
+    StudentExamResultItem,
+    StudentExamResultSession,
+    StudentExamResultsResponse,
     StudentImportCommitRequest,
     StudentImportCommitResponse,
     StudentImportPreviewResponse,
@@ -29,9 +41,65 @@ from backend.students import (
     StudentRosterNotFound,
 )
 from backend.repositories.students import StudentRecord, StudentRepositoryGateway
+from backend.repositories.access import GradingRepositoryAccess
+from question_id_contract import question_id_coordinates
+from question_bank.services.source_question_link_service import (
+    SourceQuestionLinkService,
+)
 
 
 router = APIRouter(prefix="/api", tags=["students"])
+
+
+def _confirmed_bank_question_links(
+    question_bank_db_path: Path,
+    session_ids: list[int],
+) -> dict[tuple[int, str], int]:
+    """Map (session_id, question_id) to confirmed bank question ids.
+
+    Returns an empty mapping whenever the question bank is unavailable so the
+    read-only exam results endpoint keeps working without it.
+    """
+    path = Path(question_bank_db_path)
+    if not session_ids or not path.exists():
+        return {}
+    service = SourceQuestionLinkService(path)
+    links: dict[tuple[int, str], int] = {}
+    for session_id in session_ids:
+        try:
+            session_links = service.list_links(session_id)
+        except (OSError, sqlite3.Error, ValueError):
+            continue
+        for link in session_links:
+            if link.get("status") != "confirmed":
+                continue
+            source_id = str(link.get("source_question_id") or "").strip()
+            bank_id = link.get("bank_question_id")
+            if not source_id or bank_id is None:
+                continue
+            links[(session_id, source_id)] = int(bank_id)
+    return links
+
+
+def _lookup_bank_question_id(
+    links: dict[tuple[int, str], int],
+    session_id: int,
+    question_id: str,
+) -> int | None:
+    """Match a confirmed link for one detail row, falling back to its parent.
+
+    Confirmed links are recorded per rubric question (parent id like ``Q11``),
+    while multi-part subjective details carry part ids (``Q11(P1)``).  When the
+    exact id misses, retry with the parent id so sub-question rows still find
+    the source question.
+    """
+    bank_id = links.get((session_id, question_id))
+    if bank_id is not None:
+        return bank_id
+    coordinates = question_id_coordinates(question_id)
+    if coordinates is None or coordinates[1] is None:
+        return None
+    return links.get((session_id, f"Q{coordinates[0]}"))
 
 
 def _student_response(row: dict) -> StudentResponse:
@@ -226,6 +294,105 @@ def update_student(
     except StudentRosterError as exc:
         raise ApiError(422, exc.code, "Student update is invalid") from exc
     return StudentMutationResponse.model_validate(result.to_dict())
+
+
+@router.get(
+    "/students/{student_id}/exam-results",
+    response_model=StudentExamResultsResponse,
+    responses={404: {"model": ErrorResponse, "description": "Student not found"}},
+)
+def get_student_exam_results(
+    student_id: int,
+    only_deducted: bool = Query(default=True),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    students: StudentRepositoryGateway = Depends(get_student_repository),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+) -> StudentExamResultsResponse:
+    student_row = next(
+        (
+            row
+            for row in students.list_students()
+            if int(row["id"]) == int(student_id)
+        ),
+        None,
+    )
+    if student_row is None:
+        raise ApiError(
+            404,
+            "student_not_found",
+            "Student not found",
+            {"student_id": int(student_id)},
+        )
+    rows = db.get_active_assessment_evidence(student_ids=[int(student_id)])
+    if only_deducted:
+        rows = [row for row in rows if row.get("is_deducted")]
+    bank_links = _confirmed_bank_question_links(
+        question_bank_db_path,
+        sorted({int(row["session_id"]) for row in rows}),
+    )
+
+    sessions: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        session_id = int(row["session_id"])
+        result_id = int(row["result_id"])
+        detail_id = int(row["detail_id"])
+        bucket = sessions.setdefault(
+            session_id,
+            {
+                "session_id": session_id,
+                "session_name": str(row.get("session_name") or ""),
+                "graded_at": row.get("graded_at"),
+                "exam_created_at": row.get("exam_created_at"),
+                "result_id": result_id,
+                "student_score": float(row.get("student_score") or 0.0),
+                "total_score": float(row.get("total_score") or 0.0),
+                "items": [],
+            },
+        )
+        bucket["items"].append(
+            StudentExamResultItem(
+                detail_id=detail_id,
+                question_id=str(row.get("question_id") or ""),
+                bank_question_id=_lookup_bank_question_id(
+                    bank_links,
+                    session_id,
+                    str(row.get("question_id") or ""),
+                ),
+                score_awarded=float(row.get("score_awarded") or 0.0),
+                max_score=row.get("max_score"),
+                deduction_amount=row.get("deduction_amount"),
+                deduction_reason=row.get("deduction_reason"),
+                error_category=row.get("error_category"),
+                error_summary=row.get("error_summary"),
+                evidence_url=(
+                    f"/api/sessions/{session_id}/results/{result_id}"
+                    f"/details/{detail_id}/crop"
+                ),
+            )
+        )
+    ordered = sorted(
+        sessions.values(),
+        key=lambda bucket: (
+            str(bucket.get("graded_at") or bucket.get("exam_created_at") or ""),
+            int(bucket["session_id"]),
+        ),
+        reverse=True,
+    )
+    total = len(ordered)
+    offset = (page - 1) * page_size
+    return StudentExamResultsResponse(
+        student=_student_response(student_row),
+        sessions=[
+            StudentExamResultSession(**bucket)
+            for bucket in ordered[offset : offset + page_size]
+        ],
+        total_sessions=total,
+        page=page,
+        page_size=page_size,
+        total_pages=(total + page_size - 1) // page_size,
+    )
 
 
 @router.get(

@@ -140,3 +140,36 @@ class StudentImportCommitResponse(BaseModel):
     unchanged: int
     total: int
     roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class StudentExamResultItem(BaseModel):
+    detail_id: int
+    question_id: str
+    bank_question_id: int | None = None
+    score_awarded: float
+    max_score: float | None = None
+    deduction_amount: float | None = None
+    deduction_reason: str | None = None
+    error_category: str | None = None
+    error_summary: str | None = None
+    evidence_url: str
+
+
+class StudentExamResultSession(BaseModel):
+    session_id: int
+    session_name: str
+    graded_at: str | None = None
+    exam_created_at: str | None = None
+    result_id: int
+    student_score: float
+    total_score: float
+    items: list[StudentExamResultItem]
+
+
+class StudentExamResultsResponse(BaseModel):
+    student: StudentResponse
+    sessions: list[StudentExamResultSession]
+    total_sessions: int
+    page: int
+    page_size: int
+    total_pages: int
