@@ -81,7 +81,7 @@ def create_intake_router() -> APIRouter:
         )
 
     @router.get("/conversations")
-    def list_conversations(request: Request, response: Response, limit: int = 12):
+    def list_conversations(request: Request, response: Response, limit: int = 5):
         _no_store(response)
         return _call(lambda: _service(request).intake.list_conversations(limit=limit))
 
@@ -89,6 +89,12 @@ def create_intake_router() -> APIRouter:
     def get_conversation(conversation_id: str, request: Request, response: Response):
         _no_store(response)
         return _call(lambda: _service(request).intake.get_conversation(conversation_id))
+
+    @router.delete("/conversations/{conversation_id}")
+    def delete_conversation(conversation_id: str, request: Request, response: Response):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).intake.delete_conversation(conversation_id))
 
     @router.post("/conversations/{conversation_id}/turns")
     def append_turn(conversation_id: str, request: Request, body: TurnAppendRequest, response: Response):

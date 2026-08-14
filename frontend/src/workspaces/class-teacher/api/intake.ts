@@ -369,14 +369,24 @@ export const intakeApi = {
       method: 'POST', headers: headers(), body: { subject_id: subjectId }, decode: decodeIntakeConversation,
     })
   },
-  listConversations() {
-    return apiClient.request('/api/class-teacher/intake/conversations', {
+  listConversations(limit = 5) {
+    return apiClient.request(`/api/class-teacher/intake/conversations?limit=${limit}`, {
       decode: (value) => list(record(value).items).map(decodeConversationSummary),
     })
   },
   conversation(id: string) {
     return apiClient.request(`/api/class-teacher/intake/conversations/${encodeURIComponent(id)}`, {
       decode: decodeIntakeConversation,
+    })
+  },
+  deleteConversation(id: string) {
+    return apiClient.request(`/api/class-teacher/intake/conversations/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: headers(),
+      decode: (value) => {
+        const item = record(value)
+        return { conversation_id: text(item.conversation_id), deleted: item.deleted === true }
+      },
     })
   },
   appendTurn(conversation: IntakeConversation, message: string, operation = operationId()) {

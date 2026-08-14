@@ -1,7 +1,7 @@
 import { createApp, nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { decodeHandoffDraft, intakeApi, type IntakeConversation } from '../api/intake'
+import { decodeHandoffDraft, intakeApi, type IntakeConversation, type IntakeConversationSummary } from '../api/intake'
 import { workApi, type WorkNode } from '../api/work'
 import ConversationDesk from '../intake/ConversationDesk.vue'
 import * as browserVoice from '../intake/browserVoiceRecorder'
@@ -20,12 +20,19 @@ async function settle(): Promise<void> {
   await Promise.resolve(); await Promise.resolve(); await new Promise((resolve) => setTimeout(resolve, 0)); await nextTick()
 }
 
-async function mountDesk(startValue = conversation(), workNodes: WorkNode[] = [], cloudConfigured = true) {
+async function mountDesk(
+  startValue = conversation(),
+  workNodes: WorkNode[] = [],
+  cloudConfigured = true,
+  listeners: Record<string, unknown> = {},
+  recentItems: IntakeConversationSummary[] = [],
+) {
   vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({
     homeroom_class: '一班', revision: 1, classes: ['一班', '二班'], source_revision: 'a'.repeat(64),
   })
-  vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
+  vi.spyOn(intakeApi, 'listConversations').mockResolvedValue(recentItems)
   vi.spyOn(intakeApi, 'startConversation').mockResolvedValue(startValue)
+  vi.spyOn(intakeApi, 'deleteConversation').mockResolvedValue({ conversation_id: 'conversation-1234', deleted: true })
   vi.spyOn(intakeApi, 'speechCapabilities').mockResolvedValue({
     available: true, status: 'ready', engine: 'synthetic-local-speech', offline: true,
     sample_rate: 16000, max_duration_seconds: 60, max_audio_bytes: 2_100_000,
@@ -46,7 +53,7 @@ async function mountDesk(startValue = conversation(), workNodes: WorkNode[] = []
   })
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(ConversationDesk)
+  const app = createApp(ConversationDesk, listeners)
   app.mount(host); mounted.push(app)
   await settle()
   return host
@@ -298,18 +305,94 @@ describe('B-UI-R7 conversation desk', () => {
     expect(recorder.cancel).toHaveBeenCalled()
   })
 
-  it('can clear the default class without deleting roster history', async () => {
-    const setHomeroom = vi.spyOn(intakeApi, 'setHomeroom').mockResolvedValue({
-      homeroom_class: null, revision: 2, classes: ['一班', '二班'], source_revision: 'a'.repeat(64),
-    })
+  it('shows the assigned class as read-only text', async () => {
+    const setHomeroom = vi.spyOn(intakeApi, 'setHomeroom')
     const host = await mountDesk()
-    const select = host.querySelector<HTMLSelectElement>('.desk__tools select')!
-    select.value = ''
-    select.dispatchEvent(new Event('change', { bubbles: true }))
+
+    expect(host.querySelector('.desk__tools select')).toBeNull()
+    expect(host.querySelector('.desk__homeroom')?.textContent).toContain('一班')
+    expect(setHomeroom).not.toHaveBeenCalled()
+  })
+
+  it('does not start another empty conversation from the desk', async () => {
+    const host = await mountDesk()
+    const startConversation = vi.mocked(intakeApi.startConversation)
+    expect(startConversation).toHaveBeenCalledTimes(1)
+
+    const button = [...host.querySelectorAll('button')].find((item) => item.textContent?.includes('新对话'))
+    button?.click()
     await settle()
 
-    expect(setHomeroom).toHaveBeenCalledWith(expect.objectContaining({ revision: 1 }), null)
-    expect(host.textContent).toContain('学生和历史关系没有删除')
+    expect(startConversation).toHaveBeenCalledTimes(1)
+  })
+
+  it('lists at most five conversations that already have content', async () => {
+    const recentItems = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        conversation_id: `conversation-filled-${index}`,
+        revision: 1,
+        state: 'collecting',
+        homeroom_class: '一班',
+        first_message: `合成事项${index}`,
+        pending_count: 0,
+        updated_at: '2026-08-05T00:00:00Z',
+      })),
+      {
+        conversation_id: 'conversation-empty',
+        revision: 1,
+        state: 'collecting',
+        homeroom_class: '一班',
+        first_message: null,
+        pending_count: 0,
+        updated_at: '2026-08-05T00:00:00Z',
+      },
+    ]
+    const host = await mountDesk(conversation(), [], true, {}, recentItems)
+    const buttons = host.querySelectorAll('.recent-open')
+
+    expect(host.querySelector('.recent header')?.textContent).toContain('新对话')
+    expect(host.querySelector('.desk__tools')?.textContent).not.toContain('新对话')
+    expect(buttons).toHaveLength(5)
+    expect(host.textContent).not.toContain('尚未发送内容')
+    expect(host.textContent).not.toContain('合成事项5')
+  })
+
+  it('deletes a recent conversation after confirmation', async () => {
+    const recentItems: IntakeConversationSummary[] = [{
+      conversation_id: 'conversation-filled-0',
+      revision: 1,
+      state: 'collecting',
+      homeroom_class: '一班',
+      first_message: '合成事项0',
+      pending_count: 1,
+      updated_at: '2026-08-05T00:00:00Z',
+    }]
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const host = await mountDesk(conversation(), [], true, {}, recentItems)
+    host.querySelector<HTMLButtonElement>('.recent-delete')!.click()
+    await settle()
+
+    expect(intakeApi.deleteConversation).toHaveBeenCalledWith('conversation-filled-0')
+    expect(host.textContent).toContain('这段对话已删除')
+  })
+
+  it('keeps the conversation when deletion is cancelled', async () => {
+    const recentItems: IntakeConversationSummary[] = [{
+      conversation_id: 'conversation-filled-0',
+      revision: 1,
+      state: 'collecting',
+      homeroom_class: '一班',
+      first_message: '合成事项0',
+      pending_count: 1,
+      updated_at: '2026-08-05T00:00:00Z',
+    }]
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const host = await mountDesk(conversation(), [], true, {}, recentItems)
+    host.querySelector<HTMLButtonElement>('.recent-delete')!.click()
+    await settle()
+
+    expect(intakeApi.deleteConversation).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('合成事项0')
   })
 
   it('does not describe an unknown result as still processing', async () => {
@@ -349,7 +432,104 @@ describe('B-UI-R7 conversation desk', () => {
     const draftCard = host.querySelector<HTMLElement>('[data-work-item="work-stale-ref"]')
     expect(draftCard).not.toBeNull()
     expect(draftCard?.textContent).toContain('学生版本信息不一致，请重新选择')
-    expect(draftCard?.textContent).toContain('打开核对，不会自动保存')
+    expect(draftCard?.textContent).toContain('学生个人档案')
+    expect(draftCard?.textContent).toContain('请先在对话里确认是哪名学生')
+    expect(draftCard?.textContent).not.toContain('登记草稿')
+  })
+
+  it('does not auto-open a student record draft and opens the profile card instead', async () => {
+    const opened: unknown[] = []
+    const profiles: unknown[] = []
+    const host = await mountDesk(conversation(), [], true, {
+      onOpenHandoff: (item: unknown) => opened.push(item),
+      onOpenStudentProfile: (item: unknown) => profiles.push(item),
+    })
+    const ready: IntakeConversation = {
+      ...conversation('handoff_ready'), revision: 2,
+      turns: [{
+        turn_id: 'turn-profile-01', conversation_id: 'conversation-1234', sequence: 1,
+        operation_id: 'operation-profile-01', teacher_message: '合成学生家庭情况', assistant_message: '已整理到当前档案。',
+        clarification_questions: ['在校表现有没有变化？'], task_id: 'task-profile-01', task_state: 'response_persisted',
+        created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z',
+      }],
+      handoffs: [{
+        handoff_id: 'handoff-profile-01', draft_id: 'draft-profile-01', work_item_id: 'work-profile-01',
+        turn_id: 'turn-profile-01', domain: 'student_support', handling_mode: 'record', intent: 'append',
+        destination_key: 'class_teacher.student.record', draft_revision: 1, adoption_state: 'pending',
+        missing_fields: [], subject_ref_count: 1, auto_open_allowed: true,
+      }],
+    }
+    vi.spyOn(intakeApi, 'appendTurn').mockResolvedValue(ready)
+    const textarea = host.querySelector('textarea')!
+    textarea.value = '合成学生家庭情况'
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    host.querySelector('form.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+
+    expect(opened).toHaveLength(0)
+    expect(host.textContent).toContain('学生个人档案')
+    expect(host.textContent).toContain('打开预览，不会自动保存')
+    host.querySelector<HTMLElement>('[data-work-item="work-profile-01"]')!.click()
+    expect(profiles).toHaveLength(1)
+  })
+
+  it('still auto-opens a single plan draft', async () => {
+    const opened: unknown[] = []
+    const host = await mountDesk(conversation(), [], true, {
+      onOpenHandoff: (item: unknown) => opened.push(item),
+    })
+    vi.spyOn(intakeApi, 'appendTurn').mockResolvedValue({
+      ...conversation('handoff_ready'), revision: 2,
+      turns: [{
+        turn_id: 'turn-plan-01', conversation_id: 'conversation-1234', sequence: 1,
+        operation_id: 'operation-plan-01', teacher_message: '月底班会', assistant_message: '已整理为计划草稿。',
+        clarification_questions: [], task_id: 'task-plan-01', task_state: 'response_persisted',
+        created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z',
+      }],
+      handoffs: [{
+        handoff_id: 'handoff-plan-01', draft_id: 'draft-plan-01', work_item_id: 'work-plan-01',
+        turn_id: 'turn-plan-01', domain: 'class_operations', handling_mode: 'plan_calendar', intent: 'plan',
+        destination_key: 'class_teacher.plan.calendar', draft_revision: 1, adoption_state: 'pending',
+        missing_fields: [], subject_ref_count: 0, auto_open_allowed: true,
+      }],
+    })
+    const textarea = host.querySelector('textarea')!
+    textarea.value = '月底班会'
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    host.querySelector('form.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+
+    expect(opened).toHaveLength(1)
+  })
+
+  it('does not open a student profile before the student is uniquely matched', async () => {
+    const opened: unknown[] = []
+    const host = await mountDesk({
+      ...conversation('handoff_ready'),
+      handoffs: [{
+        handoff_id: 'handoff-unmatched',
+        draft_id: 'draft-unmatched',
+        work_item_id: 'work-unmatched',
+        turn_id: 'turn-unmatched',
+        domain: 'student_support',
+        handling_mode: 'record',
+        intent: 'append',
+        destination_key: 'class_teacher.student.record',
+        draft_revision: 1,
+        adoption_state: 'pending',
+        missing_fields: ['请选择一名同名学生'],
+        subject_ref_count: 0,
+        auto_open_allowed: false,
+      }],
+    }, [], true, {
+      onOpenStudentProfile: (item: unknown) => opened.push(item),
+      onOpenHandoff: (item: unknown) => opened.push(item),
+    })
+
+    host.querySelector<HTMLElement>('[data-work-item="work-unmatched"]')!.click()
+    await settle()
+    expect(opened).toHaveLength(0)
+    expect(host.textContent).toContain('请先在对话里确认是哪名学生，再打开个人档案')
   })
 
   it('shows only the current conflict draft after a follow-up revision', async () => {
@@ -402,17 +582,21 @@ describe('B-UI-R7 conversation desk', () => {
     expect(host.textContent).toContain('结果返回后可继续补充')
   })
 
-  it('shows real today and upcoming work from the existing work graph', async () => {
+  it('shows this week work from the existing work graph', async () => {
     const item: WorkNode = {
       node_id: 'node-near-001', kind: 'task', classification: 'ordinary',
       title: '合成近期检查任务', details: null, status: 'pending',
       due_date: '2026-08-06T16:00:00+08:00', revision: 1,
       created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z',
     }
-    const host = await mountDesk(conversation(), [item])
+    const undated: WorkNode = {
+      ...item, node_id: 'node-near-002', title: '合成无日期班务', due_date: null,
+    }
+    const host = await mountDesk(conversation(), [item, undated])
 
-    expect(host.textContent).toContain('今日与接下来')
+    expect(host.textContent).toContain('本周应做的事')
     expect(host.textContent).toContain('合成近期检查任务')
+    expect(host.textContent).toContain('合成无日期班务')
     expect(workApi.read).toHaveBeenCalledWith('week')
   })
 

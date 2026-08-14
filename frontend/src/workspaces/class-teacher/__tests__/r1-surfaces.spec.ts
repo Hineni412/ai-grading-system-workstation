@@ -308,6 +308,79 @@ describe('B UI R1 surfaces', () => {
     expect(host.textContent).not.toContain('拟更新内容')
   })
 
+  it('loads a home conversation proposal without a second composer', async () => {
+    const subject = { subject_id:'subject-1234', revision:1, display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:0, support_plan_count:0, confirmed_entry_count:1, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }
+    vi.spyOn(studentR1Api, 'studentCard').mockResolvedValue({
+      subject, entries:[], existing_records:[], support_plans:[],
+      current_profile:{ entry_id:'entry-1', revision:1, summary:'原有档案内容。', dimensions:[], open_questions:[], support_focus:[], updated_at:'2026-08-01' },
+    })
+    const ready = {
+      conversation_id:'home-conversation', revision:2, state:'handoff_ready', homeroom_class:'一班', focused_subject_id:null, focused_subject_revision:null, created_at:'2026-08-08', updated_at:'2026-08-08',
+      turns:[{ turn_id:'turn-home', conversation_id:'home-conversation', sequence:1, operation_id:'operation-home', teacher_message:'家庭情况', assistant_message:'已整理到当前档案。', clarification_questions:['在校表现？'], task_id:'task-home', task_state:'response_persisted', created_at:'2026-08-08', updated_at:'2026-08-08' }],
+      handoffs:[{ handoff_id:'handoff-home', draft_id:'draft-home', work_item_id:'work-home', turn_id:'turn-home', domain:'student_support' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:false }],
+    }
+    vi.spyOn(intakeApi, 'conversation').mockResolvedValue(ready)
+    vi.spyOn(intakeApi, 'handoff').mockResolvedValue({
+      contract_version:'teacher_workspace_handoff.v1', handoff_id:'handoff-home', work_item_id:'work-home', conversation_id:'home-conversation', turn_id:'turn-home', draft_id:'draft-home', draft_revision:1,
+      domain:'student_support', handling_mode:'record', intent:'append', destination_key:'class_teacher.student.record', adoption_id:'adoption-home', adoption_state:'opened',
+      content:{ summary:'拟更新家庭沟通', profile_update:{ summary:'家长情绪冲突需要关注在校情绪。', dimensions:[{ key:'family', label:'家庭沟通与身心状态', items:['家长情绪冲突'] }], open_questions:['在校表现？'], support_focus:[] } },
+      subject_refs:[{ kind:'student', id:'subject-1234', revision:'1' }], missing_fields:[], return_context:{ destination_key:'class_teacher.home', focus_ref:'work-home' },
+    })
+    const start = vi.spyOn(intakeApi, 'startStudentConversation')
+    const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({ saved:true })
+    vi.spyOn(studentR1Api, 'studentCard').mockResolvedValueOnce({
+      subject, entries:[], existing_records:[], support_plans:[],
+      current_profile:{ entry_id:'entry-1', revision:1, summary:'原有档案内容。', dimensions:[], open_questions:[], support_focus:[], updated_at:'2026-08-01' },
+    }).mockResolvedValueOnce({
+      subject, entries:[], existing_records:[], support_plans:[],
+      current_profile:{ entry_id:'entry-1', revision:2, summary:'家长情绪冲突需要关注在校情绪。', dimensions:[{ key:'family', label:'家庭沟通与身心状态', items:['家长情绪冲突'] }], open_questions:['在校表现？'], support_focus:[], updated_at:'2026-08-08' },
+    })
+
+    const host = await mount(StudentOverviewPanel, { subject, conversationId:'home-conversation' })
+    await vi.waitFor(() => expect(host.textContent).toContain('把新认识并入当前档案'))
+    expect(host.querySelector('form.composer')).toBeNull()
+    expect(start).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('告诉我最近又了解到了什么')
+    clickByText(host, '应用到当前档案')
+    await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ handoff_id:'handoff-home' }), '1')
+  })
+
+  it('opens the current student dossier from a home conversation card', async () => {
+    window.history.replaceState({}, '', '/class-teacher?surface=home')
+    const subject = { subject_id:'subject-1234', display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:0, support_plan_count:0, confirmed_entry_count:1, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }
+    const ready = {
+      conversation_id:'conversation-1234', revision:2, state:'handoff_ready', homeroom_class:'一班',
+      created_at:'2026-08-08T00:00:00Z', updated_at:'2026-08-08T00:00:00Z',
+      turns:[{ turn_id:'turn-profile', conversation_id:'conversation-1234', sequence:1, operation_id:'operation-profile', teacher_message:'家庭情况', assistant_message:'已整理到当前档案。', clarification_questions:['在校表现？'], task_id:'task-profile', task_state:'response_persisted', created_at:'2026-08-08T00:00:00Z', updated_at:'2026-08-08T00:00:00Z' }],
+      handoffs:[{ handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_support' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:false }],
+    }
+    vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
+    vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
+    vi.spyOn(intakeApi, 'startConversation').mockResolvedValue(ready)
+    vi.spyOn(intakeApi, 'conversation').mockResolvedValue(ready)
+    vi.spyOn(intakeApi, 'handoff').mockResolvedValue({
+      contract_version:'teacher_workspace_handoff.v1', handoff_id:'handoff-profile', work_item_id:'work-profile', conversation_id:'conversation-1234', turn_id:'turn-profile', draft_id:'draft-profile', draft_revision:1,
+      domain:'student_support', handling_mode:'record', intent:'append', destination_key:'class_teacher.student.record', adoption_id:'adoption-profile', adoption_state:'opened',
+      content:{ summary:'拟更新家庭沟通', profile_update:{ summary:'家长情绪冲突需要关注在校情绪。', dimensions:[{ key:'family', label:'家庭沟通与身心状态', items:['家长情绪冲突'] }], open_questions:['在校表现？'], support_focus:[] } },
+      subject_refs:[{ kind:'student', id:'subject-1234', revision:'1' }], missing_fields:[], return_context:{ destination_key:'class_teacher.home', focus_ref:'work-profile' },
+    })
+    vi.spyOn(studentR1Api, 'header').mockResolvedValue(subject)
+    vi.spyOn(studentR1Api, 'studentCard').mockResolvedValue({
+      subject, entries:[], existing_records:[], support_plans:[],
+      current_profile:{ entry_id:'entry-1', revision:1, summary:'原有档案。', dimensions:[], open_questions:[], support_focus:[], updated_at:'2026-08-01' },
+    })
+
+    const host = await mount(ClassTeacherWorkbenchView, {})
+    await vi.waitFor(() => expect(host.textContent).toContain('学生个人档案'))
+    clickByText(host, '学生个人档案')
+    await vi.waitFor(() => expect(host.textContent).toContain('把新认识并入当前档案'))
+    expect(host.querySelectorAll('form.composer').length).toBe(1)
+    expect(host.textContent).toContain('家长情绪冲突需要关注在校情绪')
+    expect(host.textContent).not.toContain('告诉我最近又了解到了什么')
+    expect(host.textContent).not.toContain('登记草稿')
+  })
+
   it('academic charts obey server segment status and preserve a real zero', async () => {
     vi.spyOn(studentR1Api, 'academic').mockResolvedValue({
       contract_version:'academic_analysis_v1', source_version:'a'.repeat(64), ruleset_version:'academic_ruleset_v1',

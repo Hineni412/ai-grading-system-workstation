@@ -130,28 +130,51 @@ class ConversationStore:
     ) -> dict[str, object]:
         conversation_id = uuid4().hex
         timestamp = _iso()
+        homeroom = str(homeroom_class or "").strip() or None
+        focused = str(focused_subject_id or "").strip() or None
+        focused_revision = str(focused_subject_revision or "").strip() or None
+        reused_id: str | None = None
         with closing(self.database.connect(create=True)) as connection:
             with connection:
-                connection.execute(
-                    """
-                    INSERT INTO intake_conversations (
-                        conversation_id, revision, state, homeroom_class,
-                        focused_subject_id, focused_subject_revision,
-                        created_at, updated_at
-                    ) VALUES (?, 1, 'collecting', ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        conversation_id,
-                        str(homeroom_class or "").strip() or None,
-                        str(focused_subject_id or "").strip() or None,
-                        str(focused_subject_revision or "").strip() or None,
-                        timestamp,
-                        timestamp,
-                    ),
-                )
-        return self.get(conversation_id)
+                if focused is None:
+                    row = connection.execute(
+                        """
+                        SELECT conversation_id FROM intake_conversations
+                        WHERE state = 'collecting'
+                          AND focused_subject_id IS NULL
+                          AND ((? IS NULL AND homeroom_class IS NULL) OR homeroom_class = ?)
+                          AND NOT EXISTS (
+                            SELECT 1 FROM intake_turns
+                            WHERE intake_turns.conversation_id = intake_conversations.conversation_id
+                          )
+                        ORDER BY updated_at DESC
+                        LIMIT 1
+                        """,
+                        (homeroom, homeroom),
+                    ).fetchone()
+                    if row is not None:
+                        reused_id = str(row["conversation_id"])
+                if reused_id is None:
+                    connection.execute(
+                        """
+                        INSERT INTO intake_conversations (
+                            conversation_id, revision, state, homeroom_class,
+                            focused_subject_id, focused_subject_revision,
+                            created_at, updated_at
+                        ) VALUES (?, 1, 'collecting', ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            conversation_id,
+                            homeroom,
+                            focused,
+                            focused_revision,
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+        return self.get(reused_id or conversation_id)
 
-    def list_recent(self, *, limit: int = 12) -> dict[str, object]:
+    def list_recent(self, *, limit: int = 5) -> dict[str, object]:
         if not self.database.exists:
             return {"items": []}
         size = max(1, min(int(limit), 50))
@@ -170,11 +193,32 @@ class ConversationStore:
                           AND h.adoption_state IN ('pending','opened','adoption_started')) AS pending_count
                 FROM intake_conversations c
                 WHERE c.state != 'abandoned'
+                  AND EXISTS (
+                    SELECT 1 FROM intake_turns t WHERE t.conversation_id = c.conversation_id
+                  )
                 ORDER BY c.updated_at DESC LIMIT ?
                 """,
                 (size,),
             ).fetchall()
         return {"items": [dict(row) for row in rows]}
+
+    def delete(self, conversation_id: str) -> dict[str, object]:
+        self._id(conversation_id, "会话编号")
+        if not self.database.exists:
+            raise VaultError("class_teacher_conversation_not_found", "会话不存在", status_code=404)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                row = connection.execute(
+                    "SELECT conversation_id FROM intake_conversations WHERE conversation_id=?",
+                    (conversation_id,),
+                ).fetchone()
+                if row is None:
+                    raise VaultError("class_teacher_conversation_not_found", "会话不存在", status_code=404)
+                connection.execute(
+                    "DELETE FROM intake_conversations WHERE conversation_id=?",
+                    (conversation_id,),
+                )
+        return {"conversation_id": conversation_id, "deleted": True}
 
     def append_turn(
         self,
@@ -1286,8 +1330,10 @@ class ConversationStore:
                 "missing_fields": missing_fields,
                 "subject_ref_count": len(subject_refs),
                 "auto_open_allowed": not missing_fields
-                and (destination != "class_teacher.student.record" or len(subject_refs) == 1)
-                and destination != "class_teacher.affair.sop",
+                and destination not in {
+                    "class_teacher.student.record",
+                    "class_teacher.affair.sop",
+                },
             })
         return results
 

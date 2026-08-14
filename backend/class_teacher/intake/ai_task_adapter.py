@@ -408,14 +408,15 @@ class ClassTeacherAITaskAdapter:
             ),
             None,
         )
-        previous_handoff = (
-            self.conversations.latest_revisable_handoff(
-                conversation_id=str(conversation["conversation_id"]),
-                exclude_turn_id=current_turn_id,
-            )
-            if _continues_previous_draft(conversation)
-            else None
+        previous_handoff = self.conversations.latest_revisable_handoff(
+            conversation_id=str(conversation["conversation_id"]),
+            exclude_turn_id=current_turn_id,
         )
+        if previous_handoff is not None and not _continues_previous_draft(
+            conversation,
+            previous_handoff,
+        ):
+            previous_handoff = None
         if profile_ref is not None:
             messages.append({"role": "system", "content": _PROFILE_INSTRUCTION})
             messages.extend(self._profile_messages_for_refs([profile_ref]))
@@ -586,14 +587,15 @@ class ClassTeacherAITaskAdapter:
         professional_items: list[dict[str, Any]] = []
         conflict_profiles: list[dict[str, object]] | None = None
         current_turn_id = str(turns[-1].get("turn_id") or "") if turns else ""
-        previous_handoff = (
-            self.conversations.latest_revisable_handoff(
-                conversation_id=str(conversation.get("conversation_id") or ""),
-                exclude_turn_id=current_turn_id or None,
-            )
-            if _continues_previous_draft(conversation)
-            else None
+        previous_handoff = self.conversations.latest_revisable_handoff(
+            conversation_id=str(conversation.get("conversation_id") or ""),
+            exclude_turn_id=current_turn_id or None,
         )
+        if previous_handoff is not None and not _continues_previous_draft(
+            conversation,
+            previous_handoff,
+        ):
+            previous_handoff = None
         if focused is not None and isinstance(items, list) and len(items) > 1:
             raise VaultError(
                 "class_teacher_triage_invalid_result",
@@ -1352,7 +1354,10 @@ def _sanitize_profile_update_dimensions(result: dict[str, Any]) -> None:
                 _drop_contentless_dimensions(update.get("profile_update"))
 
 
-def _continues_previous_draft(conversation: Mapping[str, object]) -> bool:
+def _continues_previous_draft(
+    conversation: Mapping[str, object],
+    previous_handoff: Mapping[str, object] | None = None,
+) -> bool:
     turns = [
         turn
         for turn in list(conversation.get("turns") or [])
@@ -1364,10 +1369,16 @@ def _continues_previous_draft(conversation: Mapping[str, object]) -> bool:
     if _EXPLICIT_NEW_TOPIC_PATTERN.search(current_message):
         return False
     previous_questions = turns[-2].get("clarification_questions")
-    return (
+    if (
         isinstance(previous_questions, list)
         and any(str(question).strip() for question in previous_questions)
-    ) or bool(_FOLLOW_UP_DETAIL_PATTERN.search(current_message))
+    ) or bool(_FOLLOW_UP_DETAIL_PATTERN.search(current_message)):
+        return True
+    return (
+        isinstance(previous_handoff, Mapping)
+        and str(previous_handoff.get("destination_key") or "")
+        == "class_teacher.student.record"
+    )
 
 
 def _profile_open_questions(item: Mapping[str, object]) -> list[str]:
