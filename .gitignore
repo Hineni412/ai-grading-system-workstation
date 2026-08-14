@@ -10,6 +10,10 @@ __pycache__/
 .env
 .env.*
 *.local
+.venv/
+
+# Cursor Cloud Agent isolated runtime data (never teacher user_data)
+.cloud-agent-data/
 
 # Logs and generated runtime data
 logs/

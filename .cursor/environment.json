@@ -1,0 +1,4 @@
+{
+  "install": "bash tools/cloud_agent_install.sh",
+  "start": "bash tools/cloud_agent_start.sh"
+}

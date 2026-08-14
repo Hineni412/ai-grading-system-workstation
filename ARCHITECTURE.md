@@ -23,6 +23,9 @@
 便携包只携带已构建的 `frontend/dist`；没有前端源码时，启动脚本跳过 npm 构建，再由后端入口检查构建产物是否完整。
 两种形态都需要项目便携 Python；源码目录另外需要与前端依赖兼容的 Node.js 和 npm，完整便携包不需要。
 根目录 `关闭系统.bat` 使用 PowerShell 7 停止本项目服务。
+Cursor Cloud Agent 使用仓库中的 `.cursor/environment.json` 安装依赖并启动同一套 FastAPI 入口。
+云端启动把数据放到隔离目录 `/tmp/ai-grading-cloud-data`，不读取、不写入教师本机 `user_data`。
+云端启动不调用真实模型，也不替代 Windows 日常入口 `运行.bat`。
 
 ## 3. 进程与同源页面
 
