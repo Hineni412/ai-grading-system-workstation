@@ -6,6 +6,7 @@ import StatusBadge from '../../../../components/design-system/StatusBadge.vue'
 import type {
   ExerciseSuggestionPayload,
   ExerciseSuggestionRun,
+  ReferenceMaterialLink,
   ReferenceSelectionDraft,
   ReferenceSelectionPayload,
 } from '../../api/workbench'
@@ -14,10 +15,12 @@ import {
   teachingPrepCatalogApi,
   type LessonDraft,
   type MaterialLinkPurpose,
+  type MaterialUnit,
   type ResourcePack,
 } from '../../api/catalog'
 import { useWorkspaceAITaskStore } from '../../../shared/ai-tasks/store'
 import { useTeachingPrepLessonWorkbenchContext } from '../../workbench/routeContext'
+import MaterialPagePreview from './MaterialPagePreview.vue'
 
 const LOCAL_SLIDE_CONTRACT_FINGERPRINT = '34b984e97a114fea15394bfdb1c73e8f667b340918e72c21bc15a21934a20a1b'
 const ACTIVE_TASK_STATUSES = new Set(['prepared', 'queued', 'running', 'needs_input', 'proposal_ready'])
@@ -38,6 +41,17 @@ const quickPurpose = ref<MaterialLinkPurpose | ''>('')
 const quickAdding = ref(false)
 const quickMessage = ref('')
 const quickRequestToken = ref<string | null>(null)
+const quickUnits = ref<MaterialUnit[]>([])
+const quickPreviewPage = ref(1)
+const previewingLinkId = ref<string | null>(null)
+const previewingLinkPage = ref(1)
+const previewUnitsByLink = reactive<Record<string, MaterialUnit[]>>({})
+const QUICK_PURPOSE_OPTIONS: Array<[Exclude<MaterialLinkPurpose, 'reference_ppt'>, string]> = [
+  ['textbook', '教材依据'],
+  ['exercise', '课堂练习'],
+  ['answer', '答案 / 解析'],
+  ['supplement', '补充资料'],
+]
 const exerciseRun = ref<ExerciseSuggestionRun | null>(null)
 const exerciseEdits = reactive<Record<string, ExerciseSuggestionPayload>>({})
 const exerciseAccepted = reactive<Record<string, boolean>>({})
@@ -62,10 +76,12 @@ const quickMaterialCandidates = computed(() => {
       || !record.current_material_version_id
       || (record.current_unit_count ?? 0) < 1
       || linkedVersionIds.has(record.current_material_version_id)
+      || record.material_role === 'reference_ppt'
     ) return []
     const material = catalog.materials.find(item => (
       item.id === record.current_material_version_id
       && item.availability === 'available'
+      && item.material_type !== 'pptx'
       && !item.source_archived_at
     ))
     return material ? [{ record, material }] : []
@@ -79,6 +95,7 @@ const quickMaterialMaximum = computed(() => (
   ?? quickMaterialCandidate.value?.material.unit_count
   ?? 0
 ))
+const quickPreviewReady = computed(() => quickUnits.value.some(item => item.preview_url))
 const selectedLinkIds = computed(() => [
   ...(primaryPptLinkId.value ? [primaryPptLinkId.value] : []),
   ...supportLinkIds.value,
@@ -190,11 +207,34 @@ watch(supportReady, (ready) => {
   if (ready) allowPptOnly.value = false
 })
 
-watch(quickMaterialRecordId, () => {
+watch(quickMaterialRecordId, async (recordId) => {
   quickPurpose.value = ''
   quickStartUnit.value = null
   quickEndUnit.value = null
   quickMessage.value = ''
+  quickUnits.value = []
+  quickPreviewPage.value = 1
+  if (!recordId) return
+  const versionId = quickMaterialCandidates.value.find(
+    item => item.record.id === recordId,
+  )?.record.current_material_version_id
+  if (!versionId) return
+  try {
+    const units = await teachingPrepCatalogApi.listMaterialUnits(versionId)
+    if (quickMaterialRecordId.value !== recordId) return
+    quickUnits.value = units
+    quickPreviewPage.value = units[0]?.unit_index ?? 1
+    if (!units.some(item => item.preview_url)) {
+      quickMessage.value = '这份资料还没有原页图。请先到资料库生成预览，再按页加入。'
+    }
+  } catch {
+    if (quickMaterialRecordId.value !== recordId) return
+    quickMessage.value = '原页预览没有打开。请先到资料库确认这份资料已生成预览。'
+  }
+})
+
+watch(quickStartUnit, (start) => {
+  if (typeof start === 'number' && start >= 1) quickPreviewPage.value = start
 })
 
 watch(
@@ -219,6 +259,10 @@ async function addQuickMaterialLink(): Promise<void> {
   }
   if (startUnit < 1 || endUnit < startUnit || endUnit > maximum) {
     quickMessage.value = `请输入 1—${maximum} 内的连续页段。`
+    return
+  }
+  if (!quickPreviewReady.value) {
+    quickMessage.value = '没有原页图时不能按页码加入。请先到资料库生成预览。'
     return
   }
   quickAdding.value = true
@@ -246,6 +290,37 @@ async function addQuickMaterialLink(): Promise<void> {
       : '尚未加入，请检查资料版本后重试。'
   } finally {
     quickAdding.value = false
+  }
+}
+
+function previewUnitsFor(item: ReferenceMaterialLink): Array<{ unit_index: number, preview_url: string }> {
+  if (previewUnitsByLink[item.link_id]?.length) return previewUnitsByLink[item.link_id] ?? []
+  return item.units.map(unit => ({
+    unit_index: unit.unit_index,
+    preview_url: unit.preview_url,
+  }))
+}
+
+async function toggleLinkPreview(item: ReferenceMaterialLink): Promise<void> {
+  if (previewingLinkId.value === item.link_id) {
+    previewingLinkId.value = null
+    return
+  }
+  previewingLinkId.value = item.link_id
+  previewingLinkPage.value = item.start_unit
+  if (item.units.length || previewUnitsByLink[item.link_id]?.length) return
+  try {
+    const units = await teachingPrepCatalogApi.listMaterialUnits(item.material_version_id)
+    previewUnitsByLink[item.link_id] = units.filter(unit => (
+      unit.unit_index >= item.start_unit && unit.unit_index <= item.end_unit
+    ))
+    if (previewingLinkId.value === item.link_id && !previewUnitsByLink[item.link_id]?.length) {
+      message.value = '这几页还没有原页图。请先到资料库生成预览后再核对。'
+    }
+  } catch {
+    if (previewingLinkId.value === item.link_id) {
+      message.value = '原页预览没有打开。请先到资料库确认这份资料已生成预览。'
+    }
   }
 }
 
@@ -662,16 +737,32 @@ defineExpose({
           </label>
           <p v-if="allowPptOnly" class="tp-error-text">本次只依据 PPT，可能偏离教材与教辅；生成后需要重点复核。</p>
         </div>
-        <div v-for="item in references" :key="item.link_id" class="tp-link-row">
-          <div class="tp-link-row__meta">
-            <strong>{{ item.material_name }}</strong>
-            <small>第 {{ item.start_unit }}—{{ item.end_unit }} 页 · {{ item.material_type.toUpperCase() }}</small>
+        <div v-for="item in references" :key="item.link_id" class="tp-link-block">
+          <div class="tp-link-row">
+            <div class="tp-link-row__meta">
+              <strong>{{ item.material_name }}</strong>
+              <small>第 {{ item.start_unit }}—{{ item.end_unit }} 页 · {{ item.material_type.toUpperCase() }}</small>
+            </div>
+            <StatusBadge
+              :tone="item.purpose === 'reference_ppt' ? 'success' : 'info'"
+              :label="purposeLabels[item.purpose] ?? item.purpose"
+            />
+            <AppButton
+              variant="ghost"
+              data-testid="preview-lesson-material"
+              @click="toggleLinkPreview(item)"
+            >
+              {{ previewingLinkId === item.link_id ? '收起预览' : '预览这几页' }}
+            </AppButton>
+            <AppButton variant="ghost" class="tp-danger-text" @click="removeMaterialLink(item.link_id)">移除</AppButton>
           </div>
-          <StatusBadge
-            :tone="item.purpose === 'reference_ppt' ? 'success' : 'info'"
-            :label="purposeLabels[item.purpose] ?? item.purpose"
+          <MaterialPagePreview
+            v-if="previewingLinkId === item.link_id"
+            :units="previewUnitsFor(item)"
+            :page="previewingLinkPage"
+            :range-label="`本课关联第 ${item.start_unit}—${item.end_unit} 页`"
+            @update:page="previewingLinkPage = $event"
           />
-          <AppButton variant="ghost" class="tp-danger-text" @click="removeMaterialLink(item.link_id)">移除</AppButton>
         </div>
         <p v-if="!references.length" class="tp-muted">本课还没有关联资料，请在下方添加。</p>
       </div>
@@ -680,48 +771,54 @@ defineExpose({
     <section class="tp-panel" aria-label="添加资料">
       <div class="tp-panel__head">
         <h2>添加资料</h2>
-        <span class="tp-panel__hint">只建立你明确指定的连续页段，不会自动关联整本资料，也不会在这里调用 AI</span>
+        <span class="tp-panel__hint">只加入教材、教辅等参考页段。课件已在本课主资料里，不在这里添加；没有原页图时不能按页码加入</span>
       </div>
-      <div class="tp-panel__body tp-form-line">
-        <label class="tp-field">
-          已解析资料
-          <select v-model="quickMaterialRecordId" data-testid="lesson-material-candidate">
-            <option value="">请选择资料</option>
-            <option v-for="item in quickMaterialCandidates" :key="item.record.id" :value="item.record.id">
-              {{ item.record.display_name }} · 共 {{ item.record.current_unit_count }} 页
-            </option>
-          </select>
-        </label>
-        <label class="tp-field">
-          本课时用途
-          <select v-model="quickPurpose" data-testid="lesson-material-purpose">
-            <option value="">请选择用途</option>
-            <option v-for="purpose in [
-              ['textbook', '教材依据'], ['reference_ppt', '参考课件'], ['exercise', '课堂练习'],
-              ['answer', '答案 / 解析'], ['supplement', '补充资料'],
-            ]" :key="purpose[0]" :value="purpose[0]">
-              {{ purpose[1] }}
-            </option>
-          </select>
-        </label>
-        <label class="tp-field">
-          起始页
-          <input v-model.number="quickStartUnit" data-testid="lesson-material-range" type="number" min="1" :max="quickMaterialMaximum || 1">
-        </label>
-        <label class="tp-field">
-          结束页
-          <input v-model.number="quickEndUnit" data-testid="lesson-material-range" type="number" min="1" :max="quickMaterialMaximum || 1">
-        </label>
-        <AppButton
-          variant="secondary"
-          data-testid="add-lesson-material"
-          :disabled="quickAdding"
-          @click="addQuickMaterialLink"
-        >
-          {{ quickAdding ? '正在加入…' : '确认页段并加入本课时' }}
-        </AppButton>
+      <div class="tp-panel__body">
+        <div class="tp-form-line">
+          <label class="tp-field">
+            已解析资料
+            <select v-model="quickMaterialRecordId" data-testid="lesson-material-candidate">
+              <option value="">请选择资料</option>
+              <option v-for="item in quickMaterialCandidates" :key="item.record.id" :value="item.record.id">
+                {{ item.record.display_name }} · 共 {{ item.record.current_unit_count }} 页
+              </option>
+            </select>
+          </label>
+          <label class="tp-field">
+            本课时用途
+            <select v-model="quickPurpose" data-testid="lesson-material-purpose">
+              <option value="">请选择用途</option>
+              <option v-for="purpose in QUICK_PURPOSE_OPTIONS" :key="purpose[0]" :value="purpose[0]">
+                {{ purpose[1] }}
+              </option>
+            </select>
+          </label>
+          <label class="tp-field">
+            起始页
+            <input v-model.number="quickStartUnit" data-testid="lesson-material-range" type="number" min="1" :max="quickMaterialMaximum || 1">
+          </label>
+          <label class="tp-field">
+            结束页
+            <input v-model.number="quickEndUnit" data-testid="lesson-material-range" type="number" min="1" :max="quickMaterialMaximum || 1">
+          </label>
+          <AppButton
+            variant="secondary"
+            data-testid="add-lesson-material"
+            :disabled="quickAdding || !quickPreviewReady"
+            @click="addQuickMaterialLink"
+          >
+            {{ quickAdding ? '正在加入…' : '确认页段并加入本课时' }}
+          </AppButton>
+        </div>
+        <MaterialPagePreview
+          v-if="quickMaterialCandidate"
+          :units="quickUnits"
+          :page="quickPreviewPage"
+          :range-label="quickMaterialCandidate.record.display_name"
+          @update:page="quickPreviewPage = $event"
+        />
         <p v-if="quickMessage" class="tp-inline-message" role="status">{{ quickMessage }}</p>
-        <p v-else-if="quickMaterialCandidates.length === 0" class="tp-muted">当前没有尚未关联且已完成解析的本学期资料。</p>
+        <p v-else-if="quickMaterialCandidates.length === 0" class="tp-muted">当前没有尚未关联的教材或教辅。课件请用本课已对应的主课件，不在这里添加。</p>
       </div>
     </section>
 

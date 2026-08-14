@@ -2628,6 +2628,19 @@ export const teachingPrepCatalogApi = {
     )
   },
 
+  recomputeSemesterMappingPageRanges(
+    proposal: Pick<SemesterMappingProposal, 'id' | 'revision'>,
+  ): Promise<SemesterMappingProposal> {
+    return apiClient.request(
+      `/api/teaching-prep/semester-mapping-proposals/${encodeURIComponent(proposal.id)}/recompute-page-ranges`,
+      {
+        method: 'POST',
+        body: { expected_revision: proposal.revision },
+        decode: decodeSemesterMappingProposal,
+      },
+    )
+  },
+
   rejectSemesterMappingProposal(
     proposal: Pick<SemesterMappingProposal, 'id' | 'revision'>,
   ): Promise<SemesterMappingProposal> {

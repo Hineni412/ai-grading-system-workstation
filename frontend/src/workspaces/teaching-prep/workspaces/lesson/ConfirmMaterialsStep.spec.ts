@@ -6,6 +6,7 @@ import {
   teachingPrepCatalogApi,
   type LessonNode,
   type MaterialLink,
+  type MaterialUnit,
   type MaterialVersion,
   type SemesterMaterialRecord,
   type TeachingSemester,
@@ -122,12 +123,31 @@ function parsedRecord(id: string, versionId: string, name: string): SemesterMate
   }
 }
 
-function material(id: string, name: string): MaterialVersion {
+function material(id: string, name: string, materialType: MaterialVersion['material_type'] = 'pdf'): MaterialVersion {
   return {
-    id, source_id: id, display_name: name, material_type: 'pdf',
-    content_sha256: id[0]!.repeat(64), safe_filename: `${id[0]}.pdf`, size_bytes: 20,
+    id, source_id: id, display_name: name, material_type: materialType,
+    content_sha256: id[0]!.repeat(64), safe_filename: `${id[0]}.${materialType === 'pptx' ? 'pptx' : 'pdf'}`, size_bytes: 20,
     modified_ns: null, unit_count: 5, inspection_status: 'ready',
     availability: 'available', created_at: '2026-08-03T00:00:00Z',
+  }
+}
+
+function previewUnit(versionId: string, index: number): MaterialUnit {
+  const id = `u${index}`.padEnd(32, '0')
+  return {
+    id,
+    material_version_id: versionId,
+    unit_kind: 'pdf_page',
+    unit_index: index,
+    title: null,
+    text_excerpt: '',
+    text_status: 'embedded',
+    formula_review_required: false,
+    object_summary: {},
+    preview_url: `/api/teaching-prep/material-units/${id}/preview`,
+    revision: 1,
+    created_at: '2026-08-03T00:00:00Z',
+    updated_at: '2026-08-03T00:00:00Z',
   }
 }
 
@@ -268,6 +288,8 @@ describe('ConfirmMaterialsStep', () => {
     })
     catalog.semesterMaterials = [parsedRecord('r'.repeat(32), versionId, '补充讲义.pdf')]
     catalog.materials = [material(versionId, '补充讲义.pdf')]
+    const listUnits = vi.spyOn(teachingPrepCatalogApi, 'listMaterialUnits')
+      .mockResolvedValue([1, 2, 3, 4, 5].map(index => previewUnit(versionId, index)))
     const createLink = vi.spyOn(teachingPrepCatalogApi, 'createMaterialLink')
       .mockResolvedValue(materialLink('link-new', '补充讲义.pdf'))
     await nextTick()
@@ -276,7 +298,10 @@ describe('ConfirmMaterialsStep', () => {
     expect(candidate?.querySelectorAll('option')).toHaveLength(2)
     candidate!.value = 'r'.repeat(32)
     candidate!.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(listUnits).toHaveBeenCalledWith(versionId))
     await nextTick()
+    expect(host.querySelector('[data-testid="material-page-preview"] img')?.getAttribute('src'))
+      .toContain('/preview')
     const purpose = host.querySelector<HTMLSelectElement>('[data-testid="lesson-material-purpose"]')
     purpose!.value = 'supplement'
     purpose!.dispatchEvent(new Event('change'))
@@ -298,6 +323,75 @@ describe('ConfirmMaterialsStep', () => {
       confirmation_status: 'confirmed',
     })
     expect(workbench.refresh).toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('does not list PPT files in the add-material candidates', async () => {
+    const pdfId = 'v'.repeat(32)
+    const pptId = 'p'.repeat(32)
+    const { app, host, catalog } = await mountStep({
+      links: [referenceLink('link-ppt', '认识勾股定理.pptx', 'reference_ppt', 'pptx')],
+    })
+    catalog.semesterMaterials = [
+      parsedRecord('r'.repeat(32), pdfId, '补充讲义.pdf'),
+      {
+        ...parsedRecord('q'.repeat(32), pptId, '1.1 第1课时.pptx'),
+        material_role: 'reference_ppt',
+      },
+    ]
+    catalog.materials = [
+      material(pdfId, '补充讲义.pdf'),
+      material(pptId, '1.1 第1课时.pptx', 'pptx'),
+    ]
+    await nextTick()
+
+    const candidate = host.querySelector<HTMLSelectElement>('[data-testid="lesson-material-candidate"]')
+    const labels = [...(candidate?.querySelectorAll('option') ?? [])].map(item => item.textContent ?? '')
+    expect(labels.some(item => item.includes('补充讲义'))).toBe(true)
+    expect(labels.some(item => item.includes('第1课时') || item.includes('pptx'))).toBe(false)
+    const purposeLabels = [...(host.querySelector('[data-testid="lesson-material-purpose"]')?.querySelectorAll('option') ?? [])]
+      .map(item => item.textContent ?? '')
+    expect(purposeLabels).not.toContain('参考课件')
+    app.unmount()
+  })
+
+  it('previews the linked pages of an existing material', async () => {
+    const book = referenceLink('link-book', '教材第 4—5 页', 'textbook')
+    book.start_unit = 4
+    book.end_unit = 5
+    book.units = [
+      {
+        unit_id: 'u4'.padEnd(32, '0'),
+        unit_index: 4,
+        unit_kind: 'pdf_page',
+        title: null,
+        preview_url: '/api/teaching-prep/material-units/u4/preview',
+        text_status: 'embedded',
+        formula_review_required: false,
+      },
+      {
+        unit_id: 'u5'.padEnd(32, '0'),
+        unit_index: 5,
+        unit_kind: 'pdf_page',
+        title: null,
+        preview_url: '/api/teaching-prep/material-units/u5/preview',
+        text_status: 'embedded',
+        formula_review_required: false,
+      },
+    ]
+    const { app, host } = await mountStep({
+      links: [
+        referenceLink('link-ppt', '一次函数课件.pptx', 'reference_ppt', 'pptx'),
+        book,
+      ],
+    })
+
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="preview-lesson-material"]')]
+    expect(buttons).toHaveLength(2)
+    buttons[1]?.click()
+    await nextTick()
+    expect(host.querySelector('[data-testid="material-page-preview"] img')?.getAttribute('src'))
+      .toBe('/api/teaching-prep/material-units/u4/preview')
     app.unmount()
   })
 })

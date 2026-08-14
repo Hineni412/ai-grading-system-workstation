@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
+from backend.teaching_prep.application.semester_mapping_evidence import (
+    build_directory_evidence,
+)
 from backend.teaching_prep.domain.errors import (
     TeachingPrepModelResponseError,
     TeachingPrepValidationError,
@@ -1125,7 +1128,155 @@ def _coalesce_adjacent_ranges(
     return merged
 
 
+def rematerialize_existing_mapping_payload(
+    payload: Mapping[str, object],
+    *,
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """Rebuild page ranges locally from stored lesson matches. No model call."""
+    if payload.get("generation_source") == "local_reference_ppt_names":
+        raise TeachingPrepValidationError(
+            "local reference PPT mappings do not use printed-page recomputation"
+        )
+    materials = _mapping_list(snapshot.get("materials"), "materials")
+    if len(materials) != 1:
+        raise TeachingPrepValidationError(
+            "page recomputation requires exactly one material"
+        )
+    material = materials[0]
+    record_id = str(material.get("record_id") or "")
+    material_role = str(material.get("material_role") or "")
+    new_evidence = build_directory_evidence(snapshot)
+    snapshot_lessons = _mapping_list(snapshot.get("lessons"), "lessons")
+    existing_lessons = {
+        str(item["id"])
+        for item in snapshot_lessons
+        if item.get("node_type") == "lesson"
+    }
+    toc_items, ranges_by_toc = _local_toc_contract(
+        new_evidence,
+        existing_tree=bool(existing_lessons),
+    )
+    old_toc_by_id = _toc_by_id(payload.get("directory_evidence"))
+    lesson_titles = {
+        str(item.get("id") or ""): str(item.get("title") or "")
+        for item in snapshot_lessons
+        if item.get("node_type") == "lesson"
+    }
+    uncertainties: list[str] = [
+        "已按本机页码规则重算页段，未调用模型。"
+    ]
+    rebuilt: list[dict[str, object]] = []
+    seen_lessons: set[str] = set()
+    for mapping in _mapping_list(payload.get("mappings"), "mappings"):
+        lesson_ref = str(mapping.get("lesson_ref") or "").strip()
+        if not lesson_ref or lesson_ref in seen_lessons:
+            continue
+        if existing_lessons and lesson_ref not in existing_lessons:
+            continue
+        seen_lessons.add(lesson_ref)
+        old_titles = [
+            str(old_toc_by_id[ref].get("title") or "")
+            for ref in _string_list(mapping.get("evidence_refs"))
+            if ref in old_toc_by_id
+        ]
+        toc_id = _match_recompute_toc(
+            lesson_title=lesson_titles.get(lesson_ref, ""),
+            old_titles=old_titles,
+            toc_items=toc_items,
+            ranges_by_toc=ranges_by_toc,
+        )
+        if not toc_id:
+            title = lesson_titles.get(lesson_ref) or "已有课时"
+            uncertainties.append(f"{title}暂未对应：页码重算后未找到可靠目录行")
+            continue
+        rebuilt.append(
+            _local_mapping(
+                record_id=record_id,
+                lesson_ref=lesson_ref,
+                toc_id=toc_id,
+                local_range=ranges_by_toc[toc_id],
+                basis="本机按页脚页码重算",
+            )
+        )
+    rebuilt = _share_textbook_section_page_ranges(
+        rebuilt,
+        snapshot_lessons=snapshot_lessons,
+        material_role=material_role,
+        record_id=record_id,
+        uncertainties=uncertainties,
+    )
+    purpose = _ROLE_PURPOSES.get(material_role, "supplement")
+    for item in rebuilt:
+        item["purpose"] = purpose
+    return {
+        "tree": list(payload.get("tree") or []),
+        "mappings": rebuilt,
+        "uncertainties": list(dict.fromkeys(uncertainties))[:100],
+        "source_material_record_ids": list(
+            payload.get("source_material_record_ids") or [record_id]
+        ),
+        "directory_evidence": new_evidence,
+    }
+
+
+def _toc_by_id(value: object) -> dict[str, Mapping[str, object]]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Mapping[str, object]] = {}
+    raw = value.get("toc_entries")
+    if not isinstance(raw, list):
+        return result
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        evidence_id = str(item.get("evidence_id") or "").strip()
+        if evidence_id:
+            result[evidence_id] = item
+    return result
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item or "").strip() for item in value if str(item or "").strip()]
+
+
+def _match_recompute_toc(
+    *,
+    lesson_title: str,
+    old_titles: list[str],
+    toc_items: Mapping[str, Mapping[str, object]],
+    ranges_by_toc: Mapping[str, Mapping[str, object]],
+) -> str:
+    for title in (*old_titles, lesson_title):
+        found = _best_local_lesson_evidence(
+            title,
+            toc_items=toc_items,
+            ranges_by_toc=ranges_by_toc,
+        )
+        if found:
+            return found
+    for title in old_titles:
+        core = _lesson_match_text(title)
+        if len(set(core)) < 4:
+            continue
+        hits = [
+            evidence_id
+            for evidence_id, item in toc_items.items()
+            if evidence_id in ranges_by_toc
+            and (
+                core in _lesson_match_text(str(item.get("title") or ""))
+                or _lesson_match_text(str(item.get("title") or "")) in core
+            )
+        ]
+        if len(hits) == 1:
+            return hits[0]
+    return ""
+
+
 __all__ = [
     "materialize_semantic_mapping_payload",
+    "rematerialize_existing_mapping_payload",
     "validate_semester_mapping_payload",
 ]
