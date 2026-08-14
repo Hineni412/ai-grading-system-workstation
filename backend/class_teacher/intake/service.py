@@ -261,8 +261,11 @@ class ClassTeacherIntake:
             "task_state": snapshot.state,
         }
 
-    def list_conversations(self, *, limit: int = 12) -> dict[str, object]:
+    def list_conversations(self, *, limit: int = 5) -> dict[str, object]:
         return self.conversations.list_recent(limit=limit)
+
+    def delete_conversation(self, conversation_id: str) -> dict[str, object]:
+        return self.conversations.delete(conversation_id)
 
     def apply_triage_result(self, **kwargs) -> dict[str, object]:
         return self.conversations.apply_triage_result(**kwargs)

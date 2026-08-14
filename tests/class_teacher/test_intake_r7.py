@@ -299,6 +299,85 @@ def test_local_speech_api_returns_text_without_creating_a_conversation(tmp_path:
     assert service.intake.list_conversations()["items"] == []
 
 
+def test_empty_home_conversation_is_reused_until_it_has_content(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    first = service.intake.start_conversation()
+    second = service.intake.start_conversation()
+    assert first["conversation_id"] == second["conversation_id"]
+    assert service.intake.list_conversations()["items"] == []
+
+    service.intake.append_turn(
+        conversation_id=str(first["conversation_id"]),
+        expected_revision=1,
+        message="余天策需要跟进家访",
+        operation_id="conversation-turn-reuse-001",
+    )
+    listed = service.intake.list_conversations()["items"]
+    assert [item["first_message"] for item in listed] == ["余天策需要跟进家访"]
+
+    third = service.intake.start_conversation()
+    assert third["conversation_id"] != first["conversation_id"]
+    assert [item["first_message"] for item in service.intake.list_conversations()["items"]] == [
+        "余天策需要跟进家访"
+    ]
+
+
+def test_recent_conversations_hide_empty_and_keep_five(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    for index in range(7):
+        conversation = service.intake.start_conversation()
+        service.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=1,
+            message=f"合成事项{index}",
+            operation_id=f"conversation-turn-recent-{index:03d}",
+        )
+
+    items = service.intake.list_conversations()["items"]
+    assert len(items) == 5
+    assert all(str(item["first_message"]).startswith("合成事项") for item in items)
+    extra = service.intake.list_conversations(limit=10)["items"]
+    assert len(extra) == 7
+    assert {item["first_message"] for item in extra} == {f"合成事项{index}" for index in range(7)}
+
+
+def test_delete_conversation_removes_turns_and_hides_it_from_recent(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    conversation = service.intake.start_conversation()
+    conversation = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=1,
+        message="需要删除的合成对话",
+        operation_id="conversation-turn-delete-001",
+    )
+    deleted = service.intake.delete_conversation(str(conversation["conversation_id"]))
+    assert deleted == {
+        "conversation_id": conversation["conversation_id"],
+        "deleted": True,
+    }
+    assert service.intake.list_conversations()["items"] == []
+    with pytest.raises(VaultError, match="会话不存在"):
+        service.intake.get_conversation(str(conversation["conversation_id"]))
+
+
+def test_focused_student_conversation_does_not_reuse_empty_home_desk(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    subject = service.support.create_subject(
+        token="",
+        operation_id="empty-home-not-reused-subject",
+        source_student_id="SYN-EMPTY-HOME-001",
+        display_name="合成学生甲",
+        class_label="一班",
+    )
+    home = service.intake.start_conversation()
+    focused = service.intake.start_conversation(
+        token="",
+        subject_id=str(subject["subject_id"]),
+    )
+    assert focused["conversation_id"] != home["conversation_id"]
+    assert focused["focused_subject_id"] == subject["subject_id"]
+
+
 def test_student_profile_conversation_keeps_the_selected_student_in_every_task(
     tmp_path: Path,
 ) -> None:
@@ -1778,6 +1857,153 @@ def test_student_record_adoption_receipt_is_idempotent(tmp_path: Path) -> None:
     with closing(service.database.connect()) as connection:
         assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
+
+
+def test_student_record_handoff_is_not_auto_open_allowed(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    subject = service.support.create_subject(
+        token="",
+        operation_id="subject-for-no-auto-open",
+        source_student_id="SYNTHETIC-NO-AUTO-OPEN",
+        display_name="合成学生甲",
+        class_label="一班",
+    )
+    conversation, turn = _conversation_with_turn(
+        service,
+        "student-record-no-auto-open",
+        message="补录一条合成课堂观察",
+    )
+    completed = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload=_triage(subject_id=str(subject["subject_id"])),
+    )
+    handoff = completed["handoffs"][0]
+    assert handoff["destination_key"] == "class_teacher.student.record"
+    assert handoff["auto_open_allowed"] is False
+
+
+def test_student_record_follow_up_revises_previous_draft_without_clarification(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="homeroom-for-student-record-revision",
+    )
+    selected = next(
+        item
+        for item in service.class_roster.ai_candidates(token="", class_label="一班")
+        if item["display_name"] == "合成学生甲"
+    )
+    conversation, first_turn = _conversation_with_turn(
+        service,
+        "student-record-revision-first-turn",
+        message="合成学生甲家庭情况需要记入当前档案。",
+    )
+    first_task = port.prepare_calls[-1]
+    first_outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(first_turn["task_id"]),
+        source_ref=first_task["source_ref"],
+        context_refs=first_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理到当前学生档案。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "student-record-revision-first-item",
+                domain="student_support",
+                mode="record",
+                intent="append",
+                refs=[{
+                    "kind": "student",
+                    "id": str(selected["id"]),
+                    "revision": str(selected["revision"]),
+                }],
+                draft={
+                    "summary": "第一轮学生档案摘要，后续修订必须保留。",
+                    "profile_update": {
+                        "summary": "第一轮学生档案摘要，后续修订必须保留。",
+                        "dimensions": [{
+                            "key": "family_communication",
+                            "label": "家庭沟通与身心状态",
+                            "items": ["家庭情况待核对"],
+                        }],
+                        "open_questions": [],
+                        "support_focus": [],
+                    },
+                },
+            )],
+        },
+    )
+    first_handoff = service.intake.open_handoff(
+        str(first_outcome["handoff_ids"][0])
+    )
+    assert first_handoff["destination_key"] == "class_teacher.student.record"
+    ready = service.intake.conversations.get(str(conversation["conversation_id"]))
+    assert ready["handoffs"][0]["auto_open_allowed"] is False
+    continued = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(ready["revision"]),
+        message="把档案摘要写短一点，不要写成诊断。",
+        operation_id="student-record-revision-second-turn",
+    )
+    second_task = port.prepare_calls[-1]
+    model_request = service.intake.ai_task_adapter.build_model_request(
+        task_kind="class_teacher.intake_triage",
+        source_ref=second_task["source_ref"],
+        context_refs=second_task["context_refs"],
+    )
+    joined = "\n".join(str(message["content"]) for message in model_request.messages)
+    assert "上一轮待核对草稿" in joined
+    assert "第一轮学生档案摘要，后续修订必须保留" in joined
+
+    second_turn = continued["turns"][-1]
+    second_outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(second_turn["task_id"]),
+        source_ref=second_task["source_ref"],
+        context_refs=second_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已按要求缩短档案摘要。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "student-record-revision-second-item",
+                domain="student_support",
+                mode="record",
+                intent="append",
+                refs=[{
+                    "kind": "student",
+                    "id": str(selected["id"]),
+                    "revision": str(selected["revision"]),
+                }],
+                draft={
+                    "summary": "缩短后的学生档案摘要。",
+                    "profile_update": {
+                        "summary": "缩短后的学生档案摘要。",
+                        "dimensions": [{
+                            "key": "family_communication",
+                            "label": "家庭沟通与身心状态",
+                            "items": ["家庭情况待核对"],
+                        }],
+                        "open_questions": [],
+                        "support_focus": [],
+                    },
+                },
+            )],
+        },
+    )
+    saved = service.intake.conversations.get(str(conversation["conversation_id"]))
+    assert sum(
+        item["adoption_state"] in {"pending", "opened"}
+        for item in saved["handoffs"]
+    ) == 1
+    second_handoff = service.intake.open_handoff(str(second_outcome["handoff_ids"][0]))
+    assert second_handoff["content"]["summary"] == "缩短后的学生档案摘要。"
+    assert first_handoff["draft_id"] != second_handoff["draft_id"]
 
 
 def test_focused_student_handoff_updates_the_one_current_profile_atomically(

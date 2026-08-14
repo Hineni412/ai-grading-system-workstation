@@ -12,7 +12,7 @@ import {
   type StudentSupportFocus,
 } from '../api/r1'
 
-const props = defineProps<{ subject: DirectorySubject }>()
+const props = defineProps<{ subject: DirectorySubject; conversationId?: string | null }>()
 const emit = defineEmits<{ close: []; open: [panel: 'support' | 'academic'] }>()
 
 const card = ref<StudentCard | null>(null)
@@ -52,6 +52,7 @@ const proposedProfile = computed<CurrentStudentProfile | null>(() => {
 })
 const hasProfile = computed(() => Boolean(profile.value.summary || profile.value.dimensions.length))
 const supportPlans = computed(() => card.value?.support_plans ?? [])
+const homeBound = computed(() => Boolean(props.conversationId))
 type DrawerTab = 'overview' | 'support' | 'academic'
 const activeTab = ref<DrawerTab>('overview')
 const dialog = ref<HTMLElement | null>(null)
@@ -110,7 +111,26 @@ async function loadProposal(next: IntakeConversation): Promise<void> {
     proposal.value = null
     return
   }
-  proposal.value = await intakeApi.handoff(handoff.handoff_id)
+  const loaded = await intakeApi.handoff(handoff.handoff_id)
+  const boundId = loaded.subject_refs[0]?.id
+  if (boundId && boundId !== props.subject.subject_id) {
+    proposal.value = null
+    return
+  }
+  proposal.value = loaded
+}
+
+async function bindHomeConversation(id: string): Promise<void> {
+  try {
+    const next = await intakeApi.conversation(id)
+    conversation.value = next
+    await loadProposal(next)
+    notice.value = proposal.value
+      ? 'AI 已把这轮信息合并成当前档案草稿，请核对后应用。'
+      : '本轮没有形成可应用的档案更新。'
+  } catch {
+    error.value = '本轮档案草稿暂时无法读取。当前档案没有改变。'
+  }
 }
 
 function poll(id: string): void {
@@ -210,14 +230,20 @@ function planText(plan: Record<string, unknown>, key: string): string {
   return String(value ?? '')
 }
 
-watch(() => props.subject.subject_id, async () => {
-  stopPolling()
-  activeTab.value = 'overview'
-  conversation.value = null
-  proposal.value = null
-  message.value = ''
-  await load()
-})
+watch(
+  [() => props.subject.subject_id, () => props.conversationId],
+  async () => {
+    stopPolling()
+    activeTab.value = 'overview'
+    conversation.value = null
+    proposal.value = null
+    message.value = ''
+    notice.value = ''
+    error.value = ''
+    await load()
+    if (props.conversationId) await bindHomeConversation(props.conversationId)
+  },
+)
 onMounted(() => {
   previouslyFocused = document.activeElement instanceof HTMLElement
     ? document.activeElement
@@ -225,7 +251,9 @@ onMounted(() => {
   previousBodyOverflow = document.body.style.overflow
   document.body.style.overflow = 'hidden'
   window.addEventListener('keydown', onKeydown)
-  void load()
+  void load().then(async () => {
+    if (props.conversationId) await bindHomeConversation(props.conversationId)
+  })
   void nextTick(() => dialog.value?.focus())
 })
 onBeforeUnmount(() => {
@@ -301,10 +329,18 @@ onBeforeUnmount(() => {
             <p>{{ profile.support_focus[0]?.need }}</p>
             <AppButton variant="ghost" @click="selectTab('support')">查看支持重点与下一步</AppButton>
           </div>
+          <p v-if="homeBound && notice" class="notice home-notice" role="status">{{ notice }}</p>
+          <p v-if="homeBound && error" class="error home-error" role="alert">{{ error }}</p>
+          <section v-if="homeBound && proposal && proposedProfile" class="proposal" aria-labelledby="home-proposal-title">
+            <header><div><small>本轮拟更新</small><h2 id="home-proposal-title">把新认识并入当前档案</h2></div><AppButton variant="primary" :disabled="busy" @click="applyProposal">应用到当前档案</AppButton></header>
+            <p class="proposal__summary">{{ proposedProfile.summary }}</p>
+            <div class="proposal__grid"><article v-for="dimension in proposedProfile.dimensions" :key="dimension.key"><strong>{{ dimension.label }}</strong><ul><li v-for="item in dimension.items" :key="item">{{ item }}</li></ul></article></div>
+            <footer><span>应用后仍然只有一份当前档案。关闭抽屉后，可在原对话里告诉 AI 怎么改。</span><AppButton variant="ghost" :disabled="busy" @click="discardProposal">放弃本轮更新</AppButton></footer>
+          </section>
         </section>
 
         <section v-show="activeTab === 'support'" class="tab-panel support-panel" aria-label="成长与支持">
-          <section class="ai-desk" aria-labelledby="ai-desk-title">
+          <section v-if="!homeBound" class="ai-desk" aria-labelledby="ai-desk-title">
             <div class="ai-desk__heading">
               <div><small>和 AI 一起完善这份档案</small><h2 id="ai-desk-title">告诉我最近又了解到了什么</h2></div>
               <p>不用先分类。AI 会结合当前档案整理到合适维度，并提出少量值得继续了解的问题。</p>
@@ -381,8 +417,8 @@ onBeforeUnmount(() => {
         <AppButton variant="ghost" class="quiet" @click="showSourceMaterials">查看 {{ card?.existing_records.length || 0 }} 条原始记录</AppButton>
         <div>
           <AppButton variant="ghost" @click="emit('open', 'support')">支持工作区</AppButton>
-          <AppButton v-if="activeTab !== 'academic'" variant="primary" @click="continueProfile">继续完善档案</AppButton>
-          <AppButton v-else variant="primary" @click="emit('open', 'academic')">打开学业证据</AppButton>
+          <AppButton v-if="activeTab !== 'academic' && !homeBound" variant="primary" @click="continueProfile">继续完善档案</AppButton>
+          <AppButton v-else-if="activeTab === 'academic'" variant="primary" @click="emit('open', 'academic')">打开学业证据</AppButton>
         </div>
       </footer>
     </aside>
@@ -398,7 +434,7 @@ onBeforeUnmount(() => {
 .dossier-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:8px 14px;border-bottom:1px solid var(--border);background:var(--muted)}.dossier-tabs button{min-height:36px;border:0;border-radius:var(--radius);background:transparent;color:var(--muted-foreground);font:inherit;cursor:pointer}.dossier-tabs button:hover{color:var(--foreground)}.dossier-tabs button[aria-selected=true]{background:var(--card);color:var(--primary);font-weight:700}
 .dossier__scroll{overflow:auto;padding:16px 20px 24px}.tab-panel{display:grid;gap:16px}.page-state{display:grid;place-content:center;justify-items:center;gap:8px;padding:28px;text-align:center}.page-state p{color:var(--muted-foreground)}
 .profile-summary{margin:0;padding:14px 16px;border:0;border-left:3px solid var(--color-warning);border-radius:0 var(--radius) var(--radius) 0;background:var(--color-warning-subtle);color:var(--foreground);font-size:16px;line-height:1.65}.empty-profile{display:grid;min-height:160px;place-content:center;padding:20px;text-align:center}.empty-profile p{color:var(--muted-foreground)}.quick-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.quick-stats>div{padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.quick-stats strong{display:block;color:var(--primary);font-size:20px}.quick-stats span{color:var(--muted-foreground);font-size:12px}.section-heading{padding-top:2px;border-bottom:1px solid var(--border)}.section-heading small,.ai-desk small,.proposal small,.support-section small,.academic-intro small{color:var(--primary);font-size:12px;font-weight:700;letter-spacing:.1em}.section-heading h2,.ai-desk h2,.proposal h2,.support-section h2,.academic-intro h2{margin:2px 0 12px;font-size:18px}.dimension-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.dimension{padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.dimension h3{margin:0 0 8px;font-size:15px}.dimension ul,.support-section ul,.support-section ol{margin:0;padding-left:19px;color:var(--color-text-secondary);line-height:1.65}.support-preview{display:grid;gap:5px;justify-items:start;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--color-warning-subtle)}.support-preview small{color:var(--color-warning);font-weight:700}.support-preview p{margin:0;color:var(--color-text-secondary);line-height:1.55}
-.ai-desk{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.ai-desk__heading{padding:16px 18px 12px;background:var(--accent)}.ai-desk__heading p{margin:5px 0 0;color:var(--color-text-secondary);line-height:1.6}.dialogue{display:grid;gap:12px;max-height:280px;overflow:auto;padding:14px 16px 0}.teacher-quote{justify-self:end;max-width:88%;margin:0;padding:10px 13px;border-radius:var(--radius) var(--radius) 2px var(--radius);background:var(--accent);line-height:1.6}.ai-reply{padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:var(--radius);background:var(--card)}.ai-reply p,.ai-reply ul{margin:5px 0 0;line-height:1.6}.composer{margin:14px 16px 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.composer textarea{box-sizing:border-box;width:100%;padding:12px;border:0;border-radius:var(--radius) var(--radius) 0 0;outline:0;resize:vertical;background:transparent;font:inherit;line-height:1.6}.composer:focus-within{border-color:var(--ring);box-shadow:var(--focus-ring)}.composer footer{display:flex;align-items:center;justify-content:space-between;padding:8px 10px 8px 13px;border-top:1px solid var(--border);color:var(--muted-foreground);font-size:12px}.notice,.error{margin:-6px 16px 14px;padding:9px 11px;border-radius:var(--radius)}.notice{background:var(--accent);color:var(--primary)}.error{background:var(--color-danger-subtle);color:var(--destructive)}
+.ai-desk{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.ai-desk__heading{padding:16px 18px 12px;background:var(--accent)}.ai-desk__heading p{margin:5px 0 0;color:var(--color-text-secondary);line-height:1.6}.dialogue{display:grid;gap:12px;max-height:280px;overflow:auto;padding:14px 16px 0}.teacher-quote{justify-self:end;max-width:88%;margin:0;padding:10px 13px;border-radius:var(--radius) var(--radius) 2px var(--radius);background:var(--accent);line-height:1.6}.ai-reply{padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:var(--radius);background:var(--card)}.ai-reply p,.ai-reply ul{margin:5px 0 0;line-height:1.6}.composer{margin:14px 16px 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.composer textarea{box-sizing:border-box;width:100%;padding:12px;border:0;border-radius:var(--radius) var(--radius) 0 0;outline:0;resize:vertical;background:transparent;font:inherit;line-height:1.6}.composer:focus-within{border-color:var(--ring);box-shadow:var(--focus-ring)}.composer footer{display:flex;align-items:center;justify-content:space-between;padding:8px 10px 8px 13px;border-top:1px solid var(--border);color:var(--muted-foreground);font-size:12px}.notice,.error{margin:-6px 16px 14px;padding:9px 11px;border-radius:var(--radius)}.notice{background:var(--accent);color:var(--primary)}.error{background:var(--color-danger-subtle);color:var(--destructive)}.home-notice,.home-error{margin:0}
 .proposal{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.proposal>header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--color-warning-subtle)}.proposal__summary{margin:0;padding:14px 16px;font-size:16px;line-height:1.6}.proposal__grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 16px 14px}.proposal__grid article{padding:10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.proposal__grid ul{margin:7px 0 0;padding-left:18px}.proposal>footer{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 16px;border-top:1px solid var(--border);color:var(--color-text-secondary);font-size:12px}
 .support-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.support-section{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.support-section>header{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--muted)}.support-section h2{margin-bottom:0}.support-section article{margin:12px;padding:12px;border:1px solid var(--border);border-radius:var(--radius)}.support-section article h3{margin:0}.support-section article p{margin:7px 0;line-height:1.55}.support-section article strong{display:block;margin-top:10px;color:var(--muted-foreground);font-size:12px}.compact-empty{margin:0;padding:16px;color:var(--muted-foreground);line-height:1.6}.questions ol{padding:14px 34px}.active-plans{grid-column:1/-1}.source-materials{padding:14px 16px;border:1px dashed var(--border);border-radius:var(--radius);background:var(--muted);color:var(--color-text-secondary)}.source-materials summary{cursor:pointer;font-weight:700}.source-materials p{margin-bottom:0}.academic-intro{padding:20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.academic-intro p{margin:0;color:var(--color-text-secondary);line-height:1.7}.academic-stats{margin-top:2px}
 .dossier-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-top:1px solid var(--border);background:var(--card)}.dossier-actions>div{display:flex;gap:8px}.dossier button:focus-visible,.dossier textarea:focus-visible,.source-materials:focus-visible,.source-materials summary:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
