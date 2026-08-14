@@ -112,6 +112,13 @@ def materialize_semantic_mapping_payload(
             ranges_by_toc=ranges_by_toc,
             uncertainties=local_uncertainties,
         )
+        mappings = _share_textbook_section_page_ranges(
+            mappings,
+            snapshot_lessons=snapshot_lessons,
+            material_role=str(materials[0].get("material_role") or ""),
+            record_id=record_id,
+            uncertainties=local_uncertainties,
+        )
     else:
         if matches:
             raise TeachingPrepModelResponseError(
@@ -830,6 +837,111 @@ def _materialize_existing_matches(
     if ranges_by_toc and covered_toc != set(ranges_by_toc):
         uncertainties.append("部分目录行未能对应到已有课时，需教师复核。")
     return mappings
+
+
+def _share_textbook_section_page_ranges(
+    mappings: list[dict[str, object]],
+    *,
+    snapshot_lessons: list[Mapping[str, object]],
+    material_role: str,
+    record_id: str,
+    uncertainties: list[str],
+) -> list[dict[str, object]]:
+    if material_role != "textbook":
+        return mappings
+    by_id = {
+        str(item.get("id") or ""): item
+        for item in snapshot_lessons
+        if str(item.get("id") or "")
+    }
+
+    def section_id_for(lesson_ref: str) -> str:
+        current = by_id.get(lesson_ref)
+        visited: set[str] = set()
+        while current is not None:
+            node_id = str(current.get("id") or "")
+            if not node_id or node_id in visited:
+                break
+            visited.add(node_id)
+            if current.get("node_type") == "section":
+                return node_id
+            parent_id = str(current.get("parent_id") or "")
+            current = by_id.get(parent_id) if parent_id else None
+        return ""
+
+    lessons_by_section: dict[str, list[str]] = {}
+    titles = {
+        str(item.get("id") or ""): str(item.get("title") or "")
+        for item in snapshot_lessons
+        if item.get("node_type") == "lesson"
+    }
+    for item in snapshot_lessons:
+        if item.get("node_type") != "lesson":
+            continue
+        lesson_ref = str(item.get("id") or "")
+        section_id = section_id_for(lesson_ref)
+        if lesson_ref and section_id:
+            lessons_by_section.setdefault(section_id, []).append(lesson_ref)
+    if not lessons_by_section:
+        return mappings
+
+    rewritten = list(mappings)
+    for lesson_refs in lessons_by_section.values():
+        section_mappings = [
+            item
+            for item in rewritten
+            if str(item.get("lesson_ref") or "") in lesson_refs
+        ]
+        if not section_mappings:
+            continue
+        start = min(int(item["start_unit"]) for item in section_mappings)
+        end = max(int(item["end_unit"]) for item in section_mappings)
+        evidence: list[str] = []
+        for item in section_mappings:
+            for ref in item.get("evidence_refs") or []:
+                text = str(ref or "").strip()
+                if text and text not in evidence:
+                    evidence.append(text)
+        basis = "同小节共用教材页码"
+        seen: set[str] = set()
+        next_rows: list[dict[str, object]] = []
+        for item in rewritten:
+            lesson_ref = str(item.get("lesson_ref") or "")
+            if lesson_ref not in lesson_refs:
+                next_rows.append(item)
+                continue
+            if lesson_ref in seen:
+                continue
+            updated = dict(item)
+            updated["start_unit"] = start
+            updated["end_unit"] = end
+            if evidence:
+                updated["evidence_refs"] = evidence[:20]
+            next_rows.append(updated)
+            seen.add(lesson_ref)
+        for lesson_ref in lesson_refs:
+            if lesson_ref in seen:
+                continue
+            next_rows.append(
+                {
+                    "material_record_id": record_id,
+                    "lesson_ref": lesson_ref,
+                    "start_unit": start,
+                    "end_unit": end,
+                    "basis": basis,
+                    "evidence_refs": evidence[:20],
+                }
+            )
+            seen.add(lesson_ref)
+            title = titles.get(lesson_ref) or ""
+            if title:
+                prefix = f"{title}暂未对应"
+                for index, item in enumerate(list(uncertainties)):
+                    if str(item).startswith(prefix):
+                        uncertainties.pop(index)
+                        break
+        rewritten = next_rows
+    return rewritten
 
 
 def _unique_lesson_refs_by_title(

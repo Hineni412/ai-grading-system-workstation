@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import AppButton from '../../../../components/design-system/AppButton.vue'
 import StatusBadge from '../../../../components/design-system/StatusBadge.vue'
@@ -16,9 +16,17 @@ import { adoptTeachingPrepProposal } from '../../aiAdoption'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
 import { LINK_PURPOSES, roleLabel } from './libraryShared'
 import MaterialDetail from './MaterialDetail.vue'
+import {
+  buildMappingReviewGroups,
+  coveringReviewGroup,
+  groupHasPending,
+  nextPendingReviewGroup,
+  pendingReviewCount as countPendingReviewGroups,
+  type MappingReviewGroup,
+} from './mappingSectionGroups'
 
 const props = defineProps<{ materialId: string }>()
-const emit = defineEmits<{ notice: [message: string] }>()
+const emit = defineEmits<{ notice: [message: string]; 'open-import': [] }>()
 
 const catalog = useTeachingPrepCatalogStore()
 const aiTasks = useWorkspaceAITaskStore()
@@ -36,17 +44,36 @@ const isExerciseBook = computed(() => (
   ['exercise_workbook', 'homework_workbook'].includes(record.value?.material_role ?? '')
 ))
 
+const abandonedProposalIds = ref<string[]>([])
+
 // 本书最新一份 AI 对应建议（本地 PPT 建议只服务于课时树，不在此展示）
-const bookProposal = computed<SemesterMappingProposal | null>(() => (
-  catalog.semesterMappingProposals
-    .filter(item => (
-      item.status !== 'rejected'
-      && item.payload.generation_source !== 'local_reference_ppt_names'
-      && item.payload.source_material_record_ids.includes(record.value?.id ?? '')
-    ))
+const bookProposal = computed<SemesterMappingProposal | null>(() => {
+  const recordId = record.value?.id ?? ''
+  const listed = catalog.semesterMappingProposals.filter(item => (
+    item.status !== 'rejected'
+    && !abandonedProposalIds.value.includes(item.id)
+    && item.payload.generation_source !== 'local_reference_ppt_names'
+  ))
+  const byRecord = listed
+    .filter(item => item.payload.source_material_record_ids.includes(recordId))
     .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))[0]
-  ?? null
-))
+  if (byRecord || !record.value) return byRecord ?? null
+  const semesterId = catalog.selectedSemester?.id
+  if (!semesterId) return null
+  const task = aiTasks.orderedTasks.find(item => (
+    item.module === 'teaching_prep'
+    && item.task_kind === 'teaching_prep.semester_mapping'
+    && item.status === 'proposal_ready'
+    && Boolean(item.proposal_ref_id)
+    && item.source_ref.kind === 'semester'
+    && item.source_ref.id === semesterId
+    && item.context_refs.some(reference => (
+      reference.kind === 'material' && reference.id === recordId
+    ))
+  ))
+  if (!task?.proposal_ref_id) return null
+  return listed.find(item => item.id === task.proposal_ref_id) ?? null
+})
 
 function notice(message: string): void {
   emit('notice', message)
@@ -79,22 +106,6 @@ const mappingLessonOptions = computed(() => [
   ...proposalLessonOptions.value,
   ...formalLessonOptions.value,
 ])
-const mappingGroups = computed(() => {
-  const proposal = bookProposal.value
-  if (!proposal) return []
-  const refs = [...new Set(proposal.payload.mappings.map(item => item.lesson_ref))]
-  return refs.map((lessonRef) => {
-    const option = mappingLessonOptions.value.find(item => item.value === lessonRef)
-    const mappings = proposal.payload.mappings.filter(item => item.lesson_ref === lessonRef)
-    return {
-      lessonRef,
-      title: option?.title ?? '未识别课时',
-      path: option?.path ?? lessonRef,
-      mappings,
-      pendingCount: mappings.filter(item => item.decision === 'pending').length,
-    }
-  })
-})
 const proposalEvidenceById = computed(() => {
   const evidence = bookProposal.value?.payload.directory_evidence
   const entries = [
@@ -107,13 +118,197 @@ const proposalEvidenceById = computed(() => {
     return id ? [[id, entry] as const] : []
   }))
 })
-const pendingMappingCount = computed(() => (
-  bookProposal.value?.payload.mappings.filter(item => item.decision === 'pending').length ?? 0
-))
+const isTextbookBook = computed(() => record.value?.material_role === 'textbook')
 const allMappingsDecided = computed(() => {
   const mappings = bookProposal.value?.payload.mappings ?? []
   return mappings.length > 0 && mappings.every(item => item.decision !== 'pending')
 })
+
+const currentPage = ref(1)
+const rangeEditorOpen = ref(false)
+const pageStripRef = ref<HTMLElement | null>(null)
+let initializedProposalId = ''
+
+const bookUnits = computed(() => (
+  catalog.selectedMaterialId === props.materialId ? catalog.materialUnits : []
+))
+const orderedMappings = computed(() => (
+  [...(bookProposal.value?.payload.mappings ?? [])].sort((left, right) => (
+    left.start_unit - right.start_unit || left.end_unit - right.end_unit
+  ))
+))
+const reviewGroups = computed(() => buildMappingReviewGroups(
+  orderedMappings.value,
+  {
+    textbook: isTextbookBook.value,
+    lessonNodes: catalog.lessonNodes,
+  },
+))
+const pendingReviewCount = computed(() => countPendingReviewGroups(reviewGroups.value))
+const currentReviewGroup = computed(() => coveringReviewGroup(
+  reviewGroups.value,
+  currentPage.value,
+))
+const pageCount = computed(() => Math.max(
+  record.value?.current_unit_count ?? 0,
+  bookUnits.value.reduce((max, unit) => Math.max(max, unit.unit_index), 0),
+  orderedMappings.value.reduce((max, item) => Math.max(max, item.end_unit), 0),
+  1,
+))
+const pageIndexes = computed(() => (
+  Array.from({ length: pageCount.value }, (_, index) => index + 1)
+))
+const pageStatuses = computed(() => {
+  const statuses = new Map<number, 'pending' | 'accepted' | 'modified' | 'rejected' | 'unmapped'>()
+  for (let page = 1; page <= pageCount.value; page += 1) statuses.set(page, 'unmapped')
+  for (const item of orderedMappings.value) {
+    for (let page = item.start_unit; page <= item.end_unit; page += 1) {
+      const current = statuses.get(page)
+      if (item.decision === 'pending' || current === 'unmapped' || current === 'rejected') {
+        statuses.set(page, item.decision)
+      }
+    }
+  }
+  return statuses
+})
+const pageLessonTones = computed(() => {
+  const tones = new Map<number, 'a' | 'b'>()
+  let previous: string | null = null
+  let tone: 'a' | 'b' = 'a'
+  for (let page = 1; page <= pageCount.value; page += 1) {
+    const group = coveringReviewGroup(reviewGroups.value, page)
+    const groupKey = group?.key ?? null
+    if (!groupKey) continue
+    if (previous !== null && groupKey !== previous) {
+      tone = tone === 'a' ? 'b' : 'a'
+    }
+    previous = groupKey
+    tones.set(page, tone)
+  }
+  return tones
+})
+const currentRange = computed(() => {
+  const group = currentReviewGroup.value
+  if (group) {
+    return group.mappings.find(item => item.decision === 'pending') ?? group.mappings[0] ?? null
+  }
+  const page = currentPage.value
+  const covering = orderedMappings.value.filter(item => (
+    item.start_unit <= page && page <= item.end_unit
+  ))
+  return covering.find(item => item.decision === 'pending') ?? covering[0] ?? null
+})
+const currentRangeStart = computed(() => (
+  currentReviewGroup.value?.startUnit ?? currentRange.value?.start_unit ?? currentPage.value
+))
+const currentRangeEnd = computed(() => (
+  currentReviewGroup.value?.endUnit ?? currentRange.value?.end_unit ?? currentPage.value
+))
+const currentLessonLabel = computed(() => {
+  const group = currentReviewGroup.value
+  if (group?.label) return group.label
+  const item = currentRange.value
+  if (!item) return '未对应课时'
+  return mappingLessonOptions.value.find(option => option.value === item.lesson_ref)?.title
+    ?? '未识别课时'
+})
+const previewWindow = computed(() => {
+  const page = currentPage.value
+  return [page - 1, page, page + 1].flatMap((index) => {
+    const unit = bookUnits.value.find(item => item.unit_index === index)
+    return unit ? [unit] : []
+  })
+})
+const currentPreviewMissing = computed(() => (
+  !previewWindow.value.some(unit => unit.unit_index === currentPage.value)
+))
+const confirmRangeLabel = computed(() => {
+  if (!currentRange.value) return '下一页'
+  const unit = isTextbookBook.value ? '小节' : '段'
+  if (!currentReviewGroup.value || !groupHasPending(currentReviewGroup.value)) {
+    return `看下一${unit}未确认`
+  }
+  if (pendingReviewCount.value <= 1) return isTextbookBook.value ? '确认本小节' : '确认本段'
+  return isTextbookBook.value ? '确认本小节，看下一小节' : '确认本段，看下一段'
+})
+
+function pageStatusOf(page: number): 'pending' | 'accepted' | 'modified' | 'rejected' | 'unmapped' {
+  return pageStatuses.value.get(page) ?? 'unmapped'
+}
+
+function pageLessonTone(page: number): 'a' | 'b' | null {
+  return pageLessonTones.value.get(page) ?? null
+}
+
+function pageStatusLabel(page: number): string {
+  return ({
+    pending: '待确认',
+    accepted: '已对应',
+    modified: '已调整',
+    rejected: '已排除',
+    unmapped: '未对应',
+  }[pageStatusOf(page)])
+}
+
+function pageLessonLabel(page: number): string {
+  const group = coveringReviewGroup(reviewGroups.value, page)
+  if (group?.label) return group.label
+  const covering = orderedMappings.value.filter(item => (
+    item.decision !== 'rejected'
+    && item.start_unit <= page
+    && page <= item.end_unit
+  ))
+  const chosen = covering.find(item => item.decision === 'pending') ?? covering[0]
+  if (!chosen) return ''
+  return mappingLessonOptions.value.find(option => option.value === chosen.lesson_ref)?.title
+    ?? '未识别课时'
+}
+
+function pageAriaLabel(page: number): string {
+  const lesson = pageLessonLabel(page)
+  const status = pageStatusLabel(page)
+  return lesson ? `第 ${page} 页，${lesson}，${status}` : `第 ${page} 页，${status}`
+}
+
+function goToPage(page: number): void {
+  currentPage.value = Math.min(pageCount.value, Math.max(1, page))
+}
+
+function goToNextPendingRange(afterEnd: number): void {
+  const nextGroup = nextPendingReviewGroup(reviewGroups.value, afterEnd)
+  if (nextGroup) {
+    goToPage(nextGroup.startUnit)
+    return
+  }
+  const pending = orderedMappings.value.filter(item => item.decision === 'pending')
+  const next = pending.find(item => item.start_unit > afterEnd) ?? pending[0]
+  if (next) goToPage(next.start_unit)
+}
+
+async function ensurePageUnits(): Promise<void> {
+  const item = material.value
+  if (!item) return
+  if (
+    catalog.selectedMaterialId === item.id
+    && catalog.materialUnits.some(unit => unit.material_version_id === item.id)
+  ) return
+  try {
+    if (catalog.selectedMaterialId === item.id) {
+      await catalog.refreshCurrentMaterialUnits(item.id)
+      return
+    }
+    await catalog.openMaterial(item)
+  } catch {
+    notice(catalog.errorMessage || '原页预览还没有打开，仍可按页段确认。')
+  }
+}
+
+function rangeWasEdited(item: SemesterMappingProposalRange): boolean {
+  const edit = editFor(item)
+  return edit.lessonRef !== item.lesson_ref
+    || edit.startUnit !== item.start_unit
+    || edit.endUnit !== item.end_unit
+}
 
 function evidenceDisplay(evidenceId: string): string {
   const evidence = proposalEvidenceById.value.get(evidenceId)
@@ -149,11 +344,12 @@ function editFor(item: SemesterMappingProposalRange) {
 async function decideMapping(
   item: SemesterMappingProposalRange,
   decision: 'accepted' | 'modified' | 'rejected',
-): Promise<void> {
+  options: { silent?: boolean } = {},
+): Promise<boolean> {
   const proposal = bookProposal.value
-  if (!proposal) return
+  if (!proposal) return false
   const edit = editFor(item)
-  notice('正在保存本条决定…')
+  if (!options.silent) notice('正在保存本条决定…')
   try {
     const updated = await teachingPrepWorkbenchApi.reviewMapping(
       proposal.id,
@@ -181,40 +377,169 @@ async function decideMapping(
       proposalItem => proposalItem.id === updated.id,
     )
     if (index >= 0) catalog.semesterMappingProposals[index] = updated
-    notice(decision === 'rejected'
-      ? '已排除本条对应，原始建议仍保留。'
-      : decision === 'modified'
-        ? '已保存你的修改，原始建议仍可追溯。'
-        : '已确认本条对应。')
+    if (!options.silent) {
+      notice(decision === 'rejected'
+        ? '已排除本条对应，原始建议仍保留。'
+        : decision === 'modified'
+          ? '已保存你的修改，原始建议仍可追溯。'
+          : '已确认本条对应。')
+    }
+    return true
   } catch {
     notice('本条决定没有保存，请刷新后核对版本。')
+    return false
   }
+}
+
+function groupRangeFromEditor(group: MappingReviewGroup): { start: number, end: number, edited: boolean } {
+  const representative = group.mappings.find(item => item.decision === 'pending') ?? group.mappings[0]
+  if (!representative || !rangeWasEdited(representative)) {
+    return { start: group.startUnit, end: group.endUnit, edited: false }
+  }
+  const edit = editFor(representative)
+  return { start: edit.startUnit, end: edit.endUnit, edited: true }
+}
+
+async function confirmReviewGroup(
+  group: MappingReviewGroup,
+  decision: 'accepted' | 'rejected',
+): Promise<boolean> {
+  const pending = group.mappings.filter(item => item.decision === 'pending')
+  if (pending.length === 0) return true
+  const { start, end, edited } = groupRangeFromEditor(group)
+  notice(decision === 'rejected' ? '正在排除本小节对应…' : '正在确认本小节对应…')
+  for (const item of pending) {
+    if (decision === 'rejected') {
+      const saved = await decideMapping(item, 'rejected', { silent: true })
+      if (!saved) return false
+      continue
+    }
+    const needsRangeRewrite = item.start_unit !== start || item.end_unit !== end
+    if (needsRangeRewrite || edited) {
+      const slot = editFor(item)
+      slot.lessonRef = item.lesson_ref
+      slot.startUnit = start
+      slot.endUnit = end
+      if (!slot.reason) slot.reason = '同小节共用教材页码'
+      const saved = await decideMapping(item, 'modified', { silent: true })
+      if (!saved) return false
+      continue
+    }
+    const saved = await decideMapping(item, 'accepted', { silent: true })
+    if (!saved) return false
+  }
+  const lessonCount = new Set(group.mappings.map(item => item.lesson_ref)).size
+  notice(decision === 'rejected'
+    ? '已排除本小节对应，原始建议仍保留。'
+    : lessonCount > 1
+      ? `已确认本小节，${lessonCount} 个课时将共用 ${start}—${end} 页。`
+      : '已确认本小节对应。')
+  return true
+}
+
+async function confirmCurrentRangeAndAdvance(): Promise<void> {
+  const group = currentReviewGroup.value
+  const item = currentRange.value
+  if (!group && !item) {
+    goToPage(currentPage.value + 1)
+    return
+  }
+  if (group && isTextbookBook.value) {
+    const end = groupRangeFromEditor(group).end
+    if (groupHasPending(group)) {
+      const saved = await confirmReviewGroup(group, 'accepted')
+      if (!saved) return
+    }
+    goToNextPendingRange(end)
+    return
+  }
+  if (!item) {
+    goToPage(currentPage.value + 1)
+    return
+  }
+  const end = Math.max(item.end_unit, editFor(item).endUnit)
+  if (item.decision === 'pending') {
+    const saved = await decideMapping(item, rangeWasEdited(item) ? 'modified' : 'accepted')
+    if (!saved) return
+  }
+  goToNextPendingRange(end)
+}
+
+async function excludeCurrentRange(): Promise<void> {
+  const group = currentReviewGroup.value
+  if (group && isTextbookBook.value) {
+    if (!groupHasPending(group)) return
+    const end = group.endUnit
+    const saved = await confirmReviewGroup(group, 'rejected')
+    if (!saved) return
+    goToNextPendingRange(end)
+    return
+  }
+  const item = currentRange.value
+  if (!item || item.decision === 'rejected') return
+  const end = item.end_unit
+  const saved = await decideMapping(item, 'rejected')
+  if (!saved) return
+  goToNextPendingRange(end)
+}
+
+function onCheckerKeydown(event: KeyboardEvent): void {
+  const target = event.target
+  if (target instanceof HTMLElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)) return
+  if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    goToPage(currentPage.value + 1)
+  } else if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    goToPage(currentPage.value - 1)
+  } else if (event.key === 'Enter' && event.target === event.currentTarget) {
+    event.preventDefault()
+    void confirmCurrentRangeAndAdvance()
+  }
+}
+
+function onRangeEditorToggle(event: Event): void {
+  const details = event.target
+  rangeEditorOpen.value = details instanceof HTMLDetailsElement && details.open
 }
 
 async function acceptAllPendingMappings(): Promise<void> {
   if (bulkReviewRunning.value) return
-  if (pendingMappingCount.value === 0) {
+  if (pendingReviewCount.value === 0) {
     notice('当前没有待确认的对应；如已逐条决定，可直接应用。')
     return
   }
-  const count = pendingMappingCount.value
-  if (!window.confirm(`确认接受剩余 ${count} 条页码对应吗？接受后仍需点击“应用全部接受项”才会正式生效。`)) return
+  const count = pendingReviewCount.value
+  const unit = isTextbookBook.value ? '个小节' : '条'
+  if (!window.confirm(`确认接受剩余 ${count} ${unit}对应吗？接受后仍需点击“应用全部接受项”才会正式生效。`)) return
   bulkReviewRunning.value = true
-  notice(`正在接受剩余 ${count} 条对应…`)
+  notice(`正在接受剩余 ${count} ${unit}对应…`)
   try {
-    while (true) {
-      const pending = bookProposal.value?.payload.mappings.find(
-        item => item.decision === 'pending',
-      )
-      if (!pending) break
-      const pendingId = pending.mapping_id
-      await decideMapping(pending, 'accepted')
-      const saved = bookProposal.value?.payload.mappings.find(
-        item => item.mapping_id === pendingId,
-      )
-      if (saved?.decision === 'pending') return
+    if (isTextbookBook.value) {
+      while (true) {
+        const group = reviewGroups.value.find(groupHasPending)
+        if (!group) break
+        const groupKey = group.key
+        const saved = await confirmReviewGroup(group, 'accepted')
+        if (!saved) return
+        const remaining = reviewGroups.value.find(item => item.key === groupKey)
+        if (remaining && groupHasPending(remaining)) return
+      }
+    } else {
+      while (true) {
+        const pending = bookProposal.value?.payload.mappings.find(
+          item => item.decision === 'pending',
+        )
+        if (!pending) break
+        const pendingId = pending.mapping_id
+        await decideMapping(pending, 'accepted')
+        const saved = bookProposal.value?.payload.mappings.find(
+          item => item.mapping_id === pendingId,
+        )
+        if (saved?.decision === 'pending') return
+      }
     }
-    notice(`已接受 ${count} 条对应；现在可以应用。`)
+    notice(`已接受 ${count} ${unit}对应；现在可以应用。`)
   } finally {
     bulkReviewRunning.value = false
   }
@@ -227,7 +552,7 @@ async function applyProposal(): Promise<void> {
     return
   }
   if (!allMappingsDecided.value) {
-    notice(`还有 ${pendingMappingCount.value} 条对应待你确认；全部处理后才能应用。`)
+    notice(`还有 ${pendingReviewCount.value} ${isTextbookBook.value ? '个小节' : '条'}对应待你确认；全部处理后才能应用。`)
     return
   }
   applyRunning.value = true
@@ -273,10 +598,47 @@ onMounted(() => {
   mappingClockTimer = globalThis.setInterval(() => {
     mappingClock.value = Date.now()
   }, 1_000)
+  void ensurePageUnits()
 })
 onBeforeUnmount(() => {
   if (mappingClockTimer !== null) globalThis.clearInterval(mappingClockTimer)
 })
+
+watch(
+  () => props.materialId,
+  () => {
+    initializedProposalId = ''
+    currentPage.value = 1
+    rangeEditorOpen.value = false
+    void ensurePageUnits()
+  },
+)
+
+watch(
+  () => bookProposal.value?.id ?? '',
+  (proposalId) => {
+    if (!proposalId || proposalId === initializedProposalId) return
+    initializedProposalId = proposalId
+    const pending = orderedMappings.value.find(item => item.decision === 'pending')
+    goToPage(pending?.start_unit ?? 1)
+  },
+  { immediate: true },
+)
+
+watch(currentPage, async (page) => {
+  await nextTick()
+  const active = pageStripRef.value?.querySelector(`[data-page-index="${page}"]`)
+  if (active instanceof HTMLElement && typeof active.scrollIntoView === 'function') {
+    active.scrollIntoView({ inline: 'center', block: 'nearest' })
+  }
+})
+
+watch(
+  () => currentRange.value?.mapping_id ?? '',
+  () => {
+    rangeEditorOpen.value = false
+  },
+)
 
 const currentMappingPreflight = computed(() => {
   const current = record.value
@@ -307,6 +669,14 @@ const currentMappingTask = computed(() => {
   )) ?? null
 })
 
+function applyListedProposals(items: SemesterMappingProposal[]): void {
+  catalog.semesterMappingProposals = items.map(item => (
+    abandonedProposalIds.value.includes(item.id) && item.status !== 'rejected'
+      ? { ...item, status: 'rejected' }
+      : item
+  ))
+}
+
 watch(
   () => currentMappingTask.value ? `${currentMappingTask.value.task_id}:${currentMappingTask.value.revision}` : '',
   async (revision) => {
@@ -314,8 +684,15 @@ watch(
     if (!revision || revision === refreshedMappingTaskRevision || !task) return
     if (!['proposal_ready', 'needs_input'].includes(task.status)) return
     refreshedMappingTaskRevision = revision
-    await catalog.load()
+    const semester = catalog.selectedSemester
+    if (!semester) return
+    try {
+      applyListedProposals(await teachingPrepCatalogApi.listSemesterMappingProposals(semester.id))
+    } catch {
+      notice(catalog.errorMessage || '对应草稿还没有同步到本页，可点“重新载入草稿”。本操作没有调用模型。')
+    }
   },
+  { immediate: true },
 )
 
 const mappingJobBusy = computed(() => (
@@ -342,6 +719,17 @@ const mappingJobHasDurableProposal = computed(() => {
     )
   )
 })
+const unreadSavedDraft = computed(() => {
+  if (bookProposal.value) return false
+  const task = currentMappingTask.value
+  if (task?.status !== 'proposal_ready' || !task.proposal_ref_id) return false
+  if (abandonedProposalIds.value.includes(task.proposal_ref_id)) return false
+  const saved = catalog.semesterMappingProposals.find(item => item.id === task.proposal_ref_id)
+  return saved?.status !== 'rejected'
+})
+const blockingSavedDraft = computed(() => (
+  Boolean(bookProposal.value) || unreadSavedDraft.value
+))
 const mappingResultUnknown = computed(() => {
   const job = currentMappingJob.value
   if (currentMappingTask.value?.status === 'result_unknown') return true
@@ -425,8 +813,39 @@ const canGenerateMapping = computed(() => (
   && !mappingTaskBusy.value
   && !mappingResultUnknown.value
   && !mappingJobHasDurableProposal.value
+  && !blockingSavedDraft.value
   && catalog.saveState !== 'saving'
 ))
+
+async function reloadBookProposal(): Promise<void> {
+  const semester = catalog.selectedSemester
+  if (!semester) {
+    notice('还没有选中本学期，请先回到备课首页。')
+    return
+  }
+  notice('正在重新读取已保存的对应草稿，不会调用模型…')
+  try {
+    applyListedProposals(await teachingPrepCatalogApi.listSemesterMappingProposals(semester.id))
+    if (bookProposal.value) {
+      notice('对应草稿已重新载入，请从第 1 页开始核对。')
+      return
+    }
+    const task = currentMappingTask.value
+    const saved = task?.proposal_ref_id
+      ? catalog.semesterMappingProposals.find(item => item.id === task.proposal_ref_id)
+      : null
+    if (
+      saved?.status === 'rejected'
+      || (task?.proposal_ref_id && abandonedProposalIds.value.includes(task.proposal_ref_id))
+    ) {
+      notice('旧建议已放弃。可以重新推断，会再计一次费。')
+      return
+    }
+    notice('本页仍读不到这份草稿。若对应不准，请先放弃后再重新推断（会再计费）。')
+  } catch {
+    notice(catalog.errorMessage || '草稿还没有重新载入，请稍后重试。本操作没有调用模型。')
+  }
+}
 
 function onAiToggle(event: Event): void {
   if ((event.target as HTMLDetailsElement).open) void ensureAiContext()
@@ -500,17 +919,32 @@ async function discardUnknownMappingResult(): Promise<void> {
 }
 
 async function rejectProposalForRegeneration(): Promise<void> {
+  const task = currentMappingTask.value
   const proposal = bookProposal.value
-  if (!proposal) return
+    ?? catalog.semesterMappingProposals.find(item => item.id === (task?.proposal_ref_id ?? ''))
+  const proposalId = proposal?.id ?? task?.proposal_ref_id
+  const revision = proposal?.revision ?? Number(task?.proposal_revision)
+  if (!proposalId || !Number.isSafeInteger(revision) || revision < 1) {
+    notice('找不到可放弃的旧建议，请刷新页面后再试。')
+    return
+  }
   if (!window.confirm(
-    '确定放弃这份对应建议吗？旧建议和审核记录会保留为“已放弃”，本操作不调用模型。之后只有再次点击“让 AI 重新推断对应关系”才会产生一次新调用和相应费用。',
+    '确定放弃这份对应建议吗？旧建议和审核记录会保留为“已放弃”，本操作不调用模型。之后打开“让 AI 重新推断对应关系”并确认发送，才会产生一次新调用和相应费用。',
   )) return
+  if (!abandonedProposalIds.value.includes(proposalId)) {
+    abandonedProposalIds.value = [...abandonedProposalIds.value, proposalId]
+  }
   try {
-    const updated = await teachingPrepCatalogApi.rejectSemesterMappingProposal(proposal)
+    const updated = await teachingPrepCatalogApi.rejectSemesterMappingProposal({
+      id: proposalId,
+      revision,
+    })
     const index = catalog.semesterMappingProposals.findIndex(item => item.id === updated.id)
     if (index >= 0) catalog.semesterMappingProposals[index] = updated
-    notice('旧建议已放弃。本操作没有调用模型；可重新检查发送范围后再决定是否生成新建议。')
+    else catalog.semesterMappingProposals = [...catalog.semesterMappingProposals, updated]
+    notice('旧建议已放弃。本操作没有调用模型。打开“让 AI 重新推断”并确认发送后，才会产生一次新调用和费用。')
   } catch {
+    abandonedProposalIds.value = abandonedProposalIds.value.filter(id => id !== proposalId)
     notice('旧建议没有成功放弃，请刷新后核对状态。')
   }
 }
@@ -586,7 +1020,12 @@ const decisionLabels: Record<string, string> = {
 </script>
 
 <template>
-  <section v-if="material && record" class="tp-panel" aria-label="对应到课时树">
+  <section
+    v-if="material && record"
+    class="tp-panel"
+    :class="{ 'tp-panel--correspondence': Boolean(bookProposal) }"
+    aria-label="对应到课时树"
+  >
     <div class="tp-panel__body">
       <div class="tp-main-head">
         <div>
@@ -597,10 +1036,15 @@ const decisionLabels: Record<string, string> = {
             <template v-if="isExerciseBook"> · 练习按课时对应，备课时按课时直接取用</template>
           </p>
         </div>
-        <StatusBadge
-          :tone="record.mapping_status === 'confirmed' ? 'success' : pendingMappingCount ? 'warning' : 'info'"
-          :label="record.mapping_status === 'confirmed' ? '已对应完成' : pendingMappingCount ? `${pendingMappingCount} 条待你确认` : '待对应'"
-        />
+        <div class="tp-inline-actions">
+          <AppButton variant="ghost" data-testid="open-import-from-book" @click="emit('open-import')">
+            导入其他资料
+          </AppButton>
+          <StatusBadge
+            :tone="record.mapping_status === 'confirmed' ? 'success' : pendingReviewCount ? 'warning' : 'info'"
+            :label="record.mapping_status === 'confirmed' ? '已对应完成' : pendingReviewCount ? (isTextbookBook ? `${pendingReviewCount} 个小节待你确认` : `${pendingReviewCount} 条待你确认`) : '待对应'"
+          />
+        </div>
       </div>
 
       <p v-if="record.material_role === 'textbook'" class="tp-muted">
@@ -609,89 +1053,212 @@ const decisionLabels: Record<string, string> = {
       </p>
 
       <template v-if="bookProposal">
-        <div v-if="pendingMappingCount" class="tp-banner tp-banner--ai">
-          以下对应是按目录推断的草稿，请你逐条过目；全部处理后点击“应用全部接受项”正式生效。
-        </div>
-
-        <div v-for="group in mappingGroups" :key="group.lessonRef" class="tp-mapping-group">
-          <div class="tp-mapping-group-summary">
-            <strong>{{ group.title }}</strong>
-            <small>{{ group.path }}</small>
-            <StatusBadge
-              :tone="group.pendingCount ? 'warning' : 'success'"
-              :label="group.pendingCount ? `${group.pendingCount} 条待你确认` : '已对应'"
-            />
+        <div
+          class="tp-page-checker"
+          data-testid="mapping-page-checker"
+          tabindex="0"
+          aria-label="按页确认对应"
+          @keydown="onCheckerKeydown"
+        >
+          <div class="tp-page-checker__toolbar">
+            <p v-if="pendingReviewCount" class="tp-banner tp-banner--ai">
+              {{ isTextbookBook
+                ? '对着原页确认本段页码属于哪一小节；该小节下的课时共用这一段。全部处理后点击“应用全部接受项”正式生效。'
+                : '对着原页确认本段页码属于哪一课时；全部处理后点击“应用全部接受项”正式生效。' }}
+            </p>
+            <p v-else class="tp-muted">
+              本份建议已全部处理。核对无误后可应用到本学期课时树。
+            </p>
+            <div class="tp-inline-actions tp-mapping-apply-bar">
+              <AppButton
+                variant="ghost"
+                data-testid="abandon-saved-mapping"
+                @click="rejectProposalForRegeneration"
+              >
+                放弃本份建议
+              </AppButton>
+              <AppButton variant="ghost" :disabled="bulkReviewRunning || pendingReviewCount === 0" @click="acceptAllPendingMappings">
+                {{ bulkReviewRunning ? '正在接受对应…' : `接受剩余（${pendingReviewCount}）` }}
+              </AppButton>
+              <AppButton
+                :variant="currentRange?.decision === 'pending' ? 'primary' : 'secondary'"
+                data-testid="confirm-current-range"
+                @click="confirmCurrentRangeAndAdvance"
+              >
+                {{ confirmRangeLabel }}
+              </AppButton>
+              <AppButton
+                variant="primary"
+                data-testid="apply-book-mapping"
+                :disabled="applyRunning || !allMappingsDecided"
+                @click="applyProposal"
+              >
+                {{ applyRunning ? '正在应用…' : '应用全部接受项' }}
+              </AppButton>
+            </div>
           </div>
-          <article
-            v-for="item in group.mappings"
-            :key="item.mapping_id"
-            class="tp-mapping-row"
-            :class="`is-${item.decision}`"
+
+          <div
+            ref="pageStripRef"
+            class="tp-page-strip"
+            data-testid="mapping-page-strip"
+            role="list"
+            aria-label="按页顺序，相邻段用两种底色区分"
           >
-            <header>
-              <strong>{{ item.start_unit }}—{{ item.end_unit }} 页/张</strong>
-              <StatusBadge
-                :tone="item.decision === 'pending' ? 'warning' : item.decision === 'rejected' ? 'neutral' : 'success'"
-                :label="decisionLabels[item.decision] ?? item.decision"
-              />
-            </header>
-            <div class="tp-mapping-basis">
-              <strong>推断依据</strong>
-              <p>{{ item.basis ?? item.decision_reason ?? '旧建议未保存推断依据，请结合原页人工复核。' }}</p>
-              <div v-if="item.evidence_refs?.length" class="tp-mapping-evidence-list">
-                <span>证据</span>
-                <span v-for="evidenceId in item.evidence_refs" :key="evidenceId">{{ evidenceDisplay(evidenceId) }}</span>
+            <button
+              v-for="page in pageIndexes"
+              :key="page"
+              type="button"
+              role="listitem"
+              class="tp-page-strip__cell"
+              :class="[
+                `is-${pageStatusOf(page)}`,
+                pageLessonTone(page) ? `is-lesson-${pageLessonTone(page)}` : '',
+                { 'is-active': page === currentPage },
+              ]"
+              :data-page-index="page"
+              :data-lesson-tone="pageLessonTone(page) ?? undefined"
+              :aria-current="page === currentPage ? 'page' : undefined"
+              :aria-label="pageAriaLabel(page)"
+              @click="goToPage(page)"
+            >
+              {{ page }}
+            </button>
+          </div>
+          <p class="tp-muted">{{ isTextbookBook ? '相邻小节用两种底色区分，方便看出页码是怎么切开的。' : '相邻课时用两种底色区分，方便看出页码是怎么切开的。' }}</p>
+
+          <div class="tp-page-checker__work">
+            <section class="tp-page-checker__stage" aria-label="当前原页">
+              <header>
+                <strong>第 {{ currentPage }} / {{ pageCount }} 页</strong>
+                <span>{{ pageStatusLabel(currentPage) }}</span>
+              </header>
+              <div class="tp-slide-stage" data-testid="mapping-page-preview">
+                <img
+                  v-for="unit in previewWindow"
+                  :key="unit.id"
+                  v-show="unit.unit_index === currentPage"
+                  :src="unit.preview_url"
+                  :alt="`第 ${unit.unit_index} 页原页`"
+                >
+                <div
+                  v-if="currentPreviewMissing"
+                  class="tp-slide-stage__paper"
+                >
+                  <p>本页还没有图，仍可按页段确认或修改。</p>
+                </div>
               </div>
-            </div>
-            <label class="tp-field">
-              对应课时
-              <select v-model="editFor(item).lessonRef">
-                <option v-for="lesson in mappingLessonOptions" :key="lesson.value" :value="lesson.value">
-                  {{ lesson.title }} · {{ lesson.path }}
-                </option>
-              </select>
-            </label>
-            <div class="tp-field-pair">
-              <label class="tp-field">起始页<input v-model.number="editFor(item).startUnit" type="number" min="1"></label>
-              <label class="tp-field">结束页<input v-model.number="editFor(item).endUnit" type="number" min="1"></label>
-            </div>
-            <label class="tp-field">修改说明（可选）<input v-model="editFor(item).reason" type="text"></label>
-            <div class="tp-inline-actions">
-              <AppButton variant="secondary" @click="decideMapping(item, 'accepted')">接受</AppButton>
-              <AppButton variant="secondary" @click="decideMapping(item, 'modified')">保存修改</AppButton>
-              <AppButton variant="ghost" class="tp-danger-text" @click="decideMapping(item, 'rejected')">排除</AppButton>
-            </div>
-          </article>
+              <div class="tp-inline-actions">
+                <AppButton variant="ghost" :disabled="currentPage <= 1" @click="goToPage(currentPage - 1)">
+                  上一页
+                </AppButton>
+                <AppButton variant="ghost" :disabled="currentPage >= pageCount" @click="goToPage(currentPage + 1)">
+                  下一页
+                </AppButton>
+              </div>
+            </section>
+
+            <aside class="tp-page-checker__dock" data-testid="mapping-current-range">
+              <template v-if="currentRange">
+                <header>
+                  <strong>{{ currentRangeStart }}—{{ currentRangeEnd }} 页/张</strong>
+                  <StatusBadge
+                    :tone="currentRange.decision === 'pending' ? 'warning' : currentRange.decision === 'rejected' ? 'neutral' : 'success'"
+                    :label="decisionLabels[currentRange.decision] ?? currentRange.decision"
+                  />
+                </header>
+                <p class="tp-page-checker__lesson">{{ currentLessonLabel }}</p>
+                <p class="tp-muted">
+                  {{ isTextbookBook
+                    ? '本页属于这一小节。确认后，该小节下的课时共用这一段页码，并跳到下一小节未确认的第一页。'
+                    : '本页属于这一段。确认后会跳到下一段未确认的第一页。' }}
+                </p>
+                <div class="tp-mapping-basis">
+                  <strong>推断依据</strong>
+                  <p>{{ currentRange.basis ?? currentRange.decision_reason ?? '旧建议未保存推断依据，请结合原页人工复核。' }}</p>
+                  <div v-if="currentRange.evidence_refs?.length" class="tp-mapping-evidence-list">
+                    <span>证据</span>
+                    <span v-for="evidenceId in currentRange.evidence_refs" :key="evidenceId">{{ evidenceDisplay(evidenceId) }}</span>
+                  </div>
+                </div>
+                <div class="tp-inline-actions">
+                  <AppButton
+                    variant="ghost"
+                    class="tp-danger-text"
+                    data-testid="exclude-current-range"
+                    @click="excludeCurrentRange"
+                  >
+                    排除本{{ isTextbookBook ? '小节' : '段' }}
+                  </AppButton>
+                </div>
+                <details
+                  class="tp-operation-editor"
+                  :open="rangeEditorOpen"
+                  @toggle="onRangeEditorToggle"
+                >
+                  <summary>{{ isTextbookBook ? '改本小节页段' : '改课时或页段' }}</summary>
+                  <p v-if="isTextbookBook" class="tp-muted">改页段后点“确认本小节”，该小节下的课时都会用这一段。</p>
+                  <label v-if="!isTextbookBook" class="tp-field">
+                    对应课时
+                    <select v-model="editFor(currentRange).lessonRef">
+                      <option v-for="lesson in mappingLessonOptions" :key="lesson.value" :value="lesson.value">
+                        {{ lesson.title }} · {{ lesson.path }}
+                      </option>
+                    </select>
+                  </label>
+                  <div class="tp-field-pair">
+                    <label class="tp-field">起始页<input v-model.number="editFor(currentRange).startUnit" type="number" min="1"></label>
+                    <label class="tp-field">结束页<input v-model.number="editFor(currentRange).endUnit" type="number" min="1"></label>
+                  </div>
+                  <label class="tp-field">修改说明（可选）<input v-model="editFor(currentRange).reason" type="text"></label>
+                  <AppButton variant="secondary" @click="decideMapping(currentRange, 'modified')">保存修改</AppButton>
+                </details>
+              </template>
+              <template v-else>
+                <header>
+                  <strong>第 {{ currentPage }} 页</strong>
+                  <StatusBadge tone="neutral" label="未对应" />
+                </header>
+                <p class="tp-muted">本页尚未对应到课时。可翻到有建议的页，或在下方手工指定页段。</p>
+              </template>
+            </aside>
+          </div>
         </div>
 
-        <div v-if="isExerciseBook && bookProposal.payload.uncertainties.length" class="tp-topic-box">
-          <h3>未对应页段</h3>
-          <p class="tp-muted">
-            对不上具体课时的内容不塞进课时树，备课时作为补充材料检索；本期只展示，不做持久化整理。
-          </p>
-          <ul>
-            <li v-for="item in bookProposal.payload.uncertainties" :key="item">{{ item }}</li>
-          </ul>
-        </div>
-
-        <div class="tp-inline-actions tp-mapping-apply-bar">
-          <AppButton variant="ghost" @click="rejectProposalForRegeneration">放弃本份建议</AppButton>
-          <AppButton variant="secondary" :disabled="bulkReviewRunning" @click="acceptAllPendingMappings">
-            {{ bulkReviewRunning ? '正在接受对应…' : `接受全部剩余对应（${pendingMappingCount}）` }}
-          </AppButton>
-          <AppButton
-            variant="primary"
-            data-testid="apply-book-mapping"
-            :disabled="applyRunning"
-            @click="applyProposal"
-          >
-            {{ applyRunning ? '正在应用…' : '应用全部接受项' }}
-          </AppButton>
-        </div>
+        <details
+          v-if="isExerciseBook && bookProposal.payload.uncertainties.length"
+          class="tp-ai-reinfer"
+        >
+          <summary>未对应页段</summary>
+          <div class="tp-ai-reinfer__body">
+            <p class="tp-muted">
+              对不上具体课时的内容不塞进课时树，备课时作为补充材料检索；本期只展示，不做持久化整理。
+            </p>
+            <ul>
+              <li v-for="item in bookProposal.payload.uncertainties" :key="item">{{ item }}</li>
+            </ul>
+          </div>
+        </details>
       </template>
+      <p v-else-if="unreadSavedDraft" class="tp-banner tp-banner--ai" data-testid="saved-proposal-missing">
+        这次 AI 草稿已经保存在本机，但本页还没读出来。请先点“重新载入草稿”。
+        若仍没有页段，或对应不准，请先放弃这份草稿，再重新推断（会再计一次费）。
+      </p>
       <p v-else class="tp-muted">
         还没有这本书的对应建议。可在下方让 AI 推断一份草稿，或手动指定页段。
       </p>
+      <div v-if="!bookProposal && unreadSavedDraft" class="tp-inline-actions">
+        <AppButton variant="secondary" data-testid="reload-book-proposal" @click="reloadBookProposal">
+          重新载入草稿
+        </AppButton>
+        <AppButton
+          variant="ghost"
+          data-testid="abandon-saved-mapping"
+          @click="rejectProposalForRegeneration"
+        >
+          放弃这份草稿，准备重新推断
+        </AppButton>
+      </div>
 
       <details class="tp-ai-reinfer" data-testid="ai-reinfer" @toggle="onAiToggle">
         <summary>让 AI 重新推断对应关系</summary>
@@ -702,9 +1269,21 @@ const decisionLabels: Record<string, string> = {
           <template v-else>
             <p class="tp-muted">
               会发送：本书的<b>目录线索</b>与少量<b>抽样锚点页</b>（用于核对页码），<b>不发送全书</b>；
-              会得到一份新的「小节/课时 ↔ 页码段」对应草稿，由你逐条过目后才会生效。
+              会得到一份新的「{{ isTextbookBook ? '小节' : '课时' }} ↔ 页码段」对应草稿，由你{{ isTextbookBook ? '按小节' : '逐条' }}过目后才会生效。
               本次为单次调用、按次计费，发送前需要你确认；本机无法预估金额，由当前模型服务商按实际用量计费。
             </p>
+            <p v-if="blockingSavedDraft" class="tp-banner tp-banner--ai">
+              当前已有一份草稿。对应不准或本页读不出时，请先放弃旧草稿，再确认发送（会再计一次费）。
+            </p>
+            <div v-if="blockingSavedDraft" class="tp-inline-actions">
+              <AppButton
+                variant="secondary"
+                data-testid="abandon-saved-mapping"
+                @click="rejectProposalForRegeneration"
+              >
+                放弃这份草稿，准备重新推断
+              </AppButton>
+            </div>
             <details v-if="currentMappingPreflight" class="tp-mapping-scope-summary">
               <summary>
                 发送范围：{{ currentMappingPreflight.scanned_unit_count ?? currentMappingPreflight.unit_count }} 页检查
@@ -717,7 +1296,7 @@ const decisionLabels: Record<string, string> = {
                 <span>
                   {{ currentMappingPreflight.model_label ?? (currentMappingPreflight.model_available ? '已配置模型' : '模型不可用') }}
                   · 对应到 {{ currentMappingPreflight.existing_lesson_count }} 个已生效课时
-                  · 建议需逐条确认后才会生效
+                  · 建议需{{ isTextbookBook ? '按小节' : '逐条' }}确认后才会生效
                 </span>
                 <span v-if="currentMappingPreflight.full_page_text_sent === false">
                   未发送全部逐页正文；
@@ -781,14 +1360,17 @@ const decisionLabels: Record<string, string> = {
               </AppButton>
               <AppButton
                 variant="primary"
+                data-testid="generate-mapping"
                 :disabled="!canGenerateMapping || preparingScope"
                 @click="generateSemesterMapping"
               >
                 {{ mappingResultUnknown
                   ? '结果未知，不能自动重试'
-                  : mappingJobBusy || mappingTaskBusy
-                    ? '后台生成中…'
-                    : '确认发送（单次计费）' }}
+                  : blockingSavedDraft
+                    ? '请先放弃当前草稿再发送'
+                    : mappingJobBusy || mappingTaskBusy
+                      ? '后台生成中…'
+                      : '确认发送（单次计费）' }}
               </AppButton>
             </div>
           </template>
