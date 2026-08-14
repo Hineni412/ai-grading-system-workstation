@@ -53,7 +53,12 @@ class DirectoryEvidenceBuilder:
             )
 
         offsets = _calibration_offsets(entries, units, scanned_count)
-        calibrated_offset = round(median(offsets)) if offsets else None
+        calibrated_offset, offset_issues, offset_agreed = _choose_printed_offset(
+            offsets,
+            entries=entries,
+            total_units=len(units),
+            material_role=str(material.get("material_role") or ""),
+        )
         resolved = _resolved_ranges(
             entries,
             total_units=len(units),
@@ -71,19 +76,16 @@ class DirectoryEvidenceBuilder:
             issues.append("识别到目录，但未能用正文标题校准书上页码与 PDF 页码。")
         elif len(offsets) < 2:
             issues.append("目录页码只找到一个正文锚点，页码换算仍需人工核对。")
+        issues.extend(offset_issues)
 
         confidence = "low"
         strategy = "sparse_outline"
         if entries:
             strategy = "toc_unverified"
             confidence = "medium"
-        if entries and calibrated_offset is not None and len(offsets) >= 2:
-            spread = max(offsets) - min(offsets)
-            if spread <= 2:
-                strategy = "toc_calibrated"
-                confidence = "high"
-            else:
-                issues.append("不同目录锚点的页码偏移不一致，映射范围需要重点复核。")
+        if entries and calibrated_offset is not None and offset_agreed:
+            strategy = "toc_calibrated"
+            confidence = "high"
 
         return {
             "strategy": strategy,
@@ -611,6 +613,70 @@ def _calibration_offsets(
                 )
                 break
     return offsets
+
+
+def _choose_printed_offset(
+    offsets: list[int],
+    *,
+    entries: list[dict[str, object]],
+    total_units: int,
+    material_role: str,
+) -> tuple[int | None, list[str], bool]:
+    extra_issues: list[str] = []
+    if not offsets:
+        return None, extra_issues, False
+    median_offset = round(median(offsets))
+    if len(offsets) < 2:
+        return median_offset, extra_issues, False
+    spread = max(offsets) - min(offsets)
+    if spread <= 2:
+        return median_offset, extra_issues, True
+    extra_issues.append("不同目录锚点的页码偏移不一致，映射范围需要重点复核。")
+    if material_role != "textbook":
+        return median_offset, extra_issues, False
+    ranked: list[tuple[int, bool, int]] = []
+    for seed in sorted(set(offsets)):
+        cluster = [item for item in offsets if abs(item - seed) <= 2]
+        cluster_offset = round(median(cluster))
+        ranked.append(
+            (
+                len(cluster),
+                not _offset_collapses_front(
+                    entries,
+                    cluster_offset,
+                    total_units,
+                ),
+                cluster_offset,
+            )
+        )
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    best_count, best_safe, best_offset = ranked[0]
+    if best_safe and best_count >= 2:
+        return best_offset, extra_issues, False
+    extra_issues.append(
+        "页码校准偏差过大，已改用书上页码对照 PDF，需教师按原页复核。"
+    )
+    return 0, extra_issues, False
+
+
+def _offset_collapses_front(
+    entries: list[dict[str, object]],
+    offset: int,
+    total_units: int,
+) -> bool:
+    printed = [
+        int(item["printed_page"])
+        for item in entries
+        if isinstance(item.get("printed_page"), int)
+    ]
+    if len(printed) < 3:
+        return False
+    starts = [
+        max(1, min(total_units, page + offset))
+        for page in printed
+    ]
+    collapsed = sum(start == 1 for start in starts)
+    return collapsed >= max(3, (len(starts) + 2) // 3)
 
 
 def _resolved_ranges(

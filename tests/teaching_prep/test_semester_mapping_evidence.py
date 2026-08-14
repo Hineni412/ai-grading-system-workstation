@@ -8,6 +8,7 @@ from backend.teaching_prep.application.semester_mapping import (
     validate_semester_mapping_payload,
 )
 from backend.teaching_prep.application.semester_mapping_evidence import (
+    _choose_printed_offset,
     build_directory_evidence,
 )
 from backend.teaching_prep.infrastructure.llm.semester_mapping import (
@@ -1134,3 +1135,132 @@ def test_semantic_mapping_still_rejects_tree_replacement_with_lessons() -> None:
         match="replace the existing",
     ):
         validate_semester_mapping_payload(raw, snapshot=snapshot)
+
+
+def test_textbook_mapping_shares_one_section_page_range_across_lessons() -> None:
+    snapshot = _snapshot()
+    snapshot["materials"][0]["material_role"] = "textbook"
+    snapshot["lessons"] = [
+        {
+            "id": "chapter-pythagoras",
+            "parent_id": None,
+            "node_type": "chapter",
+            "title": "第一章 勾股定理",
+        },
+        {
+            "id": "section-explore",
+            "parent_id": "chapter-pythagoras",
+            "node_type": "section",
+            "title": "1 探索勾股定理",
+        },
+        {
+            "id": "lesson-understand",
+            "parent_id": "section-explore",
+            "node_type": "lesson",
+            "title": "第1课时 认识勾股定理",
+        },
+        {
+            "id": "lesson-verify",
+            "parent_id": "section-explore",
+            "node_type": "lesson",
+            "title": "第2课时 验证勾股定理",
+        },
+        {
+            "id": "lesson-apply",
+            "parent_id": "section-explore",
+            "node_type": "lesson",
+            "title": "第3课时 应用勾股定理",
+        },
+    ]
+    evidence = build_directory_evidence(snapshot)
+    snapshot["directory_evidence"] = evidence
+    toc_ids = [str(item["evidence_id"]) for item in evidence["toc_entries"]]
+    first_toc, second_toc = toc_ids[1], toc_ids[2]
+    first_range = next(
+        item
+        for item in evidence["resolved_ranges"]
+        if item["toc_evidence_id"] == first_toc
+    )
+    second_range = next(
+        item
+        for item in evidence["resolved_ranges"]
+        if item["toc_evidence_id"] == second_toc
+    )
+    annotations = [
+        {
+            "evidence_id": item["evidence_id"],
+            "title": str(item["title"]),
+            "chapter_title": "第一章 勾股定理",
+            "section_title": "1 探索勾股定理",
+            "kind": "section",
+        }
+        for item in evidence["toc_entries"]
+    ]
+
+    materialized = materialize_semantic_mapping_payload(
+        {
+            "annotations": annotations,
+            "matches": [
+                {
+                    "lesson_ref": "lesson-understand",
+                    "evidence_ids": [first_toc],
+                    "basis": "同属探索勾股定理",
+                },
+                {
+                    "lesson_ref": "lesson-verify",
+                    "evidence_ids": [second_toc],
+                    "basis": "同属探索勾股定理",
+                },
+            ],
+            "uncertainties": [],
+        },
+        snapshot=snapshot,
+    )
+
+    shared = (
+        min(int(first_range["start_unit"]), int(second_range["start_unit"])),
+        max(int(first_range["end_unit"]), int(second_range["end_unit"])),
+    )
+    by_lesson = {
+        str(item["lesson_ref"]): (int(item["start_unit"]), int(item["end_unit"]))
+        for item in materialized["mappings"]
+    }
+    assert by_lesson == {
+        "lesson-understand": shared,
+        "lesson-verify": shared,
+        "lesson-apply": shared,
+    }
+    assert not any(
+        "第3课时 应用勾股定理暂未对应" in item
+        for item in materialized["uncertainties"]
+    )
+
+
+def test_textbook_offset_falls_back_when_median_collapses_front_pages() -> None:
+    entries = [
+        {"printed_page": page}
+        for page in (2, 10, 13, 16, 19, 25, 40, 80, 120, 180)
+    ]
+    offset, issues, agreed = _choose_printed_offset(
+        [8, 8, -82, -82, -82, -82],
+        entries=entries,
+        total_units=212,
+        material_role="textbook",
+    )
+    assert offset == 0
+    assert agreed is False
+    assert any("偏差过大" in item for item in issues)
+
+
+def test_workbook_offset_keeps_median_even_when_spread_is_wide() -> None:
+    entries = [{"printed_page": page} for page in (2, 10, 13, 16, 19)]
+    offset, issues, agreed = _choose_printed_offset(
+        [8, 8, -82, -82, -82],
+        entries=entries,
+        total_units=144,
+        material_role="exercise_workbook",
+    )
+    assert offset == -82
+    assert agreed is False
+    assert issues
+    assert not any("偏差过大" in item for item in issues)
