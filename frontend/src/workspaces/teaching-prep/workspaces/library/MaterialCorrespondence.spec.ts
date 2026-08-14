@@ -240,35 +240,19 @@ describe('MaterialCorrespondence', () => {
     app.unmount()
   })
 
-  it('recomputes page ranges without calling the model', async () => {
-    const current = bookProposal(textbookRecord.id)
-    const updated = {
-      ...current,
-      revision: 2,
-      payload: {
-        ...current.payload,
-        mappings: [{
-          ...current.payload.mappings[0]!,
-          start_unit: 180,
-          end_unit: 186,
-          decision: 'pending' as const,
-        }],
-      },
-    }
-    const { app, host, catalog, notices } = await mountPanel({
-      proposals: [current],
+  it('hides the page checker after applying accepted mappings', async () => {
+    const { app, host, catalog } = await mountPanel({
+      proposals: [bookProposal(textbookRecord.id, 'accepted')],
     })
-    const recompute = vi.spyOn(teachingPrepCatalogApi, 'recomputeSemesterMappingPageRanges')
-      .mockResolvedValue(updated)
-    vi.stubGlobal('confirm', vi.fn(() => true))
+    vi.spyOn(catalog, 'applySemesterMapping').mockResolvedValue(undefined)
+    vi.spyOn(catalog, 'load').mockResolvedValue()
 
-    host.querySelector<HTMLButtonElement>('[data-testid="recompute-mapping-pages"]')?.click()
-    await vi.waitFor(() => expect(recompute).toHaveBeenCalledWith({
-      id: current.id,
-      revision: 1,
-    }))
-    expect(catalog.semesterMappingProposals[0]?.payload.mappings[0]?.start_unit).toBe(180)
-    expect(notices.some(item => item.includes('未调用模型'))).toBe(true)
+    host.querySelector<HTMLButtonElement>('[data-testid="apply-book-mapping"]')?.click()
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="mapping-page-checker"]')).toBeNull()
+    })
+    expect(host.textContent).toContain('这本书已经对应到本学期课时树')
+    expect(host.querySelector('[data-testid="ai-reinfer"]')).toBeTruthy()
     app.unmount()
   })
 
@@ -459,7 +443,7 @@ describe('MaterialCorrespondence', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="apply-book-mapping"]')?.click()
     await vi.waitFor(() => expect(apply).toHaveBeenCalled())
     expect(apply.mock.calls[0]?.[1]).toBeUndefined()
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="apply-book-mapping"]')?.disabled).toBe(false)
+    expect(host.querySelector('[data-testid="mapping-page-checker"]')).toBeNull()
     app.unmount()
   })
 
