@@ -4,6 +4,7 @@ import type { JobResponse } from '../../../../api/jobs'
 import type { SemesterMaterialRole } from '../../api/catalog'
 import { teachingPrepCatalogApi } from '../../api/catalog'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
+import { useCurriculumScopeStore } from '../../../../stores/curriculum-scope'
 import { fileSizeLabel, suggestedRole } from './libraryShared'
 
 export type PendingImportState =
@@ -52,10 +53,15 @@ export interface PendingPptFolderBatch {
  */
 export function useMaterialImportQueue() {
   const catalog = useTeachingPrepCatalogStore()
+  const curriculumScope = useCurriculumScopeStore()
   const pendingImports = ref<PendingMaterialImport[]>([])
   const pendingPptFolders = ref<PendingPptFolderBatch[]>([])
   const importBatchRunning = ref(false)
   const message = ref('')
+
+  function canImportNow(): boolean {
+    return Boolean(curriculumScope.selectedVolumeId && catalog.selectedSemester)
+  }
 
   const pendingImportCount = computed(
     () => pendingImports.value.filter(item => (
@@ -247,6 +253,10 @@ export function useMaterialImportQueue() {
   }
 
   async function importQueuedFiles(): Promise<void> {
+    if (!canImportNow()) {
+      message.value = '请先在顶部选择教学学期，并确认已建立对应的备课学期。'
+      return
+    }
     if (importBatchRunning.value || pendingImportCount.value === 0) return
     importBatchRunning.value = true
     let completed = 0

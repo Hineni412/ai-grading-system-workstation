@@ -951,7 +951,7 @@ describe('teaching preparation selection consistency', () => {
 
     expect(listMaterials).toHaveBeenCalledTimes(1)
     expect(listParseJobs).toHaveBeenCalledTimes(1)
-    expect(listSemesterMaterials).toHaveBeenCalledTimes(2)
+    expect(listSemesterMaterials).toHaveBeenCalledTimes(4)
     expect(store.selectedSemester?.id).toBe(secondSemester.id)
     expect(store.semesterMaterials).toEqual([secondRecord])
   })

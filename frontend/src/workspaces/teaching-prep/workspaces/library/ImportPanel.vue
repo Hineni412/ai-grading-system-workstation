@@ -3,7 +3,7 @@ import { computed, reactive } from 'vue'
 
 import AppButton from '../../../../components/design-system/AppButton.vue'
 import type { SemesterMaterialRole } from '../../api/catalog'
-import { useTeachingPrepCatalogStore } from '../../stores/catalog'
+import { useTeachingPrepSemesterScope } from '../../workbench/semesterScope'
 import { MATERIAL_ROLES } from './libraryShared'
 import type {
   MaterialImportQueue,
@@ -12,8 +12,9 @@ import type {
 } from './importQueue'
 
 const props = defineProps<{ queue: MaterialImportQueue }>()
-const catalog = useTeachingPrepCatalogStore()
+const semesterScope = useTeachingPrepSemesterScope()
 const queue = props.queue
+const canImport = semesterScope.canImportMaterials
 
 type ImportQueueRow =
   | { kind: 'folder'; key: string; group: PendingImportFolderGroup }
@@ -79,7 +80,7 @@ function onFolderRoleChange(group: PendingImportFolderGroup, event: Event): void
       <div class="tp-import-actions">
         <label
           class="tp-file-button"
-          :class="{ 'is-disabled': queue.importBatchRunning.value || !catalog.selectedSemester }"
+          :class="{ 'is-disabled': queue.importBatchRunning.value || !canImport }"
           title="选择整个文件夹；只收录其中的 PPTX"
         >
           <span class="tp-file-button__icon" aria-hidden="true">
@@ -94,13 +95,13 @@ function onFolderRoleChange(group: PendingImportFolderGroup, event: Event): void
             multiple
             webkitdirectory
             directory
-            :disabled="queue.importBatchRunning.value || !catalog.selectedSemester"
+            :disabled="queue.importBatchRunning.value || !canImport"
             @change="queue.queuePptFolder($event)"
           >
         </label>
         <label
           class="tp-file-button tp-file-button--primary"
-          :class="{ 'is-disabled': queue.importBatchRunning.value }"
+          :class="{ 'is-disabled': queue.importBatchRunning.value || !canImport }"
         >
           <span class="tp-file-button__icon" aria-hidden="true">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -113,12 +114,15 @@ function onFolderRoleChange(group: PendingImportFolderGroup, event: Event): void
             type="file"
             multiple
             accept=".pdf,.pptx,.png,.jpg,.jpeg,.webp"
-            :disabled="queue.importBatchRunning.value"
+            :disabled="queue.importBatchRunning.value || !canImport"
             @change="queue.queueFiles($event)"
           >
         </label>
       </div>
 
+      <p v-if="!canImport" class="tp-inline-message" role="status">
+        请先在顶部选择教学学期，并确认已建立对应的备课学期，再导入资料。
+      </p>
       <p v-if="queue.message.value" class="tp-inline-message" role="status">{{ queue.message.value }}</p>
 
       <div v-if="queue.pendingImports.value.length" class="tp-import-queue">
@@ -134,7 +138,7 @@ function onFolderRoleChange(group: PendingImportFolderGroup, event: Event): void
             </AppButton>
             <AppButton
               variant="primary"
-              :disabled="queue.importBatchRunning.value || queue.pendingImportCount.value === 0"
+              :disabled="queue.importBatchRunning.value || queue.pendingImportCount.value === 0 || !canImport"
               @click="queue.importQueuedFiles"
             >
               {{ queue.importBatchRunning.value ? '正在复制资料…' : `开始导入 ${queue.pendingImportCount.value} 份` }}

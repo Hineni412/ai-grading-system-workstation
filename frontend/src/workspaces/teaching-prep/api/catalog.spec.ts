@@ -881,6 +881,293 @@ describe('teaching preparation delivery API', () => {
     })
   })
 
+  it('reads older directory evidence that stored a 0-1 confidence score', async () => {
+    const semesterId = 's'.repeat(32)
+    const proposal: Record<string, unknown> = {
+      id: 'p'.repeat(32),
+      semester_id: semesterId,
+      operation_id: 'stored-operation',
+      source_state_sha256: '4'.repeat(64),
+      status: 'proposed',
+      payload: {
+        tree: [],
+        mappings: [{
+          mapping_id: 'mapping-1',
+          material_record_id: 'r'.repeat(32),
+          lesson_ref: 'lesson-1',
+          start_unit: 12,
+          end_unit: 18,
+          purpose: 'exercise',
+          decision: 'pending',
+          teacher_revision: null,
+          decision_reason: null,
+          basis: '依据目录页码提出。',
+        }],
+        uncertainties: [],
+        source_material_record_ids: ['r'.repeat(32)],
+        directory_evidence: {
+          strategy: 'toc_unverified',
+          total_unit_count: 67,
+          directory_page_unit_indices: [2],
+          scanned_unit_indices: [1, 2, 3],
+          toc_entries: [{
+            evidence_id: 'toc-001',
+            level: 'lesson',
+            title: '探索勾股定理',
+            printed_page: 3,
+            printed_page_track: '页',
+            page_refs: { 页: 3 },
+            source_unit: 2,
+            confidence: 0.7,
+            source: 'ocr_layout',
+          }],
+          resolved_ranges: [],
+          anchors: [{
+            evidence_id: 'anchor-0009',
+            unit_index: 9,
+            title: '探索勾股定理',
+            text_excerpt: '第一章 勾股定理',
+          }],
+          printed_to_pdf_offset: null,
+          confidence: 0.7,
+          full_page_text_sent: false,
+          issues: [],
+        },
+      },
+      revision: 1,
+      created_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      applied_at: null,
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      response({ items: [proposal] }),
+    )
+
+    const items = await teachingPrepCatalogApi.listSemesterMappingProposals(semesterId)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.payload.mappings).toHaveLength(1)
+    expect(items[0]?.payload.mappings[0]).toMatchObject({
+      start_unit: 12,
+      end_unit: 18,
+      decision: 'pending',
+    })
+    expect(items[0]?.payload.directory_evidence?.confidence).toBe('medium')
+  })
+
+  it('reads directory page references that stored a zero page as compatible input', async () => {
+    const semesterId = 's'.repeat(32)
+    const proposal: Record<string, unknown> = {
+      id: 'p'.repeat(32),
+      semester_id: semesterId,
+      operation_id: 'stored-operation',
+      source_state_sha256: '4'.repeat(64),
+      status: 'proposed',
+      payload: {
+        tree: [],
+        mappings: [{
+          mapping_id: 'mapping-1',
+          material_record_id: 'r'.repeat(32),
+          lesson_ref: 'lesson-1',
+          start_unit: 1,
+          end_unit: 2,
+          purpose: 'textbook',
+          decision: 'pending',
+          teacher_revision: null,
+          decision_reason: null,
+        }],
+        uncertainties: [],
+        source_material_record_ids: ['r'.repeat(32)],
+        directory_evidence: {
+          strategy: 'toc_unverified',
+          toc_entries: [{
+            evidence_id: 'toc-001',
+            level: 'chapter',
+            title: '第一章',
+            printed_page: 1,
+            printed_page_track: '页',
+            page_refs: { 页: 0 },
+            source_unit: 2,
+            confidence: 0.4,
+            source: 'ocr_layout',
+          }],
+          resolved_ranges: [],
+          anchors: [],
+          confidence: 'medium',
+          issues: [],
+          full_page_text_sent: false,
+        },
+      },
+      revision: 1,
+      created_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      applied_at: null,
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      response({ items: [proposal] }),
+    )
+
+    const items = await teachingPrepCatalogApi.listSemesterMappingProposals(semesterId)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.payload.mappings[0]).toMatchObject({ start_unit: 1, end_unit: 2 })
+  })
+
+  it('keeps textbook mappings when directory evidence has extra layout fields', async () => {
+    const semesterId = 's'.repeat(32)
+    const proposal: Record<string, unknown> = {
+      id: 'p'.repeat(32),
+      semester_id: semesterId,
+      operation_id: 'stored-operation',
+      source_state_sha256: '4'.repeat(64),
+      status: 'proposed',
+      payload: {
+        tree: [],
+        mappings: [{
+          mapping_id: 'mapping-1',
+          material_record_id: 'r'.repeat(32),
+          lesson_ref: 'lesson-1',
+          start_unit: 12,
+          end_unit: 18,
+          purpose: 'textbook',
+          decision: 'pending',
+          teacher_revision: null,
+          decision_reason: null,
+        }],
+        uncertainties: [],
+        source_material_record_ids: ['r'.repeat(32)],
+        directory_evidence: {
+          strategy: 'toc_unverified',
+          toc_entries: [{
+            evidence_id: 'toc-001',
+            level: 'chapter',
+            title: '第一章 勾股定理',
+            printed_page: 1,
+            printed_page_track: '页',
+            page_refs: { 页: 1, 学: 2 },
+            source_unit: 2,
+            confidence: 0.8,
+            source: 'ocr_layout',
+            bbox: [0, 0, 10, 10],
+          }],
+          resolved_ranges: [],
+          anchors: [],
+          confidence: 'medium',
+          issues: [],
+          full_page_text_sent: false,
+        },
+      },
+      revision: 1,
+      created_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      applied_at: null,
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      response({ items: [proposal] }),
+    )
+
+    const items = await teachingPrepCatalogApi.listSemesterMappingProposals(semesterId)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.payload.mappings[0]).toMatchObject({ start_unit: 12, end_unit: 18 })
+    expect(items[0]?.payload.directory_evidence?.toc_entries[0]).toMatchObject({
+      title: '第一章 勾股定理',
+      page_refs: { 页: 1 },
+    })
+    expect(items[0]?.payload.directory_evidence?.toc_entries[0]).not.toHaveProperty('bbox')
+  })
+
+  it('keeps mappings when directory evidence cannot be read', async () => {
+    const semesterId = 's'.repeat(32)
+    const proposal: Record<string, unknown> = {
+      id: 'p'.repeat(32),
+      semester_id: semesterId,
+      operation_id: 'stored-operation',
+      source_state_sha256: '4'.repeat(64),
+      status: 'proposed',
+      payload: {
+        tree: [],
+        mappings: [{
+          mapping_id: 'mapping-1',
+          material_record_id: 'r'.repeat(32),
+          lesson_ref: 'lesson-1',
+          start_unit: 1,
+          end_unit: 8,
+          purpose: 'textbook',
+          decision: 'pending',
+          teacher_revision: null,
+          decision_reason: null,
+        }],
+        uncertainties: [],
+        source_material_record_ids: ['r'.repeat(32)],
+        directory_evidence: {
+          strategy: 'not-a-strategy',
+          toc_entries: [],
+          resolved_ranges: [],
+          anchors: [],
+          confidence: 'medium',
+          issues: [],
+          full_page_text_sent: false,
+        },
+      },
+      revision: 1,
+      created_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      applied_at: null,
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      response({ items: [proposal] }),
+    )
+
+    const items = await teachingPrepCatalogApi.listSemesterMappingProposals(semesterId)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.payload.mappings[0]).toMatchObject({ start_unit: 1, end_unit: 8 })
+    expect(items[0]?.payload.directory_evidence).toBeUndefined()
+  })
+
+  it('keeps readable mapping proposals when another saved proposal fails local validation', async () => {
+    const semesterId = 's'.repeat(32)
+    const readable: Record<string, unknown> = {
+      id: 'a'.repeat(32),
+      semester_id: semesterId,
+      operation_id: 'stored-operation-a',
+      source_state_sha256: '4'.repeat(64),
+      status: 'proposed',
+      payload: {
+        tree: [],
+        mappings: [{
+          mapping_id: 'mapping-1',
+          material_record_id: 'r'.repeat(32),
+          lesson_ref: 'lesson-1',
+          start_unit: 12,
+          end_unit: 18,
+          purpose: 'exercise',
+          decision: 'pending',
+          teacher_revision: null,
+          decision_reason: null,
+        }],
+        uncertainties: [],
+        source_material_record_ids: ['r'.repeat(32)],
+      },
+      revision: 1,
+      created_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      applied_at: null,
+    }
+    const unreadable = structuredClone(readable)
+    unreadable.id = 'b'.repeat(32)
+    unreadable.operation_id = 'stored-operation-b'
+    ;(unreadable.payload as Record<string, unknown>).root = 'C:\\private'
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      response({ items: [unreadable, readable] }),
+    )
+
+    const items = await teachingPrepCatalogApi.listSemesterMappingProposals(semesterId)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.id).toBe('a'.repeat(32))
+    expect(items[0]?.payload.mappings[0]).toMatchObject({
+      start_unit: 12,
+      end_unit: 18,
+    })
+  })
+
   it('accepts a safe semester material filename without weakening path checks', async () => {
     const semesterId = 's'.repeat(32)
     const payload = {

@@ -22,20 +22,26 @@ const pptFileTotal = computed(() => (
 
 // 教材/教辅：启用中的书记录，各一行
 const bookRecords = computed(() => (
-  catalog.semesterMaterials.filter(item => item.is_active && isBookRole(item.material_role))
+  catalog.libraryMaterialRecords.filter(item => item.is_active && isBookRole(item.material_role))
 ))
 
-// 其他资料：启用中的散装记录（不属于任何启用合集、也不是书）与未加入本学期的资料
 const looseRecords = computed(() => (
-  catalog.semesterMaterials.filter(item => (
+  catalog.libraryMaterialRecords.filter(item => (
     !isBookRole(item.material_role)
     && !catalog.collectionByRecordId.has(item.id)
   ))
 ))
+const attachedVersionIds = computed(() => new Set(
+  (catalog.selectedSemester
+    ? catalog.semesterMaterials
+    : catalog.allSemesterMaterialRecords
+  ).map(item => item.current_material_version_id),
+))
 const unattachedMaterials = computed(() => (
-  catalog.materials.filter(item => (
-    !catalog.semesterMaterials.some(record => record.current_material_version_id === item.id)
-  ))
+  catalog.materials.filter(item => !attachedVersionIds.value.has(item.id))
+))
+const unattachedLabel = computed(() => (
+  catalog.selectedSemester ? '未加入本学期' : '未归类'
 ))
 
 const treeStatus = computed(() => catalog.lessonTreeStatus)
@@ -75,13 +81,15 @@ function select(selection: LibrarySelection): void {
   <aside class="tp-rail" aria-label="资料柜">
     <button
       type="button"
-      class="tp-rail__item"
+      class="tp-rail__item tp-rail__import"
       :class="{ 'is-active': isActive({ kind: 'import' }) }"
+      data-testid="shelf-import-entry"
       @click="select({ kind: 'import' })"
     >
       <span class="tp-rail__item-name">导入资料</span>
     </button>
 
+    <div class="tp-rail__body">
     <FileTreeFolder v-if="chapterFolders.length" name="课件" default-expanded>
       <template #header="{ expanded }">
         <component :is="expanded ? FolderOpen : Folder" :size="15" aria-hidden="true" />
@@ -148,11 +156,11 @@ function select(selection: LibrarySelection): void {
         @click="select({ kind: 'material', materialId: item.id })"
       >
         <span class="tp-rail__item-name" :title="item.display_name">{{ item.display_name }}</span>
-        <span class="tp-rail__count">未归类</span>
+        <span class="tp-rail__count">{{ unattachedLabel }}</span>
       </button>
     </FileTreeFolder>
 
-    <FileTreeFolder name="课时树" default-expanded>
+    <FileTreeFolder v-if="catalog.selectedSemester" name="课时树" default-expanded>
       <template #header="{ expanded }">
         <component :is="expanded ? FolderOpen : Folder" :size="15" aria-hidden="true" />
         <span>课时树</span>
@@ -169,5 +177,6 @@ function select(selection: LibrarySelection): void {
       </button>
       <p class="tp-rail__sub">{{ treeSubLabel }}</p>
     </FileTreeFolder>
+    </div>
   </aside>
 </template>

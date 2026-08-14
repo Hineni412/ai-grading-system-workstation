@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { LessonNode, TeachingSemester } from '../api/catalog'
 import { teachingPrepWorkbenchApi } from '../api/workbench'
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
 import { teachingPrepRouteStateKey } from '../workbench/routeContext'
 import type { TeachingPrepRouteState } from '../workbench/routeState'
@@ -60,7 +61,11 @@ function fakeRouteState(): TeachingPrepRouteState {
   }
 }
 
-async function mountPage(options: { lessons?: LessonNode[]; withSemester?: boolean } = {}) {
+async function mountPage(options: {
+  lessons?: LessonNode[]
+  withSemester?: boolean
+  volumeLabel?: string
+} = {}) {
   vi.spyOn(teachingPrepWorkbenchApi, 'lessonStatuses').mockResolvedValue([])
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -76,6 +81,22 @@ async function mountPage(options: { lessons?: LessonNode[]; withSemester?: boole
     catalog.selectedSemesterId = semester.id
   }
   catalog.lessonNodes = options.lessons ?? [lesson('1'.repeat(32), '课时 1')]
+  if (options.volumeLabel) {
+    const scope = useCurriculumScopeStore(pinia)
+    scope.volumes = [{
+      id: 'g7-first',
+      order: 1,
+      label: options.volumeLabel,
+      grade: '七年级',
+      semester: '上册',
+      textbook_version: '数学',
+      source: {},
+      statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 },
+      chapters: [],
+    }]
+    scope.selectedVolumeId = 'g7-first'
+    scope.loadState = 'ready'
+  }
   app.mount(host)
   await nextTick()
   await nextTick()
@@ -148,11 +169,23 @@ describe('OverviewPage', () => {
     app.unmount()
   })
 
-  it('shows the empty state when no semester exists', async () => {
+  it('shows the empty state when no teaching term is selected', async () => {
     const { app, host } = await mountPage({ withSemester: false, lessons: [] })
 
-    expect(host.textContent).toContain('还没有本学期')
-    expect(host.textContent).toContain('建立本学期')
+    expect(host.textContent).toContain('请先在顶部选择教学学期')
+    expect(host.textContent).not.toContain('建立本学期')
+    app.unmount()
+  })
+
+  it('guides creating a prep semester for the selected teaching term', async () => {
+    const { app, host } = await mountPage({
+      withSemester: false,
+      lessons: [],
+      volumeLabel: '七年级上册',
+    })
+
+    expect(host.textContent).toContain('还没有「七年级上册」的备课学期')
+    expect(host.textContent).toContain('为「七年级上册」建立本学期')
     app.unmount()
   })
 })

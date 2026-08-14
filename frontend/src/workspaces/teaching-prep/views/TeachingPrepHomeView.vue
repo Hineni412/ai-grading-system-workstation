@@ -26,7 +26,8 @@ const curriculumScope = useCurriculumScopeStore()
 const loading = ref(true)
 const loadError = ref('')
 const semesterScope = useTeachingPrepSemesterScope({
-  onSemesterMissing: message => { loadError.value = message },
+  enableSyncWatch: true,
+  loadScope: () => routeState.currentView.value === 'overview' ? 'overview' : 'materials',
 })
 
 async function load(): Promise<void> {

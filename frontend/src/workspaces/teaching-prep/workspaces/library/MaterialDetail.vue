@@ -411,6 +411,9 @@ const deletionStateLabels: Record<MaterialDeletionState, string> = {
         >
           {{ attaching ? '正在加入…' : '加入本学期并选中' }}
         </AppButton>
+        <p v-if="!record && !catalog.selectedSemester" class="tp-muted">
+          请先在顶部选择教学学期并建立本学期，再加入资料。
+        </p>
         <AppButton v-else variant="secondary" @click="updateRole(material)">保存角色</AppButton>
         <AppButton v-if="record?.is_active" variant="ghost" @click="removeFromSemester">移出学期</AppButton>
         <AppButton v-else-if="record" variant="ghost" @click="restoreToSemester">恢复</AppButton>
