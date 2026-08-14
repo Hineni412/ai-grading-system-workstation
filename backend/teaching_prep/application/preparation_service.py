@@ -527,6 +527,21 @@ class TeachingPrepService:
             decision=normalize_mapping_decision(decision),
         )
 
+    def recompute_semester_mapping_page_ranges(
+        self,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> SemesterMappingProposal:
+        if isinstance(expected_revision, bool) or expected_revision < 1:
+            raise TeachingPrepValidationError(
+                "expected mapping revision is invalid"
+            )
+        return self.semester_mapping.recompute_page_ranges(
+            _clean_entity_id(proposal_id),
+            expected_revision=expected_revision,
+        )
+
     def reject_semester_mapping_proposal(
         self,
         proposal_id: str,

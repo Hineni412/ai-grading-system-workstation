@@ -19,6 +19,15 @@ _INLINE_PAGE_REFERENCE = re.compile(
 _MAX_TOC_ENTRIES = 160
 _MAX_ANCHORS = 120
 _EXPLICIT_LESSON_ANCHOR = re.compile(r"第\s*\d+\s*课时")
+_TRAILING_PAGE_IN_TITLE = re.compile(r"[/／]\s*(?P<page>\d{1,4})\s*$")
+_UNSTABLE_CALIBRATION_TITLES = frozenset(
+    {
+        "回顾与思考",
+        "复习题",
+        "本章内容我会学",
+    }
+)
+_MIN_VISIBLE_PAGE_OFFSETS = 5
 
 
 class DirectoryEvidenceBuilder:
@@ -52,16 +61,36 @@ class DirectoryEvidenceBuilder:
                 preferred_page_track=preferred_page_track,
             )
 
-        offsets = _calibration_offsets(entries, units, scanned_count)
-        calibrated_offset, offset_issues, offset_agreed = _choose_printed_offset(
-            offsets,
+        total_units = len(units)
+        _repair_toc_printed_pages(entries, total_units=total_units)
+        directory_pages = _directory_page_unit_indices(
+            units[:scanned_count],
             entries=entries,
-            total_units=len(units),
-            material_role=str(material.get("material_role") or ""),
+        )
+        visible_offsets = _visible_printed_offsets(
+            units,
+            directory_pages=directory_pages,
+            total_units=total_units,
+        )
+        title_offsets = _calibration_offsets(
+            entries,
+            units,
+            scanned_count,
+            directory_pages=directory_pages,
+        )
+        material_role = str(material.get("material_role") or "")
+        calibrated_offset, offset_issues, offset_agreed, offsets = (
+            _select_printed_offset(
+                visible_offsets=visible_offsets,
+                title_offsets=title_offsets,
+                entries=entries,
+                total_units=total_units,
+                material_role=material_role,
+            )
         )
         resolved = _resolved_ranges(
             entries,
-            total_units=len(units),
+            total_units=total_units,
             offset=calibrated_offset,
         )
         anchors = _anchors(
@@ -89,11 +118,8 @@ class DirectoryEvidenceBuilder:
 
         return {
             "strategy": strategy,
-            "total_unit_count": len(units),
-            "directory_page_unit_indices": _directory_page_unit_indices(
-                units[:scanned_count],
-                entries=entries,
-            ),
+            "total_unit_count": total_units,
+            "directory_page_unit_indices": directory_pages,
             "scanned_unit_indices": [
                 int(unit.get("unit_index") or index)
                 for index, unit in enumerate(units[:scanned_count], start=1)
@@ -585,32 +611,136 @@ def _toc_continues_near_end(entries: list[dict[str, object]], scanned_count: int
     return any(int(item["source_unit"]) >= scanned_count - 1 for item in entries[-8:])
 
 
+def _repair_toc_printed_pages(
+    entries: list[dict[str, object]],
+    *,
+    total_units: int,
+) -> None:
+    maximum = total_units + 40
+    for item in entries:
+        title = str(item.get("title") or "")
+        match = _TRAILING_PAGE_IN_TITLE.search(title)
+        if match is None:
+            continue
+        recovered = int(match.group("page"))
+        if recovered < 1 or recovered > maximum:
+            continue
+        current = item.get("printed_page")
+        current_is_weak = (
+            not isinstance(current, int)
+            or current <= 0
+            or (recovered >= 20 and current < 15 and recovered >= current + 20)
+        )
+        if not current_is_weak:
+            continue
+        item["printed_page"] = recovered
+        item["title"] = _TRAILING_PAGE_IN_TITLE.sub("", title).strip()
+        page_refs = item.get("page_refs")
+        if isinstance(page_refs, dict):
+            page_refs["页"] = recovered
+            item["printed_page_track"] = item.get("printed_page_track") or "页"
+
+
+def _visible_printed_offsets(
+    units: list[Mapping[str, object]],
+    *,
+    directory_pages: list[int],
+    total_units: int,
+) -> list[int]:
+    skipped = set(directory_pages)
+    offsets: list[int] = []
+    for unit in units:
+        index = int(unit.get("unit_index") or 0)
+        if index < 1 or index in skipped:
+            continue
+        summary = unit.get("object_summary")
+        if not isinstance(summary, Mapping):
+            continue
+        printed = summary.get("printed_page_number")
+        if not isinstance(printed, int) or printed < 1:
+            continue
+        if printed > total_units + 20:
+            continue
+        offsets.append(index - printed)
+    return offsets
+
+
+def _select_printed_offset(
+    *,
+    visible_offsets: list[int],
+    title_offsets: list[int],
+    entries: list[dict[str, object]],
+    total_units: int,
+    material_role: str,
+) -> tuple[int | None, list[str], bool, list[int]]:
+    visible_offset, visible_issues, visible_agreed = _choose_printed_offset(
+        visible_offsets,
+        entries=entries,
+        total_units=total_units,
+        material_role=material_role,
+    )
+    visible_usable = (
+        len(visible_offsets) >= _MIN_VISIBLE_PAGE_OFFSETS
+        and visible_offset is not None
+        and (
+            visible_agreed
+            or (
+                visible_offset != 0
+                and not _offset_collapses_front(
+                    entries,
+                    visible_offset,
+                    total_units,
+                )
+            )
+        )
+    )
+    if visible_usable:
+        issues = list(visible_issues)
+        if "页脚页码校准" not in " ".join(issues):
+            issues.insert(0, "已用正文页脚页码校准书上页码与 PDF 页码。")
+        return visible_offset, issues, visible_agreed, visible_offsets
+    title_offset, title_issues, title_agreed = _choose_printed_offset(
+        title_offsets,
+        entries=entries,
+        total_units=total_units,
+        material_role=material_role,
+    )
+    return title_offset, title_issues, title_agreed, title_offsets
+
+
 def _calibration_offsets(
     entries: list[dict[str, object]],
     units: list[Mapping[str, object]],
     scanned_count: int,
+    *,
+    directory_pages: list[int] | None = None,
 ) -> list[int]:
     offsets: list[int] = []
+    skipped_pages = set(directory_pages or ())
+    last_directory = max(skipped_pages) if skipped_pages else 0
     candidates = _spread(entries, 7)
     for entry in candidates:
         if not isinstance(entry.get("printed_page"), int):
             continue
-        title = _searchable_title(str(entry["title"]))
-        if len(title) < 3:
+        raw_title = str(entry["title"])
+        title = _searchable_title(raw_title)
+        if len(title) < 4:
+            continue
+        if _clean_title(raw_title) in _UNSTABLE_CALIBRATION_TITLES:
             continue
         source_unit = int(entry.get("source_unit") or 0)
+        floor = max(source_unit, last_directory)
         for unit in units:
-            if int(unit.get("unit_index") or 0) <= source_unit:
+            unit_index = int(unit.get("unit_index") or 0)
+            if unit_index <= floor or unit_index in skipped_pages:
                 continue
             haystack = _searchable_title(
                 f"{unit.get('title') or ''} {unit.get('text_excerpt') or ''}"
             )
             if title in haystack or (
-                len(haystack) >= 3 and haystack[:80] in title
+                len(haystack) >= 4 and haystack[:80] in title
             ):
-                offsets.append(
-                    int(unit.get("unit_index") or 1) - int(entry["printed_page"])
-                )
+                offsets.append(unit_index - int(entry["printed_page"]))
                 break
     return offsets
 
@@ -627,9 +757,19 @@ def _choose_printed_offset(
         return None, extra_issues, False
     median_offset = round(median(offsets))
     if len(offsets) < 2:
+        if _offset_collapses_front(entries, median_offset, total_units):
+            extra_issues.append(
+                "页码校准偏差过大，已改用书上页码对照 PDF，需教师按原页复核。"
+            )
+            return 0, extra_issues, False
         return median_offset, extra_issues, False
     spread = max(offsets) - min(offsets)
     if spread <= 2:
+        if _offset_collapses_front(entries, median_offset, total_units):
+            extra_issues.append(
+                "页码校准偏差过大，已改用书上页码对照 PDF，需教师按原页复核。"
+            )
+            return 0, extra_issues, False
         return median_offset, extra_issues, True
     extra_issues.append("不同目录锚点的页码偏移不一致，映射范围需要重点复核。")
     if material_role != "textbook":
@@ -774,9 +914,11 @@ def _spread(items: list[dict[str, object]], limit: int) -> list[dict[str, object
 
 
 def _heading_level(title: str) -> str:
-    if re.match(r"^第.+章", title) or re.match(r"^\d+\s*[^.\d]", title):
+    if re.match(r"^第.+章", title):
         return "chapter"
     if re.match(r"^第.+节", title) or re.match(r"^\d+\.\d+", title):
+        return "section"
+    if re.match(r"^\d+\s+[\u4e00-\u9fff☆*]", title):
         return "section"
     return "lesson"
 

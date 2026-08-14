@@ -89,6 +89,7 @@ const mappingEdits = reactive<Record<string, {
 }>>({})
 const bulkReviewRunning = ref(false)
 const applyRunning = ref(false)
+const recomputeRunning = ref(false)
 
 const proposalLessonOptions = computed(() => (
   bookProposal.value?.payload.tree.flatMap(chapter => (
@@ -918,6 +919,33 @@ async function discardUnknownMappingResult(): Promise<void> {
   }
 }
 
+async function recomputePageRanges(): Promise<void> {
+  const proposal = bookProposal.value
+  if (!proposal || recomputeRunning.value) return
+  if (!window.confirm(
+    '将按本机页码规则重算当前这份建议的页段，不调用 AI、不产生费用。已经点过的接受/排除会清掉，需要你重新对着原页确认。确定继续吗？',
+  )) return
+  recomputeRunning.value = true
+  notice('正在按本机规则重算页码，不调用模型…')
+  try {
+    const updated = await teachingPrepCatalogApi.recomputeSemesterMappingPageRanges({
+      id: proposal.id,
+      revision: proposal.revision,
+    })
+    const index = catalog.semesterMappingProposals.findIndex(item => item.id === updated.id)
+    if (index >= 0) catalog.semesterMappingProposals[index] = updated
+    else catalog.semesterMappingProposals = [...catalog.semesterMappingProposals, updated]
+    for (const key of Object.keys(mappingEdits)) delete mappingEdits[key]
+    const pending = updated.payload.mappings.find(item => item.decision === 'pending')
+    goToPage(pending?.start_unit ?? 1)
+    notice('页码已重算，未调用模型。请重新对着原页确认各段。')
+  } catch {
+    notice(catalog.errorMessage || '页码没有重算成功，当前建议仍保留，请刷新后重试。')
+  } finally {
+    recomputeRunning.value = false
+  }
+}
+
 async function rejectProposalForRegeneration(): Promise<void> {
   const task = currentMappingTask.value
   const proposal = bookProposal.value
@@ -1063,8 +1091,8 @@ const decisionLabels: Record<string, string> = {
           <div class="tp-page-checker__toolbar">
             <p v-if="pendingReviewCount" class="tp-banner tp-banner--ai">
               {{ isTextbookBook
-                ? '对着原页确认本段页码属于哪一小节；该小节下的课时共用这一段。全部处理后点击“应用全部接受项”正式生效。'
-                : '对着原页确认本段页码属于哪一课时；全部处理后点击“应用全部接受项”正式生效。' }}
+                ? '对着原页确认本段页码属于哪一小节；该小节下的课时共用这一段。若页码明显偏差，可先“按新规则重算页码（不调用 AI）”。全部处理后点击“应用全部接受项”正式生效。'
+                : '对着原页确认本段页码属于哪一课时；若页码明显偏差，可先重算页码（不调用 AI）。全部处理后点击“应用全部接受项”正式生效。' }}
             </p>
             <p v-else class="tp-muted">
               本份建议已全部处理。核对无误后可应用到本学期课时树。
@@ -1076,6 +1104,14 @@ const decisionLabels: Record<string, string> = {
                 @click="rejectProposalForRegeneration"
               >
                 放弃本份建议
+              </AppButton>
+              <AppButton
+                variant="secondary"
+                data-testid="recompute-mapping-pages"
+                :disabled="recomputeRunning"
+                @click="recomputePageRanges"
+              >
+                {{ recomputeRunning ? '正在重算页码…' : '按新规则重算页码（不调用 AI）' }}
               </AppButton>
               <AppButton variant="ghost" :disabled="bulkReviewRunning || pendingReviewCount === 0" @click="acceptAllPendingMappings">
                 {{ bulkReviewRunning ? '正在接受对应…' : `接受剩余（${pendingReviewCount}）` }}

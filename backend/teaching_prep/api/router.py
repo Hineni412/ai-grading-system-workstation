@@ -2296,6 +2296,24 @@ def create_router() -> APIRouter:
         return SemesterMappingProposalResponse.from_domain(item)
 
     @router.post(
+        "/semester-mapping-proposals/{proposal_id}/recompute-page-ranges",
+        response_model=SemesterMappingProposalResponse,
+    )
+    def recompute_semester_mapping_page_ranges(
+        proposal_id: str,
+        payload: RejectSemesterMappingProposalRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMappingProposalResponse:
+        try:
+            item = service.recompute_semester_mapping_page_ranges(
+                proposal_id,
+                expected_revision=payload.expected_revision,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMappingProposalResponse.from_domain(item)
+
+    @router.post(
         "/semester-mapping-proposals/{proposal_id}/reject",
         response_model=SemesterMappingProposalResponse,
     )

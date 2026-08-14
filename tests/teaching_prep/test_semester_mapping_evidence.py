@@ -5,10 +5,14 @@ import pytest
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.teaching_prep.application.semester_mapping import (
     materialize_semantic_mapping_payload,
+    rematerialize_existing_mapping_payload,
     validate_semester_mapping_payload,
 )
 from backend.teaching_prep.application.semester_mapping_evidence import (
     _choose_printed_offset,
+    _heading_level,
+    _repair_toc_printed_pages,
+    _select_printed_offset,
     build_directory_evidence,
 )
 from backend.teaching_prep.infrastructure.llm.semester_mapping import (
@@ -1264,3 +1268,120 @@ def test_workbook_offset_keeps_median_even_when_spread_is_wide() -> None:
     assert agreed is False
     assert issues
     assert not any("偏差过大" in item for item in issues)
+
+
+def test_consistent_wrong_offset_falls_back_when_it_collapses_front() -> None:
+    entries = [
+        {"printed_page": page}
+        for page in (1, 2, 8, 75, 79, 105, 171)
+    ]
+    offset, issues, agreed = _choose_printed_offset(
+        [-82] * 6,
+        entries=entries,
+        total_units=212,
+        material_role="textbook",
+    )
+    assert offset == 0
+    assert agreed is False
+    assert any("偏差过大" in item for item in issues)
+
+
+def test_select_printed_offset_prefers_visible_page_footer() -> None:
+    entries = [{"printed_page": page, "title": "x"} for page in (2, 10, 79, 89, 171)]
+    offset, issues, agreed, used = _select_printed_offset(
+        visible_offsets=[10] * 20,
+        title_offsets=[-82, -82, -82],
+        entries=entries,
+        total_units=212,
+        material_role="textbook",
+    )
+    assert offset == 10
+    assert used == [10] * 20
+    assert agreed is True
+    assert any("页脚" in item for item in issues)
+
+
+def test_repair_recovers_page_number_stuck_in_title() -> None:
+    entries = [
+        {
+            "title": "3 哪个团队收益大 /115",
+            "printed_page": 0,
+            "page_refs": {},
+        }
+    ]
+    _repair_toc_printed_pages(entries, total_units=212)
+    assert entries[0]["printed_page"] == 115
+    assert entries[0]["title"] == "3 哪个团队收益大"
+
+
+def test_heading_level_treats_numbered_section_titles_as_section() -> None:
+    assert _heading_level("第一章 一次函数") == "chapter"
+    assert _heading_level("3 哪个团队收益大") == "section"
+    assert _heading_level("1.1 探索勾股定理") == "section"
+
+
+def test_rematerialize_rebuilds_page_ranges_from_new_local_evidence() -> None:
+    snapshot = _snapshot()
+    snapshot["lessons"] = [
+        {
+            "id": "lesson-understand",
+            "parent_id": None,
+            "node_type": "lesson",
+            "title": "1.1 探索勾股定理",
+            "sort_order": 1,
+        }
+    ]
+    snapshot["materials"][0]["material_role"] = "textbook"
+    evidence = build_directory_evidence(snapshot)
+    toc_id = next(
+        str(item["evidence_id"])
+        for item in evidence["toc_entries"]
+        if "探索勾股定理" in str(item["title"])
+        and "1.1" in str(item["title"])
+    )
+    expected = next(
+        item
+        for item in evidence["resolved_ranges"]
+        if item["toc_evidence_id"] == toc_id
+    )
+    rebuilt = rematerialize_existing_mapping_payload(
+        {
+            "tree": [],
+            "mappings": [
+                {
+                    "lesson_ref": "lesson-understand",
+                    "evidence_refs": [toc_id],
+                    "start_unit": 89,
+                    "end_unit": 91,
+                    "material_record_id": "record-1",
+                }
+            ],
+            "uncertainties": [],
+            "source_material_record_ids": ["record-1"],
+            "directory_evidence": {
+                "toc_entries": [
+                    {
+                        "evidence_id": toc_id,
+                        "title": "1.1 探索勾股定理",
+                        "printed_page": 3,
+                        "source_unit": 2,
+                        "level": "section",
+                    }
+                ]
+            },
+        },
+        snapshot=snapshot,
+    )
+    mapping = rebuilt["mappings"][0]
+    assert mapping["start_unit"] == expected["start_unit"]
+    assert mapping["end_unit"] == expected["end_unit"]
+    assert mapping["start_unit"] != 89
+    assert "未调用模型" in str(rebuilt["uncertainties"][0])
+
+
+def test_rematerialize_rejects_local_ppt_mappings() -> None:
+    with pytest.raises(TeachingPrepValidationError):
+        rematerialize_existing_mapping_payload(
+            {"generation_source": "local_reference_ppt_names"},
+            snapshot=_snapshot(),
+        )
