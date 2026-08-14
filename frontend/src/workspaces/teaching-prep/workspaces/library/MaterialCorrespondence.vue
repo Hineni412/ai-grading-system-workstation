@@ -50,7 +50,7 @@ const abandonedProposalIds = ref<string[]>([])
 const bookProposal = computed<SemesterMappingProposal | null>(() => {
   const recordId = record.value?.id ?? ''
   const listed = catalog.semesterMappingProposals.filter(item => (
-    item.status !== 'rejected'
+    item.status === 'proposed'
     && !abandonedProposalIds.value.includes(item.id)
     && item.payload.generation_source !== 'local_reference_ppt_names'
   ))
@@ -89,7 +89,6 @@ const mappingEdits = reactive<Record<string, {
 }>>({})
 const bulkReviewRunning = ref(false)
 const applyRunning = ref(false)
-const recomputeRunning = ref(false)
 
 const proposalLessonOptions = computed(() => (
   bookProposal.value?.payload.tree.flatMap(chapter => (
@@ -568,18 +567,20 @@ async function applyProposal(): Promise<void> {
       },
     )
     if (adopted) {
-      notice('对应已写入且已有回执。')
+      closeAppliedReview(proposal.id)
+      notice('对应已写入本学期课时树。')
       const refreshes = await Promise.allSettled([
         aiTasks.refresh(adopted.match.task.task_id),
         catalog.load(),
       ])
       if (refreshes.some(result => result.status === 'rejected')) {
-        notice('对应已写入且已有回执；页面状态暂未刷新，请刷新页面。')
+        notice('对应已写入本学期课时树；页面状态暂未刷新，请刷新页面。')
       }
     } else {
       await catalog.applySemesterMapping(proposal)
+      closeAppliedReview(proposal.id)
       await catalog.load()
-      notice('全部接受项已对应到本学期课时树。')
+      notice('对应已写入本学期课时树。')
     }
   } catch {
     notice(catalog.errorMessage || '对应尚未确认；已保存的逐条决定仍保留，请直接重试。')
@@ -726,7 +727,8 @@ const unreadSavedDraft = computed(() => {
   if (task?.status !== 'proposal_ready' || !task.proposal_ref_id) return false
   if (abandonedProposalIds.value.includes(task.proposal_ref_id)) return false
   const saved = catalog.semesterMappingProposals.find(item => item.id === task.proposal_ref_id)
-  return saved?.status !== 'rejected'
+  if (saved?.status === 'applied' || saved?.status === 'rejected') return false
+  return true
 })
 const blockingSavedDraft = computed(() => (
   Boolean(bookProposal.value) || unreadSavedDraft.value
@@ -919,30 +921,23 @@ async function discardUnknownMappingResult(): Promise<void> {
   }
 }
 
-async function recomputePageRanges(): Promise<void> {
-  const proposal = bookProposal.value
-  if (!proposal || recomputeRunning.value) return
-  if (!window.confirm(
-    '将按本机页码规则重算当前这份建议的页段，不调用 AI、不产生费用。已经点过的接受/排除会清掉，需要你重新对着原页确认。确定继续吗？',
-  )) return
-  recomputeRunning.value = true
-  notice('正在按本机规则重算页码，不调用模型…')
-  try {
-    const updated = await teachingPrepCatalogApi.recomputeSemesterMappingPageRanges({
-      id: proposal.id,
-      revision: proposal.revision,
-    })
-    const index = catalog.semesterMappingProposals.findIndex(item => item.id === updated.id)
-    if (index >= 0) catalog.semesterMappingProposals[index] = updated
-    else catalog.semesterMappingProposals = [...catalog.semesterMappingProposals, updated]
-    for (const key of Object.keys(mappingEdits)) delete mappingEdits[key]
-    const pending = updated.payload.mappings.find(item => item.decision === 'pending')
-    goToPage(pending?.start_unit ?? 1)
-    notice('页码已重算，未调用模型。请重新对着原页确认各段。')
-  } catch {
-    notice(catalog.errorMessage || '页码没有重算成功，当前建议仍保留，请刷新后重试。')
-  } finally {
-    recomputeRunning.value = false
+function closeAppliedReview(proposalId: string): void {
+  const index = catalog.semesterMappingProposals.findIndex(item => item.id === proposalId)
+  const current = index >= 0 ? catalog.semesterMappingProposals[index] : null
+  if (current && current.status === 'proposed') {
+    catalog.semesterMappingProposals[index] = {
+      ...current,
+      status: 'applied',
+    }
+  }
+  const recordId = record.value?.id
+  const materialIndex = catalog.semesterMaterials.findIndex(item => item.id === recordId)
+  const material = materialIndex >= 0 ? catalog.semesterMaterials[materialIndex] : null
+  if (material && material.mapping_status !== 'confirmed') {
+    catalog.semesterMaterials[materialIndex] = {
+      ...material,
+      mapping_status: 'confirmed',
+    }
   }
 }
 
@@ -1091,8 +1086,8 @@ const decisionLabels: Record<string, string> = {
           <div class="tp-page-checker__toolbar">
             <p v-if="pendingReviewCount" class="tp-banner tp-banner--ai">
               {{ isTextbookBook
-                ? '对着原页确认本段页码属于哪一小节；该小节下的课时共用这一段。若页码明显偏差，可先“按新规则重算页码（不调用 AI）”。全部处理后点击“应用全部接受项”正式生效。'
-                : '对着原页确认本段页码属于哪一课时；若页码明显偏差，可先重算页码（不调用 AI）。全部处理后点击“应用全部接受项”正式生效。' }}
+                ? '对着原页确认本段页码属于哪一小节；该小节下的课时共用这一段。全部处理后点击“应用全部接受项”正式生效。'
+                : '对着原页确认本段页码属于哪一课时；全部处理后点击“应用全部接受项”正式生效。' }}
             </p>
             <p v-else class="tp-muted">
               本份建议已全部处理。核对无误后可应用到本学期课时树。
@@ -1104,14 +1099,6 @@ const decisionLabels: Record<string, string> = {
                 @click="rejectProposalForRegeneration"
               >
                 放弃本份建议
-              </AppButton>
-              <AppButton
-                variant="secondary"
-                data-testid="recompute-mapping-pages"
-                :disabled="recomputeRunning"
-                @click="recomputePageRanges"
-              >
-                {{ recomputeRunning ? '正在重算页码…' : '按新规则重算页码（不调用 AI）' }}
               </AppButton>
               <AppButton variant="ghost" :disabled="bulkReviewRunning || pendingReviewCount === 0" @click="acceptAllPendingMappings">
                 {{ bulkReviewRunning ? '正在接受对应…' : `接受剩余（${pendingReviewCount}）` }}
@@ -1279,6 +1266,9 @@ const decisionLabels: Record<string, string> = {
       <p v-else-if="unreadSavedDraft" class="tp-banner tp-banner--ai" data-testid="saved-proposal-missing">
         这次 AI 草稿已经保存在本机，但本页还没读出来。请先点“重新载入草稿”。
         若仍没有页段，或对应不准，请先放弃这份草稿，再重新推断（会再计一次费）。
+      </p>
+      <p v-else-if="record.mapping_status === 'confirmed'" class="tp-muted">
+        这本书已经对应到本学期课时树。若要调整，可在下方重新推断或手动指定页段。
       </p>
       <p v-else class="tp-muted">
         还没有这本书的对应建议。可在下方让 AI 推断一份草稿，或手动指定页段。
