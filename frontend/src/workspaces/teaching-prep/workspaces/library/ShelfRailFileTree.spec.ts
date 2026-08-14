@@ -72,16 +72,40 @@ async function mountRail() {
     record('t'.repeat(32), ppt2),
     record('u'.repeat(32), ppt3),
   ]
-  catalog.materials = [ppt1, ppt2, ppt3]
-  catalog.semesterMaterials = records
-  catalog.referencePptCollections = [
+  const collections = [
     collection('9'.repeat(32), '八上课件', [
       member('9'.repeat(32), records[0]!.id, '第一章 勾股定理/1.1.pptx', 0),
       member('9'.repeat(32), records[1]!.id, '第一章 勾股定理/1.2.pptx', 1),
       member('9'.repeat(32), records[2]!.id, '第二章 实数/2.1.pptx', 2),
     ]),
   ]
-  vi.spyOn(teachingPrepCatalogApi, 'listReferencePptCollections').mockResolvedValue([])
+  vi.spyOn(teachingPrepCatalogApi, 'listReferencePptCollections').mockResolvedValue(collections)
+  catalog.materials = [ppt1, ppt2, ppt3]
+  catalog.semesterMaterials = records
+  catalog.selectedCurriculumId = 'c'.repeat(32)
+  catalog.selectedSemesterId = semesterId
+  catalog.semesters = [{
+    id: semesterId,
+    curriculum_id: 'c'.repeat(32),
+    curriculum_title: '八年级上册',
+    school_year: '2026-2027',
+    term: 'first',
+    planned_new_lesson_count: 60,
+    status: 'active',
+    active_lesson_count: 0,
+    not_started_lesson_count: 0,
+    preparing_lesson_count: 0,
+    ready_lesson_count: 0,
+    taught_lesson_count: 0,
+    skipped_lesson_count: 0,
+    material_count: 3,
+    parsed_material_count: 3,
+    mapped_material_count: 0,
+    revision: 1,
+    created_at: '2026-08-03T00:00:00Z',
+    updated_at: '2026-08-03T00:00:00Z',
+  }]
+  catalog.referencePptCollections = collections
 
   const selected = ref<LibrarySelection>({ kind: 'tree' })
   const Harness = defineComponent({
@@ -93,6 +117,7 @@ async function mountRail() {
   document.body.appendChild(host)
   const app = createApp(Harness)
   app.mount(host)
+  await nextTick()
   await nextTick()
   return { app, host, catalog, selected }
 }

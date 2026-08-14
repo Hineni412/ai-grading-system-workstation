@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
+import AppButton from '../../../components/design-system/AppButton.vue'
 import FeedbackBanner from '../../../components/design-system/FeedbackBanner.vue'
 import StatePanel from '../../../components/design-system/StatePanel.vue'
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
+import {
+  defaultSchoolYear,
+  useTeachingPrepSemesterScope,
+} from '../workbench/semesterScope'
 import ImportPanel from './library/ImportPanel.vue'
 import ShelfRail from './library/ShelfRail.vue'
 import ProgressStrip from './library/ProgressStrip.vue'
@@ -15,32 +21,56 @@ import { isBookRole, type LibrarySelection } from './library/libraryShared'
 import { useMaterialImportQueue } from './library/importQueue'
 
 const catalog = useTeachingPrepCatalogStore()
+const curriculumScope = useCurriculumScopeStore()
+const semesterScope = useTeachingPrepSemesterScope()
 const importQueue = useMaterialImportQueue()
 const notice = ref('')
 const selection = ref<LibrarySelection>({ kind: 'import' })
+const userChoseImport = ref(false)
+const creatingSemester = ref(false)
+const createSetup = reactive({
+  schoolYear: defaultSchoolYear(),
+  plannedLessonCount: 60,
+})
+const createMessage = ref('')
+
+const selectedVolume = computed(() => curriculumScope.selectedVolume)
+const needsPrepSemester = computed(() => (
+  Boolean(selectedVolume.value && !catalog.selectedSemester)
+))
+const canBrowseLibrary = computed(() => !needsPrepSemester.value)
 
 function showNotice(message: string): void {
   notice.value = message
 }
 
-// 默认选中：课时树待确认时优先课时树，否则第一个章文件夹，最后退回导入
+function selectFromRail(next: LibrarySelection): void {
+  userChoseImport.value = next.kind === 'import'
+  selection.value = next
+}
+
 function defaultSelection(): LibrarySelection {
-  if (catalog.lessonTreeStatus.state === 'pending') return { kind: 'tree' }
+  if (catalog.selectedSemester && catalog.lessonTreeStatus.state === 'pending') {
+    return { kind: 'tree' }
+  }
   const firstFolder = catalog.libraryChapterFolders[0]
   if (firstFolder) return { kind: 'chapter', folderKey: firstFolder.key }
+  const firstBook = catalog.libraryMaterialRecords.find(item => (
+    item.is_active && isBookRole(item.material_role)
+  ))
+  if (firstBook) {
+    return { kind: 'material', materialId: firstBook.current_material_version_id }
+  }
   return { kind: 'import' }
 }
 
-// 从备课首页切到资料库时组件才挂载（外壳按 v-if 切换视图），此处补拉资料数据；
-// ensureMaterialData 按“教材:学期”缓存幂等，直达资料库时不会重复请求。
 onMounted(() => { void catalog.ensureMaterialData() })
 
-// 合集与课时树状态就绪后，把占位选中态切换到有意义的内容；
-// 当前选中的章文件夹被停用合集移除时回退到默认选中。
 watch(
   () => [
     catalog.libraryChapterFolders.map(folder => folder.key).join('|'),
     catalog.lessonTreeStatus.state,
+    catalog.libraryMaterialRecords.map(item => item.id).join('|'),
   ] as const,
   () => {
     const current = selection.value
@@ -49,27 +79,46 @@ watch(
       selection.value = defaultSelection()
       return
     }
-    if (current.kind === 'import' && catalog.semesterMaterials.length > 0) {
+    if (
+      current.kind === 'import'
+      && catalog.libraryMaterialRecords.length > 0
+      && !userChoseImport.value
+    ) {
       selection.value = defaultSelection()
     }
   },
   { immediate: true },
 )
 
-// 导入队列完成合集建立后同步刷新章文件夹分组
 watch(
   () => importQueue.pendingPptFolders.value.map(batch => `${batch.id}:${batch.state}`).join('|'),
   () => { void catalog.refreshReferencePptCollections() },
 )
 
-// 单份资料：教材/教辅打开“对应到课时树”，其余打开资料管理二级视图
 const selectedMaterialIsBook = computed(() => {
-  if (selection.value.kind !== 'material') return false
+  if (!catalog.selectedSemester || selection.value.kind !== 'material') return false
   const record = catalog.semesterMaterials.find(item => (
     item.current_material_version_id === (selection.value as { materialId: string }).materialId
   ))
   return record ? isBookRole(record.material_role) : false
 })
+
+async function createPrepSemester(): Promise<void> {
+  creatingSemester.value = true
+  createMessage.value = ''
+  try {
+    await semesterScope.createSemesterForGlobalVolume({
+      schoolYear: createSetup.schoolYear,
+      plannedLessonCount: createSetup.plannedLessonCount,
+    })
+    await catalog.ensureMaterialData()
+    showNotice('本学期已建立，可以导入资料。')
+  } catch {
+    createMessage.value = catalog.errorMessage || '学期没有建立，请检查填写内容。'
+  } finally {
+    creatingSemester.value = false
+  }
+}
 </script>
 
 <template>
@@ -95,17 +144,47 @@ const selectedMaterialIsBook = computed(() => {
       dismissible
       @dismiss="notice = ''"
     />
-
-    <StatePanel
-      v-if="!catalog.selectedSemester"
-      kind="empty"
-      title="还没有本学期"
-      description="请先回到备课首页建立本学期，再导入资料。"
+    <FeedbackBanner
+      v-if="!selectedVolume && canBrowseLibrary"
+      tone="info"
+      title="当前是浏览全部资料"
+      description="导入和对应需要先在顶部选择教学学期，并确认已建立对应的备课学期。"
     />
+
+    <template v-if="needsPrepSemester">
+      <StatePanel
+        kind="empty"
+        :title="`还没有「${selectedVolume?.label}」的备课学期`"
+        description="确认后只建立资料归属，不会调用 AI。现有其他学期的书不会自动搬过来，建立后再逐份加入本学期。"
+      />
+      <section class="tp-panel" aria-label="建立本学期">
+        <div class="tp-panel__body tp-form-line">
+          <label class="tp-field">
+            学年
+            <input v-model="createSetup.schoolYear" type="text" placeholder="2026-2027">
+          </label>
+          <label class="tp-field">
+            计划课时数
+            <input v-model.number="createSetup.plannedLessonCount" type="number" min="1" max="300">
+          </label>
+          <AppButton
+            variant="primary"
+            :disabled="creatingSemester"
+            @click="createPrepSemester"
+          >
+            {{ creatingSemester ? '正在建立…' : `为「${selectedVolume?.label}」建立本学期` }}
+          </AppButton>
+        </div>
+        <p v-if="createMessage" class="tp-inline-message" role="status">{{ createMessage }}</p>
+      </section>
+    </template>
     <template v-else>
-      <ProgressStrip />
+      <ProgressStrip
+        v-if="catalog.selectedSemester"
+        @open-import="selectFromRail({ kind: 'import' })"
+      />
       <div class="tp-library-layout">
-        <ShelfRail :selection="selection" @select="selection = $event" />
+        <ShelfRail :selection="selection" @select="selectFromRail" />
         <div class="tp-step-canvas">
           <ImportPanel
             v-if="selection.kind === 'import'"
@@ -114,18 +193,19 @@ const selectedMaterialIsBook = computed(() => {
           <ChapterGrid
             v-else-if="selection.kind === 'chapter'"
             :folder-key="selection.folderKey"
-            @select="selection = $event"
+            @select="selectFromRail"
             @notice="showNotice"
           />
           <LessonTreeConfirm
             v-else-if="selection.kind === 'tree'"
-            @select="selection = $event"
+            @select="selectFromRail"
             @notice="showNotice"
           />
           <MaterialCorrespondence
             v-else-if="selection.kind === 'material' && selectedMaterialIsBook"
             :material-id="selection.materialId"
             @notice="showNotice"
+            @open-import="selectFromRail({ kind: 'import' })"
           />
           <MaterialDetail
             v-else-if="selection.kind === 'material'"

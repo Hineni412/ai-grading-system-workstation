@@ -2,7 +2,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createApp, defineComponent, h, nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { MaterialVersion } from '../../api/catalog'
+import type { MaterialVersion, TeachingSemester } from '../../api/catalog'
+import { useCurriculumScopeStore } from '../../../../stores/curriculum-scope'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
 import { useMaterialImportQueue } from './importQueue'
 import ImportPanel from './ImportPanel.vue'
@@ -24,6 +25,60 @@ function folderFile(path: string): File {
   const file = new File(['x'], path.split('/').pop()!)
   Object.defineProperty(file, 'webkitRelativePath', { value: path })
   return file
+}
+
+function seedImportScope(): void {
+  const scope = useCurriculumScopeStore()
+  scope.volumes = [{
+    id: 'g8-first',
+    order: 1,
+    label: '八年级上册',
+    grade: '八年级',
+    semester: '上册',
+    textbook_version: '数学',
+    source: {},
+    statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 },
+    chapters: [],
+  }]
+  scope.selectedVolumeId = 'g8-first'
+  scope.loadState = 'ready'
+  const catalog = useTeachingPrepCatalogStore()
+  const semester: TeachingSemester = {
+    id: 's'.repeat(32),
+    curriculum_id: 'c'.repeat(32),
+    curriculum_title: '八年级上册',
+    school_year: '2026-2027',
+    term: 'first',
+    planned_new_lesson_count: 60,
+    status: 'active',
+    active_lesson_count: 0,
+    not_started_lesson_count: 0,
+    preparing_lesson_count: 0,
+    ready_lesson_count: 0,
+    taught_lesson_count: 0,
+    skipped_lesson_count: 0,
+    material_count: 0,
+    parsed_material_count: 0,
+    mapped_material_count: 0,
+    revision: 1,
+    created_at: '',
+    updated_at: '',
+  }
+  catalog.curricula = [{
+    id: semester.curriculum_id,
+    title: semester.curriculum_title,
+    grade_level: 8,
+    volume: 'first',
+    publisher: null,
+    edition_label: null,
+    revision: 1,
+    is_active: true,
+    created_at: '',
+    updated_at: '',
+  }]
+  catalog.semesters = [semester]
+  catalog.selectedCurriculumId = semester.curriculum_id
+  catalog.selectedSemesterId = semester.id
 }
 
 beforeEach(() => {
@@ -51,6 +106,7 @@ describe('material import queue', () => {
   })
 
   it('imports queued files through the catalog store', async () => {
+    seedImportScope()
     const queue = useMaterialImportQueue()
     const catalog = useTeachingPrepCatalogStore()
     const imported = material('m'.repeat(32), '一次函数课件.pptx')
@@ -66,7 +122,20 @@ describe('material import queue', () => {
     expect(queue.pendingImports.value[0]?.state).toBe('done')
   })
 
+  it('does not start copying when the teaching term is empty', async () => {
+    const queue = useMaterialImportQueue()
+    const catalog = useTeachingPrepCatalogStore()
+    const importCopy = vi.spyOn(catalog, 'importMaterialCopy').mockResolvedValue(
+      material('m'.repeat(32), '一次函数课件.pptx'),
+    )
+    queue.queueFiles(fileChangeEvent(new File(['x'], '一次函数课件.pptx')))
+    await queue.importQueuedFiles()
+    expect(importCopy).not.toHaveBeenCalled()
+    expect(queue.message.value).toContain('请先在顶部选择教学学期')
+  })
+
   it('keeps a failed import retryable instead of dropping it', async () => {
+    seedImportScope()
     const queue = useMaterialImportQueue()
     const catalog = useTeachingPrepCatalogStore()
     vi.spyOn(catalog, 'importMaterialCopy').mockRejectedValue(new Error('磁盘写入失败'))
@@ -185,7 +254,17 @@ describe('ImportPanel', () => {
     return { app, host, catalog, queue }
   }
 
+  it('disables both file pickers until a teaching term and prep semester exist', async () => {
+    const { app, host } = await mountPanel()
+    const inputs = [...host.querySelectorAll<HTMLInputElement>('input[type="file"]')]
+    expect(inputs).toHaveLength(2)
+    expect(inputs.every(input => input.disabled)).toBe(true)
+    expect(host.textContent).toContain('请先在顶部选择教学学期')
+    app.unmount()
+  })
+
   it('renders queued rows and starts the import from the panel', async () => {
+    seedImportScope()
     const { app, host, catalog, queue } = await mountPanel()
     const imported = material('m'.repeat(32), '一次函数课件.pptx')
     const importCopy = vi.spyOn(catalog, 'importMaterialCopy').mockResolvedValue(imported)

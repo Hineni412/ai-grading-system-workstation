@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { questionBankApi, type CurriculumCatalog, type CurriculumVolume } from '../../../api/question-bank'
-import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
+import { CURRICULUM_SCOPE_STORAGE_KEY, useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import { teachingPrepCatalogApi, type MaterialVersion, type SemesterMaterialRecord } from '../api/catalog'
 import { teachingPrepWorkbenchApi, type LessonPreparationStatus } from '../api/workbench'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
@@ -81,6 +81,7 @@ function mockEmptyCatalog(): void {
   vi.spyOn(teachingPrepCatalogApi, 'listSemesters').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listMaterials').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listMaterialParseJobs').mockResolvedValue([])
+  vi.spyOn(teachingPrepCatalogApi, 'listReferencePptCollections').mockResolvedValue([])
 }
 
 function statusFor(id: string, sortOrder: number, manual: LessonPreparationStatus['manual_progress'] = 'not_started'): LessonPreparationStatus {
@@ -97,6 +98,8 @@ function statusFor(id: string, sortOrder: number, manual: LessonPreparationStatu
 
 function mockCatalogWithLessons(count = 1): { semesterId: string; lessonIds: string[] } {
   mockEmptyCatalog()
+  vi.mocked(questionBankApi.getCurriculum).mockResolvedValue(globalCurriculumCatalog)
+  localStorage.setItem(CURRICULUM_SCOPE_STORAGE_KEY, globalVolume.id)
   const curriculumId = 'c'.repeat(32)
   const semesterId = 's'.repeat(32)
   const lessonIds = Array.from({ length: count }, (_, index) => `${index + 1}`.padStart(32, '0'))
@@ -171,6 +174,78 @@ afterEach(() => {
 })
 
 describe('TeachingPrepHomeView three-view shell', () => {
+  it('clears the prep semester when the topbar teaching term is empty', async () => {
+    mockCatalogWithLessons()
+    localStorage.removeItem(CURRICULUM_SCOPE_STORAGE_KEY)
+    vi.mocked(questionBankApi.getCurriculum).mockResolvedValue({
+      ...globalCurriculumCatalog,
+      volumes: [globalVolume],
+    })
+
+    const { app, host, pinia } = await mountAt()
+
+    expect(host.textContent).toContain('请先在顶部选择教学学期')
+    expect(useTeachingPrepCatalogStore(pinia).selectedSemester).toBeNull()
+    app.unmount()
+  })
+
+  it('does not reuse a second-term workspace when the topbar is first term', async () => {
+    mockCatalogWithLessons()
+    const secondCurriculumId = 'd'.repeat(32)
+    const secondSemesterId = 't'.repeat(32)
+    vi.mocked(teachingPrepCatalogApi.listCurricula).mockResolvedValue([{
+      id: secondCurriculumId,
+      title: '验收·初二数学',
+      grade_level: 8,
+      volume: 'second',
+      publisher: null,
+      edition_label: null,
+      revision: 1,
+      is_active: true,
+      created_at: '',
+      updated_at: '',
+    }])
+    vi.mocked(teachingPrepCatalogApi.listSemesters).mockResolvedValue([{
+      id: secondSemesterId,
+      curriculum_id: secondCurriculumId,
+      curriculum_title: '验收·初二数学',
+      school_year: '2025-2026',
+      term: 'second',
+      planned_new_lesson_count: 47,
+      status: 'archived',
+      active_lesson_count: 47,
+      not_started_lesson_count: 47,
+      preparing_lesson_count: 0,
+      ready_lesson_count: 0,
+      taught_lesson_count: 0,
+      skipped_lesson_count: 0,
+      material_count: 59,
+      parsed_material_count: 0,
+      mapped_material_count: 0,
+      revision: 1,
+      created_at: '',
+      updated_at: '',
+    }])
+    const eighth = {
+      ...globalVolume,
+      id: 'g8-first',
+      label: '八年级上册',
+      grade: '八年级',
+      semester: '上册',
+    }
+    vi.mocked(questionBankApi.getCurriculum).mockResolvedValue({
+      ...globalCurriculumCatalog,
+      volumes: [eighth],
+    })
+    localStorage.setItem(CURRICULUM_SCOPE_STORAGE_KEY, eighth.id)
+
+    const { app, host, pinia } = await mountAt()
+
+    expect(useTeachingPrepCatalogStore(pinia).selectedSemester).toBeNull()
+    expect(host.textContent).toContain('还没有「八年级上册」的备课学期')
+    app.unmount()
+  })
+
   it('opens the overview by default without loading material collections', async () => {
     mockCatalogWithLessons()
 

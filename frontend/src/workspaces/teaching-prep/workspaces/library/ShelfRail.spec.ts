@@ -74,9 +74,7 @@ async function mountRail() {
     record('u'.repeat(32), ppt3),
     record('v'.repeat(32), ppt4),
   ]
-  catalog.materials = [ppt1, ppt2, ppt3, ppt4]
-  catalog.semesterMaterials = records
-  catalog.referencePptCollections = [
+  const collections = [
     collection('9'.repeat(32), '八上课件', [
       member('9'.repeat(32), records[0]!.id, '第一章 勾股定理/1.1.pptx', 0),
       member('9'.repeat(32), records[1]!.id, '第一章 勾股定理/1.2.pptx', 1),
@@ -86,7 +84,33 @@ async function mountRail() {
       member('8'.repeat(32), records[3]!.id, '第三章 旧版/3.1.pptx', 0),
     ], false),
   ]
-  vi.spyOn(teachingPrepCatalogApi, 'listReferencePptCollections').mockResolvedValue([])
+  vi.spyOn(teachingPrepCatalogApi, 'listReferencePptCollections').mockResolvedValue(collections)
+  catalog.materials = [ppt1, ppt2, ppt3, ppt4]
+  catalog.semesterMaterials = records
+  catalog.selectedCurriculumId = 'c'.repeat(32)
+  catalog.selectedSemesterId = semesterId
+  catalog.semesters = [{
+    id: semesterId,
+    curriculum_id: 'c'.repeat(32),
+    curriculum_title: '八年级上册',
+    school_year: '2026-2027',
+    term: 'first',
+    planned_new_lesson_count: 60,
+    status: 'active',
+    active_lesson_count: 0,
+    not_started_lesson_count: 0,
+    preparing_lesson_count: 0,
+    ready_lesson_count: 0,
+    taught_lesson_count: 0,
+    skipped_lesson_count: 0,
+    material_count: 4,
+    parsed_material_count: 4,
+    mapped_material_count: 0,
+    revision: 1,
+    created_at: '2026-08-03T00:00:00Z',
+    updated_at: '2026-08-03T00:00:00Z',
+  }]
+  catalog.referencePptCollections = collections
 
   const selected = ref<LibrarySelection>({ kind: 'tree' })
   const Harness = defineComponent({
@@ -98,6 +122,7 @@ async function mountRail() {
   document.body.appendChild(host)
   const app = createApp(Harness)
   app.mount(host)
+  await nextTick()
   await nextTick()
   return { app, host, catalog, selected }
 }
@@ -116,6 +141,7 @@ describe('ShelfRail', () => {
   it('groups collection members into chapter folders with file-count badges', async () => {
     const { app, host } = await mountRail()
 
+    expect(host.querySelector('[data-testid="shelf-import-entry"]')?.textContent).toContain('导入资料')
     expect(host.textContent).toContain('课件 · 3 份')
     expect(host.textContent).toContain('第一章 勾股定理')
     expect(host.textContent).toContain('第二章 实数')
@@ -150,6 +176,43 @@ describe('ShelfRail', () => {
       kind: 'chapter',
       folderKey: `${'9'.repeat(32)}:第二章 实数`,
     })
+    app.unmount()
+  })
+
+  it('keeps other-semester books out of the current 书 list', async () => {
+    const { app, host, catalog } = await mountRail()
+    const otherBook = material('e'.repeat(32), '验收学期教材.pdf', 100)
+    catalog.materials = [...catalog.materials, otherBook]
+    catalog.allSemesterMaterialRecords = [
+      ...catalog.semesterMaterials,
+      {
+        id: 'w'.repeat(32),
+        semester_id: 'o'.repeat(32),
+        material_source_id: otherBook.source_id,
+        display_name: otherBook.display_name,
+        material_role: 'textbook',
+        parse_status: 'parsed',
+        mapping_status: 'unmapped',
+        current_material_version_id: otherBook.id,
+        safe_filename: otherBook.safe_filename,
+        current_inspection_status: 'ready',
+        current_unit_count: otherBook.unit_count,
+        last_parsed_version_id: otherBook.id,
+        has_unparsed_update: false,
+        parsed_at: '2026-08-03T00:00:00Z',
+        is_active: true,
+        revision: 1,
+        created_at: '2026-08-03T00:00:00Z',
+        updated_at: '2026-08-03T00:00:00Z',
+      },
+    ]
+    await nextTick()
+
+    expect(host.textContent).not.toContain('教材 · 验收学期教材.pdf')
+    const otherEntry = [...host.querySelectorAll('.tp-rail__item')]
+      .find(item => item.textContent?.includes('验收学期教材.pdf'))
+    expect(otherEntry).toBeTruthy()
+    expect(otherEntry?.textContent).toContain('未加入本学期')
     app.unmount()
   })
 })

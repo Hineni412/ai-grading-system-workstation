@@ -1320,7 +1320,7 @@ function validDirectoryEvidenceTocEntry(value: unknown): boolean {
     || Object.keys(value.page_refs).some(
       key => !SEMESTER_MAPPING_DIRECTORY_PAGE_TRACKS.has(key),
     )
-    || !Object.values(value.page_refs).every(page => integer(page, 1))
+    || !Object.values(value.page_refs).every(page => integer(page, 0))
     || typeof value.confidence !== 'number'
     || !Number.isFinite(value.confidence)
     || value.confidence < 0
@@ -1354,6 +1354,19 @@ function validDirectoryEvidenceAnchor(value: unknown): boolean {
     && Boolean(value.title || value.text_excerpt.trim())
 }
 
+function directoryEvidenceConfidenceLabel(
+  value: unknown,
+): 'high' | 'medium' | 'low' | null {
+  if (value === 'high' || value === 'medium' || value === 'low') return value
+  // Compatible input: older saved proposals stored a 0–1 score here.
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1) {
+    if (value >= 0.8) return 'high'
+    if (value >= 0.5) return 'medium'
+    return 'low'
+  }
+  return null
+}
+
 function validDirectoryEvidence(value: unknown): boolean {
   if (
     !isRecord(value)
@@ -1371,7 +1384,7 @@ function validDirectoryEvidence(value: unknown): boolean {
     || !value.resolved_ranges.every(validDirectoryEvidenceResolvedRange)
     || !Array.isArray(value.anchors)
     || !value.anchors.every(validDirectoryEvidenceAnchor)
-    || !['high', 'medium', 'low'].includes(String(value.confidence))
+    || directoryEvidenceConfidenceLabel(value.confidence) === null
     || !Array.isArray(value.issues)
     || !value.issues.every(text)
     || typeof value.full_page_text_sent !== 'boolean'
@@ -1390,6 +1403,78 @@ function validDirectoryEvidence(value: unknown): boolean {
   return value.printed_to_pdf_offset === undefined
     || value.printed_to_pdf_offset === null
     || Number.isSafeInteger(value.printed_to_pdf_offset)
+}
+
+function pickAllowedKeys(
+  value: Record<string, unknown>,
+  allowed: Set<string>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => allowed.has(key)),
+  )
+}
+
+function rejectPathLikeExtras(
+  value: Record<string, unknown>,
+  allowed: Set<string>,
+): void {
+  for (const [key, child] of Object.entries(value)) {
+    if (allowed.has(key)) continue
+    assertNoPathLikeKeys({ [key]: child })
+  }
+}
+
+function sanitizeDirectoryEvidenceTocEntry(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null
+  rejectPathLikeExtras(value, SEMESTER_MAPPING_DIRECTORY_TOC_KEYS)
+  const picked = pickAllowedKeys(value, SEMESTER_MAPPING_DIRECTORY_TOC_KEYS)
+  if (isRecord(picked.page_refs)) {
+    picked.page_refs = Object.fromEntries(
+      Object.entries(picked.page_refs).filter(([key]) => (
+        SEMESTER_MAPPING_DIRECTORY_PAGE_TRACKS.has(key)
+      )),
+    )
+  }
+  return validDirectoryEvidenceTocEntry(picked) ? picked : null
+}
+
+function sanitizeDirectoryEvidence(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null
+  rejectPathLikeExtras(value, SEMESTER_MAPPING_DIRECTORY_EVIDENCE_KEYS)
+  const picked = pickAllowedKeys(value, SEMESTER_MAPPING_DIRECTORY_EVIDENCE_KEYS)
+  if (Array.isArray(picked.toc_entries)) {
+    picked.toc_entries = picked.toc_entries.flatMap((item) => {
+      const entry = sanitizeDirectoryEvidenceTocEntry(item)
+      return entry ? [entry] : []
+    })
+  }
+  if (Array.isArray(picked.resolved_ranges)) {
+    picked.resolved_ranges = picked.resolved_ranges.flatMap((item) => {
+      if (!isRecord(item)) return []
+      rejectPathLikeExtras(item, SEMESTER_MAPPING_DIRECTORY_RESOLVED_RANGE_KEYS)
+      const range = pickAllowedKeys(item, SEMESTER_MAPPING_DIRECTORY_RESOLVED_RANGE_KEYS)
+      return validDirectoryEvidenceResolvedRange(range) ? [range] : []
+    })
+  }
+  if (Array.isArray(picked.anchors)) {
+    picked.anchors = picked.anchors.flatMap((item) => {
+      if (!isRecord(item)) return []
+      rejectPathLikeExtras(item, SEMESTER_MAPPING_DIRECTORY_ANCHOR_KEYS)
+      const anchor = pickAllowedKeys(item, SEMESTER_MAPPING_DIRECTORY_ANCHOR_KEYS)
+      return validDirectoryEvidenceAnchor(anchor) ? [anchor] : []
+    })
+  }
+  if (Array.isArray(picked.directory_page_unit_indices)) {
+    picked.directory_page_unit_indices = picked.directory_page_unit_indices.filter(
+      item => integer(item, 1),
+    )
+  }
+  if (Array.isArray(picked.scanned_unit_indices)) {
+    picked.scanned_unit_indices = picked.scanned_unit_indices.filter(
+      item => integer(item, 1),
+    )
+  }
+  return validDirectoryEvidence(picked) ? picked : null
 }
 
 export function decodeSemesterMappingProposal(value: unknown): SemesterMappingProposal {
@@ -1419,14 +1504,35 @@ export function decodeSemesterMappingProposal(value: unknown): SemesterMappingPr
       && value.payload.generation_source !== 'local_reference_ppt_names')
     || (value.payload.summary !== undefined
       && !validSemesterProposalSummary(value.payload.summary))
-    || (value.payload.directory_evidence !== undefined
-      && !validDirectoryEvidence(value.payload.directory_evidence))
     || !integer(value.revision, 1)
     || !text(value.created_at)
     || !text(value.updated_at)
     || !nullableText(value.applied_at)
   ) throw new Error('Invalid semester mapping proposal response')
-  return value as unknown as SemesterMappingProposal
+  const payload = { ...value.payload }
+  if (
+    payload.directory_evidence !== undefined
+    && !validDirectoryEvidence(payload.directory_evidence)
+  ) {
+    const sanitized = sanitizeDirectoryEvidence(payload.directory_evidence)
+    if (sanitized) payload.directory_evidence = sanitized
+    else delete payload.directory_evidence
+  }
+  const evidence = payload.directory_evidence
+  if (!isRecord(evidence)) {
+    return { ...value, payload } as unknown as SemesterMappingProposal
+  }
+  const confidence = directoryEvidenceConfidenceLabel(evidence.confidence)
+  if (confidence === null || evidence.confidence === confidence) {
+    return { ...value, payload } as unknown as SemesterMappingProposal
+  }
+  return {
+    ...value,
+    payload: {
+      ...payload,
+      directory_evidence: { ...evidence, confidence },
+    },
+  } as unknown as SemesterMappingProposal
 }
 
 function referencePptCollection(value: unknown): ReferencePptCollection {
@@ -2476,7 +2582,17 @@ export const teachingPrepCatalogApi = {
             || !hasExactKeys(payload, new Set(['items']))
             || !Array.isArray(payload.items)
           ) throw new Error('Invalid semester mapping proposal list response')
-          return payload.items.map(decodeSemesterMappingProposal)
+          const items = payload.items.flatMap((item) => {
+            try {
+              return [decodeSemesterMappingProposal(item)]
+            } catch {
+              return []
+            }
+          })
+          if (items.length === 0 && payload.items.length > 0) {
+            throw new Error('Invalid semester mapping proposal list response')
+          }
+          return items
         },
       },
     )
@@ -2513,7 +2629,7 @@ export const teachingPrepCatalogApi = {
   },
 
   rejectSemesterMappingProposal(
-    proposal: SemesterMappingProposal,
+    proposal: Pick<SemesterMappingProposal, 'id' | 'revision'>,
   ): Promise<SemesterMappingProposal> {
     return apiClient.request(
       `/api/teaching-prep/semester-mapping-proposals/${encodeURIComponent(proposal.id)}/reject`,

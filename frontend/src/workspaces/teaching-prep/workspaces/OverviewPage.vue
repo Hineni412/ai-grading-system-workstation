@@ -4,6 +4,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import AppButton from '../../../components/design-system/AppButton.vue'
 import StatePanel from '../../../components/design-system/StatePanel.vue'
 import StatusBadge from '../../../components/design-system/StatusBadge.vue'
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import type {
   LessonNode,
   SemesterLessonProgressStatus,
@@ -13,10 +14,18 @@ import { LESSON_PROGRESS_OPTIONS } from '../progressLabels'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
 import { useLessonStatusFeed } from '../workbench/lessonStatus'
 import { useTeachingPrepRouteStateContext } from '../workbench/routeContext'
+import {
+  defaultSchoolYear,
+  prepKeysForVolume,
+  useTeachingPrepSemesterScope,
+} from '../workbench/semesterScope'
 
 const catalog = useTeachingPrepCatalogStore()
+const curriculumScope = useCurriculumScopeStore()
+const semesterScope = useTeachingPrepSemesterScope()
 const routeState = useTeachingPrepRouteStateContext()
 const statusFeed = useLessonStatusFeed()
+const selectedVolume = computed(() => curriculumScope.selectedVolume)
 
 const SEMESTER_STATUS_LABELS: Record<SemesterStatus, string> = {
   planning: '规划中',
@@ -37,13 +46,12 @@ const actionMessage = ref('')
 const busy = computed(() => catalog.saveState === 'saving')
 
 const semesterSetup = reactive({
-  title: '初中数学',
-  gradeLevel: 8,
-  volume: 'first' as 'first' | 'second' | 'whole_year',
-  schoolYear: '2026-2027',
-  term: 'first' as 'first' | 'second',
+  schoolYear: defaultSchoolYear(),
   plannedLessonCount: 60,
 })
+const volumeKeys = computed(() => (
+  selectedVolume.value ? prepKeysForVolume(selectedVolume.value) : null
+))
 const semesterSetupOpen = ref(false)
 const semesterSetupMessage = ref('')
 
@@ -93,13 +101,6 @@ function readiness(lessonId: string) {
   ] as const
 }
 
-async function switchSemester(event: Event): Promise<void> {
-  const semesterId = (event.target as HTMLSelectElement).value
-  if (!semesterId || semesterId === semester.value?.id) return
-  await catalog.selectSemester(semesterId, 'overview')
-  await statusFeed.reload()
-}
-
 async function setSemesterStatus(status: SemesterStatus): Promise<void> {
   const current = semester.value
   if (!current) return
@@ -120,32 +121,14 @@ async function setSemesterStatus(status: SemesterStatus): Promise<void> {
 async function createSemesterContext(): Promise<void> {
   semesterSetupMessage.value = '正在建立本学期资料容器…'
   try {
-    if (catalog.selectedCurriculum) {
-      await catalog.createSemester({
-        request_token: `semester-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
-        school_year: semesterSetup.schoolYear.trim(),
-        term: semesterSetup.term,
-        planned_new_lesson_count: semesterSetup.plannedLessonCount,
-      })
-    } else {
-      await catalog.createSemesterWorkspace({
-        curriculum: {
-          title: semesterSetup.title.trim(),
-          grade_level: semesterSetup.gradeLevel,
-          volume: semesterSetup.volume,
-          publisher: null,
-          edition_label: null,
-        },
-        semester: {
-          school_year: semesterSetup.schoolYear.trim(),
-          term: semesterSetup.term,
-          planned_new_lesson_count: semesterSetup.plannedLessonCount,
-        },
-      })
-    }
+    await semesterScope.createSemesterForGlobalVolume({
+      schoolYear: semesterSetup.schoolYear,
+      plannedLessonCount: semesterSetup.plannedLessonCount,
+    })
     semesterSetupOpen.value = false
     semesterSetupMessage.value = ''
     actionMessage.value = '学期已建立，可以开始新建课时。'
+    await statusFeed.reload()
   } catch {
     semesterSetupMessage.value = catalog.errorMessage || '学期没有建立，请检查填写内容。'
   }
@@ -253,15 +236,6 @@ async function restoreLesson(lesson: LessonNode): Promise<void> {
         </p>
       </div>
       <div class="tp-semester-card__actions">
-        <label v-if="catalog.semesters.length > 1" class="tp-field tp-field--inline">
-          切换学期
-          <select :value="semester.id" @change="switchSemester">
-            <option v-for="item in catalog.semesters" :key="item.id" :value="item.id">
-              {{ item.curriculum_title }} · {{ item.school_year }} {{ termLabel(item.term) }}
-              （{{ SEMESTER_STATUS_LABELS[item.status] }}）
-            </option>
-          </select>
-        </label>
         <AppButton
           v-if="semester.status === 'archived'"
           variant="secondary"
@@ -300,13 +274,21 @@ async function restoreLesson(lesson: LessonNode): Promise<void> {
     </section>
 
     <StatePanel
-      v-if="!semester && !semesterSetupOpen"
+      v-if="!semester && !semesterSetupOpen && !selectedVolume"
       kind="empty"
-      title="还没有本学期"
-      description="先建立本学期，再导入资料、新建课时。建立学期只登记资料归属，不会调用 AI。"
+      title="请先在顶部选择教学学期"
+      description="备课学期跟随顶部的教学学期。未选择时可以到资料库浏览已有资料，但不能导入或对应到课时。"
     />
-    <div v-if="!semester && !semesterSetupOpen" class="tp-empty-actions">
-      <AppButton variant="primary" @click="semesterSetupOpen = true">建立本学期</AppButton>
+    <StatePanel
+      v-else-if="!semester && !semesterSetupOpen && selectedVolume"
+      kind="empty"
+      :title="`还没有「${selectedVolume.label}」的备课学期`"
+      description="确认后只建立资料归属，不会调用 AI。建立后，导入和对应都只进入这个学期。"
+    />
+    <div v-if="!semester && !semesterSetupOpen && selectedVolume" class="tp-empty-actions">
+      <AppButton variant="primary" @click="semesterSetupOpen = true">
+        为「{{ selectedVolume.label }}」建立本学期
+      </AppButton>
     </div>
 
     <section v-if="semesterSetupOpen" class="tp-panel" aria-label="建立本学期">
@@ -315,23 +297,16 @@ async function restoreLesson(lesson: LessonNode): Promise<void> {
         <span class="tp-panel__hint">这一步只建立资料归属，不会调用 AI</span>
       </div>
       <div class="tp-panel__body tp-form-line">
-        <label v-if="!catalog.selectedCurriculum" class="tp-field">教材名称<input v-model="semesterSetup.title" type="text"></label>
-        <label v-if="!catalog.selectedCurriculum" class="tp-field">年级<input v-model.number="semesterSetup.gradeLevel" type="number" min="1" max="12"></label>
-        <label v-if="!catalog.selectedCurriculum" class="tp-field">
-          册别
-          <select v-model="semesterSetup.volume">
-            <option value="first">上册</option><option value="second">下册</option><option value="whole_year">全一册</option>
-          </select>
-        </label>
+        <p v-if="selectedVolume && volumeKeys" class="tp-muted">
+          将为「{{ selectedVolume.label }}」建立备课学期（{{ termLabel(volumeKeys.term) }}）。年级和册别已由顶部教学学期锁定。
+        </p>
         <label class="tp-field">学年<input v-model="semesterSetup.schoolYear" type="text" placeholder="2026-2027"></label>
-        <label class="tp-field">
-          学期
-          <select v-model="semesterSetup.term">
-            <option value="first">第一学期</option><option value="second">第二学期</option>
-          </select>
-        </label>
         <label class="tp-field">计划课时数<input v-model.number="semesterSetup.plannedLessonCount" type="number" min="1" max="300"></label>
-        <AppButton variant="primary" :disabled="busy" @click="createSemesterContext">
+        <AppButton
+          variant="primary"
+          :disabled="busy || !selectedVolume"
+          @click="createSemesterContext"
+        >
           {{ busy ? '正在建立…' : '建立本学期' }}
         </AppButton>
         <AppButton variant="ghost" @click="semesterSetupOpen = false">取消</AppButton>

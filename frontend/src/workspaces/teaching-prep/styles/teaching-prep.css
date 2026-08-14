@@ -728,6 +728,10 @@
 .tp-rail {
   position: sticky;
   top: 92px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 112px);
+  min-height: 0;
   padding: var(--space-3);
   background: var(--card);
   border: var(--border-width) solid var(--border);
@@ -1146,6 +1150,124 @@
   overflow: auto;
 }
 
+.tp-panel--correspondence {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 220px);
+}
+
+.tp-panel--correspondence .tp-panel__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tp-page-checker {
+  display: grid;
+  grid-template-rows: auto auto minmax(280px, 1fr);
+  gap: var(--space-3);
+  flex: 1;
+  min-height: 0;
+}
+
+.tp-page-checker__toolbar {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.tp-page-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: var(--space-1);
+}
+
+.tp-page-strip__cell {
+  position: relative;
+  flex: 0 0 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: var(--border-width) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+
+.tp-page-strip__cell.is-lesson-a {
+  background: var(--color-accent-subtle);
+}
+
+.tp-page-strip__cell.is-lesson-b {
+  background: var(--color-warning-subtle);
+}
+
+.tp-page-strip__cell.is-pending {
+  box-shadow: inset 0 -3px 0 var(--color-warning);
+}
+
+.tp-page-strip__cell.is-rejected {
+  opacity: 0.55;
+  background: var(--card);
+}
+
+.tp-page-strip__cell.is-active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.tp-page-strip__cell.is-active.is-pending {
+  box-shadow: 0 0 0 1px var(--primary), inset 0 -3px 0 var(--color-warning);
+}
+
+.tp-page-checker__work {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
+  gap: var(--space-4);
+  min-height: 0;
+}
+
+.tp-page-checker__stage {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  min-width: 0;
+}
+
+.tp-page-checker__stage header,
+.tp-page-checker__dock header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.tp-page-checker__stage .tp-slide-stage {
+  min-height: 280px;
+}
+
+.tp-page-checker__dock {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  min-width: 0;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.tp-page-checker__lesson {
+  margin: 0;
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
 .tp-operation-row {
   border: var(--border-width) solid var(--border);
   border-radius: calc(var(--radius) - 2px);
@@ -1403,6 +1525,14 @@
     max-height: none;
   }
 
+  .tp-page-checker__work {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tp-panel--correspondence {
+    min-height: 0;
+  }
+
   .tp-library-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1417,7 +1547,7 @@
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   gap: var(--space-4);
-  align-items: start;
+  align-items: stretch;
 }
 
 .tp-rail__group-label {
@@ -1456,6 +1586,19 @@
   background: var(--accent);
   color: var(--primary);
   font-weight: var(--font-weight-semibold);
+}
+
+.tp-rail__import {
+  flex: none;
+  margin-bottom: var(--space-2);
+  border: var(--border-width) solid var(--border);
+  background: var(--muted);
+}
+
+.tp-rail__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .tp-rail__item.is-inactive {
@@ -1511,9 +1654,22 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
   color: var(--muted-foreground);
+  font: inherit;
   font-size: var(--font-size-dense);
   font-weight: var(--font-weight-medium);
+}
+
+button.tp-progress-strip__node {
+  cursor: pointer;
+}
+
+button.tp-progress-strip__node:hover {
+  color: var(--foreground);
 }
 
 .tp-progress-strip__dot {
