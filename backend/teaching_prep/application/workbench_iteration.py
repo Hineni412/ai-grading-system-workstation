@@ -214,7 +214,7 @@ def normalize_exercise_suggestion_payload(
     materials = {
         str(item["material_version_id"]): item
         for item in _mapping_list(snapshot.get("materials"), "materials")
-        if str(item.get("purpose") or "") == "exercise"
+        if str(item.get("purpose") or "") in {"exercise", "textbook"}
     }
     allowed_units = {
         str(unit["unit_id"]): (

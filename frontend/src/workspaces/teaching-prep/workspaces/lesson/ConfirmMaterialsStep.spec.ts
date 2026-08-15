@@ -12,11 +12,13 @@ import {
   type TeachingSemester,
 } from '../../api/catalog'
 import type {
+  ExerciseSuggestionRun,
   ReferenceMaterialLink,
   ReferenceSelectionPreflight,
   SlideAnimationRun,
 } from '../../api/workbench'
 import { teachingPrepWorkbenchApi } from '../../api/workbench'
+import { ApiError } from '../../../../api/errors'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
 import { teachingPrepLessonWorkbenchKey } from '../../workbench/routeContext'
 import type { TeachingPrepLessonWorkbench } from '../../workbench/lessonWorkbench'
@@ -156,7 +158,69 @@ function previewUnit(versionId: string, index: number): MaterialUnit {
 interface StepExpose {
   primaryLabel: string
   primaryDisabled: boolean
+  inspectorMessage?: string
   runPrimary: () => Promise<void>
+}
+
+function notFoundError(): ApiError {
+  return new ApiError({
+    kind: 'not_found',
+    status: 404,
+    code: 'teaching_prep_not_found',
+    message: 'Teaching preparation record was not found',
+    details: {},
+    requestId: 'test',
+    retryable: false,
+  })
+}
+
+function succeededExerciseRun(): ExerciseSuggestionRun {
+  const suggestionId = 'e'.repeat(32)
+  return {
+    id: 'r'.repeat(32),
+    snapshot_id: 'p'.repeat(32),
+    operation_id: 'exercise-suggestions-restore-1',
+    status: 'succeeded',
+    error_code: null,
+    model_call_count: 1,
+    created_at: '2026-08-15T07:56:37Z',
+    updated_at: '2026-08-15T07:57:55Z',
+    finished_at: '2026-08-15T07:57:55Z',
+    suggestions: [
+      {
+        id: suggestionId,
+        run_id: 'r'.repeat(32),
+        lesson_node_id: lessonId,
+        source_state_sha256: 'a'.repeat(64),
+        decision: 'pending',
+        original_payload: {
+          material_version_id: 'v-link-ex',
+          question_number: '1',
+          content_label: '合成候选题',
+          difficulty: 'medium',
+          classroom_use: 'guided_practice',
+          estimated_minutes: 4,
+          teaching_focus: '检查方程变形',
+          reason: '与本节目标直接相关',
+          uncertainties: [],
+          question_regions: [
+            {
+              material_unit_id: 'u4'.padEnd(32, '0'),
+              sequence: 1,
+              crop: { x0: 0.1, y0: 0.1, x1: 0.9, y1: 0.55 },
+            },
+          ],
+          answer_regions: [],
+        },
+        teacher_payload: null,
+        rejection_reason: null,
+        exercise_candidate_id: null,
+        revision: 1,
+        created_at: '2026-08-15T07:57:55Z',
+        updated_at: '2026-08-15T07:57:55Z',
+      },
+    ],
+  }
 }
 
 async function mountStep(options: {
@@ -164,6 +228,7 @@ async function mountStep(options: {
   materialLinks?: MaterialLink[]
   withPreferences?: boolean
   pptUnits?: MaterialUnit[]
+  latestExerciseRun?: ExerciseSuggestionRun | null
 } = {}) {
   const catalog = useTeachingPrepCatalogStore()
   catalog.semesters = [semester]
@@ -241,6 +306,15 @@ async function mountStep(options: {
     billed_limit: 3,
     page_limit: 4,
   })
+  if (options.latestExerciseRun) {
+    vi.spyOn(teachingPrepWorkbenchApi, 'latestExerciseSuggestionRun').mockResolvedValue(
+      options.latestExerciseRun,
+    )
+  } else {
+    vi.spyOn(teachingPrepWorkbenchApi, 'latestExerciseSuggestionRun').mockRejectedValue(
+      notFoundError(),
+    )
+  }
 
   let expose!: StepExpose
   const Wrapper = defineComponent({
@@ -261,6 +335,8 @@ async function mountStep(options: {
   app.provide(teachingPrepLessonWorkbenchKey, workbench)
   app.mount(host)
   await nextTick()
+  await nextTick()
+  await Promise.resolve()
   await nextTick()
   return { app, host, catalog, workbench, getExpose: () => expose }
 }
@@ -310,7 +386,7 @@ describe('ConfirmMaterialsStep', () => {
 
     expect(host.textContent).toContain('一次函数课件.pptx')
     expect(host.textContent).toContain('教材第 1—2 页')
-    expect(getExpose().primaryLabel).toBe('确认资料并生成 AI 改编（调用 1 次）')
+    expect(getExpose().primaryLabel).toBe('发给 AI 改编')
     expect(getExpose().primaryDisabled).toBe(false)
     app.unmount()
   })
@@ -471,8 +547,24 @@ describe('ConfirmMaterialsStep', () => {
     expect(host.textContent).toContain('停住后会换成放映软件实拍')
     expect(host.textContent).toContain('课堂动画页')
     expect(host.textContent).toContain('未建任务（生成动画才单独计费，不改课件）')
-    expect(host.textContent).toContain('1 次：课件改编')
+    expect(host.textContent).toContain('内部最多 2 次：识题 + 改编')
     expect(getExpose().primaryDisabled).toBe(false)
+    app.unmount()
+  })
+
+  it('restores a succeeded workbook identification after leaving the page', async () => {
+    const { app, host, getExpose } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-ex', '教辅第 4—5 页', 'exercise'),
+      ],
+      latestExerciseRun: succeededExerciseRun(),
+    })
+
+    expect(host.textContent).not.toContain('AI 找到的题目裁切')
+    expect(host.querySelector('[aria-label="AI 找到的题目裁切"]')).toBeNull()
+    expect(getExpose().primaryLabel).toBe('发给 AI 改编')
+    expect(getExpose().inspectorMessage).toContain('上次已识别到 1 道题')
     app.unmount()
   })
 

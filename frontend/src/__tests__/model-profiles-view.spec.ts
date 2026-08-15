@@ -186,7 +186,7 @@ describe('ModelProfilesView', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const router = createAppRouter(createMemoryHistory())
-    await router.push('/model-profiles')
+    await router.push('/settings?section=ai-trace')
     await router.isReady()
     const host = document.createElement('div')
     document.body.append(host)
@@ -196,16 +196,11 @@ describe('ModelProfilesView', () => {
     app.mount(host)
     mounted.push(app)
     await vi.waitFor(() => {
-      expect(host.querySelector('.ai-diagnostics-disclosure')).not.toBeNull()
+      expect(host.querySelector('.ai-diagnostics')).not.toBeNull()
     })
     await settle()
 
-    const disclosure = host.querySelector<HTMLDetailsElement>('.ai-diagnostics-disclosure')
-    expect(disclosure).not.toBeNull()
-    disclosure!.open = true
-    disclosure!.dispatchEvent(new Event('toggle'))
-    await vi.waitFor(() => expect(listDiagnostics).toHaveBeenCalled())
-    await settle()
+    expect(host.querySelector('.ai-diagnostics-disclosure')).not.toBeNull()
 
     const sourceSelect = host.querySelector<HTMLSelectElement>(
       '.ai-diagnostics__filters label:first-child select',

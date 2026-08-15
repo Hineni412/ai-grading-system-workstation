@@ -281,6 +281,7 @@ class WorkspaceModelGateway:
             self.physical_request_count = physical_request_count
             return physical_request_count
 
+        previous_sink = self._bind_workspace_diagnostics(purpose)
         try:
             call = (
                 self.gateway.chat_completions
@@ -316,6 +317,8 @@ class WorkspaceModelGateway:
                 )
             )
             raise
+        finally:
+            self._restore_workspace_diagnostics(previous_sink)
 
         fields = usage_fields(response)
         self.audit_sink.record(
@@ -331,6 +334,23 @@ class WorkspaceModelGateway:
             )
         )
         return response
+
+    def _bind_workspace_diagnostics(self, purpose: str) -> object | None:
+        sink = getattr(self.gateway, "diagnostic_sink", None)
+        journal = getattr(sink, "journal", sink)
+        bind = getattr(journal, "for_workspace", None)
+        if not callable(bind):
+            return None
+        self.gateway.diagnostic_sink = bind(
+            workspace_module=self.module_id,
+            workspace_task_kind=purpose,
+        )
+        return sink
+
+    def _restore_workspace_diagnostics(self, previous: object | None) -> None:
+        if previous is None:
+            return
+        self.gateway.diagnostic_sink = previous
 
     def _latency_ms(self, started: float) -> int:
         return int(round(max(0.0, self.clock() - started) * 1000.0))

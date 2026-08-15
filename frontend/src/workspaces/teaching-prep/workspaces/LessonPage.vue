@@ -15,6 +15,7 @@ import CopiesStep from './lesson/CopiesStep.vue'
 interface StepHandle {
   primaryLabel: string
   primaryDisabled: boolean
+  inspectorMessage?: string
   runPrimary: () => Promise<void>
 }
 
@@ -25,9 +26,9 @@ const routeState = workbench.routeState
 const stepRef = ref<StepHandle | null>(null)
 
 const STEPS: Array<{ id: TeachingPrepLessonStep; title: string; desc: string; hint: string }> = [
-  { id: 1, title: '① 确认资料', desc: '挑选本课资料', hint: '确认本课要用的主课件和参考资料，然后发送给 AI 改编。' },
-  { id: 2, title: '② 审核改编', desc: '逐页确认 AI 修改', hint: 'AI 给出了每一页的修改建议，逐页选择接受、拒绝或标记人工处理。' },
-  { id: 3, title: '③ 副本与上课包', desc: '生成上课用 PPT', hint: '检查生成的 PPT 副本，确认无误后打包为上课包。' },
+  { id: 1, title: '① 确认资料', desc: '挑选本课资料', hint: '确认本课要用的主课件和参考资料，然后一次发给 AI 改编。' },
+  { id: 2, title: '② 对照改编', desc: '看改前改后', hint: '左右对照本地渲染的改前、改后页。满意就确认导出；某一页不满意就写一句意见再发给 AI。' },
+  { id: 3, title: '③ 上课包', desc: '打包上课文件', hint: '确认导出后的副本可在这里生成上课包。原课件不会被覆盖。' },
 ]
 
 const currentStepMeta = computed(() => STEPS.find(item => item.id === routeState.currentStep.value) ?? STEPS[0]!)
@@ -100,6 +101,9 @@ onMounted(() => { void workbench.load() })
         </p>
         <div class="tp-inspector__action">
           <p>{{ currentStepMeta.hint }}</p>
+          <p v-if="stepRef?.inspectorMessage" class="tp-inline-message" role="status">
+            {{ stepRef.inspectorMessage }}
+          </p>
           <AppButton
             variant="primary"
             block

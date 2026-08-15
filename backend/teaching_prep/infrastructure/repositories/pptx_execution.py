@@ -353,6 +353,26 @@ class PptxExecutionRepository:
                     "execution is no longer running"
                 )
 
+    def set_preview_ready(
+        self,
+        run_id: str,
+        verification_report: dict[str, object],
+    ) -> None:
+        with self._database.connect(immediate=True) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE pptx_execution_runs
+                SET verification_report_json = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ? AND status = 'verifying'
+                """,
+                (_json(verification_report), run_id),
+            )
+            if cursor.rowcount != 1:
+                raise TeachingPrepConflictError(
+                    "execution is no longer awaiting preview confirmation"
+                )
+
     def begin_publish(
         self,
         *,
@@ -806,7 +826,15 @@ class PptxExecutionRepository:
                     error_code = 'application_restarted',
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE status IN ('running', 'verifying', 'publishing')
+                WHERE status IN ('running', 'publishing')
+                   OR (
+                        status = 'verifying'
+                        AND published_version_id IS NULL
+                        AND (
+                            verification_report_json IS NULL
+                            OR TRIM(verification_report_json) IN ('', '{}', 'null')
+                        )
+                   )
                 """
             )
             return int(cursor.rowcount)

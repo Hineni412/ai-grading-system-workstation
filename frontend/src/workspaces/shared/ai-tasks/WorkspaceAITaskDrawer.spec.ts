@@ -7,16 +7,21 @@ import type { JobResponse } from '../../../api/jobs'
 import { useJobStore } from '../../../stores/jobs'
 import WorkspaceAITaskDrawer from './WorkspaceAITaskDrawer.vue'
 
-function job(status: JobResponse['status'], progress: number): JobResponse {
+function job(
+  status: JobResponse['status'],
+  progress: number,
+  jobType = 'grading_run',
+  detail = '',
+): JobResponse {
   return {
     id: 71,
-    job_type: 'grading_run',
+    job_type: jobType,
     payload: {},
     result: {},
     status,
     progress,
     stage: '',
-    detail: '',
+    detail,
     error: status === 'failed' ? 'safe failure' : null,
     cancel_requested: false,
     created_at: '2026-08-08T00:00:00Z',
@@ -45,9 +50,12 @@ async function mountDrawer() {
   return { app, host, jobs: useJobStore() }
 }
 
+async function openDrawer(host: HTMLElement): Promise<void> {
+  host.querySelector<HTMLButtonElement>('.workspace-ai-drawer-toggle')!.click()
+  await nextTick()
+}
+
 beforeEach(() => {
-  vi.useFakeTimers()
-  localStorage.clear()
   document.body.innerHTML = ''
 })
 
@@ -55,36 +63,43 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('WorkspaceAITaskDrawer completion peek', () => {
-  it('automatically minimizes a successful task after it reaches 100%', async () => {
+describe('WorkspaceAITaskDrawer', () => {
+  it('does not show a floating peek card while a job runs', async () => {
     const { app, host, jobs } = await mountDrawer()
-    jobs.track(job('running', 0.8))
+    jobs.track(job('running', 0.35, 'question_bank_sync', '正在写入题目'))
     await nextTick()
-    expect(host.querySelector('.workspace-ai-task-peek')).not.toBeNull()
 
-    jobs.track(job('succeeded', 1))
-    await nextTick()
-    await vi.advanceTimersByTimeAsync(999)
-    expect(host.querySelector('.workspace-ai-task-peek')).not.toBeNull()
-    await vi.advanceTimersByTimeAsync(1)
-    await nextTick()
     expect(host.querySelector('.workspace-ai-task-peek')).toBeNull()
     expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).toContain('任务中心')
+    expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).toContain('35%')
     app.unmount()
   })
 
-  it.each(['failed', 'cancelled'] as const)(
-    'keeps a %s task visible for teacher action',
-    async (status) => {
-      const { app, host, jobs } = await mountDrawer()
-      jobs.track(job('running', 0.8))
-      await nextTick()
-      jobs.track(job(status, 1))
-      await nextTick()
-      await vi.advanceTimersByTimeAsync(2_000)
-      await nextTick()
-      expect(host.querySelector('.workspace-ai-task-peek')).not.toBeNull()
-      app.unmount()
-    },
-  )
+  it('keeps a failed job in 需要处理 and names unknown types in Chinese', async () => {
+    const { app, host, jobs } = await mountDrawer()
+    jobs.track(job('failed', 0.35, 'question_bank_sync', '同步中断'))
+    await nextTick()
+    await openDrawer(host)
+
+    expect(host.querySelector('.workspace-ai-task-peek')).toBeNull()
+    expect(host.textContent).toContain('需要处理')
+    expect(host.textContent).toContain('题库同步')
+    expect(host.textContent).toContain('失败')
+    expect(host.textContent).toContain('35% · 同步中断')
+    expect(host.textContent).not.toContain('后台处理任务')
+    expect(host.querySelector('.workspace-ai-task-drawer__archive')).toBeNull()
+    app.unmount()
+  })
+
+  it('archives a succeeded job under 最近完成', async () => {
+    const { app, host, jobs } = await mountDrawer()
+    jobs.track(job('succeeded', 1))
+    await nextTick()
+    await openDrawer(host)
+
+    expect(host.querySelector('.workspace-ai-task-drawer__timeline')).toBeNull()
+    expect(host.querySelector('.workspace-ai-task-drawer__archive')?.textContent).toContain('最近完成 1')
+    expect(host.querySelector('.workspace-ai-task-drawer__archive')?.textContent).toContain('考试批改')
+    app.unmount()
+  })
 })

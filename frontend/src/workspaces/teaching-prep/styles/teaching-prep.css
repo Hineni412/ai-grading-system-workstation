@@ -1018,7 +1018,7 @@
   font-size: var(--font-size-caption);
 }
 
-/* ===== 第 2 步：审核改编 ===== */
+/* ===== 第 2 步：对照改编 ===== */
 .tp-ai-waiting .tp-panel__body h2 {
   margin: 0;
   font-size: var(--font-size-h2);
@@ -1039,9 +1039,16 @@
 
 .tp-slide-checker {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr) minmax(0, 1.2fr);
+  grid-template-columns: 160px minmax(0, 1.6fr) minmax(280px, 0.9fr);
   gap: var(--space-4);
   padding: var(--space-4) var(--space-5);
+}
+
+.tp-slide-checker__compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  min-width: 0;
 }
 
 .tp-slide-checker__thumbs {
@@ -1458,7 +1465,7 @@
   font-size: var(--font-size-caption);
 }
 
-/* ===== 第 3 步：副本与上课包 ===== */
+/* ===== 第 3 步：上课包 ===== */
 .tp-execution-phases {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1619,6 +1626,10 @@
   }
 
   .tp-slide-checker {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tp-slide-checker__compare {
     grid-template-columns: minmax(0, 1fr);
   }
 

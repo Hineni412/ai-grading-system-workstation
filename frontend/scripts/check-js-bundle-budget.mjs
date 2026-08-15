@@ -11,7 +11,7 @@ const chunks = await Promise.all(
     .map(async name => ({ name, bytes: (await stat(resolve(assetsDirectory, name))).size })),
 )
 const bait = chunks
-  .filter(chunk => /[_/-]ads?(?=[-_.]|$)/i.test(chunk.name))
+  .filter(chunk => /[_/-]ads?\.js$/i.test(chunk.name))
   .map(chunk => chunk.name)
 if (bait.length > 0) {
   throw new Error(

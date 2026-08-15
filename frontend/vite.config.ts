@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig, type ServerOptions } from 'vite'
 
-import { neutralizeAdBlockBaitFilenames } from './vite.adblock-filenames'
+import { JS_CHUNK_FILE_NAME_PATTERN } from './vite.adblock-filenames'
 
 export const allowedDevRoots = [
   fileURLToPath(new URL('.', import.meta.url)),
@@ -25,10 +25,12 @@ export const serverConfig = {
 } satisfies ServerOptions
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), neutralizeAdBlockBaitFilenames()],
+  plugins: [vue(), tailwindcss()],
   build: {
     rolldownOptions: {
       output: {
+        chunkFileNames: JS_CHUNK_FILE_NAME_PATTERN,
+        entryFileNames: JS_CHUNK_FILE_NAME_PATTERN,
         codeSplitting: {
           groups: [
             {
