@@ -465,3 +465,25 @@ class PostLessonReview:
     payload: dict[str, object]
     use_in_next_version: bool
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SlideAnimationRun:
+    id: str
+    lesson_node_id: str
+    material_version_id: str
+    material_link_id: str
+    operation_id: str
+    request_hash: str
+    page_indexes: tuple[int, ...]
+    storyboard: dict[str, object] | None
+    html_relpath: str | None
+    html_sha256: str | None
+    status: str
+    teacher_decision: str
+    error_code: str | None
+    model_call_count: int
+    revision: int
+    created_at: str
+    updated_at: str
+    finished_at: str | None

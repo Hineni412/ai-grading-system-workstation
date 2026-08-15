@@ -111,6 +111,61 @@ class FakeExerciseSuggestionModelAdapter:
         return deepcopy(self.result)
 
 
+class FakeSlideAnimationModelAdapter:
+    def __init__(
+        self,
+        result: dict[str, Any] | None = None,
+        *,
+        failure: Exception | None = None,
+    ) -> None:
+        self.result = deepcopy(result) if result is not None else None
+        self.failure = failure
+        self.calls: list[dict[str, Any]] = []
+
+    def generate(
+        self,
+        *,
+        operation_id: str,
+        page_payload: dict[str, Any],
+        task_model_gateway: object | None = None,
+    ) -> dict[str, Any]:
+        del task_model_gateway
+        payload = deepcopy(page_payload)
+        self.calls.append(
+            {
+                "operation_id": operation_id,
+                "page_payload": payload,
+            }
+        )
+        if self.failure is not None:
+            raise self.failure
+        if self.result is not None:
+            return deepcopy(self.result)
+        pages = payload.get("pages")
+        indexes: list[int] = []
+        if isinstance(pages, list):
+            for item in pages:
+                if isinstance(item, dict):
+                    page = int(item.get("page_index") or 0)
+                    if page > 0:
+                        indexes.append(page)
+        if not indexes:
+            indexes = [1]
+        return {
+            "title": "合成课堂动画",
+            "scenes": [
+                {
+                    "title": f"第{page}页要点",
+                    "narration": f"讲解第{page}页的核心内容。",
+                    "duration_ms": 2500,
+                    "source_page": page,
+                }
+                for page in indexes
+                if page > 0
+            ],
+        }
+
+
 class FakeWpsAdapter:
     def __init__(
         self,

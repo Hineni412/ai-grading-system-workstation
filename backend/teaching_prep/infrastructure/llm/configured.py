@@ -22,6 +22,7 @@ from backend.workspaces.ai_tasks.model_gateway import WorkspaceAITaskModelGatewa
 from .lesson_model import WorkspaceLessonModelAdapter
 from .exercise_suggestions import WorkspaceExerciseSuggestionModelAdapter
 from .semester_mapping import WorkspaceSemesterMappingModelAdapter
+from .slide_animation import WorkspaceSlideAnimationModelAdapter
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,18 @@ class _ActiveProfileRuntime:
         resolved = self._resolve()
         gateway, client = self._gateway_and_client(resolved, task_gateway)
         return WorkspaceExerciseSuggestionModelAdapter(
+            gateway=gateway,
+            client=client,
+            model=resolved.model,
+        )
+
+    def slide_animation_adapter(
+        self,
+        task_gateway: WorkspaceAITaskModelGateway | None = None,
+    ) -> WorkspaceSlideAnimationModelAdapter:
+        resolved = self._resolve()
+        gateway, client = self._gateway_and_client(resolved, task_gateway)
+        return WorkspaceSlideAnimationModelAdapter(
             gateway=gateway,
             client=client,
             model=resolved.model,
@@ -245,6 +258,34 @@ class ActiveProfileExerciseSuggestionModelAdapter:
         )
 
 
+class ActiveProfileSlideAnimationModelAdapter:
+    def __init__(
+        self,
+        *,
+        context: WorkspaceContext,
+        profile_store: ApiProfileStore,
+    ) -> None:
+        self._runtime = _ActiveProfileRuntime(
+            context=context,
+            profile_store=profile_store,
+        )
+
+    def is_available(self) -> bool:
+        return self._runtime.is_available()
+
+    def generate(
+        self,
+        *,
+        operation_id: str,
+        page_payload: dict[str, Any],
+        task_model_gateway: WorkspaceAITaskModelGateway | None = None,
+    ) -> dict[str, Any]:
+        return self._runtime.slide_animation_adapter(task_model_gateway).generate(
+            operation_id=operation_id,
+            page_payload=page_payload,
+        )
+
+
 def _first_text(*values: object) -> str:
     for value in values:
         clean = str(value or "").strip()
@@ -257,4 +298,5 @@ __all__ = [
     "ActiveProfileExerciseSuggestionModelAdapter",
     "ActiveProfileLessonModelAdapter",
     "ActiveProfileSemesterMappingModelAdapter",
+    "ActiveProfileSlideAnimationModelAdapter",
 ]

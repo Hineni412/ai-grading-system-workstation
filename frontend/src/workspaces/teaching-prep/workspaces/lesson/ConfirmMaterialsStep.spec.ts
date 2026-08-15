@@ -14,7 +14,9 @@ import {
 import type {
   ReferenceMaterialLink,
   ReferenceSelectionPreflight,
+  SlideAnimationRun,
 } from '../../api/workbench'
+import { teachingPrepWorkbenchApi } from '../../api/workbench'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
 import { teachingPrepLessonWorkbenchKey } from '../../workbench/routeContext'
 import type { TeachingPrepLessonWorkbench } from '../../workbench/lessonWorkbench'
@@ -161,6 +163,7 @@ async function mountStep(options: {
   links?: ReferenceMaterialLink[]
   materialLinks?: MaterialLink[]
   withPreferences?: boolean
+  pptUnits?: MaterialUnit[]
 } = {}) {
   const catalog = useTeachingPrepCatalogStore()
   catalog.semesters = [semester]
@@ -207,6 +210,17 @@ async function mountStep(options: {
     requestLeave: vi.fn(async () => true),
   } as unknown as TeachingPrepLessonWorkbench
 
+  vi.spyOn(teachingPrepCatalogApi, 'listMaterialUnits').mockResolvedValue(
+    options.pptUnits ?? [1, 2].map(index => previewUnit('v-link-ppt', index)),
+  )
+  vi.spyOn(teachingPrepWorkbenchApi, 'listSlideAnimationRuns').mockResolvedValue({
+    lesson_node_id: lessonId,
+    items: [],
+    billed_count: 0,
+    billed_limit: 3,
+    page_limit: 4,
+  })
+
   let expose!: StepExpose
   const Wrapper = defineComponent({
     setup() {
@@ -239,6 +253,29 @@ afterEach(() => {
   vi.unstubAllGlobals()
   document.body.innerHTML = ''
 })
+
+function pptLinkWithPages(linkId: string, name: string, pages: number): ReferenceMaterialLink {
+  const link = referenceLink(linkId, name, 'reference_ppt', 'pptx')
+  link.end_unit = pages
+  link.units = Array.from({ length: pages }, (_, index) => {
+    const page = index + 1
+    const unitId = `u${page}`.padEnd(32, '0')
+    return {
+      unit_id: unitId,
+      unit_index: page,
+      unit_kind: 'ppt_slide',
+      title: `第${page}页标题`,
+      preview_url: `/api/teaching-prep/material-units/${unitId}/preview`,
+      text_status: 'embedded',
+      formula_review_required: false,
+      object_summary: {
+        preview_kind: 'structural',
+        preview_notice: '结构预览，不是原页',
+      },
+    }
+  })
+  return link
+}
 
 describe('ConfirmMaterialsStep', () => {
   it('renders linked materials and defaults to the generate primary action', async () => {
@@ -390,8 +427,148 @@ describe('ConfirmMaterialsStep', () => {
     expect(buttons).toHaveLength(2)
     buttons[1]?.click()
     await nextTick()
-    expect(host.querySelector('[data-testid="material-page-preview"] img')?.getAttribute('src'))
-      .toBe('/api/teaching-prep/material-units/u4/preview')
+    const previewSources = [...host.querySelectorAll('[data-testid="material-page-preview"] img')]
+      .map(item => item.getAttribute('src'))
+    expect(previewSources).toContain('/api/teaching-prep/material-units/u4/preview')
+    app.unmount()
+  })
+
+  it('previews the primary PPT in send scope and keeps adaptation as a separate unpaid selection', async () => {
+    const { app, host, getExpose } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    await nextTick()
+
+    expect(host.querySelector('[data-testid="ppt-animation-page-picker"]')).toBeTruthy()
+    expect(host.textContent).toContain('结构预览，不是原页')
+    expect(host.textContent).toContain('课堂动画页')
+    expect(host.textContent).toContain('未选（生成动画才单独计费，不改课件）')
+    expect(host.textContent).toContain('1 次：课件改编')
+    expect(getExpose().primaryDisabled).toBe(false)
+    app.unmount()
+  })
+
+  it('lets the teacher pick up to four PPT pages for a later animation request', async () => {
+    const { app, host } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    await nextTick()
+
+    const strip = host.querySelector('[data-testid="ppt-animation-page-strip"]')
+    const toggle = () => host.querySelector<HTMLButtonElement>('[data-testid="toggle-animation-page"]')
+    for (const page of [1, 2, 3, 4, 5]) {
+      strip?.querySelector<HTMLButtonElement>(`[data-page-index="${page}"]`)?.click()
+      await nextTick()
+      toggle()?.click()
+      await nextTick()
+    }
+
+    expect(host.querySelector('[data-testid="ppt-animation-selection"]')?.textContent)
+      .toContain('已选第 1、2、3、4 页')
+    expect(host.textContent).toContain('已选第 1、2、3、4 页 · 生成动画另计 1 次')
+    expect(toggle()?.textContent).toContain('已选满 4 页')
+    expect(toggle()?.disabled).toBe(true)
+    expect(host.textContent).toContain('1 次：课件改编')
+    app.unmount()
+  })
+
+  it('clears animation page picks when the primary PPT changes', async () => {
+    const { app, host } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt-a', '课件A.pptx', 3),
+        pptLinkWithPages('link-ppt-b', '课件B.pptx', 3),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="toggle-animation-page"]')?.click()
+    await nextTick()
+    expect(host.querySelector('[data-testid="ppt-animation-selection"]')?.textContent)
+      .toContain('已选第 1 页')
+
+    const radios = [...host.querySelectorAll<HTMLInputElement>('input[name="primary-reference-ppt"]')]
+    radios[1]!.checked = true
+    radios[1]!.dispatchEvent(new Event('change'))
+    await nextTick()
+    await nextTick()
+
+    expect(host.querySelector('[data-testid="ppt-animation-selection"]')?.textContent)
+      .toContain('还没有选页')
+    expect(host.textContent).toContain('未选（生成动画才单独计费，不改课件）')
+    app.unmount()
+  })
+
+  it('sends selected PPT pages as a separate billed animation request and can accept the draft', async () => {
+    const draft: SlideAnimationRun = {
+      id: 'a'.repeat(32),
+      lesson_node_id: lessonId,
+      material_version_id: 'v-link-ppt',
+      material_link_id: 'link-ppt',
+      operation_id: 'slide-animation-test',
+      page_indexes: [1],
+      storyboard: { title: '一次函数引入', scenes: [] },
+      status: 'succeeded',
+      teacher_decision: 'pending',
+      error_code: null,
+      model_call_count: 1,
+      revision: 2,
+      can_preview: true,
+      can_download: false,
+      created_at: '2026-08-14T00:00:00Z',
+      updated_at: '2026-08-14T00:00:00Z',
+      finished_at: '2026-08-14T00:00:00Z',
+    }
+    const { app, host, getExpose } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    const start = vi.spyOn(teachingPrepWorkbenchApi, 'startSlideAnimationRun').mockResolvedValue(draft)
+    vi.spyOn(teachingPrepWorkbenchApi, 'listSlideAnimationRuns').mockResolvedValue({
+      lesson_node_id: lessonId,
+      items: [draft],
+      billed_count: 1,
+      billed_limit: 3,
+      page_limit: 4,
+    })
+    const accept = vi.spyOn(teachingPrepWorkbenchApi, 'acceptSlideAnimationRun').mockResolvedValue({
+      ...draft,
+      status: 'accepted',
+      teacher_decision: 'accepted',
+      can_download: true,
+      revision: 3,
+    })
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="toggle-animation-page"]')?.click()
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="generate-slide-animation"]')?.click()
+    await Promise.resolve()
+    await nextTick()
+    await Promise.resolve()
+    await nextTick()
+
+    expect(start).toHaveBeenCalledWith(lessonId, {
+      operationId: expect.stringMatching(/^slide-animation-/),
+      materialLinkId: 'link-ppt',
+      pageIndexes: [1],
+    })
+    expect(host.querySelector('[data-testid="ppt-animation-draft"]')).toBeTruthy()
+    expect(host.querySelector('iframe.tp-animation-preview')?.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(getExpose().primaryDisabled).toBe(false)
+
+    host.querySelector<HTMLButtonElement>('[data-testid="accept-slide-animation"]')?.click()
+    await nextTick()
+    await nextTick()
+    expect(accept).toHaveBeenCalledWith(draft.id, 2)
     app.unmount()
   })
 })
