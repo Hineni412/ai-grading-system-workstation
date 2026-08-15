@@ -56,6 +56,16 @@ class ExerciseSuggestionModelAdapter(Protocol):
         """Locate reviewable exercises inside one frozen reference snapshot."""
 
 
+class SlideAnimationModelAdapter(Protocol):
+    def generate(
+        self,
+        *,
+        operation_id: str,
+        page_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return a classroom storyboard for selected PPT preview pages."""
+
+
 class WpsAdapter(Protocol):
     def execute(
         self,

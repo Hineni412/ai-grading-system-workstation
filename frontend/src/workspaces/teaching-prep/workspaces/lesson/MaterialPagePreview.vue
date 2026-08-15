@@ -4,9 +4,10 @@ import { computed } from 'vue'
 import AppButton from '../../../../components/design-system/AppButton.vue'
 
 const props = defineProps<{
-  units: Array<{ unit_index: number, preview_url: string }>
+  units: Array<{ unit_index: number, preview_url: string, title?: string | null }>
   page: number
   rangeLabel?: string
+  notice?: string
 }>()
 
 const emit = defineEmits<{
@@ -35,9 +36,10 @@ function go(delta: number): void {
 <template>
   <div class="tp-material-page-preview" data-testid="material-page-preview">
     <header>
-      <strong>第 {{ page }} 页原页</strong>
+      <strong>第 {{ page }} 页{{ current?.title ? ` · ${current.title}` : '原页' }}</strong>
       <span v-if="rangeLabel" class="tp-muted">{{ rangeLabel }}</span>
     </header>
+    <p v-if="notice" class="tp-muted">{{ notice }}</p>
     <div class="tp-slide-stage">
       <img
         v-if="current?.preview_url"

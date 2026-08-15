@@ -25,6 +25,7 @@ from backend.teaching_prep.application.ports import (
     LessonModelAdapter,
     QuestionEvidenceReader,
     SemesterMappingModelAdapter,
+    SlideAnimationModelAdapter,
     WpsAdapter,
 )
 from backend.teaching_prep.application.pptx_execution import (
@@ -51,11 +52,16 @@ from backend.teaching_prep.application.preferences import (
     normalize_teaching_preferences,
     resolve_teaching_preferences,
 )
-from backend.teaching_prep.application.slide_plans import (
-    build_slide_plan_payload,
-    diff_preview,
-    require_approval_allowed,
-    validate_plan_payload,
+from backend.teaching_prep.application.slide_animation import (
+    accept_slide_animation_run,
+    cancel_slide_animation_run,
+    discard_slide_animation_run,
+    get_slide_animation_run,
+    list_slide_animation_runs,
+    process_slide_animation_run,
+    slide_animation_download_path,
+    slide_animation_preview_path,
+    start_slide_animation_run,
 )
 from backend.teaching_prep.application.semester_mapping import (
     validate_semester_mapping_payload,
@@ -132,6 +138,7 @@ from backend.teaching_prep.infrastructure.repositories import (
     TeachingPreferencesRepository,
     WorkbenchIterationRepository,
     WorkspaceAIAdoptionRepository,
+    SlideAnimationRepository,
 )
 from backend.workspaces.ai_tasks.models import RevisionConflictError
 
@@ -245,6 +252,8 @@ class TeachingPrepService:
         semester_mapping_model_label: str | None = None,
         exercise_suggestion_model_adapter: ExerciseSuggestionModelAdapter | None = None,
         exercise_suggestion_model_label: str | None = None,
+        slide_animation_model_adapter: SlideAnimationModelAdapter | None = None,
+        slide_animation_model_label: str | None = None,
         material_parser: MaterialParser | None = None,
         wps_adapter: WpsAdapter | None = None,
         wps_adapter_is_real: bool = False,
@@ -287,6 +296,7 @@ class TeachingPrepService:
             selection_catalog=self.workbench.selection_catalog,
             semester_snapshot=self.semester_mapping.snapshot,
         )
+        self.slide_animation_runs = SlideAnimationRepository(self.database)
         self.material_parser = material_parser or MaterialParser()
         self._material_parse_lock = threading.Lock()
         self._active_material_parses: set[str] = set()
@@ -296,6 +306,7 @@ class TeachingPrepService:
         self.lesson_model_adapter = lesson_model_adapter
         self.semester_mapping_model_adapter = semester_mapping_model_adapter
         self.exercise_suggestion_model_adapter = exercise_suggestion_model_adapter
+        self.slide_animation_model_adapter = slide_animation_model_adapter
         self.wps_adapter = wps_adapter
         self.wps_adapter_is_real = bool(wps_adapter_is_real)
         self.lesson_model_label = (
@@ -325,6 +336,15 @@ class TeachingPrepService:
             if exercise_suggestion_model_label is not None
             else None
         )
+        self.slide_animation_model_label = (
+            _clean_optional_text(
+                slide_animation_model_label,
+                "slide_animation_model_label",
+                maximum=120,
+            )
+            if slide_animation_model_label is not None
+            else None
+        )
         self.mark_interrupted_operations()
 
     def status(self) -> dict[str, object]:
@@ -343,6 +363,11 @@ class TeachingPrepService:
             "exercise_suggestion_model_available": (
                 _model_adapter_available(
                     self.exercise_suggestion_model_adapter
+                )
+            ),
+            "slide_animation_model_available": (
+                _model_adapter_available(
+                    self.slide_animation_model_adapter
                 )
             ),
             "real_wps_enabled": (
@@ -801,6 +826,75 @@ class TeachingPrepService:
 
     def cancel_exercise_suggestion_run(self, run_id: str):
         return self.workbench.cancel_suggestion_run(_clean_entity_id(run_id))
+
+    def start_slide_animation_run(
+        self,
+        lesson_node_id: str,
+        *,
+        operation_id: str,
+        confirmed: bool,
+        material_link_id: str,
+        page_indexes: Sequence[int],
+    ):
+        return start_slide_animation_run(
+            self,
+            lesson_node_id,
+            operation_id=operation_id,
+            confirmed=confirmed,
+            material_link_id=material_link_id,
+            page_indexes=page_indexes,
+        )
+
+    def process_slide_animation_run(
+        self,
+        run_id: str,
+        *,
+        task_model_gateway: object | None = None,
+    ) -> None:
+        process_slide_animation_run(
+            self,
+            run_id,
+            task_model_gateway=task_model_gateway,
+        )
+
+    def list_slide_animation_runs(self, lesson_node_id: str):
+        return list_slide_animation_runs(self, lesson_node_id)
+
+    def get_slide_animation_run(self, run_id: str):
+        return get_slide_animation_run(self, run_id)
+
+    def cancel_slide_animation_run(self, run_id: str):
+        return cancel_slide_animation_run(self, run_id)
+
+    def accept_slide_animation_run(
+        self,
+        run_id: str,
+        *,
+        expected_revision: int,
+    ):
+        return accept_slide_animation_run(
+            self,
+            run_id,
+            expected_revision=expected_revision,
+        )
+
+    def discard_slide_animation_run(
+        self,
+        run_id: str,
+        *,
+        expected_revision: int,
+    ):
+        return discard_slide_animation_run(
+            self,
+            run_id,
+            expected_revision=expected_revision,
+        )
+
+    def slide_animation_preview_path(self, run_id: str) -> Path:
+        return slide_animation_preview_path(self, run_id)
+
+    def slide_animation_download_path(self, run_id: str) -> Path:
+        return slide_animation_download_path(self, run_id)
 
     def review_exercise_suggestion(
         self,
@@ -5110,6 +5204,7 @@ class TeachingPrepService:
         detailed = self.pptx_executions.mark_interrupted()
         delivery = self.teaching_delivery.mark_interrupted_packages()
         workbench = self.workbench.mark_interrupted()
+        animations = self.slide_animation_runs.mark_interrupted()
         with self.database.connect(immediate=True) as connection:
             cursor = connection.execute(
                 """
@@ -5136,6 +5231,7 @@ class TeachingPrepService:
                 detailed,
                 delivery,
                 workbench,
+                animations,
                 int(cursor.rowcount),
             )
 

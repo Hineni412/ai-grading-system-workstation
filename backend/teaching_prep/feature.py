@@ -14,6 +14,7 @@ from backend.teaching_prep.infrastructure.llm import (
     ActiveProfileExerciseSuggestionModelAdapter,
     ActiveProfileLessonModelAdapter,
     ActiveProfileSemesterMappingModelAdapter,
+    ActiveProfileSlideAnimationModelAdapter,
 )
 from backend.teaching_prep.infrastructure.wps_adapter import (
     SubprocessWpsAdapter,
@@ -125,6 +126,13 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
             )
         ),
         exercise_suggestion_model_label="当前启用的模型配置",
+        slide_animation_model_adapter=(
+            ActiveProfileSlideAnimationModelAdapter(
+                context=context,
+                profile_store=profile_store,
+            )
+        ),
+        slide_animation_model_label="当前启用的模型配置",
         wps_adapter=helper,
         wps_adapter_is_real=real_wps_enabled,
     )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import threading
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 from uuid import uuid4
 
 from fastapi import (
@@ -139,6 +139,10 @@ from .schemas import (
     SaveReferenceSelectionDraftRequest,
     FreezeReferenceSelectionSnapshotRequest,
     StartExerciseSuggestionRunRequest,
+    StartSlideAnimationRunRequest,
+    DecideSlideAnimationRunRequest,
+    SlideAnimationRunResponse,
+    SlideAnimationRunListResponse,
     ReviewExerciseSuggestionRequest,
     CreateSemesterRequest,
     SetSemesterLessonProgressRequest,
@@ -2580,6 +2584,156 @@ def create_router() -> APIRouter:
             headers={"Cache-Control": "private, no-store"},
         )
 
+    @router.get(
+        "/lessons/{lesson_node_id}/slide-animation-runs",
+        response_model=SlideAnimationRunListResponse,
+    )
+    def list_slide_animation_runs(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlideAnimationRunListResponse:
+        try:
+            payload = service.list_slide_animation_runs(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SlideAnimationRunListResponse(
+            lesson_node_id=str(payload["lesson_node_id"]),
+            items=[
+                SlideAnimationRunResponse.from_domain(item)
+                for item in payload["items"]
+            ],
+            billed_count=int(payload["billed_count"]),
+            billed_limit=int(payload["billed_limit"]),
+            page_limit=int(payload["page_limit"]),
+        )
+
+    @router.post(
+        "/lessons/{lesson_node_id}/slide-animation-runs",
+        response_model=SlideAnimationRunResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def start_slide_animation_run(
+        lesson_node_id: str,
+        payload: StartSlideAnimationRunRequest,
+        background_tasks: BackgroundTasks,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlideAnimationRunResponse:
+        try:
+            run, created = service.start_slide_animation_run(
+                lesson_node_id,
+                operation_id=payload.operation_id,
+                confirmed=payload.confirmed,
+                material_link_id=payload.material_link_id,
+                page_indexes=payload.page_indexes,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if created:
+            background_tasks.add_task(
+                service.process_slide_animation_run, run.id
+            )
+        return SlideAnimationRunResponse.from_domain(run)
+
+    @router.get(
+        "/slide-animation-runs/{run_id}",
+        response_model=SlideAnimationRunResponse,
+    )
+    def get_slide_animation_run(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlideAnimationRunResponse:
+        try:
+            run = service.get_slide_animation_run(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SlideAnimationRunResponse.from_domain(run)
+
+    @router.post(
+        "/slide-animation-runs/{run_id}/cancel",
+        response_model=SlideAnimationRunResponse,
+    )
+    def cancel_slide_animation_run(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlideAnimationRunResponse:
+        try:
+            run = service.cancel_slide_animation_run(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SlideAnimationRunResponse.from_domain(run)
+
+    @router.post(
+        "/slide-animation-runs/{run_id}/accept",
+        response_model=SlideAnimationRunResponse,
+    )
+    def accept_slide_animation_run(
+        run_id: str,
+        payload: DecideSlideAnimationRunRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlideAnimationRunResponse:
+        try:
+            run = service.accept_slide_animation_run(
+                run_id,
+                expected_revision=payload.expected_revision,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SlideAnimationRunResponse.from_domain(run)
+
+    @router.post(
+        "/slide-animation-runs/{run_id}/discard",
+        response_model=SlideAnimationRunResponse,
+    )
+    def discard_slide_animation_run(
+        run_id: str,
+        payload: DecideSlideAnimationRunRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlideAnimationRunResponse:
+        try:
+            run = service.discard_slide_animation_run(
+                run_id,
+                expected_revision=payload.expected_revision,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SlideAnimationRunResponse.from_domain(run)
+
+    @router.get("/slide-animation-runs/{run_id}/preview")
+    def preview_slide_animation_run(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> FileResponse:
+        try:
+            path = service.slide_animation_preview_path(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return FileResponse(
+            path,
+            media_type="text/html; charset=utf-8",
+            headers=_animation_html_headers(),
+        )
+
+    @router.get("/slide-animation-runs/{run_id}/download")
+    def download_slide_animation_run(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> FileResponse:
+        try:
+            path = service.slide_animation_download_path(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        filename = quote("课堂动画.html")
+        headers = _animation_html_headers()
+        headers["Content-Disposition"] = (
+            "attachment; filename=\"classroom-animation.html\"; "
+            f"filename*=UTF-8''{filename}"
+        )
+        return FileResponse(
+            path,
+            media_type="text/html; charset=utf-8",
+            headers=headers,
+        )
+
     return router
 
 
@@ -2692,6 +2846,17 @@ def _api_error(exc: Exception) -> Exception:
         "teaching_prep_internal_error",
         "Teaching preparation request could not be completed",
     )
+
+
+def _animation_html_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": (
+            "default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
+            "script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+        ),
+    }
 
 
 def _new_api_error(

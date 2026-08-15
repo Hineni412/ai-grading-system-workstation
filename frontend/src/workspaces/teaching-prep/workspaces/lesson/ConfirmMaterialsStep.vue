@@ -9,6 +9,7 @@ import type {
   ReferenceMaterialLink,
   ReferenceSelectionDraft,
   ReferenceSelectionPayload,
+  SlideAnimationRun,
 } from '../../api/workbench'
 import { teachingPrepWorkbenchApi } from '../../api/workbench'
 import {
@@ -21,9 +22,14 @@ import {
 import { useWorkspaceAITaskStore } from '../../../shared/ai-tasks/store'
 import { useTeachingPrepLessonWorkbenchContext } from '../../workbench/routeContext'
 import MaterialPagePreview from './MaterialPagePreview.vue'
+import PptAnimationPagePicker, {
+  type PptAnimationPickerUnit,
+} from './PptAnimationPagePicker.vue'
 
 const LOCAL_SLIDE_CONTRACT_FINGERPRINT = '34b984e97a114fea15394bfdb1c73e8f667b340918e72c21bc15a21934a20a1b'
 const ACTIVE_TASK_STATUSES = new Set(['prepared', 'queued', 'running', 'needs_input', 'proposal_ready'])
+const ANIMATION_PAGE_LIMIT = 4
+const ANIMATION_BILLED_LIMIT = 3
 
 const workbench = useTeachingPrepLessonWorkbenchContext()
 const routeState = workbench.routeState
@@ -58,11 +64,51 @@ const exerciseAccepted = reactive<Record<string, boolean>>({})
 const selectedExerciseCandidateIds = ref<string[]>([])
 const exerciseSuggestionsConfirmed = ref(false)
 const cancellingTask = ref(false)
+const animationPages = ref<number[]>([])
+const animationPage = ref(1)
+const animationUnits = ref<PptAnimationPickerUnit[]>([])
+const animationLoading = ref(false)
+const animationLoadError = ref('')
+const animationBusy = ref(false)
+const animationMessage = ref('')
+const animationRuns = ref<SlideAnimationRun[]>([])
+const animationBilledCount = ref(0)
+const animationBilledLimit = ref(ANIMATION_BILLED_LIMIT)
 
 const preflight = computed(() => workbench.referencePreflight.value)
 const references = computed(() => preflight.value?.catalog.material_links ?? [])
 const referencePpts = computed(() => references.value.filter(item => item.purpose === 'reference_ppt'))
+const primaryPpt = computed(() => (
+  referencePpts.value.find(item => item.link_id === primaryPptLinkId.value) ?? null
+))
 const supportMaterials = computed(() => references.value.filter(item => item.purpose !== 'reference_ppt'))
+const animationSelectionLabel = computed(() => {
+  if (!animationPages.value.length) return '未选（生成动画才单独计费，不改课件）'
+  return `已选第 ${animationPages.value.join('、')} 页 · 生成动画另计 1 次`
+})
+const animationRemaining = computed(() => (
+  Math.max(0, animationBilledLimit.value - animationBilledCount.value)
+))
+const pendingAnimation = computed(() => (
+  animationRuns.value.find(item => item.status === 'running' || item.status === 'succeeded') ?? null
+))
+const reviewingAnimation = computed(() => (
+  pendingAnimation.value?.status === 'succeeded' ? pendingAnimation.value : null
+))
+const runningAnimation = computed(() => (
+  pendingAnimation.value?.status === 'running' ? pendingAnimation.value : null
+))
+const acceptedAnimations = computed(() => (
+  animationRuns.value.filter(item => item.status === 'accepted')
+))
+const canGenerateAnimation = computed(() => (
+  Boolean(primaryPpt.value)
+  && animationPages.value.length > 0
+  && animationRemaining.value > 0
+  && !animationBusy.value
+  && !runningAnimation.value
+  && !reviewingAnimation.value
+))
 const quickMaterialCandidates = computed(() => {
   const semesterId = catalog.selectedSemester?.id
   const linkedVersionIds = new Set(references.value.map(item => item.material_version_id))
@@ -206,6 +252,61 @@ watch(quickMaterialCandidates, (candidates) => {
 watch(supportReady, (ready) => {
   if (ready) allowPptOnly.value = false
 })
+
+function toPickerUnits(
+  units: Array<{
+    unit_index: number
+    preview_url: string
+    title?: string | null
+    object_summary?: Record<string, unknown>
+  }>,
+  startUnit: number,
+  endUnit: number,
+): PptAnimationPickerUnit[] {
+  return units
+    .filter(item => item.unit_index >= startUnit && item.unit_index <= endUnit)
+    .map(item => ({
+      unit_index: item.unit_index,
+      preview_url: item.preview_url,
+      title: item.title ?? null,
+      object_summary: item.object_summary,
+    }))
+}
+
+watch(
+  () => primaryPpt.value?.link_id ?? '',
+  async (linkId) => {
+    animationPages.value = []
+    animationUnits.value = []
+    animationLoadError.value = ''
+    const item = primaryPpt.value
+    animationPage.value = item?.start_unit ?? 1
+    if (!linkId || !item || item.link_id !== linkId) return
+    const linked = toPickerUnits(item.units, item.start_unit, item.end_unit)
+    if (linked.length) {
+      animationUnits.value = linked
+      animationPage.value = linked[0]?.unit_index ?? item.start_unit
+      return
+    }
+    animationLoading.value = true
+    try {
+      const units = await teachingPrepCatalogApi.listMaterialUnits(item.material_version_id)
+      if (primaryPptLinkId.value !== linkId) return
+      const picked = toPickerUnits(units, item.start_unit, item.end_unit)
+      animationUnits.value = picked
+      animationPage.value = picked[0]?.unit_index ?? item.start_unit
+      if (!picked.length) {
+        animationLoadError.value = '这份主课件还没有可预览的页。请先到资料库生成预览。'
+      }
+    } catch {
+      if (primaryPptLinkId.value !== linkId) return
+      animationLoadError.value = '主课件预览没有打开。请先到资料库确认这份课件已生成预览。'
+    } finally {
+      if (primaryPptLinkId.value === linkId) animationLoading.value = false
+    }
+  },
+  { immediate: true },
+)
 
 watch(quickMaterialRecordId, async (recordId) => {
   quickPurpose.value = ''
@@ -495,6 +596,137 @@ function initializeExerciseReview(run: ExerciseSuggestionRun): void {
 function wait(milliseconds: number): Promise<void> {
   return new Promise(resolve => window.setTimeout(resolve, milliseconds))
 }
+
+async function loadAnimationRuns(): Promise<void> {
+  const lessonId = routeState.currentLessonId.value
+  if (!lessonId) {
+    animationRuns.value = []
+    animationBilledCount.value = 0
+    return
+  }
+  try {
+    const listed = await teachingPrepWorkbenchApi.listSlideAnimationRuns(lessonId)
+    animationRuns.value = listed.items
+    animationBilledCount.value = listed.billed_count
+    animationBilledLimit.value = listed.billed_limit
+  } catch {
+    animationMessage.value = animationMessage.value || '课堂动画记录暂时没有打开，可稍后刷新。'
+  }
+}
+
+function animationPreviewUrl(runId: string): string {
+  return `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/preview`
+}
+
+async function generateAnimation(): Promise<void> {
+  const lessonId = routeState.currentLessonId.value
+  const link = primaryPpt.value
+  if (!lessonId || !link || !canGenerateAnimation.value) return
+  animationBusy.value = true
+  animationMessage.value = '正在单独发送选中课件页，生成课堂动画（计费 1 次）……'
+  try {
+    let run = await teachingPrepWorkbenchApi.startSlideAnimationRun(lessonId, {
+      operationId: `slide-animation-${crypto.randomUUID().replaceAll('-', '')}`,
+      materialLinkId: link.link_id,
+      pageIndexes: [...animationPages.value],
+    })
+    animationRuns.value = [run, ...animationRuns.value.filter(item => item.id !== run.id)]
+    for (let attempt = 0; attempt < 120 && run.status === 'running'; attempt += 1) {
+      await wait(1_000)
+      run = await teachingPrepWorkbenchApi.slideAnimationRun(run.id)
+      animationRuns.value = [run, ...animationRuns.value.filter(item => item.id !== run.id)]
+    }
+    await loadAnimationRuns()
+    if (!animationRuns.value.some(item => item.id === run.id)) {
+      animationRuns.value = [run, ...animationRuns.value]
+    }
+    if (run.status === 'succeeded') {
+      animationMessage.value = '课堂动画草稿已生成。请预览后再保存为本课附件；这次调用不改课件副本。'
+      return
+    }
+    if (run.status === 'running') {
+      animationMessage.value = '课堂动画等待超时，没有自动重试。勾选仍保留。'
+      return
+    }
+    animationMessage.value = run.status === 'failed'
+      ? `课堂动画没有生成：${run.error_code ?? '模型未返回可用分镜'}。勾选仍保留，不会自动重试。`
+      : `课堂动画未完成：${run.error_code ?? run.status}`
+  } catch (error) {
+    animationMessage.value = error instanceof Error && error.message
+      ? `课堂动画没有发出。请确认已选 1—4 页、每页都有预览，且本课还没超过 ${animationBilledLimit.value} 次计费发送。`
+      : `课堂动画没有发出。本课最多 ${animationBilledLimit.value} 次计费发送，失败不自动重试。`
+  } finally {
+    animationBusy.value = false
+  }
+}
+
+async function cancelAnimation(): Promise<void> {
+  const run = runningAnimation.value
+  if (!run) return
+  animationBusy.value = true
+  try {
+    await teachingPrepWorkbenchApi.cancelSlideAnimationRun(run.id)
+    await loadAnimationRuns()
+    animationMessage.value = '课堂动画已取消；若模型尚未发出则不计费。课件改编不受影响。'
+  } catch {
+    animationMessage.value = '课堂动画暂时没有取消成功，请稍后重试。'
+  } finally {
+    animationBusy.value = false
+  }
+}
+
+async function acceptAnimation(): Promise<void> {
+  const run = reviewingAnimation.value
+  if (!run) return
+  animationBusy.value = true
+  try {
+    await teachingPrepWorkbenchApi.acceptSlideAnimationRun(run.id, run.revision)
+    await loadAnimationRuns()
+    animationMessage.value = '已保存为本课课堂动画附件。可下载到本机，用浏览器打开播放。'
+  } catch {
+    animationMessage.value = '课堂动画没有保存成功，请刷新后重试。'
+  } finally {
+    animationBusy.value = false
+  }
+}
+
+async function discardAnimation(): Promise<void> {
+  const run = reviewingAnimation.value
+  if (!run) return
+  animationBusy.value = true
+  try {
+    await teachingPrepWorkbenchApi.discardSlideAnimationRun(run.id, run.revision)
+    await loadAnimationRuns()
+    animationMessage.value = '已放弃这份课堂动画草稿。本次计费仍计入本课次数。'
+  } catch {
+    animationMessage.value = '课堂动画草稿没有放弃成功，请刷新后重试。'
+  } finally {
+    animationBusy.value = false
+  }
+}
+
+async function downloadAnimation(run: SlideAnimationRun): Promise<void> {
+  try {
+    const { blob } = await teachingPrepWorkbenchApi.downloadSlideAnimation(run.id)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = '课堂动画.html'
+    document.body.append(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+    animationMessage.value = '已开始下载课堂动画。用浏览器打开即可离线播放。'
+  } catch {
+    animationMessage.value = '课堂动画还不能下载。请先预览并保存为本课附件。'
+  }
+}
+
+watch(
+  () => routeState.currentLessonId.value,
+  () => { void loadAnimationRuns() },
+  { immediate: true },
+)
 
 async function identifyWorkbookQuestions(draft: ReferenceSelectionDraft): Promise<void> {
   const lessonId = routeState.currentLessonId.value
@@ -840,6 +1072,91 @@ defineExpose({
               >
               <span><strong>{{ item.material_name }}</strong><small>第 {{ item.start_unit }}—{{ item.end_unit }} 页 · PPT</small></span>
             </label>
+            <PptAnimationPagePicker
+              v-if="primaryPpt"
+              :units="animationUnits"
+              :page="animationPage"
+              :selected-pages="animationPages"
+              :max-selected="ANIMATION_PAGE_LIMIT"
+              :loading="animationLoading"
+              :load-error="animationLoadError"
+              @update:page="animationPage = $event"
+              @update:selected-pages="animationPages = $event"
+            />
+            <div v-if="primaryPpt" class="tp-inline-actions" data-testid="ppt-animation-actions">
+              <AppButton
+                variant="secondary"
+                data-testid="generate-slide-animation"
+                :disabled="!canGenerateAnimation"
+                @click="generateAnimation"
+              >
+                {{ animationBusy && runningAnimation ? '正在生成课堂动画…' : '生成课堂动画（单独计费 1 次）' }}
+              </AppButton>
+              <span class="tp-muted" data-testid="ppt-animation-quota">
+                本课还可单独发送 {{ animationRemaining }} 次（最多 {{ animationBilledLimit }} 次）
+              </span>
+              <AppButton
+                v-if="runningAnimation"
+                variant="secondary"
+                data-testid="cancel-slide-animation"
+                :disabled="animationBusy"
+                @click="cancelAnimation"
+              >
+                取消生成
+              </AppButton>
+            </div>
+            <p v-if="animationMessage" class="tp-inline-message" role="status">{{ animationMessage }}</p>
+            <div
+              v-if="reviewingAnimation"
+              class="tp-animation-draft"
+              data-testid="ppt-animation-draft"
+            >
+              <p class="tp-muted">
+                草稿预览 · {{ reviewingAnimation.storyboard?.title || '课堂动画' }}
+                · 第 {{ reviewingAnimation.page_indexes.join('、') }} 页
+              </p>
+              <iframe
+                class="tp-animation-preview"
+                sandbox="allow-scripts"
+                referrerpolicy="no-referrer"
+                title="课堂动画预览"
+                :src="animationPreviewUrl(reviewingAnimation.id)"
+              />
+              <div class="tp-inline-actions">
+                <AppButton
+                  data-testid="accept-slide-animation"
+                  :disabled="animationBusy"
+                  @click="acceptAnimation"
+                >
+                  保存为本课附件
+                </AppButton>
+                <AppButton
+                  variant="secondary"
+                  data-testid="discard-slide-animation"
+                  :disabled="animationBusy"
+                  @click="discardAnimation"
+                >
+                  放弃这份草稿
+                </AppButton>
+              </div>
+            </div>
+            <div v-if="acceptedAnimations.length" class="tp-animation-attachments">
+              <p class="tp-source-group__label">已保存的课堂动画</p>
+              <div
+                v-for="item in acceptedAnimations"
+                :key="item.id"
+                class="tp-inline-actions"
+              >
+                <span>{{ item.storyboard?.title || '课堂动画' }} · 第 {{ item.page_indexes.join('、') }} 页</span>
+                <AppButton
+                  variant="ghost"
+                  data-testid="download-slide-animation"
+                  @click="downloadAnimation(item)"
+                >
+                  下载 HTML
+                </AppButton>
+              </div>
+            </div>
           </div>
           <div class="tp-source-group">
             <p class="tp-source-group__label">参考依据<small>已确认的教材、教辅页段默认全部发送，也可以逐项取消</small></p>
@@ -853,7 +1170,8 @@ defineExpose({
         <div class="tp-confirmation-summary">
           <dl>
             <div><dt>本次发送</dt><dd>{{ selectedLinkIds.length }} 份资料</dd></div>
-            <div><dt>主课件</dt><dd>{{ referencePpts.find(item => item.link_id === primaryPptLinkId)?.material_name ?? '未选择' }}</dd></div>
+            <div><dt>主课件</dt><dd>{{ primaryPpt?.material_name ?? '未选择' }}</dd></div>
+            <div><dt>课堂动画页</dt><dd>{{ animationSelectionLabel }}</dd></div>
             <div><dt>参考依据</dt><dd>{{ supportLinkIds.length ? `${supportLinkIds.length} 份` : allowPptOnly ? '降级：不使用' : '待补齐' }}</dd></div>
             <div><dt>模型调用</dt><dd>{{ hasSelectedExercisePages && selectedExerciseCandidateIds.length === 0 ? '共 2 次：教辅识题 + 课件改编' : '1 次：课件改编' }} · 失败不自动重试</dd></div>
             <div><dt>调用费用</dt><dd>本机无法预估金额；由当前模型服务商按实际用量计费，点击生成即确认本次调用</dd></div>

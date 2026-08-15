@@ -208,6 +208,54 @@ export interface ExerciseSuggestionRun {
   suggestions: ExerciseSuggestion[]
 }
 
+export interface SlideAnimationScene {
+  title: string
+  narration: string
+  duration_ms: number
+  source_page: number
+  highlight?: string | null
+}
+
+export interface SlideAnimationStoryboard {
+  title: string
+  scenes: SlideAnimationScene[]
+}
+
+export interface SlideAnimationRun {
+  id: string
+  lesson_node_id: string
+  material_version_id: string
+  material_link_id: string
+  operation_id: string
+  page_indexes: number[]
+  storyboard: SlideAnimationStoryboard | null
+  status:
+    | 'running'
+    | 'succeeded'
+    | 'accepted'
+    | 'discarded'
+    | 'failed'
+    | 'cancelled'
+    | 'result_unknown'
+  teacher_decision: 'pending' | 'accepted' | 'discarded'
+  error_code: string | null
+  model_call_count: number
+  revision: number
+  can_preview: boolean
+  can_download: boolean
+  created_at: string
+  updated_at: string
+  finished_at: string | null
+}
+
+export interface SlideAnimationRunList {
+  lesson_node_id: string
+  items: SlideAnimationRun[]
+  billed_count: number
+  billed_limit: number
+  page_limit: number
+}
+
 export interface TrustedPptxVersion extends PptxVersion {
   is_current: boolean
   current_revision: number | null
@@ -330,6 +378,78 @@ export const teachingPrepWorkbenchApi = {
     )
   },
 
+  listSlideAnimationRuns(lessonId: string, signal?: AbortSignal): Promise<SlideAnimationRunList> {
+    return apiClient.request(
+      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/slide-animation-runs`,
+      { signal, decode: slideAnimationRunList },
+    )
+  },
+
+  startSlideAnimationRun(
+    lessonId: string,
+    input: {
+      operationId: string
+      materialLinkId: string
+      pageIndexes: number[]
+    },
+  ): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/slide-animation-runs`,
+      {
+        method: 'POST',
+        body: {
+          operation_id: input.operationId,
+          confirmed: true,
+          material_link_id: input.materialLinkId,
+          page_indexes: input.pageIndexes,
+        },
+        decode: slideAnimationRun,
+      },
+    )
+  },
+
+  slideAnimationRun(runId: string, signal?: AbortSignal): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}`,
+      { signal, decode: slideAnimationRun },
+    )
+  },
+
+  cancelSlideAnimationRun(runId: string): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/cancel`,
+      { method: 'POST', decode: slideAnimationRun },
+    )
+  },
+
+  acceptSlideAnimationRun(runId: string, expectedRevision: number): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/accept`,
+      {
+        method: 'POST',
+        body: { expected_revision: expectedRevision },
+        decode: slideAnimationRun,
+      },
+    )
+  },
+
+  discardSlideAnimationRun(runId: string, expectedRevision: number): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/discard`,
+      {
+        method: 'POST',
+        body: { expected_revision: expectedRevision },
+        decode: slideAnimationRun,
+      },
+    )
+  },
+
+  downloadSlideAnimation(runId: string): Promise<{ blob: Blob; contentDisposition: string | null }> {
+    return apiClient.download(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/download`,
+    )
+  },
+
   reviewExerciseSuggestion(
     suggestionId: string,
     input: {
@@ -427,6 +547,24 @@ function exerciseSuggestion(payload: unknown): ExerciseSuggestion {
 
 function exerciseSuggestionRun(payload: unknown): ExerciseSuggestionRun {
   return recordPayload(payload) as unknown as ExerciseSuggestionRun
+}
+
+function slideAnimationRun(payload: unknown): SlideAnimationRun {
+  return recordPayload(payload) as unknown as SlideAnimationRun
+}
+
+function slideAnimationRunList(payload: unknown): SlideAnimationRunList {
+  const record = recordPayload(payload)
+  if (!Array.isArray(record.items)) {
+    throw new Error('Invalid slide animation list')
+  }
+  return {
+    lesson_node_id: String(record.lesson_node_id ?? ''),
+    items: record.items.map(slideAnimationRun),
+    billed_count: Number(record.billed_count ?? 0),
+    billed_limit: Number(record.billed_limit ?? 3),
+    page_limit: Number(record.page_limit ?? 4),
+  }
 }
 
 function trustedPptxVersion(payload: unknown): TrustedPptxVersion {
