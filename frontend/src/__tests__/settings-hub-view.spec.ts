@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { modelProfilesApi } from '../api/model-profiles'
 import { opsApi } from '../api/ops'
+import { aiDiagnosticsApi } from '../api/ai-diagnostics'
+import { workspaceAITaskApi } from '../workspaces/shared/ai-tasks/api'
 import SettingsHubView from '../views/SettingsHubView.vue'
 
 const mounted: VueApp[] = []
@@ -51,6 +53,14 @@ beforeEach(() => {
   vi.spyOn(modelProfilesApi, 'getState').mockResolvedValue(emptyModelState)
   vi.spyOn(opsApi, 'getSelfCheck').mockImplementation(() => new Promise(() => {}))
   vi.spyOn(opsApi, 'getBackups').mockImplementation(() => new Promise(() => {}))
+  vi.spyOn(aiDiagnosticsApi, 'list').mockResolvedValue({
+    items: [],
+    returned: 0,
+    matching: 0,
+    scanned_event_count: 0,
+    truncated: false,
+  })
+  vi.spyOn(workspaceAITaskApi, 'list').mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -67,10 +77,12 @@ describe('SettingsHubView', () => {
     expect(source).not.toContain("import SettingsOpsView from './SettingsOpsView.vue'")
     expect(source).toContain("() => import('./ModelProfilesView.vue')")
     expect(source).toContain("() => import('./SettingsOpsView.vue')")
+    expect(source).toContain("() => import('../components/settings/AiDiagnosticsPanel.vue')")
   })
 
   it.each([
     ['/settings', 'AI 服务'],
+    ['/settings?section=ai-trace', 'AI 调用记录'],
     ['/settings?section=backup', '备份与恢复'],
     ['/settings?section=maintenance', '检查与维护'],
   ])('opens %s at the same requested section', async (path, heading) => {

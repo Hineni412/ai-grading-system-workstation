@@ -3350,12 +3350,31 @@ export const teachingPrepCatalogApi = {
   executeSlidePlan(
     planId: string,
     operationId: string,
+    options: { previewOnly?: boolean } = {},
   ): Promise<PptxExecutionResult> {
     return apiClient.request(
       `/api/teaching-prep/slide-plans/${encodeURIComponent(planId)}/executions`,
       {
         method: 'POST',
-        body: { operation_id: operationId, confirmed: true },
+        body: {
+          operation_id: operationId,
+          confirmed: true,
+          preview_only: options.previewOnly === true,
+        },
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return pptxExecutionResult(payload)
+        },
+      },
+    )
+  },
+
+  confirmPptxPreview(runId: string): Promise<PptxExecutionResult> {
+    return apiClient.request(
+      `/api/teaching-prep/pptx-executions/${encodeURIComponent(runId)}/confirm-preview`,
+      {
+        method: 'POST',
+        body: { confirmed: true },
         decode: (payload) => {
           assertNoPathLikeKeys(payload)
           return pptxExecutionResult(payload)

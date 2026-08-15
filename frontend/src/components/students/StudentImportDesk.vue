@@ -52,44 +52,62 @@ async function commit(): Promise<void> {
 </script>
 
 <template>
-  <section class="student-import" aria-labelledby="student-import-title">
-    <div class="student-section-heading">
-      <div>
-        <p class="student-eyebrow">批量登记</p>
-        <h2 id="student-import-title">导入学生名单</h2>
-      </div>
-      <span>支持 CSV、XLSX，单个文件不超过 10 MB</span>
-    </div>
-
-    <ol class="student-import__rail" aria-label="名单导入步骤">
-      <li :aria-current="stage === 1 ? 'step' : undefined" :class="{ 'is-complete': stage > 1 }">
-        <span>1</span>
-        <strong>选择文件</strong>
-      </li>
-      <li :aria-current="stage === 2 ? 'step' : undefined" :class="{ 'is-complete': stage > 2 }">
-        <span>2</span>
-        <strong>核对变化</strong>
-      </li>
-      <li :aria-current="stage === 3 ? 'step' : undefined">
-        <span>3</span>
-        <strong>确认写入</strong>
-      </li>
-    </ol>
-
-    <div class="student-import__file">
-      <label class="student-file-picker">
-        <span>{{ selectedFile?.name ?? '选择 CSV 或 XLSX 名单' }}</span>
+  <section
+    class="student-import"
+    :class="{ 'is-compact': !roster.preview }"
+    aria-labelledby="student-import-title"
+  >
+    <template v-if="!roster.preview">
+      <h2 id="student-import-title" class="sr-only">导入学生名单</h2>
+      <label class="student-file-picker student-file-picker--inline">
         <input
           type="file"
           accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           @change="chooseFile"
         >
-        <strong>{{ selectedFile ? '更换文件' : '选择文件' }}</strong>
+        <strong>{{ selectedFile ? '更换文件' : '导入学生名单' }}</strong>
       </label>
+      <span class="student-import__hint">CSV / XLSX，不超过 10 MB</span>
       <span v-if="roster.importState === 'previewing'" role="status">正在读取并比对名单…</span>
-    </div>
+    </template>
 
-    <template v-if="roster.preview">
+    <template v-else>
+      <div class="student-section-heading">
+        <div>
+          <p class="student-eyebrow">批量登记</p>
+          <h2 id="student-import-title">导入学生名单</h2>
+        </div>
+        <span>CSV / XLSX，不超过 10 MB</span>
+      </div>
+
+      <ol class="student-import__rail" aria-label="名单导入步骤">
+        <li :aria-current="stage === 1 ? 'step' : undefined" :class="{ 'is-complete': stage > 1 }">
+          <span>1</span>
+          <strong>选择文件</strong>
+        </li>
+        <li :aria-current="stage === 2 ? 'step' : undefined" :class="{ 'is-complete': stage > 2 }">
+          <span>2</span>
+          <strong>核对变化</strong>
+        </li>
+        <li :aria-current="stage === 3 ? 'step' : undefined">
+          <span>3</span>
+          <strong>确认写入</strong>
+        </li>
+      </ol>
+
+      <div class="student-import__file">
+        <label class="student-file-picker">
+          <span>{{ selectedFile?.name ?? '选择 CSV 或 XLSX 名单' }}</span>
+          <input
+            type="file"
+            accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            @change="chooseFile"
+          >
+          <strong>{{ selectedFile ? '更换文件' : '选择文件' }}</strong>
+        </label>
+        <span v-if="roster.importState === 'previewing'" role="status">正在读取并比对名单…</span>
+      </div>
+
       <div class="student-import__mapping">
         <label>
           <span>学号列</span>

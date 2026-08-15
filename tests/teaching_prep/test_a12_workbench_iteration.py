@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+import os
 import zipfile
 
 import pytest
@@ -20,6 +21,9 @@ from backend.teaching_prep.infrastructure.fakes import (
 )
 from backend.teaching_prep.infrastructure.llm.exercise_suggestions import (
     WorkspaceExerciseSuggestionModelAdapter,
+)
+from backend.teaching_prep.infrastructure.llm.lesson_model import (
+    WorkspaceLessonModelAdapter,
 )
 
 from .test_a01_foundation import _migrated_service
@@ -220,6 +224,19 @@ def test_exercise_suggestion_normalizes_known_chinese_enum_aliases() -> None:
     }
 
 
+def test_exercise_suggestion_accepts_textbook_source_pages() -> None:
+    material = {
+        "purpose": "textbook",
+        "material_version_id": "a" * 32,
+        "units": [{"unit_id": "b" * 32, "unit_index": 9}],
+    }
+    raw = _suggestion(material)
+    normalized = normalize_exercise_suggestion_payload(
+        {"suggestions": [raw]}, snapshot={"materials": [material]}
+    )
+    assert normalized[0]["material_version_id"] == "a" * 32
+
+
 def test_exercise_model_receives_selected_workbook_page_images() -> None:
     class Gateway:
         def __init__(self) -> None:
@@ -242,6 +259,7 @@ def test_exercise_model_receives_selected_workbook_page_images() -> None:
             "materials": [{"purpose": "exercise", "material_version_id": "v1"}],
             "reference_images": [
                 {
+                    "purpose": "exercise",
                     "material_version_id": "v1",
                     "material_unit_id": "u1",
                     "unit_index": 4,
@@ -254,10 +272,117 @@ def test_exercise_model_receives_selected_workbook_page_images() -> None:
     user_content = gateway.kwargs["kwargs"]["messages"][1]["content"]  # type: ignore[index]
     assert isinstance(user_content, list)
     assert "reference_images" not in user_content[0]["text"]
+    assert user_content[1]["text"].startswith("教辅原页；")
     assert user_content[1]["text"].endswith("material_unit_id=u1;unit_index=4")
     assert user_content[2]["image_url"]["url"].startswith(
         "data:image/png;base64,"
     )
+
+
+def test_lesson_model_receives_selected_page_images() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.kwargs = kwargs
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"knowledge_objectives":[],"focus_points":[],'
+                                '"anticipated_difficulties":[],"lesson_flow":[],'
+                                '"exercise_recommendations":[],'
+                                '"slide_adaptations":[],"uncertainties":[]}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    payload = adapter.generate(
+        operation_id="a12-lesson-image-request",
+        resource_pack={
+            "materials": [],
+            "reference_images": [
+                {
+                    "purpose": "reference_ppt",
+                    "material_version_id": "v1",
+                    "material_unit_id": "u1",
+                    "unit_index": 1,
+                    "mime_type": "image/png",
+                    "content": b"\x89PNG",
+                }
+            ],
+        },
+    )
+    assert payload["slide_adaptations"] == []
+    user_content = gateway.kwargs["kwargs"]["messages"][1]["content"]  # type: ignore[index]
+    assert isinstance(user_content, list)
+    assert "reference_images" not in user_content[0]["text"]
+    assert user_content[1]["text"].startswith("主课件原页；")
+    assert user_content[2]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+    assert gateway.kwargs["timeout_override_seconds"] == 180
+
+
+def test_select_model_page_images_round_robins_and_caps_total() -> None:
+    from backend.teaching_prep.application.preparation_service import (
+        _select_model_page_images,
+    )
+
+    buckets = {
+        "exercise": [
+            {"purpose": "exercise", "material_unit_id": f"e{index}", "content": b"e"}
+            for index in range(3)
+        ],
+        "textbook": [
+            {"purpose": "textbook", "material_unit_id": f"t{index}", "content": b"t"}
+            for index in range(8)
+        ],
+        "reference_ppt": [
+            {
+                "purpose": "reference_ppt",
+                "material_unit_id": f"p{index}",
+                "content": b"p",
+            }
+            for index in range(9)
+        ],
+    }
+    selected = _select_model_page_images(
+        buckets,
+        purposes=("exercise", "textbook", "reference_ppt"),
+        max_images=12,
+        max_bytes=12_000_000,
+    )
+    purposes = [str(item["purpose"]) for item in selected]
+    assert len(selected) == 12
+    assert purposes.count("exercise") == 3
+    assert purposes.count("textbook") == 5
+    assert purposes.count("reference_ppt") == 4
+    assert purposes[:3] == ["exercise", "textbook", "reference_ppt"]
+
+
+def test_preview_payload_for_model_compresses_large_png(tmp_path: Path) -> None:
+    from backend.teaching_prep.application.preparation_service import (
+        _preview_payload_for_model,
+    )
+    from PIL import Image
+
+    preview = tmp_path / "large-slide.png"
+    Image.frombytes("RGB", (1600, 900), os.urandom(1600 * 900 * 3)).save(preview)
+    mime_type, content = _preview_payload_for_model(preview)
+    assert mime_type == "image/jpeg"
+    assert content.startswith(b"\xff\xd8")
+    assert len(content) < preview.stat().st_size
 
 
 def _add_exercise_link(service, lesson_id: str, *, token: str):
@@ -636,3 +761,15 @@ def test_workbench_http_contract_runs_suggestions_as_an_observable_operation(
     assert finished.status_code == 200
     assert finished.json()["status"] == "succeeded"
     assert len(finished.json()["suggestions"]) == 1
+
+    missing = client.get(
+        f"/api/teaching-prep/lessons/{'0' * 32}/latest-exercise-suggestion-run"
+    )
+    assert missing.status_code == 404
+    latest = client.get(
+        f"/api/teaching-prep/lessons/{lesson_id}/latest-exercise-suggestion-run"
+    )
+    assert latest.status_code == 200
+    assert latest.json()["id"] == run_id
+    assert latest.json()["status"] == "succeeded"
+    assert len(latest.json()["suggestions"]) == 1

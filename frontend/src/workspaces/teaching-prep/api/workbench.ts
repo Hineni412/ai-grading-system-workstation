@@ -364,6 +364,16 @@ export const teachingPrepWorkbenchApi = {
     )
   },
 
+  latestExerciseSuggestionRun(
+    lessonId: string,
+    signal?: AbortSignal,
+  ): Promise<ExerciseSuggestionRun> {
+    return apiClient.request(
+      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/latest-exercise-suggestion-run`,
+      { signal, decode: exerciseSuggestionRun },
+    )
+  },
+
   exerciseSuggestionRun(runId: string, signal?: AbortSignal): Promise<ExerciseSuggestionRun> {
     return apiClient.request(
       `/api/teaching-prep/exercise-suggestion-runs/${encodeURIComponent(runId)}`,

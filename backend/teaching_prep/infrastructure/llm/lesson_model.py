@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 from collections.abc import Mapping
@@ -48,8 +49,10 @@ ID；不得编造页码、题号、候选题或班级结论。课堂总时长由
 - exercise_recommendations 的 source_ref 只能取
   allowed_exercise_recommendation_refs；该列表为空时必须返回空数组。action 为 include
   时 target_slide_ref 必须取 allowed_slide_refs，优先放到删除冗余题后形成的空白区。
-- allowed_exercise_recommendation_refs 非空表示这些题已经由教师逐题确认；本次目标包含
-  插入教辅题，因此必须至少返回一条 action=include 的 exercise_recommendation。
+- allowed_exercise_recommendation_refs 非空表示系统已从教师勾选的教材或教辅原页自动
+  选出候选题，不是教师逐题勾选；本次目标包含插入这些题，因此必须至少返回一条
+  action=include 的 exercise_recommendation。用户消息中的原页图用于对照课件、教材和
+  教辅，不得引用图中未出现且资源包也没有的页码或题号。
 - allowed_textbook_refs 非空时，本次目标包含填写教材页码；必须至少有一条最相关讲授页的
   textbook_refs 非空，并在 citations 中包含同一教材引用。
 - 本次目标还包含删除 PPT 页内的多余练习。必须检查后段练习页的
@@ -89,6 +92,7 @@ class WorkspaceLessonModelAdapter:
         resource_pack: dict[str, Any],
     ) -> dict[str, Any]:
         model_input = dict(resource_pack)
+        raw_images = model_input.pop("reference_images", [])
         model_input["output_contract"] = _model_output_contract(
             resource_pack
         )
@@ -105,18 +109,17 @@ class WorkspaceLessonModelAdapter:
                     {"role": "system", "content": _SYSTEM_INSTRUCTION},
                     {
                         "role": "user",
-                        "content": json.dumps(
+                        "content": vision_user_content(
                             model_input,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
+                            raw_images,
+                            max_images=12,
                         ),
                     },
                 ],
                 "response_format": {"type": "json_object"},
                 "max_tokens": _MAX_OUTPUT_TOKENS,
             },
-            timeout_override_seconds=110,
+            timeout_override_seconds=180,
         )
         diagnostics = response_diagnostics(response)
         if bool(diagnostics.get("output_truncated")):
@@ -381,6 +384,62 @@ def _safe_list(value: object) -> list[object]:
     return value if isinstance(value, list) else []
 
 
+_IMAGE_PAGE_LABELS = {
+    "exercise": "教辅原页",
+    "textbook": "教材原页",
+    "reference_ppt": "主课件原页",
+}
+
+
+def vision_user_content(
+    payload: Mapping[str, object],
+    raw_images: object,
+    *,
+    max_images: int = 12,
+) -> object:
+    payload_json = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if not isinstance(raw_images, list) or not raw_images:
+        return payload_json
+    content: list[dict[str, object]] = [{"type": "text", "text": payload_json}]
+    for raw in raw_images[:max_images]:
+        if not isinstance(raw, Mapping):
+            continue
+        data = raw.get("content")
+        if not isinstance(data, bytes) or not data:
+            continue
+        mime_type = str(raw.get("mime_type") or "image/png")
+        if mime_type not in {"image/png", "image/jpeg", "image/webp"}:
+            continue
+        purpose = str(raw.get("purpose") or "")
+        label = _IMAGE_PAGE_LABELS.get(purpose, "资料原页")
+        encoded = base64.b64encode(data).decode("ascii")
+        content.extend(
+            [
+                {
+                    "type": "text",
+                    "text": (
+                        f"{label}；"
+                        f"material_version_id={raw.get('material_version_id')};"
+                        f"material_unit_id={raw.get('material_unit_id')};"
+                        f"unit_index={raw.get('unit_index')}"
+                    ),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{encoded}"
+                    },
+                },
+            ]
+        )
+    return content
+
+
 def _response_text(response: object) -> str:
     if isinstance(response, Mapping):
         choices = response.get("choices")
@@ -403,4 +462,4 @@ def _response_text(response: object) -> str:
     )
 
 
-__all__ = ["WorkspaceLessonModelAdapter"]
+__all__ = ["WorkspaceLessonModelAdapter", "vision_user_content"]

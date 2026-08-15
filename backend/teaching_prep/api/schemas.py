@@ -1164,6 +1164,13 @@ class ExecuteSlidePlanRequest(BaseModel):
 
     operation_id: str = Field(min_length=8, max_length=96)
     confirmed: bool
+    preview_only: bool = False
+
+
+class ConfirmPptxPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed: bool
 
 
 class DiscardPptxStagingRequest(BaseModel):

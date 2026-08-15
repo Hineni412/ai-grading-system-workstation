@@ -61,6 +61,7 @@ from .schemas import (
     DeleteMaterialSourceResponse,
     DiscardPptxStagingRequest,
     DeriveClassVariantRequest,
+    ConfirmPptxPreviewRequest,
     ExecuteSlidePlanRequest,
     CurriculumListResponse,
     CurriculumResponse,
@@ -1873,6 +1874,7 @@ def create_router() -> APIRouter:
                 plan_id,
                 operation_id=payload.operation_id,
                 confirmed=payload.confirmed,
+                preview_only=payload.preview_only,
             )
         except Exception as exc:
             raise _api_error(exc) from exc
@@ -1880,7 +1882,9 @@ def create_router() -> APIRouter:
             response.status_code = status.HTTP_200_OK
         else:
             background_tasks.add_task(
-                service.process_pptx_execution, execution.id
+                service.process_pptx_execution,
+                execution.id,
+                not payload.preview_only,
             )
         return PptxExecutionResultResponse(
             execution=PptxExecutionResponse.from_domain(execution),
@@ -1900,6 +1904,49 @@ def create_router() -> APIRouter:
         except Exception as exc:
             raise _api_error(exc) from exc
         return PptxExecutionResponse.from_domain(item)
+
+    @router.get("/pptx-executions/{run_id}/preview")
+    def pptx_execution_preview(
+        run_id: str,
+        slide: int = Query(default=1, ge=1),
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> FileResponse:
+        try:
+            preview = service.pptx_execution_preview_path(
+                run_id, slide_number=slide
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return FileResponse(
+            preview,
+            media_type="image/png",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.post(
+        "/pptx-executions/{run_id}/confirm-preview",
+        response_model=PptxExecutionResultResponse,
+    )
+    def confirm_pptx_preview(
+        run_id: str,
+        payload: ConfirmPptxPreviewRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PptxExecutionResultResponse:
+        try:
+            execution, version = service.confirm_pptx_preview(
+                run_id,
+                confirmed=payload.confirmed,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return PptxExecutionResultResponse(
+            execution=PptxExecutionResponse.from_domain(execution),
+            version=(
+                PptxVersionResponse.from_domain(version)
+                if version is not None
+                else None
+            ),
+        )
 
     @router.get(
         "/pptx-executions/{run_id}/performance",
@@ -2470,6 +2517,22 @@ def create_router() -> APIRouter:
     ) -> ExerciseSuggestionRunResponse:
         try:
             run, items = service.get_exercise_suggestion_run(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ExerciseSuggestionRunResponse.from_domain(run, items)
+
+    @router.get(
+        "/lessons/{lesson_node_id}/latest-exercise-suggestion-run",
+        response_model=ExerciseSuggestionRunResponse,
+    )
+    def get_latest_exercise_suggestion_run(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ExerciseSuggestionRunResponse:
+        try:
+            run, items = service.get_latest_exercise_suggestion_run(
+                lesson_node_id
+            )
         except Exception as exc:
             raise _api_error(exc) from exc
         return ExerciseSuggestionRunResponse.from_domain(run, items)
