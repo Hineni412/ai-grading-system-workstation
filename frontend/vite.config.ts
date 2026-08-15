@@ -4,6 +4,8 @@ import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig, type ServerOptions } from 'vite'
 
+import { neutralizeAdBlockBaitFilenames } from './vite.adblock-filenames'
+
 export const allowedDevRoots = [
   fileURLToPath(new URL('.', import.meta.url)),
   fileURLToPath(new URL('../components/answer_region_editor', import.meta.url)),
@@ -23,7 +25,7 @@ export const serverConfig = {
 } satisfies ServerOptions
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [vue(), tailwindcss(), neutralizeAdBlockBaitFilenames()],
   build: {
     rolldownOptions: {
       output: {
