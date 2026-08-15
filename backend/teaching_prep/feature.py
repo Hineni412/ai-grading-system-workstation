@@ -76,7 +76,7 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
     )
     preview_wps_enabled = real_wps_enabled or _boolean_env(
         "AI_GRADING_TEACHING_PREP_WPS_PREVIEW",
-        default=False,
+        default=True,
     )
     helper_script = (
         project_root

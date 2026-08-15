@@ -13,7 +13,6 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
-from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from PIL import Image
@@ -303,6 +302,9 @@ class TeachingPrepService:
         self._material_parse_lock = threading.Lock()
         self._active_material_parses: set[str] = set()
         self._pptx_preview_lock = threading.RLock()
+        self._pptx_preview_worker_lock = threading.Lock()
+        self._pptx_preview_wanted: str | None = None
+        self._pptx_preview_worker: threading.Thread | None = None
         self.question_evidence_reader = question_evidence_reader
         self.assessment_evidence_reader = assessment_evidence_reader
         self.lesson_model_adapter = lesson_model_adapter
@@ -2269,6 +2271,7 @@ class TeachingPrepService:
         request_hash: str,
         operation_already_started: bool = False,
     ) -> dict[str, object]:
+        self.close_preview_runtime()
         impact = self.catalog.material_deletion_impact(
             source_id,
             expected_revision=expected_revision,
@@ -2791,19 +2794,72 @@ class TeachingPrepService:
                         strict=False
                     )
                     unit = self.material_units.get_unit(clean_id)
-        if (
-            unit.unit_kind == "ppt_slide"
-            and unit.object_summary.get("preview_kind") == "structural"
-            and self._pptx_preview_adapter() is not None
-            and self._should_render_pptx_preview(unit.object_summary)
-        ):
-            self._render_pptx_preview(clean_id)
-            record = self.material_units.preview_record(clean_id)
-            target = (self.root / record.preview_relpath).resolve(strict=False)
         return target
 
     def get_material_unit(self, unit_id: str) -> MaterialUnit:
         return self.material_units.get_unit(_clean_entity_id(unit_id))
+
+    def request_pptx_preview_render(self, unit_id: str) -> MaterialUnit:
+        clean_id = _clean_entity_id(unit_id)
+        unit = self.material_units.get_unit(clean_id)
+        if unit.unit_kind != "ppt_slide":
+            raise TeachingPrepValidationError(
+                "only PPT slides can request rendered previews"
+            )
+        if unit.object_summary.get("preview_kind") == "rendered":
+            return unit
+        if self._pptx_preview_adapter() is None:
+            return unit
+        if not self._should_render_pptx_preview(unit.object_summary):
+            return unit
+        record = self.material_units.preview_record(clean_id)
+        self.material_units.mark_preview_render_progress(
+            clean_id,
+            source_version_sha256=record.source_version_sha256,
+            status="queued",
+        )
+        with self._pptx_preview_worker_lock:
+            self._pptx_preview_wanted = clean_id
+            worker = self._pptx_preview_worker
+            if worker is None or not worker.is_alive():
+                self._pptx_preview_worker = threading.Thread(
+                    target=self._pptx_preview_worker_loop,
+                    name="pptx-preview-render",
+                    daemon=True,
+                )
+                self._pptx_preview_worker.start()
+        return self.material_units.get_unit(clean_id)
+
+    def drain_pptx_preview_renders(self, timeout: float = 60) -> None:
+        with self._pptx_preview_worker_lock:
+            worker = self._pptx_preview_worker
+        if worker is not None:
+            worker.join(timeout=timeout)
+
+    def close_preview_runtime(self) -> None:
+        for adapter in (self.preview_wps_adapter, self.wps_adapter):
+            closer = getattr(adapter, "close_preview_session", None)
+            if callable(closer):
+                closer()
+
+    def _pptx_preview_worker_loop(self) -> None:
+        while True:
+            with self._pptx_preview_worker_lock:
+                wanted = self._pptx_preview_wanted
+                self._pptx_preview_wanted = None
+                if wanted is None:
+                    self._pptx_preview_worker = None
+                    return
+            try:
+                record = self.material_units.preview_record(wanted)
+                self.material_units.mark_preview_render_progress(
+                    wanted,
+                    source_version_sha256=record.source_version_sha256,
+                    status="running",
+                )
+                self._render_pptx_preview(wanted)
+            except Exception:
+                LOGGER.exception("PPT preview render worker failed")
 
     def _pptx_preview_adapter(self) -> WpsAdapter | None:
         if self.wps_adapter is not None and self.wps_adapter_is_real:
@@ -2933,87 +2989,95 @@ class TeachingPrepService:
                 return
             error_code = "wps_preview_failed"
             try:
-                with TemporaryDirectory(
-                    prefix="pptx-preview-",
-                    dir=self.paths["temp"],
-                ) as temporary_value:
-                    working = Path(temporary_value)
-                    source_copy = working / "source-copy.pptx"
-                    rendered_dir = working / "rendered"
+                working = (
+                    self.paths["temp"]
+                    / "pptx-preview-session"
+                    / record.source_version_sha256
+                )
+                working.mkdir(parents=True, exist_ok=True)
+                source_copy = working / "source-copy.pptx"
+                rendered_dir = working / "rendered"
+                if (
+                    not source_copy.is_file()
+                    or _sha256_file(source_copy) != record.source_version_sha256
+                ):
+                    closer = getattr(adapter, "close_preview_session", None)
+                    if callable(closer):
+                        closer()
                     shutil.copy2(source, source_copy)
-                    if _sha256_file(source_copy) != record.source_version_sha256:
-                        raise TeachingPrepConflictError(
-                            "isolated PPTX preview copy changed"
-                        )
-                    adapter.render_previews(
-                        operation_id=(
-                            f"pptx-preview-{record.source_version_sha256[:16]}-"
-                            f"{unit.unit_index:05d}"
-                        ),
-                        source_copy=str(source_copy),
-                        preview_directory=str(rendered_dir),
-                        slide_indexes=[unit.unit_index],
-                        source_sha256=record.source_version_sha256,
-                        timeout_milliseconds=30_000,
+                if _sha256_file(source_copy) != record.source_version_sha256:
+                    raise TeachingPrepConflictError(
+                        "isolated PPTX preview copy changed"
                     )
-                    candidate = rendered_dir / (
-                        f"slide-{unit.unit_index:05d}.png"
+                adapter.render_previews(
+                    operation_id=(
+                        f"pptx-preview-{record.source_version_sha256[:16]}-"
+                        f"{unit.unit_index:05d}"
+                    ),
+                    source_copy=str(source_copy),
+                    preview_directory=str(rendered_dir),
+                    slide_indexes=[unit.unit_index],
+                    source_sha256=record.source_version_sha256,
+                    timeout_milliseconds=30_000,
+                )
+                candidate = rendered_dir / (
+                    f"slide-{unit.unit_index:05d}.png"
+                )
+                if (
+                    not candidate.is_file()
+                    or candidate.stat().st_size <= 0
+                    or candidate.stat().st_size > 32 * 1024 * 1024
+                ):
+                    raise TeachingPrepValidationError(
+                        "WPS preview output is invalid"
                     )
-                    if (
-                        not candidate.is_file()
-                        or candidate.stat().st_size <= 0
-                        or candidate.stat().st_size > 32 * 1024 * 1024
-                    ):
-                        raise TeachingPrepValidationError(
-                            "WPS preview output is invalid"
-                        )
-                    try:
-                        with Image.open(candidate) as image:
-                            if image.format != "PNG":
-                                raise TeachingPrepValidationError(
-                                    "WPS preview output is invalid"
-                                )
-                            image.verify()
-                        with Image.open(candidate) as image:
-                            width, height = image.size
-                    except (OSError, ValueError) as exc:
-                        raise TeachingPrepValidationError(
-                            "WPS preview output is invalid"
-                        ) from exc
-                    if (
-                        width <= 0
-                        or height <= 0
-                        or width > 8_192
-                        or height > 8_192
-                        or _sha256_file(source) != record.source_version_sha256
-                    ):
-                        raise TeachingPrepValidationError(
-                            "WPS preview output is invalid"
-                        )
-                    target = self.root / record.preview_relpath
-                    previous = target.read_bytes()
-                    temporary = target.with_name(
-                        f".{target.name}.{uuid4().hex}.tmp"
-                    )
-                    try:
-                        shutil.copyfile(candidate, temporary)
-                        rendered_sha = _sha256_file(temporary)
-                        os.replace(temporary, target)
-                        try:
-                            self.material_units.mark_preview_rendered(
-                                unit_id,
-                                source_version_sha256=(
-                                    record.source_version_sha256
-                                ),
-                                preview_sha256=rendered_sha,
-                                width=width,
-                                height=height,
+                try:
+                    with Image.open(candidate) as image:
+                        if image.format != "PNG":
+                            raise TeachingPrepValidationError(
+                                "WPS preview output is invalid"
                             )
-                        except Exception:
-                            target.write_bytes(previous)
-                            raise
-                    finally:
-                        temporary.unlink(missing_ok=True)
+                        image.verify()
+                    with Image.open(candidate) as image:
+                        width, height = image.size
+                except (OSError, ValueError) as exc:
+                    raise TeachingPrepValidationError(
+                        "WPS preview output is invalid"
+                    ) from exc
+                if (
+                    width <= 0
+                    or height <= 0
+                    or width > 8_192
+                    or height > 8_192
+                    or _sha256_file(source) != record.source_version_sha256
+                ):
+                    raise TeachingPrepValidationError(
+                        "WPS preview output is invalid"
+                    )
+                target = self.root / record.preview_relpath
+                previous = target.read_bytes()
+                temporary = target.with_name(
+                    f".{target.name}.{uuid4().hex}.tmp"
+                )
+                try:
+                    shutil.copyfile(candidate, temporary)
+                    rendered_sha = _sha256_file(temporary)
+                    os.replace(temporary, target)
+                    try:
+                        self.material_units.mark_preview_rendered(
+                            unit_id,
+                            source_version_sha256=(
+                                record.source_version_sha256
+                            ),
+                            preview_sha256=rendered_sha,
+                            width=width,
+                            height=height,
+                        )
+                    except Exception:
+                        target.write_bytes(previous)
+                        raise
+                finally:
+                    temporary.unlink(missing_ok=True)
             except TimeoutError:
                 error_code = "wps_preview_timeout"
             except Exception:

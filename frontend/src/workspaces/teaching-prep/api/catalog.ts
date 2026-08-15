@@ -2894,6 +2894,39 @@ export const teachingPrepCatalogApi = {
     )
   },
 
+  getMaterialUnit(
+    unitId: string,
+    signal?: AbortSignal,
+  ): Promise<MaterialUnit> {
+    return apiClient.request(
+      `/api/teaching-prep/material-units/${encodeURIComponent(unitId)}`,
+      {
+        signal,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return materialUnit(payload)
+        },
+      },
+    )
+  },
+
+  requestPptPreviewRender(
+    unitId: string,
+    signal?: AbortSignal,
+  ): Promise<MaterialUnit> {
+    return apiClient.request(
+      `/api/teaching-prep/material-units/${encodeURIComponent(unitId)}/preview-render`,
+      {
+        method: 'POST',
+        signal,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return materialUnit(payload)
+        },
+      },
+    )
+  },
+
   updateMaterialUnit(
     unitId: string,
     input: {

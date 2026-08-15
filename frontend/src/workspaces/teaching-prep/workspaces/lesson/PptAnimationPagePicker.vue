@@ -6,10 +6,12 @@ import { parseAnimationPageText } from './animationPages'
 import MaterialPagePreview from './MaterialPagePreview.vue'
 
 export interface PptAnimationPickerUnit {
+  id?: string
   unit_index: number
   preview_url: string
   title?: string | null
   object_summary?: Record<string, unknown>
+  revision?: number
 }
 
 export interface PptAnimationDraftTask {
@@ -36,6 +38,7 @@ const emit = defineEmits<{
   'remove-task': [string]
   'generate-task': [string]
   'preview-loaded': [number]
+  'update:unit': [PptAnimationPickerUnit]
 }>()
 
 const indexes = computed(() => (
@@ -47,8 +50,12 @@ const current = computed(() => (
 const canCreate = computed(() => props.tasks.length < props.remaining)
 const previewNotice = computed(() => {
   const kind = current.value?.object_summary?.preview_kind
-  if (kind === 'rendered') return ''
-  return '当前是本机拼出的页，用来认页和选页；不调用 WPS，不改课件原文件。'
+  if (kind === 'rendered') return '当前是放映软件实拍，公式和版式更接近上课画面；不改课件原文件。'
+  const status = String(current.value?.object_summary?.preview_render_status ?? '')
+  if (status === 'queued' || status === 'running') {
+    return '先显示本机拼出的页；停住后会换成放映软件实拍。不改课件原文件。'
+  }
+  return '先显示本机拼出的页，用来认页和切页；停住后会换成放映软件实拍。不改课件原文件，也不因此打开第③步改编。'
 })
 
 function goTo(page: number): void {
@@ -106,6 +113,7 @@ function canGenerate(text: string): boolean {
         :page="page"
         :notice="previewNotice"
         @update:page="goTo"
+        @update:unit="emit('update:unit', $event)"
         @loaded="emit('preview-loaded', $event)"
       />
       <div

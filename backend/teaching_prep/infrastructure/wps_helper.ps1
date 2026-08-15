@@ -1,8 +1,8 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$RequestPath,
-    [Parameter(Mandatory = $true)]
-    [string]$ResultPath
+    [string]$RequestPath = '',
+    [string]$ResultPath = '',
+    [switch]$PreviewSession,
+    [string]$SessionDirectory = ''
 )
 
 Set-StrictMode -Version Latest
@@ -12,6 +12,10 @@ $application = $null
 $presentation = $null
 $verificationPresentation = $null
 $slideShowWindow = $null
+$script:previewApplication = $null
+$script:previewPresentation = $null
+$script:previewSource = ''
+$script:previewSha256 = ''
 
 function Get-NormalizedBox {
     param(
@@ -110,59 +114,62 @@ function Set-WpsApplicationHiddenIfSupported {
     }
 }
 
-function Export-ReadOnlySlidePreviews {
+function Close-PreviewSessionCom {
+    if ($null -ne $script:previewPresentation) {
+        try { $script:previewPresentation.Close() } catch {}
+    }
+    if ($null -ne $script:previewApplication) {
+        try { $script:previewApplication.Quit() } catch [System.Runtime.InteropServices.COMException] {}
+    }
+    $script:previewPresentation = $null
+    $script:previewApplication = $null
+    $script:previewSource = ''
+    $script:previewSha256 = ''
+}
+
+function Open-ReadOnlyPreviewPresentation {
     param(
         [Parameter(Mandatory = $true)][string]$SourceCopy,
-        [Parameter(Mandatory = $true)]$SlideIndexes,
-        [Parameter(Mandatory = $true)][string]$PreviewDirectory
+        [Parameter(Mandatory = $true)][string]$SourceSha256
     )
-    $indexes = @(
-        $SlideIndexes | ForEach-Object { [int]$_ }
-    )
+    if (
+        $null -ne $script:previewPresentation `
+        -and $script:previewSource -ieq $SourceCopy `
+        -and $script:previewSha256 -ieq $SourceSha256
+    ) {
+        $currentHash = (Get-FileHash -LiteralPath $SourceCopy -Algorithm SHA256).Hash
+        if ($currentHash -ieq $SourceSha256) {
+            return
+        }
+    }
+    Close-PreviewSessionCom
     $errors = @()
     foreach ($progId in @('KWPP.Application', 'PowerPoint.Application')) {
-        $application = $null
-        $presentation = $null
+        $openedApp = $null
+        $openedPresentation = $null
         try {
-            Get-ChildItem -LiteralPath $PreviewDirectory -File |
-                Remove-Item -Force
-            $application = New-Object -ComObject $progId
-            Set-WpsApplicationHiddenIfSupported -Application $application | Out-Null
-            try { $application.DisplayAlerts = 1 } catch {}
-            $presentation = $application.Presentations.Open(
+            $openedApp = New-Object -ComObject $progId
+            Set-WpsApplicationHiddenIfSupported -Application $openedApp | Out-Null
+            try { $openedApp.DisplayAlerts = 1 } catch {}
+            $openedPresentation = $openedApp.Presentations.Open(
                 $SourceCopy,
                 $true,
                 $false,
                 $false
             )
-            foreach ($index in $indexes) {
-                if ($index -gt [int]$presentation.Slides.Count) {
-                    throw 'Preview slide selection is out of range'
-                }
-                $target = Join-Path $PreviewDirectory (
-                    'slide-{0:D5}.png' -f $index
-                )
-                $presentation.Slides.Item($index).Export(
-                    $target,
-                    'PNG',
-                    1600,
-                    900
-                )
-            }
-            Wait-WpsSlidePreviews `
-                -PreviewDirectory $PreviewDirectory `
-                -ExpectedCount $indexes.Count | Out-Null
+            $script:previewApplication = $openedApp
+            $script:previewPresentation = $openedPresentation
+            $script:previewSource = $SourceCopy
+            $script:previewSha256 = $SourceSha256
             return
         }
         catch {
             $errors += ('{0}: {1}' -f $progId, $_.Exception.Message)
-        }
-        finally {
-            if ($null -ne $presentation) {
-                try { $presentation.Close() } catch {}
+            if ($null -ne $openedPresentation) {
+                try { $openedPresentation.Close() } catch {}
             }
-            if ($null -ne $application) {
-                try { $application.Quit() } catch [System.Runtime.InteropServices.COMException] {}
+            if ($null -ne $openedApp) {
+                try { $openedApp.Quit() } catch [System.Runtime.InteropServices.COMException] {}
             }
         }
     }
@@ -172,13 +179,176 @@ function Export-ReadOnlySlidePreviews {
     )
 }
 
+function Export-OpenedPreviewSlides {
+    param(
+        [Parameter(Mandatory = $true)]$SlideIndexes,
+        [Parameter(Mandatory = $true)][string]$PreviewDirectory,
+        [int]$StableCount = 2
+    )
+    if ($null -eq $script:previewPresentation) {
+        throw 'Preview presentation is not open'
+    }
+    $indexes = @(
+        $SlideIndexes | ForEach-Object { [int]$_ }
+    )
+    New-Item -ItemType Directory -Path $PreviewDirectory -Force | Out-Null
+    Get-ChildItem -LiteralPath $PreviewDirectory -File |
+        Remove-Item -Force
+    foreach ($index in $indexes) {
+        if ($index -gt [int]$script:previewPresentation.Slides.Count) {
+            throw 'Preview slide selection is out of range'
+        }
+        $target = Join-Path $PreviewDirectory (
+            'slide-{0:D5}.png' -f $index
+        )
+        $script:previewPresentation.Slides.Item($index).Export(
+            $target,
+            'PNG',
+            1600,
+            900
+        )
+    }
+    Wait-WpsSlidePreviews `
+        -PreviewDirectory $PreviewDirectory `
+        -ExpectedCount $indexes.Count `
+        -StableCount $StableCount | Out-Null
+}
+
+function Export-ReadOnlySlidePreviews {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceCopy,
+        [Parameter(Mandatory = $true)]$SlideIndexes,
+        [Parameter(Mandatory = $true)][string]$PreviewDirectory
+    )
+    try {
+        $sourceHash = (Get-FileHash -LiteralPath $SourceCopy -Algorithm SHA256).Hash
+        Open-ReadOnlyPreviewPresentation `
+            -SourceCopy $SourceCopy `
+            -SourceSha256 $sourceHash
+        Export-OpenedPreviewSlides `
+            -SlideIndexes $SlideIndexes `
+            -PreviewDirectory $PreviewDirectory
+    }
+    finally {
+        Close-PreviewSessionCom
+    }
+}
+
+function Write-PreviewSessionResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][hashtable]$Result
+    )
+    $json = $Result | ConvertTo-Json -Depth 10 -Compress
+    [IO.File]::WriteAllText(
+        $Path,
+        $json,
+        [Text.UTF8Encoding]::new($false)
+    )
+}
+
+function Invoke-PreviewSessionLoop {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory
+    )
+    $commandPath = Join-Path $Directory 'session-command.json'
+    $commandReadyPath = Join-Path $Directory 'session-command.ready'
+    $resultPath = Join-Path $Directory 'session-result.json'
+    $resultReadyPath = Join-Path $Directory 'session-result.ready'
+    $idleDeadline = [DateTime]::UtcNow.AddMinutes(15)
+    while ([DateTime]::UtcNow -lt $idleDeadline) {
+        if (-not (Test-Path -LiteralPath $commandReadyPath)) {
+            Start-Sleep -Milliseconds 50
+            continue
+        }
+        $idleDeadline = [DateTime]::UtcNow.AddMinutes(15)
+        $raw = [IO.File]::ReadAllText($commandPath, [Text.UTF8Encoding]::new($false))
+        Remove-Item -LiteralPath $commandReadyPath, $commandPath -Force -ErrorAction SilentlyContinue
+        $command = $raw | ConvertFrom-Json -Depth 20
+        $op = [string]$command.op
+        $payload = @{
+            status = 'completed'
+        }
+        try {
+            if ($op -eq 'open') {
+                $sourceCopy = [IO.Path]::GetFullPath([string]$command.source_copy)
+                $expectedHash = [string]$command.sha256
+                $currentHash = (Get-FileHash -LiteralPath $sourceCopy -Algorithm SHA256).Hash
+                if ($currentHash -ine $expectedHash) {
+                    throw 'Preview source fingerprint does not match'
+                }
+                Open-ReadOnlyPreviewPresentation `
+                    -SourceCopy $sourceCopy `
+                    -SourceSha256 $expectedHash
+                $payload.source_unchanged = $true
+            }
+            elseif ($op -eq 'export') {
+                $previewDirectory = [IO.Path]::GetFullPath(
+                    [string]$command.preview_directory
+                )
+                $sourceCopy = [IO.Path]::GetFullPath([string]$command.source_copy)
+                $expectedHash = [string]$command.sha256
+                $currentHash = (Get-FileHash -LiteralPath $sourceCopy -Algorithm SHA256).Hash
+                if ($currentHash -ine $expectedHash) {
+                    throw 'Preview source fingerprint does not match'
+                }
+                if (
+                    $null -eq $script:previewPresentation `
+                    -or $script:previewSource -ine $sourceCopy
+                ) {
+                    Open-ReadOnlyPreviewPresentation `
+                        -SourceCopy $sourceCopy `
+                        -SourceSha256 $expectedHash
+                }
+                $indexes = @(
+                    $command.slide_indexes | ForEach-Object { [int]$_ }
+                )
+                Export-OpenedPreviewSlides `
+                    -SlideIndexes $indexes `
+                    -PreviewDirectory $previewDirectory `
+                    -StableCount 1
+                $afterHash = (Get-FileHash -LiteralPath $sourceCopy -Algorithm SHA256).Hash
+                if ($afterHash -ine $expectedHash) {
+                    throw 'Preview source changed during read-only rendering'
+                }
+                $payload.rendered_slide_indexes = @($indexes)
+                $payload.source_unchanged = $true
+                $payload.source_lock_check = 'passed'
+            }
+            elseif ($op -eq 'close') {
+                Close-PreviewSessionCom
+                Write-PreviewSessionResult -Path $resultPath -Result $payload
+                New-Item -ItemType File -Path $resultReadyPath -Force | Out-Null
+                return
+            }
+            else {
+                throw 'Unsupported preview session operation'
+            }
+        }
+        catch {
+            $payload = @{
+                status = 'failed'
+                error_code = 'wps_helper_failed'
+                error_message = [string]$_.Exception.Message
+            }
+            Close-PreviewSessionCom
+        }
+        Write-PreviewSessionResult -Path $resultPath -Result $payload
+        New-Item -ItemType File -Path $resultReadyPath -Force | Out-Null
+        if ($payload.status -ne 'completed') {
+            return
+        }
+    }
+}
+
 function Wait-WpsSlidePreviews {
     param(
         [Parameter(Mandatory = $true)]
         [string]$PreviewDirectory,
         [Parameter(Mandatory = $true)]
         [int]$ExpectedCount,
-        [int]$TimeoutSeconds = 30
+        [int]$TimeoutSeconds = 30,
+        [int]$StableCount = 2
     )
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $lastSignature = $null
@@ -204,13 +374,37 @@ function Wait-WpsSlidePreviews {
         } else {
             $stableCount = 0
         }
-        if ($stableCount -ge 2) {
+        if ($stableCount -ge $StableCount) {
             return $files
         }
         $lastSignature = $signature
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $deadline)
     throw 'WPS did not finish exporting every slide preview'
+}
+
+if ($PreviewSession) {
+    if ([string]::IsNullOrWhiteSpace($SessionDirectory)) {
+        throw 'Preview session directory is required'
+    }
+    $sessionRoot = [IO.Path]::GetFullPath($SessionDirectory)
+    if (-not (Test-Path -LiteralPath $sessionRoot)) {
+        throw 'Preview session directory is unavailable'
+    }
+    try {
+        Invoke-PreviewSessionLoop -Directory $sessionRoot
+        exit 0
+    }
+    catch {
+        exit 1
+    }
+    finally {
+        Close-PreviewSessionCom
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($RequestPath) -or [string]::IsNullOrWhiteSpace($ResultPath)) {
+    throw 'Helper request and result paths are required'
 }
 
 try {
@@ -593,4 +787,5 @@ finally {
     if ($null -ne $application) {
         try { $application.Quit() } catch {}
     }
+    Close-PreviewSessionCom
 }

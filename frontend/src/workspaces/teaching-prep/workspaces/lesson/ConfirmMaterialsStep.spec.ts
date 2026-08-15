@@ -213,6 +213,27 @@ async function mountStep(options: {
   vi.spyOn(teachingPrepCatalogApi, 'listMaterialUnits').mockResolvedValue(
     options.pptUnits ?? [1, 2].map(index => previewUnit('v-link-ppt', index)),
   )
+  vi.spyOn(teachingPrepCatalogApi, 'requestPptPreviewRender').mockImplementation(async (unitId) => ({
+    ...previewUnit('v-link-ppt', 1),
+    id: unitId,
+    unit_kind: 'ppt_slide',
+    object_summary: {
+      preview_kind: 'structural',
+      preview_notice: '本机拼出的页，不是放映软件实拍',
+      preview_render_status: 'queued',
+    },
+  }))
+  vi.spyOn(teachingPrepCatalogApi, 'getMaterialUnit').mockImplementation(async (unitId) => ({
+    ...previewUnit('v-link-ppt', 1),
+    id: unitId,
+    unit_kind: 'ppt_slide',
+    object_summary: {
+      preview_kind: 'structural',
+      preview_notice: '本机拼出的页，不是放映软件实拍',
+      preview_render_status: 'failed',
+      preview_render_error_code: 'wps_preview_timeout',
+    },
+  }))
   vi.spyOn(teachingPrepWorkbenchApi, 'listSlideAnimationRuns').mockResolvedValue({
     lesson_node_id: lessonId,
     items: [],
@@ -249,6 +270,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   document.body.innerHTML = ''
@@ -446,6 +468,7 @@ describe('ConfirmMaterialsStep', () => {
 
     expect(host.querySelector('[data-testid="ppt-animation-page-picker"]')).toBeTruthy()
     expect(host.textContent).toContain('本机拼出的页')
+    expect(host.textContent).toContain('停住后会换成放映软件实拍')
     expect(host.textContent).toContain('课堂动画页')
     expect(host.textContent).toContain('未建任务（生成动画才单独计费，不改课件）')
     expect(host.textContent).toContain('1 次：课件改编')
@@ -585,6 +608,33 @@ describe('ConfirmMaterialsStep', () => {
     await nextTick()
     await nextTick()
     expect(accept).toHaveBeenCalledWith(draft.id, 2)
+    app.unmount()
+  })
+
+  it('requests a capture after the current PPT page stays in view', async () => {
+    vi.useFakeTimers()
+    const { app, host } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    await nextTick()
+    const requestRender = vi.mocked(teachingPrepCatalogApi.requestPptPreviewRender)
+    expect(requestRender).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(400)
+    expect(requestRender).toHaveBeenCalledWith('u1'.padEnd(32, '0'))
+
+    const nextButton = [...host.querySelectorAll('button')]
+      .find(button => button.textContent?.trim() === '下一页')
+    nextButton?.click()
+    await nextTick()
+    requestRender.mockClear()
+    await vi.advanceTimersByTimeAsync(399)
+    expect(requestRender).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(requestRender).toHaveBeenCalledWith('u2'.padEnd(32, '0'))
     app.unmount()
   })
 })
