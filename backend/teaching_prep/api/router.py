@@ -1200,6 +1200,20 @@ def create_router() -> APIRouter:
             items=[MaterialUnitResponse.from_domain(item) for item in units],
         )
 
+    @router.get(
+        "/material-units/{unit_id}",
+        response_model=MaterialUnitResponse,
+    )
+    def get_material_unit(
+        unit_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialUnitResponse:
+        try:
+            unit = service.get_material_unit(unit_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialUnitResponse.from_domain(unit)
+
     @router.patch(
         "/material-units/{unit_id}",
         response_model=MaterialUnitResponse,
@@ -1235,6 +1249,21 @@ def create_router() -> APIRouter:
             media_type="image/png",
             headers={"Cache-Control": "private, max-age=120"},
         )
+
+    @router.post(
+        "/material-units/{unit_id}/preview-render",
+        response_model=MaterialUnitResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def request_material_unit_preview_render(
+        unit_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialUnitResponse:
+        try:
+            unit = service.request_pptx_preview_render(unit_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialUnitResponse.from_domain(unit)
 
     @router.get(
         "/lessons/{lesson_node_id}/material-links",

@@ -264,10 +264,13 @@ watch(supportReady, (ready) => {
 
 function toPickerUnits(
   units: Array<{
+    id?: string
+    unit_id?: string
     unit_index: number
     preview_url: string
     title?: string | null
     object_summary?: Record<string, unknown>
+    revision?: number
   }>,
   startUnit: number,
   endUnit: number,
@@ -275,10 +278,12 @@ function toPickerUnits(
   return units
     .filter(item => item.unit_index >= startUnit && item.unit_index <= endUnit)
     .map(item => ({
+      id: item.id ?? item.unit_id,
       unit_index: item.unit_index,
       preview_url: item.preview_url,
       title: item.title ?? null,
       object_summary: item.object_summary,
+      revision: item.revision,
     }))
 }
 
@@ -403,12 +408,50 @@ async function addQuickMaterialLink(): Promise<void> {
   }
 }
 
-function previewUnitsFor(item: ReferenceMaterialLink): Array<{ unit_index: number, preview_url: string }> {
+function previewUnitsFor(item: ReferenceMaterialLink): Array<{
+  id?: string
+  unit_index: number
+  preview_url: string
+  title?: string | null
+  object_summary?: Record<string, unknown>
+  revision?: number
+}> {
   if (previewUnitsByLink[item.link_id]?.length) return previewUnitsByLink[item.link_id] ?? []
   return item.units.map(unit => ({
+    id: unit.unit_id,
     unit_index: unit.unit_index,
     preview_url: unit.preview_url,
+    title: unit.title,
+    object_summary: unit.object_summary,
   }))
+}
+
+function patchPreviewUnit(
+  collection: PptAnimationPickerUnit[] | MaterialUnit[],
+  next: PptAnimationPickerUnit | MaterialUnit,
+): typeof collection {
+  const nextId = 'id' in next && next.id ? next.id : ''
+  return collection.map((item) => {
+    const itemId = 'id' in item ? item.id : ''
+    if (nextId && itemId === nextId) return { ...item, ...next }
+    if (item.unit_index === next.unit_index && item.preview_url === next.preview_url) {
+      return { ...item, ...next }
+    }
+    return item
+  })
+}
+
+function applyPreviewUnit(next: PptAnimationPickerUnit): void {
+  animationUnits.value = patchPreviewUnit(animationUnits.value, next) as PptAnimationPickerUnit[]
+  if (previewingLinkId.value) {
+    const current = previewUnitsByLink[previewingLinkId.value]
+    if (current?.length) {
+      previewUnitsByLink[previewingLinkId.value] = patchPreviewUnit(
+        current,
+        next,
+      ) as MaterialUnit[]
+    }
+  }
 }
 
 async function toggleLinkPreview(item: ReferenceMaterialLink): Promise<void> {
@@ -1035,6 +1078,7 @@ defineExpose({
             :page="previewingLinkPage"
             :range-label="`本课关联第 ${item.start_unit}—${item.end_unit} 页`"
             @update:page="previewingLinkPage = $event"
+            @update:unit="applyPreviewUnit"
           />
         </div>
         <p v-if="!references.length" class="tp-muted">本课还没有关联资料，请在下方添加。</p>
@@ -1125,6 +1169,7 @@ defineExpose({
               :load-error="animationLoadError"
               :generating="animationGenerateBlocked"
               @update:page="animationPage = $event"
+              @update:unit="applyPreviewUnit"
               @add-task="addAnimationDraft"
               @remove-task="removeAnimationDraft"
               @update:task-text="updateAnimationDraftText"

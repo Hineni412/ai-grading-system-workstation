@@ -20,6 +20,9 @@ from backend.teaching_prep.domain.errors import TeachingPrepConflictError
 from backend.teaching_prep.infrastructure.fakes import FakeWpsAdapter
 from backend.teaching_prep.infrastructure.materials import MaterialParser
 from backend.teaching_prep.infrastructure.materials.parser import _slide_objects
+from backend.teaching_prep.infrastructure.materials.pptx_preview import (
+    PREVIEW_COMPOSITOR_VERSION,
+)
 from backend.jobs import JobManager, JobStore
 
 from .test_a01_foundation import _migrated_service
@@ -705,7 +708,7 @@ def test_pptx_slides_expose_titles_objects_and_structural_previews(
     assert units[0].object_summary["preview_notice"] == (
         "本机拼出的页，不是放映软件实拍"
     )
-    assert units[0].object_summary["preview_compositor"] == 1
+    assert units[0].object_summary["preview_compositor"] == PREVIEW_COMPOSITOR_VERSION
     assert units[0].object_summary["object_count"] == 1
     assert units[0].object_summary["occupied_boxes"]
     assert units[0].object_summary["objects"] == [
@@ -819,7 +822,7 @@ def test_pptx_preview_rebuilds_stale_compositor_without_wps(
         )
     )
 
-    assert refreshed.object_summary["preview_compositor"] == 1
+    assert refreshed.object_summary["preview_compositor"] == PREVIEW_COMPOSITOR_VERSION
     assert sample[0] > 180
     assert sample[1] < 80
 
@@ -869,7 +872,7 @@ def test_pptx_preview_without_wps_replaces_cached_capture_with_compositor(
     )
 
     assert refreshed.object_summary["preview_kind"] == "structural"
-    assert refreshed.object_summary["preview_compositor"] == 1
+    assert refreshed.object_summary["preview_compositor"] == PREVIEW_COMPOSITOR_VERSION
     assert sample[0] > 180
     assert sample[1] < 80
 
@@ -1042,6 +1045,12 @@ def test_pptx_archive_rejects_too_many_members_before_reading_slide_xml(
         parser.unit_count(source, material_type="pptx")
 
 
+def _upgrade_preview(service: TeachingPrepService, unit_id: str):
+    service.request_pptx_preview_render(unit_id)
+    service.drain_pptx_preview_renders()
+    return service.get_material_unit(unit_id)
+
+
 def test_pptx_real_preview_is_lazy_fingerprint_cached_and_keeps_source_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1066,8 +1075,13 @@ def test_pptx_real_preview_is_lazy_fingerprint_cached_and_keeps_source_unchanged
     assert units[0].object_summary["preview_kind"] == "structural"
 
     preview = service.material_preview_path(units[0].id)
+    assert adapter.preview_calls == []
+    assert service.get_material_unit(units[0].id).object_summary["preview_kind"] == "structural"
+
+    _upgrade_preview(service, units[0].id)
     rendered = service.list_material_units(version.id)[0]
     service.material_preview_path(units[0].id)
+    _upgrade_preview(service, units[0].id)
 
     assert len(adapter.preview_calls) == 1
     assert adapter.preview_calls[0]["slide_indexes"] == [1]
@@ -1094,6 +1108,8 @@ def test_pptx_preview_uses_preview_adapter_without_copy_execution(
     )
     unit = service.parse_material_version(version.id)[0]
     preview = service.material_preview_path(unit.id)
+    assert adapter.preview_calls == []
+    _upgrade_preview(service, unit.id)
     rendered = service.list_material_units(version.id)[0]
 
     assert len(adapter.preview_calls) == 1
@@ -1121,6 +1137,7 @@ def test_pptx_preview_retries_after_wps_unavailable(
 
     adapter = FakeWpsAdapter()
     service.preview_wps_adapter = adapter
+    _upgrade_preview(service, unit.id)
     preview = service.material_preview_path(unit.id)
     rendered = service.list_material_units(version.id)[0]
 
@@ -1146,11 +1163,14 @@ def test_pptx_preview_retries_after_wps_failed(
     )
     unit = service.parse_material_version(version.id)[0]
     service.material_preview_path(unit.id)
+    assert adapter.preview_calls == []
+    _upgrade_preview(service, unit.id)
     failed = service.list_material_units(version.id)[0]
     assert failed.object_summary["preview_render_error_code"] == "wps_preview_failed"
     assert failed.object_summary["preview_render_attempts"] == 1
 
     adapter.failure = None
+    _upgrade_preview(service, unit.id)
     preview = service.material_preview_path(unit.id)
     rendered = service.list_material_units(version.id)[0]
 
@@ -1176,9 +1196,9 @@ def test_pptx_preview_failed_retry_stops_after_second_attempt(
         name="合成预览失败后停止课件",
     )
     unit = service.parse_material_version(version.id)[0]
-    service.material_preview_path(unit.id)
-    service.material_preview_path(unit.id)
-    service.material_preview_path(unit.id)
+    _upgrade_preview(service, unit.id)
+    _upgrade_preview(service, unit.id)
+    _upgrade_preview(service, unit.id)
     failed = service.list_material_units(version.id)[0]
 
     assert len(adapter.preview_calls) == 2
@@ -1235,7 +1255,7 @@ def test_material_delete_waits_for_lazy_preview_publish_and_leaves_no_orphan(
 
     def render_preview() -> None:
         try:
-            service.material_preview_path(unit.id)
+            _upgrade_preview(service, unit.id)
         except BaseException as exc:  # pragma: no cover - diagnostic capture
             render_errors.append(exc)
 
@@ -1299,14 +1319,21 @@ def test_pptx_rendered_preview_rebuilds_when_cached_bytes_no_longer_match(
         name="合成损坏缓存参考课件",
     )
     unit = service.parse_material_version(version.id)[0]
+    _upgrade_preview(service, unit.id)
     preview = service.material_preview_path(unit.id)
     preview.write_bytes(b"corrupt rendered preview")
 
+    rebuilt_path = service.material_preview_path(unit.id)
+    restored = service.get_material_unit(unit.id)
+    assert restored.object_summary["preview_kind"] == "structural"
+
+    _upgrade_preview(service, unit.id)
     rebuilt = service.material_preview_path(unit.id)
     refreshed = service.get_material_unit(unit.id)
 
     assert len(adapter.preview_calls) == 2
     assert rebuilt.read_bytes().startswith(b"\x89PNG")
+    assert rebuilt_path.read_bytes().startswith(b"\x89PNG")
     assert refreshed.object_summary["preview_kind"] == "rendered"
     assert refreshed.object_summary["preview_render_status"] == "completed"
 
@@ -1326,11 +1353,16 @@ def test_pptx_corrupt_rendered_preview_falls_back_to_structural_when_wps_fails(
         name="合成损坏缓存降级课件",
     )
     unit = service.parse_material_version(version.id)[0]
+    _upgrade_preview(service, unit.id)
     preview = service.material_preview_path(unit.id)
     preview.write_bytes(b"corrupt rendered preview")
     adapter.failure = TimeoutError("synthetic rebuild timeout")
 
     fallback_path = service.material_preview_path(unit.id)
+    fallback = service.get_material_unit(unit.id)
+    assert fallback.object_summary["preview_kind"] == "structural"
+
+    _upgrade_preview(service, unit.id)
     fallback = service.get_material_unit(unit.id)
 
     assert len(adapter.preview_calls) == 2
@@ -1360,14 +1392,150 @@ def test_pptx_real_preview_timeout_keeps_labelled_structural_fallback(
     unit = service.parse_material_version(version.id)[0]
 
     structural_path = service.material_preview_path(unit.id)
+    assert adapter.preview_calls == []
+    _upgrade_preview(service, unit.id)
     fallback = service.list_material_units(version.id)[0]
-    service.material_preview_path(unit.id)
+    _upgrade_preview(service, unit.id)
 
     assert structural_path.read_bytes().startswith(b"\x89PNG")
     assert len(adapter.preview_calls) == 1
     assert fallback.object_summary["preview_kind"] == "structural"
     assert fallback.object_summary["preview_notice"] == "本机拼出的页，不是放映软件实拍"
     assert fallback.object_summary["preview_render_status"] == "failed"
+
+
+class _BlockingPreviewAdapter:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.delegate = FakeWpsAdapter()
+        self.preview_calls: list[dict[str, object]] = []
+
+    def render_previews(self, **kwargs):
+        self.preview_calls.append(dict(kwargs))
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise TimeoutError("synthetic preview adapter was not released")
+        return self.delegate.render_previews(**kwargs)
+
+
+def test_pptx_preview_get_stays_structural_while_latest_page_is_rendered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    adapter = _BlockingPreviewAdapter()
+    service.preview_wps_adapter = adapter
+    service.wps_adapter = None
+    service.wps_adapter_is_real = False
+    version = _register(
+        service,
+        _pptx(tmp_path / "synthetic-preview-latest-page.pptx"),
+        token="material-a03-pptx-preview-latest-page",
+        name="合成切页只渲染停留页课件",
+    )
+    units = service.parse_material_version(version.id)
+    first, second = units[0], units[1]
+
+    service.request_pptx_preview_render(first.id)
+    assert adapter.started.wait(timeout=5)
+    before_second = service.material_preview_path(second.id)
+    queued_first = service.get_material_unit(first.id)
+    service.request_pptx_preview_render(second.id)
+    adapter.release.set()
+    service.drain_pptx_preview_renders()
+    rendered_second = service.get_material_unit(second.id)
+    still_first = service.get_material_unit(first.id)
+
+    assert queued_first.object_summary["preview_kind"] == "structural"
+    assert before_second.read_bytes().startswith(b"\x89PNG")
+    assert [call["slide_indexes"] for call in adapter.preview_calls] == [[1], [2]]
+    assert rendered_second.object_summary["preview_kind"] == "rendered"
+    assert still_first.object_summary["preview_kind"] == "rendered"
+
+
+def test_subprocess_preview_session_reuses_helper_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PIL import Image as PilImage
+    import hashlib
+
+    from backend.teaching_prep.infrastructure.wps_adapter import SubprocessWpsAdapter
+
+    session_root = tmp_path / "session"
+    session_root.mkdir()
+    source_copy = session_root / "source-copy.pptx"
+    source_copy.write_bytes(b"synthetic-preview-source")
+    source_sha = hashlib.sha256(source_copy.read_bytes()).hexdigest()
+    PilImage.new("RGB", (64, 36), "white").save(session_root / "template.png")
+    start_log = session_root / "helper-starts.txt"
+    helper = tmp_path / "fake-preview-session.ps1"
+    helper.write_text(
+        "\n".join(
+            [
+                "param(",
+                "    [switch]$PreviewSession,",
+                "    [string]$SessionDirectory = ''",
+                ")",
+                "Set-StrictMode -Version Latest",
+                "$ErrorActionPreference = 'Stop'",
+                "Add-Content -LiteralPath (Join-Path $SessionDirectory 'helper-starts.txt') 'start'",
+                "$commandPath = Join-Path $SessionDirectory 'session-command.json'",
+                "$commandReadyPath = Join-Path $SessionDirectory 'session-command.ready'",
+                "$resultPath = Join-Path $SessionDirectory 'session-result.json'",
+                "$resultReadyPath = Join-Path $SessionDirectory 'session-result.ready'",
+                "function Write-Result($payload) {",
+                "    $json = $payload | ConvertTo-Json -Depth 8 -Compress",
+                "    [IO.File]::WriteAllText($resultPath, $json, [Text.UTF8Encoding]::new($false))",
+                "    New-Item -ItemType File -Path $resultReadyPath -Force | Out-Null",
+                "}",
+                "while ($true) {",
+                "    while (-not (Test-Path -LiteralPath $commandReadyPath)) { Start-Sleep -Milliseconds 20 }",
+                "    $command = Get-Content -LiteralPath $commandPath -Raw -Encoding UTF8 | ConvertFrom-Json",
+                "    Remove-Item -LiteralPath $commandReadyPath, $commandPath -Force -ErrorAction SilentlyContinue",
+                "    if ([string]$command.op -eq 'close') { Write-Result @{ status = 'completed' }; break }",
+                "    if ([string]$command.op -eq 'export') {",
+                "        New-Item -ItemType Directory -Path $command.preview_directory -Force | Out-Null",
+                "        foreach ($index in @($command.slide_indexes)) {",
+                "            Copy-Item -LiteralPath (Join-Path $SessionDirectory 'template.png') -Destination (Join-Path $command.preview_directory ('slide-{0:D5}.png' -f [int]$index))",
+                "        }",
+                "        Write-Result @{ status = 'completed'; rendered_slide_indexes = @($command.slide_indexes); source_unchanged = $true; source_lock_check = 'passed' }",
+                "        continue",
+                "    }",
+                "    Write-Result @{ status = 'completed'; source_unchanged = $true }",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    adapter = SubprocessWpsAdapter(helper_script=helper, timeout_seconds=30)
+    try:
+        first = adapter.render_previews(
+            operation_id="preview-session-1",
+            source_copy=str(source_copy),
+            preview_directory=str(session_root / "rendered"),
+            slide_indexes=[1],
+            source_sha256=source_sha,
+            timeout_milliseconds=10_000,
+        )
+        second = adapter.render_previews(
+            operation_id="preview-session-2",
+            source_copy=str(source_copy),
+            preview_directory=str(session_root / "rendered"),
+            slide_indexes=[2],
+            source_sha256=source_sha,
+            timeout_milliseconds=10_000,
+        )
+        starts = start_log.read_text(encoding="utf-8").splitlines()
+    finally:
+        adapter.close_preview_session()
+
+    assert first["rendered_slide_indexes"] == [1]
+    assert second["rendered_slide_indexes"] == [2]
+    assert starts == ["start"]
+    assert (session_root / "rendered" / "slide-00002.png").is_file()
 
 
 def test_lesson_can_confirm_multiple_non_contiguous_version_frozen_ranges(
