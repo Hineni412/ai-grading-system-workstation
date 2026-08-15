@@ -1129,8 +1129,18 @@
 }
 
 .tp-material-page-preview .tp-slide-stage {
-  max-height: 360px;
-  overflow: auto;
+  overflow: hidden;
+}
+
+.tp-material-page-preview .tp-slide-stage img {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.tp-material-page-preview .tp-slide-stage__paper {
+  aspect-ratio: 16 / 9;
+  min-height: 0;
 }
 
 .tp-link-block {
@@ -1268,6 +1278,37 @@
   display: grid;
   gap: var(--space-2);
   margin-top: var(--space-3);
+}
+
+.tp-animation-tasks {
+  display: flex;
+  gap: var(--space-3);
+  align-items: stretch;
+  overflow-x: auto;
+}
+
+.tp-animation-task {
+  flex: 0 0 min(260px, 85%);
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  min-width: 220px;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.tp-animation-task header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.tp-animation-task textarea {
+  min-height: 72px;
+  resize: vertical;
 }
 
 .tp-animation-preview {

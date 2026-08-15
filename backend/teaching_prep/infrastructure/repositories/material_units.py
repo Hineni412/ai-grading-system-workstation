@@ -16,7 +16,10 @@ from backend.teaching_prep.domain.models import (
     MaterialUnit,
 )
 from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
-from backend.teaching_prep.infrastructure.materials import ParsedMaterialUnit
+from backend.teaching_prep.infrastructure.materials import (
+    ParsedMaterialUnit,
+    STRUCTURAL_PREVIEW_NOTICE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -699,7 +702,7 @@ class MaterialUnitRepository:
                     "preview_notice": (
                         None
                         if preview_kind == "rendered"
-                        else "结构预览，不是原页"
+                        else STRUCTURAL_PREVIEW_NOTICE
                     ),
                     "preview_render_status": render_status,
                 }
@@ -713,9 +716,13 @@ class MaterialUnitRepository:
                     }
                 )
                 summary.pop("preview_render_error_code", None)
+                summary.pop("preview_render_attempts", None)
             else:
                 summary.pop("rendered_source_sha256", None)
                 summary["preview_render_error_code"] = str(error_code or "failed")
+                summary["preview_render_attempts"] = int(
+                    summary.get("preview_render_attempts") or 0
+                ) + 1
             fields: list[object] = [
                 json.dumps(
                     summary,

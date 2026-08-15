@@ -74,17 +74,20 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
         "AI_GRADING_TEACHING_PREP_WPS_ENABLED",
         default=False,
     )
+    preview_wps_enabled = real_wps_enabled or _boolean_env(
+        "AI_GRADING_TEACHING_PREP_WPS_PREVIEW",
+        default=False,
+    )
+    helper_script = (
+        project_root
+        / "backend"
+        / "teaching_prep"
+        / "infrastructure"
+        / "wps_helper.ps1"
+    )
     helper = (
-        SubprocessWpsAdapter(
-            helper_script=(
-                project_root
-                / "backend"
-                / "teaching_prep"
-                / "infrastructure"
-                / "wps_helper.ps1"
-            ),
-        )
-        if real_wps_enabled
+        SubprocessWpsAdapter(helper_script=helper_script)
+        if helper_script.is_file()
         else None
     )
     profile_store = ApiProfileStore(
@@ -133,7 +136,8 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
             )
         ),
         slide_animation_model_label="当前启用的模型配置",
-        wps_adapter=helper,
+        wps_adapter=helper if real_wps_enabled else None,
+        preview_wps_adapter=helper if preview_wps_enabled else None,
         wps_adapter_is_real=real_wps_enabled,
     )
 

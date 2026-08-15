@@ -119,6 +119,7 @@ from backend.teaching_prep.domain.states import (
 from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
 from backend.teaching_prep.infrastructure.materials import (
     PPT_OBJECT_SCHEMA_VERSION,
+    PREVIEW_COMPOSITOR_VERSION,
     MaterialParser,
 )
 from backend.teaching_prep.infrastructure.repositories import (
@@ -256,6 +257,7 @@ class TeachingPrepService:
         slide_animation_model_label: str | None = None,
         material_parser: MaterialParser | None = None,
         wps_adapter: WpsAdapter | None = None,
+        preview_wps_adapter: WpsAdapter | None = None,
         wps_adapter_is_real: bool = False,
     ) -> None:
         self.root = Path(root)
@@ -308,6 +310,7 @@ class TeachingPrepService:
         self.exercise_suggestion_model_adapter = exercise_suggestion_model_adapter
         self.slide_animation_model_adapter = slide_animation_model_adapter
         self.wps_adapter = wps_adapter
+        self.preview_wps_adapter = preview_wps_adapter
         self.wps_adapter_is_real = bool(wps_adapter_is_real)
         self.lesson_model_label = (
             _clean_optional_text(
@@ -2735,28 +2738,54 @@ class TeachingPrepService:
                 "material preview is unavailable"
             )
         unit = self.material_units.get_unit(clean_id)
-        if (
-            unit.unit_kind == "ppt_slide"
-            and unit.object_summary.get("preview_kind") == "rendered"
-            and _sha256_file(target) != record.preview_sha256
-        ):
-            with self._material_parse_lock, self._pptx_preview_lock:
-                record = self.material_units.preview_record(clean_id)
-                target = (self.root / record.preview_relpath).resolve(
-                    strict=False
-                )
-                unit = self.material_units.get_unit(clean_id)
-                if (
-                    unit.object_summary.get("preview_kind") == "rendered"
-                    and (
-                        not target.is_file()
-                        or _sha256_file(target) != record.preview_sha256
+        if unit.unit_kind == "ppt_slide":
+            summary = unit.object_summary
+            kind = str(summary.get("preview_kind") or "")
+            compositor = int(summary.get("preview_compositor") or 0)
+            adapter = self._pptx_preview_adapter()
+            replace_cached_wps = adapter is None and kind == "rendered"
+            stale_compositor = (
+                kind == "structural"
+                and compositor < PREVIEW_COMPOSITOR_VERSION
+            )
+            corrupt_rendered = (
+                kind == "rendered"
+                and _sha256_file(target) != record.preview_sha256
+            )
+            if replace_cached_wps or stale_compositor or corrupt_rendered:
+                with self._material_parse_lock, self._pptx_preview_lock:
+                    record = self.material_units.preview_record(clean_id)
+                    target = (self.root / record.preview_relpath).resolve(
+                        strict=False
                     )
-                ):
-                    self._restore_structural_pptx_preview(
-                        record=record,
-                        unit=unit,
+                    unit = self.material_units.get_unit(clean_id)
+                    summary = unit.object_summary
+                    kind = str(summary.get("preview_kind") or "")
+                    compositor = int(summary.get("preview_compositor") or 0)
+                    adapter = self._pptx_preview_adapter()
+                    still_replace = adapter is None and kind == "rendered"
+                    still_stale = (
+                        kind == "structural"
+                        and compositor < PREVIEW_COMPOSITOR_VERSION
                     )
+                    still_corrupt = (
+                        kind == "rendered"
+                        and (
+                            not target.is_file()
+                            or _sha256_file(target) != record.preview_sha256
+                        )
+                    )
+                    if still_replace or still_stale or still_corrupt:
+                        try:
+                            self._restore_structural_pptx_preview(
+                                record=record,
+                                unit=unit,
+                            )
+                        except Exception:
+                            if still_replace or still_stale:
+                                pass
+                            else:
+                                raise
                     record = self.material_units.preview_record(clean_id)
                     target = (self.root / record.preview_relpath).resolve(
                         strict=False
@@ -2765,8 +2794,8 @@ class TeachingPrepService:
         if (
             unit.unit_kind == "ppt_slide"
             and unit.object_summary.get("preview_kind") == "structural"
-            and unit.object_summary.get("preview_render_status")
-            not in {"completed", "failed"}
+            and self._pptx_preview_adapter() is not None
+            and self._should_render_pptx_preview(unit.object_summary)
         ):
             self._render_pptx_preview(clean_id)
             record = self.material_units.preview_record(clean_id)
@@ -2775,6 +2804,28 @@ class TeachingPrepService:
 
     def get_material_unit(self, unit_id: str) -> MaterialUnit:
         return self.material_units.get_unit(_clean_entity_id(unit_id))
+
+    def _pptx_preview_adapter(self) -> WpsAdapter | None:
+        if self.wps_adapter is not None and self.wps_adapter_is_real:
+            return self.wps_adapter
+        return self.preview_wps_adapter
+
+    def _should_render_pptx_preview(self, summary: Mapping[str, object]) -> bool:
+        status = str(summary.get("preview_render_status") or "")
+        if status == "completed":
+            return False
+        if status == "failed":
+            if self._pptx_preview_adapter() is None:
+                return False
+            error = str(summary.get("preview_render_error_code") or "")
+            if error == "wps_preview_unavailable":
+                return True
+            if error == "wps_preview_failed":
+                attempts = summary.get("preview_render_attempts")
+                counted = 1 if attempts is None else int(attempts)
+                return counted < 2
+            return False
+        return True
 
     def _restore_structural_pptx_preview(
         self,
@@ -2847,11 +2898,12 @@ class TeachingPrepService:
 
     def _render_pptx_preview_under_material_lock(self, unit_id: str) -> None:
         with self._pptx_preview_lock:
+            adapter = self._pptx_preview_adapter()
             unit = self.material_units.get_unit(unit_id)
             summary = unit.object_summary
-            if summary.get("preview_kind") == "rendered" or summary.get(
-                "preview_render_status"
-            ) == "failed":
+            if summary.get("preview_kind") == "rendered":
+                return
+            if not self._should_render_pptx_preview(summary):
                 return
             record = self.material_units.preview_record(unit_id)
             version = self.catalog.get_material_version(
@@ -2859,7 +2911,7 @@ class TeachingPrepService:
             )
             if version.material_type != "pptx":
                 return
-            if self.wps_adapter is None or not self.wps_adapter_is_real:
+            if adapter is None:
                 self.material_units.mark_preview_render_failed(
                     unit_id,
                     source_version_sha256=record.source_version_sha256,
@@ -2893,7 +2945,7 @@ class TeachingPrepService:
                         raise TeachingPrepConflictError(
                             "isolated PPTX preview copy changed"
                         )
-                    self.wps_adapter.render_previews(
+                    adapter.render_previews(
                         operation_id=(
                             f"pptx-preview-{record.source_version_sha256[:16]}-"
                             f"{unit.unit_index:05d}"

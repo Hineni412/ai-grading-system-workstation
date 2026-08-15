@@ -1233,7 +1233,7 @@ def create_router() -> APIRouter:
         return FileResponse(
             preview_path,
             media_type="image/png",
-            headers={"Cache-Control": "private, no-store"},
+            headers={"Cache-Control": "private, max-age=120"},
         )
 
     @router.get(
