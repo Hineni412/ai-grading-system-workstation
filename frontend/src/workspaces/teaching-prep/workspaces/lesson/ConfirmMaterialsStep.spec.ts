@@ -270,7 +270,7 @@ function pptLinkWithPages(linkId: string, name: string, pages: number): Referenc
       formula_review_required: false,
       object_summary: {
         preview_kind: 'structural',
-        preview_notice: '结构预览，不是原页',
+        preview_notice: '本机拼出的页，不是放映软件实拍',
       },
     }
   })
@@ -429,7 +429,9 @@ describe('ConfirmMaterialsStep', () => {
     await nextTick()
     const previewSources = [...host.querySelectorAll('[data-testid="material-page-preview"] img')]
       .map(item => item.getAttribute('src'))
-    expect(previewSources).toContain('/api/teaching-prep/material-units/u4/preview')
+    expect(previewSources.some(item => (
+      item?.includes('/api/teaching-prep/material-units/u4/preview')
+    ))).toBe(true)
     app.unmount()
   })
 
@@ -443,15 +445,15 @@ describe('ConfirmMaterialsStep', () => {
     await nextTick()
 
     expect(host.querySelector('[data-testid="ppt-animation-page-picker"]')).toBeTruthy()
-    expect(host.textContent).toContain('结构预览，不是原页')
+    expect(host.textContent).toContain('本机拼出的页')
     expect(host.textContent).toContain('课堂动画页')
-    expect(host.textContent).toContain('未选（生成动画才单独计费，不改课件）')
+    expect(host.textContent).toContain('未建任务（生成动画才单独计费，不改课件）')
     expect(host.textContent).toContain('1 次：课件改编')
     expect(getExpose().primaryDisabled).toBe(false)
     app.unmount()
   })
 
-  it('lets the teacher pick up to four PPT pages for a later animation request', async () => {
+  it('creates animation tasks to the right and sends typed PPT pages', async () => {
     const { app, host } = await mountStep({
       links: [
         pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
@@ -460,25 +462,32 @@ describe('ConfirmMaterialsStep', () => {
     })
     await nextTick()
 
-    const strip = host.querySelector('[data-testid="ppt-animation-page-strip"]')
-    const toggle = () => host.querySelector<HTMLButtonElement>('[data-testid="toggle-animation-page"]')
-    for (const page of [1, 2, 3, 4, 5]) {
-      strip?.querySelector<HTMLButtonElement>(`[data-page-index="${page}"]`)?.click()
-      await nextTick()
-      toggle()?.click()
-      await nextTick()
-    }
+    host.querySelector<HTMLButtonElement>('[data-testid="create-slide-animation-task"]')?.click()
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="create-slide-animation-task"]')?.click()
+    await nextTick()
 
-    expect(host.querySelector('[data-testid="ppt-animation-selection"]')?.textContent)
-      .toContain('已选第 1、2、3、4 页')
-    expect(host.textContent).toContain('已选第 1、2、3、4 页 · 生成动画另计 1 次')
-    expect(toggle()?.textContent).toContain('已选满 4 页')
-    expect(toggle()?.disabled).toBe(true)
-    expect(host.textContent).toContain('1 次：课件改编')
+    const tasks = [...host.querySelectorAll('[data-testid="slide-animation-task"]')]
+    expect(tasks).toHaveLength(2)
+    expect(tasks[0]?.textContent).toContain('任务 1')
+    expect(tasks[1]?.textContent).toContain('任务 2')
+
+    const firstInput = tasks[0]?.querySelector<HTMLTextAreaElement>('[data-testid="slide-animation-pages"]')
+    firstInput!.value = '1,2,3,4,5'
+    firstInput!.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(tasks[0]?.textContent).toContain('每次最多 4 页')
+    expect(tasks[0]?.querySelector<HTMLButtonElement>('[data-testid="generate-slide-animation"]')?.disabled).toBe(true)
+
+    firstInput!.value = '1,3'
+    firstInput!.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(host.textContent).toContain('任务1：第 1、3 页')
+    expect(tasks[0]?.querySelector<HTMLButtonElement>('[data-testid="generate-slide-animation"]')?.disabled).toBe(false)
     app.unmount()
   })
 
-  it('clears animation page picks when the primary PPT changes', async () => {
+  it('clears animation tasks when the primary PPT changes', async () => {
     const { app, host } = await mountStep({
       links: [
         pptLinkWithPages('link-ppt-a', '课件A.pptx', 3),
@@ -488,10 +497,14 @@ describe('ConfirmMaterialsStep', () => {
     })
     await nextTick()
 
-    host.querySelector<HTMLButtonElement>('[data-testid="toggle-animation-page"]')?.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="create-slide-animation-task"]')?.click()
     await nextTick()
-    expect(host.querySelector('[data-testid="ppt-animation-selection"]')?.textContent)
-      .toContain('已选第 1 页')
+    const firstInput = host.querySelector<HTMLTextAreaElement>('[data-testid="slide-animation-pages"]')
+    firstInput!.value = '1'
+    firstInput!.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(host.querySelector('[data-testid="slide-animation-task"]')?.textContent)
+      .toContain('将使用第 1 页')
 
     const radios = [...host.querySelectorAll<HTMLInputElement>('input[name="primary-reference-ppt"]')]
     radios[1]!.checked = true
@@ -499,9 +512,8 @@ describe('ConfirmMaterialsStep', () => {
     await nextTick()
     await nextTick()
 
-    expect(host.querySelector('[data-testid="ppt-animation-selection"]')?.textContent)
-      .toContain('还没有选页')
-    expect(host.textContent).toContain('未选（生成动画才单独计费，不改课件）')
+    expect(host.querySelector('[data-testid="slide-animation-task"]')).toBeNull()
+    expect(host.textContent).toContain('未建任务（生成动画才单独计费，不改课件）')
     app.unmount()
   })
 
@@ -548,7 +560,11 @@ describe('ConfirmMaterialsStep', () => {
     })
     await nextTick()
 
-    host.querySelector<HTMLButtonElement>('[data-testid="toggle-animation-page"]')?.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="create-slide-animation-task"]')?.click()
+    await nextTick()
+    const pages = host.querySelector<HTMLTextAreaElement>('[data-testid="slide-animation-pages"]')
+    pages!.value = '1'
+    pages!.dispatchEvent(new Event('input'))
     await nextTick()
     host.querySelector<HTMLButtonElement>('[data-testid="generate-slide-animation"]')?.click()
     await Promise.resolve()

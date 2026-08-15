@@ -44,6 +44,7 @@ def _enabled_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[PathManager, WorkspaceRegistry]:
     monkeypatch.setenv("AI_GRADING_TEACHING_PREP_ENABLED", "1")
+    monkeypatch.setenv("AI_GRADING_TEACHING_PREP_WPS_PREVIEW", "0")
     paths = _paths(tmp_path)
     registry = WorkspaceRegistry(
         [create_workspace_feature()],

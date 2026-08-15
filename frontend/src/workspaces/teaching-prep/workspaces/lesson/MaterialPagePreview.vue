@@ -4,7 +4,12 @@ import { computed } from 'vue'
 import AppButton from '../../../../components/design-system/AppButton.vue'
 
 const props = defineProps<{
-  units: Array<{ unit_index: number, preview_url: string, title?: string | null }>
+  units: Array<{
+    unit_index: number
+    preview_url: string
+    title?: string | null
+    object_summary?: Record<string, unknown>
+  }>
   page: number
   rangeLabel?: string
   notice?: string
@@ -12,6 +17,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:page': [number]
+  loaded: [number]
 }>()
 
 const indexes = computed(() => (
@@ -25,6 +31,14 @@ const canPrev = computed(() => currentIndex.value > 0)
 const canNext = computed(() => (
   currentIndex.value >= 0 && currentIndex.value < indexes.value.length - 1
 ))
+const imageSrc = computed(() => {
+  const url = current.value?.preview_url?.trim() ?? ''
+  if (!url) return ''
+  const summary = current.value?.object_summary ?? {}
+  const compositor = String(summary.preview_compositor ?? '0')
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}compose=${encodeURIComponent(compositor)}`
+})
 
 function go(delta: number): void {
   const position = currentIndex.value < 0 ? 0 : currentIndex.value
@@ -42,9 +56,10 @@ function go(delta: number): void {
     <p v-if="notice" class="tp-muted">{{ notice }}</p>
     <div class="tp-slide-stage">
       <img
-        v-if="current?.preview_url"
-        :src="current.preview_url"
+        v-if="imageSrc"
+        :src="imageSrc"
         :alt="`第 ${page} 页原页`"
+        @load="emit('loaded', page)"
       >
       <div v-else class="tp-slide-stage__paper">
         <p>本页还没有图。没有原页时不建议按页码加入。</p>

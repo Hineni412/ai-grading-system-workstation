@@ -110,6 +110,68 @@ function Set-WpsApplicationHiddenIfSupported {
     }
 }
 
+function Export-ReadOnlySlidePreviews {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceCopy,
+        [Parameter(Mandatory = $true)]$SlideIndexes,
+        [Parameter(Mandatory = $true)][string]$PreviewDirectory
+    )
+    $indexes = @(
+        $SlideIndexes | ForEach-Object { [int]$_ }
+    )
+    $errors = @()
+    foreach ($progId in @('KWPP.Application', 'PowerPoint.Application')) {
+        $application = $null
+        $presentation = $null
+        try {
+            Get-ChildItem -LiteralPath $PreviewDirectory -File |
+                Remove-Item -Force
+            $application = New-Object -ComObject $progId
+            Set-WpsApplicationHiddenIfSupported -Application $application | Out-Null
+            try { $application.DisplayAlerts = 1 } catch {}
+            $presentation = $application.Presentations.Open(
+                $SourceCopy,
+                $true,
+                $false,
+                $false
+            )
+            foreach ($index in $indexes) {
+                if ($index -gt [int]$presentation.Slides.Count) {
+                    throw 'Preview slide selection is out of range'
+                }
+                $target = Join-Path $PreviewDirectory (
+                    'slide-{0:D5}.png' -f $index
+                )
+                $presentation.Slides.Item($index).Export(
+                    $target,
+                    'PNG',
+                    1600,
+                    900
+                )
+            }
+            Wait-WpsSlidePreviews `
+                -PreviewDirectory $PreviewDirectory `
+                -ExpectedCount $indexes.Count | Out-Null
+            return
+        }
+        catch {
+            $errors += ('{0}: {1}' -f $progId, $_.Exception.Message)
+        }
+        finally {
+            if ($null -ne $presentation) {
+                try { $presentation.Close() } catch {}
+            }
+            if ($null -ne $application) {
+                try { $application.Quit() } catch [System.Runtime.InteropServices.COMException] {}
+            }
+        }
+    }
+    throw (
+        'No presentation application accepted preview automation. ' +
+        ($errors -join ' | ')
+    )
+}
+
 function Wait-WpsSlidePreviews {
     param(
         [Parameter(Mandatory = $true)]
@@ -197,41 +259,10 @@ try {
             throw 'Preview source fingerprint does not match'
         }
         New-Item -ItemType Directory -Path $previewDirectory -Force | Out-Null
-        Get-ChildItem -LiteralPath $previewDirectory -File |
-            Remove-Item -Force
-        $application = New-Object -ComObject 'KWPP.Application'
-        Set-WpsApplicationHiddenIfSupported -Application $application | Out-Null
-        $presentation = $application.Presentations.Open(
-            $sourceCopy,
-            $true,
-            $false,
-            $false
-        )
-        foreach ($index in $slideIndexes) {
-            if ($index -gt [int]$presentation.Slides.Count) {
-                throw 'Preview slide selection is out of range'
-            }
-            $target = Join-Path $previewDirectory (
-                'slide-{0:D5}.png' -f $index
-            )
-            $presentation.Slides.Item($index).Export(
-                $target,
-                'PNG',
-                1600,
-                900
-            )
-        }
-        Wait-WpsSlidePreviews `
-            -PreviewDirectory $previewDirectory `
-            -ExpectedCount $slideIndexes.Count | Out-Null
-        $presentation.Close()
-        $presentation = $null
-        try {
-            $application.Quit()
-        }
-        catch [System.Runtime.InteropServices.COMException] {
-        }
-        $application = $null
+        Export-ReadOnlySlidePreviews `
+            -SourceCopy $sourceCopy `
+            -SlideIndexes $slideIndexes `
+            -PreviewDirectory $previewDirectory
         $afterHash = (Get-FileHash -LiteralPath $sourceCopy -Algorithm SHA256).Hash
         if ($afterHash -ine $beforeHash) {
             throw 'Preview source changed during read-only rendering'

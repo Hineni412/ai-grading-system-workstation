@@ -21,8 +21,10 @@ import {
 } from '../../api/catalog'
 import { useWorkspaceAITaskStore } from '../../../shared/ai-tasks/store'
 import { useTeachingPrepLessonWorkbenchContext } from '../../workbench/routeContext'
+import { parseAnimationPageText } from './animationPages'
 import MaterialPagePreview from './MaterialPagePreview.vue'
 import PptAnimationPagePicker, {
+  type PptAnimationDraftTask,
   type PptAnimationPickerUnit,
 } from './PptAnimationPagePicker.vue'
 
@@ -64,7 +66,7 @@ const exerciseAccepted = reactive<Record<string, boolean>>({})
 const selectedExerciseCandidateIds = ref<string[]>([])
 const exerciseSuggestionsConfirmed = ref(false)
 const cancellingTask = ref(false)
-const animationPages = ref<number[]>([])
+const animationDrafts = ref<PptAnimationDraftTask[]>([])
 const animationPage = ref(1)
 const animationUnits = ref<PptAnimationPickerUnit[]>([])
 const animationLoading = ref(false)
@@ -82,9 +84,19 @@ const primaryPpt = computed(() => (
   referencePpts.value.find(item => item.link_id === primaryPptLinkId.value) ?? null
 ))
 const supportMaterials = computed(() => references.value.filter(item => item.purpose !== 'reference_ppt'))
+const animationAllowedPages = computed(() => animationUnits.value.map(item => item.unit_index))
 const animationSelectionLabel = computed(() => {
-  if (!animationPages.value.length) return '未选（生成动画才单独计费，不改课件）'
-  return `已选第 ${animationPages.value.join('、')} 页 · 生成动画另计 1 次`
+  const labels = animationDrafts.value.flatMap((task, index) => {
+    const parsed = parseAnimationPageText(
+      task.pageText,
+      animationAllowedPages.value,
+      ANIMATION_PAGE_LIMIT,
+    )
+    if (!parsed.pages.length) return []
+    return [`任务${index + 1}：第 ${parsed.pages.join('、')} 页`]
+  })
+  if (!labels.length) return '未建任务（生成动画才单独计费，不改课件）'
+  return `${labels.join('；')} · 每个任务另计 1 次`
 })
 const animationRemaining = computed(() => (
   Math.max(0, animationBilledLimit.value - animationBilledCount.value)
@@ -101,13 +113,10 @@ const runningAnimation = computed(() => (
 const acceptedAnimations = computed(() => (
   animationRuns.value.filter(item => item.status === 'accepted')
 ))
-const canGenerateAnimation = computed(() => (
-  Boolean(primaryPpt.value)
-  && animationPages.value.length > 0
-  && animationRemaining.value > 0
-  && !animationBusy.value
-  && !runningAnimation.value
-  && !reviewingAnimation.value
+const animationGenerateBlocked = computed(() => (
+  animationBusy.value
+  || Boolean(runningAnimation.value)
+  || Boolean(reviewingAnimation.value)
 ))
 const quickMaterialCandidates = computed(() => {
   const semesterId = catalog.selectedSemester?.id
@@ -276,7 +285,7 @@ function toPickerUnits(
 watch(
   () => primaryPpt.value?.link_id ?? '',
   async (linkId) => {
-    animationPages.value = []
+    animationDrafts.value = []
     animationUnits.value = []
     animationLoadError.value = ''
     const item = primaryPpt.value
@@ -618,17 +627,49 @@ function animationPreviewUrl(runId: string): string {
   return `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/preview`
 }
 
-async function generateAnimation(): Promise<void> {
+function addAnimationDraft(): void {
+  if (animationDrafts.value.length >= animationRemaining.value) return
+  animationDrafts.value = [
+    ...animationDrafts.value,
+    { id: crypto.randomUUID(), pageText: '' },
+  ]
+}
+
+function updateAnimationDraftText(taskId: string, pageText: string): void {
+  animationDrafts.value = animationDrafts.value.map(item => (
+    item.id === taskId ? { ...item, pageText } : item
+  ))
+}
+
+function removeAnimationDraft(taskId: string): void {
+  animationDrafts.value = animationDrafts.value.filter(item => item.id !== taskId)
+}
+
+async function generateAnimation(taskId: string): Promise<void> {
   const lessonId = routeState.currentLessonId.value
   const link = primaryPpt.value
-  if (!lessonId || !link || !canGenerateAnimation.value) return
+  const task = animationDrafts.value.find(item => item.id === taskId)
+  const parsed = parseAnimationPageText(
+    task?.pageText ?? '',
+    animationAllowedPages.value,
+    ANIMATION_PAGE_LIMIT,
+  )
+  if (
+    !lessonId
+    || !link
+    || !task
+    || parsed.error
+    || !parsed.pages.length
+    || animationGenerateBlocked.value
+    || animationRemaining.value < 1
+  ) return
   animationBusy.value = true
-  animationMessage.value = '正在单独发送选中课件页，生成课堂动画（计费 1 次）……'
+  animationMessage.value = '正在单独发送所选课件页，生成课堂动画（计费 1 次）……'
   try {
     let run = await teachingPrepWorkbenchApi.startSlideAnimationRun(lessonId, {
       operationId: `slide-animation-${crypto.randomUUID().replaceAll('-', '')}`,
       materialLinkId: link.link_id,
-      pageIndexes: [...animationPages.value],
+      pageIndexes: [...parsed.pages],
     })
     animationRuns.value = [run, ...animationRuns.value.filter(item => item.id !== run.id)]
     for (let attempt = 0; attempt < 120 && run.status === 'running'; attempt += 1) {
@@ -645,15 +686,15 @@ async function generateAnimation(): Promise<void> {
       return
     }
     if (run.status === 'running') {
-      animationMessage.value = '课堂动画等待超时，没有自动重试。勾选仍保留。'
+      animationMessage.value = '课堂动画等待超时，没有自动重试。已填页码仍保留。'
       return
     }
     animationMessage.value = run.status === 'failed'
-      ? `课堂动画没有生成：${run.error_code ?? '模型未返回可用分镜'}。勾选仍保留，不会自动重试。`
+      ? `课堂动画没有生成：${run.error_code ?? '模型未返回可用分镜'}。已填页码仍保留，不会自动重试。`
       : `课堂动画未完成：${run.error_code ?? run.status}`
   } catch (error) {
     animationMessage.value = error instanceof Error && error.message
-      ? `课堂动画没有发出。请确认已选 1—4 页、每页都有预览，且本课还没超过 ${animationBilledLimit.value} 次计费发送。`
+      ? `课堂动画没有发出。请确认页码为 1—4 页、每页都能打开原图，且本课还没超过 ${animationBilledLimit.value} 次计费发送。`
       : `课堂动画没有发出。本课最多 ${animationBilledLimit.value} 次计费发送，失败不自动重试。`
   } finally {
     animationBusy.value = false
@@ -1076,27 +1117,21 @@ defineExpose({
               v-if="primaryPpt"
               :units="animationUnits"
               :page="animationPage"
-              :selected-pages="animationPages"
+              :tasks="animationDrafts"
               :max-selected="ANIMATION_PAGE_LIMIT"
+              :remaining="animationRemaining"
+              :billed-limit="animationBilledLimit"
               :loading="animationLoading"
               :load-error="animationLoadError"
+              :generating="animationGenerateBlocked"
               @update:page="animationPage = $event"
-              @update:selected-pages="animationPages = $event"
+              @add-task="addAnimationDraft"
+              @remove-task="removeAnimationDraft"
+              @update:task-text="updateAnimationDraftText"
+              @generate-task="generateAnimation"
             />
-            <div v-if="primaryPpt" class="tp-inline-actions" data-testid="ppt-animation-actions">
+            <div v-if="primaryPpt && runningAnimation" class="tp-inline-actions" data-testid="ppt-animation-actions">
               <AppButton
-                variant="secondary"
-                data-testid="generate-slide-animation"
-                :disabled="!canGenerateAnimation"
-                @click="generateAnimation"
-              >
-                {{ animationBusy && runningAnimation ? '正在生成课堂动画…' : '生成课堂动画（单独计费 1 次）' }}
-              </AppButton>
-              <span class="tp-muted" data-testid="ppt-animation-quota">
-                本课还可单独发送 {{ animationRemaining }} 次（最多 {{ animationBilledLimit }} 次）
-              </span>
-              <AppButton
-                v-if="runningAnimation"
                 variant="secondary"
                 data-testid="cancel-slide-animation"
                 :disabled="animationBusy"
