@@ -145,6 +145,7 @@ from .schemas import (
     SlideAnimationRunResponse,
     SlideAnimationRunListResponse,
     ReviewExerciseSuggestionRequest,
+    AdaptationTraceResponse,
     CreateSemesterRequest,
     SetSemesterLessonProgressRequest,
     TeachingPrepStatusResponse,
@@ -2674,6 +2675,26 @@ def create_router() -> APIRouter:
             preview,
             media_type="image/png",
             headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.get(
+        "/lessons/{lesson_node_id}/adaptation-trace",
+        response_model=AdaptationTraceResponse,
+    )
+    def get_adaptation_trace(
+        lesson_node_id: str,
+        operation_id: str | None = Query(default=None),
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> AdaptationTraceResponse:
+        try:
+            payload = service.get_adaptation_trace(
+                lesson_node_id,
+                operation_id=operation_id,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return AdaptationTraceResponse.model_validate(
+            sanitize_public_mapping(payload)
         )
 
     @router.get(

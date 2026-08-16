@@ -222,6 +222,25 @@ class TaxonomyReviewService:
         skipped: list[dict[str, str]] = []
         for item in preview["items"]:
             proposal_id = item["proposal_id"]
+            decision = manual.get(proposal_id)
+            if decision is not None:
+                if decision.get("decision") == "defer":
+                    skipped.append(
+                        {"proposal_id": proposal_id, "reason": "teacher_deferred"}
+                    )
+                    continue
+                commands.append(
+                    {
+                        "proposal_id": proposal_id,
+                        "decision": str(decision.get("decision") or ""),
+                        "target_term_ids": _unique_strings(
+                            decision.get("target_term_ids", [])
+                        ),
+                        "edited_name": str(decision.get("edited_name") or ""),
+                    }
+                )
+                teacher_confirmed.append(proposal_id)
+                continue
             if item["automatic"]:
                 commands.append(
                     {
@@ -232,23 +251,9 @@ class TaxonomyReviewService:
                 )
                 automated.append(proposal_id)
                 continue
-            decision = manual.get(proposal_id)
-            if decision is None or decision.get("decision") == "defer":
-                skipped.append(
-                    {"proposal_id": proposal_id, "reason": "teacher_deferred"}
-                )
-                continue
-            commands.append(
-                {
-                    "proposal_id": proposal_id,
-                    "decision": str(decision.get("decision") or ""),
-                    "target_term_ids": _unique_strings(
-                        decision.get("target_term_ids", [])
-                    ),
-                    "edited_name": str(decision.get("edited_name") or ""),
-                }
+            skipped.append(
+                {"proposal_id": proposal_id, "reason": "teacher_deferred"}
             )
-            teacher_confirmed.append(proposal_id)
         if not commands:
             raise TaxonomyReviewSelectionInvalid("Batch has no accepted decisions")
         receipt = {

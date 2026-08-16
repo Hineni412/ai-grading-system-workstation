@@ -11,7 +11,10 @@ from question_bank.services.question_write_service import (
     ConfirmedQuestionTag,
     QuestionBankWriteService,
 )
-from question_bank.services.taxonomy_review_service import TaxonomyReviewService
+from question_bank.services.taxonomy_review_service import (
+    TaxonomyReviewSelectionInvalid,
+    TaxonomyReviewService,
+)
 from question_bank.taxonomy.governance import TaxonomyGovernance
 
 
@@ -349,3 +352,76 @@ def test_batch_undo_removes_only_its_insert_and_keeps_the_audit_row(
         ).fetchone()
     assert tag_count == 0
     assert ledger == (None, 0, "applied", "removed")
+
+
+def test_teacher_defer_prevents_automatic_batch_write(tmp_path: Path) -> None:
+    db_path = tmp_path / "question-bank.db"
+    question_id = QuestionBankTestStore(db_path).add_question(
+        QuestionCreate(question_number="3", question_text="一元二次方程暂缓题")
+    )
+    governance = _governance(tmp_path)
+    proposal, proposal_revision = _proposal(
+        governance,
+        question_id=question_id,
+        name="一元二次方程暂缓写法",
+        token="a" * 32,
+    )
+    generation_id = "batch-defer-generation"
+    governance.allocate_observation_sequences(
+        generation_id=generation_id,
+        question_ids=[str(question_id)],
+    )
+    governance.record_successful_observation(
+        question_id=str(question_id),
+        generation_id=generation_id,
+        proposal_ids=[proposal["id"]],
+        taxonomy_revision=proposal_revision,
+    )
+    target = governance.resolve_term("knowledge", "一元二次方程")
+    assert target is not None
+    service = TaxonomyReviewService(
+        review_state_path=tmp_path / "taxonomy-review-state.json",
+        governance=governance,
+        write_service=QuestionBankWriteService(db_path, data_root=tmp_path),
+    )
+    snapshot = governance.observation_snapshot()
+    run = {
+        "run_id": "b" * 32,
+        "taxonomy_revision": snapshot["taxonomy_revision"],
+        "evidence_revision": snapshot["evidence_revision"],
+        "graph_release_id": snapshot["graph_release_id"],
+        "items": [
+            {
+                "proposal_id": proposal["id"],
+                "status": "suggested",
+                "suggestion": {
+                    "relation_kind": "exact",
+                    "confidence": 0.94,
+                    "target_term_ids": [target["id"]],
+                    "reason": "定义和适用边界相同",
+                    "source": "ai",
+                    "legacy_format": False,
+                    "evidence_question_ids": [question_id],
+                    "taxonomy_revision": snapshot["taxonomy_revision"],
+                    "graph_release_id": snapshot["graph_release_id"],
+                },
+            }
+        ],
+    }
+    preview = service.preview_suggestion_batch(
+        run, base_revision=snapshot["taxonomy_revision"]
+    )
+    assert preview["counts"]["automatic"] == 1
+
+    with pytest.raises(TaxonomyReviewSelectionInvalid):
+        service.apply_suggestion_batch(
+            run,
+            base_revision=snapshot["taxonomy_revision"],
+            request_token="c" * 32,
+            accepted_manual_decisions=[
+                {
+                    "proposal_id": proposal["id"],
+                    "decision": "defer",
+                }
+            ],
+        )

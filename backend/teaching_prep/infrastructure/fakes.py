@@ -68,6 +68,7 @@ class FakeLessonModelAdapter:
         operation_id: str,
         resource_pack: dict[str, Any],
         task_model_gateway: object | None = None,
+        **_kwargs: object,
     ) -> dict[str, Any]:
         del task_model_gateway
         self.calls.append(

@@ -18,6 +18,7 @@ from question_bank.taxonomy.governance import (
     TaxonomyGovernance,
     TaxonomyRevisionConflict,
     TaxonomyValidationError,
+    unique_catalog_term,
 )
 from question_bank.taxonomy.curriculum_catalog import (
     infer_curriculum_volume_from_text,
@@ -488,6 +489,74 @@ def test_obvious_near_synonym_resolves_to_existing_core_identity(
 ) -> None:
     resolved = governance.resolve_term("knowledge", "一次函数的实际应用")
 
+    assert resolved is not None
+    assert resolved["name"] == "一次函数应用"
+
+
+def test_unique_suffix_and_particle_paraphrases_adopt_existing_terms() -> None:
+    terms = [
+        {
+            "id": "k-proof",
+            "dimension": "knowledge",
+            "status": "approved",
+            "name": "三角形内角和定理的证明",
+        },
+        {
+            "id": "k-isosceles",
+            "dimension": "knowledge",
+            "status": "approved",
+            "name": "等腰三角形的性质",
+        },
+        {
+            "id": "k-complement",
+            "dimension": "knowledge",
+            "status": "approved",
+            "name": "直角三角形两锐角互余",
+        },
+    ]
+
+    theorem = unique_catalog_term("knowledge", "三角形内角和定理", terms)
+    complement = unique_catalog_term(
+        "knowledge", "直角三角形的两锐角互余", terms
+    )
+    fuzzy = unique_catalog_term("knowledge", "三角形内角和性质", terms)
+
+    assert theorem is not None
+    assert theorem["id"] == "k-proof"
+    assert complement is not None
+    assert complement["id"] == "k-complement"
+    assert fuzzy is None
+
+
+def test_ambiguous_suffix_paraphrase_does_not_auto_adopt() -> None:
+    terms = [
+        {
+            "id": "k-proof",
+            "dimension": "knowledge",
+            "status": "approved",
+            "name": "三角形内角和定理的证明",
+        },
+        {
+            "id": "k-property",
+            "dimension": "knowledge",
+            "status": "approved",
+            "name": "三角形内角和定理的性质",
+        },
+    ]
+
+    assert unique_catalog_term("knowledge", "三角形内角和定理", terms) is None
+
+
+def test_constrain_adopts_unique_proof_suffix_without_proposal(
+    governance: TaxonomyGovernance,
+) -> None:
+    constrained = governance.constrain(
+        {"knowledge_points": ["一次函数应用的证明"]}
+    )
+    resolved = governance.resolve_term("knowledge", "一次函数应用的证明")
+
+    assert constrained["accepted_analysis"]["knowledge"] == ["一次函数应用"]
+    assert constrained["proposals"] == []
     assert resolved is not None
     assert resolved["name"] == "一次函数应用"
 

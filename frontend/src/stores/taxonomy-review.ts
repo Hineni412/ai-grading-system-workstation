@@ -15,6 +15,7 @@ import {
   type TaxonomyTerm,
 } from '../api/question-bank-taxonomy'
 import { ApiError, isAmbiguousWriteError } from '../api/errors'
+import { useJobStore } from './jobs'
 
 export type TaxonomyReviewApi = typeof questionBankTaxonomyApi
 export const TAXONOMY_SUGGESTION_RUN_STORAGE_KEY =
@@ -377,6 +378,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       suggestionRun.value = result.run
       rememberRunId(result.run.run_id)
       suggestionJobId.value = result.job.id
+      useJobStore().track(result.job)
       suggestionState.value = result.run.status === 'queued'
         || result.run.status === 'running'
         ? 'running'
@@ -464,6 +466,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       suggestionRun.value = result.run
       rememberRunId(result.run.run_id)
       suggestionJobId.value = result.job.id
+      useJobStore().track(result.job)
       suggestionState.value = 'running'
       suggestionMessage.value = '正在继续未完成的项目，已有建议不会重复调用。'
       return true

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 
@@ -31,6 +31,9 @@ class LessonModelAdapter(Protocol):
         *,
         operation_id: str,
         resource_pack: dict[str, Any],
+        task_model_gateway: object | None = None,
+        page_loader: Callable[[str], Mapping[str, object]] | None = None,
+        observer: Callable[[Mapping[str, object]], None] | None = None,
     ) -> dict[str, Any]:
         """Generate one structured draft without automatic retry."""
 

@@ -386,6 +386,8 @@ describe('ConfirmMaterialsStep', () => {
 
     expect(host.textContent).toContain('一次函数课件.pptx')
     expect(host.textContent).toContain('教材第 1—2 页')
+    expect(host.textContent).toContain('预计最多 6 次模型调用')
+    expect(host.textContent).toContain('失败不会自动再发')
     expect(getExpose().primaryLabel).toBe('发给 AI 改编')
     expect(getExpose().primaryDisabled).toBe(false)
     app.unmount()

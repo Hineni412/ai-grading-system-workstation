@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from backend.llm.json_repair import parse_json_object_locally
@@ -16,6 +16,36 @@ from backend.workspaces.model_policy import (
 
 
 _MAX_OUTPUT_TOKENS = 16_000
+_MAX_MODEL_ROUNDS = 6
+_MAX_PAGES_PER_ROUND = 4
+_ROUND_TIMEOUT_SECONDS = 60
+_UNIT_TEXT_LIMIT = 400
+_OBJECT_TEXT_LIMIT = 80
+_THINKING_EXCERPT_LIMIT = 500
+_PAGE_SOURCE_REF = re.compile(r"^material:([0-9a-f]{32}):unit:(\d+)$")
+_WINDOWS_PATH = re.compile(r"(?<![\w])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n\t<>|\"']+")
+_FILE_URL = re.compile(r"(?i)\bfile://[^\s<>\"']+")
+_HTTP_URL = re.compile(r"(?i)\bhttps?://[^\s<>\"']+")
+_GET_FROZEN_PAGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_frozen_page",
+        "description": (
+            "Fetch one frozen local page image by an exact page_catalog "
+            "source_ref. At most 4 pages per round. Files stay on this computer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source_ref": {
+                    "type": "string",
+                    "description": "Exact page_catalog source_ref",
+                }
+            },
+            "required": ["source_ref"],
+        },
+    },
+}
 
 
 _SYSTEM_INSTRUCTION = """\
@@ -51,8 +81,10 @@ ID；不得编造页码、题号、候选题或班级结论。课堂总时长由
   时 target_slide_ref 必须取 allowed_slide_refs，优先放到删除冗余题后形成的空白区。
 - allowed_exercise_recommendation_refs 非空表示系统已从教师勾选的教材或教辅原页自动
   选出候选题，不是教师逐题勾选；本次目标包含插入这些题，因此必须至少返回一条
-  action=include 的 exercise_recommendation。用户消息中的原页图用于对照课件、教材和
-  教辅，不得引用图中未出现且资源包也没有的页码或题号。
+  action=include 的 exercise_recommendation。第 1 轮只有目录文字；需要看原页时
+  调用 get_frozen_page，source_ref 必须原样复制 page_catalog。每轮最多 4 页，
+  整次最多 6 轮。可以取课件、教材或教辅页。不得引用目录和图中都没有的页码或题号。
+  看完后返回规定 json 对象，不要再调用工具。
 - allowed_textbook_refs 非空时，本次目标包含填写教材页码；必须至少有一条最相关讲授页的
   textbook_refs 非空，并在 citations 中包含同一教材引用。
 - 本次目标还包含删除 PPT 页内的多余练习。必须检查后段练习页的
@@ -90,57 +122,182 @@ class WorkspaceLessonModelAdapter:
         *,
         operation_id: str,
         resource_pack: dict[str, Any],
+        page_loader: Callable[[str], Mapping[str, object]] | None = None,
+        observer: Callable[[Mapping[str, object]], None] | None = None,
     ) -> dict[str, Any]:
-        model_input = dict(resource_pack)
-        raw_images = model_input.pop("reference_images", [])
-        model_input["output_contract"] = _model_output_contract(
-            resource_pack
+        catalog = compact_resource_pack_for_model(resource_pack)
+        messages: list[dict[str, object]] = [
+            {"role": "system", "content": _SYSTEM_INSTRUCTION},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    catalog,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            },
+        ]
+        _emit(
+            observer,
+            {
+                "round": 1,
+                "phase": "started",
+                "summary": "已发送本课目录，等待模型按页取图。",
+                "thinking_excerpt": None,
+                "tool": None,
+                "result": None,
+                "model_calls_used": 0,
+                "model_calls_max": _MAX_MODEL_ROUNDS,
+            },
         )
-        response = self.gateway.chat_completions(
-            request=WorkspaceModelRequest(
-                purpose="lesson_draft",
-                data_classification="teaching_material_aggregate",
-                operation_id=operation_id,
-            ),
-            client=self.client,
-            model=self.model,
-            kwargs={
-                "messages": [
-                    {"role": "system", "content": _SYSTEM_INSTRUCTION},
+        last_error: TeachingPrepValidationError | None = None
+        for round_number in range(1, _MAX_MODEL_ROUNDS + 1):
+            final_round = round_number == _MAX_MODEL_ROUNDS
+            kwargs: dict[str, object] = {
+                "messages": messages,
+                "max_tokens": _MAX_OUTPUT_TOKENS,
+            }
+            if final_round:
+                kwargs["response_format"] = {"type": "json_object"}
+            else:
+                kwargs["tools"] = [_GET_FROZEN_PAGE_TOOL]
+                kwargs["tool_choice"] = "auto"
+            response = self.gateway.chat_completions(
+                request=WorkspaceModelRequest(
+                    purpose="lesson_draft",
+                    data_classification="teaching_material_aggregate",
+                    operation_id=operation_id,
+                    max_physical_calls=_MAX_MODEL_ROUNDS,
+                ),
+                client=self.client,
+                model=self.model,
+                kwargs=kwargs,
+                timeout_override_seconds=_ROUND_TIMEOUT_SECONDS,
+            )
+            thinking = _teacher_safe_excerpt(_response_thinking(response))
+            if thinking:
+                _emit(
+                    observer,
+                    {
+                        "round": round_number,
+                        "phase": "thinking",
+                        "summary": "模型正在分析本课目录和已取原页。",
+                        "thinking_excerpt": thinking,
+                        "tool": None,
+                        "result": None,
+                        "model_calls_used": round_number,
+                        "model_calls_max": _MAX_MODEL_ROUNDS,
+                    },
+                )
+            tool_calls = _response_tool_calls(response)
+            if tool_calls and not final_round:
+                assistant = _assistant_message_for_history(response)
+                if assistant is not None:
+                    messages.append(assistant)
+                images: list[dict[str, object]] = []
+                for index, call in enumerate(tool_calls):
+                    accepted = index < _MAX_PAGES_PER_ROUND
+                    events, image, tool_message = _execute_page_tool(
+                        call,
+                        page_loader=page_loader,
+                        accepted=accepted,
+                    )
+                    for event in events:
+                        event["round"] = round_number
+                        event["model_calls_used"] = round_number
+                        event["model_calls_max"] = _MAX_MODEL_ROUNDS
+                        _emit(observer, event)
+                    messages.append(tool_message)
+                    if image is not None:
+                        images.append(image)
+                if images:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": vision_user_content(
+                                {
+                                    "returned_pages": [
+                                        str(item.get("label") or "")
+                                        for item in images
+                                    ]
+                                },
+                                images,
+                                max_images=_MAX_PAGES_PER_ROUND,
+                            ),
+                        }
+                    )
+                _emit(
+                    observer,
+                    {
+                        "round": round_number,
+                        "phase": "round_done",
+                        "summary": f"第 {round_number} 轮已取回 {len(images)} 页。",
+                        "thinking_excerpt": None,
+                        "tool": None,
+                        "result": None,
+                        "model_calls_used": round_number,
+                        "model_calls_max": _MAX_MODEL_ROUNDS,
+                    },
+                )
+                continue
+            diagnostics = response_diagnostics(response)
+            if bool(diagnostics.get("output_truncated")):
+                last_error = TeachingPrepValidationError(
+                    "lesson model output was truncated"
+                )
+                if final_round:
+                    break
+                messages.append(
                     {
                         "role": "user",
-                        "content": vision_user_content(
-                            model_input,
-                            raw_images,
-                            max_images=12,
-                        ),
-                    },
-                ],
-                "response_format": {"type": "json_object"},
-                "max_tokens": _MAX_OUTPUT_TOKENS,
-            },
-            timeout_override_seconds=180,
-        )
-        diagnostics = response_diagnostics(response)
-        if bool(diagnostics.get("output_truncated")):
-            raise TeachingPrepValidationError(
-                "lesson model output was truncated"
-            )
-        text = _response_text(response)
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
+                        "content": "上一轮输出被截断。请返回完整规定 json 对象，或调用 get_frozen_page。",
+                    }
+                )
+                continue
             try:
-                payload = parse_json_object_locally(text).payload
-            except (TypeError, ValueError):
-                raise TeachingPrepValidationError(
-                    "lesson model returned invalid JSON"
-                ) from exc
-        if not isinstance(payload, dict):
-            raise TeachingPrepValidationError(
-                "lesson model response must be an object"
+                payload = _parse_model_object(_response_text(response))
+            except TeachingPrepValidationError as exc:
+                last_error = exc
+                if final_round:
+                    break
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "请返回规定 json 对象，或调用 get_frozen_page 查看原页。",
+                    }
+                )
+                continue
+            _emit(
+                observer,
+                {
+                    "round": round_number,
+                    "phase": "final_accepted",
+                    "summary": "已收到改编清单。",
+                    "thinking_excerpt": None,
+                    "tool": None,
+                    "result": None,
+                    "model_calls_used": round_number,
+                    "model_calls_max": _MAX_MODEL_ROUNDS,
+                },
             )
-        return payload
+            return payload
+        _emit(
+            observer,
+            {
+                "round": _MAX_MODEL_ROUNDS,
+                "phase": "failed",
+                "summary": "本次没有完成（未改原 PPT）。",
+                "thinking_excerpt": None,
+                "tool": None,
+                "result": None,
+                "model_calls_used": _MAX_MODEL_ROUNDS,
+                "model_calls_max": _MAX_MODEL_ROUNDS,
+            },
+        )
+        raise last_error or TeachingPrepValidationError(
+            "lesson model did not return a valid JSON object"
+        )
 
 
 def _model_output_contract(
@@ -395,7 +552,7 @@ def vision_user_content(
     payload: Mapping[str, object],
     raw_images: object,
     *,
-    max_images: int = 12,
+    max_images: int = _MAX_PAGES_PER_ROUND,
 ) -> object:
     payload_json = json.dumps(
         payload,
@@ -440,26 +597,472 @@ def vision_user_content(
     return content
 
 
-def _response_text(response: object) -> str:
+def compact_resource_pack_for_model(
+    resource_pack: Mapping[str, object],
+) -> dict[str, object]:
+    materials: list[dict[str, object]] = []
+    page_catalog: list[dict[str, object]] = []
+    for raw_material in _safe_list(resource_pack.get("materials")):
+        if not isinstance(raw_material, Mapping):
+            continue
+        link_id = str(raw_material.get("link_id") or "").strip()
+        purpose = str(raw_material.get("purpose") or "").strip()
+        if not link_id:
+            continue
+        units: list[dict[str, object]] = []
+        for raw_unit in _safe_list(raw_material.get("units")):
+            if not isinstance(raw_unit, Mapping):
+                continue
+            unit_index = raw_unit.get("unit_index")
+            if isinstance(unit_index, bool) or not isinstance(unit_index, int):
+                continue
+            source_ref = f"material:{link_id}:unit:{unit_index}"
+            unit_id = str(raw_unit.get("unit_id") or "").strip()
+            title = str(raw_unit.get("title") or "").strip()
+            compact_unit = {
+                "source_ref": source_ref,
+                "unit_index": unit_index,
+                "title": title,
+                "text": _truncate_text(raw_unit.get("text"), _UNIT_TEXT_LIMIT),
+                "objects": _compact_objects(raw_unit.get("object_summary")),
+            }
+            units.append(compact_unit)
+            page_catalog.append(
+                {
+                    "source_ref": source_ref,
+                    "purpose": purpose,
+                    "unit_index": unit_index,
+                    "title": title,
+                    "unit_id": unit_id,
+                }
+            )
+        materials.append(
+            {
+                "link_id": link_id,
+                "purpose": purpose,
+                "material_name": str(raw_material.get("material_name") or ""),
+                "units": units,
+            }
+        )
+    lesson = resource_pack.get("lesson")
+    classroom = resource_pack.get("classroom")
+    exercises = []
+    for item in _safe_list(resource_pack.get("exercises")):
+        if not isinstance(item, Mapping):
+            continue
+        exercises.append(
+            {
+                "candidate_id": str(item.get("candidate_id") or ""),
+                "question_number": item.get("question_number"),
+                "content_label": _truncate_text(
+                    item.get("content_label"), 160
+                ),
+                "selection_status": item.get("selection_status"),
+            }
+        )
+    return {
+        "lesson": (
+            {
+                "lesson_node_id": lesson.get("lesson_node_id"),
+                "title": lesson.get("title"),
+            }
+            if isinstance(lesson, Mapping)
+            else {}
+        ),
+        "classroom": (
+            {
+                "teacher_context": _truncate_text(
+                    classroom.get("teacher_context"), 1_000
+                )
+            }
+            if isinstance(classroom, Mapping)
+            else {}
+        ),
+        "preparation_preferences": resource_pack.get("preparation_preferences"),
+        "materials": materials,
+        "exercises": exercises,
+        "page_catalog": page_catalog,
+        "output_contract": _model_output_contract(resource_pack),
+        "tool_limits": {
+            "tool": "get_frozen_page",
+            "max_pages_per_round": _MAX_PAGES_PER_ROUND,
+            "max_model_rounds": _MAX_MODEL_ROUNDS,
+        },
+    }
+
+
+def page_catalog_entry(
+    resource_pack: Mapping[str, object],
+    source_ref: str,
+) -> dict[str, object] | None:
+    match = _PAGE_SOURCE_REF.fullmatch(str(source_ref or "").strip())
+    if match is None:
+        return None
+    link_id = match.group(1)
+    unit_index = int(match.group(2))
+    for raw_material in _safe_list(resource_pack.get("materials")):
+        if not isinstance(raw_material, Mapping):
+            continue
+        if str(raw_material.get("link_id") or "").strip() != link_id:
+            continue
+        purpose = str(raw_material.get("purpose") or "").strip()
+        for raw_unit in _safe_list(raw_material.get("units")):
+            if not isinstance(raw_unit, Mapping):
+                continue
+            if raw_unit.get("unit_index") != unit_index:
+                continue
+            return {
+                "source_ref": f"material:{link_id}:unit:{unit_index}",
+                "purpose": purpose,
+                "unit_index": unit_index,
+                "title": str(raw_unit.get("title") or ""),
+                "unit_id": str(raw_unit.get("unit_id") or ""),
+            }
+    return None
+
+
+def page_label(purpose: object, unit_index: object) -> str:
+    labels = {
+        "exercise": "教辅",
+        "textbook": "教材",
+        "reference_ppt": "主课件",
+        "answer": "答案",
+        "supplement": "补充资料",
+    }
+    role = labels.get(str(purpose or ""), "资料")
+    try:
+        page = int(unit_index)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return role
+    return f"{role} 第 {page} 页"
+
+
+def _compact_objects(summary: object) -> list[dict[str, object]]:
+    objects = summary.get("objects") if isinstance(summary, Mapping) else None
+    result: list[dict[str, object]] = []
+    for raw in _safe_list(objects):
+        if not isinstance(raw, Mapping):
+            continue
+        object_ref = str(raw.get("object_ref") or "").strip()
+        if not object_ref:
+            continue
+        result.append(
+            {
+                "object_ref": object_ref,
+                "text": _truncate_text(raw.get("text"), _OBJECT_TEXT_LIMIT),
+                "safe_to_delete": raw.get("safe_to_delete") is True,
+            }
+        )
+    return result
+
+
+def _truncate_text(value: object, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _parse_model_object(text: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        try:
+            payload = parse_json_object_locally(text).payload
+        except (TypeError, ValueError):
+            raise TeachingPrepValidationError(
+                "lesson model returned invalid JSON"
+            ) from exc
+    if not isinstance(payload, dict):
+        raise TeachingPrepValidationError(
+            "lesson model response must be an object"
+        )
+    return payload
+
+
+def _execute_page_tool(
+    call: Mapping[str, object],
+    *,
+    page_loader: Callable[[str], Mapping[str, object]] | None,
+    accepted: bool,
+) -> tuple[
+    list[dict[str, object]],
+    dict[str, object] | None,
+    dict[str, object],
+]:
+    call_id = str(call.get("id") or "tool-call")
+    source_ref = str(call.get("source_ref") or "").strip()
+    safe_ref = source_ref if _PAGE_SOURCE_REF.fullmatch(source_ref) else ""
+    tool = {
+        "name": "get_frozen_page",
+        "purpose": None,
+        "page": None,
+        "source_ref": safe_ref,
+    }
+    if not accepted:
+        payload = {
+            "ok": False,
+            "error": "this round already used 4 pages",
+            "source_ref": source_ref,
+        }
+        event = {
+            "phase": "tool_result",
+            "summary": "本轮已达 4 页上限，其余取页已拒绝。",
+            "thinking_excerpt": None,
+            "tool": tool,
+            "result": {"ok": False, "label": "本轮超出 4 页", "preview_url": None},
+        }
+        return [event], None, _tool_message(call_id, payload)
+    if not safe_ref:
+        payload = {
+            "ok": False,
+            "error": "source_ref is not an allowed page_catalog value",
+            "source_ref": source_ref,
+        }
+        event = {
+            "phase": "tool_call",
+            "summary": "取页参数无效，已拒绝且未读盘。",
+            "thinking_excerpt": None,
+            "tool": tool,
+            "result": {"ok": False, "label": "无效页引用", "preview_url": None},
+        }
+        return [event], None, _tool_message(call_id, payload)
+    if page_loader is None:
+        payload = {"ok": False, "error": "page lookup is unavailable"}
+        event = {
+            "phase": "tool_result",
+            "summary": "本机取页不可用。",
+            "thinking_excerpt": None,
+            "tool": tool,
+            "result": {"ok": False, "label": "取页不可用", "preview_url": None},
+        }
+        return [event], None, _tool_message(call_id, payload)
+    loaded = dict(page_loader(source_ref))
+    purpose = loaded.get("purpose")
+    unit_index = loaded.get("unit_index")
+    label = str(loaded.get("label") or page_label(purpose, unit_index))
+    tool = {
+        "name": "get_frozen_page",
+        "purpose": str(purpose or "") or None,
+        "page": unit_index if isinstance(unit_index, int) else None,
+        "source_ref": safe_ref,
+    }
+    ok = loaded.get("ok") is True
+    preview_url = loaded.get("preview_url")
+    call_event = {
+        "phase": "tool_call",
+        "summary": f"取页 · {label}",
+        "thinking_excerpt": None,
+        "tool": tool,
+        "result": None,
+    }
+    result_event = {
+        "phase": "tool_result",
+        "summary": f"已返回{label}" if ok else f"未能返回{label}",
+        "thinking_excerpt": None,
+        "tool": tool,
+        "result": {
+            "ok": ok,
+            "label": label if ok else str(loaded.get("error") or label),
+            "preview_url": preview_url if isinstance(preview_url, str) else None,
+        },
+    }
+    image = None
+    content = loaded.get("content")
+    if ok and isinstance(content, (bytes, bytearray)) and content:
+        image = {
+            "purpose": purpose,
+            "material_unit_id": loaded.get("unit_id"),
+            "unit_index": unit_index,
+            "mime_type": loaded.get("mime_type") or "image/png",
+            "content": bytes(content),
+            "label": label,
+        }
+    tool_payload = {
+        "ok": ok,
+        "source_ref": source_ref,
+        "label": label,
+        "error": loaded.get("error"),
+    }
+    return [call_event, result_event], image, _tool_message(call_id, tool_payload)
+
+
+def _tool_message(call_id: str, payload: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": json.dumps(
+            {key: value for key, value in payload.items() if value is not None},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+
+
+def _emit(
+    observer: Callable[[Mapping[str, object]], None] | None,
+    event: Mapping[str, object],
+) -> None:
+    if observer is None:
+        return
+    try:
+        observer(dict(event))
+    except Exception:
+        return
+
+
+def _response_message(response: object) -> Mapping[str, object]:
     if isinstance(response, Mapping):
         choices = response.get("choices")
-        if isinstance(choices, list) and choices:
-            choice = choices[0]
-            if isinstance(choice, Mapping):
-                message = choice.get("message")
-                if isinstance(message, Mapping):
-                    content = message.get("content")
-                    if isinstance(content, str):
-                        return content
+        if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+            message = choices[0].get("message")
+            if isinstance(message, Mapping):
+                return message
     choices = getattr(response, "choices", None)
     if isinstance(choices, list) and choices:
         message = getattr(choices[0], "message", None)
-        content = getattr(message, "content", None)
-        if isinstance(content, str):
-            return content
+        if isinstance(message, Mapping):
+            return message
+        values = {
+            "content": getattr(message, "content", None),
+            "tool_calls": getattr(message, "tool_calls", None),
+            "function_call": getattr(message, "function_call", None),
+            "reasoning_content": getattr(message, "reasoning_content", None),
+            "reasoning": getattr(message, "reasoning", None),
+        }
+        return {key: value for key, value in values.items() if value is not None}
+    return {}
+
+
+def _response_text(response: object) -> str:
+    message = _response_message(response)
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content
+    if isinstance(content, list):
+        parts = [
+            str(item.get("text") or "")
+            for item in content
+            if isinstance(item, Mapping) and item.get("type") in {None, "text"}
+        ]
+        text = "\n".join(part for part in parts if part).strip()
+        if text:
+            return text
     raise TeachingPrepValidationError(
         "lesson model response text is unavailable"
     )
 
 
-__all__ = ["WorkspaceLessonModelAdapter", "vision_user_content"]
+def _response_thinking(response: object) -> str:
+    message = _response_message(response)
+    for key in ("reasoning_content", "reasoning"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    content = message.get("content")
+    if isinstance(content, list):
+        parts = [
+            str(item.get("text") or item.get("reasoning") or "")
+            for item in content
+            if isinstance(item, Mapping)
+            and str(item.get("type") or "") in {"reasoning", "thinking"}
+        ]
+        text = "\n".join(part for part in parts if part).strip()
+        if text:
+            return text
+    return ""
+
+
+def _response_tool_calls(response: object) -> list[dict[str, object]]:
+    message = _response_message(response)
+    raw_calls = message.get("tool_calls")
+    calls: list[dict[str, object]] = []
+    if isinstance(raw_calls, list):
+        for index, raw in enumerate(raw_calls):
+            parsed = _parse_tool_call(raw, index)
+            if parsed is not None:
+                calls.append(parsed)
+    function_call = message.get("function_call")
+    if not calls and function_call is not None:
+        parsed = _parse_tool_call(
+            {"id": "call-0", "function": function_call},
+            0,
+        )
+        if parsed is not None:
+            calls.append(parsed)
+    return calls
+
+
+def _parse_tool_call(raw: object, index: int) -> dict[str, object] | None:
+    if not isinstance(raw, Mapping):
+        name = getattr(raw, "function", None)
+        call_id = str(getattr(raw, "id", "") or f"call-{index}")
+        function = name if isinstance(name, Mapping) else {
+            "name": getattr(name, "name", None),
+            "arguments": getattr(name, "arguments", None),
+        }
+        raw = {"id": call_id, "function": function}
+    if not isinstance(raw, Mapping):
+        return None
+    function = raw.get("function")
+    if not isinstance(function, Mapping):
+        function = {
+            "name": raw.get("name"),
+            "arguments": raw.get("arguments"),
+        }
+    name = str(function.get("name") or "").strip()
+    if name != "get_frozen_page":
+        return None
+    arguments = function.get("arguments")
+    parsed: Mapping[str, object]
+    if isinstance(arguments, Mapping):
+        parsed = arguments
+    else:
+        try:
+            loaded = json.loads(str(arguments or "{}"))
+        except json.JSONDecodeError:
+            loaded = {}
+        parsed = loaded if isinstance(loaded, Mapping) else {}
+    source_ref = str(parsed.get("source_ref") or "").strip()
+    return {
+        "id": str(raw.get("id") or f"call-{index}"),
+        "name": name,
+        "source_ref": source_ref,
+        "raw": dict(raw),
+    }
+
+
+def _assistant_message_for_history(response: object) -> dict[str, object] | None:
+    message = _response_message(response)
+    if not message:
+        return None
+    payload: dict[str, object] = {"role": "assistant"}
+    content = message.get("content")
+    if isinstance(content, str):
+        payload["content"] = content
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        payload["tool_calls"] = tool_calls
+    return payload
+
+
+def _teacher_safe_excerpt(value: object, *, limit: int = _THINKING_EXCERPT_LIMIT) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = _FILE_URL.sub("[LOCAL_PATH_REDACTED]", text)
+    text = _HTTP_URL.sub("[URL_REDACTED]", text)
+    text = _WINDOWS_PATH.sub("[LOCAL_PATH_REDACTED]", text)
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+    return text
+
+
+__all__ = [
+    "WorkspaceLessonModelAdapter",
+    "compact_resource_pack_for_model",
+    "page_catalog_entry",
+    "page_label",
+    "vision_user_content",
+]

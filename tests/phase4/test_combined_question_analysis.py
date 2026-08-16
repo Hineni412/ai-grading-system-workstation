@@ -403,12 +403,24 @@ def test_duplicate_operation_is_idempotent_and_conflicting_content_is_rejected(
         )
 
 
-def test_missing_actual_image_fails_before_model_request(
+def test_missing_actual_image_continues_as_text_only(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "question-bank.db"
     _seed_questions(database)
-    gateway = QueueGateway([])
+    gateway = QueueGateway(
+        [
+            {
+                "results": [
+                    {
+                        "question_id": 1,
+                        "tag_analysis": _tag_payload(),
+                        "training_criteria": _criteria_payload(1),
+                    }
+                ]
+            }
+        ]
+    )
     module = CombinedQuestionAnalysisModule(
         repository=CombinedAnalysisRepository(database),
         gateway=gateway,
@@ -416,18 +428,14 @@ def test_missing_actual_image_fails_before_model_request(
     )
 
     summary = module.analyze(
-        operation_id="p4-09-missing-image",
+        operation_id="p4-09-missing-image-text-only",
         questions=(_question(1, has_images=True),),
     )
 
-    assert summary["status"] == "failed"
-    assert summary["request_count"] == 0
-    assert summary["items"][0]["tag_error_category"] == "missing_image"
-    assert (
-        summary["items"][0]["criteria_error_category"]
-        == "missing_image"
-    )
-    assert gateway.calls == []
+    assert summary["request_count"] == 1
+    assert gateway.calls
+    assert summary["items"][0].get("tag_error_category") != "missing_image"
+    assert summary["items"][0].get("criteria_error_category") != "missing_image"
 
 
 def test_cancelled_model_call_preserves_cancelled_state_and_can_retry(
@@ -894,6 +902,9 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
     ]
     assert link["properties"]["fine_term_id"]["minLength"] == 1
     assert link["properties"]["fine_term_name"]["minLength"] == 1
+    assert "enum" not in item["properties"]["tag_analysis"]["properties"][
+        "knowledge_points"
+    ]["items"]
     assert part["properties"]["deduction_policy"]["items"]["minLength"] == 1
 
     @dataclass
@@ -908,6 +919,25 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
     assert set(adapted) == {"question_id", "tag_analysis"}
     assert "training_criteria" not in adapted
     assert "solution_evidence" not in adapted
+
+
+def test_combined_schema_locks_controlled_fields_to_batch_ids() -> None:
+    schema = combined_response_format(
+        "both",
+        allowed_term_ids={"knowledge": ["kp_alg_linear_equation"]},
+    )
+    item = schema["schema"]["properties"]["results"]["items"]
+    knowledge_items = item["properties"]["tag_analysis"]["properties"][
+        "knowledge_points"
+    ]["items"]
+    fine_term_id = item["properties"]["solution_evidence"]["properties"][
+        "parts"
+    ]["items"]["properties"]["evidence_points"]["items"]["properties"][
+        "fine_term_links"
+    ]["items"]["properties"]["fine_term_id"]
+
+    assert knowledge_items["enum"] == ["kp_alg_linear_equation"]
+    assert fine_term_id["enum"] == ["kp_alg_linear_equation"]
 
 
 class AcceptingGovernance:
@@ -1398,9 +1428,26 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
         item["question_id"]: item["candidate_contract"]
         for item in prompt["questions"]
     }
-    assert contracts[1]["candidates"]["knowledge"][0]["id"] == (
-        "kp_alg_linear_equation"
-    )
+    assert "kp_alg_linear_equation" in contracts[1]["candidates"]["knowledge"][0]["id"]
+    format_schema = protocol.calls[0]["kwargs"]["text"]["format"]["schema"]
+    knowledge_items = format_schema["properties"]["results"]["items"][
+        "properties"
+    ]["tag_analysis"]["properties"]["knowledge_points"]["items"]
+    assert knowledge_items["enum"] == [
+        "kp_alg_linear_equation",
+        "kp_geo_parallel_lines",
+    ]
+    fine_term_id = format_schema["properties"]["results"]["items"][
+        "properties"
+    ]["solution_evidence"]["properties"]["parts"]["items"]["properties"][
+        "evidence_points"
+    ]["items"]["properties"]["fine_term_links"]["items"]["properties"][
+        "fine_term_id"
+    ]
+    assert fine_term_id["enum"] == [
+        "kp_alg_linear_equation",
+        "kp_geo_parallel_lines",
+    ]
     assert contracts[2]["candidates"]["knowledge"][0]["id"] == (
         "kp_geo_parallel_lines"
     )

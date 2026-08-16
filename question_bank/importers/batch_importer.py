@@ -119,6 +119,9 @@ def parse_paper_text(
     image_paths: list[str] | None = None,
     type_overrides: Mapping[str, str] | None = None,
 ) -> ParsedPaperText:
+    # Document-level image flags stay in the signature for callers, but each
+    # question now uses only the images extracted for that numbered block.
+    _ = (has_images, image_paths)
     question_text, answer_text = _split_answer_text(text)
     answers = _answer_map(answer_text, source_file=source_file)
     range_filter = _parse_numeric_range(question_range)
@@ -148,6 +151,7 @@ def parse_paper_text(
         # Teacher/LLM-governed types from the grading rubric win over the
         # local heuristic when the session sync supplied them.
         q_type = (type_overrides or {}).get(block.number) or detect_question_type(block.text)
+        question_has_images = bool(question_image_paths)
         questions.append(
             ParsedQuestion(
                 question_number=block.number,
@@ -156,9 +160,11 @@ def parse_paper_text(
                 source_file=source_file,
                 page_range=page_range,
                 question_type=q_type,
-                needs_review=not bool(answer) or needs_image_review,
-                has_images=has_images or bool(question_image_paths),
-                needs_image_review=needs_image_review,
+                needs_review=not bool(answer) or (
+                    needs_image_review and question_has_images
+                ),
+                has_images=question_has_images,
+                needs_image_review=needs_image_review and question_has_images,
                 image_paths=question_image_paths,
             )
         )

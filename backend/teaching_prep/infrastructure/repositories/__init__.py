@@ -13,6 +13,7 @@ from .teaching_delivery import TeachingDeliveryRepository
 from .workbench_iteration import WorkbenchIterationRepository
 from .workspace_ai_adoptions import WorkspaceAIAdoptionRepository
 from .slide_animations import SlideAnimationRepository
+from .adaptation_traces import AdaptationTraceRepository
 
 __all__ = [
     "ExerciseCandidateRepository",
@@ -32,4 +33,5 @@ __all__ = [
     "TeachingCatalogRepository",
     "WorkspaceAIAdoptionRepository",
     "SlideAnimationRepository",
+    "AdaptationTraceRepository",
 ]

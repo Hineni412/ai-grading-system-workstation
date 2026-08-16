@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -162,6 +162,82 @@ def _text(value: object) -> str:
 def _normalized_name(value: object) -> str:
     normalized = unicodedata.normalize("NFKC", _text(value)).casefold()
     return re.sub(r"[\s\W_]+", "", normalized)
+
+
+_UNIQUE_ADOPT_SUFFIXES = ("及其证明", "的证明", "的性质", "的定义")
+_MIN_UNIQUE_STEM_LENGTH = 4
+
+
+def _name_stems(value: object) -> frozenset[str]:
+    raw = _text(value)
+    normalized = _normalized_name(raw)
+    if not normalized:
+        return frozenset()
+    stems = {normalized}
+    leaf = _normalized_name(raw.rsplit("｜", 1)[-1])
+    if leaf:
+        stems.add(leaf)
+    expanded = set(stems)
+    for item in list(stems):
+        without_de = item.replace("的", "")
+        if without_de:
+            expanded.add(without_de)
+        for suffix in _UNIQUE_ADOPT_SUFFIXES:
+            marker = _normalized_name(suffix)
+            if marker and item.endswith(marker) and len(item) > len(marker):
+                stem = item[: -len(marker)]
+                if stem:
+                    expanded.add(stem)
+                    stripped = stem.replace("的", "")
+                    if stripped:
+                        expanded.add(stripped)
+    return frozenset(
+        item for item in expanded if len(item) >= _MIN_UNIQUE_STEM_LENGTH
+    )
+
+
+def unique_catalog_term(
+    dimension: str,
+    name: object,
+    terms: Sequence[Mapping[str, Any]],
+    *,
+    allowed_ids: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Adopt one existing term when a paraphrase uniquely matches it."""
+
+    wanted_dimension = _text(dimension)
+    submitted = _text(name)
+    if wanted_dimension not in _DIMENSION_SET or not submitted:
+        return None
+    eligible: list[Mapping[str, Any]] = []
+    for term in terms:
+        if (
+            str(term.get("dimension") or "") != wanted_dimension
+            or term.get("status") != _ACTIVE_TERM_STATUS
+        ):
+            continue
+        term_id = _text(term.get("id"))
+        if not term_id:
+            continue
+        if allowed_ids is not None and term_id not in allowed_ids:
+            continue
+        eligible.append(term)
+        if term_id == submitted:
+            return dict(term)
+    wanted = _name_stems(submitted)
+    if not wanted:
+        return None
+    matched_ids: set[str] = set()
+    by_id: dict[str, Mapping[str, Any]] = {}
+    for term in eligible:
+        term_id = _text(term.get("id"))
+        by_id[term_id] = term
+        stems = _name_stems(term.get("name"))
+        if wanted & stems:
+            matched_ids.add(term_id)
+    if len(matched_ids) != 1:
+        return None
+    return dict(by_id[next(iter(matched_ids))])
 
 
 def _stable_id(prefix: str, *parts: object) -> str:
@@ -1390,7 +1466,7 @@ class TaxonomyGovernance:
             else self._catalog
         )
         state = self._read_state(catalog=catalog)
-        _, alias_index, legacy_index = self._combined_terms(
+        terms, alias_index, legacy_index = self._combined_terms(
             state,
             catalog=catalog,
         )
@@ -1398,6 +1474,8 @@ class TaxonomyGovernance:
         term = alias_index.get(key)
         if term is None:
             term = legacy_index.get(key)
+        if term is None:
+            term = unique_catalog_term(dimension, value, terms)
         return _term_public(term) if term is not None else None
 
     def resolve_teacher_term(
@@ -2089,6 +2167,54 @@ class TaxonomyGovernance:
                     ):
                         return
                 accept(resolved_dimension, term, source_field=source_field)
+                return
+            adopted = unique_catalog_term(
+                dimension,
+                name,
+                terms,
+                allowed_ids=(
+                    allowed_ids[dimension]
+                    if restricted and allowed_ids[dimension]
+                    else None
+                ),
+            )
+            if adopted is None and restricted and allowed_ids[dimension]:
+                adopted = unique_catalog_term(dimension, name, terms)
+            if adopted is None and dimension == "method":
+                adopted = unique_catalog_term(
+                    "thought",
+                    name,
+                    terms,
+                    allowed_ids=(
+                        allowed_ids["thought"]
+                        if restricted and allowed_ids["thought"]
+                        else None
+                    ),
+                )
+                if adopted is None and restricted and allowed_ids["thought"]:
+                    adopted = unique_catalog_term("thought", name, terms)
+            if adopted is not None:
+                resolved_dimension = str(adopted.get("dimension") or dimension)
+                within_candidates = (
+                    not restricted
+                    or adopted["id"] in allowed_ids[resolved_dimension]
+                )
+                if not within_candidates:
+                    retrieval_misses.append(
+                        {
+                            "dimension": resolved_dimension,
+                            "submitted_name": name,
+                            "canonical_id": adopted["id"],
+                            "canonical_name": adopted["name"],
+                            "source_field": source_field,
+                        }
+                    )
+                    if (
+                        resolved_dimension == "knowledge"
+                        and int(selected_catalog["revision"]) >= 4
+                    ):
+                        return
+                accept(resolved_dimension, adopted, source_field=source_field)
                 return
             # A value known in another controlled dimension is misplaced model
             # output, not a new term.  The only intentional cross-dimension

@@ -42,7 +42,7 @@ const primaryPptLinkId = ref<string | null>(null)
 const supportLinkIds = ref<string[]>([])
 const submitting = ref(false)
 const allowPptOnly = ref(false)
-const DEFAULT_CONFIRM_MESSAGE = '先确认主课件和参考资料。勾选后点一次发送，AI 会改编课件。'
+const DEFAULT_CONFIRM_MESSAGE = '先确认主课件和参考资料。勾选后点一次发送，AI 会改编课件。预计最多 6 次模型调用，按实际用量计费。失败不会自动再发，原 PPT 不会被改。'
 const message = ref(DEFAULT_CONFIRM_MESSAGE)
 const quickMaterialRecordId = ref('')
 const quickStartUnit = ref<number | null>(null)
@@ -1152,7 +1152,7 @@ const primaryActionLabel = computed(() => {
   if (submitting.value) return '正在准备…'
   if (exerciseRun.value?.status === 'running') return '正在识别题目…'
   if (currentSlideTask.value?.status === 'proposal_ready') {
-    return '重新生成 AI 改编（调用 1 次）'
+    return '重新生成 AI 改编（最多 6 次）'
   }
   if (currentSlideTask.value) return '查看正在处理的改编'
   return '发给 AI 改编'

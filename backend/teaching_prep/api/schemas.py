@@ -1757,3 +1757,37 @@ class ActivatePptxVersionResponse(BaseModel):
     version: PptxVersionResponse
     current_revision: int
     changed: bool
+
+
+class AdaptationTraceToolResponse(BaseModel):
+    name: str
+    purpose: str | None = None
+    page: int | None = None
+    source_ref: str = ""
+
+
+class AdaptationTraceResultResponse(BaseModel):
+    ok: bool
+    label: str
+    preview_url: str | None = None
+
+
+class AdaptationTraceEventResponse(BaseModel):
+    round: int
+    phase: str
+    summary: str
+    thinking_excerpt: str | None = None
+    tool: AdaptationTraceToolResponse | None = None
+    result: AdaptationTraceResultResponse | None = None
+    model_calls_used: int
+    model_calls_max: int
+
+
+class AdaptationTraceResponse(BaseModel):
+    operation_id: str
+    lesson_node_id: str
+    status: str
+    model_calls_used: int
+    model_calls_max: int
+    events: list[AdaptationTraceEventResponse]
+
