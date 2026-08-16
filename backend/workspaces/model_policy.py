@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import stat
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,8 @@ LOGGER = logging.getLogger("ai_grading.workspaces.llm")
 _SAFE_TOKEN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SAFE_MODULE_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
+_LESSON_DRAFT_PURPOSE = "lesson_draft"
+_MAX_PHYSICAL_CALLS = 6
 
 
 class WorkspaceModelPolicyError(ValueError):
@@ -35,6 +38,7 @@ class WorkspaceModelRequest:
     purpose: str
     data_classification: str
     operation_id: str
+    max_physical_calls: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +222,9 @@ class WorkspaceModelGateway:
         self.audit_sink = audit_sink or LoggingWorkspaceModelAuditSink()
         self.clock = clock
         self.physical_request_count = 0
+        self._lock = threading.Lock()
+        self._operation_rounds: dict[str, int] = {}
+        self._operation_limits: dict[str, int] = {}
 
     def chat_completions(
         self,
@@ -266,11 +273,11 @@ class WorkspaceModelGateway:
         timeout_override_seconds: float | None,
     ) -> object:
         purpose, classification, operation_id = self._validate_request(request)
+        max_calls = self._physical_call_limit(request)
         safe_model = safe_trace_label(model)
         if not safe_model:
             raise WorkspaceModelPolicyError("model is required")
-        if self._operation_claims is not None:
-            self._operation_claims.claim(operation_id)
+        self._reserve_physical_call(operation_id, max_calls)
 
         started = self.clock()
         physical_request_count = 0
@@ -281,6 +288,7 @@ class WorkspaceModelGateway:
             self.physical_request_count = physical_request_count
             return physical_request_count
 
+        previous_sink = self._bind_workspace_diagnostics(purpose)
         try:
             call = (
                 self.gateway.chat_completions
@@ -316,6 +324,8 @@ class WorkspaceModelGateway:
                 )
             )
             raise
+        finally:
+            self._restore_workspace_diagnostics(previous_sink)
 
         fields = usage_fields(response)
         self.audit_sink.record(
@@ -332,8 +342,55 @@ class WorkspaceModelGateway:
         )
         return response
 
+    def _bind_workspace_diagnostics(self, purpose: str) -> object | None:
+        sink = getattr(self.gateway, "diagnostic_sink", None)
+        journal = getattr(sink, "journal", sink)
+        bind = getattr(journal, "for_workspace", None)
+        if not callable(bind):
+            return None
+        self.gateway.diagnostic_sink = bind(
+            workspace_module=self.module_id,
+            workspace_task_kind=purpose,
+        )
+        return sink
+
+    def _restore_workspace_diagnostics(self, previous: object | None) -> None:
+        if previous is None:
+            return
+        self.gateway.diagnostic_sink = previous
+
     def _latency_ms(self, started: float) -> int:
         return int(round(max(0.0, self.clock() - started) * 1000.0))
+
+    def _reserve_physical_call(self, operation_id: str, max_calls: int) -> None:
+        with self._lock:
+            current = self._operation_rounds.get(operation_id, 0)
+            if current == 0:
+                if self._operation_claims is not None:
+                    self._operation_claims.claim(operation_id)
+                self._operation_limits[operation_id] = max_calls
+                limit = max_calls
+            else:
+                limit = self._operation_limits.get(operation_id, 1)
+            if current >= limit:
+                raise WorkspaceModelPolicyError(
+                    "operation ID has already used its model request"
+                )
+            self._operation_rounds[operation_id] = current + 1
+
+    @staticmethod
+    def _physical_call_limit(request: WorkspaceModelRequest) -> int:
+        raw = getattr(request, "max_physical_calls", 1)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise WorkspaceModelPolicyError("max physical calls is invalid")
+        if raw < 1 or raw > _MAX_PHYSICAL_CALLS:
+            raise WorkspaceModelPolicyError("max physical calls is invalid")
+        purpose = str(request.purpose or "").strip()
+        if raw > 1 and purpose != _LESSON_DRAFT_PURPOSE:
+            raise WorkspaceModelPolicyError(
+                "only lesson_draft may use multiple physical model calls"
+            )
+        return raw
 
     @staticmethod
     def _validate_request(

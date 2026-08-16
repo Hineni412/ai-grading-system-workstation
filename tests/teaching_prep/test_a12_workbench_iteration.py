@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+import os
 import zipfile
 
 import pytest
@@ -20,6 +21,9 @@ from backend.teaching_prep.infrastructure.fakes import (
 )
 from backend.teaching_prep.infrastructure.llm.exercise_suggestions import (
     WorkspaceExerciseSuggestionModelAdapter,
+)
+from backend.teaching_prep.infrastructure.llm.lesson_model import (
+    WorkspaceLessonModelAdapter,
 )
 
 from .test_a01_foundation import _migrated_service
@@ -220,6 +224,19 @@ def test_exercise_suggestion_normalizes_known_chinese_enum_aliases() -> None:
     }
 
 
+def test_exercise_suggestion_accepts_textbook_source_pages() -> None:
+    material = {
+        "purpose": "textbook",
+        "material_version_id": "a" * 32,
+        "units": [{"unit_id": "b" * 32, "unit_index": 9}],
+    }
+    raw = _suggestion(material)
+    normalized = normalize_exercise_suggestion_payload(
+        {"suggestions": [raw]}, snapshot={"materials": [material]}
+    )
+    assert normalized[0]["material_version_id"] == "a" * 32
+
+
 def test_exercise_model_receives_selected_workbook_page_images() -> None:
     class Gateway:
         def __init__(self) -> None:
@@ -242,6 +259,7 @@ def test_exercise_model_receives_selected_workbook_page_images() -> None:
             "materials": [{"purpose": "exercise", "material_version_id": "v1"}],
             "reference_images": [
                 {
+                    "purpose": "exercise",
                     "material_version_id": "v1",
                     "material_unit_id": "u1",
                     "unit_index": 4,
@@ -254,10 +272,358 @@ def test_exercise_model_receives_selected_workbook_page_images() -> None:
     user_content = gateway.kwargs["kwargs"]["messages"][1]["content"]  # type: ignore[index]
     assert isinstance(user_content, list)
     assert "reference_images" not in user_content[0]["text"]
+    assert user_content[1]["text"].startswith("教辅原页；")
     assert user_content[1]["text"].endswith("material_unit_id=u1;unit_index=4")
     assert user_content[2]["image_url"]["url"].startswith(
         "data:image/png;base64,"
     )
+
+
+_EMPTY_LESSON_JSON = (
+    '{"knowledge_objectives":[],"focus_points":[],'
+    '"anticipated_difficulties":[],"lesson_flow":[],'
+    '"exercise_recommendations":[],'
+    '"slide_adaptations":[],"uncertainties":[]}'
+)
+_PAGE_LINK_ID = "a" * 32
+_PAGE_SOURCE_REF = f"material:{_PAGE_LINK_ID}:unit:1"
+
+
+def test_lesson_model_sends_compact_catalog_without_preattached_images() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    payload = adapter.generate(
+        operation_id="a12-lesson-catalog-request",
+        resource_pack={
+            "materials": [
+                {
+                    "link_id": _PAGE_LINK_ID,
+                    "purpose": "textbook",
+                    "material_name": "合成教材",
+                    "units": [
+                        {
+                            "unit_id": "b" * 32,
+                            "unit_index": 1,
+                            "title": "方程",
+                            "text": "很长的正文" * 80,
+                        }
+                    ],
+                }
+            ],
+            "reference_images": [{"content": b"\x89PNG"}],
+        },
+    )
+    assert payload["slide_adaptations"] == []
+    first = gateway.calls[0]
+    assert first["timeout_override_seconds"] == 60
+    assert first["request"].max_physical_calls == 6  # type: ignore[union-attr]
+    user_content = first["kwargs"]["messages"][1]["content"]  # type: ignore[index]
+    assert isinstance(user_content, str)
+    catalog = __import__("json").loads(user_content)
+    assert "reference_images" not in catalog
+    assert catalog["page_catalog"][0]["source_ref"] == _PAGE_SOURCE_REF
+    assert "tools" in first["kwargs"]
+    assert "response_format" not in first["kwargs"]
+
+
+def test_lesson_model_fetches_pages_then_returns_json() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "reasoning_content": "先看教材第 1 页",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_frozen_page",
+                                            "arguments": (
+                                                '{"source_ref":"%s"}'
+                                                % _PAGE_SOURCE_REF
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+
+    loaded: list[str] = []
+    events: list[dict[str, object]] = []
+
+    def page_loader(source_ref: str) -> dict[str, object]:
+        loaded.append(source_ref)
+        return {
+            "ok": True,
+            "source_ref": source_ref,
+            "purpose": "textbook",
+            "unit_index": 1,
+            "unit_id": "b" * 32,
+            "label": "教材 第 1 页",
+            "mime_type": "image/png",
+            "content": b"\x89PNG",
+            "preview_url": "/api/teaching-prep/material-units/%s/preview"
+            % ("b" * 32),
+        }
+
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    payload = adapter.generate(
+        operation_id="a12-lesson-tool-loop",
+        resource_pack={"materials": []},
+        page_loader=page_loader,
+        observer=events.append,
+    )
+    assert payload["slide_adaptations"] == []
+    assert loaded == [_PAGE_SOURCE_REF]
+    assert len(gateway.calls) == 2
+    second_kwargs = gateway.calls[1]["kwargs"]
+    assert "tools" in second_kwargs
+    assert "response_format" not in second_kwargs
+    second_messages = second_kwargs["messages"]
+    assert any(message.get("role") == "tool" for message in second_messages)
+    image_message = second_messages[-1]
+    assert image_message["role"] == "user"
+    assert any(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for part in image_message["content"]
+    )
+    assert any(item.get("phase") == "thinking" for item in events)
+    assert any(item.get("phase") == "tool_call" for item in events)
+    assert any(item.get("phase") == "tool_result" for item in events)
+    assert any("取页 · 教材 第 1 页" == item.get("summary") for item in events)
+    assert any("已返回教材 第 1 页" == item.get("summary") for item in events)
+    assert events[-1]["phase"] == "final_accepted"
+
+
+def test_lesson_model_rejects_invalid_and_excess_page_tools_without_loader() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                calls = [
+                    {
+                        "id": f"call-{index}",
+                        "type": "function",
+                        "function": {
+                            "name": "get_frozen_page",
+                            "arguments": '{"source_ref":"C:\\\\secret\\\\page.png"}',
+                        },
+                    }
+                    for index in range(5)
+                ]
+                return {"choices": [{"message": {"tool_calls": calls}}]}
+            return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+
+    loaded: list[str] = []
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    adapter.generate(
+        operation_id="a12-lesson-reject-tools",
+        resource_pack={"materials": []},
+        page_loader=lambda source_ref: loaded.append(source_ref) or {},
+    )
+    assert loaded == []
+    tool_messages = [
+        message
+        for message in gateway.calls[1]["kwargs"]["messages"]  # type: ignore[index]
+        if message.get("role") == "tool"
+    ]
+    assert len(tool_messages) == 5
+    assert "not an allowed page_catalog value" in tool_messages[0]["content"]
+    assert "already used 4 pages" in tool_messages[4]["content"]
+
+
+def test_load_frozen_page_for_model_rejects_path_like_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    result = service.load_frozen_page_for_model(
+        {"materials": []},
+        r"C:\secret\page.png",
+    )
+    assert result["ok"] is False
+    assert "content" not in result
+    assert "C:" not in str(result.get("error") or "")
+
+
+def test_adaptation_trace_http_returns_teacher_safe_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    lesson_id, _reference_link, _candidate = _freeze_ready_setup(service, tmp_path)
+    operation_id = "a12-trace-operation-01"
+    unit_id = "b" * 32
+    source_ref = f"material:{'a' * 32}:unit:1"
+    service.adaptation_traces.append_event(
+        lesson_node_id=lesson_id,
+        operation_id=operation_id,
+        event={
+            "round": 1,
+            "phase": "thinking",
+            "summary": "模型正在分析本课目录和已取原页。",
+            "thinking_excerpt": r"先看教材第 1 页 C:\secret\page.png",
+            "tool": None,
+            "result": None,
+            "model_calls_used": 1,
+            "model_calls_max": 6,
+        },
+    )
+    service.adaptation_traces.append_event(
+        lesson_node_id=lesson_id,
+        operation_id=operation_id,
+        event={
+            "round": 1,
+            "phase": "tool_call",
+            "summary": "取页 · 教材 第 1 页",
+            "thinking_excerpt": None,
+            "tool": {
+                "name": "get_frozen_page",
+                "purpose": "textbook",
+                "page": 1,
+                "source_ref": source_ref,
+            },
+            "result": None,
+            "model_calls_used": 1,
+            "model_calls_max": 6,
+        },
+    )
+    service.adaptation_traces.append_event(
+        lesson_node_id=lesson_id,
+        operation_id=operation_id,
+        event={
+            "round": 1,
+            "phase": "tool_result",
+            "summary": "已返回教材 第 1 页",
+            "thinking_excerpt": None,
+            "tool": {
+                "name": "get_frozen_page",
+                "purpose": "textbook",
+                "page": 1,
+                "source_ref": r"C:\secret\page.png",
+            },
+            "result": {
+                "ok": True,
+                "label": "教材 第 1 页",
+                "preview_url": f"/api/teaching-prep/material-units/{unit_id}/preview",
+            },
+            "model_calls_used": 2,
+            "model_calls_max": 6,
+        },
+    )
+    client = _api_client(service)
+    missing = client.get(
+        f"/api/teaching-prep/lessons/{'0' * 32}/adaptation-trace"
+    )
+    assert missing.status_code == 404
+    response = client.get(
+        f"/api/teaching-prep/lessons/{lesson_id}/adaptation-trace",
+        params={"operation_id": operation_id},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    dumped = str(payload)
+    assert "C:" not in dumped
+    assert "secret" not in dumped
+    assert payload["status"] == "running"
+    assert payload["model_calls_used"] == 2
+    assert payload["model_calls_max"] == 6
+    assert payload["events"][0]["thinking_excerpt"] == (
+        "先看教材第 1 页 [LOCAL_PATH_REDACTED]"
+    )
+    assert payload["events"][1]["summary"] == "取页 · 教材 第 1 页"
+    assert payload["events"][1]["tool"]["source_ref"] == source_ref
+    assert payload["events"][2]["tool"]["source_ref"] == ""
+    assert payload["events"][2]["result"]["preview_url"] == (
+        f"/api/teaching-prep/material-units/{unit_id}/preview"
+    )
+
+
+def test_select_model_page_images_round_robins_and_caps_total() -> None:
+    from backend.teaching_prep.application.preparation_service import (
+        _select_model_page_images,
+    )
+
+    buckets = {
+        "exercise": [
+            {"purpose": "exercise", "material_unit_id": f"e{index}", "content": b"e"}
+            for index in range(3)
+        ],
+        "textbook": [
+            {"purpose": "textbook", "material_unit_id": f"t{index}", "content": b"t"}
+            for index in range(8)
+        ],
+        "reference_ppt": [
+            {
+                "purpose": "reference_ppt",
+                "material_unit_id": f"p{index}",
+                "content": b"p",
+            }
+            for index in range(9)
+        ],
+    }
+    selected = _select_model_page_images(
+        buckets,
+        purposes=("exercise", "textbook"),
+        max_images=12,
+        max_bytes=12_000_000,
+    )
+    purposes = [str(item["purpose"]) for item in selected]
+    assert purposes == (
+        ["exercise", "textbook"] * 3
+        + ["textbook"] * 5
+    )
+    assert "reference_ppt" not in purposes
+    assert len(selected) == 11
+
+
+def test_preview_payload_for_model_compresses_large_png(tmp_path: Path) -> None:
+    from backend.teaching_prep.application.preparation_service import (
+        _preview_payload_for_model,
+    )
+    from PIL import Image
+
+    preview = tmp_path / "large-slide.png"
+    Image.frombytes("RGB", (1600, 900), os.urandom(1600 * 900 * 3)).save(preview)
+    mime_type, content = _preview_payload_for_model(preview)
+    assert mime_type == "image/jpeg"
+    assert content.startswith(b"\xff\xd8")
+    assert len(content) < preview.stat().st_size
 
 
 def _add_exercise_link(service, lesson_id: str, *, token: str):
@@ -636,3 +1002,15 @@ def test_workbench_http_contract_runs_suggestions_as_an_observable_operation(
     assert finished.status_code == 200
     assert finished.json()["status"] == "succeeded"
     assert len(finished.json()["suggestions"]) == 1
+
+    missing = client.get(
+        f"/api/teaching-prep/lessons/{'0' * 32}/latest-exercise-suggestion-run"
+    )
+    assert missing.status_code == 404
+    latest = client.get(
+        f"/api/teaching-prep/lessons/{lesson_id}/latest-exercise-suggestion-run"
+    )
+    assert latest.status_code == 200
+    assert latest.json()["id"] == run_id
+    assert latest.json()["status"] == "succeeded"
+    assert len(latest.json()["suggestions"]) == 1

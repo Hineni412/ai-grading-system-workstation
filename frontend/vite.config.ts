@@ -4,6 +4,8 @@ import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig, type ServerOptions } from 'vite'
 
+import { JS_CHUNK_FILE_NAME_PATTERN } from './vite.adblock-filenames'
+
 export const allowedDevRoots = [
   fileURLToPath(new URL('.', import.meta.url)),
   fileURLToPath(new URL('../components/answer_region_editor', import.meta.url)),
@@ -27,6 +29,8 @@ export default defineConfig({
   build: {
     rolldownOptions: {
       output: {
+        chunkFileNames: JS_CHUNK_FILE_NAME_PATTERN,
+        entryFileNames: JS_CHUNK_FILE_NAME_PATTERN,
         codeSplitting: {
           groups: [
             {

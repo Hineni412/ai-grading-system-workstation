@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import math
@@ -13,7 +14,6 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
-from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from PIL import Image
@@ -25,6 +25,7 @@ from backend.teaching_prep.application.ports import (
     LessonModelAdapter,
     QuestionEvidenceReader,
     SemesterMappingModelAdapter,
+    SlideAnimationModelAdapter,
     WpsAdapter,
 )
 from backend.teaching_prep.application.pptx_execution import (
@@ -50,6 +51,17 @@ from backend.teaching_prep.application.preferences import (
     DEFAULT_TEACHING_PREFERENCES,
     normalize_teaching_preferences,
     resolve_teaching_preferences,
+)
+from backend.teaching_prep.application.slide_animation import (
+    accept_slide_animation_run,
+    cancel_slide_animation_run,
+    discard_slide_animation_run,
+    get_slide_animation_run,
+    list_slide_animation_runs,
+    process_slide_animation_run,
+    slide_animation_download_path,
+    slide_animation_preview_path,
+    start_slide_animation_run,
 )
 from backend.teaching_prep.application.slide_plans import (
     build_slide_plan_payload,
@@ -113,6 +125,7 @@ from backend.teaching_prep.domain.states import (
 from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
 from backend.teaching_prep.infrastructure.materials import (
     PPT_OBJECT_SCHEMA_VERSION,
+    PREVIEW_COMPOSITOR_VERSION,
     MaterialParser,
 )
 from backend.teaching_prep.infrastructure.repositories import (
@@ -132,6 +145,8 @@ from backend.teaching_prep.infrastructure.repositories import (
     TeachingPreferencesRepository,
     WorkbenchIterationRepository,
     WorkspaceAIAdoptionRepository,
+    SlideAnimationRepository,
+    AdaptationTraceRepository,
 )
 from backend.workspaces.ai_tasks.models import RevisionConflictError
 
@@ -217,7 +232,12 @@ _EXERCISE_PREVIEW_REF = re.compile(
 )
 _LESSON_TYPES = {"new_lesson"}
 _LESSON_GENERATION_BUDGET_MS = 300_000
+_PREVIEW_PUBLISH_BUDGET_MS = 60_000
 _WPS_EXECUTION_TIMEOUT_SECONDS = 170
+_SUGGESTION_IMAGE_LIMIT = 16
+_SUGGESTION_IMAGE_BYTES = 15_000_000
+_MODEL_IMAGE_MAX_EDGE = 1280
+_MODEL_IMAGE_COMPRESS_OVER_BYTES = 180_000
 _FORBIDDEN_EVIDENCE_KEYS = {
     "name",
     "student_name",
@@ -245,8 +265,11 @@ class TeachingPrepService:
         semester_mapping_model_label: str | None = None,
         exercise_suggestion_model_adapter: ExerciseSuggestionModelAdapter | None = None,
         exercise_suggestion_model_label: str | None = None,
+        slide_animation_model_adapter: SlideAnimationModelAdapter | None = None,
+        slide_animation_model_label: str | None = None,
         material_parser: MaterialParser | None = None,
         wps_adapter: WpsAdapter | None = None,
+        preview_wps_adapter: WpsAdapter | None = None,
         wps_adapter_is_real: bool = False,
     ) -> None:
         self.root = Path(root)
@@ -287,16 +310,23 @@ class TeachingPrepService:
             selection_catalog=self.workbench.selection_catalog,
             semester_snapshot=self.semester_mapping.snapshot,
         )
+        self.slide_animation_runs = SlideAnimationRepository(self.database)
+        self.adaptation_traces = AdaptationTraceRepository(self.database)
         self.material_parser = material_parser or MaterialParser()
         self._material_parse_lock = threading.Lock()
         self._active_material_parses: set[str] = set()
         self._pptx_preview_lock = threading.RLock()
+        self._pptx_preview_worker_lock = threading.Lock()
+        self._pptx_preview_wanted: str | None = None
+        self._pptx_preview_worker: threading.Thread | None = None
         self.question_evidence_reader = question_evidence_reader
         self.assessment_evidence_reader = assessment_evidence_reader
         self.lesson_model_adapter = lesson_model_adapter
         self.semester_mapping_model_adapter = semester_mapping_model_adapter
         self.exercise_suggestion_model_adapter = exercise_suggestion_model_adapter
+        self.slide_animation_model_adapter = slide_animation_model_adapter
         self.wps_adapter = wps_adapter
+        self.preview_wps_adapter = preview_wps_adapter
         self.wps_adapter_is_real = bool(wps_adapter_is_real)
         self.lesson_model_label = (
             _clean_optional_text(
@@ -325,6 +355,15 @@ class TeachingPrepService:
             if exercise_suggestion_model_label is not None
             else None
         )
+        self.slide_animation_model_label = (
+            _clean_optional_text(
+                slide_animation_model_label,
+                "slide_animation_model_label",
+                maximum=120,
+            )
+            if slide_animation_model_label is not None
+            else None
+        )
         self.mark_interrupted_operations()
 
     def status(self) -> dict[str, object]:
@@ -343,6 +382,11 @@ class TeachingPrepService:
             "exercise_suggestion_model_available": (
                 _model_adapter_available(
                     self.exercise_suggestion_model_adapter
+                )
+            ),
+            "slide_animation_model_available": (
+                _model_adapter_available(
+                    self.slide_animation_model_adapter
                 )
             ),
             "real_wps_enabled": (
@@ -527,6 +571,21 @@ class TeachingPrepService:
             decision=normalize_mapping_decision(decision),
         )
 
+    def recompute_semester_mapping_page_ranges(
+        self,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> SemesterMappingProposal:
+        if isinstance(expected_revision, bool) or expected_revision < 1:
+            raise TeachingPrepValidationError(
+                "expected mapping revision is invalid"
+            )
+        return self.semester_mapping.recompute_page_ranges(
+            _clean_entity_id(proposal_id),
+            expected_revision=expected_revision,
+        )
+
     def reject_semester_mapping_proposal(
         self,
         proposal_id: str,
@@ -654,15 +713,116 @@ class TeachingPrepService:
         self,
         model_input: Mapping[str, object],
     ) -> list[dict[str, object]]:
-        result: list[dict[str, object]] = []
-        total_bytes = 0
+        return self._material_page_images(
+            model_input,
+            purposes=("exercise", "textbook"),
+            max_images=_SUGGESTION_IMAGE_LIMIT,
+            max_bytes=_SUGGESTION_IMAGE_BYTES,
+        )
+
+    def load_frozen_page_for_model(
+        self,
+        resource_pack: Mapping[str, object],
+        source_ref: str,
+    ) -> dict[str, object]:
+        from backend.teaching_prep.infrastructure.llm.lesson_model import (
+            page_catalog_entry,
+            page_label,
+        )
+
+        entry = page_catalog_entry(resource_pack, source_ref)
+        if entry is None:
+            return {
+                "ok": False,
+                "error": "source_ref is not in the frozen pack",
+                "source_ref": str(source_ref or ""),
+            }
+        unit_id = str(entry.get("unit_id") or "")
+        if not unit_id:
+            return {
+                "ok": False,
+                "error": "page unit is unavailable",
+                "source_ref": str(source_ref or ""),
+            }
+        preview = self._preview_file_for_model(
+            unit_id,
+            regenerate_missing=True,
+        )
+        if preview is None:
+            return {
+                "ok": False,
+                "error": "page preview is unavailable",
+                "source_ref": str(source_ref or ""),
+            }
+        mime_type, content = _preview_payload_for_model(preview)
+        purpose = entry.get("purpose")
+        unit_index = entry.get("unit_index")
+        label = page_label(purpose, unit_index)
+        return {
+            "ok": True,
+            "source_ref": str(entry.get("source_ref") or source_ref),
+            "purpose": purpose,
+            "unit_index": unit_index,
+            "unit_id": unit_id,
+            "label": label,
+            "mime_type": mime_type,
+            "content": content,
+            "preview_url": (
+                f"/api/teaching-prep/material-units/{unit_id}/preview"
+            ),
+        }
+
+    def get_adaptation_trace(
+        self,
+        lesson_node_id: str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, object]:
+        clean_lesson = _clean_entity_id(lesson_node_id)
+        if operation_id:
+            return self.adaptation_traces.list_for_operation(
+                lesson_node_id=clean_lesson,
+                operation_id=_clean_token(operation_id),
+            )
+        return self.adaptation_traces.latest_for_lesson(clean_lesson)
+
+    def _adaptation_observer(
+        self,
+        *,
+        lesson_node_id: str,
+        operation_id: str,
+    ):
+        def emit(event: Mapping[str, object]) -> None:
+            try:
+                self.adaptation_traces.append_event(
+                    lesson_node_id=lesson_node_id,
+                    operation_id=operation_id,
+                    event=event,
+                )
+            except Exception:
+                LOGGER.exception("adaptation trace could not be recorded")
+
+        return emit
+
+    def _material_page_images(
+        self,
+        model_input: Mapping[str, object],
+        *,
+        purposes: Sequence[str],
+        max_images: int,
+        max_bytes: int,
+    ) -> list[dict[str, object]]:
+        buckets: dict[str, list[dict[str, object]]] = {
+            purpose: [] for purpose in purposes
+        }
         materials = model_input.get("materials")
         if not isinstance(materials, list):
-            return result
+            return []
         for material in materials:
             if not isinstance(material, Mapping):
                 continue
-            if str(material.get("purpose") or "") != "exercise":
+            purpose = str(material.get("purpose") or "")
+            if purpose not in buckets:
                 continue
             units = material.get("units")
             if not isinstance(units, list):
@@ -673,32 +833,51 @@ class TeachingPrepService:
                 unit_id = str(unit.get("unit_id") or "")
                 if not unit_id:
                     continue
-                preview = self.material_preview_path(unit_id)
-                content = preview.read_bytes()
-                total_bytes += len(content)
-                if total_bytes > 15_000_000:
-                    return result
-                result.append(
+                preview = self._preview_file_for_model(
+                    unit_id,
+                    regenerate_missing=purpose != "reference_ppt",
+                )
+                if preview is None:
+                    continue
+                mime_type, content = _preview_payload_for_model(preview)
+                buckets[purpose].append(
                     {
+                        "purpose": purpose,
                         "material_version_id": str(
                             material.get("material_version_id") or ""
                         ),
                         "material_name": str(material.get("material_name") or ""),
                         "material_unit_id": unit_id,
                         "unit_index": int(unit.get("unit_index") or 0),
-                        "mime_type": (
-                            "image/jpeg"
-                            if preview.suffix.lower() in {".jpg", ".jpeg"}
-                            else "image/webp"
-                            if preview.suffix.lower() == ".webp"
-                            else "image/png"
-                        ),
+                        "mime_type": mime_type,
                         "content": content,
                     }
                 )
-                if len(result) >= 12:
-                    return result
-        return result
+        return _select_model_page_images(
+            buckets,
+            purposes=purposes,
+            max_images=max_images,
+            max_bytes=max_bytes,
+        )
+
+    def _preview_file_for_model(
+        self,
+        unit_id: str,
+        *,
+        regenerate_missing: bool,
+    ) -> Path | None:
+        try:
+            if regenerate_missing:
+                return self.material_preview_path(unit_id)
+            record = self.material_units.preview_record(
+                _clean_entity_id(unit_id)
+            )
+            target = (self.root / record.preview_relpath).resolve(strict=False)
+            preview_root = self.paths["previews"].resolve(strict=False)
+            target.relative_to(preview_root)
+            return target if target.is_file() else None
+        except Exception:
+            return None
 
     def start_exercise_suggestion_run(
         self,
@@ -784,8 +963,87 @@ class TeachingPrepService:
     def get_exercise_suggestion_run(self, run_id: str):
         return self.workbench.get_suggestion_run(_clean_entity_id(run_id))
 
+    def get_latest_exercise_suggestion_run(self, lesson_node_id: str):
+        result = self.workbench.get_latest_suggestion_run_for_lesson(
+            _clean_entity_id(lesson_node_id)
+        )
+        if result is None:
+            raise TeachingPrepNotFoundError(
+                "exercise suggestion run was not found"
+            )
+        return result
+
     def cancel_exercise_suggestion_run(self, run_id: str):
         return self.workbench.cancel_suggestion_run(_clean_entity_id(run_id))
+
+    def start_slide_animation_run(
+        self,
+        lesson_node_id: str,
+        *,
+        operation_id: str,
+        confirmed: bool,
+        material_link_id: str,
+        page_indexes: Sequence[int],
+    ):
+        return start_slide_animation_run(
+            self,
+            lesson_node_id,
+            operation_id=operation_id,
+            confirmed=confirmed,
+            material_link_id=material_link_id,
+            page_indexes=page_indexes,
+        )
+
+    def process_slide_animation_run(
+        self,
+        run_id: str,
+        *,
+        task_model_gateway: object | None = None,
+    ) -> None:
+        process_slide_animation_run(
+            self,
+            run_id,
+            task_model_gateway=task_model_gateway,
+        )
+
+    def list_slide_animation_runs(self, lesson_node_id: str):
+        return list_slide_animation_runs(self, lesson_node_id)
+
+    def get_slide_animation_run(self, run_id: str):
+        return get_slide_animation_run(self, run_id)
+
+    def cancel_slide_animation_run(self, run_id: str):
+        return cancel_slide_animation_run(self, run_id)
+
+    def accept_slide_animation_run(
+        self,
+        run_id: str,
+        *,
+        expected_revision: int,
+    ):
+        return accept_slide_animation_run(
+            self,
+            run_id,
+            expected_revision=expected_revision,
+        )
+
+    def discard_slide_animation_run(
+        self,
+        run_id: str,
+        *,
+        expected_revision: int,
+    ):
+        return discard_slide_animation_run(
+            self,
+            run_id,
+            expected_revision=expected_revision,
+        )
+
+    def slide_animation_preview_path(self, run_id: str) -> Path:
+        return slide_animation_preview_path(self, run_id)
+
+    def slide_animation_download_path(self, run_id: str) -> Path:
+        return slide_animation_download_path(self, run_id)
 
     def review_exercise_suggestion(
         self,
@@ -2157,6 +2415,7 @@ class TeachingPrepService:
         request_hash: str,
         operation_already_started: bool = False,
     ) -> dict[str, object]:
+        self.close_preview_runtime()
         impact = self.catalog.material_deletion_impact(
             source_id,
             expected_revision=expected_revision,
@@ -2626,46 +2885,147 @@ class TeachingPrepService:
                 "material preview is unavailable"
             )
         unit = self.material_units.get_unit(clean_id)
-        if (
-            unit.unit_kind == "ppt_slide"
-            and unit.object_summary.get("preview_kind") == "rendered"
-            and _sha256_file(target) != record.preview_sha256
-        ):
-            with self._material_parse_lock, self._pptx_preview_lock:
-                record = self.material_units.preview_record(clean_id)
-                target = (self.root / record.preview_relpath).resolve(
-                    strict=False
-                )
-                unit = self.material_units.get_unit(clean_id)
-                if (
-                    unit.object_summary.get("preview_kind") == "rendered"
-                    and (
-                        not target.is_file()
-                        or _sha256_file(target) != record.preview_sha256
-                    )
-                ):
-                    self._restore_structural_pptx_preview(
-                        record=record,
-                        unit=unit,
-                    )
+        if unit.unit_kind == "ppt_slide":
+            summary = unit.object_summary
+            kind = str(summary.get("preview_kind") or "")
+            compositor = int(summary.get("preview_compositor") or 0)
+            adapter = self._pptx_preview_adapter()
+            replace_cached_wps = adapter is None and kind == "rendered"
+            stale_compositor = (
+                kind == "structural"
+                and compositor < PREVIEW_COMPOSITOR_VERSION
+            )
+            corrupt_rendered = (
+                kind == "rendered"
+                and _sha256_file(target) != record.preview_sha256
+            )
+            if replace_cached_wps or stale_compositor or corrupt_rendered:
+                with self._material_parse_lock, self._pptx_preview_lock:
                     record = self.material_units.preview_record(clean_id)
                     target = (self.root / record.preview_relpath).resolve(
                         strict=False
                     )
                     unit = self.material_units.get_unit(clean_id)
-        if (
-            unit.unit_kind == "ppt_slide"
-            and unit.object_summary.get("preview_kind") == "structural"
-            and unit.object_summary.get("preview_render_status")
-            not in {"completed", "failed"}
-        ):
-            self._render_pptx_preview(clean_id)
-            record = self.material_units.preview_record(clean_id)
-            target = (self.root / record.preview_relpath).resolve(strict=False)
+                    summary = unit.object_summary
+                    kind = str(summary.get("preview_kind") or "")
+                    compositor = int(summary.get("preview_compositor") or 0)
+                    adapter = self._pptx_preview_adapter()
+                    still_replace = adapter is None and kind == "rendered"
+                    still_stale = (
+                        kind == "structural"
+                        and compositor < PREVIEW_COMPOSITOR_VERSION
+                    )
+                    still_corrupt = (
+                        kind == "rendered"
+                        and (
+                            not target.is_file()
+                            or _sha256_file(target) != record.preview_sha256
+                        )
+                    )
+                    if still_replace or still_stale or still_corrupt:
+                        try:
+                            self._restore_structural_pptx_preview(
+                                record=record,
+                                unit=unit,
+                            )
+                        except Exception:
+                            if still_replace or still_stale:
+                                pass
+                            else:
+                                raise
+                    record = self.material_units.preview_record(clean_id)
+                    target = (self.root / record.preview_relpath).resolve(
+                        strict=False
+                    )
+                    unit = self.material_units.get_unit(clean_id)
         return target
 
     def get_material_unit(self, unit_id: str) -> MaterialUnit:
         return self.material_units.get_unit(_clean_entity_id(unit_id))
+
+    def request_pptx_preview_render(self, unit_id: str) -> MaterialUnit:
+        clean_id = _clean_entity_id(unit_id)
+        unit = self.material_units.get_unit(clean_id)
+        if unit.unit_kind != "ppt_slide":
+            raise TeachingPrepValidationError(
+                "only PPT slides can request rendered previews"
+            )
+        if unit.object_summary.get("preview_kind") == "rendered":
+            return unit
+        if self._pptx_preview_adapter() is None:
+            return unit
+        if not self._should_render_pptx_preview(unit.object_summary):
+            return unit
+        record = self.material_units.preview_record(clean_id)
+        self.material_units.mark_preview_render_progress(
+            clean_id,
+            source_version_sha256=record.source_version_sha256,
+            status="queued",
+        )
+        with self._pptx_preview_worker_lock:
+            self._pptx_preview_wanted = clean_id
+            worker = self._pptx_preview_worker
+            if worker is None or not worker.is_alive():
+                self._pptx_preview_worker = threading.Thread(
+                    target=self._pptx_preview_worker_loop,
+                    name="pptx-preview-render",
+                    daemon=True,
+                )
+                self._pptx_preview_worker.start()
+        return self.material_units.get_unit(clean_id)
+
+    def drain_pptx_preview_renders(self, timeout: float = 60) -> None:
+        with self._pptx_preview_worker_lock:
+            worker = self._pptx_preview_worker
+        if worker is not None:
+            worker.join(timeout=timeout)
+
+    def close_preview_runtime(self) -> None:
+        for adapter in (self.preview_wps_adapter, self.wps_adapter):
+            closer = getattr(adapter, "close_preview_session", None)
+            if callable(closer):
+                closer()
+
+    def _pptx_preview_worker_loop(self) -> None:
+        while True:
+            with self._pptx_preview_worker_lock:
+                wanted = self._pptx_preview_wanted
+                self._pptx_preview_wanted = None
+                if wanted is None:
+                    self._pptx_preview_worker = None
+                    return
+            try:
+                record = self.material_units.preview_record(wanted)
+                self.material_units.mark_preview_render_progress(
+                    wanted,
+                    source_version_sha256=record.source_version_sha256,
+                    status="running",
+                )
+                self._render_pptx_preview(wanted)
+            except Exception:
+                LOGGER.exception("PPT preview render worker failed")
+
+    def _pptx_preview_adapter(self) -> WpsAdapter | None:
+        if self.wps_adapter is not None and self.wps_adapter_is_real:
+            return self.wps_adapter
+        return self.preview_wps_adapter
+
+    def _should_render_pptx_preview(self, summary: Mapping[str, object]) -> bool:
+        status = str(summary.get("preview_render_status") or "")
+        if status == "completed":
+            return False
+        if status == "failed":
+            if self._pptx_preview_adapter() is None:
+                return False
+            error = str(summary.get("preview_render_error_code") or "")
+            if error == "wps_preview_unavailable":
+                return True
+            if error == "wps_preview_failed":
+                attempts = summary.get("preview_render_attempts")
+                counted = 1 if attempts is None else int(attempts)
+                return counted < 2
+            return False
+        return True
 
     def _restore_structural_pptx_preview(
         self,
@@ -2738,11 +3098,12 @@ class TeachingPrepService:
 
     def _render_pptx_preview_under_material_lock(self, unit_id: str) -> None:
         with self._pptx_preview_lock:
+            adapter = self._pptx_preview_adapter()
             unit = self.material_units.get_unit(unit_id)
             summary = unit.object_summary
-            if summary.get("preview_kind") == "rendered" or summary.get(
-                "preview_render_status"
-            ) == "failed":
+            if summary.get("preview_kind") == "rendered":
+                return
+            if not self._should_render_pptx_preview(summary):
                 return
             record = self.material_units.preview_record(unit_id)
             version = self.catalog.get_material_version(
@@ -2750,7 +3111,7 @@ class TeachingPrepService:
             )
             if version.material_type != "pptx":
                 return
-            if self.wps_adapter is None or not self.wps_adapter_is_real:
+            if adapter is None:
                 self.material_units.mark_preview_render_failed(
                     unit_id,
                     source_version_sha256=record.source_version_sha256,
@@ -2772,87 +3133,95 @@ class TeachingPrepService:
                 return
             error_code = "wps_preview_failed"
             try:
-                with TemporaryDirectory(
-                    prefix="pptx-preview-",
-                    dir=self.paths["temp"],
-                ) as temporary_value:
-                    working = Path(temporary_value)
-                    source_copy = working / "source-copy.pptx"
-                    rendered_dir = working / "rendered"
+                working = (
+                    self.paths["temp"]
+                    / "pptx-preview-session"
+                    / record.source_version_sha256
+                )
+                working.mkdir(parents=True, exist_ok=True)
+                source_copy = working / "source-copy.pptx"
+                rendered_dir = working / "rendered"
+                if (
+                    not source_copy.is_file()
+                    or _sha256_file(source_copy) != record.source_version_sha256
+                ):
+                    closer = getattr(adapter, "close_preview_session", None)
+                    if callable(closer):
+                        closer()
                     shutil.copy2(source, source_copy)
-                    if _sha256_file(source_copy) != record.source_version_sha256:
-                        raise TeachingPrepConflictError(
-                            "isolated PPTX preview copy changed"
-                        )
-                    self.wps_adapter.render_previews(
-                        operation_id=(
-                            f"pptx-preview-{record.source_version_sha256[:16]}-"
-                            f"{unit.unit_index:05d}"
-                        ),
-                        source_copy=str(source_copy),
-                        preview_directory=str(rendered_dir),
-                        slide_indexes=[unit.unit_index],
-                        source_sha256=record.source_version_sha256,
-                        timeout_milliseconds=30_000,
+                if _sha256_file(source_copy) != record.source_version_sha256:
+                    raise TeachingPrepConflictError(
+                        "isolated PPTX preview copy changed"
                     )
-                    candidate = rendered_dir / (
-                        f"slide-{unit.unit_index:05d}.png"
+                adapter.render_previews(
+                    operation_id=(
+                        f"pptx-preview-{record.source_version_sha256[:16]}-"
+                        f"{unit.unit_index:05d}"
+                    ),
+                    source_copy=str(source_copy),
+                    preview_directory=str(rendered_dir),
+                    slide_indexes=[unit.unit_index],
+                    source_sha256=record.source_version_sha256,
+                    timeout_milliseconds=30_000,
+                )
+                candidate = rendered_dir / (
+                    f"slide-{unit.unit_index:05d}.png"
+                )
+                if (
+                    not candidate.is_file()
+                    or candidate.stat().st_size <= 0
+                    or candidate.stat().st_size > 32 * 1024 * 1024
+                ):
+                    raise TeachingPrepValidationError(
+                        "WPS preview output is invalid"
                     )
-                    if (
-                        not candidate.is_file()
-                        or candidate.stat().st_size <= 0
-                        or candidate.stat().st_size > 32 * 1024 * 1024
-                    ):
-                        raise TeachingPrepValidationError(
-                            "WPS preview output is invalid"
-                        )
-                    try:
-                        with Image.open(candidate) as image:
-                            if image.format != "PNG":
-                                raise TeachingPrepValidationError(
-                                    "WPS preview output is invalid"
-                                )
-                            image.verify()
-                        with Image.open(candidate) as image:
-                            width, height = image.size
-                    except (OSError, ValueError) as exc:
-                        raise TeachingPrepValidationError(
-                            "WPS preview output is invalid"
-                        ) from exc
-                    if (
-                        width <= 0
-                        or height <= 0
-                        or width > 8_192
-                        or height > 8_192
-                        or _sha256_file(source) != record.source_version_sha256
-                    ):
-                        raise TeachingPrepValidationError(
-                            "WPS preview output is invalid"
-                        )
-                    target = self.root / record.preview_relpath
-                    previous = target.read_bytes()
-                    temporary = target.with_name(
-                        f".{target.name}.{uuid4().hex}.tmp"
-                    )
-                    try:
-                        shutil.copyfile(candidate, temporary)
-                        rendered_sha = _sha256_file(temporary)
-                        os.replace(temporary, target)
-                        try:
-                            self.material_units.mark_preview_rendered(
-                                unit_id,
-                                source_version_sha256=(
-                                    record.source_version_sha256
-                                ),
-                                preview_sha256=rendered_sha,
-                                width=width,
-                                height=height,
+                try:
+                    with Image.open(candidate) as image:
+                        if image.format != "PNG":
+                            raise TeachingPrepValidationError(
+                                "WPS preview output is invalid"
                             )
-                        except Exception:
-                            target.write_bytes(previous)
-                            raise
-                    finally:
-                        temporary.unlink(missing_ok=True)
+                        image.verify()
+                    with Image.open(candidate) as image:
+                        width, height = image.size
+                except (OSError, ValueError) as exc:
+                    raise TeachingPrepValidationError(
+                        "WPS preview output is invalid"
+                    ) from exc
+                if (
+                    width <= 0
+                    or height <= 0
+                    or width > 8_192
+                    or height > 8_192
+                    or _sha256_file(source) != record.source_version_sha256
+                ):
+                    raise TeachingPrepValidationError(
+                        "WPS preview output is invalid"
+                    )
+                target = self.root / record.preview_relpath
+                previous = target.read_bytes()
+                temporary = target.with_name(
+                    f".{target.name}.{uuid4().hex}.tmp"
+                )
+                try:
+                    shutil.copyfile(candidate, temporary)
+                    rendered_sha = _sha256_file(temporary)
+                    os.replace(temporary, target)
+                    try:
+                        self.material_units.mark_preview_rendered(
+                            unit_id,
+                            source_version_sha256=(
+                                record.source_version_sha256
+                            ),
+                            preview_sha256=rendered_sha,
+                            width=width,
+                            height=height,
+                        )
+                    except Exception:
+                        target.write_bytes(previous)
+                        raise
+                finally:
+                    temporary.unlink(missing_ok=True)
             except TimeoutError:
                 error_code = "wps_preview_timeout"
             except Exception:
@@ -3467,6 +3836,18 @@ class TeachingPrepService:
                 model_kwargs = {
                     "operation_id": clean_operation_id,
                     "resource_pack": model_payload,
+                    "page_loader": (
+                        lambda source_ref, pack_payload=model_payload: (
+                            self.load_frozen_page_for_model(
+                                pack_payload,
+                                str(source_ref),
+                            )
+                        )
+                    ),
+                    "observer": self._adaptation_observer(
+                        lesson_node_id=pack.lesson_node_id,
+                        operation_id=clean_operation_id,
+                    ),
                 }
                 if task_model_gateway is not None:
                     model_kwargs["task_model_gateway"] = task_model_gateway
@@ -3615,6 +3996,18 @@ class TeachingPrepService:
             model_kwargs = {
                 "operation_id": clean_token,
                 "resource_pack": model_payload,
+                "page_loader": (
+                    lambda source_ref, pack_payload=model_payload: (
+                        self.load_frozen_page_for_model(
+                            pack_payload,
+                            str(source_ref),
+                        )
+                    )
+                ),
+                "observer": self._adaptation_observer(
+                    lesson_node_id=pack.lesson_node_id,
+                    operation_id=clean_token,
+                ),
             }
             if task_model_gateway is not None:
                 model_kwargs["task_model_gateway"] = task_model_gateway
@@ -3917,12 +4310,14 @@ class TeachingPrepService:
         *,
         operation_id: str,
         confirmed: bool,
+        publish: bool = True,
     ) -> tuple[PptxExecutionRun, PptxVersion | None, bool]:
         return self._execute_slide_plan_sync(
             plan_id,
             operation_id=operation_id,
             confirmed=confirmed,
             continue_existing=False,
+            publish=publish,
         )
 
     def start_pptx_execution(
@@ -3931,7 +4326,9 @@ class TeachingPrepService:
         *,
         operation_id: str,
         confirmed: bool,
+        preview_only: bool = False,
     ) -> tuple[PptxExecutionRun, bool]:
+        _ = preview_only
         if not confirmed:
             raise TeachingPrepValidationError(
                 "PPTX copy execution requires explicit confirmation"
@@ -4042,7 +4439,11 @@ class TeachingPrepService:
             created,
         )
 
-    def process_pptx_execution(self, run_id: str) -> None:
+    def process_pptx_execution(
+        self,
+        run_id: str,
+        publish: bool = True,
+    ) -> None:
         run = self.pptx_executions.get(_clean_entity_id(run_id))
         if run.status != "running":
             return
@@ -4051,6 +4452,7 @@ class TeachingPrepService:
             operation_id=run.operation_id,
             confirmed=True,
             continue_existing=True,
+            publish=publish,
         )
 
     def _execute_slide_plan_sync(
@@ -4060,6 +4462,7 @@ class TeachingPrepService:
         operation_id: str,
         confirmed: bool,
         continue_existing: bool,
+        publish: bool = True,
     ) -> tuple[PptxExecutionRun, PptxVersion | None, bool]:
         if not confirmed:
             raise TeachingPrepValidationError(
@@ -4173,6 +4576,17 @@ class TeachingPrepService:
                 **verification,
                 "generation_deadline_at": publication_deadline_at,
             }
+            if not publish:
+                self.pptx_executions.set_preview_ready(
+                    run.id, verification
+                )
+                return (
+                    self._execution_with_storage(
+                        self.pptx_executions.get(run.id)
+                    ),
+                    None,
+                    True,
+                )
             pack = self.resource_packs.get(plan.resource_pack_id)
             version, relative = self.pptx_executions.begin_publish(
                 run_id=run.id,
@@ -4325,6 +4739,138 @@ class TeachingPrepService:
         if not target.is_file():
             raise TeachingPrepNotFoundError("PPTX preview is unavailable")
         return target
+
+    def pptx_execution_preview_path(
+        self,
+        run_id: str,
+        *,
+        slide_number: int = 1,
+    ) -> Path:
+        run = self.get_pptx_execution(run_id)
+        if not _preview_ready(run):
+            raise TeachingPrepValidationError(
+                "execution preview is not ready"
+            )
+        if slide_number < 1 or slide_number > run.expected_slide_count:
+            raise TeachingPrepValidationError("preview slide number is invalid")
+        root = (self._execution_staging(run.id) / "wps-previews").resolve(
+            strict=False
+        )
+        target = (root / f"slide-{slide_number:05d}.png").resolve(strict=False)
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise TeachingPrepValidationError(
+                "PPTX preview path is invalid"
+            ) from exc
+        if not target.is_file():
+            raise TeachingPrepNotFoundError("PPTX preview is unavailable")
+        return target
+
+    def confirm_pptx_preview(
+        self,
+        run_id: str,
+        *,
+        confirmed: bool,
+    ) -> tuple[PptxExecutionRun, PptxVersion | None]:
+        if not confirmed:
+            raise TeachingPrepValidationError(
+                "PPTX preview publication requires explicit confirmation"
+            )
+        run = self.get_pptx_execution(run_id)
+        if not _preview_ready(run):
+            raise TeachingPrepValidationError(
+                "only a verified isolated preview can be published"
+            )
+        plan = self._effective_slide_plan(
+            self.slide_plans.get(run.slide_plan_id)
+        )
+        pack = self.resource_packs.get(plan.resource_pack_id)
+        staging = self._execution_staging(run.id)
+        candidate = staging / "candidate.pptx"
+        preview_dir = staging / "wps-previews"
+        if not candidate.is_file():
+            raise TeachingPrepConflictError(
+                "isolated preview candidate is missing"
+            )
+        for index in range(1, run.expected_slide_count + 1):
+            if not (preview_dir / f"slide-{index:05d}.png").is_file():
+                raise TeachingPrepConflictError(
+                    "isolated preview pages are incomplete"
+                )
+        deadline_at = (
+            datetime.now(UTC)
+            + timedelta(milliseconds=_PREVIEW_PUBLISH_BUDGET_MS)
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        verification = dict(run.verification_report or {})
+        verification["generation_deadline_at"] = deadline_at
+        publication_moved = False
+        published = False
+        reserved_version_id: str | None = None
+        published_preview_dir: Path | None = None
+        output: Path | None = None
+        try:
+            version, relative = self.pptx_executions.begin_publish(
+                run_id=run.id,
+                lesson_node_id=pack.lesson_node_id,
+                slide_plan_id=plan.id,
+                slide_count=run.expected_slide_count,
+                verification_report=verification,
+            )
+            reserved_version_id = version.id
+            output = self._controlled_output(relative)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if output.exists():
+                raise TeachingPrepConflictError(
+                    "reserved PPTX output already exists"
+                )
+            os.rename(candidate, output)
+            publication_moved = True
+            published_preview_dir = (
+                self.paths["previews"] / "pptx-versions" / version.id
+            )
+            published_preview_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(preview_dir, published_preview_dir)
+            version = self.pptx_executions.finish_publish(
+                run_id=run.id,
+                version_id=version.id,
+                output_sha256=str(verification["candidate_sha256"]),
+                deadline_at=deadline_at,
+            )
+            published = True
+            return (
+                self._execution_with_storage(
+                    self.pptx_executions.get(run.id)
+                ),
+                version,
+            )
+        except Exception as exc:
+            if published_preview_dir is not None:
+                shutil.rmtree(published_preview_dir, ignore_errors=True)
+            error_code = _execution_error_code(exc)
+            if published and reserved_version_id is not None:
+                self.pptx_executions.revoke_published(
+                    run_id=run.id,
+                    version_id=reserved_version_id,
+                    error_code=error_code,
+                )
+                _restore_candidate_from_output(
+                    candidate=candidate,
+                    output=output,
+                )
+            else:
+                if publication_moved:
+                    _restore_candidate_from_output(
+                        candidate=candidate,
+                        output=output,
+                    )
+                self.pptx_executions.fail(run.id, error_code)
+            return (
+                self._execution_with_storage(
+                    self.pptx_executions.get(run.id)
+                ),
+                None,
+            )
 
     def get_lesson_generation_performance(
         self,
@@ -5095,6 +5641,7 @@ class TeachingPrepService:
         detailed = self.pptx_executions.mark_interrupted()
         delivery = self.teaching_delivery.mark_interrupted_packages()
         workbench = self.workbench.mark_interrupted()
+        animations = self.slide_animation_runs.mark_interrupted()
         with self.database.connect(immediate=True) as connection:
             cursor = connection.execute(
                 """
@@ -5121,6 +5668,7 @@ class TeachingPrepService:
                 detailed,
                 delivery,
                 workbench,
+                animations,
                 int(cursor.rowcount),
             )
 
@@ -5293,6 +5841,71 @@ def _require_initial_tree_source(snapshot: Mapping[str, object]) -> None:
         raise TeachingPrepValidationError(
             "initial lesson tree requires a textbook or homework workbook"
         )
+
+
+def _preview_payload_for_model(preview: Path) -> tuple[str, bytes]:
+    suffix = preview.suffix.lower()
+    mime_type = (
+        "image/jpeg"
+        if suffix in {".jpg", ".jpeg"}
+        else "image/webp"
+        if suffix == ".webp"
+        else "image/png"
+    )
+    content = preview.read_bytes()
+    if len(content) <= _MODEL_IMAGE_COMPRESS_OVER_BYTES:
+        return mime_type, content
+    try:
+        with Image.open(preview) as image:
+            rgb = image.convert("RGB")
+            rgb.thumbnail((_MODEL_IMAGE_MAX_EDGE, _MODEL_IMAGE_MAX_EDGE))
+            buffer = io.BytesIO()
+            rgb.save(buffer, format="JPEG", quality=75, optimize=True)
+            compressed = buffer.getvalue()
+        if compressed and len(compressed) < len(content):
+            return "image/jpeg", compressed
+    except Exception:
+        return mime_type, content
+    return mime_type, content
+
+
+def _select_model_page_images(
+    buckets: Mapping[str, Sequence[Mapping[str, object]]],
+    *,
+    purposes: Sequence[str],
+    max_images: int,
+    max_bytes: int,
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    total_bytes = 0
+    cursors = {purpose: 0 for purpose in purposes}
+    progressed = True
+    while progressed and len(result) < max_images:
+        progressed = False
+        for purpose in purposes:
+            items = buckets.get(purpose) or ()
+            index = cursors[purpose]
+            if index >= len(items) or len(result) >= max_images:
+                continue
+            item = dict(items[index])
+            cursors[purpose] = index + 1
+            progressed = True
+            content = item.get("content")
+            size = len(content) if isinstance(content, (bytes, bytearray)) else 0
+            if size <= 0 or total_bytes + size > max_bytes:
+                continue
+            total_bytes += size
+            result.append(item)
+    return result
+
+
+def _preview_ready(run: PptxExecutionRun) -> bool:
+    return (
+        run.status == "verifying"
+        and run.published_version_id is None
+        and isinstance(run.verification_report, Mapping)
+        and bool(run.verification_report)
+    )
 
 
 def _execution_error_code(exc: Exception) -> str:

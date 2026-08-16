@@ -2363,8 +2363,47 @@
   margin: 0;
 }
 
-.taxonomy-ai-results__manual {
-  display: grid;
+.taxonomy-ai-results__table-wrap {
+  overflow-x: auto;
+}
+
+.taxonomy-ai-results__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.taxonomy-ai-results__table th,
+.taxonomy-ai-results__table td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.taxonomy-ai-results__table thead th {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.taxonomy-ai-results__table tbody th {
+  font-weight: 600;
+}
+
+.taxonomy-ai-results__table td p,
+.taxonomy-ai-results__table td strong {
+  margin: 0;
+}
+
+.taxonomy-ai-results__table td p {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.taxonomy-ai-results__check {
+  display: flex;
+  align-items: center;
   gap: 8px;
 }
 

@@ -51,16 +51,17 @@ _RETRYABLE_CATEGORIES = {
     "unknown",
 }
 _PUBLIC_FAILURE_MESSAGES = {
-    "rate_limit": "AI service rate limited the request.",
-    "timeout": "AI tagging request timed out.",
-    "network": "AI tagging service was unavailable.",
-    "parse": "AI tagging response could not be parsed.",
-    "validation": "Question is unavailable for tagging.",
-    "quality": "AI tagging result did not meet the save quality gate.",
-    "save": "Complete AI tags could not be saved.",
-    "evidence": "Solution evidence could not be saved.",
-    "training_criteria": "Training points could not be published.",
-    "unknown": "AI tagging failed.",
+    "rate_limit": "模型请求过于频繁，请稍后再试。",
+    "timeout": "分析超时，可稍后补齐未完成题目。",
+    "network": "暂时连不上分析服务，已保存进度。",
+    "parse": "模型返回无法解析，可稍后重试未完成题目。",
+    "validation": "这道题暂时无法完成分析。",
+    "missing_image": "题目标记有图但没有抽出可用图片。",
+    "quality": "分析结果未达到保存标准，需要补齐或审核。",
+    "save": "完整标签未能保存。",
+    "evidence": "解题证据未能保存。",
+    "training_criteria": "训练判定点未能发布。",
+    "unknown": "分析失败，已保存进度。",
 }
 
 
@@ -1009,7 +1010,7 @@ def _combined_public_category(category: str) -> str:
     if normalized in {"tag_validation", "validation"}:
         return "quality"
     if normalized == "missing_image":
-        return "validation"
+        return "missing_image"
     if normalized in {"training_criteria", "criterionqualityerror"}:
         return "training_criteria"
     if normalized in {"timeout", "parse"}:

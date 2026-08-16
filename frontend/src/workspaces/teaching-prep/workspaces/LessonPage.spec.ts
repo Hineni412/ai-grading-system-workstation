@@ -89,8 +89,8 @@ describe('LessonPage', () => {
     const rail = host.querySelector('[aria-label="备课步骤"]')
     expect(rail?.querySelectorAll('.tp-rail__step')).toHaveLength(3)
     expect(host.textContent).toContain('① 确认资料')
-    expect(host.textContent).toContain('② 审核改编')
-    expect(host.textContent).toContain('③ 副本与上课包')
+    expect(host.textContent).toContain('② 对照改编')
+    expect(host.textContent).toContain('③ 上课包')
     expect(host.querySelector('[aria-label="本步说明"]')).toBeTruthy()
     expect(host.textContent).toContain('第一课时')
     await vi.waitFor(() => {

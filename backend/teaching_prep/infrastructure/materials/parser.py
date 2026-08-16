@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from backend.ops.archive import (
     OpsArchiveInvalid,
@@ -20,6 +20,11 @@ from backend.ops.archive import (
     inspect_zip,
 )
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
+from backend.teaching_prep.infrastructure.materials.pptx_preview import (
+    PREVIEW_COMPOSITOR_VERSION,
+    STRUCTURAL_PREVIEW_NOTICE,
+    render_pptx_slide_preview,
+)
 
 
 PPT_OBJECT_SCHEMA_VERSION = 4
@@ -157,6 +162,9 @@ class MaterialParser:
         )
         if material_type == "pdf":
             yield from self._iter_pdf_preview_units(path, requested=requested)
+            return
+        if material_type == "pptx":
+            yield from self._iter_pptx_preview_units(path, requested=requested)
             return
         units = self.parse(path, material_type=material_type)
         for unit in units:
@@ -391,6 +399,14 @@ class MaterialParser:
         return tuple(units)
 
     def _parse_pptx(self, path: Path) -> tuple[ParsedMaterialUnit, ...]:
+        return tuple(self._iter_pptx_preview_units(path, requested=None))
+
+    def _iter_pptx_preview_units(
+        self,
+        path: Path,
+        *,
+        requested: set[int] | None,
+    ) -> Iterator[ParsedMaterialUnit]:
         inspected_slide_names = set(self._inspect_pptx(path))
         try:
             with zipfile.ZipFile(path) as archive:
@@ -403,27 +419,32 @@ class MaterialParser:
                     ),
                     key=lambda item: item[0],
                 )
+                if requested is not None:
+                    slide_names = [
+                        item
+                        for item in slide_names
+                        if item[0] in requested
+                    ]
                 if not slide_names:
                     raise TeachingPrepValidationError(
                         "PPTX contains no readable slides"
                     )
                 slide_width, slide_height = _pptx_slide_size(archive)
-                units = [
-                    _pptx_slide_unit(
+                for index, name in slide_names:
+                    yield _pptx_slide_unit(
                         archive.read(name),
                         index=index,
                         slide_width=slide_width,
                         slide_height=slide_height,
+                        archive=archive,
+                        slide_name=name,
                     )
-                    for index, name in slide_names
-                ]
         except TeachingPrepValidationError:
             raise
         except (OSError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
             raise TeachingPrepValidationError(
                 "PPTX could not be opened"
             ) from exc
-        return tuple(units)
 
     def _inspect_pptx(self, path: Path) -> tuple[str, ...]:
         source = Path(path)
@@ -519,6 +540,8 @@ def _pptx_slide_unit(
     index: int,
     slide_width: int,
     slide_height: int,
+    archive: zipfile.ZipFile | None = None,
+    slide_name: str = "",
 ) -> ParsedMaterialUnit:
     root = ElementTree.fromstring(xml_bytes)
     texts = [
@@ -532,48 +555,15 @@ def _pptx_slide_unit(
         for element in root.iter()
         if _local_name(element.tag) in _DRAWABLE_TAGS
     )
-    preview = Image.new("RGB", (960, 540), "white")
-    draw = ImageDraw.Draw(preview)
-    draw.rectangle((0, 0, 959, 539), outline=(198, 203, 208), width=2)
     objects = _slide_objects(root, slide_width, slide_height)
-    rectangles = [
-        (
-            str(item["source_kind"]),
-            (
-                round(float(item["position"]["x"]) * 960),
-                round(float(item["position"]["y"]) * 540),
-                round(
-                    (
-                        float(item["position"]["x"])
-                        + float(item["position"]["width"])
-                    )
-                    * 960
-                ),
-                round(
-                    (
-                        float(item["position"]["y"])
-                        + float(item["position"]["height"])
-                    )
-                    * 540
-                ),
-            ),
-        )
-        for item in objects
-    ]
-    for position, (kind, box) in enumerate(rectangles):
-        color = {
-            "pic": (73, 101, 121),
-            "graphicFrame": (94, 98, 141),
-            "grpSp": (154, 103, 24),
-        }.get(kind, (19, 94, 107))
-        draw.rectangle(box, outline=color, width=2)
-        if position >= 80:
-            break
+    preview_png = render_pptx_slide_preview(
+        xml_bytes,
+        archive=archive,
+        slide_name=slide_name,
+        slide_width=slide_width,
+        slide_height=slide_height,
+    )
     title = _first_line(text) or f"Slide {index}"
-    safe_title = title.encode("ascii", "replace").decode("ascii")[:100]
-    draw.text((20, 14), safe_title, fill=(28, 39, 51))
-    output = io.BytesIO()
-    preview.save(output, format="PNG")
     return ParsedMaterialUnit(
         unit_kind="ppt_slide",
         unit_index=index,
@@ -584,8 +574,9 @@ def _pptx_slide_unit(
         object_summary={
             "object_schema_version": PPT_OBJECT_SCHEMA_VERSION,
             "preview_kind": "structural",
-            "preview_notice": "结构预览，不是原页",
+            "preview_notice": STRUCTURAL_PREVIEW_NOTICE,
             "preview_render_status": "pending",
+            "preview_compositor": PREVIEW_COMPOSITOR_VERSION,
             "object_count": sum(types.values()),
             "object_types": dict(sorted(types.items())),
             "objects": [
@@ -598,15 +589,16 @@ def _pptx_slide_unit(
             ],
             "occupied_boxes": [
                 {
-                    "x": round(box[0] / 960, 6),
-                    "y": round(box[1] / 540, 6),
-                    "width": round((box[2] - box[0]) / 960, 6),
-                    "height": round((box[3] - box[1]) / 540, 6),
+                    "x": position["x"],
+                    "y": position["y"],
+                    "width": position["width"],
+                    "height": position["height"],
                 }
-                for _kind, box in rectangles[:200]
+                for item in objects[:200]
+                if isinstance((position := item.get("position")), dict)
             ],
         },
-        preview_png=output.getvalue(),
+        preview_png=preview_png,
     )
 
 

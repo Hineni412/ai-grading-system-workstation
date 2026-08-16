@@ -551,6 +551,36 @@ class WorkbenchIterationRepository:
             _suggestion(item) for item in suggestions
         )
 
+    def get_latest_suggestion_run_for_lesson(
+        self,
+        lesson_node_id: str,
+    ) -> tuple[ExerciseSuggestionRun, tuple[ExerciseSuggestion, ...]] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT runs.*
+                FROM exercise_suggestion_runs AS runs
+                INNER JOIN reference_selection_snapshots AS snapshots
+                  ON snapshots.id = runs.snapshot_id
+                WHERE snapshots.lesson_node_id = ?
+                ORDER BY runs.created_at DESC, runs.id DESC
+                LIMIT 1
+                """,
+                (lesson_node_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            suggestions = connection.execute(
+                """
+                SELECT * FROM exercise_suggestions
+                WHERE run_id = ? ORDER BY created_at, id
+                """,
+                (str(row["id"]),),
+            ).fetchall()
+        return _suggestion_run(row), tuple(
+            _suggestion(item) for item in suggestions
+        )
+
     def get_suggestion_run_for_suggestion(
         self,
         suggestion_id: str,

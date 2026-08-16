@@ -10,6 +10,15 @@ const chunks = await Promise.all(
     .filter(name => name.endsWith('.js'))
     .map(async name => ({ name, bytes: (await stat(resolve(assetsDirectory, name))).size })),
 )
+const bait = chunks
+  .filter(chunk => /[_/-]ads?\.js$/i.test(chunk.name))
+  .map(chunk => chunk.name)
+if (bait.length > 0) {
+  throw new Error(
+    `JavaScript chunk names would be blocked by common ad blockers:\n${bait.join('\n')}`,
+  )
+}
+
 const oversized = chunks
   .filter(chunk => chunk.bytes > MAX_CHUNK_BYTES)
   .sort((left, right) => right.bytes - left.bytes)

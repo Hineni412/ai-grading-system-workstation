@@ -16,7 +16,10 @@ from backend.teaching_prep.domain.models import (
     MaterialUnit,
 )
 from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
-from backend.teaching_prep.infrastructure.materials import ParsedMaterialUnit
+from backend.teaching_prep.infrastructure.materials import (
+    ParsedMaterialUnit,
+    STRUCTURAL_PREVIEW_NOTICE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -663,6 +666,68 @@ class MaterialUnitRepository:
             height=None,
         )
 
+    def mark_preview_render_progress(
+        self,
+        unit_id: str,
+        *,
+        source_version_sha256: str,
+        status: str,
+    ) -> MaterialUnit:
+        if status not in {"queued", "running"}:
+            raise TeachingPrepValidationError(
+                "preview render progress status is invalid"
+            )
+        with self._database.connect(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM material_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+            if row is None:
+                raise TeachingPrepNotFoundError(
+                    "material unit was not found"
+                )
+            if str(row["source_version_sha256"]) != source_version_sha256:
+                raise TeachingPrepConflictError(
+                    "material source version changed during preview rendering"
+                )
+            if str(row["unit_kind"]) != "ppt_slide":
+                raise TeachingPrepValidationError(
+                    "only PPT slides can update rendered previews"
+                )
+            summary = json.loads(str(row["object_summary_json"] or "{}"))
+            if not isinstance(summary, dict):
+                summary = {}
+            if summary.get("preview_kind") == "rendered":
+                return _unit(row)
+            summary["preview_kind"] = "structural"
+            summary["preview_notice"] = STRUCTURAL_PREVIEW_NOTICE
+            summary["preview_render_status"] = status
+            connection.execute(
+                """
+                UPDATE material_units
+                SET object_summary_json = ?,
+                    revision = revision + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(
+                        summary,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    unit_id,
+                ),
+            )
+            refreshed = connection.execute(
+                "SELECT * FROM material_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+        if refreshed is None:
+            raise TeachingPrepNotFoundError("material unit was not found")
+        return _unit(refreshed)
+
     def _update_preview_render_state(
         self,
         unit_id: str,
@@ -699,7 +764,7 @@ class MaterialUnitRepository:
                     "preview_notice": (
                         None
                         if preview_kind == "rendered"
-                        else "结构预览，不是原页"
+                        else STRUCTURAL_PREVIEW_NOTICE
                     ),
                     "preview_render_status": render_status,
                 }
@@ -713,9 +778,13 @@ class MaterialUnitRepository:
                     }
                 )
                 summary.pop("preview_render_error_code", None)
+                summary.pop("preview_render_attempts", None)
             else:
                 summary.pop("rendered_source_sha256", None)
                 summary["preview_render_error_code"] = str(error_code or "failed")
+                summary["preview_render_attempts"] = int(
+                    summary.get("preview_render_attempts") or 0
+                ) + 1
             fields: list[object] = [
                 json.dumps(
                     summary,

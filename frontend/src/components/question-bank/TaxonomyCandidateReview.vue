@@ -63,9 +63,7 @@ const pendingProposals = computed(() => (
   ))
 ))
 
-const batchDrafts = reactive<Record<string, { decision: TaxonomyBatchManualDecision['decision']; targetTermId: string }>>({})
-const manualBatchItems = computed(() => store.batchPreview?.items.filter((item) => !item.automatic) ?? [])
-const automaticBatchItems = computed(() => store.batchPreview?.items.filter((item) => item.automatic) ?? [])
+const batchDrafts = reactive<Record<string, { selected: boolean; targetTermId: string }>>({})
 
 const suggestionIsActive = computed(() => (
   store.suggestionRun !== null
@@ -350,27 +348,100 @@ async function startSuggestions(): Promise<void> {
   if (started) scheduleSuggestionRefresh()
 }
 
-function batchDraft(proposalId: string, targetIds: string[]) {
+function batchDraft(
+  proposalId: string,
+  targetIds: string[],
+  selected = false,
+) {
   batchDrafts[proposalId] ??= {
-    decision: 'defer',
+    selected,
     targetTermId: targetIds[0] ?? '',
   }
   return batchDrafts[proposalId]!
 }
 
-function batchTerms(dimension: TaxonomyDimension): TaxonomyTerm[] {
-  return store.termsFor(dimension)
+function targetTermLabel(dimension: TaxonomyDimension, ids: string[]): string {
+  if (ids.length === 0) return '尚无对应规范词'
+  return ids
+    .map((termId) => store.termsFor(dimension).find((term) => term.id === termId)?.name || termId)
+    .join('、')
 }
 
+const comparisonRows = computed(() => {
+  if (showHistoricalRun.value) return []
+  if (store.batchPreview) {
+    return [...store.batchPreview.items]
+      .sort((left, right) => Number(right.automatic) - Number(left.automatic))
+      .map((item) => ({
+        proposalId: item.proposal_id,
+        proposedName: item.proposed_name,
+        dimension: item.dimension,
+        targetIds: item.suggestion.target_term_ids,
+        targetLabel: targetTermLabel(item.dimension, item.suggestion.target_term_ids),
+        conclusion: `${suggestionLabel(item.suggestion)} · ${Math.round(item.suggestion.confidence * 100)}%`,
+        reason: localizedSuggestionReason(item.suggestion),
+        automatic: item.automatic,
+      }))
+  }
+  const run = store.suggestionRun
+  if (!run) return []
+  return run.items.flatMap((item) => {
+    if (!item.suggestion) return []
+    return [{
+      proposalId: item.proposal_id,
+      proposedName: item.proposed_name,
+      dimension: item.dimension,
+      targetIds: item.suggestion.target_term_ids,
+      targetLabel: targetTermLabel(item.dimension, item.suggestion.target_term_ids),
+      conclusion: `${suggestionLabel(item.suggestion)} · ${Math.round(item.suggestion.confidence * 100)}%`,
+      reason: localizedSuggestionReason(item.suggestion),
+      automatic: item.suggestion.relation_kind === 'exact',
+    }]
+  })
+})
+
+const selectedBatchCount = computed(() => {
+  if (!store.batchPreview) return 0
+  return store.batchPreview.items.filter((item) => (
+    batchDrafts[item.proposal_id]?.selected === true
+  )).length
+})
+
+watch(
+  () => store.batchPreview?.run_id ?? '',
+  () => {
+    const preview = store.batchPreview
+    if (!preview) return
+    for (const item of preview.items) {
+      batchDrafts[item.proposal_id] = {
+        selected: item.automatic || item.suggestion.relation_kind === 'exact',
+        targetTermId: item.suggestion.target_term_ids[0] ?? '',
+      }
+    }
+  },
+  { immediate: true },
+)
+
 async function saveBatch(): Promise<void> {
-  const decisions: TaxonomyBatchManualDecision[] = manualBatchItems.value.map((item) => {
-    const draft = batchDraft(item.proposal_id, item.suggestion.target_term_ids)
+  if (!store.batchPreview) return
+  const decisions: TaxonomyBatchManualDecision[] = store.batchPreview.items.map((item) => {
+    const draft = batchDraft(
+      item.proposal_id,
+      item.suggestion.target_term_ids,
+      item.automatic || item.suggestion.relation_kind === 'exact',
+    )
+    if (!draft.selected) {
+      return {
+        proposal_id: item.proposal_id,
+        decision: 'defer',
+        target_term_ids: [],
+      }
+    }
+    const target = draft.targetTermId || item.suggestion.target_term_ids[0] || ''
     return {
       proposal_id: item.proposal_id,
-      decision: draft.decision,
-      target_term_ids: draft.decision === 'merge' && draft.targetTermId
-        ? [draft.targetTermId]
-        : [],
+      decision: 'merge',
+      target_term_ids: target ? [target] : [],
     }
   })
   await store.applySuggestionBatch(decisions)
@@ -579,76 +650,55 @@ onBeforeUnmount(() => {
           </article>
         </section>
 
-        <section v-else-if="store.batchPreview" class="taxonomy-ai-results" aria-labelledby="taxonomy-ai-results-title">
+        <section v-else-if="comparisonRows.length" class="taxonomy-ai-results" aria-labelledby="taxonomy-ai-results-title">
           <header>
             <div>
               <h3 id="taxonomy-ai-results-title">AI 归并结果</h3>
-              <p>先核对疑难项，再一次保存</p>
+              <p>
+                {{ store.batchPreview
+                  ? '高把握项已默认勾选，确认后才会写入规范词表'
+                  : '已生成的建议会先出现在这张表里，全部完成后再勾选确认' }}
+              </p>
             </div>
-            <p>
-              自动归并 {{ store.batchPreview.counts.automatic }} ｜
-              需人工 {{ store.batchPreview.counts.manual }}
+            <p v-if="store.batchPreview">
+              已勾选 {{ selectedBatchCount }} ｜
+              共 {{ store.batchPreview.counts.total }}
             </p>
           </header>
 
-          <div class="taxonomy-ai-results__manual">
-            <h4>需人工确认</h4>
-            <article v-for="item in manualBatchItems" :key="item.proposal_id">
-              <header class="taxonomy-ai-results__candidate-head">
-                <div>
-                  <strong>{{ item.proposed_name }}</strong>
-                  <span>{{ suggestionLabel(item.suggestion) }} · {{ Math.round(item.suggestion.confidence * 100) }}%</span>
-                </div>
-                <details class="taxonomy-ai-results__evidence">
-                  <summary>查看依据</summary>
-                  <button
-                    v-for="questionId in item.question_ids"
-                    :key="questionId"
-                    type="button"
-                    class="taxonomy-question-link"
-                    @click="openQuestionPreview(questionId, $event)"
-                  >
-                    题目 #{{ questionId }}
-                  </button>
-                </details>
-              </header>
-              <p class="taxonomy-ai-results__reason">{{ localizedSuggestionReason(item.suggestion) }}</p>
-              <div class="taxonomy-ai-results__controls">
-                <label class="taxonomy-ai-results__decision">
-                  <span>处理方式</span>
-                  <select v-model="batchDraft(item.proposal_id, item.suggestion.target_term_ids).decision">
-                    <option value="defer">暂缓</option>
-                    <option value="merge">归并到现有词</option>
-                    <option value="approve">保留为新词</option>
-                    <option value="reject">拒绝</option>
-                  </select>
-                </label>
-                <label
-                  v-if="batchDraft(item.proposal_id, item.suggestion.target_term_ids).decision === 'merge'"
-                  class="taxonomy-ai-results__target"
-                >
-                  <span>目标词</span>
-                  <select v-model="batchDraft(item.proposal_id, item.suggestion.target_term_ids).targetTermId">
-                    <option value="">请选择</option>
-                    <option v-for="term in batchTerms(item.dimension)" :key="term.id" :value="term.id">
-                      {{ term.name }}
-                    </option>
-                  </select>
-                </label>
-              </div>
-            </article>
+          <div class="taxonomy-ai-results__table-wrap">
+            <table class="taxonomy-ai-results__table">
+              <thead>
+                <tr>
+                  <th>新词</th>
+                  <th>规范词</th>
+                  <th>AI 结论</th>
+                  <th v-if="store.batchPreview">确认归并</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in comparisonRows" :key="row.proposalId">
+                  <th scope="row">{{ row.proposedName }}</th>
+                  <td>{{ row.targetLabel }}</td>
+                  <td>
+                    <strong>{{ row.conclusion }}</strong>
+                    <p>{{ row.reason }}</p>
+                  </td>
+                  <td v-if="store.batchPreview">
+                    <label class="taxonomy-ai-results__check">
+                      <input
+                        v-model="batchDraft(row.proposalId, row.targetIds, row.automatic).selected"
+                        type="checkbox"
+                      >
+                      <span>归并到规范词</span>
+                    </label>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
 
-          <details class="taxonomy-ai-results__automatic">
-            <summary>已自动处理（{{ automaticBatchItems.length }}，默认折叠）</summary>
-            <article v-for="item in automaticBatchItems" :key="item.proposal_id">
-              <strong>{{ item.proposed_name }}</strong>
-              <span>{{ suggestionLabel(item.suggestion) }} · {{ Math.round(item.suggestion.confidence * 100) }}%</span>
-              <p>{{ localizedSuggestionReason(item.suggestion) }}</p>
-            </article>
-          </details>
-
-          <footer>
+          <footer v-if="store.batchPreview">
             <p aria-live="polite">{{ store.batchMessage }}</p>
             <AppButton variant="secondary" @click="store.batchPreview = null">返回候选</AppButton>
             <AppButton
@@ -660,10 +710,10 @@ onBeforeUnmount(() => {
             </AppButton>
             <AppButton
               variant="primary"
-              :disabled="store.batchState === 'saving'"
+              :disabled="store.batchState === 'saving' || selectedBatchCount === 0"
               @click="saveBatch"
             >
-              {{ store.batchState === 'saving' ? '正在保存…' : '保存本批决定' }}
+              {{ store.batchState === 'saving' ? '正在保存…' : '确认已勾选' }}
             </AppButton>
           </footer>
         </section>

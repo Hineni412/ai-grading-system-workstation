@@ -50,7 +50,7 @@ const abandonedProposalIds = ref<string[]>([])
 const bookProposal = computed<SemesterMappingProposal | null>(() => {
   const recordId = record.value?.id ?? ''
   const listed = catalog.semesterMappingProposals.filter(item => (
-    item.status !== 'rejected'
+    item.status === 'proposed'
     && !abandonedProposalIds.value.includes(item.id)
     && item.payload.generation_source !== 'local_reference_ppt_names'
   ))
@@ -567,18 +567,20 @@ async function applyProposal(): Promise<void> {
       },
     )
     if (adopted) {
-      notice('对应已写入且已有回执。')
+      closeAppliedReview(proposal.id)
+      notice('对应已写入本学期课时树。')
       const refreshes = await Promise.allSettled([
         aiTasks.refresh(adopted.match.task.task_id),
         catalog.load(),
       ])
       if (refreshes.some(result => result.status === 'rejected')) {
-        notice('对应已写入且已有回执；页面状态暂未刷新，请刷新页面。')
+        notice('对应已写入本学期课时树；页面状态暂未刷新，请刷新页面。')
       }
     } else {
       await catalog.applySemesterMapping(proposal)
+      closeAppliedReview(proposal.id)
       await catalog.load()
-      notice('全部接受项已对应到本学期课时树。')
+      notice('对应已写入本学期课时树。')
     }
   } catch {
     notice(catalog.errorMessage || '对应尚未确认；已保存的逐条决定仍保留，请直接重试。')
@@ -725,7 +727,8 @@ const unreadSavedDraft = computed(() => {
   if (task?.status !== 'proposal_ready' || !task.proposal_ref_id) return false
   if (abandonedProposalIds.value.includes(task.proposal_ref_id)) return false
   const saved = catalog.semesterMappingProposals.find(item => item.id === task.proposal_ref_id)
-  return saved?.status !== 'rejected'
+  if (saved?.status === 'applied' || saved?.status === 'rejected') return false
+  return true
 })
 const blockingSavedDraft = computed(() => (
   Boolean(bookProposal.value) || unreadSavedDraft.value
@@ -915,6 +918,26 @@ async function discardUnknownMappingResult(): Promise<void> {
     notice('旧结果已放弃。请重新检查发送范围；只有再次点击“让 AI 重新推断”才会产生新调用。')
   } catch {
     notice('旧结果尚未放弃，请保留当前页面后重试。')
+  }
+}
+
+function closeAppliedReview(proposalId: string): void {
+  const index = catalog.semesterMappingProposals.findIndex(item => item.id === proposalId)
+  const current = index >= 0 ? catalog.semesterMappingProposals[index] : null
+  if (current && current.status === 'proposed') {
+    catalog.semesterMappingProposals[index] = {
+      ...current,
+      status: 'applied',
+    }
+  }
+  const recordId = record.value?.id
+  const materialIndex = catalog.semesterMaterials.findIndex(item => item.id === recordId)
+  const material = materialIndex >= 0 ? catalog.semesterMaterials[materialIndex] : null
+  if (material && material.mapping_status !== 'confirmed') {
+    catalog.semesterMaterials[materialIndex] = {
+      ...material,
+      mapping_status: 'confirmed',
+    }
   }
 }
 
@@ -1243,6 +1266,9 @@ const decisionLabels: Record<string, string> = {
       <p v-else-if="unreadSavedDraft" class="tp-banner tp-banner--ai" data-testid="saved-proposal-missing">
         这次 AI 草稿已经保存在本机，但本页还没读出来。请先点“重新载入草稿”。
         若仍没有页段，或对应不准，请先放弃这份草稿，再重新推断（会再计一次费）。
+      </p>
+      <p v-else-if="record.mapping_status === 'confirmed'" class="tp-muted">
+        这本书已经对应到本学期课时树。若要调整，可在下方重新推断或手动指定页段。
       </p>
       <p v-else class="tp-muted">
         还没有这本书的对应建议。可在下方让 AI 推断一份草稿，或手动指定页段。

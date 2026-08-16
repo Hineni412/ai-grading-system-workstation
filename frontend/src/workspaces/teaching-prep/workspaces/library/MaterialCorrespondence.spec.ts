@@ -240,6 +240,22 @@ describe('MaterialCorrespondence', () => {
     app.unmount()
   })
 
+  it('hides the page checker after applying accepted mappings', async () => {
+    const { app, host, catalog } = await mountPanel({
+      proposals: [bookProposal(textbookRecord.id, 'accepted')],
+    })
+    vi.spyOn(catalog, 'applySemesterMapping').mockResolvedValue(undefined)
+    vi.spyOn(catalog, 'load').mockResolvedValue()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="apply-book-mapping"]')?.click()
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="mapping-page-checker"]')).toBeNull()
+    })
+    expect(host.textContent).toContain('这本书已经对应到本学期课时树')
+    expect(host.querySelector('[data-testid="ai-reinfer"]')).toBeTruthy()
+    app.unmount()
+  })
+
   it('paints adjacent lessons with alternating tones on the page strip', async () => {
     const secondLessonId = '2'.repeat(32)
     const pending = twoRangeProposal(textbookRecord.id)
@@ -427,7 +443,7 @@ describe('MaterialCorrespondence', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="apply-book-mapping"]')?.click()
     await vi.waitFor(() => expect(apply).toHaveBeenCalled())
     expect(apply.mock.calls[0]?.[1]).toBeUndefined()
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="apply-book-mapping"]')?.disabled).toBe(false)
+    expect(host.querySelector('[data-testid="mapping-page-checker"]')).toBeNull()
     app.unmount()
   })
 
