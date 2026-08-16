@@ -194,8 +194,8 @@ const analysisJobs = computed(() => {
     .filter((job) => job.job_type === 'question_import' || job.job_type === 'tagging_sync')
     .sort((left, right) => right.id - left.id)
   const active = matching.filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
-  const latestFinished = matching.find((job) => TERMINAL_JOB_STATUSES.has(job.status))
-  return latestFinished ? [...active, latestFinished] : active
+  const finished = matching.filter((job) => TERMINAL_JOB_STATUSES.has(job.status))
+  return [...active, ...finished.slice(0, 2)]
 })
 
 function analysisJobState(job: JobResponse): string {
@@ -212,13 +212,24 @@ function analysisJobState(job: JobResponse): string {
   const outcome = String(job.result.outcome ?? '')
   const taxonomyReview = jobResultIdCount(job, 'review_question_ids')
     || jobResultCount(job, 'review_count')
-  if (taxonomyReview > 0) {
-    return `${taxonomyReview} 道题产生了待审核新词；请先审核新词，再继续补齐标签。`
-  }
   const reviewCount = jobResultCount(job, 'criteria_needs_review_count')
-  if (reviewCount > 0) return `${reviewCount} 道题需要审核，禁止按分析成功展示。`
-  if (outcome === 'complete') return '标签、解题证据和训练判定点均已完成。'
-  if (outcome === 'partial') return '部分题目已完成，其余项目待补齐或审核。'
+  const failed = jobResultCount(job, 'failed_count')
+    || jobResultIdCount(job, 'failed_question_ids')
+  const bits = [
+    taxonomyReview > 0 ? `${taxonomyReview} 道题产生了待审核新词` : '',
+    reviewCount > 0 ? `${reviewCount} 道题需要审核` : '',
+    failed > 0 ? `${failed} 道题未完成` : '',
+  ].filter(Boolean)
+  if (outcome === 'complete' && bits.length === 0) {
+    return '标签、解题证据和训练判定点均已完成。'
+  }
+  if (outcome === 'partial' || bits.length > 0) {
+    if (bits.length === 0) return '部分题目已完成，其余项目待补齐或审核。'
+    const suffix = failed > 0
+      ? '已保存的结果保留，可补齐未完成项目。'
+      : '请先审核后再继续补齐标签。'
+    return `${bits.join('；')}。${suffix}`
+  }
   if (outcome === 'failed') return '任务已结束，但标签或训练判定点没有保存成功。'
   return '分析任务已结束，请核对标签与判定点状态。'
 }

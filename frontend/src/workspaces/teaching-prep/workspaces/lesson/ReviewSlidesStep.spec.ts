@@ -3,6 +3,10 @@ import { computed, createApp, defineComponent, h, nextTick, ref, shallowRef } fr
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LessonNode, PptxExecution, SlideOperation, SlidePlan } from '../../api/catalog'
+import { teachingPrepWorkbenchApi } from '../../api/workbench'
+import { useWorkspaceAITaskStore } from '../../../shared/ai-tasks/store'
+import { workspaceAITaskApi } from '../../../shared/ai-tasks/api'
+import type { WorkspaceAITask } from '../../../shared/ai-tasks/contracts'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
 import { teachingPrepLessonWorkbenchKey } from '../../workbench/routeContext'
 import type { TeachingPrepLessonWorkbench } from '../../workbench/lessonWorkbench'
@@ -76,6 +80,44 @@ function execution(status: PptxExecution['status'], extras: Partial<PptxExecutio
     updated_at: '2026-08-03T00:00:00Z',
     finished_at: null,
     ...extras,
+  }
+}
+
+function runningSlideTask(): WorkspaceAITask {
+  return {
+    contract_version: 'teacher_workspace_ai_task.v1',
+    task_id: 't'.repeat(32),
+    operation_id: 'slide-proposal-op-01',
+    module: 'teaching_prep',
+    task_kind: 'teaching_prep.slide_change_proposal',
+    source_ref: { kind: 'lesson', id: lessonId, revision: '1' },
+    context_refs: [],
+    return_target: 'teaching-prep.lesson.review',
+    status: 'running',
+    phase: 'model',
+    progress: 0.2,
+    send_attempt_count: 1,
+    dispatch_evidence: 'may_have_started',
+    cancel_requested: false,
+    job_id: 1,
+    proposal_ref_id: null,
+    proposal_revision: null,
+    error_code: null,
+    error_detail: null,
+    revision: 1,
+    safe_title: '改编课件',
+    safe_source: '第一课时',
+    teacher_message: '正在逐页分析',
+    next_action: '等待结果',
+    handoffs: [],
+    handoff_total: 0,
+    adopted_count: 0,
+    discarded_count: 0,
+    stale_count: 0,
+    pending_count: 0,
+    created_at: '2026-08-16T00:00:00Z',
+    updated_at: '2026-08-16T00:00:01Z',
+    finished_at: null,
   }
 }
 
@@ -180,6 +222,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
   document.body.innerHTML = ''
+  localStorage.removeItem('teacher-platform:tracked-ai-tasks:v1')
 })
 
 describe('ReviewSlidesStep', () => {
@@ -254,6 +297,78 @@ describe('ReviewSlidesStep', () => {
     textarea!.dispatchEvent(new Event('input'))
     await nextTick()
     expect(host.querySelector<HTMLButtonElement>('[data-testid="resend-with-page-notes"]')?.disabled).toBe(false)
+    app.unmount()
+  })
+
+  it('shows thinking, page fetch and returned preview in the waiting panel', async () => {
+    const task = runningSlideTask()
+    const previewUrl = `/api/teaching-prep/material-units/${'b'.repeat(32)}/preview`
+    vi.spyOn(workspaceAITaskApi, 'get').mockResolvedValue(task)
+    vi.spyOn(teachingPrepWorkbenchApi, 'getAdaptationTrace').mockResolvedValue({
+      operation_id: task.operation_id,
+      lesson_node_id: lessonId,
+      status: 'running',
+      model_calls_used: 2,
+      model_calls_max: 6,
+      events: [
+        {
+          round: 1,
+          phase: 'thinking',
+          summary: '模型正在分析本课目录和已取原页。',
+          thinking_excerpt: '先看教材第 1 页',
+          tool: null,
+          result: null,
+          model_calls_used: 1,
+          model_calls_max: 6,
+        },
+        {
+          round: 1,
+          phase: 'tool_call',
+          summary: '取页 · 教材 第 1 页',
+          thinking_excerpt: null,
+          tool: {
+            name: 'get_frozen_page',
+            purpose: 'textbook',
+            page: 1,
+            source_ref: `material:${'a'.repeat(32)}:unit:1`,
+          },
+          result: null,
+          model_calls_used: 1,
+          model_calls_max: 6,
+        },
+        {
+          round: 1,
+          phase: 'tool_result',
+          summary: '已返回教材 第 1 页',
+          thinking_excerpt: null,
+          tool: {
+            name: 'get_frozen_page',
+            purpose: 'textbook',
+            page: 1,
+            source_ref: `material:${'a'.repeat(32)}:unit:1`,
+          },
+          result: {
+            ok: true,
+            label: '教材 第 1 页',
+            preview_url: previewUrl,
+          },
+          model_calls_used: 2,
+          model_calls_max: 6,
+        },
+      ],
+    })
+    const aiTasks = useWorkspaceAITaskStore()
+    aiTasks.track(task)
+    const { app, host } = await mountStep()
+
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="adaptation-trace"]')?.textContent).toContain('第 2 / 6 轮')
+    })
+    expect(host.textContent).toContain('先看教材第 1 页')
+    expect(host.textContent).toContain('取页 · 教材 第 1 页')
+    expect(host.textContent).toContain('已返回教材 第 1 页')
+    expect(host.querySelector('.tp-adaptation-trace__thumb')?.getAttribute('src')).toBe(previewUrl)
+    aiTasks.remove(task.task_id)
     app.unmount()
   })
 })

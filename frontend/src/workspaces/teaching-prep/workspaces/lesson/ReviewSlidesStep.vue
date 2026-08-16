@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 
 import AppButton from '../../../../components/design-system/AppButton.vue'
 import type {
@@ -8,6 +8,8 @@ import type {
   SlideOperationDecision,
   SlidePlan,
 } from '../../api/catalog'
+import { teachingPrepWorkbenchApi, type AdaptationTrace } from '../../api/workbench'
+import { isAuthoritativeNotFoundError } from '../../../../api/errors'
 import { useWorkspaceAITaskStore } from '../../../shared/ai-tasks/store'
 import { adoptTeachingPrepProposal } from '../../aiAdoption'
 import { useTeachingPrepLessonWorkbenchContext } from '../../workbench/routeContext'
@@ -27,6 +29,9 @@ const positions = reactive<Record<string, { x: number; y: number; width: number;
 const textbookLabels = reactive<Record<string, string>>({})
 const pageNotes = reactive<Record<number, string>>({})
 const reviewMessage = ref('改编返回后会在隔离副本上生成本地改后页。满意再导出；某一页不满意就写一句意见重发。')
+const adaptationTrace = ref<AdaptationTrace | null>(null)
+let traceAbort: AbortController | null = null
+let traceTimer: ReturnType<typeof setTimeout> | null = null
 const activeOperationId = ref<string | null>(null)
 const activeSlideIndex = ref(0)
 const handledTaskRevisions = new Set<string>()
@@ -111,6 +116,18 @@ const previewBusy = computed(() => {
 const canConfirmExport = computed(() => (
   previewReady.value || latestRun.value?.status === 'published'
 ))
+const waitingForAdaptation = computed(() => (
+  !selectedPlan.value && currentSlideTask.value != null
+  && ['prepared', 'queued', 'running'].includes(currentSlideTask.value.status)
+))
+const traceRounds = computed(() => {
+  const trace = adaptationTrace.value
+  if (!trace) return null
+  return {
+    used: trace.model_calls_used,
+    max: trace.model_calls_max,
+  }
+})
 
 function isPreviewReady(run: PptxExecution | null): boolean {
   return Boolean(
@@ -519,6 +536,74 @@ watch(selectedPlan, (plan) => {
   void autoAdoptAndPreview(plan)
 }, { immediate: true })
 
+function stopTracePoll(): void {
+  traceAbort?.abort()
+  traceAbort = null
+  if (traceTimer !== null) {
+    clearTimeout(traceTimer)
+    traceTimer = null
+  }
+}
+
+async function refreshAdaptationTrace(): Promise<void> {
+  const lessonId = routeState.currentLessonId.value
+  const task = currentSlideTask.value
+  if (!lessonId || !task) {
+    adaptationTrace.value = null
+    return
+  }
+  traceAbort?.abort()
+  const controller = new AbortController()
+  traceAbort = controller
+  try {
+    adaptationTrace.value = await teachingPrepWorkbenchApi.getAdaptationTrace(
+      lessonId,
+      task.operation_id,
+      controller.signal,
+    )
+  } catch (error) {
+    if (controller.signal.aborted) return
+    if (isAuthoritativeNotFoundError(error)) {
+      if (!waitingForAdaptation.value) adaptationTrace.value = null
+      return
+    }
+  }
+}
+
+function scheduleTracePoll(): void {
+  stopTracePoll()
+  if (!waitingForAdaptation.value && currentSlideTask.value?.status !== 'failed'
+    && currentSlideTask.value?.status !== 'result_unknown'
+    && currentSlideTask.value?.status !== 'invalid_result') {
+    return
+  }
+  void refreshAdaptationTrace().finally(() => {
+    if (!waitingForAdaptation.value) return
+    traceTimer = setTimeout(() => {
+      traceTimer = null
+      scheduleTracePoll()
+    }, 2000)
+  })
+}
+
+watch(
+  () => [
+    routeState.currentLessonId.value,
+    currentSlideTask.value?.task_id,
+    currentSlideTask.value?.status,
+    currentSlideTask.value?.operation_id,
+    selectedPlan.value?.id ?? null,
+  ],
+  () => {
+    scheduleTracePoll()
+  },
+  { immediate: true },
+)
+
+onUnmounted(() => {
+  stopTracePoll()
+})
+
 watch(
   () => currentSlideTask.value ? `${currentSlideTask.value.task_id}:${currentSlideTask.value.revision}` : '',
   async (key) => {
@@ -558,6 +643,32 @@ defineExpose({
       <div class="tp-panel__body">
         <h2>{{ taskPresentation.title }}</h2>
         <p>{{ taskPresentation.detail }}</p>
+        <section
+          v-if="adaptationTrace || waitingForAdaptation"
+          class="tp-adaptation-trace"
+          data-testid="adaptation-trace"
+          aria-label="改编观察"
+        >
+          <p class="tp-adaptation-trace__rounds">
+            {{ traceRounds ? `第 ${traceRounds.used} / ${traceRounds.max} 轮` : '等待模型开始取页' }}
+          </p>
+          <ol v-if="adaptationTrace?.events.length" class="tp-adaptation-trace__list">
+            <li
+              v-for="(event, index) in adaptationTrace.events"
+              :key="`${event.phase}-${index}`"
+              class="tp-adaptation-trace__item"
+            >
+              <strong>{{ event.summary }}</strong>
+              <p v-if="event.thinking_excerpt" class="tp-adaptation-trace__thinking">{{ event.thinking_excerpt }}</p>
+              <img
+                v-if="event.result?.ok && event.result.preview_url"
+                :src="event.result.preview_url"
+                :alt="event.result.label"
+                class="tp-adaptation-trace__thumb"
+              >
+            </li>
+          </ol>
+        </section>
         <div class="tp-inline-actions">
           <AppButton variant="secondary" @click="routeState.setStep(1)">返回确认资料</AppButton>
           <AppButton v-if="currentSlideTask" variant="ghost" @click="aiTasks.refresh(currentSlideTask.task_id)">刷新任务状态</AppButton>

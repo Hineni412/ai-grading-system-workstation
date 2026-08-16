@@ -146,6 +146,7 @@ from backend.teaching_prep.infrastructure.repositories import (
     WorkbenchIterationRepository,
     WorkspaceAIAdoptionRepository,
     SlideAnimationRepository,
+    AdaptationTraceRepository,
 )
 from backend.workspaces.ai_tasks.models import RevisionConflictError
 
@@ -235,8 +236,6 @@ _PREVIEW_PUBLISH_BUDGET_MS = 60_000
 _WPS_EXECUTION_TIMEOUT_SECONDS = 170
 _SUGGESTION_IMAGE_LIMIT = 16
 _SUGGESTION_IMAGE_BYTES = 15_000_000
-_ADAPTATION_IMAGE_LIMIT = 12
-_ADAPTATION_IMAGE_BYTES = 12_000_000
 _MODEL_IMAGE_MAX_EDGE = 1280
 _MODEL_IMAGE_COMPRESS_OVER_BYTES = 180_000
 _FORBIDDEN_EVIDENCE_KEYS = {
@@ -312,6 +311,7 @@ class TeachingPrepService:
             semester_snapshot=self.semester_mapping.snapshot,
         )
         self.slide_animation_runs = SlideAnimationRepository(self.database)
+        self.adaptation_traces = AdaptationTraceRepository(self.database)
         self.material_parser = material_parser or MaterialParser()
         self._material_parse_lock = threading.Lock()
         self._active_material_parses: set[str] = set()
@@ -720,16 +720,89 @@ class TeachingPrepService:
             max_bytes=_SUGGESTION_IMAGE_BYTES,
         )
 
-    def _adaptation_reference_images(
+    def load_frozen_page_for_model(
         self,
-        model_input: Mapping[str, object],
-    ) -> list[dict[str, object]]:
-        return self._material_page_images(
-            model_input,
-            purposes=("exercise", "textbook", "reference_ppt"),
-            max_images=_ADAPTATION_IMAGE_LIMIT,
-            max_bytes=_ADAPTATION_IMAGE_BYTES,
+        resource_pack: Mapping[str, object],
+        source_ref: str,
+    ) -> dict[str, object]:
+        from backend.teaching_prep.infrastructure.llm.lesson_model import (
+            page_catalog_entry,
+            page_label,
         )
+
+        entry = page_catalog_entry(resource_pack, source_ref)
+        if entry is None:
+            return {
+                "ok": False,
+                "error": "source_ref is not in the frozen pack",
+                "source_ref": str(source_ref or ""),
+            }
+        unit_id = str(entry.get("unit_id") or "")
+        if not unit_id:
+            return {
+                "ok": False,
+                "error": "page unit is unavailable",
+                "source_ref": str(source_ref or ""),
+            }
+        preview = self._preview_file_for_model(
+            unit_id,
+            regenerate_missing=True,
+        )
+        if preview is None:
+            return {
+                "ok": False,
+                "error": "page preview is unavailable",
+                "source_ref": str(source_ref or ""),
+            }
+        mime_type, content = _preview_payload_for_model(preview)
+        purpose = entry.get("purpose")
+        unit_index = entry.get("unit_index")
+        label = page_label(purpose, unit_index)
+        return {
+            "ok": True,
+            "source_ref": str(entry.get("source_ref") or source_ref),
+            "purpose": purpose,
+            "unit_index": unit_index,
+            "unit_id": unit_id,
+            "label": label,
+            "mime_type": mime_type,
+            "content": content,
+            "preview_url": (
+                f"/api/teaching-prep/material-units/{unit_id}/preview"
+            ),
+        }
+
+    def get_adaptation_trace(
+        self,
+        lesson_node_id: str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, object]:
+        clean_lesson = _clean_entity_id(lesson_node_id)
+        if operation_id:
+            return self.adaptation_traces.list_for_operation(
+                lesson_node_id=clean_lesson,
+                operation_id=_clean_token(operation_id),
+            )
+        return self.adaptation_traces.latest_for_lesson(clean_lesson)
+
+    def _adaptation_observer(
+        self,
+        *,
+        lesson_node_id: str,
+        operation_id: str,
+    ):
+        def emit(event: Mapping[str, object]) -> None:
+            try:
+                self.adaptation_traces.append_event(
+                    lesson_node_id=lesson_node_id,
+                    operation_id=operation_id,
+                    event=event,
+                )
+            except Exception:
+                LOGGER.exception("adaptation trace could not be recorded")
+
+        return emit
 
     def _material_page_images(
         self,
@@ -3763,6 +3836,18 @@ class TeachingPrepService:
                 model_kwargs = {
                     "operation_id": clean_operation_id,
                     "resource_pack": model_payload,
+                    "page_loader": (
+                        lambda source_ref, pack_payload=model_payload: (
+                            self.load_frozen_page_for_model(
+                                pack_payload,
+                                str(source_ref),
+                            )
+                        )
+                    ),
+                    "observer": self._adaptation_observer(
+                        lesson_node_id=pack.lesson_node_id,
+                        operation_id=clean_operation_id,
+                    ),
                 }
                 if task_model_gateway is not None:
                     model_kwargs["task_model_gateway"] = task_model_gateway
@@ -3908,12 +3993,21 @@ class TeachingPrepService:
                     pack.payload.get("preparation_preferences")
                 )
             )
-            model_payload["reference_images"] = (
-                self._adaptation_reference_images(model_payload)
-            )
             model_kwargs = {
                 "operation_id": clean_token,
                 "resource_pack": model_payload,
+                "page_loader": (
+                    lambda source_ref, pack_payload=model_payload: (
+                        self.load_frozen_page_for_model(
+                            pack_payload,
+                            str(source_ref),
+                        )
+                    )
+                ),
+                "observer": self._adaptation_observer(
+                    lesson_node_id=pack.lesson_node_id,
+                    operation_id=clean_token,
+                ),
             }
             if task_model_gateway is not None:
                 model_kwargs["task_model_gateway"] = task_model_gateway

@@ -493,6 +493,67 @@ def test_task_gateway_records_complete_local_diagnostics_and_zero_retry(
         )
 
 
+def test_task_gateway_allows_six_lesson_draft_calls(tmp_path: Path) -> None:
+    class Completions:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            return {
+                "model": "synthetic-model",
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+            }
+
+    class Paths:
+        def workspace_dir(self, module_id: str, *, create: bool = False) -> Path:
+            root = tmp_path / module_id
+            if create:
+                root.mkdir(parents=True, exist_ok=True)
+            return root
+
+    journal = JsonlDiagnosticJournal(tmp_path / "llm_diagnostics.jsonl")
+    completions = Completions()
+    context = WorkspaceContext(
+        module_id="teaching-prep",
+        root=tmp_path / "teaching-prep",
+        paths=Paths(),
+    )
+    gateway = WorkspaceModelGateway(
+        context=context,
+        gateway=LLMGateway(),
+        metadata_only=False,
+        claim_operations=False,
+        allow_retry=False,
+    )
+    task_gateway = WorkspaceAITaskModelGateway(diagnostic_sink=journal)
+    request = WorkspaceModelRequest(
+        purpose="lesson_draft",
+        data_classification="teaching_material_aggregate",
+        operation_id="lesson-draft-task-six-001",
+        max_physical_calls=6,
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    for _index in range(6):
+        task_gateway.chat_completions(
+            gateway=gateway,
+            request=request,
+            client=client,
+            model="synthetic-model",
+            kwargs={"messages": [{"role": "user", "content": "catalog"}]},
+        )
+    assert len(completions.calls) == 6
+    with pytest.raises(Exception, match="already used"):
+        task_gateway.chat_completions(
+            gateway=gateway,
+            request=request,
+            client=client,
+            model="synthetic-model",
+            kwargs={},
+        )
+    assert len(completions.calls) == 6
+
+
 def test_task_gateway_records_transport_failure_without_retry(
     tmp_path: Path,
 ) -> None:

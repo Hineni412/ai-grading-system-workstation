@@ -36,6 +36,7 @@ from question_bank.training_criteria.analysis import (
     QuestionAnalysisInput,
     TaxonomyProjectionReviewRequired,
     combined_response_format,
+    controlled_term_ids_from_questions,
 )
 
 
@@ -276,7 +277,12 @@ class OpenAICombinedAnalysisGateway:
             allow_retry=False,
             kwargs={
                 "text": {
-                    "format": combined_response_format(projection)
+                    "format": combined_response_format(
+                        projection,
+                        allowed_term_ids=controlled_term_ids_from_questions(
+                            batch.questions
+                        ),
+                    )
                 },
                 "input": _combined_prompt(batch, projection),
             },

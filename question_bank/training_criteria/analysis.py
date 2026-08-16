@@ -8,6 +8,7 @@ import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
+from collections.abc import Iterable
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
@@ -996,18 +997,6 @@ class CombinedQuestionAnalysisModule:
                 if not any(status in {"failed", "cancelled"} for status in statuses.values()):
                     continue
             elif any(status == "succeeded" for status in statuses.values()):
-                continue
-            if not question.has_required_images:
-                for item, status in statuses.items():
-                    if retry and status not in {"failed", "cancelled"}:
-                        continue
-                    self.repository.save_projection(
-                        operation_id=operation_id,
-                        question_id=question.question_id,
-                        projection=item,
-                        status="failed",
-                        error_category="missing_image",
-                    )
                 continue
             ready.append(question)
 
@@ -2074,10 +2063,128 @@ class TagOnlyV1ResultAdapter:
         }
 
 
+_MAX_COMBINED_ENUM_IDS = 800
+_CONTROLLED_DIMENSIONS = (
+    "knowledge",
+    "method",
+    "thought",
+    "ability",
+    "model",
+    "special_type",
+    "curriculum",
+)
+
+
+def _ordered_unique_strings(values: Iterable[object]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _candidate_ids_from_contract(
+    contract: Mapping[str, Any],
+    dimension: str,
+) -> list[str]:
+    candidates = contract.get("candidates")
+    if not isinstance(candidates, Mapping):
+        return []
+    raw_items = candidates.get(dimension)
+    if not isinstance(raw_items, Sequence) or isinstance(
+        raw_items, (str, bytes, bytearray)
+    ):
+        return []
+    ids: list[str] = []
+    for raw in raw_items:
+        if not isinstance(raw, Mapping):
+            continue
+        usage = str(raw.get("usage") or "").strip()
+        if usage == "do_not_use_as_knowledge":
+            continue
+        item_id = str(raw.get("id") or "").strip()
+        if item_id:
+            ids.append(item_id)
+    return ids
+
+
+def _section_ids_from_contract(contract: Mapping[str, Any]) -> list[str]:
+    volume = contract.get("curriculum_volume")
+    if not isinstance(volume, Mapping):
+        return []
+    sections = volume.get("sections")
+    if not isinstance(sections, Sequence) or isinstance(
+        sections, (str, bytes, bytearray)
+    ):
+        return []
+    return _ordered_unique_strings(
+        item.get("id")
+        for item in sections
+        if isinstance(item, Mapping)
+    )
+
+
+def controlled_term_ids_from_questions(
+    questions: Sequence[QuestionAnalysisInput],
+) -> dict[str, tuple[str, ...]]:
+    buckets: dict[str, list[str]] = {
+        dimension: [] for dimension in _CONTROLLED_DIMENSIONS
+    }
+    buckets["curriculum_sections"] = []
+    seen = {key: set() for key in buckets}
+    for question in questions:
+        contract = question.taxonomy_contract
+        if not isinstance(contract, Mapping):
+            continue
+        for dimension in _CONTROLLED_DIMENSIONS:
+            for item_id in _candidate_ids_from_contract(contract, dimension):
+                if item_id in seen[dimension]:
+                    continue
+                seen[dimension].add(item_id)
+                buckets[dimension].append(item_id)
+        for item_id in _section_ids_from_contract(contract):
+            if item_id in seen["curriculum_sections"]:
+                continue
+            seen["curriculum_sections"].add(item_id)
+            buckets["curriculum_sections"].append(item_id)
+    return {key: tuple(values) for key, values in buckets.items()}
+
+
+def _enum_string_schema(
+    ids: Sequence[str],
+    *,
+    include_empty: bool = False,
+) -> dict[str, Any]:
+    values = _ordered_unique_strings(ids)
+    bounded = len(values)
+    if include_empty:
+        values = ["", *values]
+    if bounded == 0 or bounded > _MAX_COMBINED_ENUM_IDS:
+        return {"type": "string"}
+    return {"type": "string", "enum": values}
+
+
+def _enum_array_schema(ids: Sequence[str]) -> dict[str, Any]:
+    item = _enum_string_schema(ids)
+    if "enum" not in item:
+        return {"type": "array", "items": {"type": "string"}}
+    return {"type": "array", "items": item}
+
+
 def combined_response_format(
     projection: AnalysisProjection = "both",
+    *,
+    allowed_term_ids: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     selected = _selected_projections(_projection(projection))
+    ids = {
+        str(key): tuple(str(item or "").strip() for item in values if str(item or "").strip())
+        for key, values in dict(allowed_term_ids or {}).items()
+    }
     item_properties: dict[str, Any] = {
         "question_id": {"type": "integer"},
         "reference_assessment": {
@@ -2087,9 +2194,11 @@ def combined_response_format(
         "reference_assessment_reason": {"type": "string"},
     }
     if "tag" in selected:
-        item_properties["tag_analysis"] = _tag_schema()
+        item_properties["tag_analysis"] = _tag_schema(ids)
     if "training_criteria" in selected:
-        item_properties["solution_evidence"] = _solution_evidence_schema()
+        item_properties["solution_evidence"] = _solution_evidence_schema(
+            knowledge_ids=ids.get("knowledge") or (),
+        )
     return {
         "type": "json_schema",
         "name": (
@@ -2117,23 +2226,31 @@ def combined_response_format(
     }
 
 
-def _tag_schema() -> dict[str, Any]:
+def _tag_schema(
+    allowed_term_ids: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    ids = dict(allowed_term_ids or {})
     array = {"type": "array", "items": {"type": "string"}}
     text = {"type": "string"}
-    properties = {
-        "knowledge_points": array,
-        "method_tags": array,
-        "thought_tags": array,
-        "ability_tags": array,
-        "math_model_tags": array,
-        "special_type_tags": array,
+    properties: dict[str, Any] = {
+        "knowledge_points": _enum_array_schema(ids.get("knowledge") or ()),
+        "method_tags": _enum_array_schema(ids.get("method") or ()),
+        "thought_tags": _enum_array_schema(ids.get("thought") or ()),
+        "ability_tags": _enum_array_schema(ids.get("ability") or ()),
+        "math_model_tags": _enum_array_schema(ids.get("model") or ()),
+        "special_type_tags": _enum_array_schema(ids.get("special_type") or ()),
         "difficulty": {"type": "integer", "minimum": 1, "maximum": 10},
         "error_prone_points": array,
-        "prerequisite_points": array,
-        "textbook_chapters": array,
-        "curriculum_sections": array,
+        "prerequisite_points": _enum_array_schema(ids.get("knowledge") or ()),
+        "textbook_chapters": _enum_array_schema(ids.get("curriculum") or ()),
+        "curriculum_sections": _enum_array_schema(
+            ids.get("curriculum_sections") or ()
+        ),
         "suitable_student_level": text,
-        "canonical_knowledge_id": text,
+        "canonical_knowledge_id": _enum_string_schema(
+            ids.get("knowledge") or (),
+            include_empty=True,
+        ),
         "taxonomy_revision": {"type": "integer"},
         "proposed_tags": _proposal_schema(),
         "reason": text,
@@ -2208,15 +2325,21 @@ def _criteria_schema() -> dict[str, Any]:
     }
 
 
-def _solution_evidence_schema() -> dict[str, Any]:
+def _solution_evidence_schema(
+    *,
+    knowledge_ids: Sequence[str] = (),
+) -> dict[str, Any]:
     text_array = {"type": "array", "items": {"type": "string"}}
     non_empty_text = {"type": "string", "minLength": 1}
     machine_identifier = {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_-]{1,127}$",
     }
+    fine_term_id = _enum_string_schema(knowledge_ids)
+    if "enum" not in fine_term_id:
+        fine_term_id = non_empty_text
     fine_term_properties = {
-        "fine_term_id": non_empty_text,
+        "fine_term_id": fine_term_id,
         "fine_term_name": non_empty_text,
         "role": {
             "type": "string",

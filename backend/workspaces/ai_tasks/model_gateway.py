@@ -19,7 +19,8 @@ class WorkspaceAITaskModelGateway:
     It applies the shared privacy policy immediately before the physical call.
     Complete text diagnostics are written to the approved local journal, while
     automatic retries and the secondary trace/usage sinks stay disabled. A task
-    operation can cross this gateway only once.
+    operation can cross this gateway up to the request's max_physical_calls
+    times; the default remains one physical send.
     """
 
     def __init__(
@@ -27,7 +28,8 @@ class WorkspaceAITaskModelGateway:
         *,
         diagnostic_sink: JsonlDiagnosticJournal | None = None,
     ) -> None:
-        self._claimed_operations: set[str] = set()
+        self._operation_rounds: dict[str, int] = {}
+        self._operation_limits: dict[str, int] = {}
         self._lock = threading.Lock()
         self._diagnostic_sink = diagnostic_sink or JsonlDiagnosticJournal()
 
@@ -103,12 +105,19 @@ class WorkspaceAITaskModelGateway:
                 "workspace model request metadata is required"
             )
         _purpose, _classification, operation_id = gateway._validate_request(request)
+        max_calls = WorkspaceModelGateway._physical_call_limit(request)
         with self._lock:
-            if operation_id in self._claimed_operations:
+            current = self._operation_rounds.get(operation_id, 0)
+            if current == 0:
+                self._operation_limits[operation_id] = max_calls
+                limit = max_calls
+            else:
+                limit = self._operation_limits.get(operation_id, 1)
+            if current >= limit:
                 raise WorkspaceModelPolicyError(
                     "workspace AI task already used its model request"
                 )
-            self._claimed_operations.add(operation_id)
+            self._operation_rounds[operation_id] = current + 1
 
         # Enforce on the actual low-level call path, including supplied gateways.
         # The shared task/job stores remain metadata-only; sensitive request and

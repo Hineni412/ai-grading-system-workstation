@@ -263,6 +263,39 @@ export interface TrustedPptxVersion extends PptxVersion {
   file_verified: boolean
 }
 
+export interface AdaptationTraceTool {
+  name: string
+  purpose: string | null
+  page: number | null
+  source_ref: string
+}
+
+export interface AdaptationTraceResult {
+  ok: boolean
+  label: string
+  preview_url: string | null
+}
+
+export interface AdaptationTraceEvent {
+  round: number
+  phase: 'started' | 'thinking' | 'tool_call' | 'tool_result' | 'round_done' | 'final_accepted' | 'failed' | string
+  summary: string
+  thinking_excerpt: string | null
+  tool: AdaptationTraceTool | null
+  result: AdaptationTraceResult | null
+  model_calls_used: number
+  model_calls_max: number
+}
+
+export interface AdaptationTrace {
+  operation_id: string
+  lesson_node_id: string
+  status: 'running' | 'succeeded' | 'failed' | string
+  model_calls_used: number
+  model_calls_max: number
+  events: AdaptationTraceEvent[]
+}
+
 export const teachingPrepWorkbenchApi = {
   adoptAIHandoff(
     handoffId: string,
@@ -519,6 +552,20 @@ export const teachingPrepWorkbenchApi = {
       { signal, decode: pptxExecution },
     )
   },
+
+  getAdaptationTrace(
+    lessonId: string,
+    operationId?: string | null,
+    signal?: AbortSignal,
+  ): Promise<AdaptationTrace> {
+    const query = operationId
+      ? `?operation_id=${encodeURIComponent(operationId)}`
+      : ''
+    return apiClient.request(
+      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/adaptation-trace${query}`,
+      { signal, decode: adaptationTrace },
+    )
+  },
 }
 
 function itemList<T>(payload: unknown, decode: (value: unknown) => T): T[] {
@@ -607,6 +654,87 @@ function activateResult(
 
 function pptxExecution(payload: unknown): PptxExecution {
   return recordPayload(payload) as unknown as PptxExecution
+}
+
+function adaptationTrace(payload: unknown): AdaptationTrace {
+  assertNoPathLikeKeys(payload)
+  if (
+    !isRecord(payload)
+    || typeof payload.operation_id !== 'string'
+    || typeof payload.lesson_node_id !== 'string'
+    || typeof payload.status !== 'string'
+    || typeof payload.model_calls_used !== 'number'
+    || typeof payload.model_calls_max !== 'number'
+    || !Array.isArray(payload.events)
+  ) {
+    throw new Error('Invalid adaptation trace')
+  }
+  return {
+    operation_id: payload.operation_id,
+    lesson_node_id: payload.lesson_node_id,
+    status: payload.status,
+    model_calls_used: payload.model_calls_used,
+    model_calls_max: payload.model_calls_max,
+    events: payload.events.map(adaptationTraceEvent),
+  }
+}
+
+function adaptationTraceEvent(payload: unknown): AdaptationTraceEvent {
+  if (
+    !isRecord(payload)
+    || typeof payload.round !== 'number'
+    || typeof payload.phase !== 'string'
+    || typeof payload.summary !== 'string'
+    || (payload.thinking_excerpt !== null && typeof payload.thinking_excerpt !== 'string')
+    || typeof payload.model_calls_used !== 'number'
+    || typeof payload.model_calls_max !== 'number'
+  ) {
+    throw new Error('Invalid adaptation trace event')
+  }
+  return {
+    round: payload.round,
+    phase: payload.phase,
+    summary: payload.summary,
+    thinking_excerpt: payload.thinking_excerpt,
+    tool: payload.tool == null ? null : adaptationTraceTool(payload.tool),
+    result: payload.result == null ? null : adaptationTraceResult(payload.result),
+    model_calls_used: payload.model_calls_used,
+    model_calls_max: payload.model_calls_max,
+  }
+}
+
+function adaptationTraceTool(payload: unknown): AdaptationTraceTool {
+  if (
+    !isRecord(payload)
+    || typeof payload.name !== 'string'
+    || (payload.purpose !== null && typeof payload.purpose !== 'string')
+    || (payload.page !== null && typeof payload.page !== 'number')
+    || typeof payload.source_ref !== 'string'
+  ) {
+    throw new Error('Invalid adaptation trace tool')
+  }
+  return {
+    name: payload.name,
+    purpose: payload.purpose,
+    page: payload.page,
+    source_ref: payload.source_ref,
+  }
+}
+
+function adaptationTraceResult(payload: unknown): AdaptationTraceResult {
+  if (
+    !isRecord(payload)
+    || typeof payload.ok !== 'boolean'
+    || typeof payload.label !== 'string'
+    || (payload.preview_url !== null && typeof payload.preview_url !== 'string')
+  ) {
+    throw new Error('Invalid adaptation trace result')
+  }
+  return {
+    ok: payload.ok,
+    label: payload.label,
+    preview_url: payload.preview_url,
+  }
 }
 
 function teachingPrepAIAdoption(payload: unknown): TeachingPrepAIAdoption {

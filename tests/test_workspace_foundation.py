@@ -623,6 +623,95 @@ def test_workspace_model_policy_counts_each_physical_retry_attempt(
     assert policy.physical_request_count == 3
 
 
+def test_workspace_model_policy_allows_repeated_lesson_draft_calls_on_same_gateway(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    gateway = _FakeGateway()
+    policy = WorkspaceModelGateway(
+        context=_context(paths, "teaching-prep"),
+        gateway=gateway,
+        audit_sink=_AuditSink(),
+    )
+    request = WorkspaceModelRequest(
+        purpose="lesson_draft",
+        data_classification="teaching_material_aggregate",
+        operation_id="lesson-draft-six-001",
+        max_physical_calls=6,
+    )
+    for _index in range(6):
+        policy.chat_completions(
+            request=request,
+            client=object(),
+            model="safe-model",
+            kwargs={},
+        )
+    assert len(gateway.calls) == 6
+    with pytest.raises(WorkspaceModelPolicyError, match="already used"):
+        policy.chat_completions(
+            request=request,
+            client=object(),
+            model="safe-model",
+            kwargs={},
+        )
+    assert len(gateway.calls) == 6
+
+
+def test_workspace_model_policy_rejects_multiple_calls_for_other_purposes(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    policy = WorkspaceModelGateway(
+        context=_context(paths, "teaching-prep"),
+        gateway=_FakeGateway(),
+    )
+    with pytest.raises(WorkspaceModelPolicyError, match="lesson_draft"):
+        policy.chat_completions(
+            request=WorkspaceModelRequest(
+                purpose="exercise_suggestions",
+                data_classification="confidential",
+                operation_id="exercise-multi-001",
+                max_physical_calls=6,
+            ),
+            client=object(),
+            model="safe-model",
+            kwargs={},
+        )
+
+
+def test_workspace_model_lesson_draft_claim_still_blocks_restarted_gateway(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    request = WorkspaceModelRequest(
+        purpose="lesson_draft",
+        data_classification="teaching_material_aggregate",
+        operation_id="lesson-draft-restart-001",
+        max_physical_calls=6,
+    )
+    first = WorkspaceModelGateway(
+        context=_context(paths, "teaching-prep"),
+        gateway=_FakeGateway(),
+    )
+    first.chat_completions(
+        request=request,
+        client=object(),
+        model="safe-model",
+        kwargs={},
+    )
+    restarted = WorkspaceModelGateway(
+        context=_context(paths, "teaching-prep"),
+        gateway=_FakeGateway(),
+    )
+    with pytest.raises(WorkspaceModelPolicyError, match="already used"):
+        restarted.chat_completions(
+            request=request,
+            client=object(),
+            model="safe-model",
+            kwargs={},
+        )
+
+
 def test_workspace_model_gateway_tags_diagnostic_sink_for_workspace_calls(
     tmp_path: Path,
 ) -> None:
