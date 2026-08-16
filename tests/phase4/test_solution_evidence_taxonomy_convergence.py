@@ -14,6 +14,7 @@ from question_bank.solution_evidence.contracts import (
 from question_bank.solution_evidence.convergence import converge_evidence_terms
 from question_bank.solution_evidence.repository import SolutionEvidenceProjectionWriter
 from question_bank.taxonomy.governance import TaxonomyGovernance
+from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 from question_bank.training_criteria.analysis import combined_response_format
 
 
@@ -270,6 +271,37 @@ def test_unambiguous_id_or_name_match_is_repaired_locally(
     assert convergence.secondary_matches[0]["correction"] == correction
 
 
+def test_unique_suffix_paraphrase_resolves_unknown_fine_term_id(
+    tmp_path: Path,
+) -> None:
+    governance = _legacy_governance(tmp_path / "taxonomy-unique-suffix.json")
+    resolved = governance.resolve_term("knowledge", "一次函数应用的证明")
+    assert resolved is not None
+
+    convergence = converge_evidence_terms(
+        _payload(_link("unknown-local-id", "一次函数应用的证明")),
+        taxonomy_contract={
+            "taxonomy_revision": 2,
+            "candidates": {"knowledge": []},
+        },
+        governance=governance,
+        question_ref="Q1",
+        model_name="synthetic-model",
+        operation_id="test:unique-suffix-fine-term",
+    )
+
+    point = convergence.payload["parts"][0]["evidence_points"][0]
+    assert point["fine_term_links"] == [
+        {
+            "fine_term_id": resolved["id"],
+            "fine_term_name": resolved["name"],
+            "role": "direct",
+        }
+    ]
+    assert convergence.unresolved_links == ()
+    assert convergence.proposals == ()
+
+
 def test_same_term_keeps_distinct_roles_and_deduplicates_only_exact_links(
     tmp_path: Path,
 ) -> None:
@@ -372,6 +404,11 @@ def test_formal_writer_saves_sound_scoring_without_unresolved_formal_links(
         ),
     )
 
+    contract = {
+        "taxonomy_revision": 2,
+        "candidates": {"knowledge": []},
+    }
+    snapshot = QuestionTaxonomySnapshot.capture(1, contract)
     evidence = writer.write(
         SimpleNamespace(
             question_id=1,
@@ -379,10 +416,8 @@ def test_formal_writer_saves_sound_scoring_without_unresolved_formal_links(
             question_type_confirmed=True,
             explicit_part_labels=(),
             objective_response_shape=None,
-            taxonomy_contract={
-                "taxonomy_revision": 2,
-                "candidates": {"knowledge": []},
-            },
+            taxonomy_contract=snapshot,
+            taxonomy_snapshot=snapshot,
             tagging_context=SimpleNamespace(
                 question_text="完成关键等价变形",
                 answer_text="写出正确的中间式",
@@ -441,6 +476,7 @@ def test_formal_writer_never_saves_knowledge_outside_the_question_contract(
         ),
     )
 
+    snapshot = QuestionTaxonomySnapshot.capture(1, contract)
     evidence = writer.write(
         SimpleNamespace(
             question_id=1,
@@ -448,7 +484,8 @@ def test_formal_writer_never_saves_knowledge_outside_the_question_contract(
             question_type_confirmed=True,
             explicit_part_labels=(),
             objective_response_shape=None,
-            taxonomy_contract=contract,
+            taxonomy_contract=snapshot,
+            taxonomy_snapshot=snapshot,
             tagging_context=SimpleNamespace(
                 question_text="用 AAS 证明三角形全等",
                 answer_text="写出全等证明过程",

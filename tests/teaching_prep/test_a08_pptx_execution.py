@@ -1269,3 +1269,103 @@ def test_execution_api_is_path_safe_and_downloads_verified_copy(
     assert download.headers["content-type"].startswith(
         "application/vnd.openxmlformats"
     )
+
+
+def test_preview_only_execution_waits_for_teacher_confirm_before_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source = tmp_path / "a05-reference.pptx"
+    source_before = _sha256(source)
+    service.wps_adapter = FakeWpsAdapter()
+
+    started, created = service.start_pptx_execution(
+        plan.id,
+        operation_id="a08-preview-only-execution",
+        confirmed=True,
+        preview_only=True,
+    )
+    assert created is True
+    service.process_pptx_execution(started.id, publish=False)
+    previewed = service.get_pptx_execution(started.id)
+    assert previewed.status == "verifying"
+    assert previewed.published_version_id is None
+    assert previewed.verification_report is not None
+    preview = service.pptx_execution_preview_path(started.id, slide_number=1)
+    assert preview.is_file()
+    versions = service.list_lesson_pptx_versions(
+        service.get_resource_pack(plan.resource_pack_id).lesson_node_id
+    )
+    assert versions == ()
+    assert _sha256(source) == source_before
+
+    restarted = TeachingPrepService(service.root)
+    restarted.wps_adapter = FakeWpsAdapter()
+    previewed_after_restart = restarted.get_pptx_execution(started.id)
+    assert previewed_after_restart.status == "verifying"
+    assert previewed_after_restart.published_version_id is None
+    assert previewed_after_restart.verification_report is not None
+
+    finished, version = restarted.confirm_pptx_preview(
+        started.id, confirmed=True
+    )
+    assert finished.status == "published"
+    assert version is not None
+    assert version.status == "published"
+    output, _filename = restarted.pptx_download(version.id)
+    assert output.is_file()
+    assert output != source
+    assert _sha256(source) == source_before
+
+
+def test_preview_only_api_waits_for_confirm_before_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source = tmp_path / "a05-reference.pptx"
+    source_before = _sha256(source)
+    service.wps_adapter = FakeWpsAdapter()
+    app = FastAPI()
+    app.state.workspace_services = {"teaching-prep": service}
+    app.include_router(create_router(), prefix="/api/teaching-prep")
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/teaching-prep/slide-plans/{plan.id}/executions",
+        json={
+            "operation_id": "a08-preview-only-api",
+            "confirmed": True,
+            "preview_only": True,
+        },
+    )
+    assert response.status_code == 202
+    run_id = response.json()["execution"]["id"]
+    previewed = client.get(f"/api/teaching-prep/pptx-executions/{run_id}")
+    assert previewed.status_code == 200
+    assert previewed.json()["status"] == "verifying"
+    assert previewed.json()["published_version_id"] is None
+    page = client.get(
+        f"/api/teaching-prep/pptx-executions/{run_id}/preview",
+        params={"slide": 1},
+    )
+    assert page.status_code == 200
+    assert page.headers["content-type"].startswith("image/png")
+    lesson_id = service.get_resource_pack(plan.resource_pack_id).lesson_node_id
+    versions = client.get(
+        f"/api/teaching-prep/lessons/{lesson_id}/pptx-versions"
+    )
+    assert versions.status_code == 200
+    assert versions.json()["items"] == []
+
+    confirmed = client.post(
+        f"/api/teaching-prep/pptx-executions/{run_id}/confirm-preview",
+        json={"confirmed": True},
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["execution"]["status"] == "published"
+    assert confirmed.json()["version"] is not None
+    assert _sha256(source) == source_before

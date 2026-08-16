@@ -623,6 +623,150 @@ def test_workspace_model_policy_counts_each_physical_retry_attempt(
     assert policy.physical_request_count == 3
 
 
+def test_workspace_model_policy_allows_repeated_lesson_draft_calls_on_same_gateway(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    gateway = _FakeGateway()
+    policy = WorkspaceModelGateway(
+        context=_context(paths, "teaching-prep"),
+        gateway=gateway,
+        audit_sink=_AuditSink(),
+    )
+    request = WorkspaceModelRequest(
+        purpose="lesson_draft",
+        data_classification="teaching_material_aggregate",
+        operation_id="lesson-draft-six-001",
+        max_physical_calls=6,
+    )
+    for _index in range(6):
+        policy.chat_completions(
+            request=request,
+            client=object(),
+            model="safe-model",
+            kwargs={},
+        )
+    assert len(gateway.calls) == 6
+    with pytest.raises(WorkspaceModelPolicyError, match="already used"):
+        policy.chat_completions(
+            request=request,
+            client=object(),
+            model="safe-model",
+            kwargs={},
+        )
+    assert len(gateway.calls) == 6
+
+
+def test_workspace_model_policy_rejects_multiple_calls_for_other_purposes(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    policy = WorkspaceModelGateway(
+        context=_context(paths, "teaching-prep"),
+        gateway=_FakeGateway(),
+    )
+    with pytest.raises(WorkspaceModelPolicyError, match="lesson_draft"):
+        policy.chat_completions(
+            request=WorkspaceModelRequest(
+                purpose="exercise_suggestions",
+                data_classification="confidential",
+                operation_id="exercise-multi-001",
+                max_physical_calls=6,
+            ),
+            client=object(),
+            model="safe-model",
+            kwargs={},
+        )
+
+
+def test_workspace_model_lesson_draft_claim_still_blocks_restarted_gateway(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    request = WorkspaceModelRequest(
+        purpose="lesson_draft",
+        data_classification="teaching_material_aggregate",
+        operation_id="lesson-draft-restart-001",
+        max_physical_calls=6,
+    )
+    first = WorkspaceModelGateway(
+        context=_context(paths, "teaching-prep"),
+        gateway=_FakeGateway(),
+    )
+    first.chat_completions(
+        request=request,
+        client=object(),
+        model="safe-model",
+        kwargs={},
+    )
+    restarted = WorkspaceModelGateway(
+        context=_context(paths, "teaching-prep"),
+        gateway=_FakeGateway(),
+    )
+    with pytest.raises(WorkspaceModelPolicyError, match="already used"):
+        restarted.chat_completions(
+            request=request,
+            client=object(),
+            model="safe-model",
+            kwargs={},
+        )
+
+
+def test_workspace_model_gateway_tags_diagnostic_sink_for_workspace_calls(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+
+    class _BoundSink:
+        def __init__(self, workspace_module: str, workspace_task_kind: str) -> None:
+            self.workspace_module = workspace_module
+            self.workspace_task_kind = workspace_task_kind
+
+    class _Journal:
+        def __init__(self) -> None:
+            self.binds: list[_BoundSink] = []
+
+        def for_workspace(self, *, workspace_module: object, workspace_task_kind: object):
+            bound = _BoundSink(str(workspace_module), str(workspace_task_kind))
+            self.binds.append(bound)
+            return bound
+
+    class _TaggingGateway(_FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.journal = _Journal()
+            self.diagnostic_sink = self.journal
+            self.seen_sinks: list[object] = []
+
+        def chat_completions(self, **kwargs):
+            self.seen_sinks.append(self.diagnostic_sink)
+            return super().chat_completions(**kwargs)
+
+    gateway = _TaggingGateway()
+    policy = WorkspaceModelGateway(
+        context=_context(paths, "teaching-prep"),
+        gateway=gateway,
+        metadata_only=False,
+        claim_operations=False,
+    )
+    policy.chat_completions(
+        request=WorkspaceModelRequest(
+            purpose="exercise_suggestions",
+            data_classification="confidential",
+            operation_id="exercise-tag-001",
+        ),
+        client=object(),
+        model="safe-model",
+        kwargs={},
+    )
+
+    assert len(gateway.journal.binds) == 1
+    assert gateway.journal.binds[0].workspace_module == "teaching-prep"
+    assert gateway.journal.binds[0].workspace_task_kind == "exercise_suggestions"
+    assert gateway.seen_sinks == [gateway.journal.binds[0]]
+    assert gateway.diagnostic_sink is gateway.journal
+
+
 def test_workspace_model_operation_claim_survives_new_gateway_instance(
     tmp_path: Path,
 ) -> None:

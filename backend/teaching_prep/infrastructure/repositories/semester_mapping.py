@@ -411,6 +411,75 @@ class SemesterMappingRepository:
             )
             return self._get(connection, proposal.id)
 
+    def recompute_page_ranges(
+        self,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> SemesterMappingProposal:
+        from backend.teaching_prep.application.semester_mapping import (
+            rematerialize_existing_mapping_payload,
+        )
+
+        with self._database.connect(immediate=True) as connection:
+            proposal = self._get(connection, proposal_id)
+            if proposal.status != "proposed":
+                raise TeachingPrepConflictError(
+                    "mapping proposal can no longer be recomputed"
+                )
+            if proposal.revision != expected_revision:
+                raise TeachingPrepConflictError(
+                    "mapping proposal changed; refresh before recomputing"
+                )
+            if proposal.payload.get("generation_source") == (
+                "local_reference_ppt_names"
+            ):
+                raise TeachingPrepConflictError(
+                    "local reference PPT mappings do not use printed-page recomputation"
+                )
+            material_ids = tuple(
+                str(item)
+                for item in proposal.payload["source_material_record_ids"]
+            )
+            snapshot, source_sha = self._snapshot(
+                connection, proposal.semester_id, material_ids
+            )
+            if not _source_state_matches(
+                connection, proposal, snapshot, source_sha
+            ):
+                raise TeachingPrepConflictError(
+                    "semester lessons or materials changed; generate a new proposal"
+                )
+            rebuilt = rematerialize_existing_mapping_payload(
+                proposal.payload,
+                snapshot=snapshot,
+            )
+            reviewable = dict(rebuilt)
+            reviewable["mappings"] = [
+                {
+                    **dict(item),
+                    "mapping_id": uuid4().hex,
+                    "decision": "pending",
+                    "teacher_revision": None,
+                    "decision_reason": None,
+                }
+                for item in list(rebuilt.get("mappings") or [])
+            ]
+            updated = connection.execute(
+                """
+                UPDATE semester_mapping_proposals
+                SET payload_json = ?, revision = revision + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ? AND revision = ? AND status = 'proposed'
+                """,
+                (_json(reviewable), proposal.id, expected_revision),
+            ).rowcount
+            if updated != 1:
+                raise TeachingPrepConflictError(
+                    "mapping proposal changed; refresh before recomputing"
+                )
+            return self._get(connection, proposal.id)
+
     def fail_generation(self, operation_id: str, error_code: str) -> None:
         with self._database.connect(immediate=True) as connection:
             connection.execute(

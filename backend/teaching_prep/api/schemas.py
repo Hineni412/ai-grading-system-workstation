@@ -36,6 +36,7 @@ from backend.teaching_prep.domain.models import (
     TeachingPreferences,
     TeachingSemester,
     TeachingPrepAIAdoption,
+    SlideAnimationRun,
 )
 from backend.teaching_prep.domain.states import LessonPreparationState
 
@@ -68,6 +69,7 @@ class TeachingPrepStatusResponse(BaseModel):
     real_model_enabled: bool = False
     semester_mapping_model_available: bool = False
     exercise_suggestion_model_available: bool = False
+    slide_animation_model_available: bool = False
     real_wps_enabled: bool = False
     wps_execution_available: bool = False
     real_model_enabled: bool
@@ -1162,6 +1164,13 @@ class ExecuteSlidePlanRequest(BaseModel):
 
     operation_id: str = Field(min_length=8, max_length=96)
     confirmed: bool
+    preview_only: bool = False
+
+
+class ConfirmPptxPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed: bool
 
 
 class DiscardPptxStagingRequest(BaseModel):
@@ -1620,6 +1629,97 @@ class ExerciseSuggestionRunResponse(BaseModel):
         return cls.model_validate(payload)
 
 
+class StartSlideAnimationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str = Field(min_length=8, max_length=96)
+    confirmed: bool
+    material_link_id: str = Field(min_length=32, max_length=32)
+    page_indexes: list[int] = Field(min_length=1, max_length=4)
+
+
+class DecideSlideAnimationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class SlideAnimationSceneResponse(BaseModel):
+    title: str
+    narration: str
+    duration_ms: int
+    source_page: int
+    highlight: str | None = None
+
+
+class SlideAnimationStoryboardResponse(BaseModel):
+    title: str
+    scenes: list[SlideAnimationSceneResponse]
+
+
+class SlideAnimationRunResponse(BaseModel):
+    id: str
+    lesson_node_id: str
+    material_version_id: str
+    material_link_id: str
+    operation_id: str
+    page_indexes: list[int]
+    storyboard: SlideAnimationStoryboardResponse | None = None
+    status: Literal[
+        "running",
+        "succeeded",
+        "accepted",
+        "discarded",
+        "failed",
+        "cancelled",
+        "result_unknown",
+    ]
+    teacher_decision: Literal["pending", "accepted", "discarded"]
+    error_code: str | None
+    model_call_count: int
+    revision: int
+    can_preview: bool
+    can_download: bool
+    created_at: str
+    updated_at: str
+    finished_at: str | None
+
+    @classmethod
+    def from_domain(cls, run: SlideAnimationRun) -> "SlideAnimationRunResponse":
+        storyboard = None
+        if isinstance(run.storyboard, dict):
+            storyboard = SlideAnimationStoryboardResponse.model_validate(
+                run.storyboard
+            )
+        return cls(
+            id=run.id,
+            lesson_node_id=run.lesson_node_id,
+            material_version_id=run.material_version_id,
+            material_link_id=run.material_link_id,
+            operation_id=run.operation_id,
+            page_indexes=list(run.page_indexes),
+            storyboard=storyboard,
+            status=run.status,  # type: ignore[arg-type]
+            teacher_decision=run.teacher_decision,  # type: ignore[arg-type]
+            error_code=run.error_code,
+            model_call_count=run.model_call_count,
+            revision=run.revision,
+            can_preview=run.status in {"succeeded", "accepted"},
+            can_download=run.status == "accepted",
+            created_at=run.created_at,
+            updated_at=run.updated_at,
+            finished_at=run.finished_at,
+        )
+
+
+class SlideAnimationRunListResponse(BaseModel):
+    lesson_node_id: str
+    items: list[SlideAnimationRunResponse]
+    billed_count: int
+    billed_limit: int
+    page_limit: int
+
+
 class ReviewExerciseSuggestionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1657,3 +1757,37 @@ class ActivatePptxVersionResponse(BaseModel):
     version: PptxVersionResponse
     current_revision: int
     changed: bool
+
+
+class AdaptationTraceToolResponse(BaseModel):
+    name: str
+    purpose: str | None = None
+    page: int | None = None
+    source_ref: str = ""
+
+
+class AdaptationTraceResultResponse(BaseModel):
+    ok: bool
+    label: str
+    preview_url: str | None = None
+
+
+class AdaptationTraceEventResponse(BaseModel):
+    round: int
+    phase: str
+    summary: str
+    thinking_excerpt: str | None = None
+    tool: AdaptationTraceToolResponse | None = None
+    result: AdaptationTraceResultResponse | None = None
+    model_calls_used: int
+    model_calls_max: int
+
+
+class AdaptationTraceResponse(BaseModel):
+    operation_id: str
+    lesson_node_id: str
+    status: str
+    model_calls_used: int
+    model_calls_max: int
+    events: list[AdaptationTraceEventResponse]
+

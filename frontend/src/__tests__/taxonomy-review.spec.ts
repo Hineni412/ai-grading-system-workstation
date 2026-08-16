@@ -10,6 +10,7 @@ import {
 import { ApiError } from '../api/errors'
 import { questionBankApi, type QuestionBankDetail } from '../api/question-bank'
 import TaxonomyCandidateReview from '../components/question-bank/TaxonomyCandidateReview.vue'
+import { useJobStore } from '../stores/jobs'
 import {
   TAXONOMY_SUGGESTION_COMMAND_STORAGE_KEY,
   TAXONOMY_SUGGESTION_RUN_STORAGE_KEY,
@@ -274,7 +275,7 @@ describe('taxonomy review', () => {
     app.unmount()
   })
 
-  it('shows doubtful batch items first, keeps automatic items collapsed, and saves once', async () => {
+  it('shows a comparison table, checks high-confidence rows, and saves checked merges once', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const store = useTaxonomyReviewStore()
@@ -340,30 +341,40 @@ describe('taxonomy review', () => {
     await nextTick()
 
     const results = document.body.querySelector('.taxonomy-ai-results')
-    const automatic = results?.querySelector<HTMLDetailsElement>(
-      '.taxonomy-ai-results__automatic',
-    )
+    const table = results?.querySelector<HTMLTableElement>('.taxonomy-ai-results__table')
     const resultText = results?.textContent ?? ''
-    expect(results?.textContent).toContain('先核对疑难项，再一次保存')
-    expect(results?.querySelectorAll('.taxonomy-ai-results__candidate-head')).toHaveLength(1)
-    expect(results?.querySelectorAll('.taxonomy-ai-results__controls')).toHaveLength(1)
-    expect(resultText.indexOf('需要人工判断的词')).toBeLessThan(
-      resultText.indexOf('可严格归并的词'),
+    expect(results?.textContent).toContain('高把握项已默认勾选')
+    expect(table).not.toBeNull()
+    expect(results?.querySelector('.taxonomy-ai-results__automatic')).toBeNull()
+    expect(resultText).toContain('可严格归并的词')
+    expect(resultText).toContain('需要人工判断的词')
+    expect(resultText.indexOf('可严格归并的词')).toBeLessThan(
+      resultText.indexOf('需要人工判断的词'),
     )
-    expect(automatic?.open).toBe(false)
+    const checkboxes = [...(table?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]') ?? [])]
+    expect(checkboxes).toHaveLength(2)
+    expect(checkboxes[0]?.checked).toBe(true)
+    expect(checkboxes[1]?.checked).toBe(false)
     expect(document.body.textContent).toContain('当前知识标准 · 词表修订 7')
     expect(document.body.textContent).not.toContain('启用知识图谱')
 
     const saveButton = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('保存本批决定'))
+      .find((button) => button.textContent?.includes('确认已勾选'))
     saveButton?.click()
     await nextTick()
     expect(saveSpy).toHaveBeenCalledTimes(1)
-    expect(saveSpy).toHaveBeenCalledWith([{
-      proposal_id: 'proposal-manual',
-      decision: 'defer',
-      target_term_ids: [],
-    }])
+    expect(saveSpy).toHaveBeenCalledWith([
+      {
+        proposal_id: 'proposal-manual',
+        decision: 'defer',
+        target_term_ids: [],
+      },
+      {
+        proposal_id: 'proposal-auto',
+        decision: 'merge',
+        target_term_ids: ['term-1'],
+      },
+    ])
 
     app.unmount()
   })
@@ -682,5 +693,6 @@ describe('taxonomy review', () => {
 
     expect(inputs).toHaveLength(2)
     expect(inputs[0]?.request_token).toBe(inputs[1]?.request_token)
+    expect(useJobStore().jobs[92]?.job_type).toBe('taxonomy_suggestion')
   })
 })

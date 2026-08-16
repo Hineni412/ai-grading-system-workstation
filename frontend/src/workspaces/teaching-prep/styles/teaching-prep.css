@@ -1018,7 +1018,7 @@
   font-size: var(--font-size-caption);
 }
 
-/* ===== 第 2 步：审核改编 ===== */
+/* ===== 第 2 步：对照改编 ===== */
 .tp-ai-waiting .tp-panel__body h2 {
   margin: 0;
   font-size: var(--font-size-h2);
@@ -1037,11 +1037,63 @@
   border-color: var(--color-warning);
 }
 
+.tp-adaptation-trace {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--muted);
+}
+
+.tp-adaptation-trace__rounds {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+}
+
+.tp-adaptation-trace__list {
+  margin: 0;
+  padding-left: var(--space-4);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.tp-adaptation-trace__item {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.tp-adaptation-trace__item strong {
+  font-weight: var(--font-weight-semibold);
+}
+
+.tp-adaptation-trace__thinking {
+  margin: 0;
+  font-size: var(--font-size-dense);
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+}
+
+.tp-adaptation-trace__thumb {
+  width: 120px;
+  height: auto;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+}
+
 .tp-slide-checker {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr) minmax(0, 1.2fr);
+  grid-template-columns: 160px minmax(0, 1.6fr) minmax(280px, 0.9fr);
   gap: var(--space-4);
   padding: var(--space-4) var(--space-5);
+}
+
+.tp-slide-checker__compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  min-width: 0;
 }
 
 .tp-slide-checker__thumbs {
@@ -1111,6 +1163,52 @@
   padding: var(--space-4);
   color: var(--color-text-secondary);
   text-align: center;
+}
+
+.tp-material-page-preview {
+  display: grid;
+  gap: var(--space-2);
+  min-width: min(100%, 280px);
+  margin-top: var(--space-2);
+}
+
+.tp-material-page-preview header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.tp-material-page-preview .tp-slide-stage {
+  overflow: hidden;
+}
+
+.tp-material-page-preview .tp-slide-stage img {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.tp-material-page-preview .tp-slide-stage__paper {
+  aspect-ratio: 16 / 9;
+  min-height: 0;
+}
+
+.tp-link-block {
+  display: grid;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.tp-link-block:last-child {
+  border-bottom: none;
+}
+
+.tp-link-block .tp-link-row {
+  border-bottom: none;
+  padding: var(--space-3) 0 0;
 }
 
 .tp-change-overlay {
@@ -1220,8 +1318,64 @@
   font-weight: var(--font-weight-semibold);
 }
 
-.tp-page-strip__cell.is-active.is-pending {
-  box-shadow: 0 0 0 1px var(--primary), inset 0 -3px 0 var(--color-warning);
+.tp-page-strip__cell.is-picked {
+  background: var(--color-success-subtle);
+}
+
+.tp-page-strip__cell.is-active.is-picked {
+  box-shadow: 0 0 0 1px var(--primary), inset 0 -3px 0 var(--color-success);
+}
+
+.tp-animation-picker {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.tp-animation-tasks {
+  display: flex;
+  gap: var(--space-3);
+  align-items: stretch;
+  overflow-x: auto;
+}
+
+.tp-animation-task {
+  flex: 0 0 min(260px, 85%);
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  min-width: 220px;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.tp-animation-task header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.tp-animation-task textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.tp-animation-preview {
+  width: 100%;
+  min-height: 320px;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: #111827;
+}
+
+.tp-animation-draft,
+.tp-animation-attachments {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .tp-page-checker__work {
@@ -1356,7 +1510,7 @@
   font-size: var(--font-size-caption);
 }
 
-/* ===== 第 3 步：副本与上课包 ===== */
+/* ===== 第 3 步：上课包 ===== */
 .tp-execution-phases {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1517,6 +1671,10 @@
   }
 
   .tp-slide-checker {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tp-slide-checker__compare {
     grid-template-columns: minmax(0, 1fr);
   }
 

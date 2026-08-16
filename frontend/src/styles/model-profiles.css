@@ -663,11 +663,15 @@
   opacity: var(--opacity-disabled);
 }
 
-.ai-diagnostics-disclosure {
-  margin-block-start: var(--space-8);
-  padding-block-start: var(--space-6);
-  border-block-start: var(--border-width) solid var(--color-border-default);
+.model-profiles-trace-link {
+  margin-block-start: var(--space-4);
 }
+
+.model-profiles-trace-link a {
+  color: var(--color-accent-active);
+  font-weight: var(--font-weight-semibold);
+}
+
 
 .workspace-ai-records {
   display: grid;

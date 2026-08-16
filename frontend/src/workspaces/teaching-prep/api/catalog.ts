@@ -2628,6 +2628,19 @@ export const teachingPrepCatalogApi = {
     )
   },
 
+  recomputeSemesterMappingPageRanges(
+    proposal: Pick<SemesterMappingProposal, 'id' | 'revision'>,
+  ): Promise<SemesterMappingProposal> {
+    return apiClient.request(
+      `/api/teaching-prep/semester-mapping-proposals/${encodeURIComponent(proposal.id)}/recompute-page-ranges`,
+      {
+        method: 'POST',
+        body: { expected_revision: proposal.revision },
+        decode: decodeSemesterMappingProposal,
+      },
+    )
+  },
+
   rejectSemesterMappingProposal(
     proposal: Pick<SemesterMappingProposal, 'id' | 'revision'>,
   ): Promise<SemesterMappingProposal> {
@@ -2876,6 +2889,39 @@ export const teachingPrepCatalogApi = {
             throw new Error('Invalid material unit response')
           }
           return payload.items.map(materialUnit)
+        },
+      },
+    )
+  },
+
+  getMaterialUnit(
+    unitId: string,
+    signal?: AbortSignal,
+  ): Promise<MaterialUnit> {
+    return apiClient.request(
+      `/api/teaching-prep/material-units/${encodeURIComponent(unitId)}`,
+      {
+        signal,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return materialUnit(payload)
+        },
+      },
+    )
+  },
+
+  requestPptPreviewRender(
+    unitId: string,
+    signal?: AbortSignal,
+  ): Promise<MaterialUnit> {
+    return apiClient.request(
+      `/api/teaching-prep/material-units/${encodeURIComponent(unitId)}/preview-render`,
+      {
+        method: 'POST',
+        signal,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return materialUnit(payload)
         },
       },
     )
@@ -3304,12 +3350,31 @@ export const teachingPrepCatalogApi = {
   executeSlidePlan(
     planId: string,
     operationId: string,
+    options: { previewOnly?: boolean } = {},
   ): Promise<PptxExecutionResult> {
     return apiClient.request(
       `/api/teaching-prep/slide-plans/${encodeURIComponent(planId)}/executions`,
       {
         method: 'POST',
-        body: { operation_id: operationId, confirmed: true },
+        body: {
+          operation_id: operationId,
+          confirmed: true,
+          preview_only: options.previewOnly === true,
+        },
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return pptxExecutionResult(payload)
+        },
+      },
+    )
+  },
+
+  confirmPptxPreview(runId: string): Promise<PptxExecutionResult> {
+    return apiClient.request(
+      `/api/teaching-prep/pptx-executions/${encodeURIComponent(runId)}/confirm-preview`,
+      {
+        method: 'POST',
+        body: { confirmed: true },
         decode: (payload) => {
           assertNoPathLikeKeys(payload)
           return pptxExecutionResult(payload)

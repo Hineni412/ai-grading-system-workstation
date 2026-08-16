@@ -148,6 +148,29 @@ def test_parse_paper_text_type_overrides_win_over_heuristic() -> None:
     assert by_number["2"].question_type == "填空题"
 
 
+def test_parse_paper_text_does_not_broadcast_document_level_images() -> None:
+    parsed = parse_paper_text(
+        (
+            "1．这是一道足够长的纯文字题目内容\n"
+            "2．这是含图的题目内容[[IMAGE:extracted.png]]\n"
+            "答案：\n"
+            "1. 1\n"
+            "2. 2"
+        ),
+        source_file="tmp_sample.docx",
+        page_range="document",
+        has_images=True,
+        needs_image_review=True,
+        image_paths=["extracted.png"],
+    )
+    by_number = {item.question_number: item for item in parsed.questions}
+
+    assert by_number["1"].has_images is False
+    assert by_number["1"].image_paths == []
+    assert by_number["2"].has_images is True
+    assert by_number["2"].image_paths == ["extracted.png"]
+
+
 def test_cross_paper_duplicate_question_is_kept_for_complete_paper_import(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
     service = QuestionBankTestStore(db_path)

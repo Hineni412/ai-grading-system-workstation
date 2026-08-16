@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { WorkspaceAITask } from './contracts'
-import { returnLocation } from './taskPresentation'
+import { jobTitle, returnLocation } from './taskPresentation'
 
 function task(destination: string): WorkspaceAITask {
   return {
@@ -17,6 +17,19 @@ function task(destination: string): WorkspaceAITask {
     created_at: '', updated_at: '', finished_at: '',
   }
 }
+
+describe('job presentation', () => {
+  it('names common background jobs instead of a generic fallback', () => {
+    const base = {
+      id: 1, payload: {}, result: {}, status: 'running' as const, progress: 0.2,
+      stage: '', detail: '', error: null, cancel_requested: false,
+      created_at: '', started_at: null, updated_at: '', finished_at: null,
+    }
+    expect(jobTitle({ ...base, job_type: 'question_bank_sync' })).toBe('题库同步')
+    expect(jobTitle({ ...base, job_type: 'teaching_prep.semester_mapping' })).toBe('整理学期资料')
+    expect(jobTitle({ ...base, job_type: 'unknown_kind' })).toBe('后台任务')
+  })
+})
 
 describe('AI task return location', () => {
   it('returns a materials-step task to the lesson first step', () => {

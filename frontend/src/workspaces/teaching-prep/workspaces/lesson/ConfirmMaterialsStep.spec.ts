@@ -6,14 +6,19 @@ import {
   teachingPrepCatalogApi,
   type LessonNode,
   type MaterialLink,
+  type MaterialUnit,
   type MaterialVersion,
   type SemesterMaterialRecord,
   type TeachingSemester,
 } from '../../api/catalog'
 import type {
+  ExerciseSuggestionRun,
   ReferenceMaterialLink,
   ReferenceSelectionPreflight,
+  SlideAnimationRun,
 } from '../../api/workbench'
+import { teachingPrepWorkbenchApi } from '../../api/workbench'
+import { ApiError } from '../../../../api/errors'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
 import { teachingPrepLessonWorkbenchKey } from '../../workbench/routeContext'
 import type { TeachingPrepLessonWorkbench } from '../../workbench/lessonWorkbench'
@@ -122,25 +127,108 @@ function parsedRecord(id: string, versionId: string, name: string): SemesterMate
   }
 }
 
-function material(id: string, name: string): MaterialVersion {
+function material(id: string, name: string, materialType: MaterialVersion['material_type'] = 'pdf'): MaterialVersion {
   return {
-    id, source_id: id, display_name: name, material_type: 'pdf',
-    content_sha256: id[0]!.repeat(64), safe_filename: `${id[0]}.pdf`, size_bytes: 20,
+    id, source_id: id, display_name: name, material_type: materialType,
+    content_sha256: id[0]!.repeat(64), safe_filename: `${id[0]}.${materialType === 'pptx' ? 'pptx' : 'pdf'}`, size_bytes: 20,
     modified_ns: null, unit_count: 5, inspection_status: 'ready',
     availability: 'available', created_at: '2026-08-03T00:00:00Z',
+  }
+}
+
+function previewUnit(versionId: string, index: number): MaterialUnit {
+  const id = `u${index}`.padEnd(32, '0')
+  return {
+    id,
+    material_version_id: versionId,
+    unit_kind: 'pdf_page',
+    unit_index: index,
+    title: null,
+    text_excerpt: '',
+    text_status: 'embedded',
+    formula_review_required: false,
+    object_summary: {},
+    preview_url: `/api/teaching-prep/material-units/${id}/preview`,
+    revision: 1,
+    created_at: '2026-08-03T00:00:00Z',
+    updated_at: '2026-08-03T00:00:00Z',
   }
 }
 
 interface StepExpose {
   primaryLabel: string
   primaryDisabled: boolean
+  inspectorMessage?: string
   runPrimary: () => Promise<void>
+}
+
+function notFoundError(): ApiError {
+  return new ApiError({
+    kind: 'not_found',
+    status: 404,
+    code: 'teaching_prep_not_found',
+    message: 'Teaching preparation record was not found',
+    details: {},
+    requestId: 'test',
+    retryable: false,
+  })
+}
+
+function succeededExerciseRun(): ExerciseSuggestionRun {
+  const suggestionId = 'e'.repeat(32)
+  return {
+    id: 'r'.repeat(32),
+    snapshot_id: 'p'.repeat(32),
+    operation_id: 'exercise-suggestions-restore-1',
+    status: 'succeeded',
+    error_code: null,
+    model_call_count: 1,
+    created_at: '2026-08-15T07:56:37Z',
+    updated_at: '2026-08-15T07:57:55Z',
+    finished_at: '2026-08-15T07:57:55Z',
+    suggestions: [
+      {
+        id: suggestionId,
+        run_id: 'r'.repeat(32),
+        lesson_node_id: lessonId,
+        source_state_sha256: 'a'.repeat(64),
+        decision: 'pending',
+        original_payload: {
+          material_version_id: 'v-link-ex',
+          question_number: '1',
+          content_label: '合成候选题',
+          difficulty: 'medium',
+          classroom_use: 'guided_practice',
+          estimated_minutes: 4,
+          teaching_focus: '检查方程变形',
+          reason: '与本节目标直接相关',
+          uncertainties: [],
+          question_regions: [
+            {
+              material_unit_id: 'u4'.padEnd(32, '0'),
+              sequence: 1,
+              crop: { x0: 0.1, y0: 0.1, x1: 0.9, y1: 0.55 },
+            },
+          ],
+          answer_regions: [],
+        },
+        teacher_payload: null,
+        rejection_reason: null,
+        exercise_candidate_id: null,
+        revision: 1,
+        created_at: '2026-08-15T07:57:55Z',
+        updated_at: '2026-08-15T07:57:55Z',
+      },
+    ],
+  }
 }
 
 async function mountStep(options: {
   links?: ReferenceMaterialLink[]
   materialLinks?: MaterialLink[]
   withPreferences?: boolean
+  pptUnits?: MaterialUnit[]
+  latestExerciseRun?: ExerciseSuggestionRun | null
 } = {}) {
   const catalog = useTeachingPrepCatalogStore()
   catalog.semesters = [semester]
@@ -187,6 +275,47 @@ async function mountStep(options: {
     requestLeave: vi.fn(async () => true),
   } as unknown as TeachingPrepLessonWorkbench
 
+  vi.spyOn(teachingPrepCatalogApi, 'listMaterialUnits').mockResolvedValue(
+    options.pptUnits ?? [1, 2].map(index => previewUnit('v-link-ppt', index)),
+  )
+  vi.spyOn(teachingPrepCatalogApi, 'requestPptPreviewRender').mockImplementation(async (unitId) => ({
+    ...previewUnit('v-link-ppt', 1),
+    id: unitId,
+    unit_kind: 'ppt_slide',
+    object_summary: {
+      preview_kind: 'structural',
+      preview_notice: '本机拼出的页，不是放映软件实拍',
+      preview_render_status: 'queued',
+    },
+  }))
+  vi.spyOn(teachingPrepCatalogApi, 'getMaterialUnit').mockImplementation(async (unitId) => ({
+    ...previewUnit('v-link-ppt', 1),
+    id: unitId,
+    unit_kind: 'ppt_slide',
+    object_summary: {
+      preview_kind: 'structural',
+      preview_notice: '本机拼出的页，不是放映软件实拍',
+      preview_render_status: 'failed',
+      preview_render_error_code: 'wps_preview_timeout',
+    },
+  }))
+  vi.spyOn(teachingPrepWorkbenchApi, 'listSlideAnimationRuns').mockResolvedValue({
+    lesson_node_id: lessonId,
+    items: [],
+    billed_count: 0,
+    billed_limit: 3,
+    page_limit: 4,
+  })
+  if (options.latestExerciseRun) {
+    vi.spyOn(teachingPrepWorkbenchApi, 'latestExerciseSuggestionRun').mockResolvedValue(
+      options.latestExerciseRun,
+    )
+  } else {
+    vi.spyOn(teachingPrepWorkbenchApi, 'latestExerciseSuggestionRun').mockRejectedValue(
+      notFoundError(),
+    )
+  }
+
   let expose!: StepExpose
   const Wrapper = defineComponent({
     setup() {
@@ -207,6 +336,8 @@ async function mountStep(options: {
   app.mount(host)
   await nextTick()
   await nextTick()
+  await Promise.resolve()
+  await nextTick()
   return { app, host, catalog, workbench, getExpose: () => expose }
 }
 
@@ -215,10 +346,34 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   document.body.innerHTML = ''
 })
+
+function pptLinkWithPages(linkId: string, name: string, pages: number): ReferenceMaterialLink {
+  const link = referenceLink(linkId, name, 'reference_ppt', 'pptx')
+  link.end_unit = pages
+  link.units = Array.from({ length: pages }, (_, index) => {
+    const page = index + 1
+    const unitId = `u${page}`.padEnd(32, '0')
+    return {
+      unit_id: unitId,
+      unit_index: page,
+      unit_kind: 'ppt_slide',
+      title: `第${page}页标题`,
+      preview_url: `/api/teaching-prep/material-units/${unitId}/preview`,
+      text_status: 'embedded',
+      formula_review_required: false,
+      object_summary: {
+        preview_kind: 'structural',
+        preview_notice: '本机拼出的页，不是放映软件实拍',
+      },
+    }
+  })
+  return link
+}
 
 describe('ConfirmMaterialsStep', () => {
   it('renders linked materials and defaults to the generate primary action', async () => {
@@ -231,7 +386,9 @@ describe('ConfirmMaterialsStep', () => {
 
     expect(host.textContent).toContain('一次函数课件.pptx')
     expect(host.textContent).toContain('教材第 1—2 页')
-    expect(getExpose().primaryLabel).toBe('确认资料并生成 AI 改编（调用 1 次）')
+    expect(host.textContent).toContain('预计最多 6 次模型调用')
+    expect(host.textContent).toContain('失败不会自动再发')
+    expect(getExpose().primaryLabel).toBe('发给 AI 改编')
     expect(getExpose().primaryDisabled).toBe(false)
     app.unmount()
   })
@@ -268,6 +425,8 @@ describe('ConfirmMaterialsStep', () => {
     })
     catalog.semesterMaterials = [parsedRecord('r'.repeat(32), versionId, '补充讲义.pdf')]
     catalog.materials = [material(versionId, '补充讲义.pdf')]
+    const listUnits = vi.spyOn(teachingPrepCatalogApi, 'listMaterialUnits')
+      .mockResolvedValue([1, 2, 3, 4, 5].map(index => previewUnit(versionId, index)))
     const createLink = vi.spyOn(teachingPrepCatalogApi, 'createMaterialLink')
       .mockResolvedValue(materialLink('link-new', '补充讲义.pdf'))
     await nextTick()
@@ -276,7 +435,10 @@ describe('ConfirmMaterialsStep', () => {
     expect(candidate?.querySelectorAll('option')).toHaveLength(2)
     candidate!.value = 'r'.repeat(32)
     candidate!.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(listUnits).toHaveBeenCalledWith(versionId))
     await nextTick()
+    expect(host.querySelector('[data-testid="material-page-preview"] img')?.getAttribute('src'))
+      .toContain('/preview')
     const purpose = host.querySelector<HTMLSelectElement>('[data-testid="lesson-material-purpose"]')
     purpose!.value = 'supplement'
     purpose!.dispatchEvent(new Event('change'))
@@ -298,6 +460,275 @@ describe('ConfirmMaterialsStep', () => {
       confirmation_status: 'confirmed',
     })
     expect(workbench.refresh).toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('does not list PPT files in the add-material candidates', async () => {
+    const pdfId = 'v'.repeat(32)
+    const pptId = 'p'.repeat(32)
+    const { app, host, catalog } = await mountStep({
+      links: [referenceLink('link-ppt', '认识勾股定理.pptx', 'reference_ppt', 'pptx')],
+    })
+    catalog.semesterMaterials = [
+      parsedRecord('r'.repeat(32), pdfId, '补充讲义.pdf'),
+      {
+        ...parsedRecord('q'.repeat(32), pptId, '1.1 第1课时.pptx'),
+        material_role: 'reference_ppt',
+      },
+    ]
+    catalog.materials = [
+      material(pdfId, '补充讲义.pdf'),
+      material(pptId, '1.1 第1课时.pptx', 'pptx'),
+    ]
+    await nextTick()
+
+    const candidate = host.querySelector<HTMLSelectElement>('[data-testid="lesson-material-candidate"]')
+    const labels = [...(candidate?.querySelectorAll('option') ?? [])].map(item => item.textContent ?? '')
+    expect(labels.some(item => item.includes('补充讲义'))).toBe(true)
+    expect(labels.some(item => item.includes('第1课时') || item.includes('pptx'))).toBe(false)
+    const purposeLabels = [...(host.querySelector('[data-testid="lesson-material-purpose"]')?.querySelectorAll('option') ?? [])]
+      .map(item => item.textContent ?? '')
+    expect(purposeLabels).not.toContain('参考课件')
+    app.unmount()
+  })
+
+  it('previews the linked pages of an existing material', async () => {
+    const book = referenceLink('link-book', '教材第 4—5 页', 'textbook')
+    book.start_unit = 4
+    book.end_unit = 5
+    book.units = [
+      {
+        unit_id: 'u4'.padEnd(32, '0'),
+        unit_index: 4,
+        unit_kind: 'pdf_page',
+        title: null,
+        preview_url: '/api/teaching-prep/material-units/u4/preview',
+        text_status: 'embedded',
+        formula_review_required: false,
+      },
+      {
+        unit_id: 'u5'.padEnd(32, '0'),
+        unit_index: 5,
+        unit_kind: 'pdf_page',
+        title: null,
+        preview_url: '/api/teaching-prep/material-units/u5/preview',
+        text_status: 'embedded',
+        formula_review_required: false,
+      },
+    ]
+    const { app, host } = await mountStep({
+      links: [
+        referenceLink('link-ppt', '一次函数课件.pptx', 'reference_ppt', 'pptx'),
+        book,
+      ],
+    })
+
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="preview-lesson-material"]')]
+    expect(buttons).toHaveLength(2)
+    buttons[1]?.click()
+    await nextTick()
+    const previewSources = [...host.querySelectorAll('[data-testid="material-page-preview"] img')]
+      .map(item => item.getAttribute('src'))
+    expect(previewSources.some(item => (
+      item?.includes('/api/teaching-prep/material-units/u4/preview')
+    ))).toBe(true)
+    app.unmount()
+  })
+
+  it('previews the primary PPT in send scope and keeps adaptation as a separate unpaid selection', async () => {
+    const { app, host, getExpose } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    await nextTick()
+
+    expect(host.querySelector('[data-testid="ppt-animation-page-picker"]')).toBeTruthy()
+    expect(host.textContent).toContain('本机拼出的页')
+    expect(host.textContent).toContain('停住后会换成放映软件实拍')
+    expect(host.textContent).toContain('课堂动画页')
+    expect(host.textContent).toContain('未建任务（生成动画才单独计费，不改课件）')
+    expect(host.textContent).toContain('内部最多 2 次：识题 + 改编')
+    expect(getExpose().primaryDisabled).toBe(false)
+    app.unmount()
+  })
+
+  it('restores a succeeded workbook identification after leaving the page', async () => {
+    const { app, host, getExpose } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-ex', '教辅第 4—5 页', 'exercise'),
+      ],
+      latestExerciseRun: succeededExerciseRun(),
+    })
+
+    expect(host.textContent).not.toContain('AI 找到的题目裁切')
+    expect(host.querySelector('[aria-label="AI 找到的题目裁切"]')).toBeNull()
+    expect(getExpose().primaryLabel).toBe('发给 AI 改编')
+    expect(getExpose().inspectorMessage).toContain('上次已识别到 1 道题')
+    app.unmount()
+  })
+
+  it('creates animation tasks to the right and sends typed PPT pages', async () => {
+    const { app, host } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="create-slide-animation-task"]')?.click()
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="create-slide-animation-task"]')?.click()
+    await nextTick()
+
+    const tasks = [...host.querySelectorAll('[data-testid="slide-animation-task"]')]
+    expect(tasks).toHaveLength(2)
+    expect(tasks[0]?.textContent).toContain('任务 1')
+    expect(tasks[1]?.textContent).toContain('任务 2')
+
+    const firstInput = tasks[0]?.querySelector<HTMLTextAreaElement>('[data-testid="slide-animation-pages"]')
+    firstInput!.value = '1,2,3,4,5'
+    firstInput!.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(tasks[0]?.textContent).toContain('每次最多 4 页')
+    expect(tasks[0]?.querySelector<HTMLButtonElement>('[data-testid="generate-slide-animation"]')?.disabled).toBe(true)
+
+    firstInput!.value = '1,3'
+    firstInput!.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(host.textContent).toContain('任务1：第 1、3 页')
+    expect(tasks[0]?.querySelector<HTMLButtonElement>('[data-testid="generate-slide-animation"]')?.disabled).toBe(false)
+    app.unmount()
+  })
+
+  it('clears animation tasks when the primary PPT changes', async () => {
+    const { app, host } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt-a', '课件A.pptx', 3),
+        pptLinkWithPages('link-ppt-b', '课件B.pptx', 3),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="create-slide-animation-task"]')?.click()
+    await nextTick()
+    const firstInput = host.querySelector<HTMLTextAreaElement>('[data-testid="slide-animation-pages"]')
+    firstInput!.value = '1'
+    firstInput!.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(host.querySelector('[data-testid="slide-animation-task"]')?.textContent)
+      .toContain('将使用第 1 页')
+
+    const radios = [...host.querySelectorAll<HTMLInputElement>('input[name="primary-reference-ppt"]')]
+    radios[1]!.checked = true
+    radios[1]!.dispatchEvent(new Event('change'))
+    await nextTick()
+    await nextTick()
+
+    expect(host.querySelector('[data-testid="slide-animation-task"]')).toBeNull()
+    expect(host.textContent).toContain('未建任务（生成动画才单独计费，不改课件）')
+    app.unmount()
+  })
+
+  it('sends selected PPT pages as a separate billed animation request and can accept the draft', async () => {
+    const draft: SlideAnimationRun = {
+      id: 'a'.repeat(32),
+      lesson_node_id: lessonId,
+      material_version_id: 'v-link-ppt',
+      material_link_id: 'link-ppt',
+      operation_id: 'slide-animation-test',
+      page_indexes: [1],
+      storyboard: { title: '一次函数引入', scenes: [] },
+      status: 'succeeded',
+      teacher_decision: 'pending',
+      error_code: null,
+      model_call_count: 1,
+      revision: 2,
+      can_preview: true,
+      can_download: false,
+      created_at: '2026-08-14T00:00:00Z',
+      updated_at: '2026-08-14T00:00:00Z',
+      finished_at: '2026-08-14T00:00:00Z',
+    }
+    const { app, host, getExpose } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    const start = vi.spyOn(teachingPrepWorkbenchApi, 'startSlideAnimationRun').mockResolvedValue(draft)
+    vi.spyOn(teachingPrepWorkbenchApi, 'listSlideAnimationRuns').mockResolvedValue({
+      lesson_node_id: lessonId,
+      items: [draft],
+      billed_count: 1,
+      billed_limit: 3,
+      page_limit: 4,
+    })
+    const accept = vi.spyOn(teachingPrepWorkbenchApi, 'acceptSlideAnimationRun').mockResolvedValue({
+      ...draft,
+      status: 'accepted',
+      teacher_decision: 'accepted',
+      can_download: true,
+      revision: 3,
+    })
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="create-slide-animation-task"]')?.click()
+    await nextTick()
+    const pages = host.querySelector<HTMLTextAreaElement>('[data-testid="slide-animation-pages"]')
+    pages!.value = '1'
+    pages!.dispatchEvent(new Event('input'))
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="generate-slide-animation"]')?.click()
+    await Promise.resolve()
+    await nextTick()
+    await Promise.resolve()
+    await nextTick()
+
+    expect(start).toHaveBeenCalledWith(lessonId, {
+      operationId: expect.stringMatching(/^slide-animation-/),
+      materialLinkId: 'link-ppt',
+      pageIndexes: [1],
+    })
+    expect(host.querySelector('[data-testid="ppt-animation-draft"]')).toBeTruthy()
+    expect(host.querySelector('iframe.tp-animation-preview')?.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(getExpose().primaryDisabled).toBe(false)
+
+    host.querySelector<HTMLButtonElement>('[data-testid="accept-slide-animation"]')?.click()
+    await nextTick()
+    await nextTick()
+    expect(accept).toHaveBeenCalledWith(draft.id, 2)
+    app.unmount()
+  })
+
+  it('requests a capture after the current PPT page stays in view', async () => {
+    vi.useFakeTimers()
+    const { app, host } = await mountStep({
+      links: [
+        pptLinkWithPages('link-ppt', '一次函数课件.pptx', 5),
+        referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+      ],
+    })
+    await nextTick()
+    const requestRender = vi.mocked(teachingPrepCatalogApi.requestPptPreviewRender)
+    expect(requestRender).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(400)
+    expect(requestRender).toHaveBeenCalledWith('u1'.padEnd(32, '0'))
+
+    const nextButton = [...host.querySelectorAll('button')]
+      .find(button => button.textContent?.trim() === '下一页')
+    nextButton?.click()
+    await nextTick()
+    requestRender.mockClear()
+    await vi.advanceTimersByTimeAsync(399)
+    expect(requestRender).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(requestRender).toHaveBeenCalledWith('u2'.padEnd(32, '0'))
     app.unmount()
   })
 })

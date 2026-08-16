@@ -2,7 +2,11 @@ import { createPinia, setActivePinia } from 'pinia'
 import { computed, createApp, defineComponent, h, nextTick, ref, shallowRef } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { LessonNode, SlideOperation, SlidePlan } from '../../api/catalog'
+import type { LessonNode, PptxExecution, SlideOperation, SlidePlan } from '../../api/catalog'
+import { teachingPrepWorkbenchApi } from '../../api/workbench'
+import { useWorkspaceAITaskStore } from '../../../shared/ai-tasks/store'
+import { workspaceAITaskApi } from '../../../shared/ai-tasks/api'
+import type { WorkspaceAITask } from '../../../shared/ai-tasks/contracts'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
 import { teachingPrepLessonWorkbenchKey } from '../../workbench/routeContext'
 import type { TeachingPrepLessonWorkbench } from '../../workbench/lessonWorkbench'
@@ -34,7 +38,7 @@ function operation(id: string, decision: SlideOperation['decision'] = 'proposed'
   }
 }
 
-function slidePlan(operations: SlideOperation[]): SlidePlan {
+function slidePlan(operations: SlideOperation[], status: SlidePlan['status'] = 'in_review'): SlidePlan {
   return {
     id: 'p'.repeat(32),
     lesson_draft_id: 'd'.repeat(32),
@@ -42,7 +46,7 @@ function slidePlan(operations: SlideOperation[]): SlidePlan {
     version_number: 1,
     based_on_plan_id: null,
     source_ppt_state_sha256: 'a'.repeat(64),
-    status: 'in_review',
+    status,
     payload: {
       schema_version: 1,
       source_presentations: [],
@@ -55,25 +59,102 @@ function slidePlan(operations: SlideOperation[]): SlidePlan {
   }
 }
 
+function execution(status: PptxExecution['status'], extras: Partial<PptxExecution> = {}): PptxExecution {
+  return {
+    id: 'e'.repeat(32),
+    operation_id: 'op-exec-1',
+    slide_plan_id: 'p'.repeat(32),
+    source_material_version_id: 'v'.repeat(32),
+    source_sha256: 'a'.repeat(64),
+    expected_slide_count: 1,
+    status,
+    execution_report: null,
+    verification_report: null,
+    error_code: null,
+    published_version_id: null,
+    phase: status === 'published' ? 'done' : 'verifying',
+    cancel_requested: false,
+    staging_retained: true,
+    recovery_actions: [],
+    created_at: '2026-08-03T00:00:00Z',
+    updated_at: '2026-08-03T00:00:00Z',
+    finished_at: null,
+    ...extras,
+  }
+}
+
+function runningSlideTask(): WorkspaceAITask {
+  return {
+    contract_version: 'teacher_workspace_ai_task.v1',
+    task_id: 't'.repeat(32),
+    operation_id: 'slide-proposal-op-01',
+    module: 'teaching_prep',
+    task_kind: 'teaching_prep.slide_change_proposal',
+    source_ref: { kind: 'lesson', id: lessonId, revision: '1' },
+    context_refs: [],
+    return_target: 'teaching-prep.lesson.review',
+    status: 'running',
+    phase: 'model',
+    progress: 0.2,
+    send_attempt_count: 1,
+    dispatch_evidence: 'may_have_started',
+    cancel_requested: false,
+    job_id: 1,
+    proposal_ref_id: null,
+    proposal_revision: null,
+    error_code: null,
+    error_detail: null,
+    revision: 1,
+    safe_title: '改编课件',
+    safe_source: '第一课时',
+    teacher_message: '正在逐页分析',
+    next_action: '等待结果',
+    handoffs: [],
+    handoff_total: 0,
+    adopted_count: 0,
+    discarded_count: 0,
+    stale_count: 0,
+    pending_count: 0,
+    created_at: '2026-08-16T00:00:00Z',
+    updated_at: '2026-08-16T00:00:01Z',
+    finished_at: null,
+  }
+}
+
 interface StepExpose {
   primaryLabel: string
   primaryDisabled: boolean
   runPrimary: () => Promise<void>
 }
 
-async function mountStep(options: { plans?: SlidePlan[] } = {}) {
+async function mountStep(options: {
+  plans?: SlidePlan[]
+  executions?: PptxExecution[]
+  wps?: boolean
+} = {}) {
   const catalog = useTeachingPrepCatalogStore()
   catalog.lessonNodes = [lessonNode]
   catalog.selectedLessonId = lessonId
   catalog.slidePlans = options.plans ?? []
   catalog.selectedSlidePlanId = options.plans?.[0]?.id ?? null
+  catalog.pptxExecutions = options.executions ?? []
+  catalog.moduleStatus = {
+    module: 'teaching-prep',
+    enabled: true,
+    schema_version: '1',
+    real_model_enabled: false,
+    semester_mapping_model_available: false,
+    exercise_suggestion_model_available: false,
+    real_wps_enabled: options.wps === true,
+    wps_execution_available: options.wps === true,
+  }
   catalog.slidePlanPreview = {
     valid_for_execution: true,
     source_changed: false,
     includes_proposed_operations: true,
     before_slide_count: 1,
     after_slide_count: 1,
-    before: [{ title: '引入页', original_index: 1 }],
+    before: [{ title: '引入页', original_index: 1, preview_url: '/before.png' }],
     after: [],
     changes: [],
     manual_only: [],
@@ -104,6 +185,15 @@ async function mountStep(options: { plans?: SlidePlan[] } = {}) {
     requestLeave: vi.fn(async () => true),
   } as unknown as TeachingPrepLessonWorkbench
 
+  vi.spyOn(catalog, 'reviewSlidePlan').mockResolvedValue(undefined)
+  vi.spyOn(catalog, 'selectSlidePlan').mockResolvedValue(undefined)
+  vi.spyOn(catalog, 'executePptx').mockImplementation(async () => {
+    if (options.wps === true && catalog.pptxExecutions.length === 0) {
+      catalog.pptxExecutions = [execution('verifying', { verification_report: { verified: true } })]
+    }
+  })
+  vi.spyOn(catalog, 'confirmPptxPreview').mockResolvedValue(undefined)
+
   let expose!: StepExpose
   const Wrapper = defineComponent({
     setup() {
@@ -132,6 +222,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
   document.body.innerHTML = ''
+  localStorage.removeItem('teacher-platform:tracked-ai-tasks:v1')
 })
 
 describe('ReviewSlidesStep', () => {
@@ -142,67 +233,142 @@ describe('ReviewSlidesStep', () => {
     app.unmount()
   })
 
-  it('renders operations and keeps the primary action disabled until all decided', async () => {
+  it('shows before/after compare and does not require per-operation radios', async () => {
     const { app, host, getExpose } = await mountStep({
       plans: [slidePlan([operation('op-1'), operation('op-2')])],
     })
 
-    expect(host.textContent).toContain('删除整页')
-    expect(host.querySelectorAll('.tp-operation-row')).toHaveLength(2)
-    expect(getExpose().primaryLabel).toBe('保存审核决定并进入副本')
+    expect(host.textContent).toContain('改前 / 改后对照')
+    expect(host.querySelector('input[type="radio"]')).toBeNull()
+    expect(getExpose().primaryLabel).toBe('这台电脑还不能导出副本')
     expect(getExpose().primaryDisabled).toBe(true)
     app.unmount()
   })
 
-  it('renders the change overlay for an operation with a valid position', async () => {
-    const positioned = {
-      ...operation('op-1'),
-      target: {
-        generated_page_number: 1,
-        position: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
-      },
-    }
-    const { app, host } = await mountStep({ plans: [slidePlan([positioned])] })
-
-    const overlay = host.querySelector('.tp-change-overlay')
-    expect(overlay).toBeTruthy()
-    expect((overlay as HTMLElement).style.left).toBe('10%')
-    expect((overlay as HTMLElement).style.top).toBe('20%')
-    expect((overlay as HTMLElement).style.width).toBe('30%')
-    expect((overlay as HTMLElement).style.height).toBe('40%')
-    app.unmount()
-  })
-
-  it('saves review decisions through the catalog fallback path', async () => {
+  it('auto-adopts proposed operations without a teacher checkbox', async () => {
     const plan = slidePlan([operation('op-1')])
-    const { app, host, catalog, workbench } = await mountStep({ plans: [plan] })
-    const review = vi.spyOn(catalog, 'reviewSlidePlan').mockResolvedValue(undefined)
+    const { app, catalog } = await mountStep({ plans: [plan] })
 
-    const approve = host.querySelector<HTMLInputElement>('input[type="radio"][value="approved"]')
-    expect(approve).toBeTruthy()
-    approve!.click()
-    await nextTick()
-
-    ;[...host.querySelectorAll('button')]
-      .find(button => button.textContent?.trim() === '保存全部审核决定')?.click()
-    await vi.waitFor(() => expect(review).toHaveBeenCalled())
-    expect(review.mock.calls[0]?.[1]).toEqual([expect.objectContaining({
-      operation_id: 'op-1',
-      decision: 'approved',
-    })])
-    expect(workbench.setDirty).toHaveBeenCalledWith(null)
-    expect(host.textContent).toContain('课件计划审核已保存')
+    await vi.waitFor(() => expect(catalog.reviewSlidePlan).toHaveBeenCalled())
+    expect(vi.mocked(catalog.reviewSlidePlan).mock.calls[0]?.[1]).toEqual([
+      expect.objectContaining({ operation_id: 'op-1', decision: 'approved' }),
+    ])
     app.unmount()
   })
 
-  it('moves to the copies step after a successful primary run', async () => {
-    const plan = slidePlan([operation('op-1', 'approved')])
-    const { app, catalog, workbench, getExpose } = await mountStep({ plans: [plan] })
-    vi.spyOn(catalog, 'reviewSlidePlan').mockResolvedValue(undefined)
+  it('enables export after an isolated preview is ready', async () => {
+    const plan = slidePlan([operation('op-1', 'approved')], 'approved')
+    const { app, host, catalog, workbench, getExpose } = await mountStep({
+      plans: [plan],
+      executions: [execution('verifying', { verification_report: { verified: true } })],
+    })
 
+    expect(host.textContent).toContain('改前 / 改后对照')
+    expect(getExpose().primaryLabel).toBe('确认这一版并导出副本')
     expect(getExpose().primaryDisabled).toBe(false)
     await getExpose().runPrimary()
+    expect(catalog.confirmPptxPreview).toHaveBeenCalled()
     expect(workbench.routeState.setStep).toHaveBeenCalledWith(3)
+    app.unmount()
+  })
+
+  it('starts an isolated preview for an approved plan', async () => {
+    const plan = slidePlan([operation('op-1', 'approved')], 'approved')
+    const { app, catalog } = await mountStep({
+      plans: [plan],
+      wps: true,
+    })
+
+    await vi.waitFor(() => expect(catalog.executePptx).toHaveBeenCalledWith(plan, { previewOnly: true }))
+    expect(catalog.pptxExecutions[0]?.verification_report).toEqual({ verified: true })
+    app.unmount()
+  })
+
+  it('enables resend after a page note is entered', async () => {
+    const { app, host } = await mountStep({
+      plans: [slidePlan([operation('op-1', 'approved')], 'approved')],
+      executions: [execution('verifying', { verification_report: { verified: true } })],
+    })
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="resend-with-page-notes"]')
+    expect(button?.disabled).toBe(true)
+    const textarea = host.querySelector<HTMLTextAreaElement>('[data-testid="compare-page-note"]')
+    expect(textarea).toBeTruthy()
+    textarea!.value = '插题太大，挡住例题'
+    textarea!.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="resend-with-page-notes"]')?.disabled).toBe(false)
+    app.unmount()
+  })
+
+  it('shows thinking, page fetch and returned preview in the waiting panel', async () => {
+    const task = runningSlideTask()
+    const previewUrl = `/api/teaching-prep/material-units/${'b'.repeat(32)}/preview`
+    vi.spyOn(workspaceAITaskApi, 'get').mockResolvedValue(task)
+    vi.spyOn(teachingPrepWorkbenchApi, 'getAdaptationTrace').mockResolvedValue({
+      operation_id: task.operation_id,
+      lesson_node_id: lessonId,
+      status: 'running',
+      model_calls_used: 2,
+      model_calls_max: 6,
+      events: [
+        {
+          round: 1,
+          phase: 'thinking',
+          summary: '模型正在分析本课目录和已取原页。',
+          thinking_excerpt: '先看教材第 1 页',
+          tool: null,
+          result: null,
+          model_calls_used: 1,
+          model_calls_max: 6,
+        },
+        {
+          round: 1,
+          phase: 'tool_call',
+          summary: '取页 · 教材 第 1 页',
+          thinking_excerpt: null,
+          tool: {
+            name: 'get_frozen_page',
+            purpose: 'textbook',
+            page: 1,
+            source_ref: `material:${'a'.repeat(32)}:unit:1`,
+          },
+          result: null,
+          model_calls_used: 1,
+          model_calls_max: 6,
+        },
+        {
+          round: 1,
+          phase: 'tool_result',
+          summary: '已返回教材 第 1 页',
+          thinking_excerpt: null,
+          tool: {
+            name: 'get_frozen_page',
+            purpose: 'textbook',
+            page: 1,
+            source_ref: `material:${'a'.repeat(32)}:unit:1`,
+          },
+          result: {
+            ok: true,
+            label: '教材 第 1 页',
+            preview_url: previewUrl,
+          },
+          model_calls_used: 2,
+          model_calls_max: 6,
+        },
+      ],
+    })
+    const aiTasks = useWorkspaceAITaskStore()
+    aiTasks.track(task)
+    const { app, host } = await mountStep()
+
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="adaptation-trace"]')?.textContent).toContain('第 2 / 6 轮')
+    })
+    expect(host.textContent).toContain('先看教材第 1 页')
+    expect(host.textContent).toContain('取页 · 教材 第 1 页')
+    expect(host.textContent).toContain('已返回教材 第 1 页')
+    expect(host.querySelector('.tp-adaptation-trace__thumb')?.getAttribute('src')).toBe(previewUrl)
+    aiTasks.remove(task.task_id)
     app.unmount()
   })
 })

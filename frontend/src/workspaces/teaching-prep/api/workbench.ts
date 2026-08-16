@@ -208,11 +208,92 @@ export interface ExerciseSuggestionRun {
   suggestions: ExerciseSuggestion[]
 }
 
+export interface SlideAnimationScene {
+  title: string
+  narration: string
+  duration_ms: number
+  source_page: number
+  highlight?: string | null
+}
+
+export interface SlideAnimationStoryboard {
+  title: string
+  scenes: SlideAnimationScene[]
+}
+
+export interface SlideAnimationRun {
+  id: string
+  lesson_node_id: string
+  material_version_id: string
+  material_link_id: string
+  operation_id: string
+  page_indexes: number[]
+  storyboard: SlideAnimationStoryboard | null
+  status:
+    | 'running'
+    | 'succeeded'
+    | 'accepted'
+    | 'discarded'
+    | 'failed'
+    | 'cancelled'
+    | 'result_unknown'
+  teacher_decision: 'pending' | 'accepted' | 'discarded'
+  error_code: string | null
+  model_call_count: number
+  revision: number
+  can_preview: boolean
+  can_download: boolean
+  created_at: string
+  updated_at: string
+  finished_at: string | null
+}
+
+export interface SlideAnimationRunList {
+  lesson_node_id: string
+  items: SlideAnimationRun[]
+  billed_count: number
+  billed_limit: number
+  page_limit: number
+}
+
 export interface TrustedPptxVersion extends PptxVersion {
   is_current: boolean
   current_revision: number | null
   preview_url: string
   file_verified: boolean
+}
+
+export interface AdaptationTraceTool {
+  name: string
+  purpose: string | null
+  page: number | null
+  source_ref: string
+}
+
+export interface AdaptationTraceResult {
+  ok: boolean
+  label: string
+  preview_url: string | null
+}
+
+export interface AdaptationTraceEvent {
+  round: number
+  phase: 'started' | 'thinking' | 'tool_call' | 'tool_result' | 'round_done' | 'final_accepted' | 'failed' | string
+  summary: string
+  thinking_excerpt: string | null
+  tool: AdaptationTraceTool | null
+  result: AdaptationTraceResult | null
+  model_calls_used: number
+  model_calls_max: number
+}
+
+export interface AdaptationTrace {
+  operation_id: string
+  lesson_node_id: string
+  status: 'running' | 'succeeded' | 'failed' | string
+  model_calls_used: number
+  model_calls_max: number
+  events: AdaptationTraceEvent[]
 }
 
 export const teachingPrepWorkbenchApi = {
@@ -316,6 +397,16 @@ export const teachingPrepWorkbenchApi = {
     )
   },
 
+  latestExerciseSuggestionRun(
+    lessonId: string,
+    signal?: AbortSignal,
+  ): Promise<ExerciseSuggestionRun> {
+    return apiClient.request(
+      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/latest-exercise-suggestion-run`,
+      { signal, decode: exerciseSuggestionRun },
+    )
+  },
+
   exerciseSuggestionRun(runId: string, signal?: AbortSignal): Promise<ExerciseSuggestionRun> {
     return apiClient.request(
       `/api/teaching-prep/exercise-suggestion-runs/${encodeURIComponent(runId)}`,
@@ -327,6 +418,78 @@ export const teachingPrepWorkbenchApi = {
     return apiClient.request(
       `/api/teaching-prep/exercise-suggestion-runs/${encodeURIComponent(runId)}/cancel`,
       { method: 'POST', decode: exerciseSuggestionRun },
+    )
+  },
+
+  listSlideAnimationRuns(lessonId: string, signal?: AbortSignal): Promise<SlideAnimationRunList> {
+    return apiClient.request(
+      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/slide-animation-runs`,
+      { signal, decode: slideAnimationRunList },
+    )
+  },
+
+  startSlideAnimationRun(
+    lessonId: string,
+    input: {
+      operationId: string
+      materialLinkId: string
+      pageIndexes: number[]
+    },
+  ): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/slide-animation-runs`,
+      {
+        method: 'POST',
+        body: {
+          operation_id: input.operationId,
+          confirmed: true,
+          material_link_id: input.materialLinkId,
+          page_indexes: input.pageIndexes,
+        },
+        decode: slideAnimationRun,
+      },
+    )
+  },
+
+  slideAnimationRun(runId: string, signal?: AbortSignal): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}`,
+      { signal, decode: slideAnimationRun },
+    )
+  },
+
+  cancelSlideAnimationRun(runId: string): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/cancel`,
+      { method: 'POST', decode: slideAnimationRun },
+    )
+  },
+
+  acceptSlideAnimationRun(runId: string, expectedRevision: number): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/accept`,
+      {
+        method: 'POST',
+        body: { expected_revision: expectedRevision },
+        decode: slideAnimationRun,
+      },
+    )
+  },
+
+  discardSlideAnimationRun(runId: string, expectedRevision: number): Promise<SlideAnimationRun> {
+    return apiClient.request(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/discard`,
+      {
+        method: 'POST',
+        body: { expected_revision: expectedRevision },
+        decode: slideAnimationRun,
+      },
+    )
+  },
+
+  downloadSlideAnimation(runId: string): Promise<{ blob: Blob; contentDisposition: string | null }> {
+    return apiClient.download(
+      `/api/teaching-prep/slide-animation-runs/${encodeURIComponent(runId)}/download`,
     )
   },
 
@@ -389,6 +552,20 @@ export const teachingPrepWorkbenchApi = {
       { signal, decode: pptxExecution },
     )
   },
+
+  getAdaptationTrace(
+    lessonId: string,
+    operationId?: string | null,
+    signal?: AbortSignal,
+  ): Promise<AdaptationTrace> {
+    const query = operationId
+      ? `?operation_id=${encodeURIComponent(operationId)}`
+      : ''
+    return apiClient.request(
+      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/adaptation-trace${query}`,
+      { signal, decode: adaptationTrace },
+    )
+  },
 }
 
 function itemList<T>(payload: unknown, decode: (value: unknown) => T): T[] {
@@ -429,6 +606,24 @@ function exerciseSuggestionRun(payload: unknown): ExerciseSuggestionRun {
   return recordPayload(payload) as unknown as ExerciseSuggestionRun
 }
 
+function slideAnimationRun(payload: unknown): SlideAnimationRun {
+  return recordPayload(payload) as unknown as SlideAnimationRun
+}
+
+function slideAnimationRunList(payload: unknown): SlideAnimationRunList {
+  const record = recordPayload(payload)
+  if (!Array.isArray(record.items)) {
+    throw new Error('Invalid slide animation list')
+  }
+  return {
+    lesson_node_id: String(record.lesson_node_id ?? ''),
+    items: record.items.map(slideAnimationRun),
+    billed_count: Number(record.billed_count ?? 0),
+    billed_limit: Number(record.billed_limit ?? 3),
+    page_limit: Number(record.page_limit ?? 4),
+  }
+}
+
 function trustedPptxVersion(payload: unknown): TrustedPptxVersion {
   if (!isRecord(payload) || typeof payload.file_verified !== 'boolean') {
     throw new Error('Invalid trusted PPTX version')
@@ -459,6 +654,87 @@ function activateResult(
 
 function pptxExecution(payload: unknown): PptxExecution {
   return recordPayload(payload) as unknown as PptxExecution
+}
+
+function adaptationTrace(payload: unknown): AdaptationTrace {
+  assertNoPathLikeKeys(payload)
+  if (
+    !isRecord(payload)
+    || typeof payload.operation_id !== 'string'
+    || typeof payload.lesson_node_id !== 'string'
+    || typeof payload.status !== 'string'
+    || typeof payload.model_calls_used !== 'number'
+    || typeof payload.model_calls_max !== 'number'
+    || !Array.isArray(payload.events)
+  ) {
+    throw new Error('Invalid adaptation trace')
+  }
+  return {
+    operation_id: payload.operation_id,
+    lesson_node_id: payload.lesson_node_id,
+    status: payload.status,
+    model_calls_used: payload.model_calls_used,
+    model_calls_max: payload.model_calls_max,
+    events: payload.events.map(adaptationTraceEvent),
+  }
+}
+
+function adaptationTraceEvent(payload: unknown): AdaptationTraceEvent {
+  if (
+    !isRecord(payload)
+    || typeof payload.round !== 'number'
+    || typeof payload.phase !== 'string'
+    || typeof payload.summary !== 'string'
+    || (payload.thinking_excerpt !== null && typeof payload.thinking_excerpt !== 'string')
+    || typeof payload.model_calls_used !== 'number'
+    || typeof payload.model_calls_max !== 'number'
+  ) {
+    throw new Error('Invalid adaptation trace event')
+  }
+  return {
+    round: payload.round,
+    phase: payload.phase,
+    summary: payload.summary,
+    thinking_excerpt: payload.thinking_excerpt,
+    tool: payload.tool == null ? null : adaptationTraceTool(payload.tool),
+    result: payload.result == null ? null : adaptationTraceResult(payload.result),
+    model_calls_used: payload.model_calls_used,
+    model_calls_max: payload.model_calls_max,
+  }
+}
+
+function adaptationTraceTool(payload: unknown): AdaptationTraceTool {
+  if (
+    !isRecord(payload)
+    || typeof payload.name !== 'string'
+    || (payload.purpose !== null && typeof payload.purpose !== 'string')
+    || (payload.page !== null && typeof payload.page !== 'number')
+    || typeof payload.source_ref !== 'string'
+  ) {
+    throw new Error('Invalid adaptation trace tool')
+  }
+  return {
+    name: payload.name,
+    purpose: payload.purpose,
+    page: payload.page,
+    source_ref: payload.source_ref,
+  }
+}
+
+function adaptationTraceResult(payload: unknown): AdaptationTraceResult {
+  if (
+    !isRecord(payload)
+    || typeof payload.ok !== 'boolean'
+    || typeof payload.label !== 'string'
+    || (payload.preview_url !== null && typeof payload.preview_url !== 'string')
+  ) {
+    throw new Error('Invalid adaptation trace result')
+  }
+  return {
+    ok: payload.ok,
+    label: payload.label,
+    preview_url: payload.preview_url,
+  }
 }
 
 function teachingPrepAIAdoption(payload: unknown): TeachingPrepAIAdoption {

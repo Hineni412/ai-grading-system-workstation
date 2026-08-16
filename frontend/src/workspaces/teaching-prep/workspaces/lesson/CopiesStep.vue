@@ -9,7 +9,7 @@ import { useTeachingPrepLessonWorkbenchContext } from '../../workbench/routeCont
 
 const workbench = useTeachingPrepLessonWorkbenchContext()
 const catalog = workbench.catalog
-const reviewMessage = ref('可信 PPTX 发布后，可单独生成上课包。')
+const reviewMessage = ref('确认导出后的副本可在这里生成上课包。原课件不会被覆盖。')
 const activatingId = ref<string | null>(null)
 const previewVersionId = ref<string | null>(null)
 const previewVersionSlide = ref(1)
@@ -27,16 +27,23 @@ const currentVersion = computed(() => pptxVersions.value.find(item => item.is_cu
 const pptxExecutionAvailable = computed(() => (
   catalog.moduleStatus?.wps_execution_available === true
 ))
-const canExecute = computed(() => (
-  pptxExecutionAvailable.value
-  && selectedPlan.value?.status === 'approved'
-  && preview.value?.valid_for_execution
-  && !latestRun.value
-    ? true
-    : selectedPlan.value?.status === 'approved'
-      && preview.value?.valid_for_execution
-      && !['running', 'verifying', 'publishing'].includes(latestRun.value?.status ?? '')
+const previewReady = computed(() => (
+  latestRun.value?.status === 'verifying'
+  && latestRun.value.published_version_id === null
+  && Boolean(latestRun.value.verification_report)
+  && Object.keys(latestRun.value.verification_report ?? {}).length > 0
 ))
+const canExecute = computed(() => {
+  if (
+    !pptxExecutionAvailable.value
+    || selectedPlan.value?.status !== 'approved'
+    || !preview.value?.valid_for_execution
+  ) return false
+  if (previewReady.value) return true
+  const status = latestRun.value?.status ?? ''
+  if (!latestRun.value) return true
+  return !['running', 'verifying', 'publishing'].includes(status)
+})
 
 const phases = computed(() => {
   const order = ['copying', 'executing', 'verifying', 'publishing'] as const
@@ -76,6 +83,12 @@ watch(
 
 async function executePlan(): Promise<void> {
   if (!selectedPlan.value) return
+  if (previewReady.value && latestRun.value) {
+    await catalog.confirmPptxPreview(latestRun.value)
+    reviewMessage.value = '这一版已经导出为上课副本。原课件没有被覆盖。'
+    await workbench.refresh()
+    return
+  }
   await catalog.executePptx(selectedPlan.value)
   reviewMessage.value = '已创建异步 WPS 任务。关闭或刷新页面不会重复启动。'
   await workbench.refresh()
@@ -154,13 +167,15 @@ defineExpose({
         <div v-if="!pptxExecutionAvailable" class="tp-banner tp-banner--warn" role="alert">
           <div>
             <strong>这台电脑当前不能生成 PPTX 副本</strong>
-            <p>尚未检测到可用的 WPS 执行能力。修改建议可以继续审核和保存，但不能假装已经导出成品。</p>
+            <p>尚未检测到可用的 WPS 执行能力。对照页仍可查看；但不能假装已经导出成品。</p>
           </div>
         </div>
         <div class="tp-inline-actions">
-          <AppButton variant="primary" :disabled="!canExecute" @click="executePlan">创建新 PPTX 副本</AppButton>
+          <AppButton variant="primary" :disabled="!canExecute" @click="executePlan">
+            {{ previewReady ? '确认导出这一版副本' : '创建新 PPTX 副本' }}
+          </AppButton>
           <AppButton
-            v-if="latestRun && ['running', 'verifying', 'publishing'].includes(latestRun.status)"
+            v-if="latestRun && ['running', 'publishing'].includes(latestRun.status)"
             variant="secondary"
             @click="catalog.cancelPptxExecution(latestRun)"
           >
@@ -225,7 +240,7 @@ defineExpose({
         </tbody>
       </table>
       <div v-else class="tp-panel__body">
-        <p class="tp-muted">还没有可信 PPTX 副本。先在上一步保存审核决定，再创建副本。</p>
+        <p class="tp-muted">还没有上课副本。请先在对照页确认导出。</p>
       </div>
 
       <section v-if="previewVersion" class="tp-modified-ppt-preview" aria-label="修改后 PPT 逐页预览">

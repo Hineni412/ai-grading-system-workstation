@@ -1911,11 +1911,15 @@ export const useTeachingPrepCatalogStore = defineStore(
         ) return
         slidePlanPreview.value = preview
         pptxExecutions.value = executions
-        lessonGenerationPerformance.value = executions[0]
-          ? await teachingPrepCatalogApi.getLessonGenerationPerformance(
-              executions[0].id,
-            )
-          : null
+        try {
+          lessonGenerationPerformance.value = executions[0]
+            ? await teachingPrepCatalogApi.getLessonGenerationPerformance(
+                executions[0].id,
+              )
+            : null
+        } catch {
+          lessonGenerationPerformance.value = null
+        }
         latestPptxVersion.value = null
       } catch (error) {
         if (
@@ -1927,22 +1931,46 @@ export const useTeachingPrepCatalogStore = defineStore(
       }
     }
 
-    async function executePptx(plan: SlidePlan): Promise<void> {
+    async function executePptx(
+      plan: SlidePlan,
+      options: { previewOnly?: boolean } = {},
+    ): Promise<void> {
       saveState.value = 'saving'
       errorMessage.value = ''
       try {
         const result = await teachingPrepCatalogApi.executeSlidePlan(
           plan.id,
           `pptx-execution-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+          { previewOnly: options.previewOnly },
         )
         latestPptxVersion.value = result.version
         pptxExecutions.value = await teachingPrepCatalogApi
           .listPptxExecutions(plan.id)
-        lessonGenerationPerformance.value = pptxExecutions.value[0]
-          ? await teachingPrepCatalogApi.getLessonGenerationPerformance(
-              pptxExecutions.value[0].id,
-            )
-          : null
+        try {
+          lessonGenerationPerformance.value = pptxExecutions.value[0]
+            ? await teachingPrepCatalogApi.getLessonGenerationPerformance(
+                pptxExecutions.value[0].id,
+              )
+            : null
+        } catch {
+          lessonGenerationPerformance.value = null
+        }
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function confirmPptxPreview(run: PptxExecution): Promise<void> {
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        const result = await teachingPrepCatalogApi.confirmPptxPreview(run.id)
+        latestPptxVersion.value = result.version
+        pptxExecutions.value = await teachingPrepCatalogApi
+          .listPptxExecutions(run.slide_plan_id)
       } catch (error) {
         errorMessage.value = safeMessage(error)
         throw error
@@ -2825,6 +2853,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       selectSlidePlan,
       reviewSlidePlan,
       executePptx,
+      confirmPptxPreview,
       cancelPptxExecution,
       recoverPptxExecution,
       discardPptxStaging,
