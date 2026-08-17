@@ -22,12 +22,12 @@ const stages = computed(() => [
     available: true },
   { id: 'source', label: '上传与拆题', fact: props.sourceReady ? '来源已读取' : '待上传',
     available: props.sessionReady },
-  { id: 'generation', label: 'AI 生成', fact: props.editorReady ? '已生成' : props.generationSubmitted ? '任务已提交' : '待提交',
+  { id: 'generation', label: '分析并入库', fact: props.editorReady ? '已入库并赋分' : props.generationSubmitted ? '任务已提交' : '待提交',
     available: props.sourceReady || props.generationSubmitted || props.editorReady },
-  { id: 'editor', label: '评分依据', fact: props.editorReady ? '可编辑' : '待生成',
+  { id: 'editor', label: '本场赋分', fact: props.editorReady ? '可检查分值' : '待入库成功',
     available: props.editorReady },
   { id: 'template', label: '样卷题框', fact: props.templateReady ? '已确认'
-    : props.templatePresent ? '标定中' : props.editorReady ? '可开始' : '待评分依据',
+    : props.templatePresent ? '标定中' : props.editorReady ? '可开始' : '待本场赋分',
     available: props.editorReady },
 ] as const)
 

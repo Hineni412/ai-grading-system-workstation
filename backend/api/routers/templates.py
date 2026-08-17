@@ -19,6 +19,7 @@ from answer_region_draft_service import (
 from answer_region_models import load_question_binding_catalog, normalize_regions, validate_regions
 from backend.api.app import ApiError
 from backend.config_workspace.publish import load_editor_config
+from backend.exam_intake import exam_intake_blocks_progress
 from backend.api.dependencies import (
     get_grading_db,
     get_template_upload_service,
@@ -64,9 +65,12 @@ def _scoring_configured(
     session_id: int,
 ) -> bool:
     try:
-        return bool(load_editor_config(db, int(session_id)).configured)
+        loaded = load_editor_config(db, int(session_id))
     except (KeyError, OSError, ValueError):
         return False
+    if exam_intake_blocks_progress(loaded.session):
+        return False
+    return bool(loaded.configured)
 
 
 def _region_lock_timeout_error(session_id: int) -> ApiError:

@@ -95,12 +95,98 @@ def test_read_service_lists_active_papers_without_paths_or_writes(question_bank_
     assert papers[0]["tagged_any_question_count"] == 1
     assert papers[0]["evidence_question_count"] == 0
     assert papers[0]["criteria_question_count"] == 0
+    assert papers[0]["criteria_needs_review_count"] == 0
     assert papers[0]["complete_analysis_count"] == 0
     assert papers[1]["question_count"] == 0
     assert papers[1]["tagged_question_count"] == 0
     assert "source_file" not in repr(papers)
     assert "content_fingerprint" not in repr(papers)
     assert db_path.read_bytes() == before
+
+
+def test_failed_proposed_criteria_surface_as_needs_review(question_bank_fixture) -> None:
+    service, db_path, _ = question_bank_fixture
+    version_id = "a" * 64
+    source_hash = "b" * 64
+    criteria_hash = "c" * 64
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO training_criterion_versions (
+                version_id, question_id, version_number, parent_version_id,
+                source_content_hash, schema_version, status, source_kind,
+                source_reference, criteria_json, criteria_hash,
+                quality_status, quality_codes_json, created_by
+            ) VALUES (?, 1, 1, NULL, ?, 'training-criteria-draft-v1',
+                      'proposed', 'combined_model', 'test:failed-review', '{}', ?,
+                      'failed', '[]', 'model:fake')
+            """,
+            (version_id, source_hash, criteria_hash),
+        )
+        conn.execute(
+            """
+            INSERT INTO training_criterion_heads (
+                question_id, current_version_id, approved_version_id,
+                current_source_hash, revision
+            ) VALUES (1, ?, NULL, ?, 1)
+            """,
+            (version_id, source_hash),
+        )
+        conn.commit()
+
+    papers = service.list_papers()
+    newest = next(item for item in papers if item["title"] == "Newest")
+    detail = service.get_question(1)
+    listed = service.list_questions(question_read_module.QuestionReadFilters()).items
+
+    assert newest["criteria_needs_review_count"] == 1
+    assert newest["criteria_question_count"] == 1
+    assert detail is not None
+    assert detail["criteria_needs_review"] is True
+    assert listed[0]["id"] == 1
+    assert listed[0]["criteria_needs_review"] is True
+    review_only = service.list_questions(
+        question_read_module.QuestionReadFilters(criteria_needs_review=True)
+    ).items
+    assert [item["id"] for item in review_only] == [1]
+
+    client = _question_bank_client(service)
+    papers_response = client.get("/api/question-bank/papers")
+    questions_response = client.get("/api/question-bank/questions")
+    review_response = client.get(
+        "/api/question-bank/questions?criteria_needs_review=true"
+    )
+    assert papers_response.status_code == 200
+    assert questions_response.status_code == 200
+    assert review_response.status_code == 200
+    assert papers_response.json()["items"][0]["criteria_needs_review_count"] == 1
+    assert questions_response.json()["items"][0]["criteria_needs_review"] is True
+    assert [item["id"] for item in review_response.json()["items"]] == [1]
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE training_criterion_versions
+            SET quality_status = 'passed'
+            WHERE version_id = ?
+            """,
+            (version_id,),
+        )
+        conn.commit()
+
+    papers = service.list_papers()
+    newest = next(item for item in papers if item["title"] == "Newest")
+    detail = service.get_question(1)
+    listed = service.list_questions(question_read_module.QuestionReadFilters()).items
+
+    assert newest["criteria_needs_review_count"] == 0
+    assert detail is not None
+    assert detail["criteria_needs_review"] is False
+    assert listed[0]["criteria_needs_review"] is False
+    assert service.list_questions(
+        question_read_module.QuestionReadFilters(criteria_needs_review=True)
+    ).items == []
 
 
 def test_session_analysis_status_does_not_treat_complete_tags_as_complete_analysis(

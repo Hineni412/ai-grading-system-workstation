@@ -1966,6 +1966,7 @@ def list_questions(
         "frequency_contextual",
     ] = "newest",
     compact: bool = False,
+    criteria_needs_review: bool = False,
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionListResponse:
     _validate_difficulty_range(difficulty_min, difficulty_max)
@@ -2000,6 +2001,7 @@ def list_questions(
                 tag_status=tag_status,
                 analysis_status=analysis_status,
                 sort=sort,
+                criteria_needs_review=criteria_needs_review,
             )
         )
     except QuestionBankSnapshotError as exc:

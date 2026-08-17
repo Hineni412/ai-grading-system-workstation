@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -74,3 +76,46 @@ def test_delete_profile_route_returns_safe_remaining_state(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["profiles"] == []
     assert "old-secret" not in response.text
+
+
+def test_legacy_batch_model_binding_is_ignored_on_load(tmp_path) -> None:
+    store = ApiProfileStore(tmp_path / "api_profiles.json")
+    store.task_bindings_path.write_text(
+        json.dumps(
+            {
+                "content_generation": {
+                    "profile_name": "校内站点",
+                    "model": "content-model",
+                    "batch_model": "ep-bi-old",
+                },
+                "grading": {
+                    "profile_name": "校内站点",
+                    "model": "grading-model",
+                    "batch_model": "ep-bi-old",
+                },
+                "teaching_prep": {
+                    "profile_name": "校内站点",
+                    "model": "prep-model",
+                },
+                "class_teacher": {
+                    "profile_name": "校内站点",
+                    "model": "class-teacher-model",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = store.load_task_bindings()
+
+    assert loaded["content_generation"] == {
+        "profile_name": "校内站点",
+        "model": "content-model",
+    }
+    assert loaded["grading"] == {
+        "profile_name": "校内站点",
+        "model": "grading-model",
+    }
+    assert "batch_model" not in loaded["content_generation"]
+    assert "batch_model" not in loaded["grading"]

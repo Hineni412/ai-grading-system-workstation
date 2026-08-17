@@ -16,6 +16,7 @@ const question = {
   typicality: null,
   reason: null,
   needs_review: false,
+  criteria_needs_review: false,
   has_images: true,
   needs_image_review: false,
   created_at: '2026-07-18T08:00:00Z',
@@ -145,6 +146,30 @@ describe('question bank API contracts', () => {
     expect(requested).toContain('tag_status=untagged')
     expect(requested).toContain('sort=difficulty')
     expect(requested).not.toContain('years=')
+    expect(requested).not.toContain('criteria_needs_review=')
+  })
+
+  it('asks the server for questions whose criteria still need review', async () => {
+    const { questionBankApi } = await import('../api/question-bank')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({
+        items: [question],
+        total: 1,
+        page: 1,
+        page_size: 100,
+        total_pages: 1,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await questionBankApi.listQuestions({
+      page: 1,
+      pageSize: 100,
+      criteriaNeedsReview: true,
+    })
+
+    const requested = String(fetchSpy.mock.calls[0]?.[0])
+    expect(requested).toContain('criteria_needs_review=true')
   })
 
   it('accepts only the safe paper summary fields', async () => {
@@ -170,6 +195,7 @@ describe('question bank API contracts', () => {
       tagged_any_question_count: 15,
       evidence_question_count: 14,
       criteria_question_count: 13,
+      criteria_needs_review_count: 0,
       complete_analysis_count: 10,
       source_type: 'docx',
     }

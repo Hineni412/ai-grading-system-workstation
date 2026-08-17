@@ -33,6 +33,7 @@ class QuestionPaperListItem(_QuestionBankModel):
     tagged_any_question_count: int
     evidence_question_count: int
     criteria_question_count: int
+    criteria_needs_review_count: int
     complete_analysis_count: int
 
 
@@ -290,6 +291,7 @@ class QuestionListItem(_QuestionBankModel):
     typicality: str | None = None
     reason: str | None = None
     needs_review: bool
+    criteria_needs_review: bool
     has_images: bool
     needs_image_review: bool
     created_at: str
@@ -426,16 +428,18 @@ class QuestionJobRetryRequest(_QuestionBankModel):
 
 class TrainingCriterionPointSchema(_QuestionBankModel):
     point_id: str = Field(min_length=2, max_length=64)
-    target: str = Field(min_length=1, max_length=500)
-    observable_evidence: str = Field(min_length=1, max_length=1000)
+    target: str = Field(min_length=1, max_length=2000)
+    observable_evidence: str = Field(min_length=1, max_length=8000)
     equivalent_rules: list[str] = Field(default_factory=list, max_length=30)
     counterexamples: list[str] = Field(default_factory=list, max_length=30)
+    depends_on: list[str] = Field(default_factory=list, max_length=50)
 
 
 class TrainingCriterionDraftSchema(_QuestionBankModel):
-    schema_version: Literal["training-criteria-draft-v1"] = (
-        "training-criteria-draft-v1"
-    )
+    schema_version: Literal[
+        "training-criteria-draft-v1",
+        "judgment-points-v1",
+    ] = "training-criteria-draft-v1"
     question_id: int = Field(gt=0)
     source_content_hash: str = Field(default="", max_length=64)
     question_type: str = Field(default="", max_length=64)
@@ -450,6 +454,7 @@ class TrainingCriterionDraftSchema(_QuestionBankModel):
         "combined_model",
         "confirmed_rubric_adapter",
     ] = "combined_model"
+    solution_evidence: dict[str, Any] | None = None
 
 
 class TrainingCriterionVersionResponse(_QuestionBankModel):

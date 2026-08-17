@@ -157,7 +157,10 @@ class ConfigGenerationOrchestrator:
         meta = payload.setdefault("meta", {})
         if not isinstance(meta, dict):
             payload["meta"] = meta = {}
-        meta["structure_source"] = "solution_evidence"
+        existing_source = str(meta.get("structure_source") or "").strip()
+        meta["structure_source"] = (
+            existing_source if existing_source else "solution_evidence"
+        )
         meta["structure_generation_model_requests"] = 0
         return self._score_completed_draft_once(
             payload,

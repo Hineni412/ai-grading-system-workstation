@@ -104,7 +104,8 @@ describe('QuestionBlockReview', () => {
     const mounted = await mountReview({ value: unknown })
 
     expect(mounted.host.querySelector('[aria-label="Q-unknown 题型"]')).toBeNull()
-    expect(mounted.host.textContent).toContain('只有题面和解析冲突时')
+    expect(mounted.host.textContent).not.toContain('本地判为')
+    expect(mounted.host.textContent).toContain('拿不准时会出现黄条')
   })
 
   it('asks for type confirmation only when the source reports a conflict', async () => {
@@ -129,6 +130,41 @@ describe('QuestionBlockReview', () => {
     expect(onUpdate).toHaveBeenLastCalledWith([
       { question_id: 'Q9', excluded: false, question_type: 'fill_blank' },
     ])
+  })
+
+  it('shows the local type guess and keeps mixed blank-and-subpart questions for confirmation', async () => {
+    const value = source({
+      questions: [{
+        ...source().questions[2]!,
+        question_id: 'Q14',
+        question_type: 'comprehensive',
+        question_type_basis: '题面有填空位置 · 题面有多个小问',
+        question_type_review_required: true,
+        question_type_review_reason: '题面既有多个小问，也有填空位置。本地按综合解答题处理，请确认题型。',
+      }],
+    })
+    const mounted = await mountReview({
+      value,
+      decisions: [{ question_id: 'Q14', excluded: false, question_type: 'comprehensive' }],
+    })
+
+    expect(mounted.host.textContent).toContain('您已确认为综合解答题')
+    expect(mounted.host.textContent).toContain('请确认题型')
+    expect(mounted.host.querySelector('.question-review__type-check')).not.toBeNull()
+  })
+
+  it('tells the teacher the unconfirmed local type on ordinary questions', async () => {
+    const mounted = await mountReview({
+      value: source({
+        questions: [{
+          ...source().questions[1]!,
+          question_type: 'fill_blank',
+          question_type_basis: '题面有填空位置',
+        }],
+      }),
+    })
+
+    expect(mounted.host.textContent).toContain('本地判为填空题（题面有填空位置 · 未经您确认）')
   })
 
   it('shows answer facts and builds assets only from semantic identifiers', async () => {

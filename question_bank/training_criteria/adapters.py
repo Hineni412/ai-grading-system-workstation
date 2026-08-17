@@ -581,111 +581,122 @@ def question_analysis_input_from_config_source(
     )
 
 
+def _prompt_candidate_contract(contract: Mapping[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key in (
+        "schema_version",
+        "taxonomy_revision",
+        "knowledge_graph_release_id",
+        "allowed_dimensions",
+        "rules",
+    ):
+        if key in contract:
+            compact[key] = contract[key]
+    candidates = contract.get("candidates")
+    if isinstance(candidates, Mapping):
+        compact["candidates"] = {
+            str(dimension): [
+                {
+                    "id": str(item.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                }
+                for item in items
+                if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+            ]
+            for dimension, items in candidates.items()
+            if isinstance(items, list)
+        }
+    volume = contract.get("curriculum_volume")
+    if isinstance(volume, Mapping):
+        sections: list[dict[str, str]] = []
+        raw_sections = volume.get("sections")
+        if isinstance(raw_sections, list):
+            for item in raw_sections:
+                if not isinstance(item, Mapping):
+                    continue
+                item_id = str(item.get("id") or "").strip()
+                if not item_id:
+                    continue
+                sections.append(
+                    {
+                        "id": item_id,
+                        "name": str(
+                            item.get("name") or item.get("label") or ""
+                        ),
+                        "chapter_name": str(item.get("chapter_name") or ""),
+                    }
+                )
+        compact["curriculum_volume"] = {
+            "id": volume.get("id"),
+            "label": volume.get("label"),
+            "sections": sections,
+        }
+    return compact
+
+
 def _combined_prompt(
     batch: PlannedAnalysisBatch,
     projection: AnalysisProjection,
 ) -> list[dict[str, Any]]:
     instructions = (
-        "只分析列出的初中数学题。除公式、变量、选项字母、机器标识和原答案片段外，"
-        "所有教师可见自由文本必须使用简体中文；返回英文说明即为失败。"
+        "只分析列出的初中数学题。每个列出的 question_id 必须恰好返回一条结果，"
+        "并把该整数原样写入 result 与 solution_evidence，不得串题或混用候选。"
+        "除公式、变量、选项字母、机器标识和原答案片段外，所有教师可见自由文本"
+        "必须使用简体中文；返回英文说明即为失败。"
         "候选知识表是所选册别及以前册别的完整教材目录树，必须先在整棵树中按稳定 ID 选择，"
-        "不得因题干措辞不同而新造近义知识词。tag_analysis 的 knowledge_points、"
-        "prerequisite_points、method_tags、thought_tags、ability_tags、math_model_tags、"
-        "special_type_tags 只能逐字照抄该题候选契约中候选条的 id，不得填写名称、"
-        "改写或自造；curriculum_sections 只填册别小节 id。"
-        "Analyze only the listed junior-middle-school math questions. "
-        "Return exactly one result for every listed question_id, copy that "
-        "integer unchanged into both the result and solution_evidence, and "
-        "never mix candidates between questions. Tag candidates may only come "
-        "from that question's candidate_contract. In tag_analysis, every "
-        "controlled field (knowledge_points, prerequisite_points, method_tags, "
-        "thought_tags, ability_tags, math_model_tags, special_type_tags) must "
-        "contain only exact candidate id values copied verbatim from that "
-        "question's candidate_contract for the matching dimension, never "
-        "display names, paraphrases, or invented terms; curriculum_sections "
-        "must contain only exact section IDs from curriculum_volume. "
-        "Solution evidence must use "
-        "Simplified Chinese for every teacher-visible semantic field, including "
-        "target, observable_evidence, justification, rationale, auxiliary rules, "
-        "equivalent rules, counterexamples, and reference assessment reasons. "
-        "Only formulas, mathematical variables, option letters, machine IDs, and "
-        "verbatim answer anchors may remain non-Chinese. "
-        "question-solution-evidence-v2 and be split into question parts. Within "
-        "each part, one independently scorable mathematical milestone must map "
-        "to exactly one evidence point. If a derivation contains several meaningful "
-        "intermediate results, return one evidence point for each result instead "
-        "of placing the whole derivation inside one target or observable_evidence. "
-        "Do not split trivial algebraic typography or restate the same result. "
-        "A genuinely atomic answer may contain one evidence point, but it must use "
-        "the matching non-process response_mode. Every process_required part must "
-        "contain at least two distinct, non-empty evidence points. Follow the "
-        "complete positive and negative evidence_examples supplied with this task; "
-        "the negative example is explicitly forbidden. For every point, "
-        "step_index must start at 1 and follow array order, justification must name "
-        "the condition, theorem, property, or operation supporting that step, and "
-        "answer_anchor must copy the shortest unique result or operation that identifies "
-        "the milestone verbatim from the answer source. For exact_objective the answer "
-        "source is canonical_answer and full_answer may be empty; for every other "
-        "response_mode the answer source is full_answer. Process anchors must occur in "
-        "evidence-point order. "
-        "depends_on may reference only earlier evidence_point_id values in the same "
-        "part. Each part starts a fresh dependency namespace: never put an "
-        "evidence_point_id from another part in depends_on. If a later part uses an "
-        "earlier part's conclusion, describe that fact in justification or "
-        "auxiliary_rules instead. Before returning, complete every item in "
-        "pre_output_checklist. Every "
-        "part_id and evidence_point_id must be a unique lowercase ASCII machine "
-        "identifier matching ^[a-z][a-z0-9_-]{1,127}$; prefer part-1 and "
-        "part-1-step-1 style IDs, and keep evidence_point_id unique across the "
-        "whole question. Every evidence point may link zero or more entries from "
-        "that question's candidate_contract.candidates.knowledge only. Copy the "
-        "id and name together, verbatim, from the same knowledge candidate; do "
-        "not use another candidate dimension, a proposed tag, a paraphrase, or "
-        "an invented term. If no governed knowledge candidate is an exact fit, "
-        "return an empty fine_term_links array; keep any genuinely new term only "
-        "in tag_analysis.proposed_tags for later human review. Label each link "
-        "as direct or supporting_prerequisite and do not repeat the same "
-        "(id, role) pair in "
-        "one evidence point. Never infer or return "
-        "core graph mappings; the application resolves those from governed "
-        "local mappings. For every part also return response_mode, canonical "
-        "and full answers, accepted forms, proof and visual obligations, a "
-        "non-empty deduction policy, and whether alternative methods are "
-        "allowed. target and observable_evidence must be non-empty. For "
-        "exact_objective, canonical_answer must be non-empty; for every other "
-        "response_mode, full_answer must be non-empty. Keep "
-        "keys present even when a type-specific list or answer is empty. "
-        "Solution evidence must never contain score fields. "
-        "Treat reference_solution according to trust_level. teacher_confirmed is a "
-        "teacher-confirmed basis. source_extracted is unconfirmed reference material "
-        "that may be incomplete or internally conflicting: use the stem, images and "
-        "mathematical reasoning instead of copying it mechanically. absent means no "
-        "reference was available. Return reference_assessment as consistent, conflict, "
-        "or insufficient with a short reference_assessment_reason. A conflict is a "
-        "teacher warning, never a reason to omit a usable grading structure. "
-        "Do not invent content hidden by a missing image. When repair_context is "
-        "present, this is a teacher-authorized targeted repair. Use its exact "
-        "validation_error, validation_issues, allowed_changes, immutable_fields, "
-        "and previous_result. Resolve every listed issue at its stated path, retain "
-        "content that is already correct, never alter an immutable field, and return "
-        "one complete replacement result for the requested projection. When "
-        "expected_projection is training_criteria, return solution_evidence only; "
-        "the application preserves the already accepted tag_analysis. "
-        "Do not copy the rejected structure blindly. Process-required parts need at "
-        "least two distinct non-empty evidence points. If only one milestone can be "
-        "confirmed, choose the matching non-process response_mode; never invent steps "
-        "just to satisfy a count. Do not infer an exact evidence point count from "
-        "punctuation, equations, angle symbols, or connective words. "
-        "A local question_type with question_type_confirmed=false is only a preview hint, "
-        "not a grading fact. Decide response_mode separately for every part from the "
-        "question, its complete answer and analysis. One blank in part (1) must never "
-        "collapse later process-required parts into a whole-question fill blank. When "
-        "expected_part_count is present, return exactly that many parts in the stated order. "
-        "response_shape is a deterministic local fact: single_choice and single_blank "
-        "must each return one exact_objective part with one final-answer evidence point; "
-        "never turn option-by-option elimination or explanatory work into extra points. "
-        "multiple_blank keeps separately observable blank answers, and unknown must not "
-        "be forced into an objective shape."
+        "不得因题干措辞不同而新造近义知识词。"
+        "tag_analysis 的 knowledge_points、prerequisite_points、method_tags、"
+        "thought_tags、ability_tags、math_model_tags、special_type_tags "
+        "只能逐字照抄该题 candidate_contract 中对应维度候选条的 id，不得填写名称、"
+        "改写或自造；curriculum_sections 只填 curriculum_volume 中的小节 id。"
+        "解题证据使用 question-solution-evidence-v2，并拆成 question parts。"
+        "每个独立可评分的数学台阶对应恰好一个 evidence point；推导中有多个有意义"
+        "中间结果时，每个结果各占一个 evidence point，不得把整段推导塞进同一个 "
+        "target 或 observable_evidence。不要拆无意义的代数书写，也不要把同一结论"
+        "再说一遍当成新台阶。真正原子的答案可以只有一个 evidence point，但必须使用"
+        "匹配的非过程 response_mode。每个 process_required 的 part 至少包含两个"
+        "互不相同、非空的 evidence point。严格遵循本任务提供的正例和反例；反例明确禁止。"
+        "每个点的 step_index 从 1 起并与数组顺序一致；justification 必须写出支撑该步的"
+        "条件、定理、性质或运算；answer_anchor 从答案来源原样抄写能唯一标识该台阶的"
+        "最短结果或运算。exact_objective 的答案来源是 canonical_answer，full_answer 可空；"
+        "其他 response_mode 的答案来源是 full_answer。过程锚点必须按证据点顺序出现。"
+        "depends_on 只能引用同一 part 中更早的 evidence_point_id。每个 part 独立命名空间，"
+        "不得把其他 part 的 id 写入 depends_on；后问用到前问结论时，写在 justification "
+        "或 auxiliary_rules。返回前必须完成 pre_output_checklist 全部项。"
+        "part_id 与 evidence_point_id 必须是全题唯一的小写 ASCII 机器标识，匹配 "
+        "^[a-z][a-z0-9_-]{1,127}$；优先 part-1、part-1-step-1。"
+        "每个 evidence point 的 fine_term_links 只能引用该题 "
+        "candidate_contract.candidates.knowledge，且必须把同一候选条的 id 与 name "
+        "成对原样照抄；不得用其他维度、拟议标签、改写或自造词。没有完全匹配的受控知识时"
+        "返回空数组，真正新词只放在 tag_analysis.proposed_tags 供人工审核。"
+        "每个链接标注 direct 或 supporting_prerequisite，同一 (id, role) 不得在一个 "
+        "evidence point 内重复。不要推断或返回核心图谱映射。"
+        "每个 part 还要返回 response_mode、canonical_answer、full_answer、accepted_forms、"
+        "证明与作图义务、非空 deduction_policy，以及是否允许其他解法。"
+        "target 与 observable_evidence 不得为空。exact_objective 时 canonical_answer "
+        "不得为空；其他 response_mode 时 full_answer 不得为空。类型专用列表即使为空"
+        "也要保留键。解题证据不得含分值字段。"
+        "按 trust_level 对待 reference_solution：teacher_confirmed 是教师确认依据；"
+        "source_extracted 是未确认参考，可能不完整或自相矛盾，应以题干、配图和数学推理"
+        "为准，不得机械抄写；absent 表示没有参考。reference_assessment 只能是 "
+        "consistent、conflict 或 insufficient，并给一句简短 reference_assessment_reason。"
+        "conflict 只是教师警告，不得作为省略可用评分结构的理由。"
+        "不得编造被缺失配图挡住的内容。出现 repair_context 时，这是教师授权的定向修复："
+        "使用其中的 validation_error、validation_issues、allowed_changes、"
+        "immutable_fields 和 previous_result；按路径逐项修复已列出问题，保留已经正确的"
+        "内容，不得改 immutable 字段，并返回该投影的完整替换结果。"
+        "expected_projection 为 training_criteria 时只返回 solution_evidence，应用会保留"
+        "已接受的 tag_analysis。不要盲目复制被拒绝的结构。"
+        "若只能确认一个台阶，改用匹配的非过程 response_mode，不得为凑数量发明步骤。"
+        "不要从标点、等式、角符号或连接词推断证据点个数。"
+        "question_type_confirmed=false 的本地题型只是预览提示，不是评分事实。"
+        "每个 part 的 response_mode 必须根据题目、完整答案和解析单独判定。"
+        "第(1)问的一个填空位不得把后续过程问压成整题填空。出现 expected_part_count 时，"
+        "必须按给定顺序返回恰好那么多 part。"
+        "response_shape 是本地确定事实：single_choice 与 single_blank 必须各返回一个 "
+        "exact_objective part，且只有一个最终答案 evidence point；不得把逐项排除或解释"
+        "过程拆成额外点。multiple_blank 保留可分别观察的各空答案；unknown 不得被强行"
+        "改成客观题形态。"
     )
     questions = []
     for item in batch.questions:
@@ -701,7 +712,9 @@ def _combined_prompt(
             "rich_answer_blocks": list(
                 item.rich_answer_blocks
             ),
-            "candidate_contract": dict(item.taxonomy_contract),
+            "candidate_contract": _prompt_candidate_contract(
+                item.taxonomy_contract
+            ),
             "reference_solution": dict(item.reference_solution),
             "question_type_confirmed": item.question_type_confirmed,
             "response_shape": item.objective_response_shape,
@@ -771,8 +784,7 @@ def _combined_evidence_examples() -> dict[str, Any]:
     return {
         "q11_process_positive": {
             "why_correct": (
-                "Three independently checkable intermediate mathematical results "
-                "become three unscored placeholders for later score allocation."
+                "三个可独立核对的中间数学结果，对应三个无分值占位，供后续赋分使用。"
             ),
             "part_id": "part-1",
             "label": "第1问",
@@ -829,8 +841,7 @@ def _combined_evidence_examples() -> dict[str, Any]:
         },
         "q11_process_negative": {
             "do_not_return": (
-                "This incorrectly merges three independently scorable milestones "
-                "into one evidence point."
+                "这个反例错误地把三个独立可评分台阶合并进同一个 evidence point，禁止这样返回。"
             ),
             "part_id": "part-1",
             "label": "第1问",
@@ -863,9 +874,8 @@ def _combined_evidence_examples() -> dict[str, Any]:
         },
         "atomic_non_process_positive": {
             "why_correct": (
-                "Moving one term and obtaining the only required result is one "
-                "independently scorable milestone, so this part uses a non-process "
-                "response mode instead of inventing a second step."
+                "移项得到唯一所需结果是一个独立可评分台阶，因此该问使用非过程 "
+                "response_mode，而不是再发明第二步。"
             ),
             "part_id": "part-1",
             "label": "第1问",
@@ -894,8 +904,7 @@ def _combined_evidence_examples() -> dict[str, Any]:
         },
         "objective_positive": {
             "why_correct": (
-                "An exact objective item is graded from canonical_answer alone; "
-                "full_answer may be empty."
+                "精确客观题只按 canonical_answer 判定；full_answer 可空。"
             ),
             "part_id": "part-1",
             "label": "",
@@ -923,13 +932,13 @@ def _combined_evidence_examples() -> dict[str, Any]:
             ],
         },
         "pre_output_checklist": [
-            "Every meaningful intermediate result that could earn partial credit has its own evidence_point.",
-            "No evidence_point combines multiple independently scorable milestones.",
-            "No trivial algebraic typography or repeated conclusion was split into a separate point.",
-            "Each process answer_anchor is copied verbatim from full_answer and follows answer order.",
-            "Each exact_objective answer_anchor is copied verbatim from canonical_answer; full_answer may be empty.",
-            "step_index is contiguous and each depends_on entry names only an earlier point in the same part.",
-            "No score or point-value field appears anywhere in solution_evidence.",
+            "每个能单独给分的有意义中间结果都有自己的 evidence_point。",
+            "没有任何 evidence_point 把多个独立可评分台阶合在一起。",
+            "没有把无意义的代数书写或重复结论拆成新点。",
+            "过程题的每个 answer_anchor 都从 full_answer 按出现顺序原样抄写。",
+            "exact_objective 的 answer_anchor 从 canonical_answer 原样抄写；full_answer 可空。",
+            "step_index 连续，depends_on 只引用同一 part 中更早的点。",
+            "solution_evidence 任何位置都没有分数或分值字段。",
         ],
     }
 

@@ -21,6 +21,7 @@ from backend.api.schemas.grading import (
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.scan import GradingRunSummaryResponse
 from backend.config_workspace.publish import load_editor_config
+from backend.exam_intake import exam_intake_blocks_progress
 from backend.grading_workflow import build_grading_plan
 from backend.scan_grading.workspace import (
     GradingConfigChangedError,
@@ -35,6 +36,41 @@ from path_manager import resolve_stored_file_path
 
 
 router = APIRouter(prefix="/api", tags=["grading"])
+
+
+def _require_exam_intake_complete(
+    db: GradingRepositoryAccess,
+    session_id: int,
+) -> None:
+    session = db.get_grading_session(int(session_id))
+    if not exam_intake_blocks_progress(session):
+        return
+    details: dict[str, object] = {}
+    if isinstance(session, dict):
+        raw_details = session.get("question_bank_sync_details")
+        if isinstance(raw_details, dict):
+            details = dict(raw_details)
+        else:
+            raw = session.get("question_bank_sync_details_json")
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    details = parsed
+    raise ApiError(
+        409,
+        "exam_intake_incomplete",
+        str(details.get("intake_message") or "题库入库未完整成功，当前不能开始批改"),
+        {
+            "category": str(details.get("intake_category") or "exam_intake_incomplete"),
+            "failed_question_ids": list(
+                details.get("intake_failed_question_ids") or []
+            ),
+            "retryable": bool(details.get("intake_retryable", True)),
+        },
+    )
 
 
 def _require_current_preflight_config(
@@ -65,6 +101,7 @@ def preview_session_grading(
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> GradingPlanResponse:
     session = _require_session(db, session_id)
+    _require_exam_intake_complete(db, session_id)
     try:
         workspace_state = workspace.get_workspace(session_id)
         upload_batch = workspace_state["upload_batch"]
@@ -336,6 +373,7 @@ def run_session_grading(
 ) -> JobResponse:
     _require_session(db, session_id)
     request = request or GradingRunRequest()
+    _require_exam_intake_complete(db, session_id)
     if workspace.upload_batch_exists(session_id):
         if request.failed_only or request.resume_run_id is not None:
             raise ApiError(

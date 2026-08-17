@@ -41,47 +41,145 @@ const activeImageUrl = ref<string | null>(null)
 const activeImageAlt = ref('')
 const imageZoom = ref(1)
 const imageViewer = ref<HTMLElement | null>(null)
-type RenderGroupKind = 'plain' | 'full' | 'media' | 'media-right' | 'pair'
+type RenderGroupKind = 'plain' | 'full' | 'media' | 'media-right' | 'pair' | 'option-grid'
 interface RenderGroup {
   key: string
   kind: RenderGroupKind
   blocks: QuestionBankRichBlock[]
 }
 
+const OPTION_LABEL_ONLY = /^(?:[A-Da-d][.．、]?){3,4}$/
+const OPTION_ITEM_LABEL = /^(?:[A-Da-d][.．、]?)?$/
+
 const renderGroups = computed<RenderGroup[]>(() => {
-  if (!props.paperMediaFlow) {
-    return props.blocks.length
-      ? [{ key: 'plain', kind: 'plain', blocks: props.blocks }]
-      : []
-  }
+  const blocks = props.blocks
+  if (!blocks.length) return []
   const groups: RenderGroup[] = []
-  let mediaBlocks: QuestionBankRichBlock[] = []
-  let mediaStart = 0
-  const flushMedia = () => {
-    if (!mediaBlocks.length) return
-    groups.push({
-      key: `media:${mediaStart}`,
-      kind: 'media',
-      blocks: mediaBlocks,
-    })
-    mediaBlocks = []
-  }
-  props.blocks.forEach((block, index) => {
-    if (isPaperMediaBlock(block)) {
-      if (!mediaBlocks.length) mediaStart = index
-      mediaBlocks.push(block)
-      return
+  let index = 0
+  while (index < blocks.length) {
+    const optionGrid = consumeOptionGrid(blocks, index)
+    if (optionGrid !== null) {
+      groups.push(optionGrid.group)
+      index = optionGrid.next
+      continue
     }
-    flushMedia()
+    if (!props.paperMediaFlow) {
+      groups.push({
+        key: `full:${index}`,
+        kind: 'full',
+        blocks: [blocks[index]!],
+      })
+      index += 1
+      continue
+    }
+    if (isPaperMediaBlock(blocks[index]!)) {
+      const mediaStart = index
+      const mediaBlocks: QuestionBankRichBlock[] = []
+      while (index < blocks.length && isPaperMediaBlock(blocks[index]!)) {
+        mediaBlocks.push(blocks[index]!)
+        index += 1
+      }
+      groups.push({
+        key: `media:${mediaStart}`,
+        kind: 'media',
+        blocks: mediaBlocks,
+      })
+      continue
+    }
     groups.push({
       key: `full:${index}`,
       kind: 'full',
-      blocks: [block],
+      blocks: [blocks[index]!],
     })
-  })
-  flushMedia()
+    index += 1
+  }
+  if (!props.paperMediaFlow) {
+    if (groups.length === 1 && groups[0]!.kind !== 'option-grid') {
+      return [{ key: 'plain', kind: 'plain', blocks: groups[0]!.blocks }]
+    }
+    return groups
+  }
   return applyCompactMedia(groups)
 })
+
+function compactStem(text: string): string {
+  return text.replace(/\s+/g, '')
+}
+
+function isOptionLabelBlock(block: QuestionBankRichBlock): boolean {
+  return (
+    block.kind !== 'table'
+    && block.asset_urls.length === 0
+    && OPTION_LABEL_ONLY.test(compactStem(block.text))
+  )
+}
+
+function isOptionImageBlock(block: QuestionBankRichBlock): boolean {
+  if (block.kind === 'table' || block.asset_urls.length === 0) return false
+  return OPTION_ITEM_LABEL.test(compactStem(block.text))
+}
+
+function optionImageCount(blocks: readonly QuestionBankRichBlock[]): number {
+  return blocks.reduce((total, block) => total + block.asset_urls.length, 0)
+}
+
+function consumeOptionGrid(
+  blocks: readonly QuestionBankRichBlock[],
+  start: number,
+): { group: RenderGroup; next: number } | null {
+  const first = blocks[start]
+  if (first === undefined) return null
+  if (isOptionLabelBlock(first)) {
+    const images: QuestionBankRichBlock[] = []
+    let cursor = start + 1
+    while (cursor < blocks.length && isOptionImageBlock(blocks[cursor]!)) {
+      images.push(blocks[cursor]!)
+      cursor += 1
+    }
+    const count = optionImageCount(images)
+    if (count >= 3 && count <= 4) {
+      return {
+        group: {
+          key: `options:${start}`,
+          kind: 'option-grid',
+          blocks: [first, ...images],
+        },
+        next: cursor,
+      }
+    }
+  }
+  if (first.asset_urls.length >= 3 && first.asset_urls.length <= 4 && compactStem(first.text).length <= 32) {
+    return {
+      group: {
+        key: `options:${start}`,
+        kind: 'option-grid',
+        blocks: [first],
+      },
+      next: start + 1,
+    }
+  }
+  if (!isOptionImageBlock(first)) return null
+  const images: QuestionBankRichBlock[] = []
+  let cursor = start
+  while (cursor < blocks.length && isOptionImageBlock(blocks[cursor]!)) {
+    images.push(blocks[cursor]!)
+    cursor += 1
+  }
+  const count = optionImageCount(images)
+  if (count < 3 || count > 4) return null
+  return {
+    group: {
+      key: `options:${start}`,
+      kind: 'option-grid',
+      blocks: images,
+    },
+    next: cursor,
+  }
+}
+
+function optionGridCount(group: RenderGroup): number {
+  return Math.min(4, Math.max(3, optionImageCount(group.blocks)))
+}
 
 // Mirrors word_renderer._compact_image_pairs / add_answer_space behavior for
 // the HTML paper preview. Only runs when compactMediaWithText is explicitly set.
@@ -203,10 +301,12 @@ function handleViewerKey(event: KeyboardEvent): void {
         :class="{
           'question-content__media-strip': group.kind === 'media' || group.kind === 'media-right',
           'question-content__media-strip--right': group.kind === 'media-right',
+          'question-content__option-grid': group.kind === 'option-grid',
           'question-content__pair': group.kind === 'pair',
           'question-content__full-block': group.kind === 'full',
           'question-content__plain-blocks': group.kind === 'plain',
         }"
+        :data-option-count="group.kind === 'option-grid' ? optionGridCount(group) : undefined"
         :style="group.kind === 'media' ? { display: 'flex', flexWrap: 'wrap' } : undefined"
       >
         <div
@@ -216,6 +316,9 @@ function handleViewerKey(event: KeyboardEvent): void {
           :class="{
             'question-content__pair-text': group.kind === 'pair' && blockIndex === 0,
             'question-content__pair-media': group.kind === 'pair' && blockIndex > 0,
+            'question-content__option-label': (
+              group.kind === 'option-grid' && block.asset_urls.length === 0
+            ),
             'question-content__block--inline-media-paired':
               isInlineMediaBlock(block) && compactMediaWithText === true,
             'question-content__block--inline-media-right':
@@ -246,7 +349,18 @@ function handleViewerKey(event: KeyboardEvent): void {
           </p>
           <p v-else-if="block.text" class="question-content__text">{{ block.text }}</p>
 
-          <div v-if="block.asset_urls.length" class="question-content__media">
+          <div
+            v-if="block.asset_urls.length"
+            class="question-content__media"
+            :class="{
+              'question-content__media--options': (
+                group.kind === 'option-grid' && block.asset_urls.length >= 3
+              ),
+            }"
+            :data-option-count="(
+              group.kind === 'option-grid' && block.asset_urls.length >= 3
+            ) ? Math.min(4, block.asset_urls.length) : undefined"
+          >
             <figure v-for="(url, imageIndex) in block.asset_urls" :key="url">
               <button
                 v-if="!failedImages.has(url)"
@@ -426,6 +540,69 @@ function handleViewerKey(event: KeyboardEvent): void {
   min-width: 160px;
 }
 
+.question-content__option-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.question-content__option-grid[data-option-count="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.question-content__option-grid .question-content__block {
+  margin: 0;
+  max-width: none;
+  min-width: 0;
+  width: auto;
+}
+
+.question-content__option-grid .question-content__block + .question-content__block {
+  margin-top: 0;
+}
+
+.question-content__option-label {
+  grid-column: 1 / -1;
+}
+
+.question-content__option-grid .question-content__media {
+  display: block;
+  margin-top: 0;
+}
+
+.question-content__media--options {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: 100%;
+}
+
+.question-content__media--options[data-option-count="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.question-content__option-grid .question-content__media figure,
+.question-content__media--options figure {
+  max-width: 100%;
+  width: 100%;
+}
+
+.question-content__option-grid .question-content__image-button,
+.question-content__media--options .question-content__image-button {
+  width: 100%;
+}
+
+.question-content__block {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.question-content__block + .question-content__block {
+  margin-top: 10px;
+}
+
 .question-content__full-block {
   display: block;
   width: 100%;
@@ -465,26 +642,31 @@ function handleViewerKey(event: KeyboardEvent): void {
 }
 
 .question-content__table-wrap {
+  display: block;
   margin: 12px 0;
   max-width: 100%;
-  overflow-x: auto;
+  overflow: visible;
+  width: 100%;
 }
 
 .question-content table {
   border-collapse: collapse;
   font-variant-numeric: lining-nums tabular-nums;
-  min-width: min(100%, 420px);
-  table-layout: auto;
-  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  width: 100%;
 }
 
 .question-content td {
   border: 1px solid var(--border);
-  min-width: 72px;
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: 7px 10px;
   text-align: left;
   vertical-align: top;
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .question-content.is-dense .question-content__table-wrap {
@@ -492,11 +674,11 @@ function handleViewerKey(event: KeyboardEvent): void {
 }
 
 .question-content.is-dense table {
-  min-width: min(100%, 340px);
+  min-width: 0;
 }
 
 .question-content.is-dense td {
-  min-width: 54px;
+  min-width: 0;
   padding: 4px 7px;
 }
 
@@ -592,6 +774,45 @@ function handleViewerKey(event: KeyboardEvent): void {
 .question-content.is-paper-media-flow .question-content__media-strip .question-content__media img {
   max-height: 165px;
   max-width: min(100%, 260px);
+}
+
+.question-content__option-grid .question-content__media img,
+.question-content__media--options img {
+  height: auto;
+  max-height: 120px;
+  max-width: 100%;
+  width: 100%;
+}
+
+.question-content.is-dense .question-content__option-grid .question-content__media img,
+.question-content.is-media-list .question-content__option-grid .question-content__media img,
+.question-content.is-dense .question-content__media--options img,
+.question-content.is-media-list .question-content__media--options img {
+  max-height: 96px;
+}
+
+.question-content.is-media-review .question-content__option-grid .question-content__media img,
+.question-content.is-media-review .question-content__media--options img {
+  max-height: 110px;
+}
+
+.question-content.is-media-detail .question-content__option-grid .question-content__media img,
+.question-content.is-media-paper .question-content__option-grid .question-content__media img,
+.question-content.is-media-detail .question-content__media--options img,
+.question-content.is-media-paper .question-content__media--options img {
+  max-height: 160px;
+}
+
+.question-content.is-paper-media-flow .question-content__option-grid .question-content__media img {
+  max-height: 120px;
+  max-width: 100%;
+}
+
+@media (max-width: 520px) {
+  .question-content__option-grid[data-option-count="4"],
+  .question-content__media--options[data-option-count="4"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .question-content.is-dense .question-content__media figcaption,

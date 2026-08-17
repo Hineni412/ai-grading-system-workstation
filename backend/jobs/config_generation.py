@@ -9,7 +9,7 @@ import re
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping
 
 from backend.repositories.access import GradingRepositoryAccess
 from backend.config_workspace.locks import session_config_lock
@@ -89,6 +89,11 @@ from session_manager import (
 
 from .manager import JobCancellationRequested, JobContext
 from .question_bank_sync import run_deferred_question_bank_intake
+from backend.exam_intake import (
+    classify_intake_result,
+    persist_intake_required,
+    persist_intake_result,
+)
 
 
 # Compatibility names for older callers/tests. Both execute the new batched
@@ -524,6 +529,7 @@ def _run_config_generation_job_impl(
         inputs.get("curriculum_volume_id") or ""
     ).strip()
     if sync_to_question_bank:
+        persist_intake_required(db, session_id)
         volume = curriculum_volume(volume_id=curriculum_volume_id)
         if volume is None:
             raise ValueError(
@@ -687,6 +693,7 @@ def _run_config_generation_job_impl(
 
     evidence_artifact_hash = ""
     analysis_artifact: DeferredAnalysisArtifact | None = None
+    intake_classified: dict[str, Any] | None = None
     local_quality_retry_refs: tuple[str, ...] = ()
     evidence_flow = (
         sync_to_question_bank
@@ -892,18 +899,53 @@ def _run_config_generation_job_impl(
                 # contract for the next targeted request.
                 payload = structure
             else:
-                context.raise_if_cancelled()
-                client = llm_client_factory()
-                payload = allocate_grading_config_scores(
-                    structure,
-                    confirmed_blocks,
-                    document_text,
-                    llm_client=client,
-                    model_name=_config_model(client),
-                    report=report,
-                    q_images=question_images or None,
-                    checkpoint=checkpoint,
-                )
+                intake_classified = None
+                if sync_to_question_bank:
+                    persist_intake_required(db, session_id)
+                    intake_classified = _run_exam_paper_intake(
+                        context=context,
+                        db=db,
+                        session_id=session_id,
+                        analysis_artifact=analysis_artifact,
+                        source_record=source_record,
+                        question_bank_db_path=question_bank_db_path,
+                        data_root=data_root,
+                        tagging_ai_service_factory=tagging_ai_service_factory,
+                        taxonomy_governance=taxonomy_governance,
+                        question_bank_intake_runner=question_bank_intake_runner,
+                    )
+                if intake_classified is not None and not intake_classified["complete"]:
+                    payload = structure
+                    meta = payload.setdefault("meta", {})
+                    if not isinstance(meta, dict):
+                        payload["meta"] = meta = {}
+                    meta["exam_intake_incomplete"] = True
+                    meta["exam_intake_category"] = intake_classified["category"]
+                    meta["exam_intake_failed_question_ids"] = list(
+                        intake_classified["failed_question_ids"]
+                    )
+                    meta["exam_intake_retryable"] = bool(
+                        intake_classified["retryable"]
+                    )
+                    meta["exam_intake_error"] = intake_classified["message"]
+                    meta["structure_source"] = "judgment_points"
+                else:
+                    context.raise_if_cancelled()
+                    meta = structure.setdefault("meta", {})
+                    if not isinstance(meta, dict):
+                        structure["meta"] = meta = {}
+                    meta["structure_source"] = "judgment_points"
+                    client = llm_client_factory()
+                    payload = allocate_grading_config_scores(
+                        structure,
+                        confirmed_blocks,
+                        document_text,
+                        llm_client=client,
+                        model_name=_config_model(client),
+                        report=report,
+                        q_images=question_images or None,
+                        checkpoint=checkpoint,
+                    )
     elif mode == "regenerate_questions":
         client = llm_client_factory()
         raw_regenerate_ids = inputs.get("regenerate_question_ids")
@@ -1040,6 +1082,8 @@ def _run_config_generation_job_impl(
     summary["question_bank_sync_state"] = (
         "waiting_for_config" if sync_to_question_bank else "not_requested"
     )
+    if intake_classified is not None:
+        _apply_intake_summary(summary, intake_classified)
     repair_meta = payload.get("meta") if isinstance(payload, dict) else None
     stagnated_ids = (
         list(repair_meta.get("quality_repair_stagnated_question_ids") or [])
@@ -1049,13 +1093,22 @@ def _run_config_generation_job_impl(
     if stagnated_ids:
         summary["quality_repair_stagnated_question_ids"] = stagnated_ids
         summary["retryable"] = False
+    intake_incomplete = bool(
+        (intake_classified is not None and not intake_classified["complete"])
+        or (
+            isinstance(repair_meta, dict)
+            and repair_meta.get("exam_intake_incomplete")
+        )
+    )
     if (
         failed_ids
         or uncertain_ids
         or bool(score_allocation["score_allocation_pending"])
+        or intake_incomplete
     ):
         if (
             sync_to_question_bank
+            and intake_classified is None
             and analysis_artifact is not None
             and source_record is not None
             and question_bank_db_path is not None
@@ -1217,61 +1270,67 @@ def _run_config_generation_job_impl(
                         "session config changed while generation was running"
                     )
                 if sync_to_question_bank:
-                    sync_asset_overrides: list[dict[str, Any]] | None = None
-                    asset_overrides_blocked = False
                     if (
-                        source_service is not None
-                        and final_source is not None
-                        and asset_decisions
+                        intake_classified is not None
+                        and intake_classified["complete"]
                     ):
-                        try:
-                            sync_asset_overrides = list(
-                                source_service.resolve_asset_decision_overrides(
-                                    final_source,
-                                    asset_decisions,
-                                )
-                            )
-                        except (ConfigSourceError, ValueError):
-                            LOGGER.exception(
-                                "Failed to resolve asset decision overrides "
-                                "for session_id=%s",
-                                session_id,
-                            )
-                            asset_overrides_blocked = True
-                    if asset_overrides_blocked:
-                        summary["question_bank_sync_state"] = "blocked"
-                        summary["question_bank_sync_error"] = (
-                            "评分依据已发布，但图片归属决定已失效；"
-                            "题库任务没有启动，请回到复核页重新确认图片归属后"
-                            "在评分编辑页重新提交题库任务。"
-                        )
+                        summary["question_bank_sync_state"] = "ready"
                     else:
-                        _submit_automatic_question_bank_sync(
-                            context=context,
-                            db=db,
-                            session_id=session_id,
-                            source_paper_sha256=(
-                                archived.sha256 if archived is not None else ""
-                            ),
-                            source_safe_filename=(
-                                final_source.safe_filename
-                                if final_source is not None
-                                else ""
-                            ),
-                            curriculum_volume_id=curriculum_volume_id,
-                            analysis_artifact_id=(
-                                str(inputs.get("analysis_artifact_id") or "")
-                                if evidence_flow
-                                else ""
-                            ),
-                            analysis_artifact_hash=evidence_artifact_hash,
-                            analysis_source_id=source_id if evidence_flow else "",
-                            analysis_source_revision=(
-                                source_revision if evidence_flow else ""
-                            ),
-                            asset_overrides=sync_asset_overrides,
-                            summary=summary,
-                        )
+                        sync_asset_overrides: list[dict[str, Any]] | None = None
+                        asset_overrides_blocked = False
+                        if (
+                            source_service is not None
+                            and final_source is not None
+                            and asset_decisions
+                        ):
+                            try:
+                                sync_asset_overrides = list(
+                                    source_service.resolve_asset_decision_overrides(
+                                        final_source,
+                                        asset_decisions,
+                                    )
+                                )
+                            except (ConfigSourceError, ValueError):
+                                LOGGER.exception(
+                                    "Failed to resolve asset decision overrides "
+                                    "for session_id=%s",
+                                    session_id,
+                                )
+                                asset_overrides_blocked = True
+                        if asset_overrides_blocked:
+                            summary["question_bank_sync_state"] = "blocked"
+                            summary["question_bank_sync_error"] = (
+                                "评分依据已发布，但图片归属决定已失效；"
+                                "题库任务没有启动，请回到复核页重新确认图片归属后"
+                                "在评分编辑页重新提交题库任务。"
+                            )
+                        else:
+                            _submit_automatic_question_bank_sync(
+                                context=context,
+                                db=db,
+                                session_id=session_id,
+                                source_paper_sha256=(
+                                    archived.sha256 if archived is not None else ""
+                                ),
+                                source_safe_filename=(
+                                    final_source.safe_filename
+                                    if final_source is not None
+                                    else ""
+                                ),
+                                curriculum_volume_id=curriculum_volume_id,
+                                analysis_artifact_id=(
+                                    str(inputs.get("analysis_artifact_id") or "")
+                                    if evidence_flow
+                                    else ""
+                                ),
+                                analysis_artifact_hash=evidence_artifact_hash,
+                                analysis_source_id=source_id if evidence_flow else "",
+                                analysis_source_revision=(
+                                    source_revision if evidence_flow else ""
+                                ),
+                                asset_overrides=sync_asset_overrides,
+                                summary=summary,
+                            )
                 _refresh_mapping_and_finalize_job(
                     context=context,
                     db=db,
@@ -1302,6 +1361,101 @@ def _run_config_generation_job_impl(
                             pass
                 raise
     return summary
+
+
+def _run_exam_paper_intake(
+    *,
+    context: JobContext,
+    db: GradingRepositoryAccess,
+    session_id: int,
+    analysis_artifact: DeferredAnalysisArtifact | None,
+    source_record: ConfigSourceRecord | None,
+    question_bank_db_path: Path | None,
+    data_root: Path | None,
+    tagging_ai_service_factory: Callable[[], Any] | None,
+    taxonomy_governance: Any | None,
+    question_bank_intake_runner: Callable[..., dict[str, object]] | None,
+) -> dict[str, Any]:
+    if (
+        analysis_artifact is None
+        or source_record is None
+        or question_bank_db_path is None
+        or tagging_ai_service_factory is None
+        or taxonomy_governance is None
+    ):
+        classified = classify_intake_result(
+            {
+                "outcome": "failed",
+                "failure_code": "intake_inputs_missing",
+                "retryable": True,
+            }
+        )
+        persist_intake_result(db, session_id, classified)
+        return classified
+    resolved_data_root = (
+        Path(data_root) if data_root is not None else _infer_data_root(Path(db.db_path))
+    )
+    intake_runner = question_bank_intake_runner or run_deferred_question_bank_intake
+    context.report(0.72, "question_bank_intake", "正在把分析结果写入题库判定点")
+    try:
+        intake_result = intake_runner(
+            context=context,
+            session_id=session_id,
+            artifact=analysis_artifact,
+            source_filename=source_record.safe_filename,
+            source_content=source_record.private_source_bytes,
+            question_bank_db_path=Path(question_bank_db_path),
+            data_root=resolved_data_root,
+            ai_service_factory=tagging_ai_service_factory,
+            taxonomy_governance=taxonomy_governance,
+        )
+    except JobCancellationRequested:
+        raise
+    except Exception:
+        classified = classify_intake_result(
+            {
+                "outcome": "failed",
+                "failure_code": "intake_failed",
+                "retryable": True,
+            }
+        )
+        persist_intake_result(db, session_id, classified)
+        return classified
+    classified = classify_intake_result(intake_result)
+    persist_intake_result(db, session_id, classified)
+    return classified
+
+
+def _apply_intake_summary(
+    summary: dict[str, object],
+    classified: Mapping[str, Any],
+) -> None:
+    complete = bool(classified.get("complete"))
+    summary["question_bank_sync_state"] = (
+        "ready" if complete else str(classified.get("state") or "failed")
+    )
+    summary["exam_intake_complete"] = complete
+    summary["exam_intake_category"] = str(classified.get("category") or "")
+    summary["exam_intake_error"] = (
+        "" if complete else str(classified.get("message") or "")
+    )
+    summary["exam_intake_failed_question_ids"] = list(
+        classified.get("failed_question_ids") or []
+    )
+    summary["exam_intake_retryable"] = bool(classified.get("retryable"))
+    summary["question_bank_imported_count"] = int(
+        classified.get("imported_count") or 0
+    )
+    summary["question_bank_tagged_count"] = int(classified.get("tagged_count") or 0)
+    summary["question_bank_evidence_count"] = int(
+        classified.get("criteria_count") or 0
+    )
+    if not complete:
+        summary["outcome"] = (
+            "partial" if int(classified.get("imported_count") or 0) > 0 else "failed"
+        )
+        summary["retryable"] = bool(classified.get("retryable"))
+        summary["question_bank_sync_error"] = str(classified.get("message") or "")
 
 
 def _run_refine_config_job(
@@ -1794,8 +1948,8 @@ def _deferred_analysis_draft(
         "answer_key": {"questions": []},
         "meta": {
             "warnings": warnings,
-            "generation_mode": "solution_evidence_structure",
-            "structure_source": "solution_evidence",
+            "generation_mode": "judgment_points_structure",
+            "structure_source": "judgment_points",
             "structure_generation_model_requests": len(
                 {item.request_id for item in bundle.requests}
             ),

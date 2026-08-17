@@ -7,7 +7,7 @@ import math
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from collections.abc import Iterable
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
@@ -17,6 +17,12 @@ from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
 
 AnalysisProjection = Literal["both", "tag", "training_criteria"]
+CriterionSchemaVersion = Literal[
+    "training-criteria-draft-v1",
+    "judgment-points-v1",
+]
+JUDGMENT_POINTS_SCHEMA: CriterionSchemaVersion = "judgment-points-v1"
+LEGACY_CRITERIA_SCHEMA: CriterionSchemaVersion = "training-criteria-draft-v1"
 ObjectiveResponseShape = Literal[
     "single_choice",
     "single_blank",
@@ -385,6 +391,7 @@ class TrainingCriterionPoint:
     observable_evidence: str
     equivalent_rules: tuple[str, ...] = ()
     counterexamples: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "TrainingCriterionPoint":
@@ -398,12 +405,28 @@ class TrainingCriterionPoint:
             raise ProjectionValidationError(
                 "criterion target and observable evidence are required"
             )
+        raw_depends = payload.get("depends_on")
+        if raw_depends is None:
+            depends_on: tuple[str, ...] = ()
+        elif not isinstance(raw_depends, list) or not all(
+            isinstance(item, str) for item in raw_depends
+        ):
+            raise ProjectionValidationError("depends_on must be an array of identifiers")
+        else:
+            depends_on = _text_tuple(
+                [str(item).strip().casefold() for item in raw_depends]
+            )
+        if any(not _POINT_ID.fullmatch(item) for item in depends_on):
+            raise ProjectionValidationError("depends_on contains an invalid point_id")
+        if len(depends_on) != len(set(depends_on)):
+            raise ProjectionValidationError("depends_on contains a duplicated point_id")
         return cls(
             point_id=point_id,
             target=target,
             observable_evidence=evidence,
             equivalent_rules=_text_tuple(payload.get("equivalent_rules")),
             counterexamples=_text_tuple(payload.get("counterexamples")),
+            depends_on=depends_on,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -413,12 +436,13 @@ class TrainingCriterionPoint:
             "observable_evidence": self.observable_evidence,
             "equivalent_rules": list(self.equivalent_rules),
             "counterexamples": list(self.counterexamples),
+            "depends_on": list(self.depends_on),
         }
 
 
 @dataclass(frozen=True, slots=True)
 class TrainingCriteriaDraft:
-    schema_version: Literal["training-criteria-draft-v1"]
+    schema_version: CriterionSchemaVersion
     question_id: int
     source_content_hash: str
     question_type: str
@@ -427,6 +451,7 @@ class TrainingCriteriaDraft:
     rationale: str
     confidence: float
     source_kind: Literal["combined_model", "confirmed_rubric_adapter"]
+    embedded_evidence_json: str = ""
 
     @classmethod
     def from_model_dict(
@@ -436,7 +461,8 @@ class TrainingCriteriaDraft:
         question: QuestionAnalysisInput,
     ) -> "TrainingCriteriaDraft":
         _reject_score_fields(payload)
-        if payload.get("schema_version") != "training-criteria-draft-v1":
+        schema = str(payload.get("schema_version") or "")
+        if schema not in {LEGACY_CRITERIA_SCHEMA, JUDGMENT_POINTS_SCHEMA}:
             raise ProjectionValidationError(
                 "training criteria schema version is invalid"
             )
@@ -454,6 +480,12 @@ class TrainingCriteriaDraft:
             raise ProjectionValidationError("criterion point is invalid")
         if len({point.point_id for point in points}) != len(points):
             raise ProjectionValidationError("criterion point_id is duplicated")
+        known_ids = {point.point_id for point in points}
+        for point in points:
+            if any(item not in known_ids for item in point.depends_on):
+                raise ProjectionValidationError(
+                    "depends_on references an unknown point_id"
+                )
         raw_question_id = payload.get("question_id", question.question_id)
         if int(raw_question_id) != question.question_id:
             raise ProjectionValidationError(
@@ -464,8 +496,18 @@ class TrainingCriteriaDraft:
             raise ProjectionValidationError(
                 "training criteria confidence is invalid"
             )
+        embedded = payload.get("solution_evidence")
+        embedded_json = ""
+        if schema == JUDGMENT_POINTS_SCHEMA and isinstance(embedded, Mapping):
+            _reject_score_fields(embedded)
+            embedded_json = json.dumps(
+                dict(embedded),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         return cls(
-            schema_version="training-criteria-draft-v1",
+            schema_version=schema,  # type: ignore[arg-type]
             question_id=question.question_id,
             source_content_hash=question.criterion_source_content_hash,
             question_type=question.question_type_group,
@@ -474,12 +516,23 @@ class TrainingCriteriaDraft:
             rationale=str(payload.get("rationale") or "").strip(),
             confidence=confidence,
             source_kind="combined_model",
+            embedded_evidence_json=embedded_json,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
-        payload["points"] = [point.to_dict() for point in self.points]
-        payload["auxiliary_rules"] = list(self.auxiliary_rules)
+        payload = {
+            "schema_version": self.schema_version,
+            "question_id": self.question_id,
+            "source_content_hash": self.source_content_hash,
+            "question_type": self.question_type,
+            "points": [point.to_dict() for point in self.points],
+            "auxiliary_rules": list(self.auxiliary_rules),
+            "rationale": self.rationale,
+            "confidence": self.confidence,
+            "source_kind": self.source_kind,
+        }
+        if self.schema_version == JUDGMENT_POINTS_SCHEMA and self.embedded_evidence_json:
+            payload["solution_evidence"] = json.loads(self.embedded_evidence_json)
         return payload
 
 
@@ -644,7 +697,7 @@ class AnalysisProjectionRepository(Protocol):
 
 
 class CombinedQuestionAnalysisModule:
-    """Deep module for one request, two independently persisted projections."""
+    """Deep module for one request: tags plus one detailed unscored 判定点."""
 
     def __init__(
         self,
@@ -1657,6 +1710,31 @@ def _answer_only_training_draft(
     )
 
 
+def _judgment_points_draft(
+    *,
+    training_criteria: TrainingCriteriaDraft,
+    evidence: QuestionSolutionEvidence,
+) -> TrainingCriteriaDraft:
+    _reject_score_fields(evidence.to_dict())
+    return TrainingCriteriaDraft(
+        schema_version=JUDGMENT_POINTS_SCHEMA,
+        question_id=training_criteria.question_id,
+        source_content_hash=training_criteria.source_content_hash,
+        question_type=training_criteria.question_type,
+        points=training_criteria.points,
+        auxiliary_rules=training_criteria.auxiliary_rules,
+        rationale=training_criteria.rationale,
+        confidence=training_criteria.confidence,
+        source_kind=training_criteria.source_kind,
+        embedded_evidence_json=json.dumps(
+            evidence.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
 def criteria_from_confirmed_rubric(
     *,
     question: QuestionAnalysisInput,
@@ -1825,12 +1903,15 @@ def training_criteria_from_solution_evidence(
                 if form != canonical
             )
         )
-        return _answer_only_training_draft(
-            question=question,
-            answer_units=((canonical, accepted_forms),),
-            rationale="客观题仅依据答案生成训练判定点。",
-            confidence=evidence.confidence,
-            source_kind="combined_model",
+        return _judgment_points_draft(
+            training_criteria=_answer_only_training_draft(
+                question=question,
+                answer_units=((canonical, accepted_forms),),
+                rationale="客观题仅依据答案生成训练判定点。",
+                confidence=evidence.confidence,
+                source_kind="combined_model",
+            ),
+            evidence=evidence,
         )
     if question.objective_response_shape == "multiple_blank":
         answer_units: list[tuple[str, tuple[str, ...]]] = []
@@ -1856,12 +1937,15 @@ def training_criteria_from_solution_evidence(
             raise ProjectionValidationError(
                 "fill-blank evidence cannot be converted without answers"
             )
-        return _answer_only_training_draft(
-            question=question,
-            answer_units=tuple(answer_units),
-            rationale="填空题仅依据各独立答案生成训练判定点。",
-            confidence=evidence.confidence,
-            source_kind="combined_model",
+        return _judgment_points_draft(
+            training_criteria=_answer_only_training_draft(
+                question=question,
+                answer_units=tuple(answer_units),
+                rationale="填空题仅依据各独立答案生成训练判定点。",
+                confidence=evidence.confidence,
+                source_kind="combined_model",
+            ),
+            evidence=evidence,
         )
     points = tuple(
         TrainingCriterionPoint(
@@ -1870,20 +1954,24 @@ def training_criteria_from_solution_evidence(
             observable_evidence=point.observable_evidence,
             equivalent_rules=point.equivalent_rules,
             counterexamples=point.counterexamples,
+            depends_on=point.depends_on,
         )
         for part in evidence.parts
         for point in part.evidence_points
     )
-    return TrainingCriteriaDraft(
-        schema_version="training-criteria-draft-v1",
-        question_id=question.question_id,
-        source_content_hash=question.criterion_source_content_hash,
-        question_type=question.question_type_group,
-        points=points,
-        auxiliary_rules=evidence.auxiliary_rules,
-        rationale=evidence.rationale,
-        confidence=evidence.confidence,
-        source_kind="combined_model",
+    return _judgment_points_draft(
+        training_criteria=TrainingCriteriaDraft(
+            schema_version=LEGACY_CRITERIA_SCHEMA,
+            question_id=question.question_id,
+            source_content_hash=question.criterion_source_content_hash,
+            question_type=question.question_type_group,
+            points=points,
+            auxiliary_rules=evidence.auxiliary_rules,
+            rationale=evidence.rationale,
+            confidence=evidence.confidence,
+            source_kind="combined_model",
+        ),
+        evidence=evidence,
     )
 
 
@@ -2168,7 +2256,32 @@ def _enum_string_schema(
     return {"type": "string", "enum": values}
 
 
-def _enum_array_schema(ids: Sequence[str]) -> dict[str, Any]:
+def _enum_ref(
+    defs: dict[str, Any],
+    name: str,
+    ids: Sequence[str],
+    *,
+    include_empty: bool = False,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    schema = _enum_string_schema(ids, include_empty=include_empty)
+    if "enum" not in schema:
+        return dict(fallback or schema)
+    defs.setdefault(name, schema)
+    return {"$ref": f"#/$defs/{name}"}
+
+
+def _enum_array_schema(
+    ids: Sequence[str],
+    *,
+    defs: dict[str, Any] | None = None,
+    ref_name: str = "",
+) -> dict[str, Any]:
+    if defs is not None and ref_name:
+        item = _enum_ref(defs, ref_name, ids)
+        if "$ref" not in item:
+            return {"type": "array", "items": {"type": "string"}}
+        return {"type": "array", "items": item}
     item = _enum_string_schema(ids)
     if "enum" not in item:
         return {"type": "array", "items": {"type": "string"}}
@@ -2185,6 +2298,7 @@ def combined_response_format(
         str(key): tuple(str(item or "").strip() for item in values if str(item or "").strip())
         for key, values in dict(allowed_term_ids or {}).items()
     }
+    defs: dict[str, Any] = {}
     item_properties: dict[str, Any] = {
         "question_id": {"type": "integer"},
         "reference_assessment": {
@@ -2194,21 +2308,17 @@ def combined_response_format(
         "reference_assessment_reason": {"type": "string"},
     }
     if "tag" in selected:
-        item_properties["tag_analysis"] = _tag_schema(ids)
+        item_properties["tag_analysis"] = _tag_schema(ids, defs=defs)
     if "training_criteria" in selected:
         item_properties["solution_evidence"] = _solution_evidence_schema(
             knowledge_ids=ids.get("knowledge") or (),
+            defs=defs,
         )
-    return {
-        "type": "json_schema",
-        "name": (
-            "question_bank_combined_analysis_v3"
-            if projection == "both"
-            else f"question_bank_{projection}_projection_v3"
-        ),
-        "strict": True,
-        "schema": {
-            "type": "object",
+    schema: dict[str, Any] = {"type": "object"}
+    if defs:
+        schema["$defs"] = defs
+    schema.update(
+        {
             "properties": {
                 "results": {
                     "type": "array",
@@ -2222,33 +2332,83 @@ def combined_response_format(
             },
             "required": ["results"],
             "additionalProperties": False,
-        },
+        }
+    )
+    return {
+        "type": "json_schema",
+        "name": (
+            "question_bank_combined_analysis_v3"
+            if projection == "both"
+            else f"question_bank_{projection}_projection_v3"
+        ),
+        "strict": True,
+        "schema": schema,
     }
 
 
 def _tag_schema(
     allowed_term_ids: Mapping[str, Sequence[str]] | None = None,
+    *,
+    defs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ids = dict(allowed_term_ids or {})
+    shared_defs = defs if defs is not None else {}
+    knowledge = ids.get("knowledge") or ()
     array = {"type": "array", "items": {"type": "string"}}
     text = {"type": "string"}
     properties: dict[str, Any] = {
-        "knowledge_points": _enum_array_schema(ids.get("knowledge") or ()),
-        "method_tags": _enum_array_schema(ids.get("method") or ()),
-        "thought_tags": _enum_array_schema(ids.get("thought") or ()),
-        "ability_tags": _enum_array_schema(ids.get("ability") or ()),
-        "math_model_tags": _enum_array_schema(ids.get("model") or ()),
-        "special_type_tags": _enum_array_schema(ids.get("special_type") or ()),
+        "knowledge_points": _enum_array_schema(
+            knowledge,
+            defs=shared_defs,
+            ref_name="knowledge_id",
+        ),
+        "method_tags": _enum_array_schema(
+            ids.get("method") or (),
+            defs=shared_defs,
+            ref_name="method_id",
+        ),
+        "thought_tags": _enum_array_schema(
+            ids.get("thought") or (),
+            defs=shared_defs,
+            ref_name="thought_id",
+        ),
+        "ability_tags": _enum_array_schema(
+            ids.get("ability") or (),
+            defs=shared_defs,
+            ref_name="ability_id",
+        ),
+        "math_model_tags": _enum_array_schema(
+            ids.get("model") or (),
+            defs=shared_defs,
+            ref_name="model_id",
+        ),
+        "special_type_tags": _enum_array_schema(
+            ids.get("special_type") or (),
+            defs=shared_defs,
+            ref_name="special_type_id",
+        ),
         "difficulty": {"type": "integer", "minimum": 1, "maximum": 10},
         "error_prone_points": array,
-        "prerequisite_points": _enum_array_schema(ids.get("knowledge") or ()),
-        "textbook_chapters": _enum_array_schema(ids.get("curriculum") or ()),
+        "prerequisite_points": _enum_array_schema(
+            knowledge,
+            defs=shared_defs,
+            ref_name="knowledge_id",
+        ),
+        "textbook_chapters": _enum_array_schema(
+            ids.get("curriculum") or (),
+            defs=shared_defs,
+            ref_name="curriculum_id",
+        ),
         "curriculum_sections": _enum_array_schema(
-            ids.get("curriculum_sections") or ()
+            ids.get("curriculum_sections") or (),
+            defs=shared_defs,
+            ref_name="curriculum_section_id",
         ),
         "suitable_student_level": text,
-        "canonical_knowledge_id": _enum_string_schema(
-            ids.get("knowledge") or (),
+        "canonical_knowledge_id": _enum_ref(
+            shared_defs,
+            "knowledge_id_or_empty",
+            knowledge,
             include_empty=True,
         ),
         "taxonomy_revision": {"type": "integer"},
@@ -2328,6 +2488,7 @@ def _criteria_schema() -> dict[str, Any]:
 def _solution_evidence_schema(
     *,
     knowledge_ids: Sequence[str] = (),
+    defs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     text_array = {"type": "array", "items": {"type": "string"}}
     non_empty_text = {"type": "string", "minLength": 1}
@@ -2335,9 +2496,13 @@ def _solution_evidence_schema(
         "type": "string",
         "pattern": "^[a-z][a-z0-9_-]{1,127}$",
     }
-    fine_term_id = _enum_string_schema(knowledge_ids)
-    if "enum" not in fine_term_id:
-        fine_term_id = non_empty_text
+    shared_defs = defs if defs is not None else {}
+    fine_term_id = _enum_ref(
+        shared_defs,
+        "knowledge_id",
+        knowledge_ids,
+        fallback=non_empty_text,
+    )
     fine_term_properties = {
         "fine_term_id": fine_term_id,
         "fine_term_name": non_empty_text,
@@ -2622,9 +2787,13 @@ def _error_category(exc: BaseException) -> str:
         status_code = getattr(response, "status_code", None)
     if status_code in {401, 403}:
         return "authentication"
+    if status_code == 429:
+        return "rate_limit"
     if isinstance(status_code, int) and 400 <= status_code < 500:
         return "invalid_request"
     text = f"{type(exc).__name__} {exc}".casefold()
+    if "rate limit" in text or "ratelimit" in text or "requestbursttoofast" in text:
+        return "rate_limit"
     if "timeout" in text:
         return "timeout"
     if "json" in text or "parse" in text:

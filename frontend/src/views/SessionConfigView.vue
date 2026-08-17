@@ -6,7 +6,6 @@ import ConfigSourceUpload from '../components/config/ConfigSourceUpload.vue'
 import ConfigGenerationPanel from '../components/config/ConfigGenerationPanel.vue'
 import ConfigSaveResult from '../components/config/ConfigSaveResult.vue'
 import QuestionBlockReview from '../components/config/QuestionBlockReview.vue'
-import QuestionBankSyncPanel from '../components/config/QuestionBankSyncPanel.vue'
 import RubricEditorTable from '../components/config/RubricEditorTable.vue'
 import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
@@ -666,12 +665,6 @@ watch(
           class="config-editor config-workspace__panel"
           aria-label="评分依据工作区"
         >
-          <QuestionBankSyncPanel
-            :session-id="sessionStore.currentSession.id"
-            :session-name="sessionStore.currentSession.name"
-            :config-revision="configStore.editor.revision"
-            :asset-decisions="configStore.assetDecisions"
-          />
           <p
             v-if="regenerationMessage && !saveBlocked"
             class="rubric-ledger__regeneration-note"

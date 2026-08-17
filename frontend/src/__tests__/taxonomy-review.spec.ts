@@ -84,6 +84,7 @@ const detail: QuestionBankDetail = {
   typicality: null,
   reason: null,
   needs_review: false,
+  criteria_needs_review: false,
   has_images: false,
   needs_image_review: false,
   created_at: '2026-07-29T10:00:00Z',

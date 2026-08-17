@@ -660,6 +660,7 @@ function bankQuestion(id: number, text: string): QuestionBankListItem {
     typicality: null,
     reason: null,
     needs_review: false,
+    criteria_needs_review: false,
     has_images: false,
     needs_image_review: false,
     created_at: '2026-07-18T08:00:00Z',

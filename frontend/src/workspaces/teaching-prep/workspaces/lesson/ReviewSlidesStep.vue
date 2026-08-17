@@ -563,7 +563,7 @@ async function refreshAdaptationTrace(): Promise<void> {
     )
   } catch (error) {
     if (controller.signal.aborted) return
-    if (isAuthoritativeNotFoundError(error)) {
+      if (isAuthoritativeNotFoundError(error, 'teaching_prep_not_found')) {
       if (!waitingForAdaptation.value) adaptationTrace.value = null
       return
     }

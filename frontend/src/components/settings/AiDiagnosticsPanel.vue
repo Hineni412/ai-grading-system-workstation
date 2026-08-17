@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, markRaw, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 
 import {
   aiDiagnosticsApi,
@@ -24,9 +24,17 @@ const diagnosticKind = ref('')
 const workspaceModuleFilter = ref<'' | WorkspaceAITask['module']>('')
 const workspaceTaskKindFilter = ref('')
 const selectedDiagnosticId = ref('')
-const selectedDiagnostic = ref<AiDiagnosticDetail | null>(null)
+const selectedDiagnostic = shallowRef<AiDiagnosticDetail | null>(null)
 const diagnosticDetailState = ref<'idle' | 'loading' | 'error'>('idle')
 const diagnosticTab = ref<DiagnosticTab>('request')
+const expandRequestJson = ref(false)
+const expandParsedJson = ref(false)
+const expandRawResponse = ref(false)
+const requestJsonText = ref('')
+const parsedJsonText = ref('')
+const rawResponseText = ref('')
+
+const JSON_DISPLAY_LIMIT = 80_000
 
 let diagnosticsController: AbortController | null = null
 let diagnosticDetailController: AbortController | null = null
@@ -130,9 +138,7 @@ function clearHiddenDiagnosticSelection(): void {
     selectedDiagnosticId.value
     && !visibleDiagnostics.value.some(({ call_id: callId }) => callId === selectedDiagnosticId.value)
   ) {
-    selectedDiagnosticId.value = ''
-    selectedDiagnostic.value = null
-    diagnosticDetailState.value = 'idle'
+    clearSelectedDiagnostic()
   }
 }
 
@@ -202,16 +208,66 @@ function formatDiagnosticJson(value: unknown): string {
   }
 }
 
+function diagnosticTextPreview(
+  text: string,
+  expanded: boolean,
+): { text: string; truncated: boolean; hiddenChars: number } {
+  if (!text) return { text: '暂无内容', truncated: false, hiddenChars: 0 }
+  if (expanded || text.length <= JSON_DISPLAY_LIMIT) {
+    return { text, truncated: false, hiddenChars: 0 }
+  }
+  return {
+    text: text.slice(0, JSON_DISPLAY_LIMIT),
+    truncated: true,
+    hiddenChars: text.length - JSON_DISPLAY_LIMIT,
+  }
+}
+
+const requestPreview = computed(() => diagnosticTextPreview(
+  requestJsonText.value,
+  expandRequestJson.value,
+))
+const parsedPreview = computed(() => diagnosticTextPreview(
+  parsedJsonText.value,
+  expandParsedJson.value,
+))
+const rawResponsePreview = computed(() => diagnosticTextPreview(
+  rawResponseText.value,
+  expandRawResponse.value,
+))
+
+function clearSelectedDiagnostic(): void {
+  selectedDiagnosticId.value = ''
+  selectedDiagnostic.value = null
+  diagnosticDetailState.value = 'idle'
+  expandRequestJson.value = false
+  expandParsedJson.value = false
+  expandRawResponse.value = false
+  requestJsonText.value = ''
+  parsedJsonText.value = ''
+  rawResponseText.value = ''
+}
+
 async function loadDiagnosticDetail(callId: string): Promise<void> {
   diagnosticDetailController?.abort()
   const controller = new AbortController()
   diagnosticDetailController = controller
   selectedDiagnosticId.value = callId
   selectedDiagnostic.value = null
+  requestJsonText.value = ''
+  parsedJsonText.value = ''
+  rawResponseText.value = ''
+  expandRequestJson.value = false
+  expandParsedJson.value = false
+  expandRawResponse.value = false
   diagnosticDetailState.value = 'loading'
   diagnosticTab.value = 'request'
   try {
-    selectedDiagnostic.value = await aiDiagnosticsApi.detail(callId, controller.signal)
+    const detail = markRaw(await aiDiagnosticsApi.detail(callId, controller.signal))
+    selectedDiagnostic.value = detail
+    requestJsonText.value = formatDiagnosticJson(detail.request)
+    parsedJsonText.value = formatDiagnosticJson(detail.parsed_result)
+    rawResponseText.value = detail.raw_response || '暂无原始返回'
     diagnosticDetailState.value = 'idle'
   } catch (error) {
     if (controller.signal.aborted) return
@@ -243,9 +299,7 @@ async function loadDiagnostics(): Promise<void> {
       ({ call_id: callId }) => callId === selectedDiagnosticId.value,
     )
     if (!selectedStillVisible) {
-      selectedDiagnosticId.value = ''
-      selectedDiagnostic.value = null
-      diagnosticDetailState.value = 'idle'
+      clearSelectedDiagnostic()
     }
   } catch (error) {
     if (controller.signal.aborted) return
@@ -266,9 +320,7 @@ async function clearClassTeacherDiagnostics(): Promise<void> {
   try {
     const result = await aiDiagnosticsApi.clearClassTeacher()
     diagnosticsNotice.value = `已清除 ${result.deleted_event_count} 条班主任正文日志；保留 ${result.retained_event_count} 条其他或未分类记录。`
-    selectedDiagnosticId.value = ''
-    selectedDiagnostic.value = null
-    diagnosticDetailState.value = 'idle'
+    clearSelectedDiagnostic()
     await loadDiagnostics()
   } catch (error) {
     diagnosticsError.value = error instanceof Error
@@ -500,7 +552,14 @@ onBeforeUnmount(() => {
 
           <section v-if="diagnosticTab === 'request'" class="ai-diagnostic-panel" aria-label="发送内容">
             <p>图片正文已替换为附件编号；其余内容是发送给模型的文本和参数。</p>
-            <pre>{{ formatDiagnosticJson(selectedDiagnostic.request) }}</pre>
+            <p v-if="requestPreview.truncated" class="ai-diagnostic-panel__notice">
+              内容较长，先显示前面 {{ JSON_DISPLAY_LIMIT }} 个字符，以免页面卡住。后面还有
+              {{ requestPreview.hiddenChars }} 个字符。
+              <button type="button" class="ai-diagnostic-panel__expand" @click="expandRequestJson = true">
+                显示全部
+              </button>
+            </p>
+            <pre>{{ requestPreview.text }}</pre>
           </section>
           <section
             v-else-if="diagnosticTab === 'attachments'"
@@ -526,7 +585,14 @@ onBeforeUnmount(() => {
                 ? `${selectedDiagnostic.response_chars} 个字符`
                 : '没有收到可显示的文本返回' }}
             </p>
-            <pre>{{ selectedDiagnostic.raw_response || '暂无原始返回' }}</pre>
+            <p v-if="rawResponsePreview.truncated" class="ai-diagnostic-panel__notice">
+              返回正文较长，先显示前面 {{ JSON_DISPLAY_LIMIT }} 个字符。后面还有
+              {{ rawResponsePreview.hiddenChars }} 个字符。
+              <button type="button" class="ai-diagnostic-panel__expand" @click="expandRawResponse = true">
+                显示全部
+              </button>
+            </p>
+            <pre>{{ rawResponsePreview.text }}</pre>
           </section>
           <section
             v-else-if="diagnosticTab === 'parsed'"
@@ -548,7 +614,14 @@ onBeforeUnmount(() => {
             >
               校验原因码：{{ selectedDiagnostic.validation_issue_codes.join('、') }}
             </p>
-            <pre>{{ formatDiagnosticJson(selectedDiagnostic.parsed_result) }}</pre>
+            <p v-if="parsedPreview.truncated" class="ai-diagnostic-panel__notice">
+              解析结果较长，先显示前面 {{ JSON_DISPLAY_LIMIT }} 个字符。后面还有
+              {{ parsedPreview.hiddenChars }} 个字符。
+              <button type="button" class="ai-diagnostic-panel__expand" @click="expandParsedJson = true">
+                显示全部
+              </button>
+            </p>
+            <pre>{{ parsedPreview.text }}</pre>
           </section>
           <section v-else class="ai-diagnostic-panel" aria-label="错误与重试">
             <dl class="ai-diagnostic-retry">

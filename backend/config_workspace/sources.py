@@ -32,6 +32,12 @@ from backend.document_parsing import (
     parse_docx_question_blocks,
     parse_plain_question_blocks,
 )
+from backend.document_parsing.question_blocks import (
+    has_explicit_choice_options,
+    has_visible_fill_blank_mark,
+    has_visible_stem_fill_blank_mark,
+    has_visible_subparts,
+)
 
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
@@ -62,8 +68,6 @@ _HTML_QUESTION_SECTION_HEADING = re.compile(
     r"[、.．]\s*(?:选择|填空|解答|计算|证明|作图)题.*",
     re.IGNORECASE | re.DOTALL,
 )
-_VISIBLE_BLANK = re.compile(r"(?:_{1,}|＿{1,}|﹏{2,}|<u\b[^>]*>.*?</u>)", re.IGNORECASE | re.DOTALL)
-_VISIBLE_SUBPART = re.compile(r"(?:^|\s)[（(]\s*[1-9]\d*\s*[）)]", re.MULTILINE)
 _RICH_TABLE_PATTERN = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
 _RICH_TABLE_ROW_PATTERN = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
 _RICH_TABLE_CELL_PATTERN = re.compile(
@@ -81,6 +85,7 @@ _ALLOWED_QUESTION_TYPES = {
     "proof",
     "comprehensive",
 }
+_DISPLAY_QUESTION_TYPES = _ALLOWED_QUESTION_TYPES | {"single_choice", "multi_choice"}
 _IMAGE_FORMATS = {
     "JPEG": (".jpg", "image/jpeg"),
     "PNG": (".png", "image/png"),
@@ -422,6 +427,7 @@ class ConfigSourceService:
             )
             for block in blocks:
                 _strip_embedded_question_section_heading(block)
+                _align_question_type_with_visible_blank(block)
             questions = _question_previews(blocks, asset_files)
             source_sha256 = digest.hexdigest()
             manifest_path = source_dir / "manifest.json"
@@ -1158,6 +1164,7 @@ class ConfigSourceService:
                 # Teacher confirmation remains distinct from a visible answer-form
                 # fact.  A single printed blank is still not permission for the
                 # model to invent process subquestions.
+                _align_question_type_with_visible_blank(block)
                 block["question_type_confirmed"] = False
                 if _visible_response_form_fact(block) == "single_blank":
                     block["response_form_fact"] = "single_blank"
@@ -2483,6 +2490,10 @@ def _public_questions_with_rich_content(
         block = copy.deepcopy(original_block) if isinstance(original_block, dict) else None
         if block is not None:
             _strip_embedded_question_section_heading(block)
+            _align_question_type_with_visible_blank(block)
+            payload["question_type"] = str(
+                block.get("question_type") or question.question_type
+            )
         image_semantic_source = source_suffix == ".pdf" or (
             isinstance(block, dict)
             and str(block.get("semantic_source") or "").strip() == "images"
@@ -2516,6 +2527,19 @@ def _public_questions_with_rich_content(
                     "question_type_review_reason": review_reason,
                 }
             )
+        payload["question_type_basis"] = _question_type_basis(
+            str(payload.get("question_type") or question.question_type),
+            (
+                ""
+                if image_semantic_source or block is None
+                else (
+                    block.get("question_html")
+                    or block.get("question_text")
+                    or block.get("text")
+                    or question.question_preview
+                )
+            ),
+        )
         payload["rich_content"] = _config_rich_content(
             block,
             session_id=session_id,
@@ -2876,23 +2900,92 @@ def _matches_legacy_question_previews(
     return tuple(stored) == tuple(legacy)
 
 
+def _align_question_type_with_visible_blank(block: dict[str, Any]) -> None:
+    """If an unconfirmed stem has one fill-in slot, prefer fill_blank."""
+    if block.get("question_type_confirmed") is True:
+        return
+    question_value = (
+        block.get("question_html")
+        or block.get("question_text")
+        or block.get("text")
+        or ""
+    )
+    current_type = str(block.get("question_type") or "").strip()
+    reason = _question_type_review_reason(current_type, question_value)
+    if reason.startswith("题面只有一个明确填空位置"):
+        block["question_type"] = "fill_blank"
+        return
+    if (
+        current_type == "fill_blank"
+        and has_visible_subparts(str(question_value or ""))
+    ):
+        # A labeled multi-task stem was only looking like a fill-in because a
+        # table cell or one blank sat inside a larger worked question.
+        block["question_type"] = "comprehensive"
+
+
 def _question_type_review_reason(question_type: str, question_value: Any) -> str:
     raw = str(question_value or "")
     plain = html.unescape(_HTML_TAG.sub(" ", raw)).replace("\r", "")
     if _QUESTION_SECTION_HEADING.search(plain):
         return "检测到下一部分标题可能粘在本题末尾，请确认题型。"
+    normalized_type = str(question_type or "").strip()
+    looks_like_choice = (
+        normalized_type in {"choice", "single_choice", "multi_choice"}
+        or "选择" in normalized_type
+        or has_explicit_choice_options(raw)
+        or has_explicit_choice_options(plain)
+    )
+    labeled_subparts = has_visible_subparts(raw) or has_visible_subparts(plain)
     if (
-        str(question_type or "").strip() != "fill_blank"
-        and _VISIBLE_BLANK.search(raw)
-        and not _VISIBLE_SUBPART.search(plain)
+        normalized_type != "fill_blank"
+        and has_visible_stem_fill_blank_mark(raw)
+        and not labeled_subparts
+        and not looks_like_choice
     ):
         return "题面只有一个明确填空位置，但当前题型不是填空题。"
     if (
-        str(question_type or "").strip() in {"choice", "fill_blank"}
-        and _VISIBLE_SUBPART.search(plain)
+        normalized_type == "comprehensive"
+        and labeled_subparts
+        and has_visible_fill_blank_mark(raw)
+    ):
+        return "题面既有多个小问，也有填空位置。本地按综合解答题处理，请确认题型。"
+    if (
+        normalized_type in {"choice", "fill_blank"}
+        and labeled_subparts
     ):
         return "题面包含多个小问，但当前题型是选择题或填空题，请确认题型。"
     return ""
+
+
+def _question_type_basis(question_type: str, question_value: Any) -> str:
+    normalized = str(question_type or "").strip()
+    if normalized not in _DISPLAY_QUESTION_TYPES:
+        return ""
+    raw = str(question_value or "")
+    plain = html.unescape(_HTML_TAG.sub(" ", raw)).replace("\r", "")
+    parts: list[str] = []
+    if has_explicit_choice_options(raw) or has_explicit_choice_options(plain):
+        parts.append("题面有选项")
+    if has_visible_stem_fill_blank_mark(raw) or (
+        (has_visible_subparts(raw) or has_visible_subparts(plain))
+        and has_visible_fill_blank_mark(raw)
+    ):
+        parts.append("题面有填空位置")
+    if has_visible_subparts(raw) or has_visible_subparts(plain):
+        parts.append("题面有多个小问")
+    if parts:
+        return " · ".join(parts)
+    fallback = {
+        "choice": "按选择题处理",
+        "single_choice": "按选择题处理",
+        "multi_choice": "按选择题处理",
+        "fill_blank": "按填空题处理",
+        "calculation": "按计算题处理",
+        "proof": "按证明题处理",
+        "comprehensive": "按综合解答题处理",
+    }
+    return fallback[normalized]
 
 
 def _visible_response_form_fact(block: dict[str, Any]) -> str:
@@ -2906,8 +2999,9 @@ def _visible_response_form_fact(block: dict[str, Any]) -> str:
     plain = html.unescape(_HTML_TAG.sub(" ", raw))
     if (
         question_type == "fill_blank"
-        and _VISIBLE_BLANK.search(raw)
-        and not _VISIBLE_SUBPART.search(plain)
+        and has_visible_stem_fill_blank_mark(raw)
+        and not has_visible_subparts(raw)
+        and not has_visible_subparts(plain)
     ):
         return "single_blank"
     return ""

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import type { QuestionBankPaper } from '../api/question-bank'
+import type { QuestionBankListItem, QuestionBankPaper } from '../api/question-bank'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
 import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
@@ -23,6 +23,9 @@ const QuestionLedger = defineAsyncComponent(
 const TaxonomyCandidateReview = defineAsyncComponent(
   () => import('../components/question-bank/TaxonomyCandidateReview.vue'),
 )
+const CriteriaReviewPanel = defineAsyncComponent(
+  () => import('../components/question-bank/CriteriaReviewPanel.vue'),
+)
 
 const bank = useQuestionBankStore()
 const jobStore = useJobStore()
@@ -30,6 +33,7 @@ const taxonomyReview = useTaxonomyReviewStore()
 const activePaper = ref<QuestionBankPaper | null>(null)
 const showImport = ref(false)
 const showTaxonomyReview = ref(false)
+const showCriteriaReview = ref(false)
 let secondaryLoadHandle: ReturnType<typeof setTimeout> | null = null
 
 const activeProgress = computed(() => {
@@ -55,10 +59,9 @@ onBeforeUnmount(() => {
   if (secondaryLoadHandle !== null) clearTimeout(secondaryLoadHandle)
 })
 
-function openPaper(paper: QuestionBankPaper): void {
+function openPaper(paper: QuestionBankPaper, questionId?: number): void {
   activePaper.value = paper
   bank.clearSelection()
-  void bank.selectQuestion(null)
   void bank.loadQuestions({
     page: 1,
     pageSize: 20,
@@ -66,6 +69,7 @@ function openPaper(paper: QuestionBankPaper): void {
     tagStatus: 'all',
     sort: 'paper_order',
   })
+  void bank.selectQuestion(questionId ?? null)
 }
 
 function closePaper(): void {
@@ -76,9 +80,29 @@ function closePaper(): void {
 
 function openTaxonomyReview(): void {
   showImport.value = false
+  showCriteriaReview.value = false
   showTaxonomyReview.value = true
   void taxonomyReview.load()
 }
+
+function openCriteriaReview(): void {
+  showImport.value = false
+  showTaxonomyReview.value = false
+  showCriteriaReview.value = true
+}
+
+function openCriteriaQuestion(question: QuestionBankListItem): void {
+  const paper = bank.papers.find((item) => item.id === question.paper_id)
+  if (!paper || question.paper_id == null) return
+  showCriteriaReview.value = false
+  openPaper(paper, question.id)
+}
+
+const currentPaper = computed(() => {
+  const selected = activePaper.value
+  if (!selected) return null
+  return bank.papers.find((paper) => paper.id === selected.id) ?? selected
+})
 </script>
 
 <template>
@@ -90,6 +114,7 @@ function openTaxonomyReview(): void {
       @open="openPaper"
       @import="showImport = true"
       @review-taxonomy="openTaxonomyReview"
+      @review-criteria="openCriteriaReview"
     />
 
     <template v-else>
@@ -129,6 +154,13 @@ function openTaxonomyReview(): void {
             <span :style="{ width: `${activeProgress}%` }" />
           </div>
           <small>{{ activeProgress }}% 完整</small>
+          <p
+            v-if="currentPaper && currentPaper.criteria_needs_review_count > 0"
+            class="question-bank__paper-review"
+            role="status"
+          >
+            {{ currentPaper.criteria_needs_review_count }} 道题判定点待审核，打开题目后到「判定点」里处理。
+          </p>
           <button type="button" class="paper-button is-primary" @click="showImport = true">
             上传与 AI 标注
           </button>
@@ -163,6 +195,12 @@ function openTaxonomyReview(): void {
       v-if="showTaxonomyReview"
       :open="showTaxonomyReview"
       @close="showTaxonomyReview = false"
+    />
+    <CriteriaReviewPanel
+      v-if="showCriteriaReview"
+      :open="showCriteriaReview"
+      @close="showCriteriaReview = false"
+      @open-question="openCriteriaQuestion"
     />
   </section>
 </template>

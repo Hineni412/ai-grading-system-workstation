@@ -4,6 +4,7 @@ from question_bank.training_criteria.analysis import (
     GatewayBatchResponse,
     GatewayResponseParseError,
     GatewayUsage,
+    JUDGMENT_POINTS_SCHEMA,
     ProjectionValidationError,
     QuestionAnalysisImage,
     QuestionAnalysisInput,
@@ -41,6 +42,7 @@ from question_bank.training_criteria.versioning import (
     CriterionVersionNotFound,
     QualityGateResult,
     TrainingCriterionModule,
+    blocking_quality_codes,
     evaluate_criterion_quality,
 )
 from question_bank.training_criteria.in_memory import (
@@ -80,6 +82,7 @@ __all__ = [
     "GatewayBatchResponse",
     "GatewayResponseParseError",
     "GatewayUsage",
+    "JUDGMENT_POINTS_SCHEMA",
     "InMemoryCombinedQuestionAnalysisModule",
     "ProjectionValidationError",
     "OpenAICombinedAnalysisGateway",
@@ -100,6 +103,7 @@ __all__ = [
     "criteria_from_confirmed_rubric",
     "answer_key_skeleton_from_solution_evidence",
     "grading_config_skeleton_from_solution_evidence",
+    "blocking_quality_codes",
     "evaluate_criterion_quality",
     "plan_analysis_batches",
     "rubric_skeleton_from_solution_evidence",

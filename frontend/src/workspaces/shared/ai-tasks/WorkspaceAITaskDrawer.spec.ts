@@ -75,6 +75,20 @@ describe('WorkspaceAITaskDrawer', () => {
     app.unmount()
   })
 
+  it('does not repeat tagging progress as a percentage in the task center', async () => {
+    const { app, host, jobs } = await mountDrawer()
+    jobs.track(job('running', 0.82, 'tagging_sync', 'AI 分析已处理 16/20 道题'))
+    await nextTick()
+
+    expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).toContain('任务中心')
+    expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).not.toContain('82%')
+    await openDrawer(host)
+    expect(host.textContent).toContain('题库分析进行中，点这里回到试卷库')
+    expect(host.textContent).toContain('回到试卷库')
+    expect(host.querySelector('progress')).toBeNull()
+    app.unmount()
+  })
+
   it('keeps a failed job in 需要处理 and names unknown types in Chinese', async () => {
     const { app, host, jobs } = await mountDrawer()
     jobs.track(job('failed', 0.35, 'question_bank_sync', '同步中断'))

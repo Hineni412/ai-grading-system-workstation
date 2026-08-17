@@ -206,7 +206,7 @@ function reviewRefs(value: unknown): string {
 function statusCopy(current: JobResponse): string {
   if (current.status === 'queued') return '等待入库'
   if (current.status === 'running') {
-    if (current.job_type === 'tagging_sync') return '正在补齐未完成题目的标签与训练判定点'
+    if (current.job_type === 'tagging_sync') return '正在补齐未完成题目的标签与判定点'
     if (current.stage === 'question_bank_tagging') return '正在调用 AI 打标签'
     if (current.stage === 'question_bank_import') return '正在拆分并写入题库'
     return '正在准备题库'
@@ -217,16 +217,16 @@ function statusCopy(current: JobResponse): string {
     liveStatus.value !== null
     && liveStatus.value.question_count > 0
     && liveStatus.value.complete_count === liveStatus.value.question_count
-  ) return '试卷已入库，标签与训练判定点已保存'
+  ) return '试卷已入库，标签与判定点已保存'
   if (liveStatus.value !== null && liveStatus.value.incomplete_question_ids.length > 0) {
-    return '已部分入库，仍有标签或训练判定点需要处理'
+    return '已部分入库，仍有标签或判定点需要处理'
   }
   if (outcome.value === 'complete') {
     return safeCount(current.result.taxonomy_review_count)
       ? '试卷已入库，部分标签仍待归并'
-      : '试卷已入库，标签与训练判定点已保存'
+      : '试卷已入库，标签与判定点已保存'
   }
-  if (outcome.value === 'partial') return '已部分入库，仍有标签或训练判定点需要处理'
+  if (outcome.value === 'partial') return '已部分入库，仍有标签或判定点需要处理'
   return '题库流程未完成'
 }
 
@@ -418,8 +418,7 @@ watch(
       <p v-if="terminal">
         题目入库成功 {{ safeCount(job.result.imported_count) }} 题 ·
         当前标签 {{ statusCounts.tagged }}/{{ statusCounts.total }} ·
-        解题证据 {{ statusCounts.evidence }}/{{ statusCounts.total }} ·
-        训练判定点 {{ statusCounts.criteria }}/{{ statusCounts.total }} ·
+        判定点 {{ statusCounts.criteria }}/{{ statusCounts.total }} ·
         联合分析完整 {{ statusCounts.complete }}/{{ statusCounts.total }}
         <template v-if="safeCount(liveStatus?.pending_taxonomy_count)">
           · 当前待审核新词 {{ safeCount(liveStatus?.pending_taxonomy_count) }} 个

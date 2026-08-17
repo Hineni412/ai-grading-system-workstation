@@ -9,6 +9,7 @@ import {
   type TrainingCriterionWorkspace,
 } from '../../api/question-bank-criteria'
 import AppButton from '../design-system/AppButton.vue'
+import SolutionEvidenceReview from './SolutionEvidenceReview.vue'
 
 interface EditorPoint extends TrainingCriterionPoint {
   equivalent_text: string
@@ -35,9 +36,13 @@ const currentSourceLabel = computed(() => ({
   backfill: 'AI 回填',
 }[current.value?.source_kind ?? 'combined_model']))
 const canReview = computed(() => current.value?.status === 'proposed')
-const canApprove = computed(() => (
-  canReview.value && current.value?.quality_status === 'passed'
+const blockingCodes = computed(() => (
+  (current.value?.quality_codes ?? []).filter((code) => code !== 'missing_actual_image')
 ))
+const advisoryCodes = computed(() => (
+  (current.value?.quality_codes ?? []).filter((code) => code === 'missing_actual_image')
+))
+const canApprove = computed(() => canReview.value && blockingCodes.value.length === 0)
 const statusCopy = computed(() => {
   if (workspace.value?.available) {
     return {
@@ -50,12 +55,15 @@ const statusCopy = computed(() => {
   }
   const state = workspace.value?.state
   if (state === 'proposed') {
+    const blocked = blockingCodes.value.length > 0
     return {
-      tone: current.value?.quality_status === 'passed' ? 'review' : 'blocked',
-      label: current.value?.quality_status === 'passed' ? '等待教师批准' : '需要先修正',
-      detail: current.value?.quality_status === 'passed'
-        ? '批准后才会进入以后生成的训练卷。'
-        : '质量检查未通过，当前版本不能批准。',
+      tone: blocked ? 'blocked' : 'review',
+      label: blocked ? '需要先修正' : '等待教师批准',
+      detail: blocked
+        ? '质量检查未通过，请先按下方列出的问题修正。'
+        : advisoryCodes.value.length > 0
+          ? '判定点内容可用，可以批准。题目配图当前不可用，只作提醒，不拦截批准。'
+          : '批准后才会进入以后生成的训练卷。',
     }
   }
   if (state === 'stale') {
@@ -74,7 +82,7 @@ const statusCopy = computed(() => {
   }
   return {
     tone: 'missing',
-    label: '尚无训练判定点',
+    label: '尚无判定点',
     detail: '可手动录入，或仅为这道题重新生成候选版本。',
   }
 })
@@ -88,17 +96,21 @@ const qualityMessages: Record<string, string> = {
   duplicate_point_id: '判定点编号不能重复。',
   duplicate_obligation: '不同判定点重复要求了同一件事。',
   missing_actual_image: '题目引用了图片，但当前图片内容不可用。',
+  teacher_visible_language_not_zh: '判定点需要写成老师能直接看懂的中文。',
+  unknown_dependency: '判定点之间的依赖关系不完整，需要核对。',
   source_stale: '判定点对应的题目内容已经变化。',
   question_mismatch: '判定点不属于当前题目。',
   no_points: '至少需要一个判定点。',
   unobservable_point: '每个判定点都需要明确的目标和可观察依据。',
+  objective_point_count: '客观题的判定点数量需要与答案结构一致。',
 }
 
-const qualityNotes = computed(() => (
-  (current.value?.quality_codes ?? []).map(
-    (code) => qualityMessages[code] ?? `需要修正：${code}`,
-  )
-))
+function qualityNote(code: string): string {
+  return qualityMessages[code] ?? `需要修正：${code}`
+}
+
+const blockingQualityNotes = computed(() => blockingCodes.value.map(qualityNote))
+const advisoryQualityNotes = computed(() => advisoryCodes.value.map(qualityNote))
 
 function token(): string {
   return globalThis.crypto.randomUUID().replace(/-/g, '').toLowerCase()
@@ -111,6 +123,7 @@ function editorPoint(point?: TrainingCriterionPoint): EditorPoint {
     observable_evidence: point?.observable_evidence ?? '',
     equivalent_rules: [...(point?.equivalent_rules ?? [])],
     counterexamples: [...(point?.counterexamples ?? [])],
+    depends_on: [...(point?.depends_on ?? [])],
     equivalent_text: (point?.equivalent_rules ?? []).join('\n'),
     counterexample_text: (point?.counterexamples ?? []).join('\n'),
   }
@@ -201,6 +214,7 @@ async function saveDraft(): Promise<void> {
         observable_evidence: point.observable_evidence.trim(),
         equivalent_rules: cleanLines(point.equivalent_text),
         counterexamples: cleanLines(point.counterexample_text),
+        depends_on: [...(point.depends_on ?? [])],
       })),
       auxiliary_rules: cleanLines(auxiliaryText.value),
       rationale: rationale.value.trim(),
@@ -270,8 +284,7 @@ onBeforeUnmount(() => loadController?.abort())
   <section class="criterion-review" aria-labelledby="criterion-review-title">
     <header class="criterion-review__heading">
       <div>
-        <p class="qb-eyebrow">TRAINING EVIDENCE</p>
-        <h3 id="criterion-review-title">训练判定点</h3>
+        <h3 id="criterion-review-title">判定点</h3>
       </div>
       <button
         type="button"
@@ -301,9 +314,17 @@ onBeforeUnmount(() => loadController?.abort())
         </small>
       </div>
 
-      <ul v-if="qualityNotes.length" class="criterion-quality" aria-label="需要修正的质量问题">
-        <li v-for="note in qualityNotes" :key="note">{{ note }}</li>
+      <ul v-if="blockingQualityNotes.length" class="criterion-quality is-blocking" aria-label="需要修正的质量问题">
+        <li v-for="note in blockingQualityNotes" :key="note">{{ note }}</li>
       </ul>
+      <ul v-if="advisoryQualityNotes.length" class="criterion-quality" aria-label="提醒">
+        <li v-for="note in advisoryQualityNotes" :key="note">{{ note }}</li>
+      </ul>
+
+      <SolutionEvidenceReview
+        :question-id="questionId"
+        embedded
+      />
 
       <div class="criterion-points">
         <article

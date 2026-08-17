@@ -38,6 +38,15 @@ from question_bank.services.question_write_service import QuestionBankWriteServi
 from tests.current_knowledge_support import install_current_knowledge
 
 
+def _schema_node(root: Mapping[str, Any], node: Mapping[str, Any]) -> Mapping[str, Any]:
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        resolved = root.get("$defs", {}).get(ref.rsplit("/", 1)[-1])
+        if isinstance(resolved, Mapping):
+            return resolved
+    return node
+
+
 FIXTURE = (
     Path(__file__).parent / "fixtures" / "p4_00_gold_set.json"
 )
@@ -927,17 +936,24 @@ def test_combined_schema_locks_controlled_fields_to_batch_ids() -> None:
         allowed_term_ids={"knowledge": ["kp_alg_linear_equation"]},
     )
     item = schema["schema"]["properties"]["results"]["items"]
-    knowledge_items = item["properties"]["tag_analysis"]["properties"][
-        "knowledge_points"
-    ]["items"]
-    fine_term_id = item["properties"]["solution_evidence"]["properties"][
-        "parts"
-    ]["items"]["properties"]["evidence_points"]["items"]["properties"][
-        "fine_term_links"
-    ]["items"]["properties"]["fine_term_id"]
+    knowledge_items = _schema_node(
+        schema["schema"],
+        item["properties"]["tag_analysis"]["properties"]["knowledge_points"]["items"],
+    )
+    fine_term_id = _schema_node(
+        schema["schema"],
+        item["properties"]["solution_evidence"]["properties"]["parts"]["items"][
+            "properties"
+        ]["evidence_points"]["items"]["properties"]["fine_term_links"]["items"][
+            "properties"
+        ]["fine_term_id"],
+    )
 
     assert knowledge_items["enum"] == ["kp_alg_linear_equation"]
     assert fine_term_id["enum"] == ["kp_alg_linear_equation"]
+    assert schema["schema"]["$defs"]["knowledge_id"]["enum"] == [
+        "kp_alg_linear_equation"
+    ]
 
 
 class AcceptingGovernance:
@@ -1399,11 +1415,14 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
         taxonomy_contract={
             "taxonomy_revision": 7,
             "allowed_dimensions": ["knowledge"],
+            "allowed_term_ids": {"knowledge": ["kp_geo_parallel_lines"]},
+            "candidate_fingerprint": "should-not-be-sent",
             "candidates": {
                 "knowledge": [
                     {
                         "id": "kp_geo_parallel_lines",
                         "name": "平行线",
+                        "definition": "very long extra field",
                     }
                 ]
             },
@@ -1430,20 +1449,24 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     }
     assert "kp_alg_linear_equation" in contracts[1]["candidates"]["knowledge"][0]["id"]
     format_schema = protocol.calls[0]["kwargs"]["text"]["format"]["schema"]
-    knowledge_items = format_schema["properties"]["results"]["items"][
-        "properties"
-    ]["tag_analysis"]["properties"]["knowledge_points"]["items"]
+    knowledge_items = _schema_node(
+        format_schema,
+        format_schema["properties"]["results"]["items"]["properties"]["tag_analysis"][
+            "properties"
+        ]["knowledge_points"]["items"],
+    )
     assert knowledge_items["enum"] == [
         "kp_alg_linear_equation",
         "kp_geo_parallel_lines",
     ]
-    fine_term_id = format_schema["properties"]["results"]["items"][
-        "properties"
-    ]["solution_evidence"]["properties"]["parts"]["items"]["properties"][
-        "evidence_points"
-    ]["items"]["properties"]["fine_term_links"]["items"]["properties"][
-        "fine_term_id"
-    ]
+    fine_term_id = _schema_node(
+        format_schema,
+        format_schema["properties"]["results"]["items"]["properties"][
+            "solution_evidence"
+        ]["properties"]["parts"]["items"]["properties"]["evidence_points"]["items"][
+            "properties"
+        ]["fine_term_links"]["items"]["properties"]["fine_term_id"],
+    )
     assert fine_term_id["enum"] == [
         "kp_alg_linear_equation",
         "kp_geo_parallel_lines",
@@ -1451,16 +1474,19 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     assert contracts[2]["candidates"]["knowledge"][0]["id"] == (
         "kp_geo_parallel_lines"
     )
+    assert "definition" not in contracts[2]["candidates"]["knowledge"][0]
+    assert "allowed_term_ids" not in contracts[2]
+    assert "candidate_fingerprint" not in contracts[2]
     assert "existing_tags" not in prompt["questions"][0]["question"]
     rules = prompt["rules"]
-    assert "candidate_contract.candidates.knowledge only" in rules
-    assert "Copy the id and name together, verbatim" in rules
-    assert "only exact candidate id values copied verbatim" in rules
+    assert "candidate_contract.candidates.knowledge" in rules
+    assert "id 与 name 成对原样照抄" in rules
+    assert "只能逐字照抄该题 candidate_contract" in rules
     assert "curriculum_sections" in rules
-    assert "只能逐字照抄该题候选契约中候选条的 id" in rules
+    assert "只能逐字照抄该题 candidate_contract 中对应维度候选条的 id" in rules
     assert "part-1-step-1" in rules
-    assert "one independently scorable mathematical milestone" in rules
-    assert "one evidence point" in rules
+    assert "独立可评分的数学台阶" in rules
+    assert "one evidence point" in rules or "一个 evidence point" in rules
     examples = prompt["evidence_examples"]
     assert len(examples["q11_process_positive"]["evidence_points"]) == 3
     assert len(examples["q11_process_negative"]["evidence_points"]) == 1
@@ -1529,12 +1555,12 @@ def test_gateway_prompt_turns_teacher_retry_into_targeted_repair() -> None:
     assert repair["previous_result"] == rejected_result
     assert "part2-step1" in repair["validation_error"]
     assert "repair" in prompt["rules"].casefold()
-    assert "fresh dependency namespace" in prompt["rules"]
+    assert "独立命名空间" in prompt["rules"]
     assert "full_answer" in prompt["rules"]
-    assert "If only one milestone can be confirmed" in prompt["rules"]
-    assert "choose the matching non-process response_mode" in prompt["rules"]
-    assert "never invent steps just to satisfy a count" in prompt["rules"]
-    assert "Do not infer an exact evidence point count" in prompt["rules"]
+    assert "若只能确认一个台阶" in prompt["rules"]
+    assert "改用匹配的非过程 response_mode" in prompt["rules"]
+    assert "不得为凑数量发明步骤" in prompt["rules"]
+    assert "不要从标点、等式、角符号或连接词推断证据点个数" in prompt["rules"]
 
 
 def test_input_loader_includes_rich_text_and_controlled_actual_images(

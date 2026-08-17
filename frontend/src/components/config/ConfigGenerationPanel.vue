@@ -219,36 +219,53 @@ const questionBankSyncState = computed(() => {
 })
 const questionBankSyncCopy = computed(() => {
   if (!questionBankSyncRequested.value) return ''
+  const failedIds = Array.isArray(job.value?.result.exam_intake_failed_question_ids)
+    ? job.value.result.exam_intake_failed_question_ids.filter(
+      (item): item is string => typeof item === 'string' && item.length > 0,
+    )
+    : []
+  const intakeError = typeof job.value?.result.exam_intake_error === 'string'
+    ? job.value.result.exam_intake_error
+    : ''
+  const category = typeof job.value?.result.exam_intake_category === 'string'
+    ? job.value.result.exam_intake_category
+    : ''
+  if (questionBankSyncState.value === 'ready') {
+    const imported = safeCount(job.value?.result.question_bank_imported_count)
+    return `题库判定点已完整入库（${imported} 题）。本场分数只写在这场考试的评分依据上，不会写回题库。`
+  }
   if (questionBankSyncState.value === 'ready_for_config_link') {
     const imported = safeCount(job.value?.result.question_bank_imported_count)
     const tagged = safeCount(job.value?.result.question_bank_tagged_count)
     return `试卷已先收入题库，共入库 ${imported} 题、已有完整标签 ${tagged} 题；统一赋分修正成功后只补齐评分配置关联，不会重复建卷或重复打标签。`
   }
-  if (questionBankSyncState.value === 'partial') {
+  if (questionBankSyncState.value === 'partial' || questionBankSyncState.value === 'failed') {
     const imported = safeCount(job.value?.result.question_bank_imported_count)
     const tagged = safeCount(job.value?.result.question_bank_tagged_count)
-    return `试卷已先收入题库，当前入库 ${imported} 题、已有完整标签 ${tagged} 题；未完成题可稍后继续处理，统一赋分不影响这些已保存结果。`
+    const failedText = failedIds.length > 0 ? `未通过题目：${failedIds.join('、')}。` : ''
+    const categoryText = category ? `失败类别：${category}。` : ''
+    return `${intakeError || '题库入库未完整成功，当前不能赋分、标定题框或开始批改。'} ${categoryText}${failedText}当前入库 ${imported} 题、已有完整标签 ${tagged} 题；只可继续处理缺失项。`
   }
   if (questionBankSyncState.value === 'intake_failed') {
-    return '题目分析结果已保存在本机，但试卷暂时未能写入题库；重新进行统一赋分时会按同一来源继续入库，不会重新分析题目。'
+    return intakeError || '题目分析结果已保存在本机，但试卷暂时未能写入题库；当前不能赋分。重试时会按同一来源继续入库，不会重新分析已完成题目。'
   }
   if (questionBankSyncState.value === 'queued') {
     return '评分依据已发布，题库入库与 AI 打标签任务已经排队。'
   }
   if (questionBankSyncState.value === 'running') {
-    return '评分依据已发布，正在执行题库入库与 AI 打标签。'
+    return '正在把分析结果写入题库判定点。'
   }
   if (questionBankSyncState.value === 'submission_failed'
     || questionBankSyncState.value === 'blocked') {
-    return '评分依据已发布，但题库任务没有启动；进入评分编辑页后可以重新提交，评分依据不受影响。'
+    return '题库任务没有启动；请回到本页查看失败原因后再继续，不能跳过入库直接赋分。'
   }
   if (outcome.value === 'partial' && uncertainQuestionIds.value.length > 0) {
-    return '已保存“完成后入库并打标签”的选择；处理结果不确定的题目后会自动继续。'
+    return '题目分析尚未全部确认；处理结果不确定的题目后才会入库。入库未完整成功前不能赋分。'
   }
   if (outcome.value === 'partial') {
-    return '已保存“完成后入库并打标签”的选择；当前等待评分依据完整生成，通过重试后会自动继续。'
+    return '题目分析尚未全部通过；补齐失败题后才会入库。入库未完整成功前不能赋分。'
   }
-  return '已保存“完成后入库并打标签”的选择，评分依据发布成功后将由后台自动继续。'
+  return '将先完整写入题库判定点，成功后才为本场考试赋分。'
 })
 const totalQuestionCount = computed(() => safeCount(job.value?.result.total_questions))
 const totalBatchCount = computed(() => safeCount(job.value?.result.total_batch_count))
@@ -601,8 +618,8 @@ watch(
     </p>
 
     <div v-if="job === null" class="config-generation__flow" role="note">
-      <strong>一次完成题目分析与评分依据</strong>
-      <span>先核对拆题结果；系统会按题从所选教材范围召回少量候选词，提取小问与踩分点证据，再对整卷统一赋分。失败时只重试失败题，不重做已完成题目。</span>
+      <strong>先分析并完整入库，再为本场赋分</strong>
+      <span>先核对拆题结果；系统会按题分析标签和详细判定点并写入题库。只有全部题目入库成功后，才会给本场考试挂分。入库失败时会留下失败类别和题号，不能跳过。</span>
     </div>
 
     <Teleport :to="volumeTeleportTarget ?? 'body'" :disabled="volumeTeleportTarget === null">
@@ -638,7 +655,7 @@ watch(
           class="config-generation__primary"
           :disabled="!generationAvailable || curriculumLoading || selectedVolume === null || submitting || workspacePending"
           @click="startGeneration()"
-        >{{ submitting ? '正在提交…' : '开始生成' }}</button>
+        >{{ submitting ? '正在提交…' : '开始分析并入库' }}</button>
         <button
           v-else-if="terminal && redStateCount > 0 && retryable"
           type="button"
@@ -689,8 +706,8 @@ watch(
       </p>
 
       <p v-if="terminal && outcome === 'complete'" class="config-generation__success">
-        <strong>评分标准生成成功。</strong>
-        共 {{ totalQuestionCount || generatedCount }} 道题，已通过本地校验并完成分值配置。
+        <strong>分析入库与本场赋分已完成。</strong>
+        共 {{ totalQuestionCount || generatedCount }} 道题已写入题库判定点，并完成本场分值配置。
       </p>
       <p
         v-if="terminal && outcome === 'complete' && taxonomyReviewCount > 0"
@@ -705,7 +722,7 @@ watch(
         name="进入评分标准编辑"
         class="config-generation__primary"
         @click="continueToEditor"
-      >进入下一步：检查评分标准</button>
+      >进入下一步：检查本场赋分</button>
 
       <div
         v-if="terminal && outcome === 'partial' && uncertainQuestionIds.length > 0"
@@ -734,7 +751,7 @@ watch(
           本次共 {{ totalQuestionCount }} 道题
           <template v-if="totalBatchCount">，分为 {{ totalBatchCount }} 个批次</template>；
           <strong>失败 {{ failedCount }} 道题</strong>，已成功 {{ generatedCount }} 道题。
-          <template v-if="retryable">已通过批次保存在本机；失败题补齐后才会统一赋分。</template>
+          <template v-if="retryable">已通过批次保存在本机；失败题补齐并完整入库后才会统一赋分。</template>
         </p>
         <fieldset v-if="retryable">
           <legend>选择要重试的失败批次</legend>

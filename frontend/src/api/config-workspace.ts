@@ -54,6 +54,7 @@ export interface ConfigQuestionPreview {
   needs_review: boolean
   question_type_review_required?: boolean
   question_type_review_reason?: string
+  question_type_basis?: string
   local_answer_trusted: boolean
   has_question_asset: boolean
   has_answer_asset: boolean
@@ -259,6 +260,7 @@ function isQuestionPreview(value: unknown): value is ConfigQuestionPreview {
     'rich_content',
     'question_type_review_required',
     'question_type_review_reason',
+    'question_type_basis',
   ])
   if (baseKeys.some((key) => !(key in value))
     || Object.keys(value).some((key) => !allowedKeys.has(key))) return false
@@ -270,6 +272,8 @@ function isQuestionPreview(value: unknown): value is ConfigQuestionPreview {
       || typeof value.question_type_review_required === 'boolean')
     && (value.question_type_review_reason === undefined
       || typeof value.question_type_review_reason === 'string')
+    && (value.question_type_basis === undefined
+      || typeof value.question_type_basis === 'string')
     && typeof value.has_question_asset === 'boolean' && typeof value.has_answer_asset === 'boolean'
     && (value.rich_content === undefined || isRichContent(value.rich_content))
 }

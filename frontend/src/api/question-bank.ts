@@ -48,6 +48,7 @@ export interface QuestionBankListItem {
   typicality: string | null
   reason: string | null
   needs_review: boolean
+  criteria_needs_review: boolean
   has_images: boolean
   needs_image_review: boolean
   created_at: string
@@ -99,6 +100,7 @@ export interface QuestionBankPaper {
   tagged_any_question_count: number
   evidence_question_count: number
   criteria_question_count: number
+  criteria_needs_review_count: number
   complete_analysis_count: number
   source_type: 'docx' | 'pdf' | 'other'
 }
@@ -422,7 +424,7 @@ export interface WholeQuestionClassification {
 }
 
 export interface QuestionSolutionEvidence {
-  schema_version: 'question-solution-evidence-v1'
+  schema_version: 'question-solution-evidence-v1' | 'question-solution-evidence-v2'
   question_id: number
   source_content_hash: string
   parts: SolutionEvidencePart[]
@@ -479,6 +481,7 @@ export interface QuestionBankFilters {
   tagStatus?: QuestionBankTagStatus
   analysisStatus?: QuestionBankAnalysisStatus
   sort?: QuestionBankSort
+  criteriaNeedsReview?: boolean
 }
 
 const QUESTION_LIST_KEYS = [
@@ -493,6 +496,7 @@ const QUESTION_LIST_KEYS = [
   'typicality',
   'reason',
   'needs_review',
+  'criteria_needs_review',
   'has_images',
   'needs_image_review',
   'created_at',
@@ -516,6 +520,10 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   return actual.length === keys.length && keys.every(
     (key) => Object.prototype.hasOwnProperty.call(value, key),
   )
+}
+
+function hasRequiredKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => Object.prototype.hasOwnProperty.call(value, key))
 }
 
 function isNonnegativeInteger(value: unknown): value is number {
@@ -584,6 +592,7 @@ function hasQuestionBankListFields(value: Record<string, unknown>): boolean {
     isNullableString(value.typicality) &&
     isNullableString(value.reason) &&
     typeof value.needs_review === 'boolean' &&
+    typeof value.criteria_needs_review === 'boolean' &&
     typeof value.has_images === 'boolean' &&
     typeof value.needs_image_review === 'boolean' &&
     typeof value.created_at === 'string' &&
@@ -779,6 +788,7 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
       'tagged_any_question_count',
       'evidence_question_count',
       'criteria_question_count',
+      'criteria_needs_review_count',
       'complete_analysis_count',
       'source_type',
     ]) &&
@@ -807,6 +817,8 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
     Number(value.evidence_question_count) <= Number(value.question_count) &&
     isNonnegativeInteger(value.criteria_question_count) &&
     Number(value.criteria_question_count) <= Number(value.question_count) &&
+    isNonnegativeInteger(value.criteria_needs_review_count) &&
+    Number(value.criteria_needs_review_count) <= Number(value.question_count) &&
     isNonnegativeInteger(value.complete_analysis_count) &&
     Number(value.complete_analysis_count) <= Number(value.question_count) &&
     (value.source_type === 'docx' || value.source_type === 'pdf' || value.source_type === 'other')
@@ -1255,14 +1267,14 @@ function isSolutionEvidenceFineTerm(value: unknown): boolean {
 
 function isSolutionEvidencePoint(value: unknown): boolean {
   return isRecord(value)
-    && hasExactKeys(value, [
+    && hasRequiredKeys(value, [
       'evidence_point_id', 'target', 'observable_evidence', 'fine_term_links',
       'equivalent_rules', 'counterexamples',
     ])
     && typeof value.evidence_point_id === 'string' && value.evidence_point_id.length > 0
     && typeof value.target === 'string' && value.target.length > 0
     && typeof value.observable_evidence === 'string' && value.observable_evidence.length > 0
-    && Array.isArray(value.fine_term_links) && value.fine_term_links.length > 0
+    && Array.isArray(value.fine_term_links)
     && value.fine_term_links.every(isSolutionEvidenceFineTerm)
     && isStringArray(value.equivalent_rules) && isStringArray(value.counterexamples)
 }
@@ -1320,7 +1332,8 @@ function isQuestionSolutionEvidence(value: unknown): boolean {
       'auxiliary_rules', 'rationale', 'confidence', 'content_hash', 'version_id',
       'whole_question_classification',
     ])
-    && value.schema_version === 'question-solution-evidence-v1'
+    && ['question-solution-evidence-v1', 'question-solution-evidence-v2']
+      .includes(String(value.schema_version))
     && isPositiveInteger(value.question_id)
     && isHex(value.source_content_hash, 64)
     && Array.isArray(value.parts) && value.parts.length > 0
@@ -1513,6 +1526,9 @@ function questionListPath(filters: QuestionBankFilters): string {
   parameters.set('tag_status', filters.tagStatus ?? 'all')
   parameters.set('analysis_status', filters.analysisStatus ?? 'all')
   parameters.set('sort', filters.sort ?? 'newest')
+  if (filters.criteriaNeedsReview === true) {
+    parameters.set('criteria_needs_review', 'true')
+  }
   return `/api/question-bank/questions?${parameters.toString()}`
 }
 

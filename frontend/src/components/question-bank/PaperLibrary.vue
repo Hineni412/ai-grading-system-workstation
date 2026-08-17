@@ -13,6 +13,13 @@ import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import AppButton from '../design-system/AppButton.vue'
+import {
+  isQuestionBankLibraryJob,
+  jobBelongsToPaper,
+  paperLeftoverLines,
+  paperLiveAnalysisLine,
+  type PaperQuestionRef,
+} from './paper-analysis-status'
 
 const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
@@ -32,6 +39,7 @@ const emit = defineEmits<{
   open: [paper: QuestionBankPaper]
   import: []
   reviewTaxonomy: []
+  reviewCriteria: []
 }>()
 
 const store = useQuestionBankStore()
@@ -56,6 +64,8 @@ const retagMessage = ref('')
 const deleteNotice = ref('')
 const refreshedTerminalJobs = new Set<string>()
 const collapsedFolderKeys = ref(new Set<string>())
+const questionRefs = ref(new Map<number, PaperQuestionRef>())
+const jobPaperLinks = ref(new Map<number, number>())
 const paperDraft = ref({
   title: '',
   year: '',
@@ -86,11 +96,19 @@ const filteredPapers = computed(() => {
       if (sourceType.value && paper.source_type !== sourceType.value) return false
       if (
         progressStatus.value === 'complete' &&
-        paper.complete_analysis_count < paper.question_count
+        (
+          paper.complete_analysis_count < paper.question_count
+          || paper.criteria_needs_review_count > 0
+        )
       ) return false
       if (
         progressStatus.value === 'pending' &&
         paper.complete_analysis_count >= paper.question_count
+        && paper.criteria_needs_review_count === 0
+      ) return false
+      if (
+        progressStatus.value === 'review' &&
+        paper.criteria_needs_review_count === 0
       ) return false
       if (!search) return true
       return [
@@ -189,93 +207,24 @@ const completeQuestions = computed(() => store.papers.reduce(
   (total, paper) => total + paper.complete_analysis_count,
   0,
 ))
-const analysisJobs = computed(() => {
-  const matching = Object.values(jobStore.jobs)
-    .filter((job) => job.job_type === 'question_import' || job.job_type === 'tagging_sync')
-    .sort((left, right) => right.id - left.id)
-  const active = matching.filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
-  const finished = matching.filter((job) => TERMINAL_JOB_STATUSES.has(job.status))
-  return [...active, ...finished.slice(0, 2)]
-})
-
-function analysisJobState(job: JobResponse): string {
-  if (!TERMINAL_JOB_STATUSES.has(job.status)) return job.detail || job.stage || '正在处理'
-  if (job.status === 'cancelled') return '任务已取消；已保存的结果不会被撤销。'
-  if (job.status === 'failed') {
-    return job.job_type === 'question_import'
-      ? '试卷入库失败，请检查文件后重试。'
-      : '分析失败；已保存的结果保留，可补齐未完成项目。'
-  }
-  if (job.job_type === 'question_import') {
-    return '试卷已入库，等待标签与判定点分析。'
-  }
-  const outcome = String(job.result.outcome ?? '')
-  const taxonomyReview = jobResultIdCount(job, 'review_question_ids')
-    || jobResultCount(job, 'review_count')
-  const reviewCount = jobResultCount(job, 'criteria_needs_review_count')
-  const failed = jobResultCount(job, 'failed_count')
-    || jobResultIdCount(job, 'failed_question_ids')
-  const bits = [
-    taxonomyReview > 0 ? `${taxonomyReview} 道题产生了待审核新词` : '',
-    reviewCount > 0 ? `${reviewCount} 道题需要审核` : '',
-    failed > 0 ? `${failed} 道题未完成` : '',
-  ].filter(Boolean)
-  if (outcome === 'complete' && bits.length === 0) {
-    return '标签、解题证据和训练判定点均已完成。'
-  }
-  if (outcome === 'partial' || bits.length > 0) {
-    if (bits.length === 0) return '部分题目已完成，其余项目待补齐或审核。'
-    const suffix = failed > 0
-      ? '已保存的结果保留，可补齐未完成项目。'
-      : '请先审核后再继续补齐标签。'
-    return `${bits.join('；')}。${suffix}`
-  }
-  if (outcome === 'failed') return '任务已结束，但标签或训练判定点没有保存成功。'
-  return '分析任务已结束，请核对标签与判定点状态。'
-}
-
-function jobResultCount(job: JobResponse, key: string): number {
-  const value = Number(job.result[key] ?? 0)
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
-}
-
-function jobResultIdCount(job: JobResponse, key: string): number {
-  const value = job.result[key]
-  return Array.isArray(value) ? new Set(value.map(item => String(item))).size : 0
-}
-
-function analysisJobMetrics(job: JobResponse): string {
-  if (job.job_type === 'question_import') {
-    const count = jobResultCount(job, 'question_count')
-      || jobResultCount(job, 'imported_question_count')
-    return count > 0 ? `已入库 ${count} 道题` : '仅执行本地入库'
-  }
-  const tagged = jobResultCount(job, 'complete_tagged_count')
-  const evidence = jobResultCount(job, 'evidence_count')
-  const criteria = jobResultCount(job, 'criteria_count')
-  const review = jobResultCount(job, 'criteria_needs_review_count')
-  const taxonomyReview = jobResultIdCount(job, 'review_question_ids')
-  const failed = jobResultCount(job, 'failed_count')
-  return [
-    `标签 ${tagged}`,
-    `证据 ${evidence}`,
-    `判定点 ${criteria}`,
-    taxonomyReview > 0 ? `新词待审核 ${taxonomyReview} 道` : '',
-    review > 0 ? `待审核 ${review}` : '',
-    failed > 0 ? `未完成 ${failed}` : '',
-  ].filter(Boolean).join(' · ')
-}
+const reviewQuestions = computed(() => store.papers.reduce(
+  (total, paper) => total + paper.criteria_needs_review_count,
+  0,
+))
+const libraryJobs = computed(() => Object.values(jobStore.jobs)
+  .filter(isQuestionBankLibraryJob)
+  .sort((left, right) => right.id - left.id))
 
 watch(
   () => Object.values(jobStore.jobs)
-    .filter((job) => job.job_type === 'question_import' || job.job_type === 'tagging_sync')
+    .filter(isQuestionBankLibraryJob)
     .map((job) => `${job.id}:${job.status}:${job.updated_at}`)
     .sort()
     .join('|'),
   (signature) => {
     if (!signature) return
     const terminalJob = Object.values(jobStore.jobs).find((job) => (
-      (job.job_type === 'question_import' || job.job_type === 'tagging_sync')
+      isQuestionBankLibraryJob(job)
       && TERMINAL_JOB_STATUSES.has(job.status)
       && !refreshedTerminalJobs.has(`${job.id}:${job.status}:${job.updated_at}`)
     ))
@@ -284,6 +233,98 @@ watch(
     void store.loadPapers()
   },
 )
+
+watch(
+  () => [
+    libraryJobs.value.map((job) => `${job.id}:${job.status}`).join('|'),
+    store.papers.map((paper) => `${paper.id}:${paper.complete_analysis_count}:${paper.criteria_needs_review_count}:${paper.question_count}`).join('|'),
+    [...jobPaperLinks.value.entries()].map(([jobId, paperId]) => `${jobId}:${paperId}`).join('|'),
+  ].join('/'),
+  () => {
+    void refreshQuestionRefs()
+  },
+)
+
+function rememberJobPaper(jobId: number, paperId: number): void {
+  const next = new Map(jobPaperLinks.value)
+  next.set(jobId, paperId)
+  jobPaperLinks.value = next
+}
+
+async function refreshQuestionRefs(): Promise<void> {
+  if (libraryJobs.value.length === 0) return
+  const linkedPaperIds = [...jobPaperLinks.value.values()]
+  const paperIds = [...new Set(
+    store.papers
+      .filter((paper) => (
+        paper.question_count > 0
+        && (
+          paper.complete_analysis_count < paper.question_count
+          || paper.criteria_needs_review_count > 0
+          || linkedPaperIds.includes(paper.id)
+        )
+      ))
+      .map((paper) => paper.id),
+  )]
+  if (paperIds.length === 0) return
+  const next = new Map<number, PaperQuestionRef>()
+  let page = 1
+  try {
+    while (true) {
+      const result = await questionBankApi.listQuestions({
+        page,
+        pageSize: 100,
+        paperIds,
+        sort: 'paper_order',
+      })
+      for (const item of result.items) {
+        if (item.paper_id) {
+          next.set(item.id, {
+            id: item.id,
+            paperId: item.paper_id,
+            number: item.question_number,
+          })
+        }
+      }
+      if (page >= result.total_pages) break
+      page += 1
+    }
+    questionRefs.value = next
+  } catch {
+    // Keep the last successful mapping; leftover copy can still use counts.
+  }
+}
+
+function analysisJobForPaper(paper: QuestionBankPaper): JobResponse | undefined {
+  const matching = libraryJobs.value.filter((job) => jobBelongsToPaper(
+    job,
+    paper.id,
+    questionRefs.value,
+    jobPaperLinks.value.get(job.id),
+  ))
+  return matching.find((job) => !TERMINAL_JOB_STATUSES.has(job.status))
+    ?? matching.find((job) => TERMINAL_JOB_STATUSES.has(job.status))
+}
+
+function liveAnalysisLine(paper: QuestionBankPaper): string {
+  const current = analysisJobForPaper(paper)
+  if (!current || TERMINAL_JOB_STATUSES.has(current.status)) return ''
+  return paperLiveAnalysisLine(current)
+}
+
+function leftoverLines(paper: QuestionBankPaper): string[] {
+  const current = analysisJobForPaper(paper)
+  const lines = current
+    ? paperLeftoverLines(current, questionRefs.value, paper.id)
+    : []
+  if (
+    paper.criteria_needs_review_count > 0
+    && !lines.some((line) => line.includes('判定点待您审核'))
+  ) {
+    lines.push(`${paper.criteria_needs_review_count} 道题判定点待您审核`)
+  }
+  return lines
+}
 
 function uniqueValues(values: Array<string | null>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value?.trim())))]
@@ -380,7 +421,7 @@ function requestTokenFor(storageKey: string): string {
 
 async function submitTaggingBatches(
   questionIds: number[],
-  options: { forceRetag: boolean; scope: string; volumeId: string },
+  options: { forceRetag: boolean; scope: string; volumeId: string; paperId?: number },
 ): Promise<number> {
   let jobs = 0
   for (let index = 0; index < questionIds.length; index += 500) {
@@ -392,6 +433,7 @@ async function submitTaggingBatches(
       batch, options.volumeId, undefined, undefined, options.forceRetag, requestToken,
     )
     jobStore.track(job)
+    if (options.paperId) rememberJobPaper(job.id, options.paperId)
     window.localStorage.removeItem(storageKey)
     jobs += 1
   }
@@ -420,6 +462,7 @@ async function retagPaper(paper: QuestionBankPaper): Promise<void> {
       forceRetag: true,
       scope: `paper-${paper.id}-retag`,
       volumeId: paper.curriculum_volume_id,
+      paperId: paper.id,
     })
     retagMessage.value = `已提交 ${ids.length} 道题，共 ${count} 个重新标注任务。`
   } catch {
@@ -449,12 +492,13 @@ async function fillPaperTags(paper: QuestionBankPaper): Promise<void> {
       return
     }
     if (!window.confirm(
-      `将核对“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，只补齐缺失、失败或已过期的标签、解题证据和训练判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。确认继续吗？`,
+      `将核对“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，只补齐缺失、失败或已过期的标签和判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。确认继续吗？`,
     )) return
     const count = await submitTaggingBatches(ids, {
       forceRetag: false,
       scope: `paper-${paper.id}-fill`,
       volumeId: paper.curriculum_volume_id,
+      paperId: paper.id,
     })
     retagMessage.value = `已提交 ${ids.length} 道题等待后端核对，共 ${count} 个任务；只会补齐缺失、失败或已过期的内容。`
   } catch {
@@ -510,7 +554,7 @@ async function fillAllTags(): Promise<void> {
       return
     }
     if (!window.confirm(
-      `将核对题库中的 ${total} 道题，只补齐缺失、失败或已过期的标签、解题证据和训练判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。确认继续吗？`,
+      `将核对题库中的 ${total} 道题，只补齐缺失、失败或已过期的标签和判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。确认继续吗？`,
     )) return
     let count = 0
     for (const { volumeId, ids } of scopes) {
@@ -684,6 +728,14 @@ async function confirmPermanentDelete(): Promise<void> {
         <span><strong>{{ store.papers.length }}</strong> 份试卷</span>
         <span><strong>{{ totalQuestions }}</strong> 道题</span>
         <span><strong>{{ completeQuestions }}</strong> 道联合分析完整</span>
+        <button
+          type="button"
+          class="paper-button is-review"
+          @click="emit('reviewCriteria')"
+        >
+          判定点待审核
+          <strong>{{ reviewQuestions }}</strong>
+        </button>
         <AppButton
           variant="secondary"
           :disabled="retagAllBusy || retagBusyPaperId !== null"
@@ -710,31 +762,6 @@ async function confirmPermanentDelete(): Promise<void> {
 
     <p v-if="retagMessage" class="paper-library__notice" role="status">{{ retagMessage }}</p>
     <p v-if="deleteNotice" class="paper-library__notice" role="status">{{ deleteNotice }}</p>
-
-    <section v-if="analysisJobs.length" class="paper-library__task-strip" aria-live="polite">
-      <div class="paper-library__task-strip-heading">
-        <strong>AI 解析进度</strong>
-        <span>自动刷新</span>
-      </div>
-      <div
-        v-for="job in analysisJobs"
-        :key="job.id"
-        class="paper-library__task"
-        :class="{ 'is-failed': job.status === 'failed' || job.result.outcome === 'failed' }"
-      >
-        <div class="paper-library__task-main">
-          <strong>{{ job.job_type === 'question_import' ? '试卷入库' : '标签与训练点补齐' }} #{{ job.id }}</strong>
-          <span>{{ analysisJobState(job) }}</span>
-        </div>
-        <div class="paper-library__task-progress">
-          <progress :value="Math.round(job.progress * 100)" max="100">
-            {{ Math.round(job.progress * 100) }}%
-          </progress>
-          <span>{{ Math.round(job.progress * 100) }}%</span>
-        </div>
-        <span class="paper-library__task-metrics">{{ analysisJobMetrics(job) }}</span>
-      </div>
-    </section>
 
     <div class="paper-library__filters">
       <label class="paper-search">
@@ -770,6 +797,7 @@ async function confirmPermanentDelete(): Promise<void> {
           <option value="">全部进度</option>
           <option value="complete">已完成</option>
           <option value="pending">待完善</option>
+          <option value="review">判定点待审核</option>
         </select>
       </label>
       <AppButton variant="ghost" @click="resetFilters">清除</AppButton>
@@ -832,6 +860,9 @@ async function confirmPermanentDelete(): Promise<void> {
             <span>联合分析完整度</span>
             <strong>{{ paper.complete_analysis_count }} / {{ paper.question_count }} 道</strong>
           </div>
+          <p v-if="liveAnalysisLine(paper)" class="paper-card__live" role="status">
+            {{ liveAnalysisLine(paper) }}
+          </p>
           <div
             class="paper-card__progress"
             role="progressbar"
@@ -845,9 +876,14 @@ async function confirmPermanentDelete(): Promise<void> {
           <p class="paper-card__progress-note">
             {{ progressFor(paper) }}% 完整
             · 标签 {{ paper.tagged_question_count }}/{{ paper.question_count }}
-            · 解题证据 {{ paper.evidence_question_count }}/{{ paper.question_count }}
-            · 训练判定点 {{ paper.criteria_question_count }}/{{ paper.question_count }}
+            · 判定点 {{ paper.criteria_question_count }}/{{ paper.question_count }}
+            <template v-if="paper.criteria_needs_review_count">
+              · 待审核判定点 {{ paper.criteria_needs_review_count }}
+            </template>
           </p>
+          <ul v-if="leftoverLines(paper).length" class="paper-card__leftovers">
+            <li v-for="line in leftoverLines(paper)" :key="line">{{ line }}</li>
+          </ul>
           <footer>
             <span>更新于 {{ formatDate(paper.updated_at) }}</span>
             <div class="paper-card__actions">
@@ -1417,6 +1453,23 @@ async function confirmPermanentDelete(): Promise<void> {
   margin: 6px 0 0;
 }
 
+.paper-card__live {
+  color: var(--color-accent);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 8px 0 0;
+}
+
+.paper-card__leftovers {
+  color: var(--color-warning);
+  display: grid;
+  font-size: 12px;
+  gap: 2px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
 .paper-card footer {
   align-items: center;
   border-top: 1px solid var(--border);
@@ -1559,85 +1612,6 @@ async function confirmPermanentDelete(): Promise<void> {
   background: var(--color-accent-subtle);
   color: var(--color-text-secondary);
   font-size: 13px;
-}
-
-.paper-library__task-strip {
-  display: grid;
-  gap: 7px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
-  border-radius: var(--radius-panel);
-  background: var(--color-accent-subtle);
-}
-
-.paper-library__task-strip-heading,
-.paper-library__task {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 12px;
-}
-
-.paper-library__task-strip-heading {
-  justify-content: space-between;
-}
-
-.paper-library__task-strip-heading span,
-.paper-library__task-main span {
-  color: var(--color-text-secondary);
-  font-size: 12px;
-}
-
-.paper-library__task-main {
-  display: grid;
-  flex: 1 1 300px;
-  min-width: 220px;
-  gap: 2px;
-}
-
-.paper-library__task-progress {
-  display: flex;
-  flex: 0 1 340px;
-  align-items: center;
-  gap: 8px;
-}
-
-.paper-library__task-progress progress {
-  width: min(280px, 28vw);
-  height: 8px;
-  accent-color: var(--color-accent);
-}
-
-.paper-library__task-progress span,
-.paper-library__task-metrics {
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.paper-library__task.is-failed {
-  margin-inline: -6px;
-  padding: 8px 6px;
-  border-inline-start: 4px solid var(--color-warning);
-  border-radius: 8px;
-  background: var(--color-warning-subtle);
-}
-
-@media (max-width: 620px) {
-  .paper-library__task-strip-heading,
-  .paper-library__task {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .paper-library__task-progress,
-  .paper-library__task-progress progress {
-    width: 100%;
-  }
-
-  .paper-library__task-metrics {
-    white-space: normal;
-  }
 }
 
 .paper-editor-layer {

@@ -27,6 +27,7 @@ DIAGNOSTIC_MAX_FILE_BYTES = 32 * 1024 * 1024
 DIAGNOSTIC_ROTATED_FILE_COUNT = 3
 DIAGNOSTIC_MAX_EVENT_BYTES = 1024 * 1024
 _MAX_READ_EVENTS = 10_000
+_HEAVY_EVENT_KEYS = ("request", "raw_response", "parsed_result")
 _SECRET_KEYS = frozenset(
     {
         "apikey",
@@ -587,6 +588,13 @@ class _WorkspaceDiagnosticSink:
         )
 
 
+def _line_mentions_call_id(line: str, call_id: str) -> bool:
+    return (
+        f'"call_id":"{call_id}"' in line
+        or f'"call_id": "{call_id}"' in line
+    )
+
+
 class JsonlDiagnosticJournal:
     def __init__(self, path: str | Path = DIAGNOSTIC_LOG_FILE) -> None:
         self.path = Path(path)
@@ -840,7 +848,9 @@ class JsonlDiagnosticJournal:
         workspace_module: str = "",
         workspace_task_kind: str = "",
     ) -> dict[str, object]:
-        calls, scanned_event_count, read_truncated = self._merged_calls()
+        calls, scanned_event_count, read_truncated = self._merged_calls(
+            include_bodies=False,
+        )
         normalized_kind = str(request_kind or "").strip()
         normalized_outcome = str(outcome or "").strip()
         normalized_module = _safe_workspace_label(workspace_module)
@@ -886,7 +896,10 @@ class JsonlDiagnosticJournal:
         safe_call_id = str(call_id or "").strip()
         if not re.fullmatch(r"[0-9a-f]{24}", safe_call_id):
             return None
-        calls, _, _ = self._merged_calls()
+        calls, _, _ = self._merged_calls(
+            include_bodies=True,
+            only_call_id=safe_call_id,
+        )
         call = calls.get(safe_call_id)
         if call is None:
             return None
@@ -944,9 +957,13 @@ class JsonlDiagnosticJournal:
 
     def _merged_calls(
         self,
+        *,
+        include_bodies: bool = True,
+        only_call_id: str | None = None,
     ) -> tuple[dict[str, dict[str, Any]], int, bool]:
         recent: deque[dict[str, Any]] = deque(maxlen=_MAX_READ_EVENTS)
         scanned = 0
+        target_call_id = str(only_call_id or "").strip()
         with _path_lock(self.path):
             try:
                 for path in self._read_paths():
@@ -955,6 +972,14 @@ class JsonlDiagnosticJournal:
                     with path.open("r", encoding="utf-8") as handle:
                         for line in handle:
                             scanned += 1
+                            if (
+                                target_call_id
+                                and not _line_mentions_call_id(
+                                    line,
+                                    target_call_id,
+                                )
+                            ):
+                                continue
                             try:
                                 record = json.loads(line)
                             except (
@@ -962,14 +987,20 @@ class JsonlDiagnosticJournal:
                                 UnicodeDecodeError,
                             ):
                                 continue
-                            if isinstance(record, dict):
-                                recent.append(record)
+                            if not isinstance(record, dict):
+                                continue
+                            if not include_bodies:
+                                for key in _HEAVY_EVENT_KEYS:
+                                    record.pop(key, None)
+                            recent.append(record)
             except OSError:
                 return {}, 0, False
         calls: dict[str, dict[str, Any]] = {}
         for event in recent:
             call_id = str(event.get("call_id") or "")
             if not re.fullmatch(r"[0-9a-f]{24}", call_id):
+                continue
+            if target_call_id and call_id != target_call_id:
                 continue
             current = calls.setdefault(
                 call_id,
@@ -1011,11 +1042,10 @@ class JsonlDiagnosticJournal:
                 current["started_at_utc"] = str(
                     event.get("timestamp_utc") or ""
                 )
-                current["request"] = event.get("request") or {}
-                current["attachments"] = event.get("attachments") or []
+                attachments = event.get("attachments") or []
                 current["image_count"] = (
-                    len(current["attachments"])
-                    if isinstance(current["attachments"], list)
+                    len(attachments)
+                    if isinstance(attachments, list)
                     else 0
                 )
                 current["retry_limit"] = max(
@@ -1026,6 +1056,9 @@ class JsonlDiagnosticJournal:
                     0,
                     int(event.get("retry_index") or 0),
                 )
+                if include_bodies:
+                    current["request"] = event.get("request") or {}
+                    current["attachments"] = attachments
             elif event_type in {"response", "failure"}:
                 current["finished_at_utc"] = str(
                     event.get("timestamp_utc") or ""
@@ -1035,16 +1068,17 @@ class JsonlDiagnosticJournal:
                     "elapsed_ms",
                     "will_retry",
                     "retry_delay_ms",
-                    "raw_response",
                     "response_chars",
                     "response_sha256",
                     "parse_status",
                     "parse_operations",
                     "parse_error",
-                    "parsed_result",
                     "error",
                 ):
                     current[key] = event.get(key)
+                if include_bodies:
+                    current["raw_response"] = event.get("raw_response")
+                    current["parsed_result"] = event.get("parsed_result")
             elif event_type == "validation":
                 codes = event.get("validation_issue_codes")
                 if isinstance(codes, list):
@@ -1055,8 +1089,10 @@ class JsonlDiagnosticJournal:
 
     @staticmethod
     def _summary(call: Mapping[str, object]) -> dict[str, object]:
+        image_count = max(0, int(call.get("image_count") or 0))
         attachments = call.get("attachments")
-        image_count = len(attachments) if isinstance(attachments, list) else 0
+        if isinstance(attachments, list) and attachments:
+            image_count = len(attachments)
         return {
             "call_id": str(call.get("call_id") or ""),
             "operation_id": str(call.get("operation_id") or ""),

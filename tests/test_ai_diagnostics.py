@@ -353,3 +353,27 @@ def test_ai_diagnostics_api_filters_and_clears_only_class_teacher_calls(
         "/api/ai-diagnostics",
         params={"workspace_module": "teaching_prep"},
     ).json()["matching"] == 1
+
+
+def test_diagnostic_list_omits_request_bodies_while_detail_keeps_them(
+    tmp_path: Path,
+) -> None:
+    journal = JsonlDiagnosticJournal(tmp_path / "logs" / "llm_diagnostics.jsonl")
+    huge_text = "甲" * 20_000
+    call_id = _record_workspace_call(
+        journal,
+        operation_id="synthetic-large-diagnostic",
+        module="teaching_prep",
+        task_kind="lesson_plan",
+        request_text=huge_text,
+        response_text='{"plan":"合成备课响应正文"}',
+    )
+
+    listed = journal.list_calls(limit=10, workspace_module="teaching_prep")
+    assert listed["returned"] == 1
+    assert "request" not in listed["items"][0]
+    assert "raw_response" not in listed["items"][0]
+    detail = journal.get_call(call_id)
+    assert detail is not None
+    assert huge_text in str(detail["request"])
+    assert detail["raw_response"] == '{"plan":"合成备课响应正文"}'

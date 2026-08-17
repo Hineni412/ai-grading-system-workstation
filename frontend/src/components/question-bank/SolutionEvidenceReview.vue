@@ -10,11 +10,13 @@ import StatusBadge, { type StatusTone } from '../design-system/StatusBadge.vue'
 
 const props = withDefaults(defineProps<{
   questionId: number
+  embedded?: boolean
   loader?: (
     questionId: number,
     signal?: AbortSignal,
   ) => Promise<QuestionSolutionEvidenceResponse>
 }>(), {
+  embedded: false,
   loader: (questionId: number, signal?: AbortSignal) => (
     questionBankApi.getSolutionEvidence(questionId, signal)
   ),
@@ -62,7 +64,9 @@ async function load(): Promise<void> {
     state.value = 'ready'
   } catch (reason) {
     if (controller.signal.aborted) return
-    error.value = reason instanceof Error ? reason.message : '解题证据暂时无法读取'
+    error.value = props.embedded
+      ? '知识细项暂时无法展示，不影响判定点核对。'
+      : reason instanceof Error ? reason.message : '知识细项暂时无法读取'
     state.value = 'error'
   }
 }
@@ -72,11 +76,16 @@ onBeforeUnmount(() => controller?.abort())
 </script>
 
 <template>
-  <section class="solution-evidence" aria-labelledby="solution-evidence-title">
-    <header class="solution-evidence__heading">
+  <section
+    v-if="!embedded || evidence || state === 'error'"
+    class="solution-evidence"
+    :class="{ 'is-embedded': embedded }"
+    :aria-labelledby="embedded ? undefined : 'solution-evidence-title'"
+    :aria-label="embedded ? '知识细项与图谱映射' : undefined"
+  >
+    <header v-if="!embedded" class="solution-evidence__heading">
       <div>
-        <p class="qb-eyebrow">SOLUTION EVIDENCE</p>
-        <h3 id="solution-evidence-title">拆分点、精细词条与图谱映射</h3>
+        <h3 id="solution-evidence-title">知识细项与图谱映射</h3>
       </div>
       <StatusBadge
         v-if="response?.available"
@@ -86,17 +95,30 @@ onBeforeUnmount(() => controller?.abort())
       />
     </header>
 
-    <p v-if="state === 'loading'" class="solution-evidence__empty" role="status">
-      正在读取按小问拆分的解题证据…
+    <p v-if="state === 'loading' && !embedded" class="solution-evidence__empty" role="status">
+      正在读取知识细项与图谱映射…
     </p>
     <div v-else-if="state === 'error'" class="solution-evidence__empty" role="alert">
       <span>{{ error }}</span>
       <button type="button" class="qb-link" @click="load">重新读取</button>
     </div>
-    <p v-else-if="!evidence" class="solution-evidence__empty">
-      这道题还没有拆分点证据。完成新版题目分析后，这里会按“小问 → 踩分点 → 精细词条 → 核心图谱”展示。
+    <p v-else-if="!evidence && !embedded" class="solution-evidence__empty">
+      这道题还没有知识细项映射。完成题目分析后，这里会按“小问 → 判定点 → 精细词条 → 核心图谱”展示。
     </p>
-    <template v-else>
+    <component
+      v-else-if="evidence"
+      :is="embedded ? 'details' : 'div'"
+      class="solution-evidence__body"
+    >
+      <summary v-if="embedded" id="solution-evidence-embed-title">
+        知识细项与图谱映射
+        <StatusBadge
+          v-if="response?.available"
+          class="solution-evidence__status"
+          :tone="statusTone(response.status)"
+          :label="statusCopy(response.status)"
+        />
+      </summary>
       <p class="solution-evidence__help">
         “直接考查”用于掌握度统计；“支撑前置”只说明解题依赖，默认不计入本题掌握度。
       </p>
@@ -159,12 +181,26 @@ onBeforeUnmount(() => controller?.abort())
           </div>
         </dl>
       </details>
-    </template>
+    </component>
   </section>
 </template>
 
 <style scoped>
 .solution-evidence { display: grid; gap: var(--space-3); padding: var(--space-4); border-block: var(--border-width) solid var(--border); }
+.solution-evidence.is-embedded {
+  padding: var(--space-3) 0 0;
+  border-block: 0;
+  border-block-start: var(--border-width) solid var(--color-border-subtle);
+}
+.solution-evidence.is-embedded summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  font-weight: var(--font-weight-medium);
+  gap: var(--space-2);
+}
+.solution-evidence__body { display: grid; gap: var(--space-3); }
 .solution-evidence__heading { display: flex; align-items: start; justify-content: space-between; gap: var(--space-3); }
 .solution-evidence__heading h3,
 .solution-evidence__heading p,

@@ -930,6 +930,7 @@ class TrainingAssessmentModule:
             raise AssessmentInputInvalid(
                 "frozen criterion payload is missing"
             )
+        _reject_nested_score_fields(criteria)
         raw_points = criteria.get("points")
         if not isinstance(raw_points, list) or not raw_points:
             raise AssessmentInputInvalid(
@@ -946,19 +947,6 @@ class TrainingAssessmentModule:
             if not point_id or point_id in point_ids:
                 raise AssessmentInputInvalid(
                     "frozen criterion point identity is invalid"
-                )
-            if any(
-                field in raw
-                for field in (
-                    "score",
-                    "max_score",
-                    "points_awarded",
-                    "weight",
-                    "point_value",
-                )
-            ):
-                raise AssessmentInputInvalid(
-                    "frozen training criterion contains a score field"
                 )
             point_ids.add(point_id)
             points.append(_safe_model_mapping(raw))
@@ -2065,6 +2053,35 @@ def _image_type(content: bytes) -> str:
     if content.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
     raise AssessmentInputInvalid("submission page is not a PNG or JPEG")
+
+
+_FROZEN_SCORE_KEYS = frozenset(
+    {
+        "score",
+        "max_score",
+        "min_score",
+        "step_score",
+        "total_score",
+        "points_awarded",
+        "score_awarded",
+        "full_score",
+        "weight",
+        "point_value",
+    }
+)
+
+
+def _reject_nested_score_fields(value: object) -> None:
+    if isinstance(value, Mapping):
+        for raw_key, child in value.items():
+            if str(raw_key).strip().casefold() in _FROZEN_SCORE_KEYS:
+                raise AssessmentInputInvalid(
+                    "frozen training criterion contains a score field"
+                )
+            _reject_nested_score_fields(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _reject_nested_score_fields(child)
 
 
 def _safe_model_mapping(value: Mapping[str, Any]) -> dict[str, Any]:

@@ -201,6 +201,30 @@ const questionTypeLabels: Record<QuestionType, string> = {
   comprehensive: '综合解答题',
 }
 
+function knownQuestionTypeLabel(questionType: string): string | null {
+  if (questionType === 'single_choice' || questionType === 'multi_choice') {
+    return questionTypeLabels.choice
+  }
+  if ((QUESTION_TYPES as readonly string[]).includes(questionType)) {
+    return questionTypeLabels[questionType as QuestionType]
+  }
+  return null
+}
+
+function localTypeNote(question: ConfigQuestionPreview): string {
+  const confirmed = decisionFor(question.question_id)?.question_type
+  if (confirmed) {
+    const confirmedLabel = knownQuestionTypeLabel(confirmed)
+    return confirmedLabel ? `您已确认为${confirmedLabel}` : ''
+  }
+  const label = knownQuestionTypeLabel(question.question_type)
+  if (!label) return ''
+  const basis = question.question_type_basis?.trim()
+  return basis
+    ? `本地判为${label}（${basis} · 未经您确认）`
+    : `本地判为${label}（未经您确认）`
+}
+
 function decisionFor(questionId: string): QuestionDecision | undefined {
   return props.decisions.find((item) => item.question_id === questionId)
 }
@@ -249,7 +273,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
     <header class="config-section-heading">
       <div>
         <h2 id="question-review-title">核对拆题结果</h2>
-        <p>题目与答案摘要并排呈现，完整解析可从右侧打开；只有题面和解析冲突时才需要确认题型。</p>
+        <p>题目与答案摘要并排呈现，完整解析可从右侧打开。每题会显示本地判型；拿不准时会出现黄条，请您确认。未确认前不会当作最终题型。</p>
       </div>
       <span v-if="source.questions.length" class="question-review__count">
         共 {{ source.questions.length }} 题
@@ -290,6 +314,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
           </div>
           <span v-if="question.needs_review" class="question-review__warning">建议留意预览</span>
         </header>
+        <p v-if="localTypeNote(question)" class="question-review__local-type">{{ localTypeNote(question) }}</p>
 
         <label v-if="question.question_type_review_required" class="question-review__type-check">
           <span><strong>题型建议（可选修改）</strong>{{ question.question_type_review_reason || '题面形式与解析内容存在冲突。' }} 不修改时将沿用系统建议，不会阻塞 AI 生成。</span>
@@ -317,7 +342,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
                 dense
               />
             </div>
-            <div v-if="placedAssets(question.question_id, 'question').length" class="question-review__image-well" :aria-label="`${question.question_id} 题目图片放置区`">
+            <div v-if="placedAssets(question.question_id, 'question').length" class="question-review__image-well" :data-image-count="placedAssets(question.question_id, 'question').length" :aria-label="`${question.question_id} 题目图片放置区`">
               <div
                 v-for="(asset, index) in placedAssets(question.question_id, 'question')"
                 :key="asset.asset_id"
@@ -365,7 +390,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
             >
               <span aria-hidden="true">⋯</span> 查看完整答案
             </button>
-            <div v-if="placedAssets(question.question_id, 'answer').length" class="question-review__image-well" :aria-label="`${question.question_id} 答案图片放置区`">
+            <div v-if="placedAssets(question.question_id, 'answer').length" class="question-review__image-well" :data-image-count="placedAssets(question.question_id, 'answer').length" :aria-label="`${question.question_id} 答案图片放置区`">
               <div
                 v-for="(asset, index) in placedAssets(question.question_id, 'answer')"
                 :key="asset.asset_id"
@@ -524,6 +549,11 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   align-items: center;
   gap: var(--space-2);
 }
+.question-review__local-type {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
 .question-review__type-check { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 240px); align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-inline-start: 4px solid var(--color-warning); background: var(--color-warning-subtle); }
 .question-review__type-check > span { display: grid; gap: 2px; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
 .question-review__type-check strong { color: var(--color-warning); }
@@ -547,17 +577,25 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   align-content: start;
   gap: var(--space-3);
   min-width: 0;
+  overflow: visible;
   padding: var(--space-4);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--card);
 }
 
+.question-review__paper-panel > [data-question-content] {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .question-review__paper-panel--answer { background: var(--secondary); }
 
 .question-review__answer-preview {
   position: relative;
+  min-width: 0;
   min-height: 0;
+  max-width: 100%;
   max-height: 7.2em;
   overflow: hidden;
 }
@@ -632,6 +670,16 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   background: var(--secondary);
 }
 
+.question-review__image-well[data-image-count="3"],
+.question-review__image-well[data-image-count="4"] {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.question-review__image-well[data-image-count="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .question-review__placed-asset {
   position: relative;
   display: grid;
@@ -640,11 +688,24 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   padding: var(--space-1);
 }
 
+.question-review__image-well[data-image-count="3"] .question-review__placed-asset,
+.question-review__image-well[data-image-count="4"] .question-review__placed-asset {
+  min-width: 0;
+  width: auto;
+}
+
 .question-review__placed-asset > img {
   max-width: min(100%, 240px);
   max-height: 180px;
   object-fit: contain;
   cursor: grab;
+}
+
+.question-review__image-well[data-image-count="3"] .question-review__placed-asset > img,
+.question-review__image-well[data-image-count="4"] .question-review__placed-asset > img {
+  max-height: 96px;
+  max-width: 100%;
+  width: 100%;
 }
 
 .question-review__placed-asset.is-ignored,
@@ -710,5 +771,11 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   .question-review__pair { grid-template-columns: minmax(0, 1fr); }
   .question-review__asset-between { grid-template-columns: 64px minmax(0, 1fr); }
   .question-review__asset-between img { width: 64px; height: 56px; }
+}
+
+@media (max-width: 520px) {
+  .question-review__image-well[data-image-count="4"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { WorkspaceAITask } from './contracts'
-import { jobTitle, returnLocation } from './taskPresentation'
+import { jobDetailLine, jobTitle, returnLocation } from './taskPresentation'
 
 function task(destination: string): WorkspaceAITask {
   return {
@@ -26,8 +26,22 @@ describe('job presentation', () => {
       created_at: '', started_at: null, updated_at: '', finished_at: null,
     }
     expect(jobTitle({ ...base, job_type: 'question_bank_sync' })).toBe('题库同步')
+    expect(jobTitle({ ...base, job_type: 'tagging_sync' })).toBe('题库分析')
     expect(jobTitle({ ...base, job_type: 'teaching_prep.semester_mapping' })).toBe('整理学期资料')
     expect(jobTitle({ ...base, job_type: 'unknown_kind' })).toBe('后台任务')
+    expect(jobDetailLine({
+      ...base,
+      job_type: 'tagging_sync',
+      progress: 1,
+      status: 'running',
+      detail: 'AI 分析已处理 5/20 道题',
+    })).toBe('题库分析进行中，点这里回到试卷库')
+    expect(jobDetailLine({
+      ...base,
+      job_type: 'grading_run',
+      progress: 0.35,
+      detail: '正在批改',
+    })).toBe('35% · 正在批改')
   })
 })
 

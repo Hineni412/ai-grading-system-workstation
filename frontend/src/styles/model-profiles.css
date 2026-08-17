@@ -862,6 +862,11 @@
   list-style: none;
 }
 
+.ai-diagnostics-ledger li {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 88px;
+}
+
 .ai-diagnostics-ledger li + li {
   margin-block-start: var(--space-1);
 }
@@ -1085,6 +1090,25 @@
   line-height: var(--line-height-relaxed);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+  contain: content;
+}
+
+.ai-diagnostic-panel__notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ai-diagnostic-panel__expand {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .ai-diagnostic-panel__error {
@@ -1197,6 +1221,9 @@
   gap: var(--space-3);
   padding: var(--space-3);
   background: var(--color-bg-surface);
+}
+.model-task-row--batch {
+  grid-template-columns: minmax(210px, 1.1fr) minmax(140px, .7fr) minmax(150px, .85fr) minmax(170px, .95fr);
 }
 .model-task-row__title { display: grid; gap: 2px; }
 .model-task-row__title small { color: var(--color-text-secondary); }
