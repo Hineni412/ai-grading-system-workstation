@@ -26,6 +26,8 @@ MODEL_TASK_KEYS = (
     "teaching_prep",
     "class_teacher",
 )
+_TASK_BINDING_REQUIRED_KEYS = frozenset({"profile_name", "model"})
+_TASK_BINDING_IGNORED_KEYS = frozenset({"batch_model"})
 logger = logging.getLogger(__name__)
 
 
@@ -166,12 +168,20 @@ def _validated_task_bindings(data: Any) -> dict[str, dict[str, str]]:
     if not isinstance(data, dict) or set(data) - set(MODEL_TASK_KEYS):
         raise ValueError("Model task bindings are invalid")
     normalized: dict[str, dict[str, str]] = {}
+    allowed_keys = _TASK_BINDING_REQUIRED_KEYS | _TASK_BINDING_IGNORED_KEYS
     for task, value in data.items():
-        if not isinstance(value, dict) or set(value) != {"profile_name", "model"}:
+        if (
+            not isinstance(value, dict)
+            or not _TASK_BINDING_REQUIRED_KEYS <= set(value)
+            or set(value) - allowed_keys
+        ):
             raise ValueError("Model task binding is invalid")
         profile_name = str(value.get("profile_name") or "").strip()
         model = str(value.get("model") or "").strip()
         if not profile_name or len(profile_name) > 80 or not model or len(model) > 200:
+            raise ValueError("Model task binding is invalid")
+        leftover_batch_model = str(value.get("batch_model") or "").strip()
+        if len(leftover_batch_model) > 200:
             raise ValueError("Model task binding is invalid")
         normalized[str(task)] = {
             "profile_name": profile_name,
@@ -253,7 +263,10 @@ class ApiProfileStore:
                 "config_model": model,
             })
         elif task == "grading":
-            result.update({"ocr_model": model, "grading_model": model})
+            result.update({
+                "ocr_model": model,
+                "grading_model": model,
+            })
         elif task == "teaching_prep":
             result.update({
                 "config_base_url": result.get("base_url"),

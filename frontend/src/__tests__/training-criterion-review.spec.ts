@@ -7,6 +7,7 @@ import {
   type TrainingCriterionVersion,
   type TrainingCriterionWorkspace,
 } from '../api/question-bank-criteria'
+import { questionBankApi } from '../api/question-bank'
 import TrainingCriterionReview from '../components/question-bank/TrainingCriterionReview.vue'
 
 const version: TrainingCriterionVersion = {
@@ -71,6 +72,15 @@ afterEach(() => {
 })
 
 async function mountReview(): Promise<HTMLElement> {
+  if (!vi.isMockFunction(questionBankApi.getSolutionEvidence)) {
+    vi.spyOn(questionBankApi, 'getSolutionEvidence').mockResolvedValue({
+      question_id: 17,
+      available: false,
+      evidence_version_id: null,
+      status: null,
+      evidence: null,
+    })
+  }
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp(TrainingCriterionReview, { questionId: 17 })
@@ -92,11 +102,48 @@ describe('training criterion review', () => {
     })).toThrow()
   })
 
+  it('accepts judgment points written by exam and question-bank paper ingest', () => {
+    const ingested = {
+      ...version,
+      schema_version: 'judgment-points-v1',
+      source_kind: 'combined_model' as const,
+      criteria: {
+        ...version.criteria,
+        schema_version: 'judgment-points-v1' as const,
+        points: [{
+          ...version.criteria.points[0]!,
+          depends_on: [],
+        }],
+        solution_evidence: {
+          schema_version: 'question-solution-evidence-v2',
+          question_id: 17,
+          parts: [{
+            part_id: 'part-1',
+            evidence_points: [{
+              evidence_point_id: 'p-process',
+              target: '建立方程',
+              observable_evidence: '列出正确等量关系',
+            }],
+          }],
+        },
+      },
+    }
+    const payload = workspace(ingested)
+
+    expect(decodeTrainingCriterionWorkspace(payload).current_version?.criteria.schema_version)
+      .toBe('judgment-points-v1')
+    expect(decodeTrainingCriterionWorkspace(payload).current_version?.criteria.points[0]?.target)
+      .toBe('建立方程')
+  })
+
   it('shows why approval is blocked and saves edits as a new version', async () => {
     const blocked = {
       ...version,
       quality_status: 'failed' as const,
-      quality_codes: ['calculation_process_missing'],
+      quality_codes: [
+        'calculation_process_missing',
+        'teacher_visible_language_not_zh',
+      ],
     }
     vi.spyOn(questionBankCriteriaApi, 'getWorkspace').mockResolvedValue(
       workspace(blocked),
@@ -106,7 +153,11 @@ describe('training criterion review', () => {
     )
     const host = await mountReview()
 
+    expect(host.querySelector('#criterion-review-title')?.textContent).toBe('判定点')
     expect(host.textContent).toContain('计算题不能只保留最终答案')
+    expect(host.textContent).toContain('老师能直接看懂的中文')
+    expect(host.textContent).not.toContain('TRAINING EVIDENCE')
+    expect(host.textContent).not.toContain('解题证据')
     const approve = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('批准用于以后训练'))
     expect(approve?.disabled).toBe(true)
@@ -135,6 +186,24 @@ describe('training criterion review', () => {
         observable_evidence: '列出正确等量关系',
       }],
     })
+  })
+
+  it('lets teachers approve when the only remaining note is a missing image', async () => {
+    vi.spyOn(questionBankCriteriaApi, 'getWorkspace').mockResolvedValue(
+      workspace({
+        ...version,
+        quality_status: 'failed',
+        quality_codes: ['missing_actual_image'],
+      }),
+    )
+    const host = await mountReview()
+
+    expect(host.textContent).toContain('题目引用了图片，但当前图片内容不可用')
+    expect(host.textContent).toContain('可以批准')
+    expect(host.textContent).not.toContain('当前版本不能批准')
+    const approve = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('批准用于以后训练'))
+    expect(approve?.disabled).toBe(false)
   })
 
   it('requires confirmation before regenerating only the selected question', async () => {
@@ -176,5 +245,80 @@ describe('training criterion review', () => {
     expect(window.confirm).toHaveBeenCalledOnce()
     expect(start.mock.calls[0]?.[0]).toEqual([17])
     expect(start.mock.calls[0]?.[2]).toBe('regenerate')
+  })
+
+  it('keeps knowledge mapping inside the same 判定点 block', async () => {
+    vi.spyOn(questionBankCriteriaApi, 'getWorkspace').mockResolvedValue(workspace())
+    vi.spyOn(questionBankApi, 'getSolutionEvidence').mockResolvedValue({
+      question_id: 17,
+      available: true,
+      evidence_version_id: 'c'.repeat(64),
+      status: 'proposed',
+      evidence: {
+        schema_version: 'question-solution-evidence-v1',
+        question_id: 17,
+        source_content_hash: 'a'.repeat(64),
+        parts: [{
+          part_id: 'part-1',
+          label: '（1）',
+          response_mode: 'process_required',
+          canonical_answer: 'x = 2',
+          accepted_forms: ['x=2'],
+          full_answer: '配方后得到 x = 2。',
+          proof_obligations: [],
+          visual_requirements: [],
+          deduction_policy: [],
+          allow_alternative_methods: true,
+          evidence_points: [{
+            evidence_point_id: 'point-1',
+            target: '完成方程求解',
+            observable_evidence: '写出配方过程并得到正确解。',
+            fine_term_links: [{
+              fine_term_id: 'term-direct',
+              fine_term_name: '一元二次方程求根',
+              role: 'direct',
+              core_resolution: {
+                status: 'resolved',
+                stable_keys: ['kp_equation'],
+                reason: '明确细化到方程核心节点',
+              },
+            }],
+            equivalent_rules: [],
+            counterexamples: [],
+          }],
+        }],
+        auxiliary_rules: [],
+        rationale: '按小问拆解。',
+        confidence: 0.91,
+        content_hash: 'b'.repeat(64),
+        version_id: 'c'.repeat(64),
+        whole_question_classification: {
+          direct_fine_terms: [
+            { fine_term_id: 'term-direct', fine_term_name: '一元二次方程求根' },
+          ],
+          supporting_prerequisite_fine_terms: [],
+          direct_resolved_core_node_ids: ['kp_equation'],
+          supporting_resolved_core_node_ids: [],
+          direct_ambiguous_core_node_ids: [],
+          supporting_ambiguous_core_node_ids: [],
+          direct_unmapped_fine_term_ids: [],
+          supporting_unmapped_fine_term_ids: [],
+          resolved_core_node_ids: ['kp_equation'],
+          ambiguous_core_node_ids: [],
+          unmapped_fine_term_ids: [],
+        },
+      },
+    })
+    const host = await mountReview()
+
+    await vi.waitFor(() => {
+      expect(host.querySelector('.solution-evidence.is-embedded')).not.toBeNull()
+    })
+    expect(host.querySelectorAll('.criterion-review').length).toBe(1)
+    expect(host.querySelector('#criterion-review-title')?.textContent).toBe('判定点')
+    expect(host.textContent).toContain('知识细项与图谱映射')
+    expect(host.textContent).toContain('完成方程求解')
+    expect(host.textContent).not.toContain('拆分点、精细词条')
+    expect(host.textContent).not.toContain('解题证据')
   })
 })

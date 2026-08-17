@@ -1,10 +1,14 @@
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../../api/jobs'
+import {
+  isQuestionBankLibraryJob,
+  libraryJobDetailLine,
+} from '../../../components/question-bank/paper-analysis-status'
 import type { WorkspaceAITask } from './contracts'
 
 export const JOB_TITLE_BY_TYPE: Record<string, string> = {
   config_generation: '生成评分依据',
   question_import: '试卷入库',
-  tagging_sync: '题库标签补齐',
+  tagging_sync: '题库分析',
   taxonomy_suggestion: '新词归并建议',
   scan_analysis: '答卷扫描预检',
   grading_run: '考试批改',
@@ -34,6 +38,7 @@ export function jobStatusLabel(job: JobResponse): string {
 }
 
 export function jobDetailLine(job: JobResponse): string {
+  if (isQuestionBankLibraryJob(job)) return libraryJobDetailLine(job)
   const percent = Math.round(Math.max(0, Math.min(1, job.progress)) * 100)
   const detail = job.detail.trim() || job.stage.trim()
   if (detail) return `${percent}% · ${detail}`
@@ -56,6 +61,8 @@ export function jobLocation(job: JobResponse): string {
   if (job.job_type.startsWith('teaching_prep')) return '/teaching-prep'
   return '/workbench'
 }
+
+export { isQuestionBankLibraryJob }
 
 export function isAttentionJob(job: JobResponse): boolean {
   return job.status === 'failed' || job.status === 'paused' || !TERMINAL_JOB_STATUSES.has(job.status)

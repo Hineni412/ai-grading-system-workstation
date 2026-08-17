@@ -26,6 +26,7 @@ const item = {
   typicality: null,
   reason: null,
   needs_review: false,
+  criteria_needs_review: false,
   has_images: false,
   needs_image_review: false,
   created_at: '2026-07-18T08:00:00Z',
@@ -70,6 +71,7 @@ const paper: QuestionBankPaper = {
   tagged_any_question_count: 0,
   evidence_question_count: 0,
   criteria_question_count: 0,
+  criteria_needs_review_count: 0,
   complete_analysis_count: 0,
   source_type: 'docx',
 }
@@ -240,11 +242,33 @@ describe('question bank workspace', () => {
     const app = createApp(PaperLibrary)
     app.use(pinia)
     const store = useQuestionBankStore(pinia)
-    store.papers = [paper]
+    store.papers = [{
+      ...paper,
+      question_count: 5,
+      tagged_question_count: 0,
+      tagged_any_question_count: 0,
+      evidence_question_count: 0,
+      criteria_question_count: 0,
+      complete_analysis_count: 0,
+    }]
     store.papersState = 'ready'
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).startsWith('/api/question-bank/questions?')) {
+        return response({
+          items: [5, 8, 9, 11, 12].map((id, index) => ({
+            ...item,
+            id,
+            paper_id: 4,
+            question_number: String(index + 1),
+          })),
+          total: 5,
+          page: 1,
+          page_size: 100,
+          total_pages: 1,
+        })
+      }
       if (String(input) === '/api/question-bank/papers') {
-        return response({ items: [paper], total: 1 })
+        return response({ items: store.papers, total: 1 })
       }
       throw new Error(`unexpected request: ${String(input)}`)
     })
@@ -263,12 +287,155 @@ describe('question bank workspace', () => {
       created_at: '2026-08-08T23:46:00Z', started_at: '2026-08-08T23:46:01Z',
       updated_at: '2026-08-08T23:47:00Z', finished_at: '2026-08-08T23:47:00Z',
     })
+    await vi.waitFor(() => expect(host.textContent).toContain('第1、2、3、4、5题产生了待审核新词'))
+
+    expect(host.textContent).not.toContain('AI 解析进度')
+    expect(host.textContent).not.toContain('标签、解题证据和训练判定点均已完成')
+    expect(host.textContent).not.toContain('解题证据')
+  })
+
+  it('keeps criterion review visible on paper cards after jobs disappear', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const opened = vi.fn()
+    const app = createApp(PaperLibrary, { onReviewCriteria: opened })
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [{
+      ...paper,
+      question_count: 12,
+      tagged_question_count: 12,
+      tagged_any_question_count: 12,
+      evidence_question_count: 12,
+      criteria_question_count: 12,
+      complete_analysis_count: 12,
+      criteria_needs_review_count: 2,
+    }]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
     await nextTick()
 
-    expect(host.textContent).toContain('5 道题产生了待审核新词')
-    expect(host.textContent).toContain('新词待审核 5 道')
-    expect(host.textContent).toContain('未完成 5')
-    expect(host.textContent).not.toContain('标签、解题证据和训练判定点均已完成')
+    expect(host.textContent).toContain('2 道题判定点待您审核')
+    expect(host.textContent).toContain('待审核判定点 2')
+    const reviewButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('判定点待审核'))
+    expect(reviewButton?.disabled).toBe(false)
+    reviewButton?.click()
+    await nextTick()
+    expect(opened).toHaveBeenCalledOnce()
+  })
+
+  it('opens a criterion review panel from the library header', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url === '/api/question-bank/papers') {
+        return response({
+          items: [{ ...paper, criteria_needs_review_count: 1 }],
+          total: 1,
+        })
+      }
+      if (url === '/api/question-bank/taxonomy/proposals?status=pending&summary=true') {
+        return response({
+          revision: 7,
+          items: [],
+          counts: { pending: 0, actionable: 0, historical_unavailable: 0 },
+        })
+      }
+      if (url.includes('criteria_needs_review=true')) {
+        return response({
+          items: [{
+            ...item,
+            question_number: '8',
+            question_text: '选择正确选项。',
+            criteria_needs_review: true,
+          }],
+          total: 1,
+          page: 1,
+          page_size: 100,
+          total_pages: 1,
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionBankView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.textContent).toContain('匿名期末试卷'))
+    const reviewButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('判定点待审核'))
+    reviewButton?.click()
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('这些题目的判定点还需要您核对')
+    })
+    expect(document.body.textContent).toContain('第 8 题')
+    expect(document.body.textContent).toContain('选择正确选项。')
+  })
+
+  it('shows criterion review on the paper question list without a live job', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url === '/api/question-bank/papers') {
+        return response({
+          items: [{
+            ...paper,
+            tagged_question_count: 1,
+            tagged_any_question_count: 1,
+            evidence_question_count: 1,
+            criteria_question_count: 1,
+            complete_analysis_count: 1,
+            criteria_needs_review_count: 1,
+          }],
+          total: 1,
+        })
+      }
+      if (url.startsWith('/api/question-bank/questions?')) {
+        return response({
+          items: [{ ...item, criteria_needs_review: true }],
+          total: 1,
+          page: 1,
+          page_size: 20,
+          total_pages: 1,
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    const { host } = await mountView()
+    expect(host.textContent).toContain('1 道题判定点待审核')
+    expect(host.querySelector('.qb-question-card__review-flag')?.textContent).toContain('判定点待审核')
+  })
+
+  it('warns inside question detail when criteria still need review', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(QuestionInspector)
+    app.use(pinia)
+    app.mount(host)
+    mounted.push(app)
+    const bank = useQuestionBankStore(pinia)
+    bank.detail = {
+      ...item,
+      criteria_needs_review: true,
+      page_range: null,
+      assets: [],
+      rich_content: {
+        available: true,
+        question_block_count: 0,
+        answer_block_count: 0,
+        question_blocks: [],
+        answer_blocks: [],
+      },
+      previews: [],
+    }
+    bank.detailState = 'ready'
+    await nextTick()
+    expect(document.body.textContent).toContain('本题判定点待审核')
   })
 
   it('refreshes all three saved counts when a tagging job reaches terminal state', async () => {
@@ -300,6 +467,20 @@ describe('question bank workspace', () => {
       if (String(input) === '/api/question-bank/papers') {
         return response({ items: [refreshed], total: 1 })
       }
+      if (String(input).startsWith('/api/question-bank/questions?')) {
+        return response({
+          items: Array.from({ length: 12 }, (_value, index) => ({
+            ...item,
+            id: index + 1,
+            paper_id: 4,
+            question_number: String(index + 1),
+          })),
+          total: 12,
+          page: 1,
+          page_size: 100,
+          total_pages: 1,
+        })
+      }
       throw new Error(`unexpected request: ${String(input)}`)
     })
     app.mount(host)
@@ -330,10 +511,10 @@ describe('question bank workspace', () => {
     })
 
     await vi.waitFor(() => expect(host.textContent).toContain('标签 12/12'))
-    expect(host.textContent).toContain('解题证据 12/12')
-    expect(host.textContent).toContain('训练判定点 12/12')
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe('/api/question-bank/papers')
+    expect(host.textContent).toContain('判定点 12/12')
+    expect(host.textContent).not.toContain('解题证据')
+    expect(host.textContent).not.toContain('AI 解析进度')
+    expect(fetchSpy.mock.calls.some((call) => String(call[0]) === '/api/question-bank/papers')).toBe(true)
   })
 
   it('applies difficulty on release but waits for explicit text filters and AI cost confirmation', async () => {
@@ -920,7 +1101,6 @@ describe('question bank workspace', () => {
     retag.click()
 
     await vi.waitFor(() => expect(taggingBodies).toHaveLength(1))
-    expect(questionListUrls).toHaveLength(1)
     expect(new URL(questionListUrls[0]!, 'http://local.test').searchParams.getAll('paper_ids'))
       .toEqual(papers.map(({ id }) => String(id)))
     expect(taggingBodies[0]).toEqual({
@@ -998,7 +1178,7 @@ describe('question bank workspace', () => {
     fill.click()
 
     await vi.waitFor(() => expect(taggingBodies).toHaveLength(2))
-    expect(questionPaperGroups).toEqual([[1, 2], [21, 22]])
+    expect(questionPaperGroups.slice(0, 2)).toEqual([[1, 2], [21, 22]])
     expect(taggingBodies.map((body) => ({
       question_ids: body.question_ids,
       curriculum_volume_id: body.curriculum_volume_id,

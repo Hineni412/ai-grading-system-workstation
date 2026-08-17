@@ -103,6 +103,168 @@ def test_preview_keeps_plain_single_blank_question_unflagged() -> None:
     assert preview.question_type_review_reason == ""
 
 
+def test_preview_does_not_flag_choice_question_that_has_an_answer_blank() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_id": "Q2",
+        "question_type": "choice",
+        "question_text": (
+            "一块三角形玻璃被分成四块，应选(______)\n"
+            "A．第1块 B．第2块 C．第3块 D．第4块"
+        ),
+        "canonical_answer": "B",
+    }
+    preview = sources_module._question_previews([block], {})[0]
+
+    assert preview.question_type_review_required is False
+    assert preview.question_type_review_reason == ""
+
+
+def test_stored_preview_keeps_old_comprehensive_type_for_html_blank() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_id": "Q6",
+        "question_type": "comprehensive",
+        "question_text": "若 x^2 - mx + 25 是完全平方式，则 m = .",
+        "question_html": "若 $x^2 - mx + 25$ 是完全平方式，则 $m = <u>          </u>.$",
+        "canonical_answer": "±10",
+        "needs_review": False,
+    }
+    preview = sources_module._question_previews([block], {})[0]
+
+    assert block["question_type"] == "comprehensive"
+    assert preview.question_type == "comprehensive"
+    assert preview.question_type_review_required is True
+    assert preview.question_type_review_reason.startswith("题面只有一个明确填空位置")
+
+
+def test_public_preview_aligns_unconfirmed_html_blank_to_fill_blank() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_id": "Q6",
+        "question_type": "comprehensive",
+        "question_text": "若 x^2 - mx + 25 是完全平方式，则 m = .",
+        "question_html": "若 $x^2 - mx + 25$ 是完全平方式，则 $m = <u>          </u>.$",
+        "canonical_answer": "±10",
+        "needs_review": False,
+    }
+    stored = sources_module._question_previews([copy.deepcopy(block)], {})
+    public = sources_module._public_questions_with_rich_content(
+        stored,
+        [block],
+        session_id=1,
+        source_id="src1",
+        source_suffix=".docx",
+    )[0]
+
+    assert public["question_type"] == "fill_blank"
+    assert public["question_type_review_required"] is False
+    assert public["question_type_review_reason"] == ""
+    assert "填空" in public["question_type_basis"]
+    assert block["question_type"] == "comprehensive"
+
+
+def test_public_preview_does_not_reclassify_choice_with_parenthetical_blank() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_id": "Q2",
+        "question_type": "choice",
+        "question_text": "等腰三角形的优美比为（ ）。",
+        "question_html": "等腰三角形的优美比为（ ）。",
+        "canonical_answer": "C",
+        "needs_review": False,
+    }
+    stored = sources_module._question_previews([copy.deepcopy(block)], {})
+    public = sources_module._public_questions_with_rich_content(
+        stored,
+        [block],
+        session_id=1,
+        source_id="src1",
+        source_suffix=".docx",
+    )[0]
+
+    assert stored[0].question_type == "choice"
+    assert public["question_type"] == "choice"
+    assert public["question_type_review_required"] is False
+    assert block["question_type"] == "choice"
+
+
+def test_public_preview_does_not_flatten_task_table_question_into_fill_blank() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    html_value = (
+        "<p>根据以下信息，探索完成任务：如何选择合适的话费套餐</p>"
+        "<table><tr><td>素材1</td><td>A套餐 50元</td><td>&nbsp;&nbsp;</td></tr>"
+        "<tr><td>任务一</td><td>____</td></tr>"
+        "<tr><td>任务二</td><td><u>    </u></td></tr>"
+        "<tr><td>任务三</td><td>150</td></tr></table>"
+    )
+    block = {
+        "question_id": "Q14",
+        "question_type": "fill_blank",
+        "question_text": "根据以下信息，探索完成任务：如何选择合适的话费套餐 任务一 任务二 任务三",
+        "question_html": html_value,
+        "canonical_answer": "任务一：88，93.7",
+        "needs_review": False,
+    }
+    stored = sources_module._question_previews([copy.deepcopy(block)], {})
+    public = sources_module._public_questions_with_rich_content(
+        stored,
+        [block],
+        session_id=1,
+        source_id="src1",
+        source_suffix=".docx",
+    )[0]
+
+    assert public["question_type"] == "comprehensive"
+    assert public["question_type_review_required"] is True
+    assert "小问" in public["question_type_review_reason"]
+    assert "填空" in public["question_type_review_reason"]
+    assert "题面有多个小问" in public["question_type_basis"]
+    assert "题面有填空位置" in public["question_type_basis"]
+    assert block["question_type"] == "fill_blank"
+
+
+def test_public_preview_hides_type_basis_when_parser_type_is_unknown() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_id": "Q1",
+        "question_type": "essay-from-parser",
+        "question_text": "请写出你的想法。",
+        "needs_review": False,
+    }
+    stored = sources_module._question_previews([copy.deepcopy(block)], {})
+    public = sources_module._public_questions_with_rich_content(
+        stored,
+        [block],
+        session_id=1,
+        source_id="src1",
+        source_suffix=".docx",
+    )[0]
+
+    assert public["question_type"] == "essay-from-parser"
+    assert public["question_type_basis"] == ""
+
+
+def test_align_visible_blank_skips_teacher_confirmed_type() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_id": "Q6",
+        "question_type": "comprehensive",
+        "question_type_confirmed": True,
+        "question_html": "则 $m = <u>          </u>.$",
+    }
+    sources_module._align_question_type_with_visible_blank(block)
+
+    assert block["question_type"] == "comprehensive"
+
+
 def test_preview_removes_section_heading_split_across_docx_spans() -> None:
     import backend.config_workspace.sources as sources_module
 

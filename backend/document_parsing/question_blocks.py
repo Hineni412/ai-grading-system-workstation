@@ -13,6 +13,22 @@ _INLINE_MAIN_QUESTION_MARKER = re.compile(
     r"(?P<prefix>[。！？!?．.][ \t\r\n]*)"
     r"(?P<number>\d{1,2})[ \t]*[.．、](?![ \t]*\d)[ \t]*"
 )
+_VISIBLE_FILL_BLANK_MARK = re.compile(
+    r"(?:_{2,}|＿{1,}|﹏{2,}|<u\b[^>]*>.*?</u>|（\s*）|\(\s*\)|\b填空\b|[\u00a0\u3000]{2,})",
+    re.IGNORECASE | re.DOTALL,
+)
+_VISIBLE_SUBPART = re.compile(
+    r"(?:"
+    r"[（(]\s*[1-9]\d*\s*[）)]"
+    r"|任务\s*[一二三四五六七八九十百\d]+"
+    r"|第[一二三四五六七八九十百\d]+问"
+    r")"
+)
+_TABLE_HTML = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
+_TABLE_ROW_HTML = re.compile(r"<tr\b", re.IGNORECASE)
+_TABLE_CELL_HTML = re.compile(r"<(?:td|th)\b", re.IGNORECASE)
+_EXPLICIT_PROOF_MARKERS = ("证明", "求证")
+_DRAWING_MARKERS = ("作图", "作出", "画出", "保留作图痕迹")
 
 
 def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
@@ -456,6 +472,47 @@ def _extract_choice_answer_sequence(
     return {str(index): value for index, value in enumerate(found[:20], start=1)}
 
 
+def _stem_without_data_tables(value: str) -> str:
+    """Drop multi-cell tables so empty grid cells are not treated as blanks."""
+
+    def replace_table(match: re.Match[str]) -> str:
+        table = match.group(0)
+        rows = len(_TABLE_ROW_HTML.findall(table))
+        cells = len(_TABLE_CELL_HTML.findall(table))
+        if rows >= 2 or cells >= 3:
+            return " "
+        return table
+
+    return _TABLE_HTML.sub(replace_table, str(value or ""))
+
+
+def has_visible_subparts(value: str) -> bool:
+    """True when the stem has labeled tasks or numbered subquestions."""
+    raw = str(value or "")
+    if _VISIBLE_SUBPART.search(raw):
+        return True
+    stripped = _strip_inline_html(raw)
+    return stripped != raw and _VISIBLE_SUBPART.search(stripped) is not None
+
+
+def has_visible_fill_blank_mark(value: str) -> bool:
+    """True when the stem has a fill-in slot, including Word underlines."""
+    raw = str(value or "")
+    if _VISIBLE_FILL_BLANK_MARK.search(raw):
+        return True
+    stripped = _strip_inline_html(raw)
+    return stripped != raw and _VISIBLE_FILL_BLANK_MARK.search(stripped) is not None
+
+
+def has_visible_stem_fill_blank_mark(value: str) -> bool:
+    """True when a fill-in slot sits in the stem, not only inside a data table."""
+    return has_visible_fill_blank_mark(_stem_without_data_tables(value))
+
+
+def has_explicit_choice_options(value: str) -> bool:
+    return len(_explicit_option_labels(value)) >= 3
+
+
 def _explicit_option_labels(value: str) -> set[str]:
     """Return option letters only when they carry visible option punctuation."""
     return {
@@ -483,25 +540,22 @@ def _infer_local_question_type(
         "proof",
     }:
         return normalized_section_type
-    if len(_explicit_option_labels(value)) >= 3:
+    if has_explicit_choice_options(value):
         return "choice"
     if _choice_answer_from_text(answer_text):
         return "choice"
     # A blank inside a multi-subpart question is just one subquestion's answer
     # slot; the subparts make it a worked-solution question, not a fill-in.
-    has_visible_subparts = re.search(r"[（(]\s*[1-9]\s*[）)]", value) is not None
-    if not has_visible_subparts and re.search(
-        r"_{2,}|　{1,}|（\s*）|\(\s*\)|\b填空\b", value
-    ):
+    # Data-table cells also look like blanks, but they are not a single fill-in.
+    labeled_subparts = has_visible_subparts(value)
+    if not labeled_subparts and has_visible_stem_fill_blank_mark(value):
         return "fill_blank"
-    if any(token in value for token in ["作图", "作出", "画出", "保留作图痕迹"]):
+    if any(token in value for token in _DRAWING_MARKERS):
         return "comprehensive"
-    if any(token in value for token in ["证明", "理由", "说明", "求证", "全等", "证得"]):
+    if any(token in value for token in _EXPLICIT_PROOF_MARKERS):
         return "proof"
-    if re.search(r"[（(]\s*[1-9]\s*[）)]", value) or any(
-        token in value for token in ["计算", "求", "解答", "解："]
-    ):
-        return "calculation"
+    if labeled_subparts:
+        return "comprehensive"
     if normalized_section_type in {"calculation", "comprehensive"}:
         return normalized_section_type
     return infer_question_type_from_text(question_text)
@@ -753,16 +807,17 @@ def _next_leading_main_question_number(
 
 def infer_question_type_from_text(text: str) -> str:
     value = str(text or "")
-    if len(_explicit_option_labels(value)) >= 3:
+    if has_explicit_choice_options(value):
         return "choice"
-    if re.search(r"_{2,}|[ \t]{3,}|　{1,}|（\s*）|\(\s*\)", value):
-        return "fill_blank"
-    if any(token in value for token in ["作图", "作出", "画出", "保留作图痕迹"]):
+    if has_visible_subparts(value):
         return "comprehensive"
-    if any(token in value for token in ["证明", "理由", "说明", "求证", "全等", "证得"]):
+    stem = _stem_without_data_tables(value)
+    if has_visible_fill_blank_mark(stem) or re.search(r"[ \t]{3,}", stem):
+        return "fill_blank"
+    if any(token in value for token in _DRAWING_MARKERS):
+        return "comprehensive"
+    if any(token in value for token in _EXPLICIT_PROOF_MARKERS):
         return "proof"
-    if re.search(r"[（(]\s*[1-9]\s*[）)]", value):
-        return "calculation"
     return "comprehensive"
 
 
@@ -1112,7 +1167,7 @@ def parse_rich_question_blocks(
 
     num_str = str(number)
     qtype = _infer_local_question_type(
-        question_text,
+        question_html or question_text,
         answer_text,
         num_str,
         section_type=section_type,

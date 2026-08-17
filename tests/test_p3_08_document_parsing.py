@@ -205,6 +205,65 @@ def test_legacy_imports_delegate_to_the_document_parser() -> None:
     assert rubric_auto_cropper.extract_pdf_text is extract_pdf_text
 
 
+def test_local_type_keeps_choice_ahead_of_blank_and_does_not_guess_calculation_or_proof() -> None:
+    from backend.document_parsing.question_blocks import _infer_local_question_type
+
+    choice = _infer_local_question_type(
+        "一块三角形玻璃被分成四块，应选(______)\nA．第1块 B．第2块 C．第3块 D．第4块",
+        "B",
+        "2",
+    )
+    fill_fullwidth = _infer_local_question_type(
+        "若 x^2 - ax + 25 是完全平方式，则 a = ＿＿＿＿．",
+        "±10",
+        "6",
+    )
+    fill_required = _infer_local_question_type(
+        "按要求填空：若 a + b = 3，则 a^2 + b^2 = ＿＿＿＿．",
+        "5",
+        "7",
+    )
+    application = _infer_local_question_type(
+        "根据以下信息，探索完成任务：如何选择合适的通话套餐。"
+        "请说明哪一种更合适。\n任务一 任务二 任务三",
+        "任务一：88，93.7",
+        "14",
+    )
+    application_table = _infer_local_question_type(
+        "<p>根据以下信息，探索完成任务：如何选择合适的话费套餐</p>"
+        "<table><tr><td>素材1</td><td>A套餐 50元</td><td>&nbsp;&nbsp;</td></tr>"
+        "<tr><td>任务一</td><td>____</td></tr>"
+        "<tr><td>任务二</td><td><u>    </u></td></tr>"
+        "<tr><td>任务三</td><td>150</td></tr></table>",
+        "任务一：88，93.7",
+        "14",
+    )
+    closing_fill = _infer_local_question_type(
+        "如图，三角形ABC中，D、E、F为边上的点，求AC=__________.",
+        "12",
+        "15",
+    )
+    html_underline_fill = _infer_local_question_type(
+        "若 $x^2 - mx + 25$ 是完全平方式，则 $m = <u>          </u>.$",
+        "±10",
+        "6",
+    )
+    explicit_proof = _infer_local_question_type(
+        "求证：等腰三角形两底角相等。",
+        "",
+        "16",
+    )
+
+    assert choice == "choice"
+    assert fill_fullwidth == "fill_blank"
+    assert fill_required == "fill_blank"
+    assert application == "comprehensive"
+    assert application_table == "comprehensive"
+    assert closing_fill == "fill_blank"
+    assert html_underline_fill == "fill_blank"
+    assert explicit_proof == "proof"
+
+
 def test_production_source_uses_parser_module_and_parser_has_no_model_dependency() -> None:
     source = Path("backend/config_workspace/sources.py").read_text(encoding="utf-8")
     package_sources = "\n".join(

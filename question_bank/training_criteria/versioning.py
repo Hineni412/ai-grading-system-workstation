@@ -29,6 +29,7 @@ CriterionSourceKind = Literal[
 ]
 CriterionReviewAction = Literal["approve", "reject"]
 _TOKEN = re.compile(r"^[0-9a-f]{32}$")
+ADVISORY_QUALITY_CODES = frozenset({"missing_actual_image"})
 class CriterionVersionNotFound(LookupError):
     pass
 
@@ -97,6 +98,14 @@ class CriterionReviewCommand:
         object.__setattr__(self, "reason", reason)
 
 
+def blocking_quality_codes(codes: Sequence[str]) -> tuple[str, ...]:
+    return tuple(
+        code
+        for code in dict.fromkeys(codes)
+        if code not in ADVISORY_QUALITY_CODES
+    )
+
+
 def evaluate_criterion_quality(
     question: QuestionAnalysisInput,
     draft: TrainingCriteriaDraft,
@@ -122,6 +131,13 @@ def evaluate_criterion_quality(
         for point in draft.points
     ):
         codes.append("unobservable_point")
+    known_ids = {point.point_id for point in draft.points}
+    if any(
+        item not in known_ids
+        for point in draft.points
+        for item in point.depends_on
+    ):
+        codes.append("unknown_dependency")
     if question.tagging_context.has_images and not question.has_required_images:
         codes.append("missing_actual_image")
 
@@ -155,9 +171,10 @@ def evaluate_criterion_quality(
     ]
     if any(_contains_teacher_visible_english(value) for value in teacher_visible_values):
         codes.append("teacher_visible_language_not_zh")
+    unique_codes = tuple(dict.fromkeys(codes))
     return QualityGateResult(
-        passed=not codes,
-        codes=tuple(dict.fromkeys(codes)),
+        passed=not blocking_quality_codes(unique_codes),
+        codes=unique_codes,
     )
 
 
@@ -450,7 +467,8 @@ class TrainingCriterionModule:
                 quality_codes = _json_strings(
                     version["quality_codes_json"]
                 )
-                if str(version["quality_status"]) != "passed":
+                blocked = blocking_quality_codes(quality_codes)
+                if blocked:
                     raise CriterionQualityError(quality_codes)
                 if str(version["source_content_hash"]) != str(
                     head["current_source_hash"]
@@ -1273,6 +1291,7 @@ def _hash_payload(value: object) -> str:
 
 
 __all__ = [
+    "ADVISORY_QUALITY_CODES",
     "ApprovedCriterionMissing",
     "CriterionQualityError",
     "CriterionRequestConflict",
@@ -1282,5 +1301,6 @@ __all__ = [
     "CriterionVersionNotFound",
     "QualityGateResult",
     "TrainingCriterionModule",
+    "blocking_quality_codes",
     "evaluate_criterion_quality",
 ]

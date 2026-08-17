@@ -98,9 +98,9 @@ def run_session_question_bank_sync_job(
 ) -> dict[str, object]:
     """Import an archived session paper, then run governed AI tagging.
 
-    This deliberately runs after grading-config generation as an independent
-    job.  Its state and retries cannot publish, replace, or invalidate a
-    grading rubric.
+    This job adopts a completed analysis into the question bank. It cannot
+    publish, replace, or invalidate a grading rubric, and it must not start a
+    second tagging run when the analysis artifact is missing.
     """
 
     payload = context.payload
@@ -133,6 +133,7 @@ def run_session_question_bank_sync_job(
         source_sha256=source_sha256,
         config_revision=config_revision,
         data_root=Path(data_root),
+        require_configured=deferred_artifact is None,
     )
     # Grading-rubric (LLM) question types govern the imported rows; the local
     # heuristic detector only fills questions the rubric does not cover.
@@ -224,25 +225,13 @@ def run_session_question_bank_sync_job(
             source_sha256=source_sha256,
             config_revision=config_revision,
             data_root=Path(data_root),
+            require_configured=deferred_artifact is None,
         )
 
         if question_ids and deferred_artifact is None:
-            tag_context = _ChildJobContext(
-                parent=context,
-                payload={
-                    "question_ids": question_ids,
-                    "curriculum_volume_id": str(volume["id"]),
-                },
-                progress_start=0.48,
-                progress_end=0.88,
-                stage="question_bank_tagging",
-            )
-            tagging_result = tagging_sync_runner(
-                context=tag_context,
-                question_bank_db_path=Path(question_bank_db_path),
-                data_root=Path(data_root),
-                ai_service_factory=ai_service_factory,
-                taxonomy_governance=taxonomy_governance,
+            raise ValueError(
+                "question-bank intake requires the completed analysis artifact; "
+                "refusing a second tagging run"
             )
         elif deferred_artifact is None:
             tagging_result = {
@@ -264,6 +253,7 @@ def run_session_question_bank_sync_job(
             source_sha256=source_sha256,
             config_revision=config_revision,
             data_root=Path(data_root),
+            require_configured=deferred_artifact is None,
         )
         candidates = _bank_questions(Path(question_bank_db_path), question_ids)
         source_questions = current.payload.get("rubric", {}).get("questions", [])
@@ -485,11 +475,12 @@ def _load_current_inputs(
     source_sha256: str,
     config_revision: str,
     data_root: Path,
+    require_configured: bool = True,
 ) -> tuple[LoadedEditorConfig, Path]:
     loaded = load_editor_config(grading_db, session_id)
-    if not loaded.configured:
+    if require_configured and not loaded.configured:
         raise ValueError("grading configuration is not ready")
-    if loaded.revision != config_revision:
+    if loaded.configured and loaded.revision != config_revision:
         raise StaleQuestionBankSyncError("grading configuration changed")
     current_source_sha = str(
         loaded.session.get("source_paper_sha256") or ""

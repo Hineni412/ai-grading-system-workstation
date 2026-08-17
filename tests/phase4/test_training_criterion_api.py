@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -14,7 +15,14 @@ from backend.api.dependencies import (
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from question_bank.database.schema import connect, initialize_database
-from question_bank.training_criteria import TrainingCriterionModule
+from question_bank.models.tag_schema import TaggingContext
+from question_bank.training_criteria import (
+    JUDGMENT_POINTS_SCHEMA,
+    QuestionAnalysisInput,
+    TrainingCriteriaDraft,
+    TrainingCriterionModule,
+    TrainingCriterionPoint,
+)
 
 
 def _seed(database: Path) -> None:
@@ -233,3 +241,87 @@ def test_backfill_requires_explicit_ids_and_exposes_only_safe_job_data(
         json={"question_ids": [], "request_token": "b" * 32},
     )
     assert invalid.status_code == 422
+
+
+def _ingest_question(question_id: int = 1) -> QuestionAnalysisInput:
+    return QuestionAnalysisInput(
+        question_id=question_id,
+        tagging_context=TaggingContext(
+            question_text="解方程 x+1=2",
+            answer_text="x=1",
+            question_type="计算题",
+            question_number=str(question_id),
+        ),
+    )
+
+
+def _judgment_points_from_paper_ingest(
+    question: QuestionAnalysisInput,
+) -> TrainingCriteriaDraft:
+    """Same stored shape as exam-config ingest and question-bank paper tagging."""
+    return TrainingCriteriaDraft(
+        schema_version=JUDGMENT_POINTS_SCHEMA,
+        question_id=question.question_id,
+        source_content_hash=question.criterion_source_content_hash,
+        question_type=question.question_type_group,
+        points=(
+            TrainingCriterionPoint(
+                point_id="step-1",
+                target="建立等量关系",
+                observable_evidence="列出正确方程",
+                equivalent_rules=("写出等价方程",),
+                counterexamples=("只有最终答案",),
+                depends_on=(),
+            ),
+        ),
+        auxiliary_rules=("书写清楚但不计入达成点数",),
+        rationale="联合题目解析自动发布训练判定点",
+        confidence=0.91,
+        source_kind="combined_model",
+        embedded_evidence_json=json.dumps(
+            {
+                "schema_version": "question-solution-evidence-v2",
+                "question_id": question.question_id,
+                "source_content_hash": question.criterion_source_content_hash,
+                "parts": [
+                    {
+                        "part_id": "part-1",
+                        "label": "第1问",
+                        "evidence_points": [
+                            {
+                                "evidence_point_id": "step-1",
+                                "target": "建立等量关系",
+                                "observable_evidence": "列出正确方程",
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
+def test_workspace_api_returns_judgment_points_written_by_paper_ingest(
+    tmp_path: Path,
+) -> None:
+    client, _manager, module, _database = _client(tmp_path)
+    question = _ingest_question()
+    module.propose(
+        question=question,
+        draft=_judgment_points_from_paper_ingest(question),
+        source_kind="combined_model",
+        source_reference="analysis:paper-ingest:1",
+        actor_ref="model:combined-analysis",
+        reason="联合题目解析自动发布训练判定点",
+    )
+
+    response = client.get("/api/question-bank/criteria/questions/1")
+
+    assert response.status_code == 200, response.text
+    criteria = response.json()["current_version"]["criteria"]
+    assert criteria["schema_version"] == "judgment-points-v1"
+    assert criteria["points"][0]["point_id"] == "step-1"
+    assert criteria["points"][0]["target"] == "建立等量关系"
+    assert criteria["points"][0]["depends_on"] == []
+    assert isinstance(criteria.get("solution_evidence"), dict)

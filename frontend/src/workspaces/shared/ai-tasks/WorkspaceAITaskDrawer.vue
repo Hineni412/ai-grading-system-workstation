@@ -20,6 +20,7 @@ import {
   jobStatusLabel,
   jobTitle,
   returnLocation,
+  isQuestionBankLibraryJob,
 } from './taskPresentation'
 import type { WorkspaceAITask } from './contracts'
 
@@ -40,15 +41,17 @@ const attentionCount = computed(() => attentionTasks.value.length + attentionJob
 const archivedCount = computed(() => archivedTasks.value.length + archivedJobs.value.length)
 const totalCount = computed(() => attentionCount.value + archivedCount.value)
 const livePercent = computed(() => {
-  const runningJob = attentionJobs.value.find(
-    job => job.status === 'running' || job.status === 'queued',
-  )
   const runningTask = attentionTasks.value.find(
     task => task.status === 'running' || task.status === 'queued' || task.status === 'prepared',
   )
-  const progress = runningTask?.progress ?? runningJob?.progress
-  if (progress === undefined) return null
-  return Math.round(Math.max(0, Math.min(1, progress)) * 100)
+  if (runningTask) {
+    return Math.round(Math.max(0, Math.min(1, runningTask.progress)) * 100)
+  }
+  const runningJob = attentionJobs.value.find(
+    job => (job.status === 'running' || job.status === 'queued') && !isQuestionBankLibraryJob(job),
+  )
+  if (!runningJob) return null
+  return Math.round(Math.max(0, Math.min(1, runningJob.progress)) * 100)
 })
 
 function jobTone(job: JobResponse): 'neutral' | 'info' | 'success' | 'warning' | 'danger' {
@@ -157,6 +160,7 @@ function toggleDrawer(): void {
                 <StatusBadge :tone="jobTone(job)" :label="jobStatusLabel(job)" />
               </div>
               <progress
+                v-if="!isQuestionBankLibraryJob(job)"
                 :value="Math.max(0, Math.min(1, job.progress))"
                 max="1"
                 :aria-label="`${jobTitle(job)}进度`"
@@ -164,7 +168,9 @@ function toggleDrawer(): void {
               <p>{{ jobDetailLine(job) }}</p>
               <p v-if="jobs.syncErrors[job.id]" role="status">任务状态暂时无法更新，已保留上次状态。</p>
               <footer>
-                <AppButton variant="secondary" @click="returnToJob(job)">返回相关页面</AppButton>
+              <AppButton variant="secondary" @click="returnToJob(job)">{{
+                isQuestionBankLibraryJob(job) ? '回到试卷库' : '返回相关页面'
+              }}</AppButton>
                 <AppButton
                   v-if="!TERMINAL_JOB_STATUSES.has(job.status)"
                   variant="ghost"

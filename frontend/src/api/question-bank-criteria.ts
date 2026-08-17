@@ -9,16 +9,21 @@ export type CriterionVersionStatus =
   | 'superseded'
   | 'stale'
 
+export type CriterionSchemaVersion =
+  | 'training-criteria-draft-v1'
+  | 'judgment-points-v1'
+
 export interface TrainingCriterionPoint {
   point_id: string
   target: string
   observable_evidence: string
   equivalent_rules: string[]
   counterexamples: string[]
+  depends_on?: string[]
 }
 
 export interface TrainingCriterionDraft {
-  schema_version: 'training-criteria-draft-v1'
+  schema_version: CriterionSchemaVersion
   question_id: number
   source_content_hash: string
   question_type: string
@@ -27,6 +32,7 @@ export interface TrainingCriterionDraft {
   rationale: string
   confidence: number
   source_kind: 'combined_model' | 'confirmed_rubric_adapter'
+  solution_evidence?: Record<string, unknown>
 }
 
 export interface TrainingCriterionVersion {
@@ -111,12 +117,16 @@ const VERSION_STATUSES = new Set([
   'superseded',
   'stale',
 ])
+const CRITERION_SCHEMAS = new Set([
+  'training-criteria-draft-v1',
+  'judgment-points-v1',
+])
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
-function isPositiveInteger(value: unknown): boolean {
+function isPositiveInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0
 }
 
@@ -128,14 +138,22 @@ function decodePoint(value: unknown): TrainingCriterionPoint {
     || typeof value.observable_evidence !== 'string'
     || !isStringArray(value.equivalent_rules)
     || !isStringArray(value.counterexamples)
+    || (value.depends_on !== undefined && !isStringArray(value.depends_on))
   ) throw new Error('Invalid training criterion point')
-  return value as unknown as TrainingCriterionPoint
+  return {
+    point_id: value.point_id,
+    target: value.target,
+    observable_evidence: value.observable_evidence,
+    equivalent_rules: value.equivalent_rules,
+    counterexamples: value.counterexamples,
+    ...(isStringArray(value.depends_on) ? { depends_on: value.depends_on } : {}),
+  }
 }
 
 function decodeDraft(value: unknown): TrainingCriterionDraft {
   if (
     !isRecord(value)
-    || value.schema_version !== 'training-criteria-draft-v1'
+    || !CRITERION_SCHEMAS.has(String(value.schema_version))
     || !isPositiveInteger(value.question_id)
     || typeof value.source_content_hash !== 'string'
     || typeof value.question_type !== 'string'
@@ -145,11 +163,22 @@ function decodeDraft(value: unknown): TrainingCriterionDraft {
     || typeof value.rationale !== 'string'
     || typeof value.confidence !== 'number'
     || !['combined_model', 'confirmed_rubric_adapter'].includes(String(value.source_kind))
+    || (value.solution_evidence !== undefined && !isRecord(value.solution_evidence))
   ) throw new Error('Invalid training criterion draft')
   return {
-    ...value,
+    schema_version: value.schema_version as CriterionSchemaVersion,
+    question_id: value.question_id,
+    source_content_hash: value.source_content_hash,
+    question_type: value.question_type,
     points: value.points.map(decodePoint),
-  } as unknown as TrainingCriterionDraft
+    auxiliary_rules: value.auxiliary_rules,
+    rationale: value.rationale,
+    confidence: value.confidence,
+    source_kind: value.source_kind as TrainingCriterionDraft['source_kind'],
+    ...(isRecord(value.solution_evidence)
+      ? { solution_evidence: value.solution_evidence }
+      : {}),
+  }
 }
 
 function decodeVersion(value: unknown): TrainingCriterionVersion {

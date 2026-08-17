@@ -12,7 +12,6 @@ import { useQuestionBankStore } from '../../stores/question-bank'
 import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import TrainingCriterionReview from './TrainingCriterionReview.vue'
-import SolutionEvidenceReview from './SolutionEvidenceReview.vue'
 
 const store = useQuestionBankStore()
 const curriculum = ref<CurriculumCatalog | null>(null)
@@ -219,6 +218,13 @@ async function removeCurrent(): Promise<void> {
             </div>
             <button type="button" class="qb-drawer-close" aria-label="关闭题目详情" @click="store.selectQuestion(null)">×</button>
           </header>
+          <p
+            v-if="store.detail.criteria_needs_review"
+            class="qb-feedback is-warning"
+            role="status"
+          >
+            本题判定点待审核。请到下方「判定点」核对、修正或重新生成。
+          </p>
 
           <dl class="qb-facts">
             <div><dt>题型</dt><dd>{{ store.detail.question_type || '未分类' }}</dd></div>
@@ -263,7 +269,6 @@ async function removeCurrent(): Promise<void> {
             </div>
           </section>
 
-          <SolutionEvidenceReview :question-id="store.detail.id" />
           <TrainingCriterionReview :question-id="store.detail.id" />
 
           <section class="qb-tags" aria-labelledby="qb-tags-title">

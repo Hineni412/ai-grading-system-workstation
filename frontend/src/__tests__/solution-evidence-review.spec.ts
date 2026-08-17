@@ -101,13 +101,17 @@ function evidenceResponse(): QuestionSolutionEvidenceResponse {
   }
 }
 
-async function mountReview(response: QuestionSolutionEvidenceResponse) {
+async function mountReview(
+  response: QuestionSolutionEvidenceResponse,
+  extra: { embedded?: boolean } = {},
+) {
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp({
     setup() {
       return () => h(SolutionEvidenceReview, {
         questionId: response.question_id,
+        embedded: extra.embedded ?? false,
         loader: async () => response,
       })
     },
@@ -138,6 +142,33 @@ describe('solution evidence review', () => {
     })).toThrow('Invalid question solution evidence')
   })
 
+  it('accepts v2 evidence points even when a step has no fine-term links', () => {
+    const payload = evidenceResponse()
+    const v2 = {
+      ...payload,
+      evidence: {
+        ...payload.evidence!,
+        schema_version: 'question-solution-evidence-v2' as const,
+        parts: [{
+          ...payload.evidence!.parts[0],
+          evidence_points: [{
+            evidence_point_id: 'point-1',
+            step_index: 1,
+            target: '完成方程求解',
+            justification: '配方后得到正确解',
+            answer_anchor: 'x = 2',
+            observable_evidence: '写出配方过程并得到正确解。',
+            depends_on: [],
+            fine_term_links: [],
+            equivalent_rules: [],
+            counterexamples: [],
+          }],
+        }],
+      },
+    }
+    expect(decodeQuestionSolutionEvidenceResponse(v2)).toEqual(v2)
+  })
+
   it('keeps point-level direct, supporting, ambiguous and unmapped semantics visible', async () => {
     const host = await mountReview(evidenceResponse())
     const text = host.textContent?.replace(/\s+/g, '') ?? ''
@@ -151,6 +182,8 @@ describe('solution evidence review', () => {
     expect(text).toContain('候选节点2个；未映射词条1个')
     expect(text).not.toContain('kp_equation')
     expect(text).not.toContain('term-direct')
+    expect(text).not.toContain('解题证据')
+    expect(host.querySelector('#solution-evidence-title')?.textContent).toBe('知识细项与图谱映射')
   })
 
   it('shows an explicit empty state without inventing whole-question tags', async () => {
@@ -161,8 +194,31 @@ describe('solution evidence review', () => {
       status: null,
       evidence: null,
     })
-    expect(host.textContent).toContain('这道题还没有拆分点证据')
+    expect(host.textContent).toContain('这道题还没有知识细项映射')
     expect(host.querySelector('.solution-evidence__part')).toBeNull()
     expect(host.querySelector('.solution-evidence__summary')).toBeNull()
+  })
+
+  it('hides the empty mapping panel when folded into 判定点', async () => {
+    const host = await mountReview({
+      question_id: 42,
+      available: false,
+      evidence_version_id: null,
+      status: null,
+      evidence: null,
+    }, { embedded: true })
+    expect(host.querySelector('.solution-evidence')).toBeNull()
+    expect(host.textContent).not.toContain('这道题还没有知识细项映射')
+    expect(host.textContent).not.toContain('解题证据')
+  })
+
+  it('keeps mapping as a collapsed supplement without a second heading', async () => {
+    const host = await mountReview(evidenceResponse(), { embedded: true })
+    expect(host.querySelector('#solution-evidence-title')).toBeNull()
+    expect(host.querySelector('.solution-evidence.is-embedded')).not.toBeNull()
+    expect(host.querySelector('summary')?.textContent).toContain('知识细项与图谱映射')
+    expect(host.textContent).toContain('完成方程求解')
+    expect(host.textContent).not.toContain('解题证据')
+    expect(host.textContent).not.toContain('拆分点、精细词条')
   })
 })

@@ -2639,43 +2639,16 @@ def _infer_local_question_type(
     section_type: str = "",
 ) -> str:
     """Infer question type, preferring explicit paper-section headings."""
-    value = str(question_text or "")
-    normalized_section_type = str(section_type or "").strip()
-    if normalized_section_type in {"choice", "fill_blank", "proof"}:
-        return normalized_section_type
-
-    option_labels = {
-        match.group(1).upper()
-        for match in re.finditer(r"(?m)^\s*([A-Da-d])\s*(?:[.．、)]|\s{2,})", value)
-    }
-    compact_options = any(
-        re.search(r"[Aa][.．、]?\s*.{0,80}[Bb][.．、]?\s*.{0,80}[Cc][.．、]?\s*.{0,80}[Dd]", line)
-        for line in value.splitlines()
+    from backend.document_parsing.question_blocks import (
+        _infer_local_question_type as infer_type,
     )
-    if len(option_labels) >= 3 or compact_options:
-        return "choice"
-    if re.fullmatch(r"\s*[A-Da-d]\s*", str(answer_text or "")):
-        return "choice"
 
-    has_blank = bool(
-        re.search(
-            r"_{2,}|　{1,}|（\s*）|\(\s*\)|\b填空\b",
-            value,
-        )
+    return infer_type(
+        question_text,
+        answer_text,
+        number,
+        section_type=section_type,
     )
-    if has_blank:
-        return "fill_blank"
-
-    if any(token in value for token in ["作图", "作出", "画出", "保留作图痕迹"]):
-        return "comprehensive"
-    if any(token in value for token in ["证明", "理由", "说明", "求证", "全等", "证得"]):
-        return "proof"
-    has_subparts = bool(re.search(r"[（(]\s*[1-9]\s*[）)]", value))
-    if has_subparts or any(token in value for token in ["计算", "求", "解答", "解："]):
-        return "calculation"
-    if normalized_section_type == "comprehensive":
-        return "comprehensive"
-    return _infer_question_type_from_block_text(question_text)
 
 
 def _extract_canonical_answer_for_local_question(

@@ -38,7 +38,7 @@ def test_source_extracted_analysis_and_rich_text_reach_model_input() -> None:
     )
     payload = json.loads(prompt[1]["content"][0]["text"])
     assert payload["questions"][0]["reference_solution"] == reference
-    assert "never a reason to omit" in payload["rules"]
+    assert "不得作为省略可用评分结构的理由" in payload["rules"]
 
 
 def _generated_payload(step_count: int) -> dict:
@@ -77,6 +77,19 @@ def test_structure_gate_ignores_punctuation_equations_and_angle_symbols() -> Non
 
 def test_structure_gate_still_blocks_process_question_with_one_step() -> None:
     assert blocking_quality_question_ids(_generated_payload(1)) == ["Q10"]
+
+
+def test_combined_analysis_treats_http_429_as_rate_limit() -> None:
+    from question_bank.training_criteria.analysis import _error_category
+
+    class StatusError(RuntimeError):
+        def __init__(self, status_code: int, message: str) -> None:
+            super().__init__(message)
+            self.status_code = status_code
+
+    assert _error_category(StatusError(429, "RequestBurstTooFast")) == "rate_limit"
+    assert _error_category(RuntimeError("RequestBurstTooFast")) == "rate_limit"
+    assert _error_category(StatusError(400, "exceed max message tokens")) == "invalid_request"
 
 
 def test_structure_gate_treats_reordered_evidence_as_the_same_step() -> None:

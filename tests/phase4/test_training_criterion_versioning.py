@@ -215,6 +215,46 @@ def test_quality_gate_trusts_model_granularity_but_requires_actual_image() -> No
     assert "calculation_process_missing" not in calculation_result.codes
     assert "proof_obligations_incomplete" not in proof_result.codes
     assert "missing_actual_image" in image_result.codes
+    assert image_result.passed is True
+
+
+def test_missing_actual_image_does_not_block_teacher_approval(tmp_path: Path) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed(database)
+    module = TrainingCriterionModule(database)
+    question = _question(1, question_type="作图题", has_images=True)
+
+    proposed = _propose(module, question)
+    version = proposed["current_version"]
+    assert isinstance(version, dict)
+    assert version["quality_status"] == "passed"
+    assert "missing_actual_image" in version["quality_codes"]
+
+    with connect(database) as connection:
+        connection.execute(
+            """
+            UPDATE training_criterion_versions
+            SET quality_status = 'failed'
+            WHERE version_id = ?
+            """,
+            (version["version_id"],),
+        )
+
+    approved = module.review(
+        CriterionReviewCommand(
+            question_id=1,
+            version_id=version["version_id"],
+            expected_revision=proposed["revision"],
+            action="approve",
+            actor_ref="local_teacher",
+            reason="判定点够用，缺图只提醒",
+        ),
+        question=question,
+    )
+    current = approved["current_version"]
+    assert isinstance(current, dict)
+    assert approved["available"] is True
+    assert current["status"] == "approved"
 
 
 def test_teacher_review_creates_immutable_versions_and_moves_only_head(

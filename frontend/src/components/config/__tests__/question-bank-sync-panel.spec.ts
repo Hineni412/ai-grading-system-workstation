@@ -328,7 +328,7 @@ describe('QuestionBankSyncPanel', () => {
 
     expect(host.textContent).toContain('当前待审核新词 9 个')
     expect(host.textContent).not.toContain('含 1 个新标签')
-    expect(host.textContent).toContain('试卷已入库，标签与训练判定点已保存')
+    expect(host.textContent).toContain('试卷已入库，标签与判定点已保存')
     expect(host.textContent).not.toContain('试卷已入库并完成标签治理')
     expect(host.textContent).not.toContain('待处理：Q1')
     app.unmount()

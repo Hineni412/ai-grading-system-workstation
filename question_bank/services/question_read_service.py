@@ -63,6 +63,23 @@ ANALYSIS_TAG_TYPES = (
     "exam_scope",
 )
 
+_CRITERIA_NEEDS_REVIEW_SQL = """
+EXISTS (
+    SELECT 1
+    FROM training_criterion_heads head
+    JOIN training_criterion_versions version
+      ON version.version_id = head.current_version_id
+    WHERE head.question_id = {qid}
+      AND (
+            version.status IN ('rejected', 'stale')
+            OR (
+                version.status = 'proposed'
+                AND COALESCE(version.quality_status, '') <> 'passed'
+            )
+      )
+)
+"""
+
 _IMAGE_MARKER_PATTERN = re.compile(
     r"\[\[IMAGE:(?P<path>.*?)\]\]",
     re.DOTALL | re.IGNORECASE,
@@ -476,6 +493,7 @@ class QuestionReadFilters:
     tag_status: str = "all"
     analysis_status: str = "all"
     sort: str = "newest"
+    criteria_needs_review: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1265,6 +1283,11 @@ class QuestionBankReadService:
                     END) AS criteria_question_count,
                     COUNT(CASE
                         WHEN {visible_question_sql}
+                         AND {_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id")}
+                        THEN 1
+                    END) AS criteria_needs_review_count,
+                    COUNT(CASE
+                        WHEN {visible_question_sql}
                          AND ts.core_tag_count = 3
                          AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
                          AND EXISTS (
@@ -1465,6 +1488,10 @@ class QuestionBankReadService:
                 current_knowledge=self.current_knowledge,
             )
             revisions = question_revisions(conn, [int(row["id"]) for row in rows])
+            review_ids = _load_criteria_needs_review_ids(
+                conn,
+                [int(row["id"]) for row in rows],
+            )
 
         items = [
             self._public_question_with_rich_content(
@@ -1474,6 +1501,8 @@ class QuestionBankReadService:
             )
             for row in rows
         ]
+        for item in items:
+            item["criteria_needs_review"] = int(item["id"]) in review_ids
         return QuestionReadPage(
             items=items,
             total=total,
@@ -1849,6 +1878,10 @@ class QuestionBankReadService:
                 conn,
                 [candidate_id for _, _, candidate_id, _, _ in selected],
             )
+            review_ids = _load_criteria_needs_review_ids(
+                conn,
+                [candidate_id for _, _, candidate_id, _, _ in selected],
+            )
 
         items: list[dict[str, Any]] = []
         for score, _, candidate_id, candidate, reasons in selected:
@@ -1857,6 +1890,7 @@ class QuestionBankReadService:
                 tags_by_question.get(candidate_id, []),
                 revision=revisions[candidate_id],
             )
+            item["criteria_needs_review"] = candidate_id in review_ids
             item["similarity_score"] = score
             item["similarity_reasons"] = reasons
             items.append(item)
@@ -1910,12 +1944,14 @@ class QuestionBankReadService:
             )
             previews = _load_question_previews(conn, int(question_id))
             revision = question_revision(conn, int(question_id))
+            review_ids = _load_criteria_needs_review_ids(conn, [int(question_id)])
 
         item = self._public_question_with_rich_content(
             row,
             tags,
             revision=revision,
         )
+        item["criteria_needs_review"] = int(question_id) in review_ids
         item["page_range"] = row["page_range"]
         item["assets"] = [
             {
@@ -2058,6 +2094,7 @@ class QuestionBankReadService:
                 current_knowledge=self.current_knowledge,
             )
             revisions = question_revisions(conn, list(rows_by_id))
+            review_ids = _load_criteria_needs_review_ids(conn, list(rows_by_id))
 
         items: list[dict[str, Any]] = []
         for question_id in ordered_ids:
@@ -2069,6 +2106,7 @@ class QuestionBankReadService:
                 tags_by_question.get(question_id, []),
                 revision=revisions[question_id],
             )
+            item["criteria_needs_review"] = question_id in review_ids
             if include_storage_fields:
                 raw_question_text = str(row["question_text"] or "")
                 raw_answer_text = (
@@ -2359,6 +2397,8 @@ def _question_filter_parts(
             else f"NOT {complete_sql}"
         )
         params.extend(CORE_ANALYSIS_TAG_TYPES)
+    if filters.criteria_needs_review:
+        where.append(_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id"))
     return joins, where, params
 
 
@@ -2886,6 +2926,34 @@ def _load_page_tags(
     return tags_by_question
 
 
+def _load_criteria_needs_review_ids(
+    conn: sqlite3.Connection,
+    question_ids: Iterable[int],
+) -> set[int]:
+    clean_ids = [int(question_id) for question_id in question_ids if int(question_id) > 0]
+    if not clean_ids:
+        return set()
+    placeholders = ", ".join("?" for _ in clean_ids)
+    rows = conn.execute(
+        f"""
+        SELECT head.question_id
+        FROM training_criterion_heads head
+        JOIN training_criterion_versions version
+          ON version.version_id = head.current_version_id
+        WHERE head.question_id IN ({placeholders})
+          AND (
+                version.status IN ('rejected', 'stale')
+                OR (
+                    version.status = 'proposed'
+                    AND COALESCE(version.quality_status, '') <> 'passed'
+                )
+          )
+        """,
+        clean_ids,
+    ).fetchall()
+    return {int(row["question_id"]) for row in rows}
+
+
 def _public_question_item(
     row: sqlite3.Row,
     tags: list[dict[str, Any]],
@@ -2918,6 +2986,7 @@ def _public_question_item(
             else None
         ),
         "needs_review": bool(row["needs_review"]),
+        "criteria_needs_review": False,
         "has_images": bool(row["has_images"]) or bool(asset_paths),
         "needs_image_review": bool(row["needs_image_review"]),
         "created_at": row["created_at"],

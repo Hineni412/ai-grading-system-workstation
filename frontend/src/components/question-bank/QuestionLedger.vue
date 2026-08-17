@@ -155,6 +155,10 @@ function closeSimilar(): void {
               )"
             >
             <span>第 {{ question.question_number || question.id }} 题</span>
+            <span
+              v-if="question.criteria_needs_review"
+              class="qb-question-card__review-flag"
+            >判定点待审核</span>
           </label>
           <div class="qb-question-card__source">
             <strong>{{ question.paper_title || '未命名试卷' }}</strong>

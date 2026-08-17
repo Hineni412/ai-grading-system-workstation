@@ -109,7 +109,64 @@ describe('question content renderer paper media flow', () => {
     const host = mountRenderer(false)
 
     expect(host.querySelector('.question-content__media-strip')).toBeNull()
+    expect(host.querySelector('.question-content__option-grid')).toBeNull()
     expect(host.querySelectorAll('.question-content__block')).toHaveLength(4)
+  })
+})
+
+describe('question content renderer option grid', () => {
+  function mountBlocks(
+    blocks: QuestionBankRichBlock[],
+    paperMediaFlow = false,
+  ): HTMLElement {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp({
+      render: () => h(QuestionContentRenderer, { blocks, paperMediaFlow }),
+    })
+    app.mount(host)
+    mounted.push(app)
+    return host
+  }
+
+  it('keeps four option images in one equal grid instead of wrapping', () => {
+    const host = mountBlocks([
+      textBlock('A. B. C. D.'),
+      imageBlock('A', 0),
+      imageBlock('B', 1),
+      imageBlock('C', 2),
+      imageBlock('D', 3),
+    ])
+    const grid = host.querySelector<HTMLElement>('.question-content__option-grid')
+
+    expect(grid).not.toBeNull()
+    expect(grid!.getAttribute('data-option-count')).toBe('4')
+    expect(grid!.querySelectorAll('img')).toHaveLength(4)
+    expect(host.querySelector('.question-content__media-strip')).toBeNull()
+  })
+
+  it('groups four unlabeled option images even in ordinary previews', () => {
+    const host = mountBlocks([
+      imageBlock('A', 0),
+      imageBlock('B', 1),
+      imageBlock('C', 2),
+      imageBlock('D', 3),
+    ], false)
+    const grid = host.querySelector<HTMLElement>('.question-content__option-grid')
+
+    expect(grid).not.toBeNull()
+    expect(grid!.getAttribute('data-option-count')).toBe('4')
+    expect(host.querySelector('.question-content__media-strip')).toBeNull()
+  })
+
+  it('does not treat two option images as a four-up grid', () => {
+    const host = mountBlocks([
+      imageBlock('A', 0),
+      imageBlock('B', 1),
+    ], true)
+
+    expect(host.querySelector('.question-content__option-grid')).toBeNull()
+    expect(host.querySelectorAll('.question-content__media-strip')).toHaveLength(1)
   })
 })
 

@@ -62,7 +62,7 @@ function jobCompletionNote(job: JobResponse): string {
   if (job.job_type === 'question_import') return '试卷已入库，尚未执行标签与判定点分析。'
   const reviewCount = safeCount(job.result, 'criteria_needs_review_count')
   if (reviewCount > 0) return `${reviewCount} 道题的判定点需要审核，本任务不计为分析成功。`
-  if (job.result.outcome === 'complete') return '标签、解题证据和训练判定点均已完成。'
+  if (job.result.outcome === 'complete') return '标签和判定点均已完成。'
   if (job.result.outcome === 'partial') return '部分完成，仍有未完成或待审核项目。'
   return '分析任务已结束，请核对各项结果。'
 }

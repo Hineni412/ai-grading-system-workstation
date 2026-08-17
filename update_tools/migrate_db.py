@@ -104,6 +104,9 @@ _APPROVED_TABLE_REBUILDS = {
     "029_allow_solution_evidence_v2": frozenset(
         {"question_solution_evidence_versions"}
     ),
+    "032_allow_judgment_points_v1": frozenset(
+        {"training_criterion_versions"}
+    ),
     "019_pptx_execution_source_snapshots": frozenset(
         {"pptx_execution_runs"}
     ),
