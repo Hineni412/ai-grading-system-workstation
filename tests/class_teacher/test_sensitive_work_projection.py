@@ -40,15 +40,15 @@ def test_same_sensitive_aggregate_has_one_fixed_title_projection(tmp_path: Path)
         token=token,
         operation_id="projection-record-create-001",
         subject_id=str(subject["subject_id"]),
-        record_kind="teacher_observation",
+        record_kind="fact",
         content="合成观察正文不应进入普通库。",
         scene="合成课堂",
         source="教师观察",
         basis=None,
         category="learning",
         observed_at="2026-08-01T08:00:00+00:00",
-        review_at="2026-08-10T08:00:00+00:00",
-        expires_at="2026-09-01T08:00:00+00:00",
+        review_at=None,
+        expires_at=None,
         counterexample=None,
     )
     first = service.projections.upsert(

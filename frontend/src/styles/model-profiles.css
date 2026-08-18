@@ -290,6 +290,34 @@
   margin-inline-end: var(--space-1);
 }
 
+.model-profile-batch {
+  min-width: 0;
+  margin: var(--space-5);
+  padding: 0;
+  border: 0;
+  border-block-start: var(--border-width) solid var(--color-border-default);
+}
+
+.model-profile-batch legend {
+  padding: var(--space-4) 0 0;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-panel-title);
+  font-weight: var(--font-weight-semibold);
+}
+
+.model-profile-batch .model-profile-speed-option {
+  max-width: 420px;
+  margin-block-start: var(--space-4);
+}
+
+.model-profile-batch__endpoint {
+  max-width: 420px;
+  margin-block-start: var(--space-3);
+  padding: var(--space-4);
+  border-inline-start: var(--border-selected-width) solid var(--color-accent);
+  background: var(--color-bg-subtle);
+}
+
 .model-profile-runtime {
   margin-block-start: var(--space-3);
   padding: var(--space-4);

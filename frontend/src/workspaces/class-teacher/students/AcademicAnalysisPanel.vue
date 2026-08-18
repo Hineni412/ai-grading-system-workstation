@@ -46,6 +46,11 @@ async function load() {
   await nextTick(); render()
 }
 function chart(element: HTMLElement | null, option: Record<string, unknown>) { if (!element) return; const instance = init(element); instance.setOption(option); instance.on('click', (params) => { const data = params.data as unknown; if (data && typeof data === 'object' && !Array.isArray(data) && 'evidenceId' in data && typeof data.evidenceId === 'string') void inspect(data.evidenceId) }); charts.push(instance) }
+function termShort(session: { grade?: string | null; term?: string | null }): string {
+  const grade = (session.grade ?? '').replace('年级', '')
+  const half = session.term === '上学期' ? '上' : session.term === '下学期' ? '下' : ''
+  return grade && half ? `${grade}${half}` : ''
+}
 function render() {
   charts.splice(0).forEach((item) => item.dispose())
   if (!analysis.value) return
@@ -79,9 +84,16 @@ function render() {
     }),
   ])
   pairCount.value = pairs.length
+  const pairLabel = (pair: (typeof pairs)[number]) => {
+    if (typeof pair.from_rank !== 'number' || typeof pair.to_rank !== 'number') return pair.subject_name
+    const delta = pair.rank_delta ?? 0
+    const change = delta > 0 ? `进步${delta}名` : delta < 0 ? `退步${-delta}名` : '名次持平'
+    const scope = pair.rank_scope === 'grade' ? '年级' : '班级'
+    return `${pair.subject_name}：前次${scope}第${pair.from_rank}名 → 本次${scope}第${pair.to_rank}名（${change}）`
+  }
   chart(rankChart.value, { ...common, legend: {}, xAxis: { type: 'category' }, yAxis: { type: 'value', min: 0, max: 1, name: '相对位次' }, series: rankSeries })
-  chart(pairChart.value, { ...common, tooltip: { trigger: 'item' }, xAxis: { type: 'value', min: 0, max: 1, name: '相对位次' }, yAxis: { type: 'category', data: pairs.map((item) => item.subject_name) }, series: [{ name: '前次', type: 'scatter', symbol: 'circle', data: pairs.map((item, index) => { const points=visibleSeries.find((series)=>series.subject_name===item.subject_name)?.points ?? []; return { value:[item.from,index], evidenceId:points[points.length-2]?.evidence_version_id } }) }, { name: '本次', type: 'scatter', symbol: 'diamond', data: pairs.map((item, index) => { const points=visibleSeries.find((series)=>series.subject_name===item.subject_name)?.points ?? []; return { value:[item.to,index], evidenceId:points[points.length-1]?.evidence_version_id } }) }] })
-  chart(timelineChart.value, { ...common, tooltip: { trigger:'item', formatter:(params:{data?:{label?:string}})=>params.data?.label ?? '' }, xAxis: { type: 'time' }, yAxis: { type: 'category', data: ['证据'] }, series: [{ type: 'scatter', symbolSize: 15, label:{show:true,position:'top',formatter:(params:{data?:{stateText?:string}})=>params.data?.stateText ?? ''}, data: filteredSessions.value.flatMap((session) => session.evidence.map((point) => ({ value:[point.occurred_on,0], evidenceId:point.evidence_version_id, stateText:stateLabels[point.result_state] ?? point.result_state, label:`${session.title} · ${point.subject_name} · ${stateLabels[point.result_state] ?? point.result_state}`, name:session.title, symbol:stateSymbols[point.result_state] ?? 'diamond', itemStyle:{color:session.metadata_complete ? '#356859' : '#9b6a2b'} }))) }] })
+  chart(pairChart.value, { ...common, tooltip: { trigger: 'item', formatter: (params: { data?: { label?: string } }) => params.data?.label ?? '' }, xAxis: { type: 'value', min: 0, max: 1, name: '相对位次' }, yAxis: { type: 'category', data: pairs.map((item) => item.subject_name) }, series: [{ name: '前次', type: 'scatter', symbol: 'circle', data: pairs.map((item, index) => { const points=visibleSeries.find((series)=>series.subject_name===item.subject_name)?.points ?? []; return { value:[item.from,index], evidenceId:points[points.length-2]?.evidence_version_id, label:pairLabel(item) } }) }, { name: '本次', type: 'scatter', symbol: 'diamond', data: pairs.map((item, index) => { const points=visibleSeries.find((series)=>series.subject_name===item.subject_name)?.points ?? []; return { value:[item.to,index], evidenceId:points[points.length-1]?.evidence_version_id, label:pairLabel(item) } }) }] })
+  chart(timelineChart.value, { ...common, tooltip: { trigger:'item', formatter:(params:{data?:{label?:string}})=>params.data?.label ?? '' }, xAxis: { type: 'time' }, yAxis: { type: 'category', data: ['证据'] }, series: [{ type: 'scatter', symbolSize: 15, label:{show:true,position:'top',formatter:(params:{data?:{stateText?:string}})=>params.data?.stateText ?? ''}, data: filteredSessions.value.flatMap((session) => session.evidence.map((point) => ({ value:[point.occurred_on,0], evidenceId:point.evidence_version_id, stateText:stateLabels[point.result_state] ?? point.result_state, label:`${termShort(session) ? `${termShort(session)} · ` : ''}${session.title} · ${point.subject_name} · ${stateLabels[point.result_state] ?? point.result_state}`, name:session.title, symbol:stateSymbols[point.result_state] ?? 'diamond', itemStyle:{color:session.metadata_complete ? '#356859' : '#9b6a2b'} }))) }] })
 }
 async function inspect(evidenceId: string) { selectedEvidence.value = await studentR1Api.evidenceSnapshot(evidenceId) as unknown as EvidenceSnapshot }
 async function decide(card: AttentionCard) { if (!analysis.value || !reason.value.trim()) return; await studentR1Api.decideAttention(card, analysis.value, { decision: decision.value, reason: reason.value, reviewAt: decision.value === 'no_action' ? null : reviewAt.value || null, planId: null }); message.value = '教师决定已保存；需要跟进时只生成一条匿名待办。'; await load() }

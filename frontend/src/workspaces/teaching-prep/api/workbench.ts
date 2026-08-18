@@ -276,15 +276,22 @@ export interface AdaptationTraceResult {
   preview_url: string | null
 }
 
+export interface AdaptationTraceFinding {
+  finding: string
+  category: string
+  pages: number[]
+}
+
 export interface AdaptationTraceEvent {
   round: number
-  phase: 'started' | 'thinking' | 'tool_call' | 'tool_result' | 'round_done' | 'final_accepted' | 'failed' | string
+  phase: 'started' | 'thinking' | 'tool_call' | 'tool_result' | 'round_done' | 'final_accepted' | 'failed' | 'findings_ready' | string
   summary: string
   thinking_excerpt: string | null
   tool: AdaptationTraceTool | null
   result: AdaptationTraceResult | null
   model_calls_used: number
   model_calls_max: number
+  findings?: AdaptationTraceFinding[]
 }
 
 export interface AdaptationTrace {
@@ -628,7 +635,8 @@ function trustedPptxVersion(payload: unknown): TrustedPptxVersion {
   if (!isRecord(payload) || typeof payload.file_verified !== 'boolean') {
     throw new Error('Invalid trusted PPTX version')
   }
-  const { file_verified: _safeVerificationFlag, ...safePayload } = payload
+  const safePayload = { ...payload }
+  delete safePayload.file_verified
   assertNoPathLikeKeys(safePayload)
   return payload as unknown as TrustedPptxVersion
 }
@@ -700,7 +708,25 @@ function adaptationTraceEvent(payload: unknown): AdaptationTraceEvent {
     result: payload.result == null ? null : adaptationTraceResult(payload.result),
     model_calls_used: payload.model_calls_used,
     model_calls_max: payload.model_calls_max,
+    findings: adaptationTraceFindings(payload.findings),
   }
+}
+
+function adaptationTraceFindings(payload: unknown): AdaptationTraceFinding[] | undefined {
+  if (payload == null) return undefined
+  if (!Array.isArray(payload)) throw new Error('Invalid adaptation trace event')
+  return payload.map((item) => {
+    if (
+      !isRecord(item)
+      || typeof item.finding !== 'string'
+      || typeof item.category !== 'string'
+      || !Array.isArray(item.pages)
+      || item.pages.some(page => typeof page !== 'number')
+    ) {
+      throw new Error('Invalid adaptation trace event')
+    }
+    return { finding: item.finding, category: item.category, pages: item.pages }
+  })
 }
 
 function adaptationTraceTool(payload: unknown): AdaptationTraceTool {

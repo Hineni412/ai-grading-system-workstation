@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from contextlib import closing
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -204,6 +204,103 @@ class StudentCardService:
             "existing_records": summary["items"],
             "support_plans": plans["items"],
         }
+
+    def evaluate_followup_reminders(
+        self,
+        *,
+        token: str,
+        stale_days: int = 14,
+    ) -> dict[str, int]:
+        """Lazily project stale "仍需了解" profiles into the work graph.
+
+        档案当前认识里仍有待了解问题、且最后确认时间超过 stale_days 天时，
+        生成「学生支持待跟进」提醒，到期日固定为「最后确认时间 + stale_days 天」。
+        幂等：同一确认时间只建一张卡；教师「不再跟进」后，在档案再次更新前
+        不会重复出现；档案更新后按新的确认时间重新评估。
+        """
+        if not self.database.exists:
+            # 普通工作读取不得创建加密库；没有加密库也不存在档案可评估。
+            return {"evaluated": 0, "enqueued": 0}
+        vmk = self._key_provider(token)
+        now = datetime.now(UTC)
+        evaluated = 0
+        enqueued = 0
+        subjects = self.support.list_subjects(token=token)["items"]
+        for subject in subjects:
+            if not isinstance(subject, dict):
+                continue
+            subject_id = str(subject["subject_id"])
+            evaluated += 1
+            with closing(self.database.connect()) as connection:
+                row = connection.execute(
+                    """
+                    SELECT payload_object_id FROM student_card_entries
+                    WHERE subject_id = ? AND state = 'active'
+                    ORDER BY created_at DESC, entry_id DESC LIMIT 1
+                    """,
+                    (subject_id,),
+                ).fetchone()
+                open_questions: list[object] = []
+                confirmed: datetime | None = None
+                if row is not None:
+                    payload, _revision = self.repository.get(
+                        connection,
+                        vmk=vmk,
+                        object_id=str(row["payload_object_id"]),
+                    )
+                    profile = self._profile_from_payload(payload)
+                    open_questions = list(profile.get("open_questions") or [])
+                    confirmed_raw = str(
+                        payload.get("teacher_confirmed_at") or ""
+                    ).strip()
+                    if confirmed_raw:
+                        confirmed = datetime.fromisoformat(confirmed_raw)
+                        if confirmed.tzinfo is None:
+                            confirmed = confirmed.replace(tzinfo=UTC)
+                groups = connection.execute(
+                    """
+                    SELECT group_id, occurrence_id, state
+                    FROM sensitive_work_groups
+                    WHERE source_kind = 'student_support'
+                      AND source_id = ?
+                      AND occurrence_id LIKE 'profile-stale-%'
+                    """,
+                    (subject_id,),
+                ).fetchall()
+            desired: str | None = None
+            due_date: str | None = None
+            if (
+                open_questions
+                and confirmed is not None
+                and now - confirmed >= timedelta(days=stale_days)
+            ):
+                desired = f"profile-stale-{confirmed.date().isoformat()}"
+                due_date = (
+                    confirmed + timedelta(days=stale_days)
+                ).date().isoformat()
+            for group in groups:
+                if str(group["state"]) == "cancelled":
+                    continue
+                if desired is not None and str(group["occurrence_id"]) == desired:
+                    continue
+                self.projections.tombstone(
+                    token=token,
+                    group_id=str(group["group_id"]),
+                )
+            if desired is not None and not any(
+                str(group["occurrence_id"]) == desired for group in groups
+            ):
+                self.projections.upsert(
+                    token=token,
+                    source_kind="student_support",
+                    source_id=subject_id,
+                    occurrence_id=desired,
+                    state="pending",
+                    due_date=due_date,
+                )
+                enqueued += 1
+        self.projections.drain(token=token)
+        return {"evaluated": evaluated, "enqueued": enqueued}
 
     def validate_profile_update(self, value: object) -> dict[str, object]:
         if not isinstance(value, dict):

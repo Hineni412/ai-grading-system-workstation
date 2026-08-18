@@ -30,21 +30,20 @@ def create_work_router() -> APIRouter:
         cursor: str | None = Query(default=None),
     ):
         _no_store(response)
-        return _call(
-            lambda: (
-                _service(request).work.read(
-                    view=view,
-                    anchor=anchor,
-                    cursor=cursor,
-                )
-                if view is not None
-                else _service(request).work.query(
-                    start_date=start_date,
-                    end_date=end_date,
-                    as_of=as_of,
-                )
+
+        def _read() -> dict[str, object]:
+            service = _service(request)
+            # 惰性评估「仍需了解」老化提醒；幂等，不会重复造卡。
+            service.student_cards.evaluate_followup_reminders(token="")
+            if view is not None:
+                return service.work.read(view=view, anchor=anchor, cursor=cursor)
+            return service.work.query(
+                start_date=start_date,
+                end_date=end_date,
+                as_of=as_of,
             )
-        )
+
+        return _call(_read)
 
     @router.get("/nodes/{node_id}", response_model=WorkNodeDetailResponse)
     def node_detail(node_id: str, request: Request, response: Response):

@@ -6,6 +6,7 @@ import binascii
 from fastapi import APIRouter, Query, Request, Response
 
 from ..errors import VaultError
+from ..vault_service import VaultService
 from .router import (
     _call,
     _no_store,
@@ -21,6 +22,7 @@ from .support_schemas import (
     EvidenceBatchRequest,
     EvidenceLinkRequest,
     EvidenceSupersedeRequest,
+    FollowUpPostponeRequest,
     SpreadsheetPreviewRequest,
     OperationRequest,
     QuickConfirmRequest,
@@ -35,6 +37,78 @@ from .support_schemas import (
     SupportPlanCompleteRequest,
     SupportPlanCreateRequest,
 )
+
+
+def _roster_preview_identity(
+    service: VaultService,
+    subject_id: str,
+) -> dict[str, object]:
+    identity = service.class_roster.roster_identity_for_ref(
+        roster_ref=subject_id,
+    )
+    if identity is None:
+        raise VaultError(
+            "support_subject_not_found", "学生档案不存在", status_code=404
+        ) from None
+    return identity
+
+
+def _workspace_header(service: VaultService, subject_id: str) -> dict[str, object]:
+    try:
+        return service.student_directory.open(token="", subject_id=subject_id)
+    except VaultError as exc:
+        if exc.code != "support_subject_not_found":
+            raise
+    identity = _roster_preview_identity(service, subject_id)
+    linked_subject_id = identity.get("subject_id")
+    if linked_subject_id:
+        return service.student_directory.open(
+            token="", subject_id=str(linked_subject_id)
+        )
+    return {
+        "subject_id": subject_id,
+        "source_student_id": str(identity["source_student_id"]),
+        "display_name": str(identity["display_name"]),
+        "class_label": str(identity["class_label"]),
+        "support_record_count": 0,
+        "support_plan_count": 0,
+        "attention_pending_count": 0,
+        "confirmed_entry_count": 0,
+        "affair_count": 0,
+        "related_affairs": [],
+        "projection_state": "none",
+        "last_confirmed_at": None,
+        "profile_state": "not_created",
+    }
+
+
+def _student_card(service: VaultService, subject_id: str) -> dict[str, object]:
+    try:
+        return service.student_cards.get_card(token="", subject_id=subject_id)
+    except VaultError as exc:
+        if exc.code != "support_subject_not_found":
+            raise
+    identity = _roster_preview_identity(service, subject_id)
+    linked_subject_id = identity.get("subject_id")
+    if linked_subject_id:
+        return service.student_cards.get_card(
+            token="", subject_id=str(linked_subject_id)
+        )
+    return {
+        "subject": {
+            "subject_id": subject_id,
+            "revision": 0,
+            "state": "not_created",
+            "source_student_id": str(identity["source_student_id"]),
+            "display_name": str(identity["display_name"]),
+            "class_label": str(identity["class_label"]),
+        },
+        "entries": [],
+        "current_profile": None,
+        "existing_records": [],
+        "support_plans": [],
+        "profile_state": "not_created",
+    }
 
 
 def create_support_router() -> APIRouter:
@@ -86,6 +160,32 @@ def create_support_router() -> APIRouter:
             )
         )
 
+    @router.get("/support/overview")
+    def support_overview(
+        request: Request,
+        response: Response,
+        limit: int = 50,
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).class_overview.support_overview(
+                token="",
+                limit=limit,
+            )
+        )
+
+    @router.get("/evidence/overview")
+    def evidence_overview(
+        request: Request,
+        response: Response,
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).class_overview.academic_overview(
+                token=""
+            )
+        )
+
     @router.get("/support/subjects/{subject_id}/workspace-header")
     def workspace_header(
         subject_id: str,
@@ -94,10 +194,7 @@ def create_support_router() -> APIRouter:
     ):
         _no_store(response)
         return _call(
-            lambda: _service(request).student_directory.open(
-                token="",
-                subject_id=subject_id,
-            )
+            lambda: _workspace_header(_service(request), subject_id)
         )
 
     @router.get("/support/subjects/{subject_id}/student-card")
@@ -108,10 +205,7 @@ def create_support_router() -> APIRouter:
     ):
         _no_store(response)
         return _call(
-            lambda: _service(request).student_cards.get_card(
-                token="",
-                subject_id=subject_id,
-            )
+            lambda: _student_card(_service(request), subject_id)
         )
 
     @router.get("/support/subjects/{subject_id}/academic-analysis")
@@ -355,6 +449,34 @@ def create_support_router() -> APIRouter:
             token="",
             support_plan_id=support_plan_id,
             **body.model_dump(),
+        ))
+
+    @router.post("/support/follow-ups/{projection_id}/postpone")
+    def postpone_follow_up(
+        projection_id: str,
+        request: Request,
+        body: FollowUpPostponeRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).projections.postpone(
+            token="",
+            projection_id=projection_id,
+            due_date=body.due_date,
+        ))
+
+    @router.post("/support/follow-ups/{projection_id}/dismiss")
+    def dismiss_follow_up(
+        projection_id: str,
+        request: Request,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).projections.dismiss(
+            token="",
+            projection_id=projection_id,
         ))
 
     @router.post("/support/subjects/{subject_id}/project-affair")

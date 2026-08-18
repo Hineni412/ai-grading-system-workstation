@@ -11,6 +11,7 @@ from backend.workspaces.ai_tasks.models import (
 )
 
 from ..errors import VaultError
+from ..roster_ref import task_safe_ref_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,7 +401,7 @@ def _ref(value: object) -> OpaqueRef:
         raise ValueError("workspace AI reference is invalid")
     return OpaqueRef(
         kind=str(value.get("kind") or ""),
-        id=str(value.get("id") or ""),
+        id=task_safe_ref_id(str(value.get("id") or "")),
         revision=str(value.get("revision") or ""),
     )
 

@@ -26,6 +26,10 @@ class ModelProfileUpdateRequest(_ModelProfileModel):
     ] | None = None
     max_concurrent_requests: int | None = Field(default=None, ge=1, le=100)
     requests_per_minute: int | None = Field(default=None, ge=1, le=10_000)
+    batch_enabled: bool | None = None
+    batch_model: str | None = Field(default=None, max_length=200)
+    batch_base_url: str | None = Field(default=None, max_length=2048)
+    batch_api_key: str | None = Field(default=None, max_length=8192)
 
 
 class ModelProfileResponse(_ModelProfileModel):
@@ -42,6 +46,10 @@ class ModelProfileResponse(_ModelProfileModel):
     request_speed_mode: Literal["automatic", "conservative", "custom"]
     max_concurrent_requests: int
     requests_per_minute: int
+    batch_enabled: bool
+    batch_model: str
+    batch_base_url: str
+    has_batch_api_key: bool
 
 
 class ModelTaskBinding(_ModelProfileModel):

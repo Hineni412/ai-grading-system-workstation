@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import AppButton from '@/components/design-system/AppButton.vue'
 import StatusBadge from '@/components/design-system/StatusBadge.vue'
+import { followUpApi } from '../api/support'
 import type { WorkNode } from '../api/work'
 import type { OrdinaryWorkModule } from './createOrdinaryWorkModule'
 
@@ -16,6 +17,7 @@ const expectedCount = ref(0)
 const receivedCount = ref(0)
 const needsReviewCount = ref(0)
 const confirmingCancel = ref(false)
+const confirmingDismiss = ref(false)
 const detail = computed(() => props.module.selected.value)
 
 watch(detail, (value) => {
@@ -26,6 +28,7 @@ watch(detail, (value) => {
   needsReviewCount.value = value?.collection_summary?.needs_review_count ?? 0
   message.value = ''
   confirmingCancel.value = false
+  confirmingDismiss.value = false
 })
 
 async function run(node: WorkNode, command: string, fields: Record<string, unknown> = {}) {
@@ -46,6 +49,40 @@ async function run(node: WorkNode, command: string, fields: Record<string, unkno
     }
   } catch {
     message.value = '操作没有完成，事项可能已在其他页面发生变化。请刷新后再试。'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function postponeFollowUp() {
+  const projectionId = detail.value?.projection_id
+  if (!projectionId || !dueDate.value || busy.value) return
+  busy.value = true
+  message.value = ''
+  try {
+    await followUpApi.postpone(projectionId, dueDate.value)
+    await props.module.load(props.module.snapshot.value?.view ?? 'today')
+    if (detail.value) await props.module.inspect(detail.value.node)
+    message.value = '提醒已延后；到那一天会再次出现在本周事项里。学生档案里的复查日期不变。'
+  } catch {
+    message.value = '延后没有完成，提醒可能已关闭或变化。请刷新后再试。'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function dismissFollowUp() {
+  const projectionId = detail.value?.projection_id
+  if (!projectionId || busy.value) return
+  busy.value = true
+  message.value = ''
+  try {
+    await followUpApi.dismiss(projectionId)
+    confirmingDismiss.value = false
+    await props.module.load(props.module.snapshot.value?.view ?? 'today')
+    props.module.clearSelection()
+  } catch {
+    message.value = '没有关闭成功，请刷新后再试。'
   } finally {
     busy.value = false
   }
@@ -73,6 +110,18 @@ async function run(node: WorkNode, command: string, fields: Record<string, unkno
         :disabled="busy"
         @click="run(detail.node, 'open_restricted_projection')"
       >打开相关学生事项</AppButton>
+
+      <template v-if="detail.node.classification === 'restricted_projection' && detail.node.projection_type === 'student_support'">
+        <label>
+          <span>延后提醒</span>
+          <span class="inline"><input v-model="dueDate" type="date"><AppButton variant="secondary" :disabled="busy || !dueDate" @click="postponeFollowUp">延后到这一天</AppButton></span>
+          <small class="muted">只调整这次提醒的时间；学生档案里的复查日期不变。</small>
+        </label>
+        <div class="command-row">
+          <AppButton v-if="!confirmingDismiss" variant="secondary" :disabled="busy" @click="confirmingDismiss = true">不再跟进</AppButton>
+          <template v-else><span class="confirm-copy">确定不再跟进？学生档案内容不受影响。</span><AppButton variant="danger" :disabled="busy" @click="dismissFollowUp">确认不再跟进</AppButton><AppButton variant="ghost" :disabled="busy" @click="confirmingDismiss = false">保留提醒</AppButton></template>
+        </div>
+      </template>
 
       <template v-else>
         <div v-if="detail.node.status === 'cancelled'" class="restore-panel">

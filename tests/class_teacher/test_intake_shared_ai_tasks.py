@@ -11,6 +11,8 @@ import pytest
 
 from backend.class_teacher.errors import VaultError
 from backend.class_teacher.intake.ports import PreparedTask, SharedWorkspaceAITaskPort
+from backend.class_teacher.model_approval import ModelResponseTruncatedError
+from backend.class_teacher.roster_ref import task_safe_ref_id
 from backend.class_teacher.vault_service import VaultService
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
@@ -1108,8 +1110,9 @@ def test_student_target_conflict_rebinds_shared_handoff_and_adopts_once(tmp_path
         )
         rebound_common = common.get(task_id=task_id).handoffs[0]
         assert rebound_common.draft_ref.revision == str(rebound["draft_revision"])
+        # 共同 AI Task 层只保存不透明引用：稳定学籍标识跨界后以哈希存储。
         assert rebound_common.subject_refs == (
-            OpaqueRef("student", str(current["id"]), str(current["revision"])),
+            OpaqueRef("student", task_safe_ref_id(str(current["id"])), str(current["revision"])),
         )
 
         def adopt_once(_index: int):
@@ -1211,5 +1214,38 @@ def test_plan_validation_failure_reopens_both_layers_and_can_be_corrected(tmp_pa
         with closing(domain.database.connect()) as connection:
             assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
+    finally:
+        manager.shutdown()
+
+
+def test_truncated_model_output_marks_turn_distinctly_without_resend(
+    tmp_path: Path,
+) -> None:
+    domain, common, manager, configured = _wired(
+        tmp_path,
+        ModelResponseTruncatedError("synthetic length-capped response"),
+    )
+    try:
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="合成追问轮完整修订稿请求",
+            operation_id="shared-truncated-result-001",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+
+        finished = common.get(task_id=task_id)
+        restored = domain.intake.get_conversation(
+            str(conversation["conversation_id"])
+        )
+
+        assert finished.status == "invalid_result"
+        assert restored["state"] == "failed"
+        assert restored["turns"][-1]["task_state"] == "truncated_result"
+        assert len(configured.calls) == 1
     finally:
         manager.shutdown()

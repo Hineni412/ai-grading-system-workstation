@@ -158,7 +158,7 @@ def test_existing_main_class_teacher_vault_accepts_new_tail_migration(
         logger_override=logging.getLogger("test.class-teacher.upgrade-migration"),
     )
 
-    assert result.applied[-1] == "025_handoff_adoption_receipts"
+    assert result.applied[-1] == "027_roster_memberships_stable_keys"
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT name FROM sqlite_master "

@@ -122,6 +122,84 @@ def test_csv_preview_stays_in_memory_and_preserves_zero_and_absence_text() -> No
     assert preview["temporary_file_created"] is False
 
 
+def test_xlsx_preview_locates_two_level_header_after_title_row() -> None:
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "合成成绩表"
+    worksheet.append(["合成班级-全学科成绩汇总-标题行", None, None, None, None])
+    worksheet.append(["序号", "姓名", "语文", None, "数学", None])
+    worksheet.append([None, None, "得分", "等级", "得分", "等级"])
+    worksheet.append([1, "合成学生甲", 96.5, "A+", 88, "A"])
+    worksheet.append([2, "合成学生乙", 0, "缺考", 74.5, "B"])
+    buffer = BytesIO()
+    workbook.save(buffer)
+
+    preview = ConfirmedSpreadsheetAdapter.preview(
+        file_name="synthetic-results.xlsx",
+        content=buffer.getvalue(),
+    )
+    assert preview["headers"] == [
+        "序号",
+        "姓名",
+        "语文-得分",
+        "语文-等级",
+        "数学-得分",
+        "数学-等级",
+    ]
+    assert preview["preview_row_count"] == 2
+    assert preview["rows"][0]["姓名"] == "合成学生甲"
+    assert preview["rows"][0]["语文-得分"] == "96.5"
+    assert preview["rows"][1]["数学-得分"] == "74.5"
+    assert preview["rows"][1]["语文-等级"] == "缺考"
+
+
+def test_confirm_batch_stores_grade_rank_alongside_class_rank(tmp_path: Path) -> None:
+    service, token, subject_id = _service(tmp_path)
+    batch = ConfirmedSpreadsheetAdapter().read(
+        {
+            "teacher_confirmed": True,
+            "source_label": "内存中的合成预览，不含原始文件",
+            "assessments": [
+                {
+                    "title": "合成期末考试",
+                    "subject_name": "数学",
+                    "occurred_on": "2026-06-01",
+                    "max_score": 100,
+                    "rank_scope": "grade",
+                    "participant_count": 320,
+                    "assessment_nature": "final",
+                    "results": [
+                        {
+                            "subject_id": subject_id,
+                            "result_state": "normal",
+                            "score": 88,
+                            "rank": 156,
+                            "class_rank": 12,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    service.evidence.confirm_batch(
+        token=token,
+        operation_id="confirm-evidence-grade-rank",
+        batch=batch,
+    )
+    evidence = service.evidence.list_subject_evidence(
+        token=token,
+        subject_id=subject_id,
+    )
+    rank_context = evidence["items"][0]["rank_context"]
+    assert rank_context["rank"] == 156
+    assert rank_context["class_rank"] == 12
+    assert rank_context["rank_scope"] == "grade"
+
+
 def test_result_states_are_distinct_and_three_comparable_points_allow_trend(
     tmp_path: Path,
 ) -> None:

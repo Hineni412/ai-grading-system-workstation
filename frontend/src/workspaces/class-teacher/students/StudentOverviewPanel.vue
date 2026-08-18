@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { intakeApi, type HandoffDraft, type IntakeConversation } from '../api/intake'
+import { intakeApi, type HandoffDraft, type IntakeConversation, type IntakeHandoffSummary } from '../api/intake'
+import { autoAdoptStudentRecordHandoffs } from '../intake/auto-adopt'
 import AppButton from '@/components/design-system/AppButton.vue'
+import { ApiError } from '@/api/errors'
 import {
   studentR1Api,
   type CurrentStudentProfile,
@@ -18,6 +20,8 @@ const emit = defineEmits<{ close: []; open: [panel: 'support' | 'academic'] }>()
 const card = ref<StudentCard | null>(null)
 const conversation = ref<IntakeConversation | null>(null)
 const proposal = ref<HandoffDraft | null>(null)
+const adoptedHandoff = ref<IntakeHandoffSummary | null>(null)
+const revertedHandoff = ref<IntakeHandoffSummary | null>(null)
 const message = ref('')
 const state = ref<'loading' | 'ready' | 'error'>('loading')
 const busy = ref(false)
@@ -51,6 +55,7 @@ const proposedProfile = computed<CurrentStudentProfile | null>(() => {
   }
 })
 const hasProfile = computed(() => Boolean(profile.value.summary || profile.value.dimensions.length))
+const profileNotCreated = computed(() => card.value?.profile_state === 'not_created' || props.subject.profile_state === 'not_created')
 const supportPlans = computed(() => card.value?.support_plans ?? [])
 const homeBound = computed(() => Boolean(props.conversationId))
 type DrawerTab = 'overview' | 'support' | 'academic'
@@ -104,20 +109,41 @@ async function load(): Promise<void> {
 }
 
 async function loadProposal(next: IntakeConversation): Promise<void> {
-  const handoff = [...next.handoffs]
+  const candidate = [...next.handoffs]
     .reverse()
-    .find(item => ['pending', 'opened'].includes(item.adoption_state) && item.destination_key === 'class_teacher.student.record')
-  if (!handoff) {
-    proposal.value = null
-    return
-  }
-  const loaded = await intakeApi.handoff(handoff.handoff_id)
+    .find(item => ['pending', 'opened', 'adopted', 'reverted'].includes(item.adoption_state) && item.destination_key === 'class_teacher.student.record')
+  proposal.value = null
+  adoptedHandoff.value = null
+  revertedHandoff.value = null
+  if (!candidate) return
+  const loaded = await intakeApi.handoff(candidate.handoff_id)
   const boundId = loaded.subject_refs[0]?.id
-  if (boundId && boundId !== props.subject.subject_id) {
-    proposal.value = null
+  if (boundId && boundId !== props.subject.subject_id) return
+  if (candidate.adoption_state === 'adopted') adoptedHandoff.value = candidate
+  else if (candidate.adoption_state === 'reverted') revertedHandoff.value = candidate
+  else proposal.value = loaded
+}
+
+async function settleProposal(next: IntakeConversation): Promise<void> {
+  const outcome = await autoAdoptStudentRecordHandoffs(next)
+  if (outcome === 'adopted') {
+    const refreshed = await intakeApi.conversation(next.conversation_id)
+    conversation.value = refreshed
+    await load()
+    await loadProposal(refreshed)
+    notice.value = '本轮档案更新已自动并入当前档案；如不合适可一键撤回。'
     return
   }
-  proposal.value = loaded
+  if (outcome === 'conflict') {
+    notice.value = '档案在自动并入前发生了变化，请核对最新档案后手动应用。'
+  }
+  await loadProposal(next)
+  if (outcome !== 'none') return
+  notice.value = next.state === 'needs_input'
+    ? 'AI 找到了值得继续了解的问题。可以直接回答，也可以先应用已经整理好的内容。'
+    : proposal.value
+      ? 'AI 已把这轮信息合并成当前档案草稿，请核对后应用。'
+      : '本轮没有形成可应用的档案更新。'
 }
 
 async function bindHomeConversation(id: string): Promise<void> {
@@ -126,8 +152,12 @@ async function bindHomeConversation(id: string): Promise<void> {
     conversation.value = next
     await loadProposal(next)
     notice.value = proposal.value
-      ? 'AI 已把这轮信息合并成当前档案草稿，请核对后应用。'
-      : '本轮没有形成可应用的档案更新。'
+      ? 'AI 已把这轮信息合并成当前档案草稿；自动并入未完成，请核对后手动应用。'
+      : adoptedHandoff.value
+        ? '本轮档案更新已自动并入当前档案；如不合适可一键撤回。'
+        : revertedHandoff.value
+          ? '本轮档案更新已撤回，档案回到更新前。'
+          : '本轮没有形成可应用的档案更新。'
   } catch {
     error.value = '本轮档案草稿暂时无法读取。当前档案没有改变。'
   }
@@ -147,12 +177,7 @@ function poll(id: string): void {
         return
       }
       pollTimer = null
-      await loadProposal(next)
-      notice.value = next.state === 'needs_input'
-        ? 'AI 找到了值得继续了解的问题。可以直接回答，也可以先应用已经整理好的内容。'
-        : proposal.value
-          ? 'AI 已把这轮信息合并成当前档案草稿，请核对后应用。'
-          : '本轮没有形成可应用的档案更新。'
+      await settleProposal(next)
     } catch {
       pollTimer = window.setTimeout(read, 2400)
     }
@@ -173,7 +198,7 @@ async function send(): Promise<void> {
     conversation.value = await intakeApi.appendTurn(conversation.value, outgoing)
     message.value = ''
     if (conversation.value.state === 'ai_running') poll(conversation.value.conversation_id)
-    else await loadProposal(conversation.value)
+    else await settleProposal(conversation.value)
   } catch {
     error.value = '这次整理没有完成。已输入内容仍在文本框中，请稍后继续。'
   } finally {
@@ -219,6 +244,28 @@ async function discardProposal(): Promise<void> {
   }
 }
 
+async function revertProposal(): Promise<void> {
+  if (!adoptedHandoff.value || busy.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    await intakeApi.revertProfile(adoptedHandoff.value.handoff_id)
+    adoptedHandoff.value = null
+    await load()
+    notice.value = '已撤回，档案回到本轮更新前；本轮原始记录仍保留。'
+    if (conversation.value) {
+      conversation.value = await intakeApi.conversation(conversation.value.conversation_id)
+      await loadProposal(conversation.value)
+    }
+  } catch (value) {
+    error.value = value instanceof ApiError && value.status === 409
+      ? '档案已有更新轮次，无法一键撤回，请手动修正。'
+      : '撤回没有完成，档案保持当前内容，请稍后再试。'
+  } finally {
+    busy.value = false
+  }
+}
+
 function updatedLabel(value: string | null): string {
   if (!value) return '尚未建立'
   return value.replace('T', ' ').slice(0, 16)
@@ -237,6 +284,8 @@ watch(
     activeTab.value = 'overview'
     conversation.value = null
     proposal.value = null
+    adoptedHandoff.value = null
+    revertedHandoff.value = null
     message.value = ''
     notice.value = ''
     error.value = ''
@@ -304,8 +353,9 @@ onBeforeUnmount(() => {
         <section v-show="activeTab === 'overview'" class="tab-panel overview-panel" aria-label="当前概览">
           <blockquote v-if="profile.summary" class="profile-summary">{{ profile.summary }}</blockquote>
           <div v-else class="empty-profile">
-            <strong>这份档案还没有开始生长</strong>
-            <p>到“成长与支持”写下已经了解的情况，形成第一份结构化档案。</p>
+            <strong>{{ profileNotCreated ? '档案尚未建立' : '这份档案还没有开始生长' }}</strong>
+            <p v-if="profileNotCreated">核对下方待并入的草稿，确认保存后会自动创建档案。</p>
+            <p v-else>到“成长与支持”写下已经了解的情况，形成第一份结构化档案。</p>
           </div>
 
           <div class="quick-stats">
@@ -331,6 +381,10 @@ onBeforeUnmount(() => {
           </div>
           <p v-if="homeBound && notice" class="notice home-notice" role="status">{{ notice }}</p>
           <p v-if="homeBound && error" class="error home-error" role="alert">{{ error }}</p>
+          <section v-if="homeBound && adoptedHandoff" class="proposal" aria-labelledby="home-adopted-title">
+            <header><div><small>本轮档案更新</small><h2 id="home-adopted-title">已自动并入当前档案</h2></div><AppButton variant="secondary" :disabled="busy" @click="revertProposal">撤回本轮更新</AppButton></header>
+            <footer><span>撤回后档案回到本轮更新前；本轮原始记录仍保留。</span></footer>
+          </section>
           <section v-if="homeBound && proposal && proposedProfile" class="proposal" aria-labelledby="home-proposal-title">
             <header><div><small>本轮拟更新</small><h2 id="home-proposal-title">把新认识并入当前档案</h2></div><AppButton variant="primary" :disabled="busy" @click="applyProposal">应用到当前档案</AppButton></header>
             <p class="proposal__summary">{{ proposedProfile.summary }}</p>
@@ -367,6 +421,11 @@ onBeforeUnmount(() => {
             </form>
             <p v-if="notice" class="notice" role="status">{{ notice }}</p>
             <p v-if="error" class="error" role="alert">{{ error }}</p>
+          </section>
+
+          <section v-if="adoptedHandoff" class="proposal" aria-labelledby="adopted-title">
+            <header><div><small>本轮档案更新</small><h2 id="adopted-title">已自动并入当前档案</h2></div><AppButton variant="secondary" :disabled="busy" @click="revertProposal">撤回本轮更新</AppButton></header>
+            <footer><span>撤回后档案回到本轮更新前；本轮原始记录仍保留。</span></footer>
           </section>
 
           <section v-if="proposal && proposedProfile" class="proposal" aria-labelledby="proposal-title">
@@ -409,13 +468,14 @@ onBeforeUnmount(() => {
             <div><strong>{{ subject.attention_pending_count }}</strong><span>待处理关注项</span></div>
             <div><strong>{{ updatedLabel(subject.last_confirmed_at) }}</strong><span>最近确认记录</span></div>
           </div>
-          <AppButton variant="primary" block @click="emit('open', 'academic')">打开完整学业证据</AppButton>
+          <p v-if="profileNotCreated" class="compact-empty">档案尚未建立，确认保存待并入的草稿后可查看完整学业证据。</p>
+          <AppButton v-else variant="primary" block @click="emit('open', 'academic')">打开完整学业证据</AppButton>
         </section>
       </main>
 
       <footer v-if="state === 'ready'" class="dossier-actions">
         <AppButton variant="ghost" class="quiet" @click="showSourceMaterials">查看 {{ card?.existing_records.length || 0 }} 条原始记录</AppButton>
-        <div>
+        <div v-if="!profileNotCreated">
           <AppButton variant="ghost" @click="emit('open', 'support')">支持工作区</AppButton>
           <AppButton v-if="activeTab !== 'academic' && !homeBound" variant="primary" @click="continueProfile">继续完善档案</AppButton>
           <AppButton v-else-if="activeTab === 'academic'" variant="primary" @click="emit('open', 'academic')">打开学业证据</AppButton>

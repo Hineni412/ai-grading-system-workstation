@@ -156,32 +156,68 @@ def test_existing_roster_filter_replaces_current_class_without_deleting_history(
     }
 
 
-def test_roster_replace_rolls_back_new_profiles_when_one_identity_fails(
+def test_roster_replace_writes_stable_keys_without_creating_profiles(
+    tmp_path: Path,
+) -> None:
+    """激活只写花名册状态：稳定标识为键，不创建档案、不写 subject_id。"""
+    service, token = _service(tmp_path)
+    source = service.class_roster.browse(token=token, class_label="一班")
+    roster = service.class_roster.replace_current(
+        token=token,
+        operation_id="replace-current-stable-keys",
+        expected_source_revision=str(source["source_revision"]),
+        class_label="一班",
+    )
+    assert roster["active_count"] == 2
+    assert all(item["subject_id"] is None for item in roster["items"])
+    with closing(service.database.connect()) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM student_subject_links").fetchone()[0] == 0
+        keys = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT source_student_key FROM class_roster_memberships"
+            ).fetchall()
+        }
+    assert keys == {"一班|A001", "一班|A002"}
+    browse = service.class_roster.browse(token=token, class_label="一班")
+    assert {str(item["roster_state"]) for item in browse["items"]} == {"active"}
+
+
+def test_roster_replace_rolls_back_membership_writes_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service, token = _service(tmp_path)
+    seed_source = service.class_roster.browse(token=token, class_label="二班")
+    service.class_roster.replace_current(
+        token=token,
+        operation_id="replace-current-seed-class",
+        expected_source_revision=str(seed_source["source_revision"]),
+        class_label="二班",
+    )
     source = service.class_roster.browse(token=token, class_label="一班")
-    real_ensure = service.support.ensure_subject_in_connection
+    real_ref = service.class_roster._roster_ref
     calls = 0
 
-    def fail_second(*args, **kwargs):
+    def fail_late(item):
         nonlocal calls
         calls += 1
-        if calls == 2:
-            raise RuntimeError("synthetic identity interruption")
-        return real_ensure(*args, **kwargs)
+        if calls > len(source["items"]):
+            raise RuntimeError("synthetic roster interruption")
+        return real_ref(item)
 
-    monkeypatch.setattr(service.support, "ensure_subject_in_connection", fail_second)
-    with pytest.raises(RuntimeError, match="synthetic identity interruption"):
+    monkeypatch.setattr(service.class_roster, "_roster_ref", fail_late)
+    with pytest.raises(RuntimeError, match="synthetic roster interruption"):
         service.class_roster.replace_current(
             token=token,
-            operation_id="replace-current-roster-fail",
+            operation_id="replace-current-fail",
             expected_source_revision=str(source["source_revision"]),
             class_label="一班",
         )
     with closing(service.database.connect()) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM student_subject_links").fetchone()[0] == 0
-        assert connection.execute("SELECT COUNT(*) FROM class_roster_memberships").fetchone()[0] == 0
+        rows = connection.execute(
+            "SELECT source_student_key, state FROM class_roster_memberships"
+        ).fetchall()
+    assert [(str(row[0]), str(row[1])) for row in rows] == [("二班|B001", "active")]
 
 
 def test_first_follow_up_becomes_sop_draft_and_partial_save_retry_is_idempotent(
@@ -196,10 +232,20 @@ def test_first_follow_up_becomes_sop_draft_and_partial_save_retry_is_idempotent(
         expected_source_revision=str(source["source_revision"]),
         class_label="一班",
     )
+    assert roster["active_count"] == 2
+    # 激活不再建档：按 adopt 链路显式建档后再关联事务
     subject_ids = [
-        str(item["subject_id"])
-        for item in roster["items"]
-        if item["state"] == "active"
+        str(
+            service.support.create_subject_for_roster_source(
+                token=token,
+                operation_id=f"affair-subject-{item['source_key']}",
+                source_student_id=str(item["source_key"]),
+                legacy_student_code=str(item["student_code"]),
+                display_name=str(item["display_name"]),
+                class_label=str(item["class_label"]),
+            )["subject_id"]
+        )
+        for item in source["items"]
     ]
 
     preview = service.home_intake.prepare(
@@ -280,3 +326,137 @@ def test_first_follow_up_becomes_sop_draft_and_partial_save_retry_is_idempotent(
         assert connection.execute("SELECT COUNT(*) FROM affairs").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM affair_student_links").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM affair_participants").fetchone()[0] == 1
+        # 删除学生档案同时移除其稳定标识对应的花名册成员行
+        assert connection.execute("SELECT COUNT(*) FROM class_roster_memberships").fetchone()[0] == 1
+
+
+def test_directory_roster_state_follows_stable_key_membership(tmp_path: Path) -> None:
+    """目录的在班/历史状态从成员表（稳定标识键）读，与建档顺序无关。"""
+    service, token = _service(tmp_path)
+    source = service.class_roster.browse(token=token, class_label="一班")
+    item = next(
+        entry for entry in source["items"] if str(entry["student_code"]) == "A001"
+    )
+    created = service.support.create_subject_for_roster_source(
+        token=token,
+        operation_id="directory-state-subject",
+        source_student_id=str(item["source_key"]),
+        legacy_student_code=str(item["student_code"]),
+        display_name=str(item["display_name"]),
+        class_label=str(item["class_label"]),
+    )
+    subject_id = str(created["subject_id"])
+
+    def roster_state() -> str:
+        result = service.student_directory.search(token=token, q="王明")
+        matches = [
+            entry for entry in result["items"] if entry["subject_id"] == subject_id
+        ]
+        assert len(matches) == 1
+        return str(matches[0]["roster_state"])
+
+    # 建档不经激活：不在花名册成员表，目录显示 manual
+    assert roster_state() == "manual"
+    service.class_roster.replace_current(
+        token=token,
+        operation_id="activate-class-one",
+        expected_source_revision=str(source["source_revision"]),
+        class_label="一班",
+    )
+    assert roster_state() == "active"
+    second = service.class_roster.browse(token=token, class_label="二班")
+    service.class_roster.replace_current(
+        token=token,
+        operation_id="activate-class-two",
+        expected_source_revision=str(second["source_revision"]),
+        class_label="二班",
+    )
+    assert roster_state() == "historical"
+
+
+def test_sop_joins_roster_membership_by_stable_ref(tmp_path: Path) -> None:
+    """SOP 关联已建档学生时按稳定标识核对在班状态。"""
+    service, token = _service(tmp_path)
+    source = service.class_roster.browse(token=token, class_label="一班")
+    service.class_roster.replace_current(
+        token=token,
+        operation_id="sop-join-activate",
+        expected_source_revision=str(source["source_revision"]),
+        class_label="一班",
+    )
+    item = source["items"][0]
+    created = service.support.create_subject_for_roster_source(
+        token=token,
+        operation_id="sop-join-subject",
+        source_student_id=str(item["source_key"]),
+        legacy_student_code=str(item["student_code"]),
+        display_name=str(item["display_name"]),
+        class_label=str(item["class_label"]),
+    )
+    subject_id = str(created["subject_id"])
+    template = service.sop_baselines.ensure_baselines(token=token)["items"][0]
+    affair = service.sop.create_affair(
+        token=token,
+        operation_id="sop-join-affair",
+        template_version_id=str(template["template_version_id"]),
+        title="合成事务",
+        summary=None,
+        participant_refs=[],
+        subject_ids=[subject_id],
+    )
+    assert affair["affair_id"]
+
+    second = service.class_roster.browse(token=token, class_label="二班")
+    service.class_roster.replace_current(
+        token=token,
+        operation_id="sop-join-activate-two",
+        expected_source_revision=str(second["source_revision"]),
+        class_label="二班",
+    )
+    with pytest.raises(VaultError) as blocked:
+        service.sop.create_affair(
+            token=token,
+            operation_id="sop-join-affair-two",
+            template_version_id=str(template["template_version_id"]),
+            title="合成事务二",
+            summary=None,
+            participant_refs=[],
+            subject_ids=[subject_id],
+        )
+    assert blocked.value.code == "sop_subject_not_current_roster"
+
+
+def test_delete_subject_removes_membership_row(tmp_path: Path) -> None:
+    """删除学生档案时移除其稳定标识对应的成员行；无成员行的手工档案不受影响。"""
+    service, token = _service(tmp_path)
+    source = service.class_roster.browse(token=token, class_label="一班")
+    service.class_roster.replace_current(
+        token=token,
+        operation_id="delete-cleanup-activate",
+        expected_source_revision=str(source["source_revision"]),
+        class_label="一班",
+    )
+    item = source["items"][0]
+    created = service.support.create_subject_for_roster_source(
+        token=token,
+        operation_id="delete-cleanup-subject",
+        source_student_id=str(item["source_key"]),
+        legacy_student_code=str(item["student_code"]),
+        display_name=str(item["display_name"]),
+        class_label=str(item["class_label"]),
+    )
+    service.support._delete_subject_once(
+        token=token,
+        subject_id=str(created["subject_id"]),
+        operation_id="delete-cleanup-subject-row",
+        confirmation_phrase="确认完整删除学生支持数据",
+    )
+    with closing(service.database.connect()) as connection:
+        rows = connection.execute(
+            "SELECT source_student_key, state FROM class_roster_memberships"
+        ).fetchall()
+    remaining = [(str(row[0]), str(row[1])) for row in rows]
+    expected_remaining = (
+        "一班|A002" if str(item["student_code"]) == "A001" else "一班|A001"
+    )
+    assert remaining == [(expected_remaining, "active")]

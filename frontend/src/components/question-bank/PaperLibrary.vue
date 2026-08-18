@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type {
   QuestionBankPaper,
@@ -51,7 +51,9 @@ const examType = ref('')
 const sourceType = ref('')
 const progressStatus = ref('')
 const editingPaperId = ref<number | null>(null)
-const pendingDeletePaper = ref<QuestionBankPaper | null>(null)
+const pendingDeletePapers = ref<QuestionBankPaper[]>([])
+const selectedPaperIds = ref(new Set<number>())
+const openMenuPaperId = ref<number | null>(null)
 const permanentDeleteImpact = ref<QuestionBankPaperPermanentDeleteImpact | null>(null)
 const permanentDeleteState = ref<'idle' | 'loading' | 'working' | 'error'>('idle')
 const permanentDeleteMessage = ref('')
@@ -83,7 +85,7 @@ const years = computed(() => uniqueValues(store.papers.map((paper) => paper.year
 const examTypes = computed(() => uniqueValues(store.papers.map((paper) => paper.exam_type)))
 const canConfirmPermanentDelete = computed(() => (
   permanentDeleteImpact.value !== null
-  && pendingDeletePaper.value !== null
+  && pendingDeletePapers.value.length > 0
   && permanentDeleteState.value !== 'working'
 ))
 
@@ -198,6 +200,85 @@ function toggleFolder(key: string): void {
   else next.add(key)
   collapsedFolderKeys.value = next
 }
+
+const selectedCount = computed(() => selectedPaperIds.value.size)
+const selectedPapers = computed(() => store.papers.filter(
+  (paper) => selectedPaperIds.value.has(paper.id),
+))
+const filteredPaperIds = computed(() => filteredPapers.value.map((paper) => paper.id))
+const allFilteredSelected = computed(() => (
+  filteredPaperIds.value.length > 0
+  && filteredPaperIds.value.every((id) => selectedPaperIds.value.has(id))
+))
+const someFilteredSelected = computed(() => (
+  filteredPaperIds.value.some((id) => selectedPaperIds.value.has(id))
+))
+const batchActionsDisabled = computed(() => (
+  selectedCount.value === 0
+  || retagAllBusy.value
+  || retagBusyPaperId.value !== null
+))
+
+// Papers disappear from the store after deletion or external refresh; prune the
+// selection so the batch bar never acts on stale ids. Filter/search changes keep
+// the selection on purpose: teachers often filter one batch, select it, then
+// filter the next.
+watch(() => store.papers, (papers) => {
+  const existing = new Set(papers.map((paper) => paper.id))
+  const next = new Set([...selectedPaperIds.value].filter((id) => existing.has(id)))
+  if (next.size !== selectedPaperIds.value.size) selectedPaperIds.value = next
+})
+
+function isPaperSelected(paperId: number): boolean {
+  return selectedPaperIds.value.has(paperId)
+}
+
+function onPaperSelectChange(paperId: number, event: Event): void {
+  const checked = (event.target as HTMLInputElement).checked
+  const next = new Set(selectedPaperIds.value)
+  if (checked) next.add(paperId)
+  else next.delete(paperId)
+  selectedPaperIds.value = next
+}
+
+function onSelectAllChange(event: Event): void {
+  const checked = (event.target as HTMLInputElement).checked
+  const next = new Set(selectedPaperIds.value)
+  for (const id of filteredPaperIds.value) {
+    if (checked) next.add(id)
+    else next.delete(id)
+  }
+  selectedPaperIds.value = next
+}
+
+function folderSelectedCount(folder: PaperFolder): number {
+  return folder.papers.filter((paper) => selectedPaperIds.value.has(paper.id)).length
+}
+
+function onFolderSelectChange(folder: PaperFolder, event: Event): void {
+  const checked = (event.target as HTMLInputElement).checked
+  const next = new Set(selectedPaperIds.value)
+  for (const paper of folder.papers) {
+    if (checked) next.add(paper.id)
+    else next.delete(paper.id)
+  }
+  selectedPaperIds.value = next
+}
+
+function clearPaperSelection(): void {
+  selectedPaperIds.value = new Set()
+}
+
+function togglePaperMenu(paperId: number): void {
+  openMenuPaperId.value = openMenuPaperId.value === paperId ? null : paperId
+}
+
+function closePaperMenu(): void {
+  openMenuPaperId.value = null
+}
+
+onMounted(() => document.addEventListener('click', closePaperMenu))
+onBeforeUnmount(() => document.removeEventListener('click', closePaperMenu))
 
 const totalQuestions = computed(() => store.papers.reduce(
   (total, paper) => total + paper.question_count,
@@ -440,6 +521,111 @@ async function submitTaggingBatches(
   return jobs
 }
 
+interface PaperTaggingPlan {
+  paper: QuestionBankPaper
+  ids: number[]
+}
+
+async function submitTaggingPlans(
+  plans: PaperTaggingPlan[],
+  forceRetag: boolean,
+): Promise<number> {
+  let jobs = 0
+  for (const { paper, ids } of plans) {
+    if (!paper.curriculum_volume_id) continue
+    jobs += await submitTaggingBatches(ids, {
+      forceRetag,
+      scope: `paper-${paper.id}-${forceRetag ? 'retag' : 'fill'}`,
+      volumeId: paper.curriculum_volume_id,
+      paperId: paper.id,
+    })
+  }
+  return jobs
+}
+
+// Batch entry points confirm once for the whole selection, then reuse the exact
+// per-paper submission path (same scopes, same localStorage idempotency tokens).
+async function collectTaggingPlans(
+  papers: QuestionBankPaper[],
+): Promise<{ plans: PaperTaggingPlan[]; skippedWithoutVolume: number }> {
+  const plans: PaperTaggingPlan[] = []
+  let skippedWithoutVolume = 0
+  for (const paper of papers) {
+    if (!paper.curriculum_volume_id) {
+      skippedWithoutVolume += 1
+      continue
+    }
+    const ids = await loadQuestionIds([paper.id])
+    if (ids.length > 0) plans.push({ paper, ids })
+  }
+  return { plans, skippedWithoutVolume }
+}
+
+function skippedVolumeNote(skippedWithoutVolume: number): string {
+  return skippedWithoutVolume > 0
+    ? `另有 ${skippedWithoutVolume} 份试卷缺少年级、学期或教材版本，已跳过。`
+    : ''
+}
+
+async function fillSelectedPapers(): Promise<void> {
+  const papers = selectedPapers.value
+  if (papers.length === 0 || retagBusyPaperId.value !== null || retagAllBusy.value) return
+  retagMessage.value = ''
+  retagAllBusy.value = true
+  taggingMode.value = 'fill'
+  try {
+    const { plans, skippedWithoutVolume } = await collectTaggingPlans(papers)
+    const total = plans.reduce((sum, plan) => sum + plan.ids.length, 0)
+    if (total === 0) {
+      retagMessage.value = skippedWithoutVolume > 0
+        ? '选中的试卷还没有可补齐的题目；部分试卷请先在“编辑资料”中补全年级、学期和教材版本。'
+        : '选中的试卷没有可补齐的题目。'
+      return
+    }
+    // The list endpoint only has a coarse saved-row view. Submit whole papers so
+    // the job can compare evidence/criteria with the current source hash and
+    // still skip every projection that is genuinely complete.
+    if (!window.confirm(
+      `将核对选中的 ${plans.length} 份试卷共 ${total} 道题，只补齐缺失、失败或已过期的标签和判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。${skippedVolumeNote(skippedWithoutVolume)}确认继续吗？`,
+    )) return
+    const count = await submitTaggingPlans(plans, false)
+    retagMessage.value = `已提交 ${total} 道题等待后端核对，共 ${count} 个任务；只会补齐缺失、失败或已过期的内容。${skippedVolumeNote(skippedWithoutVolume)}`
+  } catch {
+    retagMessage.value = '补齐标签任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
+  } finally {
+    retagAllBusy.value = false
+    taggingMode.value = null
+  }
+}
+
+async function retagSelectedPapers(): Promise<void> {
+  const papers = selectedPapers.value
+  if (papers.length === 0 || retagBusyPaperId.value !== null || retagAllBusy.value) return
+  retagMessage.value = ''
+  retagAllBusy.value = true
+  taggingMode.value = 'retag'
+  try {
+    const { plans, skippedWithoutVolume } = await collectTaggingPlans(papers)
+    const total = plans.reduce((sum, plan) => sum + plan.ids.length, 0)
+    if (total === 0) {
+      retagMessage.value = skippedWithoutVolume > 0
+        ? '选中的试卷还没有可重新标注的题目；部分试卷请先在“编辑资料”中补全年级、学期和教材版本。'
+        : '选中的试卷没有可重新标注的题目。'
+      return
+    }
+    if (!window.confirm(
+      `将重新分析选中的 ${plans.length} 份试卷共 ${total} 道题，可能产生模型费用；人工修改的标签会保留。${skippedVolumeNote(skippedWithoutVolume)}确认继续吗？`,
+    )) return
+    const count = await submitTaggingPlans(plans, true)
+    retagMessage.value = `已提交 ${total} 道题，共 ${count} 个重新标注任务。${skippedVolumeNote(skippedWithoutVolume)}`
+  } catch {
+    retagMessage.value = '重新标注任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
+  } finally {
+    retagAllBusy.value = false
+    taggingMode.value = null
+  }
+}
+
 async function retagPaper(paper: QuestionBankPaper): Promise<void> {
   if (retagBusyPaperId.value !== null || retagAllBusy.value) return
   retagMessage.value = ''
@@ -458,51 +644,10 @@ async function retagPaper(paper: QuestionBankPaper): Promise<void> {
     if (!window.confirm(
       `将重新分析“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，可能产生模型费用；人工修改的标签会保留。确认继续吗？`,
     )) return
-    const count = await submitTaggingBatches(ids, {
-      forceRetag: true,
-      scope: `paper-${paper.id}-retag`,
-      volumeId: paper.curriculum_volume_id,
-      paperId: paper.id,
-    })
+    const count = await submitTaggingPlans([{ paper, ids }], true)
     retagMessage.value = `已提交 ${ids.length} 道题，共 ${count} 个重新标注任务。`
   } catch {
     retagMessage.value = '重新标注任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
-  } finally {
-    retagBusyPaperId.value = null
-    taggingMode.value = null
-  }
-}
-
-async function fillPaperTags(paper: QuestionBankPaper): Promise<void> {
-  if (retagBusyPaperId.value !== null || retagAllBusy.value) return
-  retagMessage.value = ''
-  retagBusyPaperId.value = paper.id
-  taggingMode.value = 'fill'
-  try {
-    if (!paper.curriculum_volume_id) {
-      retagMessage.value = '请先在“编辑资料”中补全年级、学期和教材版本。'
-      return
-    }
-    // The list endpoint only has a coarse saved-row view. Submit the whole
-    // paper so the job can compare evidence/criteria with the current source
-    // hash and still skip every projection that is genuinely complete.
-    const ids = await loadQuestionIds([paper.id])
-    if (ids.length === 0) {
-      retagMessage.value = '这份试卷没有可补齐的题目。'
-      return
-    }
-    if (!window.confirm(
-      `将核对“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，只补齐缺失、失败或已过期的标签和判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。确认继续吗？`,
-    )) return
-    const count = await submitTaggingBatches(ids, {
-      forceRetag: false,
-      scope: `paper-${paper.id}-fill`,
-      volumeId: paper.curriculum_volume_id,
-      paperId: paper.id,
-    })
-    retagMessage.value = `已提交 ${ids.length} 道题等待后端核对，共 ${count} 个任务；只会补齐缺失、失败或已过期的内容。`
-  } catch {
-    retagMessage.value = '补齐标签任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
     retagBusyPaperId.value = null
     taggingMode.value = null
@@ -627,18 +772,25 @@ async function savePaperMetadata(): Promise<void> {
   }
 }
 
-async function requestPermanentDelete(paper: QuestionBankPaper): Promise<void> {
-  pendingDeletePaper.value = paper
+// The preview and delete endpoints both accept a selections array, so a batch
+// delete is one preview + one confirmed request for the whole selection.
+async function requestPermanentDelete(
+  target: QuestionBankPaper | QuestionBankPaper[],
+): Promise<void> {
+  const papers = (Array.isArray(target) ? target : [target])
+    .filter((paper, index, all) => all.findIndex((item) => item.id === paper.id) === index)
+  if (papers.length === 0) return
+  pendingDeletePapers.value = papers
   permanentDeleteState.value = 'loading'
   permanentDeleteMessage.value = ''
   deleteNotice.value = ''
   permanentDeleteRequestToken.value = ''
   try {
     permanentDeleteImpact.value = await questionBankApi.previewPaperPermanentDelete(
-      [{
+      papers.map((paper) => ({
         id: paper.id,
         expected_updated_at: paper.updated_at,
-      }],
+      })),
     )
     permanentDeleteState.value = 'idle'
   } catch (error) {
@@ -651,7 +803,7 @@ async function requestPermanentDelete(paper: QuestionBankPaper): Promise<void> {
 
 function cancelPermanentDelete(): void {
   if (permanentDeleteState.value === 'working') return
-  pendingDeletePaper.value = null
+  pendingDeletePapers.value = []
   permanentDeleteImpact.value = null
   permanentDeleteMessage.value = ''
   permanentDeleteRequestToken.value = ''
@@ -666,8 +818,8 @@ function requestToken(): string {
 
 async function confirmPermanentDelete(): Promise<void> {
   const impact = permanentDeleteImpact.value
-  const paper = pendingDeletePaper.value
-  if (!impact || !paper || !canConfirmPermanentDelete.value) return
+  const papers = pendingDeletePapers.value
+  if (!impact || papers.length === 0 || !canConfirmPermanentDelete.value) return
   permanentDeleteState.value = 'working'
   permanentDeleteMessage.value = ''
   if (!permanentDeleteRequestToken.value) {
@@ -675,15 +827,15 @@ async function confirmPermanentDelete(): Promise<void> {
   }
   try {
     const result = await questionBankApi.permanentlyDeletePapers(
-      [{
+      papers.map((paper) => ({
         id: paper.id,
         expected_updated_at: paper.updated_at,
-      }],
+      })),
       impact.permanent_delete_phrase,
       permanentDeleteRequestToken.value,
     )
     await store.loadPapers()
-    pendingDeletePaper.value = null
+    pendingDeletePapers.value = []
     permanentDeleteImpact.value = null
     permanentDeleteRequestToken.value = ''
     permanentDeleteState.value = 'idle'
@@ -692,10 +844,10 @@ async function confirmPermanentDelete(): Promise<void> {
     await store.loadPapers()
     const refreshConfirmedDeletion = (
       store.papersState === 'ready'
-      && !store.papers.some(item => item.id === paper.id)
+      && papers.every((paper) => !store.papers.some(item => item.id === paper.id))
     )
     if (refreshConfirmedDeletion) {
-      pendingDeletePaper.value = null
+      pendingDeletePapers.value = []
       permanentDeleteImpact.value = null
       permanentDeleteRequestToken.value = ''
       permanentDeleteState.value = 'idle'
@@ -803,6 +955,43 @@ async function confirmPermanentDelete(): Promise<void> {
       <AppButton variant="ghost" @click="resetFilters">清除</AppButton>
     </div>
 
+    <div class="paper-batch-bar" :class="{ 'is-active': selectedCount > 0 }">
+      <label class="paper-batch-bar__select-all">
+        <input
+          type="checkbox"
+          :checked="allFilteredSelected"
+          :indeterminate="someFilteredSelected && !allFilteredSelected"
+          :disabled="filteredPaperIds.length === 0"
+          @change="onSelectAllChange"
+        >
+        <span>全选</span>
+      </label>
+      <span class="paper-batch-bar__info">
+        {{ selectedCount > 0 ? `已选 ${selectedCount} 份试卷` : '未选中试卷' }}
+      </span>
+      <span class="paper-batch-bar__spacer" />
+      <AppButton
+        variant="primary"
+        :disabled="batchActionsDisabled"
+        @click="fillSelectedPapers"
+      >{{ retagAllBusy && taggingMode === 'fill' ? '正在检查未完成题…' : '继续完成未完成题目' }}</AppButton>
+      <AppButton
+        variant="secondary"
+        :disabled="batchActionsDisabled"
+        @click="retagSelectedPapers"
+      >{{ retagAllBusy && taggingMode === 'retag' ? '正在准备…' : '重新打标签' }}</AppButton>
+      <AppButton
+        variant="danger"
+        :disabled="batchActionsDisabled || permanentDeleteState === 'loading' || permanentDeleteState === 'working'"
+        @click="requestPermanentDelete(selectedPapers)"
+      >删除</AppButton>
+      <AppButton
+        variant="secondary"
+        :disabled="selectedCount === 0"
+        @click="clearPaperSelection"
+      >取消选择</AppButton>
+    </div>
+
     <p v-if="store.papersState === 'loading'" class="paper-library__state" role="status">
       正在读取试卷库…
     </p>
@@ -817,19 +1006,43 @@ async function confirmPermanentDelete(): Promise<void> {
 
     <div v-else class="paper-folders">
       <section v-for="folder in paperFolders" :key="folder.key" class="paper-folder">
-        <button
-          type="button"
-          class="paper-folder__header"
-          :aria-expanded="!collapsedFolderKeys.has(folder.key) || Boolean(keyword.trim())"
-          @click="toggleFolder(folder.key)"
-        >
-          <span class="paper-folder__chevron" aria-hidden="true">{{ collapsedFolderKeys.has(folder.key) && !keyword.trim() ? '›' : '⌄' }}</span>
-          <strong>{{ folder.label }}</strong>
-          <span class="paper-folder__kind">{{ folder.kindLabel }}</span>
-          <span class="paper-folder__count">{{ folder.papers.length }} 份</span>
-        </button>
+        <div class="paper-folder__head">
+          <label class="paper-folder__check" @click.stop>
+            <input
+              type="checkbox"
+              :checked="folder.papers.length > 0 && folderSelectedCount(folder) === folder.papers.length"
+              :indeterminate="folderSelectedCount(folder) > 0 && folderSelectedCount(folder) < folder.papers.length"
+              @change="onFolderSelectChange(folder, $event)"
+            >
+            <span class="sr-only">全选「{{ folder.label }}」的试卷</span>
+          </label>
+          <button
+            type="button"
+            class="paper-folder__header"
+            :aria-expanded="!collapsedFolderKeys.has(folder.key) || Boolean(keyword.trim())"
+            @click="toggleFolder(folder.key)"
+          >
+            <span class="paper-folder__chevron" aria-hidden="true">{{ collapsedFolderKeys.has(folder.key) && !keyword.trim() ? '›' : '⌄' }}</span>
+            <strong>{{ folder.label }}</strong>
+            <span class="paper-folder__kind">{{ folder.kindLabel }}</span>
+            <span class="paper-folder__count">{{ folder.papers.length }} 份</span>
+          </button>
+        </div>
         <div v-if="!collapsedFolderKeys.has(folder.key) || keyword.trim()" class="paper-library__grid">
-          <article v-for="paper in folder.papers" :key="paper.id" class="paper-card">
+          <article
+            v-for="paper in folder.papers"
+            :key="paper.id"
+            class="paper-card"
+            :class="{ 'is-selected': isPaperSelected(paper.id) }"
+          >
+        <label class="paper-card__check" @click.stop>
+          <input
+            type="checkbox"
+            :checked="isPaperSelected(paper.id)"
+            :aria-label="`选择${paper.title || `试卷 ${paper.id}`}`"
+            @change="onPaperSelectChange(paper.id, $event)"
+          >
+        </label>
         <div class="paper-card__cover" :class="`is-${paper.source_type}`" aria-hidden="true">
           <span>{{ sourceLabel(paper.source_type) }}</span>
           <strong>试卷</strong>
@@ -844,7 +1057,13 @@ async function confirmPermanentDelete(): Promise<void> {
             <span v-if="paper.exam_type" class="paper-chip">{{ paper.exam_type }}</span>
             <span v-if="paper.grade" class="paper-chip">{{ paper.grade }}</span>
           </div>
-          <h2>{{ paper.title || `未命名试卷 #${paper.id}` }}</h2>
+          <h2>
+            <button
+              type="button"
+              class="paper-card__title"
+              @click="emit('open', paper)"
+            >{{ paper.title || `未命名试卷 #${paper.id}` }}</button>
+          </h2>
           <p class="paper-card__meta">
             {{
               [
@@ -886,41 +1105,49 @@ async function confirmPermanentDelete(): Promise<void> {
           </ul>
           <footer>
             <span>更新于 {{ formatDate(paper.updated_at) }}</span>
-            <div class="paper-card__actions">
-              <AppButton
-                variant="secondary"
-                :disabled="retagBusyPaperId !== null || retagAllBusy"
-                @click="fillPaperTags(paper)"
-              >{{
-                retagBusyPaperId === paper.id && taggingMode === 'fill'
-                  ? '准备中…'
-                  : '继续完成未完成题目'
-              }}</AppButton>
+            <span class="paper-card__foot-spacer" />
+            <button
+              type="button"
+              class="paper-card__open"
+              @click="emit('open', paper)"
+            >查看试题 →</button>
+            <div class="paper-card__more">
               <button
                 type="button"
-                class="paper-button is-danger-quiet"
-                :disabled="permanentDeleteState === 'loading' || permanentDeleteState === 'working'"
-                :aria-label="`永久删除${paper.title || `试卷 ${paper.id}`}`"
-                title="永久删除"
-                @click="requestPermanentDelete(paper)"
+                class="paper-card__more-toggle"
+                :aria-expanded="openMenuPaperId === paper.id"
+                :aria-label="`${paper.title || `试卷 ${paper.id}`} 的更多操作`"
+                @click.stop="togglePaperMenu(paper.id)"
+              >⋯</button>
+              <div
+                v-if="openMenuPaperId === paper.id"
+                class="paper-card__more-menu"
+                role="menu"
               >
-                删除
-              </button>
-              <AppButton
-                variant="secondary"
-                :disabled="retagBusyPaperId !== null || retagAllBusy"
-                @click="retagPaper(paper)"
-              >{{
-                retagBusyPaperId === paper.id && taggingMode === 'retag'
-                  ? '准备中…'
-                  : '重新打标签'
-              }}</AppButton>
-              <AppButton variant="secondary" @click="editPaper(paper)">
-                编辑资料
-              </AppButton>
-              <AppButton variant="primary" @click="emit('open', paper)">
-                查看试题
-              </AppButton>
+                <button
+                  type="button"
+                  role="menuitem"
+                  @click="closePaperMenu(); editPaper(paper)"
+                >编辑资料</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  :disabled="retagBusyPaperId !== null || retagAllBusy"
+                  @click="closePaperMenu(); retagPaper(paper)"
+                >{{
+                  retagBusyPaperId === paper.id && taggingMode === 'retag'
+                    ? '准备中…'
+                    : '重新打标签'
+                }}</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="is-danger"
+                  :disabled="permanentDeleteState === 'loading' || permanentDeleteState === 'working'"
+                  :aria-label="`永久删除${paper.title || `试卷 ${paper.id}`}`"
+                  @click="closePaperMenu(); requestPermanentDelete(paper)"
+                >删除</button>
+              </div>
             </div>
           </footer>
         </div>
@@ -1111,7 +1338,17 @@ async function confirmPermanentDelete(): Promise<void> {
         >
           <p class="paper-trash-confirm__eyebrow">不可恢复</p>
           <h2 id="paper-permanent-delete-title">确认彻底删除？</h2>
-          <strong>{{ pendingDeletePaper?.title || `未命名试卷 #${pendingDeletePaper?.id}` }}</strong>
+          <strong v-if="pendingDeletePapers.length <= 1">
+            {{ pendingDeletePapers[0]?.title || `未命名试卷 #${pendingDeletePapers[0]?.id}` }}
+          </strong>
+          <template v-else>
+            <strong>选中的 {{ pendingDeletePapers.length }} 份试卷</strong>
+            <ul class="paper-trash-confirm__list">
+              <li v-for="paper in pendingDeletePapers" :key="paper.id">
+                {{ paper.title || `未命名试卷 #${paper.id}` }}
+              </li>
+            </ul>
+          </template>
           <p class="paper-permanent-impact">
             <span><b>{{ permanentDeleteImpact.paper_count }}</b> 份试卷</span>
             <span><b>{{ permanentDeleteImpact.question_count }}</b> 道题</span>
@@ -1257,27 +1494,50 @@ async function confirmPermanentDelete(): Promise<void> {
   gap: 10px;
 }
 
-.paper-folder__header {
+.paper-folder__head {
   align-items: center;
   background: var(--secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
+  display: flex;
+  min-height: 46px;
+  padding-right: 13px;
+}
+
+.paper-folder__head:hover,
+.paper-folder__head:focus-within {
+  background: var(--color-accent-subtle);
+  border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.paper-folder__check {
+  align-items: center;
+  align-self: stretch;
+  cursor: pointer;
+  display: flex;
+  padding: 0 5px 0 13px;
+}
+
+.paper-folder__header {
+  align-items: center;
+  background: none;
+  border: none;
+  border-radius: var(--radius-control);
   color: var(--color-text-primary);
   cursor: pointer;
   display: flex;
+  flex: 1;
   font: inherit;
   gap: 9px;
-  min-height: 46px;
-  padding: 9px 13px;
+  min-height: 44px;
+  min-width: 0;
+  padding: 9px 0;
   text-align: left;
-  width: 100%;
 }
 
-.paper-folder__header:hover,
 .paper-folder__header:focus-visible {
-  background: var(--color-accent-subtle);
-  border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
-  outline: none;
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
 }
 
 .paper-folder__chevron {
@@ -1308,9 +1568,8 @@ async function confirmPermanentDelete(): Promise<void> {
   border-radius: var(--radius-panel);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 5%, transparent);
   display: grid;
-  grid-template-columns: 108px minmax(0, 1fr);
+  grid-template-columns: auto 108px minmax(0, 1fr);
   min-height: 230px;
-  overflow: hidden;
   transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
 }
 
@@ -1318,6 +1577,36 @@ async function confirmPermanentDelete(): Promise<void> {
   border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
   box-shadow: 0 8px 26px color-mix(in srgb, var(--color-text-primary) 8%, transparent);
   transform: translateY(-1px);
+}
+
+.paper-card.is-selected {
+  background: color-mix(in srgb, var(--color-accent-subtle) 55%, var(--card));
+  border-color: var(--color-accent);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
+.paper-card__check {
+  align-items: flex-start;
+  cursor: pointer;
+  display: flex;
+  padding: 18px 0 0 14px;
+}
+
+.paper-batch-bar__select-all input,
+.paper-folder__check input {
+  accent-color: var(--color-accent);
+  cursor: pointer;
+  height: 16px;
+  margin: 0;
+  width: 16px;
+}
+
+.paper-card__check input {
+  accent-color: var(--color-accent);
+  cursor: pointer;
+  height: 18px;
+  margin: 0;
+  width: 18px;
 }
 
 .paper-card__cover {
@@ -1412,6 +1701,22 @@ async function confirmPermanentDelete(): Promise<void> {
   -webkit-line-clamp: 2;
 }
 
+.paper-card__title {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  display: inline;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.paper-card__title:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
 .paper-card__meta {
   color: var(--color-text-muted);
   font-size: 12px;
@@ -1476,15 +1781,138 @@ async function confirmPermanentDelete(): Promise<void> {
   color: var(--color-text-muted);
   display: flex;
   font-size: 11px;
-  justify-content: space-between;
+  gap: 10px;
   margin-top: 12px;
   padding-top: 11px;
 }
 
-.paper-card__actions {
+.paper-card__foot-spacer {
+  flex: 1;
+}
+
+.paper-card__open {
+  background: none;
+  border: none;
+  color: var(--color-accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  padding: 4px 2px;
+  white-space: nowrap;
+}
+
+.paper-card__open:hover {
+  text-decoration: underline;
+}
+
+.paper-card__more {
+  flex: 0 0 auto;
+  position: relative;
+}
+
+.paper-card__more-toggle {
   align-items: center;
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 15px;
+  height: 30px;
+  justify-content: center;
+  line-height: 1;
+  width: 30px;
+}
+
+.paper-card__more-toggle:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.paper-card__more-menu {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-text-primary) 12%, transparent);
+  min-width: 150px;
+  padding: 6px;
+  position: absolute;
+  right: 0;
+  top: 36px;
+  z-index: 30;
+}
+
+.paper-card__more-menu button {
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.paper-card__more-menu button:hover:not(:disabled) {
+  background: var(--secondary);
+}
+
+.paper-card__more-menu button.is-danger {
+  color: var(--color-danger);
+}
+
+.paper-card__more-menu button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.paper-batch-bar {
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 14px;
+  position: sticky;
+  top: 0;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+  z-index: 20;
+}
+
+.paper-batch-bar.is-active {
+  border-color: var(--color-accent);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.paper-batch-bar__select-all {
+  align-items: center;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
   gap: 8px;
+}
+
+.paper-batch-bar__info {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.paper-batch-bar.is-active .paper-batch-bar__info {
+  color: var(--color-accent);
+  font-weight: 650;
+}
+
+.paper-batch-bar__spacer {
+  flex: 1;
 }
 
 .paper-button {
@@ -1843,6 +2271,16 @@ async function confirmPermanentDelete(): Promise<void> {
   font-size: 16px;
 }
 
+.paper-trash-confirm__list {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 8px 0 0;
+  max-height: 140px;
+  overflow: auto;
+  padding-left: 18px;
+}
+
 .paper-permanent-confirmation {
   color: var(--color-text-secondary);
   display: grid;
@@ -2027,7 +2465,7 @@ async function confirmPermanentDelete(): Promise<void> {
   }
 
   .paper-card {
-    grid-template-columns: 78px minmax(0, 1fr);
+    grid-template-columns: auto 78px minmax(0, 1fr);
   }
 
   .paper-card footer,
@@ -2036,13 +2474,13 @@ async function confirmPermanentDelete(): Promise<void> {
     flex-direction: column;
   }
 
+  .paper-card__more {
+    align-self: flex-end;
+  }
+
   .paper-trash-filters,
   .paper-permanent-impact {
     grid-template-columns: 1fr 1fr;
-  }
-
-  .paper-card__actions {
-    flex-wrap: wrap;
   }
 
   .paper-editor__form,

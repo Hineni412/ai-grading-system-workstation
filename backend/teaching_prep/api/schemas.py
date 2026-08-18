@@ -1772,6 +1772,12 @@ class AdaptationTraceResultResponse(BaseModel):
     preview_url: str | None = None
 
 
+class AdaptationTraceFindingResponse(BaseModel):
+    finding: str
+    category: str
+    pages: list[int]
+
+
 class AdaptationTraceEventResponse(BaseModel):
     round: int
     phase: str
@@ -1779,6 +1785,7 @@ class AdaptationTraceEventResponse(BaseModel):
     thinking_excerpt: str | None = None
     tool: AdaptationTraceToolResponse | None = None
     result: AdaptationTraceResultResponse | None = None
+    findings: list[AdaptationTraceFindingResponse] | None = None
     model_calls_used: int
     model_calls_max: int
 

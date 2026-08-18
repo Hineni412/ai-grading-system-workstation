@@ -20,6 +20,7 @@ from backend.teaching_prep.application.lesson_drafts import (
     _local_slide_adaptations,
     draft_preflight,
     normalize_model_draft_payload,
+    validate_draft_payload,
 )
 from backend.teaching_prep.application.preferences import (
     DEFAULT_TEACHING_PREFERENCES,
@@ -79,9 +80,35 @@ def test_lesson_model_repairs_wrapped_json_and_requests_enough_output() -> None:
     class Gateway:
         def __init__(self) -> None:
             self.kwargs: dict[str, object] = {}
+            self.calls = 0
 
         def chat_completions(self, **kwargs: object) -> dict[str, object]:
             self.kwargs = kwargs
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "review_findings": [
+                                            {
+                                                "slide_refs": [],
+                                                "finding": "整体合理",
+                                                "category": "other",
+                                                "suggested_action": "保持",
+                                                "citations": ["lesson:lesson-1"],
+                                            }
+                                        ]
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            },
+                        }
+                    ]
+                }
             return {
                 "choices": [
                     {
@@ -692,6 +719,61 @@ def test_slide_plan_model_proposal_uses_frozen_support_materials(
     )
 
 
+def test_slide_plan_model_proposal_validation_failure_records_trace_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-model-slide-invalid-pack",
+        preferences=_preferences(),
+    )
+    local, _created = service.generate_lesson_draft(
+        pack.id,
+        operation_id="a10-model-slide-invalid-local",
+        mode="local_template",
+        confirmed=True,
+    )
+    confirmed, _created = service.revise_lesson_draft(
+        local.id,
+        request_token="a10-model-slide-invalid-confirmed",
+        payload=local.payload,
+        confirmed=True,
+    )
+    incomplete = build_local_template(pack)
+    incomplete["slide_adaptations"] = incomplete["slide_adaptations"][:-1]
+    service.lesson_model_adapter = FakeLessonModelAdapter(incomplete)
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="cover every frozen reference slide",
+    ):
+        service.create_slide_plan(
+            confirmed.id,
+            request_token="a10-model-slide-invalid-plan",
+            model_proposal=True,
+        )
+
+    trace = service.get_adaptation_trace(
+        pack.lesson_node_id,
+        operation_id="a10-model-slide-invalid-plan",
+    )
+    failed_events = [
+        event for event in trace["events"] if event["phase"] == "failed"
+    ]
+    assert len(failed_events) == 1
+    summary = failed_events[0]["summary"]
+    assert summary.startswith("本次没有完成：")
+    assert "cover every frozen reference slide" in summary
+    assert trace["status"] == "failed"
+
+
 def test_slide_plan_targets_question_objects_existing_slide_and_textbook_label(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1219,3 +1301,214 @@ def test_migration_default_matches_application_default() -> None:
 
     assert match is not None
     assert json.loads(match.group(1)) == DEFAULT_TEACHING_PREFERENCES
+
+
+def test_relaxed_slide_actions_flow_from_model_output_to_plan_operations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-relaxed-actions-pack",
+        preferences=_preferences(),
+    )
+    draft, _created = service.generate_lesson_draft(
+        pack.id,
+        operation_id="a10-relaxed-actions-draft",
+        mode="local_template",
+        confirmed=True,
+    )
+
+    proposal = build_local_template(pack)
+    adaptations = proposal["slide_adaptations"]
+    adaptations[0].update(
+        action="reorder",
+        target_position=2,
+        reason="导入页移到例题之后更顺。",
+    )
+    adaptations[1].update(
+        action="hide",
+        reason="该页内容超出本课范围，建议隐藏。",
+    )
+    validated = validate_draft_payload(proposal, pack)
+    plan, _source_state = build_slide_plan_payload(
+        pack,
+        draft,
+        proposal_payload=validated,
+    )
+
+    reorder = next(
+        item for item in plan["operations"] if item["kind"] == "reorder_slide"
+    )
+    hidden = next(
+        item for item in plan["operations"] if item["kind"] == "hide_slide"
+    )
+    assert reorder["execution_mode"] == "automatic"
+    assert reorder["details"]["target_position"] == 2
+    assert reorder["decision"] == "proposed"
+    assert hidden["execution_mode"] == "manual_only"
+    assert hidden["support_note"]
+
+    proposal_two = build_local_template(pack)
+    additions = proposal_two["slide_adaptations"]
+    additions[0].update(
+        action="add",
+        suggested_text="新增一页巩固练习",
+        reason="练习量不足，在本页之后加一页。",
+    )
+    additions[1].update(
+        action="modify_text",
+        suggested_text="合成修订后的表述",
+        reason="本页表述与新课标用语不一致。",
+    )
+    validated_two = validate_draft_payload(proposal_two, pack)
+    plan_two, _source_state = build_slide_plan_payload(
+        pack,
+        draft,
+        proposal_payload=validated_two,
+    )
+
+    added = next(
+        item for item in plan_two["operations"] if item["kind"] == "add_slide"
+    )
+    modified = next(
+        item
+        for item in plan_two["operations"]
+        if item["kind"] == "modify_text_box"
+    )
+    first_signature = plan_two["slides"][0]["stable_signature"]
+    assert added["execution_mode"] == "automatic"
+    assert added["details"]["insert_after_signature"] == first_signature
+    assert added["details"]["layout_source_signature"] == first_signature
+    assert added["target"]["position"] == {"index": 2}
+    assert added["target"]["content_summary"] == "新增一页巩固练习"
+    assert modified["execution_mode"] == "manual_only"
+    assert modified["details"]["suggested_text"] == "合成修订后的表述"
+    keeps = [
+        item for item in plan_two["operations"] if item["kind"] == "keep_slide"
+    ]
+    assert len(keeps) == len(plan_two["slides"])
+
+    cleaned = validate_plan_payload(plan_two)
+    assert cleaned["review_findings"] == plan_two["review_findings"]
+    assert cleaned["review_findings"]
+
+
+def test_relaxed_slide_action_fields_are_strictly_validated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-relaxed-validation-pack",
+        preferences=_preferences(),
+    )
+
+    def attempt(**changes: object) -> None:
+        proposal = build_local_template(pack)
+        proposal["slide_adaptations"][0].update(changes)
+        validate_draft_payload(proposal, pack)
+
+    with pytest.raises(TeachingPrepValidationError):
+        attempt(action="reorder")
+    with pytest.raises(TeachingPrepValidationError):
+        attempt(action="reorder", target_position=99)
+    with pytest.raises(TeachingPrepValidationError):
+        attempt(action="keep", target_position=1)
+    with pytest.raises(TeachingPrepValidationError):
+        attempt(action="modify_text")
+    with pytest.raises(TeachingPrepValidationError):
+        attempt(action="delete", suggested_text="删除页不许带建议文本")
+    with pytest.raises(TeachingPrepValidationError):
+        attempt(action="invented_action")
+
+    proposal = build_local_template(pack)
+    proposal["slide_adaptations"][0].update(action="hide")
+    proposal["slide_adaptations"][1].update(
+        action="add",
+        suggested_text="新增一页合成练习",
+    )
+    validated = validate_draft_payload(proposal, pack)
+    first, second = validated["slide_adaptations"]
+    assert first["action"] == "hide"
+    assert first["target_position"] is None
+    assert first["suggested_text"] is None
+    assert second["action"] == "add"
+    assert second["suggested_text"] == "新增一页合成练习"
+
+
+def test_review_findings_required_and_zero_change_draft_is_allowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-review-findings-pack",
+        preferences=_preferences(),
+    )
+    base = build_local_template(pack)
+
+    missing = deepcopy(base)
+    missing.pop("review_findings")
+    with pytest.raises(TeachingPrepValidationError):
+        validate_draft_payload(missing, pack)
+
+    empty = deepcopy(base)
+    empty["review_findings"] = []
+    with pytest.raises(TeachingPrepValidationError):
+        validate_draft_payload(empty, pack)
+
+    bad_category = deepcopy(base)
+    bad_category["review_findings"][0]["category"] = "invented"
+    with pytest.raises(TeachingPrepValidationError):
+        validate_draft_payload(bad_category, pack)
+
+    bad_refs = deepcopy(base)
+    bad_refs["review_findings"][0]["slide_refs"] = [
+        "material:invented:unit:1"
+    ]
+    with pytest.raises(TeachingPrepValidationError):
+        validate_draft_payload(bad_refs, pack)
+
+    empty_citations = deepcopy(base)
+    empty_citations["review_findings"][0]["citations"] = []
+    with pytest.raises(TeachingPrepValidationError):
+        validate_draft_payload(empty_citations, pack)
+
+    zero_change = deepcopy(base)
+    for item in zero_change["slide_adaptations"]:
+        item["action"] = "keep"
+    lesson_citation = zero_change["knowledge_objectives"][0]["citations"][0]
+    zero_change["review_findings"] = [
+        {
+            "slide_refs": [],
+            "finding": "整份课件结构完整、练习量合适，本课不需要改动。",
+            "category": "other",
+            "suggested_action": "无需改动，保持现状。",
+            "citations": [lesson_citation],
+        }
+    ]
+    validated = validate_draft_payload(zero_change, pack)
+    assert validated["slide_adaptations"]
+    assert all(
+        item["action"] == "keep" for item in validated["slide_adaptations"]
+    )
+    assert validated["review_findings"][0]["category"] == "other"

@@ -108,17 +108,22 @@ def build_slide_plan_payload(
             f"unit:{slide['original_index']}"
         )
         adaptation = _mapping(adaptations.get(slide_ref))
-        kind = (
-            "delete_slide"
-            if (
-                adaptation.get("action") == "delete"
-                or (
-                    not adaptation
-                    and presentation["teacher_intent"] == "candidate_delete"
-                )
-            )
-            else "keep_slide"
-        )
+        action = str(adaptation.get("action") or "")
+        if action == "delete" or (
+            not adaptation
+            and presentation["teacher_intent"] == "candidate_delete"
+        ):
+            kind = "delete_slide"
+            execution_mode = "automatic"
+        elif action == "reorder":
+            kind = "reorder_slide"
+            execution_mode = "automatic"
+        elif action == "hide":
+            kind = "hide_slide"
+            execution_mode = "manual_only"
+        else:
+            kind = "keep_slide"
+            execution_mode = "noop"
         operations.append(
             _operation(
                 draft.id,
@@ -149,10 +154,92 @@ def build_slide_plan_payload(
                 ),
                 planned_minutes=0,
                 risk="low",
-                execution_mode="automatic" if kind != "keep_slide" else "noop",
-                support_note=None,
+                execution_mode=execution_mode,
+                support_note=(
+                    "仅调整播放次序，不改动页面内容。"
+                    if kind == "reorder_slide"
+                    else "隐藏页需教师在 WPS 中人工执行。"
+                    if kind == "hide_slide"
+                    else None
+                ),
+                details=(
+                    {"target_position": adaptation.get("target_position")}
+                    if kind == "reorder_slide"
+                    else None
+                ),
             )
         )
+        if action == "add":
+            operations.append(
+                _operation(
+                    draft.id,
+                    kind="add_slide",
+                    target_key=f"{slide_ref}:adaptation-add",
+                    target={
+                        "target_kind": "new_slide",
+                        "slide_signature": None,
+                        "generated_page_number": slide["original_index"] + 1,
+                        "material_unit_id": None,
+                        "wps_object_id": None,
+                        "object_type": "slide",
+                        "position": {"index": slide["original_index"] + 1},
+                        "content_summary": (
+                            str(adaptation.get("suggested_text") or "")
+                            or str(adaptation.get("reason") or "")
+                            or slide["title"]
+                        ),
+                        "match_strategy": "new_object",
+                    },
+                    reason=str(
+                        adaptation.get("reason") or "在本页之后新增一页。"
+                    ),
+                    citations=_strings(
+                        adaptation.get("citations"),
+                        maximum=20,
+                    ),
+                    planned_minutes=0,
+                    risk="low",
+                    execution_mode="automatic",
+                    support_note="复制本页版式在其后新增一页。",
+                    details={
+                        "insert_after_signature": slide["stable_signature"],
+                        "layout_source_signature": slide["stable_signature"],
+                    },
+                )
+            )
+        elif action == "modify_text":
+            operations.append(
+                _operation(
+                    draft.id,
+                    kind="modify_text_box",
+                    target_key=f"{slide_ref}:adaptation-modify-text",
+                    target={
+                        "target_kind": "manual",
+                        "slide_signature": slide["stable_signature"],
+                        "generated_page_number": slide["original_index"],
+                        "material_unit_id": slide["material_unit_id"],
+                        "wps_object_id": None,
+                        "object_type": "text_box",
+                        "position": None,
+                        "content_summary": adaptation.get("suggested_text"),
+                        "match_strategy": "manual_only",
+                    },
+                    reason=str(
+                        adaptation.get("reason") or "建议修改本页文字。"
+                    ),
+                    citations=_strings(
+                        adaptation.get("citations"),
+                        maximum=20,
+                    ),
+                    planned_minutes=0,
+                    risk="low",
+                    execution_mode="manual_only",
+                    support_note="只给出建议新文本，需教师在 WPS 中人工修改。",
+                    details={
+                        "suggested_text": adaptation.get("suggested_text"),
+                    },
+                )
+            )
         deleted_object_refs = _strings(
             adaptation.get("delete_object_refs") or [],
             maximum=100,
@@ -569,30 +656,31 @@ def build_slide_plan_payload(
             for item in presentations
         ]
     )
-    return (
-        {
-            "schema_version": 1,
-            "preparation_preferences": preferences,
-            "source_presentations": [
-                {
-                    key: item[key]
-                    for key in (
-                        "link_id",
-                        "material_version_id",
-                        "material_name",
-                        "content_sha256",
-                        "teacher_intent",
-                    )
-                }
-                for item in presentations
-            ],
-            "slides": slides,
-            "operations": operations,
-            "unsupported_objects": unsupported,
-            "approval_history": [],
-        },
-        source_state,
-    )
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "preparation_preferences": preferences,
+        "source_presentations": [
+            {
+                key: item[key]
+                for key in (
+                    "link_id",
+                    "material_version_id",
+                    "material_name",
+                    "content_sha256",
+                    "teacher_intent",
+                )
+            }
+            for item in presentations
+        ],
+        "slides": slides,
+        "operations": operations,
+        "unsupported_objects": unsupported,
+        "approval_history": [],
+    }
+    review_findings = proposal.get("review_findings")
+    if isinstance(review_findings, list) and review_findings:
+        payload["review_findings"] = _review_findings(review_findings)
+    return payload, source_state
 
 
 def validate_plan_payload(
@@ -608,7 +696,7 @@ def validate_plan_payload(
         "unsupported_objects",
         "approval_history",
     }
-    optional = {"preparation_preferences"}
+    optional = {"preparation_preferences", "review_findings"}
     if (
         not required.issubset(set(payload))
         or set(payload) - required - optional
@@ -629,7 +717,7 @@ def validate_plan_payload(
         if "preparation_preferences" in payload
         else resolve_teaching_preferences(None)
     )
-    return {
+    result: dict[str, object] = {
         "schema_version": 1,
         "preparation_preferences": preferences,
         "source_presentations": _object_list(
@@ -647,6 +735,32 @@ def validate_plan_payload(
             maximum=10_000,
         ),
     }
+    if "review_findings" in payload:
+        result["review_findings"] = _review_findings(
+            payload.get("review_findings")
+        )
+    return result
+
+
+def _review_findings(value: object) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for item in _object_list(value, maximum=50):
+        result.append(
+            {
+                "slide_refs": _strings(
+                    item.get("slide_refs") or [],
+                    maximum=20,
+                ),
+                "finding": _bounded_text(item.get("finding"), maximum=1_000),
+                "category": _bounded_text(item.get("category"), maximum=40),
+                "suggested_action": _bounded_text(
+                    item.get("suggested_action"),
+                    maximum=500,
+                ),
+                "citations": _strings(item.get("citations"), maximum=20),
+            }
+        )
+    return result
 
 
 def validate_operation(value: object) -> dict[str, object]:

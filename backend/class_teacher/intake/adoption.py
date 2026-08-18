@@ -192,9 +192,8 @@ class HandoffAdoption:
                 if exc.code != "support_subject_not_found":
                     raise
                 try:
-                    source = self.class_roster.resolve_opaque_ref(
-                        token=token,
-                        opaque_ref=subject_id,
+                    source = self.class_roster.resolve_roster_ref(
+                        roster_ref=subject_id,
                         expected_revision=selected_revision,
                     )
                 except VaultError:
@@ -202,6 +201,7 @@ class HandoffAdoption:
                     raise
                 subject_identity = {
                     "source_student_id": source.source_key,
+                    "student_code": source.student_code,
                     "display_name": source.display_name,
                     "class_label": source.class_label,
                 }
@@ -227,6 +227,12 @@ class HandoffAdoption:
                         "学生记录没有完成，档案未更新",
                         status_code=409,
                     )
+                self._record_profile_snapshot(
+                    connection,
+                    vmk=vmk,
+                    adoption_id=str(handoff["adoption_id"]),
+                    subject_id=str(subject_row["subject_id"]),
+                )
                 self.student_cards.upsert_current_profile_in_connection(
                     connection,
                     vmk=vmk,
@@ -449,9 +455,8 @@ class HandoffAdoption:
             except VaultError as exc:
                 if exc.code != "support_subject_not_found":
                     raise
-                source = self.class_roster.resolve_opaque_ref(
-                    token=token,
-                    opaque_ref=candidate_id,
+                source = self.class_roster.resolve_roster_ref(
+                    roster_ref=candidate_id,
                     expected_revision=candidate_revision,
                 )
                 subject = self.support.create_subject_for_roster_source(
@@ -676,6 +681,168 @@ class HandoffAdoption:
             })
         return updates
 
+    def _record_profile_snapshot(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        adoption_id: str,
+        subject_id: str,
+    ) -> None:
+        """Capture the pre-merge current profile so one-click revert can restore it.
+
+        A NULL profile_snapshot_object_id on the receipt means no profile
+        existed before this merge; revert then supersedes the created entry.
+        """
+        row = connection.execute(
+            """
+            SELECT entry_id, payload_object_id, source_record_id
+            FROM student_card_entries
+            WHERE subject_id=? AND state='active'
+            ORDER BY created_at DESC, entry_id DESC LIMIT 1
+            """,
+            (subject_id,),
+        ).fetchone()
+        if row is None:
+            return
+        payload, revision = self.repository.get(
+            connection,
+            vmk=vmk,
+            object_id=str(row["payload_object_id"]),
+        )
+        snapshot_object_id = f"profile-revert-snapshot-{adoption_id}"
+        self.repository.put(
+            connection,
+            vmk=vmk,
+            object_id=snapshot_object_id,
+            object_type="student_profile_revert_snapshot",
+            payload={
+                "entry_id": str(row["entry_id"]),
+                "payload_object_id": str(row["payload_object_id"]),
+                "payload": payload,
+                "revision_before": int(revision),
+                "source_record_id_before": (
+                    str(row["source_record_id"]) if row["source_record_id"] else None
+                ),
+            },
+        )
+        connection.execute(
+            "UPDATE handoff_adoption_receipts SET profile_snapshot_object_id=? WHERE adoption_id=?",
+            (snapshot_object_id, adoption_id),
+        )
+
+    def revert_profile_adoption(self, *, token: str, handoff_id: str) -> dict[str, object]:
+        handoff = self.conversations.handoff_for_adapter(handoff_id)
+        if str(handoff["destination_key"]) != "class_teacher.student.record":
+            raise VaultError(
+                "class_teacher_revert_not_allowed",
+                "只有学生个人档案更新支持一键撤回",
+                status_code=422,
+            )
+        adoption_id = str(handoff["adoption_id"])
+        receipt = self._receipt(adoption_id)
+        if receipt is None or str(receipt["formal_object_type"]) != "student_record":
+            raise VaultError(
+                "class_teacher_revert_not_adopted",
+                "这份档案更新尚未并入，无需撤回",
+                status_code=409,
+            )
+        if receipt.get("reverted_at"):
+            # Idempotent replay: the profile was already restored; make sure the
+            # ordinary-database handoff state caught up, then report success.
+            self._mark_reverted(handoff_id)
+            return self._revert_result(receipt, replayed=True)
+        if str(handoff["adoption_state"]) != "adopted":
+            raise VaultError(
+                "class_teacher_revert_not_adopted",
+                "这份档案更新尚未并入，无需撤回",
+                status_code=409,
+            )
+        record_id = str(receipt["formal_object_id"])
+        vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                subject_row = connection.execute(
+                    "SELECT subject_id FROM support_records WHERE record_id=?",
+                    (record_id,),
+                ).fetchone()
+                if subject_row is None:
+                    raise VaultError(
+                        "support_record_not_found",
+                        "原始记录不存在，无法撤回档案合并",
+                        status_code=409,
+                    )
+                subject_id = str(subject_row["subject_id"])
+                entry = connection.execute(
+                    """
+                    SELECT entry_id, payload_object_id, source_record_id
+                    FROM student_card_entries
+                    WHERE subject_id=? AND state='active'
+                    ORDER BY created_at DESC, entry_id DESC LIMIT 1
+                    """,
+                    (subject_id,),
+                ).fetchone()
+                if entry is None or str(entry["source_record_id"] or "") != record_id:
+                    raise VaultError(
+                        "class_teacher_revert_superseded",
+                        "档案已有更新轮次，请手动修正",
+                        status_code=409,
+                    )
+                snapshot_object_id = str(receipt.get("profile_snapshot_object_id") or "")
+                if snapshot_object_id:
+                    snapshot, _snapshot_revision = self.repository.get(
+                        connection,
+                        vmk=vmk,
+                        object_id=snapshot_object_id,
+                    )
+                    self.repository.put(
+                        connection,
+                        vmk=vmk,
+                        object_id=str(entry["payload_object_id"]),
+                        object_type="student_card_current_profile",
+                        payload=dict(snapshot["payload"]),
+                    )
+                    connection.execute(
+                        "UPDATE student_card_entries SET source_record_id=? WHERE entry_id=?",
+                        (snapshot.get("source_record_id_before"), str(entry["entry_id"])),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE student_card_entries SET state='superseded' WHERE entry_id=?",
+                        (str(entry["entry_id"]),),
+                    )
+                reverted_at = _iso()
+                connection.execute(
+                    "UPDATE handoff_adoption_receipts SET reverted_at=? WHERE adoption_id=?",
+                    (reverted_at, adoption_id),
+                )
+        self._mark_reverted(handoff_id)
+        return self._revert_result({**receipt, "reverted_at": reverted_at}, replayed=False)
+
+    @staticmethod
+    def _revert_result(receipt: dict[str, object], *, replayed: bool) -> dict[str, object]:
+        snapshot_object_id = str(receipt.get("profile_snapshot_object_id") or "")
+        return {
+            "adoption_id": str(receipt["adoption_id"]),
+            "handoff_id": str(receipt["handoff_id"]),
+            "adoption_state": "reverted",
+            "profile_state": "restored" if snapshot_object_id else "not_created",
+            "source_record_retained": True,
+            "source_record_note": "撤回只回滚档案合并；本轮产生的原始支持记录仍保留。",
+            "replayed": replayed,
+        }
+
+    def _mark_reverted(self, handoff_id: str) -> None:
+        with closing(self.conversations.database.connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE intake_handoffs SET adoption_state='reverted', updated_at=?
+                    WHERE handoff_id=? AND adoption_state='adopted'
+                    """,
+                    (_iso(), handoff_id),
+                )
+
     def _receipt_hook(self, handoff: dict[str, object], target_revision: str, object_type: str):
         def write(connection: Any, _vmk: bytes, object_id: str) -> None:
             self._write_receipt(connection, handoff, target_revision, object_type, object_id)
@@ -716,6 +883,8 @@ class HandoffAdoption:
         with closing(self.conversations.database.connect()) as connection:
             with connection:
                 row = self.conversations._handoff_row(connection, handoff_id)
+                if str(row["adoption_state"]) == "reverted":
+                    return
                 connection.execute(
                     """
                     UPDATE intake_handoffs SET adoption_state='adopted',

@@ -294,7 +294,12 @@ class LLMGateway:
                 )
                 latency_ms = self._latency_ms(started)
                 should_retry = (
-                    retry_index < retry_limit and is_retryable_error(exc)
+                    retry_index < retry_limit
+                    and is_retryable_error(exc)
+                    and (
+                        policy.retry_on_timeout
+                        or category is not LLMErrorCategory.TIMEOUT
+                    )
                 )
                 retry_delay = (
                     self._retry_delay(exc, policy.retry_delays[retry_index])

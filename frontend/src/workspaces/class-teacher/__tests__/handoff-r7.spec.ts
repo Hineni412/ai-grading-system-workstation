@@ -44,8 +44,8 @@ async function mountHandoff(value: HandoffDraft): Promise<HTMLElement> {
   })
   vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({
     items: [
-      { source_key: 'A01', student_code: 'A01', display_name: '同名学生', class_label: '一班', subject_id: null, roster_state: 'available', opaque_ref: 'subject-a', student_revision: '3' },
-      { source_key: 'B01', student_code: 'B01', display_name: '同名学生', class_label: '一班', subject_id: null, roster_state: 'available', opaque_ref: 'subject-b', student_revision: '3' },
+      { source_key: 'A01', student_code: 'A01', display_name: '同名学生', class_label: '一班', subject_id: null, roster_state: 'available', roster_ref: 'subject-a', student_revision: '3' },
+      { source_key: 'B01', student_code: 'B01', display_name: '同名学生', class_label: '一班', subject_id: null, roster_state: 'available', roster_ref: 'subject-b', student_revision: '3' },
     ],
     classes: ['一班'], source_revision: 'a'.repeat(64), cursor: null, total: 2,
   })

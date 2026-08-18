@@ -110,6 +110,8 @@ _APPROVED_TABLE_REBUILDS = {
     "019_pptx_execution_source_snapshots": frozenset(
         {"pptx_execution_runs"}
     ),
+    "008_intake_handoff_revert_state": frozenset({"intake_handoffs"}),
+    "027_roster_memberships_stable_keys": frozenset({"class_roster_memberships"}),
 }
 _APPROVED_TABLE_DROPS = {
     "008_drop_legacy_cli_tables": frozenset(

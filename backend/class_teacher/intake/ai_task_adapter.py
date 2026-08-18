@@ -23,6 +23,8 @@ from backend.workspaces.ai_tasks.models import (
 
 from ..errors import VaultError
 from ..intake_draft import compose_sensitive_draft
+from ..model_approval import ModelResponseTruncatedError
+from ..roster_ref import SUBJECT_REF_PATTERN, task_safe_ref_id
 from ..student_card_service import CORE_PROFILE_DIMENSIONS
 from .affair_flow_contract import parse_affair_flow_revision
 from .conversations import ConversationStore
@@ -72,7 +74,8 @@ _PROFILE_ORGANIZATION_RULES = (
 # 档案整理规则对分诊与学生档案页两种会话同样生效。
 _TRIAGE_INSTRUCTION = _TRIAGE_INSTRUCTION + "\n\n" + _PROFILE_ORGANIZATION_RULES
 _PROFILE_INSTRUCTION = _PROFILE_INSTRUCTION + "\n\n" + _PROFILE_ORGANIZATION_RULES
-_STUDENT_REFERENCE_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,128}")
+# 学生引用是稳定学籍标识（班级|学号/姓名）或内部主体编号，均为无控制字符短文本。
+_STUDENT_REFERENCE_PATTERN = SUBJECT_REF_PATTERN
 _STUDENT_REFERENCE_ISSUE_CODES = frozenset(
     {"student_revision_mismatch", "unknown_student_reference"}
 )
@@ -202,13 +205,19 @@ class ClassTeacherAITaskAdapter:
                 if task_kind.endswith("draft_revision")
                 else "class_teacher_intake"
             )
-        raw = self.configured_model.invoke_workspace_task(
-            task_gateway=model_gateway,
-            messages=request.messages,
-            operation_id=task.operation_id,
-            purpose=diagnostic_task_kind,
-            expected_destination_fingerprint=task.model_destination_fingerprint,
-        )
+        try:
+            raw = self.configured_model.invoke_workspace_task(
+                task_gateway=model_gateway,
+                messages=request.messages,
+                operation_id=task.operation_id,
+                purpose=diagnostic_task_kind,
+                expected_destination_fingerprint=task.model_destination_fingerprint,
+            )
+        except ModelResponseTruncatedError as exc:
+            self._mark_invalid(task, task_kind, task_state="truncated_result")
+            raise InvalidAdapterResultError(
+                "class-teacher model result is truncated"
+            ) from exc
         try:
             payload = _parse_model_payload(raw)
             if not isinstance(payload, dict):
@@ -417,6 +426,11 @@ class ClassTeacherAITaskAdapter:
             previous_handoff,
         ):
             previous_handoff = None
+        prompt_candidates = _prompt_candidates(
+            candidates,
+            conversation=conversation,
+            previous_handoff=previous_handoff,
+        )
         if profile_ref is not None:
             messages.append({"role": "system", "content": _PROFILE_INSTRUCTION})
             messages.extend(self._profile_messages_for_refs([profile_ref]))
@@ -445,11 +459,11 @@ class ClassTeacherAITaskAdapter:
                     "content": "本机找到的涉事学生当前档案（作为本次事务背景，也可据新信息提出档案更新建议）："
                     + json.dumps(affair_contexts, ensure_ascii=False, separators=(",", ":")),
                 })
-        if candidates:
+        if prompt_candidates:
             messages.append({
                 "role": "user",
                 "content": "当前班学生候选（同名时不得自行选择，无唯一匹配时留空）："
-                + json.dumps(candidates, ensure_ascii=False, separators=(",", ":")),
+                + json.dumps(prompt_candidates, ensure_ascii=False, separators=(",", ":")),
             })
         if previous_handoff is not None:
             messages.append({
@@ -1185,13 +1199,18 @@ class ClassTeacherAITaskAdapter:
             else "class_teacher.intake_triage"
         )
 
-    def _mark_invalid(self, task: StoredTask, task_kind: str) -> None:
+    def _mark_invalid(
+        self,
+        task: StoredTask,
+        task_kind: str,
+        task_state: str = "invalid_result",
+    ) -> None:
         if task_kind == "class_teacher.draft_revision":
             request = next(item for item in task.context_refs if item.kind == "draft_revision_request")
             self.conversations.mark_draft_revision_outcome(
                 request_id=request.id,
                 task_id=task.task_id,
-                task_state="invalid_result",
+                task_state=task_state,
             )
             return
         if task_kind == "class_teacher.affair_flow_revision":
@@ -1209,7 +1228,7 @@ class ClassTeacherAITaskAdapter:
             self.conversations.mark_task_outcome(
                 turn_id=turn.id,
                 task_id=task.task_id,
-                task_state="invalid_result",
+                task_state=task_state,
             )
 
     @staticmethod
@@ -1379,6 +1398,37 @@ def _continues_previous_draft(
         and str(previous_handoff.get("destination_key") or "")
         == "class_teacher.student.record"
     )
+
+
+def _prompt_candidates(
+    candidates: list[dict[str, str]],
+    *,
+    conversation: Mapping[str, object],
+    previous_handoff: Mapping[str, object] | None,
+) -> list[dict[str, str]]:
+    """Trim the roster candidate list to named or previously referenced students.
+
+    Same-name candidates share one display name, so a single substring match
+    keeps every same-name option. When nothing matches (first turn without a
+    name), keep the full list as the fallback.
+    """
+    conversation_text = "\n".join(
+        str(turn.get("teacher_message") or "")
+        for turn in list(conversation.get("turns") or [])
+        if isinstance(turn, Mapping)
+    )
+    referenced_ids = {
+        str(ref.get("id") or "")
+        for ref in list((previous_handoff or {}).get("subject_refs") or [])
+        if isinstance(ref, Mapping)
+    }
+    selected = [
+        item
+        for item in candidates
+        if (item["display_name"] and item["display_name"] in conversation_text)
+        or item["id"] in referenced_ids
+    ]
+    return selected or candidates
 
 
 def _profile_open_questions(item: Mapping[str, object]) -> list[str]:
@@ -1856,7 +1906,7 @@ def _ref_mapping(value: OpaqueRef) -> dict[str, str]:
 def _mapping_ref(value: Mapping[str, object]) -> OpaqueRef:
     return OpaqueRef(
         kind=str(value.get("kind") or ""),
-        id=str(value.get("id") or ""),
+        id=task_safe_ref_id(str(value.get("id") or "")),
         revision=str(value.get("revision") or ""),
     )
 

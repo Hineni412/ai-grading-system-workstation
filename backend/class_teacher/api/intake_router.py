@@ -223,6 +223,14 @@ def create_intake_router() -> APIRouter:
             token="", handoff_id=handoff_id, **body.model_dump()
         ))
 
+    @router.post("/handoffs/{handoff_id}/revert-profile")
+    def revert_handoff_profile(handoff_id: str, request: Request, response: Response):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).intake.revert_profile_adoption(
+            token="", handoff_id=handoff_id,
+        ))
+
     return router
 
 

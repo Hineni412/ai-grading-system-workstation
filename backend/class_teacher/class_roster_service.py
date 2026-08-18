@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import re
 from contextlib import closing
@@ -11,6 +10,11 @@ from typing import Callable
 from .encrypted_database import EncryptedDatabase
 from .errors import VaultError
 from .existing_student_roster import ExistingStudent, ExistingStudentRosterSource
+from .roster_ref import (
+    parse_stable_ref,
+    student_content_revision,
+    student_stable_ref,
+)
 from .secure_repository import EncryptedObjectRepository
 from .support_record_service import SupportRecordService
 
@@ -48,29 +52,38 @@ class ClassRosterService:
         cursor: str | None = None,
         page_size: int = 50,
     ) -> dict[str, object]:
-        vmk = self._key_provider(token)
         items, revision = self.source.snapshot()
         filtered = self._filter(items, q=q, class_label=class_label)
-        state_by_key: dict[str, tuple[str, str]] = {}
+        # 成员表只提供花名册状态；档案编号一律按稳定标识查 student_subject_links。
+        state_by_ref: dict[str, str] = {}
+        subject_by_ref: dict[str, str] = {}
         if self.database.exists:
             with closing(self.database.connect()) as connection:
                 for row in connection.execute(
-                    "SELECT source_student_key, subject_id, state FROM class_roster_memberships"
+                    "SELECT source_student_key, state FROM class_roster_memberships"
                 ).fetchall():
-                    state_by_key[str(row["source_student_key"])] = (
-                        str(row["subject_id"]),
-                        str(row["state"]),
-                    )
+                    state_by_ref[str(row["source_student_key"])] = str(row["state"])
+                for row in connection.execute(
+                    "SELECT subject_id, source_fingerprint FROM student_subject_links WHERE state='active'"
+                ).fetchall():
+                    fingerprint = row["source_fingerprint"]
+                    if isinstance(fingerprint, str):
+                        subject_by_ref[fingerprint] = str(row["subject_id"])
         offset = int(cursor or "0") if str(cursor or "0").isdigit() else 0
         size = max(1, min(int(page_size), 100))
         page = filtered[offset : offset + size]
-        return {
-            "items": [self._item(
+        page_items: list[dict[str, object]] = []
+        for item in page:
+            ref = self._roster_ref(item)
+            page_items.append(self._item(
                 item,
-                state_by_key.get(item.source_key),
-                opaque_ref=self._opaque_ref(vmk, item.source_key),
+                subject_id=subject_by_ref.get(ref),
+                roster_state=state_by_ref.get(ref, "available"),
+                roster_ref=ref,
                 student_revision=self._student_revision(item),
-            ) for item in page],
+            ))
+        return {
+            "items": page_items,
             "classes": sorted({item.class_label for item in items if item.class_label}),
             "source_revision": revision,
             "total": len(filtered),
@@ -82,28 +95,30 @@ class ClassRosterService:
     def ai_candidates(self, *, token: str, class_label: str | None) -> list[dict[str, str]]:
         if not str(class_label or "").strip():
             return []
-        vmk = self._key_provider(token)
         items = self._filter(self.source.snapshot()[0], q=None, class_label=class_label)
         return [{
-            "id": self._opaque_ref(vmk, item.source_key),
+            "id": self._roster_ref(item),
             "revision": self._student_revision(item),
             "display_name": item.display_name,
             "class_label": item.class_label,
         } for item in items]
 
-    def resolve_opaque_ref(
+    def resolve_roster_ref(
         self,
         *,
-        token: str,
-        opaque_ref: str,
+        roster_ref: str,
         expected_revision: str,
     ) -> ExistingStudent:
-        vmk = self._key_provider(token)
-        candidate = str(opaque_ref or "")
+        """Resolve a stable roster ref against the current roster snapshot.
+
+        兼容输入：旧格式 64 位十六进制临时编号不会匹配任何稳定标识，
+        统一按「引用已失效」处理。
+        """
+        candidate = str(roster_ref or "")
         revision = str(expected_revision or "")
         for item in self.source.snapshot()[0]:
-            if hmac.compare_digest(self._opaque_ref(vmk, item.source_key), candidate):
-                if not hmac.compare_digest(self._student_revision(item), revision):
+            if self._roster_ref(item) == candidate:
+                if self._student_revision(item) != revision:
                     raise VaultError(
                         "class_teacher_target_conflict",
                         "学生资料已变化，请刷新后重新核对",
@@ -115,6 +130,42 @@ class ClassRosterService:
             "学生引用已失效，请重新选择",
             status_code=409,
         )
+
+    def roster_identity_for_ref(
+        self,
+        *,
+        roster_ref: str,
+    ) -> dict[str, object] | None:
+        """Read-only preview lookup: resolve a stable roster ref without writing."""
+        candidate = str(roster_ref or "")
+        if not candidate:
+            return None
+        student = next(
+            (
+                item
+                for item in self.source.snapshot()[0]
+                if self._roster_ref(item) == candidate
+            ),
+            None,
+        )
+        if student is None:
+            return None
+        subject_id: str | None = None
+        if self.database.exists:
+            with closing(self.database.connect()) as connection:
+                # 身份映射唯一走 student_subject_links：按稳定标识查档案链接。
+                link = connection.execute(
+                    "SELECT subject_id FROM student_subject_links WHERE source_fingerprint=? AND state='active'",
+                    (candidate,),
+                ).fetchone()
+                if link is not None:
+                    subject_id = str(link["subject_id"])
+        return {
+            "source_student_id": student.source_key,
+            "display_name": student.display_name,
+            "class_label": student.class_label,
+            "subject_id": subject_id,
+        }
 
     def replace_current(
         self,
@@ -132,7 +183,6 @@ class ClassRosterService:
             raise VaultError(
                 "class_roster_class_required", "请先选择一个班级", status_code=422
             )
-        vmk = self._key_provider(token)
         source_items, revision = self.source.snapshot()
         if revision != str(expected_source_revision or ""):
             raise VaultError(
@@ -179,65 +229,31 @@ class ClassRosterService:
         with closing(self.database.connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                subject_by_key = {
-                    item.source_key: self.support.ensure_roster_subject_in_connection(
-                        connection,
-                        vmk=vmk,
-                        source_student_id=item.source_key,
-                        legacy_student_code=item.student_code,
-                        display_name=item.display_name,
-                        class_label=item.class_label,
-                    )
-                    for item in selected
-                }
-                selected_keys = set(subject_by_key)
+                # 花名册激活只写状态：旧 active 置 historical、新行按稳定标识写 active，
+                # 不创建学生档案，也不写 subject_id（身份映射唯一走 student_subject_links）。
+                selected_refs = {self._roster_ref(item) for item in selected}
                 active_rows = connection.execute(
                     "SELECT source_student_key FROM class_roster_memberships WHERE state='active'"
                 ).fetchall()
                 historical_count = sum(
-                    1 for row in active_rows if str(row["source_student_key"]) not in selected_keys
+                    1 for row in active_rows if str(row["source_student_key"]) not in selected_refs
                 )
                 connection.execute(
                     "UPDATE class_roster_memberships SET state='historical', historical_at=?, updated_at=? WHERE state='active'",
                     (timestamp, timestamp),
                 )
                 for item in selected:
-                    subject_id = subject_by_key[item.source_key]
                     connection.execute(
                         """
                         INSERT INTO class_roster_memberships (
-                            source_student_key, subject_id, source_revision, state,
-                            activated_at, historical_at, updated_at
-                        ) VALUES (?, ?, ?, 'active', ?, NULL, ?)
+                            source_student_key, state, activated_at, historical_at, updated_at
+                        ) VALUES (?, 'active', ?, NULL, ?)
                         ON CONFLICT(source_student_key) DO UPDATE SET
-                            subject_id=excluded.subject_id,
-                            source_revision=excluded.source_revision,
                             state='active', activated_at=excluded.activated_at,
                             historical_at=NULL, updated_at=excluded.updated_at
                         """,
-                        (item.source_key, subject_id, revision, timestamp, timestamp),
+                        (self._roster_ref(item), timestamp, timestamp),
                     )
-                    subject_row = connection.execute(
-                        "SELECT payload_object_id FROM student_subject_links WHERE subject_id=?",
-                        (subject_id,),
-                    ).fetchone()
-                    if subject_row is not None:
-                        self.repository.put(
-                            connection,
-                            vmk=vmk,
-                            object_id=str(subject_row["payload_object_id"]),
-                            object_type="student_subject",
-                            payload={
-                                "source_student_id": item.source_key,
-                                "display_name": item.display_name,
-                                "class_label": item.class_label or None,
-                                "identity_snapshot_at": timestamp,
-                            },
-                        )
-                        connection.execute(
-                            "UPDATE student_subject_links SET state='active', updated_at=? WHERE subject_id=?",
-                            (timestamp, subject_id),
-                        )
                 result = {
                     "request_fingerprint": request_fingerprint,
                     "active_count": len(selected),
@@ -256,27 +272,52 @@ class ClassRosterService:
 
     def current(self, *, token: str, replayed: bool = False) -> dict[str, object]:
         vmk = self._key_provider(token)
+        snapshot_by_ref = {
+            self._roster_ref(item): item for item in self.source.snapshot()[0]
+        }
         items: list[dict[str, object]] = []
         with closing(self.database.connect()) as connection:
             rows = connection.execute(
                 """
-                SELECT m.source_student_key, m.subject_id, m.state, m.updated_at,
-                       s.payload_object_id
-                FROM class_roster_memberships m
-                JOIN student_subject_links s ON s.subject_id=m.subject_id
-                ORDER BY m.state, m.updated_at DESC
+                SELECT source_student_key, state, updated_at
+                FROM class_roster_memberships
+                ORDER BY state, updated_at DESC
                 """
             ).fetchall()
+            link_by_ref: dict[str, object] = {}
+            for row in connection.execute(
+                "SELECT subject_id, source_fingerprint, payload_object_id FROM student_subject_links"
+            ).fetchall():
+                fingerprint = row["source_fingerprint"]
+                if isinstance(fingerprint, str):
+                    link_by_ref[fingerprint] = row
             for row in rows:
-                identity, _ = self.repository.get(
-                    connection, vmk=vmk, object_id=str(row["payload_object_id"])
-                )
+                ref = str(row["source_student_key"])
+                source_item = snapshot_by_ref.get(ref)
+                link = link_by_ref.get(ref)
+                if source_item is not None:
+                    display_name = source_item.display_name
+                    class_label = source_item.class_label
+                elif link is not None:
+                    identity, _ = self.repository.get(
+                        connection,
+                        vmk=vmk,
+                        object_id=str(link["payload_object_id"]),  # type: ignore[index]
+                    )
+                    display_name = str(identity.get("display_name") or "")
+                    class_label = str(identity.get("class_label") or "")
+                else:
+                    parsed = parse_stable_ref(ref)
+                    class_label = parsed[0] if parsed else ""
+                    display_name = parsed[1] if parsed else ref
                 items.append(
                     {
-                        "source_key": str(row["source_student_key"]),
-                        "subject_id": str(row["subject_id"]),
-                        "display_name": str(identity.get("display_name") or ""),
-                        "class_label": str(identity.get("class_label") or ""),
+                        "source_key": ref,
+                        "subject_id": (
+                            str(link["subject_id"]) if link is not None else None  # type: ignore[index]
+                        ),
+                        "display_name": display_name,
+                        "class_label": class_label,
                         "state": str(row["state"]),
                     }
                 )
@@ -307,9 +348,10 @@ class ClassRosterService:
     @staticmethod
     def _item(
         item: ExistingStudent,
-        membership: tuple[str, str] | None,
         *,
-        opaque_ref: str,
+        subject_id: str | None,
+        roster_state: str,
+        roster_ref: str,
         student_revision: str,
     ) -> dict[str, object]:
         return {
@@ -317,27 +359,28 @@ class ClassRosterService:
             "student_code": item.student_code,
             "display_name": item.display_name,
             "class_label": item.class_label,
-            "subject_id": membership[0] if membership else None,
-            "roster_state": membership[1] if membership else "available",
-            "opaque_ref": opaque_ref,
+            "subject_id": subject_id,
+            "roster_state": roster_state,
+            "roster_ref": roster_ref,
             "student_revision": student_revision,
         }
 
     @staticmethod
-    def _opaque_ref(vmk: bytes, source_key: str) -> str:
-        return hmac.new(
-            vmk,
-            f"class-teacher|roster-ref|{source_key}".encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
+    def _roster_ref(item: ExistingStudent) -> str:
+        return student_stable_ref(
+            class_label=item.class_label,
+            student_code=item.student_code,
+            display_name=item.display_name,
+        )
 
     @staticmethod
     def _student_revision(item: ExistingStudent) -> str:
-        return hashlib.sha256(json.dumps(
-            [item.source_key, item.student_code, item.display_name, item.class_label],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")).hexdigest()
+        return student_content_revision(
+            source_key=item.source_key,
+            student_code=item.student_code,
+            display_name=item.display_name,
+            class_label=item.class_label,
+        )
 
 
 __all__ = ["ClassRosterService"]

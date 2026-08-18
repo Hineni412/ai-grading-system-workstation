@@ -13,6 +13,7 @@ from backend.class_teacher.feature import _create_service
 from backend.class_teacher.model_approval import (
     ModelDestinationChanged,
     ModelDispatchDisabled,
+    ModelResponseTruncatedError,
 )
 from backend.class_teacher.ordinary_database import OrdinaryWorkDatabase
 from backend.class_teacher.work_graph import WorkGraph
@@ -685,3 +686,169 @@ def test_destination_change_is_rejected_before_gateway_or_client_creation(
 
     assert constructed == []
     assert clients == []
+
+
+class _StaticCompletions:
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        return self.response
+
+
+def _static_response_gateway(
+    tmp_path: Path,
+    response: object,
+) -> tuple[ActiveProfileApprovedModelGateway, _StaticCompletions]:
+    completions = _StaticCompletions(response)
+
+    def gateway_factory(**kwargs: object) -> WorkspaceModelGateway:
+        low_level = LLMGateway(
+            profile=kwargs.get("profile"),
+            diagnostic_sink=JsonlDiagnosticJournal(
+                tmp_path / "logs" / "llm_diagnostics.jsonl"
+            ),
+            trace_sink=NullCallTraceSink(),
+            usage_sink=NullUsageSink(),
+            sleeper=lambda _seconds: None,
+        )
+        return WorkspaceModelGateway(**kwargs, gateway=low_level)
+
+    gateway = ActiveProfileApprovedModelGateway(
+        context=_context(tmp_path),
+        profile_store=_ProfileStore([
+            {
+                "name": "synthetic",
+                "config_api_key": "synthetic-key",
+                "config_base_url": "https://model.invalid/v1",
+                "config_model": "synthetic-model",
+            }
+        ]),
+        gateway_factory=gateway_factory,
+        client_factory=lambda _key, _url: SimpleNamespace(
+            chat=SimpleNamespace(completions=completions)
+        ),
+    )
+    return gateway, completions
+
+
+def _invoke_one_workspace_task(
+    gateway: ActiveProfileApprovedModelGateway,
+    tmp_path: Path,
+    *,
+    operation_id: str,
+) -> str:
+    destination = gateway.destination_snapshot()
+    return gateway.invoke_workspace_task(
+        task_gateway=WorkspaceAITaskModelGateway(
+            diagnostic_sink=JsonlDiagnosticJournal(
+                tmp_path / "task-logs" / "llm_diagnostics.jsonl"
+            )
+        ),
+        messages=({"role": "user", "content": "return json"},),
+        operation_id=operation_id,
+        purpose="class_teacher_intake",
+        expected_destination_fingerprint=str(
+            destination["destination_fingerprint"]
+        ),
+    )
+
+
+def test_workspace_task_sends_explicit_max_tokens_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_model_environment(monkeypatch)
+    gateway, completions = _static_response_gateway(
+        tmp_path,
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": '{"kind":"follow_up","questions":[]}'},
+                }
+            ]
+        },
+    )
+
+    result = _invoke_one_workspace_task(
+        gateway, tmp_path, operation_id="class-teacher-max-tokens-001"
+    )
+
+    assert json.loads(result) == {"kind": "follow_up", "questions": []}
+    assert len(completions.calls) == 1
+    assert completions.calls[0]["max_tokens"] == 8192
+    assert completions.calls[0]["response_format"] == {"type": "json_object"}
+
+
+def test_workspace_task_length_finish_raises_distinct_truncation_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_model_environment(monkeypatch)
+    gateway, completions = _static_response_gateway(
+        tmp_path,
+        {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": '{"kind":"follow_up","questions":["哪'},
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(ModelResponseTruncatedError):
+        _invoke_one_workspace_task(
+            gateway, tmp_path, operation_id="class-teacher-truncated-001"
+        )
+
+    assert len(completions.calls) == 1
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "task-logs" / "llm_diagnostics.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert events
+    assert any(
+        event.get("parse_status") == "truncated_json" for event in events
+    )
+
+
+def test_response_text_distinguishes_truncation_from_plain_invalid_json() -> None:
+    from backend.class_teacher.configured_model import _response_text
+
+    truncated = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {"content": '{"kind":"follow_up"'},
+            }
+        ]
+    }
+    with pytest.raises(ModelResponseTruncatedError):
+        _response_text(truncated)
+
+    complete = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": '{"kind":"follow_up"}'},
+            }
+        ]
+    }
+    assert _response_text(complete) == '{"kind":"follow_up"}'
+
+    object_style = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason="max_tokens",
+                message=SimpleNamespace(content='{"kind":'),
+            )
+        ]
+    )
+    with pytest.raises(ModelResponseTruncatedError):
+        _response_text(object_style)

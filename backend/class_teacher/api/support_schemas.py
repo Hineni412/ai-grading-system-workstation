@@ -97,6 +97,10 @@ class AffairProjectionRequest(OperationRequest):
     affair_id: str
 
 
+class FollowUpPostponeRequest(BaseModel):
+    due_date: str = Field(min_length=10, max_length=10)
+
+
 class QuickTextRequest(OperationRequest):
     text: str = Field(min_length=1, max_length=12_000)
     subject_id: str | None = None
@@ -170,6 +174,7 @@ __all__ = [
     "EvidenceBatchRequest",
     "EvidenceLinkRequest",
     "EvidenceSupersedeRequest",
+    "FollowUpPostponeRequest",
     "SpreadsheetPreviewRequest",
     "OperationRequest",
     "QuickConfirmRequest",

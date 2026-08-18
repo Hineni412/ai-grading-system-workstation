@@ -20,6 +20,18 @@ CONTRACT_VERSION = "academic_analysis_v1"
 CONTINUOUS_RANK_THRESHOLD = 0.05
 CONTINUOUS_SCORE_RATIO_THRESHOLD = 0.05
 
+_GRADE_ORDER = {"七年级": 7, "八年级": 8, "九年级": 9}
+_TERM_ORDER = {"上学期": 0, "下学期": 1}
+
+
+def _academic_order(session: dict[str, object]) -> tuple[int, int] | None:
+    """Order exams along the semester chain (七上→七下→八上→…)."""
+    grade = _GRADE_ORDER.get(str(session.get("grade") or ""))
+    term = _TERM_ORDER.get(str(session.get("term") or ""))
+    if grade is None or term is None:
+        return None
+    return (grade, term)
+
 
 def _today() -> date:
     return date.today()
@@ -365,15 +377,23 @@ class StudentAcademicAnalysis:
         }
 
     def _series(self, sessions: list[dict[str, object]]) -> list[dict[str, object]]:
-        buckets: dict[tuple[str, str], list[dict[str, object]]] = {}
+        buckets: dict[tuple[str, str], list[tuple[tuple[int, int] | None, dict[str, object]]]] = {}
         for session in sessions:
             series_name = str(session.get("comparison_series") or "未归组")
+            order = _academic_order(session)
             for point in session["evidence"]:
                 key = (series_name, str(point.get("subject_name") or "未命名学科"))
-                buckets.setdefault(key, []).append(point)
+                buckets.setdefault(key, []).append((order, point))
         result = []
-        for (series_name, subject_name), points in sorted(buckets.items()):
-            points.sort(key=lambda value: (str(value.get("occurred_on") or ""), str(value["evidence_version_id"])))
+        for (series_name, subject_name), ordered in sorted(buckets.items()):
+            # 学期链条优先：有年级/学期元数据的按七上→七下→八上…排，
+            # 同一学期内按考试日期排；缺元数据的排在最后按日期兜底。
+            ordered.sort(key=lambda item: (
+                item[0] if item[0] is not None else (99, 99),
+                str(item[1].get("occurred_on") or ""),
+                str(item[1]["evidence_version_id"]),
+            ))
+            points = [point for _, point in ordered]
             segments = [self._comparison(points[index - 1], points[index]) for index in range(1, len(points))]
             result.append({
                 "series": series_name,
@@ -484,11 +504,22 @@ class StudentAcademicAnalysis:
             older, newer = points[-2], points[-1]
             segment = item["segments"][-1]
             if segment["dimensions"]["rank"]["status"] == "directly_comparable":
+                from_rank = older.get("rank")
+                to_rank = newer.get("rank")
                 pairs.append({
                     "subject_name": item["subject_name"],
                     "from": older["relative_position"],
                     "to": newer["relative_position"],
                     "delta": newer["relative_position"] - older["relative_position"],
+                    "rank_scope": older.get("rank_scope"),
+                    "from_rank": from_rank,
+                    "to_rank": to_rank,
+                    # 名次变化：正数表示进步（名次数字变小）
+                    "rank_delta": (
+                        int(from_rank) - int(to_rank)
+                        if isinstance(from_rank, int) and isinstance(to_rank, int)
+                        else None
+                    ),
                 })
         return pairs
 

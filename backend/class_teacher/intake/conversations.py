@@ -10,6 +10,7 @@ from uuid import uuid4
 from ..errors import VaultError
 from ..intake_draft import enforce_sop_human_decision_language
 from ..ordinary_database import OrdinaryWorkDatabase
+from ..roster_ref import SUBJECT_REF_PATTERN
 from .ports import WorkspaceAITaskPort
 from .triage_contract import TriageResult, parse_triage
 
@@ -642,6 +643,7 @@ class ConversationStore:
             "failed_before_dispatch",
             "result_unknown",
             "invalid_result",
+            "truncated_result",
             "cancelled_before_dispatch",
             "cancel_requested",
         }:
@@ -682,7 +684,7 @@ class ConversationStore:
                 raise VaultError("class_teacher_turn_not_found", "会话轮次不存在", status_code=404)
             if str(turn["task_state"]) not in {
                 "failed_before_dispatch", "failed", "invalid_result", "result_unknown",
-                "cancelled_before_dispatch", "cancel_requested",
+                "truncated_result", "cancelled_before_dispatch", "cancel_requested",
             }:
                 raise VaultError("class_teacher_manual_route_unavailable", "当前任务仍在处理或已有可用结果", status_code=409)
         domain = "conflict_safety" if mode == "sop" else "class_operations"
@@ -815,7 +817,7 @@ class ConversationStore:
                     and (
                         str(row["state"]) != "open"
                         or str(row["adoption_state"])
-                        in {"adoption_started", "adopted", "discarded", "stale"}
+                        in {"adoption_started", "adopted", "reverted", "discarded", "stale"}
                     )
                 ):
                     raise VaultError("class_teacher_draft_not_editable", "这份草稿当前不能修改", status_code=409)
@@ -891,7 +893,7 @@ class ConversationStore:
                 handoff = self._handoff_row(connection, handoff_id)
                 if int(handoff["revision"]) != int(expected_revision):
                     raise VaultError("class_teacher_draft_conflict", "草稿已经变化，请刷新后再调整", status_code=409)
-                if str(handoff["state"]) != "open" or str(handoff["adoption_state"]) in {"adopted", "discarded", "stale"}:
+                if str(handoff["state"]) != "open" or str(handoff["adoption_state"]) in {"adopted", "reverted", "discarded", "stale"}:
                     raise VaultError("class_teacher_draft_not_editable", "这份草稿当前不能由 AI 调整", status_code=409)
                 request_id = uuid4().hex
                 conversation = connection.execute(
@@ -1016,7 +1018,7 @@ class ConversationStore:
                     return self.open_handoff(str(request["handoff_id"]))
                 if int(handoff["revision"]) != int(request["source_draft_revision"]):
                     raise VaultError("class_teacher_draft_conflict", "草稿已在 AI 调整期间变化，请从最新版本重新整理", status_code=409)
-                if str(handoff["state"]) != "open" or str(handoff["adoption_state"]) in {"adopted", "discarded", "stale"}:
+                if str(handoff["state"]) != "open" or str(handoff["adoption_state"]) in {"adopted", "reverted", "discarded", "stale"}:
                     raise VaultError("class_teacher_draft_not_editable", "这份草稿当前不能由 AI 调整", status_code=409)
                 current_content = json.loads(str(handoff["content_json"]))
                 merged_content = _merge_draft_revision_content(
@@ -1047,7 +1049,7 @@ class ConversationStore:
         return self.open_handoff(str(request["handoff_id"]))
 
     def mark_draft_revision_outcome(self, *, request_id: str, task_id: str, task_state: str) -> dict[str, object]:
-        if task_state not in {"failed_before_dispatch", "failed", "result_unknown", "invalid_result", "cancelled_before_dispatch", "cancel_requested"}:
+        if task_state not in {"failed_before_dispatch", "failed", "result_unknown", "invalid_result", "truncated_result", "cancelled_before_dispatch", "cancel_requested"}:
             raise VaultError("class_teacher_task_state_invalid", "AI 任务状态无效", status_code=422)
         with closing(self.database.connect()) as connection:
             with connection:
@@ -1072,7 +1074,7 @@ class ConversationStore:
         with closing(self.database.connect()) as connection:
             with connection:
                 row = self._handoff_row(connection, handoff_id)
-                if str(row["adoption_state"]) == "adopted":
+                if str(row["adoption_state"]) in {"adopted", "reverted"}:
                     raise VaultError("class_teacher_handoff_already_adopted", "正式内容已经保存，不能再丢弃交接", status_code=409)
                 connection.execute(
                     "UPDATE intake_handoffs SET adoption_state='discarded', updated_at=? WHERE handoff_id=?",
@@ -1214,7 +1216,7 @@ class ConversationStore:
                 """,
                 (conversation_id,),
             ).fetchall()
-        terminal = {"failed_before_dispatch", "failed", "result_unknown", "invalid_result", "cancelled_before_dispatch"}
+        terminal = {"failed_before_dispatch", "failed", "result_unknown", "invalid_result", "truncated_result", "cancelled_before_dispatch"}
         for row in rows:
             current_state = str(row["task_state"])
             if current_state in {*terminal, "cancel_requested"}:
@@ -1243,7 +1245,7 @@ class ConversationStore:
                 "SELECT task_id, task_state FROM intake_draft_revision_requests WHERE request_id=?",
                 (request_id,),
             ).fetchone()
-        settled = {"failed_before_dispatch", "failed", "result_unknown", "invalid_result", "cancelled_before_dispatch", "cancel_requested"}
+        settled = {"failed_before_dispatch", "failed", "result_unknown", "invalid_result", "truncated_result", "cancelled_before_dispatch", "cancel_requested"}
         if row is None or not row["task_id"] or str(row["task_state"]) in settled:
             return
         try:
@@ -1330,12 +1332,36 @@ class ConversationStore:
                 "missing_fields": missing_fields,
                 "subject_ref_count": len(subject_refs),
                 "auto_open_allowed": not missing_fields
+                and not ConversationStore._has_unanswered_clarifications(
+                    connection, conversation_id, str(row["turn_id"])
+                )
                 and destination not in {
                     "class_teacher.student.record",
                     "class_teacher.affair.sop",
                 },
             })
         return results
+
+    @staticmethod
+    def _has_unanswered_clarifications(
+        connection: Any,
+        conversation_id: str,
+        turn_id: str,
+    ) -> bool:
+        turn = connection.execute(
+            "SELECT sequence, clarification_questions_json FROM intake_turns WHERE turn_id=?",
+            (turn_id,),
+        ).fetchone()
+        if turn is None:
+            return False
+        questions = json.loads(str(turn["clarification_questions_json"] or "[]"))
+        if not questions:
+            return False
+        later = connection.execute(
+            "SELECT COUNT(*) FROM intake_turns WHERE conversation_id=? AND sequence>?",
+            (conversation_id, int(turn["sequence"])),
+        ).fetchone()[0]
+        return not int(later)
 
     @staticmethod
     def _handoff_row(connection: Any, handoff_id: str):
@@ -1394,7 +1420,9 @@ class ConversationStore:
                 raise VaultError("class_teacher_subject_refs_invalid", "学生引用无效", status_code=422)
             subject_id = str(value.get("id") or "")
             revision = str(value.get("revision") or "")
-            cls._id(subject_id, "学生引用")
+            # 学生引用是稳定学籍标识（班级|学号/姓名）或内部主体编号。
+            if SUBJECT_REF_PATTERN.fullmatch(subject_id) is None:
+                raise VaultError("class_teacher_subject_refs_invalid", "学生引用无效", status_code=422)
             if not revision or len(revision) > 128 or subject_id in seen:
                 raise VaultError("class_teacher_subject_refs_invalid", "学生引用无效", status_code=422)
             seen.add(subject_id)

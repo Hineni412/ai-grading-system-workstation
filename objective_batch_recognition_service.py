@@ -810,7 +810,36 @@ def _json_from_images_once(
 ) -> dict[str, Any]:
     """Invoke one visual request, preferring the strict no-repair client seam."""
 
+    # Objective-answer recognition is part of scan/intake, not grading; keep
+    # it online even when batch inference is enabled for grading.
+    opt_out = {"disable_batch_routing": True}
     strict_method = getattr(client, "json_from_images_once", None)
+    if callable(strict_method):
+        try:
+            return strict_method(
+                prompt,
+                images,
+                model=model,
+                usage_callback=usage_callback,
+                extra_kwargs=opt_out,
+            )
+        except TypeError as exc:
+            if "extra_kwargs" not in str(exc):
+                raise
+    else:
+        try:
+            return client.json_from_images(
+                prompt,
+                images,
+                model=model,
+                usage_callback=usage_callback,
+                extra_kwargs=opt_out,
+            )
+        except TypeError as exc:
+            if "extra_kwargs" not in str(exc):
+                raise
+    # Legacy/test clients without the extra_kwargs seam simply stay online
+    # unconditionally, which is the behaviour the opt-out asks for anyway.
     if callable(strict_method):
         return strict_method(
             prompt,

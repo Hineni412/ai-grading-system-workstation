@@ -371,6 +371,76 @@ class SensitiveWorkProjection:
             )
         return self.read_group(token=token, group_id=str(row["group_id"]))
 
+    def postpone(
+        self,
+        *,
+        token: str,
+        projection_id: str,
+        due_date: str,
+    ) -> dict[str, object]:
+        """延后提醒：只更新投影到期日，不改来源记录或计划本身。"""
+        vmk = self._key_provider(token)
+        normalized_due = _date(due_date)
+        if normalized_due is None:
+            raise VaultError(
+                "sensitive_projection_date_invalid",
+                "请选择新的提醒日期",
+                status_code=422,
+            )
+        with closing(self.database.connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM sensitive_work_groups WHERE projection_id = ?",
+                    (projection_id,),
+                ).fetchone()
+                if row is None:
+                    raise VaultError(
+                        "sensitive_projection_not_found",
+                        "跟进提醒不存在",
+                        status_code=404,
+                    )
+                if str(row["state"]) == "cancelled":
+                    raise VaultError(
+                        "sensitive_projection_dismissed",
+                        "该提醒已关闭，不能延后",
+                        status_code=409,
+                    )
+                queued = self.enqueue(
+                    connection,
+                    vmk=vmk,
+                    source_kind=str(row["source_kind"]),
+                    source_id=str(row["source_id"]),
+                    occurrence_id=str(row["occurrence_id"] or "") or None,
+                    state="pending",
+                    due_date=normalized_due,
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        self.drain(token=token)
+        return self.read_group(token=token, group_id=str(queued["group_id"]))
+
+    def dismiss(self, *, token: str, projection_id: str) -> dict[str, object]:
+        """不再跟进：关闭该提醒，不清除来源档案内容。"""
+        self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM sensitive_work_groups WHERE projection_id = ?",
+                (projection_id,),
+            ).fetchone()
+        if row is None:
+            raise VaultError(
+                "sensitive_projection_not_found",
+                "跟进提醒不存在",
+                status_code=404,
+            )
+        if str(row["state"]) == "cancelled":
+            return {"dismissed": True, "group_id": str(row["group_id"])}
+        result = self.tombstone(token=token, group_id=str(row["group_id"]))
+        return {**result, "dismissed": True}
+
     def resolve(self, *, token: str, projection_id: str) -> dict[str, object]:
         self._key_provider(token)
         self.drain(token=token)
@@ -383,16 +453,26 @@ class SensitiveWorkProjection:
                 return {"gone": True}
             source_kind = str(row["source_kind"])
             source_id = str(row["source_id"])
-            table = {
-                "sensitive_affair": "affairs",
-                "attention_followup": "attention_cards",
-                "student_support": "student_card_entries",
-            }[source_kind]
-            column = {
-                "sensitive_affair": "affair_id",
-                "attention_followup": "attention_card_id",
-                "student_support": "entry_id",
-            }[source_kind]
+            occurrence = str(row["occurrence_id"] or "")
+            if source_kind == "student_support" and occurrence == "record-review":
+                table, column = "support_records", "record_id"
+            elif source_kind == "student_support" and occurrence == "plan-review":
+                table, column = "support_plans", "support_plan_id"
+            elif source_kind == "student_support" and occurrence.startswith(
+                "profile-stale-"
+            ):
+                table, column = "student_subject_links", "subject_id"
+            else:
+                table = {
+                    "sensitive_affair": "affairs",
+                    "attention_followup": "attention_cards",
+                    "student_support": "student_card_entries",
+                }[source_kind]
+                column = {
+                    "sensitive_affair": "affair_id",
+                    "attention_followup": "attention_card_id",
+                    "student_support": "entry_id",
+                }[source_kind]
             exists = connection.execute(
                 f"SELECT * FROM {table} WHERE {column} = ?",
                 (source_id,),

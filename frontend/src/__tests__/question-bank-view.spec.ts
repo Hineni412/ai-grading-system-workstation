@@ -102,6 +102,24 @@ async function mountView() {
   return { host, pinia, router }
 }
 
+async function openCardMenu(host: HTMLElement, paperTitle: string): Promise<void> {
+  const toggle = [...host.querySelectorAll<HTMLButtonElement>('.paper-card__more-toggle')]
+    .find((button) => button.getAttribute('aria-label')?.includes(paperTitle))!
+  toggle.click()
+  await nextTick()
+}
+
+function cardMenuItem(label: string): HTMLButtonElement {
+  return [...document.querySelectorAll<HTMLButtonElement>('.paper-card__more-menu button')]
+    .find((button) => button.textContent?.trim() === label)!
+}
+
+function batchBarButton(host: HTMLElement, label: string): HTMLButtonElement {
+  const bar = host.querySelector('.paper-batch-bar')!
+  return [...bar.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === label)!
+}
+
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount()
   document.body.innerHTML = ''
@@ -872,8 +890,8 @@ describe('question bank workspace', () => {
       updated_at: '2026-07-29 10:30:00.123456',
     }))
 
-    const edit = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('编辑资料'))!
+    await openCardMenu(host, '匿名期末试卷')
+    const edit = cardMenuItem('编辑资料')
     edit.click()
     await nextTick()
     const title = document.body.querySelector<HTMLInputElement>('input[name="paper-title"]')!
@@ -946,9 +964,8 @@ describe('question bank workspace', () => {
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const retag = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '重新打标签')!
-    retag.click()
+    await openCardMenu(host, '匿名期末试卷')
+    cardMenuItem('重新打标签').click()
 
     await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
       ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
@@ -1245,9 +1262,8 @@ describe('question bank workspace', () => {
         throw new Error(`unexpected request: ${url} ${String(init?.method)}`)
       })
 
-    const remove = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '删除')!
-    remove.click()
+    await openCardMenu(host, '匿名期末试卷')
+    cardMenuItem('删除').click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
     expect(document.body.textContent).toContain('6 条分析记录')
     expect(document.body.textContent).toContain('已完成考试的答卷与成绩不受影响')
@@ -1258,7 +1274,8 @@ describe('question bank workspace', () => {
     cancel.click()
     await nextTick()
     expect(host.textContent).toContain('匿名期末试卷')
-    remove.click()
+    await openCardMenu(host, '匿名期末试卷')
+    cardMenuItem('删除').click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('确认彻底删除'))!
@@ -1324,9 +1341,8 @@ describe('question bank workspace', () => {
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const reviewDelete = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '删除')!
-    reviewDelete.click()
+    await openCardMenu(host, '匿名期末试卷')
+    cardMenuItem('删除').click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('确认彻底删除'))!
@@ -1393,9 +1409,8 @@ describe('question bank workspace', () => {
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const remove = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.textContent?.trim() === '删除')!
-    remove.click()
+    await openCardMenu(host, '匿名期末试卷')
+    cardMenuItem('删除').click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent?.includes('确认彻底删除'))!
@@ -1436,9 +1451,8 @@ describe('question bank workspace', () => {
       })
     })
 
-    const remove = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.textContent?.trim() === '删除')!
-    remove.click()
+    await openCardMenu(host, '匿名期末试卷')
+    cardMenuItem('删除').click()
 
     await vi.waitFor(() => expect(host.textContent).toContain(serverMessage))
     expect(host.textContent).not.toContain('删除影响读取失败')
@@ -1478,9 +1492,8 @@ describe('question bank workspace', () => {
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const reviewDelete = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.textContent?.trim() === '删除')!
-    reviewDelete.click()
+    await openCardMenu(host, '匿名期末试卷')
+    cardMenuItem('删除').click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent?.includes('确认彻底删除'))!
@@ -1522,6 +1535,186 @@ describe('question bank workspace', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('drives the batch bar from card, folder and master checkboxes', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper, { ...paper, id: 5, title: '第二份试卷' }]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    await nextTick()
+
+    expect(host.textContent).toContain('未选中试卷')
+    expect(batchBarButton(host, '继续完成未完成题目').disabled).toBe(true)
+
+    const cardChecks = [...host.querySelectorAll<HTMLInputElement>('.paper-card__check input')]
+    cardChecks[0]!.click()
+    await nextTick()
+    expect(host.textContent).toContain('已选 1 份试卷')
+    expect(batchBarButton(host, '继续完成未完成题目').disabled).toBe(false)
+    const master = host.querySelector<HTMLInputElement>('.paper-batch-bar__select-all input')!
+    expect(master.checked).toBe(false)
+    expect(master.indeterminate).toBe(true)
+
+    // The folder checkbox selects the rest of the group without collapsing it.
+    const folderCheck = host.querySelector<HTMLInputElement>('.paper-folder__check input')!
+    folderCheck.click()
+    await nextTick()
+    expect(host.textContent).toContain('已选 2 份试卷')
+    expect(host.textContent).toContain('第二份试卷')
+    expect(master.checked).toBe(true)
+
+    master.click()
+    await nextTick()
+    expect(host.textContent).toContain('未选中试卷')
+    expect(batchBarButton(host, '删除').disabled).toBe(true)
+  })
+
+  it('asks once and submits a tagging job per selected paper for batch fill', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper, { ...paper, id: 5, title: '第二份试卷' }]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const taggingBodies: Array<Record<string, unknown>> = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.startsWith('/api/question-bank/questions?')) {
+        const paperIds = new URL(url, 'http://local.test').searchParams
+          .getAll('paper_ids')
+          .map(Number)
+        return response({
+          items: paperIds.map((paperId) => ({ ...item, id: 3_000 + paperId, paper_id: paperId })),
+          total: paperIds.length,
+          page: 1,
+          page_size: 100,
+          total_pages: 1,
+        })
+      }
+      if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
+        taggingBodies.push(JSON.parse(String(init.body)))
+        return response({
+          id: 300 + taggingBodies.length,
+          job_type: 'tagging_sync',
+          payload: {},
+          result: {},
+          status: 'queued',
+          progress: 0,
+          stage: '',
+          detail: '',
+          error: null,
+          cancel_requested: false,
+          created_at: '2026-08-01T10:00:00Z',
+          started_at: null,
+          updated_at: '2026-08-01T10:00:00Z',
+          finished_at: null,
+        }, 202)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    for (const check of host.querySelectorAll<HTMLInputElement>('.paper-card__check input')) {
+      check.click()
+    }
+    await nextTick()
+    batchBarButton(host, '继续完成未完成题目').click()
+
+    await vi.waitFor(() => expect(taggingBodies).toHaveLength(2))
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('2 份试卷共 2 道题'))
+    expect(taggingBodies.map((body) => body.question_ids)).toEqual([[3_004], [3_005]])
+    expect(taggingBodies.every((body) => body.force_retag === undefined)).toBe(true)
+    expect(host.textContent).toContain('已提交 2 道题等待后端核对')
+  })
+
+  it('previews and deletes the whole selection with one request each', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    const papers = [paper, { ...paper, id: 5, title: '第二份试卷' }]
+    store.papers = papers
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    let deleted = false
+    const previewBodies: Array<Record<string, unknown>> = []
+    const deleteBodies: Array<Record<string, unknown>> = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-bank/papers') {
+        return response({ items: deleted ? [] : papers, total: deleted ? 0 : papers.length })
+      }
+      if (url.endsWith('/permanent-deletion-impact')) {
+        previewBodies.push(JSON.parse(String(init?.body)))
+        return response({
+          paper_count: 2,
+          question_count: 4,
+          tag_count: 6,
+          analysis_record_count: 8,
+          training_link_count: 1,
+          knowledge_graph_link_count: 1,
+          owned_file_count: 2,
+          shared_file_count: 0,
+          permanent_delete_phrase: '彻底删除 2 份试卷',
+        })
+      }
+      if (url.endsWith('/permanent-delete')) {
+        deleteBodies.push(JSON.parse(String(init?.body)))
+        deleted = true
+        return response({
+          deleted_paper_ids: [4, 5],
+          deleted_question_count: 4,
+          deleted_tag_count: 6,
+          deleted_analysis_record_count: 8,
+          removed_training_link_count: 1,
+          removed_knowledge_graph_link_count: 1,
+          deleted_file_count: 2,
+          skipped_shared_file_count: 0,
+          storage_cleanup_pending: false,
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    for (const check of host.querySelectorAll<HTMLInputElement>('.paper-card__check input')) {
+      check.click()
+    }
+    await nextTick()
+    batchBarButton(host, '删除').click()
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
+    expect(document.body.textContent).toContain('选中的 2 份试卷')
+    expect(document.body.textContent).toContain('第二份试卷')
+    expect(previewBodies).toHaveLength(1)
+    expect(previewBodies[0]?.selections).toEqual([
+      { id: 4, expected_updated_at: paper.updated_at },
+      { id: 5, expected_updated_at: paper.updated_at },
+    ])
+
+    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('确认彻底删除'))!
+    confirm.click()
+    await vi.waitFor(() => expect(store.papers).toHaveLength(0))
+    expect(deleteBodies).toHaveLength(1)
+    expect((deleteBodies[0]?.selections as unknown[])).toHaveLength(2)
+    expect(deleteBodies[0]?.confirmation_phrase).toBe('彻底删除 2 份试卷')
+    expect(host.textContent).toContain('已删除 2 份试卷')
+    expect(host.textContent).toContain('未选中试卷')
   })
 })
 

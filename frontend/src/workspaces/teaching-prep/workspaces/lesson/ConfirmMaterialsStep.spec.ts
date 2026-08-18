@@ -524,8 +524,9 @@ describe('ConfirmMaterialsStep', () => {
     })
 
     const buttons = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="preview-lesson-material"]')]
-    expect(buttons).toHaveLength(2)
-    buttons[1]?.click()
+    expect(buttons).toHaveLength(1)
+    expect(host.textContent).toContain('在下方发送范围确认中查看')
+    buttons[0]?.click()
     await nextTick()
     const previewSources = [...host.querySelectorAll('[data-testid="material-page-preview"] img')]
       .map(item => item.getAttribute('src'))
@@ -551,6 +552,62 @@ describe('ConfirmMaterialsStep', () => {
     expect(host.textContent).toContain('未建任务（生成动画才单独计费，不改课件）')
     expect(host.textContent).toContain('内部最多 2 次：识题 + 改编')
     expect(getExpose().primaryDisabled).toBe(false)
+    app.unmount()
+  })
+
+  it('refreshes and retries once with the current selection when saving hits a conflict', async () => {
+    const links = [
+      referenceLink('link-ppt', '一次函数课件.pptx', 'reference_ppt', 'pptx'),
+      referenceLink('link-book', '教材第 1—2 页', 'textbook'),
+    ]
+    const { app, workbench, getExpose } = await mountStep({ links })
+
+    const conflict = (): ApiError => new ApiError({
+      kind: 'conflict',
+      status: 409,
+      code: 'teaching_prep_conflict',
+      message: 'Teaching preparation record changed; refresh and try again',
+      details: {},
+      requestId: 'test',
+      retryable: false,
+    })
+    const saveDraft = vi.spyOn(teachingPrepWorkbenchApi, 'saveReferenceDraft')
+      .mockRejectedValue(conflict())
+    // 模拟刷新后后端草稿只保存了主课件；重试必须保留用户当前勾选的参考依据。
+    vi.mocked(workbench.refresh).mockImplementation(async () => {
+      workbench.referencePreflight.value = {
+        ...preflight(links),
+        source_state_sha256: 'b'.repeat(64),
+        draft: {
+          lesson_node_id: lessonId,
+          payload: {
+            material_selections: [{ link_id: 'link-ppt', start_unit: 1, end_unit: 2, ppt_intent: 'keep' as const }],
+            exercise_candidate_ids: [],
+            question_ids: [],
+            assessment_ids: [],
+            knowledge_scope: [],
+            preparation_preferences: preferences,
+            class_name: null,
+            teacher_context: null,
+          },
+          source_state_sha256: 'b'.repeat(64),
+          revision: 2,
+          created_at: '2026-08-16T00:00:00Z',
+          updated_at: '2026-08-16T00:00:00Z',
+        },
+      }
+    })
+
+    await getExpose().runPrimary()
+
+    expect(saveDraft).toHaveBeenCalledTimes(2)
+    const retried = saveDraft.mock.calls[1]?.[1]
+    expect(retried?.source_state_sha256).toBe('b'.repeat(64))
+    expect(retried?.expected_revision).toBe(2)
+    expect(retried?.selection.material_selections.map(item => item.link_id).sort())
+      .toEqual(['link-book', 'link-ppt'])
+    expect(getExpose().inspectorMessage).toContain('页面数据刚有更新')
+    expect(getExpose().inspectorMessage).not.toContain('refresh and try again')
     app.unmount()
   })
 

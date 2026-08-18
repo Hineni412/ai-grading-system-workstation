@@ -17,11 +17,13 @@ from backend.teaching_prep.domain.errors import (
     TeachingPrepNotFoundError,
     TeachingPrepConflictError,
     TeachingPrepRetryAvailableError,
+    TeachingPrepValidationError,
 )
 from backend.teaching_prep.infrastructure.fakes import (
     FakeExerciseSuggestionModelAdapter,
 )
 from backend.teaching_prep.application.ai_task_adapter import (
+    SlideProposalRetryAvailableFailure,
     TeachingPrepAITaskAdapter,
     bind_adoption_command,
 )
@@ -173,6 +175,31 @@ def test_slide_adapter_persists_metadata_for_local_recovery(tmp_path: Path) -> N
 
     assert result == recovered
     assert service.calls == 1
+
+
+def test_slide_adapter_validation_failure_keeps_code_and_carries_reason(
+    tmp_path: Path,
+) -> None:
+    class FakeService:
+        def __init__(self) -> None:
+            self.database_path = tmp_path / "teaching_prep.db"
+            self.resource_packs = SimpleNamespace(
+                source_status=lambda _pack_id: {"sources_changed": False}
+            )
+
+        def create_slide_plan(self, *_args, **_kwargs):
+            raise TeachingPrepValidationError(
+                "slide adaptations must cover every frozen reference slide"
+            )
+
+    adapter = TeachingPrepAITaskAdapter(FakeService())  # type: ignore[arg-type]
+
+    with pytest.raises(SlideProposalRetryAvailableFailure) as captured:
+        adapter.execute(_task(), model_gateway=WorkspaceAITaskModelGateway())
+
+    assert captured.value.code == "slide_proposal_retry_available"
+    assert "the slide proposal failed local validation" in str(captured.value)
+    assert "cover every frozen reference slide" in str(captured.value)
 
 
 def _real_slide_adoption_setup(

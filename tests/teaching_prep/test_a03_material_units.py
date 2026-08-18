@@ -17,6 +17,7 @@ from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application import TeachingPrepService
 from backend.teaching_prep.application import preparation_service
 from backend.teaching_prep.domain.errors import TeachingPrepConflictError
+from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.teaching_prep.infrastructure.fakes import FakeWpsAdapter
 from backend.teaching_prep.infrastructure.materials import MaterialParser
 from backend.teaching_prep.infrastructure.materials.parser import _slide_objects
@@ -731,6 +732,65 @@ def test_pptx_slides_expose_titles_objects_and_structural_previews(
     assert units[1].formula_review_required is True
 
 
+def test_pptx_reparse_with_all_pages_reusable_reuses_existing_units(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    version = _register(
+        service,
+        _pptx(tmp_path / "synthetic-reparse.pptx"),
+        token="material-a03-pptx-reparse",
+        name="合成重复解析课件",
+    )
+    first = service.parse_material_version(version.id)
+
+    second = service.parse_material_version(version.id)
+
+    assert [unit.id for unit in second] == [unit.id for unit in first]
+    assert len(service.list_material_units(version.id)) == len(first)
+
+
+def test_pptx_iter_preview_units_with_empty_request_yields_nothing(
+    tmp_path: Path,
+) -> None:
+    parser = MaterialParser()
+    path = _pptx(tmp_path / "synthetic-empty-request.pptx")
+
+    assert list(
+        parser.iter_preview_units(path, material_type="pptx", unit_indexes=set())
+    ) == []
+    with pytest.raises(TeachingPrepValidationError, match="no readable slides"):
+        list(
+            parser.iter_preview_units(
+                path, material_type="pptx", unit_indexes={99}
+            )
+        )
+
+
+def test_pptx_without_slides_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "synthetic-empty.pptx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "ppt/presentation.xml",
+            '<p:presentation '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>',
+        )
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    version = _register(
+        service,
+        path,
+        token="material-a03-pptx-empty",
+        name="合成空课件",
+    )
+
+    with pytest.raises(TeachingPrepValidationError, match="no readable slides"):
+        service.parse_material_version(version.id)
+
+
 def test_pptx_content_preview_shows_embedded_image(
     tmp_path: Path,
 ) -> None:
@@ -1051,7 +1111,7 @@ def _upgrade_preview(service: TeachingPrepService, unit_id: str):
     return service.get_material_unit(unit_id)
 
 
-def test_pptx_real_preview_is_lazy_fingerprint_cached_and_keeps_source_unchanged(
+def test_pptx_real_preview_is_prerendered_fingerprint_cached_and_keeps_source_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1071,20 +1131,21 @@ def test_pptx_real_preview_is_lazy_fingerprint_cached_and_keeps_source_unchanged
     before_sha = hashlib.sha256(controlled_source.read_bytes()).hexdigest()
 
     units = service.parse_material_version(version.id)
-    assert adapter.preview_calls == []
-    assert units[0].object_summary["preview_kind"] == "structural"
+    service.drain_pptx_preview_renders()
+    assert len(adapter.preview_calls) == 2
+    assert adapter.preview_calls[0]["slide_indexes"] == [1]
+    assert adapter.preview_calls[1]["slide_indexes"] == [2]
 
     preview = service.material_preview_path(units[0].id)
-    assert adapter.preview_calls == []
-    assert service.get_material_unit(units[0].id).object_summary["preview_kind"] == "structural"
+    assert len(adapter.preview_calls) == 2
+    assert service.get_material_unit(units[0].id).object_summary["preview_kind"] == "rendered"
 
     _upgrade_preview(service, units[0].id)
     rendered = service.list_material_units(version.id)[0]
     service.material_preview_path(units[0].id)
     _upgrade_preview(service, units[0].id)
 
-    assert len(adapter.preview_calls) == 1
-    assert adapter.preview_calls[0]["slide_indexes"] == [1]
+    assert len(adapter.preview_calls) == 2
     assert preview.read_bytes().startswith(b"\x89PNG")
     assert rendered.object_summary["preview_kind"] == "rendered"
     assert rendered.object_summary["rendered_source_sha256"] == version.content_sha256
@@ -1107,16 +1168,58 @@ def test_pptx_preview_uses_preview_adapter_without_copy_execution(
         name="合成预览适配课件",
     )
     unit = service.parse_material_version(version.id)[0]
+    service.drain_pptx_preview_renders()
     preview = service.material_preview_path(unit.id)
-    assert adapter.preview_calls == []
+    assert len(adapter.preview_calls) == 2
     _upgrade_preview(service, unit.id)
     rendered = service.list_material_units(version.id)[0]
 
-    assert len(adapter.preview_calls) == 1
+    assert len(adapter.preview_calls) == 2
     assert preview.read_bytes().startswith(b"\x89PNG")
     assert rendered.object_summary["preview_kind"] == "rendered"
     assert service.wps_adapter is None
     assert service.wps_adapter_is_real is False
+
+
+def test_pptx_parse_prerenders_all_slides_in_background(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    adapter = FakeWpsAdapter()
+    service.preview_wps_adapter = adapter
+    service.wps_adapter = None
+    service.wps_adapter_is_real = False
+    version = _register(
+        service,
+        _pptx(tmp_path / "synthetic-prerender-all.pptx"),
+        token="material-a03-pptx-prerender-all",
+        name="合成批量预渲染课件",
+    )
+    units = service.parse_material_version(version.id)
+    assert all(
+        unit.object_summary["preview_kind"] == "structural" for unit in units
+    )
+
+    service.drain_pptx_preview_renders()
+    rendered = service.list_material_units(version.id)
+
+    assert sorted(
+        call["slide_indexes"][0] for call in adapter.preview_calls
+    ) == [1, 2]
+    assert all(
+        unit.object_summary["preview_kind"] == "rendered"
+        and unit.object_summary["preview_render_status"] == "completed"
+        for unit in rendered
+    )
+    for unit in rendered:
+        preview = service.material_preview_path(unit.id)
+        assert preview.read_bytes().startswith(b"\x89PNG")
+
+    service._schedule_pptx_prerender(version.id)
+    service._schedule_pptx_prerender(version.id)
+    service.drain_pptx_preview_renders()
+    assert len(adapter.preview_calls) == 2
 
 
 def test_pptx_preview_retries_after_wps_unavailable(
@@ -1163,8 +1266,8 @@ def test_pptx_preview_retries_after_wps_failed(
     )
     unit = service.parse_material_version(version.id)[0]
     service.material_preview_path(unit.id)
-    assert adapter.preview_calls == []
-    _upgrade_preview(service, unit.id)
+    service.drain_pptx_preview_renders()
+    assert len(adapter.preview_calls) == 2
     failed = service.list_material_units(version.id)[0]
     assert failed.object_summary["preview_render_error_code"] == "wps_preview_failed"
     assert failed.object_summary["preview_render_attempts"] == 1
@@ -1174,7 +1277,7 @@ def test_pptx_preview_retries_after_wps_failed(
     preview = service.material_preview_path(unit.id)
     rendered = service.list_material_units(version.id)[0]
 
-    assert len(adapter.preview_calls) == 2
+    assert len(adapter.preview_calls) == 3
     assert preview.read_bytes().startswith(b"\x89PNG")
     assert rendered.object_summary["preview_kind"] == "rendered"
     assert "preview_render_attempts" not in rendered.object_summary
@@ -1196,12 +1299,13 @@ def test_pptx_preview_failed_retry_stops_after_second_attempt(
         name="合成预览失败后停止课件",
     )
     unit = service.parse_material_version(version.id)[0]
+    service.drain_pptx_preview_renders()
     _upgrade_preview(service, unit.id)
     _upgrade_preview(service, unit.id)
     _upgrade_preview(service, unit.id)
     failed = service.list_material_units(version.id)[0]
 
-    assert len(adapter.preview_calls) == 2
+    assert len(adapter.preview_calls) == 3
     assert failed.object_summary["preview_render_error_code"] == "wps_preview_failed"
     assert failed.object_summary["preview_render_attempts"] == 2
 
@@ -1220,8 +1324,11 @@ def test_material_delete_waits_for_lazy_preview_publish_and_leaves_no_orphan(
         name="合成预览删除竞态课件",
     )
     unit = service.parse_material_version(version.id)[0]
+    service.drain_pptx_preview_renders()
     record = service.material_units.preview_record(unit.id)
     preview_path = (service.root / record.preview_relpath).resolve()
+    preview_path.write_bytes(b"corrupt rendered preview")
+    service.material_preview_path(unit.id)
     impact = service.preview_material_deletion(
         version.source_id,
         expected_revision=version.source_revision,
@@ -1319,6 +1426,7 @@ def test_pptx_rendered_preview_rebuilds_when_cached_bytes_no_longer_match(
         name="合成损坏缓存参考课件",
     )
     unit = service.parse_material_version(version.id)[0]
+    service.drain_pptx_preview_renders()
     _upgrade_preview(service, unit.id)
     preview = service.material_preview_path(unit.id)
     preview.write_bytes(b"corrupt rendered preview")
@@ -1331,7 +1439,7 @@ def test_pptx_rendered_preview_rebuilds_when_cached_bytes_no_longer_match(
     rebuilt = service.material_preview_path(unit.id)
     refreshed = service.get_material_unit(unit.id)
 
-    assert len(adapter.preview_calls) == 2
+    assert len(adapter.preview_calls) == 3
     assert rebuilt.read_bytes().startswith(b"\x89PNG")
     assert rebuilt_path.read_bytes().startswith(b"\x89PNG")
     assert refreshed.object_summary["preview_kind"] == "rendered"
@@ -1353,6 +1461,7 @@ def test_pptx_corrupt_rendered_preview_falls_back_to_structural_when_wps_fails(
         name="合成损坏缓存降级课件",
     )
     unit = service.parse_material_version(version.id)[0]
+    service.drain_pptx_preview_renders()
     _upgrade_preview(service, unit.id)
     preview = service.material_preview_path(unit.id)
     preview.write_bytes(b"corrupt rendered preview")
@@ -1365,7 +1474,7 @@ def test_pptx_corrupt_rendered_preview_falls_back_to_structural_when_wps_fails(
     _upgrade_preview(service, unit.id)
     fallback = service.get_material_unit(unit.id)
 
-    assert len(adapter.preview_calls) == 2
+    assert len(adapter.preview_calls) == 3
     assert fallback_path.read_bytes().startswith(b"\x89PNG")
     assert fallback.object_summary["preview_kind"] == "structural"
     assert fallback.object_summary["preview_notice"] == "本机拼出的页，不是放映软件实拍"
@@ -1390,15 +1499,16 @@ def test_pptx_real_preview_timeout_keeps_labelled_structural_fallback(
         name="合成预览超时课件",
     )
     unit = service.parse_material_version(version.id)[0]
+    service.drain_pptx_preview_renders()
 
     structural_path = service.material_preview_path(unit.id)
-    assert adapter.preview_calls == []
+    assert len(adapter.preview_calls) == 2
     _upgrade_preview(service, unit.id)
     fallback = service.list_material_units(version.id)[0]
     _upgrade_preview(service, unit.id)
 
     assert structural_path.read_bytes().startswith(b"\x89PNG")
-    assert len(adapter.preview_calls) == 1
+    assert len(adapter.preview_calls) == 2
     assert fallback.object_summary["preview_kind"] == "structural"
     assert fallback.object_summary["preview_notice"] == "本机拼出的页，不是放映软件实拍"
     assert fallback.object_summary["preview_render_status"] == "failed"

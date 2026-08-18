@@ -38,6 +38,7 @@ _REQUIRED_TOP_LEVEL_KEYS = {
     "anticipated_difficulties",
     "lesson_flow",
     "exercise_recommendations",
+    "review_findings",
     "uncertainties",
 }
 _OPTIONAL_TOP_LEVEL_KEYS = {"slide_adaptations"}
@@ -48,6 +49,21 @@ _SLIDE_ROLES = {
     "example",
     "practice",
     "summary",
+    "other",
+}
+_SLIDE_ACTIONS = {
+    "keep",
+    "delete",
+    "reorder",
+    "hide",
+    "add",
+    "modify_text",
+}
+_REVIEW_CATEGORIES = {
+    "content",
+    "sequence",
+    "practice_load",
+    "alignment",
     "other",
 }
 _EXPLICIT_LOCATOR = re.compile(
@@ -198,6 +214,7 @@ def build_local_template(
                 }
             )
     slide_adaptations = _local_slide_adaptations(payload)
+    review_findings = _local_review_findings(slide_adaptations, lesson_ref)
     insertion_slide_ref = _preferred_insertion_slide(slide_adaptations)
     exercise_recommendations: list[dict[str, object]] = []
     included = 0
@@ -298,6 +315,7 @@ def build_local_template(
         "lesson_flow": lesson_flow,
         "exercise_recommendations": exercise_recommendations,
         "slide_adaptations": slide_adaptations,
+        "review_findings": review_findings,
         "uncertainties": uncertainties,
     }
 
@@ -347,6 +365,10 @@ def validate_draft_payload(
         "slide_adaptations": _slide_adaptations(
             value.get("slide_adaptations", []),
             pack,
+            allowed_refs,
+        ),
+        "review_findings": _review_findings(
+            value["review_findings"],
             allowed_refs,
         ),
         "uncertainties": _strings(
@@ -423,6 +445,49 @@ def normalize_model_draft_payload(
         uncertainties.append(notice)
     normalized["uncertainties"] = uncertainties
     return normalized
+
+
+def default_review_findings(
+    pack: ResourcePackVersion,
+) -> list[dict[str, object]]:
+    """Compatible input for legacy drafts frozen before review findings existed."""
+    lesson = _mapping(pack.payload.get("lesson"))
+    lesson_id = str(lesson.get("lesson_node_id") or pack.lesson_node_id)
+    return _local_review_findings([], f"lesson:{lesson_id}")
+
+
+def _local_review_findings(
+    slide_adaptations: list[dict[str, object]],
+    lesson_ref: str,
+) -> list[dict[str, object]]:
+    findings: list[dict[str, object]] = []
+    for item in slide_adaptations:
+        if item.get("action") != "delete":
+            continue
+        slide_ref = str(item.get("slide_ref") or "")
+        findings.append(
+            {
+                "slide_refs": [slide_ref],
+                "finding": str(item.get("reason") or ""),
+                "category": "practice_load",
+                "suggested_action": "整页删除该页，等待教师逐条确认。",
+                "citations": [slide_ref],
+            }
+        )
+    if findings:
+        return findings
+    return [
+        {
+            "slide_refs": [],
+            "finding": (
+                "本地模板只做规则化检查，未识别出必须调整的页面；"
+                "具体是否需要改动以教师逐页审核为准。"
+            ),
+            "category": "other",
+            "suggested_action": "无需改动，等待教师确认。",
+            "citations": [lesson_ref],
+        }
+    ]
 
 
 def _local_slide_adaptations(
@@ -523,7 +588,7 @@ def _slide_adaptations(
                 "slide adaptation role is invalid"
             )
         action = str(item.get("action") or "")
-        if action not in {"keep", "delete"}:
+        if action not in _SLIDE_ACTIONS:
             raise TeachingPrepValidationError(
                 "slide adaptation action is invalid"
             )
@@ -534,7 +599,34 @@ def _slide_adaptations(
         )
         if action != "keep" and delete_object_refs:
             raise TeachingPrepValidationError(
-                "objects cannot be deleted from a deleted slide"
+                "objects can only be deleted from a kept slide"
+            )
+        raw_position = item.get("target_position")
+        target_position: int | None = None
+        if action == "reorder":
+            if (
+                isinstance(raw_position, bool)
+                or not isinstance(raw_position, int)
+                or not 1 <= raw_position <= len(ppt_refs)
+            ):
+                raise TeachingPrepValidationError(
+                    "slide adaptation target position is invalid"
+                )
+            target_position = raw_position
+        elif raw_position is not None:
+            raise TeachingPrepValidationError(
+                "target position is only allowed for reorder"
+            )
+        raw_text = item.get("suggested_text")
+        suggested_text: str | None = None
+        if action == "modify_text":
+            suggested_text = _text(raw_text, maximum=1_000)
+        elif action == "add":
+            if raw_text is not None and str(raw_text).strip():
+                suggested_text = _text(raw_text, maximum=300)
+        elif raw_text is not None and str(raw_text).strip():
+            raise TeachingPrepValidationError(
+                "suggested text is only allowed for add or modify_text"
             )
         if any(
             ref not in object_refs_by_slide.get(slide_ref, set())
@@ -566,6 +658,8 @@ def _slide_adaptations(
                 "action": action,
                 "delete_object_refs": delete_object_refs,
                 "textbook_refs": mapped_textbooks,
+                "target_position": target_position,
+                "suggested_text": suggested_text,
                 "reason": _text(item.get("reason"), maximum=1_000),
                 "citations": citations,
             }
@@ -573,6 +667,46 @@ def _slide_adaptations(
     if items and seen != ppt_refs:
         raise TeachingPrepValidationError(
             "slide adaptations must cover every frozen reference slide"
+        )
+    return result
+
+
+def _review_findings(
+    value: object,
+    allowed_refs: set[str],
+) -> list[dict[str, object]]:
+    items = _object_list(value, maximum=50)
+    if not items:
+        raise TeachingPrepValidationError(
+            "review findings cannot be empty"
+        )
+    result: list[dict[str, object]] = []
+    for item in items:
+        slide_refs = _strings(
+            item.get("slide_refs", []),
+            maximum=20,
+            item_maximum=300,
+        )
+        if any(ref not in allowed_refs for ref in slide_refs):
+            raise TeachingPrepValidationError(
+                "review finding refers to an unknown slide"
+            )
+        category = str(item.get("category") or "")
+        if category not in _REVIEW_CATEGORIES:
+            raise TeachingPrepValidationError(
+                "review finding category is invalid"
+            )
+        result.append(
+            {
+                "slide_refs": slide_refs,
+                "finding": _text(item.get("finding"), maximum=1_000),
+                "category": category,
+                "suggested_action": _text(
+                    item.get("suggested_action"),
+                    maximum=500,
+                ),
+                "citations": _citations(item.get("citations"), allowed_refs),
+            }
         )
     return result
 
@@ -729,9 +863,30 @@ def calculate_capacity(
 def reference_catalog(
     pack: ResourcePackVersion,
 ) -> dict[str, str]:
-    payload = pack.payload
+    return _payload_reference_catalog(
+        pack.payload,
+        fallback_lesson_node_id=pack.lesson_node_id,
+    )
+
+
+def validate_review_findings_payload(
+    value: object,
+    pack_payload: Mapping[str, object],
+) -> list[dict[str, object]]:
+    """Validate the lesson model's preliminary first-round review findings."""
+    allowed_refs = set(_payload_reference_catalog(pack_payload))
+    return _review_findings(value, allowed_refs)
+
+
+def _payload_reference_catalog(
+    payload: Mapping[str, object],
+    *,
+    fallback_lesson_node_id: str = "",
+) -> dict[str, str]:
     lesson = _mapping(payload.get("lesson"))
-    lesson_id = str(lesson.get("lesson_node_id") or pack.lesson_node_id)
+    lesson_id = str(
+        lesson.get("lesson_node_id") or fallback_lesson_node_id
+    )
     result = {
         f"lesson:{lesson_id}": f"课时：{lesson.get('title') or '本课'}"
     }
@@ -972,6 +1127,7 @@ def _validate_explicit_locators(
         "anticipated_difficulties",
         "lesson_flow",
         "exercise_recommendations",
+        "review_findings",
     ):
         for raw in _list(draft.get(section)):
             item = _mapping(raw)
@@ -981,7 +1137,15 @@ def _validate_explicit_locators(
             }
             text = " ".join(
                 str(item.get(field) or "")
-                for field in ("text", "title", "rationale", "purpose", "reason")
+                for field in (
+                    "text",
+                    "title",
+                    "rationale",
+                    "purpose",
+                    "reason",
+                    "finding",
+                    "suggested_action",
+                )
             )
             for match in _EXPLICIT_LOCATOR.finditer(text):
                 number = match.group("number")
@@ -1196,7 +1360,9 @@ def _list(value: object) -> list[Any]:
 __all__ = [
     "build_local_template",
     "calculate_capacity",
+    "default_review_findings",
     "draft_preflight",
     "reference_catalog",
     "validate_draft_payload",
+    "validate_review_findings_payload",
 ]

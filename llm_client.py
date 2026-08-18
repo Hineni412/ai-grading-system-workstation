@@ -53,10 +53,24 @@ class LLMSettings:
     config_api_key: str | None = None
     config_base_url: str | None = None
     policy_profile: Mapping[str, object] | None = None
+    # Optional batch-inference channel (e.g. Volcengine Ark batch endpoint).
+    # When enabled, grading-kind requests are routed to batch_base_url with
+    # batch_model (the batch endpoint id); every other request kind keeps
+    # using the online channel unchanged.
+    batch_enabled: bool = False
+    batch_api_key: str | None = None
+    batch_base_url: str | None = None
+    batch_model: str | None = None
 
 
 class LLMResponseFormatError(ValueError):
     """The provider returned content that is not a usable JSON object."""
+
+
+_BATCH_REQUEST_KINDS: dict[LLMRequestKind, LLMRequestKind] = {
+    LLMRequestKind.GRADING: LLMRequestKind.GRADING_BATCH,
+    LLMRequestKind.TAGGING: LLMRequestKind.TAGGING_BATCH,
+}
 
 
 class LLMOutputTruncatedError(ValueError):
@@ -117,6 +131,42 @@ class LLMClient:
                 trace_sink=trace_sink_factory(),
                 endpoint_host=safe_endpoint_host(config_base_url),
             )
+        self.batch_enabled = bool(settings.batch_enabled and settings.batch_model)
+        self.batch_model = str(settings.batch_model or "")
+        self.batch_client: Any = None
+        self.batch_gateway: Any = None
+        if self.batch_enabled:
+            batch_api_key = settings.batch_api_key or settings.api_key
+            batch_base_url = normalize_openai_base_url(
+                settings.batch_base_url or _derive_batch_base_url(settings.base_url)
+            )
+            self.batch_client = _create_openai_client(batch_api_key, batch_base_url)
+            self.batch_gateway = gateway_factory(
+                profile=gateway_profile,
+                config_key=_gateway_config_key(batch_api_key, batch_base_url),
+                usage_sink=usage_sink_factory(),
+                trace_sink=trace_sink_factory(),
+                endpoint_host=safe_endpoint_host(batch_base_url),
+            )
+
+    def _batch_routing(
+        self,
+        *,
+        use_config_client: bool,
+        request_kind: LLMRequestKind,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> bool:
+        """Whether this call must go through the batch-inference channel."""
+        if not self.batch_enabled:
+            return False
+        if extra_kwargs and extra_kwargs.get("disable_batch_routing"):
+            return False
+        if request_kind == LLMRequestKind.TAGGING:
+            return True
+        return (
+            not use_config_client
+            and request_kind == LLMRequestKind.GRADING
+        )
 
     def text_from_images(self, prompt: str, image_blobs: list[bytes], model: str | None = None, system_prompt: str | None = None) -> str:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -155,6 +205,7 @@ class LLMClient:
         dynamic_prompt: str | None = None,
         allow_gateway_retry: bool = False,
         request_kind: LLMRequestKind | None = None,
+        extra_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self.json_from_images_with_options(
             prompt,
@@ -162,7 +213,7 @@ class LLMClient:
             model=model,
             system_prompt=system_prompt,
             usage_callback=usage_callback,
-            extra_kwargs=None,
+            extra_kwargs=extra_kwargs,
             static_image_blobs=static_image_blobs,
             dynamic_prompt=dynamic_prompt,
             allow_gateway_retry=allow_gateway_retry,
@@ -189,6 +240,20 @@ class LLMClient:
         effective_request_kind = request_kind or (
             LLMRequestKind.CONFIG_GENERATION if use_config_client else LLMRequestKind.GRADING
         )
+        active_gateway = None
+        allow_retry = allow_gateway_retry
+        if self._batch_routing(
+            use_config_client=use_config_client,
+            request_kind=effective_request_kind,
+            extra_kwargs=extra_kwargs,
+        ):
+            active_client = self.batch_client
+            active_gateway = self.batch_gateway
+            model = self.batch_model
+            default_model = self.batch_model
+            effective_request_kind = _BATCH_REQUEST_KINDS[effective_request_kind]
+            allow_retry = True
+            extra_kwargs = _strip_timeout_overrides(extra_kwargs)
         content: list[dict[str, Any]] = []
         if prompt:
             content.append({"type": "text", "text": prompt})
@@ -236,6 +301,8 @@ class LLMClient:
             allow_parameter_fallback=False,
             request_kind=effective_request_kind,
             single_request=True,
+            allow_gateway_retry=allow_retry,
+            gateway=active_gateway,
         )
         return _parse_single_request_json(completion)
 
@@ -249,9 +316,25 @@ class LLMClient:
         request_kind: LLMRequestKind = LLMRequestKind.CONFIG_GENERATION,
     ) -> dict[str, Any]:
         effective_request_kind = LLMRequestKind(request_kind)
+        active_client = self.config_client
+        active_gateway = None
+        default_model = self.settings.config_model
+        allow_retry = False
+        if self._batch_routing(
+            use_config_client=True,
+            request_kind=effective_request_kind,
+            extra_kwargs=extra_kwargs,
+        ):
+            active_client = self.batch_client
+            active_gateway = self.batch_gateway
+            model = self.batch_model
+            default_model = self.batch_model
+            effective_request_kind = _BATCH_REQUEST_KINDS[effective_request_kind]
+            allow_retry = True
+            extra_kwargs = _strip_timeout_overrides(extra_kwargs)
         completion = self._create_chat_completion(
-            self.config_client,
-            model=model or self.settings.config_model,
+            active_client,
+            model=model or default_model,
             messages=[{"role": "user", "content": prompt}],
             expect_json=True,
             extra_kwargs=extra_kwargs,
@@ -259,6 +342,8 @@ class LLMClient:
             allow_parameter_fallback=False,
             request_kind=effective_request_kind,
             single_request=True,
+            allow_gateway_retry=allow_retry,
+            gateway=active_gateway,
         )
         return _parse_single_request_json(completion)
 
@@ -274,16 +359,35 @@ class LLMClient:
         """Make exactly one model request and parse JSON locally without AI repair."""
         strict_kwargs = dict(extra_kwargs or {})
         strict_kwargs.pop("omit_token_limit", None)
+        effective_request_kind = LLMRequestKind(request_kind)
+        active_client = self.config_client
+        active_gateway = None
+        default_model = self.settings.config_model
+        allow_retry = False
+        if self._batch_routing(
+            use_config_client=True,
+            request_kind=effective_request_kind,
+            extra_kwargs=strict_kwargs,
+        ):
+            active_client = self.batch_client
+            active_gateway = self.batch_gateway
+            model = self.batch_model
+            default_model = self.batch_model
+            effective_request_kind = _BATCH_REQUEST_KINDS[effective_request_kind]
+            allow_retry = True
+            strict_kwargs = _strip_timeout_overrides(strict_kwargs) or {}
         completion = self._create_chat_completion(
-            self.config_client,
-            model=model or self.settings.config_model,
+            active_client,
+            model=model or default_model,
             messages=[{"role": "user", "content": prompt}],
             expect_json=False,
             extra_kwargs=strict_kwargs,
             response_format=response_format,
             allow_parameter_fallback=False,
-            request_kind=LLMRequestKind(request_kind),
+            request_kind=effective_request_kind,
             single_request=True,
+            allow_gateway_retry=allow_retry,
+            gateway=active_gateway,
         )
         return _parse_single_request_json(completion)
 
@@ -309,6 +413,20 @@ class LLMClient:
         )
         strict_kwargs = dict(extra_kwargs or {})
         strict_kwargs.pop("omit_token_limit", None)
+        active_gateway = None
+        allow_retry = False
+        if self._batch_routing(
+            use_config_client=use_config_client,
+            request_kind=request_kind,
+            extra_kwargs=strict_kwargs,
+        ):
+            active_client = self.batch_client
+            active_gateway = self.batch_gateway
+            model = self.batch_model
+            default_model = self.batch_model
+            request_kind = _BATCH_REQUEST_KINDS[request_kind]
+            allow_retry = True
+            strict_kwargs = _strip_timeout_overrides(strict_kwargs) or {}
         
         content: list[dict[str, Any]] = []
         if prompt:
@@ -346,6 +464,8 @@ class LLMClient:
             allow_parameter_fallback=False,
             request_kind=request_kind,
             single_request=True,
+            allow_gateway_retry=allow_retry,
+            gateway=active_gateway,
         )
         return _parse_single_request_json(completion)
 
@@ -397,6 +517,7 @@ class LLMClient:
         single_request: bool = False,
         _next_attempt: Callable[[], int] | None = None,
         allow_gateway_retry: bool = False,
+        gateway: Any = None,
     ) -> Any:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -430,11 +551,12 @@ class LLMClient:
             elif is_r1_reasoning:
                 kwargs["temperature"] = 0.6
                 
-        gateway = (
-            self.config_gateway
-            if client is self.config_client
-            else self.gateway
-        )
+        if gateway is None:
+            gateway = (
+                self.config_gateway
+                if client is self.config_client
+                else self.gateway
+            )
         logical_request_id = str(
             uuid.uuid4() if request_id is None else request_id
         )
@@ -466,15 +588,49 @@ class LLMClient:
         # Compatibility flags remain in the private signature while older
         # callers migrate, but they can no longer authorize another physical
         # request. Retries are owned by explicit user-level workflows only.
+        # The batch-inference channel is the one exception: provider-side
+        # ServerOverloaded rejections are expected there, so it opts in to
+        # gateway-managed backoff retries via allow_gateway_retry=True.
         return invoke(
             "",
-            allow_retry=False,
+            allow_retry=allow_gateway_retry,
             planned_parameter_fallback=False,
         )
 
 
 def _create_openai_client(api_key: str, base_url: str) -> OpenAI:
     return _shared_create_openai_client(api_key, base_url)
+
+
+def _derive_batch_base_url(base_url: str) -> str:
+    """Derive the batch endpoint base URL from the online one.
+
+    For Volcengine Ark the batch chat API lives at ``/api/v3/batch`` while the
+    online API lives at ``/api/v3``, so appending ``/batch`` produces the
+    right URL.  Only used when batch inference is explicitly enabled without
+    an explicit ``batch_base_url``.
+    """
+    normalized = normalize_openai_base_url(base_url)
+    return f"{normalized}/batch" if normalized else normalized
+
+
+def _strip_timeout_overrides(
+    extra_kwargs: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Drop caller-side timeout overrides so the batch policy timeout applies.
+
+    Online callers cap requests at a few minutes (e.g. ``timeout_override_
+    seconds=600``); a batch request may legitimately pend much longer, and the
+    batch channel's own policy (default 3600s) is the authoritative budget.
+    """
+    if not extra_kwargs:
+        return extra_kwargs
+    stripped = {
+        key: value
+        for key, value in extra_kwargs.items()
+        if key not in ("timeout_override_seconds", "timeout")
+    }
+    return stripped
 
 
 def _gateway_config_key(api_key: str, base_url: str) -> str:
