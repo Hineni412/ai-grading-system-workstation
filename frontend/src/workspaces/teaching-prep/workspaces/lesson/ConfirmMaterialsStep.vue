@@ -11,7 +11,7 @@ import type {
   ReferenceSelectionPayload,
   SlideAnimationRun,
 } from '../../api/workbench'
-import { isAuthoritativeNotFoundError } from '../../../../api/errors'
+import { ApiError, isAuthoritativeNotFoundError } from '../../../../api/errors'
 import { teachingPrepWorkbenchApi } from '../../api/workbench'
 import {
   teachingPrepCatalogApi,
@@ -505,6 +505,7 @@ async function removeMaterialLink(linkId: string): Promise<void> {
 
 function selectPrimaryPpt(linkId: string): void {
   primaryPptLinkId.value = linkId
+  if (previewingLinkId.value === linkId) previewingLinkId.value = null
   workbench.setDirty('资料对应关系')
   message.value = '已更换主课件；发送后 AI 将以这份 PPT 为删改底稿。'
 }
@@ -573,20 +574,53 @@ function matchingCurrentPack(teacherContext: string | null = null): ResourcePack
   )) ?? null
 }
 
-async function saveConfirmedSelection(): Promise<ReferenceSelectionDraft> {
+function isTeachingPrepConflictError(error: unknown): error is ApiError {
+  return error instanceof ApiError
+    && error.status === 409
+    && error.kind === 'conflict'
+    && error.code === 'teaching_prep_conflict'
+}
+
+async function saveConfirmedSelection(allowConflictRetry = true): Promise<ReferenceSelectionDraft> {
   const lessonId = routeState.currentLessonId.value
   if (!lessonId || !preflight.value) throw new Error('请先选择课时')
   const savedExerciseCandidateIds = [...selectedExerciseCandidateIds.value]
-  const saved = await teachingPrepWorkbenchApi.saveReferenceDraft(lessonId, {
-    expected_revision: preflight.value.draft?.revision ?? null,
-    source_state_sha256: preflight.value.source_state_sha256,
-    selection: selectionPayload(),
-  })
+  let saved: ReferenceSelectionDraft
+  try {
+    saved = await teachingPrepWorkbenchApi.saveReferenceDraft(lessonId, {
+      expected_revision: preflight.value.draft?.revision ?? null,
+      source_state_sha256: preflight.value.source_state_sha256,
+      selection: selectionPayload(),
+    })
+  } catch (error) {
+    if (!allowConflictRetry || !isTeachingPrepConflictError(error)) throw error
+    return retryConfirmedSelectionAfterRefresh()
+  }
   workbench.setDirty(null)
   await workbench.refresh()
   await nextTick()
   selectedExerciseCandidateIds.value = savedExerciseCandidateIds
   return saved
+}
+
+// 冲突说明页面停留期间后端状态已被推进：刷新拿到新指纹后，按用户当前选择重试一次。
+async function retryConfirmedSelectionAfterRefresh(): Promise<ReferenceSelectionDraft> {
+  const snapshot = {
+    primary: primaryPptLinkId.value,
+    support: [...supportLinkIds.value],
+    exerciseIds: [...selectedExerciseCandidateIds.value],
+  }
+  await workbench.refresh()
+  // preflight 刷新会用已保存草稿重置本地勾选，先按用户当前选择恢复再重试。
+  await nextTick()
+  if (snapshot.primary && !referencePpts.value.some(item => item.link_id === snapshot.primary)) {
+    throw new Error('页面数据刚有更新，你勾选的主课件已不在本课关联资料中，请确认选择后重新发送。')
+  }
+  if (snapshot.primary) primaryPptLinkId.value = snapshot.primary
+  const availableSupport = new Set(supportMaterials.value.map(item => item.link_id))
+  supportLinkIds.value = snapshot.support.filter(id => availableSupport.has(id))
+  selectedExerciseCandidateIds.value = snapshot.exerciseIds
+  return saveConfirmedSelection(false)
 }
 
 async function ensureResourcePack(teacherContext: string | null = null): Promise<ResourcePack> {
@@ -1122,6 +1156,10 @@ async function confirmAndSend(forceNew = false, teacherContext: string | null = 
     await routeState.setStep(2)
   } catch (error) {
     if (isAbortError(error)) return
+    if (isTeachingPrepConflictError(error)) {
+      message.value = '页面数据刚有更新，已为你刷新，请确认选择后重新发送。'
+      return
+    }
     message.value = error instanceof Error && error.message
       ? `尚未发送：${error.message}`
       : '尚未发送。当前勾选仍保留，请检查资料后重试。'
@@ -1215,16 +1253,18 @@ defineExpose({
               :label="purposeLabels[item.purpose] ?? item.purpose"
             />
             <AppButton
+              v-if="item.link_id !== primaryPptLinkId"
               variant="ghost"
               data-testid="preview-lesson-material"
               @click="toggleLinkPreview(item)"
             >
               {{ previewingLinkId === item.link_id ? '收起预览' : '预览这几页' }}
             </AppButton>
+            <span v-else class="tp-muted">在下方发送范围确认中查看</span>
             <AppButton variant="ghost" class="tp-danger-text" @click="removeMaterialLink(item.link_id)">移除</AppButton>
           </div>
           <MaterialPagePreview
-            v-if="previewingLinkId === item.link_id"
+            v-if="previewingLinkId === item.link_id && item.link_id !== primaryPptLinkId"
             :units="previewUnitsFor(item)"
             :page="previewingLinkPage"
             :range-label="`本课关联第 ${item.start_unit}—${item.end_unit} 页`"

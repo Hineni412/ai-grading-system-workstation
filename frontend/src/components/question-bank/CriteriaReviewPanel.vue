@@ -51,7 +51,6 @@ async function load(): Promise<void> {
       page: 1,
       pageSize: 100,
       criteriaNeedsReview: true,
-      sort: 'newest',
     }, controller.signal)
     if (controller.signal.aborted) return
     items.value = result.items

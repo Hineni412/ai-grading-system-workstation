@@ -12,6 +12,7 @@ from api_profiles import ApiProfileStorageError, ApiProfileStore, resolve_profil
 from backend.llm import (
     create_openai_client,
     gateway_config_key,
+    is_truncation_finish_reason,
     normalize_openai_base_url,
     policy_overrides_from_profile,
 )
@@ -22,7 +23,16 @@ from backend.workspaces.model_policy import (
 )
 
 from .crypto import canonical_json
-from .model_approval import ModelDestinationChanged, ModelDispatchDisabled
+from .model_approval import (
+    ModelDestinationChanged,
+    ModelDispatchDisabled,
+    ModelResponseTruncatedError,
+)
+
+
+# Explicit output budget for workspace task calls; the teaching-prep module
+# already sends max_tokens=16_000 to the same ark (火山) endpoint family.
+_MAX_OUTPUT_TOKENS = 8192
 
 
 class _ProfileStore(Protocol):
@@ -212,6 +222,7 @@ class ActiveProfileApprovedModelGateway:
                 kwargs={
                     "messages": list(messages),
                     "response_format": {"type": "json_object"},
+                    "max_tokens": _MAX_OUTPUT_TOKENS,
                 },
                 timeout_override_seconds=110,
             )
@@ -386,7 +397,28 @@ def _tag_class_teacher_diagnostics(
     )
 
 
+def _finish_reason(response: object) -> str:
+    if isinstance(response, Mapping):
+        choices = response.get("choices")
+    else:
+        choices = getattr(response, "choices", None)
+    if isinstance(choices, list) and choices:
+        choice = choices[0]
+        reason = (
+            choice.get("finish_reason")
+            if isinstance(choice, Mapping)
+            else getattr(choice, "finish_reason", None)
+        )
+        if reason is not None:
+            return str(reason)
+    return ""
+
+
 def _response_text(response: object) -> str:
+    if is_truncation_finish_reason(_finish_reason(response)):
+        raise ModelResponseTruncatedError(
+            "class-teacher model response stopped at the output token limit"
+        )
     if isinstance(response, Mapping):
         choices = response.get("choices")
         if isinstance(choices, list) and choices:

@@ -105,7 +105,7 @@ describe('B UI R1 surfaces', () => {
   it('directory calls only the lightweight directory interface before selection', async () => {
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     const directory = vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'student:S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'none', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
-    const rosterSource = vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
+    const rosterSource = vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', roster_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
     const records = vi.spyOn(studentR1Api, 'records')
     const host = await mount(StudentDirectoryPanel, {})
     expect(host.textContent).toContain('点击卡片进入学生当前档案')
@@ -123,7 +123,7 @@ describe('B UI R1 surfaces', () => {
     vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'student:S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'none', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
     vi.spyOn(studentR1Api, 'rosterSource')
       .mockRejectedValueOnce(new Error('temporary unavailable'))
-      .mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
+      .mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', roster_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
 
     const host = await mount(StudentDirectoryPanel, {})
 
@@ -139,7 +139,7 @@ describe('B UI R1 surfaces', () => {
     const subject = { subject_id:'subject-1234', display_name:'合成学生', source_student_id:'student:S001', class_label:'一班', support_record_count:2, support_plan_count:1, confirmed_entry_count:2, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[subject], cursor:null, total:1, page_size:20 })
-    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'subject-1234', roster_state:'active', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
+    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'subject-1234', roster_state:'active', roster_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
     const header = vi.spyOn(studentR1Api, 'header').mockResolvedValue(subject)
     vi.spyOn(studentR1Api, 'studentCard').mockResolvedValue({
       subject, entries:[], existing_records:[], support_plans:[],
@@ -157,7 +157,7 @@ describe('B UI R1 surfaces', () => {
   it('opens an empty current dossier for a roster student without confirmed records', async () => {
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[], cursor:null, total:0, page_size:100 })
-    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S002', student_code:'S002', display_name:'待整理学生', class_label:'一班', subject_id:null, roster_state:'available', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
+    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S002', student_code:'S002', display_name:'待整理学生', class_label:'一班', subject_id:null, roster_state:'available', roster_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
     const createSubject = vi.spyOn(supportApi, 'createSubject').mockResolvedValue({ subject_id:'new-subject', revision:1, source_student_id:'student:S002', display_name:'待整理学生', class_label:'一班' })
     const select = vi.fn()
     const host = await mount(StudentDirectoryPanel, { onSelect:select })
@@ -222,7 +222,7 @@ describe('B UI R1 surfaces', () => {
     expect(close).toHaveBeenCalledOnce()
   })
 
-  it('continues a student-scoped AI conversation and applies the proposal in place', async () => {
+  it('auto-adopts a student-scoped profile update on settle and offers one-click revert', async () => {
     const subject = { subject_id:'subject-1234', revision:1, display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:0, support_plan_count:0, confirmed_entry_count:1, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }
     const before = {
       subject, entries:[], existing_records:[], support_plans:[],
@@ -236,12 +236,13 @@ describe('B UI R1 surfaces', () => {
         open_questions:['遇到意见不同时能否继续参与'], support_focus:[],
       },
     }
-    vi.spyOn(studentR1Api, 'studentCard').mockResolvedValueOnce(before).mockResolvedValueOnce(after)
+    vi.spyOn(studentR1Api, 'studentCard').mockResolvedValueOnce(before).mockResolvedValueOnce(after).mockResolvedValue(before)
     const collecting = { conversation_id:'profile-conversation', revision:1, state:'collecting', homeroom_class:'一班', focused_subject_id:'subject-1234', focused_subject_revision:'1', created_at:'2026-08-08', updated_at:'2026-08-08', turns:[], handoffs:[] }
+    const pendingHandoff = { handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_growth' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:true }
     const ready = {
       ...collecting, revision:2, state:'handoff_ready',
       turns:[{ turn_id:'turn-profile', conversation_id:'profile-conversation', sequence:1, operation_id:'operation-profile', teacher_message:'最近开始主动分工', assistant_message:'已整理到同伴关系。', clarification_questions:['遇到意见不同时会怎样？'], task_id:'task-profile', task_state:'proposal_ready', created_at:'2026-08-08', updated_at:'2026-08-08' }],
-      handoffs:[{ handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_growth' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:true }],
+      handoffs:[pendingHandoff],
     }
     vi.spyOn(intakeApi, 'startStudentConversation').mockResolvedValue(collecting)
     vi.spyOn(intakeApi, 'appendTurn').mockResolvedValue(ready)
@@ -252,7 +253,10 @@ describe('B UI R1 surfaces', () => {
       subject_refs:[{ kind:'student', id:'subject-1234', revision:'1' }], missing_fields:[], return_context:{ destination_key:'class_teacher.home', focus_ref:'work-profile' },
     })
     const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({ saved:true })
-    vi.spyOn(intakeApi, 'conversation').mockResolvedValue({ ...ready, state:'teacher_confirmed' })
+    const revert = vi.spyOn(intakeApi, 'revertProfile').mockResolvedValue({ adoption_state:'reverted', profile_state:'restored' })
+    vi.spyOn(intakeApi, 'conversation')
+      .mockResolvedValueOnce({ ...ready, state:'teacher_confirmed', handoffs:[{ ...pendingHandoff, adoption_state:'adopted' as const }] })
+      .mockResolvedValue({ ...ready, state:'teacher_confirmed', handoffs:[{ ...pendingHandoff, adoption_state:'reverted' as const }] })
 
     const host = await mount(StudentOverviewPanel, { subject })
     const textarea = host.querySelector('textarea')!
@@ -261,14 +265,16 @@ describe('B UI R1 surfaces', () => {
     host.querySelector('form.composer')!.dispatchEvent(new Event('submit', { bubbles:true, cancelable:true }))
     await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
 
-    expect(host.textContent).toContain('把新认识并入当前档案')
-    expect(host.textContent).toContain('同伴与人际关系')
-    clickByText(host, '应用到当前档案')
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ handoff_id:'handoff-profile' }), '1')
+    expect(host.textContent).toContain('本轮档案更新已自动并入当前档案')
+    expect(host.textContent).toContain('已自动并入当前档案')
+    expect(host.textContent).toContain('在小组任务中开始主动分工')
+
+    clickByText(host, '撤回本轮更新')
     await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
 
-    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ handoff_id:'handoff-profile' }), '1')
-    expect(host.textContent).toContain('当前学生档案已经更新')
-    expect(host.textContent).toContain('在小组任务中开始主动分工')
+    expect(revert).toHaveBeenCalledExactlyOnceWith('handoff-profile')
+    expect(host.textContent).toContain('已撤回，档案回到本轮更新前')
   })
 
   it('discards a proposed student profile update without changing the current profile', async () => {
@@ -291,6 +297,7 @@ describe('B UI R1 surfaces', () => {
       subject_refs:[{ kind:'student', id:'subject-1234', revision:'1' }], missing_fields:[], return_context:{ destination_key:'class_teacher.home', focus_ref:'work-profile' },
     })
     const discard = vi.spyOn(intakeApi, 'discard').mockResolvedValue({ discarded:true })
+    vi.spyOn(intakeApi, 'adopt').mockRejectedValue(new Error('synthetic auto-adopt unavailable'))
     vi.spyOn(intakeApi, 'conversation').mockResolvedValue({ ...ready, state:'collecting', handoffs:[{ ...ready.handoffs[0]!, adoption_state:'discarded' }] })
 
     const host = await mount(StudentOverviewPanel, { subject })
@@ -379,6 +386,48 @@ describe('B UI R1 surfaces', () => {
     expect(host.textContent).toContain('家长情绪冲突需要关注在校情绪')
     expect(host.textContent).not.toContain('告诉我最近又了解到了什么')
     expect(host.textContent).not.toContain('登记草稿')
+  })
+
+  it('opens a not-yet-created student profile preview from a roster opaque ref', async () => {
+    window.history.replaceState({}, '', '/class-teacher?surface=home')
+    const opaqueRef = 'a'.repeat(64)
+    const rosterRevision = 'b'.repeat(64)
+    const headerSubject = { subject_id:opaqueRef, display_name:'合成新生', source_student_id:'S009', class_label:'一班', support_record_count:0, support_plan_count:0, confirmed_entry_count:0, projection_state:'none', attention_pending_count:0, last_confirmed_at:null, profile_state:'not_created' as const }
+    const ready = {
+      conversation_id:'conversation-opaque', revision:2, state:'handoff_ready', homeroom_class:'一班',
+      created_at:'2026-08-08T00:00:00Z', updated_at:'2026-08-08T00:00:00Z',
+      turns:[{ turn_id:'turn-opaque', conversation_id:'conversation-opaque', sequence:1, operation_id:'operation-opaque', teacher_message:'新转入学生情况', assistant_message:'已整理到当前档案。', clarification_questions:[], task_id:'task-opaque', task_state:'response_persisted', created_at:'2026-08-08T00:00:00Z', updated_at:'2026-08-08T00:00:00Z' }],
+      handoffs:[{ handoff_id:'handoff-opaque', draft_id:'draft-opaque', work_item_id:'work-opaque', turn_id:'turn-opaque', domain:'student_support' as const, handling_mode:'record' as const, intent:'create', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:false }],
+    }
+    vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
+    vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
+    vi.spyOn(intakeApi, 'startConversation').mockResolvedValue(ready)
+    vi.spyOn(intakeApi, 'conversation').mockResolvedValue(ready)
+    vi.spyOn(intakeApi, 'handoff').mockResolvedValue({
+      contract_version:'teacher_workspace_handoff.v1', handoff_id:'handoff-opaque', work_item_id:'work-opaque', conversation_id:'conversation-opaque', turn_id:'turn-opaque', draft_id:'draft-opaque', draft_revision:1,
+      domain:'student_support', handling_mode:'record', intent:'create', destination_key:'class_teacher.student.record', adoption_id:'adoption-opaque', adoption_state:'opened',
+      content:{ summary:'拟建立档案', profile_update:{ summary:'新转入学生，待建立档案。', dimensions:[{ key:'learning_ability', label:'学习与能力', items:['待了解'] }], open_questions:[], support_focus:[] } },
+      subject_refs:[{ kind:'student', id:opaqueRef, revision:rosterRevision }], missing_fields:[], return_context:{ destination_key:'class_teacher.home', focus_ref:'work-opaque' },
+    })
+    vi.spyOn(studentR1Api, 'header').mockResolvedValue(headerSubject)
+    const createdCard = { subject:{ ...headerSubject, profile_state:'created' as const }, entries:[], existing_records:[], support_plans:[], current_profile:{ entry_id:'entry-1', revision:1, summary:'新转入学生，待建立档案。', dimensions:[], open_questions:[], support_focus:[], updated_at:'2026-08-08' }, profile_state:'created' as const }
+    vi.spyOn(studentR1Api, 'studentCard')
+      .mockResolvedValueOnce({ subject:headerSubject, entries:[], existing_records:[], support_plans:[], current_profile:null, profile_state:'not_created' })
+      .mockResolvedValue(createdCard)
+    const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({ saved:true })
+
+    const host = await mount(ClassTeacherWorkbenchView, {})
+    await vi.waitFor(() => expect(host.textContent).toContain('学生个人档案'))
+    clickByText(host, '学生个人档案')
+    await vi.waitFor(() => expect(host.textContent).toContain('档案尚未建立'))
+    expect(host.textContent).toContain('确认保存后会自动创建档案')
+    expect(host.textContent).toContain('把新认识并入当前档案')
+    expect(host.textContent).not.toContain('学生档案暂时无法打开')
+
+    clickByText(host, '应用到当前档案')
+    await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ handoff_id:'handoff-opaque' }), rosterRevision)
+    await vi.waitFor(() => expect(host.textContent).toContain('当前学生档案已经更新'))
   })
 
   it('academic charts obey server segment status and preserve a real zero', async () => {

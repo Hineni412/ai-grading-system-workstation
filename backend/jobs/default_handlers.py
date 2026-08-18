@@ -635,6 +635,17 @@ def _active_llm_client() -> LLMClient:
     return LLMClient(settings)
 
 
+def _optional_str(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _active_llm_settings() -> LLMSettings | None:
     store = get_api_profile_store()
     profile = resolve_profile_for_task(store, "grading")
@@ -646,6 +657,14 @@ def _active_llm_settings() -> LLMSettings | None:
         str(profile.get("base_url") or os.getenv("LLM_BASE_URL") or "https://api.openai.com/v1")
     )
     grading_model = str(profile.get("grading_model") or os.getenv("LLM_GRADING_MODEL") or "gpt-4o")
+    batch_enabled = _truthy(
+        profile.get("batch_enabled")
+        if profile.get("batch_enabled") is not None
+        else os.getenv("LLM_BATCH_ENABLED")
+    )
+    batch_base_url = _optional_str(
+        profile.get("batch_base_url") or os.getenv("LLM_BATCH_BASE_URL")
+    )
     return LLMSettings(
         api_key=api_key,
         base_url=base_url,
@@ -657,4 +676,14 @@ def _active_llm_settings() -> LLMSettings | None:
             str(content_profile.get("config_base_url") or content_profile.get("base_url") or os.getenv("LLM_CONFIG_BASE_URL") or base_url)
         ),
         policy_profile=policy_overrides_from_profile(profile),
+        batch_enabled=batch_enabled,
+        batch_api_key=_optional_str(
+            profile.get("batch_api_key") or os.getenv("LLM_BATCH_API_KEY")
+        ),
+        batch_base_url=(
+            normalize_openai_base_url(batch_base_url) if batch_base_url else None
+        ),
+        batch_model=_optional_str(
+            profile.get("batch_model") or os.getenv("LLM_BATCH_MODEL")
+        ),
     )

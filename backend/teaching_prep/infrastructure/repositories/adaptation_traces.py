@@ -20,6 +20,8 @@ _PHASES = {
     "tool_call",
     "tool_result",
     "round_done",
+    "round_retry",
+    "findings_ready",
     "final_accepted",
     "failed",
 }
@@ -159,9 +161,37 @@ def _teacher_safe_event(event: Mapping[str, object]) -> dict[str, object]:
         "thinking_excerpt": _safe_excerpt(event.get("thinking_excerpt"), 500),
         "tool": safe_tool,
         "result": safe_result,
+        "findings": _safe_findings(event.get("findings")),
         "model_calls_used": used if isinstance(used, int) else 0,
         "model_calls_max": maximum if isinstance(maximum, int) else 6,
     }
+
+
+def _safe_findings(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list):
+        return None
+    items: list[dict[str, object]] = []
+    for raw in value[:20]:
+        if not isinstance(raw, Mapping):
+            continue
+        finding = _safe_excerpt(raw.get("finding"), 240)
+        if not finding:
+            continue
+        pages = [
+            page
+            for page in (
+                raw.get("pages") if isinstance(raw.get("pages"), list) else []
+            )
+            if isinstance(page, int) and not isinstance(page, bool) and page > 0
+        ][:40]
+        items.append(
+            {
+                "finding": finding,
+                "category": _optional_text(raw.get("category"), 40) or "",
+                "pages": pages,
+            }
+        )
+    return items or None
 
 
 def _optional_text(value: object, limit: int) -> str | None:

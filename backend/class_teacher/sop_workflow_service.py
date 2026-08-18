@@ -400,7 +400,7 @@ class SopWorkflowService:
                             """
                             SELECT s.payload_object_id
                             FROM student_subject_links s
-                            JOIN class_roster_memberships m ON m.subject_id=s.subject_id
+                            JOIN class_roster_memberships m ON m.source_student_key=s.source_fingerprint
                             WHERE s.subject_id=? AND s.state='active' AND m.state='active'
                             """,
                             (subject_id,),

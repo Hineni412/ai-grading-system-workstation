@@ -26,7 +26,8 @@ _SAFE_TOKEN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SAFE_MODULE_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _LESSON_DRAFT_PURPOSE = "lesson_draft"
-_MAX_PHYSICAL_CALLS = 6
+# lesson_draft runs up to 6 model rounds with one same-round retry each.
+_MAX_PHYSICAL_CALLS = 12
 
 
 class WorkspaceModelPolicyError(ValueError):

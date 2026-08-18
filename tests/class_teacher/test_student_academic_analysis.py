@@ -139,6 +139,118 @@ def test_legacy_evidence_is_one_to_one_and_source_version_blocks_stale_decision(
     assert error.value.code == "academic_analysis_stale"
 
 
+def test_adjacent_rank_change_reports_rank_numbers(tmp_path: Path) -> None:
+    service, token, subject_id = _service(tmp_path)
+    assessments = []
+    for index, (occurred, score, rank) in enumerate(
+        [("2026-03-01", 61, 40), ("2026-04-01", 78, 12)],
+        start=1,
+    ):
+        assessments.append({
+            "title": f"合成相邻场次 {index}",
+            "subject_name": "数学",
+            "occurred_on": occurred,
+            "max_score": 100,
+            "rank_scope": "class",
+            "participant_count": 40,
+            "assessment_nature": "unit",
+            "rank_origin": "teacher_confirmed",
+            "cohort_key": "synthetic-class-1",
+            "ranking_rule_version": "school-rule-v1",
+            "session": {
+                "title": f"合成相邻场次 {index}",
+                "academic_year": "2025-2026",
+                "term": "下学期",
+                "grade": "八年级",
+                "exam_type": "单元测验",
+                "comparison_series": "数学单元",
+                "occurred_on": occurred,
+                "source_reference": f"synthetic-adjacent-{index}",
+            },
+            "results": [{
+                "subject_id": subject_id,
+                "result_state": "normal",
+                "score": score,
+                "rank": rank,
+            }],
+        })
+    batch = ConfirmedSpreadsheetAdapter().read({
+        "teacher_confirmed": True,
+        "source_label": "仅内存合成相邻排名数据",
+        "assessments": assessments,
+    })
+    service.evidence.confirm_batch(
+        token=token, operation_id="academic-confirm-rank", batch=batch
+    )
+
+    analysis = service.academic.read(token=token, subject_id=subject_id)
+    pairs = analysis["rank_change_pairs"]
+    assert len(pairs) == 1
+    pair = pairs[0]
+    assert pair["subject_name"] == "数学"
+    assert pair["from_rank"] == 40
+    assert pair["to_rank"] == 12
+    assert pair["rank_delta"] == 28
+    assert pair["delta"] == pytest.approx(28 / 39)
+
+
+def test_rank_pairs_follow_semester_chain_across_grades(tmp_path: Path) -> None:
+    service, token, subject_id = _service(tmp_path)
+    # 八上期中的考试日期被错填得比七下期末还早，学期链条仍应把七下期末排在前面
+    cases = [
+        ("2026-06-20", "下学期", "七年级", "期末考试", 90, 100),
+        ("2026-01-05", "上学期", "八年级", "期中考试", 95, 80),
+    ]
+    assessments = []
+    for index, (occurred, term, grade, exam_type, score, rank) in enumerate(cases, start=1):
+        assessments.append({
+            "title": f"合成跨年级场次 {index}",
+            "subject_name": "数学",
+            "occurred_on": occurred,
+            "max_score": 100,
+            "rank_scope": "grade",
+            "participant_count": 320,
+            "assessment_nature": exam_type,
+            "rank_origin": "teacher_confirmed",
+            "cohort_key": "same-grade-cohort",
+            "ranking_rule_version": "school-export-v1",
+            "session": {
+                "title": f"合成跨年级场次 {index}",
+                "academic_year": "2025-2026",
+                "term": term,
+                "grade": grade,
+                "exam_type": exam_type,
+                "comparison_series": "class-regular",
+                "occurred_on": occurred,
+                "source_reference": f"synthetic-chain-{index}",
+            },
+            "results": [{
+                "subject_id": subject_id,
+                "result_state": "normal",
+                "score": score,
+                "rank": rank,
+            }],
+        })
+    batch = ConfirmedSpreadsheetAdapter().read({
+        "teacher_confirmed": True,
+        "source_label": "仅内存合成跨年级数据",
+        "assessments": assessments,
+    })
+    service.evidence.confirm_batch(
+        token=token, operation_id="academic-confirm-chain", batch=batch
+    )
+
+    analysis = service.academic.read(token=token, subject_id=subject_id)
+    pairs = analysis["rank_change_pairs"]
+    assert len(pairs) == 1
+    pair = pairs[0]
+    # 七下期末(100名) → 八上期中(80名)，而不是按日期倒过来
+    assert pair["from_rank"] == 100
+    assert pair["to_rank"] == 80
+    assert pair["rank_delta"] == 20
+    assert pair["rank_scope"] == "grade"
+
+
 def test_attention_decision_and_projection_outbox_roll_back_together(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

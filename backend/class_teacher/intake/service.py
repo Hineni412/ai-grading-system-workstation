@@ -296,5 +296,9 @@ class ClassTeacherIntake:
         kwargs.pop("operation_id", None)
         return self.conversations.ai_tasks.adopt(**kwargs)
 
+    def revert_profile_adoption(self, **kwargs) -> dict[str, object]:
+        kwargs.pop("token", None)
+        return self.adoption.revert_profile_adoption(token="", **kwargs)
+
 
 __all__ = ["ClassTeacherIntake"]

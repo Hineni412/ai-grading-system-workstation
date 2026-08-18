@@ -35,7 +35,7 @@ export interface IntakeHandoffSummary {
   intent: string
   destination_key: string
   draft_revision: number
-  adoption_state: 'pending' | 'opened' | 'adoption_started' | 'adopted' | 'discarded' | 'stale'
+  adoption_state: 'pending' | 'opened' | 'adoption_started' | 'adopted' | 'reverted' | 'discarded' | 'stale'
   missing_fields: string[]
   subject_ref_count: number
   auto_open_allowed: boolean
@@ -131,7 +131,7 @@ const destinations = new Set([
   'class_teacher.plan.calendar',
   'class_teacher.affair.sop',
 ])
-const adoptionStates = new Set(['pending', 'opened', 'adoption_started', 'adopted', 'discarded', 'stale'])
+const adoptionStates = new Set(['pending', 'opened', 'adoption_started', 'adopted', 'reverted', 'discarded', 'stale'])
 
 function invalid(): never {
   throw new Error('班主任工作台返回了无法识别的数据')
@@ -455,6 +455,11 @@ export const intakeApi = {
       method: 'POST', headers: headers(),
       body: { draft_revision: draft.draft_revision, target_revision: targetRevision, operation_id: operationId() },
       decode: record,
+    })
+  },
+  revertProfile(id: string) {
+    return apiClient.request(`/api/class-teacher/intake/handoffs/${encodeURIComponent(id)}/revert-profile`, {
+      method: 'POST', headers: headers(), decode: record,
     })
   },
 }

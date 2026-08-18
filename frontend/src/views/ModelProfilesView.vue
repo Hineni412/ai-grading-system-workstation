@@ -40,6 +40,8 @@ interface ModelProfileDraft {
   requestSpeedMode: RequestSpeedMode
   maxConcurrentRequests: number
   requestsPerMinute: number
+  batchEnabled: boolean
+  batchModel: string
 }
 
 const profilesStore = useModelProfilesStore()
@@ -81,6 +83,8 @@ const draft = reactive<ModelProfileDraft>({
   requestSpeedMode: 'automatic',
   maxConcurrentRequests: 20,
   requestsPerMinute: 1000,
+  batchEnabled: false,
+  batchModel: '',
 })
 
 function draftSnapshot(): string {
@@ -99,6 +103,8 @@ function draftSnapshot(): string {
     requestSpeedMode: draft.requestSpeedMode,
     maxConcurrentRequests: draft.maxConcurrentRequests,
     requestsPerMinute: draft.requestsPerMinute,
+    batchEnabled: draft.batchEnabled,
+    batchModel: draft.batchModel,
   })
 }
 
@@ -206,6 +212,8 @@ function applyProfile(profile: ModelProfile): void {
     requestSpeedMode: profile.request_speed_mode,
     maxConcurrentRequests: profile.max_concurrent_requests,
     requestsPerMinute: profile.requests_per_minute,
+    batchEnabled: profile.batch_enabled,
+    batchModel: profile.batch_model,
   } satisfies ModelProfileDraft)
   localError.value = ''
   baseline.value = draftSnapshot()
@@ -229,6 +237,8 @@ function applyBlankProfile(): void {
     requestSpeedMode: 'automatic',
     maxConcurrentRequests: 20,
     requestsPerMinute: 1000,
+    batchEnabled: false,
+    batchModel: '',
   } satisfies ModelProfileDraft)
   localError.value = ''
   baseline.value = draftSnapshot()
@@ -289,6 +299,8 @@ function toUpsertInput(): ModelProfileUpsertInput {
     request_speed_mode: draft.requestSpeedMode,
     max_concurrent_requests: draft.maxConcurrentRequests,
     requests_per_minute: draft.requestsPerMinute,
+    batch_enabled: draft.batchEnabled,
+    batch_model: draft.batchModel,
   }
 }
 
@@ -770,6 +782,45 @@ onBeforeUnmount(() => {
           <p class="model-profile-execution__note">
             保存不会测试接口或产生费用；新设置从下一次任务启动时生效，
             已经运行的任务继续使用启动时的方案。
+          </p>
+        </fieldset>
+
+        <fieldset class="model-profile-batch">
+          <legend>批量推理（阅卷省钱模式）</legend>
+          <label
+            class="model-profile-speed-option"
+            :class="{ 'model-profile-speed-option--selected': draft.batchEnabled }"
+          >
+            <input
+              v-model="draft.batchEnabled"
+              type="checkbox"
+              name="batch-enabled"
+              :disabled="isBusy"
+            >
+            <span>
+              <strong>启用批量推理</strong>
+            </span>
+          </label>
+          <div
+            v-if="draft.batchEnabled"
+            class="model-profile-batch__endpoint"
+          >
+            <label class="model-profile-field model-profile-field--wide">
+              <span>批量推理接入点 ID</span>
+              <input
+                v-model="draft.batchModel"
+                name="batch-model"
+                type="text"
+                autocomplete="off"
+                :maxlength="MODEL_PROFILE_LIMITS.model"
+                placeholder="ep-bi-..."
+                :disabled="isBusy"
+                :required="draft.batchEnabled"
+              >
+            </label>
+          </div>
+          <p class="model-profile-execution__note">
+            启用后，阅卷请求走火山引擎批量推理，费用约为在线推理的一半，但每份答卷可能多等几分钟到几十分钟。只影响阅卷；扫描识别和配置生成仍走在线推理。保存不会调用模型、不产生费用。
           </p>
         </fieldset>
 

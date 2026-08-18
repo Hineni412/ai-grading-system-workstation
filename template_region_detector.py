@@ -57,7 +57,14 @@ def detect_answer_regions_llm(
 """
 
     try:
-        raw = llm_client.json_from_images(prompt, [img_bytes], model=ocr_model)
+        # Template region detection is an interactive setup step; keep it
+        # online even when batch inference is enabled for grading.
+        raw = llm_client.json_from_images(
+            prompt,
+            [img_bytes],
+            model=ocr_model,
+            extra_kwargs={"disable_batch_routing": True},
+        )
     except Exception:
         # Fallback: try text extraction with JSON parsing
         try:

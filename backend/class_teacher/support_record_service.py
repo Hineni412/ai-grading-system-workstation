@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .encrypted_database import EncryptedDatabase
 from .errors import VaultError
+from .roster_ref import student_stable_ref
 from .secure_repository import EncryptedObjectRepository
 from .sensitive_work_projection import SensitiveWorkProjection
 
@@ -49,6 +50,16 @@ def _normalize_datetime(value: str | None, label: str) -> str | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=_LOCAL_TIMEZONE)
     return parsed.astimezone(UTC).isoformat()
+
+
+def _followup_due_date(value: str | None) -> str | None:
+    """把存库的 UTC 复查时间转回本时区日期，作为跟进提醒到期日。"""
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(_LOCAL_TIMEZONE).date().isoformat()
 
 
 class SupportRecordService:
@@ -107,7 +118,7 @@ class SupportRecordService:
         display_name: str,
         class_label: str | None,
     ) -> dict[str, object]:
-        """Use the roster key while reusing a subject created with the old student code."""
+        """Attach the roster source identity keyed by its stable ref (班级|学号/姓名)."""
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "support.subject.create")
         if replay is not None:
@@ -143,56 +154,14 @@ class SupportRecordService:
         display_name: str,
         class_label: str | None,
     ) -> str:
-        """Normalize a legacy student-code identity to the roster source key."""
-        source_id = self._text(source_student_id, "来源学生编号", 240)
-        clean_name = self._text(display_name, "显示名称", 240)
-        fingerprint = self._subject_fingerprint(vmk, source_id)
-        current = connection.execute(
-            "SELECT subject_id FROM student_subject_links WHERE source_fingerprint = ?",
-            (fingerprint,),
-        ).fetchone()
-        if current is not None:
-            return str(current["subject_id"])
-
-        legacy_id = str(legacy_student_code or "").strip()
-        if legacy_id and legacy_id != source_id:
-            legacy = connection.execute(
-                """
-                SELECT subject_id, payload_object_id
-                FROM student_subject_links WHERE source_fingerprint = ?
-                """,
-                (self._subject_fingerprint(vmk, legacy_id),),
-            ).fetchone()
-            if legacy is not None:
-                timestamp = _iso()
-                self.repository.put(
-                    connection,
-                    vmk=vmk,
-                    object_id=str(legacy["payload_object_id"]),
-                    object_type="student_subject",
-                    payload={
-                        "source_student_id": source_id,
-                        "display_name": clean_name,
-                        "class_label": str(class_label or "").strip() or None,
-                        "identity_snapshot_at": timestamp,
-                    },
-                )
-                connection.execute(
-                    """
-                    UPDATE student_subject_links
-                    SET source_fingerprint = ?, state = 'active', updated_at = ?
-                    WHERE subject_id = ?
-                    """,
-                    (fingerprint, timestamp, str(legacy["subject_id"])),
-                )
-                return str(legacy["subject_id"])
-
+        """Attach the roster identity keyed by its stable ref (班级|学号/姓名)."""
         return self.ensure_subject_in_connection(
             connection,
             vmk=vmk,
-            source_student_id=source_id,
-            display_name=clean_name,
+            source_student_id=source_student_id,
+            display_name=display_name,
             class_label=class_label,
+            student_code=legacy_student_code,
         )
 
     def ensure_subject_in_connection(
@@ -203,11 +172,19 @@ class SupportRecordService:
         source_student_id: str,
         display_name: str,
         class_label: str | None,
+        student_code: str | None = None,
     ) -> str:
         """Return one identity while leaving commit/rollback to the caller."""
         source_id = self._text(source_student_id, "来源学生编号", 240)
         clean_name = self._text(display_name, "显示名称", 240)
-        fingerprint = self._subject_fingerprint(vmk, source_id)
+        # 花名册链路传入学籍号：稳定标识为 班级|学号（学号空时为 班级|姓名）。
+        # 手工建档没有学籍号概念，来源编号本身即稳定键。
+        code = str(student_code).strip() if student_code is not None else source_id
+        fingerprint = student_stable_ref(
+            class_label=class_label,
+            student_code=code,
+            display_name=clean_name,
+        )
         existing = connection.execute(
             "SELECT subject_id FROM student_subject_links WHERE source_fingerprint = ?",
             (fingerprint,),
@@ -344,6 +321,45 @@ class SupportRecordService:
                 )
         return self.get_subject(token=token, subject_id=subject_id)
 
+    def _tombstone_followup(
+        self,
+        *,
+        token: str,
+        source_id: str,
+        occurrence_id: str,
+    ) -> None:
+        """关闭指定来源的跟进提醒；没有提醒或已关闭时静默跳过。"""
+        if self.projections is None:
+            return
+        try:
+            group = self.projections.read_source_group(
+                token=token,
+                source_kind="student_support",
+                source_id=source_id,
+                occurrence_id=occurrence_id,
+            )
+        except VaultError as exc:
+            if exc.code == "sensitive_projection_not_found":
+                return
+            raise
+        if str(group["state"]) == "cancelled":
+            return
+        self.projections.tombstone(token=token, group_id=str(group["group_id"]))
+
+    def _active_profile_stale_groups(self, subject_id: str) -> list[str]:
+        with closing(self.database.connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT group_id FROM sensitive_work_groups
+                WHERE source_kind = 'student_support'
+                  AND source_id = ?
+                  AND occurrence_id LIKE 'profile-stale-%'
+                  AND state != 'cancelled'
+                """,
+                (subject_id,),
+            ).fetchall()
+        return [str(row["group_id"]) for row in rows]
+
     def create_record(
         self,
         *,
@@ -380,6 +396,7 @@ class SupportRecordService:
                         source_student_id=str(subject_identity.get("source_student_id") or ""),
                         display_name=str(subject_identity.get("display_name") or ""),
                         class_label=str(subject_identity.get("class_label") or "").strip() or None,
+                        student_code=str(subject_identity.get("student_code") or "").strip() or None,
                     )
                 else:
                     self._subject_row(connection, resolved_subject_id)
@@ -401,6 +418,11 @@ class SupportRecordService:
                 )
                 if transaction_hook is not None:
                     transaction_hook(connection, vmk, record_id)
+        if self.projections is not None:
+            self.projections.drain(token=token)
+            # 教师已经为这名学生记下新记录，视为跟进了"仍需了解"老化提醒。
+            for group_id in self._active_profile_stale_groups(resolved_subject_id):
+                self.projections.tombstone(token=token, group_id=group_id)
         return self.get_record(token=token, record_id=record_id)
 
     def create_record_in_connection(
@@ -446,6 +468,16 @@ class SupportRecordService:
             normalized=normalized,
         )
         self._rebuild_summary(connection, vmk, subject_id)
+        if self.projections is not None and normalized["review_at"] is not None:
+            self.projections.enqueue(
+                connection,
+                vmk=vmk,
+                source_kind="student_support",
+                source_id=record_id,
+                occurrence_id="record-review",
+                state="pending",
+                due_date=_followup_due_date(normalized["review_at"]),
+            )
         self._remember(
             connection,
             operation_id,
@@ -600,12 +632,30 @@ class SupportRecordService:
                     vmk,
                     str(row["subject_id"]),
                 )
+                if self.projections is not None and normalized["review_at"] is not None:
+                    self.projections.enqueue(
+                        connection,
+                        vmk=vmk,
+                        source_kind="student_support",
+                        source_id=record_id,
+                        occurrence_id="record-review",
+                        state="pending",
+                        due_date=_followup_due_date(normalized["review_at"]),
+                    )
                 self._remember(
                     connection,
                     operation_id,
                     "support.record.revise",
                     {"record_id": record_id},
                 )
+        if self.projections is not None:
+            if normalized["review_at"] is None:
+                self._tombstone_followup(
+                    token=token,
+                    source_id=record_id,
+                    occurrence_id="record-review",
+                )
+            self.projections.drain(token=token)
         return self.get_record(token=token, record_id=record_id)
 
     def set_record_state(
@@ -685,6 +735,22 @@ class SupportRecordService:
                     operation_id,
                     "support.record.state",
                     {"record_id": record_id},
+                )
+        if self.projections is not None:
+            if state == "active" and row["review_at"] is not None:
+                self.projections.upsert(
+                    token=token,
+                    source_kind="student_support",
+                    source_id=record_id,
+                    occurrence_id="record-review",
+                    state="pending",
+                    due_date=_followup_due_date(str(row["review_at"])),
+                )
+            elif state in {"withdrawn", "archived"}:
+                self._tombstone_followup(
+                    token=token,
+                    source_id=record_id,
+                    occurrence_id="record-review",
                 )
         return self.get_record(token=token, record_id=record_id)
 
@@ -984,6 +1050,18 @@ class SupportRecordService:
                     "support.plan.create",
                     {"support_plan_id": plan_id},
                 )
+                if self.projections is not None:
+                    self.projections.enqueue(
+                        connection,
+                        vmk=vmk,
+                        source_kind="student_support",
+                        source_id=plan_id,
+                        occurrence_id="plan-review",
+                        state="pending",
+                        due_date=_followup_due_date(normalized_review),
+                    )
+        if self.projections is not None:
+            self.projections.drain(token=token)
         return self.get_support_plan(
             token=token,
             support_plan_id=plan_id,
@@ -1120,6 +1198,11 @@ class SupportRecordService:
                     "support.plan.complete",
                     {"support_plan_id": support_plan_id},
                 )
+        self._tombstone_followup(
+            token=token,
+            source_id=support_plan_id,
+            occurrence_id="plan-review",
+        )
         return self.get_support_plan(
             token=token,
             support_plan_id=support_plan_id,
@@ -1404,11 +1487,17 @@ class SupportRecordService:
                         SELECT g.* FROM sensitive_work_groups g
                         WHERE (g.source_kind = 'attention_followup' AND g.source_id IN (
                             SELECT attention_card_id FROM attention_cards WHERE subject_id = ?
-                        )) OR (g.source_kind = 'student_support' AND g.source_id IN (
-                            SELECT entry_id FROM student_card_entries WHERE subject_id = ?
+                        )) OR (g.source_kind = 'student_support' AND (
+                            g.source_id IN (
+                                SELECT entry_id FROM student_card_entries WHERE subject_id = ?
+                            ) OR (g.occurrence_id = 'record-review' AND g.source_id IN (
+                                SELECT record_id FROM support_records WHERE subject_id = ?
+                            )) OR (g.occurrence_id = 'plan-review' AND g.source_id IN (
+                                SELECT support_plan_id FROM support_plans WHERE subject_id = ?
+                            )) OR (g.occurrence_id LIKE 'profile-stale-%' AND g.source_id = ?)
                         ))
                         """,
-                        (subject_id, subject_id),
+                        (subject_id, subject_id, subject_id, subject_id, subject_id),
                     ).fetchall()
                     tombstoned = [dict(row) for row in rows]
                 for group in tombstoned:
@@ -1706,10 +1795,12 @@ class SupportRecordService:
                             for participant_id in linked_affair_participant_ids
                         ],
                     )
-                connection.execute(
-                    "DELETE FROM class_roster_memberships WHERE subject_id = ?",
-                    (subject_id,),
-                )
+                fingerprint = subject["source_fingerprint"]
+                if isinstance(fingerprint, str):
+                    connection.execute(
+                        "DELETE FROM class_roster_memberships WHERE source_student_key = ?",
+                        (fingerprint,),
+                    )
                 connection.execute(
                     "DELETE FROM student_subject_links WHERE subject_id = ?",
                     (subject_id,),
@@ -2215,14 +2306,6 @@ class SupportRecordService:
                 }
             )
         return revisions
-
-    @staticmethod
-    def _subject_fingerprint(vmk: bytes, source_student_id: str) -> bytes:
-        return hmac.new(
-            vmk,
-            f"class-teacher-subject|{source_student_id}".encode("utf-8"),
-            hashlib.sha256,
-        ).digest()
 
     @staticmethod
     def _subject_row(connection: Any, subject_id: str) -> Any:

@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application.lesson_drafts import (
     build_local_template,
+    default_review_findings,
 )
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
@@ -354,4 +355,80 @@ def test_bad_model_payload_and_teacher_cancel_never_publish_draft(
     assert repeated.json()["newly_cancelled"] is False
     assert len(errors) == 1
     assert isinstance(errors[0], TeachingPrepConflictError)
+    assert service.list_lesson_drafts(pack.id) == ()
+
+
+def test_revise_accepts_legacy_payload_without_review_findings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    pack = _ready_pack(service, tmp_path)
+    draft, _created = service.generate_lesson_draft(
+        pack.id,
+        operation_id="a06-legacy-base-draft",
+        mode="local_template",
+        confirmed=True,
+    )
+
+    legacy = deepcopy(draft.payload)
+    legacy.pop("review_findings")
+    revised, created = service.revise_lesson_draft(
+        draft.id,
+        request_token="a06-legacy-revision",
+        payload=legacy,
+        confirmed=True,
+    )
+
+    assert created is True
+    assert revised.payload["review_findings"] == default_review_findings(pack)
+
+    repeated, repeated_created = service.revise_lesson_draft(
+        draft.id,
+        request_token="a06-legacy-revision",
+        payload=legacy,
+        confirmed=True,
+    )
+    assert repeated_created is False
+    assert repeated.id == revised.id
+
+    edited = deepcopy(draft.payload)
+    explicit_findings = [
+        {
+            "slide_refs": [],
+            "finding": "教师确认整份课件结构完整，本课不需要改动。",
+            "category": "other",
+            "suggested_action": "无需改动，保持现状。",
+            "citations": edited["knowledge_objectives"][0]["citations"][:1],
+        }
+    ]
+    edited["review_findings"] = explicit_findings
+    kept, kept_created = service.revise_lesson_draft(
+        revised.id,
+        request_token="a06-explicit-findings-revision",
+        payload=edited,
+        confirmed=True,
+    )
+    assert kept_created is True
+    assert kept.payload["review_findings"] == explicit_findings
+
+
+def test_model_generate_still_requires_review_findings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    pack = _ready_pack(service, tmp_path)
+    incomplete = build_local_template(pack)
+    incomplete.pop("review_findings")
+    adapter = FakeLessonModelAdapter(incomplete)
+    service.lesson_model_adapter = adapter
+
+    with pytest.raises(TeachingPrepValidationError):
+        service.generate_lesson_draft(
+            pack.id,
+            operation_id="a06-model-missing-findings",
+            mode="model",
+            confirmed=True,
+        )
     assert service.list_lesson_drafts(pack.id) == ()

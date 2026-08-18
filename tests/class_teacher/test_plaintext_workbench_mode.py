@@ -175,11 +175,13 @@ def test_feature_service_creation_blocks_pending_ordinary_database_migration(
     assert blocked.value.code == "class_teacher_work_initialization_failed"
     assert database.read_bytes() == before
     with sqlite3.connect(database) as connection:
-        columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(intake_conversations)")
-        }
-    assert "focused_subject_id" not in columns
+        handoffs_schema = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'intake_handoffs'"
+            ).fetchone()[0]
+        )
+    assert "'reverted'" not in handoffs_schema
 
 
 def test_plaintext_mode_still_requires_anonymous_preview_confirmation_before_model_send(

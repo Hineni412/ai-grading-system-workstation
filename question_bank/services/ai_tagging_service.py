@@ -177,6 +177,7 @@ class AITaggingService:
                 config_model=self.model,
                 config_api_key=tagging_api_key,
                 config_base_url=dedicated_base_url,
+                **_batch_settings_kwargs({}, self.env),
             )
             self.llm_client = LLMClient(settings)
         elif llm_client is not None:
@@ -352,6 +353,9 @@ class AITaggingService:
                     response_format=_chat_response_format(
                         _taxonomy_suggestion_response_format()
                     ),
+                    # Interactive UX: taxonomy merge suggestions must stay on
+                    # the online channel even when batch inference is enabled.
+                    extra_kwargs={"disable_batch_routing": True},
                 )
             except (
                 LLMOutputTruncatedError,
@@ -1298,6 +1302,39 @@ def _llm_client_from_saved_profile(env: Mapping[str, str]) -> LLMClient | None:
     return LLMClient(settings)
 
 
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _batch_settings_kwargs(
+    source: Mapping[str, Any],
+    environ: Mapping[str, str],
+) -> dict[str, Any]:
+    """Resolve the optional batch-inference channel fields for tagging clients."""
+    enabled_raw = source.get("batch_enabled")
+    if enabled_raw is None:
+        enabled_raw = environ.get("LLM_BATCH_ENABLED")
+    base_url = str(
+        source.get("batch_base_url") or environ.get("LLM_BATCH_BASE_URL") or ""
+    ).strip()
+    return {
+        "batch_enabled": _truthy(enabled_raw),
+        "batch_api_key": str(
+            source.get("batch_api_key") or environ.get("LLM_BATCH_API_KEY") or ""
+        ).strip()
+        or None,
+        "batch_base_url": (
+            normalize_openai_base_url(base_url) if base_url else None
+        ),
+        "batch_model": str(
+            source.get("batch_model") or environ.get("LLM_BATCH_MODEL") or ""
+        ).strip()
+        or None,
+    }
+
+
 def _llm_settings_from_env(env: Mapping[str, str]) -> LLMSettings | None:
     api_key = str(env.get("LLM_API_KEY") or "").strip()
     config_api_key = str(env.get("LLM_CONFIG_API_KEY") or api_key).strip()
@@ -1311,6 +1348,7 @@ def _llm_settings_from_env(env: Mapping[str, str]) -> LLMSettings | None:
         config_model=str(env.get("QUESTION_BANK_TAGGING_MODEL") or env.get("LLM_CONFIG_MODEL") or DEFAULT_TAGGING_MODEL),
         config_api_key=config_api_key,
         config_base_url=normalize_openai_base_url(str(env.get("LLM_CONFIG_BASE_URL") or env.get("LLM_BASE_URL") or "https://api.openai.com/v1")),
+        **_batch_settings_kwargs({}, env),
     )
 
 
@@ -1332,6 +1370,7 @@ def _llm_settings_from_profile() -> LLMSettings | None:
         config_api_key=config_api_key,
         config_base_url=normalize_openai_base_url(str(profile.get("config_base_url") or profile.get("base_url") or "https://api.openai.com/v1")),
         policy_profile=policy_overrides_from_profile(profile),
+        **_batch_settings_kwargs(profile, os.environ),
     )
 
 
@@ -1384,6 +1423,7 @@ def _json_from_text_once_compat(
     *,
     model: str | None = None,
     response_format: Mapping[str, Any] | None = None,
+    extra_kwargs: dict[str, Any] | None = None,
 ) -> Any:
     """Use the strict one-request interface; never fall back to AI repair."""
 
@@ -1395,6 +1435,8 @@ def _json_from_text_once_compat(
         "request_kind": LLMRequestKind.TAGGING,
         "response_format": response_format,
     }
+    if extra_kwargs is not None:
+        call_kwargs["extra_kwargs"] = extra_kwargs
     try:
         return method(prompt, **call_kwargs)
     except TypeError as exc:

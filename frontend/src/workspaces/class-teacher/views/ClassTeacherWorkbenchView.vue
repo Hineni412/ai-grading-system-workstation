@@ -33,6 +33,7 @@ function asDirectorySubject(value: Record<string, unknown>): DirectorySubject {
     projection_state: String(value.projection_state ?? 'none'),
     attention_pending_count: Number(value.attention_pending_count ?? 0),
     last_confirmed_at: value.last_confirmed_at == null ? null : String(value.last_confirmed_at),
+    ...(value.profile_state == null ? {} : { profile_state: String(value.profile_state) as DirectorySubject['profile_state'] }),
   }
 }
 
@@ -46,12 +47,24 @@ async function selectSurface(surface: ClassTeacherSurface): Promise<void> {
 }
 
 async function openRestricted(projectionId: string, projectionType: string | null): Promise<void> {
+  profileError.value = ''
   try {
     const target = await projectionR1Api.resolve(projectionId) as unknown as {
       surface?: ClassTeacherSurface
       panel?: 'directory' | 'support' | 'academic'
+      subject_id?: string | null
+      gone?: boolean
     }
-    await navigate({ surface: target.surface ?? (projectionType === 'sensitive_affair' ? 'affairs' : 'students'), panel: target.panel ?? 'directory' })
+    if (target.gone) {
+      profileError.value = '这条提醒对应的内容已经不存在，提醒已自动关闭。'
+      await navigate({ surface: projectionType === 'sensitive_affair' ? 'affairs' : 'students', panel: target.panel ?? 'directory', subjectId: null })
+      return
+    }
+    await navigate({
+      surface: target.surface ?? (projectionType === 'sensitive_affair' ? 'affairs' : 'students'),
+      panel: target.panel ?? 'directory',
+      subjectId: target.subject_id ?? null,
+    })
   } catch {
     await navigate({ surface: projectionType === 'sensitive_affair' ? 'affairs' : 'students' })
   }
@@ -141,6 +154,7 @@ function openDomain(domain: string): void {
         @open-handoff="openHandoff"
         @open-student-profile="openStudentProfile"
         @open-calendar="selectSurface('calendar')"
+        @open-restricted="openRestricted"
         @open-domain="openDomain"
       />
       <CalendarSurface

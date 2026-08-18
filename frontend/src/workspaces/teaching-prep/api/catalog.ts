@@ -635,6 +635,14 @@ export interface SlideOperation {
   teacher_note: string | null
 }
 
+export interface SlidePlanReviewFinding {
+  slide_refs: string[]
+  finding: string
+  category: string
+  suggested_action: string
+  citations: string[]
+}
+
 export interface SlidePlan {
   id: string
   lesson_draft_id: string
@@ -650,6 +658,7 @@ export interface SlidePlan {
     operations: SlideOperation[]
     unsupported_objects: Array<Record<string, unknown>>
     approval_history: Array<Record<string, unknown>>
+    review_findings?: SlidePlanReviewFinding[]
   }
   created_at: string
 }

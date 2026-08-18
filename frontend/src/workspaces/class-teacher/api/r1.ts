@@ -93,6 +93,7 @@ export interface DirectorySubject {
   last_confirmed_at: string | null
   roster_state?: 'active' | 'historical' | 'manual'
   revision?: number
+  profile_state?: 'created' | 'not_created'
 }
 
 export interface ExistingRosterStudent {
@@ -102,7 +103,7 @@ export interface ExistingRosterStudent {
   class_label: string
   subject_id: string | null
   roster_state: 'available' | 'active' | 'historical'
-  opaque_ref: string
+  roster_ref: string
   student_revision: string
 }
 
@@ -140,9 +141,10 @@ export interface CurrentStudentProfile {
 export interface StudentCard {
   subject: DirectorySubject
   entries: StudentCardEntry[]
-  current_profile?: CurrentStudentProfile
+  current_profile?: CurrentStudentProfile | null
   existing_records: JsonRecord[]
   support_plans: JsonRecord[]
+  profile_state?: 'created' | 'not_created'
 }
 
 export interface AcademicAnalysis {
@@ -161,12 +163,65 @@ export interface AcademicAnalysis {
 }
 
 export interface AcademicPoint { evidence_version_id: string; session_id?: string; subject_name: string; result_state: string; score: number | null; occurred_on: string; relative_position?: number | null; is_comparable?: boolean; comparable_outputs?: string[] }
-export interface AcademicSession { session_id: string; title: string; occurred_on: string; comparison_series?: string | null; metadata_complete: boolean; evidence: AcademicPoint[] }
+export interface AcademicSession { session_id: string; title: string; occurred_on: string; comparison_series?: string | null; metadata_complete: boolean; grade?: string | null; term?: string | null; academic_year?: string | null; evidence: AcademicPoint[] }
 export interface ComparisonSegment { overall_status?: string; dimensions: { rank: { status: string }; score: { status: string } } }
 export interface AcademicSeries { subject_name: string; points: AcademicPoint[]; segments: ComparisonSegment[] }
-export interface RankChangePair { subject_name: string; from: number; to: number }
+export interface RankChangePair { subject_name: string; from: number; to: number; delta?: number; rank_scope?: string | null; from_rank?: number | null; to_rank?: number | null; rank_delta?: number | null }
 export interface RelativeSubjectSignal { subject_name: string; signal: string; eligible_session_count: number }
 export interface AttentionCard { attention_card_id: string; revision: number; state: string; observed_fact: string; evidence_sufficiency: string }
+
+export interface SupportOverviewFollowUp {
+  subject_id: string
+  display_name: string
+  class_label: string | null
+  next_review_at: string | null
+  last_record_at: string | null
+  active_record_count: number
+  due_soon: boolean
+}
+
+export interface SupportOverviewRecord {
+  record_id: string
+  subject_id: string
+  display_name: string
+  class_label: string | null
+  record_kind: string
+  observed_at: string
+  excerpt: string
+}
+
+export interface SupportOverview {
+  follow_ups: SupportOverviewFollowUp[]
+  recent_records: SupportOverviewRecord[]
+  has_records: boolean
+  review_soon_days: number
+}
+
+export interface AcademicSessionSummary {
+  session_id: string
+  title: string
+  occurred_on: string
+  comparison_series: string | null
+  subject_names: string[]
+  member_count: number
+  metadata_complete: boolean
+}
+
+export interface AcademicSubjectStats {
+  subject_name: string
+  count: number
+  average: number
+  maximum: number
+  minimum: number
+  bands: Array<{ label: string; count: number }>
+}
+
+export interface AcademicOverview {
+  sessions: AcademicSessionSummary[]
+  latest_session: { session_id: string; title: string; occurred_on: string; subjects: AcademicSubjectStats[] } | null
+  attention_students: Array<{ subject_id: string; display_name: string; class_label: string | null; pending_count: number }>
+  attention_pending_count: number
+}
 
 export const affairR1Api = {
   list() {
@@ -216,7 +271,7 @@ export const projectionR1Api = {
 
 export const studentR1Api = {
   studentCard(subjectId: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/student-card`, {
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(subjectId)}/student-card`, {
       decode: value => record(value) as unknown as StudentCard,
     })
   },
@@ -242,10 +297,20 @@ export const studentR1Api = {
     })
   },
   header(subjectId: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/workspace-header`, { decode: record })
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(subjectId)}/workspace-header`, { decode: record })
+  },
+  supportOverview(limit = 50) {
+    return apiClient.request(`/api/class-teacher/support/overview?limit=${limit}`, {
+      decode: (value) => record(value) as unknown as SupportOverview,
+    })
+  },
+  academicOverview() {
+    return apiClient.request('/api/class-teacher/evidence/overview', {
+      decode: (value) => record(value) as unknown as AcademicOverview,
+    })
   },
   records(subjectId: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/records`, { decode: (value) => record(value).items as JsonRecord[] })
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(subjectId)}/records`, { decode: (value) => record(value).items as JsonRecord[] })
   },
   academic(subjectId: string, input: { timeRange?: string; comparisonSeries?: string; subjectName?: string; comparableOnly?: boolean } = {}) {
     const query = new URLSearchParams()
@@ -253,7 +318,7 @@ export const studentR1Api = {
     if (input.comparisonSeries) query.set('comparison_series', input.comparisonSeries)
     if (input.subjectName) query.set('subject_name', input.subjectName)
     if (input.comparableOnly) query.set('comparable_only', 'true')
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/academic-analysis?${query}`, { decode: (value) => record(value) as unknown as AcademicAnalysis })
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(subjectId)}/academic-analysis?${query}`, { decode: (value) => record(value) as unknown as AcademicAnalysis })
   },
   evidenceSnapshot(evidenceId: string) {
     return apiClient.request(`/api/class-teacher/evidence/${evidenceId}/snapshot`, { decode: record })

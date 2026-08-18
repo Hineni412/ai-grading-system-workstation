@@ -37,6 +37,12 @@ class ModelResultUnknown(RuntimeError):
     pass
 
 
+class ModelResponseTruncatedError(RuntimeError):
+    """The model stopped at the output-token limit; the result is incomplete."""
+
+    pass
+
+
 class ModelDestinationChanged(RuntimeError):
     """The configured provider/endpoint/model no longer matches a preview."""
 

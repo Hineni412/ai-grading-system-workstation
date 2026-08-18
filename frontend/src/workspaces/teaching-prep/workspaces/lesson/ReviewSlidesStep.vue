@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
 
 import AppButton from '../../../../components/design-system/AppButton.vue'
-import type {
-  PptxExecution,
-  ResourcePack,
-  SlideOperationDecision,
-  SlidePlan,
+import {
+  teachingPrepCatalogApi,
+  type PptxExecution,
+  type ResourcePack,
+  type SlideOperation,
+  type SlideOperationDecision,
+  type SlidePlan,
 } from '../../api/catalog'
-import { teachingPrepWorkbenchApi, type AdaptationTrace } from '../../api/workbench'
+import { teachingPrepWorkbenchApi, type AdaptationTrace, type AdaptationTraceEvent, type AdaptationTraceFinding } from '../../api/workbench'
 import { isAuthoritativeNotFoundError } from '../../../../api/errors'
 import { useWorkspaceAITaskStore } from '../../../shared/ai-tasks/store'
 import { adoptTeachingPrepProposal } from '../../aiAdoption'
@@ -39,6 +41,7 @@ const autoReviewedPlanIds = new Set<string>()
 const previewStartedPlanIds = new Set<string>()
 const busy = ref(false)
 const resending = ref(false)
+const decisionSaving = ref(false)
 
 const selectedPlan = computed(() => catalog.slidePlans.find(
   item => item.id === catalog.selectedSlidePlanId,
@@ -82,9 +85,6 @@ const taskPresentation = computed(() => {
   }
   return { title: '正在恢复改编状态', detail: task.teacher_message || '请稍候。', tone: 'idle' }
 })
-const activeOperation = computed(() => selectedPlan.value?.payload.operations.find(
-  item => item.operation_id === activeOperationId.value,
-) ?? selectedPlan.value?.payload.operations[0] ?? null)
 const beforeSlide = computed(() => preview.value?.before[activeSlideIndex.value] ?? null)
 const afterPreviewUrl = computed(() => {
   const page = activeSlideIndex.value + 1
@@ -99,6 +99,288 @@ const afterPreviewUrl = computed(() => {
 const pageOperations = computed(() => (
   selectedPlan.value?.payload.operations.filter(item => slideIndexFor(item) === activeSlideIndex.value) ?? []
 ))
+const pageChangeOperations = computed(() => (
+  pageOperations.value.filter(item => item.kind !== 'keep_slide')
+))
+const plannedAfterOperations = computed(() => (
+  pageChangeOperations.value.filter(item => operationDecision(item) !== 'rejected')
+))
+const pageChangeMap = computed(() => {
+  const map = new Map<number, Set<ChangeCategory>>()
+  for (const item of selectedPlan.value?.payload.operations ?? []) {
+    if (item.kind === 'keep_slide') continue
+    if (operationDecision(item) === 'rejected') continue
+    const index = slideIndexFor(item)
+    if (index < 0) continue
+    const categories = map.get(index) ?? new Set<ChangeCategory>()
+    categories.add(operationCategory(item))
+    map.set(index, categories)
+  }
+  return map
+})
+const reviewSummary = computed(() => {
+  const plan = selectedPlan.value
+  if (!plan) return null
+  const counts: Record<ChangeCategory, number> = { delete: 0, insert: 0, adjust: 0, manual: 0 }
+  for (const item of plan.payload.operations) {
+    if (item.kind === 'keep_slide') continue
+    if (operationDecision(item) === 'rejected') continue
+    counts[operationCategory(item)] += 1
+  }
+  const parts: string[] = []
+  if (counts.delete) parts.push(`删 ${counts.delete} 处`)
+  if (counts.insert) parts.push(`插 ${counts.insert} 题`)
+  if (counts.adjust) parts.push(`调 ${counts.adjust} 处`)
+  if (counts.manual) parts.push(`需人工 ${counts.manual} 处`)
+  return { changedPages: pageChangeMap.value.size, parts }
+})
+const showOnlyChanged = ref(false)
+const visibleSlideIndices = computed(() => {
+  const all = Array.from({ length: afterSlideCount.value }, (_, index) => index)
+  if (!showOnlyChanged.value) return all
+  return all.filter(index => pageChangeMap.value.has(index))
+})
+
+interface ReviewFindingView {
+  finding: string
+  category: string
+  suggestedAction: string | null
+  pages: number[]
+}
+
+const slideRefPages = computed(() => {
+  const map = new Map<string, number>()
+  for (const slide of selectedPlan.value?.payload.slides ?? []) {
+    const linkId = String(slide.source_link_id ?? '')
+    const page = Number(slide.original_index)
+    if (linkId && Number.isFinite(page)) {
+      map.set(`material:${linkId}:unit:${page}`, page)
+    }
+  }
+  return map
+})
+
+const reviewFindings = computed<ReviewFindingView[]>(() => (
+  (selectedPlan.value?.payload.review_findings ?? []).map(item => ({
+    finding: item.finding,
+    category: item.category,
+    suggestedAction: item.suggested_action?.trim() || null,
+    pages: [...new Set(
+      item.slide_refs
+        .map(ref => slideRefPages.value.get(ref))
+        .filter((page): page is number => typeof page === 'number'),
+    )].sort((a, b) => a - b),
+  }))
+))
+
+const FINDINGS_COLLAPSED_COUNT = 3
+const findingsExpanded = ref(false)
+const visibleReviewFindings = computed(() => (
+  findingsExpanded.value
+    ? reviewFindings.value
+    : reviewFindings.value.slice(0, FINDINGS_COLLAPSED_COUNT)
+))
+
+function jumpToFindingPage(page: number): void {
+  const before = preview.value?.before ?? []
+  let index = before.findIndex(item => Number(item.original_index) === page)
+  if (index < 0) index = Math.min(Math.max(page - 1, 0), Math.max(afterSlideCount.value - 1, 0))
+  if (!visibleSlideIndices.value.includes(index)) showOnlyChanged.value = false
+  activeSlideIndex.value = index
+}
+const afterStatusLabel = computed(() => {
+  if (previewReady.value || latestRun.value?.status === 'published') return '已渲染副本'
+  if (previewBusy.value) return '模拟改后 · 示意（真实渲染生成中…）'
+  return '模拟改后 · 示意'
+})
+
+function pageCategories(index: number): ChangeCategory[] {
+  return [...(pageChangeMap.value.get(index) ?? [])]
+}
+
+const CHANGE_TAG_LABELS: Record<ChangeCategory, string> = {
+  delete: '删',
+  insert: '插',
+  adjust: '调',
+  manual: '人工',
+}
+
+const beforeLoadFailed = ref(false)
+const beforeRetryTick = ref(0)
+const requestedRenderUnitIds = new Set<string>()
+let beforeRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+const beforeUnitId = computed(() => {
+  const value = beforeSlide.value?.material_unit_id
+  return typeof value === 'string' ? value : ''
+})
+const beforeImageSrc = computed(() => {
+  const raw = beforeSlide.value?.preview_url
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  const summary = (beforeSlide.value?.object_summary ?? {}) as Record<string, unknown>
+  const params = [`retry=${beforeRetryTick.value}`]
+  const kind = String(summary.preview_kind ?? '')
+  const compositor = String(summary.preview_compositor ?? '')
+  if (kind) params.push(`kind=${encodeURIComponent(kind)}`)
+  if (compositor) params.push(`compose=${encodeURIComponent(compositor)}`)
+  const separator = raw.includes('?') ? '&' : '?'
+  return `${raw}${separator}${params.join('&')}`
+})
+
+function scheduleBeforeRetry(): void {
+  if (beforeRetryTimer !== null) clearTimeout(beforeRetryTimer)
+  beforeRetryTimer = setTimeout(() => {
+    beforeRetryTimer = null
+    beforeRetryTick.value += 1
+    beforeLoadFailed.value = false
+  }, 1500)
+}
+
+function requestBeforeRender(): void {
+  const unitId = beforeUnitId.value
+  if (!unitId || requestedRenderUnitIds.has(unitId)) return
+  const summary = (beforeSlide.value?.object_summary ?? {}) as Record<string, unknown>
+  if (!('preview_kind' in summary)) return
+  requestedRenderUnitIds.add(unitId)
+  void teachingPrepCatalogApi.requestPptPreviewRender(unitId)
+    .then(() => { scheduleBeforeRetry() })
+    .catch(() => { requestedRenderUnitIds.delete(unitId) })
+}
+
+function onBeforeImageError(): void {
+  beforeLoadFailed.value = true
+  requestBeforeRender()
+}
+
+function retryBeforeImage(): void {
+  beforeLoadFailed.value = false
+  beforeRetryTick.value += 1
+  requestBeforeRender()
+}
+
+watch(beforeUnitId, () => {
+  beforeLoadFailed.value = false
+  const summary = (beforeSlide.value?.object_summary ?? {}) as Record<string, unknown>
+  if (String(summary.preview_kind ?? '') === 'structural') requestBeforeRender()
+})
+
+type SimulatedOverlayTone = 'delete' | 'insert' | 'note'
+
+function simulatedToneFor(item: SlideOperation): SimulatedOverlayTone | null {
+  if (item.kind === 'delete_shape' || item.kind === 'delete_slide') return 'delete'
+  if (item.kind === 'insert_static_image') return 'insert'
+  if (item.kind === 'add_text_box') return 'note'
+  return null
+}
+
+interface NormalizedPosition {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+function normalizedPositionFor(item: SlideOperation): NormalizedPosition | null {
+  const edited = positions[item.operation_id]
+  const raw = edited ?? (item.target.position as Record<string, unknown> | null | undefined)
+  if (!raw || typeof raw !== 'object') return null
+  const values = [raw.x, raw.y, raw.width, raw.height].map(value => Number(value))
+  if (values.some(value => !Number.isFinite(value))) return null
+  const [rawX, rawY, rawWidth, rawHeight] = values as [number, number, number, number]
+  const x = Math.min(Math.max(rawX, 0), 1)
+  const y = Math.min(Math.max(rawY, 0), 1)
+  const width = Math.min(Math.max(rawWidth, 0), 1 - x)
+  const height = Math.min(Math.max(rawHeight, 0), 1 - y)
+  if (width <= 0 || height <= 0) return null
+  return { x, y, width, height }
+}
+
+interface SimulatedOverlayBox {
+  key: string
+  tone: SimulatedOverlayTone
+  tag: string
+  text: string | null
+  imageUrl: string | null
+  alt: string
+  style: { left: string; top: string; width: string; height: string }
+}
+
+const simulatedOverlayBoxes = computed<SimulatedOverlayBox[]>(() => (
+  plannedAfterOperations.value.flatMap((item) => {
+    const tone = simulatedToneFor(item)
+    if (!tone) return []
+    const position = normalizedPositionFor(item)
+    if (!position) return []
+    const style = {
+      left: `${position.x * 100}%`,
+      top: `${position.y * 100}%`,
+      width: `${position.width * 100}%`,
+      height: `${position.height * 100}%`,
+    }
+    const base = { key: item.operation_id, tone, style, alt: cardTitle(item) }
+    if (tone === 'insert') {
+      const asset = item.details.asset_ref
+      const imageUrl = typeof asset === 'string' && asset.trim() ? asset : null
+      return [{ ...base, tag: '插', text: imageUrl ? null : cardTitle(item), imageUrl }]
+    }
+    if (tone === 'note') {
+      const text = String(item.details.text ?? item.target.content_summary ?? '').trim()
+      return [{ ...base, tag: '注', text: text || operationLabel(item.kind), imageUrl: null }]
+    }
+    return [{ ...base, tag: '删', text: null, imageUrl: null }]
+  })
+))
+
+const simulatedPageLevelOperations = computed(() => {
+  const drawn = new Set(simulatedOverlayBoxes.value.map(box => box.key))
+  return plannedAfterOperations.value.filter(item => !drawn.has(item.operation_id))
+})
+
+const showSimulatedAfter = computed(() => afterPreviewUrl.value === null)
+
+const simViewportEl = ref<HTMLElement | null>(null)
+const simViewportSize = ref<{ width: number; height: number } | null>(null)
+const simBaseNatural = ref<{ width: number; height: number } | null>(null)
+let simResizeObserver: ResizeObserver | null = null
+
+const simCanvasStyle = computed(() => {
+  const viewport = simViewportSize.value
+  const natural = simBaseNatural.value
+  if (!viewport || !natural || viewport.width <= 0 || viewport.height <= 0) {
+    return { width: '100%', height: '100%' }
+  }
+  const scale = Math.min(viewport.width / natural.width, viewport.height / natural.height)
+  return {
+    width: `${Math.round(natural.width * scale)}px`,
+    height: `${Math.round(natural.height * scale)}px`,
+  }
+})
+
+function onSimBaseLoad(event: Event): void {
+  const image = event.target as HTMLImageElement
+  if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+    simBaseNatural.value = { width: image.naturalWidth, height: image.naturalHeight }
+  }
+}
+
+watch(simViewportEl, (element) => {
+  simResizeObserver?.disconnect()
+  simResizeObserver = null
+  simViewportSize.value = null
+  if (!element || typeof ResizeObserver === 'undefined') return
+  const observer = new ResizeObserver((entries) => {
+    const rect = entries[0]?.contentRect
+    if (rect && rect.width > 0 && rect.height > 0) {
+      simViewportSize.value = { width: rect.width, height: rect.height }
+    }
+  })
+  observer.observe(element)
+  simResizeObserver = observer
+})
+
+watch(beforeImageSrc, () => {
+  simBaseNatural.value = null
+})
 const currentPageNote = computed({
   get: () => pageNotes[activeSlideIndex.value + 1] ?? '',
   set: (value: string) => {
@@ -129,6 +411,177 @@ const traceRounds = computed(() => {
   }
 })
 
+interface TraceThumb {
+  key: string
+  url: string
+  label: string
+}
+
+interface TraceLine {
+  key: string
+  text: string
+  tone: 'normal' | 'success' | 'warn' | 'error'
+}
+
+interface TraceFindingBlock {
+  key: string
+  items: AdaptationTraceFinding[]
+}
+
+interface TraceGroup {
+  key: string
+  header: string | null
+  lines: TraceLine[]
+  thinking: string | null
+  thumbs: TraceThumb[]
+  findingBlocks: TraceFindingBlock[]
+}
+
+const FINDING_CATEGORY_LABELS: Record<string, string> = {
+  content: '内容',
+  sequence: '顺序',
+  practice_load: '练习量',
+  alignment: '教材对应',
+  other: '其他',
+}
+
+function findingCategoryLabel(category: string): string {
+  return FINDING_CATEGORY_LABELS[category] ?? '其他'
+}
+
+function findingCategoryTone(category: string): string {
+  return category in FINDING_CATEGORY_LABELS ? category : 'other'
+}
+
+const traceGroups = computed<TraceGroup[]>(() => {
+  const events = adaptationTrace.value?.events ?? []
+  const buckets = new Map<string, { round: number, ending: boolean, events: AdaptationTraceEvent[] }>()
+  for (const event of events) {
+    const ending = event.phase === 'final_accepted' || event.phase === 'failed'
+    const key = ending ? 'final' : `round-${event.round}`
+    const bucket = buckets.get(key) ?? { round: event.round, ending, events: [] }
+    bucket.events.push(event)
+    buckets.set(key, bucket)
+  }
+  return [...buckets.entries()].map(([key, bucket]) => {
+    const lines: TraceLine[] = []
+    const thinking: string[] = []
+    const thumbs: TraceThumb[] = []
+    const findingBlocks: TraceFindingBlock[] = []
+    let doneSummary: string | null = null
+    bucket.events.forEach((event, index) => {
+      if (event.result?.ok && event.result.preview_url) {
+        thumbs.push({ key: `${key}-thumb-${index}`, url: event.result.preview_url, label: event.result.label })
+      }
+      if (event.thinking_excerpt) thinking.push(event.thinking_excerpt)
+      const line = (text: string, tone: TraceLine['tone'] = 'normal') => {
+        lines.push({ key: `${key}-line-${index}`, text, tone })
+      }
+      switch (event.phase) {
+        case 'round_done':
+          doneSummary = event.summary
+          break
+        case 'findings_ready':
+          if (event.findings?.length) {
+            findingBlocks.push({ key: `${key}-findings-${index}`, items: event.findings })
+          } else {
+            line(event.summary)
+          }
+          break
+        case 'tool_call': {
+          const next = bucket.events[index + 1]
+          if (next?.phase === 'tool_result') {
+            const failedFetch = next.result?.ok === false
+            line(`${event.summary} ${failedFetch ? '✗' : '✓'}`, failedFetch ? 'error' : 'normal')
+          } else {
+            line(`${event.summary} …`)
+          }
+          break
+        }
+        case 'tool_result': {
+          if (bucket.events[index - 1]?.phase === 'tool_call') break
+          line(event.summary, event.result?.ok === false ? 'error' : 'normal')
+          break
+        }
+        case 'round_retry':
+          line(event.summary, 'warn')
+          break
+        case 'final_accepted':
+          line(event.summary, 'success')
+          break
+        case 'failed':
+          line(event.summary, 'error')
+          break
+        case 'thinking':
+          break
+        default:
+          line(event.summary)
+      }
+    })
+    const header = bucket.ending
+      ? null
+      : doneSummary ?? (bucket.round > 0 ? `第 ${bucket.round} 轮 · 进行中` : '开始')
+    return { key, header, lines, thinking: thinking.join('\n') || null, thumbs, findingBlocks }
+  })
+})
+
+const expandedThinkingGroups = ref<string[]>([])
+const activeTraceThumb = ref<TraceThumb | null>(null)
+const traceThumbDialog = ref<HTMLDialogElement | null>(null)
+const waitElapsedSeconds = ref(0)
+let waitTimer: ReturnType<typeof setInterval> | null = null
+let waitStartedAt: number | null = null
+
+const traceHasEnding = computed(() => Boolean(
+  adaptationTrace.value?.events.some(event => event.phase === 'final_accepted' || event.phase === 'failed'),
+))
+const showWaitHint = computed(() => (
+  currentSlideTask.value != null
+  && ['prepared', 'queued', 'running'].includes(currentSlideTask.value.status)
+  && !traceHasEnding.value
+))
+
+function toggleTraceThinking(key: string): void {
+  expandedThinkingGroups.value = expandedThinkingGroups.value.includes(key)
+    ? expandedThinkingGroups.value.filter(item => item !== key)
+    : [...expandedThinkingGroups.value, key]
+}
+
+function openTraceThumb(thumb: TraceThumb): void {
+  activeTraceThumb.value = thumb
+  void nextTick(() => traceThumbDialog.value?.showModal?.())
+}
+
+function closeTraceThumb(): void {
+  traceThumbDialog.value?.close?.()
+  activeTraceThumb.value = null
+}
+
+function formatWaitElapsed(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`
+}
+
+function stopWaitTimer(): void {
+  if (waitTimer !== null) {
+    clearInterval(waitTimer)
+    waitTimer = null
+  }
+  waitStartedAt = null
+  waitElapsedSeconds.value = 0
+}
+
+function startWaitTimer(): void {
+  if (waitTimer !== null) return
+  if (waitStartedAt === null) waitStartedAt = Date.now()
+  waitElapsedSeconds.value = Math.max(0, Math.floor((Date.now() - waitStartedAt) / 1000))
+  waitTimer = setInterval(() => {
+    if (waitStartedAt === null) return
+    waitElapsedSeconds.value = Math.max(0, Math.floor((Date.now() - waitStartedAt) / 1000))
+  }, 1000)
+}
+
 function isPreviewReady(run: PptxExecution | null): boolean {
   return Boolean(
     run
@@ -143,30 +596,96 @@ function describeSlide(item: Record<string, unknown>, index: number): string {
   return String(item.title ?? item.name ?? item.slide_ref ?? `第 ${index + 1} 页`)
 }
 
-function describeChange(item: Record<string, unknown>): string {
-  return String(item.summary ?? item.reason ?? item.kind ?? '页面调整')
+const OPERATION_LABELS: Record<string, string> = {
+  delete_slide: '删除整页',
+  reorder_slide: '调整页序',
+  delete_shape: '删除页内内容',
+  add_text_box: '添加文本标注',
+  add_slide: '新增页面',
+  insert_static_image: '插入图片',
+  move_static_image: '移动图片',
+  scale_static_image: '缩放图片',
+  crop_static_image: '裁剪图片',
+  replace_static_image: '替换图片',
+  keep_slide: '保留本页',
+  hide_slide: '隐藏本页',
+  copy_slide: '复制本页',
+  modify_text_box: '修改文本',
+  manual_note: '人工处理',
 }
 
 function operationLabel(kind: string): string {
-  return {
-    delete_slide: '删除整页',
-    delete_shape: '删除页内题目',
-    add_text_box: '填写教材页码',
-    insert_static_image: '插入教辅题',
-    add_slide: '新增练习页',
-    manual_note: '需要人工处理',
-  }[kind] ?? kind
+  return OPERATION_LABELS[kind] ?? '页面调整'
 }
 
-function editablePosition(item: NonNullable<typeof activeOperation.value>): boolean {
+type ChangeCategory = 'delete' | 'insert' | 'adjust' | 'manual'
+
+function operationCategory(item: SlideOperation): ChangeCategory {
+  if (item.execution_mode === 'manual_only') return 'manual'
+  if (item.kind === 'delete_slide' || item.kind === 'delete_shape') return 'delete'
+  if (item.kind === 'add_slide' || item.kind === 'insert_static_image') return 'insert'
+  return 'adjust'
+}
+
+function defaultDecisionFor(item: SlideOperation): SlideOperationDecision {
+  return item.execution_mode === 'manual_only' ? 'rejected' : 'approved'
+}
+
+function operationDecision(item: SlideOperation): SlideOperationDecision {
+  const decision = decisions[item.operation_id] ?? item.decision
+  return decision === 'proposed' ? defaultDecisionFor(item) : decision
+}
+
+function riskLabel(risk: SlideOperation['risk']): string {
+  return {
+    low: '低风险',
+    medium: '中风险',
+    high: '高风险',
+    blocked: '需先解除阻塞',
+  }[risk] ?? '风险未知'
+}
+
+function cardTitle(item: SlideOperation): string {
+  const summary = String(item.target.content_summary ?? '').trim()
+  if (summary) return summary
+  const firstSentence = item.reason.split(/[。!?\n]/)[0]?.trim()
+  return firstSentence || operationLabel(item.kind)
+}
+
+function operationSupplement(item: SlideOperation): string | null {
+  if (item.support_note?.trim()) return item.support_note
+  const summary = item.details.summary
+  return typeof summary === 'string' && summary.trim() ? summary : null
+}
+
+function materialNameFor(linkId: string): string | null {
+  const presentations = selectedPlan.value?.payload.source_presentations ?? []
+  const match = presentations.find(item => String(item.link_id ?? '') === linkId)
+  const name = match?.material_name
+  return typeof name === 'string' && name.trim() ? name : null
+}
+
+function describeCitation(ref: string): string {
+  const material = /^material:([^:]+):unit:(\d+)$/.exec(ref)
+  const linkId = material?.[1]
+  const unitPage = material?.[2]
+  if (linkId && unitPage) {
+    const name = materialNameFor(linkId)
+    return name ? `${name} 第 ${unitPage} 页` : `资料第 ${unitPage} 页`
+  }
+  if (ref.startsWith('exercise:')) return '题库候选题'
+  return ref
+}
+
+function editablePosition(item: SlideOperation): boolean {
   return item.kind === 'insert_static_image' || item.kind === 'add_text_box'
 }
 
-function isTextbookLabel(item: NonNullable<typeof activeOperation.value>): boolean {
+function isTextbookLabel(item: SlideOperation): boolean {
   return item.kind === 'add_text_box' && item.details.semantic_role === 'textbook_page_label'
 }
 
-function initializeEditableOperation(item: NonNullable<typeof activeOperation.value>): void {
+function initializeEditableOperation(item: SlideOperation): void {
   const rawPosition = item.target.position
   if (rawPosition && typeof rawPosition === 'object' && !Array.isArray(rawPosition)) {
     const value = rawPosition as Record<string, unknown>
@@ -185,7 +704,7 @@ function initializeEditableOperation(item: NonNullable<typeof activeOperation.va
   }
 }
 
-function slideIndexFor(operation: NonNullable<typeof activeOperation.value>): number {
+function slideIndexFor(operation: SlideOperation): number {
   const hasEditedTargetPage = (
     operation.kind === 'insert_static_image'
     && operation.target.target_kind === 'existing_slide'
@@ -290,6 +809,13 @@ function teacherFeedbackText(): string {
   return lines.length ? `教师对照意见：\n${lines.join('\n')}` : ''
 }
 
+watch(visibleSlideIndices, (list) => {
+  const first = list[0]
+  if (first !== undefined && !list.includes(activeSlideIndex.value)) {
+    activeSlideIndex.value = first
+  }
+})
+
 async function saveReview(): Promise<boolean> {
   if (!selectedPlan.value) return false
   const plan = selectedPlan.value
@@ -342,6 +868,34 @@ async function saveReview(): Promise<boolean> {
   } catch {
     reviewMessage.value = '改编草稿还没有保存成功，请稍后重试。原 PPT 没有被修改。'
     return false
+  }
+}
+
+async function setOperationDecision(
+  item: SlideOperation,
+  decision: SlideOperationDecision,
+): Promise<void> {
+  if (busy.value || decisionSaving.value) return
+  const previous = operationDecision(item)
+  if (previous === decision) return
+  decisions[item.operation_id] = decision
+  decisionSaving.value = true
+  busy.value = true
+  reviewMessage.value = '正在保存你的选择并重新生成本地改后页……'
+  try {
+    const saved = await saveReview()
+    if (!saved) {
+      decisions[item.operation_id] = previous
+      return
+    }
+    const refreshed = selectedPlan.value
+    if (refreshed) {
+      previewStartedPlanIds.delete(refreshed.id)
+      await ensurePreview(refreshed)
+    }
+  } finally {
+    busy.value = false
+    decisionSaving.value = false
   }
 }
 
@@ -532,6 +1086,7 @@ async function resendWithPageNotes(): Promise<void> {
 }
 
 watch(selectedPlan, (plan) => {
+  findingsExpanded.value = false
   if (!plan) return
   void autoAdoptAndPreview(plan)
 }, { immediate: true })
@@ -600,8 +1155,35 @@ watch(
   { immediate: true },
 )
 
+watch(showWaitHint, (active) => {
+  if (active) startWaitTimer()
+  else stopWaitTimer()
+}, { immediate: true })
+
+watch(
+  () => {
+    const events = adaptationTrace.value?.events
+    if (!events?.length) return ''
+    const last = events[events.length - 1]
+    if (!last) return ''
+    return `${events.length}:${last.phase}:${last.summary}`
+  },
+  () => {
+    if (waitStartedAt === null) return
+    waitStartedAt = Date.now()
+    waitElapsedSeconds.value = 0
+  },
+)
+
 onUnmounted(() => {
   stopTracePoll()
+  stopWaitTimer()
+  if (beforeRetryTimer !== null) {
+    clearTimeout(beforeRetryTimer)
+    beforeRetryTimer = null
+  }
+  simResizeObserver?.disconnect()
+  simResizeObserver = null
 })
 
 watch(
@@ -652,22 +1234,78 @@ defineExpose({
           <p class="tp-adaptation-trace__rounds">
             {{ traceRounds ? `第 ${traceRounds.used} / ${traceRounds.max} 轮` : '等待模型开始取页' }}
           </p>
-          <ol v-if="adaptationTrace?.events.length" class="tp-adaptation-trace__list">
-            <li
-              v-for="(event, index) in adaptationTrace.events"
-              :key="`${event.phase}-${index}`"
-              class="tp-adaptation-trace__item"
+          <p
+            v-if="showWaitHint"
+            class="tp-adaptation-trace__wait"
+            data-testid="adaptation-wait-hint"
+            role="status"
+          >
+            本轮请求已发出，已等待 {{ formatWaitElapsed(waitElapsedSeconds) }}
+          </p>
+          <div v-if="traceGroups.length" class="tp-adaptation-trace__groups">
+            <section
+              v-for="group in traceGroups"
+              :key="group.key"
+              class="tp-adaptation-trace__group"
             >
-              <strong>{{ event.summary }}</strong>
-              <p v-if="event.thinking_excerpt" class="tp-adaptation-trace__thinking">{{ event.thinking_excerpt }}</p>
-              <img
-                v-if="event.result?.ok && event.result.preview_url"
-                :src="event.result.preview_url"
-                :alt="event.result.label"
-                class="tp-adaptation-trace__thumb"
+              <p v-if="group.header" class="tp-adaptation-trace__group-head">{{ group.header }}</p>
+              <ul v-if="group.lines.length" class="tp-adaptation-trace__lines">
+                <li
+                  v-for="line in group.lines"
+                  :key="line.key"
+                  class="tp-adaptation-trace__line"
+                  :class="`is-${line.tone}`"
+                >
+                  {{ line.text }}
+                </li>
+              </ul>
+              <div
+                v-for="block in group.findingBlocks"
+                :key="block.key"
+                class="tp-findings-card"
+                data-testid="trace-findings"
               >
-            </li>
-          </ol>
+                <p class="tp-findings-card__title">初步审课发现（细看后可能修正）</p>
+                <ul class="tp-findings-card__list">
+                  <li
+                    v-for="(item, findingIndex) in block.items"
+                    :key="`${block.key}-${findingIndex}`"
+                    class="tp-findings-item"
+                  >
+                    <span class="tp-finding-chip" :class="`is-${findingCategoryTone(item.category)}`">{{ findingCategoryLabel(item.category) }}</span>
+                    <span class="tp-findings-item__text">{{ item.finding }}</span>
+                    <span v-if="item.pages.length" class="tp-findings-item__pages">涉及第 {{ item.pages.join('、') }} 页</span>
+                  </li>
+                </ul>
+              </div>
+              <div v-if="group.thumbs.length" class="tp-adaptation-trace__thumbs">
+                <button
+                  v-for="thumb in group.thumbs"
+                  :key="thumb.key"
+                  type="button"
+                  class="tp-adaptation-trace__thumb-button"
+                  :aria-label="`放大查看${thumb.label}`"
+                  @click="openTraceThumb(thumb)"
+                >
+                  <img :src="thumb.url" :alt="thumb.label" class="tp-adaptation-trace__thumb" loading="lazy">
+                </button>
+              </div>
+              <div v-if="group.thinking" class="tp-adaptation-trace__thinking-block">
+                <button
+                  type="button"
+                  class="tp-adaptation-trace__thinking-toggle"
+                  :aria-expanded="expandedThinkingGroups.includes(group.key)"
+                  @click="toggleTraceThinking(group.key)"
+                >
+                  {{ expandedThinkingGroups.includes(group.key) ? '收起模型思考' : '查看模型思考' }}
+                </button>
+                <p
+                  v-if="expandedThinkingGroups.includes(group.key)"
+                  class="tp-adaptation-trace__thinking"
+                >{{ group.thinking }}</p>
+              </div>
+            </section>
+          </div>
         </section>
         <div class="tp-inline-actions">
           <AppButton variant="secondary" @click="routeState.setStep(1)">返回确认资料</AppButton>
@@ -694,81 +1332,344 @@ defineExpose({
       <section class="tp-panel" aria-label="改前改后对照">
         <div class="tp-panel__head">
           <h2>改前 / 改后对照</h2>
-          <span class="tp-panel__hint">改后页来自隔离副本的本地渲染。原 PPTX 不会被修改。</span>
+          <span class="tp-panel__hint">改后位默认是按改编计划即时画的示意图；本地副本渲染完成后自动换成真实改后页。原 PPTX 不会被修改。</span>
         </div>
+        <div v-if="reviewSummary" class="tp-review-summary" data-testid="review-summary">
+          <strong>计划 {{ selectedPlan?.version_number }}</strong>
+          <span>共 {{ afterSlideCount }} 页 · 有改动 {{ reviewSummary.changedPages }} 页</span>
+          <span v-if="reviewSummary.parts.length">（{{ reviewSummary.parts.join(' / ') }}）</span>
+          <span v-else>（无实质改动）</span>
+        </div>
+        <section v-if="reviewFindings.length" class="tp-review-findings" data-testid="review-findings" aria-label="AI 审课发现">
+          <p class="tp-review-findings__title">AI 审课发现</p>
+          <ul class="tp-review-findings__list">
+            <li
+              v-for="(item, findingIndex) in visibleReviewFindings"
+              :key="`review-finding-${findingIndex}`"
+              class="tp-findings-item"
+            >
+              <span class="tp-finding-chip" :class="`is-${findingCategoryTone(item.category)}`">{{ findingCategoryLabel(item.category) }}</span>
+              <span class="tp-findings-item__text">{{ item.finding }}</span>
+              <span v-if="item.suggestedAction" class="tp-findings-item__action">建议：{{ item.suggestedAction }}</span>
+              <span v-if="item.pages.length" class="tp-findings-item__page-links">
+                <button
+                  v-for="page in item.pages"
+                  :key="`finding-page-${findingIndex}-${page}`"
+                  type="button"
+                  class="tp-findings-page-link"
+                  data-testid="finding-page-link"
+                  @click="jumpToFindingPage(page)"
+                >第 {{ page }} 页</button>
+              </span>
+            </li>
+          </ul>
+          <button
+            v-if="reviewFindings.length > FINDINGS_COLLAPSED_COUNT"
+            type="button"
+            class="tp-review-findings__toggle"
+            data-testid="findings-toggle"
+            :aria-expanded="findingsExpanded"
+            @click="findingsExpanded = !findingsExpanded"
+          >
+            {{ findingsExpanded ? '收起' : `展开全部 ${reviewFindings.length} 条` }}
+          </button>
+        </section>
         <div class="tp-slide-checker">
-          <aside class="tp-slide-checker__thumbs" aria-label="对照页缩略图">
+          <aside class="tp-slide-checker__pages" aria-label="页面列表">
+            <label class="tp-slide-checker__filter">
+              <input v-model="showOnlyChanged" type="checkbox" data-testid="filter-changed-only">
+              <span>只看改动</span>
+            </label>
             <button
-              v-for="index in afterSlideCount"
+              v-for="index in visibleSlideIndices"
               :key="`page-${index}`"
               type="button"
-              :class="{ 'is-active': index - 1 === activeSlideIndex }"
-              @click="activeSlideIndex = index - 1"
+              class="tp-slide-checker__page-row"
+              :class="{ 'is-active': index === activeSlideIndex }"
+              @click="activeSlideIndex = index"
             >
-              <span>{{ index }}</span>
-              <strong>{{ describeSlide(preview?.before[index - 1] ?? {}, index - 1) }}</strong>
+              <span class="tp-slide-checker__page-no">{{ index + 1 }}</span>
+              <strong class="tp-slide-checker__page-title">{{ describeSlide(preview?.before[index] ?? {}, index) }}</strong>
+              <span v-if="pageCategories(index).length" class="tp-slide-checker__page-tags">
+                <span
+                  v-for="category in pageCategories(index)"
+                  :key="category"
+                  class="tp-page-tag"
+                  :class="`is-${category}`"
+                >{{ CHANGE_TAG_LABELS[category] }}</span>
+              </span>
             </button>
+            <p v-if="!visibleSlideIndices.length" class="tp-muted">没有符合条件的改动页。</p>
           </aside>
 
-          <div class="tp-slide-checker__compare">
-            <section class="tp-slide-checker__canvas" aria-label="改前页">
-              <header><span>改前</span><strong>第 {{ activeSlideIndex + 1 }} 页</strong></header>
-              <div class="tp-slide-stage">
-                <img v-if="beforeSlide?.preview_url" :src="String(beforeSlide.preview_url)" alt="改前页预览">
-                <div v-else class="tp-slide-stage__paper"><strong>{{ describeSlide(beforeSlide ?? {}, activeSlideIndex) }}</strong><span>这一页还没有改前图，可能是新增页。</span></div>
-              </div>
-            </section>
-            <section class="tp-slide-checker__canvas" aria-label="改后页">
-              <header><span>改后</span><strong>{{ previewReady || latestRun?.status === 'published' ? '本地渲染' : '尚未生成' }}</strong></header>
-              <div class="tp-slide-stage">
-                <img v-if="afterPreviewUrl" :src="afterPreviewUrl" alt="改后页预览">
-                <div v-else class="tp-slide-stage__paper">
-                  <strong>{{ previewBusy ? '正在生成本地改后页' : '还没有改后页' }}</strong>
-                  <span>{{ pptxExecutionAvailable ? '完成后会显示 WPS 渲染结果。' : '当前电脑还不能生成本地改后页。' }}</span>
+          <div class="tp-slide-checker__main">
+            <div class="tp-slide-checker__compare">
+              <section class="tp-slide-checker__canvas" aria-label="改前页">
+                <header><span>改前</span><strong>第 {{ activeSlideIndex + 1 }} 页</strong></header>
+                <div class="tp-slide-stage">
+                  <img
+                    v-if="beforeImageSrc && !beforeLoadFailed"
+                    :src="beforeImageSrc"
+                    alt="改前页预览"
+                    @error="onBeforeImageError"
+                  >
+                  <div v-else-if="beforeImageSrc" class="tp-slide-stage__paper" data-testid="before-load-failed">
+                    <strong>第 {{ activeSlideIndex + 1 }} 页改前图暂时打不开</strong>
+                    <span>正在尝试重新生成这一页的预览图。</span>
+                    <AppButton variant="ghost" data-testid="before-retry" @click="retryBeforeImage">重试</AppButton>
+                  </div>
+                  <div v-else class="tp-slide-stage__paper"><strong>{{ describeSlide(beforeSlide ?? {}, activeSlideIndex) }}</strong><span>这一页还没有改前图，可能是新增页。</span></div>
                 </div>
+              </section>
+              <section class="tp-slide-checker__canvas" aria-label="改后页">
+                <header><span>改后</span><strong>{{ afterStatusLabel }}</strong></header>
+                <div class="tp-slide-stage">
+                  <img v-if="afterPreviewUrl" :src="afterPreviewUrl" alt="改后页预览（已渲染副本）">
+                  <div v-else-if="showSimulatedAfter && beforeImageSrc && !beforeLoadFailed" class="tp-slide-stage__sim" data-testid="simulated-after">
+                    <div v-if="simulatedPageLevelOperations.length" class="tp-sim-opsbar" data-testid="simulated-opsbar">
+                      <span
+                        v-for="item in simulatedPageLevelOperations"
+                        :key="item.operation_id"
+                        class="tp-op-chip"
+                        :class="`is-${operationCategory(item)}`"
+                      >{{ operationLabel(item.kind) }}</span>
+                    </div>
+                    <div ref="simViewportEl" class="tp-sim-viewport">
+                      <div class="tp-sim-canvas" :style="simCanvasStyle">
+                        <img
+                          class="tp-sim-canvas__base"
+                          :src="beforeImageSrc"
+                          :alt="`第 ${activeSlideIndex + 1} 页改前底图`"
+                          @load="onSimBaseLoad"
+                          @error="onBeforeImageError"
+                        >
+                        <div
+                          v-for="box in simulatedOverlayBoxes"
+                          :key="box.key"
+                          class="tp-change-overlay tp-sim-box"
+                          :class="`is-${box.tone}`"
+                          :style="box.style"
+                          data-testid="simulated-overlay-box"
+                        >
+                          <img v-if="box.imageUrl" :src="box.imageUrl" :alt="box.alt" class="tp-sim-box__image">
+                          <span v-else-if="box.text" class="tp-sim-box__text">{{ box.text }}</span>
+                          <span class="tp-sim-box__tag">{{ box.tag }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="tp-slide-stage__paper">
+                    <strong>{{ describeSlide(beforeSlide ?? {}, activeSlideIndex) }}</strong>
+                    <span>这一页没有改前底图（可能是新增页），暂时画不出模拟改后图。</span>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <section class="tp-slide-checker__details" aria-label="本页改动与意见">
+              <p v-if="pageChangeOperations.length" class="tp-muted">本页改动</p>
+              <div v-if="pageChangeOperations.length" class="tp-page-operations">
+                <article
+                  v-for="item in pageChangeOperations"
+                  :key="item.operation_id"
+                  class="tp-operation-row"
+                  :class="{ 'is-rejected': operationDecision(item) === 'rejected' }"
+                >
+                  <header class="tp-operation-row__head">
+                    <span class="tp-op-chip" :class="`is-${operationCategory(item)}`" data-testid="operation-kind">{{ operationLabel(item.kind) }}</span>
+                    <strong class="tp-operation-row__title">{{ cardTitle(item) }}</strong>
+                    <span v-if="item.execution_mode === 'manual_only'" class="tp-op-flag">需人工在 WPS 中处理</span>
+                  </header>
+                  <p class="tp-operation-row__reason">{{ item.reason }}</p>
+                  <p v-if="operationSupplement(item)" class="tp-operation-row__note">{{ operationSupplement(item) }}</p>
+                  <p class="tp-operation-row__meta">
+                    <span v-for="ref in item.citations" :key="ref" class="tp-operation-row__cite">{{ describeCitation(ref) }}</span>
+                    <span class="tp-op-risk" :class="`is-${item.risk}`">{{ riskLabel(item.risk) }}</span>
+                    <span v-if="item.planned_minutes > 0">预计 {{ item.planned_minutes }} 分钟</span>
+                  </p>
+                  <div class="tp-operation-row__decision" role="group" :aria-label="`${operationLabel(item.kind)}采纳开关`">
+                    <button
+                      type="button"
+                      data-testid="operation-approve"
+                      :class="{ 'is-on': operationDecision(item) === 'approved' }"
+                      :disabled="busy || decisionSaving"
+                      @click="setOperationDecision(item, 'approved')"
+                    >采纳</button>
+                    <button
+                      type="button"
+                      data-testid="operation-reject"
+                      :class="{ 'is-on': operationDecision(item) === 'rejected' }"
+                      :disabled="busy || decisionSaving"
+                      @click="setOperationDecision(item, 'rejected')"
+                    >不采纳</button>
+                  </div>
+                </article>
               </div>
+              <p v-if="!pageChangeOperations.length" class="tp-muted" data-testid="page-kept">本页保留，无改动。</p>
+              <label class="tp-field">
+                <span>这一页不满意就写一句</span>
+                <textarea
+                  v-model="currentPageNote"
+                  rows="3"
+                  maxlength="500"
+                  data-testid="compare-page-note"
+                  placeholder="例如：插题太大，挡住例题"
+                />
+              </label>
+              <AppButton
+                variant="secondary"
+                data-testid="resend-with-page-notes"
+                :disabled="resending || busy || !hasPageNotes"
+                @click="resendWithPageNotes"
+              >
+                {{ resending ? '正在重发…' : '按这些意见重新发给 AI' }}
+              </AppButton>
+              <div v-if="preview?.source_changed" class="tp-banner tp-banner--warn" role="alert">来源 PPTX 已变化，本计划不可执行；请基于新来源重新发送。</div>
             </section>
           </div>
-
-          <section class="tp-slide-checker__inspector">
-            <p class="tp-muted" v-if="pageOperations.length">本页改动</p>
-            <article
-              v-for="item in pageOperations"
-              :key="item.operation_id"
-              class="tp-operation-row"
-            >
-              <div class="tp-operation-row__selector">
-                <strong>{{ operationLabel(item.kind) }}</strong>
-                <span>{{ item.reason }}</span>
-                <small>{{ item.support_note || describeChange(item.details) }}</small>
-              </div>
-            </article>
-            <p v-if="!pageOperations.length" class="tp-muted">这一页没有单独列出的改动。</p>
-            <label class="tp-field">
-              <span>这一页不满意就写一句</span>
-              <textarea
-                v-model="currentPageNote"
-                rows="3"
-                maxlength="500"
-                data-testid="compare-page-note"
-                placeholder="例如：插题太大，挡住例题"
-              />
-            </label>
-            <AppButton
-              variant="secondary"
-              data-testid="resend-with-page-notes"
-              :disabled="resending || busy || !hasPageNotes"
-              @click="resendWithPageNotes"
-            >
-              {{ resending ? '正在重发…' : '按这些意见重新发给 AI' }}
-            </AppButton>
-            <div v-if="preview?.source_changed" class="tp-banner tp-banner--warn" role="alert">来源 PPTX 已变化，本计划不可执行；请基于新来源重新发送。</div>
-          </section>
         </div>
         <div class="tp-panel__foot">
           <span class="tp-inline-message" role="status">{{ reviewMessage }}</span>
         </div>
       </section>
     </template>
+
+    <dialog
+      ref="traceThumbDialog"
+      class="tp-adaptation-trace__preview"
+      :aria-label="activeTraceThumb ? `放大查看${activeTraceThumb.label}` : '放大查看页面'"
+      @click="closeTraceThumb"
+    >
+      <img v-if="activeTraceThumb" :src="activeTraceThumb.url" :alt="activeTraceThumb.label">
+    </dialog>
   </div>
 </template>
+
+<style>
+.tp-adaptation-trace {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--muted);
+}
+
+.tp-adaptation-trace__rounds {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+}
+
+.tp-adaptation-trace__wait {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.tp-adaptation-trace__groups {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.tp-adaptation-trace__group {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.tp-adaptation-trace__group-head {
+  margin: 0;
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-semibold);
+}
+
+.tp-adaptation-trace__lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.tp-adaptation-trace__line {
+  font-size: var(--font-size-dense);
+  color: var(--color-text-secondary);
+}
+
+.tp-adaptation-trace__line.is-success {
+  color: var(--color-success);
+}
+
+.tp-adaptation-trace__line.is-warn {
+  color: var(--color-warning);
+  font-weight: var(--font-weight-semibold);
+}
+
+.tp-adaptation-trace__line.is-error {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-semibold);
+}
+
+.tp-adaptation-trace__thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.tp-adaptation-trace__thumb-button {
+  padding: 0;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  cursor: zoom-in;
+  line-height: 0;
+}
+
+.tp-adaptation-trace__thumb {
+  height: 72px;
+  width: auto;
+  border-radius: calc(var(--radius) - var(--border-width));
+}
+
+.tp-adaptation-trace__thinking-block {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: start;
+}
+
+.tp-adaptation-trace__thinking-toggle {
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  text-decoration: underline;
+}
+
+.tp-adaptation-trace__thinking {
+  margin: 0;
+  font-size: var(--font-size-dense);
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+}
+
+.tp-adaptation-trace__preview {
+  max-width: min(90vw, 960px);
+  padding: var(--space-2);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  cursor: zoom-out;
+}
+
+.tp-adaptation-trace__preview::backdrop {
+  background: rgb(0 0 0 / 55%);
+}
+
+.tp-adaptation-trace__preview img {
+  max-width: 100%;
+  max-height: 80vh;
+  display: block;
+}
+</style>

@@ -197,6 +197,7 @@ class VaultService:
 
     def _initialize_business_facades(self) -> None:
         from .affair_workspace import AffairWorkspace
+        from .class_overview import ClassOverview
         from .home_intake_finalizer import HomeIntakeFinalizer
         from .student_directory import StudentDirectory
         from .support_ai_review import SupportRecordAIReview
@@ -210,6 +211,11 @@ class VaultService:
             self.projections,
         )
         self.student_directory = StudentDirectory(
+            self.database,
+            self.repository,
+            self._key_provider,
+        )
+        self.class_overview = ClassOverview(
             self.database,
             self.repository,
             self._key_provider,

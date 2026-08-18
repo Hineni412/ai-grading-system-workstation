@@ -21,6 +21,7 @@ from backend.class_teacher.errors import VaultError
 from backend.class_teacher.intake.ai_task_adapter import (
     _normalize_triage_payload_compatibility,
     _parse_model_payload,
+    _prompt_candidates,
 )
 from backend.class_teacher.intake.conversations import _merge_draft_revision_content
 from backend.class_teacher.intake.preferences import HomeroomPreference
@@ -1007,9 +1008,8 @@ def test_sop_adoption_reuses_legacy_student_code_subject_for_roster_candidate(
         token="",
         class_label="一班",
     )[0]
-    source = service.class_roster.resolve_opaque_ref(
-        token="",
-        opaque_ref=candidate["id"],
+    source = service.class_roster.resolve_roster_ref(
+        roster_ref=candidate["id"],
         expected_revision=candidate["revision"],
     )
     subject = service.support.create_subject(
@@ -2994,15 +2994,19 @@ def test_sop_adoption_updates_each_selected_students_record_and_current_profile(
     with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
         connection.execute("UPDATE students SET class_name='一班' WHERE id=2")
         connection.commit()
+    # 稳定学籍标识下，既有档案按「班级|学号」挂靠，与花名册候选一致。
     subjects = [
-        service.support.create_subject(
+        service.support.create_subject_for_roster_source(
             token="",
             operation_id=f"requested-conflict-subject-{index}",
             source_student_id=str(index),
+            legacy_student_code=code,
             display_name=name,
             class_label="一班",
         )
-        for index, name in enumerate(("合成学生甲", "合成学生乙"), start=1)
+        for index, (code, name) in enumerate(
+            (("A001", "合成学生甲"), ("B001", "合成学生乙")), start=1
+        )
     ]
     preference = service.intake.preferences.get()
     service.intake.preferences.set(
@@ -3483,3 +3487,297 @@ def test_plan_draft_with_multiple_teacher_dates_keeps_model_deadline(
     handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
 
     assert handoff["content"]["final_deadline"] == "2026-09-05T18:00:00+08:00"
+
+
+def _service_with_two_student_roster(
+    tmp_path: Path,
+) -> tuple[VaultService, FakeWorkspaceAITaskPort]:
+    grading = tmp_path / "grading.db"
+    with closing(sqlite3.connect(grading)) as connection:
+        connection.execute(
+            "CREATE TABLE students (id INTEGER PRIMARY KEY, student_code TEXT, name TEXT, class_name TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO students VALUES (?, ?, ?, ?)",
+            [(1, "A001", "合成学生甲", "一班"), (2, "A002", "合成学生丙", "一班")],
+        )
+        connection.commit()
+    port = FakeWorkspaceAITaskPort()
+    context = WorkspaceContext(
+        module_id="class-teacher",
+        root=tmp_path / "workspaces" / "class-teacher",
+        paths=SimpleNamespace(
+            project_root=PROJECT_ROOT,
+            migration_project_root=PROJECT_ROOT,
+            db_path=grading,
+        ),
+    )
+    return VaultService(context, workspace_ai_task_port=port), port
+
+
+def _set_homeroom(service: VaultService, operation_id: str) -> None:
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=int(preference["revision"]),
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id=operation_id,
+    )
+
+
+def _prompt_candidate_payload(
+    service: VaultService,
+    prepare_call: dict[str, object],
+) -> list[dict[str, object]]:
+    request = service.intake.ai_task_adapter.build_model_request(
+        task_kind="class_teacher.intake_triage",
+        source_ref=prepare_call["source_ref"],
+        context_refs=prepare_call["context_refs"],
+    )
+    candidate_message = next(
+        str(message["content"])
+        for message in request.messages
+        if "当前班学生候选" in str(message["content"])
+    )
+    return json.loads(candidate_message.split("：", 1)[1])
+
+
+def test_prompt_candidates_keep_only_named_or_referenced_students() -> None:
+    candidates = [
+        {"id": "a" * 64, "revision": "r1", "display_name": "合成学生甲", "class_label": "一班"},
+        {"id": "b" * 64, "revision": "r2", "display_name": "合成学生甲", "class_label": "一班"},
+        {"id": "c" * 64, "revision": "r3", "display_name": "合成学生丙", "class_label": "一班"},
+    ]
+
+    named = _prompt_candidates(
+        candidates,
+        conversation={"turns": [{"teacher_message": "合成学生甲今天主动帮助同学。"}]},
+        previous_handoff=None,
+    )
+    assert [item["id"] for item in named] == ["a" * 64, "b" * 64]
+
+    referenced = _prompt_candidates(
+        candidates,
+        conversation={"turns": [{"teacher_message": "他这周又进步了。"}]},
+        previous_handoff={
+            "subject_refs": [{"kind": "student", "id": "c" * 64, "revision": "r3"}]
+        },
+    )
+    assert [item["id"] for item in referenced] == ["c" * 64]
+
+    fallback = _prompt_candidates(
+        candidates,
+        conversation={"turns": [{"teacher_message": "班会通知已发。"}]},
+        previous_handoff=None,
+    )
+    assert fallback == candidates
+
+
+def test_triage_prompt_trims_candidates_to_named_student(tmp_path: Path) -> None:
+    service, port = _service_with_two_student_roster(tmp_path)
+    _set_homeroom(service, "candidate-trim-homeroom")
+    _conversation, _turn = _conversation_with_turn(
+        service,
+        "candidate-trim-turn",
+        message="合成学生甲今天主动帮助同学。",
+    )
+
+    payload = _prompt_candidate_payload(service, port.prepare_calls[-1])
+
+    assert [item["display_name"] for item in payload] == ["合成学生甲"]
+
+
+def test_triage_prompt_keeps_full_candidates_when_nobody_named(
+    tmp_path: Path,
+) -> None:
+    service, port = _service_with_two_student_roster(tmp_path)
+    _set_homeroom(service, "candidate-full-homeroom")
+    _conversation, _turn = _conversation_with_turn(
+        service,
+        "candidate-full-turn",
+        message="班会通知已发。",
+    )
+
+    payload = _prompt_candidate_payload(service, port.prepare_calls[-1])
+
+    assert {item["display_name"] for item in payload} == {"合成学生甲", "合成学生丙"}
+
+
+def test_triage_prompt_keeps_previous_draft_referenced_student(
+    tmp_path: Path,
+) -> None:
+    service, port = _service_with_two_student_roster(tmp_path)
+    _set_homeroom(service, "candidate-continue-homeroom")
+    selected = next(
+        item
+        for item in service.class_roster.ai_candidates(token="", class_label="一班")
+        if item["display_name"] == "合成学生甲"
+    )
+    conversation, first_turn = _conversation_with_turn(
+        service,
+        "candidate-continue-first",
+        message="合成学生甲今天主动帮助同学。",
+    )
+    first_task = port.prepare_calls[-1]
+    service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(first_turn["task_id"]),
+        source_ref=first_task["source_ref"],
+        context_refs=first_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理到当前学生档案。",
+            "clarification_questions": ["还需要补充什么？"],
+            "work_items": [_work_item(
+                "candidate-continue-item",
+                domain="student_support",
+                mode="record",
+                intent="append",
+                refs=[{
+                    "kind": "student",
+                    "id": str(selected["id"]),
+                    "revision": str(selected["revision"]),
+                }],
+                draft={
+                    "summary": "第一轮学生档案摘要。",
+                    "profile_update": {
+                        "summary": "第一轮学生档案摘要。",
+                        "dimensions": [],
+                        "open_questions": [],
+                        "support_focus": [],
+                    },
+                },
+            )],
+        },
+    )
+    ready = service.intake.conversations.get(str(conversation["conversation_id"]))
+    service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(ready["revision"]),
+        message="再补充一点这周的进展。",
+        operation_id="candidate-continue-second",
+    )
+
+    second_task = port.prepare_calls[-1]
+    payload = _prompt_candidate_payload(service, second_task)
+    request = service.intake.ai_task_adapter.build_model_request(
+        task_kind="class_teacher.intake_triage",
+        source_ref=second_task["source_ref"],
+        context_refs=second_task["context_refs"],
+    )
+
+    assert [item["display_name"] for item in payload] == ["合成学生甲"]
+    assert any(
+        "上一轮待核对草稿" in str(message["content"])
+        for message in request.messages
+    )
+
+
+def test_plan_handoff_with_unanswered_clarifications_is_not_auto_opened(
+    tmp_path: Path,
+) -> None:
+    service, _port = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "auto-open-pending-questions",
+        message="合成计划事务",
+    )
+    payload = _triage()
+    payload["clarification_questions"] = ["具体是哪一天？"]
+    completed = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload=payload,
+    )
+
+    handoff = completed["handoffs"][0]
+    assert handoff["destination_key"] == "class_teacher.plan.calendar"
+    assert handoff["auto_open_allowed"] is False
+
+
+def test_plan_handoff_without_pending_questions_is_auto_open_allowed(
+    tmp_path: Path,
+) -> None:
+    service, _port = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "auto-open-no-questions",
+        message="合成计划事务",
+    )
+    completed = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload=_triage(),
+    )
+
+    handoff = completed["handoffs"][0]
+    assert handoff["destination_key"] == "class_teacher.plan.calendar"
+    assert handoff["auto_open_allowed"] is True
+
+
+def test_answered_clarifications_no_longer_block_auto_open(
+    tmp_path: Path,
+) -> None:
+    service, _port = _service(tmp_path)
+    conversation, turn = _conversation_with_turn(
+        service,
+        "auto-open-answered-questions",
+        message="合成计划事务",
+    )
+    payload = _triage()
+    payload["clarification_questions"] = ["具体是哪一天？"]
+    completed = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload=payload,
+    )
+    assert completed["handoffs"][0]["auto_open_allowed"] is False
+
+    continued = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(completed["revision"]),
+        message="下周一放学前。",
+        operation_id="auto-open-answered-follow-up",
+    )
+
+    handoffs = {
+        str(item["turn_id"]): item for item in continued["handoffs"]
+    }
+    assert handoffs[str(turn["turn_id"])]["auto_open_allowed"] is True
+
+
+def test_adopting_draft_with_legacy_hex_ref_marks_stale(tmp_path: Path) -> None:
+    """兼容输入：旧格式 64 位十六进制临时编号按「引用已失效」优雅报错。"""
+    service, _ = _service(tmp_path)
+    subject = service.support.create_subject(
+        token="", operation_id="subject-for-legacy-ref", source_student_id="SYNTHETIC-LEGACY",
+        display_name="合成学生旧编号", class_label="一班",
+    )
+    _conversation, turn = _conversation_with_turn(service, "conversation-legacy-ref")
+    ready = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]), task_id=str(turn["task_id"]),
+        payload=_triage(subject_id=str(subject["subject_id"])),
+    )
+    handoff = service.intake.open_handoff(str(ready["handoffs"][0]["handoff_id"]))
+    rebound = service.intake.update_draft(
+        handoff_id=str(handoff["handoff_id"]),
+        expected_revision=int(handoff["draft_revision"]),
+        content={
+            "summary": "合成草稿正文已重新核对",
+            "observed_at": "2026-08-05T08:00:00+08:00",
+            "record_kind": "fact",
+            "source": "合成教师核对",
+        },
+        subject_refs=[{"kind": "student", "id": "a" * 64, "revision": "1"}],
+    )
+    with pytest.raises(VaultError, match="学生引用已失效") as excinfo:
+        service.intake.adopt_handoff(
+            token="", handoff_id=str(rebound["handoff_id"]),
+            draft_revision=int(rebound["draft_revision"]),
+            target_revision="1", operation_id="adopt-legacy-ref",
+        )
+    assert excinfo.value.code == "class_teacher_subject_ref_invalid"
+    assert excinfo.value.status_code == 409
+    restored = service.intake.get_conversation(str(ready["conversation_id"]))
+    assert restored["handoffs"][0]["adoption_state"] == "stale"
+    with closing(service.database.connect()) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 0

@@ -49,6 +49,10 @@ export interface ModelProfile {
   request_speed_mode: RequestSpeedMode
   max_concurrent_requests: number
   requests_per_minute: number
+  batch_enabled: boolean
+  batch_model: string
+  batch_base_url: string
+  has_batch_api_key: boolean
 }
 
 export interface ModelProfilesState {
@@ -89,6 +93,10 @@ export interface ModelProfileUpsertInput {
   request_speed_mode: RequestSpeedMode
   max_concurrent_requests: number
   requests_per_minute: number
+  batch_enabled?: boolean
+  batch_model?: string
+  batch_base_url?: string
+  batch_api_key?: string
 }
 
 export interface ModelProfileSaveOptions {
@@ -117,6 +125,10 @@ const PROFILE_KEYS = [
   'request_speed_mode',
   'max_concurrent_requests',
   'requests_per_minute',
+  'batch_enabled',
+  'batch_model',
+  'batch_base_url',
+  'has_batch_api_key',
 ] as const
 
 function hasExactKeys(
@@ -205,6 +217,11 @@ function isModelProfile(value: unknown): value is ModelProfile {
     && Number(value.requests_per_minute) >= 1
     && Number(value.requests_per_minute)
       <= MODEL_PROFILE_LIMITS.requestsPerMinute
+    && typeof value.batch_enabled === 'boolean'
+    && isBoundedText(value.batch_model, 0, MODEL_PROFILE_LIMITS.model)
+    && isBoundedText(value.batch_base_url, 0, MODEL_PROFILE_LIMITS.url)
+    && isHttpUrl(value.batch_base_url, true)
+    && typeof value.has_batch_api_key === 'boolean'
   )
 }
 
@@ -410,6 +427,7 @@ export function normalizeModelProfileInput(
 ): ModelProfileUpsertInput {
   const apiKey = normalizeApiKey(input.api_key, 'API 密钥')
   const configApiKey = normalizeApiKey(input.config_api_key, '高级配置密钥')
+  const batchApiKey = normalizeApiKey(input.batch_api_key, '批量推理密钥')
   if (requireApiKey && apiKey === '') {
     throw new ModelProfileInputError('新配置需要填写 API 密钥。')
   }
@@ -475,9 +493,25 @@ export function normalizeModelProfileInput(
       '每分钟请求数',
       MODEL_PROFILE_LIMITS.requestsPerMinute,
     ),
+    batch_enabled: input.batch_enabled === true,
+    batch_model: normalizeBoundedText(
+      input.batch_model ?? '',
+      '批量推理接入点 ID',
+      MODEL_PROFILE_LIMITS.model,
+      false,
+    ),
+    batch_base_url: normalizeUrl(
+      input.batch_base_url ?? '',
+      '批量推理 API 地址',
+      false,
+    ),
+  }
+  if (normalized.batch_enabled && normalized.batch_model === '') {
+    throw new ModelProfileInputError('启用批量推理时请填写批量推理接入点 ID。')
   }
   if (apiKey !== '') normalized.api_key = apiKey
   if (configApiKey !== '') normalized.config_api_key = configApiKey
+  if (batchApiKey !== '') normalized.batch_api_key = batchApiKey
   return normalized
 }
 
@@ -508,7 +542,7 @@ export const modelProfilesApi = {
   ): Promise<ModelProfilesState> {
     const pathName = requireProfilePathName(profileName)
     const normalized = normalizeModelProfileInput(input, options.requireApiKey)
-    const body: Record<string, string | number> = {
+    const body: Record<string, string | number | boolean> = {
       base_url: normalized.base_url,
       ocr_model: normalized.ocr_model,
       grading_model: normalized.grading_model,
@@ -519,10 +553,18 @@ export const modelProfilesApi = {
       request_speed_mode: normalized.request_speed_mode,
       max_concurrent_requests: normalized.max_concurrent_requests,
       requests_per_minute: normalized.requests_per_minute,
+      batch_enabled: normalized.batch_enabled ?? false,
+      batch_model: normalized.batch_model ?? '',
+    }
+    if (normalized.batch_base_url) {
+      body.batch_base_url = normalized.batch_base_url
     }
     if (normalized.api_key !== undefined) body.api_key = normalized.api_key
     if (normalized.config_api_key !== undefined) {
       body.config_api_key = normalized.config_api_key
+    }
+    if (normalized.batch_api_key !== undefined) {
+      body.batch_api_key = normalized.batch_api_key
     }
     return apiClient.request(`/api/model-profiles/${pathName}`, {
       method: 'PUT',

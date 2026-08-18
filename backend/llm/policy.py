@@ -18,9 +18,11 @@ class LLMPolicyError(ValueError):
 
 class LLMRequestKind(str, Enum):
     GRADING = "grading"
+    GRADING_BATCH = "grading_batch"
     RECOGNITION = "recognition"
     CONFIG_GENERATION = "config_generation"
     TAGGING = "tagging"
+    TAGGING_BATCH = "tagging_batch"
     WORKSPACE = "workspace"
 
 
@@ -35,12 +37,19 @@ class LLMRequestPolicy:
     max_retries: int
     requests_per_minute: int
     retry_delays: tuple[float, ...]
+    # Batch endpoints queue requests server-side, so a client-side timeout
+    # must not trigger a silent resend (the original request may still be
+    # processed and billed).  Online channels keep the legacy behaviour.
+    retry_on_timeout: bool = True
 
 
 DEFAULT_POLICIES: Mapping[LLMRequestKind, LLMRequestPolicy] = MappingProxyType(
     {
         LLMRequestKind.GRADING: LLMRequestPolicy(
             300.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
+        ),
+        LLMRequestKind.GRADING_BATCH: LLMRequestPolicy(
+            3600.0, 10, 1000, (2.0, 5.0, 10.0, 20.0, 40.0), False
         ),
         LLMRequestKind.RECOGNITION: LLMRequestPolicy(
             60.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
@@ -50,6 +59,9 @@ DEFAULT_POLICIES: Mapping[LLMRequestKind, LLMRequestPolicy] = MappingProxyType(
         ),
         LLMRequestKind.TAGGING: LLMRequestPolicy(
             240.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
+        ),
+        LLMRequestKind.TAGGING_BATCH: LLMRequestPolicy(
+            3600.0, 10, 1000, (2.0, 5.0, 10.0, 20.0, 40.0), False
         ),
         LLMRequestKind.WORKSPACE: LLMRequestPolicy(
             120.0, 0, 1000, ()
@@ -112,6 +124,38 @@ def _bounded_int(
     return value
 
 
+# Batch inference requests may legitimately pend for tens of minutes, so the
+# batch channel accepts much longer timeout overrides than online channels.
+_TIMEOUT_OVERRIDE_CAPS: Mapping[LLMRequestKind, float] = MappingProxyType(
+    {
+        LLMRequestKind.GRADING_BATCH: 7200.0,
+        LLMRequestKind.TAGGING_BATCH: 7200.0,
+    }
+)
+_DEFAULT_TIMEOUT_OVERRIDE_CAP = 600.0
+
+# A rejected (429/503) batch attempt is never billed, so batch channels may
+# keep drawing tickets far longer than online channels.
+_RETRY_COUNT_CAPS: Mapping[LLMRequestKind, int] = MappingProxyType(
+    {
+        LLMRequestKind.GRADING_BATCH: 20,
+        LLMRequestKind.TAGGING_BATCH: 20,
+    }
+)
+_DEFAULT_RETRY_COUNT_CAP = 5
+
+
+def _retry_delays_for(
+    base: LLMRequestPolicy,
+    retries: int,
+) -> tuple[float, ...]:
+    delays = base.retry_delays[:retries]
+    if len(delays) < retries:
+        tail = delays[-1] if delays else 0.0
+        delays = delays + (tail,) * (retries - len(delays))
+    return delays
+
+
 def policy_from_profile(
     kind: LLMRequestKind,
     profile: Mapping[str, object] | None,
@@ -125,14 +169,14 @@ def policy_from_profile(
         f"{prefix}_timeout_seconds",
         base.timeout_seconds,
         1.0,
-        600.0,
+        _TIMEOUT_OVERRIDE_CAPS.get(request_kind, _DEFAULT_TIMEOUT_OVERRIDE_CAP),
     )
     retries = _bounded_int(
         values,
         f"{prefix}_max_retries",
         base.max_retries,
         0,
-        5,
+        _RETRY_COUNT_CAPS.get(request_kind, _DEFAULT_RETRY_COUNT_CAP),
     )
     if _EXECUTION_PROFILE_FIELDS.intersection(values):
         requests_per_minute = (
@@ -154,7 +198,8 @@ def policy_from_profile(
         timeout,
         retries,
         requests_per_minute,
-        base.retry_delays[:retries],
+        _retry_delays_for(base, retries),
+        base.retry_on_timeout,
     )
 
 

@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<!--
+  试卷库多选批量操作原型（不连接真实接口）
+  目的：验证「去掉卡片上的按钮排，改为复选框多选 + 批量操作栏」的交互。
+  顶部可切换两种模式：
+    A. 复选框常驻（推荐）
+    B. 点「批量管理」才进入选择模式
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>试卷库 · 多选批量操作原型</title>
+<style>
+  :root {
+    --primary: #155e4b;
+    --primary-dark: #0f4a3b;
+    --danger: #c0392b;
+    --bg: #f3f6f5;
+    --card: #ffffff;
+    --line: #e2e8e6;
+    --text: #1f2a26;
+    --muted: #6b7a74;
+    --amber: #b45309;
+    --amber-bg: #fef3c7;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 32px 120px;
+  }
+  .prototype-banner {
+    background: #fff8e1; border: 1px solid #f0d98c; border-radius: 10px;
+    padding: 10px 16px; margin-bottom: 20px; font-size: 14px; color: #7a5d00;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  .prototype-banner strong { color: #5c4700; }
+  .mode-switch { display: flex; gap: 8px; margin-left: auto; }
+  .mode-switch button {
+    border: 1px solid #d8c878; background: #fff; border-radius: 8px;
+    padding: 6px 14px; cursor: pointer; font-size: 13px;
+  }
+  .mode-switch button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+  /* ===== 页头 ===== */
+  .page-head { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; margin-bottom: 8px; }
+  .page-head h1 { font-size: 30px; }
+  .page-head .sub { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  .head-stats { display: flex; gap: 18px; font-size: 15px; margin-left: 24px; }
+  .head-stats b { font-size: 22px; }
+  .head-actions { margin-left: auto; display: flex; gap: 10px; }
+  .btn {
+    border: 1px solid var(--line); background: var(--card); border-radius: 10px;
+    padding: 9px 16px; font-size: 14px; cursor: pointer; color: var(--text);
+  }
+  .btn:hover { border-color: var(--primary); }
+  .btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .btn.primary:hover { background: var(--primary-dark); }
+  .btn.danger { color: var(--danger); border-color: #ecc7c2; }
+  .btn.danger:hover { background: #fdf0ee; border-color: var(--danger); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn .count-badge {
+    display: inline-block; min-width: 20px; padding: 0 5px; margin-left: 6px;
+    background: #e74c3c; color: #fff; border-radius: 10px; font-size: 12px;
+  }
+
+  .notice {
+    background: #eaf5f1; border-left: 4px solid var(--primary);
+    border-radius: 8px; padding: 10px 16px; margin: 16px 0; font-size: 14px; color: #2c4a41;
+  }
+
+  /* ===== 筛选行 ===== */
+  .filter-row {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 18px; display: flex; gap: 12px; margin: 18px 0 0; flex-wrap: wrap;
+  }
+  .filter-row input, .filter-row select {
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; font-size: 14px;
+    background: #fbfdfc; min-width: 140px;
+  }
+  .filter-row input { flex: 1; min-width: 220px; }
+
+  /* ===== 批量操作栏（吸顶，选中后激活） ===== */
+  .batch-bar {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    margin: 14px 0; padding: 12px 18px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    transition: box-shadow .2s, border-color .2s;
+  }
+  .batch-bar.active {
+    border-color: var(--primary);
+    box-shadow: 0 6px 18px rgba(21, 94, 75, .12);
+  }
+  .batch-bar .sel-info { font-size: 14px; color: var(--muted); margin-right: 8px; }
+  .batch-bar.active .sel-info { color: var(--primary); font-weight: 600; }
+  .batch-bar .spacer { flex: 1; }
+
+  /* ===== 分组 ===== */
+  .folder {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    margin-bottom: 18px; overflow: hidden;
+  }
+  .folder-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    border-bottom: 1px solid var(--line); background: #fafcfb;
+  }
+  .folder-head .caret { color: var(--muted); transition: transform .15s; }
+  .folder.collapsed .caret { transform: rotate(-90deg); }
+  .folder-head h3 { font-size: 16px; }
+  .folder-head .tag { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+  .folder-head .count { margin-left: auto; color: var(--muted); font-size: 14px; }
+  .folder-body { padding: 18px 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .folder.collapsed .folder-body { display: none; }
+
+  /* ===== 试卷卡片 ===== */
+  .paper-card {
+    position: relative;
+    display: flex; gap: 16px;
+    border: 1.5px solid var(--line); border-radius: 12px; padding: 16px;
+    background: #fff; transition: border-color .15s, box-shadow .15s, background .15s;
+  }
+  .paper-card:hover { border-color: #b8cdc5; box-shadow: 0 4px 12px rgba(0,0,0,.05); }
+  .paper-card.selected { border-color: var(--primary); background: #f4faf8; box-shadow: 0 4px 14px rgba(21,94,75,.14); }
+
+  .card-check { display: flex; align-items: flex-start; padding-top: 4px; }
+  .card-check input[type="checkbox"] {
+    width: 20px; height: 20px; accent-color: var(--primary); cursor: pointer;
+  }
+  /* 模式 B：平时隐藏复选框，进入批量模式才显示 */
+  body.mode-b .card-check { display: none; }
+  body.mode-b.batch-on .card-check { display: flex; }
+  /* 模式 B 未进批量模式时整卡可点 */
+  body.mode-b:not(.batch-on) .paper-card { cursor: pointer; }
+
+  .card-cover {
+    width: 92px; min-width: 92px; border-radius: 8px;
+    background: linear-gradient(135deg, #e8f1ee, #d3e5df);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: var(--primary); font-size: 13px; gap: 4px;
+  }
+  .card-cover .big { font-size: 22px; font-weight: 700; }
+
+  .card-main { flex: 1; min-width: 0; }
+  .chips { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+  .chip {
+    font-size: 12px; padding: 2px 9px; border-radius: 6px;
+    background: #eef3f1; color: #41564e; border: 1px solid #dde7e3;
+  }
+  .chip.src { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .card-title {
+    font-size: 17px; font-weight: 600; line-height: 1.4; cursor: pointer;
+    display: inline-block;
+  }
+  .card-title:hover { color: var(--primary); text-decoration: underline; }
+  .card-meta { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+  .progress-line { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: 14px; }
+  .progress-track { height: 6px; background: #edf1ef; border-radius: 3px; margin-top: 6px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--primary); border-radius: 3px; }
+  .progress-note { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  .review-note { font-size: 13px; color: var(--amber); margin-top: 6px; cursor: pointer; }
+  .review-note:hover { text-decoration: underline; }
+  .analyzing { font-size: 13px; color: var(--primary); margin-top: 6px; }
+
+  .card-foot { display: flex; align-items: center; margin-top: 14px; gap: 10px; }
+  .card-foot .updated { color: var(--muted); font-size: 12.5px; }
+  .card-foot .spacer { flex: 1; }
+  .card-open {
+    border: none; background: none; color: var(--primary); font-size: 14px;
+    cursor: pointer; padding: 4px 2px; font-weight: 600;
+  }
+  .card-open:hover { text-decoration: underline; }
+  /* 单卷更多操作：收到 ⋯ 菜单里 */
+  .more-wrap { position: relative; }
+  .more-btn {
+    border: 1px solid var(--line); background: #fff; border-radius: 8px;
+    width: 32px; height: 32px; cursor: pointer; font-size: 16px; color: var(--muted);
+  }
+  .more-btn:hover { border-color: var(--primary); color: var(--primary); }
+  .more-menu {
+    position: absolute; right: 0; top: 38px; z-index: 30;
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.12); min-width: 150px; padding: 6px;
+    display: none;
+  }
+  .more-menu.open { display: block; }
+  .more-menu button {
+    display: block; width: 100%; text-align: left; border: none; background: none;
+    padding: 9px 12px; font-size: 14px; border-radius: 6px; cursor: pointer;
+  }
+  .more-menu button:hover { background: #f0f6f4; }
+  .more-menu button.danger { color: var(--danger); }
+
+  /* ===== 底部浮动批量条（模式 B 用，模式 A 用吸顶栏） ===== */
+  .float-bar {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(90px);
+    background: #1f2a26; color: #fff; border-radius: 14px;
+    padding: 12px 20px; display: flex; align-items: center; gap: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.3); z-index: 50;
+    transition: transform .25s;
+  }
+  .float-bar.show { transform: translateX(-50%) translateY(0); }
+  .float-bar .btn { background: transparent; color: #fff; border-color: rgba(255,255,255,.35); }
+  .float-bar .btn:hover { border-color: #fff; }
+  .float-bar .btn.danger { color: #ff9d8f; border-color: rgba(255,157,143,.5); }
+  .float-bar .btn.primary { background: var(--primary); border-color: var(--primary); }
+
+  /* toast */
+  #toast {
+    position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+    background: #1f2a26; color: #fff; padding: 12px 22px; border-radius: 10px;
+    font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 99;
+  }
+  #toast.show { opacity: 1; }
+
+  .select-all-label { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+  .select-all-label input { width: 18px; height: 18px; accent-color: var(--primary); cursor: pointer; }
+
+  @media (max-width: 1100px) { .folder-body { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body class="mode-a">
+
+<div class="prototype-banner">
+  <strong>原型演示</strong> 数据是假的，按钮不会真正执行，只演示多选 + 批量操作的交互。
+  <div class="mode-switch">
+    <button id="modeA" class="active" onclick="setMode('a')">方案 A：复选框常驻（推荐）</button>
+    <button id="modeB" onclick="setMode('b')">方案 B：点「批量管理」进入选择模式</button>
+  </div>
+</div>
+
+<div class="page-head">
+  <div>
+    <h1>试卷库</h1>
+    <div class="sub">以老师上传的 Word 或 PDF 试卷为入口，再进入试题核对与标注。</div>
+  </div>
+  <div class="head-stats">
+    <span><b>11</b> 份试卷</span>
+    <span><b>207</b> 道题</span>
+    <span><b>69</b> 道联合分析完整</span>
+  </div>
+  <div class="head-actions">
+    <button class="btn" style="background:var(--amber-bg);border-color:#ecd9a8;color:var(--amber)">判定点待审核 <span class="count-badge">5</span></button>
+    <button class="btn" style="background:var(--amber-bg);border-color:#ecd9a8;color:var(--amber)">待审核新词 <span class="count-badge">38</span></button>
+    <button class="btn" onclick="toast('打开上传试卷对话框（演示）')">上传试卷</button>
+    <button class="btn" id="batchModeBtn" style="display:none" onclick="toggleBatchMode()">批量管理</button>
+  </div>
+</div>
+
+<div class="notice">已提交 20 道题等待后端核对，共 1 个任务；只会补齐缺失、失败或已过期的内容。</div>
+
+<div class="filter-row">
+  <input type="text" placeholder="搜索试卷名称、地区或教材">
+  <select><option>全部年份</option><option>2026</option><option>2025</option><option>2024</option></select>
+  <select><option>全部类型</option><option>期末</option><option>期中</option><option>阶段练习</option></select>
+  <select><option>全部文件</option><option>Word</option><option>PDF</option></select>
+  <select><option>全部进度</option><option>已完成</option><option>待补全</option><option>有待审核</option></select>
+  <button class="btn">清除</button>
+</div>
+
+<!-- 批量操作栏（方案 A 使用；方案 B 用底部浮动条） -->
+<div class="batch-bar" id="batchBar">
+  <label class="select-all-label">
+    <input type="checkbox" id="masterCheck" onchange="toggleAll(this.checked)">
+    <span>全选</span>
+  </label>
+  <span class="sel-info" id="selInfo">未选中试卷</span>
+  <span class="spacer"></span>
+  <button class="btn primary" data-batch disabled onclick="batchAct('继续完成未完成题目')">继续完成未完成题目</button>
+  <button class="btn" data-batch disabled onclick="batchAct('重新打标签')">重新打标签</button>
+  <button class="btn danger" data-batch disabled onclick="batchAct('删除')">删除</button>
+  <button class="btn" data-batch disabled onclick="clearSelection()">取消选择</button>
+</div>
+
+<div id="folders"></div>
+
+<!-- 底部浮动批量条（方案 B 进入批量模式且有选中时显示） -->
+<div class="float-bar" id="floatBar">
+  <span id="floatSelInfo">已选 0 份</span>
+  <button class="btn primary" onclick="batchAct('继续完成未完成题目')">继续完成</button>
+  <button class="btn" onclick="batchAct('重新打标签')">重新打标签</button>
+  <button class="btn danger" onclick="batchAct('删除')">删除</button>
+  <button class="btn" onclick="clearSelection()">取消</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ---------- 假数据 ----------
+const FOLDERS = [
+  {
+    name: "八年级下册（当前学期）", tag: "按学期自动归类",
+    papers: [
+      { id: 1, src: "Word", year: 2026, type: "阶段练习", grade: "七年级", title: "0630限时训练", meta: "下学期 · 北师大版（2024）", done: 15, total: 15, pct: 100, tags: "15/15", criteria: "15/15", review: 0, updated: "2026/08/16" },
+      { id: 2, src: "Word", year: 2026, type: "期中", grade: "八年级", title: "2025-2026学年深圳市南山区八年级（下）期中数学试卷", meta: "广东省 · 深圳市 · 南山区 · 下学期", done: 20, total: 23, pct: 87, tags: "20/23", criteria: "19/23", review: 1, updated: "2026/08/15" },
+      { id: 3, src: "PDF", year: 2025, type: "期末", grade: "八年级", title: "2024-2025学年深圳市罗湖区八年级（下）期末数学试卷", meta: "广东省 · 深圳市 · 罗湖区 · 下学期", done: 22, total: 22, pct: 100, tags: "22/22", criteria: "22/22", review: 0, updated: "2026/08/10" },
+    ]
+  },
+  {
+    name: "其他学期", tag: "不属于当前教学学期，仍可操作",
+    papers: [
+      { id: 4, src: "Word", year: 2024, type: "期末", grade: "七年级", title: "2024-2025学年广东省深圳高级中学（集团）七年级（下）期末数学试卷", meta: "广东省 · 深圳市 · 下学期", done: 17, total: 20, pct: 85, tags: "17/20", criteria: "18/20", review: 2, analyzing: true, updated: "2026/08/17" },
+      { id: 5, src: "Word", year: 2024, type: "期末", grade: "七年级", title: "2024-2025学年广东省深圳市盐田区七年级（下）期末数学试卷", meta: "广东省 · 深圳市 · 盐田区 · 下学期", done: 20, total: 20, pct: 100, tags: "20/20", criteria: "20/20", review: 0, updated: "2026/08/12" },
+      { id: 6, src: "Word", year: 2024, type: "期末", grade: "七年级", title: "2024-2025学年广东省深圳市南山区七年级（下）期末数学试卷", meta: "广东省 · 深圳市 · 南山区 · 下学期", done: 9, total: 21, pct: 43, tags: "9/21", criteria: "8/21", review: 0, updated: "2026/08/08" },
+    ]
+  }
+];
+
+const selected = new Set();
+let mode = 'a';
+let batchOn = false;
+
+// ---------- 渲染 ----------
+function renderFolders() {
+  const box = document.getElementById('folders');
+  box.innerHTML = '';
+  FOLDERS.forEach((f, fi) => {
+    const div = document.createElement('div');
+    div.className = 'folder';
+    div.innerHTML = `
+      <div class="folder-head" onclick="this.parentElement.classList.toggle('collapsed')">
+        <label class="select-all-label" onclick="event.stopPropagation()">
+          <input type="checkbox" onchange="toggleFolder(${fi}, this.checked)">
+        </label>
+        <span class="caret">▾</span>
+        <h3>${f.name}</h3>
+        <span class="tag">${f.tag}</span>
+        <span class="count">${f.papers.length} 份</span>
+      </div>
+      <div class="folder-body"></div>`;
+    const body = div.querySelector('.folder-body');
+    f.papers.forEach(p => body.appendChild(renderCard(p)));
+    box.appendChild(div);
+  });
+}
+
+function renderCard(p) {
+  const card = document.createElement('div');
+  card.className = 'paper-card' + (selected.has(p.id) ? ' selected' : '');
+  card.dataset.id = p.id;
+  const reviewHtml = p.review > 0
+    ? `<div class="review-note" onclick="toast('跳转到判定点审核（演示）')">${p.review} 道题判定点待您审核</div>` : '';
+  const analyzingHtml = p.analyzing ? `<div class="analyzing">正在分析这张试卷…</div>` : '';
+  card.innerHTML = `
+    <div class="card-check">
+      <input type="checkbox" ${selected.has(p.id) ? 'checked' : ''} onchange="toggleOne(${p.id}, this.checked)">
+    </div>
+    <div class="card-cover"><span>${p.src}</span><span class="big">试卷</span></div>
+    <div class="card-main">
+      <div class="chips">
+        <span class="chip src">${p.src}</span>
+        <span class="chip">${p.year}</span>
+        <span class="chip">${p.type}</span>
+        <span class="chip">${p.grade}</span>
+      </div>
+      <span class="card-title" onclick="openPaper(${p.id})">${p.title}</span>
+      <div class="card-meta">${p.meta}</div>
+      <div class="progress-line"><span>联合分析完整度</span><span>${p.done} / ${p.total} 道</span></div>
+      <div class="progress-track"><div class="progress-fill" style="width:${p.pct}%"></div></div>
+      <div class="progress-note">${p.pct}% 完整 · 标签 ${p.tags} · 判定点 ${p.criteria}</div>
+      ${analyzingHtml}${reviewHtml}
+      <div class="card-foot">
+        <span class="updated">更新于 ${p.updated}</span>
+        <span class="spacer"></span>
+        <button class="card-open" onclick="openPaper(${p.id})">查看试题 →</button>
+        <div class="more-wrap">
+          <button class="more-btn" onclick="toggleMore(event, ${p.id})">⋯</button>
+          <div class="more-menu" id="more-${p.id}">
+            <button onclick="toast('打开「编辑资料」抽屉（演示）')">编辑资料</button>
+            <button onclick="toast('仅对这份试卷重新打标签（演示）')">重新打标签</button>
+            <button class="danger" onclick="toast('删除单份试卷：先显示影响预览，再输入确认短语（演示）')">删除</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  // 模式 B 未进批量模式：整卡点击 = 查看试题
+  card.addEventListener('click', (e) => {
+    if (mode === 'b' && !batchOn && !e.target.closest('.more-wrap') && !e.target.closest('.card-title') && !e.target.closest('.card-open')) {
+      openPaper(p.id);
+    }
+  });
+  return card;
+}
+
+// ---------- 选择逻辑 ----------
+function toggleOne(id, on) {
+  on ? selected.add(id) : selected.delete(id);
+  syncUI();
+  const card = document.querySelector(`.paper-card[data-id="${id}"]`);
+  if (card) {
+    card.classList.toggle('selected', on);
+    card.querySelector('input[type=checkbox]').checked = on;
+  }
+}
+function toggleFolder(fi, on) {
+  FOLDERS[fi].papers.forEach(p => on ? selected.add(p.id) : selected.delete(p.id));
+  renderFolders(); syncUI();
+}
+function toggleAll(on) {
+  FOLDERS.forEach(f => f.papers.forEach(p => on ? selected.add(p.id) : selected.delete(p.id)));
+  renderFolders(); syncUI();
+}
+function clearSelection() {
+  selected.clear();
+  renderFolders(); syncUI();
+  if (mode === 'b') { /* 保持在批量模式，方便重新选 */ }
+}
+function syncUI() {
+  const n = selected.size;
+  // 吸顶栏
+  document.getElementById('selInfo').textContent = n === 0 ? '未选中试卷' : `已选 ${n} 份试卷`;
+  document.querySelectorAll('#batchBar [data-batch]').forEach(b => b.disabled = n === 0);
+  document.getElementById('batchBar').classList.toggle('active', n > 0);
+  // 主全选框状态
+  const all = FOLDERS.flatMap(f => f.papers);
+  const master = document.getElementById('masterCheck');
+  master.checked = n === all.length && n > 0;
+  master.indeterminate = n > 0 && n < all.length;
+  // 浮动条
+  document.getElementById('floatSelInfo').textContent = `已选 ${n} 份`;
+  document.getElementById('floatBar').classList.toggle('show', mode === 'b' && batchOn && n > 0);
+}
+
+// ---------- 模式切换 ----------
+function setMode(m) {
+  mode = m;
+  document.body.className = 'mode-' + m + (batchOn ? ' batch-on' : '');
+  document.getElementById('modeA').classList.toggle('active', m === 'a');
+  document.getElementById('modeB').classList.toggle('active', m === 'b');
+  document.getElementById('batchModeBtn').style.display = m === 'b' ? '' : 'none';
+  document.getElementById('batchBar').style.display = m === 'a' ? '' : 'none';
+  if (m === 'a') { batchOn = false; }
+  clearSelection();
+}
+function toggleBatchMode() {
+  batchOn = !batchOn;
+  document.body.classList.toggle('batch-on', batchOn);
+  document.getElementById('batchModeBtn').textContent = batchOn ? '退出批量管理' : '批量管理';
+  if (!batchOn) clearSelection(); else syncUI();
+}
+
+// ---------- 演示动作 ----------
+function batchAct(name) {
+  const n = selected.size;
+  if (n === 0) return;
+  if (name === '删除') {
+    toast(`将先展示 ${n} 份试卷的删除影响预览，确认并输入删除短语后才真正删除（演示）`);
+  } else {
+    toast(`已提交：对 ${n} 份试卷执行「${name}」（演示）`);
+  }
+}
+function openPaper(id) { toast('进入这份试卷的试题明细页（演示）'); }
+function toggleMore(e, id) {
+  e.stopPropagation();
+  document.querySelectorAll('.more-menu.open').forEach(m => { if (m.id !== 'more-' + id) m.classList.remove('open'); });
+  document.getElementById('more-' + id).classList.toggle('open');
+}
+document.addEventListener('click', () => document.querySelectorAll('.more-menu.open').forEach(m => m.classList.remove('open')));
+
+let toastTimer;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+renderFolders();
+syncUI();
+// 截图/演示用：#demo-select 预选中两份试卷，展示批量栏激活状态
+if (location.hash === '#demo-select') {
+  selected.add(1); selected.add(4);
+  renderFolders(); syncUI();
+}
+</script>
+</body>
+</html>

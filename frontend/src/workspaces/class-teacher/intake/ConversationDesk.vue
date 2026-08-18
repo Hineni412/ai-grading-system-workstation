@@ -2,13 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getActivePinia } from 'pinia'
 
-import { intakeApi, type HandlingMode, type HomeroomPreference, type IntakeConversation, type IntakeConversationSummary, type IntakeHandoffSummary } from '../api/intake'
+import { intakeApi, type HandlingMode, type HomeroomPreference, type IntakeConversation, type IntakeConversationSummary, type IntakeHandoffSummary, type IntakeTurn } from '../api/intake'
 import { workApi, type WorkNode } from '../api/work'
+import { autoAdoptStudentRecordHandoffs } from './auto-adopt'
 import { workspaceAITaskApi } from '../../shared/ai-tasks/api'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import AppButton from '@/components/design-system/AppButton.vue'
 import { TypewriterText } from '@/components/ui/typewriter'
 import LocalVoiceInputButton from './LocalVoiceInputButton.vue'
+import { ApiError } from '@/api/errors'
 
 type ClassTeacherDomain =
   | 'student_growth'
@@ -24,6 +26,7 @@ const emit = defineEmits<{
   openHandoff: [handoff: IntakeHandoffSummary]
   openStudentProfile: [handoff: IntakeHandoffSummary]
   openCalendar: []
+  openRestricted: [projectionId: string, projectionType: string | null]
   openDomain: [domain: ClassTeacherDomain]
 }>()
 
@@ -68,6 +71,7 @@ function taskMessage(state: string): string {
   if (state === 'failed_before_dispatch') return '这次任务尚未发出。原文已保留。'
   if (state === 'result_unknown') return '这次请求可能已经发出，但本机没有可靠结果。系统不会自动重发。'
   if (state === 'invalid_result') return '返回内容未通过校验，没有形成正式草稿。原文仍保留。'
+  if (state === 'truncated_result') return '模型输出达到长度上限被截断，没有形成正式草稿。原文仍保留，可点击下方「重新整理本轮」重试。'
   if (state === 'failed') return '这次整理没有完成，系统不会自动再次调用模型。'
   if (state === 'cancel_requested') return '已停止本地后续；外部请求不保证已经撤回。'
   if (state === 'cancelled_before_dispatch') return '任务在发出前已取消，原文仍保留。'
@@ -98,11 +102,59 @@ function handoffTitle(handoff: IntakeHandoffSummary): string {
 }
 
 function handoffHint(handoff: IntakeHandoffSummary): string {
-  if (handoff.adoption_state === 'adopted') return '教师已确认保存'
+  if (handoff.adoption_state === 'adopted') return isStudentRecord(handoff) ? '已自动并入档案，可一键撤回' : '教师已确认保存'
+  if (handoff.adoption_state === 'reverted') return '已撤回，档案回到本轮更新前'
   if (handoff.adoption_state === 'discarded') return '已丢弃'
   if (isStudentRecord(handoff) && handoff.subject_ref_count !== 1) return '请先在对话里确认是哪名学生'
-  if (isStudentRecord(handoff)) return '打开预览，不会自动保存'
+  if (isStudentRecord(handoff)) return '自动并入未完成时，打开学生档案手动核对'
   return '打开核对，不会自动保存'
+}
+
+let autoAdoptBusy = false
+
+function settleHandoffs(next: IntakeConversation): void {
+  maybeOpenSingleHandoff(next)
+  void autoAdoptStudentRecords(next)
+}
+
+async function autoAdoptStudentRecords(next: IntakeConversation): Promise<void> {
+  if (autoAdoptBusy) return
+  const candidates = next.handoffs.filter((item) =>
+    ['pending', 'opened'].includes(item.adoption_state) && isStudentRecord(item))
+  if (!candidates.length) return
+  autoAdoptBusy = true
+  try {
+    const outcome = await autoAdoptStudentRecordHandoffs(next)
+    if (outcome === 'none') return
+    conversation.value = await intakeApi.conversation(next.conversation_id)
+    if (outcome === 'adopted') {
+      notice.value = '学生档案更新已自动并入当前档案；如不合适可一键撤回。'
+    } else {
+      error.value = '学生档案自动并入未完成：学生资料可能已变化。请打开学生档案核对后手动应用。'
+    }
+  } catch {
+    error.value = '学生档案自动并入未完成，请打开学生档案核对后手动应用。'
+  } finally {
+    autoAdoptBusy = false
+  }
+}
+
+async function revertAdoption(handoff: IntakeHandoffSummary): Promise<void> {
+  if (busy.value || !conversation.value) return
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    await intakeApi.revertProfile(handoff.handoff_id)
+    conversation.value = await intakeApi.conversation(conversation.value.conversation_id)
+    notice.value = '已撤回，档案回到本轮更新前；本轮原始记录仍保留。'
+  } catch (value) {
+    error.value = value instanceof ApiError && value.status === 409
+      ? '档案已有更新轮次，无法一键撤回，请手动修正。'
+      : '撤回没有完成，档案保持当前内容，请稍后再试。'
+  } finally {
+    busy.value = false
+  }
 }
 
 function maybeOpenSingleHandoff(next: IntakeConversation): void {
@@ -141,7 +193,7 @@ function pollUntilSettled(id: string): void {
         pollTimer = null
         if (next.state === 'handoff_ready' || next.state === 'needs_input') {
           notice.value = next.state === 'needs_input' ? 'AI 需要补充少量信息；直接在下方继续回复即可。' : 'AI 草稿已返回，请核对后再决定是否正式保存。'
-          maybeOpenSingleHandoff(next)
+          settleHandoffs(next)
         }
         await loadRecent()
       }
@@ -200,10 +252,16 @@ async function send(): Promise<void> {
     message.value = ''
     if (conversation.value.state === 'failed') notice.value = 'AI 任务没有发出。原文已保留，可直接选择一种处理方式继续。'
     else if (conversation.value.state === 'ai_running') pollUntilSettled(conversation.value.conversation_id)
-    else maybeOpenSingleHandoff(conversation.value)
+    else settleHandoffs(conversation.value)
     await loadRecent()
   } catch { error.value = errorText() }
   finally { busy.value = false }
+}
+
+function onComposerKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.isComposing) return
+  event.preventDefault()
+  void send()
 }
 
 async function applyVoiceTranscript(text: string): Promise<void> {
@@ -257,7 +315,7 @@ async function submitCloudAudio(wav: Blob, operationId: string, fingerprint: str
     notice.value = next.state === 'needs_input'
       ? '语音已转写，AI 还需要补充少量信息；请先核对原话，再继续回复。'
       : '语音已转写并形成草稿，请先核对姓名、日期、数字和否定词，再决定是否保存。'
-    maybeOpenSingleHandoff(next)
+    settleHandoffs(next)
     await loadRecent()
     return true
   } catch (value) {
@@ -265,6 +323,19 @@ async function submitCloudAudio(wav: Blob, operationId: string, fingerprint: str
     error.value = cloudVoiceError(value)
     return false
   }
+}
+
+async function retryTurn(turn: IntakeTurn): Promise<void> {
+  if (!conversation.value || busy.value || taskInFlight.value || voiceBusy.value) return
+  busy.value = true; error.value = ''; notice.value = '正在按原文重新整理这一轮；系统不会自动重复发送。'
+  try {
+    conversation.value = await intakeApi.appendTurn(conversation.value, turn.teacher_message)
+    await trackTask(latestTurn.value?.task_id ?? null)
+    if (conversation.value.state === 'ai_running') pollUntilSettled(conversation.value.conversation_id)
+    else settleHandoffs(conversation.value)
+    await loadRecent()
+  } catch { error.value = errorText() }
+  finally { busy.value = false }
 }
 
 async function manual(mode: HandlingMode): Promise<void> {
@@ -293,6 +364,23 @@ async function loadNearWork(): Promise<void> {
 function dueLabel(value: string | null): string {
   if (!value) return '时间待定'
   return value.replace('T', ' ').slice(0, 16)
+}
+
+async function openNearWork(item: WorkNode): Promise<void> {
+  if (item.classification !== 'restricted_projection') {
+    emit('openCalendar')
+    return
+  }
+  try {
+    const detail = await workApi.detail(item.node_id)
+    if (detail.projection_id) {
+      emit('openRestricted', detail.projection_id, item.projection_type ?? null)
+      return
+    }
+  } catch {
+    // 详情暂时读不到时退回日历视图。
+  }
+  emit('openCalendar')
 }
 
 async function removeConversation(item: IntakeConversationSummary): Promise<void> {
@@ -349,7 +437,7 @@ onMounted(async () => {
     <div class="desk__body">
       <article class="conversation" aria-label="持续会话">
         <div v-if="!conversation?.turns.length" class="opening">
-          <p>直接输入今天需要处理的班务即可，不必先选分类。系统只负责整理和起草，正式记录与处置仍由你确认。</p>
+          <p>直接输入今天需要处理的班务即可，不必先选分类。学生档案更新会自动并入、可一键撤回；其余正式记录与处置仍由你确认。</p>
         </div>
         <ol v-else class="messages" aria-live="polite">
           <li v-for="turn in conversation.turns" :key="turn.turn_id" class="turn">
@@ -359,27 +447,33 @@ onMounted(async () => {
               <TypewriterText v-if="turn.assistant_message" tag="p" :text="turn.assistant_message" />
               <p v-else>{{ taskMessage(turn.task_state) }}</p>
               <ul v-if="turn.clarification_questions.length"><li v-for="question in turn.clarification_questions" :key="question">{{ question }}</li></ul>
+              <div v-if="turn === latestTurn && ['invalid_result','truncated_result'].includes(turn.task_state)" class="turn-retry">
+                <AppButton variant="secondary" :disabled="busy || taskInFlight || voiceBusy" @click="retryTurn(turn)">重新整理本轮</AppButton>
+              </div>
             </div>
           </li>
         </ol>
 
         <section v-if="visibleHandoffs.length" class="handoffs" aria-label="交接草稿">
-          <button v-for="handoff in visibleHandoffs" :key="handoff.handoff_id" type="button" :data-mode="handoff.handling_mode" :data-work-item="handoff.work_item_id" @click="openHandoffCard(handoff)">
-            <span>{{ domainLabels[handoff.domain] }}</span><strong>{{ handoffTitle(handoff) }}</strong><small>{{ handoffHint(handoff) }}</small>
-            <ul v-if="handoff.missing_fields.length" class="handoff-warnings"><li v-for="item in handoff.missing_fields" :key="item">{{ item }}</li></ul>
-          </button>
+          <div v-for="handoff in visibleHandoffs" :key="handoff.handoff_id" class="handoff-entry">
+            <button type="button" :data-mode="handoff.handling_mode" :data-work-item="handoff.work_item_id" @click="openHandoffCard(handoff)">
+              <span>{{ domainLabels[handoff.domain] }}</span><strong>{{ handoffTitle(handoff) }}</strong><small>{{ handoffHint(handoff) }}</small>
+              <ul v-if="handoff.missing_fields.length" class="handoff-warnings"><li v-for="item in handoff.missing_fields" :key="item">{{ item }}</li></ul>
+            </button>
+            <AppButton v-if="handoff.adoption_state === 'adopted' && isStudentRecord(handoff)" variant="ghost" class="handoff-revert" :disabled="busy" @click="revertAdoption(handoff)">撤回本轮更新</AppButton>
+          </div>
         </section>
 
-        <div v-if="latestTurn && ['failed_before_dispatch','failed','invalid_result','result_unknown'].includes(latestTurn.task_state)" class="manual-route">
+        <div v-if="latestTurn && ['failed_before_dispatch','failed','invalid_result','truncated_result','result_unknown'].includes(latestTurn.task_state)" class="manual-route">
           <p>无需再次调用 AI，也可以直接把原文带到一种处理页：</p>
           <AppButton v-for="mode in (['record','plan_calendar','sop'] as const)" :key="mode" variant="secondary" :disabled="busy" @click="manual(mode)">{{ modeLabels[mode] }}</AppButton>
         </div>
 
         <form class="composer" @submit.prevent="send">
           <label for="class-teacher-message">继续说明或补充</label>
-          <textarea id="class-teacher-message" ref="composer" v-model="message" rows="3" maxlength="4000" :disabled="taskInFlight" placeholder="例如：月底提醒我复查；已确认双方目前都安全"></textarea>
+          <textarea id="class-teacher-message" ref="composer" v-model="message" rows="3" maxlength="4000" :disabled="taskInFlight" placeholder="例如：月底提醒我复查；已确认双方目前都安全" @keydown="onComposerKeydown"></textarea>
           <div class="composer__actions">
-            <small>{{ taskInFlight ? '上一轮正在整理；结果返回后可继续补充。' : '发送后直接进入已配置模型任务，无需额外预览确认。' }}</small>
+            <small>{{ taskInFlight ? '上一轮正在整理；结果返回后可继续补充。' : '回车直接发送，Shift+回车换行；发送后进入已配置模型任务，无需额外预览确认。' }}</small>
             <div class="composer__buttons">
               <LocalVoiceInputButton :disabled="busy || taskInFlight" :context-key="conversation?.conversation_id" :submit-cloud-audio="submitCloudAudio" @transcript="applyVoiceTranscript" @info="voiceInfo" @error="voiceError" @busy-changed="voiceBusy = $event" />
               <AppButton variant="primary" type="submit" :disabled="busy || taskInFlight || voiceBusy || !message.trim() || message.length > maxMessageChars">{{ busy || taskInFlight ? '处理中…' : '发送并整理' }}</AppButton>
@@ -389,8 +483,8 @@ onMounted(async () => {
       </article>
 
       <aside class="side-notes" aria-label="本周事项与最近会话">
-        <section class="near-work"><header><span>本周应做的事</span></header><button v-for="item in nearWork" :key="item.node_id" type="button" @click="emit('openCalendar')"><strong>{{ item.title }}</strong><small>{{ dueLabel(item.due_date) }}</small></button><p v-if="!nearWork.length">本周还没有应做的事。</p></section>
-        <section><header><span>待核对</span><strong>{{ pendingHandoffs.length }}</strong></header><p>{{ pendingHandoffs.length ? '草稿只有在你确认后才会成为正式记录。' : '当前没有等待确认的交接草稿。' }}</p></section>
+        <section class="near-work"><header><span>本周应做的事</span></header><button v-for="item in nearWork" :key="item.node_id" type="button" @click="openNearWork(item)"><strong>{{ item.title }}</strong><small>{{ dueLabel(item.due_date) }}</small></button><p v-if="!nearWork.length">本周还没有应做的事。</p></section>
+        <section><header><span>待核对</span><strong>{{ pendingHandoffs.length }}</strong></header><p>{{ pendingHandoffs.length ? '学生档案草稿会自动并入档案、可一键撤回；其余草稿在你确认后才会成为正式记录。' : '当前没有等待确认的交接草稿。' }}</p></section>
         <section class="recent">
           <header>
             <span>最近会话</span>
@@ -432,4 +526,6 @@ onMounted(async () => {
 }
 .domain-band > button:hover { background: var(--accent); }
 .handoff-warnings{margin:2px 0 0;padding-left:16px;color:var(--destructive);font-size:12px;line-height:1.35}
+.handoff-entry{display:grid;gap:4px;justify-items:start}.handoff-revert{min-height:28px;padding:0 8px;font-size:12px}
+.turn-retry{margin-top:6px}
 </style>

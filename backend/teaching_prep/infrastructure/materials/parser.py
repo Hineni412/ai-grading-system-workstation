@@ -425,7 +425,9 @@ class MaterialParser:
                         for item in slide_names
                         if item[0] in requested
                     ]
-                if not slide_names:
+                if not slide_names and (requested is None or requested):
+                    # ``requested`` empty means every slide is already
+                    # reusable; there is simply nothing left to parse.
                     raise TeachingPrepValidationError(
                         "PPTX contains no readable slides"
                     )

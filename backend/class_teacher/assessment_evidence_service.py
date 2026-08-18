@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import csv
 from io import BytesIO, StringIO
 from contextlib import closing
@@ -27,6 +28,69 @@ _RESULT_STATES = {
 
 def _iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+_NAME_HEADER = re.compile(r"姓名|名字")
+_SUB_HEADER_LABELS = {
+    "得分",
+    "成绩",
+    "分数",
+    "等级",
+    "校次",
+    "班次",
+    "排名",
+    "校名",
+    "班名",
+    "得分率",
+    "满分",
+}
+
+
+def _split_header(
+    rows: list[list[str]],
+) -> tuple[list[str], list[list[str]]]:
+    """Locate the real header row and merge a two-level header if present.
+
+    School grade exports often start with a merged title row, followed by a
+    group header row (序号/姓名/数学/...) and a sub header row (得分/等级/...).
+    The first row containing 姓名/名字 is treated as the header; when the row
+    right below it is a sub header row, the two are joined into single labels
+    such as "数学-得分". Plain single-header sheets keep the old behavior.
+    """
+    header_index = 0
+    for index, row in enumerate(rows[:10]):
+        if any(_NAME_HEADER.search(cell) for cell in row):
+            header_index = index
+            break
+    header_row = rows[header_index]
+    data_start = header_index + 1
+    sub_row: list[str] | None = None
+    if data_start < len(rows):
+        candidate = rows[data_start]
+        if sum(1 for cell in candidate if cell in _SUB_HEADER_LABELS) >= 2:
+            sub_row = candidate
+            data_start += 1
+    width = max(len(row) for row in rows[header_index:])
+    sub_values = set(sub_row) if sub_row is not None else set()
+
+    def _cell(row: list[str], index: int) -> str:
+        return row[index] if index < len(row) else ""
+
+    headers: list[str] = []
+    group = ""
+    for index in range(width):
+        top = _cell(header_row, index)
+        # Some writers repeat the sub labels (得分/等级/...) inside the merged
+        # group row; treat those as blank anchors so the group name carries.
+        if top and top not in sub_values:
+            group = top
+        sub = _cell(sub_row, index) if sub_row is not None else ""
+        parts = [part for part in (group, sub) if part]
+        # Avoid "姓名-姓名" when a merged label repeats on both levels.
+        if len(parts) == 2 and parts[0] == parts[1]:
+            parts.pop()
+        headers.append("-".join(parts) or f"未命名列 {index + 1}")
+    return headers, rows[data_start:]
 
 
 class AssessmentEvidenceSource(Protocol):
@@ -105,6 +169,9 @@ class ConfirmedSpreadsheetAdapter:
                         status_code=422,
                     )
                 worksheet = workbook[selected_sheet]
+                # Some tools write a wrong declared dimension (e.g. A1:A1);
+                # rescan so trailing columns are not silently dropped.
+                worksheet.reset_dimensions()
                 rows = [
                     [
                         "" if cell is None else str(cell).strip()
@@ -138,11 +205,8 @@ class ConfirmedSpreadsheetAdapter:
                 "成绩工作表为空",
                 status_code=422,
             )
-        width = max(len(row) for row in rows)
-        headers = [
-            value or f"未命名列 {index + 1}"
-            for index, value in enumerate(rows[0] + [""] * (width - len(rows[0])))
-        ]
+        headers, data_rows = _split_header(rows)
+        width = len(headers)
         preview_rows = [
             {
                 headers[index]: (
@@ -150,7 +214,7 @@ class ConfirmedSpreadsheetAdapter:
                 )
                 for index in range(width)
             }
-            for row in rows[1:5001]
+            for row in data_rows[:5000]
         ]
         return {
             "file_name": file_name,
@@ -159,7 +223,7 @@ class ConfirmedSpreadsheetAdapter:
             "headers": headers,
             "rows": preview_rows,
             "preview_row_count": len(preview_rows),
-            "truncated": len(rows) > 5001,
+            "truncated": len(data_rows) > 5000,
             "raw_file_retained": False,
             "temporary_file_created": False,
         }
@@ -717,7 +781,8 @@ class AssessmentEvidenceService:
             ),
         )
         rank = self._optional_integer(result.get("rank"))
-        if rank is not None:
+        class_rank = self._optional_integer(result.get("class_rank"))
+        if rank is not None or class_rank is not None:
             rank_context_id = uuid4().hex
             rank_object_id = f"rank-context-{rank_context_id}"
             self.repository.put(
@@ -727,6 +792,7 @@ class AssessmentEvidenceService:
                 object_type="rank_context",
                 payload={
                     "rank": rank,
+                    "class_rank": class_rank,
                     "rank_scope": assessment_payload["rank_scope"],
                     "participant_count": assessment_payload[
                         "participant_count"

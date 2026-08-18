@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
@@ -43,6 +44,7 @@ from backend.teaching_prep.application.reference_ppt_collections import (
 from backend.teaching_prep.application.lesson_drafts import (
     build_local_template,
     calculate_capacity,
+    default_review_findings,
     draft_preflight,
     normalize_model_draft_payload,
     validate_draft_payload,
@@ -165,6 +167,9 @@ _MATERIAL_SUFFIXES = {
     ".jpeg": "image",
     ".webp": "image",
 }
+_PPTX_PRERENDER_PASSES = 2
+_PPTX_PRERENDER_PAGE_TIMEOUT_SECONDS = 45.0
+_PPTX_PRERENDER_POLL_SECONDS = 0.2
 _VOLUMES = {"first", "second", "whole_year"}
 _NODE_TYPES = {"chapter", "section", "lesson"}
 _SOURCE_KINDS = {"teacher", "catalog"}
@@ -319,6 +324,8 @@ class TeachingPrepService:
         self._pptx_preview_worker_lock = threading.Lock()
         self._pptx_preview_wanted: str | None = None
         self._pptx_preview_worker: threading.Thread | None = None
+        self._pptx_prerender_lock = threading.Lock()
+        self._pptx_prerender_threads: dict[str, threading.Thread] = {}
         self.question_evidence_reader = question_evidence_reader
         self.assessment_evidence_reader = assessment_evidence_reader
         self.lesson_model_adapter = lesson_model_adapter
@@ -803,6 +810,40 @@ class TeachingPrepService:
                 LOGGER.exception("adaptation trace could not be recorded")
 
         return emit
+
+    def _validation_failure_trace_event(
+        self,
+        *,
+        lesson_node_id: str,
+        operation_id: str,
+        reason: str,
+    ) -> dict[str, object]:
+        last_event: Mapping[str, object] = {}
+        try:
+            trace = self.adaptation_traces.list_for_operation(
+                lesson_node_id=lesson_node_id,
+                operation_id=operation_id,
+            )
+            events = trace.get("events")
+            if isinstance(events, list) and events:
+                candidate = events[-1]
+                if isinstance(candidate, Mapping):
+                    last_event = candidate
+        except Exception:
+            LOGGER.exception("adaptation trace could not be read")
+        round_number = last_event.get("round")
+        used = last_event.get("model_calls_used")
+        maximum = last_event.get("model_calls_max")
+        return {
+            "round": round_number if isinstance(round_number, int) else 1,
+            "phase": "failed",
+            "summary": f"本次没有完成：{reason}",
+            "thinking_excerpt": None,
+            "tool": None,
+            "result": None,
+            "model_calls_used": used if isinstance(used, int) else 0,
+            "model_calls_max": maximum if isinstance(maximum, int) else 6,
+        }
 
     def _material_page_images(
         self,
@@ -2826,6 +2867,13 @@ class TeachingPrepService:
                 unit_count=total_units,
             )
             self.semesters.mark_version_parsed(clean_id)
+            if version.material_type == "pptx":
+                try:
+                    self._schedule_pptx_prerender(clean_id)
+                except Exception:
+                    LOGGER.exception(
+                        "PPT prerender scheduling failed for %s", clean_id
+                    )
             return units
         except Exception:
             self.semesters.mark_version_parse_failed(clean_id)
@@ -2975,10 +3023,123 @@ class TeachingPrepService:
         return self.material_units.get_unit(clean_id)
 
     def drain_pptx_preview_renders(self, timeout: float = 60) -> None:
-        with self._pptx_preview_worker_lock:
-            worker = self._pptx_preview_worker
-        if worker is not None:
-            worker.join(timeout=timeout)
+        deadline = time.monotonic() + max(float(timeout), 0.0)
+        while True:
+            with self._pptx_preview_worker_lock:
+                worker = self._pptx_preview_worker
+            with self._pptx_prerender_lock:
+                batches = tuple(self._pptx_prerender_threads.values())
+            threads = tuple(
+                thread
+                for thread in (worker, *batches)
+                if thread is not None and thread.is_alive()
+            )
+            if not threads:
+                return
+            for thread in threads:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                thread.join(timeout=remaining)
+            if time.monotonic() >= deadline:
+                return
+
+    def _schedule_pptx_prerender(self, version_id: str) -> None:
+        if self._pptx_preview_adapter() is None:
+            return
+        with self._pptx_prerender_lock:
+            if version_id in self._pptx_prerender_threads:
+                return
+            thread = threading.Thread(
+                target=self._pptx_prerender_loop,
+                args=(version_id,),
+                name=f"pptx-prerender-{version_id[:12]}",
+                daemon=True,
+            )
+            self._pptx_prerender_threads[version_id] = thread
+            thread.start()
+
+    def _pptx_prerender_loop(self, version_id: str) -> None:
+        try:
+            for _ in range(_PPTX_PRERENDER_PASSES):
+                units = self.material_units.list_units(version_id)
+                candidates = [
+                    unit
+                    for unit in sorted(
+                        units, key=lambda item: item.unit_index
+                    )
+                    if unit.unit_kind == "ppt_slide"
+                    and self._is_pptx_prerender_candidate(
+                        unit.object_summary
+                    )
+                ]
+                if not candidates:
+                    return
+                for unit in candidates:
+                    self._pptx_prerender_unit(unit.id)
+        except Exception:
+            LOGGER.exception("PPT prerender batch failed for %s", version_id)
+        finally:
+            with self._pptx_prerender_lock:
+                self._pptx_prerender_threads.pop(version_id, None)
+
+    @staticmethod
+    def _is_pptx_prerender_candidate(summary: Mapping[str, object]) -> bool:
+        if summary.get("preview_kind") == "rendered":
+            return False
+        status = str(summary.get("preview_render_status") or "")
+        return status in {"pending", "queued", "running"}
+
+    def _pptx_prerender_unit(self, unit_id: str) -> None:
+        deadline = time.monotonic() + _PPTX_PRERENDER_PAGE_TIMEOUT_SECONDS
+        try:
+            unit = self.material_units.get_unit(unit_id)
+            if not self._is_pptx_prerender_candidate(unit.object_summary):
+                return
+            record = self.material_units.preview_record(unit_id)
+            self.material_units.mark_preview_render_progress(
+                unit_id,
+                source_version_sha256=record.source_version_sha256,
+                status="queued",
+            )
+        except Exception:
+            return
+        # On-demand requests win the render slot: never overwrite another
+        # page that is already waiting, and give up on own page when an
+        # on-demand request replaces it (the next pass retries it later).
+        while True:
+            with self._pptx_preview_worker_lock:
+                wanted = self._pptx_preview_wanted
+                if wanted is None or wanted == unit_id:
+                    self._pptx_preview_wanted = unit_id
+                    worker = self._pptx_preview_worker
+                    if worker is None or not worker.is_alive():
+                        self._pptx_preview_worker = threading.Thread(
+                            target=self._pptx_preview_worker_loop,
+                            name="pptx-preview-render",
+                            daemon=True,
+                        )
+                        self._pptx_preview_worker.start()
+                    break
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(_PPTX_PRERENDER_POLL_SECONDS)
+        while time.monotonic() < deadline:
+            with self._pptx_preview_worker_lock:
+                wanted = self._pptx_preview_wanted
+            if wanted is not None and wanted != unit_id:
+                return
+            try:
+                current = self.material_units.get_unit(unit_id)
+            except Exception:
+                return
+            summary = current.object_summary
+            if summary.get("preview_kind") == "rendered":
+                return
+            status = str(summary.get("preview_render_status") or "")
+            if status in {"completed", "failed"}:
+                return
+            time.sleep(_PPTX_PRERENDER_POLL_SECONDS)
 
     def close_preview_runtime(self) -> None:
         for adapter in (self.preview_wps_adapter, self.wps_adapter):
@@ -3897,7 +4058,10 @@ class TeachingPrepService:
     ) -> tuple[LessonDraftVersion, bool]:
         current = self.lesson_drafts.get(_clean_entity_id(draft_id))
         pack = self.resource_packs.get(current.resource_pack_id)
-        clean_payload = validate_draft_payload(payload, pack)
+        revision_input = dict(payload)
+        if "review_findings" not in revision_input:
+            revision_input["review_findings"] = default_review_findings(pack)
+        clean_payload = validate_draft_payload(revision_input, pack)
         capacity = calculate_capacity(pack, clean_payload)
         revision_hash = _stable_hash(
             {
@@ -3993,6 +4157,10 @@ class TeachingPrepService:
                     pack.payload.get("preparation_preferences")
                 )
             )
+            observer = self._adaptation_observer(
+                lesson_node_id=pack.lesson_node_id,
+                operation_id=clean_token,
+            )
             model_kwargs = {
                 "operation_id": clean_token,
                 "resource_pack": model_payload,
@@ -4004,22 +4172,29 @@ class TeachingPrepService:
                         )
                     )
                 ),
-                "observer": self._adaptation_observer(
-                    lesson_node_id=pack.lesson_node_id,
-                    operation_id=clean_token,
-                ),
+                "observer": observer,
             }
             if task_model_gateway is not None:
                 model_kwargs["task_model_gateway"] = task_model_gateway
-            raw = normalize_model_draft_payload(
-                adapter.generate(**model_kwargs),
-                pack,
-            )
-            proposal_payload = validate_draft_payload(raw, pack)
-            if not proposal_payload.get("slide_adaptations"):
-                raise TeachingPrepValidationError(
-                    "lesson model must classify every frozen reference slide"
+            try:
+                raw = normalize_model_draft_payload(
+                    adapter.generate(**model_kwargs),
+                    pack,
                 )
+                proposal_payload = validate_draft_payload(raw, pack)
+                if not proposal_payload.get("slide_adaptations"):
+                    raise TeachingPrepValidationError(
+                        "lesson model must classify every frozen reference slide"
+                    )
+            except TeachingPrepValidationError as exc:
+                observer(
+                    self._validation_failure_trace_event(
+                        lesson_node_id=pack.lesson_node_id,
+                        operation_id=clean_token,
+                        reason=str(exc),
+                    )
+                )
+                raise
         payload, source_ppt_state = build_slide_plan_payload(
             pack,
             draft,

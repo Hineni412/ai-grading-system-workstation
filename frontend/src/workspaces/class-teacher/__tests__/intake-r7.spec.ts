@@ -1,6 +1,7 @@
 import { createApp, nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiError } from '@/api/errors'
 import { decodeHandoffDraft, intakeApi, type IntakeConversation, type IntakeConversationSummary } from '../api/intake'
 import { workApi, type WorkNode } from '../api/work'
 import ConversationDesk from '../intake/ConversationDesk.vue'
@@ -460,6 +461,20 @@ describe('B-UI-R7 conversation desk', () => {
       }],
     }
     vi.spyOn(intakeApi, 'appendTurn').mockResolvedValue(ready)
+    vi.spyOn(intakeApi, 'handoff').mockResolvedValue({
+      contract_version: 'teacher_workspace_handoff.v1', handoff_id: 'handoff-profile-01', work_item_id: 'work-profile-01',
+      conversation_id: 'conversation-1234', turn_id: 'turn-profile-01', draft_id: 'draft-profile-01', draft_revision: 1,
+      domain: 'student_support', handling_mode: 'record', intent: 'append',
+      destination_key: 'class_teacher.student.record', adoption_id: 'adoption-profile-01', adoption_state: 'opened',
+      content: { summary: '合成学生家庭情况' },
+      subject_refs: [{ kind: 'student', id: 'subject-01', revision: '3' }],
+      missing_fields: [], return_context: { destination_key: 'class_teacher.home', focus_ref: 'work-profile-01' },
+    })
+    vi.spyOn(intakeApi, 'adopt').mockRejectedValue(new ApiError({
+      kind: 'conflict', status: 409, code: 'class_teacher_target_conflict',
+      message: '学生资料已变化', details: {}, requestId: 'synthetic-request', retryable: false,
+    }))
+    vi.spyOn(intakeApi, 'conversation').mockResolvedValue(ready)
     const textarea = host.querySelector('textarea')!
     textarea.value = '合成学生家庭情况'
     textarea.dispatchEvent(new Event('input', { bubbles: true }))
@@ -468,7 +483,7 @@ describe('B-UI-R7 conversation desk', () => {
 
     expect(opened).toHaveLength(0)
     expect(host.textContent).toContain('学生个人档案')
-    expect(host.textContent).toContain('打开预览，不会自动保存')
+    expect(host.textContent).toContain('自动并入未完成时，打开学生档案手动核对')
     host.querySelector<HTMLElement>('[data-work-item="work-profile-01"]')!.click()
     expect(profiles).toHaveLength(1)
   })

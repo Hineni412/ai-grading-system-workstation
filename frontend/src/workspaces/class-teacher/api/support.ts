@@ -95,6 +95,12 @@ export interface AssessmentEvidence {
   score: number | null
   result_state: string
   assessment_nature: string | null
+  rank_context: {
+    rank: number | null
+    class_rank: number | null
+    rank_scope: string | null
+    participant_count: number | null
+  } | null
 }
 
 export interface AttentionCard {
@@ -173,6 +179,30 @@ function headers(): Record<string, string> {
 
 function operationId(): string {
   return globalThis.crypto.randomUUID()
+}
+
+export const followUpApi = {
+  postpone(projectionId: string, dueDate: string) {
+    return apiClient.request(
+      `/api/class-teacher/support/follow-ups/${projectionId}/postpone`,
+      {
+        method: 'POST',
+        headers: headers(),
+        body: { due_date: dueDate },
+        decode: record,
+      },
+    )
+  },
+  dismiss(projectionId: string) {
+    return apiClient.request(
+      `/api/class-teacher/support/follow-ups/${projectionId}/dismiss`,
+      {
+        method: 'POST',
+        headers: headers(),
+        decode: record,
+      },
+    )
+  },
 }
 
 export const supportApi = {

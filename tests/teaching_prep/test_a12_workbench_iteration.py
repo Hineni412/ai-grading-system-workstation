@@ -14,7 +14,10 @@ from backend.teaching_prep.application.preferences import (
 from backend.teaching_prep.application.workbench_iteration import (
     normalize_exercise_suggestion_payload,
 )
-from backend.teaching_prep.domain.errors import TeachingPrepConflictError
+from backend.teaching_prep.domain.errors import (
+    TeachingPrepConflictError,
+    TeachingPrepValidationError,
+)
 from backend.teaching_prep.infrastructure.fakes import (
     FakeExerciseSuggestionModelAdapter,
     FakeWpsAdapter,
@@ -289,6 +292,30 @@ _PAGE_LINK_ID = "a" * 32
 _PAGE_SOURCE_REF = f"material:{_PAGE_LINK_ID}:unit:1"
 
 
+def _findings_json(
+    citation_ref: str,
+    *,
+    slide_refs: tuple[str, ...] = (),
+    finding: str = "课件整体结构合理",
+) -> str:
+    import json
+
+    return json.dumps(
+        {
+            "review_findings": [
+                {
+                    "slide_refs": list(slide_refs),
+                    "finding": finding,
+                    "category": "other",
+                    "suggested_action": "细看后再定",
+                    "citations": [citation_ref],
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
 def test_lesson_model_sends_compact_catalog_without_preattached_images() -> None:
     class Gateway:
         def __init__(self) -> None:
@@ -296,6 +323,12 @@ def test_lesson_model_sends_compact_catalog_without_preattached_images() -> None
 
         def chat_completions(self, **kwargs: object) -> dict[str, object]:
             self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return {
+                    "choices": [
+                        {"message": {"content": _findings_json(_PAGE_SOURCE_REF)}}
+                    ]
+                }
             return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
 
     gateway = Gateway()
@@ -327,15 +360,188 @@ def test_lesson_model_sends_compact_catalog_without_preattached_images() -> None
     )
     assert payload["slide_adaptations"] == []
     first = gateway.calls[0]
-    assert first["timeout_override_seconds"] == 60
-    assert first["request"].max_physical_calls == 6  # type: ignore[union-attr]
+    assert first["timeout_override_seconds"] == 300
+    assert first["request"].max_physical_calls == 12  # type: ignore[union-attr]
     user_content = first["kwargs"]["messages"][1]["content"]  # type: ignore[index]
     assert isinstance(user_content, str)
     catalog = __import__("json").loads(user_content)
     assert "reference_images" not in catalog
     assert catalog["page_catalog"][0]["source_ref"] == _PAGE_SOURCE_REF
-    assert "tools" in first["kwargs"]
-    assert "response_format" not in first["kwargs"]
+    assert "tools" not in first["kwargs"]
+    assert first["kwargs"]["response_format"] == {"type": "json_object"}  # type: ignore[index]
+    second = gateway.calls[1]
+    assert "tools" in second["kwargs"]  # type: ignore[index]
+    assert "response_format" not in second["kwargs"]  # type: ignore[index]
+
+
+def _tiny_png(width: int = 1600, height: int = 900) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    image = Image.effect_noise((width, height), 100).convert("RGB")
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_lesson_model_first_round_attaches_all_slide_thumbnails() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return {
+                    "choices": [
+                        {"message": {"content": _findings_json(_PAGE_SOURCE_REF)}}
+                    ]
+                }
+            return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+
+    def page_loader(source_ref: str) -> dict[str, object]:
+        unit_index = int(source_ref.rsplit(":unit:", 1)[1])
+        return {
+            "ok": True,
+            "source_ref": source_ref,
+            "purpose": "reference_ppt",
+            "unit_index": unit_index,
+            "unit_id": f"{unit_index:0>32}",
+            "label": f"主课件 第 {unit_index} 页",
+            "mime_type": "image/png",
+            "content": _tiny_png(),
+            "preview_url": None,
+        }
+
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    adapter.generate(
+        operation_id="a12-first-round-thumbnails",
+        resource_pack={
+            "materials": [
+                {
+                    "link_id": _PAGE_LINK_ID,
+                    "purpose": "reference_ppt",
+                    "material_name": "合成课件",
+                    "material_version_id": "v1",
+                    "units": [
+                        {
+                            "unit_id": f"{index:0>32}",
+                            "unit_index": index,
+                            "title": f"合成页 {index}",
+                        }
+                        for index in range(1, 4)
+                    ],
+                },
+                {
+                    "link_id": "c" * 32,
+                    "purpose": "textbook",
+                    "material_name": "合成教材",
+                    "units": [
+                        {"unit_id": "d" * 32, "unit_index": 10, "title": "教材页"}
+                    ],
+                },
+            ],
+        },
+        page_loader=page_loader,
+    )
+    user_content = gateway.calls[0]["kwargs"]["messages"][1]["content"]  # type: ignore[index]
+    assert isinstance(user_content, list)
+    catalog = __import__("json").loads(user_content[0]["text"])
+    assert catalog["first_round_slide_images"]["attached"] == 3
+    image_parts = [
+        part for part in user_content if part.get("type") == "image_url"
+    ]
+    assert len(image_parts) == 3
+    labels = [
+        part["text"]
+        for part in user_content
+        if part.get("type") == "text" and "unit_index=" in part["text"]
+    ]
+    assert all(label.startswith("主课件原页；") for label in labels)
+    assert [label.rsplit("unit_index=", 1)[1] for label in labels] == [
+        "1",
+        "2",
+        "3",
+    ]
+    import base64
+    import io
+
+    from PIL import Image
+
+    for part in image_parts:
+        url = part["image_url"]["url"]
+        assert url.startswith("data:image/jpeg;base64,")
+        data = base64.b64decode(url.split(",", 1)[1])
+        with Image.open(io.BytesIO(data)) as image:
+            assert max(image.size) <= 480
+
+
+def test_lesson_model_first_round_thumbnails_capped_at_forty_slides() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return {
+                    "choices": [
+                        {"message": {"content": _findings_json(_PAGE_SOURCE_REF)}}
+                    ]
+                }
+            return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+
+    def page_loader(source_ref: str) -> dict[str, object]:
+        unit_index = int(source_ref.rsplit(":unit:", 1)[1])
+        return {
+            "ok": True,
+            "source_ref": source_ref,
+            "purpose": "reference_ppt",
+            "unit_index": unit_index,
+            "unit_id": f"{unit_index:0>32}",
+            "label": f"主课件 第 {unit_index} 页",
+            "mime_type": "image/png",
+            "content": _tiny_png(120, 90),
+            "preview_url": None,
+        }
+
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    adapter.generate(
+        operation_id="a12-first-round-thumbnail-cap",
+        resource_pack={
+            "materials": [
+                {
+                    "link_id": _PAGE_LINK_ID,
+                    "purpose": "reference_ppt",
+                    "material_name": "合成课件",
+                    "units": [
+                        {"unit_id": f"{index:0>32}", "unit_index": index}
+                        for index in range(1, 46)
+                    ],
+                }
+            ],
+        },
+        page_loader=page_loader,
+    )
+    user_content = gateway.calls[0]["kwargs"]["messages"][1]["content"]  # type: ignore[index]
+    assert isinstance(user_content, list)
+    catalog = __import__("json").loads(user_content[0]["text"])
+    assert catalog["first_round_slide_images"]["attached"] == 40
+    image_parts = [
+        part for part in user_content if part.get("type") == "image_url"
+    ]
+    assert len(image_parts) == 40
 
 
 def test_lesson_model_fetches_pages_then_returns_json() -> None:
@@ -346,6 +552,16 @@ def test_lesson_model_fetches_pages_then_returns_json() -> None:
         def chat_completions(self, **kwargs: object) -> dict[str, object]:
             self.calls.append(kwargs)
             if len(self.calls) == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": _findings_json("lesson:a12-lesson-1")
+                            }
+                        }
+                    ]
+                }
+            if len(self.calls) == 2:
                 return {
                     "choices": [
                         {
@@ -396,25 +612,45 @@ def test_lesson_model_fetches_pages_then_returns_json() -> None:
     )
     payload = adapter.generate(
         operation_id="a12-lesson-tool-loop",
-        resource_pack={"materials": []},
+        resource_pack={
+            "lesson": {"lesson_node_id": "a12-lesson-1", "title": "合成课"},
+            "materials": [],
+        },
         page_loader=page_loader,
         observer=events.append,
     )
     assert payload["slide_adaptations"] == []
     assert loaded == [_PAGE_SOURCE_REF]
-    assert len(gateway.calls) == 2
+    assert len(gateway.calls) == 3
+    first_kwargs = gateway.calls[0]["kwargs"]
+    assert "tools" not in first_kwargs
+    assert first_kwargs["response_format"] == {"type": "json_object"}
     second_kwargs = gateway.calls[1]["kwargs"]
     assert "tools" in second_kwargs
     assert "response_format" not in second_kwargs
-    second_messages = second_kwargs["messages"]
-    assert any(message.get("role") == "tool" for message in second_messages)
-    image_message = second_messages[-1]
+    third_kwargs = gateway.calls[2]["kwargs"]
+    assert "tools" in third_kwargs
+    third_messages = third_kwargs["messages"]
+    assert any(message.get("role") == "tool" for message in third_messages)
+    image_message = third_messages[-1]
     assert image_message["role"] == "user"
     assert any(
         isinstance(part, dict) and part.get("type") == "image_url"
         for part in image_message["content"]
     )
     assert any(item.get("phase") == "thinking" for item in events)
+    findings_events = [
+        item for item in events if item.get("phase") == "findings_ready"
+    ]
+    assert len(findings_events) == 1
+    assert findings_events[0]["round"] == 1
+    assert findings_events[0]["findings"] == [
+        {
+            "finding": "课件整体结构合理",
+            "category": "other",
+            "pages": [],
+        }
+    ]
     assert any(item.get("phase") == "tool_call" for item in events)
     assert any(item.get("phase") == "tool_result" for item in events)
     assert any("取页 · 教材 第 1 页" == item.get("summary") for item in events)
@@ -430,6 +666,16 @@ def test_lesson_model_rejects_invalid_and_excess_page_tools_without_loader() -> 
         def chat_completions(self, **kwargs: object) -> dict[str, object]:
             self.calls.append(kwargs)
             if len(self.calls) == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": _findings_json("lesson:a12-lesson-1")
+                            }
+                        }
+                    ]
+                }
+            if len(self.calls) == 2:
                 calls = [
                     {
                         "id": f"call-{index}",
@@ -453,18 +699,360 @@ def test_lesson_model_rejects_invalid_and_excess_page_tools_without_loader() -> 
     )
     adapter.generate(
         operation_id="a12-lesson-reject-tools",
-        resource_pack={"materials": []},
+        resource_pack={
+            "lesson": {"lesson_node_id": "a12-lesson-1", "title": "合成课"},
+            "materials": [],
+        },
         page_loader=lambda source_ref: loaded.append(source_ref) or {},
     )
     assert loaded == []
     tool_messages = [
         message
-        for message in gateway.calls[1]["kwargs"]["messages"]  # type: ignore[index]
+        for message in gateway.calls[2]["kwargs"]["messages"]  # type: ignore[index]
         if message.get("role") == "tool"
     ]
     assert len(tool_messages) == 5
     assert "not an allowed page_catalog value" in tool_messages[0]["content"]
     assert "already used 4 pages" in tool_messages[4]["content"]
+
+
+def test_lesson_model_retries_recoverable_error_once_per_round() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise TimeoutError("read timed out")
+            if len(self.calls) == 2:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": _findings_json("lesson:a12-lesson-1")
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+
+    events: list[dict[str, object]] = []
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    payload = adapter.generate(
+        operation_id="a12-lesson-retry-once",
+        resource_pack={
+            "lesson": {"lesson_node_id": "a12-lesson-1", "title": "合成课"},
+            "materials": [],
+        },
+        observer=events.append,
+    )
+    assert payload["slide_adaptations"] == []
+    assert len(gateway.calls) == 3
+    assert all(
+        call["timeout_override_seconds"] == 300 for call in gateway.calls
+    )
+    retry_events = [item for item in events if item.get("phase") == "round_retry"]
+    assert len(retry_events) == 1
+    assert retry_events[0]["round"] == 1
+    assert "timeout" in str(retry_events[0]["summary"])
+    assert events[-1]["phase"] == "final_accepted"
+
+
+def test_lesson_model_raises_when_retry_also_times_out() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            raise TimeoutError("read timed out")
+
+    events: list[dict[str, object]] = []
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    with pytest.raises(TimeoutError):
+        adapter.generate(
+            operation_id="a12-lesson-retry-exhausted",
+            resource_pack={"materials": []},
+            observer=events.append,
+        )
+    assert len(gateway.calls) == 2
+    retry_events = [item for item in events if item.get("phase") == "round_retry"]
+    assert len(retry_events) == 1
+
+
+def test_lesson_model_does_not_retry_client_errors() -> None:
+    class _ClientError(Exception):
+        status_code = 401
+
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            raise _ClientError("unauthorized")
+
+    events: list[dict[str, object]] = []
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    with pytest.raises(_ClientError):
+        adapter.generate(
+            operation_id="a12-lesson-no-retry-4xx",
+            resource_pack={"materials": []},
+            observer=events.append,
+        )
+    assert len(gateway.calls) == 1
+    assert not any(item.get("phase") == "round_retry" for item in events)
+
+
+def test_lesson_model_reprompts_invalid_findings_within_round_one() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+            if len(self.calls) == 2:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": _findings_json("lesson:a12-lesson-1")
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+
+    events: list[dict[str, object]] = []
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    payload = adapter.generate(
+        operation_id="a12-lesson-findings-reprompt",
+        resource_pack={
+            "lesson": {"lesson_node_id": "a12-lesson-1", "title": "合成课"},
+            "materials": [],
+        },
+        observer=events.append,
+    )
+    assert payload["slide_adaptations"] == []
+    assert len(gateway.calls) == 3
+    for call in gateway.calls[:2]:
+        assert "tools" not in call["kwargs"]
+        assert call["kwargs"]["response_format"] == {"type": "json_object"}  # type: ignore[index]
+    reprompts = [
+        message
+        for message in gateway.calls[1]["kwargs"]["messages"]  # type: ignore[index]
+        if message.get("role") == "user"
+        and "第 1 轮只接受初步审课发现" in str(message.get("content"))
+    ]
+    assert len(reprompts) == 1
+    assert "tools" in gateway.calls[2]["kwargs"]  # type: ignore[index]
+    findings_events = [
+        item for item in events if item.get("phase") == "findings_ready"
+    ]
+    assert len(findings_events) == 1
+    assert findings_events[0]["round"] == 1
+    assert events[-1]["phase"] == "final_accepted"
+
+
+def test_lesson_model_fails_when_findings_stay_invalid() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+
+    events: list[dict[str, object]] = []
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    with pytest.raises(TeachingPrepValidationError):
+        adapter.generate(
+            operation_id="a12-lesson-findings-invalid",
+            resource_pack={
+                "lesson": {"lesson_node_id": "a12-lesson-1", "title": "合成课"},
+                "materials": [],
+            },
+            observer=events.append,
+        )
+    assert len(gateway.calls) == 2
+    assert not any(item.get("phase") == "findings_ready" for item in events)
+    assert events[-1]["phase"] == "failed"
+    assert events[-1]["round"] == 1
+
+
+def test_lesson_model_findings_ready_maps_pages_and_truncates() -> None:
+    long_finding = "练习量偏大" * 60
+    findings_payload = __import__("json").dumps(
+        {
+            "review_findings": [
+                {
+                    "slide_refs": [
+                        f"material:{_PAGE_LINK_ID}:unit:2",
+                        f"material:{_PAGE_LINK_ID}:unit:5",
+                    ],
+                    "finding": long_finding,
+                    "category": "practice_load",
+                    "suggested_action": "细看后删减",
+                    "citations": [f"material:{_PAGE_LINK_ID}:unit:2"],
+                },
+                {
+                    "slide_refs": [],
+                    "finding": "整体顺序合理",
+                    "category": "sequence",
+                    "suggested_action": "保持",
+                    "citations": [_PAGE_SOURCE_REF],
+                },
+            ]
+            + [
+                {
+                    "slide_refs": [],
+                    "finding": f"补充发现 {index}",
+                    "category": "other",
+                    "suggested_action": "保持",
+                    "citations": [_PAGE_SOURCE_REF],
+                }
+                for index in range(25)
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return {"choices": [{"message": {"content": findings_payload}}]}
+            return {"choices": [{"message": {"content": _EMPTY_LESSON_JSON}}]}
+
+    events: list[dict[str, object]] = []
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    adapter.generate(
+        operation_id="a12-lesson-findings-trace",
+        resource_pack={
+            "materials": [
+                {
+                    "link_id": _PAGE_LINK_ID,
+                    "purpose": "reference_ppt",
+                    "material_name": "合成课件",
+                    "units": [
+                        {"unit_id": f"{index:0>32}", "unit_index": index}
+                        for index in range(1, 6)
+                    ],
+                }
+            ],
+        },
+        observer=events.append,
+    )
+    findings_events = [
+        item for item in events if item.get("phase") == "findings_ready"
+    ]
+    assert len(findings_events) == 1
+    event = findings_events[0]
+    assert event["round"] == 1
+    assert "27 条" in str(event["summary"])
+    findings = event["findings"]
+    assert len(findings) == 20
+    assert findings[0]["pages"] == [2, 5]
+    assert findings[0]["category"] == "practice_load"
+    assert len(findings[0]["finding"]) == 240
+    assert str(findings[0]["finding"]).endswith("…")
+    assert findings[1]["pages"] == []
+
+
+def test_lesson_model_final_review_findings_replace_preliminary() -> None:
+    final_json = __import__("json").dumps(
+        {
+            "review_findings": [
+                {
+                    "slide_refs": [],
+                    "finding": "细看后修正：练习量其实合适",
+                    "category": "practice_load",
+                    "suggested_action": "保持",
+                    "citations": ["lesson:a12-lesson-1"],
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": _findings_json(
+                                    "lesson:a12-lesson-1",
+                                    finding="初步判断：练习量偏大",
+                                )
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": final_json}}]}
+
+    events: list[dict[str, object]] = []
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+    payload = adapter.generate(
+        operation_id="a12-lesson-findings-revised",
+        resource_pack={
+            "lesson": {"lesson_node_id": "a12-lesson-1", "title": "合成课"},
+            "materials": [],
+        },
+        observer=events.append,
+    )
+    assert payload["review_findings"][0]["finding"] == "细看后修正：练习量其实合适"
+    findings_events = [
+        item for item in events if item.get("phase") == "findings_ready"
+    ]
+    assert findings_events[0]["findings"][0]["finding"] == "初步判断：练习量偏大"
+    assert events[-1]["phase"] == "final_accepted"
 
 
 def test_load_frozen_page_for_model_rejects_path_like_refs(
@@ -546,6 +1134,33 @@ def test_adaptation_trace_http_returns_teacher_safe_events(
             "model_calls_max": 6,
         },
     )
+    service.adaptation_traces.append_event(
+        lesson_node_id=lesson_id,
+        operation_id=operation_id,
+        event={
+            "round": 1,
+            "phase": "findings_ready",
+            "summary": "已给出初步审课发现 1 条（细看后可能修正）",
+            "thinking_excerpt": None,
+            "tool": None,
+            "result": None,
+            "findings": [
+                {
+                    "finding": r"第 3 页练习重复 https://x.example C:\secret\page.png",
+                    "category": "practice_load",
+                    "pages": [3, -1, "x", 5],
+                },
+                {
+                    "finding": "   ",
+                    "category": "other",
+                    "pages": [1],
+                },
+                "not-a-mapping",
+            ],
+            "model_calls_used": 2,
+            "model_calls_max": 6,
+        },
+    )
     client = _api_client(service)
     missing = client.get(
         f"/api/teaching-prep/lessons/{'0' * 32}/adaptation-trace"
@@ -566,12 +1181,24 @@ def test_adaptation_trace_http_returns_teacher_safe_events(
     assert payload["events"][0]["thinking_excerpt"] == (
         "先看教材第 1 页 [LOCAL_PATH_REDACTED]"
     )
+    assert payload["events"][0]["findings"] is None
     assert payload["events"][1]["summary"] == "取页 · 教材 第 1 页"
     assert payload["events"][1]["tool"]["source_ref"] == source_ref
     assert payload["events"][2]["tool"]["source_ref"] == ""
     assert payload["events"][2]["result"]["preview_url"] == (
         f"/api/teaching-prep/material-units/{unit_id}/preview"
     )
+    findings_event = payload["events"][3]
+    assert findings_event["phase"] == "findings_ready"
+    assert findings_event["findings"] == [
+        {
+            "finding": (
+                "第 3 页练习重复 [URL_REDACTED] [LOCAL_PATH_REDACTED]"
+            ),
+            "category": "practice_load",
+            "pages": [3, 5],
+        }
+    ]
 
 
 def test_select_model_page_images_round_robins_and_caps_total() -> None:

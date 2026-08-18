@@ -55,7 +55,7 @@ class StudentDirectory:
                        (SELECT COUNT(*) FROM affair_student_links l
                         WHERE l.subject_id = s.subject_id) AS affair_count,
                        COALESCE((SELECT m.state FROM class_roster_memberships m
-                                 WHERE m.subject_id=s.subject_id), 'manual') AS roster_state,
+                                 WHERE m.source_student_key=s.source_fingerprint), 'manual') AS roster_state,
                        (SELECT MAX(created_at) FROM student_card_entries c
                         WHERE c.subject_id = s.subject_id AND c.state = 'active') AS last_confirmed_at,
                        (SELECT CASE WHEN COUNT(*) = 0 THEN 'none'
@@ -187,6 +187,7 @@ class StudentDirectory:
             "related_affairs": related_affairs,
             "projection_state": "unknown",
             "last_confirmed_at": None if row["last_confirmed_at"] is None else str(row["last_confirmed_at"]),
+            "profile_state": "created",
         }
 
 

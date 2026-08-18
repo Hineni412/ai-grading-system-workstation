@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ..errors import VaultError
+from ..roster_ref import SUBJECT_REF_PATTERN
 
 
 DOMAINS = {
@@ -115,8 +116,9 @@ def parse_triage(payload: Mapping[str, object]) -> TriageResult:
         for ref in raw_refs:
             if not isinstance(ref, Mapping) or set(ref) != {"kind", "id", "revision"} or ref.get("kind") != "student":
                 raise VaultError("class_teacher_triage_invalid_result", "AI 返回的学生引用无效", status_code=422)
-            subject_id = _text(ref.get("id"), "学生引用", maximum=128)
-            if _OPAQUE_ID.fullmatch(subject_id) is None:
+            subject_id = _text(ref.get("id"), "学生引用", maximum=240)
+            # 学生引用是稳定学籍标识（班级|学号/姓名）或内部主体编号。
+            if SUBJECT_REF_PATTERN.fullmatch(subject_id) is None:
                 raise VaultError("class_teacher_triage_invalid_result", "AI 返回的学生引用无效", status_code=422)
             refs.append({
                 "kind": "student",

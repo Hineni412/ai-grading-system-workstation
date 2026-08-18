@@ -144,7 +144,7 @@ class TeachingPrepAITaskAdapter:
                 )
             except TeachingPrepValidationError as exc:
                 raise SlideProposalRetryAvailableFailure(
-                    "the slide proposal failed local validation"
+                    f"the slide proposal failed local validation: {exc}"
                 ) from exc
             result = self._result(task, proposal.id, str(proposal.version_number))
         else:
