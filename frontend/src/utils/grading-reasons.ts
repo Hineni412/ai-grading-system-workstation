@@ -18,7 +18,10 @@ const REASON_LABELS: Record<string, string> = {
   duplicate_detail_question_id: 'AI 重复返回了同一小问',
   unexpected_detail_question_id: 'AI 返回了不属于本题的小问',
   no_numeric_value: '未能可靠识别填写的数值，需要教师确认',
+  'multiple options selected': '识别到选择了多个选项',
 }
+
+const OBJECTIVE_ANSWER_PREFIX = 'objective_answer='
 
 export function translateGradingReason(
   value: string | null | undefined,
@@ -26,6 +29,10 @@ export function translateGradingReason(
 ): string {
   const text = value?.trim() ?? ''
   if (!text) return fallback
+  if (text.toLocaleLowerCase().startsWith(OBJECTIVE_ANSWER_PREFIX)) {
+    const answer = text.slice(OBJECTIVE_ANSWER_PREFIX.length).trim()
+    return answer ? `作答识别为「${answer}」，与参考答案不符` : fallback
+  }
   const direct = REASON_LABELS[text.toLocaleLowerCase()]
   if (direct) return direct
   const embeddedCode = Object.entries(REASON_LABELS).find(([code]) => (

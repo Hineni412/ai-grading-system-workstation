@@ -713,12 +713,11 @@ watch(
             <p v-if="regenerationError" class="config-editor__refine-error" role="alert">{{ regenerationError }}</p>
           </details>
 
-          <div class="config-editor__save-bar">
+          <div v-if="saveNeeded || saveBlocked || saving" class="config-editor__save-bar">
             <div>
-              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改' : '评分标准已自动保存' }}</strong>
+              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改' : '需先处理阻断问题' }}</strong>
               <span v-if="saveBlocked">需处理阻断问题并使总分为 100 后保存。</span>
-              <span v-else-if="configStore.hasDirtyEditor">保存时会一次提交全部行修改与评分单元命令。</span>
-              <span v-else>只有修改评分标准后才需要再次保存；当前可以直接进入下一步。</span>
+              <span v-else>保存时会一次提交全部行修改与评分单元命令。</span>
             </div>
             <AppButton
               type="button"
@@ -727,7 +726,7 @@ watch(
               class="config-editor__save-primary"
               :disabled="!saveNeeded || saveBlocked || saving || saveUnknown || configJobActive || submissionPending"
               @click="saveEditor"
-            >{{ saving ? '正在保存…' : saveNeeded ? '保存评分依据' : '无需保存' }}</AppButton>
+            >{{ saving ? '正在保存…' : '保存评分依据' }}</AppButton>
           </div>
           <ConfigSaveResult
             :status="configStore.saveStatus === 'saving' ? 'idle' : configStore.saveStatus"

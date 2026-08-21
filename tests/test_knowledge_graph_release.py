@@ -260,7 +260,11 @@ def test_tagging_contract_follows_activation_and_rollback(
     first_contract = tagging_contract()
     assert first_contract["knowledge_graph_release_id"] == first.release_id
     assert first_contract["knowledge_catalog_revision"] == 3
-    assert first_contract["candidates"]["knowledge"]
+    # The revision-3 release carries legacy fine-term ids that are not part
+    # of the bundled BNU curriculum tree, so a volume-scoped context has no
+    # eligible knowledge candidates and the contract reports "insufficient".
+    assert first_contract["candidates"]["knowledge"] == []
+    assert first_contract["retrieval_status"] == "insufficient"
     assert governance.snapshot()["base_catalog_revision"] == 3
     assert governance.observation_snapshot()["graph_release_id"] == first.release_id
     stage_release(
@@ -296,7 +300,8 @@ def test_tagging_contract_follows_activation_and_rollback(
     rollback_contract = tagging_contract()
     assert rollback_contract["knowledge_graph_release_id"] == first.release_id
     assert rollback_contract["knowledge_catalog_revision"] == 3
-    assert rollback_contract["candidates"]["knowledge"]
+    assert rollback_contract["candidates"]["knowledge"] == []
+    assert rollback_contract["retrieval_status"] == "insufficient"
     assert governance.snapshot()["base_catalog_revision"] == 3
     assert not any(
         term["id"] == "kp_bnu24_math_g7_lower_4_3_7"

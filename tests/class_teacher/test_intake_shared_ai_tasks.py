@@ -537,9 +537,11 @@ def test_focused_student_revision_change_keeps_review_draft_without_rebinding(
         manager.shutdown()
 
 
-def test_malformed_student_reference_still_rejects_the_model_result(
+def test_malformed_student_reference_is_softened_to_reselection(
     tmp_path: Path,
 ) -> None:
+    # 形状损坏的学生引用（多出身份字段）不再让整轮作废：多余键被剥离，
+    # 无法匹配候选的引用清空，转为"请重新选择学生"的待核对手动流程。
     result = _triage()
     result["work_items"][0]["subject_refs"] = [{
         "kind": "student",
@@ -566,9 +568,12 @@ def test_malformed_student_reference_still_rejects_the_model_result(
             str(conversation["conversation_id"])
         )
 
-        assert finished.status == "invalid_result"
-        assert restored["turns"][-1]["task_state"] == "invalid_result"
-        assert restored["handoffs"] == []
+        assert finished.status == "proposal_ready"
+        assert restored["turns"][-1]["task_state"] == "response_persisted"
+        assert len(restored["handoffs"]) == 1
+        handoff = restored["handoffs"][0]
+        assert handoff["subject_ref_count"] == 0
+        assert "学生版本信息不一致，请重新选择" in handoff["missing_fields"]
         assert len(configured.calls) == 1
     finally:
         manager.shutdown()

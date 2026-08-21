@@ -197,6 +197,13 @@ def test_result_repository_writes_only_list_truth_and_derives_legacy_value(
         migrations_dir=_migrations_through_006(tmp_path),
     )
     assert report.error is None, report.error
+    # The repository targets the current schema; bring the fixture current.
+    current = run_migrations(
+        "grading",
+        db_path=database,
+        migrations_dir=GRADING_MIGRATIONS,
+    )
+    assert current.error is None, current.error
     repository = ResultRepositoryGateway(SQLiteConnectionFactory(database))
     grading_result = GradingResult(
         student_name="student",
@@ -222,6 +229,7 @@ def test_result_repository_writes_only_list_truth_and_derives_legacy_value(
             "detail_id": 7,
             "question_id": "Q-new",
             "score_awarded": 30.0,
+            "ai_score_awarded": 30.0,
             "deduction_reason": None,
             "knowledge_id": "K_MAIN",
             "knowledge_ids": ["K_MAIN", "K_SECONDARY"],
@@ -261,6 +269,13 @@ def test_report_snapshot_reads_list_truth_and_derives_legacy_value(
         migrations_dir=_migrations_through_006(tmp_path),
     )
     assert report.error is None, report.error
+    # The report snapshot targets the current schema; bring the fixture current.
+    current = run_migrations(
+        "grading",
+        db_path=database,
+        migrations_dir=GRADING_MIGRATIONS,
+    )
+    assert current.error is None, current.error
 
     snapshot = ReportRepositoryGateway(
         SQLiteConnectionFactory(database)

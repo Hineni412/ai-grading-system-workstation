@@ -50,6 +50,7 @@ def test_domain_model_fields_defaults_and_serialization_match_the_frozen_contrac
         "confidence_score",
         "knowledge_ids",
         "secondary_errors",
+        "ai_score_awarded",
     ]
     assert [field.name for field in fields(GradingResult)] == [
         "student_name",
@@ -100,6 +101,7 @@ def test_domain_model_fields_defaults_and_serialization_match_the_frozen_contrac
                 "secondary_errors": [
                     {"category": "calculation", "summary": "sign", "evidence": "line 2"}
                 ],
+                "ai_score_awarded": None,
             }
         ],
         "raw_json": {"safe": True},

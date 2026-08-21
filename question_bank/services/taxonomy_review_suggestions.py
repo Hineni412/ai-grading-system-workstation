@@ -389,6 +389,7 @@ class TaxonomySuggestionService:
         gateway: TaxonomyReviewSuggestionGateway,
         *,
         batch_size: int = 8,
+        concurrency: int = 1,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
@@ -413,6 +414,7 @@ class TaxonomySuggestionService:
             run_id,
             gateway,
             batch_size=batch_size,
+            concurrency=concurrency,
             progress_callback=progress_callback,
             cancel_requested=cancel_requested,
         )
@@ -423,12 +425,14 @@ class TaxonomySuggestionService:
         gateway: TaxonomyReviewSuggestionGateway,
         *,
         batch_size: int = 8,
+        concurrency: int = 1,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         size = int(batch_size)
         if size <= 0:
             raise ValueError("batch_size must be positive")
+        workers = max(1, int(concurrency))
         normalized_run_id = str(run_id or "").strip()
         with _STATE_LOCK:
             state = self._read_state_unlocked()
@@ -454,82 +458,139 @@ class TaxonomySuggestionService:
         try:
             self._apply_local_suggestions(normalized_run_id)
             self._emit_progress(progress_callback, normalized_run_id)
-            while True:
-                if _callback_requests_cancel(cancel_requested):
-                    self.cancel_run(normalized_run_id)
-                    self._emit_progress(
-                        progress_callback, normalized_run_id
-                    )
-                    break
-                batch = self._claim_batch(normalized_run_id, size)
-                if not batch:
-                    break
-                prepared = [
-                    (item, self._gateway_item(item)) for item in batch
-                ]
-                without_context = [
-                    item["proposal_id"]
-                    for item, payload in prepared
-                    if not payload["question_summaries"]
-                ]
-                if without_context:
-                    self._finish_batch_failure(
-                        normalized_run_id,
-                        without_context,
-                        category="question_context",
-                        message=(
-                            "当前题库中已没有可核对的关联题目；"
-                            "恢复原试卷后可重试。"
-                        ),
-                    )
-                eligible = [
-                    (item, payload)
-                    for item, payload in prepared
-                    if payload["question_summaries"]
-                ]
-                if not eligible:
-                    self._emit_progress(
-                        progress_callback, normalized_run_id
-                    )
-                    continue
-                eligible_batch = [item for item, _payload in eligible]
-                payload = [payload for _item, payload in eligible]
-                try:
-                    response = gateway.suggest_taxonomy_reviews(payload)
-                    suggestions = self._validated_gateway_response(
-                        eligible_batch,
-                        response,
-                    )
-                except TaxonomySuggestionModelResponseError:
-                    self._finish_batch_failure(
-                        normalized_run_id,
-                        [item["proposal_id"] for item in eligible_batch],
-                        category="model_response",
-                        message=(
-                            "AI 已返回内容，但格式无法读取，可单独重试。"
-                        ),
-                    )
-                except Exception:
-                    self._finish_batch_failure(
-                        normalized_run_id,
-                        [item["proposal_id"] for item in eligible_batch],
-                        category="model_gateway",
-                        message="AI 建议暂时未返回，可单独重试。",
-                    )
-                else:
-                    self._finish_batch_success(
-                        normalized_run_id,
-                        suggestions,
-                    )
-                self._emit_progress(
-                    progress_callback, normalized_run_id
-                )
+            self._run_batch_workers(
+                normalized_run_id,
+                gateway,
+                batch_size=size,
+                workers=workers,
+                progress_callback=progress_callback,
+                cancel_requested=cancel_requested,
+            )
             result = self._finalize_run(normalized_run_id)
             _safe_progress_callback(progress_callback, result)
             return result
         finally:
             with _STATE_LOCK:
                 _ACTIVE_RUNS.discard(normalized_run_id)
+
+    def _run_batch_workers(
+        self,
+        run_id: str,
+        gateway: TaxonomyReviewSuggestionGateway,
+        *,
+        batch_size: int,
+        workers: int,
+        progress_callback: Callable[[dict[str, Any]], None] | None,
+        cancel_requested: Callable[[], bool] | None,
+    ) -> None:
+        """Process claimed batches with a bounded worker pool.
+
+        Only the model gateway call overlaps between workers; every state
+        read/write stays serialized under _STATE_LOCK.
+        """
+        errors: list[BaseException] = []
+        error_lock = threading.Lock()
+
+        def worker() -> None:
+            while True:
+                with error_lock:
+                    if errors:
+                        return
+                if _callback_requests_cancel(cancel_requested):
+                    self.cancel_run(run_id)
+                    self._emit_progress(progress_callback, run_id)
+                    return
+                batch = self._claim_batch(run_id, batch_size)
+                if not batch:
+                    return
+                try:
+                    self._process_claimed_batch(run_id, batch, gateway)
+                except BaseException as exc:
+                    with error_lock:
+                        errors.append(exc)
+                    return
+                self._emit_progress(progress_callback, run_id)
+
+        if workers <= 1:
+            worker()
+        else:
+            threads = [
+                threading.Thread(
+                    target=worker,
+                    name=f"taxonomy-suggestion-{run_id[:8]}-{index}",
+                    daemon=True,
+                )
+                for index in range(workers)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        if errors:
+            raise errors[0]
+
+    def _process_claimed_batch(
+        self,
+        run_id: str,
+        batch: Sequence[dict[str, Any]],
+        gateway: TaxonomyReviewSuggestionGateway,
+    ) -> None:
+        prepared = [
+            (item, self._gateway_item(item)) for item in batch
+        ]
+        without_context = [
+            item["proposal_id"]
+            for item, payload in prepared
+            if not payload["question_summaries"]
+        ]
+        if without_context:
+            self._finish_batch_failure(
+                run_id,
+                without_context,
+                category="question_context",
+                message=(
+                    "当前题库中已没有可核对的关联题目；"
+                    "恢复原试卷后可重试。"
+                ),
+            )
+        eligible = [
+            (item, payload)
+            for item, payload in prepared
+            if payload["question_summaries"]
+        ]
+        if not eligible:
+            return
+        eligible_batch = [item for item, _payload in eligible]
+        payload = [payload for _item, payload in eligible]
+        proposal_ids = [item["proposal_id"] for item in eligible_batch]
+        try:
+            response = gateway.suggest_taxonomy_reviews(payload)
+            suggestions = self._validated_gateway_response(
+                eligible_batch,
+                response,
+            )
+        except TaxonomySuggestionModelResponseError:
+            self._finish_batch_failure(
+                run_id,
+                proposal_ids,
+                category="model_response",
+                message=(
+                    "AI 已返回内容，但格式无法读取，可单独重试。"
+                ),
+            )
+        except Exception:
+            self._finish_batch_failure(
+                run_id,
+                proposal_ids,
+                category="model_gateway",
+                message="AI 建议暂时未返回，可单独重试。",
+            )
+        else:
+            self._finish_batch_success(
+                run_id,
+                suggestions,
+                proposal_ids=proposal_ids,
+            )
 
     def _apply_local_suggestions(self, run_id: str) -> None:
         with _STATE_LOCK:
@@ -675,7 +736,10 @@ class TaxonomySuggestionService:
         self,
         run_id: str,
         suggestions: Mapping[str, Mapping[str, Any]],
+        *,
+        proposal_ids: Sequence[str],
     ) -> None:
+        wanted = set(proposal_ids)
         with _STATE_LOCK:
             state = self._read_state_unlocked()
             run = self._require_run(state, run_id)
@@ -684,7 +748,10 @@ class TaxonomySuggestionService:
                 self._write_state_unlocked(state)
                 return
             for item in run["items"]:
-                if item["status"] != "running":
+                if (
+                    item["status"] != "running"
+                    or item["proposal_id"] not in wanted
+                ):
                     continue
                 suggestion = suggestions.get(item["proposal_id"])
                 if suggestion is None:

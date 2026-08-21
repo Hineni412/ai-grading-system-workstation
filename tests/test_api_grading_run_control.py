@@ -75,7 +75,7 @@ def _system(tmp_path, *, config_fingerprint_resolver=None):
     from backend.jobs.store import JobStore
     from db_manager import DBManager
 
-    db = DBManager(tmp_path / "grading.db")
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
     manager = JobManager(JobStore(db.db_path), max_workers=1)
     app = create_app()
@@ -301,9 +301,7 @@ def test_incomplete_result_unlocks_failed_retry_without_failed_items(tmp_path) -
     db.upsert_students([StudentRecord("S001", "学生甲", "七年级 1 班")])
     student_id = int(db.list_students()[0]["id"])
     session_id = db.create_grading_session("局部失败重试", "rubric.json", "answer.json")
-    import os
-
-    config_dir = Path(os.environ["AI_GRADING_DATA_DIR"]) / "config"
+    config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     rubric_path = config_dir / f"rubric-{session_id}.json"
     rubric_path.write_text(

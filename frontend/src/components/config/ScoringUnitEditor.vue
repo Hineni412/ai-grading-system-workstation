@@ -157,39 +157,37 @@ watch(
         </header>
         <div class="scoring-unit-editor__step-grid">
           <div v-for="(step, stepIndex) in part.steps" :key="stepIndex" class="scoring-unit-editor__step-card">
-            <header>
-              <strong>步骤 {{ stepIndex + 1 }}</strong>
-              <label class="scoring-unit-editor__score">
-                <span class="sr-only">分值</span>
-                <input
-                  v-model.number="step.score"
-                  type="number"
-                  min="0.5"
-                  max="100"
-                  step="0.5"
-                  :disabled="disabled"
-                  :aria-label="`${questionId} 第 ${partIndex + 1} 小问步骤 ${stepIndex + 1} 分值`"
-                >
-                <span>分</span>
-              </label>
-              <button
-                type="button"
-                class="scoring-unit-editor__remove-step"
-                :disabled="disabled || part.steps.length <= 1"
-                :aria-label="`删除第 ${partIndex + 1} 小问步骤 ${stepIndex + 1}`"
-                @click="removeStep(partIndex, stepIndex)"
-              >×</button>
-            </header>
-            <label>
+            <strong class="scoring-unit-editor__step-title">步骤 {{ stepIndex + 1 }}</strong>
+            <label class="scoring-unit-editor__goal">
               <span class="sr-only">评分目标</span>
               <textarea
                 v-model="step.core_goal"
-                rows="3"
+                rows="1"
                 :disabled="disabled"
                 :aria-label="`${questionId} 第 ${partIndex + 1} 小问步骤 ${stepIndex + 1} 评分目标`"
                 placeholder="输入这个步骤的得分条件"
               />
             </label>
+            <label class="scoring-unit-editor__score">
+              <span class="sr-only">分值</span>
+              <input
+                v-model.number="step.score"
+                type="number"
+                min="0.5"
+                max="100"
+                step="0.5"
+                :disabled="disabled"
+                :aria-label="`${questionId} 第 ${partIndex + 1} 小问步骤 ${stepIndex + 1} 分值`"
+              >
+              <span>分</span>
+            </label>
+            <button
+              type="button"
+              class="scoring-unit-editor__remove-step"
+              :disabled="disabled || part.steps.length <= 1"
+              :aria-label="`删除第 ${partIndex + 1} 小问步骤 ${stepIndex + 1}`"
+              @click="removeStep(partIndex, stepIndex)"
+            >×</button>
           </div>
           <button type="button" class="scoring-unit-editor__add-step" :disabled="disabled" @click="addStep(partIndex)">
             ＋ 添加步骤点

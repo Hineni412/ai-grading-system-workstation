@@ -11,15 +11,27 @@ const name = ref('')
 const curriculumVolumeId = ref<string | null>(null)
 const busy = ref(false)
 const message = ref('')
+const volumeManuallyChanged = ref(false)
 
 watch(
   () => sessionStore.currentSession,
   (value) => {
+    volumeManuallyChanged.value = false
     name.value = value?.name ?? ''
     curriculumVolumeId.value = value?.curriculum_volume_id
       ?? curriculumScope.selectedVolumeId
   },
   { immediate: true },
+)
+
+// 未在本面板手动改过、且当前考试没有自己保存的学期时，跟随顶部全局教学学期。
+watch(
+  () => curriculumScope.selectedVolumeId,
+  (volumeId) => {
+    if (volumeManuallyChanged.value) return
+    if (sessionStore.currentSession?.curriculum_volume_id) return
+    curriculumVolumeId.value = volumeId
+  },
 )
 
 const curriculumOptions = computed(() => curriculumScope.volumes)
@@ -89,6 +101,7 @@ async function renameDraft(): Promise<void> {
         id="session-draft-curriculum"
         v-model="curriculumVolumeId"
         :disabled="busy || curriculumScope.loadState === 'loading'"
+        @change="volumeManuallyChanged = true"
       >
         <option :value="null">暂不归类</option>
         <option v-for="volume in curriculumOptions" :key="volume.id" :value="volume.id">

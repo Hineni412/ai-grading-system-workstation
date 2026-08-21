@@ -226,51 +226,6 @@ async function removeCurrent(): Promise<void> {
             本题判定点待审核。请到下方「判定点」核对、修正或重新生成。
           </p>
 
-          <dl class="qb-facts">
-            <div><dt>题型</dt><dd>{{ store.detail.question_type || '未分类' }}</dd></div>
-            <div><dt>难度</dt><dd>{{ store.detail.difficulty || '待定' }}</dd></div>
-            <div><dt>页码</dt><dd>{{ store.detail.page_range || '未记录' }}</dd></div>
-            <div><dt>图片</dt><dd>{{ store.detail.has_images ? '包含' : '无' }}</dd></div>
-          </dl>
-
-          <section class="qb-paper-section">
-            <h3>题干</h3>
-            <QuestionContentRenderer
-              :blocks="store.detail.rich_content.question_blocks"
-              :fallback="store.detail.question_text"
-              image-alt="题目配图"
-              media-mode="detail"
-            />
-          </section>
-
-          <details class="qb-paper-section qb-answer-section">
-            <summary>答案与解析</summary>
-            <QuestionContentRenderer
-              :blocks="store.detail.rich_content.answer_blocks"
-              :fallback="store.detail.answer_text"
-              empty-label="暂未录入答案或解析"
-              image-alt="答案配图"
-              media-mode="detail"
-            />
-          </details>
-
-          <section v-if="store.detail.previews.length" class="qb-paper-section">
-            <h3>原卷预览</h3>
-            <div class="qb-preview-grid">
-              <template v-for="preview in store.detail.previews" :key="preview.preview_type">
-                <a v-if="preview.url" :href="preview.url" target="_blank" rel="noopener">
-                  {{ preview.preview_type === 'question' ? '打开题目原卷' : '打开答案原卷' }}
-                  <span v-if="preview.page_number"> · 第 {{ preview.page_number }} 页</span>
-                </a>
-                <span v-else>
-                  {{ preview.preview_type === 'question' ? '题目原卷' : '答案原卷' }}暂不可用
-                </span>
-              </template>
-            </div>
-          </section>
-
-          <TrainingCriterionReview :question-id="store.detail.id" />
-
           <section class="qb-tags" aria-labelledby="qb-tags-title">
             <header class="qb-section-heading">
               <div>
@@ -387,6 +342,51 @@ async function removeCurrent(): Promise<void> {
             >
               {{ store.writeState === 'saving' ? '正在保存…' : '保存标签' }}
             </AppButton>
+          </section>
+
+          <TrainingCriterionReview :question-id="store.detail.id" />
+
+          <dl class="qb-facts">
+            <div><dt>题型</dt><dd>{{ store.detail.question_type || '未分类' }}</dd></div>
+            <div><dt>难度</dt><dd>{{ store.detail.difficulty || '待定' }}</dd></div>
+            <div><dt>页码</dt><dd>{{ store.detail.page_range || '未记录' }}</dd></div>
+            <div><dt>图片</dt><dd>{{ store.detail.has_images ? '包含' : '无' }}</dd></div>
+          </dl>
+
+          <details class="qb-paper-section qb-answer-section">
+            <summary>查看题干</summary>
+            <QuestionContentRenderer
+              :blocks="store.detail.rich_content.question_blocks"
+              :fallback="store.detail.question_text"
+              image-alt="题目配图"
+              media-mode="detail"
+            />
+          </details>
+
+          <details class="qb-paper-section qb-answer-section">
+            <summary>答案与解析</summary>
+            <QuestionContentRenderer
+              :blocks="store.detail.rich_content.answer_blocks"
+              :fallback="store.detail.answer_text"
+              empty-label="暂未录入答案或解析"
+              image-alt="答案配图"
+              media-mode="detail"
+            />
+          </details>
+
+          <section v-if="store.detail.previews.length" class="qb-paper-section">
+            <h3>原卷预览</h3>
+            <div class="qb-preview-grid">
+              <template v-for="preview in store.detail.previews" :key="preview.preview_type">
+                <a v-if="preview.url" :href="preview.url" target="_blank" rel="noopener">
+                  {{ preview.preview_type === 'question' ? '打开题目原卷' : '打开答案原卷' }}
+                  <span v-if="preview.page_number"> · 第 {{ preview.page_number }} 页</span>
+                </a>
+                <span v-else>
+                  {{ preview.preview_type === 'question' ? '题目原卷' : '答案原卷' }}暂不可用
+                </span>
+              </template>
+            </div>
           </section>
 
           <section class="qb-danger">

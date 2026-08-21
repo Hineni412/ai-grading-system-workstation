@@ -9,6 +9,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "frontend" / "src"
 TOKENS = SRC / "styles" / "tokens.css"
+# Theme token definition files: hex literals there define the design tokens
+# themselves (tokens.css, and the shadcn-vue theme variables in tailwind.css),
+# they are not page-specific color exceptions.
+TOKEN_DEFINITION_FILES = {
+    TOKENS,
+    SRC / "styles" / "tailwind.css",
+}
 COLOR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgb|hsl)a?\(")
 DESIGN_PROPERTY = (
     r"(?:margin|padding)(?:-[a-z]+)*"
@@ -48,23 +55,19 @@ def test_design_tokens_define_the_approved_visual_contract() -> None:
 def test_page_specific_color_exceptions_are_confined_to_p3_5_question_work() -> None:
     offenders: list[str] = []
     for path in SRC.rglob("*"):
-        if path.suffix not in {".css", ".vue"} or path == TOKENS:
+        if path.suffix not in {".css", ".vue"} or path in TOKEN_DEFINITION_FILES:
             continue
         text = path.read_text(encoding="utf-8")
         if COLOR_LITERAL.search(text):
             offenders.append(path.relative_to(ROOT).as_posix())
     assert set(offenders) == {
-        "frontend/src/components/config/SessionDeletionPanel.vue",
-        "frontend/src/components/config/ConfigGenerationPanel.vue",
-        "frontend/src/components/config/QuestionBlockReview.vue",
-        "frontend/src/components/question-bank/PaperLibrary.vue",
-        "frontend/src/components/question-bank/QuestionContentRenderer.vue",
-        "frontend/src/views/ResultsCenterView.vue",
-        "frontend/src/workspaces/class-teacher/ordinary/WorkNodeInspector.vue",
-        "frontend/src/workspaces/class-teacher/students/AcademicAnalysisPanel.vue",
-        "frontend/src/workspaces/teaching-prep/styles/teaching-prep.css",
-        "frontend/src/styles/question-assembly.css",
         "frontend/src/styles/question-bank.css",
+        "frontend/src/views/ResultsCenterView.vue",
+        "frontend/src/views/StudentEvidenceView.vue",
+        "frontend/src/workspaces/class-teacher/students/AcademicAnalysisPanel.vue",
+        "frontend/src/workspaces/class-teacher/students/EvidenceUploadPanel.vue",
+        "frontend/src/workspaces/teaching-prep/styles/teaching-prep.css",
+        "frontend/src/workspaces/teaching-prep/workspaces/lesson/ReviewSlidesStep.vue",
     }
 
 
@@ -93,50 +96,17 @@ def test_design_value_guard_rejects_logical_multi_value_and_shadow_bypasses(
     assert RAW_DESIGN_VALUE.search(declaration)
 
 
-def test_element_theme_maps_product_tokens() -> None:
-    css = (SRC / "styles" / "element-theme.css").read_text(encoding="utf-8")
-    for mapping in (
-        "--el-color-primary: var(--color-accent)",
-        "--el-color-success: var(--color-success)",
-        "--el-color-warning: var(--color-warning)",
-        "--el-color-danger: var(--color-danger)",
-        "--el-border-radius-base: var(--radius-control)",
-        "--el-text-color-secondary: var(--color-text-secondary)",
-        "--el-text-color-placeholder: var(--color-text-secondary)",
-    ):
-        assert mapping in css
-
-    derived = {
-        "primary": ("accent", "accent-active"),
-        "success": ("success", "success"),
-        "warning": ("warning", "warning"),
-        "danger": ("danger", "danger"),
-        "info": ("info", "info"),
-    }
-    for role, (product_role, dark_role) in derived.items():
-        for level in (3, 5, 8, 9):
-            assert (
-                f"--el-color-{role}-light-{level}: "
-                f"var(--color-{product_role}-subtle)"
-            ) in css
-        assert (
-            f"--el-color-{role}-dark-2: var(--color-{dark_role})"
-        ) in css
-    assert "--el-color-primary-light-7: var(--color-accent-subtle)" in css
-
-
-def test_element_plus_stays_scoped_to_the_design_system_components() -> None:
+def test_element_plus_is_not_part_of_the_design_system() -> None:
+    # The frontend migrated to the shadcn-vue design system
+    # (commit "feat(ui): migrate frontend to shadcn-vue design system"):
+    # element-theme.css was deleted and element-plus was removed from
+    # package.json. Guard against element-plus being reintroduced.
     main = (SRC / "main.ts").read_text(encoding="utf-8")
     app = (SRC / "App.vue").read_text(encoding="utf-8")
+    package_json = (ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
 
-    assert "element-plus/dist/index.css" not in main
-    assert ".use(ElementPlus" not in main
-    for stylesheet in (
-        "element-plus/theme-chalk/base.css",
-        "element-plus/theme-chalk/el-icon.css",
-        "element-plus/theme-chalk/el-button.css",
-        "element-plus/theme-chalk/el-input.css",
-    ):
-        assert stylesheet in main
-    assert "ElConfigProvider" in app
-    assert "element-plus/es/locale/lang/zh-cn" in app
+    assert "element-plus" not in main
+    assert "element-plus" not in app
+    assert "ElConfigProvider" not in app
+    assert '"element-plus"' not in package_json
+    assert not (SRC / "styles" / "element-theme.css").exists()

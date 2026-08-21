@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import itertools
 import json
 import warnings
 from pathlib import Path
@@ -23,7 +24,7 @@ def _client_with_db(tmp_path):
     from backend.jobs.store import JobStore
     from db_manager import DBManager
 
-    db = DBManager(tmp_path / "grading.db")
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
 
     app = create_app()
@@ -32,6 +33,9 @@ def _client_with_db(tmp_path):
     app.dependency_overrides[get_job_manager] = lambda: manager
     app.dependency_overrides[get_templates_dir] = lambda: tmp_path / "templates"
     return TestClient(app), db
+
+
+_session_counter = itertools.count(1)
 
 
 def _session(db) -> int:
@@ -47,7 +51,11 @@ def _session(db) -> int:
     answer.write_text(
         json.dumps({"questions": [{"question_id": "Q1"}]}), encoding="utf-8"
     )
-    return db.create_grading_session("Template Exam", str(rubric), str(answer))
+    # Session names are unique per database (migration 012), so each helper
+    # call needs a distinct name.
+    return db.create_grading_session(
+        f"Template Exam {next(_session_counter)}", str(rubric), str(answer)
+    )
 
 
 def _template_files(tmp_path: Path) -> tuple[Path, Path]:
@@ -129,7 +137,7 @@ def _bind_template(client: TestClient, session_id: int, front: Path, back: Path)
 def test_template_route_binds_existing_template_paths(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
-    front, back = _template_files(tmp_path)
+    front, back = _template_files(tmp_path / "templates")
 
     body = _bind_template(client, session_id, front, back)
 
@@ -378,7 +386,7 @@ def test_template_page_assignment_rejects_stale_and_legacy_requests(tmp_path) ->
     ).json()["template"]["first_page_role"] == "back"
 
     legacy_session_id = _session(db)
-    legacy_front, legacy_back = _template_files(tmp_path / "legacy")
+    legacy_front, legacy_back = _template_files(tmp_path / "templates" / "legacy")
     _bind_template(client, legacy_session_id, legacy_front, legacy_back)
     legacy_fingerprint = client.get(
         f"/api/sessions/{legacy_session_id}/regions/draft"
@@ -403,7 +411,7 @@ def test_region_readiness_blocks_template_upload_until_scoring_config_is_saved(t
     from backend.config_workspace.drafts import create_session_draft
 
     client, db = _client_with_db(tmp_path)
-    session_id = create_session_draft(db, tmp_path / "config", name="Draft Exam")
+    session_id = create_session_draft(db.session_repository, tmp_path / "config", name="Draft Exam")
 
     readiness = client.get(f"/api/sessions/{session_id}/regions/readiness")
     upload = client.post(
@@ -766,7 +774,7 @@ def test_draft_save_rejects_a_stale_revision_and_returns_no_internal_paths(tmp_p
 def test_answer_region_draft_route_saves_and_loads_compatible_draft(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
-    front, back = _template_files(tmp_path)
+    front, back = _template_files(tmp_path / "templates")
     _bind_template(client, session_id, front, back)
 
     save_response = client.put(
@@ -793,13 +801,13 @@ def test_answer_region_draft_route_saves_and_loads_compatible_draft(tmp_path) ->
 def test_incompatible_draft_requires_an_explicit_safe_discard(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
-    first_front, first_back = _template_files(tmp_path / "first")
+    first_front, first_back = _template_files(tmp_path / "templates" / "first")
     _bind_template(client, session_id, first_front, first_back)
     client.put(
         f"/api/sessions/{session_id}/regions/draft",
         json={"revision": 1, "regions": [_region()]},
     )
-    second_front, second_back = _template_files(tmp_path / "second")
+    second_front, second_back = _template_files(tmp_path / "templates" / "second")
     second_front.write_bytes(b"different-front")
     _bind_template(client, session_id, second_front, second_back)
 
@@ -819,7 +827,7 @@ def test_incompatible_draft_requires_an_explicit_safe_discard(tmp_path) -> None:
 def test_answer_region_commit_route_commits_regions_and_snapshot(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
-    front, back = _template_files(tmp_path)
+    front, back = _template_files(tmp_path / "templates")
     _bind_template(client, session_id, front, back)
     draft = client.put(
         f"/api/sessions/{session_id}/regions/draft",
@@ -861,7 +869,7 @@ def test_answer_region_commit_route_rejects_illegal_mapping_status(
 ) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
-    front, back = _template_files(tmp_path)
+    front, back = _template_files(tmp_path / "templates")
     _bind_template(client, session_id, front, back)
     invalid_region = _region()
     invalid_region["mapping_status"] = "confirmed"
@@ -893,7 +901,7 @@ def test_pending_snapshot_can_be_retried_without_recommitting_regions(
 
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
-    front, back = _template_files(tmp_path)
+    front, back = _template_files(tmp_path / "templates")
     _bind_template(client, session_id, front, back)
     draft = client.put(
         f"/api/sessions/{session_id}/regions/draft",
@@ -939,7 +947,7 @@ def test_pending_snapshot_can_be_retried_without_recommitting_regions(
 def test_answer_region_commit_route_returns_validation_issues_without_commit(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
-    front, back = _template_files(tmp_path)
+    front, back = _template_files(tmp_path / "templates")
     _bind_template(client, session_id, front, back)
 
     response = client.post(
@@ -965,7 +973,7 @@ def test_answer_region_commit_lock_timeout_has_stable_retryable_contract(
 
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
-    front, back = _template_files(tmp_path)
+    front, back = _template_files(tmp_path / "templates")
     _bind_template(client, session_id, front, back)
 
     def time_out(*_args, **_kwargs):
@@ -1012,8 +1020,13 @@ def test_answer_region_draft_route_requires_template(tmp_path) -> None:
 def test_missing_template_file_error_does_not_expose_stored_absolute_path(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)
-    missing_front = tmp_path / "private" / "missing-front.jpg"
-    back = tmp_path / "back.jpg"
+    # A stored path that is missing must surface as template_file_not_found.
+    # Absolute paths outside the controlled roots are rejected outright by
+    # resolve_stored_file_path, so the missing file is recorded as a
+    # controlled relative path (resolved inside the data root).
+    missing_front = Path("private") / "missing-front.jpg"
+    back = tmp_path / "templates" / "back.jpg"
+    back.parent.mkdir(parents=True, exist_ok=True)
     back.write_bytes(b"back-template")
     _bind_template(client, session_id, missing_front, back)
 
@@ -1024,3 +1037,4 @@ def test_missing_template_file_error_does_not_expose_stored_absolute_path(tmp_pa
         "field": "front_template_path"
     }
     assert str(missing_front) not in response.text
+    assert str(tmp_path) not in response.text

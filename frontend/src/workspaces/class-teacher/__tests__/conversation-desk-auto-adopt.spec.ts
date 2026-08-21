@@ -31,7 +31,7 @@ function profileHandoff(id: string, state: IntakeHandoffSummary['adoption_state'
     handoff_id: id, draft_id: `draft-${id}`, work_item_id: `work-${id}`,
     turn_id: 'turn-01', domain: 'student_growth', handling_mode: 'record', intent: 'append',
     destination_key: 'class_teacher.student.record', draft_revision: 1, adoption_state: state,
-    missing_fields: [], subject_ref_count: 1, auto_open_allowed: true,
+    missing_fields: [], subject_ref_count: 1, subject_id: 'subject-01', auto_open_allowed: true,
   }
 }
 
@@ -147,5 +147,23 @@ describe('ConversationDesk 学生档案自动并入与撤回', () => {
 
     expect(revert).toHaveBeenCalledExactlyOnceWith('handoff-auto-c')
     expect(host.textContent).toContain('已撤回，档案回到本轮更新前')
+  })
+
+  it('shows only the latest profile card per student', async () => {
+    const host = await mountDesk({
+      ...conversation('teacher_confirmed'), revision: 3,
+      handoffs: [
+        { ...profileHandoff('handoff-auto-old', 'reverted') },
+        profileHandoff('handoff-auto-new', 'adopted'),
+        { ...profileHandoff('handoff-auto-other', 'pending'), subject_id: 'subject-02' },
+      ],
+    })
+
+    expect(host.querySelector('[data-work-item="work-handoff-auto-old"]')).toBeNull()
+    expect(host.querySelector('[data-work-item="work-handoff-auto-new"]')).not.toBeNull()
+    expect(host.querySelector('[data-work-item="work-handoff-auto-other"]')).not.toBeNull()
+    const revertButtons = [...host.querySelectorAll('button')]
+      .filter((item) => item.textContent?.includes('撤回本轮更新'))
+    expect(revertButtons).toHaveLength(1)
   })
 })

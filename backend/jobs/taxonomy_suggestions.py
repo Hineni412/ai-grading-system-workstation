@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,9 @@ _TERMINAL_RUN_STATUSES = frozenset(
     {"completed", "partial", "failed", "cancelled", "stale"}
 )
 _JOB_STAGE = "生成归并建议"
+# Bounded worker pool for suggestion batches; only the model call overlaps,
+# state writes stay serialized inside the service.
+_SUGGESTION_BATCH_CONCURRENCY = 3
 
 
 def run_taxonomy_suggestion_job(
@@ -30,6 +34,7 @@ def run_taxonomy_suggestion_job(
     ],
     ai_service_factory: Callable[[], Any],
     batch_size: int = 8,
+    concurrency: int = _SUGGESTION_BATCH_CONCURRENCY,
 ) -> dict[str, object]:
     run_id = str(context.payload.get("run_id") or "").strip().casefold()
     if _RUN_ID.fullmatch(run_id) is None:
@@ -55,6 +60,7 @@ def run_taxonomy_suggestion_job(
         run_id,
         gateway,
         batch_size=batch_size,
+        concurrency=concurrency,
         progress_callback=lambda snapshot: _report_progress(
             context,
             snapshot,
@@ -76,14 +82,19 @@ class _LazySuggestionGateway:
     def __init__(self, factory: Callable[[], Any]) -> None:
         self._factory = factory
         self._service: Any | None = None
+        self._lock = threading.Lock()
 
     def suggest_taxonomy_reviews(
         self,
         batch: Sequence[Mapping[str, Any]],
     ) -> Sequence[Mapping[str, Any]]:
-        if self._service is None:
-            self._service = self._factory()
-        suggest = getattr(self._service, "suggest_taxonomy_reviews", None)
+        service = self._service
+        if service is None:
+            with self._lock:
+                if self._service is None:
+                    self._service = self._factory()
+                service = self._service
+        suggest = getattr(service, "suggest_taxonomy_reviews", None)
         if not callable(suggest):
             raise RuntimeError(
                 "taxonomy suggestion model service is unavailable"

@@ -17,7 +17,17 @@ from question_bank.services.question_write_service import (
     PaperStateConflict,
     QuestionBankWriteService,
 )
+from question_bank.taxonomy.governance import TaxonomyGovernance
 from tests.current_knowledge_support import install_current_knowledge
+
+
+_TAXONOMY_CATALOG_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "question_bank"
+    / "taxonomy"
+    / "catalogs"
+    / "tag_vocabulary_v2.json"
+)
 
 
 _CURRENT_PAPER_QUESTION_FK_CHILDREN = {
@@ -887,3 +897,214 @@ def test_restore_falls_back_to_needs_review_when_old_status_is_blank(
         ).fetchone()
     assert row is not None
     assert row["import_status"] == "needs_review"
+
+
+def _taxonomy_governance_for_test(tmp_path: Path) -> TaxonomyGovernance:
+    return TaxonomyGovernance(
+        catalog_path=_TAXONOMY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "not-created-question-bank.db",
+    )
+
+
+def _propose_new_term(
+    governance: TaxonomyGovernance,
+    *,
+    name: str,
+    question_id: int,
+    token: str,
+) -> None:
+    governance.constrain(
+        {
+            "proposed_tags": [
+                {
+                    "dimension": "model",
+                    "name": name,
+                    "definition": f"{name}的定义",
+                    "reason": "现有候选词不能准确表达",
+                    "nearest_id": "",
+                    "why_not_reuse": "语义边界不同",
+                }
+            ],
+        },
+        context={
+            "persist_proposals": True,
+            "question_id": question_id,
+            "model": "paper-delete-test-model",
+            "request_token": token,
+        },
+    )
+
+
+def _proposal_by_name(
+    governance: TaxonomyGovernance,
+    name: str,
+) -> dict | None:
+    state = governance._read_state()
+    return next(
+        (
+            proposal
+            for proposal in state["proposals"]
+            if proposal["proposed_name"] == name
+        ),
+        None,
+    )
+
+
+def test_permanent_delete_prunes_orphan_pending_taxonomy_proposals(
+    tmp_path: Path,
+) -> None:
+    writer, _reader, paper_id, version, _source_path = _seed_paper(tmp_path)
+    governance = _taxonomy_governance_for_test(tmp_path)
+    writer = QuestionBankWriteService(
+        writer.db_path,
+        data_root=writer.data_root,
+        taxonomy_governance=governance,
+    )
+    with connect(writer.db_path) as conn:
+        deleted_ids = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT id FROM questions "
+                "WHERE paper_id = ? AND COALESCE(is_deleted, 0) = 0 ORDER BY id",
+                (paper_id,),
+            ).fetchall()
+        ]
+        paper_question_ids = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT id FROM questions WHERE paper_id = ? ORDER BY id",
+                (paper_id,),
+            ).fetchall()
+        ]
+        other_paper_id = int(
+            conn.execute(
+                """
+                INSERT INTO papers (
+                    title, source_file, import_status, updated_at
+                ) VALUES ('保留的试卷', 'kept.docx', 'completed',
+                          '2026-07-29 12:00:00.000000')
+                """
+            ).lastrowid
+        )
+        other_question_id = int(
+            conn.execute(
+                """
+                INSERT INTO questions (
+                    paper_id, question_number, question_text, is_deleted
+                ) VALUES (?, '1', '保留卷第一题', 0)
+                """,
+                (other_paper_id,),
+            ).lastrowid
+        )
+    deleted_q1, deleted_q2 = deleted_ids
+
+    # 仅引用被删题的待审提案（应整条移除）
+    _propose_new_term(
+        governance, name="删除联动孤儿词", question_id=deleted_q1,
+        token="prune-orphan-1",
+    )
+    _propose_new_term(
+        governance, name="删除联动孤儿词", question_id=deleted_q2,
+        token="prune-orphan-2",
+    )
+    # 混合引用：被删题 + 保留题（应只修剪引用）
+    _propose_new_term(
+        governance, name="删除联动混合词", question_id=deleted_q1,
+        token="prune-mixed-1",
+    )
+    _propose_new_term(
+        governance, name="删除联动混合词", question_id=other_question_id,
+        token="prune-mixed-2",
+    )
+    # 已被拒的提案是词决策历史（应保留，只修剪引用）
+    _propose_new_term(
+        governance, name="删除联动被拒词", question_id=deleted_q1,
+        token="prune-rejected-1",
+    )
+    rejected = _proposal_by_name(governance, "删除联动被拒词")
+    assert rejected is not None
+    governance.review_proposal(
+        proposal_id=rejected["id"],
+        decision="reject",
+        expected_revision=governance._read_state()["revision"],
+        request_token="prune-reject-review",
+    )
+    # 已被合并的提案同样保留
+    _propose_new_term(
+        governance, name="删除联动被并词", question_id=deleted_q1,
+        token="prune-merged-1",
+    )
+    merged = _proposal_by_name(governance, "删除联动被并词")
+    assert merged is not None
+    model_terms = governance.snapshot()["terms_by_dimension"]["model"]
+    governance.review_proposal(
+        proposal_id=merged["id"],
+        decision="merge",
+        target_term_id=model_terms[0]["id"],
+        expected_revision=governance._read_state()["revision"],
+        request_token="prune-merge-review",
+    )
+    approved_before = governance._read_state()["approved_terms"]
+
+    trashed = writer.set_paper_deleted(
+        paper_id,
+        expected_updated_at=version,
+        deleted=True,
+    )
+    selections = [PaperPermanentDeleteSelection(paper_id, trashed.updated_at)]
+
+    impact = writer.preview_paper_permanent_delete(selections)
+    result = writer.permanently_delete_papers(
+        selections,
+        confirmation_phrase="彻底删除 1 份试卷",
+        request_token="d" * 32,
+    )
+    repeated = writer.permanently_delete_papers(
+        selections,
+        confirmation_phrase="彻底删除 1 份试卷",
+        request_token="d" * 32,
+    )
+
+    assert impact.taxonomy_proposal_count == 1
+    assert repeated == result
+
+    assert _proposal_by_name(governance, "删除联动孤儿词") is None
+
+    mixed = _proposal_by_name(governance, "删除联动混合词")
+    assert mixed is not None
+    assert mixed["status"] == "pending"
+    assert mixed["question_refs"] == [str(other_question_id)]
+    assert mixed["occurrences"] == 1
+
+    rejected_after = _proposal_by_name(governance, "删除联动被拒词")
+    assert rejected_after is not None
+    assert rejected_after["status"] == "rejected"
+    assert rejected_after["question_refs"] == []
+    assert rejected_after["occurrences"] == 1
+
+    merged_after = _proposal_by_name(governance, "删除联动被并词")
+    assert merged_after is not None
+    assert merged_after["status"] == "merged"
+    assert merged_after["question_refs"] == []
+
+    assert governance._read_state()["approved_terms"] == approved_before
+
+    # 同一 token 重放修剪：返回已记录的结果，不重复移除或计数
+    revision_before_replay = governance._read_state()["revision"]
+    replayed = governance.prune_proposals_for_deleted_questions(
+        paper_question_ids,
+        question_exists=writer._live_question_exists,
+        request_token="d" * 32,
+    )
+    assert replayed["removed_pending_proposals"] == 1
+    assert _proposal_by_name(governance, "删除联动孤儿词") is None
+    assert governance._read_state()["revision"] == revision_before_replay
+
+    # 重放后再次预览式 dry-run：已无可清理的孤儿待审提案
+    follow_up = governance.prune_proposals_for_deleted_questions(
+        paper_question_ids,
+        question_exists=writer._live_question_exists,
+        dry_run=True,
+    )
+    assert follow_up["removed_pending_proposals"] == 0

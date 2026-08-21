@@ -871,6 +871,7 @@ def build_hybrid_major_prompt(
         "3) 若存在关键逻辑跳跃、循环论证、条件未说明、定理使用前提缺失、由结论反推原因等问题，应按 deduction_policy 或 presentation_rules 扣分。\n"
         "4) 对解答题或证明题，deduction_reason 必须说明“已完成哪些证明义务、缺失或断裂在哪里、扣几分”。\n"
         "5) 返回内容必须是严格的 JSON 对象，不得包含 Markdown 或其他解释文字。\n"
+        "5.1) deduction_reason、error_summary、candidate_scores 的 reason 等教师可见自由文本必须使用简体中文（公式、变量、选项字母除外）。\n"
         "6) JSON 必须包含字段 question_id 和 items。\n"
         "7) items 是包含每名学生批改结果的列表，每一项必须包含以下字段：\n"
         "    - paper_key (学生的唯一标识，例如 paper_001_student_1_sample)\n"

@@ -16,6 +16,7 @@ export interface SupportRecord {
   record_kind: string
   state: string
   current_revision: number
+  plan_id: string | null
   content: string
   scene: string
   source: string
@@ -60,6 +61,8 @@ export interface SupportSummary {
   source_record_count: number
 }
 
+export type SupportPlanOutcome = 'effective' | 'ineffective' | 'continue'
+
 export interface SupportPlan {
   support_plan_id: string
   subject_id: string
@@ -70,8 +73,16 @@ export interface SupportPlan {
   goal: string
   support_actions: string[]
   result: string | null
+  outcome: SupportPlanOutcome | null
+  completed_at: string | null
   created_at: string
   updated_at: string
+}
+
+export interface SupportPlanAiDraft {
+  goal: string
+  support_actions: string[]
+  review_at: string
 }
 
 export interface SubjectDeletionPreview {
@@ -250,6 +261,23 @@ export const supportApi = {
       decode: (payload) => list(payload, supportRecord),
     })
   },
+  setRecordState(
+    value: SupportRecord,
+    state: 'active' | 'withdrawn' | 'archived',
+    reason: string,
+  ) {
+    return apiClient.request(`/api/class-teacher/support/records/${value.record_id}/state`, {
+      method: 'POST',
+      headers: headers(),
+      body: {
+        operation_id: operationId(),
+        expected_revision: value.current_revision,
+        state,
+        reason,
+      },
+      decode: supportRecord,
+    })
+  },
   getSummary(subjectId: string) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/summary`, {
       decode: (payload) => record(payload) as unknown as SupportSummary,
@@ -268,6 +296,7 @@ export const supportApi = {
       observed_at: string
       review_at: string | null
       expires_at: string | null
+      plan_id?: string | null
     },
     operationIdValue = operationId(),
   ) {
@@ -314,6 +343,15 @@ export const supportApi = {
       decode: supportPlan,
     })
   },
+  draftSupportPlan(subjectId: string, operationIdValue: string) {
+    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/plans/ai-draft`, {
+      method: 'POST',
+      headers: headers(),
+      body: { operation_id: operationIdValue },
+      timeoutMs: 120_000,
+      decode: (payload) => record(payload) as unknown as SupportPlanAiDraft,
+    })
+  },
   listSupportPlans(subjectId: string) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/plans`, {
       decode: (payload) => list(
@@ -326,6 +364,7 @@ export const supportApi = {
     planId: string,
     revision: number,
     result: string,
+    outcome: SupportPlanOutcome | null = null,
   ) {
     return apiClient.request(`/api/class-teacher/support/plans/${planId}/complete`, {
       method: 'POST',
@@ -334,6 +373,7 @@ export const supportApi = {
         operation_id: operationId(),
         expected_revision: revision,
         result,
+        outcome,
       },
       decode: supportPlan,
     })

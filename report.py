@@ -52,7 +52,8 @@ class ReportGenerator:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         snapshot = self.repositories.reports.get_session_report_snapshot(
-            int(session_id)
+            int(session_id),
+            question_bank_path=self._question_bank_db_path(),
         )
         session_name = (
             str(snapshot.session.get("session_name") or "")
@@ -101,6 +102,7 @@ class ReportGenerator:
                 "class_name",
                 "question_id",
                 "score_awarded",
+                "ai_score_awarded",
                 "deduction_reason",
                 "knowledge_id",
                 "knowledge_ids",
@@ -163,10 +165,16 @@ class ReportGenerator:
             eligible_details,
             score_map,
         )
+        ai_teacher_compare = self._build_ai_teacher_comparison_sheet(
+            df_details,
+            snapshot.locks,
+            score_map,
+        )
         knowledge_summary = self._build_session_knowledge_summary_by_class(
             eligible_details,
             score_map,
             knowledge_label_map,
+            snapshot.knowledge_backfill,
         )
         exceptions = self._build_exception_sheet(
             df_results,
@@ -199,6 +207,12 @@ class ReportGenerator:
             workbook.create_sheet("成绩与小题明细"),
             score_detail,
             freeze_cell="D2",
+            landscape=True,
+        )
+        self._write_dataframe_sheet(
+            workbook.create_sheet("AI与人工分对比"),
+            ai_teacher_compare,
+            freeze_cell="E2",
             landscape=True,
         )
         self._write_dataframe_sheet(
@@ -464,6 +478,76 @@ class ReportGenerator:
                     "错误摘要": _public_grading_reason(item.get("error_summary")),
                 }
             )
+        return pd.DataFrame(rows, columns=columns)
+
+    def _build_ai_teacher_comparison_sheet(
+        self,
+        df_details: pd.DataFrame,
+        locks: list[dict[str, Any]],
+        score_map: dict[str, float],
+    ) -> pd.DataFrame:
+        columns = [
+            "班级",
+            "学号",
+            "学生姓名",
+            "题号",
+            "满分",
+            "AI 得分",
+            "人工得分",
+            "最终得分",
+        ]
+        if df_details.empty:
+            return pd.DataFrame(columns=columns)
+        # A student can hold locks from several scan batches; the row query
+        # orders by lock id, so the last write wins and keeps the latest lock.
+        lock_by_key: dict[tuple[int, str], dict[str, Any]] = {}
+        for lock in locks:
+            key = (
+                int(lock.get("student_id") or 0),
+                str(lock.get("question_id") or ""),
+            )
+            lock_by_key[key] = lock
+        rows: list[dict[str, object]] = []
+        for item in df_details.to_dict(orient="records"):
+            qid = str(item.get("question_id") or "")
+            lock = lock_by_key.get(
+                (int(item.get("student_id") or 0), qid)
+            )
+            full_score = float(score_map.get(qid) or 0)
+            if full_score <= 0 and lock is not None:
+                full_score = float(lock.get("max_score") or 0)
+            rows.append(
+                {
+                    "班级": item.get("class_name") or "未分班",
+                    "学号": item.get("student_code"),
+                    "学生姓名": item.get("student_name"),
+                    "题号": qid,
+                    "满分": full_score,
+                    "AI 得分": _number_or_none(item.get("ai_score_awarded")),
+                    "人工得分": (
+                        float(lock["score_awarded"])
+                        if lock is not None
+                        else None
+                    ),
+                    "最终得分": _number_or_none(item.get("score_awarded")),
+                }
+            )
+        qid_order = {
+            qid: index
+            for index, qid in enumerate(
+                _natural_question_order(
+                    [str(row["题号"]) for row in rows]
+                )
+            )
+        }
+        rows.sort(
+            key=lambda row: (
+                str(row["班级"]),
+                str(row["学号"] or ""),
+                str(row["学生姓名"] or ""),
+                qid_order.get(str(row["题号"]), len(qid_order)),
+            )
+        )
         return pd.DataFrame(rows, columns=columns)
 
     def _build_exception_sheet(
@@ -1148,11 +1232,21 @@ class ReportGenerator:
         data_root = self.db_path.parent.parent if self.db_path.parent.name == "databases" else None
         return resolve_stored_file_path(path_value, data_root=data_root)
 
+    def _question_bank_db_path(self) -> Path | None:
+        data_root = (
+            self.db_path.parent.parent
+            if self.db_path.parent.name == "databases"
+            else self.db_path.parent
+        )
+        candidate = data_root / "databases" / "question_bank.db"
+        return candidate if candidate.is_file() else None
+
     def _build_session_knowledge_summary_by_class(
         self,
         df_details: pd.DataFrame,
         score_map: dict[str, float],
         knowledge_label_map: dict[str, str],
+        knowledge_backfill: dict[str, list[dict[str, str]]] | None = None,
     ) -> pd.DataFrame:
         columns = ["班级", "知识点", "涉及题目", "累计得分", "累计满分", "得分率", "失分人数"]
         if df_details.empty:
@@ -1172,10 +1266,21 @@ class ReportGenerator:
             awarded = max(0.0, min(float(item.get("score_awarded") or 0), full_score))
             class_name = str(item.get("class_name") or "未分班").strip() or "未分班"
             student_name = _student_label(item)
-            for kid in _knowledge_ids_from_detail(item):
-                label = _clean_knowledge_label(kid, knowledge_label_map.get(kid, ""))
-                key = (class_name, label or "未命名知识点")
-                bucket = buckets.setdefault(key, {"score_sum": 0.0, "full_sum": 0.0, "questions": set()})
+            for bucket_key, display_label in _knowledge_bucket_labels(
+                item,
+                knowledge_label_map,
+                knowledge_backfill,
+            ):
+                key = (class_name, bucket_key)
+                bucket = buckets.setdefault(
+                    key,
+                    {
+                        "label": display_label,
+                        "score_sum": 0.0,
+                        "full_sum": 0.0,
+                        "questions": set(),
+                    },
+                )
                 bucket["score_sum"] = float(bucket["score_sum"]) + awarded
                 bucket["full_sum"] = float(bucket["full_sum"]) + full_score
                 questions = bucket["questions"]
@@ -1185,19 +1290,19 @@ class ReportGenerator:
                     lost_students.setdefault(key, set()).add(student_name)
 
         rows: list[dict[str, object]] = []
-        for (class_name, label), bucket in buckets.items():
+        for (class_name, _bucket_key), bucket in buckets.items():
             score_sum = float(bucket["score_sum"])
             full_sum = float(bucket["full_sum"])
             questions = bucket["questions"] if isinstance(bucket["questions"], set) else set()
             rows.append(
                 {
                     "班级": class_name,
-                    "知识点": label,
+                    "知识点": str(bucket.get("label") or "未命名知识点"),
                     "涉及题目": "、".join(_natural_question_order([str(q) for q in questions])),
                     "累计得分": round(score_sum, 2),
                     "累计满分": round(full_sum, 2),
                     "得分率": round(score_sum / full_sum, 4) if full_sum > 0 else 0,
-                    "失分人数": len(lost_students.get((class_name, label), set())),
+                    "失分人数": len(lost_students.get((class_name, _bucket_key), set())),
                 }
             )
         return pd.DataFrame(rows, columns=columns).sort_values(by=["班级", "得分率", "知识点"], kind="stable")
@@ -1407,6 +1512,18 @@ def _student_label(item: dict) -> str:
     return name or code or "未知学生"
 
 
+def _number_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number):
+        return None
+    return number
+
+
 def _knowledge_ids_from_detail(item: dict) -> list[str]:
     raw = item.get("knowledge_ids")
     values: list[str] = []
@@ -1453,6 +1570,56 @@ def _clean_knowledge_label(knowledge_id: str, label: object) -> str:
     if not text or text == kid or re.fullmatch(r"[A-Za-z]+\d*_\d+", text):
         return "未命名知识点"
     return text
+
+
+_PART_SUFFIX_RE = re.compile(r"[\(（]\s*P?\s*\d+\s*[\)）]\s*$", re.IGNORECASE)
+
+
+def _parent_question_id(question_id: str) -> str:
+    """Strip a trailing part suffix, e.g. ``Q10(P1)`` -> ``Q10``."""
+    return _PART_SUFFIX_RE.sub("", str(question_id or "").strip())
+
+
+def _knowledge_bucket_labels(
+    item: dict,
+    knowledge_label_map: dict[str, str],
+    knowledge_backfill: dict[str, list[dict[str, str]]] | None = None,
+) -> list[tuple[str, str]]:
+    """Return (bucket_key, display_label) pairs for one detail record.
+
+    Stored knowledge ids that resolve through the rubric label map keep the
+    historical behavior (bucket and display on the same label).  When nothing
+    resolves — new sessions only persist placeholder ids — fall back to the
+    read-only question-bank backfill, bucketing by the full hierarchical tag
+    path (so same-named leaves in different chapters stay separate) while
+    displaying the leaf label.  Part-level ids such as ``Q10(P1)`` fall back
+    to their parent question ``Q10`` for the backfill lookup.
+    """
+    labels: list[str] = []
+    for kid in _knowledge_ids_from_detail(item):
+        label = _clean_knowledge_label(kid, knowledge_label_map.get(kid, ""))
+        if label and label != "未命名知识点" and label not in labels:
+            labels.append(label)
+    if labels:
+        return [(label, label) for label in labels]
+
+    backfill_map = knowledge_backfill or {}
+    qid = str(item.get("question_id") or "").strip()
+    entries = backfill_map.get(qid)
+    if entries is None and qid:
+        parent = _parent_question_id(qid)
+        if parent and parent != qid:
+            entries = backfill_map.get(parent)
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for entry in entries or []:
+        path = str(entry.get("path") or "").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        label = str(entry.get("label") or "").strip() or "未命名知识点"
+        pairs.append((path, label))
+    return pairs or [("未命名知识点", "未命名知识点")]
 
 
 def _summarize_error_categories(items: list[dict], full_score: float) -> str:

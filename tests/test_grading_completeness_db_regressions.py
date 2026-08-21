@@ -23,7 +23,7 @@ RUBRIC = {
 
 
 def _seed_session(tmp_path: Path, raw_json: dict | None = None) -> tuple[DBManager, int, int]:
-    db_path = tmp_path / "grading.db"
+    db_path = tmp_path / "databases" / "grading.db"
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(json.dumps(RUBRIC, ensure_ascii=False), encoding="utf-8")
     db = DBManager(db_path)

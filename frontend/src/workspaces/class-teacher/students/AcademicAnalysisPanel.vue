@@ -1,123 +1,226 @@
 <script setup lang="ts">
-import { LineChart, ScatterChart } from 'echarts/charts'
-import { AriaComponent, GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
+import { LineChart } from 'echarts/charts'
+import { AriaComponent, GridComponent, TooltipComponent } from 'echarts/components'
 import { init, use, type ECharts } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import AppButton from '@/components/design-system/AppButton.vue'
-import { studentR1Api, type AcademicAnalysis, type AttentionCard, type DirectorySubject } from '../api/r1'
+import {
+  studentR1Api,
+  type AcademicAnalysis,
+  type AcademicPoint,
+  type AcademicProfilePoint,
+  type AttentionCard,
+  type DirectorySubject,
+} from '../api/r1'
 
-use([LineChart, ScatterChart, AriaComponent, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
+use([LineChart, AriaComponent, GridComponent, TooltipComponent, CanvasRenderer])
 const props = defineProps<{ subject: DirectorySubject }>()
 const analysis = ref<AcademicAnalysis | null>(null)
-interface EvidenceSnapshot { language: string; evidence: { title: string; occurred_on: string; result_state: string; score: number | null } }
-const selectedEvidence = ref<EvidenceSnapshot | null>(null)
-const rankChart = ref<HTMLElement | null>(null)
-const pairChart = ref<HTMLElement | null>(null)
-const timelineChart = ref<HTMLElement | null>(null)
+const trendChart = ref<HTMLElement | null>(null)
 const charts: ECharts[] = []
 const decision = ref('observe')
 const reason = ref('')
 const reviewAt = ref('')
 const message = ref('')
-const pairCount = ref(0)
-const timeFilter = ref<'all'|'recent_90'|'year'>('all')
-const seriesFilter = ref('')
-const subjectFilter = ref('')
-const comparableOnly = ref(false)
+const expanded = ref<Set<string>>(new Set())
 let loadSequence = 0
-const stateLabels: Record<string, string> = { normal:'正常', absent:'缺考', exempt:'免考', missing:'缺失', incomplete:'未完成', pending_review:'待核对', makeup:'补测' }
-const stateSymbols: Record<string, string> = { normal:'circle', absent:'emptyCircle', exempt:'triangle', missing:'rect', incomplete:'roundRect', pending_review:'diamond', makeup:'pin' }
-const seriesOptions = computed(() => analysis.value?.filter_options?.series ?? [...new Set((analysis.value?.sessions ?? []).map((item) => item.comparison_series).filter((item): item is string => !!item))])
-const subjectOptions = computed(() => analysis.value?.filter_options?.subjects ?? [...new Set((analysis.value?.series ?? []).map((item) => item.subject_name))])
-const filteredSessions = computed(() => analysis.value?.sessions ?? [])
 
-async function load() {
-  const sequence = ++loadSequence
-  const next = await studentR1Api.academic(props.subject.subject_id, {
-    timeRange: timeFilter.value,
-    comparisonSeries: seriesFilter.value || undefined,
-    subjectName: subjectFilter.value || undefined,
-    comparableOnly: comparableOnly.value,
+const trendLabels: Record<string, string> = { improving: '持续进步', declining: '持续退步', fluctuating: '起伏', flat: '持平', insufficient: '场次不足' }
+const stabilityLabels: Record<string, string> = { stable: '稳定', moderate: '有波动', volatile: '波动大', insufficient: '场次不足' }
+const skewLabels: Record<string, string> = { balanced: '总体均衡', skewed: '明显偏科', insufficient: '场次不足' }
+const stateLabels: Record<string, string> = { normal: '正常', absent: '缺考', exempt: '免考', missing: '缺失', incomplete: '未完成', pending_review: '待核对', makeup: '补测' }
+const gradeOrder: Record<string, number> = { 七年级: 7, 八年级: 8, 九年级: 9 }
+const termOrder: Record<string, number> = { 上学期: 0, 下学期: 1 }
+
+const profile = computed(() => analysis.value?.profile ?? null)
+
+interface HeatRow { occurred_on: string; title: string; termLabel: string; cells: Record<string, AcademicPoint> }
+const heatmap = computed(() => {
+  const sessions = [...(analysis.value?.sessions ?? [])]
+  sessions.sort((a, b) => {
+    const chainA = (gradeOrder[a.grade ?? ''] ?? 99) * 10 + (termOrder[a.term ?? ''] ?? 99)
+    const chainB = (gradeOrder[b.grade ?? ''] ?? 99) * 10 + (termOrder[b.term ?? ''] ?? 99)
+    return chainA - chainB || a.occurred_on.localeCompare(b.occurred_on)
   })
-  if (sequence !== loadSequence) return
-  analysis.value = next
-  await nextTick(); render()
-}
-function chart(element: HTMLElement | null, option: Record<string, unknown>) { if (!element) return; const instance = init(element); instance.setOption(option); instance.on('click', (params) => { const data = params.data as unknown; if (data && typeof data === 'object' && !Array.isArray(data) && 'evidenceId' in data && typeof data.evidenceId === 'string') void inspect(data.evidenceId) }); charts.push(instance) }
+  const rows: HeatRow[] = []
+  const byDate = new Map<string, HeatRow>()
+  const subjects = new Set<string>()
+  for (const session of sessions) {
+    let row = byDate.get(session.occurred_on)
+    if (!row) {
+      row = { occurred_on: session.occurred_on, title: session.title, termLabel: termShort(session), cells: {} }
+      byDate.set(session.occurred_on, row)
+      rows.push(row)
+    }
+    for (const point of session.evidence) {
+      if (point.measure_role && point.measure_role !== 'subject_score') continue
+      row.cells[point.subject_name] = point
+      subjects.add(point.subject_name)
+    }
+  }
+  return { rows, subjects: [...subjects].sort() }
+})
+
+const subjectRows = computed(() => {
+  const rows = [...(profile.value?.subjects ?? [])]
+  rows.sort((a, b) => Number(b.attention) - Number(a.attention) || a.subject_name.localeCompare(b.subject_name))
+  return rows
+})
+
 function termShort(session: { grade?: string | null; term?: string | null }): string {
   const grade = (session.grade ?? '').replace('年级', '')
   const half = session.term === '上学期' ? '上' : session.term === '下学期' ? '下' : ''
   return grade && half ? `${grade}${half}` : ''
 }
+function rankDeltaText(delta: number | null | undefined): string {
+  if (typeof delta !== 'number') return ''
+  return delta > 0 ? `进步 ${delta} 名` : delta < 0 ? `退步 ${-delta} 名` : '名次持平'
+}
+function cellStyle(point: AcademicPoint | undefined): Record<string, string> {
+  if (!point || point.relative_position == null || point.result_state !== 'normal') return { background: 'var(--muted)', color: 'var(--muted-foreground)' }
+  const position = point.relative_position
+  if (position >= 0.75) return { background: 'rgba(53,104,89,.22)' }
+  if (position >= 0.4) return { background: 'transparent' }
+  return { background: 'rgba(155,106,43,.24)' }
+}
+function sparkline(points: AcademicProfilePoint[]): string {
+  const usable = points.filter((point) => point.relative_position != null)
+  if (usable.length < 2) return ''
+  const width = 120
+  const height = 28
+  const step = width / (usable.length - 1)
+  return usable
+    .map((point, index) => `${(index * step).toFixed(1)},${(height - 3 - (point.relative_position ?? 0) * (height - 6)).toFixed(1)}`)
+    .join(' ')
+}
+function toggle(subjectName: string) {
+  const next = new Set(expanded.value)
+  if (next.has(subjectName)) next.delete(subjectName)
+  else next.add(subjectName)
+  expanded.value = next
+}
+
+async function load() {
+  const sequence = ++loadSequence
+  const next = await studentR1Api.academic(props.subject.subject_id)
+  if (sequence !== loadSequence) return
+  analysis.value = next
+  expanded.value = new Set((next.profile?.subjects ?? []).filter((item) => item.attention).map((item) => item.subject_name))
+  await nextTick(); render()
+}
+function formatTopRatio(ratio: number): string {
+  const percent = ratio * 100
+  return percent >= 10 ? `${Math.round(percent)}%` : `${Math.round(percent * 10) / 10}%`
+}
 function render() {
   charts.splice(0).forEach((item) => item.dispose())
-  if (!analysis.value) return
-  const common = { aria: { enabled: true }, tooltip: { trigger: 'axis' }, grid: { left: 46, right: 18, top: 42, bottom: 42 } }
-  const visibleSeries = analysis.value.series
-  const pairs = analysis.value.rank_change_pairs
-  const rankSeries = visibleSeries.flatMap((series) => [
-    {
-      name: series.subject_name,
-      type: 'scatter',
-      symbol: 'circle',
-      data: series.points.map((point) => ({
-        evidenceId: point.evidence_version_id,
-        value: [point.occurred_on, point.relative_position ?? null],
-      })),
+  if (!analysis.value || !trendChart.value) return
+  const totals = (profile.value?.total_trend ?? [])
+  const labels = totals.map((point) => point.term_label || String(point.occurred_on ?? ''))
+  const instance = init(trendChart.value)
+  instance.setOption({
+    aria: { enabled: true },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: { dataIndex: number }[]) => {
+        const point = totals[params[0]?.dataIndex ?? 0]
+        if (!point) return ''
+        const rank = point.rank != null ? `第 ${point.rank} 名` : (stateLabels[String(point.result_state)] ?? '无名次')
+        const total = point.participant_count ? ` / 共 ${point.participant_count} 人` : ''
+        return `${point.session_title ?? ''}（${point.occurred_on ?? ''}）<br/>校次：${rank}${total}`
+      },
     },
-    ...series.segments.flatMap((segment, index) => {
-      if (segment.dimensions.rank.status !== 'directly_comparable') return []
-      const from = series.points[index]
-      const to = series.points[index + 1]
-      if (!from || !to) return []
-      return [{
-        name: series.subject_name,
-        type: 'line',
-        symbol: 'none',
-        data: [
-          { evidenceId:from.evidence_version_id, value:[from.occurred_on, from.relative_position ?? null] },
-          { evidenceId:to.evidence_version_id, value:[to.occurred_on, to.relative_position ?? null] },
-        ],
-      }]
-    }),
-  ])
-  pairCount.value = pairs.length
-  const pairLabel = (pair: (typeof pairs)[number]) => {
-    if (typeof pair.from_rank !== 'number' || typeof pair.to_rank !== 'number') return pair.subject_name
-    const delta = pair.rank_delta ?? 0
-    const change = delta > 0 ? `进步${delta}名` : delta < 0 ? `退步${-delta}名` : '名次持平'
-    const scope = pair.rank_scope === 'grade' ? '年级' : '班级'
-    return `${pair.subject_name}：前次${scope}第${pair.from_rank}名 → 本次${scope}第${pair.to_rank}名（${change}）`
-  }
-  chart(rankChart.value, { ...common, legend: {}, xAxis: { type: 'category' }, yAxis: { type: 'value', min: 0, max: 1, name: '相对位次' }, series: rankSeries })
-  chart(pairChart.value, { ...common, tooltip: { trigger: 'item', formatter: (params: { data?: { label?: string } }) => params.data?.label ?? '' }, xAxis: { type: 'value', min: 0, max: 1, name: '相对位次' }, yAxis: { type: 'category', data: pairs.map((item) => item.subject_name) }, series: [{ name: '前次', type: 'scatter', symbol: 'circle', data: pairs.map((item, index) => { const points=visibleSeries.find((series)=>series.subject_name===item.subject_name)?.points ?? []; return { value:[item.from,index], evidenceId:points[points.length-2]?.evidence_version_id, label:pairLabel(item) } }) }, { name: '本次', type: 'scatter', symbol: 'diamond', data: pairs.map((item, index) => { const points=visibleSeries.find((series)=>series.subject_name===item.subject_name)?.points ?? []; return { value:[item.to,index], evidenceId:points[points.length-1]?.evidence_version_id, label:pairLabel(item) } }) }] })
-  chart(timelineChart.value, { ...common, tooltip: { trigger:'item', formatter:(params:{data?:{label?:string}})=>params.data?.label ?? '' }, xAxis: { type: 'time' }, yAxis: { type: 'category', data: ['证据'] }, series: [{ type: 'scatter', symbolSize: 15, label:{show:true,position:'top',formatter:(params:{data?:{stateText?:string}})=>params.data?.stateText ?? ''}, data: filteredSessions.value.flatMap((session) => session.evidence.map((point) => ({ value:[point.occurred_on,0], evidenceId:point.evidence_version_id, stateText:stateLabels[point.result_state] ?? point.result_state, label:`${termShort(session) ? `${termShort(session)} · ` : ''}${session.title} · ${point.subject_name} · ${stateLabels[point.result_state] ?? point.result_state}`, name:session.title, symbol:stateSymbols[point.result_state] ?? 'diamond', itemStyle:{color:session.metadata_complete ? '#356859' : '#9b6a2b'} }))) }] })
+    grid: { left: 46, right: 18, top: 30, bottom: 30 },
+    xAxis: { type: 'category', data: labels },
+    yAxis: { type: 'value', inverse: true, name: '校次', min: 1 },
+    series: [{
+      name: '总分校次',
+      type: 'line',
+      symbol: 'circle',
+      symbolSize: 10,
+      connectNulls: false,
+      data: totals.map((point) => (point.result_state === 'normal' ? point.rank : null)),
+    }],
+  })
+  charts.push(instance)
 }
-async function inspect(evidenceId: string) { selectedEvidence.value = await studentR1Api.evidenceSnapshot(evidenceId) as unknown as EvidenceSnapshot }
 async function decide(card: AttentionCard) { if (!analysis.value || !reason.value.trim()) return; await studentR1Api.decideAttention(card, analysis.value, { decision: decision.value, reason: reason.value, reviewAt: decision.value === 'no_action' ? null : reviewAt.value || null, planId: null }); message.value = '教师决定已保存；需要跟进时只生成一条匿名待办。'; await load() }
 function resize() { charts.forEach((item) => item.resize()) }
 onMounted(() => { void load(); window.addEventListener('resize', resize) })
 onBeforeUnmount(() => { window.removeEventListener('resize', resize); charts.forEach((item) => item.dispose()) })
-watch([timeFilter, seriesFilter, subjectFilter, comparableOnly], () => { void load() })
 </script>
 
 <template>
   <section class="academic">
-    <header><div><p>学业证据 · {{ analysis?.ruleset_version || '正在读取' }}</p><h2>{{ subject.display_name }} 的证据变化</h2></div><span>缺考不是 0 分 · 不可比点保留但断线 · 不显示风险分</span></header>
-    <div class="filters" aria-label="学业证据筛选"><label><span>时间</span><select v-model="timeFilter"><option value="all">全部时间</option><option value="recent_90">最近 90 天</option><option value="year">最近学年</option></select></label><label><span>考试系列</span><select v-model="seriesFilter"><option value="">全部系列</option><option v-for="item in seriesOptions" :key="item" :value="item">{{ item }}</option></select></label><label><span>学科</span><select v-model="subjectFilter"><option value="">全部学科</option><option v-for="item in subjectOptions" :key="item" :value="item">{{ item }}</option></select></label><label class="check"><input v-model="comparableOnly" type="checkbox"><span>只看可比证据</span></label></div>
-    <div class="summary"><div><strong>{{ filteredSessions.length }}</strong><span>考试场次</span></div><div><strong>{{ analysis?.series.length ?? 0 }}</strong><span>学科序列</span></div><div><strong>{{ pairCount }}</strong><span>可比位次对</span></div><div><strong>{{ analysis?.attention_cards.filter(card=>card.state==='draft').length ?? 0 }}</strong><span>待教师决定</span></div></div>
+    <header><div><p>学业画像</p><h2>{{ subject.display_name }} 的大考表现</h2></div><span>名次以校次为主 · 只比较同年级同口径场次 · 缺考不计入</span></header>
+
+    <section v-if="profile?.current" class="standing" aria-label="当前定位">
+      <div class="standing__exam">
+        <span v-if="profile.current.term_label" class="term">{{ profile.current.term_label }}</span>
+        <strong>{{ profile.current.session_title }}</strong>
+        <span>{{ profile.current.occurred_on }}</span>
+      </div>
+      <div class="standing__metrics">
+        <div v-if="profile.current.score != null"><strong>{{ profile.current.score }}</strong><span>总分</span></div>
+        <div><strong>第 {{ profile.current.rank }} 名</strong><span>校次 · 共 {{ profile.current.participant_count }} 人<template v-if="profile.current.top_ratio != null"> · 前 {{ formatTopRatio(profile.current.top_ratio) }}</template></span></div>
+        <div v-if="profile.current.class_rank != null"><strong>第 {{ profile.current.class_rank }} 名</strong><span>班次</span></div>
+        <div v-if="profile.current.rank_delta != null && profile.current.previous"><strong>{{ rankDeltaText(profile.current.rank_delta) }}</strong><span>较{{ profile.current.previous.term_label || '前一场' }}（第 {{ profile.current.previous.rank }} 名）</span></div>
+      </div>
+      <div class="standing__tags">
+        <span class="tag" :title="`最近 ${profile.trend.session_count} 场同年级总分校次`">趋势：{{ trendLabels[profile.trend.label] ?? profile.trend.label }}</span>
+        <span class="tag" :title="profile.stability.swing_ratio != null ? `近几场校次振幅约 ${Math.round(profile.stability.swing_ratio * 100)}%` : ''">稳定性：{{ stabilityLabels[profile.stability.label] ?? profile.stability.label }}</span>
+        <span class="tag" :title="profile.skew.label === 'skewed' ? `最强 ${profile.skew.strongest.map((item) => item.subject_name).join('、')}，最弱 ${profile.skew.weakest.map((item) => item.subject_name).join('、')}` : ''">偏科：{{ skewLabels[profile.skew.label] ?? profile.skew.label }}</span>
+      </div>
+    </section>
+    <p v-else-if="analysis" class="empty">还没有带校次的总分成绩，导入大考成绩表后这里会显示定位。</p>
+
     <div class="layout">
       <div class="charts">
-        <figure><figcaption><strong>1. 总体相对位次如何变化？</strong><span>只有后端判定可比的相邻点才连线</span></figcaption><div ref="rankChart" class="chart" role="img" aria-label="相对位次趋势图"></div></figure>
-        <figure><figcaption><strong>2. 哪些学科前移或后移？</strong><span>圆点为前次，菱形为本次</span></figcaption><div ref="pairChart" class="chart chart--short" role="img" aria-label="学科位次变化图"></div></figure>
-        <figure><figcaption><strong>3. 哪些证据可直接比较？</strong><span>空心点、菱形与琥珀色表示特殊或信息不完整</span></figcaption><div ref="timelineChart" class="chart chart--short" role="img" aria-label="证据时间带"></div></figure>
-        <section class="signals"><h3>4. 相对学科线索</h3><div v-for="signal in analysis?.relative_subject_signals" :key="signal.subject_name"><strong>{{ signal.subject_name }}</strong><span>{{ signal.signal }} · {{ signal.eligible_session_count }} 个合格场次</span></div><p v-for="reasonItem in analysis?.insufficient_reasons" :key="reasonItem">{{ reasonItem }}</p></section>
-        <details><summary>键盘可访问的数据点</summary><template v-for="session in filteredSessions" :key="session.session_id"><button v-for="point in session.evidence.filter((item)=>!subjectFilter || item.subject_name===subjectFilter)" :key="point.evidence_version_id" type="button" @click="inspect(point.evidence_version_id)">{{ session.occurred_on }} · {{ session.title }} · {{ point.subject_name }} · {{ stateLabels[point.result_state] ?? point.result_state }} · {{ point.score ?? '无分数' }}</button></template></details>
+        <figure v-if="profile?.current"><figcaption><strong>总分校次走势</strong><span>按学期链条排列；跨年级名次不直接比较</span></figcaption><div ref="trendChart" class="chart" role="img" aria-label="总分校次走势图"></div></figure>
+
+        <section v-if="heatmap.rows.length" class="heat" aria-label="学科位次热力表">
+          <h3>历次大考学科校次</h3>
+          <table>
+            <thead><tr><th>考试</th><th v-for="name in heatmap.subjects" :key="name">{{ name }}</th></tr></thead>
+            <tbody>
+              <tr v-for="row in heatmap.rows" :key="row.occurred_on">
+                <th scope="row"><span v-if="row.termLabel" class="term">{{ row.termLabel }}</span>{{ row.title }}</th>
+                <td v-for="name in heatmap.subjects" :key="name" :style="cellStyle(row.cells[name])">
+                  <template v-if="row.cells[name]">{{ row.cells[name].result_state === 'normal' ? (row.cells[name].rank ?? '—') : (stateLabels[row.cells[name].result_state] ?? row.cells[name].result_state) }}</template>
+                  <template v-else>—</template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="hint">颜色越绿校次越靠前，琥珀色表示落在年级后 60%；灰格为缺考或无有效名次。</p>
+        </section>
+
+        <section v-if="subjectRows.length" class="subjects" aria-label="学科明细">
+          <h3>学科明细</h3>
+          <div v-for="row in subjectRows" :key="row.subject_name" class="subject" :class="{ 'subject--attention': row.attention }">
+            <button type="button" @click="toggle(row.subject_name)">
+              <strong>{{ row.subject_name }}</strong>
+              <span v-if="row.latest?.rank != null">最近校次 第 {{ row.latest.rank }} 名<template v-if="row.latest.participant_count"> / {{ row.latest.participant_count }} 人</template></span>
+              <span v-else>暂无有效名次</span>
+              <span v-if="row.rank_delta != null" class="delta">{{ rankDeltaText(row.rank_delta) }}</span>
+              <span v-if="row.attention" class="mark">需要关注</span>
+            </button>
+            <svg v-if="expanded.has(row.subject_name) && sparkline(row.points)" class="spark" viewBox="0 0 120 28" role="img" :aria-label="`${row.subject_name}近期位次走势`">
+              <polyline :points="sparkline(row.points)" fill="none" stroke="var(--primary)" stroke-width="2" />
+            </svg>
+            <p v-if="expanded.has(row.subject_name)" class="detail">
+              <template v-for="point in row.points" :key="`${point.occurred_on}-${point.rank}`">
+                <span>{{ point.term_label || point.occurred_on }} · {{ point.result_state === 'normal' ? (point.rank != null ? `第 ${point.rank} 名` : '无名次') : (stateLabels[String(point.result_state)] ?? point.result_state) }}</span>
+              </template>
+            </p>
+          </div>
+        </section>
+        <p v-for="reasonItem in analysis?.insufficient_reasons" :key="reasonItem" class="hint">{{ reasonItem }}</p>
       </div>
+
       <aside>
-        <section><p class="eyebrow">证据检查器</p><template v-if="selectedEvidence"><h3>{{ selectedEvidence.language }}</h3><dl><div><dt>考试</dt><dd>{{ selectedEvidence.evidence.title }}</dd></div><div><dt>日期</dt><dd>{{ selectedEvidence.evidence.occurred_on }}</dd></div><div><dt>成绩状态</dt><dd>{{ selectedEvidence.evidence.result_state }}</dd></div><div><dt>分数</dt><dd>{{ selectedEvidence.evidence.score ?? '无数值' }}</dd></div></dl><p>原始文件：未保留；来源：教师确认的快照。</p></template><p v-else>点击图下的数据点，核对教师确认的证据快照。</p></section>
         <section v-for="card in analysis?.attention_cards.filter(item=>item.state==='draft')" :key="card.attention_card_id" class="attention"><p class="eyebrow">待教师决定</p><h3>{{ card.observed_fact }}</h3><p>{{ card.evidence_sufficiency }}</p><label><span>决定</span><select v-model="decision"><option value="follow_up">跟进</option><option value="observe">观察</option><option value="no_action">暂不行动</option></select></label><label><span>教师理由（必填）</span><textarea v-model="reason" rows="3"></textarea></label><label v-if="decision!=='no_action'"><span>复查日期（必填）</span><input v-model="reviewAt" type="date"></label><AppButton variant="primary" :disabled="!reason.trim() || (decision!=='no_action'&&!reviewAt)" @click="decide(card)">保存教师决定</AppButton></section>
         <p v-if="message" class="success">{{ message }}</p>
       </aside>
@@ -126,6 +229,12 @@ watch([timeFilter, seriesFilter, subjectFilter, comparableOnly], () => { void lo
 </template>
 
 <style scoped>
-.academic{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}header{display:flex;justify-content:space-between;align-items:end;padding:var(--space-5);border-bottom:1px solid var(--border)}header p,.eyebrow{margin:0 0 2px;color:var(--primary);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.07em}h2{margin:0;font-size:var(--font-size-h2)}header>span{max-width:420px;color:var(--color-text-secondary);font-size:var(--font-size-dense)}.summary{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid var(--border)}.summary div{display:flex;gap:var(--space-2);align-items:baseline;padding:var(--space-3) var(--space-5);border-right:1px solid var(--color-border-subtle)}.summary strong{font-size:var(--font-size-h2);color:var(--primary)}.summary span{color:var(--color-text-secondary)}.layout{display:grid;grid-template-columns:minmax(0,72fr) minmax(300px,28fr)}.charts{padding:var(--space-4)}figure{margin:0 0 var(--space-4);padding-bottom:var(--space-3);border-bottom:1px solid var(--color-border-subtle)}figcaption{display:flex;justify-content:space-between}figcaption span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.chart{height:300px}.chart--short{height:230px}.signals{padding:var(--space-4);border-radius:var(--radius);background:var(--muted)}.signals h3{margin-top:0}.signals div{display:flex;justify-content:space-between;padding:var(--space-2) 0;border-bottom:1px solid var(--color-border-subtle)}.signals p{color:var(--color-text-secondary)}details{margin-top:var(--space-3)}details summary{cursor:pointer;font-weight:600}details button{display:block;width:100%;padding:var(--space-2);border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left;cursor:pointer}details button:hover{background:var(--accent)}.layout>aside{padding:var(--space-4);border-left:1px solid var(--border);background:var(--muted)}aside>section{margin-bottom:var(--space-4);padding:var(--space-4);background:var(--card);border:1px solid var(--border);border-radius:var(--radius)}aside h3{margin-top:0}dl div{display:flex;justify-content:space-between;padding:var(--space-1) 0}dd{margin:0;font-weight:650}.attention{border-left:3px solid var(--color-warning)}label{display:grid;gap:var(--space-1);margin-top:var(--space-3);font-weight:650}select,input,textarea{min-height:38px;padding:var(--space-2);border:1px solid var(--border);border-radius:var(--radius);background:var(--card);font:inherit}select:focus-visible,input:focus-visible,textarea:focus-visible{border-color:var(--ring);box-shadow:var(--focus-ring);outline:0}aside .app-button{margin-top:var(--space-3)}.success{color:var(--color-success)}@media(max-width:1000px){.layout{grid-template-columns:1fr}.layout>aside{border-top:1px solid var(--border);border-left:0}}@media(max-width:700px){header{align-items:flex-start;flex-direction:column}.summary{grid-template-columns:repeat(2,1fr)}}
-.filters{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr)) auto;gap:var(--space-3);align-items:end;padding:var(--space-3) var(--space-5);border-bottom:1px solid var(--border);background:var(--muted)}.filters label{display:grid;gap:var(--space-1);margin:0}.filters .check{display:flex;align-items:center;min-height:40px}.filters select{min-height:38px;padding:0 var(--space-2);border:1px solid var(--border);border-radius:var(--radius);background:var(--card);font:inherit}@media(max-width:800px){.filters{grid-template-columns:1fr 1fr}}
+.academic{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}header{display:flex;justify-content:space-between;align-items:end;padding:var(--space-5);border-bottom:1px solid var(--border)}header p,.eyebrow{margin:0 0 2px;color:var(--primary);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.07em}h2{margin:0;font-size:var(--font-size-h2)}header>span{max-width:420px;color:var(--color-text-secondary);font-size:var(--font-size-dense)}
+.standing{display:grid;grid-template-columns:minmax(200px,1.2fr) 2fr;gap:var(--space-4);padding:var(--space-4) var(--space-5);border-bottom:1px solid var(--border)}.standing__exam{display:grid;gap:var(--space-1);align-content:start}.standing__exam strong{font-size:var(--font-size-h3)}.standing__exam span:last-child{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.term{display:inline-block;width:max-content;padding:1px var(--space-2);border-radius:var(--radius);background:var(--accent);color:var(--primary);font-size:var(--font-size-caption);font-weight:700}.standing__metrics{display:flex;flex-wrap:wrap;gap:var(--space-4)}.standing__metrics div{display:grid;gap:2px}.standing__metrics strong{font-size:var(--font-size-h2);color:var(--primary)}.standing__metrics span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.standing__tags{grid-column:1/-1;display:flex;gap:var(--space-2)}.tag{padding:var(--space-1) var(--space-3);border:1px solid var(--border);border-radius:999px;background:var(--card);font-size:var(--font-size-dense)}
+.empty{padding:var(--space-5);color:var(--color-text-secondary)}
+.layout{display:grid;grid-template-columns:minmax(0,72fr) minmax(300px,28fr)}.charts{padding:var(--space-4)}figure{margin:0 0 var(--space-4);padding-bottom:var(--space-3);border-bottom:1px solid var(--color-border-subtle)}figcaption{display:flex;justify-content:space-between}figcaption span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.chart{height:260px}
+.heat{margin-bottom:var(--space-4)}.heat h3,.subjects h3{margin:0 0 var(--space-2)}.heat table{width:100%;border-collapse:collapse;font-size:var(--font-size-dense)}.heat th,.heat td{padding:var(--space-1) var(--space-2);border:1px solid var(--color-border-subtle);text-align:center}.heat th[scope="row"]{text-align:left;font-weight:600}.heat thead th{background:var(--muted)}.heat .term{margin-right:var(--space-1)}.hint{color:var(--color-text-secondary);font-size:var(--font-size-dense)}
+.subjects{display:grid;gap:var(--space-2)}.subject{border:1px solid var(--color-border-subtle);border-radius:var(--radius)}.subject--attention{border-color:rgba(155,106,43,.55)}.subject>button{display:flex;align-items:baseline;gap:var(--space-3);width:100%;padding:var(--space-2) var(--space-3);border:0;background:transparent;font:inherit;text-align:left;cursor:pointer}.subject>button span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.subject .delta{color:var(--primary);font-weight:600}.subject .mark{margin-left:auto;padding:0 var(--space-2);border-radius:999px;background:rgba(155,106,43,.16);color:#9b6a2b;font-size:var(--font-size-caption);font-weight:700}.spark{display:block;margin:0 var(--space-3)}.detail{display:flex;flex-wrap:wrap;gap:var(--space-2);margin:0;padding:0 var(--space-3) var(--space-2);color:var(--color-text-secondary);font-size:var(--font-size-dense)}
+.layout>aside{padding:var(--space-4);border-left:1px solid var(--border);background:var(--muted)}aside>section{margin-bottom:var(--space-4)}.attention label{display:grid;gap:var(--space-1);margin:var(--space-2) 0}.attention select,.attention textarea,.attention input{border:1px solid var(--border);border-radius:var(--radius);background:var(--card);font:inherit;padding:var(--space-1) var(--space-2)}.success{color:var(--primary);font-weight:600}
+@media(max-width:900px){.layout{grid-template-columns:1fr}.layout>aside{border-left:0;border-top:1px solid var(--border)}.standing{grid-template-columns:1fr}}
 </style>

@@ -2467,6 +2467,46 @@
   gap: 8px;
 }
 
+.taxonomy-ai-results__category {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.taxonomy-ai-results__category.is-merge {
+  border-color: var(--color-success);
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.taxonomy-ai-results__category.is-new {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.taxonomy-ai-results__category.is-reject {
+  border-color: var(--color-danger);
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.taxonomy-ai-results__category.is-uncertain {
+  border-color: var(--color-warning);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+
+.taxonomy-ai-results__defer-hint {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 12px;
+}
+
 .taxonomy-ai-results__manual article,
 .taxonomy-ai-results__automatic article {
   padding: 10px;

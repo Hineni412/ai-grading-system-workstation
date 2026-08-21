@@ -112,6 +112,7 @@ def test_existing_subjects_render_as_one_empty_card_each(tmp_path: Path) -> None
         "open_questions": [],
         "support_focus": [],
         "updated_at": None,
+        "latest_round": None,
     }
 
 

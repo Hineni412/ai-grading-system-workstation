@@ -14,7 +14,9 @@ def test_run_scan_analysis_persists_payload_and_summary(tmp_path, monkeypatch: p
     from db_manager import DBManager, StudentRecord
     from scanner import ExamPaperGroup, ScanAnalysis
 
-    db = DBManager(tmp_path / "grading.db")
+    # db lives under a "databases" directory so load_editor_config infers
+    # tmp_path as the controlled data root for the session config files.
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
     db.upsert_students([StudentRecord("S001", "Alice", "Class 1")])
     student_id = db.list_students()[0]["id"]

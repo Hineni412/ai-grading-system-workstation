@@ -335,6 +335,7 @@ def test_grading_paper_intake_creates_source_links(
         source_file=source_file,
         db_path=db_path,
         run_ai_tagging=False,
+        data_root=tmp_path,
         grading_session_id=14,
         grading_source_questions=[
             {
@@ -417,6 +418,7 @@ def test_duplicate_intake_retries_only_questions_without_complete_tags(
         db_path=db_path,
         run_ai_tagging=True,
         ai_service=tagger,
+        data_root=tmp_path,
     )
 
     assert tagger.question_ids == [second_id]

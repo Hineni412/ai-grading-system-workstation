@@ -34,8 +34,13 @@ def training_services(tmp_path: Path) -> tuple[
     PracticePlanService,
     TrainingTaskService,
 ]:
-    grading_db_path = tmp_path / "grading.db"
-    question_bank_db_path = tmp_path / "question_bank.db"
+    # db 必须放在名为 "databases" 的目录下,生产代码据此把 tmp_path 推断为
+    # data root(受控根),否则 resolve_stored_file_path 会拒绝 tmp_path 下的
+    # rubric.json 等存储路径。
+    db_dir = tmp_path / "databases"
+    db_dir.mkdir()
+    grading_db_path = db_dir / "grading.db"
+    question_bank_db_path = db_dir / "question_bank.db"
     grading_db = DBManager(grading_db_path)
     grading_db.initialize()
     initialize_database(question_bank_db_path)

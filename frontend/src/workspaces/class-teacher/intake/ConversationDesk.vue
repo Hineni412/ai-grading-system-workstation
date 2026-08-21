@@ -49,7 +49,18 @@ const latestTurn = computed(() => {
   return turns.length ? turns[turns.length - 1]! : null
 })
 const pendingHandoffs = computed(() => conversation.value?.handoffs.filter((item) => ['pending', 'opened', 'adoption_started'].includes(item.adoption_state)) ?? [])
-const visibleHandoffs = computed(() => conversation.value?.handoffs.filter((item) => item.adoption_state !== 'stale') ?? [])
+// 学生档案卡按学生去重：同一学生只保留最新一张（列表按创建顺序排列），撤回按钮也挂在最新卡上。
+const visibleHandoffs = computed(() => {
+  const all = conversation.value?.handoffs.filter((item) => item.adoption_state !== 'stale') ?? []
+  const latestByStudent = new Map<string, number>()
+  all.forEach((item, index) => {
+    if (isStudentRecord(item) && item.subject_id) latestByStudent.set(item.subject_id, index)
+  })
+  return all.filter((item, index) => {
+    if (!isStudentRecord(item) || !item.subject_id) return true
+    return latestByStudent.get(item.subject_id) === index
+  })
+})
 const recentConversations = computed(() => recent.value.filter((item) => Boolean(item.first_message)).slice(0, 5))
 const taskInFlight = computed(() => conversation.value?.state === 'ai_running')
 const domains = [

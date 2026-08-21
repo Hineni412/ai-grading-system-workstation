@@ -2,6 +2,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+import path_manager
+
+
+@pytest.fixture(autouse=True)
+def _controlled_synthetic_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # tests/conftest.py isolates the global PathManager into its own temporary
+    # directory, so the harness data root (tmp_path / "synthetic_data") falls
+    # outside every controlled root and resolve_stored_file_path rejects the
+    # session's stored rubric/template paths during region commit. Point the
+    # data root at tmp_path so the whole synthetic tree is controlled here.
+    monkeypatch.setattr(path_manager.get_path_manager(), "_data_root", tmp_path)
+
 
 def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
     api_e2e,

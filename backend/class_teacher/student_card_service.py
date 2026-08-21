@@ -60,6 +60,7 @@ class StudentCardService:
         model_approval: ModelApproval,
         work: WorkGraph,
         projections: SensitiveWorkProjection,
+        academic_summarizer: Callable[..., dict[str, object] | None] | None = None,
     ) -> None:
         self.database = database
         self.repository = repository
@@ -68,6 +69,9 @@ class StudentCardService:
         self.model_approval = model_approval
         self.work = work
         self.projections = projections
+        # 学业摘要卡由 StudentAcademicAnalysis 提供；装配时注入，
+        # 保持学生卡服务不反向依赖学业分析模块。
+        self.academic_summarizer = academic_summarizer
 
     def list_cards(self, *, token: str) -> dict[str, object]:
         vmk = self._key_provider(token)
@@ -98,6 +102,11 @@ class StudentCardService:
 
         card = self.get_card(token=token, subject_id=subject_id)
         profile = dict(card["current_profile"])
+        academic_summary = (
+            self.academic_summarizer(token=token, subject_id=subject_id)
+            if self.academic_summarizer is not None
+            else None
+        )
         return {
             "subject_ref": {
                 "kind": "student",
@@ -107,6 +116,7 @@ class StudentCardService:
             "display_name": str(card["subject"].get("display_name") or ""),
             "class_label": str(card["subject"].get("class_label") or ""),
             "profile": profile,
+            "academic_summary": academic_summary,
             "support_plans": list(card["support_plans"])[:8],
         }
 
@@ -311,6 +321,40 @@ class StudentCardService:
             )
         return self._profile(value)
 
+    def current_profile_in_connection(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        subject_id: str,
+    ) -> dict[str, object] | None:
+        """Read the one active current profile inside a caller-owned transaction.
+
+        返回归一化档案、当前修订号和原有教师原话/草稿，供同事务内的档案回写
+        （如方案完成时并入已验证有效做法）保持档案其余内容不变。
+        """
+        row = connection.execute(
+            """
+            SELECT payload_object_id FROM student_card_entries
+            WHERE subject_id=? AND state='active'
+            ORDER BY created_at DESC, entry_id DESC LIMIT 1
+            """,
+            (subject_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        payload, revision = self.repository.get(
+            connection,
+            vmk=vmk,
+            object_id=str(row["payload_object_id"]),
+        )
+        return {
+            "profile": self._profile_from_payload(payload),
+            "revision": int(revision),
+            "teacher_quote": self._optional_text(payload.get("teacher_quote"), 4000),
+            "model_draft": self._optional_text(payload.get("model_draft"), 12_000),
+        }
+
     def upsert_current_profile_in_connection(
         self,
         connection: Any,
@@ -324,6 +368,7 @@ class StudentCardService:
         teacher_quote: str,
         model_draft: str,
         source_record_id: str | None = None,
+        latest_round_record_id: str | None = None,
     ) -> dict[str, object]:
         """Merge into one current profile without creating visible history versions."""
 
@@ -348,17 +393,24 @@ class StudentCardService:
             entry_id = uuid4().hex
             object_id = f"student-card-current-{entry_id}"
             merged = incoming
+            payload: dict[str, object] = {
+                "profile": merged,
+                "teacher_quote": self._optional_text(teacher_quote, 4000),
+                "model_draft": self._optional_text(model_draft, 12_000),
+                "teacher_confirmed_at": timestamp,
+            }
+            if latest_round_record_id is not None:
+                payload["latest_round"] = {
+                    "record_id": latest_round_record_id,
+                    "adopted_at": timestamp,
+                    "changed": self._profile_changes(self._empty_profile(), merged),
+                }
             self.repository.put(
                 connection,
                 vmk=vmk,
                 object_id=object_id,
                 object_type="student_card_current_profile",
-                payload={
-                    "profile": merged,
-                    "teacher_quote": self._optional_text(teacher_quote, 4000),
-                    "model_draft": self._optional_text(model_draft, 12_000),
-                    "teacher_confirmed_at": timestamp,
-                },
+                payload=payload,
             )
             connection.execute(
                 """
@@ -394,18 +446,25 @@ class StudentCardService:
                 )
             current = self._profile_from_payload(payload)
             merged = self._merge_profile(current, incoming)
+            new_payload: dict[str, object] = {
+                "profile": merged,
+                "teacher_quote": self._optional_text(teacher_quote, 4000),
+                "model_draft": self._optional_text(model_draft, 12_000),
+                "teacher_confirmed_at": timestamp,
+                "last_model_operation_id": model_operation_id,
+            }
+            if latest_round_record_id is not None:
+                new_payload["latest_round"] = {
+                    "record_id": latest_round_record_id,
+                    "adopted_at": timestamp,
+                    "changed": self._profile_changes(current, merged),
+                }
             revision = self.repository.put(
                 connection,
                 vmk=vmk,
                 object_id=object_id,
                 object_type="student_card_current_profile",
-                payload={
-                    "profile": merged,
-                    "teacher_quote": self._optional_text(teacher_quote, 4000),
-                    "model_draft": self._optional_text(model_draft, 12_000),
-                    "teacher_confirmed_at": timestamp,
-                    "last_model_operation_id": model_operation_id,
-                },
+                payload=new_payload,
                 expected_revision=revision,
             )
             if source_record_id:
@@ -655,18 +714,84 @@ class StudentCardService:
             return {
                 "entry_id": None,
                 "revision": 0,
-                "summary": "",
-                "dimensions": [],
-                "open_questions": [],
-                "support_focus": [],
+                **StudentCardService._empty_profile(),
                 "updated_at": None,
+                "latest_round": None,
             }
         profile = StudentCardService._profile_from_payload(entry)
+        latest_round = entry.get("latest_round")
         return {
             "entry_id": str(entry.get("entry_id") or "") or None,
             "revision": int(entry.get("revision") or 0),
             **profile,
             "updated_at": entry.get("teacher_confirmed_at") or entry.get("created_at"),
+            "latest_round": dict(latest_round) if isinstance(latest_round, dict) else None,
+        }
+
+    @staticmethod
+    def _empty_profile() -> dict[str, object]:
+        return {
+            "summary": "",
+            "dimensions": [],
+            "open_questions": [],
+            "support_focus": [],
+        }
+
+    @staticmethod
+    def _profile_changes(
+        before: dict[str, object],
+        after: dict[str, object],
+    ) -> dict[str, object]:
+        """Diff two current profiles so the drawer can mark this round's updates."""
+
+        before_dimensions = {
+            str(item.get("key") or ""): item
+            for item in list(before.get("dimensions") or [])
+            if isinstance(item, dict)
+        }
+        dimensions: dict[str, list[str]] = {}
+        for item in list(after.get("dimensions") or []):
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "")
+            if not key:
+                continue
+            previous_items = {
+                str(value)
+                for value in list((before_dimensions.get(key) or {}).get("items") or [])
+            }
+            new_items = [
+                str(value)
+                for value in list(item.get("items") or [])
+                if str(value) not in previous_items
+            ]
+            if new_items:
+                dimensions[key] = new_items
+        before_questions = {
+            str(value) for value in list(before.get("open_questions") or [])
+        }
+        open_questions = [
+            str(value)
+            for value in list(after.get("open_questions") or [])
+            if str(value) not in before_questions
+        ]
+        before_focus = {
+            str(item.get("key") or ""): item
+            for item in list(before.get("support_focus") or [])
+            if isinstance(item, dict)
+        }
+        support_focus = [
+            str(item.get("key") or "")
+            for item in list(after.get("support_focus") or [])
+            if isinstance(item, dict)
+            and str(item.get("key") or "")
+            and before_focus.get(str(item.get("key") or "")) != item
+        ]
+        return {
+            "summary_changed": str(before.get("summary") or "") != str(after.get("summary") or ""),
+            "dimensions": dimensions,
+            "open_questions": open_questions,
+            "support_focus": support_focus,
         }
 
     @staticmethod

@@ -200,6 +200,238 @@ def test_confirm_batch_stores_grade_rank_alongside_class_rank(tmp_path: Path) ->
     assert rank_context["rank_scope"] == "grade"
 
 
+def test_confirm_batch_creates_empty_profile_for_unknown_student(tmp_path: Path) -> None:
+    service, token, subject_id = _service(tmp_path)
+
+    def _batch_with_new_student(occurred_on: str, operation: str) -> dict[str, object]:
+        batch = ConfirmedSpreadsheetAdapter().read(
+            {
+                "teacher_confirmed": True,
+                "source_label": "内存中的合成预览，不含原始文件",
+                "assessments": [
+                    {
+                        "title": f"合成多学科场次{occurred_on}",
+                        "subject_name": "语文",
+                        "occurred_on": occurred_on,
+                        "results": [
+                            {
+                                "subject_id": subject_id,
+                                "result_state": "normal",
+                                "score": 90,
+                            },
+                            {
+                                "subject_identity": {
+                                    "display_name": "合成新学生",
+                                    "class_label": "合成一班",
+                                    "student_code": "S999",
+                                },
+                                "result_state": "normal",
+                                "score": 77,
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        return service.evidence.confirm_batch(
+            token=token, operation_id=operation, batch=batch
+        )
+
+    first = _batch_with_new_student("2026-05-01", "confirm-evidence-autocreate-1")
+    assert first["created_results"] == 2
+    subjects = service.support.list_subjects(token=token)["items"]
+    names = {item["display_name"] for item in subjects}
+    assert "合成新学生" in names
+    assert len(subjects) == 2
+
+    # 同一学生再次登记：指纹命中，不重复建档
+    second = _batch_with_new_student("2026-06-01", "confirm-evidence-autocreate-2")
+    assert second["created_results"] == 2
+    subjects = service.support.list_subjects(token=token)["items"]
+    assert len(subjects) == 2
+    new_subject = next(
+        item for item in subjects if item["display_name"] == "合成新学生"
+    )
+    evidence = service.evidence.list_subject_evidence(
+        token=token, subject_id=str(new_subject["subject_id"])
+    )
+    assert [item["score"] for item in evidence["items"]] == [77, 77]
+
+
+def _build_roster_db(path: Path, students: list[tuple[int, str, str, str]]) -> None:
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(
+            "CREATE TABLE students (id INTEGER PRIMARY KEY, student_code TEXT, name TEXT, class_name TEXT)"
+        )
+        connection.executemany("INSERT INTO students VALUES (?, ?, ?, ?)", students)
+        connection.commit()
+
+
+def _batch_with_identity(
+    identity: dict[str, object], occurred_on: str
+) -> dict[str, object]:
+    return ConfirmedSpreadsheetAdapter().read(
+        {
+            "teacher_confirmed": True,
+            "source_label": "内存中的合成预览，不含原始文件",
+            "assessments": [
+                {
+                    "title": f"合成花名册建档场次{occurred_on}",
+                    "subject_name": "语文",
+                    "occurred_on": occurred_on,
+                    "results": [
+                        {
+                            "subject_identity": identity,
+                            "result_state": "normal",
+                            "score": 77,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def _subject_fingerprint(service: VaultService, subject_id: str) -> object:
+    with closing(service.database.connect()) as connection:
+        row = connection.execute(
+            "SELECT source_fingerprint FROM student_subject_links WHERE subject_id = ?",
+            (subject_id,),
+        ).fetchone()
+    return None if row is None else row[0]
+
+
+def test_confirm_batch_creates_roster_identity_for_roster_student(
+    tmp_path: Path,
+) -> None:
+    service, token, _subject_id = _service(tmp_path)
+    _build_roster_db(
+        tmp_path / "workspaces" / "class-teacher" / "grading.db",
+        [(20, "20250920", "合成花名册学生", "9")],
+    )
+
+    service.evidence.confirm_batch(
+        token=token,
+        operation_id="confirm-evidence-roster-identity-1",
+        batch=_batch_with_identity(
+            {"display_name": "合成花名册学生", "class_label": "9", "student_code": "37032129"},
+            "2026-05-01",
+        ),
+    )
+
+    subjects = service.support.list_subjects(token=token)["items"]
+    new_subject = next(
+        item for item in subjects if item["display_name"] == "合成花名册学生"
+    )
+    # 按花名册身份建档：来源编号是花名册来源编号，稳定标识是 班级|学号。
+    assert new_subject["source_student_id"] == "20"
+    assert _subject_fingerprint(service, str(new_subject["subject_id"])) == "9|20250920"
+
+    # 同一学生再次登记：命中同一档案，不重复建档。
+    service.evidence.confirm_batch(
+        token=token,
+        operation_id="confirm-evidence-roster-identity-2",
+        batch=_batch_with_identity(
+            {"display_name": "合成花名册学生", "class_label": "9", "student_code": "37032129"},
+            "2026-06-01",
+        ),
+    )
+    subjects = service.support.list_subjects(token=token)["items"]
+    assert len([item for item in subjects if item["display_name"] == "合成花名册学生"]) == 1
+
+
+def test_confirm_batch_matches_roster_by_unique_name_when_class_differs(
+    tmp_path: Path,
+) -> None:
+    service, token, _subject_id = _service(tmp_path)
+    _build_roster_db(
+        tmp_path / "workspaces" / "class-teacher" / "grading.db",
+        [(20, "20250920", "合成花名册学生", "9")],
+    )
+
+    service.evidence.confirm_batch(
+        token=token,
+        operation_id="confirm-evidence-roster-by-name",
+        batch=_batch_with_identity(
+            {"display_name": "合成花名册学生", "class_label": "七9班"},
+            "2026-05-01",
+        ),
+    )
+
+    subjects = service.support.list_subjects(token=token)["items"]
+    new_subject = next(
+        item for item in subjects if item["display_name"] == "合成花名册学生"
+    )
+    assert new_subject["source_student_id"] == "20"
+    assert new_subject["class_label"] == "9"
+
+
+def test_confirm_batch_falls_back_to_temporary_identity_outside_roster(
+    tmp_path: Path,
+) -> None:
+    service, token, _subject_id = _service(tmp_path)
+    _build_roster_db(
+        tmp_path / "workspaces" / "class-teacher" / "grading.db",
+        [(20, "20250920", "合成花名册学生", "9")],
+    )
+
+    service.evidence.confirm_batch(
+        token=token,
+        operation_id="confirm-evidence-outside-roster",
+        batch=_batch_with_identity(
+            {"display_name": "花名册外学生", "class_label": "9", "student_code": "S999"},
+            "2026-05-01",
+        ),
+    )
+
+    subjects = service.support.list_subjects(token=token)["items"]
+    new_subject = next(
+        item for item in subjects if item["display_name"] == "花名册外学生"
+    )
+    assert str(new_subject["source_student_id"]).startswith("evidence-upload|")
+
+
+def test_subject_identity_requires_configured_ensurer(tmp_path: Path) -> None:
+    from backend.class_teacher.assessment_evidence_service import (
+        AssessmentEvidenceService,
+    )
+
+    service, token, _subject_id = _service(tmp_path)
+    bare = AssessmentEvidenceService(
+        service.database,
+        service.repository,
+        getattr(service, "_key_provider"),
+    )
+    batch = ConfirmedSpreadsheetAdapter().read(
+        {
+            "teacher_confirmed": True,
+            "source_label": "内存中的合成预览，不含原始文件",
+            "assessments": [
+                {
+                    "title": "合成无建档服务场次",
+                    "subject_name": "语文",
+                    "occurred_on": "2026-05-01",
+                    "results": [
+                        {
+                            "subject_identity": {"display_name": "合成新学生"},
+                            "result_state": "normal",
+                            "score": 77,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    with pytest.raises(VaultError) as error:
+        bare.confirm_batch(
+            token=token, operation_id="confirm-evidence-no-ensurer", batch=batch
+        )
+    assert error.value.code == "assessment_subject_ensurer_unavailable"
+
+
 def test_result_states_are_distinct_and_three_comparable_points_allow_trend(
     tmp_path: Path,
 ) -> None:

@@ -23,6 +23,8 @@ class FailingCreateSessionDb:
         session_name: str,
         rubric_path: str,
         answer_key_path: str,
+        *,
+        curriculum_volume_id: str | None = None,
     ) -> int:
         raise RuntimeError("insert failed")
 
@@ -31,7 +33,7 @@ def test_create_session_draft_creates_recoverable_created_session(tmp_path) -> N
     db = initialized_db(tmp_path / "grading.db")
 
     session_id = create_session_draft(
-        db,
+        db.session_repository,
         tmp_path / "uploaded",
         name="七年级期末",
     )

@@ -175,7 +175,7 @@ describe('TemplateRegionView', () => {
 
     expect(host.querySelectorAll('.config-stage-rail button')).toHaveLength(5)
     const editorStage = [...host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
-      .find((button) => button.textContent?.includes('评分依据'))
+      .find((button) => button.textContent?.includes('本场赋分'))
     expect(editorStage?.disabled).toBe(false)
     expect(host.querySelector<HTMLButtonElement>('.config-stage-rail button[aria-current="step"]')
       ?.textContent).toContain('样卷题框')

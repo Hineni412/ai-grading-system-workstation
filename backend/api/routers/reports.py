@@ -45,7 +45,11 @@ def export_session_report(
     file_service: JobFileService = Depends(get_job_file_service),
 ) -> JobResponse:
     _require_session(db, session_id)
-    if request is not None and not db.get_session_results(int(session_id)):
+    has_results = bool(db.get_session_results(int(session_id)))
+    has_teacher_locks = bool(
+        db.review_repository.list_teacher_score_locks(int(session_id))
+    )
+    if request is not None and not has_results and not has_teacher_locks:
         raise ApiError(
             409,
             "report_results_missing",
@@ -92,6 +96,9 @@ def get_session_report_context(
 ) -> ReportExportContextResponse:
     _require_session(db, session_id)
     revision = score_revision(db, session_id)
+    has_results = bool(db.get_session_results(int(session_id))) or bool(
+        db.review_repository.list_teacher_score_locks(int(session_id))
+    )
     jobs, total = manager.list(
         session_id=int(session_id),
         job_types=("report_export",),
@@ -100,7 +107,7 @@ def get_session_report_context(
     )
     return ReportExportContextResponse(
         score_revision=revision,
-        has_results=bool(db.get_session_results(int(session_id))),
+        has_results=has_results,
         jobs=[
             ReportExportHistoryItem(
                 **_job_response(job).model_dump(),

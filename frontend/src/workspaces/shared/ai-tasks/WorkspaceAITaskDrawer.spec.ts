@@ -64,14 +64,36 @@ afterEach(() => {
 })
 
 describe('WorkspaceAITaskDrawer', () => {
-  it('does not show a floating peek card while a job runs', async () => {
+  it('shows a floating peek card while a job runs and minimizes it on demand', async () => {
     const { app, host, jobs } = await mountDrawer()
     jobs.track(job('running', 0.35, 'question_bank_sync', '正在写入题目'))
     await nextTick()
 
-    expect(host.querySelector('.workspace-ai-task-peek')).toBeNull()
+    const peek = host.querySelector('.workspace-ai-task-peek')
+    expect(peek).not.toBeNull()
+    expect(peek?.textContent).toContain('题库同步')
+    expect(peek?.textContent).toContain('35% · 正在写入题目')
     expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).toContain('任务中心')
     expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).toContain('35%')
+
+    const minimizeButton = [...peek!.querySelectorAll('button')]
+      .find(button => button.textContent?.includes('收回任务中心'))
+    expect(minimizeButton).toBeDefined()
+    minimizeButton!.click()
+    await nextTick()
+    expect(host.querySelector('.workspace-ai-task-peek')).toBeNull()
+    app.unmount()
+  })
+
+  it('auto-minimizes the peek card after a tracked job succeeds', async () => {
+    const { app, host, jobs } = await mountDrawer()
+    vi.useFakeTimers()
+    jobs.track(job('succeeded', 1))
+    await nextTick()
+
+    expect(host.querySelector('.workspace-ai-task-peek')).not.toBeNull()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(host.querySelector('.workspace-ai-task-peek')).toBeNull()
     app.unmount()
   })
 

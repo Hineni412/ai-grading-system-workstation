@@ -38,7 +38,9 @@ def _detail(question_id: str, score: float, knowledge_id: str = "K") -> Question
 
 
 def _seed_retry_case(tmp_path: Path) -> tuple[DBManager, int, int, int, Path, Path, Path]:
-    db = DBManager(tmp_path / "retry.db")
+    db_dir = tmp_path / "databases"
+    db_dir.mkdir()
+    db = DBManager(db_dir / "retry.db")
     db.initialize()
     session_id = db.create_grading_session("Retry", "rubric.json", "answer.json")
     exams_dir = tmp_path / "exams"

@@ -318,3 +318,107 @@ def test_revert_keeps_the_original_support_record(tmp_path: Path) -> None:
     assert row["state"] == "active"
     summary = service.support.get_summary(token="", subject_id=str(subject["subject_id"]))
     assert any(str(item.get("record_id")) == record_id for item in summary["items"])
+
+
+def test_adopt_marks_latest_round_changes_and_revert_clears_them(tmp_path: Path) -> None:
+    service, _port = _service(tmp_path)
+    subject = service.support.create_subject(
+        token="",
+        operation_id="latest-round-subject",
+        source_student_id="SYN-ROUND-001",
+        display_name="合成学生甲",
+        class_label="一班",
+    )
+    with closing(service.database.connect()) as connection:
+        with connection:
+            service.student_cards.upsert_current_profile_in_connection(
+                connection,
+                vmk=service.student_cards._key_provider(""),
+                subject_id=str(subject["subject_id"]),
+                profile_update=_profile("合并前的档案", "原有表现"),
+                expected_revision=0,
+                operation_id="latest_round_seed",
+                model_operation_id="latest-round-model",
+                teacher_quote="合成档案原话",
+                model_draft="合成档案草稿",
+            )
+    outcome = _adopt_profile_update(
+        service,
+        operation_id="latest-round-adopt",
+        subject=subject,
+        profile_update=_profile("合并后的档案", "新增表现"),
+        profile_base_revision=1,
+    )
+
+    profile = _current_profile(service, str(subject["subject_id"]))
+    latest = profile["latest_round"]
+    assert isinstance(latest, dict)
+    assert latest["record_id"] == str(outcome["receipt"]["formal_object_id"])
+    assert latest["adopted_at"]
+    changed = latest["changed"]
+    assert changed["summary_changed"] is True
+    assert changed["dimensions"] == {"peer_relationships": ["新增表现"]}
+    assert changed["open_questions"] == []
+    assert changed["support_focus"] == []
+
+    service.intake.revert_profile_adoption(
+        token="",
+        handoff_id=str(outcome["handoff"]["handoff_id"]),
+    )
+    restored = _current_profile(service, str(subject["subject_id"]))
+    assert restored["summary"] == "合并前的档案"
+    assert restored["latest_round"] is None
+
+
+def test_new_adopt_replaces_latest_round_marker(tmp_path: Path) -> None:
+    service, _port = _service(tmp_path)
+    subject = service.support.create_subject(
+        token="",
+        operation_id="latest-round-replace-subject",
+        source_student_id="SYN-ROUND-002",
+        display_name="合成学生甲",
+        class_label="一班",
+    )
+    _adopt_profile_update(
+        service,
+        operation_id="latest-round-first",
+        subject=subject,
+        profile_update=_profile("第一轮档案", "第一轮表现"),
+        profile_base_revision=0,
+    )
+    second = _adopt_profile_update(
+        service,
+        operation_id="latest-round-second",
+        subject=subject,
+        profile_update=_profile("第二轮档案", "第二轮表现"),
+        profile_base_revision=1,
+    )
+
+    latest = _current_profile(service, str(subject["subject_id"]))["latest_round"]
+    assert isinstance(latest, dict)
+    assert latest["record_id"] == str(second["receipt"]["formal_object_id"])
+    assert latest["changed"]["dimensions"] == {"peer_relationships": ["第二轮表现"]}
+
+
+def test_handoff_summary_carries_subject_id_for_card_dedup(tmp_path: Path) -> None:
+    service, _port = _service(tmp_path)
+    subject = service.support.create_subject(
+        token="",
+        operation_id="handoff-subject-id-subject",
+        source_student_id="SYN-ROUND-003",
+        display_name="合成学生甲",
+        class_label="一班",
+    )
+    outcome = _adopt_profile_update(
+        service,
+        operation_id="handoff-subject-id-adopt",
+        subject=subject,
+        profile_update=_profile("合成档案", "合成表现"),
+        profile_base_revision=0,
+    )
+    handoff_id = str(outcome["handoff"]["handoff_id"])
+    conversation_id = str(service.intake.open_handoff(handoff_id)["conversation_id"])
+
+    conversation = service.intake.get_conversation(conversation_id)
+
+    assert conversation["handoffs"][0]["subject_id"] == str(subject["subject_id"])

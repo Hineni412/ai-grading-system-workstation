@@ -28,7 +28,7 @@ from ..roster_ref import SUBJECT_REF_PATTERN, task_safe_ref_id
 from ..student_card_service import CORE_PROFILE_DIMENSIONS
 from .affair_flow_contract import parse_affair_flow_revision
 from .conversations import ConversationStore
-from .triage_contract import DOMAINS, HANDLING_MODES, INTENTS
+from .triage_contract import DOMAINS, HANDLING_MODES, INTENTS, SAFETY_LEVELS
 
 
 _TRIAGE_INSTRUCTION = """你是班主任事务整理助手。只返回一个 JSON 对象，不要 Markdown。顶层只能有 contract_version、assistant_message、clarification_questions、work_items。严格按下面的完整结构返回：
@@ -71,9 +71,18 @@ _PROFILE_ORGANIZATION_RULES = (
     "什么情境下表现好或差、什么方式对他有效或无效、家庭与同伴中的关键细节、教师试过的办法及效果；"
     "只有涉及专业结论规则时才追问材料来源、日期与依据。"
 )
+_ACADEMIC_SUMMARY_RULES = (
+    "学业摘要规则：上下文中可能带 academic_summary（学业摘要卡），"
+    "由本机根据教师确认的历次大考成绩预计算，包含定位（最近一次总分校次）、"
+    "趋势、稳定性、偏科标签和各科目最近校次。"
+    "整理档案或提出支持建议时可直接引用其中事实（名次、进退步、偏科方向），"
+    "但不得把趋势或偏科标签写成能力、智力或性格结论，"
+    "不得编造摘要卡中没有的场次、分数或名次，"
+    "摘要卡缺失或标签为 insufficient 时不得推测学业水平。"
+)
 # 档案整理规则对分诊与学生档案页两种会话同样生效。
-_TRIAGE_INSTRUCTION = _TRIAGE_INSTRUCTION + "\n\n" + _PROFILE_ORGANIZATION_RULES
-_PROFILE_INSTRUCTION = _PROFILE_INSTRUCTION + "\n\n" + _PROFILE_ORGANIZATION_RULES
+_TRIAGE_INSTRUCTION = _TRIAGE_INSTRUCTION + "\n\n" + _PROFILE_ORGANIZATION_RULES + "\n\n" + _ACADEMIC_SUMMARY_RULES
+_PROFILE_INSTRUCTION = _PROFILE_INSTRUCTION + "\n\n" + _PROFILE_ORGANIZATION_RULES + "\n\n" + _ACADEMIC_SUMMARY_RULES
 # 学生引用是稳定学籍标识（班级|学号/姓名）或内部主体编号，均为无控制字符短文本。
 _STUDENT_REFERENCE_PATTERN = SUBJECT_REF_PATTERN
 _STUDENT_REFERENCE_ISSUE_CODES = frozenset(
@@ -582,6 +591,7 @@ class ClassTeacherAITaskAdapter:
             name_counts[name] = name_counts.get(name, 0) + 1
         normalized_result = deepcopy(dict(result))
         _canonicalize_work_item_enums(normalized_result)
+        _soften_triage_shapes(normalized_result)
         _sanitize_profile_update_dimensions(normalized_result)
         normalized_result["clarification_questions"] = _bounded_clarification_questions(
             normalized_result.get("clarification_questions")
@@ -638,6 +648,11 @@ class ClassTeacherAITaskAdapter:
                         *(item for item in alternatives if item != requested_mode),
                     ]))[:2]
                     raw_item.pop("handoff_key", None)
+            if (
+                raw_item.get("domain") in {"student_growth", "student_support"}
+                and raw_item.get("primary_mode") == "record"
+            ):
+                _move_model_missing_fields_to_open_questions(raw_item)
             if (
                 raw_item.get("domain") == "conflict_safety"
                 and requested_mode is None
@@ -1018,20 +1033,8 @@ class ClassTeacherAITaskAdapter:
             ]))
         draft["profile_update"] = profile
         draft["profile_base_revision"] = base_revision
-        missing = item.get("missing_fields") if isinstance(item.get("missing_fields"), list) else []
-        missing = [
-            value
-            for value in missing
-            if not re.search(r"(?:诊断|专业|结论|书面|依据|在校支持|干预|规避)", str(value))
-        ]
-        additions: list[str] = []
-        if not (has_source and has_basis):
-            additions.append("请核对专业结论来源和书面依据")
-        if not has_date:
-            additions.append("请核对专业结论日期")
-        if not has_school_support:
-            additions.append("请补充当前在校支持")
-        item["missing_fields"] = list(dict.fromkeys([*missing, *additions]))
+        # 模型自报的缺失项已在 normalize_triage_result 前半段统一转写进
+        # 档案 open_questions，这里不再有 missing_fields 需要清理。
 
     def _current_profile_for_candidate(
         self,
@@ -1252,6 +1255,122 @@ class ClassTeacherAITaskAdapter:
             return_focus_ref=str(item["work_item_id"]),
             expires_on_source_change=expires_on_source_change,
         )
+
+
+# 与 triage_contract 的合同字段保持一致：合同外字段在归一层丢弃，不进校验。
+_TRIAGE_TOP_LEVEL_FIELDS = frozenset({
+    "contract_version", "assistant_message", "clarification_questions", "work_items",
+})
+_TRIAGE_WORK_ITEM_FIELDS = frozenset({
+    "work_item_id", "domain", "primary_mode", "secondary_modes", "intent",
+    "reason_summary", "subject_refs", "time_facts", "safety_level",
+    "missing_fields", "draft", "draft_ref", "handoff_key",
+})
+_WORK_ITEM_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,128}")
+
+
+def _soft_student_ref(value: object) -> dict[str, str] | None:
+    """学生引用形状修复：多余键丢弃、形状不合格的整条引用丢弃（不信任）。"""
+    if not isinstance(value, Mapping) or value.get("kind") != "student":
+        return None
+    ref_id = str(value.get("id") or "")
+    revision = str(value.get("revision") or "").strip()
+    if (
+        SUBJECT_REF_PATTERN.fullmatch(ref_id) is None
+        or not revision
+        or len(revision) > 128
+    ):
+        return None
+    return {"kind": "student", "id": ref_id, "revision": revision}
+
+
+def _expected_destination_key(mode: str, domain: str) -> str:
+    # 与 triage_contract._destination 的推断规则保持一致。
+    if mode == "plan_calendar":
+        return "class_teacher.plan.calendar"
+    if mode == "sop":
+        return "class_teacher.affair.sop"
+    if domain in {"student_growth", "student_support"}:
+        return "class_teacher.student.record"
+    return "class_teacher.affair.record"
+
+
+def _soften_triage_shapes(result: dict[str, Any]) -> None:
+    """形状瑕疵就地修复，避免一个格式问题让整轮作废。
+
+    只做无损处理：合同外字段丢弃、超长截断、空说明补默认文案、
+    安全级别只往更严归一。语义枚举（domain/mode/intent 归一后仍不认识）
+    仍由后续合同校验把关，不在此处猜测。
+    """
+    for field in tuple(set(result) - _TRIAGE_TOP_LEVEL_FIELDS):
+        result.pop(field, None)
+    message = str(result.get("assistant_message") or "").strip()
+    result["assistant_message"] = (message or "已整理，请核对草稿。")[:2000]
+    items = result.get("work_items")
+    if not isinstance(items, list):
+        return
+    if len(items) > 8:
+        del items[8:]
+        result["work_items"] = items
+    seen_ids: set[str] = set()
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        for field in tuple(set(item) - _TRIAGE_WORK_ITEM_FIELDS):
+            item.pop(field, None)
+        raw_id = str(item.get("work_item_id") or "").strip()
+        if _WORK_ITEM_ID_PATTERN.fullmatch(raw_id) is None or raw_id in seen_ids:
+            raw_id = f"item_{index:03d}"
+            while raw_id in seen_ids:
+                raw_id = f"item_{index:03d}_{len(seen_ids)}"
+            item["work_item_id"] = raw_id
+        seen_ids.add(raw_id)
+        primary = str(item.get("primary_mode") or "").strip()
+        secondary = item.get("secondary_modes")
+        if isinstance(secondary, list):
+            kept: list[str] = []
+            for value in secondary:
+                mode_value = str(value).strip()
+                if (
+                    mode_value in HANDLING_MODES
+                    and mode_value != primary
+                    and mode_value not in kept
+                ):
+                    kept.append(mode_value)
+            item["secondary_modes"] = kept[:2]
+        time_facts = item.get("time_facts")
+        if isinstance(time_facts, list):
+            facts: list[dict[str, object]] = []
+            for fact in time_facts:
+                if isinstance(fact, Mapping):
+                    facts.append(dict(fact))
+                elif isinstance(fact, str) and fact.strip() and len(fact.strip()) <= 400:
+                    facts.append({"text": fact.strip()})
+            item["time_facts"] = facts[:30]
+        missing = item.get("missing_fields")
+        if isinstance(missing, list):
+            item["missing_fields"] = [
+                str(value).strip()[:400]
+                for value in missing
+                if str(value).strip()
+            ][:20]
+        reason = str(item.get("reason_summary") or "").strip()
+        item["reason_summary"] = (reason or "模型未说明整理理由，采用前请核对")[:800]
+        safety = str(item.get("safety_level") or "").strip()
+        if safety and safety not in SAFETY_LEVELS:
+            item["safety_level"] = "teacher_review_required"
+        refs = item.get("subject_refs")
+        if isinstance(refs, list):
+            item["subject_refs"] = [
+                ref for ref in (_soft_student_ref(value) for value in refs)
+                if ref is not None
+            ]
+        handoff_key = item.get("handoff_key")
+        if handoff_key is not None and handoff_key != _expected_destination_key(
+            primary, str(item.get("domain") or "").strip()
+        ):
+            # handoff_key 只是模型给的目标提示，与推断目标不一致时丢弃提示。
+            item.pop("handoff_key", None)
 
 
 def _canonicalize_work_item_enums(result: dict[str, Any]) -> None:
@@ -1668,6 +1787,32 @@ def _professional_date_from_text(source_text: str) -> str:
     return ""
 
 
+def _move_model_missing_fields_to_open_questions(item: dict[str, Any]) -> None:
+    """学生档案类事务默认自动并入：模型自报的"还缺什么"不是系统阻断项，
+    转写进档案草稿的 open_questions（并入后落在抽屉"仍需了解"），
+    不再占用 missing_fields 拦截自动并入。系统级阻断项（同名学生选择、
+    引用失效重新选择等）在后续环节另行追加，不受此影响。
+    没有 profile_update 草稿时保留原样，仍按待核对处理。
+    """
+    missing = item.get("missing_fields")
+    if not isinstance(missing, list) or not missing:
+        return
+    draft = item.get("draft")
+    update = draft.get("profile_update") if isinstance(draft, dict) else None
+    if not isinstance(update, dict):
+        return
+    existing = update.get("open_questions")
+    questions = (
+        [str(question).strip() for question in existing if str(question).strip()]
+        if isinstance(existing, list)
+        else []
+    )
+    moved = [str(value).strip() for value in missing if str(value).strip()]
+    # open_questions 上限 30 条（student_card_service._text_list）。
+    update["open_questions"] = list(dict.fromkeys([*questions, *moved]))[:30]
+    item["missing_fields"] = []
+
+
 def _school_support_from_text(source_text: str) -> str:
     match = re.search(
         r"((?:当前在校|在校|学校|课堂)(?:已)?采用[^。；]{1,240})",
@@ -1764,6 +1909,8 @@ def _normalize_triage_payload_compatibility(
             "missing_fields",
             "profile_update",
             "profile_base_revision",
+            # prompt 示例里的免责声明字段，模型会原样抄回顶层；没有业务语义。
+            "ai_disclaimer",
         ):
             normalized.pop(field, None)
         # JSON-object providers can echo unused schema branches under their

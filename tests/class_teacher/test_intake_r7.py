@@ -48,7 +48,7 @@ def test_class_teacher_uses_diagnostics_local_json_repair_for_terminal_closers()
     assert _parse_model_payload(malformed) == expected
 
 
-@pytest.mark.parametrize("extra_field", ["name", "description", "additionalProp1", "missing_fields", "profile_update", "profile_base_revision"])
+@pytest.mark.parametrize("extra_field", ["name", "description", "additionalProp1", "missing_fields", "profile_update", "profile_base_revision", "ai_disclaimer"])
 def test_class_teacher_ignores_observed_schema_description_fields(
     extra_field: str,
 ) -> None:
@@ -77,17 +77,112 @@ def test_class_teacher_ignores_observed_schema_description_fields(
     assert result.work_items[0].primary_mode == "plan_calendar"
 
 
-def test_class_teacher_still_rejects_unknown_semantic_top_level_fields() -> None:
-    payload = {
-        "contract_version": "class_teacher_triage.v1",
-        "assistant_message": "已整理，请核对。",
-        "clarification_questions": [],
-        "work_items": [],
-        "diagnosis": "模型自行作出的结论",
-    }
+def test_class_teacher_drops_unknown_semantic_top_level_fields(tmp_path: Path) -> None:
+    """模型在顶层多写的未知字段（哪怕看起来像语义字段）在归一层被丢弃，
+    不再让整轮作废，也不会进入草稿内容。"""
+    service, port = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service, "unknown-top-level", message="月底提醒复查合成事项"
+    )
+    task = port.prepare_calls[-1]
 
-    with pytest.raises(VaultError, match="未知的分诊字段"):
-        parse_triage(_normalize_triage_payload_compatibility(payload))
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理，请核对。",
+            "clarification_questions": [],
+            "diagnosis": "模型自行作出的结论",
+            "work_items": [_work_item(
+                "unknown-top-level-item",
+                domain="class_operations",
+                mode="record",
+                intent="create",
+                draft={"summary": "月底复查合成事项"},
+            )],
+        },
+    )
+
+    assert outcome["handoff_ids"]
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+    assert "diagnosis" not in handoff["content"]
+
+
+def test_triage_shape_defects_are_softened_instead_of_failing(tmp_path: Path) -> None:
+    """形状瑕疵（超长、超量、多余字段、不认识的安全级别、空说明）就地修复，
+    语义有效的事务照常落定；语义枚举仍不猜测。"""
+    service, port = _service(tmp_path)
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="shape-softening-homeroom",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service, "shape-softening", message="合成班务"
+    )
+    task = port.prepare_calls[-1]
+    candidate = next(
+        item
+        for item in service.class_roster.ai_candidates(token="", class_label="一班")
+        if item["display_name"] == "合成学生甲"
+    )
+    items: list[dict[str, object]] = []
+    for index in range(9):  # 9 个事务，超过合同上限 8
+        items.append({
+            "work_item_id": "dup",  # 过短且全部重复
+            "domain": "class_operations",
+            "primary_mode": "record",
+            "secondary_modes": ["record", "归档", "plan_calendar", "sop"],
+            "intent": "create",
+            "reason_summary": "",
+            "subject_refs": [],
+            "time_facts": ["今天提醒", {"text": "对象"}, 42],
+            "safety_level": "critical",
+            "missing_fields": ["x" * 500],
+            "draft": {"summary": f"合成草稿{index}"},
+            "model_extra": "模型多写的字段",
+            "handoff_key": "class_teacher.plan.calendar",
+        })
+    # 第一项带一个形状不合格（多键）但指向真实候选的学生引用。
+    items[0]["subject_refs"] = [{
+        "kind": "student",
+        "id": str(candidate["id"]),
+        "revision": str(candidate["revision"]),
+        "name": "多余键",
+    }]
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "",
+            "clarification_questions": [],
+            "work_items": items,
+            "model_note": "顶层多写的字段",
+        },
+    )
+
+    assert len(outcome["handoff_ids"]) == 8
+    saved = service.intake.get_conversation(str(turn["conversation_id"]))
+    assert saved["turns"][-1]["assistant_message"] == "已整理，请核对草稿。"
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+    content = handoff["content"]
+    assert content["safety_level"] == "teacher_review_required"
+    assert content["reason_summary"] == "模型未说明整理理由，采用前请核对"
+    assert content["time_facts"] == [{"text": "今天提醒"}, {"text": "对象"}]
+    assert handoff["missing_fields"] == ["x" * 400]
+    assert "model_extra" not in content
+    assert handoff["subject_refs"] == [{
+        "kind": "student",
+        "id": str(candidate["id"]),
+        "revision": str(candidate["revision"]),
+    }]
 
 
 def test_ai_sop_revision_preserves_safety_and_each_students_profile_draft() -> None:
@@ -2881,6 +2976,82 @@ def test_professional_report_is_saved_as_bounded_review_draft_until_evidence_is_
     assert content["profile_base_revision"] == 0
     assert content["profile_update"]["summary"].startswith("教师转述")
     assert content["profile_update"]["dimensions"][0]["key"] == "professional_support_context"
+    # 专业核对提醒不再进入 missing_fields 拦截自动并入，但仍保留在档案"仍需了解"。
+    assert handoff["missing_fields"] == []
+    open_questions = content["profile_update"]["open_questions"]
+    assert "专业结论由哪家机构或哪位专业人员出具，是否有可核对的书面材料？" in open_questions
+    assert "这份专业结论的出具日期是什么时候？" in open_questions
+    assert "学生当前在校已采用哪些支持方式，哪些有效，哪些做法需要避免？" in open_questions
+
+
+def test_student_record_model_missing_fields_move_to_open_questions(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="missing-fields-homeroom",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "missing-fields-move",
+        message="合成学生甲最近上课容易走神。",
+    )
+    task = port.prepare_calls[-1]
+    candidate = next(
+        item
+        for item in service.class_roster.ai_candidates(token="", class_label="一班")
+        if item["display_name"] == "合成学生甲"
+    )
+    ref = {
+        "kind": "student",
+        "id": str(candidate["id"]),
+        "revision": str(candidate["revision"]),
+    }
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理到学生档案。",
+            "clarification_questions": [],
+            "work_items": [{
+                "work_item_id": "missing-fields-item",
+                "domain": "student_growth",
+                "primary_mode": "record",
+                "secondary_modes": [],
+                "intent": "append",
+                "reason_summary": "补充学生课堂表现",
+                "subject_refs": [ref],
+                "time_facts": [],
+                "safety_level": "normal",
+                "missing_fields": ["已尝试的支持措施及效果"],
+                "draft": {
+                    "summary": "合成学生甲最近上课容易走神。",
+                    "record_kind": "fact",
+                    "source": "合成教师核对",
+                    "profile_update": {
+                        "summary": "合成学生甲最近上课容易走神。",
+                        "dimensions": [],
+                        "open_questions": ["走神是否集中在特定课程？"],
+                        "support_focus": [],
+                    },
+                },
+            }],
+        },
+    )
+
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+    # 模型自报的缺失项不拦截自动并入，转写进档案"仍需了解"。
+    assert handoff["missing_fields"] == []
+    open_questions = handoff["content"]["profile_update"]["open_questions"]
+    assert "走神是否集中在特定课程？" in open_questions
+    assert "已尝试的支持措施及效果" in open_questions
 
 
 def test_complete_professional_material_uses_explicit_date_and_does_not_repeat_answered_questions(

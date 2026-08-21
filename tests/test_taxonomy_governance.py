@@ -1020,3 +1020,185 @@ def test_rejected_term_stays_suppressed_when_ai_proposes_it_again(
     assert persisted["status"] == "empty"
     assert persisted["taxonomy_revision"] == 2
     assert governance.list_proposals(status="pending")["counts"] == {"pending": 0}
+
+
+@pytest.fixture
+def governance_v3(tmp_path: Path) -> TaxonomyGovernance:
+    return TaxonomyGovernance(
+        catalog_path=CATALOG_PATH.with_name("tag_vocabulary_v3.json"),
+        state_path=tmp_path / "taxonomy-state-v3.json",
+        knowledge_graph_db_path=tmp_path / "not-created-question-bank.db",
+    )
+
+
+def _g7_lower_context(governance: TaxonomyGovernance) -> dict[str, object]:
+    contract = governance.prompt_contract(
+        {
+            "question_text": "本地预归并规则验证题",
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+        }
+    )
+    return {
+        "allowed_term_ids": contract["allowed_term_ids"],
+        "knowledge_catalog_revision": contract["knowledge_catalog_revision"],
+    }
+
+
+def _write_premerge_catalog(
+    tmp_path: Path, terms: list[dict[str, object]]
+) -> Path:
+    catalog_path = tmp_path / "premerge-catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "catalog_id": "test-local-premerge",
+                "revision": 4,
+                "source_snapshot": {},
+                "classification_policy": {},
+                "terms": terms,
+                "reference_candidates": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return catalog_path
+
+
+def test_sanitized_catalog_name_adopts_scoped_section_leaf(
+    governance_v3: TaxonomyGovernance,
+) -> None:
+    constrained = governance_v3.constrain(
+        {"knowledge_points": ["平行线的性质"]},
+        context=_g7_lower_context(governance_v3),
+    )
+
+    assert [
+        item["id"] for item in constrained["accepted_terms"]["knowledge"]
+    ] == ["kp_bnu24_math_g7_lower_2_3"]
+    assert constrained["proposals"] == []
+    assert constrained["local_adoptions"] == [
+        {
+            "dimension": "knowledge",
+            "submitted_name": "平行线的性质",
+            "rule": "sanitized_name",
+            "canonical_id": "kp_bnu24_math_g7_lower_2_3",
+            "canonical_name": "七年级下册｜第二章 相交线与平行线｜3 平行线的性质",
+            "source_field": "knowledge_points",
+        }
+    ]
+
+
+def test_curriculum_verb_prefix_is_stripped_before_matching(
+    governance_v3: TaxonomyGovernance,
+) -> None:
+    constrained = governance_v3.constrain(
+        {"knowledge_points": ["掌握轴对称图形的识别"]},
+        context=_g7_lower_context(governance_v3),
+    )
+
+    assert [
+        item["id"] for item in constrained["accepted_terms"]["knowledge"]
+    ] == ["kp_bnu24_math_g7_lower_5_1_1"]
+    assert constrained["proposals"] == []
+    assert [
+        (item["rule"], item["canonical_id"])
+        for item in constrained["local_adoptions"]
+    ] == [("verb_stripped", "kp_bnu24_math_g7_lower_5_1_1")]
+
+
+def test_unique_containment_adopts_without_proposal(
+    governance_v3: TaxonomyGovernance,
+) -> None:
+    constrained = governance_v3.constrain(
+        {"knowledge_points": ["角平分线的定义"]},
+        context=_g7_lower_context(governance_v3),
+    )
+
+    assert [
+        item["id"] for item in constrained["accepted_terms"]["knowledge"]
+    ] == ["kp_bnu24_math_g7_lower_4_1_12"]
+    assert constrained["proposals"] == []
+    assert [
+        (item["rule"], item["canonical_id"])
+        for item in constrained["local_adoptions"]
+    ] == [("unique_containment", "kp_bnu24_math_g7_lower_4_1_12")]
+
+
+def test_ambiguous_sanitized_name_stays_a_proposal(
+    governance_v3: TaxonomyGovernance,
+) -> None:
+    # "最短路径问题" is the sanitized leaf of both a g7-upper and a g7-lower
+    # term; without a volume scope no deterministic adoption is allowed.
+    constrained = governance_v3.constrain(
+        {"knowledge_points": ["最短路径问题"]}
+    )
+
+    assert constrained["accepted_terms"]["knowledge"] == []
+    assert [
+        item["proposed_name"] for item in constrained["proposals"]
+    ] == ["最短路径问题"]
+    assert constrained["local_adoptions"] == []
+
+
+def test_ambiguous_containment_stays_a_proposal(
+    governance_v3: TaxonomyGovernance,
+) -> None:
+    # Unscoped, "角平分线的定义" is contained in "三角形角平分线的定义" and
+    # itself contains the g8-lower section leaf "角平分线".
+    constrained = governance_v3.constrain(
+        {"knowledge_points": ["角平分线的定义"]}
+    )
+
+    assert constrained["accepted_terms"]["knowledge"] == []
+    assert [
+        item["proposed_name"] for item in constrained["proposals"]
+    ] == ["角平分线的定义"]
+    assert constrained["local_adoptions"] == []
+
+
+def test_short_containment_stem_stays_a_proposal(tmp_path: Path) -> None:
+    catalog_path = _write_premerge_catalog(
+        tmp_path,
+        [
+            {
+                "id": "kp-draw-axis",
+                "dimension": "knowledge",
+                "name": "七年级下册｜第五章 图形的轴对称｜1 轴对称及其性质｜画对称轴",
+                "aliases": [],
+                "status": "approved",
+            }
+        ],
+    )
+    governance = TaxonomyGovernance(
+        catalog_path=catalog_path,
+        state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "not-created-question-bank.db",
+    )
+
+    constrained = governance.constrain({"knowledge_points": ["对称轴"]})
+
+    assert constrained["accepted_terms"]["knowledge"] == []
+    assert [
+        item["proposed_name"] for item in constrained["proposals"]
+    ] == ["对称轴"]
+    assert constrained["local_adoptions"] == []
+
+
+def test_out_of_scope_match_keeps_the_restricted_boundary(
+    governance_v3: TaxonomyGovernance,
+) -> None:
+    # "角平分线的判定定理" only exists in the g8-lower volume, outside the
+    # teacher-selected g7-lower scope: the pre-merge rules must not adopt it.
+    constrained = governance_v3.constrain(
+        {"knowledge_points": ["角平分线的判定定理"]},
+        context=_g7_lower_context(governance_v3),
+    )
+
+    assert constrained["accepted_terms"]["knowledge"] == []
+    assert [
+        item["canonical_id"] for item in constrained["retrieval_misses"]
+    ] == ["kp_bnu24_math_g8_lower_1_5_2"]
+    assert constrained["proposals"] == []
+    assert constrained["local_adoptions"] == []

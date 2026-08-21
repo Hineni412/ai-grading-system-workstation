@@ -330,7 +330,7 @@ def _run_tagging_sync_job_locked(
                     },
                     progress_callback=None,
                     request_callback=None,
-                    allow_batch_fallback=False,
+                    allow_batch_fallback=True,
                     quality_retry_limit=1,
                     enable_review=False,
                 )

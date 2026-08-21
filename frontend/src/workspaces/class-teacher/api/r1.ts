@@ -128,6 +128,19 @@ export interface StudentSupportFocus {
   next_actions: string[]
 }
 
+export interface ProfileRoundChanges {
+  summary_changed: boolean
+  dimensions: Record<string, string[]>
+  open_questions: string[]
+  support_focus: string[]
+}
+
+export interface ProfileLatestRound {
+  record_id: string
+  adopted_at: string
+  changed: ProfileRoundChanges
+}
+
 export interface CurrentStudentProfile {
   entry_id: string | null
   revision: number
@@ -136,6 +149,7 @@ export interface CurrentStudentProfile {
   open_questions: string[]
   support_focus: StudentSupportFocus[]
   updated_at: string | null
+  latest_round?: ProfileLatestRound | null
 }
 
 export interface StudentCard {
@@ -158,11 +172,31 @@ export interface AcademicAnalysis {
   recent_changes: JsonRecord[]
   insufficient_reasons: string[]
   attention_cards: AttentionCard[]
+  profile?: AcademicProfile
   filter_options?: { series: string[]; subjects: string[] }
   applied_filters?: { time_range: string; comparison_series: string | null; subject_name: string | null; comparable_only: boolean }
 }
 
-export interface AcademicPoint { evidence_version_id: string; session_id?: string; subject_name: string; result_state: string; score: number | null; occurred_on: string; relative_position?: number | null; is_comparable?: boolean; comparable_outputs?: string[] }
+export interface AcademicProfilePoint { occurred_on: string | null; term_label: string; session_title?: string | null; rank: number | null; participant_count?: number | null; relative_position?: number | null; result_state?: string | null }
+export interface AcademicProfileSubject { subject_name: string; latest: (AcademicProfilePoint & { score?: number | null; class_rank?: number | null }) | null; rank_delta: number | null; points: AcademicProfilePoint[]; attention: boolean }
+export interface AcademicProfile {
+  current: {
+    session_title: string | null; occurred_on: string | null; term_label: string
+    grade?: string | null; term?: string | null
+    score: number | null; rank: number | null; class_rank: number | null
+    participant_count: number | null; top_ratio: number | null
+    previous: { session_title: string | null; occurred_on: string | null; term_label: string; rank: number | null; participant_count: number | null } | null
+    rank_delta: number | null
+  } | null
+  trend: { label: string; step_deltas: number[]; session_count: number }
+  stability: { label: string; swing_ratio: number | null; session_count: number }
+  skew: { label: string; strongest: { subject_name: string; rank: number | null; relative_position: number | null }[]; weakest: { subject_name: string; rank: number | null; relative_position: number | null }[]; gap_ratio: number | null }
+  subjects: AcademicProfileSubject[]
+  total_trend?: AcademicProfilePoint[]
+  basis: { total_session_count: number; grade: string | null }
+}
+
+export interface AcademicPoint { evidence_version_id: string; session_id?: string; subject_name: string; result_state: string; score: number | null; occurred_on: string; measure_role?: string; rank?: number | null; class_rank?: number | null; participant_count?: number | null; relative_position?: number | null; is_comparable?: boolean; comparable_outputs?: string[] }
 export interface AcademicSession { session_id: string; title: string; occurred_on: string; comparison_series?: string | null; metadata_complete: boolean; grade?: string | null; term?: string | null; academic_year?: string | null; evidence: AcademicPoint[] }
 export interface ComparisonSegment { overall_status?: string; dimensions: { rank: { status: string }; score: { status: string } } }
 export interface AcademicSeries { subject_name: string; points: AcademicPoint[]; segments: ComparisonSegment[] }

@@ -2,7 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { intakeApi, type HandoffDraft, type IntakeConversation, type IntakeHandoffSummary } from '../api/intake'
+import { supportApi, type SupportRecord } from '../api/support'
 import { autoAdoptStudentRecordHandoffs } from '../intake/auto-adopt'
+import { formatClassLabel } from '../format_class_label'
 import AppButton from '@/components/design-system/AppButton.vue'
 import { ApiError } from '@/api/errors'
 import {
@@ -14,7 +16,12 @@ import {
   type StudentSupportFocus,
 } from '../api/r1'
 
-const props = defineProps<{ subject: DirectorySubject; conversationId?: string | null }>()
+type DrawerTab = 'overview' | 'support' | 'academic'
+const props = defineProps<{
+  subject: DirectorySubject
+  conversationId?: string | null
+  initialTab?: DrawerTab
+}>()
 const emit = defineEmits<{ close: []; open: [panel: 'support' | 'academic'] }>()
 
 const card = ref<StudentCard | null>(null)
@@ -55,16 +62,164 @@ const proposedProfile = computed<CurrentStudentProfile | null>(() => {
   }
 })
 const hasProfile = computed(() => Boolean(profile.value.summary || profile.value.dimensions.length))
+const roundChanges = computed(() => profile.value.latest_round?.changed ?? null)
+const hasRoundChanges = computed(() => Boolean(
+  roundChanges.value
+  && (roundChanges.value.summary_changed
+    || Object.keys(roundChanges.value.dimensions).length
+    || roundChanges.value.open_questions.length
+    || roundChanges.value.support_focus.length),
+))
+
+function isRoundNewItem(dimensionKey: string, item: string): boolean {
+  return Boolean(roundChanges.value?.dimensions[dimensionKey]?.includes(item))
+}
+
+function isRoundNewQuestion(question: string): boolean {
+  return Boolean(roundChanges.value?.open_questions.includes(question))
+}
+
+function isRoundNewFocus(key: string): boolean {
+  return Boolean(roundChanges.value?.support_focus.includes(key))
+}
 const profileNotCreated = computed(() => card.value?.profile_state === 'not_created' || props.subject.profile_state === 'not_created')
 const supportPlans = computed(() => card.value?.support_plans ?? [])
 const homeBound = computed(() => Boolean(props.conversationId))
-type DrawerTab = 'overview' | 'support' | 'academic'
-const activeTab = ref<DrawerTab>('overview')
+const activeTab = ref<DrawerTab>(props.initialTab ?? 'overview')
 const dialog = ref<HTMLElement | null>(null)
 const messageInput = ref<HTMLTextAreaElement | null>(null)
 const sourceDetails = ref<HTMLDetailsElement | null>(null)
 let previouslyFocused: HTMLElement | null = null
 let previousBodyOverflow = ''
+
+// 参考材料区：原始支持记录的查看、撤回/恢复与补录，不经过 AI。
+const recordKindLabels: Record<string, string> = {
+  fact: '可核对事实',
+  student_statement: '学生陈述',
+  reported_statement: '转述信息',
+  teacher_observation: '教师观察',
+  provisional_judgment: '阶段性判断',
+  professional_conclusion: '专业结论',
+}
+const sourceRecords = ref<SupportRecord[] | null>(null)
+const sourceLoading = ref(false)
+const recordBusy = ref(false)
+const recordNotice = ref('')
+const recordError = ref('')
+const withdrawingId = ref<string | null>(null)
+const withdrawReason = ref('记录有误，撤回')
+const addOpen = ref(false)
+const addContent = ref('')
+const addObservedAt = ref(new Date().toISOString().slice(0, 10))
+const addReviewAt = ref('')
+const addExpiresAt = ref('')
+const visibleSourceRecords = computed(() =>
+  (sourceRecords.value ?? []).filter((record) => record.record_kind !== 'ai_draft'),
+)
+const canAddObservation = computed(() => Boolean(
+  addContent.value.trim() && addObservedAt.value && addReviewAt.value && addExpiresAt.value,
+))
+
+function recordDay(value: string | null | undefined): string {
+  if (!value) return ''
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value.slice(0, 10)
+  const pad = (unit: number) => String(unit).padStart(2, '0')
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`
+}
+
+async function loadSourceRecords(): Promise<void> {
+  if (sourceLoading.value) return
+  sourceLoading.value = true
+  recordError.value = ''
+  try {
+    sourceRecords.value = await supportApi.listRecords(props.subject.subject_id)
+  } catch {
+    recordError.value = '原始记录暂时无法读取；已有内容没有改变。'
+  } finally {
+    sourceLoading.value = false
+  }
+}
+
+function onSourceToggle(): void {
+  if (sourceDetails.value?.open && sourceRecords.value === null) void loadSourceRecords()
+}
+
+async function refreshCard(): Promise<void> {
+  try {
+    card.value = await studentR1Api.studentCard(props.subject.subject_id)
+  } catch {
+    // 保留抽屉里的现有档案内容，不打扰当前状态。
+  }
+}
+
+function startWithdrawRecord(record: SupportRecord): void {
+  withdrawingId.value = record.record_id
+  withdrawReason.value = '记录有误，撤回'
+}
+
+async function changeRecordState(record: SupportRecord, nextState: 'active' | 'withdrawn'): Promise<void> {
+  if (recordBusy.value) return
+  recordBusy.value = true
+  recordNotice.value = ''
+  recordError.value = ''
+  try {
+    await supportApi.setRecordState(
+      record,
+      nextState,
+      nextState === 'withdrawn' ? withdrawReason.value.trim() || '教师撤回记录' : '教师恢复记录',
+    )
+    withdrawingId.value = null
+    recordNotice.value = nextState === 'withdrawn'
+      ? '已撤回，记录不再计入档案与跟进提醒；仍留痕，可恢复。'
+      : '已恢复为有效记录。'
+    await loadSourceRecords()
+    await refreshCard()
+  } catch {
+    recordError.value = '状态没有更新；现有记录未改变。若其他页面已更新，请刷新后再核对。'
+  } finally {
+    recordBusy.value = false
+  }
+}
+
+function openAddForm(): void {
+  addOpen.value = true
+  addContent.value = ''
+  addObservedAt.value = new Date().toISOString().slice(0, 10)
+  addReviewAt.value = ''
+  addExpiresAt.value = ''
+  recordNotice.value = ''
+  recordError.value = ''
+}
+
+async function addObservation(): Promise<void> {
+  if (!canAddObservation.value || recordBusy.value) return
+  recordBusy.value = true
+  recordNotice.value = ''
+  recordError.value = ''
+  try {
+    await supportApi.createRecord(props.subject.subject_id, {
+      record_kind: 'teacher_observation',
+      content: addContent.value.trim(),
+      scene: '日常观察',
+      source: '教师本人观察',
+      basis: null,
+      counterexample: null,
+      category: 'general',
+      observed_at: addObservedAt.value,
+      review_at: addReviewAt.value,
+      expires_at: addExpiresAt.value,
+    })
+    addOpen.value = false
+    recordNotice.value = '已按教师确认补录为观察记录；没有调用 AI，也没有自动生成诊断或结论。'
+    await loadSourceRecords()
+    await refreshCard()
+  } catch {
+    recordError.value = '记录没有保存；现有记录未改变。若其他页面已更新，请刷新后再核对。'
+  } finally {
+    recordBusy.value = false
+  }
+}
 
 function selectTab(tab: DrawerTab): void {
   activeTab.value = tab
@@ -80,6 +235,7 @@ async function showSourceMaterials(): Promise<void> {
   activeTab.value = 'support'
   await nextTick()
   if (sourceDetails.value) sourceDetails.value.open = true
+  if (sourceRecords.value === null) void loadSourceRecords()
   sourceDetails.value?.focus()
 }
 
@@ -281,7 +437,7 @@ watch(
   [() => props.subject.subject_id, () => props.conversationId],
   async () => {
     stopPolling()
-    activeTab.value = 'overview'
+    activeTab.value = props.initialTab ?? 'overview'
     conversation.value = null
     proposal.value = null
     adoptedHandoff.value = null
@@ -289,6 +445,11 @@ watch(
     message.value = ''
     notice.value = ''
     error.value = ''
+    sourceRecords.value = null
+    withdrawingId.value = null
+    addOpen.value = false
+    recordNotice.value = ''
+    recordError.value = ''
     await load()
     if (props.conversationId) await bindHomeConversation(props.conversationId)
   },
@@ -330,7 +491,7 @@ onBeforeUnmount(() => {
           <span class="identity__seal" aria-hidden="true">{{ subject.display_name.slice(0, 1) }}</span>
           <div>
             <h1 id="student-dossier-title">{{ subject.display_name }}</h1>
-            <p>{{ subject.class_label || '未分班' }} · 学号 {{ subject.source_student_id }}</p>
+            <p>学号 {{ subject.source_student_id }} · {{ formatClassLabel(subject.class_label) }}</p>
           </div>
         </div>
         <button type="button" class="close" aria-label="关闭学生档案" @click="closeDrawer">×</button>
@@ -351,7 +512,7 @@ onBeforeUnmount(() => {
 
       <main v-else class="dossier__scroll">
         <section v-show="activeTab === 'overview'" class="tab-panel overview-panel" aria-label="当前概览">
-          <blockquote v-if="profile.summary" class="profile-summary">{{ profile.summary }}</blockquote>
+          <blockquote v-if="profile.summary" class="profile-summary"><span v-if="roundChanges?.summary_changed" class="round-badge">本轮</span>{{ profile.summary }}</blockquote>
           <div v-else class="empty-profile">
             <strong>{{ profileNotCreated ? '档案尚未建立' : '这份档案还没有开始生长' }}</strong>
             <p v-if="profileNotCreated">核对下方待并入的草稿，确认保存后会自动创建档案。</p>
@@ -367,10 +528,11 @@ onBeforeUnmount(() => {
           <header class="section-heading">
             <div><small>此刻对这名学生的认识</small><h2>当前结构化档案</h2></div>
           </header>
+          <p v-if="hasRoundChanges" class="round-legend">带「本轮」标记的内容是最近一轮对话并入的更新。</p>
           <div v-if="hasProfile" class="dimension-grid">
             <article v-for="dimension in profile.dimensions" :key="dimension.key" class="dimension">
               <h3>{{ dimension.label }}</h3>
-              <ul><li v-for="item in dimension.items" :key="item">{{ item }}</li></ul>
+              <ul><li v-for="item in dimension.items" :key="item"><span v-if="isRoundNewItem(dimension.key, item)" class="round-badge">本轮</span>{{ item }}</li></ul>
             </article>
           </div>
           <div v-if="profile.support_focus.length" class="support-preview">
@@ -439,7 +601,7 @@ onBeforeUnmount(() => {
             <section class="support-section">
               <header><small>与个人档案直接相连</small><h2>当前学生支持</h2></header>
               <article v-for="focus in profile.support_focus" :key="focus.key">
-                <h3>{{ focus.title }}</h3><p>{{ focus.need }}</p>
+                <h3><span v-if="isRoundNewFocus(focus.key)" class="round-badge">本轮</span>{{ focus.title }}</h3><p>{{ focus.need }}</p>
                 <template v-if="focus.effective_methods.length"><strong>已经有效</strong><ul><li v-for="item in focus.effective_methods" :key="item">{{ item }}</li></ul></template>
                 <template v-if="focus.next_actions.length"><strong>接下来尝试</strong><ul><li v-for="item in focus.next_actions" :key="item">{{ item }}</li></ul></template>
               </article>
@@ -447,17 +609,57 @@ onBeforeUnmount(() => {
             </section>
             <section class="support-section questions">
               <header><small>后续谈话可以留意</small><h2>仍需了解</h2></header>
-              <ol v-if="profile.open_questions.length"><li v-for="item in profile.open_questions" :key="item">{{ item }}</li></ol>
-              <p v-else class="compact-empty">当前没有尚待了解的问题。</p>
+              <ol v-if="profile.open_questions.length"><li v-for="item in profile.open_questions" :key="item"><span v-if="isRoundNewQuestion(item)" class="round-badge">本轮</span>{{ item }}</li></ol>
+              <p v-if="hasRoundChanges" class="round-legend questions-legend">带「本轮」标记的内容是最近一轮对话并入的更新。</p>
+              <p v-if="!profile.open_questions.length" class="compact-empty">当前没有尚待了解的问题。</p>
             </section>
             <section v-if="supportPlans.length" class="support-section active-plans">
               <header><small>正在执行</small><h2>支持方案</h2></header>
               <article v-for="plan in supportPlans" :key="String(plan.support_plan_id || plan.goal)"><strong>{{ planText(plan, 'goal') }}</strong><p>{{ planText(plan, 'support_actions') }}</p></article>
             </section>
           </div>
-          <details ref="sourceDetails" class="source-materials" tabindex="-1">
+          <details ref="sourceDetails" class="source-materials" tabindex="-1" @toggle="onSourceToggle">
             <summary>参考材料 · {{ card?.existing_records.length || 0 }} 条原始记录</summary>
-            <p>这些内容只作为完善当前档案的来源，不再占据学生页的主要位置。</p>
+            <p>这些记录只作为完善当前档案的来源，不再占据学生页的主要位置；撤回后不再计入档案与跟进提醒，仍可恢复。</p>
+            <p v-if="recordNotice" class="notice source-notice" role="status">{{ recordNotice }}</p>
+            <p v-if="recordError" class="error source-error" role="alert">{{ recordError }}</p>
+            <p v-if="sourceRecords === null" class="source-hint">{{ sourceLoading ? '正在读取原始记录…' : '展开后读取原始记录。' }}</p>
+            <ul v-else-if="visibleSourceRecords.length" class="source-list">
+              <li v-for="record in visibleSourceRecords" :key="record.record_id" :class="{ withdrawn: record.state === 'withdrawn' }">
+                <div class="source-line">
+                  <strong>{{ recordKindLabels[record.record_kind] ?? record.record_kind }}</strong>
+                  <time>{{ recordDay(record.observed_at) }}</time>
+                  <span v-if="record.state === 'withdrawn'" class="state-badge">已撤回</span>
+                </div>
+                <p class="source-content">{{ record.content }}</p>
+                <div class="source-actions">
+                  <AppButton v-if="record.state !== 'withdrawn' && withdrawingId !== record.record_id" variant="ghost" :disabled="recordBusy" @click="startWithdrawRecord(record)">撤回</AppButton>
+                  <AppButton v-if="record.state === 'withdrawn'" variant="ghost" :disabled="recordBusy" @click="changeRecordState(record, 'active')">恢复</AppButton>
+                </div>
+                <div v-if="withdrawingId === record.record_id" class="withdraw-confirm">
+                  <input v-model="withdrawReason" maxlength="200" aria-label="撤回原因" placeholder="撤回原因（留痕）">
+                  <div>
+                    <AppButton variant="primary" :disabled="recordBusy" @click="changeRecordState(record, 'withdrawn')">确认撤回</AppButton>
+                    <AppButton variant="ghost" :disabled="recordBusy" @click="withdrawingId = null">取消</AppButton>
+                  </div>
+                </div>
+              </li>
+            </ul>
+            <p v-else class="source-hint">暂无原始记录。</p>
+            <div class="add-observation">
+              <AppButton v-if="!addOpen" variant="ghost" @click="openAddForm">＋ 补录一条观察记录</AppButton>
+              <form v-else class="add-form" @submit.prevent="addObservation">
+                <label class="wide"><span>观察内容</span><textarea v-model="addContent" rows="3" maxlength="8000" placeholder="记录可核对的观察，不贴永久标签"></textarea></label>
+                <label><span>观察日期</span><input v-model="addObservedAt" type="date"></label>
+                <label><span>复查日期</span><input v-model="addReviewAt" type="date"></label>
+                <label><span>失效日期</span><input v-model="addExpiresAt" type="date"></label>
+                <p class="add-hint">观察记录需要复查与失效日期，到期后自动不再计入档案摘要；保存只由你确认，不调用 AI。</p>
+                <footer>
+                  <AppButton variant="primary" type="submit" :disabled="recordBusy || !canAddObservation">确认补录</AppButton>
+                  <AppButton variant="ghost" :disabled="recordBusy" @click="addOpen = false">取消</AppButton>
+                </footer>
+              </form>
+            </div>
           </details>
         </section>
 
@@ -496,10 +698,13 @@ onBeforeUnmount(() => {
 .profile-summary{margin:0;padding:14px 16px;border:0;border-left:3px solid var(--color-warning);border-radius:0 var(--radius) var(--radius) 0;background:var(--color-warning-subtle);color:var(--foreground);font-size:16px;line-height:1.65}.empty-profile{display:grid;min-height:160px;place-content:center;padding:20px;text-align:center}.empty-profile p{color:var(--muted-foreground)}.quick-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.quick-stats>div{padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.quick-stats strong{display:block;color:var(--primary);font-size:20px}.quick-stats span{color:var(--muted-foreground);font-size:12px}.section-heading{padding-top:2px;border-bottom:1px solid var(--border)}.section-heading small,.ai-desk small,.proposal small,.support-section small,.academic-intro small{color:var(--primary);font-size:12px;font-weight:700;letter-spacing:.1em}.section-heading h2,.ai-desk h2,.proposal h2,.support-section h2,.academic-intro h2{margin:2px 0 12px;font-size:18px}.dimension-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.dimension{padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.dimension h3{margin:0 0 8px;font-size:15px}.dimension ul,.support-section ul,.support-section ol{margin:0;padding-left:19px;color:var(--color-text-secondary);line-height:1.65}.support-preview{display:grid;gap:5px;justify-items:start;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--color-warning-subtle)}.support-preview small{color:var(--color-warning);font-weight:700}.support-preview p{margin:0;color:var(--color-text-secondary);line-height:1.55}
 .ai-desk{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.ai-desk__heading{padding:16px 18px 12px;background:var(--accent)}.ai-desk__heading p{margin:5px 0 0;color:var(--color-text-secondary);line-height:1.6}.dialogue{display:grid;gap:12px;max-height:280px;overflow:auto;padding:14px 16px 0}.teacher-quote{justify-self:end;max-width:88%;margin:0;padding:10px 13px;border-radius:var(--radius) var(--radius) 2px var(--radius);background:var(--accent);line-height:1.6}.ai-reply{padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:var(--radius);background:var(--card)}.ai-reply p,.ai-reply ul{margin:5px 0 0;line-height:1.6}.composer{margin:14px 16px 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.composer textarea{box-sizing:border-box;width:100%;padding:12px;border:0;border-radius:var(--radius) var(--radius) 0 0;outline:0;resize:vertical;background:transparent;font:inherit;line-height:1.6}.composer:focus-within{border-color:var(--ring);box-shadow:var(--focus-ring)}.composer footer{display:flex;align-items:center;justify-content:space-between;padding:8px 10px 8px 13px;border-top:1px solid var(--border);color:var(--muted-foreground);font-size:12px}.notice,.error{margin:-6px 16px 14px;padding:9px 11px;border-radius:var(--radius)}.notice{background:var(--accent);color:var(--primary)}.error{background:var(--color-danger-subtle);color:var(--destructive)}.home-notice,.home-error{margin:0}
 .proposal{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.proposal>header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--color-warning-subtle)}.proposal__summary{margin:0;padding:14px 16px;font-size:16px;line-height:1.6}.proposal__grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 16px 14px}.proposal__grid article{padding:10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.proposal__grid ul{margin:7px 0 0;padding-left:18px}.proposal>footer{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 16px;border-top:1px solid var(--border);color:var(--color-text-secondary);font-size:12px}
-.support-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.support-section{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.support-section>header{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--muted)}.support-section h2{margin-bottom:0}.support-section article{margin:12px;padding:12px;border:1px solid var(--border);border-radius:var(--radius)}.support-section article h3{margin:0}.support-section article p{margin:7px 0;line-height:1.55}.support-section article strong{display:block;margin-top:10px;color:var(--muted-foreground);font-size:12px}.compact-empty{margin:0;padding:16px;color:var(--muted-foreground);line-height:1.6}.questions ol{padding:14px 34px}.active-plans{grid-column:1/-1}.source-materials{padding:14px 16px;border:1px dashed var(--border);border-radius:var(--radius);background:var(--muted);color:var(--color-text-secondary)}.source-materials summary{cursor:pointer;font-weight:700}.source-materials p{margin-bottom:0}.academic-intro{padding:20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.academic-intro p{margin:0;color:var(--color-text-secondary);line-height:1.7}.academic-stats{margin-top:2px}
+.support-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.support-section{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.support-section>header{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--muted)}.support-section h2{margin-bottom:0}.support-section article{margin:12px;padding:12px;border:1px solid var(--border);border-radius:var(--radius)}.support-section article h3{margin:0}.support-section article p{margin:7px 0;line-height:1.55}.support-section article strong{display:block;margin-top:10px;color:var(--muted-foreground);font-size:12px}.compact-empty{margin:0;padding:16px;color:var(--muted-foreground);line-height:1.6}.questions ol{padding:14px 34px}.active-plans{grid-column:1/-1}.source-materials{padding:14px 16px;border:1px dashed var(--border);border-radius:var(--radius);background:var(--muted);color:var(--color-text-secondary)}.source-materials summary{cursor:pointer;font-weight:700}.source-materials p{margin-bottom:0}.source-materials .notice,.source-materials .error{margin:10px 0 0}.source-hint{margin:10px 0 0}.source-list{display:grid;gap:10px;margin:12px 0 0;padding:0;list-style:none}.source-list>li{display:grid;gap:6px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.source-list>li.withdrawn{opacity:.6}.source-line{display:flex;align-items:baseline;gap:10px}.source-line strong{color:var(--foreground)}.source-line time{color:var(--muted-foreground);font-size:12px}.state-badge{padding:0 6px;border:1px solid var(--border);border-radius:999px;color:var(--muted-foreground);font-size:11px;font-weight:700}.source-content{margin:0;line-height:1.6;color:var(--color-text-secondary)}.source-actions{display:flex;justify-content:flex-end}.withdraw-confirm{display:grid;gap:6px}.withdraw-confirm>div{display:flex;gap:6px}.withdraw-confirm input{min-height:34px}.add-observation{margin-top:12px}.add-form{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.add-form label{display:grid;gap:4px;font-size:12px;font-weight:650;color:var(--foreground)}.add-form .wide{grid-column:1/-1}.add-hint{grid-column:1/-1;margin:0;font-size:12px;color:var(--muted-foreground)}.add-form footer{grid-column:1/-1;display:flex;gap:8px}.academic-intro{padding:20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.academic-intro p{margin:0;color:var(--color-text-secondary);line-height:1.7}.academic-stats{margin-top:2px}
 .dossier-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-top:1px solid var(--border);background:var(--card)}.dossier-actions>div{display:flex;gap:8px}.dossier button:focus-visible,.dossier textarea:focus-visible,.source-materials:focus-visible,.source-materials summary:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.round-badge{display:inline-block;margin-right:6px;padding:0 6px;border:1px solid var(--primary);border-radius:999px;color:var(--primary);font-size:11px;font-weight:700;vertical-align:1px}
+.round-legend{margin:0;color:var(--muted-foreground);font-size:12px}
+.questions-legend{padding:0 16px 12px}
 @keyframes drawer-in{from{transform:translateX(24px)}to{transform:none}}
-@media(max-width:700px){.dossier{width:100%;border-left:0}.folder-tab{display:none}.dimension-grid,.support-grid,.proposal__grid{grid-template-columns:1fr}.active-plans{grid-column:auto}.dossier-actions{align-items:stretch;flex-direction:column}.dossier-actions>div{display:grid;grid-template-columns:1fr 1fr}.dossier-actions>.quiet{display:none}.quick-stats{grid-template-columns:1fr}.identity p{font-size:12px}.dossier__scroll{padding-inline:14px}}
+@media(max-width:700px){.dossier{width:100%;border-left:0}.folder-tab{display:none}.dimension-grid,.support-grid,.proposal__grid,.add-form{grid-template-columns:1fr}.active-plans{grid-column:auto}.dossier-actions{align-items:stretch;flex-direction:column}.dossier-actions>div{display:grid;grid-template-columns:1fr 1fr}.dossier-actions>.quiet{display:none}.quick-stats{grid-template-columns:1fr}.identity p{font-size:12px}.dossier__scroll{padding-inline:14px}}
 @media(max-width:430px){.dossier__masthead{padding:14px}.identity__seal{width:42px;height:42px}.identity h1{font-size:20px}.dossier-tabs{padding-inline:8px}.dossier-tabs button{padding-inline:5px}.dossier-actions>div{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){.dossier{animation:none}}
 </style>

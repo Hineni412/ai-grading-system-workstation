@@ -18,6 +18,9 @@ class QuestionGradingDetail:
     confidence_score: float | None = None
     knowledge_ids: list[str] = field(default_factory=list)
     secondary_errors: list["SecondaryError"] = field(default_factory=list)
+    # Original AI score for this detail when a teacher lock overrode
+    # score_awarded; None means "no separate AI score was preserved".
+    ai_score_awarded: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +38,25 @@ class GradingResult:
     needs_human_review: bool
     grading_details: list[QuestionGradingDetail]
     raw_json: dict[str, Any]
+
+
+TEACHER_LOCKED_ERROR_SUMMARY = "teacher_score_locked"
+
+
+def detail_ai_score(detail: QuestionGradingDetail) -> float | None:
+    """Resolve the original AI score carried by one detail.
+
+    Teacher-locked details keep their AI score in ``ai_score_awarded``; a
+    locked detail without an AI counterpart has no AI score at all.  Every
+    other detail is AI-produced, so its own ``score_awarded`` is the AI score.
+    """
+
+    explicit = detail.ai_score_awarded
+    if explicit is not None:
+        return float(explicit)
+    if str(detail.error_summary or "") == TEACHER_LOCKED_ERROR_SUMMARY:
+        return None
+    return float(detail.score_awarded)
 
 
 @dataclass

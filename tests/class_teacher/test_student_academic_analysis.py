@@ -507,3 +507,197 @@ def test_time_filters_use_academic_year_and_current_date(
         subject_name=None,
     )
     assert [item["session_id"] for item in recent] == ["boundary", "today"]
+
+
+def _profile_assessments(
+    subject_id: str,
+    rows: list[tuple[str, str, str, str, str, int, int]],
+) -> list[dict[str, object]]:
+    """rows: (subject, occurred, term, grade, exam_type, score, rank)."""
+    sessions: dict[str, dict[str, object]] = {}
+    for subject, occurred, term, grade, exam_type, score, rank in rows:
+        key = occurred
+        session = sessions.setdefault(key, {
+            "title": f"合成画像场次 {occurred}",
+            "academic_year": "2025-2026",
+            "term": term,
+            "grade": grade,
+            "exam_type": exam_type,
+            "comparison_series": "class-regular",
+            "occurred_on": occurred,
+            "source_reference": f"synthetic-profile-{occurred}",
+        })
+        session.setdefault("subjects", []).append((subject, score, rank))
+    assessments = []
+    for occurred, session in sessions.items():
+        for subject, score, rank in session["subjects"]:
+            assessments.append({
+                "title": session["title"],
+                "subject_name": subject,
+                "occurred_on": occurred,
+                "max_score": 100,
+                "rank_scope": "grade",
+                "participant_count": 400,
+                "measure_role": "total_score" if subject == "总分" else "subject_score",
+                "assessment_nature": session["exam_type"],
+                "rank_origin": "teacher_confirmed",
+                "cohort_key": "same-grade-cohort",
+                "ranking_rule_version": "school-export-v1",
+                "session": {key: value for key, value in session.items() if key != "subjects"},
+                "results": [{
+                    "subject_id": subject_id,
+                    "result_state": "normal",
+                    "score": score,
+                    "rank": rank,
+                }],
+            })
+    return assessments
+
+
+def _confirm_assessments(
+    service: VaultService,
+    token: str,
+    assessments: list[dict[str, object]],
+    operation_id: str,
+) -> None:
+    batch = ConfirmedSpreadsheetAdapter().read({
+        "teacher_confirmed": True,
+        "source_label": "仅内存合成画像数据",
+        "assessments": assessments,
+    })
+    service.evidence.confirm_batch(token=token, operation_id=operation_id, batch=batch)
+
+
+def test_profile_computes_positioning_trend_stability_and_skew(tmp_path: Path) -> None:
+    service, token, subject_id = _service(tmp_path)
+    rows = [
+        # 七上期中：总分 200 名
+        ("总分", "2025-11-01", "上学期", "七年级", "期中考试", 70, 200),
+        ("语文", "2025-11-01", "上学期", "七年级", "期中考试", 80, 100),
+        ("数学", "2025-11-01", "上学期", "七年级", "期中考试", 75, 100),
+        ("英语", "2025-11-01", "上学期", "七年级", "期中考试", 78, 120),
+        # 七上期末：总分 100 名
+        ("总分", "2026-01-10", "上学期", "七年级", "期末考试", 78, 100),
+        ("语文", "2026-01-10", "上学期", "七年级", "期末考试", 85, 60),
+        ("数学", "2026-01-10", "上学期", "七年级", "期末考试", 70, 200),
+        ("英语", "2026-01-10", "上学期", "七年级", "期末考试", 82, 90),
+        # 七下期中：总分 40 名
+        ("总分", "2026-04-20", "下学期", "七年级", "期中考试", 88, 40),
+        ("语文", "2026-04-20", "下学期", "七年级", "期中考试", 92, 20),
+        ("数学", "2026-04-20", "下学期", "七年级", "期中考试", 65, 300),
+        ("英语", "2026-04-20", "下学期", "七年级", "期中考试", 85, 100),
+    ]
+    _confirm_assessments(
+        service, token, _profile_assessments(subject_id, rows), "academic-profile-0001"
+    )
+
+    analysis = service.academic.read(token=token, subject_id=subject_id)
+    profile = analysis["profile"]
+
+    current = profile["current"]
+    assert current["rank"] == 40
+    assert current["participant_count"] == 400
+    assert current["top_ratio"] == pytest.approx(0.1)
+    assert current["term_label"] == "七下"
+    assert current["previous"]["rank"] == 100
+    assert current["rank_delta"] == 60
+
+    # 相对位次 0.501 → 0.752 → 0.902，两步同向且超过阈值
+    assert profile["trend"]["label"] == "improving"
+    assert profile["trend"]["session_count"] == 3
+    # 振幅约 0.40，属于波动大
+    assert profile["stability"]["label"] == "volatile"
+    assert profile["stability"]["swing_ratio"] == pytest.approx(
+        (1 - 39 / 399) - (1 - 199 / 399)
+    )
+
+    # 七下期中：语文前 10%（20/400），数学后 50%（300/400）→ 明显偏科
+    assert profile["skew"]["label"] == "skewed"
+    assert profile["skew"]["strongest"][0]["subject_name"] == "语文"
+    assert profile["skew"]["weakest"][0]["subject_name"] == "数学"
+
+    subjects = {item["subject_name"]: item for item in profile["subjects"]}
+    assert subjects["数学"]["latest"]["rank"] == 300
+    # 数学 200 名 → 300 名，下滑 100/400 = 0.25，超过关注阈值
+    assert subjects["数学"]["rank_delta"] == -100
+    assert subjects["数学"]["attention"] is True
+    # 最弱两科（数学、英语）也带关注标记
+    assert subjects["英语"]["attention"] is True
+    assert subjects["语文"]["attention"] is False
+    assert [point["rank"] for point in subjects["语文"]["points"]] == [100, 60, 20]
+
+
+def test_profile_marks_insufficient_and_ignores_cross_grade_ranks(tmp_path: Path) -> None:
+    service, token, subject_id = _service(tmp_path)
+    rows = [
+        ("总分", "2025-11-01", "上学期", "七年级", "期中考试", 70, 210),
+        ("语文", "2025-11-01", "上学期", "七年级", "期中考试", 80, 200),
+        ("数学", "2025-11-01", "上学期", "七年级", "期中考试", 75, 205),
+        ("英语", "2025-11-01", "上学期", "七年级", "期中考试", 78, 195),
+        ("总分", "2026-01-10", "上学期", "七年级", "期末考试", 71, 200),
+        ("语文", "2026-01-10", "上学期", "七年级", "期末考试", 81, 190),
+        ("数学", "2026-01-10", "上学期", "七年级", "期末考试", 76, 210),
+        ("英语", "2026-01-10", "上学期", "七年级", "期末考试", 79, 200),
+        # 升入八年级后名次口径不同，不得与七年级场次直接比较
+        ("总分", "2026-11-01", "上学期", "八年级", "期中考试", 60, 350),
+        ("语文", "2026-11-01", "上学期", "八年级", "期中考试", 70, 330),
+        ("数学", "2026-11-01", "上学期", "八年级", "期中考试", 55, 360),
+        ("英语", "2026-11-01", "上学期", "八年级", "期中考试", 65, 340),
+    ]
+    _confirm_assessments(
+        service, token, _profile_assessments(subject_id, rows), "academic-profile-0002"
+    )
+
+    analysis = service.academic.read(token=token, subject_id=subject_id)
+    profile = analysis["profile"]
+
+    # 最新一场在八年级，同年级只有一场 → 趋势、进退都不可判定
+    assert profile["current"]["rank"] == 350
+    assert profile["current"]["previous"] is None
+    assert profile["current"]["rank_delta"] is None
+    assert profile["trend"]["label"] == "insufficient"
+    assert profile["stability"]["label"] == "insufficient"
+    subjects = {item["subject_name"]: item for item in profile["subjects"]}
+    assert subjects["数学"]["rank_delta"] is None
+    # 单科 points 仍保留全部场次（含七年级）
+    assert [point["rank"] for point in subjects["数学"]["points"]] == [205, 210, 360]
+
+
+def test_ai_summary_card_flows_into_model_context(tmp_path: Path) -> None:
+    service, token, subject_id = _service(tmp_path)
+    rows = [
+        ("总分", "2025-11-01", "上学期", "七年级", "期中考试", 70, 200),
+        ("语文", "2025-11-01", "上学期", "七年级", "期中考试", 80, 30),
+        ("数学", "2025-11-01", "上学期", "七年级", "期中考试", 60, 320),
+        ("英语", "2025-11-01", "上学期", "七年级", "期中考试", 78, 150),
+    ]
+    _confirm_assessments(
+        service, token, _profile_assessments(subject_id, rows), "academic-profile-0003"
+    )
+
+    context = service.student_cards.model_context(token=token, subject_id=subject_id)
+    summary = context["academic_summary"]
+    assert summary["contract_version"] == "academic_ai_summary_v1"
+    assert summary["total"]["rank"] == 200
+    assert summary["total"]["participant_count"] == 400
+    assert summary["latest_exam"]["term_label"] == "七上"
+    assert summary["trend"] == "insufficient"
+    assert summary["skew"]["label"] == "skewed"
+    assert summary["skew"]["strongest"] == ["语文"]
+    assert summary["skew"]["weakest"] == ["数学"]
+    subjects = {item["name"]: item for item in summary["subjects"]}
+    assert subjects["数学"]["latest_rank"] == 320
+    assert subjects["数学"]["attention"] is True
+
+    # 没有任何成绩证据的学生：摘要卡为 None，不阻塞 AI 流程
+    other = service.support.create_subject(
+        token=token,
+        operation_id="academic-subject-0002",
+        source_student_id="academic-student-002",
+        display_name="无成绩学生",
+        class_label="合成一班",
+    )
+    empty_context = service.student_cards.model_context(
+        token=token, subject_id=str(other["subject_id"])
+    )
+    assert empty_context["academic_summary"] is None

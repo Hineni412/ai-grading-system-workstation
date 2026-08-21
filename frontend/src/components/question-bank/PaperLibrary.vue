@@ -1022,7 +1022,12 @@ async function confirmPermanentDelete(): Promise<void> {
             :aria-expanded="!collapsedFolderKeys.has(folder.key) || Boolean(keyword.trim())"
             @click="toggleFolder(folder.key)"
           >
-            <span class="paper-folder__chevron" aria-hidden="true">{{ collapsedFolderKeys.has(folder.key) && !keyword.trim() ? '›' : '⌄' }}</span>
+            <svg
+              class="paper-folder__chevron"
+              :class="{ 'is-collapsed': collapsedFolderKeys.has(folder.key) && !keyword.trim() }"
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+            ><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
             <strong>{{ folder.label }}</strong>
             <span class="paper-folder__kind">{{ folder.kindLabel }}</span>
             <span class="paper-folder__count">{{ folder.papers.length }} 份</span>
@@ -1357,6 +1362,9 @@ async function confirmPermanentDelete(): Promise<void> {
             <span><b>{{ permanentDeleteImpact.owned_file_count }}</b> 个本地文件</span>
             <span><b>{{ permanentDeleteImpact.training_link_count }}</b> 条训练关联</span>
             <span><b>{{ permanentDeleteImpact.knowledge_graph_link_count }}</b> 条知识图谱计数来源</span>
+            <span v-if="permanentDeleteImpact.taxonomy_proposal_count">
+              将清除 <b>{{ permanentDeleteImpact.taxonomy_proposal_count }}</b> 条待审新词
+            </span>
           </p>
           <p>
             本地 Word/PDF、题目和标签会删除；训练材料快照保留，但不再计入这些题；
@@ -1542,9 +1550,14 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-folder__chevron {
   color: var(--color-accent);
-  font-size: 22px;
-  line-height: 1;
+  flex: none;
+  height: 16px;
+  transition: transform 150ms ease;
   width: 16px;
+}
+
+.paper-folder__chevron.is-collapsed {
+  transform: rotate(-90deg);
 }
 
 .paper-folder__kind {
@@ -1568,8 +1581,9 @@ async function confirmPermanentDelete(): Promise<void> {
   border-radius: var(--radius-panel);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 5%, transparent);
   display: grid;
-  grid-template-columns: auto 108px minmax(0, 1fr);
+  grid-template-columns: 108px minmax(0, 1fr);
   min-height: 230px;
+  position: relative;
   transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
 }
 
@@ -1586,19 +1600,27 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-card__check {
-  align-items: flex-start;
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--color-text-primary) 12%, transparent);
   cursor: pointer;
   display: flex;
-  padding: 18px 0 0 14px;
+  inset-block-start: 10px;
+  inset-inline-start: 10px;
+  padding: 5px;
+  position: absolute;
+  z-index: 2;
 }
 
 .paper-batch-bar__select-all input,
 .paper-folder__check input {
   accent-color: var(--color-accent);
   cursor: pointer;
-  height: 16px;
+  height: 18px;
   margin: 0;
-  width: 16px;
+  width: 18px;
 }
 
 .paper-card__check input {
@@ -2465,7 +2487,7 @@ async function confirmPermanentDelete(): Promise<void> {
   }
 
   .paper-card {
-    grid-template-columns: auto 78px minmax(0, 1fr);
+    grid-template-columns: 78px minmax(0, 1fr);
   }
 
   .paper-card footer,

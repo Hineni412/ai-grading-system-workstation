@@ -31,6 +31,9 @@ export default defineConfig({
       output: {
         chunkFileNames: JS_CHUNK_FILE_NAME_PATTERN,
         entryFileNames: JS_CHUNK_FILE_NAME_PATTERN,
+        // 手动分包可能打乱跨 chunk 的模块执行顺序（echarts/zrender 与页面 chunk 之间
+        // 会形成循环引用，共享辅助函数尚未初始化就被调用），保持源码执行顺序。
+        strictExecutionOrder: true,
         codeSplitting: {
           groups: [
             {

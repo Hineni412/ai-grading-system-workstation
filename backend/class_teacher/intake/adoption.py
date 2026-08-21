@@ -250,6 +250,7 @@ class HandoffAdoption:
                     teacher_quote=str(content.get("teacher_quote") or content.get("summary") or ""),
                     model_draft=json.dumps(profile_update, ensure_ascii=False),
                     source_record_id=record_id,
+                    latest_round_record_id=record_id,
                 )
             record = self.support.create_record(
                 token=token,
@@ -795,12 +796,15 @@ class HandoffAdoption:
                         vmk=vmk,
                         object_id=snapshot_object_id,
                     )
+                    restored = dict(snapshot["payload"])
+                    # 撤回后不再有任何"本轮更新"高亮。
+                    restored.pop("latest_round", None)
                     self.repository.put(
                         connection,
                         vmk=vmk,
                         object_id=str(entry["payload_object_id"]),
                         object_type="student_card_current_profile",
-                        payload=dict(snapshot["payload"]),
+                        payload=restored,
                     )
                     connection.execute(
                         "UPDATE student_card_entries SET source_record_id=? WHERE entry_id=?",

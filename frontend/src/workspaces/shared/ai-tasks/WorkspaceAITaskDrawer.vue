@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { useWorkspaceAITaskStore } from './store'
@@ -28,15 +28,50 @@ const store = useWorkspaceAITaskStore()
 const jobs = useJobStore()
 const router = useRouter()
 const open = ref(false)
+const peekOpen = ref(false)
+const peekTaskId = ref<string | null>(null)
+const peekJobId = ref<number | null>(null)
+const peekFading = ref(false)
 
 const ordinaryJobs = computed(() => Object.values(jobs.jobs)
   .filter(job => !job.job_type.startsWith('workspace_ai.'))
   .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)))
 
+function isLiveTask(task: WorkspaceAITask): boolean {
+  return ['prepared', 'queued', 'running'].includes(task.status)
+}
+
+function isLiveJob(job: JobResponse): boolean {
+  return job.status === 'queued' || job.status === 'running'
+}
+
 const attentionTasks = computed(() => store.orderedTasks.filter(isAttentionTask))
 const archivedTasks = computed(() => store.orderedTasks.filter(isArchivedTask))
 const attentionJobs = computed(() => ordinaryJobs.value.filter(isAttentionJob))
 const archivedJobs = computed(() => ordinaryJobs.value.filter(isArchivedJob))
+type AttentionItem =
+  | { kind: 'task'; task: WorkspaceAITask; live: boolean; updatedAt: number }
+  | { kind: 'job'; job: JobResponse; live: boolean; updatedAt: number }
+const attentionItems = computed(() => {
+  const items: AttentionItem[] = [
+    ...attentionTasks.value.map(task => ({
+      kind: 'task' as const,
+      task,
+      live: isLiveTask(task),
+      updatedAt: Date.parse(task.updated_at),
+    })),
+    ...attentionJobs.value.map(job => ({
+      kind: 'job' as const,
+      job,
+      live: isLiveJob(job),
+      updatedAt: Date.parse(job.updated_at),
+    })),
+  ]
+  return items.sort((left, right) => {
+    if (left.live !== right.live) return left.live ? -1 : 1
+    return right.updatedAt - left.updatedAt
+  })
+})
 const attentionCount = computed(() => attentionTasks.value.length + attentionJobs.value.length)
 const archivedCount = computed(() => archivedTasks.value.length + archivedJobs.value.length)
 const totalCount = computed(() => attentionCount.value + archivedCount.value)
@@ -53,6 +88,94 @@ const livePercent = computed(() => {
   if (!runningJob) return null
   return Math.round(Math.max(0, Math.min(1, runningJob.progress)) * 100)
 })
+
+const peekTask = computed(() => peekTaskId.value ? store.tasks[peekTaskId.value] ?? null : null)
+const peekJob = computed(() => peekJobId.value ? jobs.jobs[peekJobId.value] ?? null : null)
+const AUTO_MINIMIZE_DELAY_MS = 1200
+const FADE_DURATION_MS = 320
+let autoMinimizeTimer: ReturnType<typeof setTimeout> | null = null
+let fadeTimer: ReturnType<typeof setTimeout> | null = null
+
+function cancelPeekTimers(): void {
+  if (autoMinimizeTimer !== null) clearTimeout(autoMinimizeTimer)
+  if (fadeTimer !== null) clearTimeout(fadeTimer)
+  autoMinimizeTimer = null
+  fadeTimer = null
+}
+
+function canAutoMinimizePeek(): boolean {
+  if (!peekOpen.value) return false
+  if (peekJob.value) {
+    return peekJob.value.status === 'succeeded' && peekJob.value.progress >= 1
+  }
+  if (peekTask.value) {
+    return peekTask.value.status === 'proposal_ready'
+      && peekTask.value.progress >= 1
+      && peekTask.value.pending_count === 0
+  }
+  return false
+}
+
+function scheduleAutoMinimize(): void {
+  cancelPeekTimers()
+  if (!canAutoMinimizePeek()) return
+  const taskId = peekTaskId.value
+  const jobId = peekJobId.value
+  autoMinimizeTimer = setTimeout(() => {
+    autoMinimizeTimer = null
+    if (
+      peekTaskId.value !== taskId
+      || peekJobId.value !== jobId
+      || !canAutoMinimizePeek()
+    ) return
+    peekFading.value = true
+    fadeTimer = setTimeout(() => {
+      fadeTimer = null
+      if (peekTaskId.value === taskId && peekJobId.value === jobId) {
+        peekOpen.value = false
+        peekFading.value = false
+      }
+    }, FADE_DURATION_MS)
+  }, AUTO_MINIMIZE_DELAY_MS)
+}
+
+watch(() => store.taskNoticeRevision, () => {
+  if (!store.latestStartedTaskId) return
+  cancelPeekTimers()
+  peekTaskId.value = store.latestStartedTaskId
+  peekJobId.value = null
+  peekFading.value = false
+  peekOpen.value = true
+})
+
+watch(() => jobs.jobNoticeRevision, () => {
+  if (!jobs.latestTrackedJobId) return
+  cancelPeekTimers()
+  peekJobId.value = jobs.latestTrackedJobId
+  peekTaskId.value = null
+  peekFading.value = false
+  peekOpen.value = true
+})
+
+watch(
+  () => [
+    peekOpen.value,
+    peekTask.value?.status,
+    peekTask.value?.progress,
+    peekTask.value?.pending_count,
+    peekJob.value?.status,
+    peekJob.value?.progress,
+  ],
+  scheduleAutoMinimize,
+)
+
+onBeforeUnmount(cancelPeekTimers)
+
+function minimizePeek(): void {
+  cancelPeekTimers()
+  peekOpen.value = false
+  peekFading.value = false
+}
 
 function jobTone(job: JobResponse): 'neutral' | 'info' | 'success' | 'warning' | 'danger' {
   if (job.status === 'running' || job.status === 'queued') return 'info'
@@ -74,16 +197,19 @@ function taskTone(task: WorkspaceAITask): TimelineTone {
 
 async function returnToJob(job: JobResponse): Promise<void> {
   open.value = false
+  minimizePeek()
   await router.push(jobLocation(job))
 }
 
 async function returnToTask(task: WorkspaceAITask): Promise<void> {
   open.value = false
+  minimizePeek()
   await router.push(returnLocation(task))
 }
 
 function toggleDrawer(): void {
   open.value = !open.value
+  if (open.value) minimizePeek()
 }
 </script>
 
@@ -100,6 +226,33 @@ function toggleDrawer(): void {
       <span v-if="attentionCount">{{ attentionCount }}</span>
       <small v-if="livePercent !== null">{{ livePercent }}%</small>
     </button>
+
+    <aside
+      v-if="peekOpen && (peekTask || peekJob)"
+      class="workspace-ai-task-peek"
+      :class="{ 'is-fading': peekFading }"
+      aria-live="polite"
+    >
+      <header>
+        <strong>{{ peekTask?.safe_title ?? (peekJob ? jobTitle(peekJob) : '后台任务') }}</strong>
+        <button type="button" aria-label="收回任务中心" @click="minimizePeek">—</button>
+      </header>
+      <progress
+        v-if="peekTask || (peekJob && !isQuestionBankLibraryJob(peekJob))"
+        :value="Math.max(0, Math.min(1, peekTask?.progress ?? peekJob?.progress ?? 0))"
+        max="1"
+        aria-label="最新任务进度"
+      />
+      <p v-if="peekTask">{{ peekTask.teacher_message }}</p>
+      <p v-else-if="peekJob">{{ jobDetailLine(peekJob) }}</p>
+      <footer>
+        <AppButton v-if="peekTask" variant="secondary" @click="returnToTask(peekTask)">返回原页</AppButton>
+        <AppButton v-else-if="peekJob" variant="secondary" @click="returnToJob(peekJob)">{{
+          isQuestionBankLibraryJob(peekJob) ? '回到试卷库' : '返回相关页面'
+        }}</AppButton>
+        <AppButton variant="ghost" @click="minimizePeek">收回任务中心</AppButton>
+      </footer>
+    </aside>
 
     <div
       v-if="open"
@@ -128,55 +281,57 @@ function toggleDrawer(): void {
       <section v-if="attentionCount" class="workspace-ai-task-drawer__section" aria-label="需要处理">
         <h3>需要处理</h3>
         <div class="workspace-ai-task-drawer__timeline">
-          <TimelineItem v-for="task in attentionTasks" :key="task.task_id" :tone="taskTone(task)">
-            <article>
+          <TimelineItem
+            v-for="item in attentionItems"
+            :key="item.kind === 'task' ? item.task.task_id : `job-${item.job.id}`"
+            :tone="item.kind === 'task' ? taskTone(item.task) : jobTone(item.job)"
+          >
+            <article v-if="item.kind === 'task'">
               <div class="workspace-ai-task-drawer__heading">
-                <strong>{{ task.safe_title }}</strong>
-                <span>{{ task.safe_source }}</span>
+                <strong>{{ item.task.safe_title }}</strong>
+                <span>{{ item.task.safe_source }}</span>
               </div>
-              <progress :value="task.progress" max="1" :aria-label="`${task.safe_title}进度`" />
-              <p>{{ task.teacher_message }}</p>
-              <p class="workspace-ai-task-drawer__meta">{{ task.next_action }}</p>
-              <p v-if="store.syncErrors[task.task_id]" role="status">
-                {{ store.syncErrors[task.task_id] }}
+              <progress :value="item.task.progress" max="1" :aria-label="`${item.task.safe_title}进度`" />
+              <p>{{ item.task.teacher_message }}</p>
+              <p class="workspace-ai-task-drawer__meta">{{ item.task.next_action }}</p>
+              <p v-if="store.syncErrors[item.task.task_id]" role="status">
+                {{ store.syncErrors[item.task.task_id] }}
               </p>
               <footer>
-                <AppButton variant="secondary" @click="returnToTask(task)">返回原页</AppButton>
+                <AppButton variant="secondary" @click="returnToTask(item.task)">返回原页</AppButton>
                 <AppButton
-                  v-if="canCancelTask(task)"
+                  v-if="canCancelTask(item.task)"
                   variant="ghost"
-                  @click="store.cancel(task.task_id)"
+                  @click="store.cancel(item.task.task_id)"
                 >
-                  {{ cancelTaskLabel(task) }}
+                  {{ cancelTaskLabel(item.task) }}
                 </AppButton>
-                <AppButton v-else variant="ghost" @click="store.remove(task.task_id)">从列表移除</AppButton>
+                <AppButton v-else variant="ghost" @click="store.remove(item.task.task_id)">从列表移除</AppButton>
               </footer>
             </article>
-          </TimelineItem>
-          <TimelineItem v-for="job in attentionJobs" :key="`job-${job.id}`" :tone="jobTone(job)">
-            <article>
+            <article v-else>
               <div class="workspace-ai-task-drawer__heading">
-                <strong>{{ jobTitle(job) }}</strong>
-                <StatusBadge :tone="jobTone(job)" :label="jobStatusLabel(job)" />
+                <strong>{{ jobTitle(item.job) }}</strong>
+                <StatusBadge :tone="jobTone(item.job)" :label="jobStatusLabel(item.job)" />
               </div>
               <progress
-                v-if="!isQuestionBankLibraryJob(job)"
-                :value="Math.max(0, Math.min(1, job.progress))"
+                v-if="!isQuestionBankLibraryJob(item.job)"
+                :value="Math.max(0, Math.min(1, item.job.progress))"
                 max="1"
-                :aria-label="`${jobTitle(job)}进度`"
+                :aria-label="`${jobTitle(item.job)}进度`"
               />
-              <p>{{ jobDetailLine(job) }}</p>
-              <p v-if="jobs.syncErrors[job.id]" role="status">任务状态暂时无法更新，已保留上次状态。</p>
+              <p>{{ jobDetailLine(item.job) }}</p>
+              <p v-if="jobs.syncErrors[item.job.id]" role="status">任务状态暂时无法更新，已保留上次状态。</p>
               <footer>
-              <AppButton variant="secondary" @click="returnToJob(job)">{{
-                isQuestionBankLibraryJob(job) ? '回到试卷库' : '返回相关页面'
+              <AppButton variant="secondary" @click="returnToJob(item.job)">{{
+                isQuestionBankLibraryJob(item.job) ? '回到试卷库' : '返回相关页面'
               }}</AppButton>
                 <AppButton
-                  v-if="!TERMINAL_JOB_STATUSES.has(job.status)"
+                  v-if="!TERMINAL_JOB_STATUSES.has(item.job.status)"
                   variant="ghost"
-                  @click="jobs.cancel(job.id)"
+                  @click="jobs.cancel(item.job.id)"
                 >停止任务</AppButton>
-                <AppButton v-else variant="ghost" @click="jobs.remove(job.id)">从列表移除</AppButton>
+                <AppButton v-else variant="ghost" @click="jobs.remove(item.job.id)">从列表移除</AppButton>
               </footer>
             </article>
           </TimelineItem>
@@ -251,6 +406,57 @@ function toggleDrawer(): void {
   inset: 0;
   z-index: 69;
   background: transparent;
+}
+
+.workspace-ai-task-peek {
+  position: absolute;
+  z-index: 72;
+  inset-block-start: calc(100% + 12px);
+  inset-inline-end: 0;
+  display: grid;
+  width: min(340px, calc(100vw - 24px));
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--card);
+  box-shadow: var(--shadow-overlay);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.workspace-ai-task-peek.is-fading {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+.workspace-ai-task-peek header,
+.workspace-ai-task-peek footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workspace-ai-task-peek header button {
+  border: 0;
+  background: transparent;
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.workspace-ai-task-peek progress {
+  width: 100%;
+}
+
+.workspace-ai-task-peek p {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.workspace-ai-task-peek footer {
+  justify-content: flex-start;
+  flex-wrap: wrap;
 }
 
 .workspace-ai-task-drawer {

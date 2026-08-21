@@ -354,6 +354,7 @@ class DBManager:
         *,
         source_paper_path: str = "",
         source_paper_sha256: str = "",
+        curriculum_volume_id: str | None = None,
     ) -> int:
         return self.session_repository.create_grading_session(
             session_name,
@@ -361,6 +362,7 @@ class DBManager:
             answer_key_path,
             source_paper_path=source_paper_path,
             source_paper_sha256=source_paper_sha256,
+            curriculum_volume_id=curriculum_volume_id,
         )
 
     def bind_grading_session_source(

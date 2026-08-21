@@ -312,7 +312,7 @@ class AITaggingService:
             result = AITaggingResult(
                 ok=True,
                 mock_mode=False,
-                analysis=TagAnalysis.from_dict(json.loads(output_text)),
+                analysis=TagAnalysis.from_dict(_loads_model_json(output_text)),
                 model_name=self.model,
             )
             return _with_quality(
@@ -1718,6 +1718,41 @@ def _batch_tag_analysis_response_format(
     }
 
 
+def _loads_model_json(text: str) -> Any:
+    """Parse model JSON output with conservative, semantics-preserving cleanup.
+
+    Only strips decorations that cannot change the payload (markdown fences,
+    text outside the outermost brackets, trailing commas).  Anything still
+    unparsable is raised so the caller can fall back to a fresh request.
+    """
+    cleaned = text.strip()
+    fence = re.match(r"^```[a-zA-Z0-9]*\s*(?P<body>.*?)\s*```$", cleaned, re.DOTALL)
+    if fence:
+        cleaned = fence.group("body").strip()
+    candidates = [cleaned]
+    start = min(
+        (index for index in (cleaned.find("{"), cleaned.find("[")) if index >= 0),
+        default=-1,
+    )
+    end = max(cleaned.rfind("}"), cleaned.rfind("]"))
+    if start > 0 or (start >= 0 and end >= 0 and end < len(cleaned) - 1):
+        if start >= 0 and end > start:
+            candidates.append(cleaned[start : end + 1])
+    for candidate in list(candidates):
+        no_trailing_commas = re.sub(r",(\s*[}\]])", r"\1", candidate)
+        if no_trailing_commas != candidate:
+            candidates.append(no_trailing_commas)
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise json.JSONDecodeError("empty model output", text, 0)
+
+
 def _mock_batch_analysis(batch_contexts: list[tuple[int, TaggingContext]]) -> dict[int, AITaggingResult]:
     results = {}
     for qid, ctx in batch_contexts:
@@ -1842,7 +1877,7 @@ def _analyze_one_batch(
             },
         )
         output_text = str(getattr(response, "output_text", "") or "").strip()
-        payload = json.loads(output_text)
+        payload = _loads_model_json(output_text)
         results = {}
         for item in payload.get("results", []):
             try:
@@ -1990,10 +2025,9 @@ def _finalize_batch_results(
             question_ref=str(qid),
         )
         retries_remaining = max(0, int(quality_retry_limit))
-        while (
-            result.analysis is not None
-            and result.quality_status == "invalid"
-            and retries_remaining > 0
+        while retries_remaining > 0 and (
+            (result.analysis is not None and result.quality_status == "invalid")
+            or (result.analysis is None and not result.ok)
         ):
             if request_controller is not None:
                 request_controller.begin("quality_retry", (qid,))

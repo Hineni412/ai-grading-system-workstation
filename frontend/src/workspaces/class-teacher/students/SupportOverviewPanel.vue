@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { studentR1Api, type SupportOverview } from '../api/r1'
+import { formatClassLabel } from '../format_class_label'
 import AppButton from '@/components/design-system/AppButton.vue'
 
 const emit = defineEmits<{ select: [subjectId: string] }>()
@@ -56,7 +57,7 @@ onMounted(() => { void load() })
           <p v-if="!dueSoon.length" class="hint">近期 {{ overview.review_soon_days }} 天内没有到期复查。</p>
           <button v-for="item in dueSoon" :key="item.subject_id" type="button" class="row" @click="emit('select', item.subject_id)">
             <strong>{{ item.display_name }}</strong>
-            <span>{{ item.class_label || '未分班' }}</span>
+            <span>{{ formatClassLabel(item.class_label) }}</span>
             <small>复查日期 {{ day(item.next_review_at) }}</small>
           </button>
         </section>
@@ -64,7 +65,7 @@ onMounted(() => { void load() })
           <h3>其他有记录的学生</h3>
           <button v-for="item in others" :key="item.subject_id" type="button" class="row" @click="emit('select', item.subject_id)">
             <strong>{{ item.display_name }}</strong>
-            <span>{{ item.class_label || '未分班' }}</span>
+            <span>{{ formatClassLabel(item.class_label) }}</span>
             <small>{{ item.next_review_at ? `复查 ${day(item.next_review_at)}` : `最近记录 ${day(item.last_record_at) || '—'}` }} · {{ item.active_record_count }} 条</small>
           </button>
         </section>

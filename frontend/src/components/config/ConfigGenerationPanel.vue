@@ -25,6 +25,7 @@ import {
   useConfigWorkspaceStore,
   type ConfigGenerationSummary,
 } from '../../stores/config-workspace'
+import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useJobStore } from '../../stores/jobs'
 
 const props = withDefaults(defineProps<{
@@ -56,12 +57,14 @@ const emit = defineEmits<{
 
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
+const curriculumScope = useCurriculumScopeStore()
 const submitting = ref(false)
 const requestError = ref('')
 const editorError = ref('')
 const selectedFailed = ref<string[]>([])
 const curriculum = ref<CurriculumCatalog | null>(null)
 const selectedVolumeId = ref('')
+const volumeManuallyChanged = ref(false)
 const curriculumLoading = ref(true)
 const curriculumError = ref('')
 const volumeTeleportTarget = ref<HTMLElement | null>(null)
@@ -88,20 +91,52 @@ const generationBlockReason = computed(() => {
   return ''
 })
 
+// 默认册别：优先顶部全局教学学期（需在已加载目录中），全局未选时再按考试名推断。
+function resolveDefaultVolumeId(sessionName: string): string {
+  const globalId = curriculumScope.selectedVolumeId
+  if (globalId !== null && curriculum.value?.volumes.some((item) => item.id === globalId)) {
+    return globalId
+  }
+  return inferCurriculumVolumeId(sessionName, curriculum.value?.volumes ?? []) || ''
+}
+
 onMounted(async () => {
   volumeTeleportTarget.value = document.querySelector<HTMLElement>('#config-curriculum-volume-slot')
   try {
     curriculum.value = await props.curriculumLoader()
-    selectedVolumeId.value = inferCurriculumVolumeId(
-      props.sessionName,
-      curriculum.value.volumes,
-    )
+    selectedVolumeId.value = resolveDefaultVolumeId(props.sessionName)
   } catch {
     curriculumError.value = '本地教材目录暂时无法读取，当前不会调用题目分析模型。'
   } finally {
     curriculumLoading.value = false
   }
 })
+
+// 未在本面板手动改过册别时，跟随顶部全局教学学期。
+watch(
+  () => curriculumScope.selectedVolumeId,
+  (volumeId) => {
+    if (volumeManuallyChanged.value) return
+    if (volumeId === null) {
+      selectedVolumeId.value = ''
+      return
+    }
+    if (curriculum.value?.volumes.some((item) => item.id === volumeId)) {
+      selectedVolumeId.value = volumeId
+    }
+  },
+)
+
+// 切换考试时按挂载时的既有逻辑重新推断册别，并恢复跟随全局学期。
+watch(
+  () => props.sessionName,
+  (sessionName) => {
+    volumeManuallyChanged.value = false
+    if (curriculum.value !== null) {
+      selectedVolumeId.value = resolveDefaultVolumeId(sessionName)
+    }
+  },
+)
 
 const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[configStore.jobId] ?? null)
 const syncError = computed(() => configStore.jobId === null
@@ -630,7 +665,7 @@ watch(
       >
         <label class="config-generation__console-volume">
           <span id="config-generation-volume-title">选择教材册别</span>
-          <select v-model="selectedVolumeId" :disabled="curriculumLoading" @change="requestError = ''">
+          <select v-model="selectedVolumeId" :disabled="curriculumLoading" @change="requestError = ''; volumeManuallyChanged = true">
             <option value="">请选择</option>
             <option v-for="volume in curriculum?.volumes ?? []" :key="volume.id" :value="volume.id">
               {{ volume.label }} · {{ volume.textbook_version }}

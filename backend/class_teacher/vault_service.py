@@ -125,14 +125,15 @@ class VaultService:
         from .class_roster_service import ClassRosterService
         from .existing_student_roster import SqliteExistingStudentRosterSource
 
+        roster_source = SqliteExistingStudentRosterSource(
+            Path(getattr(context.paths, "db_path", context.root / "grading.db"))
+        )
         self.class_roster = ClassRosterService(
             self.database,
             self.repository,
             self._key_provider,
             self.support,
-            SqliteExistingStudentRosterSource(
-                Path(getattr(context.paths, "db_path", context.root / "grading.db"))
-            ),
+            roster_source,
         )
         self.student_cards = StudentCardService(
             self.database,
@@ -142,6 +143,13 @@ class VaultService:
             self.model_approval,
             self.work,
             self.projections,
+        )
+        from .support_plan_draft_service import SupportPlanDraftService
+
+        self.support_plan_drafts = SupportPlanDraftService(
+            model_gateway=self.workspace_model_gateway,
+            student_cards=self.student_cards,
+            support=self.support,
         )
         self.quick_inbox = QuickInboxService(
             self.database,
@@ -155,6 +163,8 @@ class VaultService:
             self.database,
             self.repository,
             self._key_provider,
+            self.support.ensure_subject_in_connection,
+            roster_source=roster_source,
         )
         self.attention = AttentionService(
             self.database,
@@ -176,6 +186,9 @@ class VaultService:
             self.attention,
             self.projections,
         )
+        self.student_cards.academic_summarizer = self.academic.ai_summary
+        # 方案完成评「有效」时由支持记录服务回写学生当前档案。
+        self.support.student_cards = self.student_cards
         self._initialize_business_facades()
         from .intake import ClassTeacherIntake
 

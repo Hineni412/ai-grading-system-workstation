@@ -30,9 +30,11 @@ const riskReason = computed(() => {
   const reason = item.error_summary?.trim()
     || item.error_category?.trim()
     || item.deduction_reason?.trim()
+  if (item.score_status === 'ai_ready') {
+    return reason ? translateGradingReason(reason, '高置信 AI 结果') : '高置信 AI 结果'
+  }
   if (reason) return translateGradingReason(reason)
   if (item.score_status === 'ai_review') return 'AI 结果需要教师复核'
-  if (item.score_status === 'ai_ready') return '高置信 AI 结果'
   return '教师已确认'
 })
 const deductionReason = computed(() => {
@@ -46,7 +48,9 @@ const deductionReason = computed(() => {
     item.deduction_reason
       || item.error_summary
       || item.error_category,
-    'AI 未提供明确扣分依据，建议教师复核',
+    item.score_status === 'ai_ready'
+      ? 'AI 未提供明确扣分依据'
+      : 'AI 未提供明确扣分依据，建议教师复核',
   )
 })
 

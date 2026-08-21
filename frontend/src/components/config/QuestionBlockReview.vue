@@ -172,15 +172,21 @@ function placedAssets(questionId: string, assetKind: 'question' | 'answer'): Con
   })
 }
 
-function candidatePlacement(asset: ConfigSourceAsset): string {
-  const decision = assetDecision(asset.asset_id)
-  if (decision === undefined) return '待归属'
-  if (decision.action === 'ignore') return '已忽略'
-  return `${decision.question_id} · ${decision.asset_kind === 'question' ? '题目' : '答案'}`
+function candidatesBefore(questionId: string): ConfigSourceAsset[] {
+  return uncertainAssets.value.filter((item) => (
+    item.candidate_question_ids[1] === questionId
+    && assetDecision(item.asset_id) === undefined
+  ))
 }
 
-function candidatesBefore(questionId: string): ConfigSourceAsset[] {
-  return uncertainAssets.value.filter((item) => item.candidate_question_ids[1] === questionId)
+const ignoredAssets = computed(() => uncertainAssets.value
+  .filter((item) => assetDecision(item.asset_id)?.action === 'ignore'))
+const ignoredExpanded = ref(false)
+
+function restoreAsset(assetId: string): void {
+  emit('update:asset-decisions', props.assetDecisions.filter(
+    (item) => item.candidate_id !== assetId,
+  ))
 }
 
 function stateOf(questionId: string): 'pending' | 'running' | 'passed' | 'blocked' | 'failed' | '' {
@@ -280,6 +286,33 @@ watch(() => props.source.source_revision, (_revision, previous) => {
       </span>
     </header>
 
+    <div v-if="ignoredAssets.length" class="question-review__ignored-tray">
+      <button
+        type="button"
+        class="question-review__ignored-toggle"
+        :aria-expanded="ignoredExpanded"
+        @click="ignoredExpanded = !ignoredExpanded"
+      >
+        已忽略 {{ ignoredAssets.length }} 张<small>点开可查看并恢复</small>
+      </button>
+      <ul v-if="ignoredExpanded" class="question-review__ignored-list">
+        <li
+          v-for="asset in ignoredAssets"
+          :key="asset.asset_id"
+          class="question-review__ignored-item"
+        >
+          <img :src="asset.asset_url" :alt="`${asset.asset_id} 已忽略图片`">
+          <div><strong>疑难图片 · {{ asset.candidate_question_ids.join(' / ') }}</strong><small>已忽略，不会发送给AI</small></div>
+          <button
+            type="button"
+            class="question-review__restore-button"
+            :aria-label="`恢复疑难图片 ${asset.candidate_question_ids.join(' / ')} 到待归属提醒区`"
+            @click="restoreAsset(asset.asset_id)"
+          >恢复</button>
+        </li>
+      </ul>
+    </div>
+
     <p v-if="source.questions.length === 0" class="question-review__empty" role="status">
       当前来源没有可核对的题目，请更换文件后重试。
     </p>
@@ -289,15 +322,14 @@ watch(() => props.source.source_revision, (_revision, previous) => {
         v-for="candidate in candidatesBefore(question.question_id)"
         :key="candidate.asset_id"
         class="question-review__asset-between"
-        :class="{ 'is-ignored': isIgnored(candidate.asset_id) }"
       >
         <img :src="candidate.asset_url" :alt="`${candidate.asset_id} 待归属图片`" draggable="true" @dragstart="startAssetDrag(candidate.asset_id, $event)">
-        <div><strong>疑难图片 · {{ candidate.candidate_question_ids.join(' / ') }}</strong><small>{{ candidatePlacement(candidate) }}</small></div>
+        <div><strong>疑难图片 · {{ candidate.candidate_question_ids.join(' / ') }}</strong><small>待归属</small></div>
         <button
           type="button"
           class="question-review__ignore-button"
-          :aria-label="isIgnored(candidate.asset_id) ? '撤销忽略这张图片' : '忽略这张图片，不发送给AI'"
-          :aria-pressed="isIgnored(candidate.asset_id)"
+          aria-label="忽略这张图片，不发送给AI"
+          :aria-pressed="false"
           @click="ignoreAsset(candidate.asset_id)"
         ><span aria-hidden="true">×</span></button>
       </li>
@@ -509,6 +541,60 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   border: 0;
   list-style: none;
 }
+.question-review__ignored-tray {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--secondary);
+}
+.question-review__ignored-toggle {
+  display: flex;
+  align-items: baseline;
+  justify-self: start;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+.question-review__ignored-toggle small { color: var(--color-text-secondary); }
+.question-review__ignored-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.question-review__ignored-item {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.question-review__ignored-item img { width: 64px; height: 64px; object-fit: contain; filter: grayscale(1); opacity: .55; }
+.question-review__ignored-item small { display: block; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.question-review__restore-button {
+  min-height: 32px;
+  padding-inline: var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+.question-review__restore-button:hover,
+.question-review__restore-button:focus-visible { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
 .question-review__asset-between { position: relative; display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: center; gap: var(--space-3); padding: var(--space-3) 52px var(--space-3) var(--space-3); border: 1px solid var(--color-warning); border-left-width: 4px; border-radius: var(--radius-sm); background: var(--color-warning-subtle); }
 .question-review__asset-between img { width: 88px; height: 72px; object-fit: contain; }
 .question-review__asset-between small { display: block; color: var(--color-text-secondary); }

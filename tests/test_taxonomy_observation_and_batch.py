@@ -157,7 +157,7 @@ def test_exact_batch_advances_once_is_idempotent_and_undo_keeps_preexisting_tag(
     proposal, proposal_revision = _proposal(
         governance,
         question_id=question_id,
-        name="一元二次方程旧写法测试",
+        name="旧式求解口诀甲",
         token="4" * 32,
     )
     generation_id = "batch-current-generation"
@@ -277,7 +277,7 @@ def test_batch_undo_removes_only_its_insert_and_keeps_the_audit_row(
     proposal, proposal_revision = _proposal(
         governance,
         question_id=question_id,
-        name="一元二次方程另一种写法",
+        name="另一种求解口诀乙",
         token="7" * 32,
     )
     governance.allocate_observation_sequences(
@@ -363,7 +363,7 @@ def test_teacher_defer_prevents_automatic_batch_write(tmp_path: Path) -> None:
     proposal, proposal_revision = _proposal(
         governance,
         question_id=question_id,
-        name="一元二次方程暂缓写法",
+        name="暂缓求解口诀丙",
         token="a" * 32,
     )
     generation_id = "batch-defer-generation"
@@ -425,3 +425,119 @@ def test_teacher_defer_prevents_automatic_batch_write(tmp_path: Path) -> None:
                 }
             ],
         )
+
+
+def test_batch_approve_and_reject_manual_decisions(tmp_path: Path) -> None:
+    db_path = tmp_path / "question-bank.db"
+    store = QuestionBankTestStore(db_path)
+    approve_question_id = store.add_question(
+        QuestionCreate(question_number="4", question_text="配方法练习")
+    )
+    reject_question_id = store.add_question(
+        QuestionCreate(question_number="5", question_text="不适合入词表的写法")
+    )
+    governance = _governance(tmp_path)
+    approve_proposal, approve_revision = _proposal(
+        governance,
+        question_id=approve_question_id,
+        name="配方法批量新增",
+        token="d" * 32,
+    )
+    reject_proposal, _reject_revision = _proposal(
+        governance,
+        question_id=reject_question_id,
+        name="应放弃的词",
+        token="e" * 32,
+    )
+    governance.allocate_observation_sequences(
+        generation_id="batch-approve-reject", question_ids=[str(approve_question_id), str(reject_question_id)]
+    )
+    governance.record_successful_observation(
+        question_id=str(approve_question_id),
+        generation_id="batch-approve-reject",
+        proposal_ids=[approve_proposal["id"]],
+        taxonomy_revision=approve_revision,
+    )
+    governance.record_successful_observation(
+        question_id=str(reject_question_id),
+        generation_id="batch-approve-reject",
+        proposal_ids=[reject_proposal["id"]],
+        taxonomy_revision=approve_revision,
+    )
+    service = TaxonomyReviewService(
+        review_state_path=tmp_path / "taxonomy-review-state.json",
+        governance=governance,
+        write_service=QuestionBankWriteService(db_path, data_root=tmp_path),
+    )
+    snapshot = governance.observation_snapshot()
+
+    def _suggestion(relation_kind: str, question_id: int) -> dict:
+        return {
+            "relation_kind": relation_kind,
+            "confidence": 0.9,
+            "target_term_ids": [],
+            "reason": "AI 结论说明",
+            "source": "ai",
+            "legacy_format": False,
+            "evidence_question_ids": [question_id],
+            "taxonomy_revision": snapshot["taxonomy_revision"],
+            "graph_release_id": snapshot["graph_release_id"],
+        }
+
+    run = {
+        "run_id": "f" * 32,
+        "taxonomy_revision": snapshot["taxonomy_revision"],
+        "evidence_revision": snapshot["evidence_revision"],
+        "graph_release_id": snapshot["graph_release_id"],
+        "items": [
+            {
+                "proposal_id": approve_proposal["id"],
+                "status": "suggested",
+                "suggestion": _suggestion("new_core_candidate", approve_question_id),
+            },
+            {
+                "proposal_id": reject_proposal["id"],
+                "status": "suggested",
+                "suggestion": _suggestion("reject", reject_question_id),
+            },
+        ],
+    }
+
+    applied = service.apply_suggestion_batch(
+        run,
+        base_revision=snapshot["taxonomy_revision"],
+        request_token="0" * 32,
+        accepted_manual_decisions=[
+            {"proposal_id": approve_proposal["id"], "decision": "approve"},
+            {"proposal_id": reject_proposal["id"], "decision": "reject"},
+        ],
+    )
+
+    assert applied["status"] == "applied"
+    assert applied["taxonomy_revision"] == snapshot["taxonomy_revision"] + 1
+    assert set(applied["teacher_confirmed_proposal_ids"]) == {
+        approve_proposal["id"],
+        reject_proposal["id"],
+    }
+    assert governance.get_proposal(approve_proposal["id"])["status"] == "approved"
+    assert governance.get_proposal(reject_proposal["id"])["status"] == "rejected"
+    assert governance.resolve_term("knowledge", "配方法批量新增") is not None
+    assert governance.resolve_term("knowledge", "应放弃的词") is None
+
+    with sqlite3.connect(db_path) as conn:
+        approved_tags = conn.execute(
+            """
+            SELECT COUNT(*) FROM question_tags
+            WHERE question_id = ? AND tag_type = 'knowledge_point' AND tag_value = ?
+            """,
+            (approve_question_id, "配方法批量新增"),
+        ).fetchone()[0]
+        rejected_tags = conn.execute(
+            """
+            SELECT COUNT(*) FROM question_tags
+            WHERE question_id = ? AND tag_type = 'knowledge_point' AND tag_value = ?
+            """,
+            (reject_question_id, "应放弃的词"),
+        ).fetchone()[0]
+    assert approved_tags == 1
+    assert rejected_tags == 0

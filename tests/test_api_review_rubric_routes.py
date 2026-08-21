@@ -17,7 +17,7 @@ def _client_for_config(
     rubric: dict,
     answer_key: dict,
 ) -> tuple[TestClient, int, Path, Path]:
-    db = DBManager(tmp_path / "grading.db")
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
     answer_path = tmp_path / "answer.json"

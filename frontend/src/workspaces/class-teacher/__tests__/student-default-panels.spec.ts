@@ -27,6 +27,7 @@ describe('student surface keeps the selected student and shows class defaults', 
   it('keeps the current student in the URL when switching student sub-panels', async () => {
     vi.spyOn(studentR1Api, 'header').mockResolvedValue(subject)
     vi.spyOn(supportApi, 'listRecords').mockResolvedValue([])
+    vi.spyOn(supportApi, 'listSupportPlans').mockResolvedValue([])
     const navigate = vi.fn()
     const host = await mount(StudentSurface, { panel:'support', subjectId:'subject-1234', onNavigate:navigate })
     await vi.waitFor(() => expect(host.textContent).toContain('当前学生：'))
@@ -55,6 +56,7 @@ describe('student surface keeps the selected student and shows class defaults', 
     const navigate = vi.fn()
     vi.spyOn(studentR1Api, 'header').mockResolvedValue({ ...subject, subject_id:'subject-due', display_name:'合成到期' })
     vi.spyOn(supportApi, 'listRecords').mockResolvedValue([])
+    vi.spyOn(supportApi, 'listSupportPlans').mockResolvedValue([])
     const host = await mount(StudentSurface, { panel:'support', subjectId:null, onNavigate:navigate })
 
     expect(overview).toHaveBeenCalledOnce()

@@ -388,9 +388,12 @@ def test_tagging_schema_limits_controlled_fields_to_contract_candidates() -> Non
 def test_governed_knowledge_catalog_accepts_standard_term(
     tmp_path: Path,
 ) -> None:
+    # knowledge_graph_db_path 缺省会指向会话级共享题库库;全量跑时其他测试的应用启动
+    # 会把 revision 4 的签入标准装入该库,与本文件词表 revision 冲突,故指向本测试私有路径。
     governance = TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "standard-term-question-bank.db",
     )
     context = TaggingContext(
         question_text="根据轴对称性质完成证明。",
@@ -607,7 +610,7 @@ def test_single_responses_uses_tagging_gateway_with_raw_client(monkeypatch) -> N
             },
             "input": _prompt_input(context, taxonomy_contract),
             "model": "fake-tagging-model",
-            "timeout": 120.0,
+            "timeout": 240.0,
         }
     ]
     assert math.isfinite(provider_calls[0]["timeout"])
@@ -704,7 +707,7 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
             },
             "input": _prompt_input(contexts[1], single_contract),
             "model": "fake-tagging-model",
-            "timeout": 120.0,
+            "timeout": 240.0,
         },
         {
             "text": {
@@ -712,7 +715,7 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
             },
             "input": _batch_prompt_input(batch_items, batch_contracts),
             "model": "fake-tagging-model",
-            "timeout": 120.0,
+            "timeout": 240.0,
         }
     ]
     assert all(math.isfinite(call["timeout"]) for call in provider_calls)
@@ -1175,9 +1178,12 @@ def test_resolve_controlled_ids_ignores_contract_without_candidates() -> None:
 def test_governed_knowledge_catalog_accepts_candidate_id(
     tmp_path: Path,
 ) -> None:
+    # knowledge_graph_db_path 缺省会指向会话级共享题库库;全量跑时其他测试的应用启动
+    # 会把 revision 4 的签入标准装入该库,与本文件词表 revision 冲突,故指向本测试私有路径。
     governance = TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "candidate-id-question-bank.db",
     )
     context = TaggingContext(
         question_text="根据轴对称性质完成证明。",
@@ -1197,3 +1203,55 @@ def test_governed_knowledge_catalog_accepts_candidate_id(
     assert "controlled_field_violation:knowledge_points" not in result.quality_notes
     assert result.analysis is not None
     assert result.analysis.knowledge_points == ["轴对称的性质"]
+
+
+def test_loads_model_json_tolerates_fences_and_surrounding_junk() -> None:
+    payload = {"results": [{"question_id": 1, "knowledge_points": ["整式运算"]}]}
+    text = json.dumps(payload, ensure_ascii=False)
+
+    assert ai_tagging_module._loads_model_json(text) == payload
+    assert ai_tagging_module._loads_model_json(f"```json\n{text}\n```") == payload
+    assert ai_tagging_module._loads_model_json(f"{text}\n```") == payload
+    assert ai_tagging_module._loads_model_json(f"结果如下：\n{text}") == payload
+
+
+def test_loads_model_json_tolerates_trailing_commas() -> None:
+    assert ai_tagging_module._loads_model_json(
+        '{"results": [{"question_id": 1,}],}'
+    ) == {"results": [{"question_id": 1}]}
+
+
+def test_loads_model_json_rejects_unbalanced_brackets() -> None:
+    with pytest.raises(json.JSONDecodeError):
+        ai_tagging_module._loads_model_json('{"results": [{"question_id": 1}]]')
+
+
+def test_missing_batch_result_triggers_single_question_retry() -> None:
+    service = _FakeTaggingService(primary={1: [_analysis()], 2: [_analysis()]})
+    contexts = {
+        1: TaggingContext(question_text="计算 a² · a³。", question_number="1", question_type="选择题"),
+        2: TaggingContext(question_text="计算 b² · b³。", question_number="2", question_type="选择题"),
+    }
+    raw = {
+        1: AITaggingResult(ok=True, mock_mode=False, analysis=_analysis(), model_name="doubao-main"),
+        2: AITaggingResult(
+            ok=False,
+            mock_mode=False,
+            error="API response did not include results for this question ID",
+            model_name="doubao-main",
+            quality_status="invalid",
+        ),
+    }
+
+    final = ai_tagging_module._finalize_batch_results(
+        service,
+        list(contexts.items()),
+        raw,
+        quality_retry_limit=1,
+        enable_review=False,
+    )
+
+    assert final[1].quality_status == "complete"
+    assert final[2].ok
+    assert final[2].quality_status == "complete"
+    assert service.primary_calls == [2]

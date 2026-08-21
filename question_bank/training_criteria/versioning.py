@@ -155,22 +155,6 @@ def evaluate_criterion_quality(
         blank_count = _blank_count(question.tagging_context.question_text)
         if blank_count > 1 and len(draft.points) < blank_count:
             codes.append("multiple_blanks_collapsed")
-    teacher_visible_values = [
-        draft.rationale,
-        *draft.auxiliary_rules,
-        *(
-            value
-            for point in draft.points
-            for value in (
-                point.target,
-                point.observable_evidence,
-                *point.equivalent_rules,
-                *point.counterexamples,
-            )
-        ),
-    ]
-    if any(_contains_teacher_visible_english(value) for value in teacher_visible_values):
-        codes.append("teacher_visible_language_not_zh")
     unique_codes = tuple(dict.fromkeys(codes))
     return QualityGateResult(
         passed=not blocking_quality_codes(unique_codes),
@@ -1226,30 +1210,6 @@ def _blank_count(value: object) -> int:
     underscores = re.findall(r"_{2,}", text)
     empty_brackets = re.findall(r"[（(]\s*[）)]", text)
     return max(len(named), len(underscores) + len(empty_brackets), 1)
-
-
-def _contains_teacher_visible_english(value: object) -> bool:
-    text = str(value or "").strip()
-    if not text:
-        return False
-    words = [
-        word
-        for word in re.findall(r"[A-Za-z]{2,}", text)
-        if not (
-            (word.isupper() and len(word) <= 3)
-            or word.casefold() in {
-                "sin",
-                "cos",
-                "tan",
-                "log",
-                "ln",
-                "cm",
-                "mm",
-                "km",
-            }
-        )
-    ]
-    return bool(words)
 
 
 def _compact(value: object) -> str:

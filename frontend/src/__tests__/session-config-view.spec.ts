@@ -372,7 +372,7 @@ describe('SessionConfigView source replacement guard', () => {
     await nextTick()
 
     const generationStage = [...host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
-      .find((button) => button.textContent?.includes('AI 生成'))
+      .find((button) => button.textContent?.includes('分析并入库'))
     generationStage?.click()
     await settle()
     expect(host.querySelector('button[name="重新核对生成任务"]')).not.toBeNull()

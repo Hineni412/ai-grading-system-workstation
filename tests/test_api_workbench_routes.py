@@ -62,7 +62,9 @@ def workbench_client(tmp_path: Path):
     from backend.jobs.store import JobStore
     from db_manager import DBManager
 
-    db_path = tmp_path / "grading.db"
+    db_dir = tmp_path / "databases"
+    db_dir.mkdir()
+    db_path = db_dir / "grading.db"
     db = DBManager(db_path)
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
