@@ -36,7 +36,9 @@ def _client(
     *,
     config_generation_handler=None,
 ) -> tuple[TestClient, DBManager, JobManager]:
-    db = DBManager(tmp_path / "grading.db")
+    # db lives under a "databases" directory so load_editor_config infers
+    # tmp_path as the controlled data root for the session config files.
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
     manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
     manager.register(

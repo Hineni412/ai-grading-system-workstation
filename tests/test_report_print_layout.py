@@ -51,7 +51,9 @@ def _complete_payload() -> str:
 
 
 def _seed_print_report(tmp_path: Path) -> Path:
-    db_path = tmp_path / "grading.db"
+    databases_dir = tmp_path / "databases"
+    databases_dir.mkdir(exist_ok=True)
+    db_path = databases_dir / "grading.db"
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(json.dumps(RUBRIC, ensure_ascii=False), encoding="utf-8")
     with sqlite3.connect(db_path) as conn:
@@ -76,6 +78,7 @@ def _seed_print_report(tmp_path: Path) -> Path:
                 paper_id INTEGER,
                 total_score REAL,
                 student_score REAL,
+                ai_student_score REAL,
                 needs_human_review INTEGER,
                 raw_json TEXT,
                 graded_at TEXT
@@ -85,10 +88,26 @@ def _seed_print_report(tmp_path: Path) -> Path:
                 result_id INTEGER,
                 question_id TEXT,
                 score_awarded REAL,
+                ai_score_awarded REAL,
                 deduction_reason TEXT,
                 knowledge_ids TEXT,
                 error_category TEXT,
                 error_summary TEXT
+            );
+            CREATE TABLE teacher_score_locks (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER,
+                scan_batch_id TEXT,
+                student_id INTEGER,
+                question_id TEXT,
+                score_awarded REAL,
+                max_score REAL,
+                deduction_reason TEXT,
+                source_target_type TEXT,
+                source_target_id INTEGER,
+                revision INTEGER,
+                created_at TEXT,
+                updated_at TEXT
             );
             CREATE TABLE session_attendance (
                 id INTEGER PRIMARY KEY,
@@ -194,6 +213,7 @@ def test_score_excel_separates_official_statistics_from_print_name_hiding(
         "班级成绩总表",
         "小题分析打印",
         "成绩与小题明细",
+        "AI与人工分对比",
         "错因明细",
         "知识点分析",
         "缺考与异常",

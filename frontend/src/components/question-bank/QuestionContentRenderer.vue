@@ -567,19 +567,30 @@ function handleViewerKey(event: KeyboardEvent): void {
   grid-column: 1 / -1;
 }
 
-.question-content__option-grid .question-content__media {
+/* 单个块同时带选项标签和多张选项图（Word 里图文同段）时，
+   整块占满一行，选项图按原始大小横排，不再挤压或纵向堆叠。 */
+.question-content__option-grid > .question-content__block:only-child {
+  grid-column: 1 / -1;
+}
+
+.question-content__option-grid > .question-content__block:only-child .question-content__media img {
+  margin-inline: auto;
+  width: auto;
+}
+
+.question-content__option-grid .question-content__media:not(.question-content__media--options) {
   display: block;
   margin-top: 0;
 }
 
-.question-content__media--options {
+.question-content__media.question-content__media--options {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   width: 100%;
 }
 
-.question-content__media--options[data-option-count="3"] {
+.question-content__media.question-content__media--options[data-option-count="3"] {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
@@ -654,8 +665,8 @@ function handleViewerKey(event: KeyboardEvent): void {
   font-variant-numeric: lining-nums tabular-nums;
   max-width: 100%;
   min-width: 0;
-  table-layout: fixed;
-  width: 100%;
+  table-layout: auto;
+  width: auto;
 }
 
 .question-content td {

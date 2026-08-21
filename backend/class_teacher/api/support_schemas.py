@@ -48,7 +48,8 @@ class RecordFields(BaseModel):
 
 
 class RecordCreateRequest(OperationRequest, RecordFields):
-    pass
+    # 可选归属方案：行动日志挂到这名学生已有的支持方案下（服务端校验归属）。
+    plan_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class RecordReviseRequest(OperationRequest):
@@ -88,9 +89,18 @@ class SupportPlanCreateRequest(OperationRequest):
     action_id: str | None = None
 
 
+class SupportPlanAiDraftRequest(OperationRequest):
+    # AI 起草支持方案：只需幂等操作号，草稿不落库。
+    pass
+
+
 class SupportPlanCompleteRequest(OperationRequest):
     expected_revision: int = Field(ge=1)
     result: str = Field(min_length=1, max_length=4000)
+    # 效果评价。缺省（null）为普通完成：只记录结果，不评价效果、不回写档案；
+    # effective 会把方案行动并入档案「已验证有效」支持重点；ineffective/continue
+    # 只留痕评价，不改档案。
+    outcome: Literal["effective", "ineffective", "continue"] | None = None
 
 
 class AffairProjectionRequest(OperationRequest):
@@ -186,6 +196,7 @@ __all__ = [
     "SubjectCreateRequest",
     "SubjectDeleteRequest",
     "SubjectUpdateRequest",
+    "SupportPlanAiDraftRequest",
     "SupportPlanCompleteRequest",
     "SupportPlanCreateRequest",
 ]

@@ -1,1 +1,0 @@
-"""Question-bank data models."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import hashlib
 import io
 import json
 import sqlite3
@@ -15,8 +16,11 @@ from typing import Any
 import fitz
 import pytest
 from docx import Document
+from docx.shared import Inches
+from PIL import Image
 
 from backend.config_workspace.sources import (
+    AmbiguousAssetDecision,
     ConfigSourceChangedError,
     ConfigSourceRecord,
     ConfigSourceService,
@@ -25,6 +29,7 @@ from backend.config_workspace.sources import (
 from backend.jobs.config_generation import (
     _config_analysis_images,
     _run_config_generation_job_impl,
+    _run_exam_paper_intake,
     cleanup_consumed_config_retry_artifacts,
     discard_config_generation_input,
     load_config_generation_input,
@@ -49,7 +54,11 @@ from backend.jobs.store import JobStore
 from backend.jobs.store import ConfigRetryAlreadySubmittedError, ConfigSessionBusyError
 from db_manager import DBManager
 from question_id_contract import canonicalize_grading_config_payload
+from question_bank.database.schema import connect, initialize_database
 from question_bank.services.source_paper_archive_service import archive_source_bytes
+from question_bank.services.source_question_link_service import (
+    SourceQuestionLinkService,
+)
 from session_manager import save_generated_config
 
 
@@ -481,7 +490,9 @@ def _job_context(
 
 
 def _db_with_session(tmp_path: Path) -> tuple[DBManager, int, tuple[str, str]]:
-    db = DBManager(tmp_path / "grading.db")
+    databases_dir = tmp_path / "databases"
+    databases_dir.mkdir(parents=True, exist_ok=True)
+    db = DBManager(databases_dir / "grading.db")
     db.initialize()
     initial_dir = tmp_path / "initial"
     rubric_path, answer_path = save_generated_config(
@@ -2819,7 +2830,7 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
             "outcome": "complete",
             "imported_count": 1,
             "tagged_count": 1,
-            "evidence_count": 1,
+            "criteria_count": 1,
             "failed_count": 0,
         }
 
@@ -2837,7 +2848,7 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
 
     assert first["outcome"] == "partial"
     assert first["score_allocation_pending"] is True
-    assert first["question_bank_sync_state"] == "ready_for_config_link"
+    assert first["question_bank_sync_state"] == "ready"
     assert first["question_bank_imported_count"] == 1
     assert first["question_bank_tagged_count"] == 1
     assert first["question_bank_evidence_count"] == 1
@@ -2961,6 +2972,27 @@ def test_structural_evidence_retry_reanalyzes_before_first_score_allocation(
         "backend.jobs.config_generation.allocate_grading_config_scores",
         allocate_after_valid_analysis,
     )
+    question_bank_db_path = tmp_path / "data" / "databases" / "question_bank.db"
+
+    def intake_runner(**kwargs: Any) -> dict[str, object]:
+        artifact = kwargs["artifact"]
+        if artifact.bundle.status != "succeeded":
+            return {
+                "outcome": "failed",
+                "imported_count": 0,
+                "tagged_count": 0,
+                "criteria_count": 0,
+                "failed_count": 1,
+                "retryable": True,
+            }
+        return {
+            "outcome": "complete",
+            "imported_count": 1,
+            "tagged_count": 1,
+            "criteria_count": 1,
+            "failed_count": 0,
+        }
+
     first_context, store = _job_context(
         db.db_path,
         {
@@ -2978,15 +3010,18 @@ def test_structural_evidence_retry_reanalyzes_before_first_score_allocation(
         db=db,
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
+        question_bank_db_path=question_bank_db_path,
         llm_client_factory=lambda: object(),
         tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
         taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
     )
 
     assert first["failed_question_ids"] == ["Q1"]
     assert first["failed_batches"][0]["category"] == "model_output_contract"
     assert "another question" in first["failed_batches"][0]["error"]
-    assert first["question_bank_sync_state"] == "waiting_for_config"
+    assert first["question_bank_sync_state"] == "partial"
+    assert first["question_bank_config_link_pending"] is True
     assert len(protocol.calls) == 1
     assert allocation_calls == []
     store.finish(first_context.job_id, "succeeded", result=first)
@@ -3009,9 +3044,11 @@ def test_structural_evidence_retry_reanalyzes_before_first_score_allocation(
         db=db,
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
+        question_bank_db_path=question_bank_db_path,
         llm_client_factory=lambda: object(),
         tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
         taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
     )
 
     assert len(protocol.calls) == 2
@@ -3137,6 +3174,16 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
     resume_store.finish(resume_context.job_id, "succeeded", result=resumed)
     confirmed_protocol = _DeferredProtocol()
     score_client = _DeferredScoreClient(valid_six_question_score=False)
+
+    def confirmed_intake_runner(**_kwargs: Any) -> dict[str, object]:
+        return {
+            "outcome": "complete",
+            "imported_count": 1,
+            "tagged_count": 1,
+            "criteria_count": 1,
+            "failed_count": 0,
+        }
+
     confirmed_context, _confirmed_store = _job_context(
         db.db_path,
         {
@@ -3156,11 +3203,13 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
         db=db,
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
         llm_client_factory=lambda: score_client,
         tagging_ai_service_factory=lambda: _DeferredTaggingService(
             confirmed_protocol
         ),
         taxonomy_governance=object(),
+        question_bank_intake_runner=confirmed_intake_runner,
     )
 
     assert len(confirmed_protocol.calls) == 1
@@ -3170,7 +3219,7 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
     assert len(score_client.calls) == 1
 
 
-def test_complete_evidence_first_generation_queues_exact_artifact_identity(
+def test_complete_evidence_first_generation_intake_receives_exact_artifact_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3249,6 +3298,20 @@ def test_complete_evidence_first_generation_queues_exact_artifact_identity(
     monkeypatch.setattr(store, "update_progress", record_progress)
     protocol = _DeferredProtocol()
     score_client = _DeferredScoreClient(valid_six_question_score=True)
+    question_bank_db_path = tmp_path / "data" / "databases" / "question_bank.db"
+    intake_calls: list[dict[str, Any]] = []
+
+    def intake_runner(**kwargs: Any) -> dict[str, object]:
+        intake_calls.append(kwargs)
+        initialize_database(question_bank_db_path)
+        return {
+            "outcome": "complete",
+            "imported_count": 6,
+            "tagged_count": 6,
+            "criteria_count": 6,
+            "failed_count": 0,
+        }
+
     monkeypatch.setattr(
         "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
         lambda *_args, **_kwargs: pytest.fail(
@@ -3261,9 +3324,11 @@ def test_complete_evidence_first_generation_queues_exact_artifact_identity(
         db=db,
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
+        question_bank_db_path=question_bank_db_path,
         llm_client_factory=lambda: score_client,
         tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
         taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
     )
 
     assert result["outcome"] == "complete", json.dumps(
@@ -3283,19 +3348,601 @@ def test_complete_evidence_first_generation_queues_exact_artifact_identity(
     assert len(analysis_reports) >= 2
     assert analysis_reports[-1][0] == pytest.approx(0.84)
     assert "6/6" in analysis_reports[-1][2]
-    assert len(submitted) == 1
-    queued = submitted[0]
-    assert queued["analysis_source_id"] == source.source_id
-    assert queued["analysis_source_revision"] == source.source_revision
-    artifact = DeferredAnalysisArtifactStore(tmp_path / "uploaded").load(
-        str(queued["analysis_artifact_id"]),
+    # The completed analysis is consumed by the in-run intake; no second
+    # tagging run is queued afterwards.
+    assert submitted == []
+    assert len(intake_calls) == 1
+    artifact = intake_calls[0]["artifact"]
+    assert artifact.source_id == source.source_id
+    assert artifact.source_revision == source.source_revision
+    stored = DeferredAnalysisArtifactStore(tmp_path / "uploaded").load(
+        artifact.artifact_id,
         session_id=session_id,
         source_id=source.source_id,
         source_revision=source.source_revision,
         curriculum_volume_id="bnu24-math-g7-upper",
-        expected_content_hash=str(queued["analysis_artifact_hash"]),
+        expected_content_hash=artifact.content_hash,
     )
-    assert artifact.bundle.status == "succeeded"
-    assert [item.source_question_ref for item in artifact.bundle.items] == [
+    assert stored.bundle.status == "succeeded"
+    assert [item.source_question_ref for item in stored.bundle.items] == [
         f"Q{index}" for index in range(1, 7)
     ]
+
+
+def test_complete_intake_confirms_source_links_after_bind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    lines = [f"{index}. 解方程 x+{index}={index + 1}。" for index in range(1, 7)]
+    lines.extend(
+        ["答案", *[f"{index}. x=1" for index in range(1, 7)]]
+    )
+    _source_service, source = _controlled_source(
+        tmp_path,
+        session_id,
+        text="\n".join(lines),
+    )
+    assert len(source.questions) == 6
+    input_id = stage_config_source_generation_input(
+        tmp_path / "uploaded",
+        session_id=session_id,
+        expected_rubric_path=old_paths[0],
+        expected_answer_key_path=old_paths[1],
+        generation_mode="batched",
+        source_id=source.source_id,
+        source_revision=source.source_revision,
+        sync_to_question_bank=True,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        decisions=[
+            {
+                "question_id": question.question_id,
+                "question_type": "calculation",
+                "excluded": False,
+            }
+            for question in source.questions
+        ],
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    bank_path = tmp_path / "data" / "databases" / "question_bank.db"
+
+    def intake_runner(**_kwargs: Any) -> dict[str, object]:
+        archived = archive_source_bytes(
+            filename=source.safe_filename,
+            content=source.private_source_bytes,
+            data_root=tmp_path / "data",
+        )
+        initialize_database(bank_path)
+        with connect(bank_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO questions (id, question_number, question_text, source_file)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (100 + index, str(index), f"第 {index} 题", archived.stored_path)
+                    for index in range(1, 7)
+                ],
+            )
+        return {
+            "outcome": "complete",
+            "imported_count": 6,
+            "tagged_count": 6,
+            "evidence_count": 6,
+            "failed_count": 0,
+        }
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: pytest.fail(
+            "the legacy structure generator must not run"
+        ),
+    )
+
+    def _relaxed_load_editor_config(db_arg: Any, sid: int) -> SimpleNamespace:
+        session_row = db_arg.get_grading_session(int(sid))
+        rubric = json.loads(
+            Path(str(session_row["rubric_path"])).read_text(encoding="utf-8")
+        )
+        answer = json.loads(
+            Path(str(session_row["answer_key_path"])).read_text(encoding="utf-8")
+        )
+        return SimpleNamespace(
+            session=session_row,
+            payload={
+                "rubric": rubric,
+                "answer_key": answer,
+                "meta": {"warnings": []},
+            },
+            revision="a" * 64,
+            configured=True,
+        )
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.load_editor_config",
+        _relaxed_load_editor_config,
+    )
+    protocol = _DeferredProtocol()
+    score_client = _DeferredScoreClient(valid_six_question_score=True)
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        question_bank_db_path=bank_path,
+        llm_client_factory=lambda: score_client,
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
+        taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
+    )
+
+    assert result["outcome"] == "complete", json.dumps(
+        result,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert result["question_bank_sync_state"] == "ready"
+    assert result["question_bank_linked_count"] == 6
+    assert result["question_bank_unresolved_question_ids"] == []
+    session = db.get_grading_session(session_id)
+    assert session["question_bank_sync_state"] == "ready"
+    links = SourceQuestionLinkService(bank_path).list_links(session_id)
+    assert {
+        (item["source_question_id"], item["bank_question_id"], item["status"])
+        for item in links
+    } == {
+        (f"Q{index}", 100 + index, "confirmed") for index in range(1, 7)
+    }
+
+
+def _png_bytes() -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (24, 18), "navy").save(output, format="PNG")
+    return output.getvalue()
+
+
+def _docx_with_question_image() -> bytes:
+    document = Document()
+    paragraph = document.add_paragraph()
+    paragraph.add_run("1. 解方程 x+1=2。")
+    paragraph.add_run().add_picture(io.BytesIO(_png_bytes()), width=Inches(0.25))
+    document.add_paragraph("答案：x=1")
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def _image_source(
+    tmp_path: Path,
+    session_id: int,
+) -> tuple[ConfigSourceService, ConfigSourceRecord, dict[str, Any]]:
+    source_service = ConfigSourceService(tmp_path / "uploaded")
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=session_id,
+            filename="七年级下册测试卷.docx",
+            chunks=_chunks(_docx_with_question_image()),
+        )
+    )
+    automatic = next(
+        item
+        for item in record.public_snapshot()["assets"]
+        if item["assignment_state"] == "automatic"
+    )
+    return source_service, record, automatic
+
+
+def _stage_image_intake_input(
+    tmp_path: Path,
+    source: ConfigSourceRecord,
+    automatic: dict[str, Any],
+    expected_paths: tuple[str, str],
+) -> str:
+    return stage_config_source_generation_input(
+        tmp_path / "uploaded",
+        session_id=source.session_id,
+        expected_rubric_path=expected_paths[0],
+        expected_answer_key_path=expected_paths[1],
+        generation_mode="batched",
+        source_id=source.source_id,
+        source_revision=source.source_revision,
+        sync_to_question_bank=True,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        decisions=[
+            {
+                "question_id": source.questions[0].question_id,
+                "question_type": "proof",
+                "excluded": False,
+            }
+        ],
+        asset_decisions=[
+            {
+                "candidate_id": automatic["asset_id"],
+                "action": "bind",
+                "question_id": source.questions[0].question_id,
+                "asset_kind": "answer",
+            }
+        ],
+    )
+
+
+def _expected_image_asset_override(question_number: str) -> dict[str, Any]:
+    return {
+        "sha256": hashlib.sha256(_png_bytes()).hexdigest(),
+        "action": "bind",
+        "question_number": question_number,
+        "asset_kind": "answer",
+    }
+
+
+def test_deferred_intake_carries_teacher_asset_and_type_decisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    _source_service, source, automatic = _image_source(tmp_path, session_id)
+    input_id = _stage_image_intake_input(tmp_path, source, automatic, old_paths)
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: pytest.fail(
+            "the legacy structure generator must not run"
+        ),
+    )
+    intake_calls: list[dict[str, Any]] = []
+
+    def intake_runner(**kwargs: Any) -> dict[str, object]:
+        intake_calls.append(kwargs)
+        return {
+            "outcome": "complete",
+            "imported_count": 1,
+            "tagged_count": 1,
+            "evidence_count": 1,
+            "failed_count": 0,
+        }
+
+    run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
+        llm_client_factory=lambda: _DeferredScoreClient(
+            valid_six_question_score=False
+        ),
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(
+            _DeferredProtocol()
+        ),
+        taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
+    )
+
+    assert len(intake_calls) == 1
+    assert intake_calls[0]["asset_overrides"] == [
+        _expected_image_asset_override("1")
+    ]
+    assert intake_calls[0]["type_overrides"] == {"1": "解答题（证明）"}
+
+
+def test_deferred_intake_blocks_when_asset_decisions_go_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    _source_service, source, automatic = _image_source(tmp_path, session_id)
+    input_id = _stage_image_intake_input(tmp_path, source, automatic, old_paths)
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: pytest.fail(
+            "the legacy structure generator must not run"
+        ),
+    )
+
+    def stale_resolve(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], ...]:
+        raise ValueError("invalid ambiguous asset decision")
+
+    monkeypatch.setattr(
+        ConfigSourceService,
+        "resolve_asset_decision_overrides",
+        stale_resolve,
+    )
+
+    def intake_runner(**_kwargs: Any) -> dict[str, object]:
+        pytest.fail("intake must not start when asset decisions are stale")
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
+        llm_client_factory=lambda: _DeferredScoreClient(
+            valid_six_question_score=False
+        ),
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(
+            _DeferredProtocol()
+        ),
+        taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
+    )
+
+    assert result["question_bank_sync_state"] == "failed"
+    assert "图片归属决定已失效" in str(result["question_bank_sync_error"])
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert session["question_bank_sync_state"] == "failed"
+    assert "asset_decisions_stale" in str(
+        session.get("question_bank_sync_details_json")
+        or session.get("question_bank_sync_details")
+        or ""
+    )
+
+
+def test_exam_paper_intake_resolves_and_forwards_teacher_overrides(
+    tmp_path: Path,
+) -> None:
+    db, session_id, _old_paths = _db_with_session(tmp_path)
+    source_service, source, automatic = _image_source(tmp_path, session_id)
+    context, _store = _job_context(
+        db.db_path,
+        {"session_id": session_id, "mode": "generate"},
+    )
+    captured: dict[str, Any] = {}
+
+    def intake_runner(**kwargs: Any) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "outcome": "complete",
+            "imported_count": 1,
+            "tagged_count": 1,
+            "evidence_count": 1,
+            "failed_count": 0,
+        }
+
+    classified = _run_exam_paper_intake(
+        context=context,
+        db=db,
+        session_id=session_id,
+        analysis_artifact=SimpleNamespace(marker="artifact"),
+        source_record=source,
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
+        data_root=tmp_path / "data",
+        tagging_ai_service_factory=lambda: object(),
+        taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
+        source_service=source_service,
+        asset_decisions=[
+            AmbiguousAssetDecision(
+                candidate_id=str(automatic["asset_id"]),
+                action="bind",
+                question_id="Q1",
+                asset_kind="answer",
+            )
+        ],
+        type_overrides={"1": "解答题（证明）"},
+    )
+
+    assert classified["complete"] is True
+    assert captured["asset_overrides"] == [_expected_image_asset_override("1")]
+    assert captured["type_overrides"] == {"1": "解答题（证明）"}
+
+
+def test_exam_paper_intake_without_asset_decisions_passes_no_asset_overrides(
+    tmp_path: Path,
+) -> None:
+    db, session_id, _old_paths = _db_with_session(tmp_path)
+    source_service, source, _automatic = _image_source(tmp_path, session_id)
+    context, _store = _job_context(
+        db.db_path,
+        {"session_id": session_id, "mode": "generate"},
+    )
+    captured: dict[str, Any] = {}
+
+    def intake_runner(**kwargs: Any) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "outcome": "complete",
+            "imported_count": 1,
+            "tagged_count": 1,
+            "evidence_count": 1,
+            "failed_count": 0,
+        }
+
+    classified = _run_exam_paper_intake(
+        context=context,
+        db=db,
+        session_id=session_id,
+        analysis_artifact=SimpleNamespace(marker="artifact"),
+        source_record=source,
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
+        data_root=tmp_path / "data",
+        tagging_ai_service_factory=lambda: object(),
+        taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
+        source_service=source_service,
+    )
+
+    assert classified["complete"] is True
+    assert captured["asset_overrides"] is None
+
+
+def test_exam_paper_intake_blocks_when_asset_decisions_go_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, _old_paths = _db_with_session(tmp_path)
+    source_service, source, automatic = _image_source(tmp_path, session_id)
+    context, _store = _job_context(
+        db.db_path,
+        {"session_id": session_id, "mode": "generate"},
+    )
+
+    def stale_resolve(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], ...]:
+        raise ValueError("invalid ambiguous asset decision")
+
+    monkeypatch.setattr(
+        ConfigSourceService,
+        "resolve_asset_decision_overrides",
+        stale_resolve,
+    )
+
+    def intake_runner(**_kwargs: Any) -> dict[str, object]:
+        pytest.fail("intake must not start when asset decisions are stale")
+
+    classified = _run_exam_paper_intake(
+        context=context,
+        db=db,
+        session_id=session_id,
+        analysis_artifact=SimpleNamespace(marker="artifact"),
+        source_record=source,
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
+        data_root=tmp_path / "data",
+        tagging_ai_service_factory=lambda: object(),
+        taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
+        source_service=source_service,
+        asset_decisions=[
+            AmbiguousAssetDecision(
+                candidate_id=str(automatic["asset_id"]),
+                action="bind",
+                question_id="Q1",
+                asset_kind="answer",
+            )
+        ],
+        type_overrides={"1": "解答题（证明）"},
+    )
+
+    assert classified["complete"] is False
+    assert classified["state"] == "failed"
+    assert classified["category"] == "asset_decisions_stale"
+    assert classified["retryable"] is True
+    assert "图片归属决定已失效" in str(classified["message"])
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    assert session["question_bank_sync_state"] == "failed"
+
+
+def test_interrupted_resume_intake_carries_teacher_asset_and_type_decisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    _source_service, source, automatic = _image_source(tmp_path, session_id)
+    input_id = _stage_image_intake_input(tmp_path, source, automatic, old_paths)
+    first_context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        _run_config_generation_job_impl(
+            context=first_context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            data_root=tmp_path / "data",
+            llm_client_factory=lambda: pytest.fail("scoring must not start"),
+            tagging_ai_service_factory=lambda: _DeferredTaggingService(
+                _InterruptingDeferredProtocol()
+            ),
+            taxonomy_governance=object(),
+        )
+    preserve_interrupted_config_generation_checkpoints(
+        tmp_path / "uploaded",
+        store,
+    )
+
+    resume_context, _resume_store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    intake_calls: list[dict[str, Any]] = []
+
+    def intake_runner(**kwargs: Any) -> dict[str, object]:
+        intake_calls.append(kwargs)
+        return {
+            "outcome": "complete",
+            "imported_count": 1,
+            "tagged_count": 0,
+            "evidence_count": 0,
+            "failed_count": 0,
+        }
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: pytest.fail(
+            "the legacy structure generator must not run"
+        ),
+    )
+    replay_protocol = _DeferredProtocol()
+    resumed = run_config_generation_job(
+        context=resume_context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
+        llm_client_factory=lambda: pytest.fail("scoring must not start"),
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(
+            replay_protocol
+        ),
+        taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
+    )
+
+    assert replay_protocol.calls == []
+    assert len(intake_calls) == 1
+    assert intake_calls[0]["asset_overrides"] == [
+        _expected_image_asset_override("1")
+    ]
+    assert intake_calls[0]["type_overrides"] == {"1": "解答题（证明）"}
+    assert resumed["question_bank_sync_state"] == "ready_for_config_link"

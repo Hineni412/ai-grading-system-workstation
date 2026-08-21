@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -194,6 +194,49 @@ def _name_stems(value: object) -> frozenset[str]:
     return frozenset(
         item for item in expanded if len(item) >= _MIN_UNIQUE_STEM_LENGTH
     )
+
+
+_SECTION_NUMBER_PREFIX = re.compile(r"^\d+(?:\.\d+)*[\s.、．]+")
+
+_CURRICULUM_VERB_PREFIXES = (
+    "掌握",
+    "理解",
+    "了解",
+    "认识",
+    "探索",
+    "体会",
+    "经历",
+    "运用",
+    "会",
+    "能",
+)
+
+
+def _sanitized_match_keys(value: object) -> frozenset[str]:
+    """Normalized exact-match keys for one catalog term name.
+
+    Knowledge display names carry the textbook path and a leading section
+    number ("七年级下册｜第二章 …｜3 平行线的性质") while models and teachers
+    submit the bare concept ("平行线的性质").
+    """
+    keys: set[str] = set()
+    full = _normalized_name(value)
+    if full:
+        keys.add(full)
+    leaf = _text(value).rsplit("｜", 1)[-1]
+    leaf = _SECTION_NUMBER_PREFIX.sub("", unicodedata.normalize("NFKC", leaf))
+    normalized_leaf = _normalized_name(leaf)
+    if normalized_leaf:
+        keys.add(normalized_leaf)
+    return frozenset(keys)
+
+
+def _strip_curriculum_verb(value: object) -> str:
+    text = _text(value)
+    for verb in _CURRICULUM_VERB_PREFIXES:
+        if text.startswith(verb) and text[len(verb) :].strip():
+            return text[len(verb) :]
+    return text
 
 
 def unique_catalog_term(
@@ -1136,6 +1179,14 @@ def _term_public(term: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _proposal_ref_question_id(value: object) -> int | None:
+    try:
+        question_id = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return question_id if question_id > 0 else None
+
+
 def _proposal_public(proposal: Mapping[str, Any]) -> dict[str, Any]:
     question_refs: list[int] = []
     for value in proposal.get("question_refs", []):
@@ -1987,6 +2038,7 @@ class TaxonomyGovernance:
         unknown_by_key: dict[tuple[str, str], dict[str, str]] = {}
         retrieval_misses: list[dict[str, str]] = []
         proposal_overflow: list[dict[str, str]] = []
+        local_adoptions: list[dict[str, str]] = []
         free_keys: set[tuple[str, str]] = set()
         ignored_fields: list[str] = []
         restricted = isinstance(allowed_term_ids, Mapping)
@@ -2117,6 +2169,84 @@ class TaxonomyGovernance:
                     resolved.append(term)
             return resolved if len(resolved) >= 2 else []
 
+        sanitized_scopes: dict[
+            str, list[tuple[dict[str, Any], frozenset[str]]]
+        ] = {}
+
+        def sanitized_candidates(
+            dimension: str,
+        ) -> list[tuple[dict[str, Any], frozenset[str]]]:
+            # Deterministic pre-merge rules only ever look inside the same
+            # candidate scope the model was given: in restricted mode that is
+            # the teacher-selected allowed_term_ids boundary.
+            if dimension not in sanitized_scopes:
+                entries: list[tuple[dict[str, Any], frozenset[str]]] = []
+                if not restricted or allowed_ids[dimension]:
+                    scope = allowed_ids[dimension] if restricted else None
+                    entries = [
+                        (term, _sanitized_match_keys(term["name"]))
+                        for term in terms
+                        if term["dimension"] == dimension
+                        and term["status"] == _ACTIVE_TERM_STATUS
+                        and (scope is None or term["id"] in scope)
+                    ]
+                sanitized_scopes[dimension] = entries
+            return sanitized_scopes[dimension]
+
+        def local_rule_match(
+            dimension: str,
+            name: str,
+        ) -> tuple[dict[str, Any] | None, str]:
+            # Three deterministic layers, each adopting only an unambiguous
+            # hit: sanitized catalog name, curriculum-verb stripping, then
+            # unique containment with a minimum stem length.  Only knowledge
+            # proposals use them: path-prefixed display names and
+            # curriculum-standard verb prefixes are knowledge-specific, and
+            # composite curriculum expressions must never be partially
+            # adopted through containment.
+            if dimension != "knowledge":
+                return None, ""
+            entries = sanitized_candidates(dimension)
+            if not entries:
+                return None, ""
+            normalized = _normalized_name(name)
+            exact_hits = {
+                term["id"]: term
+                for term, keys in entries
+                if normalized in keys
+            }
+            if len(exact_hits) == 1:
+                return next(iter(exact_hits.values())), "sanitized_name"
+            if exact_hits:
+                return None, ""
+            stripped = _normalized_name(_strip_curriculum_verb(name))
+            if stripped and stripped != normalized:
+                verb_hits = {
+                    term["id"]: term
+                    for term, keys in entries
+                    if stripped in keys
+                }
+                if len(verb_hits) == 1:
+                    return next(iter(verb_hits.values())), "verb_stripped"
+                if verb_hits:
+                    return None, ""
+            containment_hits: dict[str, dict[str, Any]] = {}
+            for term, keys in entries:
+                for key in keys:
+                    shorter, longer = sorted((normalized, key), key=len)
+                    if (
+                        shorter != longer
+                        and len(shorter) >= _MIN_UNIQUE_STEM_LENGTH
+                        and shorter in longer
+                    ):
+                        containment_hits[term["id"]] = term
+                        break
+            if len(containment_hits) == 1:
+                return next(iter(containment_hits.values())), (
+                    "unique_containment"
+                )
+            return None, ""
+
         def classify_one(
             dimension: str,
             name: str,
@@ -2235,6 +2365,23 @@ class TaxonomyGovernance:
                         source_field=source_field,
                     )
                 return
+            # Deterministic local pre-merge: adopt an existing term only when
+            # one layered rule hits exactly one candidate in scope. Ambiguous
+            # or short-stem matches keep the current pending-proposal path.
+            rule_term, rule_name = local_rule_match(dimension, name)
+            if rule_term is not None:
+                accept(dimension, rule_term, source_field=source_field)
+                local_adoptions.append(
+                    {
+                        "dimension": dimension,
+                        "submitted_name": name,
+                        "rule": rule_name,
+                        "canonical_id": rule_term["id"],
+                        "canonical_name": rule_term["name"],
+                        "source_field": source_field,
+                    }
+                )
+                return
             # A per-question model contract is closed for every optional
             # semantic dimension.  The compressed catalog deliberately sends
             # all method/thought/model/special-type choices, so an out-of-list
@@ -2319,6 +2466,7 @@ class TaxonomyGovernance:
             "unknown": list(unknown_by_key.values()),
             "retrieval_misses": retrieval_misses,
             "proposal_overflow": proposal_overflow,
+            "local_adoptions": local_adoptions,
             "ignored_legacy_fields": sorted(set(ignored_fields)),
         }
 
@@ -2564,6 +2712,9 @@ class TaxonomyGovernance:
         proposal_overflow = copy.deepcopy(
             classified.get("proposal_overflow", [])
         )
+        local_adoptions = copy.deepcopy(
+            classified.get("local_adoptions", [])
+        )
         notes: list[str] = []
         if retrieval_misses:
             notes.append(
@@ -2575,6 +2726,11 @@ class TaxonomyGovernance:
                 f"模型返回的候选外标签超过2个，已忽略 "
                 f"{len(proposal_overflow)} 个多余值。"
             )
+        if local_adoptions:
+            notes.append(
+                f"本题有 {len(local_adoptions)} 个标签经本地确定性规则"
+                "并入现有规范词，命中规则与目标词已保留审计记录。"
+            )
         return {
             "accepted_analysis": copy.deepcopy(classified["accepted_analysis"]),
             "accepted_terms": copy.deepcopy(classified["accepted_terms"]),
@@ -2582,6 +2738,7 @@ class TaxonomyGovernance:
             "proposals": copy.deepcopy(proposals),
             "retrieval_misses": retrieval_misses,
             "proposal_overflow": proposal_overflow,
+            "local_adoptions": local_adoptions,
             "ignored_legacy_fields": list(
                 classified["ignored_legacy_fields"]
             ),
@@ -2769,6 +2926,100 @@ class TaxonomyGovernance:
                 for proposal_id, question_ids in refs_by_proposal.items()
             },
         }
+
+    def prune_proposals_for_deleted_questions(
+        self,
+        question_ids: Iterable[int],
+        *,
+        question_exists: Callable[[int], bool],
+        request_token: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, int]:
+        """Trim permanently deleted questions out of proposal references.
+
+        References to the deleted questions are removed from every proposal.
+        A pending proposal that no longer references any existing question is
+        an orphan left by the deletion and is removed entirely; resolved
+        proposals stay as decision history with trimmed references. Approved
+        terms are never touched. With ``dry_run=True`` nothing is written and
+        only the counts of what would change are returned.
+        """
+
+        deleted_ids = {
+            value for value in (int(item) for item in question_ids) if value > 0
+        }
+
+        def plan(
+            state: Mapping[str, Any],
+        ) -> tuple[list[dict[str, Any]], dict[str, int], bool]:
+            now = _now()
+            kept: list[dict[str, Any]] = []
+            removed_pending = 0
+            trimmed_refs = 0
+            changed = False
+            for proposal in state["proposals"]:
+                remaining: list[str] = []
+                trimmed = 0
+                for ref in proposal["question_refs"]:
+                    ref_id = _proposal_ref_question_id(ref)
+                    if ref_id is not None and ref_id in deleted_ids:
+                        trimmed += 1
+                    else:
+                        remaining.append(ref)
+                has_live_ref = any(
+                    (ref_id := _proposal_ref_question_id(ref)) is not None
+                    and question_exists(ref_id)
+                    for ref in remaining
+                )
+                if proposal["status"] == "pending" and not has_live_ref:
+                    removed_pending += 1
+                    changed = True
+                    continue
+                if trimmed:
+                    proposal = copy.deepcopy(proposal)
+                    proposal["question_refs"] = remaining
+                    proposal["occurrences"] = max(
+                        int(proposal["occurrences"]) - trimmed, 1
+                    )
+                    proposal["updated_at"] = now
+                    trimmed_refs += trimmed
+                    changed = True
+                kept.append(proposal)
+            return kept, {
+                "removed_pending_proposals": removed_pending,
+                "trimmed_question_refs": trimmed_refs,
+            }, changed
+
+        if dry_run:
+            state = self._read_state()
+            _kept, counts, _changed = plan(state)
+            return {**counts, "revision": int(state["revision"])}
+
+        token = _text(request_token)
+        if not token:
+            raise TaxonomyValidationError(
+                "prune_proposals_for_deleted_questions requires a request_token"
+            )
+        fingerprint = _fingerprint(
+            {
+                "kind": "prune_proposals_for_deleted_questions",
+                "question_ids": sorted(deleted_ids),
+            }
+        )
+        with _exclusive_state_lock(self.state_path):
+            state = self._read_state_unlocked()
+            replay = self._operation_replay(state, token, fingerprint)
+            if replay is not None:
+                return replay
+            kept, counts, changed = plan(state)
+            if changed:
+                state["proposals"] = kept
+                state["revision"] += 1
+            result = {**counts, "revision": int(state["revision"])}
+            self._remember_operation(state, token, fingerprint, result)
+            state["base_catalog_revision"] = self._catalog["revision"]
+            _write_state_atomic(self.state_path, state, catalog=self._catalog)
+            return result
 
     def read_audit_history(
         self,

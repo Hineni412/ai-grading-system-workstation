@@ -1,8 +1,0 @@
-[
-  {"raw_label": "角平分线的性质", "expected_key": "math.geometry.line_angle.bisector"},
-  {"raw_label": "三角形外心作图", "expected_key": "math.geometry.construction.circumcenter"},
-  {"raw_label": "最短路径作图", "expected_key": "math.geometry.construction.shortest_path"},
-  {"raw_label": "轴对称作图", "expected_key": "math.geometry.transformation.axis_draw"},
-  {"raw_label": "一次函数图像应用", "expected_key": "math.function.linear.graph_application"},
-  {"raw_label": "全等三角形判定", "expected_key": "math.geometry.congruence.judge"}
-]

@@ -715,6 +715,27 @@ def _coerce_answer_part_aliases(part: dict[str, Any]) -> None:
                 break
 
 def _extract_direct_answer_values(item: dict[str, Any]) -> list[Any]:
+    normalized = item.get("answer_values")
+    if isinstance(normalized, list) and normalized:
+        # answer_values 是归一化写回键；已归一化的 payload 只读它，
+        # 避免与 answers/answer_content 等原始别名键重复累计（幂等）。
+        unwrapped: list[Any] = []
+        for value in normalized:
+            if isinstance(value, dict):
+                nested = next(
+                    (
+                        value.get(alias)
+                        for alias in ("value", "answer", "answer_content", "standard_answer", "canonical_answer")
+                        if value.get(alias) is not None
+                    ),
+                    None,
+                )
+                if nested is not None:
+                    unwrapped.append(nested)
+            elif value is not None:
+                unwrapped.append(value)
+        if unwrapped:
+            return unwrapped
     values: list[Any] = []
     direct = item.get("direct_answer")
     if isinstance(direct, dict):

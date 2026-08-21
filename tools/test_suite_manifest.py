@@ -56,7 +56,7 @@ RELEASE_AUDIT_TEST_PATHS = (
 # A small cross-module sentinel set for routine development. Paths are reused
 # directly; no duplicate "quick versions" of product tests are maintained.
 QUICK_TEST_PATHS = (
-    Path("test_answer_normalizer.py"),
+    Path("tests/test_answer_normalizer.py"),
     Path("tests/api_e2e/test_five_flow.py"),
     Path("tests/test_annotation_margin_layout.py"),
     Path("tests/test_api_app.py"),

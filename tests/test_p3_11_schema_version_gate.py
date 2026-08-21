@@ -44,7 +44,7 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         migrations_dir=PROJECT_ROOT / "migrations" / "grading",
     )
 
-    assert result.current_version == "012_exclusive_session_names"
+    assert result.current_version == "013_dual_track_ai_scores"
     assert result.applied == (
         "000_baseline_schema",
         "001_init_migration_tracking",
@@ -59,6 +59,7 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         "010_workspace_ai_tasks",
         "011_add_session_curriculum_volume",
         "012_exclusive_session_names",
+        "013_dual_track_ai_scores",
     )
     with sqlite3.connect(database) as connection:
         tables = {
@@ -84,7 +85,7 @@ def test_exclusive_name_migration_preserves_historical_duplicates_but_blocks_new
     legacy_migrations = tmp_path / "legacy-migrations"
     legacy_migrations.mkdir()
     for source in sorted(current_migrations.glob("*.sql")):
-        if source.name.startswith("012_"):
+        if source.name >= "012_":
             continue
         shutil.copy2(source, legacy_migrations / source.name)
     ensure_schema_current("grading", database, migrations_dir=legacy_migrations)
@@ -103,7 +104,7 @@ def test_exclusive_name_migration_preserves_historical_duplicates_but_blocks_new
         migrations_dir=current_migrations,
     )
 
-    assert result.current_version == "012_exclusive_session_names"
+    assert result.current_version == "013_dual_track_ai_scores"
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM grading_sessions"
@@ -273,7 +274,7 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         )
 
     assert {result.current_version for result in results} == {
-        "012_exclusive_session_names"
+        "013_dual_track_ai_scores"
     }
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
@@ -299,8 +300,9 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         ("010_workspace_ai_tasks", 1),
         ("011_add_session_curriculum_volume", 1),
         ("012_exclusive_session_names", 1),
+        ("013_dual_track_ai_scores", 1),
     ]
-    assert len(list((tmp_path / "backups").glob("*.db"))) == 13
+    assert len(list((tmp_path / "backups").glob("*.db"))) == 14
 
 
 def test_migration_backup_includes_committed_wal_content(tmp_path: Path) -> None:
@@ -368,6 +370,7 @@ def test_db_manager_initialize_uses_current_grading_migrations(
         "010_workspace_ai_tasks",
         "011_add_session_curriculum_volume",
         "012_exclusive_session_names",
+        "013_dual_track_ai_scores",
     ]
 
 
@@ -390,7 +393,7 @@ def test_grading_store_initializers_use_current_migrations(
             LIMIT 1
             """
         ).fetchone()
-    assert current == ("012_exclusive_session_names",)
+    assert current == ("013_dual_track_ai_scores",)
 
 
 def test_question_bank_initializer_uses_current_migrations(
@@ -432,7 +435,7 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
 
     results = ensure_application_schema(paths)
 
-    assert results["grading"].current_version == "012_exclusive_session_names"
+    assert results["grading"].current_version == "013_dual_track_ai_scores"
     assert results["question_bank"].current_version == CURRENT_QUESTION_BANK_MIGRATION
 
 
@@ -443,9 +446,10 @@ def test_application_startup_reports_pending_existing_database_without_applying_
     grading_migrations = legacy_root / "migrations" / "grading"
     grading_migrations.mkdir(parents=True)
     current_grading = PROJECT_ROOT / "migrations" / "grading"
-    for migration in sorted(current_grading.glob("*.sql")):
-        if migration.name.startswith("012_"):
-            continue
+    current_migrations = sorted(current_grading.glob("*.sql"))
+    # The legacy project has everything except the newest migration, so
+    # startup must report exactly that one as pending.
+    for migration in current_migrations[:-1]:
         shutil.copy2(migration, grading_migrations / migration.name)
     data_root = tmp_path / "data"
     grading_db = data_root / "databases" / "grading.db"

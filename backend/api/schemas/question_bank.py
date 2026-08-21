@@ -98,6 +98,7 @@ class QuestionPaperPermanentDeleteImpactResponse(_QuestionBankModel):
     knowledge_graph_link_count: int = Field(ge=0)
     owned_file_count: int = Field(ge=0)
     shared_file_count: int = Field(ge=0)
+    taxonomy_proposal_count: int = Field(ge=0)
     permanent_delete_phrase: str
 
 

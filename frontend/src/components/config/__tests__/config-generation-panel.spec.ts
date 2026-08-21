@@ -11,6 +11,7 @@ import type { JobResponse } from '../../../api/jobs'
 import { ApiError } from '../../../api/errors'
 import type { CurriculumCatalog } from '../../../api/question-bank'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import { useJobStore } from '../../../stores/jobs'
 import ConfigGenerationPanel from '../ConfigGenerationPanel.vue'
 
@@ -85,6 +86,27 @@ function curriculum(): CurriculumCatalog {
       statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 },
       chapters: [],
     }],
+  }
+}
+
+function twoVolumeCurriculum(): CurriculumCatalog {
+  const base = curriculum()
+  return {
+    ...base,
+    volumes: [
+      ...base.volumes,
+      {
+        id: 'bnu24-math-g8-upper',
+        order: 2,
+        label: '八年级数学上册',
+        grade: '八年级',
+        semester: '上册',
+        textbook_version: '北师大版',
+        source: { provider: '组卷网' },
+        statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 },
+        chapters: [],
+      },
+    ],
   }
 }
 
@@ -177,10 +199,10 @@ describe('ConfigGenerationPanel', () => {
     })
     const mounted = await mountPanel({ submitter })
 
-    expect(mounted.host.textContent).toContain('一次完成题目分析与评分依据')
-    expect(mounted.host.textContent).toContain('召回少量候选词')
-    expect(mounted.host.textContent).toContain('提取小问与踩分点证据')
-    expect(mounted.host.textContent).toContain('失败时只重试失败题')
+    expect(mounted.host.textContent).toContain('先分析并完整入库，再为本场赋分')
+    expect(mounted.host.textContent).toContain('系统会按题分析标签和详细判定点并写入题库')
+    expect(mounted.host.textContent).toContain('只有全部题目入库成功后，才会给本场考试挂分')
+    expect(mounted.host.textContent).toContain('入库失败时会留下失败类别和题号')
     expect(mounted.host.querySelectorAll('input[type="radio"]')).toHaveLength(0)
     expect(mounted.host.textContent).not.toContain('整卷生成评分标准')
     const submit = mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!
@@ -590,9 +612,9 @@ describe('ConfigGenerationPanel', () => {
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel()
 
-    expect(mounted.host.textContent).toContain('试卷已先收入题库')
+    expect(mounted.host.textContent).toContain('题库入库未完整成功，当前不能赋分')
     expect(mounted.host.textContent).toContain('当前入库 12 题、已有完整标签 9 题')
-    expect(mounted.host.textContent).toContain('未完成题可稍后继续处理')
+    expect(mounted.host.textContent).toContain('只可继续处理缺失项')
   })
 
   it('explains a recoverable question-bank intake failure without claiming reanalysis', async () => {
@@ -610,7 +632,7 @@ describe('ConfigGenerationPanel', () => {
     const mounted = await mountPanel()
 
     expect(mounted.host.textContent).toContain('试卷暂时未能写入题库')
-    expect(mounted.host.textContent).toContain('不会重新分析题目')
+    expect(mounted.host.textContent).toContain('不会重新分析已完成题目')
     expect(mounted.host.textContent).not.toContain('标签已保存在本机')
   })
 
@@ -858,5 +880,78 @@ describe('ConfigGenerationPanel', () => {
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel({ editorLoader: vi.fn(async () => editor()) })
     expect(mounted.host.textContent).toContain(copy)
+  })
+
+  it('follows the global teaching semester until the teacher picks another volume', async () => {
+    const scope = useCurriculumScopeStore()
+    const mounted = await mountPanel({ curriculumLoader: async () => twoVolumeCurriculum() })
+    const select = mounted.host.querySelector<HTMLSelectElement>(
+      '.config-generation__console-volume select',
+    )!
+
+    expect(select.value).toBe('bnu24-math-g7-upper')
+
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    await settle()
+    expect(select.value).toBe('bnu24-math-g8-upper')
+
+    scope.selectedVolumeId = null
+    await settle()
+    expect(select.value).toBe('')
+
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    await settle()
+    select.value = 'bnu24-math-g7-upper'
+    select.dispatchEvent(new Event('change'))
+    await settle()
+    scope.selectedVolumeId = 'bnu24-math-g7-lower-missing'
+    await settle()
+    expect(select.value).toBe('bnu24-math-g7-upper')
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    await settle()
+    expect(select.value).toBe('bnu24-math-g7-upper')
+    mounted.unmount()
+  })
+
+  it('prefers the global teaching semester even when the exam name infers another volume', async () => {
+    const scope = useCurriculumScopeStore()
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    const mounted = await mountPanel({
+      sessionName: '七年级数学上册测试',
+      curriculumLoader: async () => twoVolumeCurriculum(),
+    })
+    const select = mounted.host.querySelector<HTMLSelectElement>(
+      '.config-generation__console-volume select',
+    )!
+
+    // 考试名能推断出七年级上册，但顶部全局学期优先
+    expect(select.value).toBe('bnu24-math-g8-upper')
+    mounted.unmount()
+  })
+
+  it('falls back to the global teaching semester when the exam name matches no volume', async () => {
+    const scope = useCurriculumScopeStore()
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    const mounted = await mountPanel({
+      sessionName: '0526test',
+      curriculumLoader: async () => twoVolumeCurriculum(),
+    })
+    const select = mounted.host.querySelector<HTMLSelectElement>(
+      '.config-generation__console-volume select',
+    )!
+
+    expect(select.value).toBe('bnu24-math-g8-upper')
+
+    // 换一个也推断不出册别的考试名，仍跟随全局学期而不是清空
+    await mounted.unmount()
+    const remounted = await mountPanel({
+      sessionName: '另一场推断不出的考试',
+      curriculumLoader: async () => twoVolumeCurriculum(),
+    })
+    const reselect = remounted.host.querySelector<HTMLSelectElement>(
+      '.config-generation__console-volume select',
+    )!
+    expect(reselect.value).toBe('bnu24-math-g8-upper')
+    remounted.unmount()
   })
 })

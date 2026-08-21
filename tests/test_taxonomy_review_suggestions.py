@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,16 +30,22 @@ CATALOG_PATH = (
 
 
 def _governance(tmp_path: Path) -> TaxonomyGovernance:
+    # 显式传入本测试私有库路径：缺省会指向会话级共享题库库，
+    # 全量跑时被其他测试的应用启动装上 revision 4 的签入标准，与本文件词表 revision 冲突。
     return TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "taxonomy-governance.db",
     )
 
 
 def _release_governance(tmp_path: Path) -> TaxonomyGovernance:
+    # 显式传入本测试私有库路径：缺省会指向会话级共享题库库，
+    # 全量跑时被其他测试的应用启动装上 revision 4 的签入标准，与本文件词表 revision 冲突。
     return TaxonomyGovernance(
         catalog_path=DEFAULT_TAXONOMY_PATH,
         state_path=tmp_path / "taxonomy-release-state.json",
+        knowledge_graph_db_path=tmp_path / "taxonomy-release-governance.db",
     )
 
 
@@ -909,3 +917,258 @@ def test_same_revision_and_selection_reuse_one_run_across_new_tokens(
     assert {
         receipt["run_id"] for receipt in state["requests"].values()
     } == {runs[0]["run_id"]}
+
+
+class ParallelRecordingGateway(RecordingGateway):
+    def __init__(self, responses=None, *, fail_names=(), delay=0.05):
+        super().__init__(responses, fail_names=fail_names)
+        self.delay = delay
+        self._lock = threading.Lock()
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    def suggest_taxonomy_reviews(self, batch):
+        with self._lock:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            time.sleep(self.delay)
+            return super().suggest_taxonomy_reviews(batch)
+        finally:
+            with self._lock:
+                self.in_flight -= 1
+
+
+class BarrierRecordingGateway(RecordingGateway):
+    """First calls rendezvous at a barrier, proving overlap without sleep."""
+
+    def __init__(self, responses=None, *, fail_names=(), parties=2, timeout=30):
+        super().__init__(responses, fail_names=fail_names)
+        self._barrier = threading.Barrier(parties, timeout=timeout)
+        self._waiters = parties
+        self._lock = threading.Lock()
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    def suggest_taxonomy_reviews(self, batch):
+        with self._lock:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            wait = self._waiters > 0
+            if wait:
+                self._waiters -= 1
+        try:
+            if wait:
+                # Serial processing would block here until the barrier
+                # times out and this test fails deterministically.
+                self._barrier.wait()
+            return RecordingGateway.suggest_taxonomy_reviews(self, batch)
+        finally:
+            with self._lock:
+                self.in_flight -= 1
+
+
+def _persist_many(
+    governance: TaxonomyGovernance,
+    *,
+    count: int,
+    name_prefix: str,
+    token_prefix: str,
+    first_question_id: int,
+) -> list[dict]:
+    return [
+        _persist(
+            governance,
+            dimension="knowledge",
+            name=f"{name_prefix}{index}",
+            token=f"{token_prefix}{index:030x}"[:32],
+            question_id=first_question_id + index,
+        )
+        for index in range(count)
+    ]
+
+
+def test_concurrent_workers_finish_every_batch_with_accurate_counts(
+    tmp_path: Path,
+) -> None:
+    governance = _governance(tmp_path)
+    proposals = _persist_many(
+        governance,
+        count=4,
+        name_prefix="并发完成知识",
+        token_prefix="a1",
+        first_question_id=301,
+    )
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=_question_loader,
+    )
+    run = service.create_run(
+        proposal_ids=[proposal["id"] for proposal in proposals],
+        expected_revision=governance.list_proposals(status="pending")[
+            "revision"
+        ],
+        request_token="a2" + "0" * 30,
+    )
+    gateway = BarrierRecordingGateway()
+    progress: list[dict] = []
+
+    completed = service.process_run(
+        run["run_id"],
+        gateway,
+        batch_size=1,
+        concurrency=2,
+        progress_callback=lambda snapshot: progress.append(snapshot),
+    )
+
+    assert gateway.max_in_flight == 2
+    assert len(gateway.calls) == 4
+    assert completed["status"] == "completed"
+    assert [item["status"] for item in completed["items"]] == [
+        "suggested"
+    ] * 4
+    assert {item["attempts"] for item in completed["items"]} == {1}
+    assert completed["progress"] == {
+        "total": 4,
+        "processed": 4,
+        "completed": 4,
+        "failed": 0,
+        "pending": 0,
+        "cancelled": 0,
+    }
+    assert progress[-1]["progress"]["completed"] == 4
+
+
+def test_concurrent_batch_failure_is_isolated_from_other_batches(
+    tmp_path: Path,
+) -> None:
+    governance = _governance(tmp_path)
+    proposals = _persist_many(
+        governance,
+        count=3,
+        name_prefix="并发隔离知识",
+        token_prefix="b3",
+        first_question_id=311,
+    )
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=_question_loader,
+    )
+    run = service.create_run(
+        proposal_ids=[proposal["id"] for proposal in proposals],
+        expected_revision=governance.list_proposals(status="pending")[
+            "revision"
+        ],
+        request_token="b4" + "0" * 30,
+    )
+    gateway = ParallelRecordingGateway(
+        fail_names={"并发隔离知识1"},
+        delay=0.02,
+    )
+
+    partial = service.process_run(
+        run["run_id"],
+        gateway,
+        batch_size=1,
+        concurrency=2,
+    )
+
+    assert partial["status"] == "partial"
+    statuses = {
+        item["proposal_id"]: item["status"] for item in partial["items"]
+    }
+    assert statuses[proposals[0]["id"]] == "suggested"
+    assert statuses[proposals[1]["id"]] == "failed"
+    assert statuses[proposals[2]["id"]] == "suggested"
+    failed_item = partial["items"][1]
+    assert failed_item["error"]["category"] == "model_gateway"
+    assert partial["progress"] == {
+        "total": 3,
+        "processed": 3,
+        "completed": 2,
+        "failed": 1,
+        "pending": 0,
+        "cancelled": 0,
+    }
+    assert partial["retryable"] is True
+
+    retry_gateway = RecordingGateway()
+    retried = service.retry_failed(
+        run["run_id"],
+        retry_gateway,
+        batch_size=1,
+        concurrency=2,
+    )
+    assert retried["status"] == "completed"
+    assert [
+        item["proposal_id"]
+        for batch in retry_gateway.calls
+        for item in batch
+    ] == [proposals[1]["id"]]
+
+
+def test_concurrent_workers_stop_claiming_once_cancel_is_requested(
+    tmp_path: Path,
+) -> None:
+    governance = _governance(tmp_path)
+    proposals = _persist_many(
+        governance,
+        count=4,
+        name_prefix="并发取消知识",
+        token_prefix="c5",
+        first_question_id=321,
+    )
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=_question_loader,
+    )
+    run = service.create_run(
+        proposal_ids=[proposal["id"] for proposal in proposals],
+        expected_revision=governance.list_proposals(status="pending")[
+            "revision"
+        ],
+        request_token="c6" + "0" * 30,
+    )
+    barrier = threading.Barrier(2, timeout=30)
+    calls: list[list[dict]] = []
+    cancel_event = threading.Event()
+
+    class BarrierGateway:
+        def suggest_taxonomy_reviews(self, batch):
+            copied = [dict(item) for item in batch]
+            barrier.wait()
+            calls.append(copied)
+            cancel_event.set()
+            return [
+                {
+                    "proposal_id": item["proposal_id"],
+                    "decision": "uncertain",
+                    "target_term_ids": [],
+                    "reason": "需要教师判断",
+                    "confidence": 0.4,
+                }
+                for item in copied
+            ]
+
+    result = service.process_run(
+        run["run_id"],
+        BarrierGateway(),
+        batch_size=1,
+        concurrency=2,
+        cancel_requested=cancel_event.is_set,
+    )
+
+    # Both in-flight batches finish; no further batch is claimed after cancel.
+    assert len(calls) == 2
+    assert result["status"] == "cancelled"
+    assert [item["status"] for item in result["items"]].count(
+        "suggested"
+    ) == 2
+    assert [item["status"] for item in result["items"]].count(
+        "cancelled"
+    ) == 2
+    assert result["progress"]["processed"] == 4
+    assert result["progress"]["cancelled"] == 2

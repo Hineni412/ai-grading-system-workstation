@@ -227,7 +227,11 @@ def get_question_bank_read_service() -> QuestionBankReadService:
 
 def get_question_bank_write_service() -> QuestionBankWriteService:
     paths = get_path_manager()
-    return QuestionBankWriteService(paths.qb_db_path, data_root=paths.data_root)
+    return QuestionBankWriteService(
+        paths.qb_db_path,
+        data_root=paths.data_root,
+        taxonomy_governance=get_taxonomy_governance(),
+    )
 
 
 def get_training_criterion_module() -> TrainingCriterionModule:

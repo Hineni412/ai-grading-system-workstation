@@ -27,7 +27,7 @@ def _legacy_database(tmp_path: Path) -> Path:
     released = tmp_path / "released-migrations"
     released.mkdir()
     for migration in sorted(MIGRATIONS.glob("*.sql")):
-        if migration.name.startswith("027_"):
+        if migration.name[:3] >= "027":
             continue
         shutil.copy2(migration, released / migration.name)
     database = tmp_path / "student_affairs.db"

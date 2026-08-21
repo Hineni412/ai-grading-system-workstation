@@ -752,7 +752,16 @@ class ReviewRepository:
                 """
                 UPDATE session_details
                 SET score_awarded = ?, deduction_reason = ?,
-                    error_category = ?, error_summary = ?
+                    error_category = ?, error_summary = ?,
+                    ai_score_awarded = CASE
+                        WHEN ai_score_awarded IS NULL
+                          AND (
+                              confidence_score IS NOT NULL
+                              OR deduction_reason IS NOT NULL
+                          )
+                        THEN score_awarded
+                        ELSE ai_score_awarded
+                    END
                 WHERE id = ?
                 """,
                 (
@@ -942,7 +951,16 @@ class ReviewRepository:
             self.session.connection.execute(
                 """
                 UPDATE session_details
-                SET score_awarded = ?
+                SET score_awarded = ?,
+                    ai_score_awarded = CASE
+                        WHEN ai_score_awarded IS NULL
+                          AND (
+                              confidence_score IS NOT NULL
+                              OR deduction_reason IS NOT NULL
+                          )
+                        THEN score_awarded
+                        ELSE ai_score_awarded
+                    END
                 WHERE id = ?
                 """,
                 (float(item["score_awarded"]), int(item["detail_id"])),

@@ -52,9 +52,13 @@ def _client_with_curriculum_proposal(
             question_text="一道同时涉及平行线和三角形的综合题",
         )
     )
+    # knowledge_graph_db_path 缺省会指向会话级共享题库库；全量跑时其他测试的
+    # 应用启动会把 revision 4 的签入标准装进去，与本文件词表 revision 冲突，
+    # 因此显式传入本测试私有路径（文件不存在即可，governance 会跳过激活版本检查）。
     governance = TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "taxonomy-governance.db",
     )
     created = governance.constrain(
         {

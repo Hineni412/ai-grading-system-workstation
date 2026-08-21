@@ -20,8 +20,23 @@ CONTRACT_VERSION = "academic_analysis_v1"
 CONTINUOUS_RANK_THRESHOLD = 0.05
 CONTINUOUS_SCORE_RATIO_THRESHOLD = 0.05
 
+# 学业画像阈值（相对位次口径，0~1，越高越好）
+PROFILE_TREND_STEP = 0.05  # 趋势：每一步相对位次变化达到该幅度才算同向
+PROFILE_STABLE_SWING = 0.05  # 稳定性：振幅不超过该比例为「稳定」
+PROFILE_VOLATILE_SWING = 0.15  # 振幅达到该比例为「波动大」
+PROFILE_SKEW_STRONG = 0.90  # 偏科：最强科位于前 10%
+PROFILE_SKEW_WEAK = 0.50  # 且最弱科位于后 50%
+PROFILE_ATTENTION_DROP = 0.10  # 单科一次下滑达到该比例即标记关注
+
 _GRADE_ORDER = {"七年级": 7, "八年级": 8, "九年级": 9}
 _TERM_ORDER = {"上学期": 0, "下学期": 1}
+
+
+def _term_short(session: dict[str, object]) -> str:
+    grade = str(session.get("grade") or "").replace("年级", "")
+    term = session.get("term")
+    half = "上" if term == "上学期" else ("下" if term == "下学期" else "")
+    return f"{grade}{half}" if grade and half else ""
 
 
 def _academic_order(session: dict[str, object]) -> tuple[int, int] | None:
@@ -186,6 +201,7 @@ class StudentAcademicAnalysis:
             insufficient = ["筛选后没有可直接比较的证据"]
         recent_changes = self._recent_changes(series)
         cards = list(self.attention.list_for_subject(token=token, subject_id=subject_id)["items"])
+        profile = self._profile(scope_sessions)
         return {
             "contract_version": CONTRACT_VERSION,
             "source_version": source_version,
@@ -197,6 +213,7 @@ class StudentAcademicAnalysis:
             "recent_changes": recent_changes,
             "insufficient_reasons": insufficient,
             "attention_cards": cards,
+            "profile": profile,
             "detail_ref": "/api/class-teacher/evidence/{evidence_version_id}/snapshot",
             "model_enabled": False,
             "physical_request_count": 0,
@@ -365,6 +382,7 @@ class StudentAcademicAnalysis:
             "max_score": item.get("max_score"),
             "result_state": item.get("result_state"),
             "rank": rank,
+            "class_rank": rank_context.get("class_rank"),
             "participant_count": participants,
             "rank_scope": rank_context.get("rank_scope") or item.get("rank_scope"),
             "rank_origin": rank_context.get("rank_origin"),
@@ -493,6 +511,322 @@ class StudentAcademicAnalysis:
             "basis": {"same_series": True, "teacher_confirmed": True},
             "ruleset_version": RULESET_VERSION,
         }
+
+    def ai_summary(self, *, token: str, subject_id: str) -> dict[str, object] | None:
+        """Compact pre-computed academic card injected into class-teacher AI flows.
+
+        Facts only: positioning, trend, stability and subject skew labels are
+        computed here; wording and strategy remain the model's job, and the
+        teacher still confirms before anything is saved.
+        """
+        analysis = self.read(token=token, subject_id=subject_id)
+        profile = analysis["profile"]
+        assert isinstance(profile, dict)
+        current = profile.get("current")
+        if not isinstance(current, dict):
+            current = None
+        subjects = [
+            item for item in list(profile.get("subjects") or [])
+            if isinstance(item, dict) and item.get("latest")
+        ]
+        if current is None and not subjects:
+            return None
+        trend = profile.get("trend") if isinstance(profile.get("trend"), dict) else {}
+        stability = profile.get("stability") if isinstance(profile.get("stability"), dict) else {}
+        skew = profile.get("skew") if isinstance(profile.get("skew"), dict) else {}
+        previous = current.get("previous") if current and isinstance(current.get("previous"), dict) else None
+        return {
+            "contract_version": "academic_ai_summary_v1",
+            "latest_exam": (
+                {
+                    "title": current["session_title"],
+                    "occurred_on": current["occurred_on"],
+                    "term_label": current["term_label"],
+                }
+                if current else None
+            ),
+            "total": (
+                {
+                    "score": current["score"],
+                    "rank": current["rank"],
+                    "participant_count": current["participant_count"],
+                    "top_ratio": current["top_ratio"],
+                }
+                if current else None
+            ),
+            "rank_change_vs_previous": (
+                {
+                    "previous_title": previous["session_title"],
+                    "previous_rank": previous["rank"],
+                    "delta": current["rank_delta"],
+                }
+                if previous else None
+            ),
+            "trend": trend.get("label", "insufficient"),
+            "stability": stability.get("label", "insufficient"),
+            "skew": {
+                "label": skew.get("label", "insufficient"),
+                "strongest": [str(item["subject_name"]) for item in list(skew.get("strongest") or [])],
+                "weakest": [str(item["subject_name"]) for item in list(skew.get("weakest") or [])],
+            },
+            "subjects": [
+                {
+                    "name": item["subject_name"],
+                    "latest_rank": item["latest"]["rank"],
+                    "participant_count": item["latest"]["participant_count"],
+                    "rank_delta": item.get("rank_delta"),
+                    "attention": bool(item.get("attention")),
+                }
+                for item in subjects
+            ],
+            "notes": [
+                "仅比较同学期链内同年级、同口径（校次）的场次",
+                "缺考不参与计算，也不按 0 分处理",
+            ],
+        }
+
+    def _profile(self, sessions: list[dict[str, object]]) -> dict[str, object]:
+        """Positioning / trend / stability / skew labels from confirmed evidence.
+
+        Rank metrics only compare points inside the latest point's own grade
+        (七年级名次不与八年级名次直接比)；points without a usable rank are
+        skipped, and thin data yields explicit "insufficient" labels instead
+        of a forced judgement.
+        """
+        ordered = sorted(
+            sessions,
+            key=lambda value: (
+                _academic_order(value) or (99, 99),
+                str(value.get("occurred_on") or ""),
+                str(value["session_id"]),
+            ),
+        )
+        totals: list[dict[str, object]] = []
+        by_subject: dict[str, list[dict[str, object]]] = {}
+        for session in ordered:
+            for point in session["evidence"]:
+                entry = {
+                    "session_title": session.get("title"),
+                    "occurred_on": point.get("occurred_on"),
+                    "grade": session.get("grade"),
+                    "term": session.get("term"),
+                    "term_label": _term_short(session),
+                    "score": point.get("score"),
+                    "rank": point.get("rank"),
+                    "class_rank": point.get("class_rank"),
+                    "participant_count": point.get("participant_count"),
+                    "relative_position": point.get("relative_position"),
+                    "result_state": point.get("result_state"),
+                }
+                if point.get("measure_role") == "total_score":
+                    totals.append(entry)
+                elif point.get("measure_role") == "subject_score":
+                    by_subject.setdefault(
+                        str(point.get("subject_name") or "未命名学科"), []
+                    ).append(entry)
+
+        ranked_totals = [item for item in totals if self._ranked(item)]
+        latest_total = ranked_totals[-1] if ranked_totals else None
+        same_grade = (
+            [item for item in ranked_totals if item["grade"] == latest_total["grade"]]
+            if latest_total else []
+        )
+        previous = same_grade[-2] if len(same_grade) >= 2 else None
+        current = None
+        if latest_total is not None:
+            participants = int(latest_total["participant_count"])
+            rank = int(latest_total["rank"])
+            current = {
+                **latest_total,
+                "top_ratio": rank / participants,
+                "previous": (
+                    {
+                        "session_title": previous["session_title"],
+                        "occurred_on": previous["occurred_on"],
+                        "term_label": previous["term_label"],
+                        "rank": previous["rank"],
+                        "participant_count": previous["participant_count"],
+                    }
+                    if previous else None
+                ),
+                "rank_delta": (
+                    int(previous["rank"]) - rank if previous else None
+                ),
+            }
+        trend = self._profile_trend(same_grade)
+        stability = self._profile_stability(same_grade)
+        # 一场考试的多科目在存储层可能是多个场次行，按考试日期归并取最新一场。
+        skew = self._profile_skew(latest_total, by_subject)
+        subjects = self._profile_subjects(by_subject, latest_total)
+        return {
+            "current": current,
+            "trend": trend,
+            "stability": stability,
+            "skew": skew,
+            "subjects": subjects,
+            "total_trend": [
+                {
+                    "occurred_on": item["occurred_on"],
+                    "term_label": item["term_label"],
+                    "session_title": item["session_title"],
+                    "rank": item["rank"],
+                    "participant_count": item["participant_count"],
+                    "relative_position": item["relative_position"],
+                    "result_state": item["result_state"],
+                }
+                for item in totals
+            ],
+            "basis": {
+                "total_session_count": len(ranked_totals),
+                "grade": (latest_total["grade"] if latest_total else None),
+            },
+        }
+
+    @staticmethod
+    def _ranked(entry: dict[str, object]) -> bool:
+        return (
+            isinstance(entry.get("rank"), int)
+            and isinstance(entry.get("participant_count"), int)
+            and int(entry["participant_count"]) > 0
+            and entry.get("result_state") == "normal"
+        )
+
+    @staticmethod
+    def _profile_trend(same_grade: list[dict[str, object]]) -> dict[str, object]:
+        recent = same_grade[-3:]
+        if len(recent) < 3 or any(item.get("relative_position") is None for item in recent):
+            return {"label": "insufficient", "step_deltas": [], "session_count": len(recent)}
+        deltas = [
+            float(recent[index]["relative_position"]) - float(recent[index - 1]["relative_position"])
+            for index in (1, 2)
+        ]
+        if all(delta >= PROFILE_TREND_STEP for delta in deltas):
+            label = "improving"
+        elif all(delta <= -PROFILE_TREND_STEP for delta in deltas):
+            label = "declining"
+        elif all(abs(delta) < PROFILE_TREND_STEP for delta in deltas):
+            label = "flat"
+        else:
+            label = "fluctuating"
+        return {"label": label, "step_deltas": deltas, "session_count": len(recent)}
+
+    @staticmethod
+    def _profile_stability(same_grade: list[dict[str, object]]) -> dict[str, object]:
+        recent = same_grade[-4:]
+        positions = [
+            float(item["relative_position"])
+            for item in recent
+            if item.get("relative_position") is not None
+        ]
+        if len(positions) < 2:
+            return {"label": "insufficient", "swing_ratio": None, "session_count": len(recent)}
+        swing = max(positions) - min(positions)
+        label = (
+            "stable" if swing <= PROFILE_STABLE_SWING
+            else ("volatile" if swing >= PROFILE_VOLATILE_SWING else "moderate")
+        )
+        return {"label": label, "swing_ratio": swing, "session_count": len(recent)}
+
+    @staticmethod
+    def _profile_skew(
+        latest_total: dict[str, object] | None,
+        by_subject: dict[str, list[dict[str, object]]],
+    ) -> dict[str, object]:
+        result: dict[str, object] = {
+            "label": "insufficient", "strongest": [], "weakest": [], "gap_ratio": None,
+        }
+        if latest_total is None:
+            return result
+        exam_date = str(latest_total["occurred_on"] or "")
+        ranked = [
+            {"subject_name": subject_name, **entries[-1]}
+            for subject_name, entries in by_subject.items()
+            if entries
+            and str(entries[-1]["occurred_on"] or "") == exam_date
+            and entries[-1]["result_state"] == "normal"
+            and entries[-1]["relative_position"] is not None
+        ]
+        if len(ranked) < 3:
+            return result
+        ranked.sort(key=lambda point: float(point["relative_position"]), reverse=True)
+        strongest = ranked[0]
+        weakest = ranked[-1]
+        gap = float(strongest["relative_position"]) - float(weakest["relative_position"])
+        label = (
+            "skewed"
+            if float(strongest["relative_position"]) >= PROFILE_SKEW_STRONG
+            and float(weakest["relative_position"]) <= PROFILE_SKEW_WEAK
+            else "balanced"
+        )
+        return {
+            "label": label,
+            "strongest": [{
+                "subject_name": strongest["subject_name"],
+                "rank": strongest.get("rank"),
+                "relative_position": strongest["relative_position"],
+            }],
+            "weakest": [{
+                "subject_name": weakest["subject_name"],
+                "rank": weakest.get("rank"),
+                "relative_position": weakest["relative_position"],
+            }],
+            "gap_ratio": gap,
+        }
+
+    @staticmethod
+    def _profile_subjects(
+        by_subject: dict[str, list[dict[str, object]]],
+        latest_total: dict[str, object] | None,
+    ) -> list[dict[str, object]]:
+        latest_grade = latest_total["grade"] if latest_total else None
+        rows: list[dict[str, object]] = []
+        for subject_name, entries in sorted(by_subject.items()):
+            ranked = [item for item in entries if StudentAcademicAnalysis._ranked(item)]
+            latest = ranked[-1] if ranked else (entries[-1] if entries else None)
+            same_grade = [
+                item for item in ranked
+                if latest_grade is None or item["grade"] == latest_grade
+            ]
+            previous = same_grade[-2] if len(same_grade) >= 2 else None
+            rank_delta = None
+            drop_ratio = None
+            if latest is not None and previous is not None and any(item is latest for item in same_grade):
+                rank_delta = int(previous["rank"]) - int(latest["rank"])
+                participants = int(latest["participant_count"] or 0)
+                if participants > 0:
+                    drop_ratio = -rank_delta / participants
+            rows.append({
+                "subject_name": subject_name,
+                "latest": latest,
+                "rank_delta": rank_delta,
+                "points": [
+                    {
+                        "occurred_on": item["occurred_on"],
+                        "term_label": item["term_label"],
+                        "session_title": item["session_title"],
+                        "rank": item["rank"],
+                        "relative_position": item["relative_position"],
+                        "result_state": item["result_state"],
+                    }
+                    for item in entries
+                ],
+                # 占位，排序后统一回填
+                "attention": False,
+                "_drop_ratio": drop_ratio,
+            })
+        # 关注标记：当前最弱的两科，或最近一次下滑超过阈值的科
+        with_position = [
+            row for row in rows
+            if row["latest"] is not None and row["latest"].get("relative_position") is not None
+        ]
+        with_position.sort(key=lambda row: float(row["latest"]["relative_position"]))
+        for row in with_position[:2]:
+            row["attention"] = True
+        for row in rows:
+            drop = row.pop("_drop_ratio")
+            if drop is not None and drop >= PROFILE_ATTENTION_DROP:
+                row["attention"] = True
+        return rows
 
     @staticmethod
     def _rank_pairs(series: list[dict[str, object]]) -> list[dict[str, object]]:

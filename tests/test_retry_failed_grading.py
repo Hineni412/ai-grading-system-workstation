@@ -3,7 +3,11 @@ from pathlib import Path
 from db_manager import DBManager
 
 def test_list_failed_papers(tmp_path):
-    db = DBManager(tmp_path / "test.db")
+    # db 放在 databases/ 子目录下，data_root 才能推断为 tmp_path；
+    # 否则解析相对路径（如 "rubric.json"）会落到会话级共享临时根，全量跑时被其他测试的同名文件干扰。
+    databases_dir = tmp_path / "databases"
+    databases_dir.mkdir()
+    db = DBManager(databases_dir / "test.db")
     db.initialize()
     
     session_id = db.create_grading_session("Test Session", "rubric.json", "answer.json")
@@ -111,7 +115,9 @@ def test_list_failed_papers(tmp_path):
 def test_graded_incomplete_or_invalid_result_is_retry_eligible(tmp_path, completeness_status):
     import json
 
-    db = DBManager(tmp_path / f"{completeness_status}.db")
+    databases_dir = tmp_path / "databases"
+    databases_dir.mkdir()
+    db = DBManager(databases_dir / f"{completeness_status}.db")
     db.initialize()
     session_id = db.create_grading_session("Retry", "rubric.json", "answer.json")
     with db._connect() as conn:
@@ -161,7 +167,9 @@ def test_grading_service_incremental_retry_merge(tmp_path):
     answer_key_path = tmp_path / "answer_key.json"
     answer_key_path.write_text('{}', encoding="utf-8")
 
-    db = DBManager(tmp_path / "test_merge.db")
+    databases_dir = tmp_path / "databases"
+    databases_dir.mkdir(parents=True, exist_ok=True)
+    db = DBManager(databases_dir / "test_merge.db")
     db.initialize()
 
     # Create session & template & regions
@@ -301,7 +309,9 @@ def test_grading_service_incremental_retry_merge(tmp_path):
 
 
 def test_annotated_results_foreign_key_cleanup(tmp_path):
-    db = DBManager(tmp_path / "test_fk.db")
+    databases_dir = tmp_path / "databases"
+    databases_dir.mkdir()
+    db = DBManager(databases_dir / "test_fk.db")
     db.initialize()
     
     session_id = db.create_grading_session("Test FK", "rubric.json", "answer.json")

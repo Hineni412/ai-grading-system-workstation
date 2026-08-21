@@ -13,7 +13,11 @@ from report import ReportGenerator
 
 
 def _seed_session(tmp_path: Path) -> tuple[DBManager, Path]:
-    db_path = tmp_path / "grading.db"
+    # db 放在 "databases" 子目录下,使 tmp_path 被推断为受控 data root
+    # (见 manual_review_service._data_root / report 中的同名逻辑),
+    # 从而 tmp_path 下的 rubric.json 等存储路径能通过受控根校验。
+    db_path = tmp_path / "databases" / "grading.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(
         json.dumps(

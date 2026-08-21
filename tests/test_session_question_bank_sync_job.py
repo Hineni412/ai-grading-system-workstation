@@ -405,6 +405,51 @@ def _assert_template_snapshot_invalidated(
     assert template["regions_snapshot_token"] is None
 
 
+def _stage_deferred_analysis_artifact(
+    tmp_path: Path,
+    *,
+    session_id: int,
+    question_bank_db: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """Save a completed deferred analysis artifact and return its payload fields."""
+    install_current_knowledge(question_bank_db)
+    source_question = question_analysis_input_from_config_source(
+        {
+            "question_id": "Q1",
+            "question_text": "1 + 1 = ?",
+            "answer_text": "B",
+            "question_type": "choice",
+        },
+        question_id=1,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        taxonomy_contract=_deferred_sync_contract(),
+    )
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=_DeferredSyncGateway(),
+    ).analyze(
+        operation_id="config:synthetic:sync-artifact",
+        curriculum_volume_id="bnu24-math-g7-upper",
+        sources=(ConfigQuestionAnalysisSource("Q1", source_question),),
+    )
+    source_id = "b" * 32
+    source_revision = "c" * 64
+    artifact_root = tmp_path / "analysis-artifacts"
+    artifact = DeferredAnalysisArtifactStore(artifact_root).save(
+        artifact_id="a" * 32,
+        session_id=session_id,
+        source_id=source_id,
+        source_revision=source_revision,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        bundle=bundle,
+    )
+    return artifact_root, {
+        "analysis_artifact_id": artifact.artifact_id,
+        "analysis_artifact_hash": artifact.content_hash,
+        "analysis_source_id": source_id,
+        "analysis_source_revision": source_revision,
+    }
+
+
 def test_sync_runs_import_then_governed_tagging_and_links_without_touching_config(
     tmp_path: Path,
 ) -> None:
@@ -413,7 +458,11 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
     )
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
-    install_current_knowledge(question_bank_db)
+    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
+        tmp_path,
+        session_id=session_id,
+        question_bank_db=question_bank_db,
+    )
     store = JobStore(db.db_path)
     job = store.create_job(
         "question_bank_sync",
@@ -425,6 +474,7 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
             "client_request_token": "f" * 32,
             "client_request_fingerprint": "1" * 64,
             "curriculum_volume_id": "bnu24-math-g7-upper",
+            **artifact_fields,
         },
     )
     assert store.mark_running(job.id)
@@ -435,7 +485,6 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
         store=store,
     )
     call_order: list[str] = []
-    observed_governance: list[Any] = []
     rubric_before = Path(db.get_grading_session(session_id)["rubric_path"]).read_bytes()
 
     def import_runner(**kwargs: Any) -> dict[str, object]:
@@ -459,23 +508,10 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
             "retryable": False,
         }
 
-    def tagging_runner(**kwargs: Any) -> dict[str, object]:
-        call_order.append("tag")
-        observed_governance.append(kwargs.get("taxonomy_governance"))
-        ids = list(kwargs["context"].payload["question_ids"])
-        return {
-            "outcome": "complete",
-            "requested_count": len(ids),
-            "tagged_count": len(ids),
-            "successful_question_ids": ids,
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "review_count": 1,
-            "proposal_ids": ["proposal-1"],
-            "retryable": False,
-        }
+    def unexpected_tagging_runner(**_kwargs: Any) -> dict[str, object]:
+        pytest.fail("sync must adopt the deferred analysis artifact, not re-tag")
 
-    governance = object()
+    governance = _RecordingTaxonomyGovernance()
     result = run_session_question_bank_sync_job(
         context=context,
         grading_db=db,
@@ -486,15 +522,17 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
             data_root=tmp_path / "data",
         ),
         question_import_runner=import_runner,
-        tagging_sync_runner=tagging_runner,
-        ai_service_factory=lambda: object(),
+        tagging_sync_runner=unexpected_tagging_runner,
+        ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
         taxonomy_governance=governance,
+        analysis_artifact_root=artifact_root,
     )
 
-    assert call_order == ["import", "tag"]
-    assert observed_governance == [governance]
+    assert call_order == ["import"]
+    assert governance.constrain_calls, "adopted analysis must pass governance"
     assert result["outcome"] == "complete"
-    assert result["review_count"] == 1
+    assert result["tagged_count"] == 1
+    assert result["review_count"] == 0
     assert db.get_grading_session(session_id)["question_bank_sync_state"] == "ready"
     assert Path(db.get_grading_session(session_id)["rubric_path"]).read_bytes() == rubric_before
 
@@ -507,6 +545,11 @@ def test_sync_carries_original_filename_and_grading_paper_defaults_to_import(
     )
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
+    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
+        tmp_path,
+        session_id=session_id,
+        question_bank_db=question_bank_db,
+    )
     store = JobStore(db.db_path)
     job = store.create_job(
         "question_bank_sync",
@@ -517,6 +560,7 @@ def test_sync_carries_original_filename_and_grading_paper_defaults_to_import(
             "source_paper_sha256": source_sha256,
             "source_safe_filename": "0526test2.docx",
             "curriculum_volume_id": "bnu24-math-g7-upper",
+            **artifact_fields,
         },
     )
     assert store.mark_running(job.id)
@@ -553,21 +597,11 @@ def test_sync_carries_original_filename_and_grading_paper_defaults_to_import(
             "retryable": False,
         }
 
-    def tagging_runner(**kwargs: Any) -> dict[str, object]:
-        question_ids = list(kwargs["context"].payload["question_ids"])
-        return {
-            "outcome": "complete",
-            "requested_count": len(question_ids),
-            "tagged_count": len(question_ids),
-            "successful_question_ids": question_ids,
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "review_count": 0,
-            "proposal_ids": [],
-            "retryable": False,
-        }
+    def unexpected_tagging_runner(**_kwargs: Any) -> dict[str, object]:
+        pytest.fail("sync must adopt the deferred analysis artifact, not re-tag")
 
-    run_session_question_bank_sync_job(
+    governance = _PassThroughTaxonomyGovernance()
+    result = run_session_question_bank_sync_job(
         context=context,
         grading_db=db,
         question_bank_db_path=question_bank_db,
@@ -577,11 +611,13 @@ def test_sync_carries_original_filename_and_grading_paper_defaults_to_import(
             data_root=tmp_path / "data",
         ),
         question_import_runner=import_runner,
-        tagging_sync_runner=tagging_runner,
-        ai_service_factory=lambda: object(),
-        taxonomy_governance=object(),
+        tagging_sync_runner=unexpected_tagging_runner,
+        ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
+        taxonomy_governance=governance,
+        analysis_artifact_root=artifact_root,
     )
 
+    assert result["outcome"] == "complete", result
     assert captured["filename"] == "0526test2.docx"
     assert captured["defaults"] == {
         "year": str(datetime.now().year),
@@ -598,6 +634,11 @@ def test_sync_passes_rubric_question_types_to_import(tmp_path: Path) -> None:
     )
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
+    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
+        tmp_path,
+        session_id=session_id,
+        question_bank_db=question_bank_db,
+    )
     store = JobStore(db.db_path)
     job = store.create_job(
         "question_bank_sync",
@@ -608,6 +649,7 @@ def test_sync_passes_rubric_question_types_to_import(tmp_path: Path) -> None:
             "source_paper_sha256": source_sha256,
             "source_safe_filename": "0526test2.docx",
             "curriculum_volume_id": "bnu24-math-g7-upper",
+            **artifact_fields,
         },
     )
     assert store.mark_running(job.id)
@@ -640,21 +682,11 @@ def test_sync_passes_rubric_question_types_to_import(tmp_path: Path) -> None:
             "retryable": False,
         }
 
-    def tagging_runner(**kwargs: Any) -> dict[str, object]:
-        question_ids = list(kwargs["context"].payload["question_ids"])
-        return {
-            "outcome": "complete",
-            "requested_count": len(question_ids),
-            "tagged_count": len(question_ids),
-            "successful_question_ids": question_ids,
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "review_count": 0,
-            "proposal_ids": [],
-            "retryable": False,
-        }
+    def unexpected_tagging_runner(**_kwargs: Any) -> dict[str, object]:
+        pytest.fail("sync must adopt the deferred analysis artifact, not re-tag")
 
-    run_session_question_bank_sync_job(
+    governance = _PassThroughTaxonomyGovernance()
+    result = run_session_question_bank_sync_job(
         context=context,
         grading_db=db,
         question_bank_db_path=question_bank_db,
@@ -664,11 +696,13 @@ def test_sync_passes_rubric_question_types_to_import(tmp_path: Path) -> None:
             data_root=tmp_path / "data",
         ),
         question_import_runner=import_runner,
-        tagging_sync_runner=tagging_runner,
-        ai_service_factory=lambda: object(),
-        taxonomy_governance=object(),
+        tagging_sync_runner=unexpected_tagging_runner,
+        ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
+        taxonomy_governance=governance,
+        analysis_artifact_root=artifact_root,
     )
 
+    assert result["outcome"] == "complete", result
     assert captured["type_overrides"] == {"1": "选择题"}
 
 
@@ -679,6 +713,11 @@ def test_sync_that_loses_final_ownership_removes_its_automatic_links(
     db, session_id, _source, source_sha256, revision = _configured_session(tmp_path)
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
+    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
+        tmp_path,
+        session_id=session_id,
+        question_bank_db=question_bank_db,
+    )
     store = JobStore(db.db_path)
     job = store.create_job(
         "question_bank_sync",
@@ -688,6 +727,7 @@ def test_sync_that_loses_final_ownership_removes_its_automatic_links(
             "config_revision": revision,
             "source_paper_sha256": source_sha256,
             "curriculum_volume_id": "bnu24-math-g7-upper",
+            **artifact_fields,
         },
     )
     assert store.mark_running(job.id)
@@ -732,19 +772,14 @@ def test_sync_that_loses_final_ownership_removes_its_automatic_links(
                 data_root=tmp_path / "data",
             ),
             question_import_runner=import_runner,
-            tagging_sync_runner=lambda **_kwargs: {
-                "outcome": "complete",
-                "requested_count": 1,
-                "tagged_count": 1,
-                "successful_question_ids": [1],
-                "failed_question_ids": [],
-                "failed_count": 0,
-                "review_count": 0,
-                "proposal_ids": [],
-                "retryable": False,
-            },
-            ai_service_factory=lambda: object(),
-            taxonomy_governance=object(),
+            tagging_sync_runner=lambda **_kwargs: pytest.fail(
+                "sync must adopt the deferred analysis artifact, not re-tag"
+            ),
+            ai_service_factory=lambda: _DeferredAdoptionTaggingService(
+                _PassThroughTaxonomyGovernance()
+            ),
+            taxonomy_governance=_PassThroughTaxonomyGovernance(),
+            analysis_artifact_root=artifact_root,
         )
 
     with connect(question_bank_db) as conn:
@@ -763,12 +798,17 @@ def test_tag_retry_skips_import_and_failure_stays_in_the_sync_state(
     )
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
+    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
+        tmp_path,
+        session_id=session_id,
+        question_bank_db=question_bank_db,
+    )
     with connect(question_bank_db) as conn:
         conn.execute(
             """
             INSERT INTO questions (
                 id, question_number, question_type, question_text, answer_text
-            ) VALUES (201, '1', 'choice', '1 + 1 = ?', 'B')
+            ) VALUES (201, '99', 'choice', '1 + 1 = ?', 'B')
             """
         )
     store = JobStore(db.db_path)
@@ -784,6 +824,7 @@ def test_tag_retry_skips_import_and_failure_stays_in_the_sync_state(
             "client_request_token": "2" * 32,
             "client_request_fingerprint": "3" * 64,
             "retry_of_job_id": 19,
+            **artifact_fields,
         },
     )
     assert store.mark_running(job.id)
@@ -810,19 +851,14 @@ def test_tag_retry_skips_import_and_failure_stays_in_the_sync_state(
             data_root=tmp_path / "data",
         ),
         question_import_runner=unexpected_import,
-        tagging_sync_runner=lambda **_kwargs: {
-            "outcome": "failed",
-            "requested_count": 1,
-            "tagged_count": 0,
-            "successful_question_ids": [],
-            "failed_question_ids": [201],
-            "failed_count": 1,
-            "review_count": 0,
-            "proposal_ids": [],
-            "retryable": True,
-        },
-        ai_service_factory=lambda: object(),
-        taxonomy_governance=object(),
+        tagging_sync_runner=lambda **_kwargs: pytest.fail(
+            "tag retry must adopt the deferred analysis artifact, not re-tag"
+        ),
+        ai_service_factory=lambda: _DeferredAdoptionTaggingService(
+            _PassThroughTaxonomyGovernance()
+        ),
+        taxonomy_governance=_PassThroughTaxonomyGovernance(),
+        analysis_artifact_root=artifact_root,
     )
 
     assert import_called is False
@@ -840,6 +876,11 @@ def test_tag_retry_preserves_parent_links_and_reports_whole_paper(
     )
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
+    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
+        tmp_path,
+        session_id=session_id,
+        question_bank_db=question_bank_db,
+    )
     with connect(question_bank_db) as conn:
         conn.execute(
             """
@@ -897,6 +938,7 @@ def test_tag_retry_preserves_parent_links_and_reports_whole_paper(
             "client_request_token": "8" * 32,
             "client_request_fingerprint": "9" * 64,
             "retry_of_job_id": parent.id,
+            **artifact_fields,
         },
     )
     assert store.mark_running(job.id)
@@ -919,22 +961,14 @@ def test_tag_retry_preserves_parent_links_and_reports_whole_paper(
         question_import_runner=lambda **_kwargs: pytest.fail(
             "tag retry must not import again"
         ),
-        tagging_sync_runner=lambda **_kwargs: {
-            "outcome": "complete",
-            "requested_count": 1,
-            "tagged_count": 1,
-            "complete_tagged_count": 1,
-            "evidence_count": 1,
-            "criteria_count": 0,
-            "successful_question_ids": [201],
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "review_count": 0,
-            "proposal_ids": [],
-            "retryable": False,
-        },
-        ai_service_factory=lambda: object(),
-        taxonomy_governance=object(),
+        tagging_sync_runner=lambda **_kwargs: pytest.fail(
+            "tag retry must adopt the deferred analysis artifact, not re-tag"
+        ),
+        ai_service_factory=lambda: _DeferredAdoptionTaggingService(
+            _PassThroughTaxonomyGovernance()
+        ),
+        taxonomy_governance=_PassThroughTaxonomyGovernance(),
+        analysis_artifact_root=artifact_root,
     )
 
     assert result["outcome"] == "complete"
@@ -1336,6 +1370,19 @@ class _PassThroughTaxonomyGovernance:
         }
 
 
+class _RecordingTaxonomyGovernance(_PassThroughTaxonomyGovernance):
+    def __init__(self) -> None:
+        self.constrain_calls: list[dict[str, Any]] = []
+
+    def constrain(
+        self,
+        raw_analysis: dict[str, Any],
+        context: object = None,
+    ) -> dict[str, Any]:
+        self.constrain_calls.append(raw_analysis)
+        return super().constrain(raw_analysis, context)
+
+
 class _DeferredAdoptionTaggingService:
     model = "synthetic-combined-v3"
 
@@ -1365,6 +1412,9 @@ def _run_deferred_adoption(
     repeat_prepublish_intake: bool = False,
     partial_analysis: bool = False,
     cancel_after_import: bool = False,
+    intake_asset_overrides: list[dict[str, Any]] | None = None,
+    intake_type_overrides: dict[str, str] | None = None,
+    captured_import_payload: dict[str, Any] | None = None,
 ) -> tuple[
     dict[str, object],
     _DeferredSyncGateway,
@@ -1458,6 +1508,9 @@ def _run_deferred_adoption(
     imported_ids: list[int] = []
 
     def import_runner(**_kwargs: Any) -> dict[str, object]:
+        if captured_import_payload is not None:
+            child = _kwargs.get("context")
+            captured_import_payload.update(dict(getattr(child, "payload", {})))
         if imported_ids:
             return {
                 "outcome": "complete",
@@ -1508,6 +1561,8 @@ def _run_deferred_adoption(
                 source_content=b"controlled source paper",
                 question_bank_db_path=question_bank_db,
                 data_root=tmp_path / "data",
+                asset_overrides=intake_asset_overrides,
+                type_overrides=intake_type_overrides,
                 question_import_runner=import_runner,
                 ai_service_factory=lambda: _DeferredAdoptionTaggingService(
                     governance
@@ -1527,6 +1582,8 @@ def _run_deferred_adoption(
                 source_content=b"controlled source paper",
                 question_bank_db_path=question_bank_db,
                 data_root=tmp_path / "data",
+                asset_overrides=intake_asset_overrides,
+                type_overrides=intake_type_overrides,
                 question_import_runner=import_runner,
                 ai_service_factory=lambda: _DeferredAdoptionTaggingService(
                     governance
@@ -1631,6 +1688,64 @@ def test_score_pending_intake_imports_tags_and_evidence_without_grading_links(
     assert artifact_path.exists()
 
 
+def test_score_pending_intake_forwards_teacher_asset_and_type_overrides(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+    asset_overrides = [
+        {
+            "sha256": "a" * 64,
+            "action": "bind",
+            "question_number": "1",
+            "asset_kind": "question",
+        }
+    ]
+
+    result, _gateway, _ids, _db, _path = _run_deferred_adoption(
+        tmp_path,
+        prepublish_intake=True,
+        intake_asset_overrides=asset_overrides,
+        intake_type_overrides={"1": "选择题"},
+        captured_import_payload=captured,
+    )
+
+    assert result["outcome"] == "complete", result
+    assert captured["asset_overrides"] == asset_overrides
+    assert captured["type_overrides"] == {"1": "选择题"}
+
+
+def test_score_pending_intake_defaults_to_no_overrides(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    result, _gateway, _ids, _db, _path = _run_deferred_adoption(
+        tmp_path,
+        prepublish_intake=True,
+        captured_import_payload=captured,
+    )
+
+    assert result["outcome"] == "complete", result
+    assert captured["asset_overrides"] == []
+    assert captured["type_overrides"] == {}
+
+
+def test_score_pending_intake_rejects_invalid_asset_overrides(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="sha256"):
+        _run_deferred_adoption(
+            tmp_path,
+            prepublish_intake=True,
+            intake_asset_overrides=[
+                {
+                    "sha256": "not-a-sha256",
+                    "action": "bind",
+                    "question_number": "1",
+                    "asset_kind": "question",
+                }
+            ],
+        )
+
+
 def test_score_pending_intake_retry_reuses_question_tags_and_evidence(
     tmp_path: Path,
 ) -> None:
@@ -1706,7 +1821,11 @@ def test_sync_keeps_taxonomy_review_artifact_for_local_retry(
 ) -> None:
     governance = TaxonomyGovernance(
         catalog_path=LEGACY_CATALOG_PATH,
-        state_path=tmp_path / "taxonomy-state.json"
+        state_path=tmp_path / "taxonomy-state.json",
+        # 缺省的 knowledge_graph_db_path 指向会话级共享题库库,
+        # 全量跑时会被其他测试的应用启动装上 revision 4 的签入标准,
+        # 与本文件词表 revision 冲突; 指向本测试私有路径即可跳过该检查。
+        knowledge_graph_db_path=tmp_path / "taxonomy-governance.db",
     )
     result, gateway, imported_ids, question_bank_db, artifact_path = (
         _run_deferred_adoption(

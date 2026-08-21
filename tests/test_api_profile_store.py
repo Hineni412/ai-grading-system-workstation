@@ -36,59 +36,6 @@ class _FakeStore:
         return [self.profile]
 
 
-class _SessionState(dict):
-    def __getattr__(self, name: str):
-        return self[name]
-
-    def __setattr__(self, name: str, value: object) -> None:
-        self[name] = value
-
-
-class _FakeStreamlit:
-    def __init__(self) -> None:
-        self.session_state = _SessionState()
-        self.sidebar = self
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args) -> None:
-        return None
-
-    def expander(self, *_args, **_kwargs):
-        return self
-
-    def markdown(self, *_args, **_kwargs) -> None:
-        return None
-
-    def caption(self, *_args, **_kwargs) -> None:
-        return None
-
-    def warning(self, *_args, **_kwargs) -> None:
-        return None
-
-    def success(self, *_args, **_kwargs) -> None:
-        return None
-
-    def error(self, *_args, **_kwargs) -> None:
-        return None
-
-    def text_input(self, _label: str, *, key: str, **_kwargs):
-        return self.session_state[key]
-
-    def selectbox(self, _label: str, *, key: str, **_kwargs):
-        return self.session_state[key]
-
-    def number_input(self, _label: str, *, key: str, **_kwargs):
-        return self.session_state[key]
-
-    def checkbox(self, _label: str, *, key: str, **_kwargs):
-        return self.session_state[key]
-
-    def button(self, *_args, **_kwargs) -> bool:
-        return False
-
-
 def _store(target: Path, *legacy_paths: Path):
     assert hasattr(api_profiles, "ApiProfileStore"), "ApiProfileStore must own profile persistence"
     return api_profiles.ApiProfileStore(target, legacy_paths=legacy_paths)

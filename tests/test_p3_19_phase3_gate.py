@@ -117,11 +117,11 @@ def test_phase_gate_upgrades_every_supported_historical_version(
     }
     assert set(by_target) == {"grading", "question_bank"}
     for target, expected_count, latest_version in (
-        ("grading", 12, "010_workspace_ai_tasks"),
+        ("grading", 15, "013_dual_track_ai_scores"),
         (
             "question_bank",
-            33,
-            "031_add_paper_folder",
+            34,
+            "032_allow_judgment_points_v1",
         ),
     ):
         item = by_target[target]

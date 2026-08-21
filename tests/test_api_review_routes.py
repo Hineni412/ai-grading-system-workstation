@@ -29,7 +29,9 @@ def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
     from backend.jobs.store import JobStore
     from db_manager import DBManager
 
-    db = DBManager(tmp_path / "grading.db")
+    db_dir = tmp_path / "databases"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db = DBManager(db_dir / "grading.db")
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(

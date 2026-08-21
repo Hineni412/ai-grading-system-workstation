@@ -64,7 +64,7 @@ def _client(tmp_path):
     from backend.jobs.store import JobStore
     from db_manager import DBManager
 
-    db = DBManager(tmp_path / "grading.db")
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
     manager = JobManager(JobStore(db.db_path), max_workers=1)
     app = create_app()

@@ -7,8 +7,8 @@ import AcademicOverviewPanel from './AcademicOverviewPanel.vue'
 import EvidenceUploadPanel from './EvidenceUploadPanel.vue'
 import StudentDirectoryPanel from './StudentDirectoryPanel.vue'
 import StudentOverviewPanel from './StudentOverviewPanel.vue'
+import SupportActionPanel from './SupportActionPanel.vue'
 import SupportOverviewPanel from './SupportOverviewPanel.vue'
-import SupportReviewPanel from './SupportReviewPanel.vue'
 
 const AcademicAnalysisPanel = defineAsyncComponent(() => import('./AcademicAnalysisPanel.vue'))
 
@@ -21,6 +21,7 @@ const emit = defineEmits<{
   navigate: [panel: Panel, subjectId?: string | null]
 }>()
 const selected = ref<DirectorySubject | null>(null)
+const profileOpen = ref(false)
 async function restoreSelection() {
   if (!props.subjectId) return
   try {
@@ -30,25 +31,27 @@ async function restoreSelection() {
     selected.value = null
   }
 }
-function choose(subject: DirectorySubject) { selected.value = subject; emit('navigate', 'directory', subject.subject_id) }
-function openPanel(panel: 'support' | 'academic') { emit('navigate', panel, selected.value?.subject_id ?? null) }
+function choose(subject: DirectorySubject) { selected.value = subject; profileOpen.value = false; emit('navigate', 'directory', subject.subject_id) }
+function openPanel(panel: 'support' | 'academic') { profileOpen.value = false; emit('navigate', panel, selected.value?.subject_id ?? null) }
 async function chooseFromOverview(subjectId: string) {
   try {
     const value = await studentR1Api.header(subjectId)
     selected.value = value as unknown as DirectorySubject
+    profileOpen.value = false
     emit('navigate', props.panel, subjectId)
   } catch {
     selected.value = null
   }
 }
-watch(() => props.subjectId, () => { void restoreSelection() })
+watch(() => props.subjectId, () => { profileOpen.value = false; void restoreSelection() })
+watch(() => props.panel, () => { profileOpen.value = false })
 onMounted(() => { void restoreSelection() })
 </script>
 
 <template>
   <section class="students">
     <nav class="subnav" aria-label="学生工作区页面">
-      <button v-for="item in ([['directory','学生目录'],['support','支持记录'],['academic','学业证据']] as const)" :key="item[0]" type="button" :aria-current="panel===item[0]?'page':undefined" @click="emit('navigate', item[0], selected?.subject_id ?? null)">{{ item[1] }}</button>
+      <button v-for="item in ([['directory','学生目录'],['support','支持行动'],['academic','学业证据']] as const)" :key="item[0]" type="button" :aria-current="panel===item[0]?'page':undefined" @click="emit('navigate', item[0], selected?.subject_id ?? null)">{{ item[1] }}</button>
       <span v-if="selected">当前学生：<strong>{{ selected.display_name }}</strong></span>
       <span v-else>选择学生后可进入这名学生的当前档案</span>
     </nav>
@@ -59,10 +62,18 @@ onMounted(() => { void restoreSelection() })
       @close="selected = null; emit('navigate', 'directory', null)"
       @open="openPanel"
     />
-    <SupportReviewPanel
+    <SupportActionPanel
       v-if="panel==='support' && selected"
       :key="selected.subject_id"
       :subject="selected"
+      @open-profile="profileOpen = true"
+    />
+    <StudentOverviewPanel
+      v-if="panel==='support' && selected && profileOpen"
+      :subject="selected"
+      initial-tab="support"
+      @close="profileOpen = false"
+      @open="openPanel"
     />
     <SupportOverviewPanel
       v-if="panel==='support' && !selected"

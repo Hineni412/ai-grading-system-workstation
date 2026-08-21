@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from backend.domain_models import GradingResult, QuestionGradingDetail
+from backend.domain_models import (
+    GradingResult,
+    QuestionGradingDetail,
+    detail_ai_score,
+)
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
 from backend.repositories.papers import PaperRepository
 from grading_completeness import audit_grading_details
@@ -36,6 +40,11 @@ class ResultRepository:
             scan_batch_id=scan_batch_id,
             grading_result=grading_result,
         )
+        ai_scores = [detail_ai_score(detail) for detail in details]
+        known_ai_scores = [score for score in ai_scores if score is not None]
+        ai_student_score = (
+            float(sum(known_ai_scores)) if known_ai_scores else None
+        )
         old_rows = self.session.connection.execute(
             """
             SELECT id
@@ -63,8 +72,8 @@ class ResultRepository:
             """
             INSERT INTO session_results (
                 session_id, student_id, paper_id, total_score, student_score,
-                needs_human_review, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                needs_human_review, raw_json, ai_student_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -74,17 +83,18 @@ class ResultRepository:
                 student_score,
                 1 if grading_result.needs_human_review else 0,
                 json.dumps(raw_json, ensure_ascii=False),
+                ai_student_score,
             ),
         )
         result_id = int(cursor.lastrowid)
-        for detail in details:
+        for detail, ai_score in zip(details, ai_scores):
             self.session.connection.execute(
                 """
                 INSERT INTO session_details (
                     result_id, question_id, score_awarded, deduction_reason,
                     knowledge_ids, error_category, error_summary,
-                    confidence_score, secondary_errors_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    confidence_score, secondary_errors_json, ai_score_awarded
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result_id,
@@ -98,6 +108,7 @@ class ResultRepository:
                     _serialize_secondary_errors(
                         getattr(detail, "secondary_errors", [])
                     ),
+                    ai_score,
                 ),
             )
         return result_id
@@ -164,6 +175,9 @@ class ResultRepository:
                 secondary_errors=(
                     list(previous.secondary_errors) if previous is not None else []
                 ),
+                ai_score_awarded=(
+                    detail_ai_score(previous) if previous is not None else None
+                ),
             )
             locked_question_ids.append(question_id)
 
@@ -208,6 +222,7 @@ class ResultRepository:
                 ep.back_image,
                 sr.total_score,
                 sr.student_score,
+                sr.ai_student_score,
                 sr.needs_human_review,
                 sr.graded_at,
                 sr.raw_json
@@ -236,7 +251,8 @@ class ResultRepository:
                 error_category,
                 error_summary,
                 confidence_score,
-                secondary_errors_json
+                secondary_errors_json,
+                ai_score_awarded
             FROM session_details
             WHERE result_id = ?
             ORDER BY id ASC
@@ -638,6 +654,11 @@ class ResultRepository:
                 """,
                 (result_id, *question_ids),
             )
+        locked_replacement_ai_scores = {
+            str(detail.question_id): detail_ai_score(detail)
+            for detail in replacement_details
+            if str(detail.question_id) in locked_question_ids
+        }
         for detail in replacement_details:
             if str(detail.question_id) in locked_question_ids:
                 continue
@@ -647,6 +668,8 @@ class ResultRepository:
         # result.  Preserve/update existing locked rows and materialize a
         # missing detail before the completeness audit, so an explicit retry
         # cannot fail merely because it correctly skipped the teacher's item.
+        # Locked rows keep the teacher score as final; a fresh AI score from
+        # this run is still recorded in ai_score_awarded.
         for lock in locked_rows:
             question_id = str(lock["question_id"])
             existing = self.session.connection.execute(
@@ -659,7 +682,28 @@ class ResultRepository:
                 (result_id, question_id),
             ).fetchall()
             if existing:
+                ai_score = locked_replacement_ai_scores.get(question_id)
                 for row in existing:
+                    if ai_score is not None:
+                        self.session.connection.execute(
+                            """
+                            UPDATE session_details
+                            SET score_awarded = ?,
+                                deduction_reason = ?,
+                                error_category = '教师已确认',
+                                error_summary = 'teacher_score_locked',
+                                ai_score_awarded = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                float(lock["score_awarded"]),
+                                lock["deduction_reason"]
+                                or "教师人工批改已确认",
+                                ai_score,
+                                int(row["id"]),
+                            ),
+                        )
+                        continue
                     self.session.connection.execute(
                         """
                         UPDATE session_details
@@ -699,7 +743,7 @@ class ResultRepository:
                 SELECT
                     question_id, score_awarded, deduction_reason,
                     knowledge_ids, error_category, error_summary,
-                    confidence_score, secondary_errors_json
+                    confidence_score, secondary_errors_json, ai_score_awarded
                 FROM session_details
                 WHERE result_id = ?
                 ORDER BY id ASC
@@ -709,6 +753,14 @@ class ResultRepository:
         ]
         recalculated_score = sum(
             float(detail["score_awarded"]) for detail in stored_details
+        )
+        known_ai_scores = [
+            float(detail["ai_score_awarded"])
+            for detail in stored_details
+            if detail["ai_score_awarded"] is not None
+        ]
+        recalculated_ai_score = (
+            float(sum(known_ai_scores)) if known_ai_scores else None
         )
         persisted_raw_json = (
             dict(raw_json) if isinstance(raw_json, dict) else {}
@@ -731,13 +783,15 @@ class ResultRepository:
         self.session.connection.execute(
             """
             UPDATE session_results
-            SET student_score = ?, needs_human_review = ?, raw_json = ?
+            SET student_score = ?, needs_human_review = ?, raw_json = ?,
+                ai_student_score = ?
             WHERE id = ?
             """,
             (
                 float(recalculated_score),
                 1 if needs_human_review else 0,
                 json.dumps(persisted_raw_json, ensure_ascii=False),
+                recalculated_ai_score,
                 result_id,
             ),
         )
@@ -779,8 +833,8 @@ class ResultRepository:
             INSERT INTO session_details (
                 result_id, question_id, score_awarded, deduction_reason,
                 knowledge_ids, error_category, error_summary,
-                confidence_score, secondary_errors_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                confidence_score, secondary_errors_json, ai_score_awarded
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result_id,
@@ -794,6 +848,7 @@ class ResultRepository:
                 _serialize_secondary_errors(
                     getattr(detail, "secondary_errors", [])
                 ),
+                detail_ai_score(detail),
             ),
         )
 

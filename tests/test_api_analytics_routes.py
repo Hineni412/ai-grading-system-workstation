@@ -70,7 +70,8 @@ def analysis_client(tmp_path: Path):
     from backend.api.dependencies import get_grading_db
     from db_manager import DBManager
 
-    db_path = tmp_path / "grading.db"
+    db_path = tmp_path / "databases" / "grading.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(
         json.dumps(
@@ -154,7 +155,8 @@ def missing_max_client(tmp_path: Path):
     from backend.api.dependencies import get_grading_db
     from db_manager import DBManager
 
-    db_path = tmp_path / "missing-max.db"
+    db_path = tmp_path / "databases" / "missing-max.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text('{"questions": []}', encoding="utf-8")
     db = DBManager(db_path)

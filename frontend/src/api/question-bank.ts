@@ -143,6 +143,7 @@ export interface QuestionBankPaperPermanentDeleteImpact {
   knowledge_graph_link_count: number
   owned_file_count: number
   shared_file_count: number
+  taxonomy_proposal_count: number
   permanent_delete_phrase: string
 }
 
@@ -1209,6 +1210,7 @@ export function decodeQuestionBankPaperPermanentDeleteImpact(
   const countKeys = [
     'question_count', 'tag_count', 'analysis_record_count', 'training_link_count',
     'knowledge_graph_link_count', 'owned_file_count', 'shared_file_count',
+    'taxonomy_proposal_count',
   ]
   if (
     !isRecord(value)

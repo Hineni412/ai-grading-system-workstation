@@ -13,7 +13,7 @@ from backend.repositories.access import GradingRepositoryAccess
 
 _submit_lock = threading.RLock()
 _REPORT_RENDITION_VERSIONS = {
-    "score_excel": "score_excel_print_v3",
+    "score_excel": "score_excel_print_v5",
     "annotated_original_pdf": "annotated_original_pdf_score_boxes_v3",
 }
 
@@ -31,8 +31,17 @@ def score_revision(db: GradingRepositoryAccess, session_id: int) -> str:
                 ],
             }
         )
+    payload = {
+        "results": rows,
+        "locks": [
+            dict(lock)
+            for lock in db.review_repository.list_teacher_score_locks(
+                int(session_id)
+            )
+        ],
+    }
     serialized = json.dumps(
-        rows,
+        payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

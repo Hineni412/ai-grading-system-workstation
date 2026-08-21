@@ -15,6 +15,7 @@ from backend.domain_models import (
     GradingResult,
     QuestionGradingDetail,
     SecondaryError,
+    detail_ai_score,
 )
 from backend.llm.execution import execution_snapshot_from_profile
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
@@ -89,6 +90,7 @@ def _detail_from_row(row: dict[str, Any]) -> QuestionGradingDetail:
         confidence_score=row.get("confidence_score"),
         knowledge_ids=knowledge_ids,
         secondary_errors=secondary_errors,
+        ai_score_awarded=row.get("ai_score_awarded"),
     )
 
 
@@ -185,7 +187,6 @@ class GradingService:
             if scan_batch_id
             else []
         )
-        teacher_locked_questions_by_student: dict[int, set[str]] = {}
         teacher_score_locks_by_student: dict[
             int,
             dict[str, dict[str, Any]],
@@ -208,10 +209,6 @@ class GradingService:
                     "教师最终分所用满分与当前评分依据不一致，"
                     "请先在人工批改中重新确认后再启动 AI 批改"
                 )
-            teacher_locked_questions_by_student.setdefault(
-                int(lock["student_id"]),
-                set(),
-            ).add(locked_question_id)
             teacher_score_locks_by_student.setdefault(
                 int(lock["student_id"]),
                 {},
@@ -552,11 +549,10 @@ class GradingService:
             )
             total = len(matched_records)
             existing_results_by_student = {}
-            skipped_questions_by_student = {
-                student_id: set(question_ids)
-                for student_id, question_ids
-                in teacher_locked_questions_by_student.items()
-            }
+            # Teacher-locked questions are graded by the AI like everything
+            # else; locks only win when results are merged and persisted.
+            # This map is reserved for the failed_only retry path below.
+            skipped_questions_by_student: dict[int, set[str]] = {}
             if failed_only:
                 for paper_id, group, student_id in matched_records:
                     stored_result = self.results.get_student_result_for_retry(
@@ -1528,6 +1524,11 @@ def _merge_teacher_score_locks_into_result(
             ),
             secondary_errors=(
                 list(previous.secondary_errors) if previous is not None else []
+            ),
+            # The AI still graded this question; keep its score beside the
+            # teacher final so exports can compare both tracks.
+            ai_score_awarded=(
+                detail_ai_score(previous) if previous is not None else None
             ),
         )
         locked_question_ids.add(question_id)

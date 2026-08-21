@@ -96,7 +96,6 @@ const qualityMessages: Record<string, string> = {
   duplicate_point_id: '判定点编号不能重复。',
   duplicate_obligation: '不同判定点重复要求了同一件事。',
   missing_actual_image: '题目引用了图片，但当前图片内容不可用。',
-  teacher_visible_language_not_zh: '判定点需要写成老师能直接看懂的中文。',
   unknown_dependency: '判定点之间的依赖关系不完整，需要核对。',
   source_stale: '判定点对应的题目内容已经变化。',
   question_mismatch: '判定点不属于当前题目。',

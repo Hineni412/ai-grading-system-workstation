@@ -60,7 +60,9 @@ def _insert_result(
 
 @pytest.fixture
 def seed_analysis(tmp_path: Path) -> tuple[DBManager, int]:
-    db_path = tmp_path / "grading.db"
+    db_dir = tmp_path / "databases"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_dir / "grading.db"
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(
         json.dumps(
@@ -146,7 +148,9 @@ def seed_analysis(tmp_path: Path) -> tuple[DBManager, int]:
 
 @pytest.fixture
 def seed_missing_max_score(tmp_path: Path) -> tuple[DBManager, int]:
-    db_path = tmp_path / "missing-max.db"
+    db_dir = tmp_path / "databases"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_dir / "missing-max.db"
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text('{"questions": []}', encoding="utf-8")
     db = DBManager(db_path)
@@ -173,7 +177,9 @@ def seed_missing_max_score(tmp_path: Path) -> tuple[DBManager, int]:
 
 @pytest.fixture
 def seed_parent_parts(tmp_path: Path) -> tuple[DBManager, int]:
-    db_path = tmp_path / "parent-parts.db"
+    db_dir = tmp_path / "databases"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_dir / "parent-parts.db"
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(
         json.dumps(

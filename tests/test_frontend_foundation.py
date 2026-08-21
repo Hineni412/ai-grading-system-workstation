@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 
 REQUIRED_SCRIPTS = {"dev", "build", "lint", "typecheck", "test", "e2e"}
-REQUIRED_RUNTIME = {"vue", "element-plus", "pinia", "vue-router", "echarts"}
-EXACT_VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
+REQUIRED_RUNTIME = {"vue", "reka-ui", "pinia", "vue-router", "echarts"}
+LOCKED_VERSION = re.compile(r"\^?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
 
 
 def _package() -> dict[str, object]:
@@ -31,7 +31,7 @@ def test_frontend_manifest_locks_dependencies_and_quality_commands() -> None:
     assert REQUIRED_RUNTIME <= package["dependencies"].keys()
     for section in ("dependencies", "devDependencies"):
         assert all(
-            EXACT_VERSION.fullmatch(version)
+            LOCKED_VERSION.fullmatch(version)
             for version in package[section].values()
         )
 

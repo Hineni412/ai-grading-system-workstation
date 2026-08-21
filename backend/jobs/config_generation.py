@@ -9,7 +9,7 @@ import re
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from backend.repositories.access import GradingRepositoryAccess
 from backend.config_workspace.locks import session_config_lock
@@ -44,6 +44,12 @@ from question_bank.services.source_paper_archive_service import (
     ArchivedSourcePaper,
     archive_source_bytes,
     source_archive_sha_lock,
+)
+from question_bank.parsers.type_detector import question_type_from_rubric
+from question_bank.database.schema import connect
+from question_bank.services.source_question_link_service import (
+    SourceQuestionLinkService,
+    _normalize_question_number,
 )
 from backend.config_generation.compat import (
     allocate_grading_config_scores,
@@ -90,6 +96,7 @@ from session_manager import (
 from .manager import JobCancellationRequested, JobContext
 from .question_bank_sync import run_deferred_question_bank_intake
 from backend.exam_intake import (
+    INTAKE_REQUIRED_KEY,
     classify_intake_result,
     persist_intake_required,
     persist_intake_result,
@@ -913,6 +920,9 @@ def _run_config_generation_job_impl(
                         tagging_ai_service_factory=tagging_ai_service_factory,
                         taxonomy_governance=taxonomy_governance,
                         question_bank_intake_runner=question_bank_intake_runner,
+                        source_service=source_service,
+                        asset_decisions=asset_decisions,
+                        type_overrides=_intake_type_overrides(confirmed_blocks),
                     )
                 if intake_classified is not None and not intake_classified["complete"]:
                     payload = structure
@@ -1124,57 +1134,81 @@ def _run_config_generation_job_impl(
                 question_bank_intake_runner
                 or run_deferred_question_bank_intake
             )
+            intake_asset_overrides: list[dict[str, Any]] | None = None
+            asset_overrides_blocked = False
             try:
-                intake_result = intake_runner(
-                    context=context,
-                    session_id=session_id,
-                    artifact=analysis_artifact,
-                    source_filename=source_record.safe_filename,
-                    source_content=source_record.private_source_bytes,
-                    question_bank_db_path=Path(question_bank_db_path),
-                    data_root=resolved_data_root,
-                    ai_service_factory=tagging_ai_service_factory,
-                    taxonomy_governance=taxonomy_governance,
+                intake_asset_overrides = _resolve_intake_asset_overrides(
+                    source_service,
+                    source_record,
+                    asset_decisions,
                 )
-            except JobCancellationRequested:
-                raise
-            except Exception:
-                summary["question_bank_sync_state"] = "intake_failed"
+            except (ConfigSourceError, ValueError):
+                LOGGER.exception(
+                    "Failed to resolve asset decision overrides "
+                    "for session_id=%s",
+                    session_id,
+                )
+                asset_overrides_blocked = True
+            if asset_overrides_blocked:
+                summary["question_bank_sync_state"] = "blocked"
                 summary["question_bank_sync_error"] = (
-                    "题目分析结果已保留，但试卷暂时没有写入题库；"
-                    "评分依据草稿已保留，重试时会按原来源继续收敛。"
+                    "图片归属决定已失效，试卷未写入题库；"
+                    "请回到复核页重新确认图片归属后重新提交。"
                 )
             else:
-                imported_count = max(
-                    0,
-                    int(intake_result.get("imported_count") or 0),
-                )
-                tagged_count = max(
-                    0,
-                    int(intake_result.get("tagged_count") or 0),
-                )
-                evidence_count = max(
-                    0,
-                    int(intake_result.get("evidence_count") or 0),
-                )
-                summary.update(
-                    {
-                        "question_bank_sync_state": (
-                            "ready_for_config_link"
-                            if str(intake_result.get("outcome") or "")
-                            == "complete"
-                            else "partial"
-                        ),
-                        "question_bank_imported_count": imported_count,
-                        "question_bank_tagged_count": tagged_count,
-                        "question_bank_evidence_count": evidence_count,
-                        "question_bank_failed_count": max(
-                            0,
-                            int(intake_result.get("failed_count") or 0),
-                        ),
-                        "question_bank_config_link_pending": True,
-                    }
-                )
+                try:
+                    intake_result = intake_runner(
+                        context=context,
+                        session_id=session_id,
+                        artifact=analysis_artifact,
+                        source_filename=source_record.safe_filename,
+                        source_content=source_record.private_source_bytes,
+                        question_bank_db_path=Path(question_bank_db_path),
+                        data_root=resolved_data_root,
+                        ai_service_factory=tagging_ai_service_factory,
+                        taxonomy_governance=taxonomy_governance,
+                        asset_overrides=intake_asset_overrides,
+                        type_overrides=_intake_type_overrides(confirmed_blocks),
+                    )
+                except JobCancellationRequested:
+                    raise
+                except Exception:
+                    summary["question_bank_sync_state"] = "intake_failed"
+                    summary["question_bank_sync_error"] = (
+                        "题目分析结果已保留，但试卷暂时没有写入题库；"
+                        "评分依据草稿已保留，重试时会按原来源继续收敛。"
+                    )
+                else:
+                    imported_count = max(
+                        0,
+                        int(intake_result.get("imported_count") or 0),
+                    )
+                    tagged_count = max(
+                        0,
+                        int(intake_result.get("tagged_count") or 0),
+                    )
+                    evidence_count = max(
+                        0,
+                        int(intake_result.get("evidence_count") or 0),
+                    )
+                    summary.update(
+                        {
+                            "question_bank_sync_state": (
+                                "ready_for_config_link"
+                                if str(intake_result.get("outcome") or "")
+                                == "complete"
+                                else "partial"
+                            ),
+                            "question_bank_imported_count": imported_count,
+                            "question_bank_tagged_count": tagged_count,
+                            "question_bank_evidence_count": evidence_count,
+                            "question_bank_failed_count": max(
+                                0,
+                                int(intake_result.get("failed_count") or 0),
+                            ),
+                            "question_bank_config_link_pending": True,
+                        }
+                    )
         with session_config_lock(Path(upload_config_dir), session_id):
             current_session = db.get_grading_session(session_id)
             if (
@@ -1274,7 +1308,26 @@ def _run_config_generation_job_impl(
                         intake_classified is not None
                         and intake_classified["complete"]
                     ):
-                        summary["question_bank_sync_state"] = "ready"
+                        try:
+                            _confirm_intake_source_links(
+                                context=context,
+                                db=db,
+                                session_id=session_id,
+                                question_bank_db_path=question_bank_db_path,
+                                summary=summary,
+                            )
+                        except Exception:
+                            LOGGER.exception(
+                                "Failed to confirm intake source links "
+                                "for session_id=%s",
+                                session_id,
+                            )
+                            summary["question_bank_sync_state"] = "partial"
+                            summary["question_bank_sync_error"] = (
+                                "评分依据已发布、试卷已入库,但题库关联没有建立;"
+                                "知识结构页暂不显示本场数据,"
+                                "可在评分编辑页重新提交题库任务。"
+                            )
                     else:
                         sync_asset_overrides: list[dict[str, Any]] | None = None
                         asset_overrides_blocked = False
@@ -1363,6 +1416,41 @@ def _run_config_generation_job_impl(
     return summary
 
 
+def _resolve_intake_asset_overrides(
+    source_service: ConfigSourceService | None,
+    source_record: ConfigSourceRecord,
+    asset_decisions: Sequence[AmbiguousAssetDecision],
+) -> list[dict[str, Any]] | None:
+    if source_service is None or not asset_decisions:
+        return None
+    return list(
+        source_service.resolve_asset_decision_overrides(
+            source_record,
+            asset_decisions,
+        )
+    )
+
+
+def _intake_type_overrides(
+    confirmed_blocks: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Map teacher-confirmed block types onto bank question numbers.
+
+    The deferred intake has no published rubric yet, so the confirmed blocks
+    (which already carry the teacher's type decisions) play the role that
+    ``_rubric_type_overrides`` gives the published rubric in the sync path.
+    """
+    overrides: dict[str, str] = {}
+    for block in confirmed_blocks:
+        if not isinstance(block, dict):
+            continue
+        number = _normalize_question_number(block.get("question_id"))
+        question_type = question_type_from_rubric(block.get("question_type"))
+        if number and question_type:
+            overrides[number] = question_type
+    return overrides
+
+
 def _run_exam_paper_intake(
     *,
     context: JobContext,
@@ -1375,6 +1463,9 @@ def _run_exam_paper_intake(
     tagging_ai_service_factory: Callable[[], Any] | None,
     taxonomy_governance: Any | None,
     question_bank_intake_runner: Callable[..., dict[str, object]] | None,
+    source_service: ConfigSourceService | None = None,
+    asset_decisions: Sequence[AmbiguousAssetDecision] = (),
+    type_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if (
         analysis_artifact is None
@@ -1395,6 +1486,30 @@ def _run_exam_paper_intake(
     resolved_data_root = (
         Path(data_root) if data_root is not None else _infer_data_root(Path(db.db_path))
     )
+    try:
+        asset_overrides = _resolve_intake_asset_overrides(
+            source_service,
+            source_record,
+            asset_decisions,
+        )
+    except (ConfigSourceError, ValueError):
+        LOGGER.exception(
+            "Failed to resolve asset decision overrides for session_id=%s",
+            session_id,
+        )
+        classified = classify_intake_result(
+            {
+                "outcome": "failed",
+                "failure_code": "asset_decisions_stale",
+                "retryable": True,
+            }
+        )
+        classified["message"] = (
+            "图片归属决定已失效，试卷未写入题库；"
+            "请回到复核页重新确认图片归属后重新提交。"
+        )
+        persist_intake_result(db, session_id, classified)
+        return classified
     intake_runner = question_bank_intake_runner or run_deferred_question_bank_intake
     context.report(0.72, "question_bank_intake", "正在把分析结果写入题库判定点")
     try:
@@ -1408,6 +1523,8 @@ def _run_exam_paper_intake(
             data_root=resolved_data_root,
             ai_service_factory=tagging_ai_service_factory,
             taxonomy_governance=taxonomy_governance,
+            asset_overrides=asset_overrides,
+            type_overrides=type_overrides,
         )
     except JobCancellationRequested:
         raise
@@ -1567,6 +1684,99 @@ def _set_mapping_result(
     result = refresh_mapping_after_config_save(lambda: status)
     summary["mapping_status"] = result.mapping_status
     summary["mapping_message"] = result.mapping_message
+
+
+def _confirm_intake_source_links(
+    *,
+    context: JobContext,
+    db: GradingRepositoryAccess,
+    session_id: int,
+    question_bank_db_path: Path | None,
+    summary: dict[str, object],
+) -> None:
+    """Confirm grading-source links for a completed intake.
+
+    The deferred intake imports and tags the paper without grading links; the
+    links are bound here against the just-published rubric.  This runs after
+    the session bind (which resets the persisted sync state), so the final
+    state is written back here as well.
+    """
+    if question_bank_db_path is None:
+        raise ValueError("question-bank intake requires a question bank path")
+    loaded = load_editor_config(db, session_id)
+    if not loaded.configured:
+        raise ValueError("published grading config is unavailable")
+    session = db.get_grading_session(int(session_id))
+    source_path_value = str((session or {}).get("source_paper_path") or "").strip()
+    rubric = (
+        loaded.payload.get("rubric")
+        if isinstance(loaded.payload, Mapping)
+        else None
+    )
+    source_questions = [
+        dict(item)
+        for item in (
+            rubric.get("questions") if isinstance(rubric, Mapping) else []
+        )
+        if isinstance(item, Mapping)
+    ]
+    candidates: list[dict[str, Any]] = []
+    if source_path_value:
+        with connect(Path(question_bank_db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, question_number, question_text, source_file
+                FROM questions
+                WHERE COALESCE(is_deleted, 0) = 0 AND source_file = ?
+                ORDER BY id
+                """,
+                (source_path_value,),
+            ).fetchall()
+        candidates = [dict(row) for row in rows]
+    link_result = SourceQuestionLinkService(
+        Path(question_bank_db_path)
+    ).confirm_imported_questions_for_session(
+        grading_session_id=int(session_id),
+        source_questions=source_questions,
+        imported_bank_questions=candidates,
+        sync_job_id=context.job_id,
+        sync_config_revision=str(loaded.revision),
+        preserve_existing_confirmed=True,
+    )
+    confirmed = max(0, int(link_result.get("confirmed") or 0))
+    unresolved_ids = [
+        str(item).strip()
+        for item in link_result.get("unresolved_question_ids", [])
+        if str(item).strip()
+    ]
+    ready = confirmed > 0 and not unresolved_ids
+    db.update_question_bank_sync_state(
+        int(session_id),
+        state="ready" if ready else "partial",
+        details={
+            INTAKE_REQUIRED_KEY: True,
+            "intake_category": "complete",
+            "job_id": context.job_id,
+            "config_revision": str(loaded.revision),
+            "source_paper_sha256": str(
+                (session or {}).get("source_paper_sha256") or ""
+            ),
+            "linked_count": confirmed,
+            "unresolved_question_ids": unresolved_ids,
+        },
+        error=(
+            None
+            if ready
+            else "题库关联未全部建立;知识结构页只显示已关联题目。"
+        ),
+    )
+    summary["question_bank_sync_state"] = "ready" if ready else "partial"
+    summary["question_bank_linked_count"] = confirmed
+    summary["question_bank_unresolved_question_ids"] = unresolved_ids
+    if not ready:
+        summary["question_bank_sync_error"] = (
+            "题库关联未全部建立;知识结构页只显示已关联题目。"
+        )
 
 
 def _submit_automatic_question_bank_sync(

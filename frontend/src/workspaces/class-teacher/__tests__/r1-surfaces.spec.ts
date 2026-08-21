@@ -1,7 +1,7 @@
 import { createApp, nextTick, ref, type App, type Component } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-interface CapturedChartOption { series?: Array<{ data: unknown[] }> }
+interface CapturedChartOption { series?: Array<{ data: unknown[] }>; yAxis?: { inverse?: boolean } }
 const chartOptions: CapturedChartOption[] = []
 vi.mock('echarts/core', () => ({
   use: vi.fn(),
@@ -22,7 +22,6 @@ import AcademicAnalysisPanel from '../students/AcademicAnalysisPanel.vue'
 import StudentDirectoryPanel from '../students/StudentDirectoryPanel.vue'
 import StudentOverviewPanel from '../students/StudentOverviewPanel.vue'
 import StudentSurface from '../students/StudentSurface.vue'
-import SupportReviewPanel from '../students/SupportReviewPanel.vue'
 import ClassTeacherWorkbenchView from '../views/ClassTeacherWorkbenchView.vue'
 
 const apps: App[] = []
@@ -105,13 +104,15 @@ describe('B UI R1 surfaces', () => {
   it('directory calls only the lightweight directory interface before selection', async () => {
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     const directory = vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'student:S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'none', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
-    const rosterSource = vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', roster_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
+    const rosterSource = vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', roster_ref:'ref', student_revision:'r1' },{ source_key:'student:S002', student_code:'S002', display_name:'未建档学生', class_label:'一班', subject_id:null, roster_state:'active', roster_ref:'ref2', student_revision:'r2' }], classes:['一班'], source_revision:'r1', total:2, cursor:null })
     const records = vi.spyOn(studentR1Api, 'records')
     const host = await mount(StudentDirectoryPanel, {})
     expect(host.textContent).toContain('点击卡片进入学生当前档案')
     expect(host.textContent).toContain('合成学生')
     expect(host.textContent).toContain('一班')
-    expect(host.textContent).toContain('当前档案已建立')
+    expect(host.textContent).toContain('进行中方案 1')
+    expect(host.textContent).toContain('还没有档案 · 点卡片开始建立')
+    expect(host.textContent).not.toContain('当前档案已建立')
     expect(directory).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ classLabel:'一班', state:'active' }))
     expect(directory.mock.calls[0]?.[0]).not.toHaveProperty('rosterState')
     expect(rosterSource).toHaveBeenCalledExactlyOnceWith({ classLabel:'一班', pageSize:100 })
@@ -238,7 +239,7 @@ describe('B UI R1 surfaces', () => {
     }
     vi.spyOn(studentR1Api, 'studentCard').mockResolvedValueOnce(before).mockResolvedValueOnce(after).mockResolvedValue(before)
     const collecting = { conversation_id:'profile-conversation', revision:1, state:'collecting', homeroom_class:'一班', focused_subject_id:'subject-1234', focused_subject_revision:'1', created_at:'2026-08-08', updated_at:'2026-08-08', turns:[], handoffs:[] }
-    const pendingHandoff = { handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_growth' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:true }
+    const pendingHandoff = { handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_growth' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, subject_id:'subject-1234', auto_open_allowed:true }
     const ready = {
       ...collecting, revision:2, state:'handoff_ready',
       turns:[{ turn_id:'turn-profile', conversation_id:'profile-conversation', sequence:1, operation_id:'operation-profile', teacher_message:'最近开始主动分工', assistant_message:'已整理到同伴关系。', clarification_questions:['遇到意见不同时会怎样？'], task_id:'task-profile', task_state:'proposal_ready', created_at:'2026-08-08', updated_at:'2026-08-08' }],
@@ -286,7 +287,7 @@ describe('B UI R1 surfaces', () => {
     const collecting = { conversation_id:'profile-conversation', revision:1, state:'collecting', homeroom_class:'一班', focused_subject_id:'subject-1234', focused_subject_revision:'1', created_at:'2026-08-08', updated_at:'2026-08-08', turns:[], handoffs:[] }
     const ready = {
       ...collecting, revision:2, state:'handoff_ready', turns:[],
-      handoffs:[{ handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_growth' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:true }],
+      handoffs:[{ handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_growth' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, subject_id:'subject-1234', auto_open_allowed:true }],
     }
     vi.spyOn(intakeApi, 'startStudentConversation').mockResolvedValue(collecting)
     vi.spyOn(intakeApi, 'appendTurn').mockResolvedValue(ready)
@@ -324,7 +325,7 @@ describe('B UI R1 surfaces', () => {
     const ready = {
       conversation_id:'home-conversation', revision:2, state:'handoff_ready', homeroom_class:'一班', focused_subject_id:null, focused_subject_revision:null, created_at:'2026-08-08', updated_at:'2026-08-08',
       turns:[{ turn_id:'turn-home', conversation_id:'home-conversation', sequence:1, operation_id:'operation-home', teacher_message:'家庭情况', assistant_message:'已整理到当前档案。', clarification_questions:['在校表现？'], task_id:'task-home', task_state:'response_persisted', created_at:'2026-08-08', updated_at:'2026-08-08' }],
-      handoffs:[{ handoff_id:'handoff-home', draft_id:'draft-home', work_item_id:'work-home', turn_id:'turn-home', domain:'student_support' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:false }],
+      handoffs:[{ handoff_id:'handoff-home', draft_id:'draft-home', work_item_id:'work-home', turn_id:'turn-home', domain:'student_support' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, subject_id:'subject-1234', auto_open_allowed:false }],
     }
     vi.spyOn(intakeApi, 'conversation').mockResolvedValue(ready)
     vi.spyOn(intakeApi, 'handoff').mockResolvedValue({
@@ -360,7 +361,7 @@ describe('B UI R1 surfaces', () => {
       conversation_id:'conversation-1234', revision:2, state:'handoff_ready', homeroom_class:'一班',
       created_at:'2026-08-08T00:00:00Z', updated_at:'2026-08-08T00:00:00Z',
       turns:[{ turn_id:'turn-profile', conversation_id:'conversation-1234', sequence:1, operation_id:'operation-profile', teacher_message:'家庭情况', assistant_message:'已整理到当前档案。', clarification_questions:['在校表现？'], task_id:'task-profile', task_state:'response_persisted', created_at:'2026-08-08T00:00:00Z', updated_at:'2026-08-08T00:00:00Z' }],
-      handoffs:[{ handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_support' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:false }],
+      handoffs:[{ handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_support' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, subject_id:'subject-1234', auto_open_allowed:false }],
     }
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
@@ -397,7 +398,7 @@ describe('B UI R1 surfaces', () => {
       conversation_id:'conversation-opaque', revision:2, state:'handoff_ready', homeroom_class:'一班',
       created_at:'2026-08-08T00:00:00Z', updated_at:'2026-08-08T00:00:00Z',
       turns:[{ turn_id:'turn-opaque', conversation_id:'conversation-opaque', sequence:1, operation_id:'operation-opaque', teacher_message:'新转入学生情况', assistant_message:'已整理到当前档案。', clarification_questions:[], task_id:'task-opaque', task_state:'response_persisted', created_at:'2026-08-08T00:00:00Z', updated_at:'2026-08-08T00:00:00Z' }],
-      handoffs:[{ handoff_id:'handoff-opaque', draft_id:'draft-opaque', work_item_id:'work-opaque', turn_id:'turn-opaque', domain:'student_support' as const, handling_mode:'record' as const, intent:'create', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:false }],
+      handoffs:[{ handoff_id:'handoff-opaque', draft_id:'draft-opaque', work_item_id:'work-opaque', turn_id:'turn-opaque', domain:'student_support' as const, handling_mode:'record' as const, intent:'create', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, subject_id:'subject-1234', auto_open_allowed:false }],
     }
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
@@ -430,63 +431,67 @@ describe('B UI R1 surfaces', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('当前学生档案已经更新'))
   })
 
-  it('academic charts obey server segment status and preserve a real zero', async () => {
+  it('renders the academic profile card, rank trend and subject heatmap', async () => {
     vi.spyOn(studentR1Api, 'academic').mockResolvedValue({
       contract_version:'academic_analysis_v1', source_version:'a'.repeat(64), ruleset_version:'academic_ruleset_v1',
-      sessions:[{ session_id:'x', title:'第一次', occurred_on:'2026-06-01', metadata_complete:true, evidence:[{ evidence_version_id:'e1', subject_name:'数学', result_state:'normal', score:0, occurred_on:'2026-06-01' }] },{ session_id:'y', title:'第二次', occurred_on:'2026-07-01', metadata_complete:true, evidence:[{ evidence_version_id:'e2', subject_name:'数学', result_state:'absent', score:null, occurred_on:'2026-07-01' }] }],
-      series:[{ subject_name:'数学', points:[{evidence_version_id:'e1',subject_name:'数学',result_state:'normal',score:0,occurred_on:'2026-06-01',relative_position:0.2},{evidence_version_id:'e2',subject_name:'数学',result_state:'absent',score:null,occurred_on:'2026-07-01',relative_position:null}], segments:[{dimensions:{rank:{status:'not_comparable'},score:{status:'not_comparable'}}}] }],
-      rank_change_pairs:[], relative_subject_signals:[], recent_changes:[], insufficient_reasons:['不可比'], attention_cards:[],
+      sessions:[
+        { session_id:'a', title:'七上期中', occurred_on:'2025-11-01', grade:'七年级', term:'上学期', metadata_complete:true, evidence:[
+          { evidence_version_id:'t1', subject_name:'总分', measure_role:'total_score', result_state:'normal', score:70, occurred_on:'2025-11-01', rank:200, participant_count:400, relative_position:0.5 },
+          { evidence_version_id:'c1', subject_name:'语文', measure_role:'subject_score', result_state:'normal', score:80, occurred_on:'2025-11-01', rank:100, participant_count:400, relative_position:0.75 },
+          { evidence_version_id:'m1', subject_name:'数学', measure_role:'subject_score', result_state:'normal', score:75, occurred_on:'2025-11-01', rank:100, participant_count:400, relative_position:0.75 },
+        ] },
+        { session_id:'b', title:'七上期末', occurred_on:'2026-01-10', grade:'七年级', term:'上学期', metadata_complete:true, evidence:[
+          { evidence_version_id:'t2', subject_name:'总分', measure_role:'total_score', result_state:'normal', score:88, occurred_on:'2026-01-10', rank:40, participant_count:400, relative_position:0.9 },
+          { evidence_version_id:'c2', subject_name:'语文', measure_role:'subject_score', result_state:'normal', score:92, occurred_on:'2026-01-10', rank:20, participant_count:400, relative_position:0.95 },
+          { evidence_version_id:'m2', subject_name:'数学', measure_role:'subject_score', result_state:'absent', score:null, occurred_on:'2026-01-10', rank:null, participant_count:400, relative_position:null },
+        ] },
+      ],
+      series:[], rank_change_pairs:[], relative_subject_signals:[], recent_changes:[], insufficient_reasons:[], attention_cards:[],
+      filter_options:{ series:['class-regular'], subjects:['语文','数学'] },
+      profile:{
+        current:{ session_title:'七上期末', occurred_on:'2026-01-10', term_label:'七上', grade:'七年级', term:'上学期', score:88, rank:40, class_rank:3, participant_count:400, top_ratio:0.1, previous:{ session_title:'七上期中', occurred_on:'2025-11-01', term_label:'七上', rank:200, participant_count:400 }, rank_delta:160 },
+        trend:{ label:'improving', step_deltas:[0.4], session_count:2 },
+        stability:{ label:'volatile', swing_ratio:0.4, session_count:2 },
+        skew:{ label:'skewed', strongest:[{ subject_name:'语文', rank:20, relative_position:0.95 }], weakest:[{ subject_name:'数学', rank:300, relative_position:0.25 }], gap_ratio:0.7 },
+        subjects:[
+          { subject_name:'语文', latest:{ occurred_on:'2026-01-10', term_label:'七上', rank:20, participant_count:400, relative_position:0.95, result_state:'normal' }, rank_delta:80, points:[{ occurred_on:'2025-11-01', term_label:'七上', rank:100, relative_position:0.75, result_state:'normal' },{ occurred_on:'2026-01-10', term_label:'七上', rank:20, relative_position:0.95, result_state:'normal' }], attention:false },
+          { subject_name:'数学', latest:{ occurred_on:'2026-01-10', term_label:'七上', rank:300, participant_count:400, relative_position:0.25, result_state:'normal' }, rank_delta:-200, points:[{ occurred_on:'2025-11-01', term_label:'七上', rank:100, relative_position:0.75, result_state:'normal' },{ occurred_on:'2026-01-10', term_label:'七上', rank:300, relative_position:0.25, result_state:'normal' }], attention:true },
+        ],
+        total_trend:[
+          { occurred_on:'2025-11-01', term_label:'七上', session_title:'七上期中', rank:200, participant_count:400, relative_position:0.5, result_state:'normal' },
+          { occurred_on:'2026-01-10', term_label:'七上', session_title:'七上期末', rank:40, participant_count:400, relative_position:0.9, result_state:'normal' },
+        ],
+        basis:{ total_session_count:2, grade:'七年级' },
+      },
     })
     const host = await mount(AcademicAnalysisPanel, { subject:{subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null} })
-    expect(host.textContent).toContain('缺考不是 0 分')
-    expect(host.textContent).toContain('考试系列')
-    expect(host.textContent).toContain('只看可比证据')
+    expect(host.textContent).toContain('合成学生 的大考表现')
+    expect(host.textContent).toContain('第 40 名')
+    expect(host.textContent).toContain('前 10%')
+    expect(host.textContent).toContain('进步 160 名')
+    expect(host.textContent).toContain('趋势：持续进步')
+    expect(host.textContent).toContain('稳定性：波动大')
+    expect(host.textContent).toContain('偏科：明显偏科')
+    expect(host.textContent).toContain('历次大考学科校次')
     expect(host.textContent).toContain('缺考')
-    expect(host.textContent).toContain('数学 · 正常 · 0')
-    const secondPoint = chartOptions[0]!.series![0]!.data[1] as { value: unknown[] }
-    expect(secondPoint.value[1]).toBeNull()
+    expect(host.textContent).toContain('退步 200 名')
+    expect(host.textContent).toContain('需要关注')
+    const trend = chartOptions[0]!
+    expect(trend.yAxis?.inverse).toBe(true)
+    expect(trend.series![0]!.data).toEqual([200, 40])
   })
 
-  it('asks the server to apply comparability filters instead of inferring from normal results', async () => {
-    const options = { series:['数学单元'], subjects:['数学'] }
-    const academic = vi.spyOn(studentR1Api, 'academic')
-      .mockResolvedValueOnce({
-        contract_version:'academic_analysis_v1', source_version:'a'.repeat(64), ruleset_version:'academic_ruleset_v1',
-        filter_options:options, applied_filters:{ time_range:'all', comparison_series:null, subject_name:null, comparable_only:false },
-        sessions:[
-          { session_id:'x', title:'第一次', occurred_on:'2026-06-01', comparison_series:'数学单元', metadata_complete:true, evidence:[{ evidence_version_id:'e1', session_id:'x', subject_name:'数学', result_state:'normal', score:60, occurred_on:'2026-06-01', relative_position:0.2, is_comparable:false }] },
-          { session_id:'y', title:'第二次', occurred_on:'2026-07-01', comparison_series:'数学单元', metadata_complete:true, evidence:[{ evidence_version_id:'e2', session_id:'y', subject_name:'数学', result_state:'normal', score:70, occurred_on:'2026-07-01', relative_position:0.3, is_comparable:false }] },
-        ],
-        series:[{ subject_name:'数学', points:[{evidence_version_id:'e1',session_id:'x',subject_name:'数学',result_state:'normal',score:60,occurred_on:'2026-06-01',relative_position:0.2,is_comparable:false},{evidence_version_id:'e2',session_id:'y',subject_name:'数学',result_state:'normal',score:70,occurred_on:'2026-07-01',relative_position:0.3,is_comparable:false}], segments:[{overall_status:'reference_only',dimensions:{rank:{status:'reference_only'},score:{status:'reference_only'}}}] }],
-        rank_change_pairs:[], relative_subject_signals:[{subject_name:'数学',signal:'inconsistent',eligible_session_count:3}], recent_changes:[], insufficient_reasons:[], attention_cards:[],
-      })
-      .mockResolvedValueOnce({
-        contract_version:'academic_analysis_v1', source_version:'a'.repeat(64), ruleset_version:'academic_ruleset_v1',
-        filter_options:options, applied_filters:{ time_range:'all', comparison_series:null, subject_name:null, comparable_only:true },
-        sessions:[], series:[], rank_change_pairs:[], relative_subject_signals:[], recent_changes:[], insufficient_reasons:['筛选后没有可直接比较的证据'], attention_cards:[],
-      })
+  it('loads the full academic scope by default without filter controls', async () => {
+    const baseAnalysis = {
+      contract_version:'academic_analysis_v1', source_version:'a'.repeat(64), ruleset_version:'academic_ruleset_v1',
+      sessions:[], series:[], rank_change_pairs:[], relative_subject_signals:[], recent_changes:[], insufficient_reasons:['场次不足'], attention_cards:[],
+      filter_options:{ series:['class-regular'], subjects:['数学'] },
+    }
+    const academic = vi.spyOn(studentR1Api, 'academic').mockResolvedValue(baseAnalysis)
     const host = await mount(AcademicAnalysisPanel, { subject:{subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null} })
-
-    const checkbox = host.querySelector<HTMLInputElement>('.filters input[type="checkbox"]')!
-    checkbox.checked = true; checkbox.dispatchEvent(new Event('change',{bubbles:true}))
-    await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-
-    expect(academic).toHaveBeenLastCalledWith('s1', expect.objectContaining({ comparableOnly:true }))
-    expect(host.textContent).not.toContain('3 个合格场次')
-    const filteredTimeline = chartOptions[chartOptions.length - 1]!.series![0]!.data
-    expect(filteredTimeline).toEqual([])
-  })
-
-
-  it('saving a support record locally makes zero AI requests', async () => {
-    vi.spyOn(supportApi, 'listRecords').mockResolvedValue([])
-    const create = vi.spyOn(supportApi, 'createRecord').mockResolvedValue({ record_id:'r1',subject_id:'s1',record_kind:'observation',state:'active',current_revision:1,content:'合成事实',scene:'日常观察',source:'教师本人观察',counterexample:null,observed_at:'2026-08-01',review_at:null,expires_at:null })
-    const subject = {subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null}
-    const host = await mount(SupportReviewPanel, { subject })
-    const content = host.querySelector<HTMLTextAreaElement>('.editor textarea')!
-    content.value='合成事实'; content.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '确认保存记录'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    expect(create).toHaveBeenCalledOnce()
-    expect(host.textContent).toContain('系统没有调用 AI')
+    expect(academic).toHaveBeenCalledWith('s1')
+    expect(host.textContent).toContain('还没有带校次的总分成绩')
+    expect(host.querySelector('.filters')).toBeNull()
+    expect(host.textContent).not.toContain('academic_ruleset_v1')
   })
 })

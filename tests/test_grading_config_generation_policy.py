@@ -72,7 +72,7 @@ D. 4
 3. 请写出结果：____
 三、解答题：
 4. 作出图形并保留作图痕迹。
-5. 判断结论是否成立，并说明理由。
+5. 证明结论成立，并说明理由。
 
 参考答案与解析：
 1. 【答案】C
@@ -786,7 +786,9 @@ def test_choice_and_fill_blank_are_forced_to_objective_scoring() -> None:
     assert part["presentation_rules"] == []
     assert step["core_goal"] == "选择正确的选项"
     assert step["required_elements"] == ["A"]
-    assert question.get("deduction_policy", []) == []
+    assert question.get("deduction_policy", []) == [
+        "仅按标准答案或等价答案判分，不要求书写过程。"
+    ]
 
 
 def test_choice_normalization_removes_non_option_equivalent_answers() -> None:
@@ -2116,7 +2118,7 @@ def test_llm_single_request_keeps_mismatched_json_distinct_from_truncation(
 ) -> None:
     client, completions, sink, _gateway_configs = _gateway_client_factory(
         monkeypatch,
-        [_gateway_json_completion('{"a":1]', finish_reason="stop")],
+        [_gateway_json_completion('{"a":1], "b":2}', finish_reason="stop")],
     )
 
     with pytest.raises(ValueError) as raised:

@@ -215,6 +215,97 @@ describe('QuestionBlockReview', () => {
     }])
   })
 
+  it('removes resolved ambiguous images from the reminder and shows bound ones only under the target question', async () => {
+    const assetBase = `/api/sessions/7/config/sources/${'a'.repeat(32)}/ambiguous-assets`
+    const reviewSource = source({
+      suffix: '.docx',
+      safe_filename: '七年级数学.docx',
+      ambiguous_assets: [
+        { candidate_id: 'A1', previous_question_id: 'Q1', next_question_id: 'Q2',
+          source_section: 'question', asset_url: `${assetBase}/A1` },
+        { candidate_id: 'A2', previous_question_id: 'Q1', next_question_id: 'Q2',
+          source_section: 'question', asset_url: `${assetBase}/A2` },
+        { candidate_id: 'A3', previous_question_id: 'Q2', next_question_id: 'Q3',
+          source_section: 'question', asset_url: `${assetBase}/A3` },
+      ],
+    })
+    const mounted = await mountReview({
+      value: reviewSource,
+      assetDecisions: [
+        { candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question' },
+        { candidate_id: 'A2', action: 'ignore' },
+      ],
+    })
+
+    const reminders = [...mounted.host.querySelectorAll<HTMLElement>('.question-review__asset-between')]
+    expect(reminders).toHaveLength(1)
+    expect(reminders[0]!.textContent).toContain('疑难图片 · Q2 / Q3')
+    expect(reminders[0]!.textContent).toContain('待归属')
+
+    const bound = mounted.host.querySelectorAll('[data-asset-id="A1"]')
+    expect(bound).toHaveLength(1)
+    expect(mounted.host.querySelector('[data-question-panel="Q2"] .question-review__image-well [data-asset-id="A1"]'))
+      .not.toBeNull()
+    expect(mounted.host.querySelectorAll('[data-asset-id="A2"]')).toHaveLength(0)
+  })
+
+  it('offers a restore entry for ignored ambiguous images and returns them to the reminder', async () => {
+    const assetBase = `/api/sessions/7/config/sources/${'a'.repeat(32)}/ambiguous-assets`
+    const reviewSource = source({
+      suffix: '.docx',
+      safe_filename: '七年级数学.docx',
+      ambiguous_assets: [
+        { candidate_id: 'A1', previous_question_id: 'Q1', next_question_id: 'Q2',
+          source_section: 'question', asset_url: `${assetBase}/A1` },
+        { candidate_id: 'A2', previous_question_id: 'Q2', next_question_id: 'Q3',
+          source_section: 'question', asset_url: `${assetBase}/A2` },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const state = reactive({
+      value: reviewSource,
+      assetDecisions: [
+        { candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question' },
+        { candidate_id: 'A2', action: 'ignore' },
+      ] as ConfigAmbiguousAssetDecision[],
+    })
+    const app = createApp({
+      components: { QuestionBlockReview },
+      setup: () => ({ state }),
+      template: '<QuestionBlockReview :source="state.value" :asset-decisions="state.assetDecisions" @update:asset-decisions="state.assetDecisions = $event" />',
+    })
+    app.mount(host)
+    await nextTick()
+
+    expect(host.querySelectorAll('.question-review__asset-between')).toHaveLength(0)
+    const toggle = host.querySelector<HTMLButtonElement>('.question-review__ignored-toggle')!
+    expect(toggle.textContent).toContain('已忽略 1 张')
+    expect(host.querySelector('.question-review__ignored-list')).toBeNull()
+
+    toggle.click()
+    await nextTick()
+    const ignoredItems = [...host.querySelectorAll<HTMLElement>('.question-review__ignored-item')]
+    expect(ignoredItems).toHaveLength(1)
+    expect(ignoredItems[0]!.textContent).toContain('疑难图片 · Q2 / Q3')
+    expect(ignoredItems[0]!.textContent).toContain('已忽略')
+
+    const restore = ignoredItems[0]!.querySelector<HTMLButtonElement>('.question-review__restore-button')!
+    restore.click()
+    await nextTick()
+
+    expect(state.assetDecisions).toEqual([
+      { candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question' },
+    ])
+    expect(host.querySelector('.question-review__ignored-tray')).toBeNull()
+    const reminders = [...host.querySelectorAll<HTMLElement>('.question-review__asset-between')]
+    expect(reminders).toHaveLength(1)
+    expect(reminders[0]!.textContent).toContain('疑难图片 · Q2 / Q3')
+    expect(reminders[0]!.textContent).toContain('待归属')
+
+    app.unmount()
+  })
+
   it('lets a teacher drag an automatically assigned image into an answer panel', async () => {
     const onAssetUpdate = vi.fn()
     const base = source({ suffix: '.docx', safe_filename: '七年级数学.docx' })

@@ -471,16 +471,22 @@ def test_job_store_records_current_grading_migration(tmp_path: Path) -> None:
     database = tmp_path / "jobs.db"
     JobStore(database)
 
+    migration_root = Path.cwd() / "migrations" / "grading"
+    latest = sorted(path.stem for path in migration_root.glob("*.sql"))[-1]
+
     with sqlite3.connect(database) as conn:
         current = conn.execute(
             "SELECT migration_name FROM schema_migrations "
             "WHERE success = 1 ORDER BY id DESC LIMIT 1"
         ).fetchone()
-    assert current == ("010_workspace_ai_tasks",)
+    assert current == (latest,)
 
 
-def test_job_store_preserves_legacy_rows_when_adding_result_json(tmp_path: Path) -> None:
+def test_job_store_rejects_legacy_database_without_migration_history(
+    tmp_path: Path,
+) -> None:
     from backend.jobs.store import JobStore
+    from backend.schema_migrations import SchemaVersionError
 
     canonical = Path.cwd() / "migrations" / "grading" / "003_add_jobs.sql"
     migration_sql = canonical.read_text(encoding="utf-8")
@@ -500,17 +506,26 @@ def test_job_store_preserves_legacy_rows_when_adding_result_json(tmp_path: Path)
         )
         job_id = int(cursor.lastrowid)
 
-    store = JobStore(db_path)
+    # JobStore 不再静默迁移没有 schema_migrations 记录的遗留库:
+    # 这类库必须走受保护的维护迁移,直接打开会被拒绝且数据保持原样。
+    with pytest.raises(SchemaVersionError, match="migration history is missing"):
+        JobStore(db_path)
 
-    loaded = store.get_job(job_id)
-    assert loaded is not None
-    assert loaded.job_type == "report_export"
-    assert loaded.payload == {"session_id": 7}
-    assert loaded.status == "queued"
-    assert loaded.result == {}
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT job_type, payload_json, status FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
         columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
-    assert "result_json" in columns
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert row == ("report_export", '{"session_id": 7}', "queued")
+    assert "result_json" not in columns
+    assert "schema_migrations" not in tables
 
 
 def test_job_store_closes_every_sqlite_connection(

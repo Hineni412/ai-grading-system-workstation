@@ -276,7 +276,7 @@ describe('taxonomy review', () => {
     app.unmount()
   })
 
-  it('shows a comparison table, checks high-confidence rows, and saves checked merges once', async () => {
+  it('shows a comparison table, checks merge-category rows by default, and saves checked merges once', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const store = useTaxonomyReviewStore()
@@ -344,7 +344,7 @@ describe('taxonomy review', () => {
     const results = document.body.querySelector('.taxonomy-ai-results')
     const table = results?.querySelector<HTMLTableElement>('.taxonomy-ai-results__table')
     const resultText = results?.textContent ?? ''
-    expect(results?.textContent).toContain('高把握项已默认勾选')
+    expect(results?.textContent).toContain('归并类已按 AI 建议默认勾选')
     expect(table).not.toBeNull()
     expect(results?.querySelector('.taxonomy-ai-results__automatic')).toBeNull()
     expect(resultText).toContain('可严格归并的词')
@@ -355,7 +355,7 @@ describe('taxonomy review', () => {
     const checkboxes = [...(table?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]') ?? [])]
     expect(checkboxes).toHaveLength(2)
     expect(checkboxes[0]?.checked).toBe(true)
-    expect(checkboxes[1]?.checked).toBe(false)
+    expect(checkboxes[1]?.checked).toBe(true)
     expect(document.body.textContent).toContain('当前知识标准 · 词表修订 7')
     expect(document.body.textContent).not.toContain('启用知识图谱')
 
@@ -367,8 +367,8 @@ describe('taxonomy review', () => {
     expect(saveSpy).toHaveBeenCalledWith([
       {
         proposal_id: 'proposal-manual',
-        decision: 'defer',
-        target_term_ids: [],
+        decision: 'merge',
+        target_term_ids: ['term-1'],
       },
       {
         proposal_id: 'proposal-auto',
@@ -377,6 +377,147 @@ describe('taxonomy review', () => {
       },
     ])
 
+    app.unmount()
+  })
+
+  it('labels the four conclusion categories, adopts only merge rows by default, and scrolls results into view', async () => {
+    const scrollSpy = vi.fn()
+    window.HTMLElement.prototype.scrollIntoView = scrollSpy
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useTaxonomyReviewStore()
+    store.revision = 7
+    store.loadState = 'ready'
+    store.suggestionRun = decodeTaxonomySuggestionRun(suggestionRun)
+    const baseSuggestion = {
+      reason: 'AI 判断说明。',
+      confidence: 0.9,
+      source: 'ai' as const,
+      legacy_format: false,
+      evidence_question_ids: [482],
+      taxonomy_revision: 7,
+      graph_release_id: 'current-standard',
+    }
+    store.batchPreview = {
+      run_id: 'run-1',
+      base_revision: 7,
+      evidence_revision: 3,
+      graph_release_id: 'current-standard',
+      policy_version: 'taxonomy-batch-v1',
+      policy_fingerprint: 'fingerprint-2',
+      counts: { automatic: 1, manual: 3, total: 4 },
+      items: [
+        {
+          proposal_id: 'proposal-merge',
+          dimension: 'curriculum',
+          proposed_name: '可归并的词',
+          question_ids: [482],
+          automatic: true,
+          reasons: [],
+          suggestion: {
+            ...baseSuggestion,
+            relation_kind: 'exact' as const,
+            target_term_ids: ['term-1'],
+          },
+        },
+        {
+          proposal_id: 'proposal-new',
+          dimension: 'curriculum',
+          proposed_name: '疑似缺失的新词',
+          question_ids: [482],
+          automatic: false,
+          reasons: [],
+          suggestion: {
+            ...baseSuggestion,
+            relation_kind: 'new_core_candidate' as const,
+            target_term_ids: [],
+          },
+        },
+        {
+          proposal_id: 'proposal-reject',
+          dimension: 'curriculum',
+          proposed_name: '不适合的词',
+          question_ids: [482],
+          automatic: false,
+          reasons: [],
+          suggestion: {
+            ...baseSuggestion,
+            relation_kind: 'reject' as const,
+            target_term_ids: [],
+          },
+        },
+        {
+          proposal_id: 'proposal-uncertain',
+          dimension: 'curriculum',
+          proposed_name: '证据不足的词',
+          question_ids: [482],
+          automatic: false,
+          reasons: [],
+          suggestion: {
+            ...baseSuggestion,
+            relation_kind: 'uncertain' as const,
+            target_term_ids: [],
+          },
+        },
+      ],
+    }
+    const saveSpy = vi.spyOn(store, 'applySuggestionBatch').mockResolvedValue(true)
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TaxonomyCandidateReview, { open: true })
+    app.use(pinia)
+    app.mount(host)
+    await nextTick()
+
+    expect(scrollSpy).toHaveBeenCalled()
+    const results = document.body.querySelector('.taxonomy-ai-results')
+    expect(results).not.toBeNull()
+    const resultText = results?.textContent ?? ''
+    expect(resultText).toContain('归并到现有')
+    expect(resultText).toContain('新增')
+    expect(resultText).toContain('放弃')
+    expect(resultText).toContain('存疑')
+    expect(resultText).toContain('默认暂缓；返回候选后可单独处理')
+
+    const checkboxes = [...(results?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]') ?? [])]
+    expect(checkboxes).toHaveLength(3)
+    expect(checkboxes[0]?.checked).toBe(true)
+    expect(checkboxes[1]?.checked).toBe(false)
+    expect(checkboxes[2]?.checked).toBe(false)
+
+    checkboxes[1]!.checked = true
+    checkboxes[1]!.dispatchEvent(new Event('change'))
+    await nextTick()
+
+    const saveButton = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('确认已勾选'))
+    saveButton?.click()
+    await nextTick()
+    expect(saveSpy).toHaveBeenCalledWith([
+      {
+        proposal_id: 'proposal-merge',
+        decision: 'merge',
+        target_term_ids: ['term-1'],
+      },
+      {
+        proposal_id: 'proposal-new',
+        decision: 'approve',
+        target_term_ids: [],
+      },
+      {
+        proposal_id: 'proposal-reject',
+        decision: 'defer',
+        target_term_ids: [],
+      },
+      {
+        proposal_id: 'proposal-uncertain',
+        decision: 'defer',
+        target_term_ids: [],
+      },
+    ])
+
+    delete (window.HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView
     app.unmount()
   })
 

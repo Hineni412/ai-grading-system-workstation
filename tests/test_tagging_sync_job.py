@@ -487,9 +487,12 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
         "OpenAICombinedAnalysisGateway",
         FakeCombinedGateway,
     )
+    # knowledge_graph_db_path 缺省会指向会话级共享题库库：全量跑时其他测试的应用启动
+    # 会往共享库装上 revision 4 的签入知识标准，与本文件词表 revision 冲突，这里改用私有路径。
     governance = TaxonomyGovernance(
         catalog_path=LEGACY_CATALOG_PATH,
-        state_path=tmp_path / "taxonomy-state.json"
+        state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-combined-kg.db",
     )
     service = AITaggingService(
         env={
@@ -634,9 +637,12 @@ def test_fill_twelve_questions_only_analyzes_five_missing_and_refreshes_counts(
         "CombinedQuestionAnalysisModule",
         PersistingCombinedModule,
     )
+    # knowledge_graph_db_path 缺省会指向会话级共享题库库：全量跑时其他测试的应用启动
+    # 会往共享库装上 revision 4 的签入知识标准，与本文件词表 revision 冲突，这里改用私有路径。
     governance = TaxonomyGovernance(
         catalog_path=LEGACY_CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-fill-kg.db",
     )
     ai_service = AITaggingService(
         env={
@@ -692,9 +698,12 @@ def test_fill_retags_when_saved_tags_belong_to_an_old_question_source(
     data_root = tmp_path / "data"
     question_id = _seed(db_path, 1)[0]
     bank = QuestionBankTestStore(db_path)
+    # knowledge_graph_db_path 缺省会指向会话级共享题库库：全量跑时其他测试的应用启动
+    # 会往共享库装上 revision 4 的签入知识标准，与本文件词表 revision 冲突，这里改用私有路径。
     governance = TaxonomyGovernance(
         catalog_path=LEGACY_CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-retag-kg.db",
     )
     loader = QuestionAnalysisInputLoader(
         db_path=db_path,
@@ -909,9 +918,12 @@ def test_unified_tagging_exposes_evidence_failure_in_retry_ids(
         "CombinedQuestionAnalysisModule",
         StubCombinedModule,
     )
+    # knowledge_graph_db_path 缺省会指向会话级共享题库库：全量跑时其他测试的应用启动
+    # 会往共享库装上 revision 4 的签入知识标准，与本文件词表 revision 冲突，这里改用私有路径。
     governance = TaxonomyGovernance(
         catalog_path=LEGACY_CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-retry-kg.db",
     )
     service = AITaggingService(
         env={
@@ -984,9 +996,12 @@ def test_unified_tagging_rejects_claimed_success_when_no_projection_was_saved(
         "CombinedQuestionAnalysisModule",
         ClaimsSuccessWithoutWriting,
     )
+    # knowledge_graph_db_path 缺省会指向会话级共享题库库：全量跑时其他测试的应用启动
+    # 会往共享库装上 revision 4 的签入知识标准，与本文件词表 revision 冲突，这里改用私有路径。
     governance = TaxonomyGovernance(
         catalog_path=LEGACY_CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-claimed-kg.db",
     )
     service = AITaggingService(
         env={
@@ -1107,9 +1122,12 @@ def test_fill_reanalyzes_evidence_and_criteria_from_an_old_question_source(
         "CombinedQuestionAnalysisModule",
         CapturingCombinedModule,
     )
+    # knowledge_graph_db_path 缺省会指向会话级共享题库库：全量跑时其他测试的应用启动
+    # 会往共享库装上 revision 4 的签入知识标准，与本文件词表 revision 冲突，这里改用私有路径。
     governance = TaxonomyGovernance(
         catalog_path=LEGACY_CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-reanalyze-kg.db",
     )
     ai_service = AITaggingService(
         env={
@@ -1537,7 +1555,7 @@ def test_tagging_sync_classifies_save_failure_without_raising(
         {
             "question_id": ids[0],
             "category": "save",
-            "message": "Complete AI tags could not be saved.",
+            "message": "完整标签未能保存。",
         }
     ]
 

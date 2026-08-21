@@ -142,7 +142,7 @@ describe('training criterion review', () => {
       quality_status: 'failed' as const,
       quality_codes: [
         'calculation_process_missing',
-        'teacher_visible_language_not_zh',
+        'unknown_dependency',
       ],
     }
     vi.spyOn(questionBankCriteriaApi, 'getWorkspace').mockResolvedValue(
@@ -155,7 +155,7 @@ describe('training criterion review', () => {
 
     expect(host.querySelector('#criterion-review-title')?.textContent).toBe('判定点')
     expect(host.textContent).toContain('计算题不能只保留最终答案')
-    expect(host.textContent).toContain('老师能直接看懂的中文')
+    expect(host.textContent).toContain('判定点之间的依赖关系不完整')
     expect(host.textContent).not.toContain('TRAINING EVIDENCE')
     expect(host.textContent).not.toContain('解题证据')
     const approve = [...host.querySelectorAll<HTMLButtonElement>('button')]

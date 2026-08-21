@@ -8,7 +8,7 @@ from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -17,6 +17,9 @@ from .errors import VaultError
 from .roster_ref import student_stable_ref
 from .secure_repository import EncryptedObjectRepository
 from .sensitive_work_projection import SensitiveWorkProjection
+
+if TYPE_CHECKING:
+    from .student_card_service import StudentCardService
 
 
 _RECORD_KINDS = {
@@ -74,6 +77,8 @@ class SupportRecordService:
         self.repository = repository
         self._key_provider = key_provider
         self.projections = projections
+        # 由 VaultService 在装配后注入；方案完成评「有效」时回写学生当前档案。
+        self.student_cards: StudentCardService | None = None
 
     def create_subject(
         self,
@@ -376,6 +381,7 @@ class SupportRecordService:
         observed_at: str,
         review_at: str | None,
         expires_at: str | None,
+        plan_id: str | None = None,
         subject_identity: dict[str, str] | None = None,
         transaction_hook: Callable[[Any, bytes, str], None] | None = None,
     ) -> dict[str, object]:
@@ -415,6 +421,7 @@ class SupportRecordService:
                     observed_at=observed_at,
                     review_at=review_at,
                     expires_at=expires_at,
+                    plan_id=plan_id,
                 )
                 if transaction_hook is not None:
                     transaction_hook(connection, vmk, record_id)
@@ -442,11 +449,27 @@ class SupportRecordService:
         observed_at: str,
         review_at: str | None,
         expires_at: str | None,
+        plan_id: str | None = None,
     ) -> str:
         """Create one record inside a caller-owned domain transaction."""
 
         self._validate_operation_id(operation_id)
         self._subject_row(connection, subject_id)
+        clean_plan_id = str(plan_id).strip() if plan_id is not None else ""
+        if clean_plan_id:
+            plan_row = connection.execute(
+                """
+                SELECT subject_id FROM support_plans
+                WHERE support_plan_id = ?
+                """,
+                (clean_plan_id,),
+            ).fetchone()
+            if plan_row is None or str(plan_row["subject_id"]) != subject_id:
+                raise VaultError(
+                    "support_plan_invalid_for_record",
+                    "记录只能挂到这名学生已有的支持方案下",
+                    status_code=422,
+                )
         normalized = self._normalize_record(
             record_kind=record_kind,
             content=content,
@@ -466,6 +489,7 @@ class SupportRecordService:
             record_id=record_id,
             subject_id=subject_id,
             normalized=normalized,
+            plan_id=clean_plan_id or None,
         )
         self._rebuild_summary(connection, vmk, subject_id)
         if self.projections is not None and normalized["review_at"] is not None:
@@ -498,6 +522,7 @@ class SupportRecordService:
             "record_kind": str(row["record_kind"]),
             "state": str(row["state"]),
             "current_revision": int(row["current_revision"]),
+            "plan_id": str(row["plan_id"]) if row["plan_id"] else None,
             **current["payload"],
             "revision_history": revisions,
             "created_at": str(row["created_at"]),
@@ -1103,6 +1128,8 @@ class SupportRecordService:
             "state": str(row["state"]),
             "review_at": str(row["review_at"]),
             **payload,
+            "outcome": payload.get("outcome"),
+            "completed_at": payload.get("completed_at"),
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
         }
@@ -1143,6 +1170,7 @@ class SupportRecordService:
         operation_id: str,
         expected_revision: int,
         result: str,
+        outcome: str | None = None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "support.plan.complete")
@@ -1150,6 +1178,12 @@ class SupportRecordService:
             return self.get_support_plan(
                 token=token,
                 support_plan_id=support_plan_id,
+            )
+        if outcome not in (None, "effective", "ineffective", "continue"):
+            raise VaultError(
+                "support_plan_outcome_invalid",
+                "支持方案效果评价无效",
+                status_code=422,
             )
         clean_result = self._text(result, "支持结果", 4000)
         with closing(self.database.connect()) as connection:
@@ -1175,6 +1209,7 @@ class SupportRecordService:
                 if revision != expected_revision:
                     self._revision_conflict("支持计划")
                 payload["result"] = clean_result
+                payload["outcome"] = outcome
                 payload["completed_at"] = _iso()
                 self.repository.put(
                     connection,
@@ -1192,6 +1227,17 @@ class SupportRecordService:
                     """,
                     (_iso(), support_plan_id),
                 )
+                if outcome == "effective":
+                    self._append_verified_effective_methods(
+                        connection,
+                        vmk=vmk,
+                        subject_id=str(row["subject_id"]),
+                        support_actions=[
+                            str(item)
+                            for item in list(payload.get("support_actions") or [])
+                        ],
+                        operation_id=f"plan-effective-{support_plan_id}",
+                    )
                 self._remember(
                     connection,
                     operation_id,
@@ -1206,6 +1252,97 @@ class SupportRecordService:
         return self.get_support_plan(
             token=token,
             support_plan_id=support_plan_id,
+        )
+
+    def _append_verified_effective_methods(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        subject_id: str,
+        support_actions: list[str],
+        operation_id: str,
+    ) -> None:
+        """把方案中验证有效的做法并入学生当前档案的 verified_effective 支持重点。
+
+        只合并 effective_methods（去重）；档案的摘要、维度、待了解问题、教师原话
+        和草稿保持原样。没有档案时新建一份仅含该支持重点的当前档案。
+        """
+        if self.student_cards is None:
+            raise VaultError(
+                "support_plan_effective_unavailable",
+                "档案回写暂时不可用，方案未完成，请稍后重试",
+                status_code=503,
+            )
+        methods: list[str] = []
+        for item in support_actions:
+            text = str(item).strip()
+            if text and text not in methods:
+                methods.append(text)
+        if not methods:
+            return
+        current = self.student_cards.current_profile_in_connection(
+            connection,
+            vmk=vmk,
+            subject_id=subject_id,
+        )
+        existing_focus: dict[str, object] = {}
+        summary = ""
+        open_questions: list[str] = []
+        teacher_quote = ""
+        model_draft = ""
+        revision: int | None = None
+        if current is not None:
+            revision = int(current["revision"])
+            profile = current["profile"]
+            assert isinstance(profile, dict)
+            summary = str(profile.get("summary") or "")
+            open_questions = [
+                str(item) for item in list(profile.get("open_questions") or [])
+            ]
+            teacher_quote = str(current.get("teacher_quote") or "")
+            model_draft = str(current.get("model_draft") or "")
+            for item in list(profile.get("support_focus") or []):
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("key") or "") == "verified_effective"
+                ):
+                    existing_focus = dict(item)
+        merged_methods: list[str] = []
+        for item in list(existing_focus.get("effective_methods") or []) + methods:
+            text = str(item).strip()
+            if text and text not in merged_methods:
+                merged_methods.append(text)
+        focus_entry = {
+            "key": "verified_effective",
+            "title": str(existing_focus.get("title") or "").strip() or "已验证有效",
+            "need": (
+                str(existing_focus.get("need") or "").strip()
+                or "行动中验证有效的做法"
+            ),
+            "effective_methods": merged_methods,
+            "next_actions": [
+                str(item)
+                for item in list(existing_focus.get("next_actions") or [])
+            ],
+        }
+        self.student_cards.upsert_current_profile_in_connection(
+            connection,
+            vmk=vmk,
+            subject_id=subject_id,
+            profile_update={
+                "summary": (
+                    summary or "教师正在通过支持行动积累对这名学生的认识。"
+                ),
+                "dimensions": [],
+                "open_questions": open_questions,
+                "support_focus": [focus_entry],
+            },
+            expected_revision=revision,
+            operation_id=operation_id,
+            model_operation_id=f"support-{operation_id}",
+            teacher_quote=teacher_quote,
+            model_draft=model_draft,
         )
 
     def link_observation_evidence(
@@ -2066,6 +2203,7 @@ class SupportRecordService:
         record_id: str,
         subject_id: str,
         normalized: dict[str, Any],
+        plan_id: str | None = None,
     ) -> None:
         timestamp = _iso()
         kind = str(normalized["record_kind"])
@@ -2074,8 +2212,8 @@ class SupportRecordService:
             INSERT INTO support_records (
                 record_id, subject_id, record_kind, state,
                 current_revision, observed_at, review_at, expires_at,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, 'active', 1, ?, ?, ?, ?, ?)
+                plan_id, created_at, updated_at
+            ) VALUES (?, ?, ?, 'active', 1, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
@@ -2084,6 +2222,7 @@ class SupportRecordService:
                 normalized["observed_at"],
                 normalized["review_at"],
                 normalized["expires_at"],
+                plan_id,
                 timestamp,
                 timestamp,
             ),

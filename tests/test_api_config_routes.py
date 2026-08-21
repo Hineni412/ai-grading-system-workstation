@@ -69,6 +69,17 @@ def _valid_config_payload() -> dict:
     }
 
 
+def _controlled_workdir(tmp_path: Path) -> Path:
+    # Stored config files must live beneath the PathManager data root, which
+    # tests/conftest.py isolates to a temporary directory; tmp_path itself is
+    # outside every controlled root.
+    from path_manager import get_path_manager
+
+    workdir = get_path_manager().data_root / "test_api_config_routes" / tmp_path.name
+    workdir.mkdir(parents=True, exist_ok=True)
+    return workdir
+
+
 def _client_with_db(tmp_path):
     from backend.api.app import create_app
     from backend.api.dependencies import (
@@ -82,17 +93,18 @@ def _client_with_db(tmp_path):
 
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
+    upload_dir = _controlled_workdir(tmp_path) / "uploaded"
 
     app = create_app()
     manager = JobManager(JobStore(db.db_path), max_workers=1)
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
-    app.dependency_overrides[get_upload_config_dir] = lambda: tmp_path / "uploaded"
+    app.dependency_overrides[get_upload_config_dir] = lambda: upload_dir
     return TestClient(app), db
 
 
 def _write_initial_config(tmp_path: Path, db, payload: dict) -> int:
-    config_dir = tmp_path / "initial"
+    config_dir = _controlled_workdir(tmp_path) / "initial"
     config_dir.mkdir()
     rubric_path = config_dir / "rubric.json"
     answer_key_path = config_dir / "answer_key.json"
@@ -132,7 +144,7 @@ def test_session_config_route_saves_payload_and_updates_session_paths(tmp_path) 
     assert body["rubric"]["exam_title"] == "Updated Exam"
     assert Path(body["rubric_path"]).exists()
     assert Path(body["answer_key_path"]).exists()
-    assert str(tmp_path / "uploaded") in body["rubric_path"]
+    assert str(_controlled_workdir(tmp_path) / "uploaded") in body["rubric_path"]
     session = db.get_grading_session(session_id)
     assert session["rubric_path"] == body["rubric_path"]
     assert session["answer_key_path"] == body["answer_key_path"]
@@ -168,11 +180,11 @@ def test_missing_session_config_route_uses_unified_404_error(tmp_path) -> None:
 
 def test_missing_config_file_error_does_not_expose_stored_absolute_path(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
-    missing_path = tmp_path / "private" / "missing-rubric.json"
+    missing_path = _controlled_workdir(tmp_path) / "private" / "missing-rubric.json"
     session_id = db.create_grading_session(
         "Missing config",
         str(missing_path),
-        str(tmp_path / "private" / "answer-key.json"),
+        str(_controlled_workdir(tmp_path) / "private" / "answer-key.json"),
     )
 
     response = client.get(f"/api/sessions/{session_id}/config")
@@ -184,13 +196,13 @@ def test_missing_config_file_error_does_not_expose_stored_absolute_path(tmp_path
 
 def test_invalid_json_config_error_does_not_expose_stored_absolute_path(tmp_path) -> None:
     client, db = _client_with_db(tmp_path)
-    invalid_path = tmp_path / "private" / "invalid-rubric.json"
-    invalid_path.parent.mkdir(parents=True)
+    invalid_path = _controlled_workdir(tmp_path) / "private" / "invalid-rubric.json"
+    invalid_path.parent.mkdir(parents=True, exist_ok=True)
     invalid_path.write_text("{not-json", encoding="utf-8")
     session_id = db.create_grading_session(
         "Invalid config",
         str(invalid_path),
-        str(tmp_path / "private" / "answer-key.json"),
+        str(_controlled_workdir(tmp_path) / "private" / "answer-key.json"),
     )
 
     response = client.get(f"/api/sessions/{session_id}/config")

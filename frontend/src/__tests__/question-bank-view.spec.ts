@@ -1239,6 +1239,7 @@ describe('question bank workspace', () => {
             knowledge_graph_link_count: 1,
             owned_file_count: 1,
             shared_file_count: 0,
+            taxonomy_proposal_count: 2,
             permanent_delete_phrase: '彻底删除 1 份试卷',
           })
         }
@@ -1266,6 +1267,7 @@ describe('question bank workspace', () => {
     cardMenuItem('删除').click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
     expect(document.body.textContent).toContain('6 条分析记录')
+    expect(document.body.textContent).toContain('将清除 2 条待审新词')
     expect(document.body.textContent).toContain('已完成考试的答卷与成绩不受影响')
     expect(fetchSpy.mock.calls.some(([request]) => String(request).endsWith('/permanent-delete'))).toBe(false)
 
@@ -1316,6 +1318,7 @@ describe('question bank workspace', () => {
           knowledge_graph_link_count: 0,
           owned_file_count: 1,
           shared_file_count: 0,
+          taxonomy_proposal_count: 0,
           permanent_delete_phrase: '彻底删除 1 份试卷',
         })
       }
@@ -1344,6 +1347,7 @@ describe('question bank workspace', () => {
     await openCardMenu(host, '匿名期末试卷')
     cardMenuItem('删除').click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
+    expect(document.body.textContent).not.toContain('待审新词')
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('确认彻底删除'))!
     confirm.click()
@@ -1386,6 +1390,7 @@ describe('question bank workspace', () => {
           knowledge_graph_link_count: 0,
           owned_file_count: 1,
           shared_file_count: 0,
+          taxonomy_proposal_count: 0,
           permanent_delete_phrase: '彻底删除 1 份试卷',
         })
       }
@@ -1482,6 +1487,7 @@ describe('question bank workspace', () => {
           analysis_record_count: 0,
           training_link_count: 0, knowledge_graph_link_count: 0,
           owned_file_count: 1, shared_file_count: 0,
+          taxonomy_proposal_count: 0,
           permanent_delete_phrase: '彻底删除 1 份试卷',
         })
       }
@@ -1670,6 +1676,7 @@ describe('question bank workspace', () => {
           knowledge_graph_link_count: 1,
           owned_file_count: 2,
           shared_file_count: 0,
+          taxonomy_proposal_count: 1,
           permanent_delete_phrase: '彻底删除 2 份试卷',
         })
       }
@@ -1700,6 +1707,7 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
     expect(document.body.textContent).toContain('选中的 2 份试卷')
     expect(document.body.textContent).toContain('第二份试卷')
+    expect(document.body.textContent).toContain('将清除 1 条待审新词')
     expect(previewBodies).toHaveLength(1)
     expect(previewBodies[0]?.selections).toEqual([
       { id: 4, expected_updated_at: paper.updated_at },

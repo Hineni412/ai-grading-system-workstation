@@ -19,7 +19,9 @@ def _seed_review_result(
     stored_details: list[tuple[str, float]],
     rubric_parts: list[dict[str, Any]] | None = None,
 ) -> tuple[DBManager, int, dict[str, Any], dict[str, Any]]:
-    db = DBManager(tmp_path / "grading.db")
+    db_path = tmp_path / "databases" / "grading.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = DBManager(db_path)
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
     configured_parts = rubric_parts or [
@@ -202,12 +204,15 @@ def test_multi_part_parent_score_never_crosses_into_a_child(
         manual_context=manual_context,
     )
 
+    # The stored parent detail leaves both rubric parts missing, so the
+    # completeness audit marks them failed; the parent score must still
+    # never cross into a child.
     assert [
         (item.question_id, item.score_status, item.score_awarded)
         for item in items
     ] == [
-        ("Q1(P1)", "ungraded", None),
-        ("Q1(P2)", "ungraded", None),
+        ("Q1(P1)", "failed", None),
+        ("Q1(P2)", "failed", None),
     ]
 
 
@@ -360,14 +365,21 @@ def test_different_historical_subquestion_never_crosses_into_current_item(
         manual_context=manual_context,
     )
 
+    # The stored Q1(P2) detail leaves the rubric part missing, so the
+    # completeness audit marks the item failed; the alien score must still
+    # never cross into the current item.
     assert [
         (item.question_id, item.score_status, item.score_awarded)
         for item in items
-    ] == [("Q1", "ungraded", None)]
+    ] == [("Q1", "failed", None)]
     assert [
-        (student.current_score, student.ungraded_count)
+        (
+            student.current_score,
+            student.ungraded_count,
+            student.failed_count,
+        )
         for student in snapshot.students
-    ] == [(0, 1)]
+    ] == [(0, 0, 1)]
 
 
 def test_alias_collision_is_failed_instead_of_silently_overwriting_score(

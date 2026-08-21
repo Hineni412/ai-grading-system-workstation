@@ -52,6 +52,10 @@ def _client(
     governance = TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        # 必须显式隔离：缺省会指向 path_manager 的会话级共享题库库，
+        # 全量跑时被其他测试的应用启动装上 revision 4 的签入标准，
+        # 与本文件词表 revision 冲突，触发版本一致性检查报错。
+        knowledge_graph_db_path=tmp_path / "taxonomy-knowledge-graph.db",
     )
     created = governance.constrain(
         {

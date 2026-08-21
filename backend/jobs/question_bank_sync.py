@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from backend.config_workspace.deferred_analysis import (
     DeferredAnalysisArtifact,
@@ -1125,9 +1125,15 @@ def run_deferred_question_bank_intake(
     data_root: Path,
     ai_service_factory: Callable[[], Any],
     taxonomy_governance: Any,
+    asset_overrides: list[dict[str, Any]] | None = None,
+    type_overrides: Mapping[str, str] | None = None,
     question_import_runner: QuestionImportRunner = run_question_import_job,
 ) -> dict[str, object]:
-    """Import and adopt completed analysis before score publication, without grading links."""
+    """Import and adopt completed analysis before score publication, without grading links.
+
+    Teacher-confirmed asset placements and question types follow the import,
+    matching the regular sync path.
+    """
 
     if not artifact.bundle.source_fingerprints:
         raise ValueError("deferred question analysis has no source questions")
@@ -1140,6 +1146,12 @@ def run_deferred_question_bank_intake(
     volume = curriculum_volume(volume_id=artifact.curriculum_volume_id)
     if volume is None:
         raise ValueError("question-bank intake requires a valid curriculum volume")
+    validated_asset_overrides = _asset_overrides(asset_overrides)
+    clean_type_overrides = {
+        str(number).strip(): str(question_type).strip()
+        for number, question_type in dict(type_overrides or {}).items()
+        if str(number).strip() and str(question_type).strip()
+    }
 
     write_service = QuestionBankWriteService(
         Path(question_bank_db_path),
@@ -1158,6 +1170,8 @@ def run_deferred_question_bank_intake(
                 "semester": str(volume["semester"]),
                 "textbook_version": str(volume["textbook_version"]),
             },
+            "asset_overrides": validated_asset_overrides,
+            "type_overrides": clean_type_overrides,
         },
         progress_start=0.91,
         progress_end=0.95,

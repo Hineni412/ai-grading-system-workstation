@@ -187,9 +187,6 @@ const hybridPhase = computed(() => {
   if (stage === 'grading_objective') return 2
   return 1
 })
-const hybridTeacherPending = computed(() => (
-  interventionSummary.value.review
-))
 const hybridAiPending = computed(() => (
   interventionSummary.value.ungraded + interventionSummary.value.failed
 ))
@@ -795,6 +792,9 @@ watch(
               解答题分组 {{ formatPlanNumber(store.gradingPlan.requests, ['subjective_batches', 'subjective_requests']) }} 次；
               每组 {{ formatPlanNumber(store.gradingPlan.batching, ['subjective_group_min', 'group_min']) }}–{{ formatPlanNumber(store.gradingPlan.batching, ['subjective_group_max', 'group_max']) }} 位考生。
             </p>
+            <p v-if="store.selectedMode !== 'manual'" class="grading-plan__batching" data-teacher-score-priority-note>
+              已人工确认的分数始终有效：AI 会照常批改所有题目，但不会替代人工分。
+            </p>
 
             <ul v-if="store.gradingPlan.warnings.length" class="grading-plan__issues grading-plan__issues--warning">
               <li v-for="issue in store.gradingPlan.warnings" :key="`warning:${issue.code}:${issue.message}`">
@@ -865,8 +865,6 @@ watch(
               <div><span>本轮答卷</span><strong>{{ store.gradingRun.counts.total }}</strong><small>已进入队列</small></div>
               <div><span>批改单元</span><strong>已完成 {{ store.gradingRun.counts.graded }}</strong><small>已保存，可随时查看</small></div>
               <div><span>等待 AI</span><strong>{{ hybridAiPending }}</strong><small>未评分或处理失败</small></div>
-              <div :class="{ 'needs-attention': hybridTeacherPending > 0 }"><span>需要老师</span><strong>{{ hybridTeacherPending }}</strong><small>仅统计明确待复核</small></div>
-              <div><span>老师已确认</span><strong>{{ interventionSummary.teacher }}</strong><small>最终分已锁定</small></div>
             </div>
           </section>
           <div v-else class="run-counts">

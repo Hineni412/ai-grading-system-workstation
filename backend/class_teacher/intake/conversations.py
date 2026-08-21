@@ -1327,10 +1327,14 @@ class ConversationStore:
             )
             subject_refs = json.loads(str(row["subject_refs_json"]))
             destination = str(row["destination_key"])
+            subject_id = None
+            if len(subject_refs) == 1 and isinstance(subject_refs[0], dict):
+                subject_id = str(subject_refs[0].get("id") or "") or None
             results.append({
                 **row_values,
                 "missing_fields": missing_fields,
                 "subject_ref_count": len(subject_refs),
+                "subject_id": subject_id,
                 "auto_open_allowed": not missing_fields
                 and not ConversationStore._has_unanswered_clarifications(
                     connection, conversation_id, str(row["turn_id"])

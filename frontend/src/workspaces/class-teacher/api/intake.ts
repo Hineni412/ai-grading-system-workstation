@@ -38,6 +38,7 @@ export interface IntakeHandoffSummary {
   adoption_state: 'pending' | 'opened' | 'adoption_started' | 'adopted' | 'reverted' | 'discarded' | 'stale'
   missing_fields: string[]
   subject_ref_count: number
+  subject_id: string | null
   auto_open_allowed: boolean
 }
 
@@ -201,6 +202,7 @@ function decodeHandoffSummary(value: unknown): IntakeHandoffSummary {
     destination_key: destination, draft_revision: integer(item.draft_revision),
     adoption_state: adoptionState as IntakeHandoffSummary['adoption_state'],
     missing_fields: list(item.missing_fields).map(text), subject_ref_count: integer(item.subject_ref_count),
+    subject_id: item.subject_id == null ? null : text(item.subject_id),
     auto_open_allowed: item.auto_open_allowed,
   }
 }

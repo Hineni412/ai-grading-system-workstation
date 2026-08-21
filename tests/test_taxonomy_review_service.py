@@ -74,9 +74,13 @@ def _review_service(
         expected_revision=write_service.get_revision(question_id),
         tags=[ConfirmedQuestionTag("knowledge_point", "三角形综合")],
     )
+    # knowledge_graph_db_path 缺省会指向 path_manager 的会话级共享题库库，
+    # 全量跑时其他测试的应用启动会把签入标准(revision 4)装进去，
+    # 与本文件词表的 revision 冲突；这里指向本测试私有路径(文件不存在即跳过激活版本检查)。
     governance = TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "taxonomy-knowledge-graph.db",
     )
     return (
         TaxonomyReviewService(

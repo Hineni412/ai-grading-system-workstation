@@ -174,6 +174,66 @@ def test_session_report_export_rejects_empty_exam(
     assert response.json()["error"]["code"] == "report_results_missing"
 
 
+def test_session_report_export_allows_manual_only_exam_with_locks(
+    client_with_db_and_manager,
+) -> None:
+    client, db, manager = client_with_db_and_manager
+    session_id = db.create_grading_session("Manual exam", "rubric.json", "answer.json")
+    with sqlite3.connect(db.db_path) as conn:
+        student_id = int(
+            conn.execute(
+                "INSERT INTO students (student_code, name) VALUES ('001', '张三')"
+            ).lastrowid
+        )
+        paper_id = int(
+            conn.execute(
+                """
+                INSERT INTO exam_papers (
+                    session_id, front_image, back_image, student_id,
+                    match_status, processing_status
+                ) VALUES (?, '', '', ?, 'matched', 'graded')
+                """,
+                (session_id, student_id),
+            ).lastrowid
+        )
+        conn.commit()
+    db.confirm_teacher_score_locks(
+        session_id,
+        "batch-1",
+        [
+            {
+                "student_id": student_id,
+                "question_id": "Q1",
+                "score_awarded": 4.0,
+                "max_score": 5.0,
+                "deduction_reason": None,
+                "source_target_type": "exam_paper",
+                "source_target_id": paper_id,
+                "expected_revision": 0,
+            }
+        ],
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={"report_type": "score_excel"},
+    )
+
+    assert response.status_code == 202
+    manager.wait(response.json()["id"], timeout=5)
+    context = client.get(f"/api/sessions/{session_id}/reports/context").json()
+    assert context["has_results"] is True
+
+    # Removing the only score source restores the rejection.
+    db.review_repository.delete_session_teacher_score_locks(session_id)
+    rejected = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={"report_type": "score_excel"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "report_results_missing"
+
+
 def test_session_report_export_reuses_current_available_file_by_default(
     client_with_db_and_manager,
 ) -> None:
@@ -489,8 +549,18 @@ def test_report_context_paginates_history(
 def test_score_revision_changes_when_report_visible_detail_changes() -> None:
     from backend.report_exports import score_revision
 
+    class FakeReviews:
+        def __init__(self):
+            self.locks = []
+
+        def list_teacher_score_locks(self, _session_id):
+            return self.locks
+
     class FakeDB:
         deduction_reason = "计算错误"
+
+        def __init__(self):
+            self.review_repository = FakeReviews()
 
         def get_session_results(self, _session_id):
             return [{
@@ -525,6 +595,18 @@ def test_score_revision_changes_when_report_visible_detail_changes() -> None:
     after = score_revision(db, 7)
 
     assert before != after
+
+    # Teacher locks are report-visible too: editing one must invalidate cache.
+    db.review_repository.locks = [{
+        "id": 1,
+        "session_id": 7,
+        "scan_batch_id": "batch-1",
+        "student_id": 2,
+        "question_id": "Q1",
+        "score_awarded": 9,
+        "max_score": 10,
+    }]
+    assert score_revision(db, 7) != after
 
 
 def test_session_report_export_route_requires_existing_session(client_with_db_and_manager) -> None:

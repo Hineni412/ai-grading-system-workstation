@@ -62,6 +62,9 @@ def _legacy_governance(state_path: Path) -> TaxonomyGovernance:
     return TaxonomyGovernance(
         catalog_path=LEGACY_CATALOG_PATH,
         state_path=state_path,
+        # 默认 knowledge_graph_db_path 指向会话级共享题库库，全量跑时已被
+        # 其他测试通过应用启动装上当前标准；这里指向本测试私有路径保持隔离。
+        knowledge_graph_db_path=state_path.parent / "question-bank-kg.db",
     )
 
 

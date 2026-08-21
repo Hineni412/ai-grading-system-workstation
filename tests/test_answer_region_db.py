@@ -11,8 +11,8 @@ from backend.jobs.store import JobStore
 from db_manager import DBManager
 
 
-def _make_session(db: DBManager) -> tuple[int, int]:
-    session_id = db.create_grading_session("regions", "rubric.json", "answer.json")
+def _make_session(db: DBManager, name: str = "regions") -> tuple[int, int]:
+    session_id = db.create_grading_session(name, "rubric.json", "answer.json")
     template_id = db.upsert_session_template(session_id, "front.png", "back.png")
     return session_id, template_id
 
@@ -118,7 +118,7 @@ def test_initialize_rejects_incomplete_unregistered_answer_region_schema(
     db = DBManager(db_path)
     with pytest.raises(
         SchemaVersionError,
-        match="migration 000_baseline_schema failed after backup",
+        match="database migration history is missing",
     ):
         db.initialize()
 
@@ -135,7 +135,7 @@ def test_initialize_rejects_incomplete_unregistered_answer_region_schema(
             ).fetchone()[0]
             == 0
         )
-    assert len(list((tmp_path / "backups").glob("legacy_before_migration_*.db"))) == 1
+    assert len(list((tmp_path / "backups").glob("legacy_before_migration_*.db"))) == 0
 
 
 def test_initialize_backfills_stable_unique_region_uuid_and_mapping_defaults(tmp_path: Path) -> None:
@@ -381,7 +381,7 @@ def test_cross_session_template_replacement_preserves_formal_regions(tmp_path: P
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
     session_a_id, template_a_id = _make_session(db)
-    _session_b_id, template_b_id = _make_session(db)
+    _session_b_id, template_b_id = _make_session(db, name="regions-b")
     token = db.replace_answer_regions_atomic(
         session_a_id,
         template_a_id,

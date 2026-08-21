@@ -15,7 +15,7 @@ from db_manager import DBManager
 def _seed_large_review_class(
     tmp_path: Path,
 ) -> tuple[DBManager, int, dict[str, Any], list[int]]:
-    db = DBManager(tmp_path / "grading.db")
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(
@@ -145,7 +145,7 @@ def _seed_large_review_class(
 def _seed_review_confirmation(
     tmp_path: Path,
 ) -> tuple[DBManager, int, dict[str, Any], dict[str, int]]:
-    db = DBManager(tmp_path / "review-confirmation.db")
+    db = DBManager(tmp_path / "databases" / "review-confirmation.db")
     db.initialize()
     rubric_path = tmp_path / "review-confirmation-rubric.json"
     rubric_path.write_text(
@@ -630,7 +630,7 @@ def test_source_region_id_uses_parent_only_for_one_unambiguous_child() -> None:
 def test_scoring_item_types_come_from_rubric_and_parts_inherit_parent_type(
     tmp_path: Path,
 ) -> None:
-    db = DBManager(tmp_path / "grading.db")
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(

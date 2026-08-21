@@ -691,38 +691,38 @@
 .scoring-unit-editor__step-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .scoring-unit-editor__step-card {
-  display: grid;
-  align-content: start;
+  display: flex;
+  align-items: center;
   gap: var(--space-2);
   min-width: 0;
-  padding: var(--space-3);
+  padding: var(--space-1) var(--space-2);
   border: var(--border-width) solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-bg-subtle);
 }
 
-.scoring-unit-editor__step-card > header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+.scoring-unit-editor__step-title {
+  flex: none;
 }
 
-.scoring-unit-editor__step-card > header > strong {
-  margin-inline-end: auto;
+.scoring-unit-editor__goal {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .scoring-unit-editor__step-card textarea {
   width: 100%;
-  min-height: 82px;
+  min-height: 38px;
   resize: vertical;
 }
 
 .scoring-unit-editor__score {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: var(--space-1);
 }
@@ -742,7 +742,7 @@
 }
 
 .scoring-unit-editor button.scoring-unit-editor__add-step {
-  min-height: 100%;
+  grid-column: 1 / -1;
   border-style: dashed;
   color: var(--color-accent-hover);
 }
@@ -1332,6 +1332,15 @@
 
   .scoring-unit-editor__step-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .scoring-unit-editor__step-card {
+    flex-wrap: wrap;
+  }
+
+  .scoring-unit-editor__goal {
+    flex: 1 1 100%;
+    order: 4;
   }
 
   .rubric-unit-card__editor-header,

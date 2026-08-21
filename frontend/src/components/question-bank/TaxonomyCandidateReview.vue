@@ -43,6 +43,7 @@ const previewQuestionId = ref<number | null>(null)
 const previewState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const previewReturnFocus = ref<HTMLElement | null>(null)
 const previewCloseButton = ref<HTMLButtonElement | null>(null)
+const resultsSection = ref<HTMLElement | null>(null)
 const showHistoricalRun = ref(false)
 let previewController: AbortController | null = null
 let suggestionTimer: ReturnType<typeof setTimeout> | null = null
@@ -293,6 +294,35 @@ function adoptSuggestion(proposal: TaxonomyProposal): void {
   }
 }
 
+type SuggestionCategory = 'merge' | 'new' | 'reject' | 'uncertain'
+
+function suggestionCategory(suggestion: TaxonomySuggestion): SuggestionCategory {
+  const kind = suggestion.relation_kind
+  if (kind === 'new_core_candidate') return 'new'
+  if (kind === 'reject' || kind === 'wrong_dimension') return 'reject'
+  if (
+    ['exact', 'broader', 'narrower', 'related'].includes(kind)
+    && suggestion.target_term_ids.length > 0
+  ) return 'merge'
+  return 'uncertain'
+}
+
+const suggestionCategoryLabels: Record<SuggestionCategory, string> = {
+  merge: '归并到现有',
+  new: '新增',
+  reject: '放弃',
+  uncertain: '存疑',
+}
+
+function batchActionLabel(category: SuggestionCategory): string {
+  return {
+    merge: '归并到规范词',
+    new: '采用并新增为规范词',
+    reject: '放弃这个词',
+    uncertain: '暂缓',
+  }[category]
+}
+
 function suggestionLabel(suggestion: TaxonomySuggestion): string {
   return {
     exact: '严格同义',
@@ -378,6 +408,7 @@ const comparisonRows = computed(() => {
         dimension: item.dimension,
         targetIds: item.suggestion.target_term_ids,
         targetLabel: targetTermLabel(item.dimension, item.suggestion.target_term_ids),
+        category: suggestionCategory(item.suggestion),
         conclusion: `${suggestionLabel(item.suggestion)} · ${Math.round(item.suggestion.confidence * 100)}%`,
         reason: localizedSuggestionReason(item.suggestion),
         automatic: item.automatic,
@@ -393,6 +424,7 @@ const comparisonRows = computed(() => {
       dimension: item.dimension,
       targetIds: item.suggestion.target_term_ids,
       targetLabel: targetTermLabel(item.dimension, item.suggestion.target_term_ids),
+      category: suggestionCategory(item.suggestion),
       conclusion: `${suggestionLabel(item.suggestion)} · ${Math.round(item.suggestion.confidence * 100)}%`,
       reason: localizedSuggestionReason(item.suggestion),
       automatic: item.suggestion.relation_kind === 'exact',
@@ -414,7 +446,7 @@ watch(
     if (!preview) return
     for (const item of preview.items) {
       batchDrafts[item.proposal_id] = {
-        selected: item.automatic || item.suggestion.relation_kind === 'exact',
+        selected: suggestionCategory(item.suggestion) === 'merge',
         targetTermId: item.suggestion.target_term_ids[0] ?? '',
       }
     }
@@ -422,18 +454,44 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => store.batchPreview !== null,
+  (hasPreview) => {
+    if (!hasPreview) return
+    void nextTick(() => {
+      resultsSection.value?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+    })
+  },
+  { immediate: true },
+)
+
 async function saveBatch(): Promise<void> {
   if (!store.batchPreview) return
   const decisions: TaxonomyBatchManualDecision[] = store.batchPreview.items.map((item) => {
+    const category = suggestionCategory(item.suggestion)
     const draft = batchDraft(
       item.proposal_id,
       item.suggestion.target_term_ids,
-      item.automatic || item.suggestion.relation_kind === 'exact',
+      category === 'merge',
     )
     if (!draft.selected) {
       return {
         proposal_id: item.proposal_id,
         decision: 'defer',
+        target_term_ids: [],
+      }
+    }
+    if (category === 'new') {
+      return {
+        proposal_id: item.proposal_id,
+        decision: 'approve',
+        target_term_ids: [],
+      }
+    }
+    if (category === 'reject') {
+      return {
+        proposal_id: item.proposal_id,
+        decision: 'reject',
         target_term_ids: [],
       }
     }
@@ -650,13 +708,18 @@ onBeforeUnmount(() => {
           </article>
         </section>
 
-        <section v-else-if="comparisonRows.length" class="taxonomy-ai-results" aria-labelledby="taxonomy-ai-results-title">
+        <section
+          v-else-if="comparisonRows.length"
+          ref="resultsSection"
+          class="taxonomy-ai-results"
+          aria-labelledby="taxonomy-ai-results-title"
+        >
           <header>
             <div>
               <h3 id="taxonomy-ai-results-title">AI 归并结果</h3>
               <p>
                 {{ store.batchPreview
-                  ? '高把握项已默认勾选，确认后才会写入规范词表'
+                  ? '归并类已按 AI 建议默认勾选，其余按行选择；确认后才会写入规范词表'
                   : '已生成的建议会先出现在这张表里，全部完成后再勾选确认' }}
               </p>
             </div>
@@ -673,7 +736,7 @@ onBeforeUnmount(() => {
                   <th>新词</th>
                   <th>规范词</th>
                   <th>AI 结论</th>
-                  <th v-if="store.batchPreview">确认归并</th>
+                  <th v-if="store.batchPreview">采用处理</th>
                 </tr>
               </thead>
               <tbody>
@@ -681,17 +744,31 @@ onBeforeUnmount(() => {
                   <th scope="row">{{ row.proposedName }}</th>
                   <td>{{ row.targetLabel }}</td>
                   <td>
+                    <span
+                      class="taxonomy-ai-results__category"
+                      :class="`is-${row.category}`"
+                    >{{ suggestionCategoryLabels[row.category] }}</span>
                     <strong>{{ row.conclusion }}</strong>
                     <p>{{ row.reason }}</p>
                   </td>
                   <td v-if="store.batchPreview">
-                    <label class="taxonomy-ai-results__check">
+                    <label
+                      v-if="row.category !== 'uncertain'"
+                      class="taxonomy-ai-results__check"
+                    >
                       <input
-                        v-model="batchDraft(row.proposalId, row.targetIds, row.automatic).selected"
+                        v-model="batchDraft(
+                          row.proposalId,
+                          row.targetIds,
+                          row.category === 'merge',
+                        ).selected"
                         type="checkbox"
                       >
-                      <span>归并到规范词</span>
+                      <span>{{ batchActionLabel(row.category) }}</span>
                     </label>
+                    <span v-else class="taxonomy-ai-results__defer-hint">
+                      默认暂缓；返回候选后可单独处理
+                    </span>
                   </td>
                 </tr>
               </tbody>

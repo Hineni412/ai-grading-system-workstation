@@ -41,7 +41,11 @@ def _make_group(tmp_path: Path, name: str, student_id: int, content: bytes) -> E
 
 
 def _seed(tmp_path: Path, students: list[tuple[int, str]]) -> tuple[DBManager, int]:
-    db = DBManager(tmp_path / "grading.db")
+    # db 放在 databases/ 子目录下，data_root 才能推断为 tmp_path；
+    # 否则解析相对路径（如 "rubric.json"）会落到会话级共享临时根，全量跑时被其他测试的同名文件干扰。
+    databases_dir = tmp_path / "databases"
+    databases_dir.mkdir()
+    db = DBManager(databases_dir / "grading.db")
     db.initialize()
     session_id = db.create_grading_session("测试", "rubric.json", "answer.json")
     import sqlite3

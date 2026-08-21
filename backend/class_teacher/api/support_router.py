@@ -34,6 +34,7 @@ from .support_schemas import (
     SubjectCreateRequest,
     SubjectDeleteRequest,
     SubjectUpdateRequest,
+    SupportPlanAiDraftRequest,
     SupportPlanCompleteRequest,
     SupportPlanCreateRequest,
 )
@@ -420,6 +421,21 @@ def create_support_router() -> APIRouter:
             token="",
             subject_id=subject_id,
             **body.model_dump(),
+        ))
+
+    @router.post("/support/subjects/{subject_id}/plans/ai-draft")
+    def draft_support_plan_with_ai(
+        subject_id: str,
+        request: Request,
+        body: SupportPlanAiDraftRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).support_plan_drafts.draft_plan(
+            token="",
+            subject_id=subject_id,
+            operation_id=body.operation_id,
         ))
 
     @router.get("/support/subjects/{subject_id}/plans")

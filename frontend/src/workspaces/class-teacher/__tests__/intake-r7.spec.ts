@@ -426,6 +426,7 @@ describe('B-UI-R7 conversation desk', () => {
         adoption_state: 'pending',
         missing_fields: ['学生版本信息不一致，请重新选择'],
         subject_ref_count: 0,
+        subject_id: null,
         auto_open_allowed: false,
       }],
     })
@@ -457,7 +458,7 @@ describe('B-UI-R7 conversation desk', () => {
         handoff_id: 'handoff-profile-01', draft_id: 'draft-profile-01', work_item_id: 'work-profile-01',
         turn_id: 'turn-profile-01', domain: 'student_support', handling_mode: 'record', intent: 'append',
         destination_key: 'class_teacher.student.record', draft_revision: 1, adoption_state: 'pending',
-        missing_fields: [], subject_ref_count: 1, auto_open_allowed: true,
+        missing_fields: [], subject_ref_count: 1, subject_id: 'subject-01', auto_open_allowed: true,
       }],
     }
     vi.spyOn(intakeApi, 'appendTurn').mockResolvedValue(ready)
@@ -505,7 +506,7 @@ describe('B-UI-R7 conversation desk', () => {
         handoff_id: 'handoff-plan-01', draft_id: 'draft-plan-01', work_item_id: 'work-plan-01',
         turn_id: 'turn-plan-01', domain: 'class_operations', handling_mode: 'plan_calendar', intent: 'plan',
         destination_key: 'class_teacher.plan.calendar', draft_revision: 1, adoption_state: 'pending',
-        missing_fields: [], subject_ref_count: 0, auto_open_allowed: true,
+        missing_fields: [], subject_ref_count: 0, subject_id: null, auto_open_allowed: true,
       }],
     })
     const textarea = host.querySelector('textarea')!
@@ -534,6 +535,7 @@ describe('B-UI-R7 conversation desk', () => {
         adoption_state: 'pending',
         missing_fields: ['请选择一名同名学生'],
         subject_ref_count: 0,
+        subject_id: null,
         auto_open_allowed: false,
       }],
     }, [], true, {
@@ -556,6 +558,7 @@ describe('B-UI-R7 conversation desk', () => {
       draft_revision: 1,
       missing_fields: [] as string[],
       subject_ref_count: 2,
+      subject_id: null,
       auto_open_allowed: false,
     }
     const host = await mountDesk({

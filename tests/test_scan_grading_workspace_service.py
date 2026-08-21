@@ -50,8 +50,8 @@ def test_grading_start_rejects_preflight_from_a_previous_template(tmp_path) -> N
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
     session_id = db.create_grading_session("Template revision", "rubric.json", "answer.json")
-    template_dir = tmp_path / "template-files"
-    template_dir.mkdir()
+    template_dir = tmp_path / "templates" / f"session_{session_id}"
+    template_dir.mkdir(parents=True, exist_ok=True)
     front_path = template_dir / "front.png"
     back_path = template_dir / "back.png"
     Image.new("RGB", (8, 8), "white").save(front_path)
@@ -114,14 +114,24 @@ def test_grading_start_rejects_preflight_from_a_previous_template(tmp_path) -> N
         )
 
 
-def test_grading_start_preserves_portable_stored_template_paths(tmp_path) -> None:
+def test_grading_start_preserves_portable_stored_template_paths(tmp_path, monkeypatch) -> None:
     from PIL import Image
 
+    import path_manager
     from backend.scan_grading.workspace import ScanGradingWorkspace
     from db_manager import DBManager
     from template_upload_service import TemplateUploadService
 
-    db = DBManager(tmp_path / "grading.db")
+    # load_current 解析相对模板路径时数据根取自全局单例（pytest 下为会话级共享
+    # 临时根），全量跑时其中可能有其他测试留下的同名 front.png 导致歧义；
+    # 把数据根指到本测试目录保持隔离。
+    monkeypatch.setattr(path_manager.get_path_manager(), "_data_root", tmp_path)
+
+    # db 放在 databases/ 子目录下，data_root 才能推断为 tmp_path；
+    # 否则解析相对模板路径（如 "front.png"）会落到会话级共享临时根，全量跑时被其他测试的同名文件干扰。
+    databases_dir = tmp_path / "databases"
+    databases_dir.mkdir()
+    db = DBManager(databases_dir / "grading.db")
     db.initialize()
     session_id = db.create_grading_session("Portable", "rubric.json", "answer.json")
     templates_root = tmp_path / "templates"

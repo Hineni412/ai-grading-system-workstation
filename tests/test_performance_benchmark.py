@@ -255,7 +255,7 @@ def test_representative_question_bank_scenarios_return_records_for_each_workload
 ) -> None:
     import tools.performance.runner as runner_module
 
-    dataset = build_benchmark_dataset(tmp_path / scale.name, scale)
+    dataset = build_benchmark_dataset(tmp_path, scale)
     scenarios = tuple(
         scenario
         for scenario in build_scenarios(dataset)

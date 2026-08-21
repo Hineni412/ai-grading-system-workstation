@@ -12,7 +12,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from collections.abc import AsyncIterable, Iterable
+from collections.abc import AsyncIterable, Callable, Iterable
+from typing import TYPE_CHECKING
 
 from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.database.schema import connect, initialize_database
@@ -23,6 +24,9 @@ from question_bank.models.question import (
 )
 from question_bank.models.tag_schema import MAX_TAG_LENGTH, TagAnalysis
 from question_bank.services.question_revision import question_revision
+
+if TYPE_CHECKING:
+    from question_bank.taxonomy.governance import TaxonomyGovernance
 
 
 _REQUEST_LOCKS_GUARD = threading.Lock()
@@ -121,6 +125,7 @@ class PaperPermanentDeleteImpact:
     knowledge_graph_link_count: int
     owned_file_count: int
     shared_file_count: int
+    taxonomy_proposal_count: int
     permanent_delete_phrase: str
 
 
@@ -346,12 +351,23 @@ class QuestionBankWriteService:
         *,
         data_root: Path,
         max_upload_bytes: int = 200 * 1024 * 1024,
+        taxonomy_governance: TaxonomyGovernance | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
         self.max_upload_bytes = int(max_upload_bytes)
+        self._taxonomy_governance = taxonomy_governance
         self._tag_analysis_batch_lock = threading.Lock()
         self._active_tag_analysis_batch: _TagAnalysisWriteBatch | None = None
+
+    def _live_question_exists(self, question_id: int) -> bool:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM questions "
+                "WHERE id = ? AND COALESCE(is_deleted, 0) = 0",
+                (int(question_id),),
+            ).fetchone()
+        return row is not None
 
     def tag_analysis_batch(self) -> _TagAnalysisWriteBatch:
         return _TagAnalysisWriteBatch(self)
@@ -806,6 +822,16 @@ class QuestionBankWriteService:
                 conn,
                 tuple(selection.id for selection in normalized),
             )
+        taxonomy_proposal_count = 0
+        governance = self._taxonomy_governance
+        if governance is not None and question_ids:
+            taxonomy_proposal_count = int(
+                governance.prune_proposals_for_deleted_questions(
+                    question_ids,
+                    question_exists=self._live_question_exists,
+                    dry_run=True,
+                )["removed_pending_proposals"]
+            )
         return PaperPermanentDeleteImpact(
             paper_count=len(paper_rows),
             question_count=len(question_ids),
@@ -815,6 +841,7 @@ class QuestionBankWriteService:
             knowledge_graph_link_count=counts["graph"],
             owned_file_count=len(owned),
             shared_file_count=len(shared),
+            taxonomy_proposal_count=taxonomy_proposal_count,
             permanent_delete_phrase=f"彻底删除 {len(paper_rows)} 份试卷",
         )
 
@@ -906,6 +933,16 @@ class QuestionBankWriteService:
                     _restore_staged_paper_files(staged)
                     shutil.rmtree(staging_root, ignore_errors=True)
                     raise
+        governance = self._taxonomy_governance
+        if governance is not None and question_ids:
+            # The paper deletion is committed and replay-protected by the
+            # receipt above; the governance prune carries the same request
+            # token so a replayed call cannot trim or count twice.
+            governance.prune_proposals_for_deleted_questions(
+                question_ids,
+                question_exists=self._live_question_exists,
+                request_token=token,
+            )
         cleanup_pending = False
         try:
             shutil.rmtree(staging_root)

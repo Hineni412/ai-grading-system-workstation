@@ -146,6 +146,7 @@ def test_first_party_sdk_calls_stay_inside_the_llm_gateway():
     project_root = Path(__file__).resolve().parents[1]
     excluded_parts = {
         ".git",
+        ".p35t",
         ".pytest_cache",
         ".test-runs",
         ".worktrees",

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from .encrypted_database import EncryptedDatabase
 from .errors import VaultError
+from .existing_student_roster import ExistingStudent, ExistingStudentRosterSource
 from .secure_repository import EncryptedObjectRepository
 
 
@@ -252,10 +253,14 @@ class AssessmentEvidenceService:
         database: EncryptedDatabase,
         repository: EncryptedObjectRepository,
         key_provider: Callable[[str], bytes],
+        subject_ensurer: Callable[..., str] | None = None,
+        roster_source: ExistingStudentRosterSource | None = None,
     ) -> None:
         self.database = database
         self.repository = repository
         self._key_provider = key_provider
+        self._subject_ensurer = subject_ensurer
+        self._roster_source = roster_source
 
     def confirm_batch(
         self,
@@ -729,6 +734,10 @@ class AssessmentEvidenceService:
         result: dict[str, object],
     ) -> str:
         subject_id = str(result.get("subject_id") or "")
+        if not subject_id:
+            subject_id = self._ensure_subject_from_identity(
+                connection, vmk=vmk, result=result
+            )
         self._subject_exists(connection, subject_id)
         result_state = str(result.get("result_state") or "")
         if result_state not in _RESULT_STATES:
@@ -999,6 +1008,82 @@ class AssessmentEvidenceService:
         if limitations:
             return "reference_only", limitations
         return "directly_comparable", []
+
+    def _ensure_subject_from_identity(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        result: dict[str, object],
+    ) -> str:
+        identity = result.get("subject_identity")
+        if not isinstance(identity, dict):
+            raise VaultError(
+                "support_subject_not_found",
+                "学生支持对象不存在",
+                status_code=404,
+            )
+        display_name = str(identity.get("display_name") or "").strip()
+        if not display_name:
+            raise VaultError(
+                "assessment_subject_identity_invalid",
+                "新建学生档案必须提供姓名",
+                status_code=422,
+            )
+        if self._subject_ensurer is None:
+            raise VaultError(
+                "assessment_subject_ensurer_unavailable",
+                "当前部署不支持随成绩登记新建学生档案",
+                status_code=422,
+            )
+        class_label = str(identity.get("class_label") or "").strip() or None
+        student_code = str(identity.get("student_code") or "").strip() or None
+        # 优先按花名册身份建档（班级+姓名唯一命中，或姓名全校唯一），
+        # 保证「一个学生自始至终只有一条档案」；花名册查不到才退回临时身份。
+        roster_student = self._match_roster_student(class_label, display_name)
+        if roster_student is not None:
+            return self._subject_ensurer(
+                connection,
+                vmk=vmk,
+                source_student_id=roster_student.source_key,
+                display_name=roster_student.display_name,
+                class_label=roster_student.class_label,
+                student_code=roster_student.student_code,
+            )
+        return self._subject_ensurer(
+            connection,
+            vmk=vmk,
+            source_student_id=(
+                f"evidence-upload|{class_label or ''}|{student_code or display_name}"
+            ),
+            display_name=display_name,
+            class_label=class_label,
+            student_code=student_code,
+        )
+
+    def _match_roster_student(
+        self,
+        class_label: str | None,
+        display_name: str,
+    ) -> ExistingStudent | None:
+        if self._roster_source is None:
+            return None
+        students, _revision = self._roster_source.snapshot()
+        if class_label:
+            matches = [
+                student
+                for student in students
+                if student.class_label == class_label
+                and student.display_name == display_name
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            if matches:
+                return None
+        matches = [
+            student for student in students if student.display_name == display_name
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     @staticmethod
     def _subject_exists(connection: Any, subject_id: str) -> None:

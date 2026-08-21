@@ -198,7 +198,10 @@ def build_grading_plan(
         warnings.append(
             {
                 "code": "teacher_scores_preserved",
-                "message": f"教师已确认 {teacher_locked_items} 个评分项，本轮不会覆盖。",
+                "message": (
+                    f"教师已确认 {teacher_locked_items} 个评分项；"
+                    "AI 会照常批改所有题目作对照，但最终仍以教师确认的分数为准。"
+                ),
             }
         )
     if singleton_subjective_batches and mode == "hybrid_batch":

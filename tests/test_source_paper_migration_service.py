@@ -47,7 +47,7 @@ def _seed_question_bank(db_path: Path, *, source_file: str, tag_rows: int) -> No
 def _seed_single_source_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     data_root = tmp_path / "user_data"
     db_path = data_root / "databases" / "question_bank.db"
-    source = tmp_path / "outside" / "paper.docx"
+    source = data_root / "legacy" / "paper.docx"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"paper")
     _seed_question_bank(db_path, source_file=str(source), tag_rows=3)
@@ -77,14 +77,14 @@ def test_apply_migration_updates_all_source_columns_and_preserves_tags(
 def test_missing_source_is_reported_without_database_update(tmp_path: Path) -> None:
     data_root = tmp_path / "user_data"
     db_path = data_root / "databases" / "question_bank.db"
-    missing = tmp_path / "missing.docx"
-    _seed_question_bank(db_path, source_file=str(missing), tag_rows=1)
+    missing = "legacy/missing.docx"
+    _seed_question_bank(db_path, source_file=missing, tag_rows=1)
 
     report = apply_source_paper_migration(db_path=db_path, data_root=data_root)
 
     with connect(db_path) as conn:
         stored = conn.execute("SELECT source_file FROM questions").fetchone()[0]
-    assert stored == str(missing)
+    assert stored == missing
     assert report.missing_sources == 1
     assert report.migrated_sources == 0
 

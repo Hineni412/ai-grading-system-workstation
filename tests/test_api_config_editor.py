@@ -71,10 +71,10 @@ def _write_config(tmp_path: Path, db: DBManager, payload: dict | None = None) ->
 
 @pytest.fixture
 def editor_env(tmp_path: Path):
-    db = DBManager(tmp_path / "grading.db")
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
     manager = JobManager(
-        JobStore(tmp_path / "grading.db"),
+        JobStore(tmp_path / "databases" / "grading.db"),
         max_workers=1,
         interrupted_input_root=tmp_path / "uploaded",
     )
@@ -96,7 +96,7 @@ def _assert_safe_editor(body: dict, tmp_path: Path) -> None:
 
 def test_new_draft_editor_is_truthfully_unconfigured(editor_env) -> None:
     client, db, _manager, tmp_path = editor_env
-    session_id = create_session_draft(db, tmp_path / "uploaded", name="Draft exam")
+    session_id = create_session_draft(db.session_repository, tmp_path / "uploaded", name="Draft exam")
 
     response = client.get(f"/api/sessions/{session_id}/config/editor")
 
@@ -584,7 +584,7 @@ def test_refine_accepts_only_revision_and_server_commands_and_rejects_old_revisi
 
 
 def test_db_conditional_publish_requires_both_old_paths_and_preserves_source(tmp_path: Path) -> None:
-    db = DBManager(tmp_path / "grading.db")
+    db = DBManager(tmp_path / "databases" / "grading.db")
     db.initialize()
     session_id = _write_config(tmp_path, db)
     old = db.get_grading_session(session_id)

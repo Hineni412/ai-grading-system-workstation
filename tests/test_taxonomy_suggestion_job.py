@@ -325,6 +325,7 @@ def test_cancelled_job_stops_before_the_next_model_batch(
             question_loader=_question_loader,
             ai_service_factory=lambda: gateway,
             batch_size=1,
+            concurrency=1,
         )
 
     assert len(gateway.calls) == 1

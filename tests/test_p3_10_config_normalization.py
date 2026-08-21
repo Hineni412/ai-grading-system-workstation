@@ -115,13 +115,19 @@ def test_normalization_preserves_first_and_second_pass_golden_payloads() -> None
 
     normalization.normalize_generated_config_schema(payload)
     assert _payload_digest(payload) == (
-        "4b53f4114ae31f4bfda78b30af9bf084426bd244e4f13dbfb1f41238a7265bee"
+        "f4ca988b47ff029140592c0b6828b43074f404248ce36bb863249f7e8c8cba71"
     )
 
     normalization.normalize_generated_config_schema(payload)
     assert _payload_digest(payload) == (
-        "a6c4a4b8eaaa76554a904e4dde789ab551003a5b0a57d65921d0ae5f1d853878"
+        "92b70bf2f7fd840cc94d81bfe42033d843af58bbb7b1ea84438dd75a4488071e"
     )
+
+
+def test_normalization_is_idempotent_after_second_pass() -> None:
+    payload = _golden_input()
+    normalization.normalize_generated_config_schema(payload)
+    normalization.normalize_generated_config_schema(payload)
     third = copy.deepcopy(payload)
     normalization.normalize_generated_config_schema(third)
     assert third == payload

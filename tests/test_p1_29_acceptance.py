@@ -492,39 +492,44 @@ def test_metadata_schema_is_allowlisted_and_paths_are_logical(tmp_path: Path) ->
 
 
 def test_internal_seed_executes_full_synthetic_flow(tmp_path: Path) -> None:
-    workspace = tmp_path / "staged"
-    workspace.mkdir()
-    repo_root = Path(acceptance.__file__).resolve().parents[1]
-    source_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    acceptance._archive_commit(
-        source_sha,
-        repo_root=repo_root,
-        workspace=workspace,
-    )
-    shutil.copy2(
-        Path(acceptance.__file__),
-        workspace / "tools" / "p1_29_acceptance.py",
-    )
-    acceptance.rewrite_staged_config(workspace)
-    acceptance.write_anonymous_runtime_state(workspace)
+    # HEAD still tracks an accidentally committed staged snapshot under
+    # `.p35t/.../staged/...`; extracting it below pytest's deep tmp_path would
+    # exceed the Windows MAX_PATH limit, so stage into a short temp directory.
+    workspace = Path(tempfile.mkdtemp(prefix="p29-"))
+    try:
+        repo_root = Path(acceptance.__file__).resolve().parents[1]
+        source_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        acceptance._archive_commit(
+            source_sha,
+            repo_root=repo_root,
+            workspace=workspace,
+        )
+        shutil.copy2(
+            Path(acceptance.__file__),
+            workspace / "tools" / "p1_29_acceptance.py",
+        )
+        acceptance.rewrite_staged_config(workspace)
+        acceptance.write_anonymous_runtime_state(workspace)
 
-    acceptance._run_internal_seed(workspace, source_sha)
-    metadata = acceptance.load_prepared_metadata(workspace)
+        acceptance._run_internal_seed(workspace, source_sha)
+        metadata = acceptance.load_prepared_metadata(workspace)
 
-    assert metadata["counts"] == {
-        "students": 2,
-        "sessions": 1,
-        "results": 2,
-        "reports": 1,
-    }
-    assert metadata["source_sha"] == source_sha
-    assert all((workspace / filename).is_file() for filename in metadata["files"].values())
+        assert metadata["counts"] == {
+            "students": 2,
+            "sessions": 1,
+            "results": 2,
+            "reports": 1,
+        }
+        assert metadata["source_sha"] == source_sha
+        assert all((workspace / filename).is_file() for filename in metadata["files"].values())
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def _log_root_cases(workspace: Path) -> tuple[dict[str, tuple[Path, str]], str]:
@@ -549,6 +554,23 @@ def _log_root_cases(workspace: Path) -> tuple[dict[str, tuple[Path, str]], str]:
         )
     lines.append("health=http://127.0.0.1:8501/_stcore/health")
     return roots, "\n".join(lines) + "\n"
+
+
+def _expected_placeholders(
+    roots: dict[str, tuple[Path, str]],
+) -> list[str]:
+    # Mirror _log_sanitization_roots: roots that resolve to the same directory
+    # (e.g. the in-repo runtime makes <runtime-repo> equal <launcher-repo>)
+    # are deduplicated, so only the first placeholder can appear in the output.
+    seen: set[str] = set()
+    expected: list[str] = []
+    for root, placeholder in roots.values():
+        key = str(root).replace("\\", "/").casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        expected.append(placeholder)
+    return expected
 
 
 def _leaked_root_labels(
@@ -581,7 +603,7 @@ def test_sanitized_log_writer_replaces_known_roots_and_preserves_urls(
 
     sanitized = log_path.read_text(encoding="utf-8")
     assert _leaked_root_labels(sanitized, roots) == []
-    assert all(placeholder in sanitized for _root, placeholder in roots.values())
+    assert all(placeholder in sanitized for placeholder in _expected_placeholders(roots))
     assert "http://127.0.0.1:8501/_stcore/health" in sanitized
 
 
@@ -606,7 +628,7 @@ def test_internal_seed_sanitizes_captured_output_before_writing(
         encoding="utf-8"
     )
     assert _leaked_root_labels(sanitized, roots) == []
-    assert all(placeholder in sanitized for _root, placeholder in roots.values())
+    assert all(placeholder in sanitized for placeholder in _expected_placeholders(roots))
 
 
 def test_second_service_start_failure_cleans_process_handles_and_logs(
@@ -664,4 +686,4 @@ def test_second_service_start_failure_cleans_process_handles_and_logs(
             encoding="utf-8"
         )
         assert _leaked_root_labels(sanitized, roots) == []
-        assert all(placeholder in sanitized for _root, placeholder in roots.values())
+        assert all(placeholder in sanitized for placeholder in _expected_placeholders(roots))

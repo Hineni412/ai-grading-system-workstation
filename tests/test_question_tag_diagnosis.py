@@ -12,8 +12,10 @@ from question_bank.services.source_question_link_service import SourceQuestionLi
 
 
 def _seed_system(tmp_path: Path) -> tuple[DiagnosisProfileService, Path]:
-    grading_db_path = tmp_path / "grading.db"
-    question_bank_db_path = tmp_path / "question_bank.db"
+    # 数据库放在 "databases" 子目录下,使 tmp_path 成为受控数据根,
+    # 以便 resolve_stored_file_path 接受 tmp_path 下的 rubric.json 等文件。
+    grading_db_path = tmp_path / "databases" / "grading.db"
+    question_bank_db_path = tmp_path / "databases" / "question_bank.db"
     db = DBManager(grading_db_path)
     db.initialize()
     initialize_database(question_bank_db_path)

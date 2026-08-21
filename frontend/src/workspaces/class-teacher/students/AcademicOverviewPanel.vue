@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 
 import { studentR1Api, type AcademicOverview } from '../api/r1'
+import { formatClassLabel } from '../format_class_label'
 import AppButton from '@/components/design-system/AppButton.vue'
 
 const emit = defineEmits<{ select: [subjectId: string] }>()
@@ -63,7 +64,7 @@ onMounted(() => { void load() })
         <p v-if="!overview.attention_students.length" class="hint">当前没有等待教师决定的关注卡。</p>
         <button v-for="item in overview.attention_students" :key="item.subject_id" type="button" class="row" @click="emit('select', item.subject_id)">
           <strong>{{ item.display_name }}</strong>
-          <span>{{ item.class_label || '未分班' }}</span>
+          <span>{{ formatClassLabel(item.class_label) }}</span>
           <small>{{ item.pending_count }} 张待决定</small>
         </button>
       </section>

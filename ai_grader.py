@@ -395,6 +395,7 @@ class AIGrader:
             "6) 若存在关键逻辑跳跃、循环论证、条件未说明、定理使用前提缺失、由结论反推原因等问题，按 deduction_policy 或 presentation_rules 扣分。\n"
             "7) 对解答题/证明题，deduction_reason 必须写成“已完成哪些证明义务、缺失/断裂在哪里、扣几分”的形式。\n"
             "8) 返回必须是严格 JSON 对象，不要 markdown，不要解释文字。\n"
+            "8.1) deduction_reason、error_summary、candidate_scores 的 reason 等教师可见自由文本必须使用简体中文（公式、变量、选项字母除外）。\n"
             "9) JSON 必须包含字段：student_name, total_score, student_score, needs_human_review, grading_details。\n"
             "10) grading_details 每项是一个对象，必须包含以下字段：\n"
             "    - question_id (题号，如 Q13 或 Q13(P1))\n"
