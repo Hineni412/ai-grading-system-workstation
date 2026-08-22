@@ -162,6 +162,37 @@ def evaluate_criterion_quality(
     )
 
 
+def usable_training_criterion(
+    workspace: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return the criterion version allowed into training papers.
+
+    A still-matching approved version stays authoritative. If none exists, a
+    quality-passed current draft is admitted without a separate teacher click.
+    """
+
+    source_hash = str(workspace.get("current_source_hash") or "")
+
+    def _matches(version: object) -> Mapping[str, Any] | None:
+        if not isinstance(version, Mapping):
+            return None
+        if str(version.get("source_content_hash") or "") != source_hash:
+            return None
+        return version
+
+    approved = _matches(workspace.get("approved_version"))
+    if approved is not None and str(approved.get("status") or "") == "approved":
+        return dict(approved)
+    current = _matches(workspace.get("current_version"))
+    if (
+        current is not None
+        and str(current.get("status") or "") in {"proposed", "approved"}
+        and str(current.get("quality_status") or "") == "passed"
+    ):
+        return dict(current)
+    return None
+
+
 class TrainingCriterionModule:
     """Deep module for immutable criterion versions and teacher decisions."""
 
@@ -561,14 +592,11 @@ class TrainingCriterionModule:
         missing: list[int] = []
         for question in questions:
             workspace = self.read(question)
-            approved = workspace.get("approved_version")
-            if not workspace["available"] or not isinstance(
-                approved,
-                Mapping,
-            ):
+            usable = usable_training_criterion(workspace)
+            if usable is None:
                 missing.append(question.question_id)
             else:
-                versions.append(dict(approved))
+                versions.append(usable)
         if missing:
             raise ApprovedCriterionMissing(missing)
         return tuple(versions)
@@ -989,23 +1017,8 @@ class TrainingCriterionModule:
             if head is None or head["approved_version_id"] is None
             else by_id.get(str(head["approved_version_id"]))
         )
-        available = bool(
-            approved
-            and approved["status"] == "approved"
-            and head is not None
-            and approved["source_content_hash"]
-            == str(head["current_source_hash"])
-        )
-        return {
+        workspace = {
             "question_id": int(question_id),
-            "state": (
-                "available"
-                if available
-                else str(current["status"])
-                if current is not None
-                else "missing"
-            ),
-            "available": available,
             "revision": int(head["revision"]) if head is not None else 0,
             "current_source_hash": (
                 str(head["current_source_hash"])
@@ -1015,6 +1028,19 @@ class TrainingCriterionModule:
             "current_version": current,
             "approved_version": approved,
             "versions": versions,
+        }
+        usable = usable_training_criterion(workspace)
+        available = usable is not None
+        return {
+            **workspace,
+            "state": (
+                "available"
+                if available
+                else str(current["status"])
+                if current is not None
+                else "missing"
+            ),
+            "available": available,
         }
 
     @staticmethod
@@ -1263,4 +1289,5 @@ __all__ = [
     "TrainingCriterionModule",
     "blocking_quality_codes",
     "evaluate_criterion_quality",
+    "usable_training_criterion",
 ]

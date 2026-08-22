@@ -30,6 +30,7 @@ from question_bank.training_criteria import (
     QuestionAnalysisInput,
     QuestionAnalysisInputLoader,
     TrainingCriterionModule,
+    usable_training_criterion,
 )
 
 from .rendering import (
@@ -1434,12 +1435,10 @@ class PersonalizedPaperModule:
                 raise PaperSourceChanged(
                     "a recommended criterion version is unavailable"
                 ) from exc
-            approved = workspace.get("approved_version")
+            approved = usable_training_criterion(workspace)
             if (
-                not workspace.get("available")
-                or not isinstance(approved, Mapping)
+                approved is None
                 or str(approved["version_id"]) != expected_version
-                or str(version["status"]) != "approved"
                 or str(version["source_content_hash"])
                 != question.criterion_source_content_hash
             ):

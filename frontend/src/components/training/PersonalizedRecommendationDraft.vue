@@ -25,6 +25,7 @@ const props = defineProps<{
   excludeCurrentExamOriginals: boolean
   paperMode?: 'individual' | 'shared'
   targetKeys?: string[]
+  scopeKeys?: string[]
   disabled?: boolean
   externalSetup?: boolean
   expectedMinutes?: number
@@ -53,7 +54,6 @@ const paperFiles = ref<Record<string, File | undefined>>({})
 const paperBusy = ref('')
 const paperContextWindow = ref<32768 | 65536 | 128000>(32768)
 const paperBatch = ref<PersonalizedPaperBatch | null>(null)
-const includeConservativeStudents = ref(false)
 const paperCancelBusy = ref(false)
 let paperBatchPollGeneration = 0
 
@@ -89,7 +89,11 @@ const canGenerate = computed(() => (
   && difficultyMin.value >= 1
   && difficultyMax.value <= 10
   && difficultyMin.value <= difficultyMax.value
-  && (!targetOptions.value.length || selectedTargets.value.length > 0)
+  && (
+    (props.scopeKeys?.length ?? 0) > 0
+    || !targetOptions.value.length
+    || selectedTargets.value.length > 0
+  )
 ))
 const workflowStage = computed<'diagnosis' | 'draft' | 'wps' | 'scan'>(() => {
   if (!draft.value) return 'diagnosis'
@@ -111,7 +115,7 @@ watch(() => props.difficultyMax, (value) => {
 })
 
 watch(
-  [() => props.diagnosis, () => props.targetKeys],
+  [() => props.diagnosis, () => props.targetKeys, () => props.scopeKeys],
   () => {
     draft.value = null
     selectedDraftStudentId.value = ''
@@ -182,6 +186,7 @@ async function generate(): Promise<void> {
       stage_ratios: props.stageRatios,
       paper_mode: props.paperMode ?? 'individual',
       target_keys: selectedTargetsAreGoverned.value ? selectedTargets.value : [],
+      scope_keys: (props.scopeKeys ?? []).filter((key) => key.startsWith('kp_') || key.startsWith('ki_')),
       target_names: selectedTargetsAreGoverned.value ? [] : selectedTargetLabels.value,
       exclude_current_exam_originals: props.excludeCurrentExamOriginals,
     })
@@ -275,13 +280,13 @@ async function createPaper(studentId: string): Promise<void> {
 async function createPaperBatch(): Promise<void> {
   if (!draft.value || paperBusy.value) return
   const studentIds = draft.value.students
-    .filter((student) => student.items.length > 0 && (
-      includeConservativeStudents.value
-      || student.selection_mode !== 'maintenance_fallback'
+    .filter((student) => (
+      student.items.length > 0
+      && student.selection_mode !== 'maintenance_fallback'
     ))
     .map((student) => student.student_id)
   if (!studentIds.length) {
-    errorMessage.value = '当前没有带有效证据的学生可批量出卷；如需保守复习卷，请先勾选人工纳入。'
+    errorMessage.value = '当前没有带有效证据的学生可批量出卷。'
     return
   }
   paperBusy.value = 'batch'
@@ -559,7 +564,7 @@ async function editItem(
       <p v-if="!selectedTargets.length">请回到上方知识结构，人工勾选至少一个知识点。</p>
     </fieldset>
     <p v-else class="training-empty is-compact">
-      当前没有可确认的薄弱目标；生成后会明确标注为保守复习，不会补造薄弱点。
+      当前没有可确认的薄弱目标；一人一卷需要范围内已有掌握证据才会配题。
     </p>
 
     <button
@@ -615,10 +620,6 @@ async function editItem(
           <strong id="personalized-batch-title">{{ paperMode === 'shared' ? '批量生成实名同题卷' : '批量生成实名一人一卷' }}</strong>
           <p>每名学生保持独立卷实例；成功卷不会因其他学生失败而丢失。</p>
         </div>
-        <label>
-          <input v-model="includeConservativeStudents" type="checkbox">
-          人工纳入无薄弱证据学生，生成“保守复习卷”
-        </label>
         <button type="button" class="training-button is-primary" :disabled="Boolean(paperBusy)" @click="createPaperBatch">
           {{ paperBusy === 'batch' ? '正在逐人生成…' : '生成全部 WPS 审核卷' }}
         </button>
@@ -656,6 +657,9 @@ async function editItem(
           </div>
           <small>
             {{ student.selection_mode === 'maintenance_fallback' ? '保守复习' : '按掌握证据推荐' }}
+            <template v-if="student.targets.length">
+              · 细点 {{ student.targets.map((item) => String(item.display_name || item.stable_key || '')).filter(Boolean).join('、') }}
+            </template>
           </small>
         </header>
 
@@ -667,7 +671,7 @@ async function editItem(
               <p>{{ item.reason }}</p>
               <small>
                 难度 {{ item.difficulty }} · 约 {{ item.estimated_minutes }} 分钟 ·
-                {{ item.criterion_point_count }} 个已批准判定点
+                {{ item.criterion_point_count }} 个判定点
               </small>
               <small v-if="item.relation">
                 已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：
@@ -818,7 +822,7 @@ async function editItem(
       </div>
 
       <p class="personalized-footnote">
-        训练卷使用生成时的题目、推荐理由和已批准判定点快照；以后来源变化不会改写旧卷。
+        训练卷使用生成时的题目、推荐理由和判定点快照；以后来源变化不会改写旧卷。
       </p>
     </template>
   </section>

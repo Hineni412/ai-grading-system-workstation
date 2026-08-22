@@ -19,11 +19,19 @@ const props = defineProps<{
   modelValue: string[]
   title: string
   description: string
+  selectionKind?: 'targets' | 'range'
 }>()
 const emit = defineEmits<{
   'update:modelValue': [keys: string[]]
   focus: [key: string]
 }>()
+
+const selectionKind = computed(() => props.selectionKind ?? 'targets')
+const selectedCountLabel = computed(() => (
+  selectionKind.value === 'range'
+    ? `${props.modelValue.length} 个范围`
+    : `${props.modelValue.length} 项已选`
+))
 
 const activeRootKey = ref('')
 const expandedSectionKeys = ref<string[]>([])
@@ -153,11 +161,11 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
   <section class="knowledge-structure" aria-labelledby="training-structure-title">
     <header>
       <div>
-        <p class="structure-eyebrow">完整结构，不替教师挑前三项</p>
+        <p class="structure-eyebrow">{{ selectionKind === 'range' ? '先圈定章或小节，系统按每人细点掌握情况配题' : '完整结构，不替教师挑前三项' }}</p>
         <h3 id="training-structure-title">{{ title }}</h3>
         <p>{{ description }}</p>
       </div>
-      <strong>{{ modelValue.length }} 项已选</strong>
+      <strong>{{ selectedCountLabel }}</strong>
     </header>
 
     <div v-if="tree.length" class="structure-layout">
@@ -166,10 +174,14 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
           v-for="root in tree"
           :key="root.key"
           type="button"
-          :class="{ 'is-active': activeRoot?.key === root.key }"
+          :class="{ 'is-active': activeRoot?.key === root.key, 'is-checked': selectionKind === 'range' && modelValue.includes(root.key) }"
           :title="root.label"
           @click="activeRootKey = root.key"
         >
+          <label v-if="selectionKind === 'range'" class="structure-range-check" @click.stop>
+            <input type="checkbox" :checked="modelValue.includes(root.key)" @change="toggleTarget(root.key)">
+            <span class="visually-hidden">将{{ knowledgeLeafLabel(root.label) }}加入训练范围</span>
+          </label>
           <span>{{ root.label }}</span>
           <b>{{ masteryText(root) }}</b>
         </button>
@@ -194,8 +206,12 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
           :key="entry.section.key"
           class="structure-section"
         >
-          <button type="button" class="structure-section-heading" :title="entry.section.label" @click="toggleSection(entry.section.key)">
+          <button type="button" class="structure-section-heading" :class="{ 'has-range-check': selectionKind === 'range' }" :title="entry.section.label" @click="toggleSection(entry.section.key)">
             <span>{{ expandedSectionKeys.includes(entry.section.key) ? '−' : '+' }}</span>
+            <label v-if="selectionKind === 'range'" class="structure-range-check" @click.stop>
+              <input type="checkbox" :checked="modelValue.includes(entry.section.key)" @change="toggleTarget(entry.section.key)">
+              <span class="visually-hidden">将{{ knowledgeLeafLabel(entry.section.label) }}加入训练范围</span>
+            </label>
             <strong>{{ knowledgeLeafLabel(entry.section.label) }}</strong>
             <b>{{ masteryText(entry.section) }}</b>
           </button>
@@ -207,6 +223,7 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
               :title="point.label"
             >
               <input
+                v-if="selectionKind === 'targets'"
                 type="checkbox"
                 :checked="modelValue.includes(point.key)"
                 @change="toggleTarget(point.key)"
@@ -264,8 +281,11 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
 .structure-eyebrow { color: var(--color-text-secondary); font-size: .78rem; font-weight: 700; letter-spacing: .04em; }
 .structure-layout { display: grid; grid-template-columns: minmax(180px, .42fr) minmax(0, 1.58fr); gap: 1rem; align-items: start; }
 .structure-layout > nav { display: grid; gap: .45rem; position: sticky; top: calc(var(--shell-topbar-height, 64px) + 1rem); }
-.structure-layout > nav button { display: flex; justify-content: space-between; gap: .75rem; padding: .65rem .75rem; border: 1px solid transparent; border-radius: var(--radius-control); background: var(--color-bg-subtle); color: var(--color-text-primary); text-align: left; cursor: pointer; }
+.structure-layout > nav button { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .65rem .75rem; border: 1px solid transparent; border-radius: var(--radius-control); background: var(--color-bg-subtle); color: var(--color-text-primary); text-align: left; cursor: pointer; }
 .structure-layout > nav button.is-active { border-color: var(--color-accent); background: var(--color-accent-subtle); box-shadow: inset 3px 0 0 var(--color-accent); }
+.structure-layout > nav button.is-checked { border-color: var(--color-accent); }
+.structure-range-check { display: inline-flex; align-items: center; cursor: pointer; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .structure-layout > nav b { white-space: nowrap; }
 .structure-detail { min-width: 0; display: grid; gap: .65rem; }
 .structure-legend { display: flex; flex-wrap: wrap; gap: .5rem 1rem; color: var(--color-text-secondary); font-size: .78rem; }
@@ -277,6 +297,7 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
 .structure-toggle { display: inline-flex; align-items: center; gap: .3rem; margin-left: auto; color: var(--color-text-secondary); font-size: .78rem; cursor: pointer; }
 .structure-section { overflow: hidden; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); }
 .structure-section-heading { width: 100%; display: grid; grid-template-columns: 1.2rem 1fr auto; gap: .55rem; padding: .7rem .8rem; border: 0; background: var(--color-bg-subtle); color: var(--color-text-primary); text-align: left; cursor: pointer; }
+.structure-section-heading.has-range-check { grid-template-columns: 1.2rem auto 1fr auto; }
 .structure-points { display: grid; }
 .structure-point { display: grid; grid-template-columns: auto minmax(140px, .72fr) minmax(160px, 1.4fr) 3.2rem 6.8rem auto; align-items: center; gap: .65rem; min-height: 2.9rem; padding: .45rem .75rem; border-top: 1px solid var(--color-border-default); cursor: pointer; }
 .structure-point:hover { background: var(--color-bg-subtle); }

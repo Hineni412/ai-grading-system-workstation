@@ -284,4 +284,20 @@ describe('training knowledge structure hierarchy', () => {
     // 父级汇总行（2 整式的乘法）有证据但不显示“证据”入口。
     expect(host.textContent).toContain('5 条证据')
   })
+
+  it('lets teachers select chapter and section ranges without checking leaf points', async () => {
+    const { host } = mount(TrainingKnowledgeStructure, {
+      diagnosis: makeDiagnosis(),
+      modelValue: [],
+      title: '所选学生的加权知识结构',
+      description: '',
+      selectionKind: 'range',
+    })
+    await nextTick()
+    expect(host.textContent).toContain('先圈定章或小节')
+    const leafChecks = [...host.querySelectorAll<HTMLInputElement>('.structure-point input[type="checkbox"]')]
+    expect(leafChecks).toHaveLength(0)
+    const rangeChecks = [...host.querySelectorAll<HTMLInputElement>('.structure-range-check input')]
+    expect(rangeChecks.length).toBeGreaterThan(0)
+  })
 })

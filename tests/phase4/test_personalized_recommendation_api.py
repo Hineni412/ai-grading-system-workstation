@@ -97,6 +97,7 @@ def test_personalized_draft_create_and_get_have_public_contract(
     assert module.created["config"].target_keys == (
         "kp_alg_linear_equation",
     )
+    assert module.created["config"].scope_keys == ("kp_chapter_scope",)
 
     loaded = client.get(
         f"/api/training/personalized-drafts/{'e' * 64}"
@@ -183,6 +184,7 @@ def _create_body() -> dict[str, object]:
             "transfer": 0.25,
         },
         "target_names": ["一元一次方程"],
+        "scope_keys": ["kp_chapter_scope"],
         "exclude_current_exam_originals": True,
     }
 

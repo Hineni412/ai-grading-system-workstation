@@ -128,6 +128,7 @@ def test_teacher_can_create_review_and_read_immutable_criterion_version(
     assert missing.json()["state"] == "missing"
     assert created.status_code == 200, created.text
     proposed = created.json()
+    assert proposed["available"] is True
     version_id = proposed["current_version"]["version_id"]
     approved = client.post(
         "/api/question-bank/criteria/questions/1/review",

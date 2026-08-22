@@ -229,6 +229,7 @@ def test_missing_actual_image_does_not_block_teacher_approval(tmp_path: Path) ->
     assert isinstance(version, dict)
     assert version["quality_status"] == "passed"
     assert "missing_actual_image" in version["quality_codes"]
+    assert proposed["available"] is True
 
     with connect(database) as connection:
         connection.execute(
@@ -255,6 +256,50 @@ def test_missing_actual_image_does_not_block_teacher_approval(tmp_path: Path) ->
     assert isinstance(current, dict)
     assert approved["available"] is True
     assert current["status"] == "approved"
+
+
+def test_quality_passed_proposed_version_is_usable_without_approval(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed(database)
+    module = TrainingCriterionModule(database)
+    question = _question(1)
+
+    proposed = _propose(module, question)
+    version = proposed["current_version"]
+    assert isinstance(version, dict)
+    assert proposed["available"] is True
+    assert proposed["approved_version"] is None
+    frozen = module.freeze((question,))
+    assert frozen[0]["version_id"] == version["version_id"]
+    assert frozen[0]["status"] == "proposed"
+
+
+def test_quality_failed_proposed_version_is_not_usable(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed(database)
+    module = TrainingCriterionModule(database)
+    question = _question(1)
+    proposed = _propose(module, question)
+    version = proposed["current_version"]
+    assert isinstance(version, dict)
+    with connect(database) as connection:
+        connection.execute(
+            """
+            UPDATE training_criterion_versions
+            SET quality_status = 'failed',
+                quality_codes_json = ?
+            WHERE version_id = ?
+            """,
+            ('["calculation_process_missing"]', version["version_id"]),
+        )
+    workspace = module.read(question)
+    assert workspace["available"] is False
+    with pytest.raises(ApprovedCriterionMissing):
+        module.freeze((question,))
 
 
 def test_teacher_review_creates_immutable_versions_and_moves_only_head(

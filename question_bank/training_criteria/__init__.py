@@ -44,6 +44,7 @@ from question_bank.training_criteria.versioning import (
     TrainingCriterionModule,
     blocking_quality_codes,
     evaluate_criterion_quality,
+    usable_training_criterion,
 )
 from question_bank.training_criteria.in_memory import (
     AnalysisRequestCheckpoint,
@@ -105,6 +106,7 @@ __all__ = [
     "grading_config_skeleton_from_solution_evidence",
     "blocking_quality_codes",
     "evaluate_criterion_quality",
+    "usable_training_criterion",
     "plan_analysis_batches",
     "rubric_skeleton_from_solution_evidence",
     "solution_evidence_source_content_hash",

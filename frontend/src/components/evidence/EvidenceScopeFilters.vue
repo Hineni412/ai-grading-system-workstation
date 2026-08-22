@@ -38,6 +38,7 @@ const queueIds = ref<string[]>([])
 const search = ref('')
 const moreOpen = ref(false)
 const validationMessage = ref('')
+const lastAppliedFingerprint = ref('')
 let synchronizing = false
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -148,8 +149,17 @@ function rateText(studentId: string): string {
   return value === null ? '—' : `${Math.round(value * 100)}%`
 }
 
+const rosterFilterActive = computed(() => Boolean(
+  search.value.trim()
+  || classIds.value.length
+  || scoreMin.value.trim()
+  || scoreMax.value.trim()
+))
+
 // 与后端 _rate_matches 语义一致：设定了得分率区间时，无成绩学生不进入卡片列表。
+// 未输入姓名、班级或得分率时不列出名单，避免一打开筛选就把全班铺开。
 const cardStudents = computed(() => {
+  if (!rosterFilterActive.value) return []
   const minimum = rate(scoreMin.value)
   const maximum = rate(scoreMax.value)
   const rangeSet = (minimum !== undefined && !Number.isNaN(minimum))
@@ -163,6 +173,12 @@ const cardStudents = computed(() => {
     return true
   })
 })
+
+const rosterEmptyText = computed(() => (
+  rosterFilterActive.value
+    ? '当前条件下没有匹配的学生。'
+    : '输入姓名、学号，或设定班级、得分率后显示匹配学生。'
+))
 
 const rosterVisible = computed(() => Boolean(classIds.value.length || moreOpen.value))
 
@@ -186,33 +202,42 @@ function apply(): void {
     debounceTimer = null
   }
   validationMessage.value = ''
+  const payload = buildApplyPayload()
+  if (!payload) return
+  const fingerprint = JSON.stringify(payload)
+  if (fingerprint === lastAppliedFingerprint.value) return
+  lastAppliedFingerprint.value = fingerprint
+  emit('apply', payload)
+}
+
+function buildApplyPayload(): GraphQueryInput | null {
   const minimum = rate(scoreMin.value)
   const maximum = rate(scoreMax.value)
   if (Number.isNaN(minimum) || Number.isNaN(maximum)) {
     validationMessage.value = '得分率请输入 0–100 之间的数字'
-    return
+    return null
   }
   if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
     validationMessage.value = '得分率下限不能大于上限'
-    return
+    return null
   }
   let examScope: GraphQueryInput['exam_scope']
   if (examMode.value === 'current') {
     if (props.currentSessionId === null) {
       validationMessage.value = '请先在顶部选择当前考试'
-      return
+      return null
     }
     examScope = { mode: 'current', session_ids: [props.currentSessionId] }
   } else if (examMode.value === 'manual') {
     if (!manualSessionIds.value.length) {
       validationMessage.value = '请至少选择一场考试'
-      return
+      return null
     }
     examScope = { mode: 'manual', session_ids: [...manualSessionIds.value] }
   } else {
     examScope = { mode: 'cross_exam' }
   }
-  emit('apply', {
+  return {
     exam_scope: examScope,
     scope: queueIds.value.length
       ? {
@@ -231,11 +256,11 @@ function apply(): void {
           exclude_student_ids: [],
           use_historical_fallback: useHistory.value,
         },
-  })
+  }
 }
 
 watch(
-  [examMode, manualSessionIds, classIds, scoreMin, scoreMax, useHistory, queueIds],
+  [examMode, manualSessionIds, classIds, useHistory, queueIds],
   () => {
     if (synchronizing) return
     if (debounceTimer) clearTimeout(debounceTimer)
@@ -341,7 +366,7 @@ defineExpose({ openMoreFilters })
 
     <div v-if="rosterVisible" class="evidence-scope__roster">
       <header>
-        <div><strong>指定学生</strong><p>勾选即固定进队列；换筛选条件不影响队列。队列为空时按上方条件自动圈定。</p></div>
+        <div><strong>指定学生</strong><p>输入姓名、学号，或设定班级、得分率后勾选加入队列；换筛选条件不影响已入队学生。队列为空时按上方条件自动圈定。</p></div>
         <div class="evidence-scope__roster-tools">
           <input v-model="search" type="search" placeholder="搜索姓名或学号" aria-label="搜索学生">
           <button
@@ -354,7 +379,7 @@ defineExpose({ openMoreFilters })
       </header>
       <section class="evidence-scope__group" aria-label="筛选结果">
         <h3>筛选结果 · {{ cardStudents.length }} 人</h3>
-        <p v-if="!cardStudents.length" class="evidence-scope__roster-empty">当前条件下没有匹配的学生。</p>
+        <p v-if="!cardStudents.length" class="evidence-scope__roster-empty">{{ rosterEmptyText }}</p>
         <div v-else class="evidence-scope__cards">
           <label
             v-for="student in cardStudents"
@@ -442,8 +467,8 @@ select, input { width: 100%; min-height: var(--control-height-large); border: 1p
 .evidence-scope__queue-clear { min-height: 0; padding: 2px 10px; border: 1px solid var(--color-border-default); border-radius: 999px; background: var(--color-bg-surface); color: var(--color-text-secondary); font-size: var(--font-size-caption); line-height: var(--line-height-body); cursor: pointer; }
 .evidence-scope__queue-clear:hover { border-color: var(--color-danger); color: var(--color-danger); }
 .evidence-scope__group h3 { margin: 0 0 8px; font-size: 13px; color: var(--color-text-secondary); }
-.evidence-scope__roster-empty { padding: 8px 0; }
-.evidence-scope__cards { display: grid; grid-template-columns: repeat(auto-fill,minmax(150px,1fr)); gap: 8px; max-height: 220px; overflow: auto; }
+.evidence-scope__roster-empty { min-height: 132px; padding: 8px 0; }
+.evidence-scope__cards { display: grid; grid-template-columns: repeat(auto-fill,minmax(150px,1fr)); gap: 8px; min-height: 132px; max-height: 220px; overflow: auto; }
 .evidence-scope__card { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); cursor: pointer; }
 .evidence-scope__card.is-checked { border-color: var(--color-accent); background: var(--color-bg-selected); }
 .evidence-scope__card input { width: 16px; min-height: auto; }
