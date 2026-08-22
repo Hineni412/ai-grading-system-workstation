@@ -144,6 +144,167 @@ def test_shared_mode_keeps_questions_and_order_identical_per_student(
         )
 
 
+def test_quality_passed_unapproved_criterion_can_be_recommended(
+    recommendation_module: PersonalizedRecommendationModule,
+) -> None:
+    with connect(recommendation_module.db_path) as connection:
+        connection.execute(
+            "UPDATE training_criterion_versions SET status = 'proposed'"
+        )
+        connection.execute(
+            "UPDATE training_criterion_heads SET approved_version_id = NULL"
+        )
+    draft = recommendation_module.create(
+        request_token="a" * 32,
+        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
+        config=PersonalizedRecommendationConfig(
+            question_count=8,
+            expected_minutes=120,
+            target_keys=("kp_alg_linear_equation",),
+        ),
+        actor_ref="teacher-1",
+    )
+    student = draft["students"][0]
+    assert student["items"]
+    assert all(item["criterion_version_id"] for item in student["items"])
+
+
+def test_individual_scope_assigns_per_student_leaf_targets(
+    recommendation_module: PersonalizedRecommendationModule,
+) -> None:
+    diagnosis = _diagnosis(student_ids=("SYN-S01", "SYN-S02"))
+    diagnosis["knowledge_catalog"] = [
+        {
+            "knowledge_key": "kp_chapter_scope",
+            "knowledge_point": "合成章",
+            "parent_knowledge_key": None,
+        },
+        {
+            "knowledge_key": "kp_alg_linear_equation",
+            "knowledge_point": "一元一次方程",
+            "parent_knowledge_key": "kp_chapter_scope",
+        },
+        {
+            "knowledge_key": "kp_geo_triangle_congruence",
+            "knowledge_point": "三角形全等",
+            "parent_knowledge_key": "kp_chapter_scope",
+        },
+    ]
+    draft = recommendation_module.create(
+        request_token="b" * 32,
+        diagnosis=diagnosis,
+        config=PersonalizedRecommendationConfig(
+            paper_mode="individual",
+            question_count=8,
+            expected_minutes=120,
+            scope_keys=("kp_chapter_scope",),
+        ),
+        actor_ref="teacher-1",
+    )
+    by_student = {item["student_id"]: item for item in draft["students"]}
+    first_keys = {
+        str(item["stable_key"]) for item in by_student["SYN-S01"]["targets"]
+    }
+    second_keys = {
+        str(item["stable_key"]) for item in by_student["SYN-S02"]["targets"]
+    }
+    assert "kp_alg_linear_equation" in first_keys
+    assert "kp_geo_triangle_congruence" in second_keys
+    assert first_keys != second_keys
+    assert by_student["SYN-S01"]["items"]
+    assert by_student["SYN-S02"]["items"]
+
+
+def test_scope_without_evidence_does_not_invent_weakness(
+    recommendation_module: PersonalizedRecommendationModule,
+) -> None:
+    diagnosis = _diagnosis(student_ids=("SYN-S05",))
+    diagnosis["knowledge_catalog"] = [
+        {
+            "knowledge_key": "kp_chapter_scope",
+            "knowledge_point": "合成章",
+            "parent_knowledge_key": None,
+        },
+        {
+            "knowledge_key": "kp_alg_linear_equation",
+            "knowledge_point": "一元一次方程",
+            "parent_knowledge_key": "kp_chapter_scope",
+        },
+    ]
+    draft = recommendation_module.create(
+        request_token="c" * 32,
+        diagnosis=diagnosis,
+        config=PersonalizedRecommendationConfig(
+            paper_mode="individual",
+            question_count=8,
+            expected_minutes=120,
+            scope_keys=("kp_chapter_scope",),
+        ),
+        actor_ref="teacher-1",
+    )
+    student = draft["students"][0]
+    assert student["items"] == []
+    assert student["selection_mode"] == "maintenance_fallback"
+    assert any("未编造薄弱点" in warning for warning in student["warnings"])
+    assert all("可练判定点" not in warning for warning in student["warnings"])
+    assert all("请勾选纳入" not in warning for warning in student["warnings"])
+
+
+def test_individual_scope_uses_diagnosis_mastery_without_session_times(
+    recommendation_module: PersonalizedRecommendationModule,
+) -> None:
+    diagnosis = {
+        "students": [
+            {
+                "student_id": "SYN-S01",
+                "student_code": "S01",
+                "student_name": "合成学生1",
+                "class_id": "SYN-C01",
+                "weak_points": [
+                    {
+                        "knowledge_key": "kp_alg_linear_equation",
+                        "knowledge_point": "一元一次方程",
+                        "mastery": 0.31,
+                        "evidence_count": 2,
+                        "source_question_refs": [],
+                    }
+                ],
+            }
+        ],
+        "exam_scope": {"mode": "current", "session_ids": [1]},
+        "knowledge_catalog": [
+            {
+                "knowledge_key": "kp_chapter_scope",
+                "knowledge_point": "合成章",
+                "parent_knowledge_key": None,
+            },
+            {
+                "knowledge_key": "kp_alg_linear_equation",
+                "knowledge_point": "一元一次方程",
+                "parent_knowledge_key": "kp_chapter_scope",
+            },
+        ],
+    }
+    draft = recommendation_module.create(
+        request_token="d" * 32,
+        diagnosis=diagnosis,
+        config=PersonalizedRecommendationConfig(
+            paper_mode="individual",
+            question_count=8,
+            expected_minutes=120,
+            scope_keys=("kp_chapter_scope",),
+        ),
+        actor_ref="teacher-1",
+    )
+    student = draft["students"][0]
+    assert student["selection_mode"] == "mastery_targeted"
+    assert any(
+        str(item["stable_key"]) == "kp_alg_linear_equation"
+        for item in student["targets"]
+    )
+    assert student["items"]
+
+
 def test_shortage_unknown_difficulty_and_recent_use_fail_closed(
     recommendation_module: PersonalizedRecommendationModule,
 ) -> None:
@@ -673,6 +834,8 @@ def _diagnosis(
                                 {
                                     "session_id": 1,
                                     "question_id": f"EX-{index}",
+                                    "score_awarded": 4,
+                                    "full_score": 10,
                                 }
                             ],
                             "actionable_reasons": ["合成掌握证据偏弱"],
@@ -683,7 +846,8 @@ def _diagnosis(
         )
     return {
         "students": students,
-        "exam_scope": {"mode": "current", "session_ids": []},
+        "exam_scope": {"mode": "current", "session_ids": [1]},
+        "_mastery_session_times": {"1": "2026-07-20T08:00:00+08:00"},
     }
 
 

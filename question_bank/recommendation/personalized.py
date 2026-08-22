@@ -22,6 +22,7 @@ from question_bank.mastery.current import (
 from question_bank.training_criteria import (
     QuestionAnalysisInputLoader,
     TrainingCriterionModule,
+    usable_training_criterion,
 )
 
 
@@ -70,6 +71,7 @@ class PersonalizedRecommendationConfig:
     prerequisite_ratio: float = 0.3
     transfer_ratio: float = 0.1
     target_keys: tuple[str, ...] = ()
+    scope_keys: tuple[str, ...] = ()
     exclude_current_exam_originals: bool = True
 
     def __post_init__(self) -> None:
@@ -94,20 +96,8 @@ class PersonalizedRecommendationConfig:
             raise ValueError("stage ratios must be nonnegative")
         if abs(sum(ratios) - 1.0) > 1e-9:
             raise ValueError("stage ratios must sum to one")
-        normalized_targets = tuple(
-            dict.fromkeys(
-                str(value or "").strip().casefold()
-                for value in self.target_keys
-                if str(value or "").strip()
-            )
-        )
-        if len(normalized_targets) > 50:
-            raise ValueError("target_keys contains too many values")
-        if any(
-            not (value.startswith("kp_") or value.startswith("ki_"))
-            for value in normalized_targets
-        ):
-            raise ValueError("target_keys must use governed stable identities")
+        normalized_targets = _identity_keys(self.target_keys, field="target_keys")
+        normalized_scope = _identity_keys(self.scope_keys, field="scope_keys")
         object.__setattr__(self, "question_count", int(self.question_count))
         object.__setattr__(
             self, "expected_minutes", int(self.expected_minutes)
@@ -115,7 +105,12 @@ class PersonalizedRecommendationConfig:
         object.__setattr__(self, "difficulty_min", int(self.difficulty_min))
         object.__setattr__(self, "difficulty_max", int(self.difficulty_max))
         object.__setattr__(self, "target_keys", normalized_targets)
-        if self.paper_mode == "shared" and not normalized_targets:
+        object.__setattr__(self, "scope_keys", normalized_scope)
+        if (
+            self.paper_mode == "shared"
+            and not normalized_targets
+            and not normalized_scope
+        ):
             raise ValueError(
                 "shared paper mode requires teacher-selected targets"
             )
@@ -124,6 +119,7 @@ class PersonalizedRecommendationConfig:
         return {
             **asdict(self),
             "target_keys": list(self.target_keys),
+            "scope_keys": list(self.scope_keys),
             "stage_ratios": {
                 "direct": self.direct_ratio,
                 "prerequisite": self.prerequisite_ratio,
@@ -608,29 +604,71 @@ class PersonalizedRecommendationModule:
         shared_selected: dict[Stage, list[dict[str, Any]]] = {}
         shared_shortages: dict[Stage, tuple[int, str]] = {}
         shared_recent = set().union(*recent.values()) if recent else set()
+        scope_leaves = _scope_leaves(
+            config.scope_keys,
+            diagnosis=diagnosis,
+            relations=relations,
+        )
+        student_ids = tuple(
+            str(item["student_id"]) for item in diagnosis["students"]
+        )
+        shared_explicit = config.target_keys
+        if (
+            config.paper_mode == "shared"
+            and not shared_explicit
+            and scope_leaves
+        ):
+            shared_explicit = _ranked_group_leaf_keys(
+                student_ids=student_ids,
+                leaves=scope_leaves,
+                mastery=mastery,
+                limit=config.question_count,
+            )
         for profile in diagnosis["students"]:
             student_id = str(profile["student_id"])
+            personalized = (
+                config.paper_mode == "individual" and bool(config.scope_keys)
+            )
+            explicit = (
+                _ranked_leaf_keys(
+                    student_id=student_id,
+                    leaves=scope_leaves,
+                    mastery=mastery,
+                    limit=config.question_count,
+                )
+                if personalized
+                else shared_explicit
+            )
             targets = _student_targets(
                 profile,
-                explicit=config.target_keys,
+                explicit=explicit,
                 mastery=mastery,
+                allow_implicit=not personalized and not shared_explicit,
             )
             maintenance = not targets
+            fill_conservative = maintenance and not personalized
             stage_targets = _stage_targets(targets, relation_index)
             used: set[int] = set()
             elapsed = 0
             items: list[dict[str, Any]] = []
             shortages: list[dict[str, Any]] = []
             warnings: list[str] = []
-            if maintenance:
+            skip_candidate_search = maintenance and not fill_conservative
+            if maintenance and fill_conservative:
                 warnings.append(
                     "当前范围没有可确认的薄弱证据，以下内容是保守复习，不代表系统判断出新的薄弱点。"
+                )
+            elif maintenance:
+                warnings.append(
+                    "当前范围内没有该生可确认的掌握证据，未编造薄弱点。"
                 )
 
             for stage in ("direct", "prerequisite", "transfer"):
                 requested = stage_counts[stage]
                 eligible: list[dict[str, Any]] = []
-                if config.paper_mode == "shared" and stage in shared_selected:
+                if skip_candidate_search:
+                    selected: list[dict[str, Any]] = []
+                elif config.paper_mode == "shared" and stage in shared_selected:
                     selected = shared_selected[stage]
                     for candidate in selected:
                         used.add(int(candidate["question_id"]))
@@ -640,7 +678,7 @@ class PersonalizedRecommendationModule:
                         candidates,
                         stage=stage,
                         target_keys=stage_targets[stage],
-                        maintenance=maintenance,
+                        maintenance=fill_conservative,
                         used=used,
                         recent=(
                             shared_recent
@@ -685,7 +723,7 @@ class PersonalizedRecommendationModule:
                         )
                     )
                 missing = requested - len(selected)
-                if missing:
+                if missing and not skip_candidate_search:
                     if config.paper_mode == "shared" and stage in shared_shortages:
                         missing, code = shared_shortages[stage]
                     else:
@@ -850,13 +888,11 @@ class PersonalizedRecommendationModule:
                 workspace = criteria.read(question)
             except (KeyError, OSError, ValueError):
                 continue
-            approved = workspace.get("approved_version")
-            if not workspace.get("available") or not isinstance(
-                approved, Mapping
-            ):
+            usable = usable_training_criterion(workspace)
+            if usable is None:
                 continue
             difficulty = _difficulty(row["difficulty"])
-            criterion = approved.get("criteria")
+            criterion = usable.get("criteria")
             points = (
                 criterion.get("points")
                 if isinstance(criterion, Mapping)
@@ -883,7 +919,7 @@ class PersonalizedRecommendationModule:
                         item["stable_key"]: item["display_name"]
                         for item in identities
                     },
-                    "criterion_version_id": str(approved["version_id"]),
+                    "criterion_version_id": str(usable["version_id"]),
                     "criterion_point_count": (
                         len(points) if isinstance(points, list) else 0
                     ),
@@ -931,7 +967,7 @@ class PersonalizedRecommendationModule:
             self.current_knowledge,
             clock=self.clock,
         ).calculate(diagnosis)
-        return {
+        snapshot = {
             identity: {
                 "stable_key": item.stable_key,
                 "display_name": item.display_name,
@@ -947,6 +983,12 @@ class PersonalizedRecommendationModule:
             }
             for identity, item in calculated.items()
         }
+        _apply_diagnosis_mastery(
+            snapshot,
+            diagnosis,
+            resolver=self.current_knowledge,
+        )
+        return snapshot
 
     def _current_mastery_version(self) -> dict[str, Any]:
         with connect(self.db_path) as connection:
@@ -1279,6 +1321,15 @@ def _normalize_diagnosis(value: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(value.get("_mastery_session_times"), Mapping)
             else {}
         ),
+        "knowledge_catalog": [
+            dict(item)
+            for item in (
+                value.get("knowledge_catalog")
+                if isinstance(value.get("knowledge_catalog"), list)
+                else []
+            )
+            if isinstance(item, Mapping) and str(item.get("knowledge_key") or "").strip()
+        ],
     }
 
 
@@ -1287,6 +1338,7 @@ def _student_targets(
     *,
     explicit: tuple[str, ...],
     mastery: Mapping[tuple[str, str], dict[str, Any]],
+    allow_implicit: bool = True,
 ) -> list[dict[str, Any]]:
     student_id = str(profile["student_id"])
     by_key = {
@@ -1294,19 +1346,24 @@ def _student_targets(
         for (owner, key), value in mastery.items()
         if owner == student_id
     }
-    keys = explicit or tuple(
-        key
-        for key, value in sorted(
-            by_key.items(),
-            key=lambda item: (
-                item[1]["value"] is None,
-                item[1]["value"]
-                if item[1]["value"] is not None
-                else 2.0,
-                item[0],
-            ),
+    if explicit:
+        keys = explicit
+    elif allow_implicit:
+        keys = tuple(
+            key
+            for key, value in sorted(
+                by_key.items(),
+                key=lambda item: (
+                    item[1]["value"] is None,
+                    item[1]["value"]
+                    if item[1]["value"] is not None
+                    else 2.0,
+                    item[0],
+                ),
+            )
         )
-    )
+    else:
+        keys = ()
     targets = []
     for key in keys:
         evidence = by_key.get(key)
@@ -1441,7 +1498,7 @@ def _draft_item(
     )[:20]
     relation = target.get("relation")
     if maintenance:
-        reason = "当前证据不足，安排一题已批准判定点的保守复习题。"
+        reason = "当前证据不足，安排一题可练判定点的保守复习题。"
     elif stage == "direct":
         reason = (
             f"直接巩固 {target.get('display_name') or matched_key}；"
@@ -1584,7 +1641,7 @@ def _shortage_message(stage: str, missing: int, code: str) -> str:
     cause = (
         "预计时长已达到教师设置"
         if code == "time_limit_reached"
-        else "没有更多同时满足稳定知识、难度、近期去重和已批准判定点的题目"
+        else "没有更多同时满足稳定知识、难度、近期去重和可练判定点的题目"
     )
     return f"{labels[stage]}少配 {missing} 题：{cause}。"
 
@@ -1645,6 +1702,7 @@ def _config_constructor(value: Mapping[str, Any]) -> dict[str, Any]:
             else value["transfer_ratio"]
         ),
         "target_keys": tuple(value.get("target_keys") or ()),
+        "scope_keys": tuple(value.get("scope_keys") or ()),
         "exclude_current_exam_originals": bool(
             value.get("exclude_current_exam_originals", True)
         ),
@@ -1678,6 +1736,184 @@ def _context_source_version(
             "excluded_question_ids": sorted(excluded_question_ids),
         }
     )
+
+
+def _identity_keys(values: Sequence[str], *, field: str) -> tuple[str, ...]:
+    normalized = tuple(
+        dict.fromkeys(
+            str(value or "").strip().casefold()
+            for value in values
+            if str(value or "").strip()
+        )
+    )
+    if len(normalized) > 50:
+        raise ValueError(f"{field} contains too many values")
+    if any(
+        not (value.startswith("kp_") or value.startswith("ki_"))
+        for value in normalized
+    ):
+        raise ValueError(f"{field} must use governed stable identities")
+    return normalized
+
+
+def _scope_leaves(
+    scope_keys: Sequence[str],
+    *,
+    diagnosis: Mapping[str, Any],
+    relations: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    if not scope_keys:
+        return ()
+    children: dict[str, list[str]] = {}
+
+    def _add_child(parent: str, child: str) -> None:
+        if not parent or not child or parent == child:
+            return
+        bucket = children.setdefault(parent, [])
+        if child not in bucket:
+            bucket.append(child)
+
+    for relation in relations:
+        if str(relation.get("relation_type") or "") != "parent":
+            continue
+        _add_child(str(relation.get("target_key") or ""), str(relation.get("source_key") or ""))
+    catalog = diagnosis.get("knowledge_catalog")
+    if isinstance(catalog, list):
+        for item in catalog:
+            if not isinstance(item, Mapping):
+                continue
+            _add_child(
+                str(item.get("parent_knowledge_key") or "").strip().casefold(),
+                str(item.get("knowledge_key") or "").strip().casefold(),
+            )
+    leaves: list[str] = []
+    seen: set[str] = set()
+
+    def walk(node: str, trail: frozenset[str]) -> None:
+        if not node or node in trail:
+            return
+        kids = children.get(node, ())
+        if not kids:
+            if node not in seen:
+                seen.add(node)
+                leaves.append(node)
+            return
+        next_trail = trail | {node}
+        for kid in kids:
+            walk(kid, next_trail)
+
+    for key in scope_keys:
+        walk(str(key), frozenset())
+    return tuple(leaves)
+
+
+def _apply_diagnosis_mastery(
+    snapshot: dict[tuple[str, str], dict[str, Any]],
+    diagnosis: Mapping[str, Any],
+    *,
+    resolver: CurrentKnowledgeResolver,
+) -> None:
+    """Prefer mastery already shown on the diagnosis page over a second pass."""
+
+    students = diagnosis.get("students")
+    if not isinstance(students, list):
+        return
+    for profile in students:
+        if not isinstance(profile, Mapping):
+            continue
+        student_id = str(profile.get("student_id") or "").strip()
+        if not student_id:
+            continue
+        weak_points = profile.get("weak_points")
+        if not isinstance(weak_points, list):
+            continue
+        for item in weak_points:
+            if not isinstance(item, Mapping):
+                continue
+            raw_value = item.get("mastery")
+            if raw_value is None:
+                continue
+            try:
+                value = float(raw_value)
+                count = int(item.get("evidence_count") or 0)
+            except (TypeError, ValueError):
+                continue
+            if count <= 0:
+                continue
+            raw_key = str(
+                item.get("knowledge_key") or item.get("knowledge_point") or ""
+            ).strip()
+            if not raw_key:
+                continue
+            resolved = resolver.resolve(raw_key)
+            keys = [match.stable_key for match in resolved]
+            if not keys and raw_key.casefold().startswith(("kp_", "ki_")):
+                keys = [raw_key.casefold()]
+            display = str(item.get("knowledge_point") or "").strip()
+            for key in keys:
+                node = resolver.node(key)
+                existing = snapshot.get((student_id, key), {})
+                snapshot[(student_id, key)] = {
+                    "stable_key": key,
+                    "display_name": (
+                        node.display_name if node is not None else display or key
+                    ),
+                    "mode": "current",
+                    "status": "available",
+                    "value": value,
+                    "evidence_count": count,
+                    "parameter_version": str(
+                        existing.get("parameter_version") or ""
+                    ),
+                    "source_question_refs": [],
+                    "explanations": [],
+                }
+
+
+def _ranked_leaf_keys(
+    *,
+    student_id: str,
+    leaves: Sequence[str],
+    mastery: Mapping[tuple[str, str], Mapping[str, Any]],
+    limit: int,
+) -> tuple[str, ...]:
+    scored: list[tuple[float, str]] = []
+    for key in leaves:
+        evidence = mastery.get((student_id, key))
+        if not isinstance(evidence, Mapping):
+            continue
+        value = evidence.get("value")
+        count = int(evidence.get("evidence_count") or 0)
+        if value is None or count <= 0:
+            continue
+        scored.append((float(value), key))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return tuple(key for _, key in scored[: max(0, int(limit))])
+
+
+def _ranked_group_leaf_keys(
+    *,
+    student_ids: Sequence[str],
+    leaves: Sequence[str],
+    mastery: Mapping[tuple[str, str], Mapping[str, Any]],
+    limit: int,
+) -> tuple[str, ...]:
+    scored: list[tuple[float, str]] = []
+    for key in leaves:
+        values: list[float] = []
+        for student_id in student_ids:
+            evidence = mastery.get((student_id, key))
+            if (
+                isinstance(evidence, Mapping)
+                and evidence.get("value") is not None
+                and int(evidence.get("evidence_count") or 0) > 0
+            ):
+                values.append(float(evidence["value"]))
+        if not values:
+            continue
+        scored.append((sum(values) / len(values), key))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return tuple(key for _, key in scored[: max(0, int(limit))])
 
 
 def _day_clock(value: datetime) -> datetime:

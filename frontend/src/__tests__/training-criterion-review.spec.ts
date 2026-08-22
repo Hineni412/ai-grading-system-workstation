@@ -51,10 +51,15 @@ const version: TrainingCriterionVersion = {
 function workspace(
   current: TrainingCriterionVersion | null = version,
 ): TrainingCriterionWorkspace {
+  const available = Boolean(
+    current
+    && current.quality_status === 'passed'
+    && (current.status === 'proposed' || current.status === 'approved')
+  )
   return {
     question_id: 17,
-    state: current?.status ?? 'missing',
-    available: false,
+    state: available ? 'available' : (current?.status ?? 'missing'),
+    available,
     revision: current ? 1 : 0,
     current_source_hash: 'b'.repeat(64),
     current_version: current,
@@ -188,22 +193,22 @@ describe('training criterion review', () => {
     })
   })
 
-  it('lets teachers approve when the only remaining note is a missing image', async () => {
+  it('lets quality-passed drafts enter training without an extra approval click', async () => {
     vi.spyOn(questionBankCriteriaApi, 'getWorkspace').mockResolvedValue(
       workspace({
         ...version,
-        quality_status: 'failed',
+        quality_status: 'passed',
         quality_codes: ['missing_actual_image'],
       }),
     )
     const host = await mountReview()
 
     expect(host.textContent).toContain('题目引用了图片，但当前图片内容不可用')
-    expect(host.textContent).toContain('可以批准')
+    expect(host.textContent).toContain('已可进入训练')
     expect(host.textContent).not.toContain('当前版本不能批准')
     const approve = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('批准用于以后训练'))
-    expect(approve?.disabled).toBe(false)
+    expect(approve).toBeUndefined()
   })
 
   it('requires confirmation before regenerating only the selected question', async () => {

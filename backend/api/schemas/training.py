@@ -143,18 +143,19 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
     )
     paper_mode: Literal["individual", "shared"] = "individual"
     target_keys: list[str] = Field(default_factory=list, max_length=50)
+    scope_keys: list[str] = Field(default_factory=list, max_length=50)
     target_names: list[str] = Field(default_factory=list, max_length=50)
     exclude_current_exam_originals: bool = True
 
-    @field_validator("target_keys")
+    @field_validator("target_keys", "scope_keys")
     @classmethod
-    def normalize_target_keys(cls, values: list[str]) -> list[str]:
+    def normalize_identity_keys(cls, values: list[str]) -> list[str]:
         result: list[str] = []
         for raw_value in values:
             value = str(raw_value or "").strip().casefold()
             if not value.startswith(("kp_", "ki_")):
                 raise ValueError(
-                    "target_keys must use governed stable identities"
+                    "keys must use governed stable identities"
                 )
             if value not in result:
                 result.append(value)
@@ -183,7 +184,7 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
                 "target_keys and target_names cannot both be provided"
             )
         if self.paper_mode == "shared" and not (
-            self.target_keys or self.target_names
+            self.target_keys or self.target_names or self.scope_keys
         ):
             raise ValueError(
                 "shared paper mode requires teacher-selected targets"

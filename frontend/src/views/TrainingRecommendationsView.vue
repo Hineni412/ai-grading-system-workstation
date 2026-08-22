@@ -32,6 +32,7 @@ const training = useTrainingStore()
 const students = ref<StudentSummary[]>([])
 const referenceState = ref<ReferenceState>('loading')
 const selectedTargetKeys = ref<string[]>([])
+const selectedRangeKeys = ref<string[]>([])
 const questionCount = ref(10)
 const expectedMinutes = ref(40)
 const difficultyMin = ref(2)
@@ -59,7 +60,7 @@ const pageCopy = computed(() => ({
   },
   student: {
     title: '按学生训练',
-    description: '用顶部筛选确定学生群体，查看所选群体的加权知识结构，再确定训练范围。',
+    description: '用顶部筛选确定学生群体，勾选章或小节作为训练范围；生成一人一卷时按每名学生的细知识点掌握情况配题。',
   },
   paper: {
     title: '生成试卷',
@@ -112,9 +113,23 @@ const groupScopeLabel = computed(() => {
   if (training.studentScope.classId) return `${training.studentScope.classId} · ${selectedStudentCount.value} 人`
   return `全部班级 · ${selectedStudentCount.value} 人`
 })
+const selectedRangeLabels = computed(() => {
+  const labels = new Map((training.diagnosis?.knowledge_catalog ?? []).map((item) => [
+    item.knowledge_key,
+    item.knowledge_point,
+  ]))
+  return selectedRangeKeys.value.map((key) => ({
+    key,
+    label: knowledgeLeafLabel(labels.get(key) ?? key),
+    fullLabel: labels.get(key) ?? key,
+  }))
+})
+const hasPaperSelection = computed(() => (
+  selectedRangeKeys.value.length > 0 || selectedTargetKeys.value.length > 0
+))
 const paperSettingsValid = computed(() => (
   Boolean(training.diagnosis)
-  && selectedTargetKeys.value.length > 0
+  && hasPaperSelection.value
   && stageRatioTotal.value === 100
   && questionCount.value >= 8
   && questionCount.value <= 12
@@ -205,6 +220,10 @@ function removeTarget(key: string): void {
   selectedTargetKeys.value = selectedTargetKeys.value.filter((item) => item !== key)
 }
 
+function removeRange(key: string): void {
+  selectedRangeKeys.value = selectedRangeKeys.value.filter((item) => item !== key)
+}
+
 function generatePaperDraft(): void {
   void paperDraft.value?.generate()
 }
@@ -252,6 +271,7 @@ watch(() => training.diagnosis, (diagnosis) => {
   }
   const validKeys = new Set((diagnosis?.knowledge_catalog ?? []).map((item) => item.knowledge_key))
   selectedTargetKeys.value = selectedTargetKeys.value.filter((key) => validKeys.has(key))
+  selectedRangeKeys.value = selectedRangeKeys.value.filter((key) => validKeys.has(key))
 }, { immediate: true })
 
 watch(() => sessionStore.selectedSessionId, (sessionId) => {
@@ -283,7 +303,7 @@ onBeforeUnmount(() => studentsController?.abort())
       <div v-if="training.diagnosis" class="training-basis">
         <strong>{{ selectedStudentCount }} 名学生</strong>
         <span>{{ training.diagnosis.knowledge_catalog?.length ?? 0 }} 个结构节点</span>
-        <span>{{ selectedTargetKeys.length }} 项已选</span>
+        <span>{{ selectedRangeKeys.length }} 个范围 · {{ selectedTargetKeys.length }} 项细点</span>
       </div>
     </header>
 
@@ -318,33 +338,37 @@ onBeforeUnmount(() => studentsController?.abort())
         <span>{{ scoreSourceSummary }}</span>
       </header>
 
-      <p v-if="training.analysisState === 'loading'" class="status-card">正在汇总学生与知识点……</p>
+      <p v-if="training.analysisState === 'loading' && !training.diagnosis" class="status-card">正在汇总学生与知识点……</p>
       <div v-else-if="training.analysisState === 'idle'" class="status-card empty-state">
         <p>选择学生和考试范围后，开始汇总掌握度。</p>
         <AppButton variant="primary" @click="analyze">开始汇总</AppButton>
       </div>
-      <div v-else-if="training.analysisState === 'empty'" class="status-card empty-state">
+      <div v-else-if="training.analysisState === 'empty' && !training.diagnosis" class="status-card empty-state">
         当前范围没有可用知识证据，请调整学生或考试范围。
       </div>
 
       <template v-else-if="training.diagnosis">
+        <p v-if="training.analysisState === 'loading'" class="training-updating">正在更新掌握汇总…</p>
         <ChapterTrainingMatrix
-          v-if="trainingMode === 'chapter'"
+          v-if="trainingMode === 'chapter' && training.analysisState !== 'empty'"
           v-model="selectedTargetKeys"
           :diagnosis="training.diagnosis"
           :group-scope-label="groupScopeLabel"
           @adjust-scope="openScopeFilters"
         />
 
-        <template v-else>
-          <TrainingKnowledgeStructure
-            v-model="selectedTargetKeys"
-            :diagnosis="training.diagnosis"
-            title="所选学生的加权知识结构"
-            description="按章、节逐层展开；横条表示所选学生的加权掌握度，灰底表示满量程，斜纹表示无证据。"
-            @focus="() => undefined"
-          />
-        </template>
+        <TrainingKnowledgeStructure
+          v-else-if="trainingMode !== 'chapter' && training.analysisState !== 'empty'"
+          v-model="selectedRangeKeys"
+          selection-kind="range"
+          :diagnosis="training.diagnosis"
+          title="所选学生的加权知识结构"
+          description="勾选章或小节作为训练范围；细知识点只作掌握情况参考，一人一卷时按每名学生自动配题。"
+          @focus="() => undefined"
+        />
+        <div v-else-if="training.analysisState === 'empty'" class="status-card empty-state">
+          当前范围没有可用知识证据，请调整学生或考试范围。
+        </div>
 
         <details v-if="training.diagnosis.warnings.length" class="training-data-note">
           <summary>数据说明（{{ training.diagnosis.warnings.length }}）</summary>
@@ -358,16 +382,16 @@ onBeforeUnmount(() => studentsController?.abort())
         <div>
           <p class="training-eyebrow">03 · 独立出卷页</p>
           <h2>出卷设置与草稿</h2>
-          <p>这里不再重复诊断图表，只承接前两页人工选中的学生与知识点。</p>
+          <p>这里不再重复诊断图表，只承接前面选定的学生、章/节范围或细知识点。</p>
         </div>
         <div class="paper-workspace__scope">
           <strong>{{ selectedStudentCount }} 人</strong>
-          <span>{{ selectedTargetKeys.length }} 个训练知识点</span>
+          <span>{{ selectedRangeKeys.length }} 个范围 · {{ selectedTargetKeys.length }} 个细点</span>
         </div>
       </header>
 
       <div v-if="!training.diagnosis" class="status-card empty-state">
-        请先回到“按章节训练”或“按学生训练”，确定学生与训练知识点。
+        请先回到“按章节训练”勾选细知识点，或回到“按学生训练”勾选章/节范围。
       </div>
       <template v-else>
         <div class="paper-console">
@@ -383,7 +407,7 @@ onBeforeUnmount(() => studentsController?.abort())
               <div class="paper-mode-options">
                 <label :class="{ 'is-selected': paperMode === 'individual' }">
                   <input v-model="paperMode" type="radio" value="individual" :disabled="workflowStage !== 'diagnosis'">
-                  <span><b>一人一卷</b><small>按每名学生的掌握证据分别选题</small></span>
+                  <span><b>一人一卷</b><small>在选定范围内按每名学生的细点掌握情况分别选题</small></span>
                 </label>
                 <label :class="{ 'is-selected': paperMode === 'shared' }">
                   <input v-model="paperMode" type="radio" value="shared" :disabled="workflowStage !== 'diagnosis'">
@@ -408,9 +432,18 @@ onBeforeUnmount(() => studentsController?.abort())
 
             <section class="paper-targets" aria-labelledby="paper-targets-title">
               <header>
-                <div><p class="training-eyebrow">目标</p><h3 id="paper-targets-title">本次训练知识点</h3></div>
-                <span>{{ selectedTargetKeys.length }} 项</span>
+                <div><p class="training-eyebrow">目标</p><h3 id="paper-targets-title">本次训练范围与知识点</h3></div>
+                <span>{{ selectedRangeKeys.length }} 个范围 · {{ selectedTargetKeys.length }} 项细点</span>
               </header>
+              <div v-if="selectedRangeLabels.length" class="paper-targets__rows">
+                <article v-for="target in selectedRangeLabels" :key="`range-${target.key}`">
+                  <span class="paper-targets__status is-mid"></span>
+                  <strong :title="target.fullLabel">{{ target.label }}</strong>
+                  <span>训练范围</span>
+                  <small>按学生细点配题</small>
+                  <button type="button" :disabled="workflowStage !== 'diagnosis'" :aria-label="`移除范围${target.label}`" @click="removeRange(target.key)">移除</button>
+                </article>
+              </div>
               <div v-if="selectedTargetLabels.length" class="paper-targets__rows">
                 <article v-for="target in selectedTargetLabels" :key="target.key">
                   <span class="paper-targets__status" :class="target.mastery === null ? 'is-empty' : target.mastery < .6 ? 'is-low' : target.mastery < .75 ? 'is-mid' : 'is-good'"></span>
@@ -420,8 +453,8 @@ onBeforeUnmount(() => studentsController?.abort())
                   <button type="button" :disabled="workflowStage !== 'diagnosis'" :aria-label="`移除${target.label}`" @click="removeTarget(target.key)">移除</button>
                 </article>
               </div>
-              <div v-else class="paper-targets__empty">
-                尚未选择知识点。请先在“按章节训练”或“按学生训练”中勾选。
+              <div v-if="!hasPaperSelection" class="paper-targets__empty">
+                尚未选择范围或知识点。一人一卷请到“按学生训练”勾选章/节；共同细点请到“按章节训练”勾选。
               </div>
             </section>
 
@@ -443,6 +476,7 @@ onBeforeUnmount(() => studentsController?.abort())
               :exclude-current-exam-originals="excludeCurrentOriginals"
               :paper-mode="paperMode"
               :target-keys="selectedTargetKeys"
+              :scope-keys="selectedRangeKeys"
               :disabled="!paperSettingsValid"
               @stage-change="workflowStage = $event"
               @state-change="draftRequestState = $event"
@@ -455,18 +489,19 @@ onBeforeUnmount(() => studentsController?.abort())
               <h3 id="paper-summary-title">确认后生成草稿</h3>
               <dl>
                 <div><dt>学生范围</dt><dd>{{ selectedStudentCount }} 人</dd></div>
-                <div><dt>训练知识点</dt><dd>{{ selectedTargetKeys.length }} 项</dd></div>
+                <div><dt>训练范围</dt><dd>{{ selectedRangeKeys.length }} 个</dd></div>
+                <div><dt>共同细点</dt><dd>{{ selectedTargetKeys.length }} 项</dd></div>
                 <div><dt>预计试卷</dt><dd>{{ expectedPaperCount }} 份</dd></div>
                 <div><dt>每卷题量</dt><dd>{{ questionCount }} 题</dd></div>
                 <div><dt>预计时长</dt><dd>{{ expectedMinutes }} 分钟</dd></div>
               </dl>
-              <p class="paper-console__mode-note">{{ paperMode === 'individual' ? '每名学生按各自证据选题。' : '所有学生使用同一套题，姓名和回收身份独立。' }}</p>
+              <p class="paper-console__mode-note">{{ paperMode === 'individual' ? (selectedRangeKeys.length ? '每名学生在选定章/节范围内按各自细点掌握情况选题。' : '每名学生按已选细点选题。') : '所有学生使用同一套题，姓名和回收身份独立。' }}</p>
               <label class="paper-console__exclude"><input v-model="excludeCurrentOriginals" type="checkbox" :disabled="workflowStage !== 'diagnosis'">排除本次考试原题</label>
             </section>
             <section class="paper-console__action">
               <template v-if="workflowStage === 'diagnosis'">
                 <strong>{{ paperSettingsValid ? '设置完整，可以生成' : '还需完成必要设置' }}</strong>
-                <span>{{ selectedTargetKeys.length ? '生成后先进入教师审核，不会直接形成正式试卷。' : '请先选择至少一个训练知识点。' }}</span>
+                <span>{{ hasPaperSelection ? '生成后先进入教师审核，不会直接形成正式试卷。' : '请先选择章/节范围或至少一个训练知识点。' }}</span>
                 <AppButton variant="primary" block data-testid="generate-paper-draft" :disabled="!paperSettingsValid || draftRequestState === 'loading'" @click="generatePaperDraft">
                   {{ draftRequestState === 'loading' ? '正在生成…' : `生成 ${expectedPaperCount} 份草稿` }}
                 </AppButton>
@@ -494,6 +529,7 @@ onBeforeUnmount(() => studentsController?.abort())
 .paper-workspace__heading h2 { margin: var(--space-1) 0 0; }
 .training-mode-panel__heading > span { color: var(--color-text-muted); font-size: var(--font-size-dense); }
 .training-data-note { margin: var(--space-3) var(--space-6) var(--space-6); color: var(--color-text-muted); }
+.training-updating { margin: 0; padding: 8px var(--space-6); color: var(--color-text-muted); font-size: var(--font-size-caption); line-height: var(--line-height-body); }
 .paper-workspace__heading p { margin: var(--space-1) 0 0; color: var(--color-text-muted); }
 .paper-workspace__scope { display: grid; text-align: right; }
 .paper-console { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--space-5); padding: var(--space-5); background: var(--color-bg-subtle); }

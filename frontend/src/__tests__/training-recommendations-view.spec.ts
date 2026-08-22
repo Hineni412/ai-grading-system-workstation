@@ -542,6 +542,13 @@ describe('training recommendations view', () => {
       .find((item) => item.textContent?.trim() === '更多筛选')!
       .click()
     await settle()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(0)
+    expect(host.textContent).toContain('输入姓名、学号，或设定班级、得分率后显示匹配学生')
+
+    const search = host.querySelector<HTMLInputElement>('input[aria-label="搜索学生"]')!
+    search.value = '匿名'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
     expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(2)
 
     const minimum = host.querySelector<HTMLInputElement>('input[aria-label="最低得分率"]')!
@@ -568,11 +575,16 @@ describe('training recommendations view', () => {
     expect(host.querySelector('.student-filter-strip')).toBeNull()
     expect(host.textContent).not.toContain('多选学生')
     expect(host.textContent).toContain('所选学生的加权知识结构')
+    expect(host.textContent).toContain('勾选章或小节作为训练范围')
 
     ;[...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((item) => item.textContent?.trim() === '更多筛选')!
       .click()
     await settle()
+    const search = host.querySelector<HTMLInputElement>('input[aria-label="搜索学生"]')!
+    search.value = 'S012'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
     expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(1)
     expect(host.querySelector('.evidence-scope__card-evidence')?.getAttribute('href'))
       .toContain('/training/evidence/12?from=student')
@@ -621,6 +633,10 @@ describe('training recommendations view', () => {
       .find((item) => item.textContent?.trim() === '更多筛选')!
       .click()
     await settle()
+    const search = host.querySelector<HTMLInputElement>('input[aria-label="搜索学生"]')!
+    search.value = '匿名'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
     host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生甲"]')!.click()
     await nextTick()
     host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
@@ -653,5 +669,44 @@ describe('training recommendations view', () => {
     expect(host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false)
     expect(host.textContent).not.toContain('章节学生热力图')
     expect(host.textContent).not.toContain('薄弱原因与评分证据')
+  })
+
+  it('lets student-mode range selection unlock one-paper-per-student drafts', async () => {
+    const { host, router } = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(host.textContent).toContain('群体知识结构'))
+    const rangeCheckbox = host.querySelector<HTMLInputElement>('.structure-range-check input')
+    expect(rangeCheckbox).not.toBeNull()
+    rangeCheckbox!.click()
+    await nextTick()
+    await router.push('/training?mode=paper')
+    await nextTick()
+    await vi.waitFor(() => expect(host.textContent).toContain('出卷设置与草稿'))
+    expect(host.textContent).toContain('训练范围')
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false)
+  })
+
+  it('keeps the knowledge structure visible while a new diagnosis is loading', async () => {
+    let finishSecond: ((value: TrainingDiagnosis) => void) | undefined
+    const second = new Promise<TrainingDiagnosis>((resolve) => {
+      finishSecond = resolve
+    })
+    trainingApiMock.diagnose
+      .mockResolvedValueOnce(diagnosis)
+      .mockImplementationOnce(() => second)
+    const { host } = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(host.textContent).toContain('所选学生的加权知识结构'))
+
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.trim() === '更多筛选')!
+      .click()
+    await settle()
+    host.querySelector<HTMLInputElement>('.evidence-scope__history input')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
+
+    expect(host.textContent).toContain('所选学生的加权知识结构')
+    expect(host.textContent).not.toContain('正在汇总学生与知识点')
+    expect(host.textContent).toContain('正在更新掌握汇总')
+    finishSecond?.(diagnosis)
+    await settle()
   })
 })

@@ -206,6 +206,9 @@ describe('personalized recommendation draft', () => {
     generate?.click()
     await settle()
 
+    expect(host.textContent).not.toContain('人工纳入')
+    expect(host.textContent).not.toContain('保守复习卷')
+
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(
       expect.objectContaining({
         target_keys: [],
@@ -215,7 +218,7 @@ describe('personalized recommendation draft', () => {
       }),
     )
     expect(host.textContent).toContain('直接巩固一元一次方程')
-    expect(host.textContent).toContain('3 个已批准判定点')
+    expect(host.textContent).toContain('3 个判定点')
     expect(host.textContent).toContain('尚未形成正式训练卷')
 
     const lock = [...host.querySelectorAll<HTMLButtonElement>('button')]

@@ -21,6 +21,7 @@ from question_bank.training_criteria import (
     QuestionAnalysisInputLoader,
     TrainingCriteriaDraft,
     TrainingCriterionModule,
+    usable_training_criterion,
 )
 
 from .manager import JobCancellationRequested, JobContext
@@ -97,11 +98,7 @@ def run_criterion_backfill_job(
         if not regenerate and (
             workspace["available"] or already_has_draft
         ):
-            version = (
-                workspace.get("approved_version")
-                if workspace["available"]
-                else current
-            )
+            version = usable_training_criterion(workspace) or current
             criterion_module.finish_backfill_item(
                 run_id=run_id,
                 question_id=question.question_id,

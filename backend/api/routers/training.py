@@ -257,6 +257,7 @@ def create_personalized_recommendation_draft(
                     if body.target_keys
                     else module.resolve_target_names(body.target_names)
                 ),
+                scope_keys=tuple(body.scope_keys),
                 exclude_current_exam_originals=(
                     body.exclude_current_exam_originals
                 ),

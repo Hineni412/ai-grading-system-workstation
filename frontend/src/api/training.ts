@@ -61,6 +61,7 @@ export interface PersonalizedRecommendationCreateRequest
   stage_ratios: TrainingStageRatios
   paper_mode?: 'individual' | 'shared'
   target_keys?: string[]
+  scope_keys?: string[]
   target_names: string[]
   exclude_current_exam_originals: boolean
 }

@@ -104,6 +104,12 @@ function clickApply(host: HTMLElement): void {
   host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
 }
 
+function setSearch(host: HTMLElement, value: string): void {
+  const input = host.querySelector<HTMLInputElement>('input[aria-label="搜索学生"]')!
+  input.value = value
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount()
   document.body.innerHTML = ''
@@ -120,6 +126,10 @@ describe('evidence scope filters queue', () => {
 
     clickButton(host, '更多筛选')
     await settle()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(0)
+    expect(host.textContent).toContain('输入姓名、学号，或设定班级、得分率后显示匹配学生')
+    setSearch(host, '匿名')
+    await nextTick()
     host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生甲"]')!.click()
     await nextTick()
     // 勾选后占位让位给 chips，行本身不增删，下方内容不位移。
@@ -138,6 +148,9 @@ describe('evidence scope filters queue', () => {
 
     clickButton(host, '更多筛选')
     await settle()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(0)
+    setSearch(host, '匿名')
+    await nextTick()
     const before = [...host.querySelectorAll('.evidence-scope__card-name b')]
       .map((node) => node.textContent)
     expect(before).toHaveLength(3)
@@ -194,6 +207,8 @@ describe('evidence scope filters queue', () => {
     const { host, applies } = await mountFilters()
     clickButton(host, '更多筛选')
     await settle()
+    setSearch(host, '匿名')
+    await nextTick()
 
     host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生乙"]')!.click()
     await nextTick()
@@ -233,6 +248,8 @@ describe('evidence scope filters queue', () => {
 
     clickButton(host, '更多筛选')
     await settle()
+    setSearch(host, '匿名')
+    await nextTick()
     expect(host.querySelector('.evidence-scope__roster')).not.toBeNull()
 
     host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生丙"]')!.click()
@@ -259,6 +276,8 @@ describe('evidence scope filters queue', () => {
     await nextTick()
     clickButton(host, '更多筛选')
     await settle()
+    setSearch(host, '匿名')
+    await nextTick()
     setScoreMin(host, '50')
     await nextTick()
     clickApply(host)
@@ -269,5 +288,25 @@ describe('evidence scope filters queue', () => {
     expect(scoped.scope.class_ids).toEqual(['七年级一班'])
     expect(scoped.scope.score_rate_min).toBeCloseTo(0.5)
     expect(scoped.scope).not.toHaveProperty('score_rate_max')
+  })
+
+  it('lists students after a score range or class is set without requiring a name search', async () => {
+    const { host } = await mountFilters()
+    clickButton(host, '更多筛选')
+    await settle()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(0)
+    expect(host.textContent).toContain('输入姓名、学号，或设定班级、得分率后显示匹配学生')
+
+    setScoreMin(host, '0')
+    const maximum = host.querySelector<HTMLInputElement>('input[aria-label="最高得分率"]')!
+    maximum.value = '100'
+    maximum.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(3)
+
+    setScoreMin(host, '80')
+    await nextTick()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(1)
+    expect(host.querySelector('.evidence-scope__card-name b')?.textContent).toBe('匿名学生乙')
   })
 })

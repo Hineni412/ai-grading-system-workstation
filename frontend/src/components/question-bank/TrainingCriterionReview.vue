@@ -43,14 +43,36 @@ const advisoryCodes = computed(() => (
   (current.value?.quality_codes ?? []).filter((code) => code === 'missing_actual_image')
 ))
 const canApprove = computed(() => canReview.value && blockingCodes.value.length === 0)
+const replacingApproved = computed(() => Boolean(
+  workspace.value?.approved_version
+  && current.value
+  && workspace.value.approved_version.version_id !== current.value.version_id
+))
+const showApproveButton = computed(() => canReview.value && (
+  !workspace.value?.available || replacingApproved.value
+))
 const statusCopy = computed(() => {
   if (workspace.value?.available) {
+    if (current.value?.status === 'proposed' && replacingApproved.value) {
+      return {
+        tone: 'available',
+        label: '以后生成的训练卷可用',
+        detail: '已批准版本继续有效；当前新版仍需核对后才会替换。',
+      }
+    }
+    if (current.value?.status === 'proposed') {
+      return {
+        tone: 'available',
+        label: '质量检查已通过，已可进入训练',
+        detail: advisoryCodes.value.length > 0
+          ? '题目配图当前不可用，只作提醒，不挡住进入训练。'
+          : '不必再点批准。如需修改，保存新版本后仍会自动可用。',
+      }
+    }
     return {
       tone: 'available',
       label: '以后生成的训练卷可用',
-      detail: current.value?.status === 'proposed'
-        ? '已批准版本继续有效；当前新版仍需核对。'
-        : '当前批准版已冻结，历史训练卷仍保留各自使用的旧版本。',
+      detail: '当前批准版已冻结，历史训练卷仍保留各自使用的旧版本。',
     }
   }
   const state = workspace.value?.state
@@ -438,6 +460,7 @@ onBeforeUnmount(() => loadController?.abort())
             退回修改
           </AppButton>
           <AppButton
+            v-if="showApproveButton"
             variant="primary"
             :disabled="writeState !== 'idle' || !canApprove"
             @click="review('approve')"
