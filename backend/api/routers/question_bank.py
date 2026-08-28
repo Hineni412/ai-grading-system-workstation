@@ -1866,6 +1866,7 @@ def list_question_facets(
     thoughts: Annotated[list[str] | None, Query()] = None,
     models: Annotated[list[str] | None, Query()] = None,
     special_types: Annotated[list[str] | None, Query()] = None,
+    error_types: Annotated[list[str] | None, Query()] = None,
     student_levels: Annotated[list[str] | None, Query()] = None,
     teaching_stages: Annotated[list[str] | None, Query()] = None,
     sub_skills: Annotated[list[str] | None, Query()] = None,
@@ -1881,6 +1882,7 @@ def list_question_facets(
     curriculum_sections: Annotated[list[str] | None, Query()] = None,
     tag_status: Literal["all", "tagged", "untagged"] = "all",
     analysis_status: Literal["all", "complete", "incomplete"] = "all",
+    teaching_progress_chapter: str | None = None,
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionFacetsResponse:
     _validate_difficulty_range(difficulty_min, difficulty_max)
@@ -1896,6 +1898,7 @@ def list_question_facets(
                 thoughts=tuple(thoughts or ()),
                 models=tuple(models or ()),
                 special_types=tuple(special_types or ()),
+                error_types=tuple(error_types or ()),
                 student_levels=tuple(student_levels or ()),
                 teaching_stages=tuple(teaching_stages or ()),
                 sub_skills=tuple(sub_skills or ()),
@@ -1911,6 +1914,7 @@ def list_question_facets(
                 curriculum_sections=tuple(curriculum_sections or ()),
                 tag_status=tag_status,
                 analysis_status=analysis_status,
+                teaching_progress_chapter=teaching_progress_chapter or "",
             )
         )
     except QuestionBankSnapshotError as exc:
@@ -1935,6 +1939,7 @@ def list_questions(
     thoughts: Annotated[list[str] | None, Query()] = None,
     models: Annotated[list[str] | None, Query()] = None,
     special_types: Annotated[list[str] | None, Query()] = None,
+    error_types: Annotated[list[str] | None, Query()] = None,
     student_levels: Annotated[list[str] | None, Query()] = None,
     teaching_stages: Annotated[list[str] | None, Query()] = None,
     sub_skills: Annotated[list[str] | None, Query()] = None,
@@ -1950,6 +1955,7 @@ def list_questions(
     curriculum_sections: Annotated[list[str] | None, Query()] = None,
     tag_status: Literal["all", "tagged", "untagged"] = "all",
     analysis_status: Literal["all", "complete", "incomplete"] = "all",
+    teaching_progress_chapter: str | None = None,
     sort: Literal[
         "difficulty_desc",
         "difficulty_asc",
@@ -1985,6 +1991,7 @@ def list_questions(
                 thoughts=tuple(thoughts or ()),
                 models=tuple(models or ()),
                 special_types=tuple(special_types or ()),
+                error_types=tuple(error_types or ()),
                 student_levels=tuple(student_levels or ()),
                 teaching_stages=tuple(teaching_stages or ()),
                 sub_skills=tuple(sub_skills or ()),
@@ -2002,6 +2009,7 @@ def list_questions(
                 analysis_status=analysis_status,
                 sort=sort,
                 criteria_needs_review=criteria_needs_review,
+                teaching_progress_chapter=teaching_progress_chapter or "",
             )
         )
     except QuestionBankSnapshotError as exc:

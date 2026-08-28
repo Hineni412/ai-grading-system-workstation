@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -12,7 +13,7 @@ from ..intake_draft import enforce_sop_human_decision_language
 from ..ordinary_database import OrdinaryWorkDatabase
 from ..roster_ref import SUBJECT_REF_PATTERN
 from .ports import WorkspaceAITaskPort
-from .triage_contract import TriageResult, parse_triage
+from .triage_contract import TriageResult, WorkItem, parse_triage
 
 
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9_-]{8,128}")
@@ -121,6 +122,10 @@ class ConversationStore:
     def __init__(self, database: OrdinaryWorkDatabase, ai_tasks: WorkspaceAITaskPort) -> None:
         self.database = database
         self.ai_tasks = ai_tasks
+        # 由 ClassTeacherIntake 在服务层接线：SOP 生成即生效的自动建单，
+        # 以及已建单会话补充轮的流程修订改道。两者失败都不能影响落库。
+        self.auto_adopt_sop: Any = None
+        self.sop_followup: Any = None
 
     def start(
         self,
@@ -202,6 +207,54 @@ class ConversationStore:
                 (size,),
             ).fetchall()
         return {"items": [dict(row) for row in rows]}
+
+    def pending_student_handoffs(
+        self,
+        subject_id: str,
+        *,
+        accepted_ref_ids: set[str] | None = None,
+    ) -> dict[str, object]:
+        """按学生列出仍待核对（pending/opened）的学生档案交接，
+        供学生档案抽屉提示「有一轮 AI 整理的更新待核对」。
+
+        学生编号有多套体系：抽屉/目录用 student_subject_links.subject_id（hex），
+        对话交接 ref 里存的是稳定学籍标识「班级|学号」，历史草稿还可能直接存
+        档案编号。本表所在库不保存身份映射，调用方需通过唯一映射表
+        student_subject_links（support 侧）解析出 accepted_ref_ids 一并传入。"""
+        clean = str(subject_id or "").strip()
+        if not clean or len(clean) > 200 or any(ord(char) < 32 for char in clean):
+            raise VaultError("class_teacher_subject_invalid", "学生编号无效", status_code=422)
+        accepted = {clean, *(accepted_ref_ids or set())}
+        if not self.database.exists:
+            return {"items": []}
+        with closing(self.database.connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT h.handoff_id, h.adoption_state, h.updated_at,
+                       d.subject_refs_json, d.content_json
+                FROM intake_handoffs h JOIN intake_drafts d ON d.draft_id=h.draft_id
+                WHERE h.adoption_state IN ('pending','opened')
+                  AND d.destination_key='class_teacher.student.record'
+                ORDER BY h.updated_at DESC
+                """
+            ).fetchall()
+        items: list[dict[str, object]] = []
+        for row in rows:
+            refs = json.loads(str(row["subject_refs_json"] or "[]"))
+            if not any(
+                isinstance(ref, dict) and str(ref.get("id") or "") in accepted
+                for ref in refs
+            ):
+                continue
+            content = json.loads(str(row["content_json"] or "{}"))
+            items.append({
+                "handoff_id": str(row["handoff_id"]),
+                "adoption_state": str(row["adoption_state"]),
+                "updated_at": str(row["updated_at"]),
+                "summary": str(content.get("summary") or "").strip()[:200],
+                "subject_id": clean,
+            })
+        return {"items": items[:5]}
 
     def delete(self, conversation_id: str) -> dict[str, object]:
         self._id(conversation_id, "会话编号")
@@ -354,6 +407,8 @@ class ConversationStore:
                 # later shared prepare also expires the older source revision.
                 pass
 
+        # 补充轮一律照常分诊；已有生效 SOP 事务时的冲突类改道在结果落库时
+        # 按工作项目标决定（见 apply_triage_result）。
         request = {
             "module": "class_teacher",
             "task_kind": "class_teacher.intake_triage",
@@ -525,6 +580,27 @@ class ConversationStore:
                         (conversation_id,),
                     ).fetchone()[0]
                 ) + 1
+                # 本会话已有生效的 SOP 事务时，冲突类补充改道既有事务的流程修订，
+                # 不再产生第二份 SOP 交接；其余工作项照常落库。
+                sop_items = tuple(
+                    item for item in result.work_items
+                    if item.destination_key == "class_teacher.affair.sop"
+                )
+                divert_to_affair = (
+                    self.sop_followup is not None
+                    and bool(sop_items)
+                    and self._adopted_sop_affair_id_in_connection(
+                        connection, conversation_id
+                    ) is not None
+                )
+                kept_items = (
+                    tuple(
+                        item for item in result.work_items
+                        if item.destination_key != "class_teacher.affair.sop"
+                    )
+                    if divert_to_affair
+                    else result.work_items
+                )
                 turn_id = uuid4().hex
                 task_id = f"audio-{operation_id}"
                 connection.execute(
@@ -534,7 +610,7 @@ class ConversationStore:
                         source_revision, teacher_message, assistant_message,
                         clarification_questions_json, task_id, task_state,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'response_persisted', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         turn_id,
@@ -545,22 +621,28 @@ class ConversationStore:
                         clean_message,
                         result.assistant_message,
                         _json(result.clarification_questions),
-                        task_id,
+                        None if divert_to_affair else task_id,
+                        "preparing" if divert_to_affair else "response_persisted",
                         timestamp,
                         timestamp,
                     ),
                 )
-                self._insert_work_items(
-                    connection,
-                    conversation_id,
-                    turn_id,
-                    result,
-                    timestamp,
-                )
+                if kept_items:
+                    self._insert_work_items(
+                        connection,
+                        conversation_id,
+                        turn_id,
+                        replace(result, work_items=kept_items),
+                        timestamp,
+                    )
                 state = (
-                    "needs_input"
-                    if result.clarification_questions and not result.work_items
-                    else "handoff_ready"
+                    ("handoff_ready" if kept_items else "teacher_confirmed")
+                    if divert_to_affair
+                    else (
+                        "needs_input"
+                        if result.clarification_questions and not result.work_items
+                        else "handoff_ready"
+                    )
                 )
                 connection.execute(
                     """
@@ -579,6 +661,62 @@ class ConversationStore:
                 self.ai_tasks.mark_handoff(handoff_id=handoff_id, state="stale")
             except Exception:
                 pass
+        if divert_to_affair:
+            followup = self.sop_followup(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                message=clean_message,
+                operation_id=operation_id,
+            )
+            if followup is None:
+                # 既有事务已结案或弃用：本轮不再改道，补落为常规交接。
+                timestamp = _iso()
+                with closing(self.database.connect()) as connection:
+                    with connection:
+                        updated = connection.execute(
+                            """
+                            UPDATE intake_turns
+                            SET task_id=?, task_state='response_persisted',
+                                updated_at=?
+                            WHERE turn_id=? AND task_state='preparing'
+                            """,
+                            (task_id, timestamp, turn_id),
+                        ).rowcount
+                        if int(updated):
+                            self._insert_work_items(
+                                connection, conversation_id, turn_id,
+                                replace(result, work_items=sop_items), timestamp,
+                            )
+                            connection.execute(
+                                "UPDATE intake_conversations SET revision=revision+1, state='handoff_ready', updated_at=? WHERE conversation_id=?",
+                                (timestamp, conversation_id),
+                            )
+                self._run_auto_adopt_sop(conversation_id, turn_id)
+            else:
+                followup_state = str(followup.get("task_state") or "response_persisted")
+                with closing(self.database.connect()) as connection:
+                    with connection:
+                        connection.execute(
+                            """
+                            UPDATE intake_turns
+                            SET task_id=COALESCE(NULLIF(?, ''), task_id), task_state=?,
+                                updated_at=?
+                            WHERE turn_id=?
+                            """,
+                            (
+                                str(followup.get("task_id") or ""),
+                                followup_state,
+                                _iso(),
+                                turn_id,
+                            ),
+                        )
+                        if followup_state == "failed_before_dispatch":
+                            connection.execute(
+                                "UPDATE intake_conversations SET state='failed', updated_at=? WHERE conversation_id=?",
+                                (_iso(), conversation_id),
+                            )
+        else:
+            self._run_auto_adopt_sop(conversation_id, turn_id)
         return self.get(conversation_id)
 
     def apply_triage_result(
@@ -590,11 +728,15 @@ class ConversationStore:
     ) -> dict[str, object]:
         result = parse_triage(payload)
         timestamp = _iso()
+        conversation_id = ""
+        teacher_message = ""
+        diverted = False
+        deferred_items: tuple[WorkItem, ...] = ()
         with closing(self.database.connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 turn = connection.execute(
-                    "SELECT conversation_id, task_id, task_state FROM intake_turns WHERE turn_id=?",
+                    "SELECT conversation_id, task_id, task_state, teacher_message FROM intake_turns WHERE turn_id=?",
                     (turn_id,),
                 ).fetchone()
                 if turn is None:
@@ -612,16 +754,47 @@ class ConversationStore:
                 if int(existing):
                     connection.rollback()
                     return self.get(conversation_id)
-                connection.execute(
-                    """
-                    UPDATE intake_turns SET assistant_message=?,
-                        clarification_questions_json=?, task_id=?, task_state='response_persisted',
-                        updated_at=? WHERE turn_id=?
-                    """,
-                    (result.assistant_message, _json(result.clarification_questions), task_id, timestamp, turn_id),
+                teacher_message = str(turn["teacher_message"])
+                sop_items = tuple(
+                    item for item in result.work_items
+                    if item.destination_key == "class_teacher.affair.sop"
                 )
-                self._insert_work_items(connection, conversation_id, turn_id, result, timestamp)
-                state = "needs_input" if result.clarification_questions and not result.work_items else "handoff_ready"
+                diverted = bool(sop_items) and self.sop_followup is not None and (
+                    self._adopted_sop_affair_id_in_connection(connection, conversation_id)
+                    is not None
+                )
+                if diverted:
+                    # 已有生效 SOP 事务时，冲突类补充不落新交接，改道既有事务的
+                    # 流程修订（轮次的 AI 回复由修订任务回写）；其余工作项照常落库。
+                    deferred_items = sop_items
+                    kept = tuple(
+                        item for item in result.work_items
+                        if item.destination_key != "class_teacher.affair.sop"
+                    )
+                    connection.execute(
+                        """
+                        UPDATE intake_turns SET clarification_questions_json=?,
+                            task_state='preparing', updated_at=? WHERE turn_id=?
+                        """,
+                        (_json(result.clarification_questions), timestamp, turn_id),
+                    )
+                    if kept:
+                        self._insert_work_items(
+                            connection, conversation_id, turn_id,
+                            replace(result, work_items=kept), timestamp,
+                        )
+                    state = "handoff_ready" if kept else "teacher_confirmed"
+                else:
+                    connection.execute(
+                        """
+                        UPDATE intake_turns SET assistant_message=?,
+                            clarification_questions_json=?, task_id=?, task_state='response_persisted',
+                            updated_at=? WHERE turn_id=?
+                        """,
+                        (result.assistant_message, _json(result.clarification_questions), task_id, timestamp, turn_id),
+                    )
+                    self._insert_work_items(connection, conversation_id, turn_id, result, timestamp)
+                    state = "needs_input" if result.clarification_questions and not result.work_items else "handoff_ready"
                 connection.execute(
                     "UPDATE intake_conversations SET revision=revision+1, state=?, updated_at=? WHERE conversation_id=?",
                     (state, timestamp, conversation_id),
@@ -630,7 +803,80 @@ class ConversationStore:
             except Exception:
                 connection.rollback()
                 raise
+        if diverted:
+            self._complete_diverted_turn(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                message=teacher_message,
+                result=result,
+                deferred_items=deferred_items,
+            )
+        else:
+            self._run_auto_adopt_sop(conversation_id, turn_id)
         return self.get(conversation_id)
+
+    def _complete_diverted_turn(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        message: str,
+        result: TriageResult,
+        deferred_items: tuple[WorkItem, ...],
+    ) -> None:
+        """改道轮次落库后：以教师原文对既有事务发起同步修订（按轮次幂等，
+        最多发送一次）；既有事务已结案或弃用时补落为常规交接。"""
+        followup = self.sop_followup(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            message=message,
+            operation_id=f"sop-divert-{turn_id}",
+        )
+        timestamp = _iso()
+        if followup is None:
+            with closing(self.database.connect()) as connection:
+                with connection:
+                    updated = connection.execute(
+                        """
+                        UPDATE intake_turns SET assistant_message=?,
+                            task_state='response_persisted', updated_at=?
+                        WHERE turn_id=? AND task_state='preparing'
+                        """,
+                        (result.assistant_message, timestamp, turn_id),
+                    ).rowcount
+                    if int(updated):
+                        self._insert_work_items(
+                            connection, conversation_id, turn_id,
+                            replace(result, work_items=deferred_items), timestamp,
+                        )
+                        connection.execute(
+                            "UPDATE intake_conversations SET revision=revision+1, state='handoff_ready', updated_at=? WHERE conversation_id=?",
+                            (timestamp, conversation_id),
+                        )
+            self._run_auto_adopt_sop(conversation_id, turn_id)
+            return
+        followup_state = str(followup.get("task_state") or "queued")
+        with closing(self.database.connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE intake_turns
+                    SET task_id=COALESCE(NULLIF(?, ''), task_id),
+                        task_state=?, updated_at=?
+                    WHERE turn_id=?
+                    """,
+                    (
+                        str(followup.get("task_id") or ""),
+                        followup_state,
+                        timestamp,
+                        turn_id,
+                    ),
+                )
+                if followup_state == "failed_before_dispatch":
+                    connection.execute(
+                        "UPDATE intake_conversations SET state='failed', updated_at=? WHERE conversation_id=?",
+                        (timestamp, conversation_id),
+                    )
 
     def mark_task_outcome(
         self,
@@ -1198,6 +1444,84 @@ class ConversationStore:
                 "needs_input": str(conversation["state"]) == "needs_input",
             }
 
+    def adopted_sop_affair_id(self, conversation_id: str) -> str | None:
+        if not self.database.exists:
+            return None
+        with closing(self.database.connect()) as connection:
+            return self._adopted_sop_affair_id_in_connection(connection, conversation_id)
+
+    @staticmethod
+    def _adopted_sop_affair_id_in_connection(connection: Any, conversation_id: str) -> str | None:
+        row = connection.execute(
+            """
+            SELECT h.formal_object_id FROM intake_handoffs h
+            JOIN intake_drafts d ON d.draft_id=h.draft_id
+            WHERE d.conversation_id=? AND h.adoption_state='adopted'
+              AND d.destination_key='class_teacher.affair.sop'
+              AND h.formal_object_id IS NOT NULL
+            ORDER BY h.updated_at DESC LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
+        return str(row["formal_object_id"]) if row is not None else None
+
+    def complete_flow_revision_turn(
+        self,
+        *,
+        turn_id: str,
+        task_id: str,
+        assistant_message: str,
+    ) -> None:
+        """补充轮改道的流程修订落定后，把 AI 回复写回会话轮次并结束本轮。"""
+        timestamp = _iso()
+        with closing(self.database.connect()) as connection:
+            with connection:
+                turn = connection.execute(
+                    "SELECT conversation_id, task_id, task_state FROM intake_turns WHERE turn_id=?",
+                    (turn_id,),
+                ).fetchone()
+                if turn is None:
+                    return
+                bound_task = str(turn["task_id"] or "")
+                if bound_task and bound_task != task_id:
+                    raise VaultError("class_teacher_task_conflict", "任务与会话轮次不匹配", status_code=409)
+                if str(turn["task_state"]) == "response_persisted":
+                    return
+                conversation_id = str(turn["conversation_id"])
+                connection.execute(
+                    """
+                    UPDATE intake_turns SET assistant_message=?, task_id=?,
+                        task_state='response_persisted', updated_at=?
+                    WHERE turn_id=?
+                    """,
+                    (str(assistant_message or "")[:2000], task_id, timestamp, turn_id),
+                )
+                remaining = connection.execute(
+                    """
+                    SELECT COUNT(*) FROM intake_handoffs h
+                    JOIN intake_drafts d ON d.draft_id=h.draft_id
+                    WHERE d.conversation_id=? AND h.adoption_state IN ('pending','opened','adoption_started')
+                    """,
+                    (conversation_id,),
+                ).fetchone()[0]
+                connection.execute(
+                    "UPDATE intake_conversations SET revision=revision+1, state=?, updated_at=? WHERE conversation_id=?",
+                    (
+                        "handoff_ready" if int(remaining) else "teacher_confirmed",
+                        timestamp,
+                        conversation_id,
+                    ),
+                )
+
+    def _run_auto_adopt_sop(self, conversation_id: str, turn_id: str) -> None:
+        if self.auto_adopt_sop is None:
+            return
+        try:
+            self.auto_adopt_sop(conversation_id=conversation_id, turn_id=turn_id)
+        except Exception:
+            # 自动建单失败保留待确认草稿页行为，不影响分诊结果落库。
+            pass
+
     def _outcome_after_dispatch_error(self, operation_id: str) -> tuple[str, str]:
         try:
             snapshot = self.ai_tasks.get(operation_id=operation_id)
@@ -1330,8 +1654,17 @@ class ConversationStore:
             subject_id = None
             if len(subject_refs) == 1 and isinstance(subject_refs[0], dict):
                 subject_id = str(subject_refs[0].get("id") or "") or None
+            formal_object_id = row_values.get("formal_object_id")
+            affair_id = (
+                str(formal_object_id)
+                if str(row_values.get("adoption_state") or "") == "adopted"
+                and destination == "class_teacher.affair.sop"
+                and formal_object_id
+                else None
+            )
             results.append({
                 **row_values,
+                "affair_id": affair_id,
                 "missing_fields": missing_fields,
                 "subject_ref_count": len(subject_refs),
                 "subject_id": subject_id,
@@ -1398,6 +1731,13 @@ class ConversationStore:
             "destination_key": str(row["destination_key"]),
             "adoption_id": str(row["adoption_id"]),
             "adoption_state": str(row["adoption_state"]),
+            "affair_id": (
+                str(row["formal_object_id"])
+                if str(row["adoption_state"]) == "adopted"
+                and str(row["destination_key"]) == "class_teacher.affair.sop"
+                and row["formal_object_id"]
+                else None
+            ),
             "content": content,
             "subject_refs": json.loads(str(row["subject_refs_json"])),
             "missing_fields": _unresolved_missing_fields(

@@ -107,4 +107,22 @@ describe('class teacher shell navigation', () => {
       handoff: 'handoff-12345',
     })
   })
+
+  it('keeps an opaque affair reference on the affairs surface and writes it back on navigate', async () => {
+    const affair = 'affair-1234567'
+    const { router, routeState } = await mountAt(`/class-teacher?surface=affairs&affair=${affair}`)
+
+    expect(router.currentRoute.value.query).toEqual({ surface: 'affairs', affair })
+
+    await routeState.navigate({ surface: 'affairs', affairId: null })
+    expect(router.currentRoute.value.query).toEqual({ surface: 'affairs' })
+    await routeState.navigate({ surface: 'affairs', affairId: affair })
+    expect(router.currentRoute.value.query).toEqual({ surface: 'affairs', affair })
+  })
+
+  it('drops an affair reference outside the affairs surface', async () => {
+    const { router } = await mountAt(`/class-teacher?surface=calendar&range=week&affair=${'a'.repeat(16)}`)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(router.currentRoute.value.query).toEqual({ surface: 'home' })
+  })
 })

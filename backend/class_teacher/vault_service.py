@@ -165,6 +165,7 @@ class VaultService:
             self._key_provider,
             self.support.ensure_subject_in_connection,
             roster_source=roster_source,
+            projections=self.projections,
         )
         self.attention = AttentionService(
             self.database,
@@ -189,6 +190,9 @@ class VaultService:
         self.student_cards.academic_summarizer = self.academic.ai_summary
         # 方案完成评「有效」时由支持记录服务回写学生当前档案。
         self.support.student_cards = self.student_cards
+        # SOP 档案待确认草稿的确认动作要写支持记录与当前档案（迟绑定避免构造环）。
+        self.sop.support_records = self.support
+        self.sop.student_cards = self.student_cards
         self._initialize_business_facades()
         from .intake import ClassTeacherIntake
 

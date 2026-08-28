@@ -344,6 +344,7 @@ class AffairWorkspace:
             "teacher_decision": "sop.decision.record",
             "close": "sop.affair.close",
             "reopen": "sop.affair.reopen",
+            "discard": "sop.affair.discard",
         }.get(command)
         if operation_type is None:
             raise VaultError("sop_command_invalid", "事务命令无效", status_code=422)
@@ -451,6 +452,8 @@ class AffairWorkspace:
             current_count = int(counts["current_count"] or 0)
             if str(affair_row["state"]) == "closed":
                 state = "completed"
+            elif str(affair_row["state"]) == "discarded":
+                state = "cancelled"
             elif int(counts["in_progress_count"] or 0):
                 state = "in_progress"
             elif current_count and int(counts["waiting_count"] or 0) == current_count:
@@ -502,6 +505,15 @@ class AffairWorkspace:
             )
         elif command == "reopen":
             changed = self.sop.reopen_affair(
+                token=token,
+                affair_id=affair_id,
+                operation_id=operation_id,
+                revision=int(before["revision"]),
+                reason=str(reason or ""),
+                transaction_hook=enqueue_projection,
+            )
+        elif command == "discard":
+            changed = self.sop.discard_affair(
                 token=token,
                 affair_id=affair_id,
                 operation_id=operation_id,

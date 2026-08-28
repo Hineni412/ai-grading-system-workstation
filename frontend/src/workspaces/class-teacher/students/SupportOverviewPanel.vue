@@ -55,7 +55,7 @@ onMounted(() => { void load() })
         <section class="block">
           <h3>近期要跟进</h3>
           <p v-if="!dueSoon.length" class="hint">近期 {{ overview.review_soon_days }} 天内没有到期复查。</p>
-          <button v-for="item in dueSoon" :key="item.subject_id" type="button" class="row" @click="emit('select', item.subject_id)">
+          <button v-for="item in dueSoon" :key="item.subject_id" type="button" class="row" @click="emit('select', item.student_ref ?? item.subject_id)">
             <strong>{{ item.display_name }}</strong>
             <span>{{ formatClassLabel(item.class_label) }}</span>
             <small>复查日期 {{ day(item.next_review_at) }}</small>
@@ -63,7 +63,7 @@ onMounted(() => { void load() })
         </section>
         <section v-if="others.length" class="block">
           <h3>其他有记录的学生</h3>
-          <button v-for="item in others" :key="item.subject_id" type="button" class="row" @click="emit('select', item.subject_id)">
+          <button v-for="item in others" :key="item.subject_id" type="button" class="row" @click="emit('select', item.student_ref ?? item.subject_id)">
             <strong>{{ item.display_name }}</strong>
             <span>{{ formatClassLabel(item.class_label) }}</span>
             <small>{{ item.next_review_at ? `复查 ${day(item.next_review_at)}` : `最近记录 ${day(item.last_record_at) || '—'}` }} · {{ item.active_record_count }} 条</small>
@@ -71,7 +71,7 @@ onMounted(() => { void load() })
         </section>
         <section class="block">
           <h3>全班最近支持记录</h3>
-          <button v-for="item in overview.recent_records" :key="item.record_id" type="button" class="row row--record" @click="emit('select', item.subject_id)">
+          <button v-for="item in overview.recent_records" :key="item.record_id" type="button" class="row row--record" @click="emit('select', item.student_ref ?? item.subject_id)">
             <span class="record-line"><strong>{{ item.display_name }}</strong><em>{{ kindLabels[item.record_kind] ?? item.record_kind }}</em><time>{{ day(item.observed_at) }}</time></span>
             <span class="excerpt">{{ item.excerpt }}</span>
           </button>

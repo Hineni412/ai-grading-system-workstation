@@ -11,7 +11,8 @@ class HomeroomPreferenceUpdate(BaseModel):
 
 
 class ConversationStartRequest(BaseModel):
-    subject_id: str | None = Field(default=None, min_length=8, max_length=128)
+    # 对外学生编号（稳定学籍标识「班级|学号」，可短于 8 字符），兼容旧 uuid。
+    subject_id: str | None = Field(default=None, min_length=1, max_length=240)
 
 
 class TurnAppendRequest(BaseModel):

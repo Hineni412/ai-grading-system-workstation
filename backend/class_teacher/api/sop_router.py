@@ -12,10 +12,13 @@ from .sop_schemas import (
     AffairCloseRequest,
     AffairCommandRequest,
     AffairCreateRequest,
+    AffairDiscardRequest,
     AffairDraftRequest,
     AffairDraftResponse,
     AffairFlowRevisionDecideRequest,
     AffairListResponse,
+    AffairProfileDraftCommandRequest,
+    AffairProfileDraftResponse,
     AffairReopenRequest,
     AffairResponse,
     AffairSyncUpdateRequest,
@@ -267,6 +270,73 @@ def create_sop_router() -> APIRouter:
                 operation_id=body.operation_id,
                 revision=body.revision,
                 reason=body.reason,
+            )
+        )
+
+    @router.post(
+        "/sop/affairs/{affair_id}/discard",
+        response_model=AffairWorkspaceResponse,
+    )
+    def discard_affair(
+        affair_id: str,
+        request: Request,
+        body: AffairDiscardRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).affairs.advance(
+                token="",
+                affair_id=affair_id,
+                command="discard",
+                operation_id=body.operation_id,
+                expected_revision=body.revision,
+                reason=body.reason,
+            )
+        )
+
+    @router.post(
+        "/sop/affairs/{affair_id}/profile-drafts/{draft_id}/confirm",
+        response_model=AffairProfileDraftResponse,
+    )
+    def confirm_profile_draft(
+        affair_id: str,
+        draft_id: str,
+        request: Request,
+        body: AffairProfileDraftCommandRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).sop.confirm_profile_update_draft(
+                token="",
+                affair_id=affair_id,
+                draft_id=draft_id,
+                operation_id=body.operation_id,
+            )
+        )
+
+    @router.post(
+        "/sop/affairs/{affair_id}/profile-drafts/{draft_id}/discard",
+        response_model=AffairProfileDraftResponse,
+    )
+    def discard_profile_draft(
+        affair_id: str,
+        draft_id: str,
+        request: Request,
+        body: AffairProfileDraftCommandRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).sop.discard_profile_update_draft(
+                token="",
+                affair_id=affair_id,
+                draft_id=draft_id,
+                operation_id=body.operation_id,
             )
         )
 

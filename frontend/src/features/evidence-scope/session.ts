@@ -5,7 +5,7 @@ const STORAGE_KEY = 'p4-evidence-scope-v1'
 
 export function loadEvidenceScope(): GraphQueryInput | null {
   try {
-    const raw = globalThis.sessionStorage?.getItem(STORAGE_KEY)
+    const raw = globalThis.localStorage?.getItem(STORAGE_KEY)
     if (!raw) return null
     return normalizeGraphQuery(JSON.parse(raw) as GraphQueryInput)
   } catch {
@@ -15,7 +15,7 @@ export function loadEvidenceScope(): GraphQueryInput | null {
 
 export function saveEvidenceScope(query: GraphQueryInput): void {
   try {
-    globalThis.sessionStorage?.setItem(
+    globalThis.localStorage?.setItem(
       STORAGE_KEY,
       JSON.stringify(normalizeGraphQuery(query)),
     )

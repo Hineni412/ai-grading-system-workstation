@@ -23,6 +23,7 @@ export interface AffairSummary {
 
 export interface AffairStep {
   step_instance_id: string
+  key?: string
   title: string
   details?: string | null
   state: string
@@ -32,11 +33,41 @@ export interface AffairStep {
   decision_key?: string | null
   decision_prompt?: string | null
   decision_options?: Array<{ value: string; label: string }>
+  depends_on?: string[]
   activation?: { decision_key: string; allowed_values: string[] } | null
+  communication_templates?: Array<Record<string, unknown>>
   origin?: string | null
+  result?: string | null
 }
 
-export interface AffairDraft { step_instance_id: string; draft_kind: string; revision: number }
+export interface AffairParticipant {
+  participant_id: string
+  reference: string
+  subject_id?: string | null
+  student_ref?: string | null
+}
+
+export interface AffairProfileDraft {
+  draft_id: string
+  affair_id: string
+  subject_id: string
+  student_ref?: string | null
+  display_name?: string
+  state: 'pending' | 'confirmed' | 'discarded'
+  revision: number
+  record_kind?: string
+  source?: string
+  basis?: string | null
+  record_summary?: string
+  scene?: string
+  observed_at?: string
+  review_at?: string | null
+  expires_at?: string | null
+  profile_update?: Record<string, unknown>
+  confirmed_at?: string | null
+}
+
+export interface AffairDraft { step_instance_id: string; draft_kind: string; revision: number; text?: string }
 export interface AffairFlowRevisionItem {
   item_id: string
   kind: 'add_step' | 'revise_step' | 'note'
@@ -74,6 +105,11 @@ export interface AffairDetail extends AffairSummary {
   completed_steps: AffairStep[]
   preview_steps: AffairStep[]
   drafts: AffairDraft[]
+  participants?: AffairParticipant[]
+  decisions?: Array<{ decision_id: string; step_instance_id: string | null; summary: string; decision_key?: string | null; selected_option?: string | null }>
+  to_verify?: string[]
+  discard_reason?: string | null
+  profile_update_drafts?: AffairProfileDraft[]
   school_config_gaps?: string[]
   emergency_prompt?: string | null
   flow_revisions?: AffairFlowRevision[]
@@ -82,6 +118,8 @@ export interface AffairDetail extends AffairSummary {
 
 export interface DirectorySubject {
   subject_id: string
+  // 对外学生编号：稳定学籍标识「班级|学号」；subject_id 为内部档案编号。
+  student_ref: string
   display_name: string
   source_student_id: string
   class_label: string | null
@@ -94,6 +132,11 @@ export interface DirectorySubject {
   roster_state?: 'active' | 'historical' | 'manual'
   revision?: number
   profile_state?: 'created' | 'not_created'
+}
+
+// 调学生相关接口统一使用对外编号 student_ref；旧数据缺少该字段时退回内部编号。
+export function studentRefOf(subject: { student_ref?: string | null; subject_id: string }): string {
+  return subject.student_ref || subject.subject_id
 }
 
 export interface ExistingRosterStudent {
@@ -177,15 +220,16 @@ export interface AcademicAnalysis {
   applied_filters?: { time_range: string; comparison_series: string | null; subject_name: string | null; comparable_only: boolean }
 }
 
-export interface AcademicProfilePoint { occurred_on: string | null; term_label: string; session_title?: string | null; rank: number | null; participant_count?: number | null; relative_position?: number | null; result_state?: string | null }
+export interface AcademicProfilePoint { occurred_on: string | null; term_label: string; short_label?: string; grade_level?: string | null; session_title?: string | null; rank: number | null; participant_count?: number | null; relative_position?: number | null; result_state?: string | null }
 export interface AcademicProfileSubject { subject_name: string; latest: (AcademicProfilePoint & { score?: number | null; class_rank?: number | null }) | null; rank_delta: number | null; points: AcademicProfilePoint[]; attention: boolean }
 export interface AcademicProfile {
   current: {
     session_title: string | null; occurred_on: string | null; term_label: string
+    short_label?: string
     grade?: string | null; term?: string | null
     score: number | null; rank: number | null; class_rank: number | null
     participant_count: number | null; top_ratio: number | null
-    previous: { session_title: string | null; occurred_on: string | null; term_label: string; rank: number | null; participant_count: number | null } | null
+    previous: { session_title: string | null; occurred_on: string | null; term_label: string; short_label?: string; rank: number | null; participant_count: number | null } | null
     rank_delta: number | null
   } | null
   trend: { label: string; step_deltas: number[]; session_count: number }
@@ -196,8 +240,8 @@ export interface AcademicProfile {
   basis: { total_session_count: number; grade: string | null }
 }
 
-export interface AcademicPoint { evidence_version_id: string; session_id?: string; subject_name: string; result_state: string; score: number | null; occurred_on: string; measure_role?: string; rank?: number | null; class_rank?: number | null; participant_count?: number | null; relative_position?: number | null; is_comparable?: boolean; comparable_outputs?: string[] }
-export interface AcademicSession { session_id: string; title: string; occurred_on: string; comparison_series?: string | null; metadata_complete: boolean; grade?: string | null; term?: string | null; academic_year?: string | null; evidence: AcademicPoint[] }
+export interface AcademicPoint { evidence_version_id: string; session_id?: string; subject_name: string; result_state: string; score: number | null; occurred_on: string; grade_level?: string | null; measure_role?: string; rank?: number | null; class_rank?: number | null; participant_count?: number | null; relative_position?: number | null; max_score?: number | null; is_comparable?: boolean; comparable_outputs?: string[] }
+export interface AcademicSession { session_id: string; title: string; occurred_on: string; short_label?: string; comparison_series?: string | null; metadata_complete: boolean; grade?: string | null; term?: string | null; exam_type?: string | null; academic_year?: string | null; evidence: AcademicPoint[] }
 export interface ComparisonSegment { overall_status?: string; dimensions: { rank: { status: string }; score: { status: string } } }
 export interface AcademicSeries { subject_name: string; points: AcademicPoint[]; segments: ComparisonSegment[] }
 export interface RankChangePair { subject_name: string; from: number; to: number; delta?: number; rank_scope?: string | null; from_rank?: number | null; to_rank?: number | null; rank_delta?: number | null }
@@ -206,6 +250,7 @@ export interface AttentionCard { attention_card_id: string; revision: number; st
 
 export interface SupportOverviewFollowUp {
   subject_id: string
+  student_ref?: string
   display_name: string
   class_label: string | null
   next_review_at: string | null
@@ -217,6 +262,7 @@ export interface SupportOverviewFollowUp {
 export interface SupportOverviewRecord {
   record_id: string
   subject_id: string
+  student_ref?: string
   display_name: string
   class_label: string | null
   record_kind: string
@@ -235,26 +281,89 @@ export interface AcademicSessionSummary {
   session_id: string
   title: string
   occurred_on: string
+  short_label?: string
   comparison_series: string | null
   subject_names: string[]
   member_count: number
   metadata_complete: boolean
+  grade?: string | null
+  term?: string | null
+  exam_type?: string | null
+  academic_year?: string | null
 }
 
 export interface AcademicSubjectStats {
   subject_name: string
   count: number
   average: number
+  // 总体标准差（标准分雷达用）；少于 2 个有效分数时为 null
+  stddev?: number | null
   maximum: number
   minimum: number
+  average_rank: number | null
+  top50_count: number
+  top100_count: number
+  front30pct_count: number | null
   bands: Array<{ label: string; count: number }>
+  // 等级人数（固定段序 A+…C+其他）；该科无人带等级时为 null/缺省，前端回退得分率分段
+  grade_counts?: Array<{ label: string; count: number }> | null
 }
 
 export interface AcademicOverview {
   sessions: AcademicSessionSummary[]
-  latest_session: { session_id: string; title: string; occurred_on: string; subjects: AcademicSubjectStats[] } | null
-  attention_students: Array<{ subject_id: string; display_name: string; class_label: string | null; pending_count: number }>
+  latest_session: { session_id: string; title: string; occurred_on: string; short_label?: string; subjects: AcademicSubjectStats[] } | null
+  attention_students: Array<{ subject_id: string; student_ref?: string; display_name: string; class_label: string | null; pending_count: number }>
   attention_pending_count: number
+}
+
+export interface AcademicSessionClassResults {
+  session_id: string
+  title: string
+  occurred_on: string
+  short_label?: string
+  participant_count: number | null
+  subjects: Array<{
+    subject_name: string
+    max_score: number | null
+    stats: AcademicSubjectStats
+  }>
+  students: Array<{
+    subject_id: string
+    student_ref?: string
+    display_name: string
+    class_label: string | null
+    total_rank: number | null
+    results: Record<string, {
+      score: number | null
+      rank: number | null
+      class_rank: number | null
+      relative_position: number | null
+      max_score: number | null
+      grade_level?: string | null
+      result_state: string
+    }>
+  }>
+}
+
+export interface AcademicClassTrend {
+  sessions: Array<{
+    session_id: string
+    occurred_on: string
+    title: string
+    short_label?: string
+    term: string | null
+    grade: string | null
+    subjects: Array<{
+      subject_name: string
+      average: number
+      count: number
+      max_score: number | null
+      average_rank: number | null
+      top50_count: number
+      top100_count: number
+      front30pct_count: number | null
+    }>
+  }>
 }
 
 export const affairR1Api = {
@@ -291,6 +400,25 @@ export const affairR1Api = {
       method: 'POST', headers: writeHeaders(),
       body: { accepted_item_ids: acceptedItemIds, expected_revision: affair.revision, operation_id: operationId() },
       decode: (value) => record(value) as unknown as AffairDetail,
+    })
+  },
+  discard(affair: AffairDetail, reason: string) {
+    return apiClient.request(`/api/class-teacher/sop/affairs/${affair.affair_id}/commands`, {
+      method: 'POST', headers: writeHeaders(),
+      body: { command: 'discard', reason, expected_revision: affair.revision, operation_id: operationId() },
+      decode: (value) => record(value) as unknown as AffairDetail,
+    })
+  },
+  confirmProfileDraft(affairId: string, draftId: string) {
+    return apiClient.request(`/api/class-teacher/sop/affairs/${affairId}/profile-drafts/${draftId}/confirm`, {
+      method: 'POST', headers: writeHeaders(),
+      body: { operation_id: operationId() }, decode: (value) => record(value) as unknown as AffairProfileDraft,
+    })
+  },
+  discardProfileDraft(affairId: string, draftId: string) {
+    return apiClient.request(`/api/class-teacher/sop/affairs/${affairId}/profile-drafts/${draftId}/discard`, {
+      method: 'POST', headers: writeHeaders(),
+      body: { operation_id: operationId() }, decode: (value) => record(value) as unknown as AffairProfileDraft,
     })
   },
 }
@@ -341,6 +469,16 @@ export const studentR1Api = {
   academicOverview() {
     return apiClient.request('/api/class-teacher/evidence/overview', {
       decode: (value) => record(value) as unknown as AcademicOverview,
+    })
+  },
+  sessionClassResults(sessionId: string) {
+    return apiClient.request(`/api/class-teacher/evidence/sessions/${encodeURIComponent(sessionId)}/class-results`, {
+      decode: (value) => record(value) as unknown as AcademicSessionClassResults,
+    })
+  },
+  classTrend() {
+    return apiClient.request('/api/class-teacher/evidence/class-trend', {
+      decode: (value) => record(value) as unknown as AcademicClassTrend,
     })
   },
   records(subjectId: string) {

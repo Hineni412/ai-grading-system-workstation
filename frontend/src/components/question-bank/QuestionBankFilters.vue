@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { reactive } from 'vue'
+import { onMounted, reactive, shallowRef } from 'vue'
 
-import type {
-  QuestionBankFilters,
-  QuestionBankSort,
-  QuestionBankTagStatus,
+import {
+  questionBankApi,
+  type QuestionBankFacet,
+  type QuestionBankFilters,
+  type QuestionBankSort,
+  type QuestionBankTagStatus,
 } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import AppButton from '../design-system/AppButton.vue'
@@ -23,6 +25,7 @@ const draft = reactive({
   questionNumber: '',
   knowledgePoint: '',
   specialType: '',
+  errorType: '',
   questionType: '',
   examScope: '',
   year: '',
@@ -35,6 +38,21 @@ const draft = reactive({
   sort: (props.paperId ? 'paper_order' : 'difficulty_desc') as QuestionBankSort,
 })
 
+// null 表示错因选项加载失败，此时静默隐藏错因下拉。
+const errorTypeOptions = shallowRef<QuestionBankFacet[] | null>(null)
+
+onMounted(async () => {
+  try {
+    const facets = await questionBankApi.listFacets({
+      paperIds: props.paperId ? [props.paperId] : [],
+      tagStatus: 'all',
+    })
+    errorTypeOptions.value = facets.error_types
+  } catch {
+    errorTypeOptions.value = null
+  }
+})
+
 function buildFilters(): QuestionBankFilters {
   const hasDifficultyRange = draft.difficultyMin !== 1 || draft.difficultyMax !== 10
   return {
@@ -44,6 +62,7 @@ function buildFilters(): QuestionBankFilters {
     questionNumber: draft.questionNumber,
     knowledgePoint: draft.knowledgePoint,
     specialTypes: draft.specialType ? [draft.specialType] : [],
+    errorTypes: draft.errorType ? [draft.errorType] : [],
     paperIds: props.paperId ? [props.paperId] : [],
     years: draft.year ? [draft.year] : [],
     examTypes: draft.examType ? [draft.examType] : [],
@@ -69,6 +88,7 @@ function reset(): void {
     questionNumber: '',
     knowledgePoint: '',
     specialType: '',
+    errorType: '',
     questionType: '',
     examScope: '',
     year: '',
@@ -127,6 +147,15 @@ function changeSort(sort: QuestionBankSort): void {
       <div class="qb-more-filters__grid">
         <label class="qb-field"><span>题号</span><input v-model="draft.questionNumber" placeholder="如：12"></label>
         <label class="qb-field"><span>特殊题型/考法</span><input v-model="draft.specialType" placeholder="如：动态几何题"></label>
+        <label v-if="errorTypeOptions" class="qb-field">
+          <span>错因</span>
+          <select v-model="draft.errorType">
+            <option value="">全部</option>
+            <option v-for="item in errorTypeOptions" :key="item.value" :value="item.value">
+              {{ item.value }}（{{ item.count }}）
+            </option>
+          </select>
+        </label>
         <label class="qb-field"><span>章节/范围</span><input v-model="draft.examScope" placeholder="如：函数"></label>
         <label class="qb-field"><span>年份</span><input v-model="draft.year" placeholder="2026"></label>
         <label class="qb-field"><span>试卷类型</span><input v-model="draft.examType" placeholder="如：期末"></label>

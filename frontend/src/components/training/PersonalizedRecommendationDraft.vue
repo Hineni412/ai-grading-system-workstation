@@ -8,13 +8,21 @@ import {
   type PersonalizedRecommendationDraft,
   type PersonalizedRecommendationItem,
   type TrainingDiagnosis,
+  type TrainingEvidenceReference,
   type TrainingExamScopeRequest,
   type TrainingStage,
   type TrainingStageRatios,
   type TrainingStudentScopeRequest,
 } from '../../api/training'
+import { knowledgeLeafLabel } from '../../api/question-bank'
 import { ApiError } from '../../api/errors'
 import TrainingScanBatchPanel from './TrainingScanBatchPanel.vue'
+import QuestionPreviewDialog from './QuestionPreviewDialog.vue'
+import {
+  clearPaperDraftSession,
+  loadPaperDraftSession,
+  savePaperDraftSession,
+} from '../../features/training/paper-draft-session'
 
 const props = defineProps<{
   diagnosis: TrainingDiagnosis | null
@@ -31,6 +39,7 @@ const props = defineProps<{
   expectedMinutes?: number
   difficultyMin?: number
   difficultyMax?: number
+  curriculumVolumeId?: string | null
 }>()
 const emit = defineEmits<{
   stageChange: [stage: 'diagnosis' | 'draft' | 'wps' | 'scan']
@@ -47,12 +56,13 @@ const editReason = ref('教师根据课堂安排调整推荐草稿')
 const state = ref<RequestState>('idle')
 const draft = ref<PersonalizedRecommendationDraft | null>(null)
 const selectedDraftStudentId = ref('')
+const confirmDiscard = ref(false)
 const errorMessage = ref('')
 const actionMessage = ref('')
 const paperInstances = ref<PersonalizedPaperInstance[]>([])
-const paperFiles = ref<Record<string, File | undefined>>({})
 const paperBusy = ref('')
-const paperContextWindow = ref<32768 | 65536 | 128000>(32768)
+// 整卷体积上限对教师不可见：固定取最大档，硬上限（题量/判定点/图片/页数）仍会拦截。
+const PAPER_CONTEXT_WINDOW = 128000
 const paperBatch = ref<PersonalizedPaperBatch | null>(null)
 const paperCancelBusy = ref(false)
 let paperBatchPollGeneration = 0
@@ -101,6 +111,81 @@ const workflowStage = computed<'diagnosis' | 'draft' | 'wps' | 'scan'>(() => {
   if (paperBatch.value || paperInstances.value.length) return 'wps'
   return 'draft'
 })
+// 已生成训练卷或批次后不允许放弃草稿，避免丢失已生成卷的返回入口。
+const canDiscardDraft = computed(() => (
+  state.value !== 'loading'
+  && state.value !== 'editing'
+  && !paperInstances.value.length
+  && !paperBatch.value
+))
+
+// 出卷设置指纹：设置一致时才恢复上次草稿，设置变了必须重新生成。
+// rulesVersion 随选题规则升级递增，避免恢复规则升级前的旧草稿。
+const settingsFingerprint = computed(() => JSON.stringify({
+  rulesVersion: 2,
+  scope: props.scope,
+  examScope: props.examScope,
+  questionCount: props.questionCount,
+  expectedMinutes: expectedMinutes.value,
+  difficultyMin: difficultyMin.value,
+  difficultyMax: difficultyMax.value,
+  stageRatios: props.stageRatios,
+  paperMode: props.paperMode ?? 'individual',
+  targetKeys: [...(props.targetKeys ?? [])].sort(),
+  scopeKeys: [...(props.scopeKeys ?? [])].sort(),
+  excludeCurrentExamOriginals: props.excludeCurrentExamOriginals,
+  curriculumVolumeId: props.curriculumVolumeId ?? null,
+}))
+
+function rememberDraft(draftId: string): void {
+  savePaperDraftSession({
+    fingerprint: settingsFingerprint.value,
+    draftId,
+  })
+}
+
+let restoring = false
+async function restoreDraft(): Promise<void> {
+  if (restoring || draft.value || state.value !== 'idle' || !props.diagnosis) return
+  const stored = loadPaperDraftSession()
+  if (!stored || stored.fingerprint !== settingsFingerprint.value) return
+  restoring = true
+  state.value = 'loading'
+  try {
+    const restored = await trainingApi.getPersonalizedDraft(stored.draftId)
+    const [instances, batches] = await Promise.all([
+      trainingApi.listPaperInstances(stored.draftId),
+      trainingApi.listPaperBatches(stored.draftId),
+    ])
+    draft.value = restored
+    paperInstances.value = instances
+    paperBatch.value = batches[0] ?? null
+    selectedDraftStudentId.value = restored.students[0]?.student_id ?? ''
+    state.value = 'ready'
+    actionMessage.value = '已恢复上次生成的草稿，可继续审核。'
+  } catch {
+    clearPaperDraftSession()
+    state.value = 'idle'
+    actionMessage.value = '上次暂存的草稿已无法打开，已清除本地暂存；请重新生成草稿。'
+  } finally {
+    restoring = false
+  }
+}
+
+function discardDraft(): void {
+  if (!canDiscardDraft.value) return
+  draft.value = null
+  selectedDraftStudentId.value = ''
+  confirmDiscard.value = false
+  paperInstances.value = []
+  paperBusy.value = ''
+  paperBatch.value = null
+  paperBatchPollGeneration += 1
+  state.value = 'idle'
+  errorMessage.value = ''
+  actionMessage.value = '已放弃该草稿，回到出卷设置；勾选与设置保持不变，可调整后重新生成。'
+  clearPaperDraftSession()
+}
 
 watch(workflowStage, (stage) => emit('stageChange', stage), { immediate: true })
 watch(state, (nextState) => emit('stateChange', nextState), { immediate: true })
@@ -116,18 +201,34 @@ watch(() => props.difficultyMax, (value) => {
 
 watch(
   [() => props.diagnosis, () => props.targetKeys, () => props.scopeKeys],
-  () => {
+  (next, prev) => {
+    // 父级刷新诊断时会重建数组；内容没变就不清空已有草稿。
+    if (
+      prev !== undefined
+      && next[0] === prev[0]
+      && JSON.stringify(next[1] ?? []) === JSON.stringify(prev[1] ?? [])
+      && JSON.stringify(next[2] ?? []) === JSON.stringify(prev[2] ?? [])
+    ) {
+      return
+    }
     draft.value = null
     selectedDraftStudentId.value = ''
     state.value = 'idle'
     errorMessage.value = ''
     actionMessage.value = ''
     paperInstances.value = []
-    paperFiles.value = {}
     paperBusy.value = ''
     paperBatch.value = null
     paperBatchPollGeneration += 1
     selectedTargets.value = [...(props.targetKeys ?? [])]
+  },
+  { immediate: true },
+)
+
+watch(
+  [settingsFingerprint, () => props.diagnosis],
+  () => {
+    void restoreDraft()
   },
   { immediate: true },
 )
@@ -146,6 +247,117 @@ function stageLabel(stage: TrainingStage): string {
     prerequisite: '先修补强',
     transfer: '迁移应用',
   }[stage]
+}
+
+function shortageStage(shortage: Record<string, unknown>): TrainingStage {
+  const stage = String(shortage.stage ?? '')
+  return stage === 'prerequisite' || stage === 'transfer' ? stage : 'direct'
+}
+
+function evidenceRefsFor(
+  studentId: string,
+  item: PersonalizedRecommendationItem,
+): TrainingEvidenceReference[] {
+  const stableKey = typeof item.target?.stable_key === 'string'
+    ? item.target.stable_key
+    : ''
+  if (!stableKey) return []
+  const profile = props.diagnosis?.students.find(
+    (student) => student.student_id === studentId,
+  )
+  return profile?.weak_points.find(
+    (weak) => weak.knowledge_key === stableKey,
+  )?.source_question_refs ?? []
+}
+
+function evidenceRefLabel(evidence: TrainingEvidenceReference): string {
+  const question = String(evidence.question_id ?? '').trim()
+  const questionLabel = /第|题/.test(question) ? question : `第 ${question} 题`
+  return `${evidence.session_name} · ${questionLabel} · 得 ${evidence.score_awarded}/${evidence.full_score} 分`
+}
+
+// 代表错题：优先本次考试，再按失分最重排序的第一条；
+// 其余依据仍可在“全部依据”里逐条查看。
+function representativeEvidence(
+  refs: TrainingEvidenceReference[],
+): TrainingEvidenceReference | null {
+  if (!refs.length) return null
+  return [...refs].sort((left, right) => {
+    const leftCurrent = left.source_kind === 'current_exam' ? 0 : 1
+    const rightCurrent = right.source_kind === 'current_exam' ? 0 : 1
+    if (leftCurrent !== rightCurrent) return leftCurrent - rightCurrent
+    return (right.full_score - right.score_awarded)
+      - (left.full_score - left.score_awarded)
+  })[0] ?? null
+}
+
+// 小题（如 Q10(P1)/Q10(P2)）聚合到题目层级展示：合计得分，
+// 预览打开失分最重的那个小问对应的题库原题。
+function aggregateEvidenceRefs(
+  refs: TrainingEvidenceReference[],
+): TrainingEvidenceReference[] {
+  const byQuestion = new Map<string, TrainingEvidenceReference>()
+  const worstPartLoss = new Map<string, number>()
+  for (const ref of refs) {
+    const baseQuestion = String(ref.question_id ?? '').replace(/\(P\d+\)\s*$/i, '')
+    const key = `${ref.session_id}:${baseQuestion}`
+    const loss = ref.full_score - ref.score_awarded
+    const existing = byQuestion.get(key)
+    if (!existing) {
+      byQuestion.set(key, { ...ref, question_id: baseQuestion })
+      worstPartLoss.set(key, loss)
+      continue
+    }
+    existing.score_awarded += ref.score_awarded
+    existing.full_score += ref.full_score
+    if (ref.source_kind === 'current_exam') existing.source_kind = 'current_exam'
+    if (loss > (worstPartLoss.get(key) ?? -1)) {
+      existing.bank_question_id = ref.bank_question_id
+      worstPartLoss.set(key, loss)
+    }
+  }
+  return [...byQuestion.values()]
+}
+
+const previewQuestionId = ref<number | null>(null)
+const previewTitle = ref('')
+
+// 每个推荐题的错题依据展示：一道代表错题 + 可展开的完整列表。
+const evidenceDisplay = computed(() => {
+  const map = new Map<string, {
+    representative: TrainingEvidenceReference | null
+    refs: TrainingEvidenceReference[]
+  }>()
+  for (const student of draft.value?.students ?? []) {
+    for (const item of student.items) {
+      const refs = aggregateEvidenceRefs(evidenceRefsFor(student.student_id, item))
+      map.set(`${student.student_id}:${item.item_id}`, {
+        representative: representativeEvidence(refs),
+        refs,
+      })
+    }
+  }
+  return map
+})
+
+function evidenceDisplayFor(
+  studentId: string,
+  item: PersonalizedRecommendationItem,
+): { representative: TrainingEvidenceReference | null; refs: TrainingEvidenceReference[] } {
+  return evidenceDisplay.value.get(`${studentId}:${item.item_id}`) ?? {
+    representative: null,
+    refs: [],
+  }
+}
+
+function openPreview(questionId: number, title: string): void {
+  previewTitle.value = title
+  previewQuestionId.value = questionId
+}
+
+function closePreview(): void {
+  previewQuestionId.value = null
+  previewTitle.value = ''
 }
 
 function safeError(error: unknown, fallback: string): string {
@@ -189,12 +401,13 @@ async function generate(): Promise<void> {
       scope_keys: (props.scopeKeys ?? []).filter((key) => key.startsWith('kp_') || key.startsWith('ki_')),
       target_names: selectedTargetsAreGoverned.value ? [] : selectedTargetLabels.value,
       exclude_current_exam_originals: props.excludeCurrentExamOriginals,
+      curriculum_volume_id: props.curriculumVolumeId ?? null,
     })
     paperInstances.value = []
     selectedDraftStudentId.value = draft.value.students[0]?.student_id ?? ''
-    paperFiles.value = {}
     state.value = 'ready'
-    actionMessage.value = '已生成可审核草稿；尚未形成正式训练卷。'
+    actionMessage.value = '草稿已生成并自动暂存，切页后返回会自动恢复；尚未形成正式训练卷。'
+    rememberDraft(draft.value.draft_id)
   } catch (error) {
     state.value = 'error'
     errorMessage.value = safeError(
@@ -220,9 +433,9 @@ async function openNextDraft(draftId: string): Promise<void> {
     ])
     paperInstances.value = instances
     paperBatch.value = batches[0] ?? null
-    paperFiles.value = {}
     state.value = 'ready'
     actionMessage.value = '已打开下一轮草稿；请先审核，系统不会自动生成正式训练卷。'
+    rememberDraft(draft.value.draft_id)
   } catch (error) {
     state.value = 'error'
     errorMessage.value = safeError(
@@ -236,45 +449,6 @@ function instancesForStudent(studentId: string): PersonalizedPaperInstance[] {
   return paperInstances.value
     .filter((item) => item.student_id === studentId)
     .sort((left, right) => right.series_version - left.series_version)
-}
-
-async function createPaper(studentId: string): Promise<void> {
-  if (!draft.value || paperBusy.value) return
-  paperBusy.value = `create:${studentId}`
-  errorMessage.value = ''
-  actionMessage.value = ''
-  try {
-    const instance = await trainingApi.createPaperInstance(
-      draft.value.draft_id,
-      {
-        operation_token: requestToken(),
-        expected_draft_revision: draft.value.revision,
-        student_id: studentId,
-        context_window_tokens: paperContextWindow.value,
-      },
-    )
-    paperInstances.value = [
-      instance,
-      ...paperInstances.value.filter(
-        (item) => item.paper_instance_id !== instance.paper_instance_id,
-      ),
-    ]
-    actionMessage.value = 'WPS 审核稿已生成；下载检查后再上传确认。'
-  } catch (error) {
-    if (
-      error instanceof ApiError
-      && error.code === 'personalized_paper_budget_exceeded'
-    ) {
-      errorMessage.value = '整卷题量、判定点、图片或页数超过处理容量，请减少内容或选择更大容量。'
-    } else {
-      errorMessage.value = safeError(
-        error,
-        'WPS 审核稿暂时无法生成，推荐草稿和旧版本均未改变。',
-      )
-    }
-  } finally {
-    paperBusy.value = ''
-  }
 }
 
 async function createPaperBatch(): Promise<void> {
@@ -300,7 +474,8 @@ async function createPaperBatch(): Promise<void> {
         operation_token: requestToken(),
         expected_draft_revision: draft.value.revision,
         student_ids: studentIds,
-        context_window_tokens: paperContextWindow.value,
+        context_window_tokens: PAPER_CONTEXT_WINDOW,
+        direct_freeze: true,
       },
     )
     void pollCreatingBatch(draft.value.draft_id, pollGeneration)
@@ -315,10 +490,10 @@ async function createPaperBatch(): Promise<void> {
     actionMessage.value = paperBatch.value.status === 'cancelled'
       ? `批次已停止；已保留 ${paperBatch.value.succeeded_count} 份完成卷，未开始学生可另行重试。`
       : paperBatch.value.failed_count
-        ? `已生成 ${paperBatch.value.succeeded_count} 份实名审核卷，${paperBatch.value.failed_count} 人失败，可保留成功卷后单独重试。`
-        : `已生成 ${paperBatch.value.succeeded_count} 份实名审核卷，可下载 ZIP 后在 WPS 中统一检查。`
+        ? `已生成 ${paperBatch.value.succeeded_count} 份实名 PDF 试卷，${paperBatch.value.failed_count} 人失败，可保留成功卷后单独重试。`
+        : `已生成 ${paperBatch.value.succeeded_count} 份实名 PDF 试卷，下载 ZIP 后即可打印。`
   } catch (error) {
-    errorMessage.value = safeError(error, '批量审核卷暂时无法生成；已有单人卷和推荐草稿均未改变。')
+    errorMessage.value = safeError(error, '批量 PDF 试卷暂时无法生成；已有卷和推荐草稿均未改变。')
   } finally {
     paperBusy.value = ''
   }
@@ -389,7 +564,7 @@ async function downloadBatch(kind: 'bundle' | 'manifest' | 'frozen_bundle'): Pro
     const anchor = document.createElement('a')
     anchor.href = url
     anchor.download = kind === 'bundle'
-      ? '个性化训练卷-批量审核稿.zip'
+      ? '个性化训练卷-批量DOCX版.zip'
       : kind === 'frozen_bundle'
         ? '个性化训练卷-批量冻结PDF.zip'
         : '个性化训练卷-生成清单.json'
@@ -402,59 +577,9 @@ async function downloadBatch(kind: 'bundle' | 'manifest' | 'frozen_bundle'): Pro
   }
 }
 
-function setPaperFile(instanceId: string, event: Event): void {
-  const input = event.target as HTMLInputElement
-  paperFiles.value = {
-    ...paperFiles.value,
-    [instanceId]: input.files?.[0],
-  }
-}
-
-async function freezePaper(
-  instance: PersonalizedPaperInstance,
-): Promise<void> {
-  const file = paperFiles.value[instance.paper_instance_id]
-  if (!file || paperBusy.value) return
-  paperBusy.value = `freeze:${instance.paper_instance_id}`
-  errorMessage.value = ''
-  actionMessage.value = ''
-  try {
-    const frozen = await trainingApi.freezePaperInstance(
-      instance,
-      file,
-      requestToken(),
-    )
-    paperInstances.value = paperInstances.value.map((item) => (
-      item.paper_instance_id === frozen.paper_instance_id ? frozen : item
-    ))
-    if (paperBatch.value?.items.some(
-      (item) => item.paper_instance_id === frozen.paper_instance_id,
-    )) {
-      paperBatch.value = {
-        ...paperBatch.value,
-        items: paperBatch.value.items.map((item) => (
-          item.paper_instance_id === frozen.paper_instance_id ? frozen : item
-        )),
-        downloads: {
-          ...paperBatch.value.downloads,
-          frozen_bundle: `/api/training/paper-batches/${paperBatch.value.batch_run_id}/files/frozen-bundle`,
-        },
-      }
-    }
-    actionMessage.value = '该版本已冻结为 PDF；不会自动打印，也不会覆盖旧版本。'
-  } catch (error) {
-    errorMessage.value = safeError(
-      error,
-      '冻结失败，当前审核稿仍可继续使用，未留下半成品 PDF。',
-    )
-  } finally {
-    paperBusy.value = ''
-  }
-}
-
 async function downloadPaper(
   instance: PersonalizedPaperInstance,
-  kind: 'review_docx' | 'reviewed_docx' | 'frozen_pdf',
+  kind: 'review_docx' | 'frozen_pdf',
 ): Promise<void> {
   const path = instance.downloads[kind]
   if (!path) return
@@ -587,6 +712,39 @@ async function editItem(
     </p>
 
     <template v-if="draft">
+      <div class="personalized-draft-toolbar">
+        <span class="personalized-draft-toolbar__status">
+          草稿已自动暂存（版本 {{ draft.revision }}）；切到其他页面再回来会自动恢复，不需要重新勾选。
+        </span>
+        <template v-if="canDiscardDraft">
+          <button
+            v-if="!confirmDiscard"
+            type="button"
+            class="training-link"
+            data-testid="discard-paper-draft"
+            @click="confirmDiscard = true"
+          >
+            放弃草稿
+          </button>
+          <template v-else>
+            <span class="personalized-draft-toolbar__confirm">
+              确认放弃？该草稿不再自动恢复；勾选与出卷设置会保留。
+            </span>
+            <button
+              type="button"
+              class="training-button"
+              data-testid="confirm-discard-paper-draft"
+              @click="discardDraft"
+            >
+              确认放弃
+            </button>
+            <button type="button" class="training-link" @click="confirmDiscard = false">取消</button>
+          </template>
+        </template>
+        <small v-else class="personalized-draft-toolbar__locked">
+          已生成训练卷后不能再放弃草稿；如需重来请调整设置后生成新草稿。
+        </small>
+      </div>
       <label class="personalized-edit-reason">
         调整原因
         <input v-model="editReason" maxlength="500">
@@ -615,37 +773,6 @@ async function editItem(
         </button>
       </nav>
 
-      <section class="personalized-batch-panel" aria-labelledby="personalized-batch-title">
-        <div>
-          <strong id="personalized-batch-title">{{ paperMode === 'shared' ? '批量生成实名同题卷' : '批量生成实名一人一卷' }}</strong>
-          <p>每名学生保持独立卷实例；成功卷不会因其他学生失败而丢失。</p>
-        </div>
-        <button type="button" class="training-button is-primary" :disabled="Boolean(paperBusy)" @click="createPaperBatch">
-          {{ paperBusy === 'batch' ? '正在逐人生成…' : '生成全部 WPS 审核卷' }}
-        </button>
-        <button
-          v-if="paperBatch?.status === 'creating'"
-          type="button"
-          class="training-button is-secondary"
-          :disabled="paperCancelBusy"
-          @click="cancelPaperBatch"
-        >
-          {{ paperCancelBusy ? '正在停止…' : '停止未开始学生' }}
-        </button>
-        <div v-if="paperBatch" class="personalized-batch-result">
-          <span>成功 {{ paperBatch.succeeded_count }} / {{ paperBatch.requested_count }} 人</span>
-          <button v-if="paperBatch.downloads.bundle" type="button" class="training-link" @click="downloadBatch('bundle')">下载审核卷 ZIP</button>
-          <button v-if="paperBatch.downloads.manifest" type="button" class="training-link" @click="downloadBatch('manifest')">下载生成清单</button>
-          <button v-if="paperBatch.downloads.frozen_bundle" type="button" class="training-link" @click="downloadBatch('frozen_bundle')">下载已冻结 PDF ZIP</button>
-          <button v-if="paperBatch.failures.length" type="button" class="training-button is-secondary" :disabled="Boolean(paperBusy)" @click="retryFailedPaperBatch">
-            {{ paperBusy === 'batch-retry' ? '正在重试失败学生…' : `只重试失败的 ${paperBatch.failures.length} 人` }}
-          </button>
-          <ul v-if="paperBatch.failures.length">
-            <li v-for="failure in paperBatch.failures" :key="failure.student_id">学生 {{ failure.student_id }}：生成失败，可单独重试</li>
-          </ul>
-        </div>
-      </section>
-
       <template v-for="student in draft.students" :key="student.student_id">
       <article v-if="selectedDraftStudent?.student_id === student.student_id" class="personalized-student">
         <header>
@@ -657,13 +784,129 @@ async function editItem(
           </div>
           <small>
             {{ student.selection_mode === 'maintenance_fallback' ? '保守复习' : '按掌握证据推荐' }}
-            <template v-if="student.targets.length">
+            <template v-if="!externalSetup && student.targets.length">
               · 细点 {{ student.targets.map((item) => String(item.display_name || item.stable_key || '')).filter(Boolean).join('、') }}
             </template>
           </small>
         </header>
 
-        <ol>
+        <template v-if="externalSetup">
+          <ol class="personalized-match-list">
+            <li v-for="item in student.items" :key="item.item_id" class="personalized-match">
+              <div class="personalized-match__evidence">
+                <strong>错题依据</strong>
+                <template v-if="evidenceDisplayFor(student.student_id, item).representative">
+                  <span title="本次考试失分最重的同细点错题">
+                    {{ evidenceRefLabel(evidenceDisplayFor(student.student_id, item).representative!) }}
+                  </span>
+                  <button
+                    v-if="evidenceDisplayFor(student.student_id, item).representative!.bank_question_id"
+                    type="button"
+                    class="training-link"
+                    @click="openPreview(evidenceDisplayFor(student.student_id, item).representative!.bank_question_id, '错题原题')"
+                  >
+                    预览
+                  </button>
+                  <details
+                    v-if="evidenceDisplayFor(student.student_id, item).refs.length > 1"
+                    class="personalized-match__evidence-all"
+                  >
+                    <summary>全部 {{ evidenceDisplayFor(student.student_id, item).refs.length }} 条依据</summary>
+                    <span
+                      v-for="evidence in evidenceDisplayFor(student.student_id, item).refs"
+                      :key="`${evidence.session_id}-${evidence.question_id}-${evidence.bank_question_id}`"
+                    >
+                      {{ evidenceRefLabel(evidence) }}
+                      <button
+                        v-if="evidence.bank_question_id"
+                        type="button"
+                        class="training-link"
+                        @click="openPreview(evidence.bank_question_id, '错题原题')"
+                      >
+                        预览
+                      </button>
+                    </span>
+                  </details>
+                </template>
+                <small v-else>该细点在当前范围内暂无逐题失分记录</small>
+              </div>
+              <span class="personalized-match__arrow" aria-hidden="true">→</span>
+              <div class="personalized-match__card">
+                <div class="personalized-match__head">
+                  <span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ stageLabel(item.stage) }}</span>
+                  <strong :title="item.matched_name">{{ knowledgeLeafLabel(item.matched_name) }}</strong>
+                  <small v-if="knowledgeLeafLabel(item.matched_name) !== item.matched_name">{{ item.matched_name }}</small>
+                </div>
+                <p
+                  class="personalized-match__stem"
+                  :class="{ 'is-empty': !item.question_text }"
+                  :title="item.question_text || undefined"
+                >
+                  {{ item.question_text || '旧草稿未包含题干，重新生成后可见' }}
+                </p>
+                <small class="personalized-match__meta">
+                  题 {{ item.question_number }} · 难度 {{ item.difficulty }} · 约 {{ item.estimated_minutes }} 分钟 ·
+                  {{ item.criterion_point_count }} 个判定点 · 来源：{{ item.source_paper }}
+                </small>
+                <small v-if="item.relation">
+                  已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：
+                  {{ item.relation.rationale }}
+                </small>
+                <small v-if="item.stage !== 'direct'" class="personalized-match__reason">
+                  {{ item.reason }}
+                </small>
+                <div v-if="paperMode !== 'shared'" class="personalized-item-actions">
+                  <button
+                    type="button"
+                    class="training-link"
+                    @click="openPreview(item.question_id, '推荐题预览')"
+                  >
+                    预览
+                  </button>
+                  <button
+                    type="button"
+                    class="training-link"
+                    :disabled="state === 'editing'"
+                    @click="editItem(student.student_id, item, item.locked ? 'unlock' : 'lock')"
+                  >
+                    {{ item.locked ? '解锁' : '锁定' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="training-link"
+                    :disabled="item.locked || state === 'editing'"
+                    @click="editItem(student.student_id, item, 'replace')"
+                  >
+                    替换
+                  </button>
+                  <button
+                    type="button"
+                    class="training-link"
+                    :disabled="item.locked || state === 'editing'"
+                    @click="editItem(student.student_id, item, 'exclude')"
+                  >
+                    排除
+                  </button>
+                </div>
+                <p v-else class="personalized-shared-note">同题模式不允许只改某一名学生；如需换题，请调整设置后重新生成整组草稿。</p>
+              </div>
+            </li>
+          </ol>
+          <ul v-if="student.shortages.length" class="personalized-shortages">
+            <li
+              v-for="shortage in student.shortages"
+              :key="String(shortage.stage)"
+              class="personalized-shortage"
+            >
+              <span class="personalized-stage-badge" :class="`is-${shortageStage(shortage)}`">
+                {{ stageLabel(shortageStage(shortage)) }}
+              </span>
+              <strong>待配 {{ Number(shortage.missing_count) || 0 }} 题</strong>
+            </li>
+          </ul>
+        </template>
+
+        <ol v-else>
           <li v-for="item in student.items" :key="item.item_id">
             <div class="personalized-item-main">
               <span>{{ stageLabel(item.stage) }} · 题 {{ item.question_number }}</span>
@@ -713,31 +956,8 @@ async function editItem(
         </ul>
 
         <section class="personalized-paper-panel">
-          <header>
-            <div>
-              <strong>生成该生训练卷</strong>
-              <small>每次生成都是独立新版本，不会覆盖旧卷。</small>
-            </div>
-            <label>
-              处理容量
-              <select v-model.number="paperContextWindow">
-                <option :value="32768">标准</option>
-                <option :value="65536">较大</option>
-                <option :value="128000">最大</option>
-              </select>
-            </label>
-            <button
-              type="button"
-              class="training-button is-secondary"
-              :disabled="Boolean(paperBusy) || !student.items.length"
-              @click="createPaper(student.student_id)"
-            >
-              {{ paperBusy === `create:${student.student_id}` ? '正在生成…' : '生成 WPS 审核稿' }}
-            </button>
-          </header>
-
           <p v-if="!instancesForStudent(student.student_id).length" class="training-empty is-compact">
-            尚未生成训练卷。先完成草稿调整，再生成 WPS 审核稿。
+            尚未生成训练卷。先完成草稿调整，再使用页面底部的批量生成。
           </p>
 
           <article
@@ -750,35 +970,13 @@ async function editItem(
               <span>
                 {{ instance.question_count }} 题 ·
                 {{ instance.criterion_point_count }} 个判定点 ·
-                {{ instance.status === 'frozen' ? `${instance.pages.length} 页冻结 PDF` : '等待 WPS 审核' }}
+                {{ instance.status === 'frozen' ? `${instance.pages.length} 页冻结 PDF` : '待冻结 PDF' }}
               </span>
             </div>
-            <small>
-              整卷预计占用 {{ instance.budget.estimated_total_tokens.toLocaleString() }} /
-              {{ instance.budget.context_window_tokens.toLocaleString() }}
-            </small>
             <small v-if="instance.formula_fallbacks?.length" class="training-feedback is-warning">
-              {{ instance.formula_fallbacks.length }} 处公式无法转为可编辑公式，已保留原式或题图，请在 WPS 中重点检查。
+              {{ instance.formula_fallbacks.length }} 处公式无法转为可编辑公式，已保留原式或题图，打印前请预览核对。
             </small>
             <div class="personalized-paper-actions">
-              <button
-                v-if="instance.downloads.review_docx"
-                type="button"
-                class="training-link"
-                :disabled="Boolean(paperBusy)"
-                @click="downloadPaper(instance, 'review_docx')"
-              >
-                下载 WPS 审核稿
-              </button>
-              <button
-                v-if="instance.downloads.reviewed_docx"
-                type="button"
-                class="training-link"
-                :disabled="Boolean(paperBusy)"
-                @click="downloadPaper(instance, 'reviewed_docx')"
-              >
-                下载确认稿
-              </button>
               <button
                 v-if="instance.downloads.frozen_pdf"
                 type="button"
@@ -786,34 +984,58 @@ async function editItem(
                 :disabled="Boolean(paperBusy)"
                 @click="downloadPaper(instance, 'frozen_pdf')"
               >
-                下载冻结 PDF
+                下载 PDF 试卷
               </button>
-            </div>
-            <div v-if="instance.status === 'review_pending'" class="personalized-paper-freeze">
-              <label>
-                上传在 WPS 中检查后的同版本 DOCX
-                <input
-                  type="file"
-                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  @change="setPaperFile(instance.paper_instance_id, $event)"
-                >
-              </label>
               <button
+                v-if="instance.downloads.review_docx"
                 type="button"
-                class="training-button"
-                :disabled="Boolean(paperBusy) || !paperFiles[instance.paper_instance_id]"
-                @click="freezePaper(instance)"
+                class="training-link"
+                :disabled="Boolean(paperBusy)"
+                @click="downloadPaper(instance, 'review_docx')"
               >
-                {{ paperBusy === `freeze:${instance.paper_instance_id}` ? '正在冻结…' : '确认并冻结 PDF' }}
+                下载 DOCX 版（可选精修）
               </button>
             </div>
           </article>
           <p class="personalized-paper-note">
-            冻结只生成带页面身份的 PDF，不会自动打印；要改内容请生成新版本。
+            PDF 试卷每页带身份码，用于打印后扫码归卷；系统不会自动打印。要改内容请调整草稿后重新生成。
           </p>
         </section>
       </article>
       </template>
+
+      </div>
+
+      <div class="personalized-aside">
+      <section class="personalized-batch-panel" aria-labelledby="personalized-batch-title">
+        <div>
+          <strong id="personalized-batch-title">{{ paperMode === 'shared' ? '批量生成实名同题卷' : '批量生成实名一人一卷' }}</strong>
+          <p>每名学生保持独立卷实例；成功卷不会因其他学生失败而丢失。生成的是可直接打印的 PDF 试卷。</p>
+        </div>
+        <button type="button" class="training-button is-primary" :disabled="Boolean(paperBusy)" @click="createPaperBatch">
+          {{ paperBusy === 'batch' ? '正在逐人生成 PDF…' : '生成全部 PDF 试卷（可直接打印）' }}
+        </button>
+        <button
+          v-if="paperBatch?.status === 'creating'"
+          type="button"
+          class="training-button is-secondary"
+          :disabled="paperCancelBusy"
+          @click="cancelPaperBatch"
+        >
+          {{ paperCancelBusy ? '正在停止…' : '停止未开始学生' }}
+        </button>
+        <div v-if="paperBatch" class="personalized-batch-result">
+          <span>成功 {{ paperBatch.succeeded_count }} / {{ paperBatch.requested_count }} 人</span>
+          <button v-if="paperBatch.downloads.frozen_bundle" type="button" class="training-link" @click="downloadBatch('frozen_bundle')">下载试卷 PDF ZIP</button>
+          <button v-if="paperBatch.downloads.bundle" type="button" class="training-link" @click="downloadBatch('bundle')">下载 DOCX 版 ZIP</button>
+          <button v-if="paperBatch.failures.length" type="button" class="training-button is-secondary" :disabled="Boolean(paperBusy)" @click="retryFailedPaperBatch">
+            {{ paperBusy === 'batch-retry' ? '正在重试失败学生…' : `只重试失败的 ${paperBatch.failures.length} 人` }}
+          </button>
+          <ul v-if="paperBatch.failures.length">
+            <li v-for="failure in paperBatch.failures" :key="failure.student_id">学生 {{ failure.student_id }}：生成失败，可单独重试</li>
+          </ul>
+        </div>
+      </section>
 
       <TrainingScanBatchPanel
         :instances="paperInstances"
@@ -825,6 +1047,12 @@ async function editItem(
         训练卷使用生成时的题目、推荐理由和判定点快照；以后来源变化不会改写旧卷。
       </p>
     </template>
+
+    <QuestionPreviewDialog
+      :question-id="previewQuestionId"
+      :title="previewTitle"
+      @close="closePreview"
+    />
   </section>
 </template>
 
@@ -842,6 +1070,37 @@ async function editItem(
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.personalized-draft-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 1rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-subtle);
+}
+
+.personalized-draft-toolbar__status {
+  color: var(--color-text-secondary);
+  font-size: 0.86rem;
+}
+
+.personalized-draft-toolbar__confirm {
+  color: var(--color-warning);
+  font-size: 0.86rem;
+}
+
+.personalized-draft-toolbar__locked {
+  color: var(--color-text-muted);
+  font-size: 0.84rem;
+}
+
+.personalized-draft-toolbar .training-button {
+  margin: 0;
 }
 
 .personalized-draft > header,
@@ -888,9 +1147,17 @@ async function editItem(
 
 .personalized-workbench {
   display: grid;
-  grid-template-columns: minmax(190px, 0.58fr) minmax(440px, 1.55fr) minmax(300px, 0.9fr);
+  grid-template-columns: 220px minmax(0, 1fr);
   align-items: start;
   gap: 1rem;
+  margin-top: 1rem;
+}
+
+.personalized-aside {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: stretch;
   margin-top: 1rem;
 }
 
@@ -978,7 +1245,6 @@ async function editItem(
 
 .personalized-student {
   grid-column: 2;
-  grid-row: 1 / span 3;
   margin-top: 0;
   padding: 0.85rem;
   border: 1px solid var(--color-border-default);
@@ -1018,6 +1284,137 @@ async function editItem(
   font-size: .84rem;
 }
 
+.personalized-student ol.personalized-match-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+.personalized-student li.personalized-match {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.85fr) 28px minmax(0, 1.65fr);
+  align-items: stretch;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-surface);
+}
+
+.personalized-match__evidence {
+  display: grid;
+  align-self: start;
+  align-content: start;
+  gap: 0.35rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+}
+
+.personalized-match__evidence > strong {
+  color: var(--color-text-secondary);
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.personalized-match__evidence > span {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+}
+
+.personalized-match__evidence > small {
+  color: var(--color-text-muted);
+}
+
+.personalized-match__arrow {
+  align-self: center;
+  justify-self: center;
+  color: var(--color-accent);
+  font-weight: 700;
+}
+
+.personalized-match__card {
+  display: grid;
+  align-content: start;
+  gap: 0.3rem;
+}
+
+.personalized-match__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.personalized-match__head small {
+  color: var(--color-text-muted);
+}
+
+.personalized-stage-badge {
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.personalized-stage-badge.is-direct {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.personalized-stage-badge.is-prerequisite {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+
+.personalized-stage-badge.is-transfer {
+  background: var(--color-ai-subtle);
+  color: var(--color-ai);
+}
+
+.personalized-match__stem {
+  display: -webkit-box;
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  font-family: var(--font-family-document);
+  font-size: 0.92rem;
+  line-height: var(--line-height-body);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.personalized-match__stem.is-empty {
+  color: var(--color-text-muted);
+  font-family: var(--font-family-sans);
+}
+
+.personalized-match__meta {
+  color: var(--color-text-secondary);
+}
+
+.personalized-match__reason {
+  color: var(--color-text-muted);
+}
+
+.personalized-student ul.personalized-shortages {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.65rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.personalized-student li.personalized-shortage {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px dashed var(--color-warning);
+  background: var(--color-warning-subtle);
+}
+
 .personalized-paper-panel {
   display: grid;
   gap: 0.75rem;
@@ -1029,7 +1426,6 @@ async function editItem(
 }
 
 .personalized-batch-panel {
-  grid-column: 3;
   display: grid;
   grid-template-columns: 1fr;
   align-items: center;
@@ -1041,8 +1437,22 @@ async function editItem(
   background: var(--color-accent-subtle);
 }
 
-.personalized-workbench :deep(.training-scan-panel) {
-  grid-column: 3;
+.personalized-match__evidence-all {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.personalized-match__evidence-all > summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+
+.personalized-match__evidence-all > span {
+  display: block;
+  padding-top: 0.3rem;
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
 }
 
 .personalized-batch-panel p { margin: .25rem 0 0; color: var(--color-text-secondary); }
@@ -1050,28 +1460,9 @@ async function editItem(
 .personalized-batch-result { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
 .personalized-batch-result ul { flex-basis: 100%; margin: 0; }
 
-.personalized-paper-panel > header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: end;
-  gap: 0.75rem;
-}
-
-.personalized-paper-panel > header div,
-.personalized-paper-panel > header label,
-.personalized-paper-version > div:first-child,
-.personalized-paper-freeze label {
+.personalized-paper-version > div:first-child {
   display: grid;
   gap: 0.25rem;
-}
-
-.personalized-paper-panel select,
-.personalized-paper-freeze input {
-  min-width: 0;
-  padding: 0.48rem 0.6rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: calc(var(--radius) - 2px);
-  background: var(--color-bg-surface);
 }
 
 .personalized-paper-version {
@@ -1083,16 +1474,11 @@ async function editItem(
   background: var(--color-bg-surface);
 }
 
-.personalized-paper-actions,
-.personalized-paper-freeze {
+.personalized-paper-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
   gap: 0.75rem;
-}
-
-.personalized-paper-freeze label {
-  flex: 1 1 18rem;
 }
 
 .personalized-paper-note {
@@ -1111,26 +1497,25 @@ async function editItem(
     grid-template-columns: 1fr;
   }
 
-  .personalized-paper-panel > header {
+  .personalized-student li.personalized-match {
     grid-template-columns: 1fr;
-    align-items: stretch;
   }
 
-  .personalized-workbench {
+  .personalized-match__arrow {
+    justify-self: start;
+    transform: rotate(90deg);
+  }
+
+  .personalized-workbench,
+  .personalized-aside {
     grid-template-columns: 1fr;
   }
 
   .personalized-student-list,
-  .personalized-student,
-  .personalized-batch-panel {
+  .personalized-student {
     grid-column: 1;
     grid-row: auto;
     position: static;
-  }
-
-
-  .personalized-workbench :deep(.training-scan-panel) {
-    grid-column: 1;
   }
 }
 </style>

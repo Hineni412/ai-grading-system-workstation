@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 
 import type {
   QuestionBankPaper,
@@ -14,6 +15,7 @@ import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import AppButton from '../design-system/AppButton.vue'
 import {
+  formatQuestionLabel,
   isQuestionBankLibraryJob,
   jobBelongsToPaper,
   paperLeftoverLines,
@@ -66,8 +68,13 @@ const retagMessage = ref('')
 const deleteNotice = ref('')
 const refreshedTerminalJobs = new Set<string>()
 const collapsedFolderKeys = ref(new Set<string>())
-const questionRefs = ref(new Map<number, PaperQuestionRef>())
-const jobPaperLinks = ref(new Map<number, number>())
+// 这三个表持久化在 store 里：打开试卷再返回时组件重建，
+// 旧的任务状态和缺题提示可以立即显示，再由后台请求校对刷新。
+const {
+  paperQuestionRefs: questionRefs,
+  paperJobLinks: jobPaperLinks,
+  paperIncompleteNumbers: incompleteQuestionNumbers,
+} = storeToRefs(store)
 const paperDraft = ref({
   title: '',
   year: '',
@@ -149,9 +156,7 @@ const paperFolders = computed<PaperFolder[]>(() => {
       continue
     }
     const manualName = paper.folder_name?.trim() ?? ''
-    const automaticName = [paper.year, paper.semester].filter(Boolean).join(' · ')
-      || paper.semester
-      || paper.year
+    const automaticName = [paper.grade, paper.semester].filter(Boolean).join(' · ')
       || '未归类'
     const label = manualName || automaticName
     const key = `${manualName ? 'manual' : 'semester'}:${label}`
@@ -159,13 +164,25 @@ const paperFolders = computed<PaperFolder[]>(() => {
       key,
       label,
       manual: Boolean(manualName),
-      kindLabel: manualName ? '自定义文件夹' : '按学期自动归类',
+      kindLabel: manualName ? '自定义文件夹' : '按年级学期自动归类',
       papers: [],
     }
     group.papers.push(paper)
     groups.set(key, group)
   }
-  const result = [...groups.values()]
+  // 组内按年份最新在前，同年按更新时间最新在前；自动分组之间同样按最新年份排序。
+  for (const group of groups.values()) {
+    group.papers.sort(comparePapersByYearDesc)
+  }
+  const manualGroups = [...groups.values()].filter((group) => group.manual)
+  const automaticGroups = [...groups.values()].filter((group) => !group.manual)
+  automaticGroups.sort((left, right) => {
+    const leftYear = newestYearValue(left)
+    const rightYear = newestYearValue(right)
+    if (leftYear !== rightYear) return rightYear - leftYear
+    return left.label.localeCompare(right.label, 'zh-CN')
+  })
+  const result = [...manualGroups, ...automaticGroups]
   if (selectedVolumeId && otherPapers.length) {
     result.push({
       key: 'scope:other-semesters',
@@ -278,7 +295,10 @@ function closePaperMenu(): void {
 }
 
 onMounted(() => document.addEventListener('click', closePaperMenu))
-onBeforeUnmount(() => document.removeEventListener('click', closePaperMenu))
+onBeforeUnmount(() => {
+  document.removeEventListener('click', closePaperMenu)
+  if (papersRefreshTimer !== null) clearTimeout(papersRefreshTimer)
+})
 
 const totalQuestions = computed(() => store.papers.reduce(
   (total, paper) => total + paper.question_count,
@@ -311,9 +331,20 @@ watch(
     ))
     if (!terminalJob) return
     refreshedTerminalJobs.add(`${terminalJob.id}:${terminalJob.status}:${terminalJob.updated_at}`)
-    void store.loadPapers()
+    schedulePapersRefresh()
   },
 )
+
+// 批量打标会连续终结多个任务，合并成一次静默刷新，避免列表反复重拉。
+let papersRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+function schedulePapersRefresh(): void {
+  if (papersRefreshTimer !== null) clearTimeout(papersRefreshTimer)
+  papersRefreshTimer = setTimeout(() => {
+    papersRefreshTimer = null
+    void store.loadPapers()
+  }, 400)
+}
 
 watch(
   () => [
@@ -323,7 +354,9 @@ watch(
   ].join('/'),
   () => {
     void refreshQuestionRefs()
+    void refreshIncompleteNumbers()
   },
+  { immediate: true },
 )
 
 function rememberJobPaper(jobId: number, paperId: number): void {
@@ -376,6 +409,45 @@ async function refreshQuestionRefs(): Promise<void> {
   }
 }
 
+// 与卡片进度同一口径：直接按试卷字段拉取分析未完成的题号，
+// 不依赖 localStorage 里追踪过的任务，刷新后提示保持稳定。
+async function refreshIncompleteNumbers(): Promise<void> {
+  const paperIds = store.papers
+    .filter((paper) => (
+      paper.question_count > 0
+      && paper.complete_analysis_count < paper.question_count
+    ))
+    .map((paper) => paper.id)
+  if (paperIds.length === 0) {
+    incompleteQuestionNumbers.value = new Map()
+    return
+  }
+  const next = new Map<number, string[]>()
+  let page = 1
+  try {
+    while (true) {
+      const result = await questionBankApi.listQuestions({
+        page,
+        pageSize: 100,
+        paperIds,
+        analysisStatus: 'incomplete',
+        sort: 'paper_order',
+      })
+      for (const item of result.items) {
+        if (!item.paper_id) continue
+        const numbers = next.get(item.paper_id) ?? []
+        numbers.push(item.question_number)
+        next.set(item.paper_id, numbers)
+      }
+      if (page >= result.total_pages) break
+      page += 1
+    }
+    incompleteQuestionNumbers.value = next
+  } catch {
+    // Keep the last successful numbers; the progress counts still show.
+  }
+}
+
 function analysisJobForPaper(paper: QuestionBankPaper): JobResponse | undefined {
   const matching = libraryJobs.value.filter((job) => jobBelongsToPaper(
     job,
@@ -398,6 +470,17 @@ function leftoverLines(paper: QuestionBankPaper): string[] {
   const lines = current
     ? paperLeftoverLines(current, questionRefs.value, paper.id)
     : []
+  // 任务结果给不出提示时（映射丢失、任务进行中、浏览器任务记录已清），
+  // 用与进度条同一口径的试卷字段兜底，保证刷新后提示不消失。
+  if (
+    lines.length === 0
+    && paper.complete_analysis_count < paper.question_count
+  ) {
+    const numbers = incompleteQuestionNumbers.value.get(paper.id)
+    if (numbers?.length) {
+      lines.push(`${formatQuestionLabel(numbers)}分析未完成`)
+    }
+  }
   if (
     paper.criteria_needs_review_count > 0
     && !lines.some((line) => line.includes('判定点待您审核'))
@@ -410,6 +493,26 @@ function leftoverLines(paper: QuestionBankPaper): string[] {
 function uniqueValues(values: Array<string | null>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value?.trim())))]
     .sort((left, right) => right.localeCompare(left, 'zh-CN'))
+}
+
+function paperYearValue(paper: QuestionBankPaper): number {
+  if (!paper.year?.trim()) return Number.NEGATIVE_INFINITY
+  const value = Number(paper.year)
+  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY
+}
+
+function comparePapersByYearDesc(left: QuestionBankPaper, right: QuestionBankPaper): number {
+  const leftYear = paperYearValue(left)
+  const rightYear = paperYearValue(right)
+  if (leftYear !== rightYear) return rightYear - leftYear
+  return right.updated_at.localeCompare(left.updated_at)
+}
+
+function newestYearValue(folder: PaperFolder): number {
+  return folder.papers.reduce(
+    (newest, paper) => Math.max(newest, paperYearValue(paper)),
+    Number.NEGATIVE_INFINITY,
+  )
 }
 
 function progressFor(paper: QuestionBankPaper): number {
@@ -584,12 +687,20 @@ async function fillSelectedPapers(): Promise<void> {
     }
     // The list endpoint only has a coarse saved-row view. Submit whole papers so
     // the job can compare evidence/criteria with the current source hash and
-    // still skip every projection that is genuinely complete.
+    // still skip every projection that is genuinely complete. The dialog still
+    // leads with the visible not-yet-complete count so teachers know what to expect.
+    const incomplete = plans.reduce(
+      (sum, plan) => sum + Math.max(
+        0,
+        plan.paper.question_count - plan.paper.complete_analysis_count,
+      ),
+      0,
+    )
     if (!window.confirm(
-      `将核对选中的 ${plans.length} 份试卷共 ${total} 道题，只补齐缺失、失败或已过期的标签和判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。${skippedVolumeNote(skippedWithoutVolume)}确认继续吗？`,
+      `选中的 ${plans.length} 份试卷还有 ${incomplete} 道题未打全标签。将把共 ${total} 道题提交后端逐题核对：只补齐缺失、失败或已过期的标签和判定点，真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。${skippedVolumeNote(skippedWithoutVolume)}确认继续吗？`,
     )) return
     const count = await submitTaggingPlans(plans, false)
-    retagMessage.value = `已提交 ${total} 道题等待后端核对，共 ${count} 个任务；只会补齐缺失、失败或已过期的内容。${skippedVolumeNote(skippedWithoutVolume)}`
+    retagMessage.value = `已提交 ${plans.length} 份试卷等待后端核对（其中 ${incomplete} 道题未打全标签），共 ${count} 个任务；只会补齐缺失、失败或已过期的内容。${skippedVolumeNote(skippedWithoutVolume)}`
   } catch {
     retagMessage.value = '补齐标签任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {

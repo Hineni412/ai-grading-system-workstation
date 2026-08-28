@@ -147,6 +147,34 @@ class EvidenceSupersedeRequest(OperationRequest):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class EvidenceSessionUpdateRequest(OperationRequest):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    grade: str | None = Field(default=None, min_length=1, max_length=40)
+    term: str | None = Field(default=None, min_length=1, max_length=40)
+    exam_type: str | None = Field(default=None, min_length=1, max_length=120)
+    occurred_on: str | None = Field(default=None, min_length=1, max_length=40)
+    academic_year: str | None = Field(default=None, min_length=1, max_length=40)
+
+
+class EvidenceSessionDeleteRequest(OperationRequest):
+    confirmation_phrase: str
+    preview_version: str | None = Field(default=None, min_length=64, max_length=64)
+
+
+class EvidenceSessionMaxScoresRequest(OperationRequest):
+    # 按学科名更正满分；服务端再校验学科属于场次且满分为正数。
+    # 允许空 dict：只补填年级人数时不带满分，空更新由服务端拒绝。
+    max_scores: dict[str, float] = Field(default_factory=dict, max_length=40)
+    # 可选年级人数；正整数校验在服务端，便于返回专用错误码。
+    participant_count: int | None = None
+
+
+class EvidenceGlobalMaxScoresRequest(OperationRequest):
+    # 全年级统一更正：键为归一展示科目名，服务端反查各场次原始列名。
+    max_scores: dict[str, float] = Field(default_factory=dict, max_length=40)
+    participant_count: int | None = None
+
+
 class AttentionCreateRequest(OperationRequest):
     evidence_version_id: str
     observed_fact: str = Field(min_length=1, max_length=4000)
@@ -182,6 +210,7 @@ __all__ = [
     "AttentionDecisionRequest",
     "AttentionResolveRequest",
     "EvidenceBatchRequest",
+    "EvidenceGlobalMaxScoresRequest",
     "EvidenceLinkRequest",
     "EvidenceSupersedeRequest",
     "FollowUpPostponeRequest",

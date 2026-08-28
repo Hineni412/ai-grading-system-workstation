@@ -34,7 +34,9 @@ from question_bank.training_criteria import (
     criteria_from_confirmed_rubric,
     plan_analysis_batches,
 )
+from question_bank.services.ai_tagging_service import _rule_conflict_notes
 from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.training_criteria.analysis import _response_items
 from tests.current_knowledge_support import install_current_knowledge
 
 
@@ -881,6 +883,7 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
         "question_id",
         "reference_assessment",
         "reference_assessment_reason",
+        "question_type_suggestion",
         "tag_analysis",
         "solution_evidence",
     }
@@ -1666,3 +1669,369 @@ def test_input_loader_includes_rich_text_and_controlled_actual_images(
     )
     assert len(loaded[0].images) == 1
     assert loaded[0].images[0].content.endswith(b"loader-synthetic")
+
+
+# ---------------------------------------------------------------------------
+# 重复 result 容错合并（多问大题模型按小问各返回一份 result 的场景）
+# ---------------------------------------------------------------------------
+
+
+def _evidence_part(label: str, *, steps: int = 1) -> dict[str, Any]:
+    points = []
+    for index in range(1, steps + 1):
+        points.append(
+            {
+                "evidence_point_id": f"part-1-step-{index}",
+                "step_index": index,
+                "target": f"{label} 台阶 {index}",
+                "justification": "合成依据",
+                "answer_anchor": "x=1",
+                "observable_evidence": "写出 x=1",
+                "depends_on": [f"part-1-step-{index - 1}"] if index > 1 else [],
+                "fine_term_links": [],
+                "equivalent_rules": [],
+                "counterexamples": [],
+            }
+        )
+    return {
+        "part_id": "part-1",
+        "label": label,
+        "response_mode": "process_required",
+        "canonical_answer": "x=1",
+        "accepted_forms": ["x=1"],
+        "full_answer": "合成过程",
+        "proof_obligations": [],
+        "visual_requirements": [],
+        "deduction_policy": ["缺少某台阶只影响该台阶"],
+        "allow_alternative_methods": True,
+        "evidence_points": points,
+    }
+
+
+def _evidence_payload(
+    question_id: int,
+    label: str,
+    *,
+    steps: int = 1,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "question-solution-evidence-v2",
+        "question_id": question_id,
+        "parts": [_evidence_part(label, steps=steps)],
+        "auxiliary_rules": [],
+        "rationale": "合成证据",
+        "confidence": 0.9,
+    }
+
+
+def test_duplicate_results_merge_parts_and_renumber_ids() -> None:
+    batch = SimpleNamespace(question_ids=[1])
+    first = {
+        "question_id": 1,
+        "tag_analysis": {
+            **_tag_payload(),
+            "knowledge_points": ["一元一次方程"],
+            "difficulty": 3,
+        },
+        "solution_evidence": _evidence_payload(1, "第1问", steps=2),
+        "reference_assessment": "consistent",
+        "reference_assessment_reason": "与参考一致",
+    }
+    second = {
+        "question_id": 1,
+        "tag_analysis": {
+            **_tag_payload(),
+            "knowledge_points": ["一元一次方程", "合并同类项"],
+            "difficulty": 5,
+        },
+        "solution_evidence": _evidence_payload(1, "第2问", steps=1),
+        "reference_assessment": "conflict",
+        "reference_assessment_reason": "第2问参考缺步骤",
+    }
+
+    items, notes = _response_items({"results": [first, second]}, batch)
+
+    merged = items[1]
+    parts = merged["solution_evidence"]["parts"]
+    assert [part["part_id"] for part in parts] == ["part-1", "part-2"]
+    assert [part["label"] for part in parts] == ["第1问", "第2问"]
+    ep_ids = [
+        point["evidence_point_id"]
+        for part in parts
+        for point in part["evidence_points"]
+    ]
+    assert ep_ids == ["part-1-step-1", "part-1-step-2", "part-2-step-1"]
+    assert parts[0]["evidence_points"][1]["depends_on"] == ["part-1-step-1"]
+    # tag_analysis：列表字段保序去重并集，标量字段取第一份
+    assert merged["tag_analysis"]["knowledge_points"] == [
+        "一元一次方程",
+        "合并同类项",
+    ]
+    assert merged["tag_analysis"]["difficulty"] == 3
+    # reference_assessment 取最保守值，reason 拼接
+    assert merged["reference_assessment"] == "conflict"
+    assert merged["reference_assessment_reason"] == "与参考一致；第2问参考缺步骤"
+    assert "2 份" in notes[1]
+
+
+def test_duplicate_results_renumber_cross_copy_depends_on() -> None:
+    batch = SimpleNamespace(question_ids=[1])
+    first = {
+        "question_id": 1,
+        "solution_evidence": _evidence_payload(1, "第1问", steps=1),
+    }
+    second_part = _evidence_part("第2问", steps=2)
+    # 第二份内部依赖自身命名空间里的 part-1-step-1，合并后必须改写前缀
+    second = {
+        "question_id": 1,
+        "solution_evidence": {
+            "schema_version": "question-solution-evidence-v2",
+            "question_id": 1,
+            "parts": [second_part],
+            "auxiliary_rules": ["问间承接写在 auxiliary_rules"],
+            "rationale": "合成证据",
+            "confidence": 0.8,
+        },
+    }
+
+    items, _notes = _response_items({"results": [first, second]}, batch)
+
+    parts = items[1]["solution_evidence"]["parts"]
+    assert parts[1]["evidence_points"][1]["depends_on"] == ["part-2-step-1"]
+    assert items[1]["solution_evidence"]["auxiliary_rules"] == [
+        "问间承接写在 auxiliary_rules"
+    ]
+
+
+def test_duplicate_results_fallback_keeps_first_when_parts_empty() -> None:
+    batch = SimpleNamespace(question_ids=[1])
+    first = {
+        "question_id": 1,
+        "tag_analysis": _tag_payload(),
+        "solution_evidence": _evidence_payload(1, "第1问"),
+    }
+    broken = {
+        "question_id": 1,
+        "tag_analysis": _tag_payload(),
+        "solution_evidence": {
+            **_evidence_payload(1, "第2问"),
+            "parts": [],
+        },
+    }
+
+    items, notes = _response_items({"results": [first, broken]}, batch)
+
+    assert items[1] is first
+    assert "保留第一份" in notes[1]
+
+
+def test_duplicate_results_fallback_on_cross_part_depends_on() -> None:
+    batch = SimpleNamespace(question_ids=[1])
+    first = {
+        "question_id": 1,
+        "solution_evidence": _evidence_payload(1, "第1问"),
+    }
+    cross_part = _evidence_part("第2问", steps=1)
+    cross_part["evidence_points"][0]["depends_on"] = ["part-9-step-1"]
+    second = {
+        "question_id": 1,
+        "solution_evidence": {
+            "schema_version": "question-solution-evidence-v2",
+            "question_id": 1,
+            "parts": [cross_part],
+            "auxiliary_rules": [],
+            "rationale": "合成证据",
+            "confidence": 0.8,
+        },
+    }
+
+    items, notes = _response_items({"results": [first, second]}, batch)
+
+    assert items[1] is first
+    assert "保留第一份" in notes[1]
+
+
+def test_response_items_unknown_or_invalid_question_id_still_rejected() -> None:
+    batch = SimpleNamespace(question_ids=[1])
+    with pytest.raises(ProjectionValidationError):
+        _response_items({"results": [{"question_id": 9}]}, batch)
+    with pytest.raises(ProjectionValidationError):
+        _response_items({"results": [{"tag_analysis": {}}]}, batch)
+    with pytest.raises(ProjectionValidationError):
+        _response_items({"results": "not-a-list"}, batch)
+    with pytest.raises(ProjectionValidationError):
+        _response_items({}, batch)
+
+
+def test_duplicate_results_merge_end_to_end_with_merge_note(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database)
+    duplicate_result = {
+        "question_id": 1,
+        "tag_analysis": _tag_payload(),
+        "training_criteria": _criteria_payload(1),
+    }
+    gateway = QueueGateway(
+        [{"results": [dict(duplicate_result), dict(duplicate_result)]}]
+    )
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database),
+        gateway=gateway,
+        tag_writer=FakeTagWriter(),
+    )
+
+    summary = module.analyze(
+        operation_id="p4-dup-merge",
+        questions=(_question(1),),
+    )
+
+    item = summary["items"][0]
+    assert item["tag_status"] == "succeeded"
+    assert item["criteria_status"] == "succeeded"
+    assert "合并" in item["merge_note"]
+
+
+# ---------------------------------------------------------------------------
+# 失败原因可观测（脱敏后的异常类型+短消息）
+# ---------------------------------------------------------------------------
+
+
+class _LeakingTagWriter:
+    def write(self, *_args: Any, **_kwargs: Any) -> Mapping[str, Any]:
+        raise RuntimeError("upstream failed api_key=sk-secret-123")
+
+
+def test_tag_failure_records_sanitized_error_detail(tmp_path: Path) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database)
+    gateway = QueueGateway(
+        [
+            {
+                "results": [
+                    {
+                        "question_id": 1,
+                        "tag_analysis": _tag_payload(),
+                        "training_criteria": _criteria_payload(1),
+                    }
+                ]
+            }
+        ]
+    )
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database),
+        gateway=gateway,
+        tag_writer=_LeakingTagWriter(),
+    )
+
+    summary = module.analyze(
+        operation_id="p4-tag-error-detail",
+        questions=(_question(1),),
+    )
+
+    item = summary["items"][0]
+    assert item["tag_status"] == "failed"
+    assert item["tag_error_category"] == "tag_validation"
+    detail = str(item["tag_error_detail"])
+    assert "RuntimeError" in detail
+    assert "upstream failed" in detail
+    assert "sk-secret-123" not in detail
+    assert "***" in detail
+
+
+def test_criteria_failure_persists_sanitized_validation_error(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database)
+    gateway = QueueGateway(
+        [
+            {
+                "results": [
+                    {
+                        "question_id": 1,
+                        "tag_analysis": _tag_payload(),
+                        "solution_evidence": {
+                            "schema_version": "question-solution-evidence-v2",
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    repository = CombinedAnalysisRepository(database)
+    module = CombinedQuestionAnalysisModule(
+        repository=repository,
+        gateway=gateway,
+        tag_writer=FakeTagWriter(),
+    )
+
+    summary = module.analyze(
+        operation_id="p4-criteria-error-detail",
+        questions=(_question(1),),
+    )
+
+    item = summary["items"][0]
+    assert item["criteria_status"] == "failed"
+    assert item["criteria_error_category"] == "evidence_validation"
+    assert "solution evidence writer is unavailable" in str(
+        item["criteria_error_detail"]
+    )
+    # 脱敏详情持久化在台账 criteria_payload_json，进程重启后仍随摘要带出
+    persisted = repository.operation_summary("p4-criteria-error-detail")
+    persisted_item = persisted["items"][0]
+    assert "solution evidence writer is unavailable" in str(
+        persisted_item["training_criteria"]["validation_error"]
+    )
+    reloaded = module.analyze(
+        operation_id="p4-criteria-error-detail",
+        questions=(_question(1),),
+    )
+    assert "solution evidence writer is unavailable" in str(
+        reloaded["items"][0]["criteria_error_detail"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# 角平分线规则收窄（新定义题引号包裹的自定义名词不误判）
+# ---------------------------------------------------------------------------
+
+_816_STEM = (
+    "（5分）在平面直角坐标系中，给出如下定义：点P到x轴、y轴的距离的较大值"
+    "称为点P的“长距”，点Q到x轴、y轴的距离相等时，称点Q为“角平分线点”．"
+    "（1）点A（﹣3，5）的“长距”为____；"
+    "（2）若点C（﹣2，b﹣2）的长距为4，且点C在第三象限内，"
+    "请判断点D（9+2b，﹣5）是否为“角平分线点”，并说明理由．"
+)
+
+
+def test_angle_bisector_rule_ignores_quoted_custom_defined_term() -> None:
+    context = TaggingContext(question_text=_816_STEM)
+    analysis = TagAnalysis.from_dict(_tag_payload())
+
+    notes = _rule_conflict_notes(context, analysis)
+
+    assert not any("角平分线" in note for note in notes)
+
+
+def test_angle_bisector_rule_still_flags_genuine_bisector_question() -> None:
+    context = TaggingContext(
+        question_text="如图，AD是△ABC的角平分线，交BC于点D，求证BD=DC。"
+    )
+    analysis = TagAnalysis.from_dict(_tag_payload())
+
+    notes = _rule_conflict_notes(context, analysis)
+
+    assert any("角平分线" in note for note in notes)
+
+
+def test_angle_bisector_rule_flags_quoted_term_without_definition_intro() -> None:
+    context = TaggingContext(
+        question_text="课本把“角平分线”作为重点概念，请完成相关计算。"
+    )
+    analysis = TagAnalysis.from_dict(_tag_payload())
+
+    notes = _rule_conflict_notes(context, analysis)
+
+    assert any("角平分线" in note for note in notes)

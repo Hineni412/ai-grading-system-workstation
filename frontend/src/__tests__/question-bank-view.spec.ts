@@ -189,7 +189,7 @@ describe('question bank workspace', () => {
     expect(reviewButton?.textContent).not.toContain('0')
   })
 
-  it('groups papers by semester, honors manual folders, and lets teachers collapse a group', async () => {
+  it('groups papers by grade and semester, honors manual folders, and lets teachers collapse a group', async () => {
     const host = document.createElement('div')
     document.body.append(host)
     const pinia = createPinia()
@@ -216,19 +216,135 @@ describe('question bank workspace', () => {
     app.mount(host)
     mounted.push(app)
 
-    expect(host.textContent).toContain('2025 · 下学期')
-    expect(host.textContent).toContain('按学期自动归类')
+    expect(host.textContent).toContain('七年级 · 下学期')
+    expect(host.textContent).toContain('按年级学期自动归类')
     expect(host.textContent).toContain('中考专题')
     expect(host.textContent).toContain('自定义文件夹')
 
     const semesterHeader = [...host.querySelectorAll<HTMLButtonElement>('.paper-folder__header')]
-      .find((button) => button.textContent?.includes('2025 · 下学期'))!
+      .find((button) => button.textContent?.includes('七年级 · 下学期'))!
     expect(semesterHeader.getAttribute('aria-expanded')).toBe('true')
     semesterHeader.click()
     await nextTick()
     expect(semesterHeader.getAttribute('aria-expanded')).toBe('false')
     expect(host.textContent).not.toContain('同学期练习卷')
     expect(host.textContent).toContain('中考函数专题')
+  })
+
+  it('orders automatic folders and their papers by newest year first', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [
+      {
+        ...paper,
+        id: 10,
+        title: '旧年七上卷',
+        year: '2024',
+        grade: '七年级',
+        semester: '上学期',
+        updated_at: '2026-07-18T08:00:00Z',
+      },
+      {
+        ...paper,
+        id: 11,
+        title: '新年七上卷',
+        year: '2026',
+        grade: '七年级',
+        semester: '上学期',
+        updated_at: '2026-07-18T08:30:00Z',
+      },
+      {
+        ...paper,
+        id: 12,
+        title: '八年级旧卷',
+        year: '2023',
+        grade: '八年级',
+        semester: '上学期',
+        updated_at: '2026-07-18T09:00:00Z',
+      },
+    ]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+
+    const folders = [...host.querySelectorAll<HTMLElement>('.paper-folder')]
+    expect(folders).toHaveLength(2)
+    // 七年级组内有 2026 年的试卷，排在只有 2023 年试卷的八年级组前面。
+    expect(folders[0]!.textContent).toContain('七年级 · 上学期')
+    expect(folders[1]!.textContent).toContain('八年级 · 上学期')
+
+    const titles = [...folders[0]!.querySelectorAll<HTMLButtonElement>('.paper-card__title')]
+      .map((button) => button.textContent)
+    expect(titles).toEqual(['新年七上卷', '旧年七上卷'])
+  })
+
+  it('shows incomplete questions from paper fields even without tracked jobs', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.startsWith('/api/question-bank/questions?')) {
+        if (!url.includes('analysis_status=incomplete')) {
+          throw new Error(`expected incomplete analysis filter: ${url}`)
+        }
+        return response({
+          items: [
+            { ...item, id: 21, paper_id: 4, question_number: '1' },
+            { ...item, id: 22, paper_id: 4, question_number: '3' },
+          ],
+          total: 2,
+          page: 1,
+          page_size: 100,
+          total_pages: 1,
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [{ ...paper, question_count: 5, complete_analysis_count: 3 }]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain('第1、3题分析未完成')
+    })
+  })
+
+  it('keeps the library visible while refreshing papers in the background', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+
+    let resolveRefresh!: (value: { items: QuestionBankPaper[]; total: number }) => void
+    const pending = store.loadPapers(() => new Promise((resolve) => {
+      resolveRefresh = resolve
+    }))
+    await nextTick()
+
+    // 刷新进行中列表保持原样，不回到“正在读取试卷库”占位。
+    expect(store.papersState).toBe('ready')
+    expect(host.textContent).toContain('匿名期末试卷')
+    expect(host.textContent).not.toContain('正在读取试卷库')
+
+    resolveRefresh({ items: [{ ...paper, id: 30, title: '刷新后的试卷' }], total: 1 })
+    await pending
+    expect(store.papersState).toBe('ready')
+    expect(host.textContent).toContain('刷新后的试卷')
   })
 
   it('keeps papers from other teaching semesters visible by default', async () => {
@@ -1001,7 +1117,9 @@ describe('question bank workspace', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url.startsWith('/api/question-bank/questions?')) {
-        questionListUrl = url
+        if (url.includes('analysis_status=all')) {
+          questionListUrl = url
+        }
         return response({
           items: [item, { ...item, id: 18 }],
           total: 2,
@@ -1074,7 +1192,9 @@ describe('question bank workspace', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url.startsWith('/api/question-bank/questions?')) {
-        questionListUrls.push(url)
+        if (url.includes('analysis_status=all')) {
+          questionListUrls.push(url)
+        }
         const paperIds = new URL(url, 'http://local.test').searchParams
           .getAll('paper_ids')
           .map(Number)
@@ -1639,10 +1759,11 @@ describe('question bank workspace', () => {
 
     await vi.waitFor(() => expect(taggingBodies).toHaveLength(2))
     expect(confirmSpy).toHaveBeenCalledTimes(1)
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('2 份试卷共 2 道题'))
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('还有 2 道题未打全标签'))
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('共 2 道题提交后端逐题核对'))
     expect(taggingBodies.map((body) => body.question_ids)).toEqual([[3_004], [3_005]])
     expect(taggingBodies.every((body) => body.force_retag === undefined)).toBe(true)
-    expect(host.textContent).toContain('已提交 2 道题等待后端核对')
+    expect(host.textContent).toContain('已提交 2 份试卷等待后端核对（其中 2 道题未打全标签）')
   })
 
   it('previews and deletes the whole selection with one request each', async () => {

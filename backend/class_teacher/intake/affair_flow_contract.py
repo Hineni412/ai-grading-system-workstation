@@ -9,7 +9,12 @@ from ..errors import VaultError
 
 CONTRACT_VERSION = "class_teacher_affair_flow_revision.v1"
 ITEM_KINDS = {"add_step", "revise_step", "note"}
-_TOP_LEVEL_FIELDS = {"contract_version", "assistant_message", "items"}
+_TOP_LEVEL_FIELDS = {
+    "contract_version",
+    "assistant_message",
+    "items",
+    "profile_update_suggestions",
+}
 _ITEM_FIELDS = {"item_id", "kind", "target_step_key", "title", "details", "depends_on", "reason", "text"}
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9_-]{2,64}")
 
@@ -30,6 +35,7 @@ class FlowRevisionItem:
 class FlowRevisionResult:
     assistant_message: str
     items: tuple[FlowRevisionItem, ...]
+    profile_update_suggestions: tuple[dict[str, object], ...] = ()
 
 
 def _text(value: object, label: str, *, maximum: int) -> str:
@@ -120,7 +126,29 @@ def parse_affair_flow_revision(payload: Mapping[str, object]) -> FlowRevisionRes
             reason=_optional_text(raw.get("reason"), "调整理由", maximum=800),
             text=_optional_text(raw.get("text"), "核对建议", maximum=2000),
         ))
-    return FlowRevisionResult(assistant_message=assistant_message, items=tuple(items))
+    raw_suggestions = payload.get("profile_update_suggestions", [])
+    if raw_suggestions is None:
+        raw_suggestions = []
+    if not isinstance(raw_suggestions, list) or len(raw_suggestions) > 8:
+        raise VaultError(
+            "class_teacher_affair_flow_revision_invalid_result",
+            "AI 返回的档案更新建议无效",
+            status_code=422,
+        )
+    suggestions: list[dict[str, object]] = []
+    for raw_suggestion in raw_suggestions:
+        if not isinstance(raw_suggestion, Mapping):
+            raise VaultError(
+                "class_teacher_affair_flow_revision_invalid_result",
+                "AI 返回的档案更新建议无效",
+                status_code=422,
+            )
+        suggestions.append(dict(raw_suggestion))
+    return FlowRevisionResult(
+        assistant_message=assistant_message,
+        items=tuple(items),
+        profile_update_suggestions=tuple(suggestions),
+    )
 
 
 __all__ = [

@@ -15,6 +15,7 @@ import {
   type QuestionBankWriteResult,
 } from '../api/question-bank'
 import { ApiError } from '../api/errors'
+import type { PaperQuestionRef } from '../components/question-bank/paper-analysis-status'
 
 export type QuestionBankListState =
   | 'idle'
@@ -117,6 +118,11 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
 
   const selectedQuestionIds = ref<number[]>([])
   const selectedQuestionId = ref<number | null>(null)
+  // 试卷卡片状态（任务↔试卷对应表、未完成题号）放在 store 层：
+  // 打开试卷再返回试卷库时组件会重建，持久化后旧状态立即显示、后台再校对。
+  const paperQuestionRefs = ref(new Map<number, PaperQuestionRef>())
+  const paperJobLinks = ref(new Map<number, number>())
+  const paperIncompleteNumbers = ref(new Map<number, string[]>())
   const detail = ref<QuestionBankDetail | null>(null)
   const detailState = ref<QuestionBankDetailState>('idle')
   const detailError = ref('')
@@ -150,12 +156,17 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
       signal?: AbortSignal,
     ) => Promise<QuestionBankPaperListResponse> = questionBankApi.listPapers,
   ): Promise<void> {
-    papersState.value = 'loading'
+    // 已有数据时保持 ready 静默刷新，避免列表被 loading 占位整体卸载（全屏闪动）。
+    if (papers.value.length === 0) {
+      papersState.value = 'loading'
+    }
     try {
       papers.value = (await loader()).items
       papersState.value = 'ready'
     } catch {
-      papersState.value = 'error'
+      if (papers.value.length === 0) {
+        papersState.value = 'error'
+      }
     }
   }
 
@@ -455,6 +466,9 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     listError,
     listUpdatedAt,
     selectedQuestionIds,
+    paperQuestionRefs,
+    paperJobLinks,
+    paperIncompleteNumbers,
     selectedCount,
     selectedOnPageCount,
     hiddenSelectionCount,

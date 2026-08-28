@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
+from question_bank.parsers.type_detector import QUESTION_TYPES
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
@@ -39,6 +40,17 @@ ProjectionStatus = Literal[
 ]
 _PROJECTIONS = ("tag", "training_criteria")
 _POINT_ID = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
+# 题型封闭枚举到本地题组的映射，与 QuestionAnalysisInput.question_type_group
+# 的判词规则保持一致（多选题按单选客观形态处理）。
+_QUESTION_TYPE_GROUPS = {
+    "选择题": "single_choice",
+    "多选题": "single_choice",
+    "填空题": "fill_blank",
+    "解答题": "calculation",
+    "解答题（计算）": "calculation",
+    "解答题（证明）": "proof",
+    "解答题（画图）": "construction",
+}
 _BANNED_SCORE_KEYS = frozenset(
     {
         "score",
@@ -297,10 +309,13 @@ class QuestionAnalysisInput:
     def explicit_part_labels(self) -> tuple[str, ...]:
         """Return only an objective, sequential (1)(2)... structure fact."""
 
+        # 斜杠相邻的 (1)/(2) 是分数写法（1/2），与
+        # parsers/type_detector._SUBQ_MARK_RE 的排除语义保持一致；
+        # 编号范围仍按原约定允许 (1)~(19)，不影响真小问识别。
         labels = [
             str(match)
             for match in re.findall(
-                r"[（(]\s*([1-9]\d?)\s*[）)]",
+                r"(?<![/0-9])[（(]\s*([1-9]\d?)\s*[）)](?![/0-9])",
                 str(self.tagging_context.question_text or ""),
             )
         ]
@@ -334,13 +349,21 @@ class QuestionAnalysisInput:
     def objective_response_shape(self) -> ObjectiveResponseShape:
         """Return only objective response facts that are safe to enforce locally."""
 
+        return self.objective_response_shape_for(self.question_type_group)
+
+    def objective_response_shape_for(
+        self,
+        question_type_group: str,
+    ) -> ObjectiveResponseShape:
+        """按给定题组推导客观作答形态（题型建议被采纳时使用真实题组）。"""
+
         if self.explicit_part_labels:
             return "unknown"
         if not str(self.tagging_context.answer_text or "").strip():
             return "unknown"
-        if self.question_type_group == "single_choice":
+        if question_type_group == "single_choice":
             return "single_choice"
-        if self.question_type_group != "fill_blank":
+        if question_type_group != "fill_blank":
             return "unknown"
         text = str(self.tagging_context.question_text or "")
         named = re.findall(r"第[一二三四五六七八九十\d]+空", text)
@@ -348,6 +371,35 @@ class QuestionAnalysisInput:
         empty_brackets = re.findall(r"[（(]\s*[）)]", text)
         blank_count = max(len(named), len(underscores) + len(empty_brackets), 1)
         return "single_blank" if blank_count == 1 else "multiple_blank"
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionTypeSuggestion:
+    """联合分析返回的题型建议；只是候选，教师确认题型始终优先。"""
+
+    question_type: str
+    reason: str = ""
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "QuestionTypeSuggestion":
+        if not isinstance(payload, Mapping):
+            raise ProjectionValidationError("question type suggestion is invalid")
+        value = str(payload.get("question_type") or "").strip()
+        if value not in QUESTION_TYPES:
+            raise ProjectionValidationError(
+                "question type suggestion is not a supported type"
+            )
+        return cls(
+            question_type=value,
+            reason=str(payload.get("reason") or "").strip(),
+        )
+
+    @property
+    def question_type_group(self) -> str:
+        return _QUESTION_TYPE_GROUPS[self.question_type]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"question_type": self.question_type, "reason": self.reason}
 
 
 @dataclass(frozen=True, slots=True)
@@ -628,6 +680,7 @@ class SolutionEvidenceWriter(Protocol):
         *,
         model_name: str,
         operation_id: str,
+        objective_response_shape: str | None = None,
     ) -> QuestionSolutionEvidence:
         ...
 
@@ -635,6 +688,20 @@ class SolutionEvidenceWriter(Protocol):
         self,
         question: QuestionAnalysisInput,
     ) -> QuestionSolutionEvidence | None:
+        ...
+
+
+class QuestionTypeSuggestionWriter(Protocol):
+    """把题型建议落到题库写边界；教师确认的题型只登记冲突不改数据。"""
+
+    def apply(
+        self,
+        question: QuestionAnalysisInput,
+        suggestion: QuestionTypeSuggestion,
+        *,
+        model_name: str,
+        operation_id: str,
+    ) -> Mapping[str, Any]:
         ...
 
 
@@ -707,14 +774,18 @@ class CombinedQuestionAnalysisModule:
         tag_writer: TagProjectionWriter,
         evidence_writer: SolutionEvidenceWriter | None = None,
         criterion_module: Any | None = None,
+        question_type_writer: QuestionTypeSuggestionWriter | None = None,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
         self.tag_writer = tag_writer
         self.evidence_writer = evidence_writer
         self.criterion_module = criterion_module
+        self.question_type_writer = question_type_writer
         self._criterion_audits: dict[tuple[str, int], dict[str, Any]] = {}
         self._criterion_audit_lock = threading.Lock()
+        self._projection_notes: dict[tuple[str, int], dict[str, str]] = {}
+        self._projection_notes_lock = threading.Lock()
 
     def analyze_work_items(
         self,
@@ -958,7 +1029,7 @@ class CombinedQuestionAnalysisModule:
             requested_projection=normalized_projection,
         )
         if not created:
-            return self.repository.operation_summary(clean_operation)
+            return self._summary_with_annotations(clean_operation)
         self._execute(
             operation_id=clean_operation,
             questions=normalized,
@@ -966,7 +1037,7 @@ class CombinedQuestionAnalysisModule:
             retry=False,
             progress_callback=progress_callback,
         )
-        return self.repository.operation_summary(clean_operation)
+        return self._summary_with_annotations(clean_operation)
 
     def retry_failed_projection(
         self,
@@ -996,7 +1067,7 @@ class CombinedQuestionAnalysisModule:
             retry=True,
             progress_callback=progress_callback,
         )
-        return self.repository.operation_summary(clean_operation)
+        return self._summary_with_annotations(clean_operation)
 
     def resume_interrupted(
         self,
@@ -1024,7 +1095,7 @@ class CombinedQuestionAnalysisModule:
                 projection=projection,
                 retry=True,
             )
-        return self.repository.operation_summary(clean_operation)
+        return self._summary_with_annotations(clean_operation)
 
     def _execute(
         self,
@@ -1142,7 +1213,7 @@ class CombinedQuestionAnalysisModule:
                 batch_index, batch, request_id = future_map.pop(future)
                 try:
                     response = future.result()
-                    items = _response_items(response.payload, batch)
+                    items, merge_notes = _response_items(response.payload, batch)
                 except Exception as exc:
                     category = _error_category(exc)
                     self.repository.record_request_finished(
@@ -1167,6 +1238,13 @@ class CombinedQuestionAnalysisModule:
                         status="succeeded",
                         response=response,
                     )
+                    for merged_question_id, merge_note in merge_notes.items():
+                        self._record_projection_note(
+                            operation_id,
+                            merged_question_id,
+                            "merge_note",
+                            merge_note,
+                        )
                     for question in batch.questions:
                         raw = items.get(question.question_id)
                         if raw is None:
@@ -1279,6 +1357,64 @@ class CombinedQuestionAnalysisModule:
             # turn a saved model result into a failed analysis request.
             return
 
+    def _record_projection_note(
+        self,
+        operation_id: str,
+        question_id: int,
+        key: str,
+        value: str,
+    ) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        with self._projection_notes_lock:
+            notes = self._projection_notes.setdefault(
+                (str(operation_id), int(question_id)),
+                {},
+            )
+            notes[key] = text
+
+    def _summary_with_annotations(
+        self,
+        operation_id: str,
+    ) -> Mapping[str, Any]:
+        """Attach in-flight notes (merge audit, sanitized failure detail).
+
+        台账本身保持原有列不变；这些说明只叠加在返回给调用方的任务结果上。
+        criteria 投影失败时写入 criteria_payload_json 的 validation_error
+        也会在进程重启后继续随摘要带出。
+        """
+
+        summary = self.repository.operation_summary(operation_id)
+        with self._projection_notes_lock:
+            notes_by_question = {
+                question_id: dict(notes)
+                for (note_operation, question_id), notes in
+                self._projection_notes.items()
+                if note_operation == str(operation_id)
+            }
+        items: list[dict[str, Any]] = []
+        for row in summary.get("items", []):
+            if not isinstance(row, Mapping):
+                items.append(row)
+                continue
+            item = dict(row)
+            notes = notes_by_question.get(int(item.get("question_id") or 0))
+            if notes:
+                item.update(notes)
+            if "criteria_error_detail" not in item and str(
+                item.get("criteria_status") or ""
+            ) == "failed":
+                persisted = item.get("training_criteria")
+                if isinstance(persisted, Mapping):
+                    detail = str(
+                        persisted.get("validation_error") or ""
+                    ).strip()
+                    if detail:
+                        item["criteria_error_detail"] = detail
+            items.append(item)
+        return {**dict(summary), "items": items}
+
     def _save_tag(
         self,
         operation_id: str,
@@ -1303,7 +1439,14 @@ class CombinedQuestionAnalysisModule:
                 model_name=model_name,
                 operation_id=operation_id,
             )
-        except Exception:
+        except Exception as exc:
+            detail = _projection_error_detail(exc)
+            self._record_projection_note(
+                operation_id,
+                question.question_id,
+                "tag_error_detail",
+                detail,
+            )
             self.repository.save_projection(
                 operation_id=operation_id,
                 question_id=question.question_id,
@@ -1341,6 +1484,24 @@ class CombinedQuestionAnalysisModule:
                 error_category="criteria_validation",
             )
             return
+        suggestion = self._question_type_suggestion(
+            operation_id,
+            question,
+            raw,
+        )
+        effective_group = question.question_type_group
+        effective_shape = question.objective_response_shape
+        if (
+            suggestion is not None
+            and not question.question_type_confirmed
+            and suggestion.question_type_group != effective_group
+        ):
+            # 教师未确认题型时采纳模型的真实题型，解除本地误判造成的
+            # 客观形态硬约束，让解题证据与判定点按过程题生成。
+            effective_group = suggestion.question_type_group
+            effective_shape = question.objective_response_shape_for(
+                effective_group
+            )
         try:
             if isinstance(evidence_payload, Mapping):
                 if self.evidence_writer is None:
@@ -1352,10 +1513,13 @@ class CombinedQuestionAnalysisModule:
                     evidence_payload,
                     model_name=model_name,
                     operation_id=operation_id,
+                    objective_response_shape=effective_shape,
                 )
                 draft = training_criteria_from_solution_evidence(
                     evidence,
                     question=question,
+                    objective_response_shape=effective_shape,
+                    question_type_group=effective_group,
                 )
             else:
                 assert isinstance(legacy_payload, Mapping)
@@ -1363,12 +1527,20 @@ class CombinedQuestionAnalysisModule:
                     legacy_payload,
                     question=question,
                 )
-        except Exception:
+        except Exception as exc:
+            detail = _projection_error_detail(exc)
+            self._record_projection_note(
+                operation_id,
+                question.question_id,
+                "criteria_error_detail",
+                detail,
+            )
             self.repository.save_projection(
                 operation_id=operation_id,
                 question_id=question.question_id,
                 projection="training_criteria",
                 status="failed",
+                payload={"validation_error": detail},
                 error_category=(
                     "evidence_validation"
                     if isinstance(evidence_payload, Mapping)
@@ -1398,13 +1570,94 @@ class CombinedQuestionAnalysisModule:
             self._criterion_audits[(str(operation_id), question.question_id)] = (
                 criterion_audit
             )
+        payload = draft.to_dict()
+        type_audit = self._apply_question_type_suggestion(
+            operation_id,
+            question,
+            suggestion,
+            model_name=model_name,
+        )
+        if type_audit is not None:
+            payload["question_type_suggestion"] = type_audit
         self.repository.save_projection(
             operation_id=operation_id,
             question_id=question.question_id,
             projection="training_criteria",
             status="succeeded",
-            payload=draft.to_dict(),
+            payload=payload,
         )
+
+    def _question_type_suggestion(
+        self,
+        operation_id: str,
+        question: QuestionAnalysisInput,
+        raw: Mapping[str, Any],
+    ) -> QuestionTypeSuggestion | None:
+        """解析模型的题型建议；非法枚举只登记说明，不让可用分析失败。"""
+
+        if "question_type_suggestion" not in raw:
+            return None
+        try:
+            return QuestionTypeSuggestion.from_dict(
+                raw.get("question_type_suggestion")
+            )
+        except ProjectionValidationError:
+            self._record_projection_note(
+                operation_id,
+                question.question_id,
+                "question_type_suggestion_note",
+                "模型题型建议不是受支持的题型枚举，已按本地题型继续。",
+            )
+            return None
+
+    def _apply_question_type_suggestion(
+        self,
+        operation_id: str,
+        question: QuestionAnalysisInput,
+        suggestion: QuestionTypeSuggestion | None,
+        *,
+        model_name: str,
+    ) -> dict[str, Any] | None:
+        """落库题型建议：未确认自动订正，已确认只登记冲突建议。"""
+
+        if suggestion is None:
+            return None
+        local_type = str(question.tagging_context.question_type or "").strip()
+        if suggestion.question_type == local_type:
+            return None
+        audit: dict[str, Any] = {
+            "local_type": local_type,
+            "suggested_type": suggestion.question_type,
+            "reason": suggestion.reason,
+            "model_name": str(model_name or ""),
+            "action": "not_applied",
+        }
+        if question.question_type_confirmed:
+            # AI 输出只是候选：教师已确认的题型绝不自动改，只登记冲突。
+            audit["action"] = "conflict_only"
+            return audit
+        if self.question_type_writer is None:
+            return audit
+        try:
+            applied = self.question_type_writer.apply(
+                question,
+                suggestion,
+                model_name=model_name,
+                operation_id=operation_id,
+            )
+        except Exception as exc:
+            detail = _projection_error_detail(exc)
+            self._record_projection_note(
+                operation_id,
+                question.question_id,
+                "question_type_suggestion_note",
+                f"题型建议订正写入失败：{detail}",
+            )
+            audit["action"] = "write_failed"
+            return audit
+        if isinstance(applied, Mapping):
+            audit.update(dict(applied))
+        return audit
 
     def _publish_saved_criterion(
         self,
@@ -1674,6 +1927,7 @@ def _answer_only_training_draft(
     rationale: str,
     confidence: float,
     source_kind: Literal["combined_model", "confirmed_rubric_adapter"],
+    question_type_group: str | None = None,
 ) -> TrainingCriteriaDraft:
     multiple = len(answer_units) > 1
     points = tuple(
@@ -1701,7 +1955,7 @@ def _answer_only_training_draft(
         schema_version="training-criteria-draft-v1",
         question_id=question.question_id,
         source_content_hash=question.criterion_source_content_hash,
-        question_type=question.question_type_group,
+        question_type=question_type_group or question.question_type_group,
         points=points,
         auxiliary_rules=(),
         rationale=rationale,
@@ -1871,6 +2125,8 @@ def training_criteria_from_solution_evidence(
     evidence: QuestionSolutionEvidence,
     *,
     question: QuestionAnalysisInput,
+    objective_response_shape: ObjectiveResponseShape | None = None,
+    question_type_group: str | None = None,
 ) -> TrainingCriteriaDraft:
     """Project rich evidence to the existing score-free criterion contract."""
 
@@ -1882,7 +2138,10 @@ def training_criteria_from_solution_evidence(
         question
     ):
         raise ProjectionValidationError("solution evidence source is stale")
-    if question.objective_response_shape in {"single_choice", "single_blank"}:
+    # 题型建议被采纳时用真实题组与作答形态投影，否则保持本地推导结果。
+    response_shape = objective_response_shape or question.objective_response_shape
+    type_group = question_type_group or question.question_type_group
+    if response_shape in {"single_choice", "single_blank"}:
         canonical = next(
             (
                 part.canonical_answer
@@ -1910,10 +2169,11 @@ def training_criteria_from_solution_evidence(
                 rationale="客观题仅依据答案生成训练判定点。",
                 confidence=evidence.confidence,
                 source_kind="combined_model",
+                question_type_group=type_group,
             ),
             evidence=evidence,
         )
-    if question.objective_response_shape == "multiple_blank":
+    if response_shape == "multiple_blank":
         answer_units: list[tuple[str, tuple[str, ...]]] = []
         for part in evidence.parts:
             if part.response_mode == "exact_objective":
@@ -1944,6 +2204,7 @@ def training_criteria_from_solution_evidence(
                 rationale="填空题仅依据各独立答案生成训练判定点。",
                 confidence=evidence.confidence,
                 source_kind="combined_model",
+                question_type_group=type_group,
             ),
             evidence=evidence,
         )
@@ -1964,7 +2225,7 @@ def training_criteria_from_solution_evidence(
             schema_version=LEGACY_CRITERIA_SCHEMA,
             question_id=question.question_id,
             source_content_hash=question.criterion_source_content_hash,
-            question_type=question.question_type_group,
+            question_type=type_group,
             points=points,
             auxiliary_rules=evidence.auxiliary_rules,
             rationale=evidence.rationale,
@@ -2306,6 +2567,18 @@ def combined_response_format(
             "enum": ["consistent", "conflict", "insufficient"],
         },
         "reference_assessment_reason": {"type": "string"},
+        "question_type_suggestion": {
+            "type": "object",
+            "properties": {
+                "question_type": {
+                    "type": "string",
+                    "enum": list(QUESTION_TYPES),
+                },
+                "reason": {"type": "string"},
+            },
+            "required": ["question_type", "reason"],
+            "additionalProperties": False,
+        },
     }
     if "tag" in selected:
         item_properties["tag_analysis"] = _tag_schema(ids, defs=defs)
@@ -2599,12 +2872,12 @@ def _solution_evidence_schema(
 def _response_items(
     payload: Mapping[str, Any],
     batch: PlannedAnalysisBatch,
-) -> dict[int, Mapping[str, Any]]:
+) -> tuple[dict[int, Mapping[str, Any]], dict[int, str]]:
     raw = payload.get("results")
     if not isinstance(raw, list):
         raise ProjectionValidationError("combined response has no results")
     expected = set(batch.question_ids)
-    items: dict[int, Mapping[str, Any]] = {}
+    grouped: dict[int, list[Mapping[str, Any]]] = {}
     for item in raw:
         if not isinstance(item, Mapping):
             raise ProjectionValidationError("combined response item is invalid")
@@ -2614,12 +2887,228 @@ def _response_items(
             raise ProjectionValidationError(
                 "combined response question_id is invalid"
             ) from exc
-        if question_id not in expected or question_id in items:
+        if question_id not in expected:
             raise ProjectionValidationError(
                 "combined response has unknown or duplicate question_id"
             )
-        items[question_id] = item
-    return items
+        grouped.setdefault(question_id, []).append(item)
+    items: dict[int, Mapping[str, Any]] = {}
+    merge_notes: dict[int, str] = {}
+    for question_id, group in grouped.items():
+        if len(group) == 1:
+            items[question_id] = group[0]
+            continue
+        items[question_id], merge_notes[question_id] = (
+            _merge_duplicate_results(group)
+        )
+    return items, merge_notes
+
+
+class _DuplicateMergeUnsafeError(Exception):
+    """A duplicate result copy cannot be merged deterministically."""
+
+
+_TAG_ANALYSIS_LIST_FIELDS = (
+    "knowledge_points",
+    "prerequisite_points",
+    "method_tags",
+    "thought_tags",
+    "ability_tags",
+    "math_model_tags",
+    "special_type_tags",
+    "error_prone_points",
+    "textbook_chapters",
+    "curriculum_sections",
+    "sub_skills",
+    "measured_skills",
+    "supporting_skills",
+    "proposed_tags",
+)
+_REFERENCE_ASSESSMENT_SEVERITY = {
+    "consistent": 0,
+    "insufficient": 1,
+    "conflict": 2,
+}
+
+
+def _ordered_unique_values(values: Iterable[Any]) -> list[Any]:
+    seen: set[str] = set()
+    unique: list[Any] = []
+    for value in values:
+        key = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(value)
+    return unique
+
+
+def _merge_duplicate_results(
+    group: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], str]:
+    """Merge duplicate per-question results into one deterministic result.
+
+    多问大题最常见的模型误返回是按小问各给一份 result。能确定性合并时
+    合并为一条；任一合并前提不满足时回退为保留第一份，都不再整批作废。
+    """
+
+    first = group[0]
+    try:
+        merged = _try_merge_duplicate_results(group)
+    except _DuplicateMergeUnsafeError:
+        note = (
+            f"模型返回 {len(group)} 份重复结果，结构不满足合并前提，"
+            "已保留第一份。"
+        )
+        return first, note
+    note = f"模型返回 {len(group)} 份重复结果，已按返回顺序合并为一条。"
+    return merged, note
+
+
+def _try_merge_duplicate_results(
+    group: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    merged = dict(group[0])
+    analyses = [
+        item["tag_analysis"]
+        for item in group
+        if isinstance(item.get("tag_analysis"), Mapping)
+    ]
+    if analyses:
+        merged["tag_analysis"] = _merge_tag_analyses(analyses)
+    evidence_copies = [
+        item["solution_evidence"]
+        for item in group
+        if isinstance(item.get("solution_evidence"), Mapping)
+    ]
+    if evidence_copies:
+        merged["solution_evidence"] = _merge_solution_evidences(evidence_copies)
+    assessments = [
+        str(item.get("reference_assessment") or "").strip()
+        for item in group
+    ]
+    if any(assessments):
+        merged["reference_assessment"] = max(
+            assessments,
+            key=lambda value: _REFERENCE_ASSESSMENT_SEVERITY.get(
+                value.casefold(),
+                len(_REFERENCE_ASSESSMENT_SEVERITY),
+            ),
+        )
+    reasons = _ordered_unique_values(
+        [
+            str(item.get("reference_assessment_reason") or "").strip()
+            for item in group
+            if str(item.get("reference_assessment_reason") or "").strip()
+        ]
+    )
+    if reasons:
+        merged["reference_assessment_reason"] = "；".join(
+            str(reason) for reason in reasons
+        )
+    return merged
+
+
+def _merge_tag_analyses(
+    analyses: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """列表字段保序去重并集，标量字段以第一份为准。"""
+
+    merged = dict(analyses[0])
+    for field_name in _TAG_ANALYSIS_LIST_FIELDS:
+        values: list[Any] = []
+        present = False
+        for analysis in analyses:
+            raw_values = analysis.get(field_name)
+            if isinstance(raw_values, list):
+                present = True
+                values.extend(raw_values)
+        if present:
+            merged[field_name] = _ordered_unique_values(values)
+    return merged
+
+
+def _merge_solution_evidences(
+    copies: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """按返回顺序拼接 parts，并把 part/evidence point 编号重编为全题唯一。"""
+
+    merged = dict(copies[0])
+    merged_parts: list[dict[str, Any]] = []
+    for copy in copies:
+        parts = copy.get("parts")
+        if not isinstance(parts, list) or not parts:
+            raise _DuplicateMergeUnsafeError("solution evidence parts are empty")
+        for part in parts:
+            merged_parts.append(
+                _renumber_evidence_part(part, f"part-{len(merged_parts) + 1}")
+            )
+    auxiliary_rules: list[Any] = []
+    rules_present = False
+    for copy in copies:
+        raw_rules = copy.get("auxiliary_rules")
+        if isinstance(raw_rules, list):
+            rules_present = True
+            auxiliary_rules.extend(raw_rules)
+    if rules_present:
+        merged["auxiliary_rules"] = _ordered_unique_values(auxiliary_rules)
+    merged["parts"] = merged_parts
+    return merged
+
+
+def _renumber_evidence_part(
+    part: object,
+    new_part_id: str,
+) -> dict[str, Any]:
+    if not isinstance(part, Mapping):
+        raise _DuplicateMergeUnsafeError("evidence part is invalid")
+    points = part.get("evidence_points")
+    if not isinstance(points, list) or not points:
+        raise _DuplicateMergeUnsafeError("evidence part has no evidence_points")
+    id_map: dict[str, str] = {}
+    for index, point in enumerate(points, start=1):
+        if not isinstance(point, Mapping):
+            raise _DuplicateMergeUnsafeError("evidence point is invalid")
+        old_id = str(point.get("evidence_point_id") or "").strip()
+        if not old_id or old_id in id_map:
+            raise _DuplicateMergeUnsafeError("evidence point id is not unique")
+        id_map[old_id] = f"{new_part_id}-step-{index}"
+    renumbered_points: list[dict[str, Any]] = []
+    for point in points:
+        assert isinstance(point, Mapping)
+        renumbered = dict(point)
+        old_id = str(point.get("evidence_point_id") or "").strip()
+        renumbered["evidence_point_id"] = id_map[old_id]
+        raw_depends = point.get("depends_on")
+        depends = raw_depends if isinstance(raw_depends, list) else []
+        renumbered_depends: list[str] = []
+        for dependency in depends:
+            dependency_id = str(dependency or "").strip()
+            if not dependency_id:
+                continue
+            # depends_on 是 part 内命名空间；引用不到本 part 的 id 就无法安全重编。
+            target = id_map.get(dependency_id)
+            if target is None:
+                raise _DuplicateMergeUnsafeError(
+                    "depends_on reference cannot be renumbered"
+                )
+            renumbered_depends.append(target)
+        renumbered["depends_on"] = renumbered_depends
+        renumbered_points.append(renumbered)
+    renumbered_part = dict(part)
+    renumbered_part["part_id"] = new_part_id
+    renumbered_part["evidence_points"] = renumbered_points
+    return renumbered_part
+
+
+def _projection_error_detail(exc: BaseException) -> str:
+    """脱敏后的异常类型+短消息，供台账与任务结果展示。"""
+
+    from question_bank.services.ai_tagging_service import (
+        sanitize_tagging_error,
+    )
+
+    return sanitize_tagging_error(f"{type(exc).__name__}: {exc}", limit=240)
 
 
 def _normalize_questions(
@@ -2901,6 +3390,8 @@ __all__ = [
     "QuestionAnalysisImage",
     "QuestionAnalysisInput",
     "QuestionAnalysisWorkItem",
+    "QuestionTypeSuggestion",
+    "QuestionTypeSuggestionWriter",
     "TagOnlyV1ResultAdapter",
     "TagProjectionWriter",
     "TrainingCriteriaDraft",

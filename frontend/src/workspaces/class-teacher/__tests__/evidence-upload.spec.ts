@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/api/errors'
 import { supportApi } from '../api/support'
-import EvidenceUploadPanel from '../students/EvidenceUploadPanel.vue'
+import EvidenceUploadPanel, { examDateOf, guessExamNature } from '../students/EvidenceUploadPanel.vue'
 
 const apps: App[] = []
 async function mount(component: Component, props: Record<string, unknown> = {}) {
@@ -25,6 +25,12 @@ function chooseFile(host: HTMLElement, file: File) {
   const input = host.querySelector<HTMLInputElement>('input[type="file"]')
   if (!input) throw new Error('file input not found')
   Object.defineProperty(input, 'files', { value: [file], configurable: true })
+  input.dispatchEvent(new Event('change', { bubbles: true }))
+}
+function chooseFiles(host: HTMLElement, files: File[]) {
+  const input = host.querySelector<HTMLInputElement>('input[type="file"]')
+  if (!input) throw new Error('file input not found')
+  Object.defineProperty(input, 'files', { value: files, configurable: true })
   input.dispatchEvent(new Event('change', { bubbles: true }))
 }
 function apiError(message: string) {
@@ -207,5 +213,298 @@ describe('B UI 学业证据成绩表上传', () => {
         }),
       ],
     })))
+  })
+
+  it.each([
+    ['七年级上期中.csv', '七上'],
+    ['七下期中.csv', '七下'],
+    ['八年级上册期末.csv', '八上'],
+    ['九年级第二学期开学测.csv', '九下'],
+  ])('guesses the term label from file name %s', async (name, expected) => {
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue(singlePreviewPayload)
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['姓名,数学成绩\n合成学生,88'], name, { type: 'text/csv' }))
+    await vi.waitFor(() => expect(host.textContent).toContain('核对无误，确认登记'))
+
+    const termSelect = [...host.querySelectorAll('label')].find((item) => item.textContent?.includes('学期类别'))!.querySelector('select')!
+    expect(termSelect.value).toBe(expected)
+  })
+
+  it('normalizes a combined English column to 英语 when the sheet has no separate 英语 column', async () => {
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue({
+      file_name: '期末.xlsx', sheet_names: ['简表'], selected_sheet: '简表',
+      headers: ['姓名', '英语笔试加听力-得分', '英语笔试加听力-校次', '数学-得分'],
+      rows: [
+        { 姓名: '合成学生', '英语笔试加听力-得分': '88', '英语笔试加听力-校次': '30', '数学-得分': '90' },
+        { 姓名: '陌生名字', '英语笔试加听力-得分': '70', '英语笔试加听力-校次': '120', '数学-得分': '60' },
+      ],
+      preview_row_count: 2, truncated: false,
+      raw_file_retained: false as const, temporary_file_created: false as const,
+    })
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['x'], '期末.xlsx'))
+    await vi.waitFor(() => expect(host.textContent).toContain('已自动识别 2 个科目：英语、数学'))
+  })
+
+  it('keeps the combined English column name when the sheet already has a separate 英语 column', async () => {
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue({
+      file_name: '期末.xlsx', sheet_names: ['简表'], selected_sheet: '简表',
+      headers: ['姓名', '英语-得分', '英语笔试加听说-得分'],
+      rows: [
+        { 姓名: '合成学生', '英语-得分': '88', '英语笔试加听说-得分': '80' },
+        { 姓名: '陌生名字', '英语-得分': '70', '英语笔试加听说-得分': '65' },
+      ],
+      preview_row_count: 2, truncated: false,
+      raw_file_retained: false as const, temporary_file_created: false as const,
+    })
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['x'], '期末.xlsx'))
+    await vi.waitFor(() => expect(host.textContent).toContain('已自动识别 2 个科目：英语、英语笔试加听说'))
+  })
+
+  it('attaches both 科目-等级 and 科目等级 column shapes as grade_level', async () => {
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue({
+      file_name: '期末.xlsx', sheet_names: ['简表'], selected_sheet: '简表',
+      headers: ['姓名', '数学-得分', '数学-等级', '语文-得分', '语文等级'],
+      rows: [
+        { 姓名: '合成学生', '数学-得分': '95', '数学-等级': 'A+', '语文-得分': '80', 语文等级: 'B' },
+        { 姓名: '陌生名字', '数学-得分': '70', '数学-等级': '', '语文-得分': '60', 语文等级: 'C' },
+      ],
+      preview_row_count: 2, truncated: false,
+      raw_file_retained: false as const, temporary_file_created: false as const,
+    })
+    const confirm = vi.spyOn(supportApi, 'confirmEvidence').mockResolvedValue(confirmResult)
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['x'], '期末.xlsx'))
+    await vi.waitFor(() => expect(host.textContent).toContain('已自动识别 2 个科目：数学、语文'))
+    selectOption(host, '学期类别', '七上')
+
+    clickByText(host, '核对无误，确认登记')
+    // 等级识别失败只是不带 grade_level 字段，不阻塞上传
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      assessments: [
+        expect.objectContaining({
+          subject_name: '数学',
+          results: [
+            { subject_id: 's1', result_state: 'normal', score: 95, rank: null, class_rank: null, grade_level: 'A+' },
+            { subject_identity: { display_name: '陌生名字', class_label: '七9班', student_code: null }, result_state: 'normal', score: 70, rank: null, class_rank: null },
+          ],
+        }),
+        expect.objectContaining({
+          subject_name: '语文',
+          results: [
+            { subject_id: 's1', result_state: 'normal', score: 80, rank: null, class_rank: null, grade_level: 'B' },
+            { subject_identity: { display_name: '陌生名字', class_label: '七9班', student_code: null }, result_state: 'normal', score: 60, rank: null, class_rank: null, grade_level: 'C' },
+          ],
+        }),
+      ],
+    })))
+  })
+
+  it('binds the grade column of an English variant before the canonical rename', async () => {
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue({
+      file_name: '期末.xlsx', sheet_names: ['简表'], selected_sheet: '简表',
+      headers: ['姓名', '英语笔试加听力-得分', '英语笔试加听力-等级', '数学-得分'],
+      rows: [{ 姓名: '合成学生', '英语笔试加听力-得分': '88', '英语笔试加听力-等级': 'A', '数学-得分': '90' }],
+      preview_row_count: 1, truncated: false,
+      raw_file_retained: false as const, temporary_file_created: false as const,
+    })
+    const confirm = vi.spyOn(supportApi, 'confirmEvidence').mockResolvedValue(confirmResult)
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['x'], '期末.xlsx'))
+    await vi.waitFor(() => expect(host.textContent).toContain('已自动识别 2 个科目：英语、数学'))
+    selectOption(host, '学期类别', '七上')
+
+    clickByText(host, '核对无误，确认登记')
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      assessments: [
+        expect.objectContaining({
+          subject_name: '英语',
+          results: [
+            { subject_id: 's1', result_state: 'normal', score: 88, rank: null, class_rank: null, grade_level: 'A' },
+          ],
+        }),
+        expect.objectContaining({ subject_name: '数学' }),
+      ],
+    })))
+  })
+
+  it('keeps each English column grade with its own subject when 英语, variant and 听说 coexist', async () => {
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue({
+      file_name: '期末.xlsx', sheet_names: ['简表'], selected_sheet: '简表',
+      headers: ['姓名', '英语-得分', '英语-等级', '英语笔试加听说-得分', '英语笔试加听说-等级', '英语听说-得分', '英语听说-等级'],
+      rows: [{ 姓名: '合成学生', '英语-得分': '70', '英语-等级': 'B', '英语笔试加听说-得分': '92', '英语笔试加听说-等级': 'A', '英语听说-得分': '22', '英语听说-等级': 'C+' }],
+      preview_row_count: 1, truncated: false,
+      raw_file_retained: false as const, temporary_file_created: false as const,
+    })
+    const confirm = vi.spyOn(supportApi, 'confirmEvidence').mockResolvedValue(confirmResult)
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['x'], '期末.xlsx'))
+    // 有独立「英语」列时变体保持原名，由读取层隐藏；各列等级跟随自己的科目
+    await vi.waitFor(() => expect(host.textContent).toContain('已自动识别 3 个科目：英语、英语笔试加听说、英语听说'))
+    selectOption(host, '学期类别', '七上')
+
+    clickByText(host, '核对无误，确认登记')
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      assessments: [
+        expect.objectContaining({
+          subject_name: '英语',
+          results: [expect.objectContaining({ grade_level: 'B' })],
+        }),
+        expect.objectContaining({
+          subject_name: '英语笔试加听说',
+          results: [expect.objectContaining({ grade_level: 'A' })],
+        }),
+        expect.objectContaining({
+          subject_name: '英语听说',
+          results: [expect.objectContaining({ grade_level: 'C+' })],
+        }),
+      ],
+    })))
+  })
+
+  it('derives the registration date from the 考试日期 column when present', async () => {
+    expect(examDateOf(['姓名', '考试日期'], [{ 姓名: '甲', 考试日期: '2025/11/5' }])).toBe('2025-11-05')
+    expect(examDateOf(['姓名', '考试日期'], [{ 姓名: '甲', 考试日期: '' }, { 姓名: '乙', 考试日期: '2026-01-10' }])).toBe('2026-01-10')
+    expect(examDateOf(['姓名', '数学成绩'], [{ 姓名: '甲', 数学成绩: '88' }])).toBe('')
+    expect(examDateOf(['姓名', '考试日期'], [{ 姓名: '甲', 考试日期: '未知' }])).toBe('')
+
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue({
+      file_name: '七上期中.csv', sheet_names: ['CSV'], selected_sheet: 'CSV',
+      headers: ['姓名', '考试日期', '数学成绩'],
+      rows: [{ 姓名: '合成学生', 考试日期: '2025/11/5', 数学成绩: '88' }],
+      preview_row_count: 1, truncated: false,
+      raw_file_retained: false as const, temporary_file_created: false as const,
+    })
+    const confirm = vi.spyOn(supportApi, 'confirmEvidence').mockResolvedValue(confirmResult)
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['姓名,考试日期,数学成绩\n合成学生,2025/11/5,88'], '七上期中.csv', { type: 'text/csv' }))
+    await vi.waitFor(() => expect(host.textContent).toContain('核对无误，确认登记'))
+
+    // 日期只读展示，不再是可编辑输入
+    expect(host.textContent).toContain('登记日期：2025-11-05')
+    expect(host.textContent).toContain('日期仅作登记参考，场次顺序按学期和期中期末排列')
+    expect(host.querySelector('input[type="date"]')).toBeNull()
+
+    clickByText(host, '核对无误，确认登记')
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      assessments: [expect.objectContaining({
+        occurred_on: '2025-11-05',
+        session: expect.objectContaining({ occurred_on: '2025-11-05', academic_year: '2025-2026' }),
+      })],
+    })))
+  })
+
+  it('registers the upload day when the sheet has no 考试日期 column', async () => {
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue(singlePreviewPayload)
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['姓名,数学成绩\n合成学生,88'], '期中考试.csv', { type: 'text/csv' }))
+    await vi.waitFor(() => expect(host.textContent).toContain('核对无误，确认登记'))
+
+    const today = new Date().toISOString().slice(0, 10)
+    expect(host.textContent).toContain(`登记日期：${today}`)
+  })
+
+  it('prefills the exam nature from the file name and lets the teacher change it', async () => {
+    expect(guessExamNature('七上期中成绩.csv')).toBe('期中考试')
+    expect(guessExamNature('2025-2026期末统考.xlsx')).toBe('期末考试')
+    expect(guessExamNature('10月月考.xlsx')).toBe('其他')
+
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue(singlePreviewPayload)
+    const confirm = vi.spyOn(supportApi, 'confirmEvidence').mockResolvedValue(confirmResult)
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['姓名,数学成绩\n合成学生,88'], '七上期末成绩.csv', { type: 'text/csv' }))
+    await vi.waitFor(() => expect(host.textContent).toContain('核对无误，确认登记'))
+
+    const natureSelect = [...host.querySelectorAll('label')].find((item) => item.textContent?.includes('考试性质'))!.querySelector('select')!
+    expect(natureSelect.value).toBe('期末考试')
+    selectOption(host, '考试性质', '期中考试')
+    selectOption(host, '学期类别', '七上')
+
+    clickByText(host, '核对无误，确认登记')
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      assessments: [expect.objectContaining({
+        assessment_nature: '期中考试',
+        session: expect.objectContaining({ exam_type: '期中考试' }),
+      })],
+    })))
+  })
+
+  it('infers the term from table 年级/学期 columns when the file name has no hint', async () => {
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    vi.spyOn(supportApi, 'previewSpreadsheet').mockResolvedValue({
+      file_name: '成绩表.csv', sheet_names: ['CSV'], selected_sheet: 'CSV',
+      headers: ['姓名', '年级', '学期', '数学成绩'],
+      rows: [{ 姓名: '合成学生', 年级: '八年级', 学期: '下学期', 数学成绩: '88' }],
+      preview_row_count: 1, truncated: false,
+      raw_file_retained: false as const, temporary_file_created: false as const,
+    })
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFile(host, new File(['x'], '成绩表.csv', { type: 'text/csv' }))
+    await vi.waitFor(() => expect(host.textContent).toContain('核对无误，确认登记'))
+
+    const termSelect = [...host.querySelectorAll('label')].find((item) => item.textContent?.includes('学期类别'))!.querySelector('select')!
+    expect(termSelect.value).toBe('八下')
+    // 文件名无期中/期末线索：考试性质归为「其他」
+    const natureSelect = [...host.querySelectorAll('label')].find((item) => item.textContent?.includes('考试性质'))!.querySelector('select')!
+    expect(natureSelect.value).toBe('其他')
+  })
+
+  it('queues multiple files and keeps going after one fails to parse', async () => {
+    vi.spyOn(supportApi, 'listSubjects').mockResolvedValue([rosterItem])
+    const preview = vi.spyOn(supportApi, 'previewSpreadsheet')
+    preview.mockRejectedValueOnce(apiError('CSV 文件编码无法识别'))
+    preview.mockResolvedValue(singlePreviewPayload)
+    const confirm = vi.spyOn(supportApi, 'confirmEvidence').mockResolvedValue(confirmResult)
+    const host = await mount(EvidenceUploadPanel)
+
+    clickByText(host, '上传大考成绩表'); await settle()
+    chooseFiles(host, [
+      new File(['garbage'], '坏文件.csv', { type: 'text/csv' }),
+      new File(['姓名,数学成绩\n合成学生,88'], '期中考试.csv', { type: 'text/csv' }),
+    ])
+    // 第一份解析失败只标记该文件，队列继续处理第二份
+    await vi.waitFor(() => expect(host.textContent).toContain('核对无误，确认登记'))
+    expect(host.textContent).toContain('坏文件.csv')
+    expect(host.textContent).toContain('CSV 文件编码无法识别')
+    expect(host.textContent).toContain('失败')
+    expect(host.textContent).toContain('期中考试.csv')
+
+    selectOption(host, '学期类别', '七上')
+    clickByText(host, '核对无误，确认登记')
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      source_label: '期中考试.csv',
+    })))
+    await vi.waitFor(() => expect(host.textContent).toContain('已登记'))
+    expect(host.textContent).toContain('已登记')
   })
 })

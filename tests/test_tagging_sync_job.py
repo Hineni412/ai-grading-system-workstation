@@ -1242,6 +1242,220 @@ def test_unified_evidence_retry_preserves_existing_successful_tags(
     assert result["failed_question_ids"] == []
 
 
+def test_unified_evidence_retry_retags_question_without_saved_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 复现 job 138（question 816）：调用方传入 retry_evidence_question_ids，
+    # 但该题从未保存过标签。旧逻辑 analyze_tag=False 导致标签永远不被补析，
+    # 终审只能报“完整标签未能保存”，用户反复重试永不成功。
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_id = _seed(db_path, 1)[0]
+    bank = QuestionBankTestStore(db_path)
+    governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-retry-retag-kg.db",
+    )
+    analyzed: list[tuple[int, bool]] = []
+
+    class RetaggingCombinedModule:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze_work_items(self, *, work_items, **_kwargs):
+            for item in work_items:
+                analyzed.append(
+                    (item.question.question_id, bool(item.analyze_tag))
+                )
+                if item.analyze_tag:
+                    assert bank.save_tag_analysis(
+                        item.question.question_id,
+                        _analysis(),
+                        model_name="retry-model",
+                    )
+                _seed_current_projection_rows(db_path, item.question)
+            return {
+                "items": [
+                    {
+                        "question_id": item.question.question_id,
+                        "tag_status": (
+                            "succeeded" if item.analyze_tag else "not_requested"
+                        ),
+                        "tag_error_category": "",
+                        "criteria_status": "succeeded",
+                        "criteria_error_category": "",
+                    }
+                    for item in work_items
+                ],
+                "criterion_audit": {
+                    "items": [
+                        {
+                            "question_id": item.question.question_id,
+                            "status": "succeeded",
+                        }
+                        for item in work_items
+                    ]
+                },
+                "projection_audit": {
+                    "retrieval_misses": [],
+                    "proposals": [],
+                    "secondary_matches": [],
+                    "relation_hints": [],
+                    "retrieval_miss_question_ids": [],
+                    "proposal_question_ids": [],
+                },
+                "question_projection_audits": {},
+            }
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "CombinedQuestionAnalysisModule",
+        RetaggingCombinedModule,
+    )
+    ai_service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-combined",
+        },
+        protocol_adapter=object(),
+        taxonomy_governance=governance,
+    )
+    context, _store = _context(
+        tmp_path,
+        {
+            "question_ids": [question_id],
+            "retry_evidence_question_ids": [question_id],
+        },
+    )
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: ai_service,
+        taxonomy_governance=governance,
+    )
+
+    assert analyzed == [(question_id, True)]
+    assert result["outcome"] == "complete"
+    assert result["tagged_count"] == 1
+    assert result["failed_question_ids"] == []
+    assert result["failures"] == []
+    # 分配与登记覆盖对齐：该题这次确实进入了观测生命周期。
+    lifecycle = json.loads(
+        (tmp_path / "taxonomy-state.json").read_text(encoding="utf-8")
+    )["observation_lifecycle"]
+    generation = f"tagging-sync:{context.job_id}"
+    assert str(question_id) in lifecycle["allocations"].get(generation, {})
+    assert any(
+        item["question_id"] == str(question_id)
+        and item["generation_id"] == generation
+        for item in lifecycle["observations"]
+    )
+
+
+def test_unified_observation_registration_failure_keeps_saved_tag_successful(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 观测登记是审计投影：标签已落库后登记失败只记日志，不再误判为
+    # “完整标签未能保存”。
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_id = _seed(db_path, 1)[0]
+    bank = QuestionBankTestStore(db_path)
+    governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-observe-fail-kg.db",
+    )
+
+    class PersistingCombinedModule:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze_work_items(self, *, work_items, **_kwargs):
+            for item in work_items:
+                if item.analyze_tag:
+                    assert bank.save_tag_analysis(
+                        item.question.question_id,
+                        _analysis(),
+                        model_name="synthetic-model",
+                    )
+                _seed_current_projection_rows(db_path, item.question)
+            return {
+                "items": [
+                    {
+                        "question_id": item.question.question_id,
+                        "tag_status": (
+                            "succeeded" if item.analyze_tag else "not_requested"
+                        ),
+                        "tag_error_category": "",
+                        "criteria_status": "succeeded",
+                        "criteria_error_category": "",
+                    }
+                    for item in work_items
+                ],
+                "criterion_audit": {
+                    "items": [
+                        {
+                            "question_id": item.question.question_id,
+                            "status": "succeeded",
+                        }
+                        for item in work_items
+                    ]
+                },
+                "projection_audit": {
+                    "retrieval_misses": [],
+                    "proposals": [],
+                    "secondary_matches": [],
+                    "relation_hints": [],
+                    "retrieval_miss_question_ids": [],
+                    "proposal_question_ids": [],
+                },
+                "question_projection_audits": {},
+            }
+
+    def failing_observation(*_args, **_kwargs) -> None:
+        raise RuntimeError("synthetic observation registration failure")
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "CombinedQuestionAnalysisModule",
+        PersistingCombinedModule,
+    )
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "_record_successful_observation",
+        failing_observation,
+    )
+    ai_service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-combined",
+        },
+        protocol_adapter=object(),
+        taxonomy_governance=governance,
+    )
+    context, _store = _context(tmp_path, {"question_ids": [question_id]})
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: ai_service,
+        taxonomy_governance=governance,
+    )
+
+    assert result["outcome"] == "complete"
+    assert result["tagged_count"] == 1
+    assert result["successful_question_ids"] == [question_id]
+    assert result["failed_question_ids"] == []
+    assert result["failures"] == []
+
+
 def test_tagging_sync_skips_complete_questions_and_retries_only_missing(
     tmp_path: Path,
 ) -> None:

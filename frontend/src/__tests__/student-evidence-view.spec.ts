@@ -197,6 +197,7 @@ async function mountView(path = '/training/evidence/12?from=student') {
 beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
+  localStorage.clear()
   fetchStudentExamResultsMock.mockResolvedValue(responseFor([sessionItem(7)]))
   getQuestionMock.mockResolvedValue(questionDetail)
 })

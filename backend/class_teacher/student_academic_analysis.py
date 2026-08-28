@@ -13,6 +13,8 @@ from .encrypted_database import EncryptedDatabase
 from .errors import VaultError
 from .secure_repository import EncryptedObjectRepository
 from .sensitive_work_projection import SensitiveWorkProjection
+from .session_label import session_order, short_label
+from .subject_canonical import canonical_subjects
 
 
 RULESET_VERSION = "academic_ruleset_v1"
@@ -28,9 +30,6 @@ PROFILE_SKEW_STRONG = 0.90  # 偏科：最强科位于前 10%
 PROFILE_SKEW_WEAK = 0.50  # 且最弱科位于后 50%
 PROFILE_ATTENTION_DROP = 0.10  # 单科一次下滑达到该比例即标记关注
 
-_GRADE_ORDER = {"七年级": 7, "八年级": 8, "九年级": 9}
-_TERM_ORDER = {"上学期": 0, "下学期": 1}
-
 
 def _term_short(session: dict[str, object]) -> str:
     grade = str(session.get("grade") or "").replace("年级", "")
@@ -39,13 +38,9 @@ def _term_short(session: dict[str, object]) -> str:
     return f"{grade}{half}" if grade and half else ""
 
 
-def _academic_order(session: dict[str, object]) -> tuple[int, int] | None:
-    """Order exams along the semester chain (七上→七下→八上→…)."""
-    grade = _GRADE_ORDER.get(str(session.get("grade") or ""))
-    term = _TERM_ORDER.get(str(session.get("term") or ""))
-    if grade is None or term is None:
-        return None
-    return (grade, term)
+def _academic_order(session: dict[str, object]) -> tuple[int, int, int] | None:
+    """Order exams along the semester chain (七上→七下→…，同学期内期中<期末)。"""
+    return session_order(session)
 
 
 def _today() -> date:
@@ -138,10 +133,36 @@ class StudentAcademicAnalysis:
                 )
                 session["evidence"].append(point)
 
+        # 科目展示名归一：同场变体列并入同一科目（如「英语笔试加听力」→「英语」），
+        # 只改读取口径，不改库存数据；分组、筛选与比较都用归一名。
+        # 被隐藏的原始列（英语听说、被变体取代的原始「英语」）不进入学生分析。
+        for session in sessions.values():
+            points = session["evidence"]
+            name_map = canonical_subjects(
+                str(point.get("subject_name") or "") for point in points
+            )
+            visible = []
+            for point in points:
+                raw = str(point.get("subject_name") or "")
+                if raw:
+                    display = name_map.get(raw)
+                    if display is None:
+                        continue
+                    point["subject_name"] = display
+                visible.append(point)
+            session["evidence"] = visible
+
         all_sessions = sorted(
             sessions.values(),
             key=lambda value: (str(value.get("occurred_on") or ""), str(value["session_id"])),
         )
+        for session in all_sessions:
+            session["short_label"] = short_label(
+                grade=session.get("grade"),
+                term=session.get("term"),
+                exam_type=session.get("exam_type"),
+                title=session.get("title"),
+            )
         source_version = self._source_version(all_sessions)
         filter_options = {
             "series": sorted({
@@ -380,6 +401,7 @@ class StudentAcademicAnalysis:
             "occurred_on": item.get("occurred_on"),
             "score": item.get("score"),
             "max_score": item.get("max_score"),
+            "grade_level": item.get("grade_level") or None,
             "result_state": item.get("result_state"),
             "rank": rank,
             "class_rank": rank_context.get("class_rank"),
@@ -395,7 +417,7 @@ class StudentAcademicAnalysis:
         }
 
     def _series(self, sessions: list[dict[str, object]]) -> list[dict[str, object]]:
-        buckets: dict[tuple[str, str], list[tuple[tuple[int, int] | None, dict[str, object]]]] = {}
+        buckets: dict[tuple[str, str], list[tuple[tuple[int, int, int] | None, dict[str, object]]]] = {}
         for session in sessions:
             series_name = str(session.get("comparison_series") or "未归组")
             order = _academic_order(session)
@@ -407,7 +429,7 @@ class StudentAcademicAnalysis:
             # 学期链条优先：有年级/学期元数据的按七上→七下→八上…排，
             # 同一学期内按考试日期排；缺元数据的排在最后按日期兜底。
             ordered.sort(key=lambda item: (
-                item[0] if item[0] is not None else (99, 99),
+                item[0] if item[0] is not None else (99, 99, 99),
                 str(item[1].get("occurred_on") or ""),
                 str(item[1]["evidence_version_id"]),
             ))
@@ -596,7 +618,7 @@ class StudentAcademicAnalysis:
         ordered = sorted(
             sessions,
             key=lambda value: (
-                _academic_order(value) or (99, 99),
+                _academic_order(value) or (99, 99, 99),
                 str(value.get("occurred_on") or ""),
                 str(value["session_id"]),
             ),
@@ -611,6 +633,8 @@ class StudentAcademicAnalysis:
                     "grade": session.get("grade"),
                     "term": session.get("term"),
                     "term_label": _term_short(session),
+                    "short_label": session.get("short_label") or "",
+                    "grade_level": point.get("grade_level") or None,
                     "score": point.get("score"),
                     "rank": point.get("rank"),
                     "class_rank": point.get("class_rank"),
@@ -644,6 +668,7 @@ class StudentAcademicAnalysis:
                         "session_title": previous["session_title"],
                         "occurred_on": previous["occurred_on"],
                         "term_label": previous["term_label"],
+                        "short_label": previous["short_label"],
                         "rank": previous["rank"],
                         "participant_count": previous["participant_count"],
                     }
@@ -668,6 +693,7 @@ class StudentAcademicAnalysis:
                 {
                     "occurred_on": item["occurred_on"],
                     "term_label": item["term_label"],
+                    "short_label": item["short_label"],
                     "session_title": item["session_title"],
                     "rank": item["rank"],
                     "participant_count": item["participant_count"],
@@ -803,6 +829,8 @@ class StudentAcademicAnalysis:
                     {
                         "occurred_on": item["occurred_on"],
                         "term_label": item["term_label"],
+                        "short_label": item["short_label"],
+                        "grade_level": item["grade_level"],
                         "session_title": item["session_title"],
                         "rank": item["rank"],
                         "relative_position": item["relative_position"],

@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<!--
+  个性化训练卷「错题 → 推荐题 → 标签」匹配预览页原型（不连接真实接口，全部假数据）
+  目的：回答“训练卷本地匹配好后，另起一页应该长什么样”。
+  三种结构差异明显的方案，用底部悬浮条或 URL ?variant=A/B/C 切换：
+    A. 配对卡片流 —— 每行一对：左边错题依据，右边推荐题，箭头相连（最贴近用户描述）
+    B. 双栏映射 —— 左栏该生错题按细点分组，右栏推荐卷，编号 ①②③ 对应
+    C. 细点表格 —— 一行一个细点：掌握度 / 依据错题 / 推荐题 / 操作，密度最高
+  数据基于 2026-08-25 真实场景：钱肖白、周子钰，2 人 · 3 章 · 每卷 10 题 · 各缺 4 题。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>训练卷匹配预览 · 原型</title>
+<style>
+  :root {
+    --primary: #155e4b;
+    --primary-dark: #0f4a3b;
+    --accent-bg: #eaf5f1;
+    --danger: #c0392b;
+    --bg: #f3f6f5;
+    --card: #ffffff;
+    --line: #e2e8e6;
+    --text: #1f2a26;
+    --muted: #6b7a74;
+    --amber: #b45309;
+    --amber-bg: #fef3c7;
+    --purple: #6d28d9;
+    --purple-bg: #f1eafd;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 32px 140px;
+  }
+  .prototype-banner {
+    background: #fff8e1; border: 1px solid #f0d98c; border-radius: 10px;
+    padding: 10px 16px; margin-bottom: 20px; font-size: 14px; color: #7a5d00;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .prototype-banner strong { color: #5c4700; }
+
+  /* ===== 页头 ===== */
+  .page-head { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+  .page-head .crumb { font-size: 13px; color: var(--muted); }
+  .page-head .crumb a { color: var(--primary); text-decoration: none; }
+  .page-head h1 { font-size: 26px; margin-top: 4px; }
+  .page-head .sub { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  .head-stats { display: flex; gap: 16px; margin-left: auto; font-size: 14px; color: var(--muted); }
+  .head-stats b { color: var(--text); font-size: 20px; margin-right: 2px; }
+  .head-stats .is-bad b { color: var(--amber); }
+
+  /* ===== 学生切换 ===== */
+  .student-tabs { display: flex; gap: 10px; margin: 18px 0 20px; }
+  .student-tabs button {
+    border: 1px solid var(--line); background: var(--card); border-radius: 10px;
+    padding: 10px 18px; cursor: pointer; font-size: 14px; text-align: left;
+    display: grid; gap: 2px; min-width: 150px;
+  }
+  .student-tabs button small { color: var(--muted); }
+  .student-tabs button.active {
+    border-color: var(--primary); background: var(--accent-bg);
+    box-shadow: inset 3px 0 0 var(--primary);
+  }
+
+  /* ===== 公共元素 ===== */
+  .notice {
+    background: var(--accent-bg); border-left: 4px solid var(--primary);
+    border-radius: 8px; padding: 10px 16px; margin: 0 0 18px; font-size: 14px; color: #2c4a41;
+  }
+  .notice.missing { background: var(--amber-bg); border-left-color: var(--amber); color: #7a5d00; }
+  .stage-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; white-space: nowrap;
+  }
+  .stage-badge.direct { background: var(--accent-bg); color: var(--primary); }
+  .stage-badge.prerequisite { background: var(--amber-bg); color: var(--amber); }
+  .stage-badge.transfer { background: var(--purple-bg); color: var(--purple); }
+  .tag { font-weight: 700; font-size: 15px; }
+  .path { color: var(--muted); font-size: 12px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .mastery { display: inline-flex; align-items: center; gap: 8px; }
+  .mastery .bar { width: 72px; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .mastery .bar i { display: block; height: 100%; background: var(--danger); }
+  .mastery.mid .bar i { background: var(--amber); }
+  .score-chip {
+    display: inline-block; padding: 1px 8px; border-radius: 6px;
+    background: #fdf0ee; color: var(--danger); font-size: 12px; font-weight: 600;
+  }
+  .btn-link {
+    border: 0; background: transparent; color: var(--primary); cursor: pointer; font-size: 13px;
+  }
+  .btn-link:hover { text-decoration: underline; }
+  .btn-link.danger { color: var(--danger); }
+
+  /* ===== 方案 A：配对卡片流 ===== */
+  .pair-list { display: grid; gap: 14px; }
+  .pair-card {
+    display: grid; grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1.2fr);
+    align-items: stretch; background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .pair-card .wrong-panel { padding: 14px 16px; background: #fafbfa; border-right: 1px dashed var(--line); }
+  .pair-card .rec-panel { padding: 14px 16px; }
+  .pair-card .arrow {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: var(--primary); font-size: 22px; gap: 4px; background: var(--accent-bg);
+  }
+  .pair-card .arrow small { font-size: 11px; color: var(--primary); }
+  .panel-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; letter-spacing: 1px; }
+  .wrong-item {
+    display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px;
+    border-bottom: 1px dashed var(--line);
+  }
+  .wrong-item:last-child { border-bottom: 0; }
+  .wrong-item .exam { color: var(--muted); font-size: 13px; }
+  .rec-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .rec-stem {
+    margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: var(--bg);
+    font-size: 14px; line-height: 1.7;
+  }
+  .rec-foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .rec-foot .ops { margin-left: auto; display: flex; gap: 10px; }
+  .pair-card.is-missing {
+    grid-template-columns: minmax(0, 1fr); border-style: dashed; border-color: #e3c98a;
+    background: #fffdf5;
+  }
+  .missing-inner { padding: 14px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+  /* ===== 方案 B：双栏映射 ===== */
+  .map-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 18px; align-items: start; }
+  .map-col > h3 { font-size: 15px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .map-col > h3 small { color: var(--muted); font-weight: 400; }
+  .map-card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; margin-bottom: 10px; display: grid; gap: 6px;
+  }
+  .map-card .row1 { display: flex; align-items: center; gap: 10px; }
+  .map-num {
+    flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--primary); color: #fff; display: inline-flex;
+    align-items: center; justify-content: center; font-size: 13px; font-weight: 700;
+  }
+  .map-num.empty { background: #d9c48a; }
+  .map-card.is-missing { border-style: dashed; border-color: #e3c98a; background: #fffdf5; }
+  .map-card .wrongs { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  .chapter-group { margin: 4px 0 10px; }
+  .chapter-group > .chapter-name { font-size: 13px; color: var(--muted); margin: 10px 0 6px; }
+
+  /* ===== 方案 C：细点表格 ===== */
+  .match-table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: var(--radius); overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
+  .match-table th, .match-table td { padding: 10px 12px; text-align: left; font-size: 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .match-table th { background: #f0f4f2; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .match-table tr:last-child td { border-bottom: 0; }
+  .match-table tr.is-missing td { background: #fffdf5; }
+  .match-table .wrongs { display: grid; gap: 4px; font-size: 13px; }
+  .match-table .rec { display: grid; gap: 4px; }
+
+  /* ===== 底部悬浮切换条（原型专用，不进入正式设计） ===== */
+  .switcher {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 14px;
+    background: #1f2a26; color: #fff; border-radius: 999px; padding: 8px 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.28); z-index: 99; font-size: 14px;
+  }
+  .switcher button {
+    border: 0; background: rgba(255,255,255,.14); color: #fff; cursor: pointer;
+    width: 34px; height: 34px; border-radius: 50%; font-size: 16px;
+  }
+  .switcher button:hover { background: rgba(255,255,255,.3); }
+  .switcher .label { min-width: 210px; text-align: center; }
+  .switcher .label b { margin-right: 6px; }
+</style>
+</head>
+<body>
+
+<div class="prototype-banner">
+  <strong>原型 · 数据为示例假数据</strong>
+  <span>本页验证「训练卷匹配预览」的三种排版：每一道推荐题，都能看到它依据的是学生哪几道错题、对应哪个知识细点。</span>
+  <span>底部圆条或键盘 ← → 可切换方案 A / B / C。</span>
+</div>
+
+<header class="page-head">
+  <div>
+    <p class="crumb"><a href="#">知识与训练 / 生成试卷</a> · 草稿审核</p>
+    <h1>训练卷匹配预览 <small style="font-size:14px;color:var(--muted);font-weight:400;">（一人一卷 · 草稿 v1）</small></h1>
+    <p class="sub">范围：第四章 三角形 / 第五章 图形的轴对称 / 第六章 变量之间的关系 · 每卷 10 题 · 预计 40 分钟</p>
+  </div>
+  <div class="head-stats">
+    <span><b>2</b> 名学生</span>
+    <span><b>6</b> 题已配 / 卷</span>
+    <span class="is-bad"><b>4</b> 题待配 / 卷</span>
+  </div>
+</header>
+
+<div class="student-tabs" id="studentTabs"></div>
+
+<div class="notice missing" id="missingNotice"></div>
+
+<main id="app"></main>
+
+<div class="switcher">
+  <button id="prevBtn" aria-label="上一个方案">←</button>
+  <span class="label" id="variantLabel"></span>
+  <button id="nextBtn" aria-label="下一个方案">→</button>
+</div>
+
+<script>
+/* ================= 假数据（结构对应真实草稿 + 诊断接口字段） ================= */
+const STAGE_LABEL = { direct: '直接巩固', prerequisite: '先修补强', transfer: '迁移应用' };
+
+const STUDENTS = [
+  {
+    name: '钱肖白', code: 'G7-03', count: 6, minutes: 17, missing: 4,
+    pairs: [
+      {
+        point: { short: '等边对等角', path: '七年级下册 · 第五章 图形的轴对称 · 2 简单的轴对称图形', mastery: 0.42 },
+        wrongs: [
+          { exam: '0526test', q: '第 17 题', score: '2/6' },
+          { exam: '0526test', q: '第 21 题', score: '1/4' },
+        ],
+        rec: { stage: 'direct', qno: '题 17', stem: '如图，在△ABC 中，AB = AC，∠B = 40°，求 ∠C 的度数。', diff: 4, minutes: 3, points: 6, source: '2025 春七年级期末卷' },
+      },
+      {
+        point: { short: '直角三角形的两个锐角互余', path: '七年级下册 · 第四章 三角形 · 1 认识三角形', mastery: 0.38 },
+        wrongs: [{ exam: '0526test', q: '第 8 题', score: '0/4' }],
+        rec: { stage: 'direct', qno: '题 8', stem: '在 Rt△ABC 中，∠C = 90°，∠A = 35°，求 ∠B 的度数。', diff: 7, minutes: 2, points: 1, source: '2025 春七年级期末卷' },
+      },
+      {
+        point: { short: '用 ASA（AAS）证明三角形全等', path: '七年级下册 · 第四章 三角形 · 3 探索三角形全等的条件', mastery: 0.45 },
+        wrongs: [
+          { exam: '0526test', q: '第 19 题', score: '3/8' },
+          { exam: '期中练习', q: '第 12 题', score: '2/6' },
+        ],
+        rec: { stage: 'direct', qno: '题 22', stem: '已知：点 B、E、C、F 在同一直线上，AB = DE，∠A = ∠D，BE = CF。求证：△ABC ≌ △DEF。', diff: 5, minutes: 4, points: 5, source: '第四章单元卷' },
+      },
+      {
+        point: { short: '用表格表示变量之间的关系', path: '七年级下册 · 第六章 变量之间的关系 · 2 用表格表示变量之间的关系', mastery: 0.5 },
+        wrongs: [{ exam: '0526test', q: '第 15 题', score: '2/5' }],
+        rec: { stage: 'direct', qno: '题 11', stem: '下表记录了一辆汽车行驶时间与剩余油量，请根据表格回答：行驶 3 小时后剩余油量是多少？', diff: 3, minutes: 3, points: 4, source: '第六章随堂练' },
+      },
+      {
+        point: { short: '与三角形的高有关的计算问题', path: '七年级下册 · 第四章 三角形 · 1 认识三角形', mastery: 0.55 },
+        wrongs: [{ exam: '0526test', q: '第 10 题', score: '2/4' }],
+        rec: { stage: 'direct', qno: '题 5', stem: '在△ABC 中，BC = 8，BC 边上的高 AD = 5，求△ABC 的面积。', diff: 4, minutes: 2, points: 3, source: '第四章单元卷' },
+      },
+      {
+        point: { short: '三角形的分类', path: '七年级下册 · 第四章 三角形 · 1 认识三角形', mastery: 0.58 },
+        wrongs: [{ exam: '期中练习', q: '第 3 题', score: '1/3' }],
+        rec: { stage: 'direct', qno: '题 2', stem: '一个三角形的三个内角分别为 30°、60°、90°，它属于哪一类三角形？', diff: 2, minutes: 3, points: 2, source: '2025 春七年级期末卷' },
+      },
+    ],
+    shortages: [
+      { stage: 'prerequisite', missing: 3, reason: '当前知识标准里，这些细点没有已确认的「先修」关系，推不出先修补强题。' },
+      { stage: 'transfer', missing: 1, reason: '当前知识标准里没有已确认的「相关」关系，推不出迁移应用题。' },
+    ],
+  },
+  {
+    name: '周子钰', code: 'G7-07', count: 6, minutes: 19, missing: 4,
+    pairs: [
+      {
+        point: { short: '等边对等角', path: '七年级下册 · 第五章 图形的轴对称 · 2 简单的轴对称图形', mastery: 0.47 },
+        wrongs: [{ exam: '0526test', q: '第 17 题', score: '3/6' }],
+        rec: { stage: 'direct', qno: '题 8', stem: '等腰三角形的一个底角是 65°，求顶角的度数。', diff: 7, minutes: 2, points: 1, source: '2025 春七年级期末卷' },
+      },
+      {
+        point: { short: '线段垂直平分线的性质', path: '七年级下册 · 第五章 图形的轴对称 · 2 简单的轴对称图形', mastery: 0.35 },
+        wrongs: [
+          { exam: '0526test', q: '第 20 题', score: '1/6' },
+          { exam: '期中练习', q: '第 9 题', score: '0/4' },
+        ],
+        rec: { stage: 'direct', qno: '题 14', stem: '点 P 在线段 AB 的垂直平分线上，PA = 7，求 PB 的长，并说明理由。', diff: 5, minutes: 4, points: 5, source: '第五章单元卷' },
+      },
+      {
+        point: { short: '三角形内角和定理的证明', path: '七年级下册 · 第四章 三角形 · 1 认识三角形', mastery: 0.4 },
+        wrongs: [{ exam: '0526test', q: '第 23 题', score: '2/8' }],
+        rec: { stage: 'direct', qno: '题 26', stem: '试用作平行线的方法证明：三角形的内角和等于 180°。', diff: 6, minutes: 5, points: 6, source: '第四章单元卷' },
+      },
+      {
+        point: { short: '三角形角平分线的定义', path: '七年级下册 · 第四章 三角形 · 1 认识三角形', mastery: 0.52 },
+        wrongs: [{ exam: '期中练习', q: '第 6 题', score: '2/4' }],
+        rec: { stage: 'direct', qno: '题 4', stem: 'AD 是△ABC 的角平分线，∠BAC = 70°，求 ∠BAD 的度数。', diff: 3, minutes: 2, points: 2, source: '2025 春七年级期末卷' },
+      },
+      {
+        point: { short: '用表格表示变量之间的关系', path: '七年级下册 · 第六章 变量之间的关系 · 2 用表格表示变量之间的关系', mastery: 0.48 },
+        wrongs: [{ exam: '0526test', q: '第 15 题', score: '1/5' }],
+        rec: { stage: 'direct', qno: '题 16', stem: '根据表格中蜡烛燃烧时间与剩余长度的数据，估计燃烧 25 分钟后的剩余长度。', diff: 4, minutes: 3, points: 4, source: '第六章随堂练' },
+      },
+      {
+        point: { short: '等腰三角形的定义', path: '七年级下册 · 第四章 三角形 · 1 认识三角形', mastery: 0.6 },
+        wrongs: [{ exam: '0526test', q: '第 5 题', score: '2/3' }],
+        rec: { stage: 'direct', qno: '题 1', stem: '判断：有两条边相等的三角形是等腰三角形。请说明理由。', diff: 2, minutes: 3, points: 2, source: '第四章单元卷' },
+      },
+    ],
+    shortages: [
+      { stage: 'prerequisite', missing: 3, reason: '当前知识标准里，这些细点没有已确认的「先修」关系，推不出先修补强题。' },
+      { stage: 'transfer', missing: 1, reason: '当前知识标准里没有已确认的「相关」关系，推不出迁移应用题。' },
+    ],
+  },
+];
+
+const VARIANTS = {
+  A: '配对卡片流',
+  B: '双栏映射',
+  C: '细点表格',
+};
+const ORDER = ['A', 'B', 'C'];
+
+let studentIdx = 0;
+
+/* ================= 公共小片段 ================= */
+function masteryHtml(value) {
+  const pct = Math.round(value * 100);
+  const cls = pct >= 60 ? '' : pct >= 45 ? 'mid' : '';
+  return `<span class="mastery ${cls}"><span class="bar"><i style="width:${pct}%"></i></span>${pct}%</span>`;
+}
+function stageBadge(stage) {
+  return `<span class="stage-badge ${stage}">${STAGE_LABEL[stage]}</span>`;
+}
+function wrongItemHtml(w) {
+  return `<div class="wrong-item"><span class="exam">${w.exam}</span><b>${w.q}</b><span class="score-chip">得 ${w.score} 分</span></div>`;
+}
+function recOpsHtml() {
+  return `<span class="ops"><button class="btn-link">锁定</button><button class="btn-link">替换</button><button class="btn-link danger">排除</button></span>`;
+}
+function studentOf() { return STUDENTS[studentIdx]; }
+
+/* ================= 方案 A：配对卡片流 ================= */
+function renderA(s) {
+  const cards = s.pairs.map((p) => `
+    <div class="pair-card">
+      <div class="wrong-panel">
+        <p class="panel-label">错题依据 · ${p.point.short}</p>
+        ${p.wrongs.map(wrongItemHtml).join('')}
+        <p class="path" style="margin-top:8px;">${p.point.path}</p>
+      </div>
+      <div class="arrow">→<small>针对训练</small></div>
+      <div class="rec-panel">
+        <div class="rec-head">
+          ${stageBadge(p.rec.stage)}
+          <span class="tag">${p.point.short}</span>
+          ${masteryHtml(p.point.mastery)}
+        </div>
+        <div class="rec-stem">${p.rec.qno}｜${p.rec.stem}</div>
+        <div class="rec-foot">
+          <span class="meta">难度 ${p.rec.diff} · 约 ${p.rec.minutes} 分钟 · ${p.rec.points} 个判定点 · 来源：${p.rec.source}</span>
+          ${recOpsHtml()}
+        </div>
+      </div>
+    </div>`).join('');
+  const missing = s.shortages.map((m) => `
+    <div class="pair-card is-missing">
+      <div class="missing-inner">
+        ${stageBadge(m.stage)}
+        <b>待配 ${m.missing} 题</b>
+        <span class="meta">${m.reason}</span>
+        <button class="btn-link">调整比例重新生成</button>
+      </div>
+    </div>`).join('');
+  return `<div class="pair-list">${cards}${missing}</div>`;
+}
+
+/* ================= 方案 B：双栏映射 ================= */
+function renderB(s) {
+  const byChapter = new Map();
+  s.pairs.forEach((p, i) => {
+    const chapter = p.point.path.split('·')[1].trim();
+    if (!byChapter.has(chapter)) byChapter.set(chapter, []);
+    byChapter.get(chapter).push({ ...p, idx: i + 1 });
+  });
+  const NUM = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩'];
+  const left = [...byChapter.entries()].map(([chapter, list]) => `
+    <div class="chapter-group">
+      <p class="chapter-name">${chapter}</p>
+      ${list.map((p) => `
+        <div class="map-card">
+          <div class="row1">
+            <span class="map-num">${NUM[p.idx - 1]}</span>
+            <span class="tag">${p.point.short}</span>
+            ${masteryHtml(p.point.mastery)}
+          </div>
+          <div class="wrongs">${p.wrongs.map((w) => `<span>${w.exam} · ${w.q} <span class="score-chip">得 ${w.score} 分</span></span>`).join('')}</div>
+        </div>`).join('')}
+    </div>`).join('')
+    + s.shortages.map((m) => `
+      <div class="map-card is-missing">
+        <div class="row1"><span class="map-num empty">空</span>${stageBadge(m.stage)}<b>待配 ${m.missing} 题</b></div>
+        <p class="meta">${m.reason}</p>
+      </div>`).join('');
+  const right = s.pairs.map((p, i) => `
+    <div class="map-card">
+      <div class="row1">
+        <span class="map-num">${NUM[i]}</span>
+        ${stageBadge(p.rec.stage)}
+        <span class="tag">${p.point.short}</span>
+      </div>
+      <div class="rec-stem">${p.rec.qno}｜${p.rec.stem}</div>
+      <div class="rec-foot">
+        <span class="meta">难度 ${p.rec.diff} · 约 ${p.rec.minutes} 分钟 · ${p.rec.points} 个判定点</span>
+        ${recOpsHtml()}
+      </div>
+    </div>`).join('')
+    + s.shortages.map((m) => `
+      <div class="map-card is-missing">
+        <div class="row1"><span class="map-num empty">空</span>${stageBadge(m.stage)}<b>试卷上空缺 ${m.missing} 题</b></div>
+        <p class="meta">${m.reason} <button class="btn-link">调整比例重新生成</button></p>
+      </div>`).join('');
+  return `
+    <div class="map-grid">
+      <div class="map-col">
+        <h3>他的错题与薄弱细点 <small>按章分组 · 编号与右栏一一对应</small></h3>
+        ${left}
+      </div>
+      <div class="map-col">
+        <h3>推荐训练卷 <small>${s.count} 题已配 · 约 ${s.minutes} 分钟 · 缺 ${s.missing} 题</small></h3>
+        ${right}
+      </div>
+    </div>`;
+}
+
+/* ================= 方案 C：细点表格 ================= */
+function renderC(s) {
+  const rows = s.pairs.map((p) => `
+    <tr>
+      <td>
+        <div class="tag">${p.point.short}</div>
+        <div class="path">${p.point.path}</div>
+      </td>
+      <td>${masteryHtml(p.point.mastery)}</td>
+      <td><div class="wrongs">${p.wrongs.map((w) => `<span>${w.exam} · ${w.q} <span class="score-chip">得 ${w.score} 分</span></span>`).join('')}</div></td>
+      <td>
+        <div class="rec">
+          <span>${stageBadge(p.rec.stage)} <b>${p.rec.qno}</b> · 难度 ${p.rec.diff} · 约 ${p.rec.minutes} 分钟</span>
+          <span class="meta">${p.rec.stem}</span>
+        </div>
+      </td>
+      <td style="white-space:nowrap;">${recOpsHtml()}</td>
+    </tr>`).join('');
+  const missing = s.shortages.map((m) => `
+    <tr class="is-missing">
+      <td>${stageBadge(m.stage)}</td>
+      <td colspan="2" class="meta">待配 ${m.missing} 题 · ${m.reason}</td>
+      <td colspan="2"><button class="btn-link">调整比例重新生成</button></td>
+    </tr>`).join('');
+  return `
+    <table class="match-table">
+      <thead><tr>
+        <th style="width:22%;">知识细点</th>
+        <th style="width:12%;">掌握度</th>
+        <th style="width:20%;">依据错题</th>
+        <th>推荐题</th>
+        <th style="width:130px;">操作</th>
+      </tr></thead>
+      <tbody>${rows}${missing}</tbody>
+    </table>`;
+}
+
+/* ================= 装配与切换 ================= */
+function render() {
+  const variant = new URLSearchParams(location.search).get('variant') || 'A';
+  const v = VARIANTS[variant] ? variant : 'A';
+  const s = studentOf();
+
+  document.getElementById('studentTabs').innerHTML = STUDENTS.map((st, i) => `
+    <button class="${i === studentIdx ? 'active' : ''}" data-i="${i}">
+      <b>${st.name}</b>
+      <small>${st.count} 题草稿 · 约 ${st.minutes} 分钟 · 缺 ${st.missing} 题</small>
+    </button>`).join('');
+  document.querySelectorAll('#studentTabs button').forEach((btn) => {
+    btn.onclick = () => { studentIdx = Number(btn.dataset.i); render(); };
+  });
+
+  const shortageText = s.shortages.map((m) => `${STAGE_LABEL[m.stage]}待配 ${m.missing} 题`).join('；');
+  document.getElementById('missingNotice').textContent =
+    `${s.name}：已配 ${s.count} / 10 题（约 ${s.minutes} 分钟）。${shortageText}。缺口原因见下方卡片，不是随机漏题。`;
+
+  document.getElementById('app').innerHTML =
+    v === 'A' ? renderA(s) : v === 'B' ? renderB(s) : renderC(s);
+
+  document.getElementById('variantLabel').innerHTML = `<b>${v}</b> — ${VARIANTS[v]}`;
+  document.getElementById('prevBtn').onclick = () => cycle(-1);
+  document.getElementById('nextBtn').onclick = () => cycle(1);
+}
+
+function cycle(dir) {
+  const params = new URLSearchParams(location.search);
+  const cur = params.get('variant') || 'A';
+  const next = ORDER[(ORDER.indexOf(cur) + dir + ORDER.length) % ORDER.length];
+  params.set('variant', next);
+  history.replaceState(null, '', `${location.pathname}?${params}`);
+  render();
+}
+
+document.addEventListener('keydown', (e) => {
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+
+render();
+</script>
+</body>
+</html>

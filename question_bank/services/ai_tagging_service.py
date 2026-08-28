@@ -2443,8 +2443,41 @@ def _analysis_from_constraint(
     return analysis, proposals, status, notes
 
 
+_QUOTED_TERM_SPAN_RE = re.compile(r"[“「](?P<term>[^”」]{1,30})[”」]")
+_DEFINITION_INTRO_RE = re.compile(
+    r"(?:称为|定义为|记为|称[^“”「」]{0,10}为|定义[:：])"
+)
+
+
+def _is_only_custom_defined_term(text: str, term: str) -> bool:
+    """命中词只出现在引号包裹的新定义名词里时视为自定义用语。
+
+    例如新定义题把“角平分线点”定义为自定义名词，题干从未在引号外
+    使用“角平分线”本身，此时不应按角平分线性质题处理。
+    """
+
+    occurrences = [match.start() for match in re.finditer(re.escape(term), text)]
+    if not occurrences:
+        return False
+    spans = [
+        (match.start("term"), match.end("term"))
+        for match in _QUOTED_TERM_SPAN_RE.finditer(text)
+    ]
+    for position in occurrences:
+        if not any(start <= position < end for start, end in spans):
+            return False
+    for match in _QUOTED_TERM_SPAN_RE.finditer(text):
+        if term not in match.group("term"):
+            continue
+        window = text[max(0, match.start() - 16):match.start()]
+        if _DEFINITION_INTRO_RE.search(window):
+            return True
+    return False
+
+
 def _rule_conflict_notes(context: TaggingContext, analysis: TagAnalysis) -> list[str]:
-    text = _compact(str(context.question_text or ""))
+    raw_text = str(context.question_text or "")
+    text = _compact(raw_text)
     knowledge = _compact(" ".join(analysis.knowledge_points))
     notes: list[str] = []
     if ("科学记数法" in text or re.search(r"0\.0{3,}\d", text)) and "有理数" not in knowledge and "科学记数法" not in knowledge:
@@ -2452,7 +2485,13 @@ def _rule_conflict_notes(context: TaggingContext, analysis: TagAnalysis) -> list
     if ("第三边" in text or "两条边" in text) and "三角形全等" in knowledge and "三边" not in knowledge:
         notes.append("疑似三角形三边关系题，不应泛化为三角形全等")
     if ("角平分线" in text or "平分∠" in text) and "角平分线" not in knowledge and "轴对称" not in knowledge:
-        notes.append("疑似角平分线性质题，知识点可能偏泛")
+        custom_defined_only = (
+            "角平分线" in text
+            and "平分∠" not in text
+            and _is_only_custom_defined_term(raw_text, "角平分线")
+        )
+        if not custom_defined_only:
+            notes.append("疑似角平分线性质题，知识点可能偏泛")
     return notes
 
 

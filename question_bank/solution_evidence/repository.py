@@ -599,11 +599,16 @@ class SolutionEvidenceProjectionWriter:
         *,
         model_name: str,
         operation_id: str,
+        objective_response_shape: str | None = None,
     ) -> QuestionSolutionEvidence:
         from question_bank.training_criteria.analysis import (
             solution_evidence_source_content_hash,
         )
 
+        # 题型建议被采纳时由调用方传入真实作答形态，解除本地误判的客观约束。
+        response_shape = str(
+            objective_response_shape or question.objective_response_shape
+        )
         normalization = normalize_model_solution_evidence(
             payload,
             question_id=question.question_id,
@@ -615,7 +620,7 @@ class SolutionEvidenceProjectionWriter:
                 if question.explicit_part_labels
                 else None
             ),
-            objective_response_shape=question.objective_response_shape,
+            objective_response_shape=response_shape,
             expected_answer=question.tagging_context.answer_text,
         )
         normalized_payload: Mapping[str, Any] = normalization.payload

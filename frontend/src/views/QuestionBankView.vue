@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 
 import type { QuestionBankListItem, QuestionBankPaper } from '../api/question-bank'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
@@ -34,7 +34,6 @@ const activePaper = ref<QuestionBankPaper | null>(null)
 const showImport = ref(false)
 const showTaxonomyReview = ref(false)
 const showCriteriaReview = ref(false)
-let secondaryLoadHandle: ReturnType<typeof setTimeout> | null = null
 
 const activeProgress = computed(() => {
   if (!activePaper.value?.question_count) return 0
@@ -46,17 +45,10 @@ const activeProgress = computed(() => {
 onMounted(() => {
   // The library only needs the pending count. The full controlled catalog is
   // loaded on demand when the teacher opens the review workspace.
+  // 任务恢复与试卷列表并行发起，不再固定等待，卡片状态能尽早显示。
   void taxonomyReview.loadSummary()
-  void bank.loadPapers().finally(() => {
-    secondaryLoadHandle = setTimeout(() => {
-      secondaryLoadHandle = null
-      void jobStore.initialize()
-    }, 750)
-  })
-})
-
-onBeforeUnmount(() => {
-  if (secondaryLoadHandle !== null) clearTimeout(secondaryLoadHandle)
+  void bank.loadPapers()
+  void jobStore.initialize()
 })
 
 function openPaper(paper: QuestionBankPaper, questionId?: number): void {

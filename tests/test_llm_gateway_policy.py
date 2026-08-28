@@ -45,7 +45,7 @@ def test_default_timeout_budgets_are_explicit():
     assert policy_from_profile(LLMRequestKind.GRADING_BATCH, None).timeout_seconds == 3600.0
     assert policy_from_profile(LLMRequestKind.RECOGNITION, None).timeout_seconds == 60.0
     assert policy_from_profile(LLMRequestKind.CONFIG_GENERATION, None).timeout_seconds == 600.0
-    assert policy_from_profile(LLMRequestKind.TAGGING, None).timeout_seconds == 240.0
+    assert policy_from_profile(LLMRequestKind.TAGGING, None).timeout_seconds == 480.0
     assert policy_from_profile(LLMRequestKind.WORKSPACE, None).max_retries == 0
 
 

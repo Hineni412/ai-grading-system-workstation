@@ -156,7 +156,10 @@ def test_teacher_can_create_review_and_read_immutable_criterion_version(
     stale = client.get("/api/question-bank/criteria/questions/1")
     assert stale.status_code == 200
     assert stale.json()["available"] is False
-    assert stale.json()["current_version"]["status"] == "stale"
+    # 只读视图不再把持久化状态改写成 stale：版本仍记录 approved，
+    # 但内容哈希已对不上，available 拒绝其进入训练；stale 标记只在
+    # propose/review 写路径发生。
+    assert stale.json()["current_version"]["status"] == "approved"
     assert client.get(
         f"/api/question-bank/criteria/versions/{version_id}"
     ).json()["criteria"] == old_version.json()["criteria"]

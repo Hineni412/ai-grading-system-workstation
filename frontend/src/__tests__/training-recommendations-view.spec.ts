@@ -3,7 +3,11 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { TrainingDiagnosis, TrainingPlanResponse } from '../api/training'
+import type {
+  PersonalizedRecommendationDraft,
+  TrainingDiagnosis,
+  TrainingPlanResponse,
+} from '../api/training'
 import { createAppRouter } from '../router'
 import { useSessionStore } from '../stores/session'
 import TrainingRecommendationsView from '../views/TrainingRecommendationsView.vue'
@@ -12,6 +16,11 @@ const trainingApiMock = vi.hoisted(() => ({
   diagnose: vi.fn(),
   preview: vi.fn(),
   confirm: vi.fn(),
+  createPersonalizedDraft: vi.fn(),
+  getPersonalizedDraft: vi.fn(),
+  editPersonalizedDraft: vi.fn(),
+  listPaperInstances: vi.fn(),
+  listPaperBatches: vi.fn(),
 }))
 
 const exportsApiMock = vi.hoisted(() => ({
@@ -231,6 +240,59 @@ const task = {
   exports: [],
 }
 
+const paperDraft = {
+  draft_id: 'd'.repeat(64),
+  status: 'draft',
+  revision: 1,
+  result_version: 'a'.repeat(64),
+  engine_version: 'personalized-recommendation-v1',
+  source_version: 'b'.repeat(64),
+  config: {},
+  students: [{
+    student_id: '12',
+    student_code: 'S012',
+    student_name: '匿名学生甲',
+    class_id: '七年级一班',
+    selection_mode: 'mastery_targeted',
+    targets: [{
+      stable_key: 'knowledge_point:三角形全等',
+      display_name: '三角形全等',
+    }],
+    items: [{
+      item_id: 'item-1',
+      item_order: 1,
+      slot: 1,
+      question_id: 201,
+      question_number: '11',
+      question_text: '利用边角关系证明两个三角形全等',
+      stage: 'direct',
+      target: { stable_key: 'knowledge_point:三角形全等' },
+      matched_key: 'knowledge_point:三角形全等',
+      matched_name: '第四章 三角形｜全等三角形｜三角形全等',
+      relation: null,
+      criterion_version_id: 'c'.repeat(64),
+      criterion_point_count: 3,
+      difficulty: 5,
+      estimated_minutes: 6,
+      source_paper: '合成题源',
+      reason: '直接巩固三角形全等。',
+      locked: false,
+      replacement_history: [],
+    }],
+    shortages: [{
+      stage: 'prerequisite',
+      requested_count: 3,
+      selected_count: 1,
+      missing_count: 2,
+      reason_code: 'stage_targets_empty',
+    }],
+    warnings: ['先修补强少配 2 题：当前知识标准中没有这些细点已确认的先修关系，无法推导先修补强目标。'],
+    estimated_minutes: 6,
+  }],
+  warnings: ['先修补强少配 2 题：当前知识标准中没有这些细点已确认的先修关系，无法推导先修补强目标。'],
+  history: [],
+} satisfies PersonalizedRecommendationDraft
+
 const mounted: App[] = []
 
 async function settle(): Promise<void> {
@@ -266,7 +328,7 @@ async function mountView(path = '/training') {
   app.mount(host)
   mounted.push(app)
   await settle()
-  return { host, router }
+  return { app, host, router }
 }
 
 beforeEach(() => {
@@ -285,6 +347,9 @@ beforeEach(() => {
   trainingApiMock.diagnose.mockResolvedValue(diagnosis)
   trainingApiMock.preview.mockResolvedValue(plan)
   trainingApiMock.confirm.mockResolvedValue(task)
+  trainingApiMock.createPersonalizedDraft.mockResolvedValue(paperDraft)
+  trainingApiMock.listPaperInstances.mockResolvedValue([])
+  trainingApiMock.listPaperBatches.mockResolvedValue([])
   exportsApiMock.listTrainingTasks.mockResolvedValue({
     items: [task],
     total: 1,
@@ -649,40 +714,102 @@ describe('training recommendations view', () => {
     expect(host.textContent).toContain('队列 1 人')
   })
 
-  it('uses the compact A paper console and carries selected targets into its summary', async () => {
+  it('moves shared-paper settings to the chapter page and carries them to the paper summary', async () => {
     const { host, router } = await mountView('/training?mode=chapter')
     await vi.waitFor(() => expect(host.textContent).toContain('学生 × 知识点'))
     host.querySelector<HTMLInputElement>('.chapter-training thead input[type="checkbox"]')!.click()
     await nextTick()
-    await router.push('/training?mode=paper')
-    await nextTick()
-    await vi.waitFor(() => expect(host.textContent).toContain('出卷设置与草稿'))
 
+    // 出卷设置在按章节训练页完成（多人同一套卷）。
+    const panel = host.querySelector<HTMLElement>('.paper-settings-panel')!
+    expect(panel.textContent).toContain('出卷设置 · 多人同一套卷')
+    expect(panel.textContent).toContain('每卷题数')
+    expect(panel.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')?.disabled).toBe(false)
+    panel.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.mode).toBe('paper'))
+
+    // 出卷页只剩只读摘要、返回链接与生成按钮，没有可编辑设置。
     expect(host.querySelector('h1')?.textContent).toBe('生成试卷')
-    expect(host.textContent).toContain('一人一卷')
-    expect(host.textContent).toContain('多人同一套卷')
-    expect(host.textContent).toContain('每卷题数')
-    expect(host.textContent).toContain('本次出卷摘要')
-    expect(host.textContent).toContain('预计试卷')
-    expect(host.textContent).toContain('三角形全等')
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.textContent).toContain('生成 1 份草稿')
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false)
-    expect(host.textContent).not.toContain('章节学生热力图')
-    expect(host.textContent).not.toContain('薄弱原因与评分证据')
+    expect(host.querySelector('.paper-settings-panel')).toBeNull()
+    expect(host.querySelector('.paper-settings')).toBeNull()
+    const bar = host.querySelector<HTMLElement>('.paper-review-bar')!
+    expect(bar.textContent).toContain('多人同一套卷')
+    expect(bar.textContent).toContain('每卷 10 题')
+    expect(bar.textContent).toContain('回到按章节训练调整设置')
+    const generate = host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!
+    expect(generate.textContent).toContain('生成 1 份草稿')
+    expect(generate.disabled).toBe(false)
   })
 
-  it('lets student-mode range selection unlock one-paper-per-student drafts', async () => {
+  it('moves individual-paper settings to the student page and unlocks one-paper-per-student drafts', async () => {
     const { host, router } = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(host.textContent).toContain('群体知识结构'))
     const rangeCheckbox = host.querySelector<HTMLInputElement>('.structure-range-check input')
     expect(rangeCheckbox).not.toBeNull()
     rangeCheckbox!.click()
     await nextTick()
-    await router.push('/training?mode=paper')
-    await nextTick()
-    await vi.waitFor(() => expect(host.textContent).toContain('出卷设置与草稿'))
-    expect(host.textContent).toContain('训练范围')
+
+    const panel = host.querySelector<HTMLElement>('.paper-settings-panel')!
+    expect(panel.textContent).toContain('出卷设置 · 一人一卷')
+    panel.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.mode).toBe('paper'))
+
+    const bar = host.querySelector<HTMLElement>('.paper-review-bar')!
+    expect(bar.textContent).toContain('一人一卷')
+    expect(bar.textContent).toContain('回到按学生训练调整设置')
     expect(host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false)
+  })
+
+  it('turns the paper page into a full-width matched review once a draft exists', async () => {
+    const { host, router } = await mountView('/training?mode=chapter')
+    await vi.waitFor(() => expect(host.textContent).toContain('学生 × 知识点'))
+    host.querySelector<HTMLInputElement>('.chapter-training thead input[type="checkbox"]')!.click()
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.mode).toBe('paper'))
+
+    host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('04 · 草稿审核与匹配预览'))
+
+    // 审核阶段：摘要条与返回链接仍在，配对卡片整宽展示。
+    const reviewBar = host.querySelector<HTMLElement>('.paper-review-bar')!
+    expect(reviewBar.textContent).toContain('1 名学生')
+    expect(reviewBar.textContent).toContain('每卷 10 题')
+    expect(reviewBar.textContent).toContain('多人同一套卷')
+    const back = reviewBar.querySelector<HTMLAnchorElement>('.paper-review-bar__back')!
+    expect(back.textContent).toContain('回到按章节训练调整设置')
+
+    // 配对卡片：错题依据、题干、缺题卡片都可见。
+    expect(host.textContent).toContain('错题依据')
+    expect(host.textContent).toContain('匿名阶段测验 · 第 Q1 题 · 得 6/10 分')
+    expect(host.textContent).toContain('利用边角关系证明两个三角形全等')
+    expect(host.textContent).toContain('待配 2 题')
+    expect(host.textContent).toContain('无法推导先修补强目标')
+  })
+
+  it('restores selections and the draft after leaving the page and returning', async () => {
+    trainingApiMock.getPersonalizedDraft.mockResolvedValue(paperDraft)
+    const first = await mountView('/training?mode=chapter')
+    await vi.waitFor(() => expect(first.host.textContent).toContain('学生 × 知识点'))
+    first.host.querySelector<HTMLInputElement>('.chapter-training thead input[type="checkbox"]')!.click()
+    await nextTick()
+    first.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
+    await vi.waitFor(() => expect(first.router.currentRoute.value.query.mode).toBe('paper'))
+    first.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
+    await vi.waitFor(() => expect(first.host.textContent).toContain('04 · 草稿审核与匹配预览'))
+    const mountedIndex = mounted.indexOf(first.app)
+    if (mountedIndex >= 0) mounted.splice(mountedIndex, 1)
+    first.app.unmount()
+
+    // 模拟切到其他页签再回来：全新挂载，只剩会话暂存的勾选与草稿记录。
+    const second = await mountView('/training?mode=paper')
+    await vi.waitFor(() => expect(second.host.textContent).toContain('三角形全等'))
+    await vi.waitFor(() => expect(second.host.textContent).toContain('已恢复上次生成的草稿'))
+    await vi.waitFor(() => expect(second.host.textContent).toContain('04 · 草稿审核与匹配预览'))
+    expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(paperDraft.draft_id)
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledTimes(1)
+    expect(second.host.querySelector('.personalized-draft-toolbar')?.textContent)
+      .toContain('草稿已自动暂存')
   })
 
   it('keeps the knowledge structure visible while a new diagnosis is loading', async () => {

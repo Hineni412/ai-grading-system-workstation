@@ -547,6 +547,22 @@
   padding: 5px 8px;
 }
 
+.assembly-strict-progress {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 11px;
+  gap: 6px;
+  user-select: none;
+}
+
+.assembly-strict-progress.is-disabled {
+  color: var(--color-text-secondary);
+  cursor: not-allowed;
+  opacity: .65;
+}
+
 .assembly-filter-state {
   align-items: center;
   color: var(--color-text-secondary);

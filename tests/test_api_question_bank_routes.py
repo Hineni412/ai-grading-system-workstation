@@ -481,6 +481,138 @@ def test_questions_and_facets_support_special_type_filter(
     }["动态几何题"] == 1
 
 
+def test_questions_and_facets_support_error_type_filter(
+    question_bank_fixture,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO questions (
+                id, paper_id, question_number, question_text, is_deleted
+            ) VALUES (3, 2, '3', 'Second active question', 0)
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (?, ?, ?)
+            """,
+            [
+                (1, "error_type", "运算化简错误"),
+                (1, "error_type", "万花筒镜像计数易重复计数或漏算的一次性描述"),
+                (3, "error_type", "概念理解不清"),
+            ],
+        )
+        conn.commit()
+    client = _question_bank_client(service)
+
+    page = client.get(
+        "/api/question-bank/questions",
+        params=[("error_types", "运算化简错误")],
+    )
+    union = client.get(
+        "/api/question-bank/questions",
+        params=[
+            ("error_types", "运算化简错误"),
+            ("error_types", "概念理解不清"),
+        ],
+    )
+    facets = client.get("/api/question-bank/facets")
+    detail = client.get("/api/question-bank/questions/1")
+
+    assert page.status_code == 200
+    assert [item["id"] for item in page.json()["items"]] == [1]
+    assert sorted(item["id"] for item in union.json()["items"]) == [1, 3]
+    # 错因 facet 只保留受控词表内的值，自由文本错因不作为筛选项。
+    assert facets.json()["error_types"] == [
+        {"value": "概念理解不清", "count": 1},
+        {"value": "运算化简错误", "count": 1},
+    ]
+    # 题目上的原始错因标签保留。
+    assert ("error_type", "万花筒镜像计数易重复计数或漏算的一次性描述") in {
+        (tag["tag_type"], tag["tag_value"]) for tag in detail.json()["tags"]
+    }
+
+
+def _teaching_progress_client(tmp_path: Path) -> TestClient:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO papers (id, title, import_status) "
+            "VALUES (1, 'Progress paper', 'success')"
+        )
+        conn.executemany(
+            """
+            INSERT INTO questions (
+                id, paper_id, question_number, question_type, question_text
+            ) VALUES (?, 1, ?, '选择题', ?)
+            """,
+            [
+                (1, "1", "跨第一章与第四章"),
+                (2, "2", "纯第一章"),
+                (3, "3", "跨第一章与第二章"),
+                (4, "4", "无知识点标签"),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (?, 'knowledge_point', ?)
+            """,
+            [
+                (1, "八年级上册｜第一章 勾股定理｜1 探索勾股定理｜勾股定理"),
+                (1, "八年级上册｜第四章 一次函数｜1 函数｜函数的概念"),
+                (2, "八年级上册｜第一章 勾股定理｜2 一定是直角三角形吗｜勾股定理的逆定理"),
+                (3, "八年级上册｜第一章 勾股定理｜1 探索勾股定理｜勾股定理"),
+                (3, "八年级上册｜第二章 实数｜1 认识无理数｜无理数的概念"),
+            ],
+        )
+        conn.commit()
+    return _question_bank_client(QuestionBankReadService(db_path))
+
+
+def test_teaching_progress_filter_keeps_only_learned_scope(tmp_path: Path) -> None:
+    client = _teaching_progress_client(tmp_path)
+
+    first_chapter = client.get(
+        "/api/question-bank/questions",
+        params={"teaching_progress_chapter": "bnu24-math-g8-upper-c01"},
+    )
+    second_chapter = client.get(
+        "/api/question-bank/questions",
+        params={"teaching_progress_chapter": "bnu24-math-g8-upper-c02"},
+    )
+    facets = client.get(
+        "/api/question-bank/facets",
+        params={"teaching_progress_chapter": "bnu24-math-g8-upper-c01"},
+    )
+
+    assert first_chapter.status_code == 200
+    # 纯第一章题与无知识点标签题保留；涉及第二、四章的题排除。
+    assert sorted(item["id"] for item in first_chapter.json()["items"]) == [2, 4]
+    assert sorted(item["id"] for item in second_chapter.json()["items"]) == [2, 3, 4]
+    # facets 计数与列表结果一致。
+    assert facets.json()["question_types"] == [{"value": "选择题", "count": 2}]
+
+
+def test_teaching_progress_filter_fails_closed_on_unknown_chapter(
+    tmp_path: Path,
+) -> None:
+    client = _teaching_progress_client(tmp_path)
+
+    response = client.get(
+        "/api/question-bank/questions",
+        params={"teaching_progress_chapter": "unknown-chapter-id"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
+    assert response.json()["items"] == []
+
+
 def test_legacy_knowledge_value_filters_and_facets_as_current_canonical_term(
     question_bank_fixture,
 ) -> None:

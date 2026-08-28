@@ -199,6 +199,18 @@ const routes: RouteRecordRaw[] = [
     },
   })),
   {
+    // PROTOTYPE — throwaway，一次性 UI 原型（mock 数据），验收后连同 prototype/ 目录删除。
+    path: '/class-teacher/prototype/sop-workspace',
+    name: 'class-teacher-sop-workspace-prototype',
+    component: () => import('../workspaces/class-teacher/prototype/SopWorkspacePrototype.vue'),
+    meta: {
+      title: 'SOP 工作区原型',
+      description: '一次性 UI 原型，用于对比三种 SOP 工作区页面结构，验收后删除',
+      breadcrumb: '班主任工作台 / SOP 工作区原型',
+      curriculumScope: false,
+    },
+  },
+  {
     path: '/design-system',
     name: 'design-system',
     component: ComponentShowcase,

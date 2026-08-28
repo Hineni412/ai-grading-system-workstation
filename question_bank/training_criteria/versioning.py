@@ -200,8 +200,30 @@ class TrainingCriterionModule:
         self.db_path = Path(db_path)
 
     def read(self, question: QuestionAnalysisInput) -> dict[str, Any]:
-        self._sync_source(question)
-        return self._workspace(question.question_id)
+        """Read-only workspace view; never writes or marks versions stale.
+
+        When the question content changed since the last write-path sync,
+        the returned view reports the live source hash so read consumers
+        (freeze, recommendations, backfill) keep rejecting outdated
+        criteria. The stale marking itself still happens only in
+        propose()/review().
+        """
+        workspace = self._workspace(question.question_id)
+        source_hash = str(question.criterion_source_content_hash or "")
+        if str(workspace.get("current_source_hash") or "") == source_hash:
+            return workspace
+        adjusted = dict(workspace, current_source_hash=source_hash)
+        usable = usable_training_criterion(adjusted)
+        current = adjusted.get("current_version")
+        adjusted["available"] = usable is not None
+        adjusted["state"] = (
+            "available"
+            if usable is not None
+            else str(current["status"])
+            if isinstance(current, Mapping)
+            else "missing"
+        )
+        return adjusted
 
     def propose(
         self,
@@ -593,6 +615,10 @@ class TrainingCriterionModule:
         for question in questions:
             workspace = self.read(question)
             usable = usable_training_criterion(workspace)
+            if usable is not None and str(
+                usable.get("source_content_hash") or ""
+            ) != str(question.criterion_source_content_hash or ""):
+                usable = None
             if usable is None:
                 missing.append(question.question_id)
             else:

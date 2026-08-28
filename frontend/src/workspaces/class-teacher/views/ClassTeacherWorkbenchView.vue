@@ -8,6 +8,7 @@ import ClassTeacherSurfaceTabs from '../shell/ClassTeacherSurfaceTabs.vue'
 import { useClassTeacherRouteState, type ClassTeacherSurface } from '../shell/useClassTeacherRouteState'
 
 const AffairsSurface = defineAsyncComponent(() => import('../affairs/AffairsSurface.vue'))
+const SopWorkspace = defineAsyncComponent(() => import('../affairs/SopWorkspace.vue'))
 const ConversationDesk = defineAsyncComponent(() => import('../intake/ConversationDesk.vue'))
 const HandoffWorkspace = defineAsyncComponent(() => import('../intake/HandoffWorkspace.vue'))
 const CalendarSurface = defineAsyncComponent(() => import('../ordinary/CalendarSurface.vue'))
@@ -24,6 +25,7 @@ const profileError = ref('')
 function asDirectorySubject(value: Record<string, unknown>): DirectorySubject {
   return {
     subject_id: String(value.subject_id ?? ''),
+    student_ref: String(value.student_ref ?? value.subject_id ?? ''),
     display_name: String(value.display_name ?? ''),
     source_student_id: String(value.source_student_id ?? ''),
     class_label: value.class_label == null ? null : String(value.class_label),
@@ -74,14 +76,31 @@ function rememberConversation(conversationId: string): void {
   void navigate({ surface: 'home', conversationId, handoffId: null })
 }
 
-function openHandoff(handoff: { handoff_id: string; turn_id: string; work_item_id: string }): void {
+function openHandoff(handoff: { handoff_id: string; turn_id: string; work_item_id: string; handling_mode?: string; adoption_state?: string; affair_id?: string | null }): void {
   overlaySubject.value = null
   overlayConversationId.value = null
+  // 生成即生效的 SOP 直接进入 SOP 工作区，不再打开草稿页。
+  if (handoff.handling_mode === 'sop' && handoff.adoption_state === 'adopted' && handoff.affair_id) {
+    void navigate({ surface: 'affairs', affairId: handoff.affair_id, handoffId: null })
+    return
+  }
   void navigate({
     handoffId: handoff.handoff_id,
     turnId: handoff.turn_id,
     workItemId: handoff.work_item_id,
   })
+}
+
+function openAffair(affairId: string): void {
+  void navigate({ surface: 'affairs', affairId })
+}
+
+function leaveAffair(): void {
+  void navigate({ surface: 'affairs', affairId: null })
+}
+
+function backToHome(): void {
+  void navigate({ surface: 'home', affairId: null, handoffId: null })
 }
 
 async function openStudentProfile(handoff: IntakeHandoffSummary): Promise<void> {
@@ -162,7 +181,13 @@ function openDomain(domain: string): void {
         :module="ordinaryWork"
         @open-restricted="openRestricted"
       />
-      <AffairsSurface v-else-if="routeState.surface === 'affairs'" />
+      <AffairsSurface v-else-if="routeState.surface === 'affairs' && !routeState.affairId" @open="openAffair" />
+      <SopWorkspace
+        v-else-if="routeState.surface === 'affairs' && routeState.affairId"
+        :affair-id="routeState.affairId"
+        @back="backToHome"
+        @discarded="leaveAffair"
+      />
       <StudentSurface
         v-else
         :panel="routeState.panel"

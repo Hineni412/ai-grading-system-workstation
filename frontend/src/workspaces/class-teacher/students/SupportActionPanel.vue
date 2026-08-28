@@ -7,7 +7,7 @@ import {
   type SupportPlanOutcome,
   type SupportRecord,
 } from '../api/support'
-import type { DirectorySubject } from '../api/r1'
+import { studentRefOf, type DirectorySubject } from '../api/r1'
 import { formatClassLabel } from '../format_class_label'
 import AppButton from '@/components/design-system/AppButton.vue'
 
@@ -72,8 +72,8 @@ async function load(): Promise<void> {
   failed.value = false
   try {
     const [planItems, recordItems] = await Promise.all([
-      supportApi.listSupportPlans(props.subject.subject_id),
-      supportApi.listRecords(props.subject.subject_id),
+      supportApi.listSupportPlans(studentRefOf(props.subject)),
+      supportApi.listRecords(studentRefOf(props.subject)),
     ])
     plans.value = planItems
     records.value = recordItems
@@ -98,7 +98,7 @@ async function draftPlanWithAi(): Promise<void> {
   aiDraftMessage.value = ''
   aiDraftFailed.value = false
   try {
-    const draft = await supportApi.draftSupportPlan(props.subject.subject_id, crypto.randomUUID())
+    const draft = await supportApi.draftSupportPlan(studentRefOf(props.subject), crypto.randomUUID())
     planGoal.value = draft.goal
     planActions.value = draft.support_actions.join('\n')
     planReviewAt.value = draft.review_at
@@ -116,7 +116,7 @@ async function createPlan(): Promise<void> {
   if (!canSavePlan.value || busy.value) return
   busy.value = true
   try {
-    await supportApi.createSupportPlan(props.subject.subject_id, {
+    await supportApi.createSupportPlan(studentRefOf(props.subject), {
       goal: planGoal.value.trim(),
       support_actions: planActions.value.split('\n').map((line) => line.trim()).filter(Boolean),
       review_at: planReviewAt.value,
@@ -143,7 +143,7 @@ async function saveLog(plan: SupportPlan): Promise<void> {
   if (!logContent.value.trim() || !logDate.value || busy.value) return
   busy.value = true
   try {
-    await supportApi.createRecord(props.subject.subject_id, {
+    await supportApi.createRecord(studentRefOf(props.subject), {
       record_kind: 'fact',
       content: logContent.value.trim(),
       scene: '支持行动',

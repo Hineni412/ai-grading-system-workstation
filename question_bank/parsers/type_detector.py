@@ -2,6 +2,42 @@ from __future__ import annotations
 
 import re
 
+# 题干开头的分值标记，如“（12分）”。高分值是解答题的可靠信号。
+_LEADING_SCORE_RE = re.compile(r"^\s*[（(]\s*(\d+)\s*分\s*[)）]")
+# 规范小问标记：（1）（2）成对出现才算小问；排除两类编号/算式用法：
+# “七年级（2）班”这类编号（后接 班/组/年级），以及分数写法 (1)/(2)（斜杠相邻）。
+_SUBQ_MARK_RE = re.compile(
+    r"(?<![/0-9])[（(]([12])[)）](?![/0-9])(?!\s*[班组])(?!\s*年级)"
+)
+
+# 分值达到该阈值时，即使题干含填空信号也按解答题处理。
+_FULL_SOLUTION_SCORE_THRESHOLD = 6
+
+# 题型封闭枚举：本检测器的全部合法输出，也是联合分析题型建议的唯一合法取值。
+QUESTION_TYPES = (
+    "选择题",
+    "多选题",
+    "填空题",
+    "解答题",
+    "解答题（计算）",
+    "解答题（证明）",
+    "解答题（画图）",
+)
+
+
+def _looks_like_full_solution(text: str) -> bool:
+    """判断一道题是否明显是解答大题（用于压制填空误判）。
+
+    docx 解析后解答题的作答下划线常变成 <u>　　</u>，全角空格被保留，
+    会误触填空分支；分值与小问是更可靠的反向信号。
+    """
+    score_match = _LEADING_SCORE_RE.match(text)
+    if score_match and int(score_match.group(1)) >= _FULL_SOLUTION_SCORE_THRESHOLD:
+        return True
+    marks = {m.group(1) for m in _SUBQ_MARK_RE.finditer(text)}
+    return {"1", "2"} <= marks
+
+
 def detect_question_type(question_text: str, current_type: str | None = None) -> str:
     """
     Robust junior high school math question type detector.
@@ -60,7 +96,11 @@ def detect_question_type(question_text: str, current_type: str | None = None) ->
         is_blank = True
 
     if is_blank:
-        return "填空题"
+        if _looks_like_full_solution(text):
+            # 高分值或带 (1)(2) 小问的题是解答题，填空信号来自排版残留，跳过填空分支。
+            is_blank = False
+        else:
+            return "填空题"
 
     # 3. Check subjective subcategories (解答题 - 计算、证明、画图)
     # Drawing check:

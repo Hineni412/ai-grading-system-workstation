@@ -49,7 +49,11 @@ _REVISION_INSTRUCTION = """你只调整现有班主任草稿。只返回 JSON �
 _AFFAIR_FLOW_INSTRUCTION = """你是班主任事务流程助理。教师正在推进一个已经建立的事务处理流程，现在补充了新情况。只返回一个 JSON 对象，不要 Markdown。严格按这个结构返回：
 {"contract_version":"class_teacher_affair_flow_revision.v1","assistant_message":"给教师的简短说明","items":[{"item_id":"rev-1","kind":"add_step","title":"可执行步骤名","details":"具体做法和完成标准","depends_on":["已存在步骤key"],"reason":"为什么建议这一步"},{"item_id":"rev-2","kind":"revise_step","target_step_key":"未开始普通步骤key","title":"新步骤名","details":"新步骤说明","reason":"为什么这样改"},{"item_id":"rev-3","kind":"note","text":"提醒教师核对的建议","reason":"依据"}]}
 
-规则：kind 只能是 add_step、revise_step、note。只能新增普通步骤、修改未开始普通步骤的文案、或给出核对建议；绝不能删除或弱化安全必做步骤，绝不能改动教师分流决策点及其选项，绝不新增决策点。新步骤和修改必须基于教师补充的新情况、已完成步骤的结果和分流决定；depends_on 只能引用给定事务里已存在的步骤 key。不提惩戒、诊断、欺凌认定或对外发送建议。items 最多 5 条，没有需要调整时 items 返回一条 note 说明当前流程无需改动。"""
+规则：kind 只能是 add_step、revise_step、note。只能新增普通步骤、修改未开始普通步骤的文案、或给出核对建议；绝不能删除或弱化安全必做步骤，绝不能改动教师分流决策点及其选项，绝不新增决策点。新步骤和修改必须基于教师补充的新情况、已完成步骤的结果和分流决定；depends_on 只能引用给定事务里已存在的步骤 key。不提惩戒、诊断、欺凌认定或对外发送建议。items 最多 5 条，没有需要调整时 items 返回一条 note 说明当前流程无需改动。
+
+档案更新建议：若补充的新情况涉及某位参与学生的档案信息，可额外返回顶层 profile_update_suggestions（没有需要时省略），每项只针对一名参与学生：
+{"suggestion_id":"prof-1","subject_id":"事务参与学生的 subject_id","record_summary":"这名学生与本次事件有关的待核事实","observed_at":"带时区的 ISO 日期时间","profile_update":{"summary":"合并后的当前档案摘要","dimensions":[],"open_questions":[],"support_focus":[]}}
+档案建议只是教师逐人确认前的草稿，不会自动写入档案；不得包含惩戒、诊断或欺凌认定结论，也不得替代或弱化安全必做步骤与教师分流。"""
 _STUDENT_REFERENCE_RESELECTION_MESSAGE = "学生版本信息不一致，请重新选择"
 _PROFILE_DIMENSION_GUIDE = "、".join(
     f"{key}（{label}）" for key, label in CORE_PROFILE_DIMENSIONS
@@ -70,6 +74,11 @@ _PROFILE_ORGANIZATION_RULES = (
     "追问规则：clarification_questions 优先问能帮助理解学生的问题——"
     "什么情境下表现好或差、什么方式对他有效或无效、家庭与同伴中的关键细节、教师试过的办法及效果；"
     "只有涉及专业结论规则时才追问材料来源、日期与依据。"
+    "追问前先核对会话历史（含此前各轮的追问和教师已经作出的回答）与当前档案中已有的信息，"
+    "教师已经回答过的问题不要再次追问；只追问仍缺失且对记录确有必要的信息。"
+    "open_questions 由你直接整理输出精简后的完整列表：基于会话历史和当前档案，"
+    "移除教师已经回答过的问题，合并语义重复或高度相近的问题，"
+    "只保留仍值得了解的问题，最多 8 条；不要机械保留旧列表。"
 )
 _ACADEMIC_SUMMARY_RULES = (
     "学业摘要规则：上下文中可能带 academic_summary（学业摘要卡），"
@@ -133,7 +142,12 @@ _PROFESSIONAL_SOURCE_PATTERN = re.compile(
 )
 _PROFESSIONAL_BASIS_PATTERN = re.compile(r"(?:书面|报告|证明|病历|评估单|诊断书)")
 _EXPLICIT_DATE_PATTERN = re.compile(
-    r"(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|(?:今天|今日|昨天|昨日|前天)"
+    r"(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日"
+    r"|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}"
+    r"|\d{4}\s*年\s*\d{1,2}\s*月"
+    r"|\d{4}[-/]\d{1,2}(?!\d|[-/.]\d)"
+    r"|(?:今年|去年)\s*\d{1,2}\s*月"
+    r"|(?:今天|今日|昨天|昨日|前天)"
 )
 _SCHOOL_SUPPORT_PATTERN = re.compile(
     r"(?:当前在校|在校|学校|课堂).{0,16}(?:支持|安排|措施|调整|协助|采用|已采用)|(?:座位调整|前排座位|任务拆分|任务分段|提醒方式|简短提醒|情绪安抚)"
@@ -494,8 +508,22 @@ class ClassTeacherAITaskAdapter:
             if not isinstance(turn, Mapping):
                 continue
             messages.append({"role": "user", "content": str(turn.get("teacher_message") or "")})
-            if turn.get("assistant_message"):
-                messages.append({"role": "assistant", "content": str(turn["assistant_message"])})
+            assistant_message = str(turn.get("assistant_message") or "")
+            if assistant_message:
+                history_questions = turn.get("clarification_questions")
+                asked = (
+                    [
+                        str(question).strip()
+                        for question in history_questions
+                        if str(question).strip()
+                    ]
+                    if isinstance(history_questions, list)
+                    else []
+                )
+                # 历史追问一并回喂，模型可据此判断哪些问题教师已经回答过。
+                if asked:
+                    assistant_message += "（当时追问：" + "；".join(asked) + "）"
+                messages.append({"role": "assistant", "content": assistant_message})
         if turn_ids and not any(str(turn.get("turn_id")) in turn_ids for turn in list(conversation["turns"])):
             raise VaultError("class_teacher_turn_not_found", "AI 任务轮次不存在", status_code=404)
         return DomainModelRequest(
@@ -914,15 +942,11 @@ class ClassTeacherAITaskAdapter:
             )
             supplied_update = updates_by_id.get(subject_id)
             if supplied_update is None:
-                open_questions = list(dict.fromkeys([
-                    *[
-                        str(question).strip()
-                        for question in list(current_profile.get("open_questions") or [])
-                        if str(question).strip()
-                    ],
-                    *verification,
-                    "本次冲突经过与后续支持需要仍待教师核对。",
-                ]))
+                open_questions = _merge_open_questions(
+                    current_profile.get("open_questions"),
+                    verification,
+                    ["本次冲突经过与后续支持需要仍待教师核对。"],
+                )
                 profile_update = {
                     "summary": str(current_profile.get("summary") or "").strip()
                     or "本次同伴冲突情况待教师核对。",
@@ -1003,17 +1027,21 @@ class ClassTeacherAITaskAdapter:
             existing=[],
         )
         raw_profile = draft.get("profile_update")
+        model_profile_valid = True
         try:
             profile = self.student_cards.validate_profile_update(raw_profile)
         except VaultError:
+            model_profile_valid = False
             profile = _professional_profile_fallback(
                 current_profile=current_profile,
                 questions=questions,
+                source_text=source_text,
             )
         if not complete_evidence:
             profile = _professional_profile_fallback(
                 current_profile=current_profile,
                 questions=questions,
+                source_text=source_text,
             )
         else:
             current_summary = str(current_profile.get("summary") or "").strip()
@@ -1023,14 +1051,33 @@ class ClassTeacherAITaskAdapter:
                 if current_summary and safe_summary not in current_summary
                 else current_summary or safe_summary
             )[:4000]
-            profile["open_questions"] = list(dict.fromkeys([
-                *[
-                    str(question).strip()
-                    for question in list(current_profile.get("open_questions") or [])
-                    if str(question).strip()
-                ],
-                *questions,
-            ]))
+            confirmed_dimension = _professional_confirmed_dimension(draft)
+            dimensions = [
+                dimension
+                for dimension in list(profile.get("dimensions") or [])
+                if not (
+                    isinstance(dimension, Mapping)
+                    and str(dimension.get("key") or "") == "professional_support_context"
+                )
+            ]
+            dimensions.append(confirmed_dimension)
+            profile["dimensions"] = dimensions
+            if model_profile_valid:
+                # 模型按整理规则输出的是精简后的完整 open_questions，以其为准，
+                # 旧列表不再无条件拼回；仍做标点归一去重与「已回答」兜底过滤。
+                profile["open_questions"] = _merge_open_questions(
+                    _drop_answered_professional_questions(
+                        [
+                            str(question).strip()
+                            for question in list(profile.get("open_questions") or [])
+                            if str(question).strip()
+                        ],
+                        source_text=source_text,
+                    ),
+                    questions,
+                )
+            # 模型输出缺失或非法时 profile 来自回退路径，
+            # 旧 open_questions 已并入并过滤，保持现状。
         draft["profile_update"] = profile
         draft["profile_base_revision"] = base_revision
         # 模型自报的缺失项已在 normalize_triage_result 前半段统一转写进
@@ -1110,7 +1157,21 @@ class ClassTeacherAITaskAdapter:
                     }
                     for item in parsed.items
                 ],
+                profile_update_suggestions=[
+                    dict(item) for item in parsed.profile_update_suggestions
+                ],
+                source_task_id=task_id,
             )
+            turn_ref = next(
+                (item for item in context_refs if item.get("kind") == "turn"),
+                None,
+            )
+            if turn_ref is not None:
+                self.conversations.complete_flow_revision_turn(
+                    turn_id=str(turn_ref.get("id") or ""),
+                    task_id=task_id,
+                    assistant_message=parsed.assistant_message,
+                )
             return {
                 "proposal_ref": {"kind": "flow_revision", "id": entry["revision_id"], "revision": "1"},
                 "handoff_ids": [],
@@ -1726,6 +1787,71 @@ def _is_professional_report(source_text: str) -> bool:
     return False
 
 
+def _open_question_key(question: str) -> str:
+    """open_questions 归一键：忽略首尾空白和结尾标点，
+    「具体表现情境？」与「具体表现情境」视为同一条。"""
+    return question.strip().rstrip("？?。．.！!；;，,").strip()
+
+
+def _merge_open_questions(*groups: object) -> list[str]:
+    """拼接并归一去重 open_questions，保留先出现条目的原始写法。"""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for value in group:
+            text = str(value).strip()
+            key = _open_question_key(text)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(text)
+    return merged
+
+
+def _professional_question_answered(
+    question: str,
+    *,
+    has_source_and_basis: bool,
+    has_date: bool,
+    has_support: bool,
+) -> bool:
+    """规则层专业类追问的「该项信息已在会话全文出现」判断，
+    clarification_questions 与档案 open_questions 共用。"""
+    if has_source_and_basis and re.search(r"(?:来源|机构|医生|材料|报告|依据)", question):
+        return True
+    if has_date and re.search(r"(?:日期|时间|什么时候|何时)", question):
+        return True
+    return bool(
+        has_support and re.search(r"(?:在校|支持|有效|避免|做法)", question)
+    )
+
+
+def _drop_answered_professional_questions(
+    questions: list[str],
+    *,
+    source_text: str,
+) -> list[str]:
+    """把旧 open_questions 带入新档案前，移除会话全文已经回答的专业类追问。"""
+    has_source_and_basis = bool(
+        _PROFESSIONAL_SOURCE_PATTERN.search(source_text)
+        and _PROFESSIONAL_BASIS_PATTERN.search(source_text)
+    )
+    has_date = bool(_EXPLICIT_DATE_PATTERN.search(source_text))
+    has_support = bool(_SCHOOL_SUPPORT_PATTERN.search(source_text))
+    return [
+        question
+        for question in questions
+        if not _professional_question_answered(
+            question,
+            has_source_and_basis=has_source_and_basis,
+            has_date=has_date,
+            has_support=has_support,
+        )
+    ]
+
+
 def _professional_clarification_questions(
     *,
     source_text: str,
@@ -1745,11 +1871,12 @@ def _professional_clarification_questions(
     if not has_support:
         questions.append("学生当前在校已采用哪些支持方式，哪些有效，哪些做法需要避免？")
     for question in _bounded_clarification_questions(existing):
-        if has_source_and_basis and re.search(r"(?:来源|机构|医生|材料|报告|依据)", question):
-            continue
-        if has_date and re.search(r"(?:日期|时间|什么时候|何时)", question):
-            continue
-        if has_support and re.search(r"(?:在校|支持|有效|避免|做法)", question):
+        if _professional_question_answered(
+            question,
+            has_source_and_basis=has_source_and_basis,
+            has_date=has_date,
+            has_support=has_support,
+        ):
             continue
         questions.append(question)
     return list(dict.fromkeys(questions))[:3]
@@ -1780,6 +1907,46 @@ def _professional_date_from_text(source_text: str) -> str:
             ).date().isoformat()
         except ValueError:
             return ""
+    year_month = re.search(
+        r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月",
+        source_text,
+    )
+    if year_month:
+        try:
+            return datetime(
+                int(year_month.group("year")),
+                int(year_month.group("month")),
+                1,
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ).date().isoformat()[:7]
+        except ValueError:
+            return ""
+    iso_month = re.search(
+        r"(?P<year>\d{4})[-/](?P<month>\d{1,2})(?!\d|[-/.]\d)",
+        source_text,
+    )
+    if iso_month:
+        try:
+            return datetime(
+                int(iso_month.group("year")),
+                int(iso_month.group("month")),
+                1,
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ).date().isoformat()[:7]
+        except ValueError:
+            return ""
+    relative_month = re.search(
+        r"(?P<word>今年|去年)\s*(?P<month>\d{1,2})\s*月",
+        source_text,
+    )
+    if relative_month:
+        month = int(relative_month.group("month"))
+        if not 1 <= month <= 12:
+            return ""
+        year = datetime.now(ZoneInfo("Asia/Shanghai")).year
+        if relative_month.group("word") == "去年":
+            year -= 1
+        return f"{year:04d}-{month:02d}"
     relative = re.search(r"今天|今日|昨天|昨日|前天", source_text)
     if relative:
         offset = 0 if relative.group(0) in {"今天", "今日"} else -1 if relative.group(0) in {"昨天", "昨日"} else -2
@@ -1802,14 +1969,9 @@ def _move_model_missing_fields_to_open_questions(item: dict[str, Any]) -> None:
     if not isinstance(update, dict):
         return
     existing = update.get("open_questions")
-    questions = (
-        [str(question).strip() for question in existing if str(question).strip()]
-        if isinstance(existing, list)
-        else []
-    )
     moved = [str(value).strip() for value in missing if str(value).strip()]
     # open_questions 上限 30 条（student_card_service._text_list）。
-    update["open_questions"] = list(dict.fromkeys([*questions, *moved]))[:30]
+    update["open_questions"] = _merge_open_questions(existing, moved)[:30]
     item["missing_fields"] = []
 
 
@@ -1821,10 +1983,39 @@ def _school_support_from_text(source_text: str) -> str:
     return str(match.group(1)).strip() if match else ""
 
 
+def _professional_confirmed_dimension(draft: Mapping[str, Any]) -> dict[str, object]:
+    """证据齐全时用本轮已核对的来源、日期、依据与在校支持生成
+    「专业支持信息」维度；按 key 覆盖档案里的「待核对」占位卡。"""
+    items: list[str] = []
+    basis = str(draft.get("basis") or "").strip()
+    observed_at = str(draft.get("observed_at") or "").strip()
+    school_support = str(draft.get("current_school_support") or "").strip()
+    recommendations = str(draft.get("professional_recommendations") or "").strip()
+    avoidances = str(draft.get("avoidances") or "").strip()
+    if basis:
+        items.append(f"专业书面材料：{basis}。")
+    if observed_at:
+        items.append(f"结论日期：{observed_at}。")
+    if school_support:
+        items.append(f"当前在校支持：{school_support}。")
+    if recommendations:
+        items.append(f"专业建议：{recommendations}。")
+    if avoidances:
+        items.append(f"需要避免的做法：{avoidances}。")
+    if not items:
+        items.append("教师已补充可核对的专业书面材料与结论日期；正式采用前仍由教师核对原始材料。")
+    return {
+        "key": "professional_support_context",
+        "label": "专业支持信息",
+        "items": items,
+    }
+
+
 def _professional_profile_fallback(
     *,
     current_profile: Mapping[str, object],
     questions: list[str],
+    source_text: str,
 ) -> dict[str, object]:
     current_summary = str(current_profile.get("summary") or "").strip()
     report_summary = "教师转述学生已有专业诊断信息，具体来源、日期和书面材料仍待核对。"
@@ -1847,16 +2038,21 @@ def _professional_profile_fallback(
     index = by_key.get("professional_support_context")
     if index is None:
         dimensions.append(context_dimension)
-    else:
+    elif "待核对" in str(dimensions[index].get("label") or ""):
         dimensions[index] = context_dimension
-    open_questions = list(dict.fromkeys([
-        *[
-            str(question).strip()
-            for question in list(current_profile.get("open_questions") or [])
-            if str(question).strip()
-        ],
-        *questions,
-    ]))
+    # 同 key 维度 label 已不带「待核对」时说明教师此前已核对过，
+    # 本轮证据判断失败不能把已核对内容降级回占位文案。
+    open_questions = _merge_open_questions(
+        _drop_answered_professional_questions(
+            [
+                str(question).strip()
+                for question in list(current_profile.get("open_questions") or [])
+                if str(question).strip()
+            ],
+            source_text=source_text,
+        ),
+        questions,
+    )
     return {
         "summary": summary[:4000],
         "dimensions": dimensions,

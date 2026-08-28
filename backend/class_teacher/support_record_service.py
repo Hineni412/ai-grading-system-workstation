@@ -42,6 +42,11 @@ def _iso() -> str:
 def _normalize_datetime(value: str | None, label: str) -> str | None:
     if not value:
         return None
+    # 兼容只有年月的写法（如专业结论只掌握到「2026-07」），视为该月 1 日；
+    # 完整日期与其他格式仍按原 ISO 解析与校验，行为不变。
+    year_month = re.fullmatch(r"(\d{4})-(\d{1,2})", value)
+    if year_month and 1 <= int(year_month.group(2)) <= 12:
+        value = f"{year_month.group(1)}-{int(year_month.group(2)):02d}-01"
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
@@ -234,12 +239,39 @@ class SupportRecordService:
             )
         return {
             "subject_id": subject_id,
+            "student_ref": str(row["source_fingerprint"]),
             "revision": revision,
             "state": str(row["state"]),
             **payload,
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
         }
+
+    def subject_fingerprints(self, *, subject_id: str) -> list[str]:
+        """学生档案编号 ↔ 稳定学籍标识的唯一映射（student_subject_links）。
+        返回该学生的全部身份键（含历史格式），供跨编号体系的只读匹配。"""
+        clean = str(subject_id or "").strip()
+        if not clean or not self.database.exists:
+            return []
+        with closing(self.database.connect()) as connection:
+            rows = connection.execute(
+                "SELECT source_fingerprint FROM student_subject_links WHERE subject_id=?",
+                (clean,),
+            ).fetchall()
+        return [str(row["source_fingerprint"]) for row in rows]
+
+    def subject_id_for_ref(self, *, student_ref: str) -> str | None:
+        """按稳定学籍标识（对外学生编号「班级|学号」）查内部档案编号，
+        走唯一身份映射 student_subject_links；查不到返回 None。"""
+        clean = str(student_ref or "").strip()
+        if not clean or not self.database.exists:
+            return None
+        with closing(self.database.connect()) as connection:
+            row = connection.execute(
+                "SELECT subject_id FROM student_subject_links WHERE source_fingerprint=? AND state='active'",
+                (clean,),
+            ).fetchone()
+        return None if row is None else str(row["subject_id"])
 
     def list_subjects(self, *, token: str) -> dict[str, object]:
         vmk = self._key_provider(token)
@@ -260,6 +292,7 @@ class SupportRecordService:
                 items.append(
                     {
                         "subject_id": str(row["subject_id"]),
+                        "student_ref": str(row["source_fingerprint"]),
                         "revision": revision,
                         "state": str(row["state"]),
                         **payload,

@@ -30,6 +30,10 @@ class SopWorkflowService:
         self.database = database
         self.repository = repository
         self._key_provider = key_provider
+        # 档案待确认草稿的确认动作需要写支持记录与当前档案；
+        # 由 VaultService 在构造完相关服务后迟绑定，避免构造环。
+        self.support_records: Any = None
+        self.student_cards: Any = None
 
     def publish_template(
         self,
@@ -218,6 +222,7 @@ class SopWorkflowService:
         subject_ids: list[str] | None = None,
         verified_current_subject_ids: list[str] | None = None,
         step_text_overrides: dict[str, dict[str, str]] | None = None,
+        pending_verifications: list[str] | None = None,
         idempotency_fingerprint: str | None = None,
         transaction_hook: Callable[[Any, bytes, str, str], None] | None = None,
     ) -> dict[str, object]:
@@ -327,6 +332,10 @@ class SopWorkflowService:
                     "school_config_gaps": list(
                         template.get("school_config_gaps") or []
                     ),
+                    "to_verify": [
+                        self._text(item, "待补充事项", 500)
+                        for item in list(pending_verifications or [])[:20]
+                    ],
                     "model_enabled": False,
                     "physical_request_count": 0,
                     "current_occurrence_sequence": 1,
@@ -540,6 +549,13 @@ class SopWorkflowService:
                             if participant["subject_id"] is None
                             else str(participant["subject_id"])
                         ),
+                        "student_ref": (
+                            None
+                            if participant["subject_id"] is None
+                            else self._student_ref_for(
+                                connection, participant["subject_id"]
+                            )
+                        ),
                     }
                 )
             steps = self._steps_for_occurrence(
@@ -548,12 +564,21 @@ class SopWorkflowService:
                 str(occurrence["occurrence_id"]),
             )
             decisions = self._decisions(connection, vmk, affair_id)
+            profile_update_drafts = self._profile_update_drafts_in_connection(
+                connection,
+                vmk,
+                affair_id,
+            )
         return {
             "affair_id": affair_id,
             "revision": revision,
             "template_version_id": str(row["template_version_id"]),
             "plan_id": str(row["plan_id"]),
             **payload,
+            "to_verify": [
+                str(item) for item in list(payload.get("to_verify") or [])
+            ],
+            "profile_update_drafts": profile_update_drafts,
             "occurrence_id": str(occurrence["occurrence_id"]),
             "occurrence_sequence": int(occurrence["sequence"]),
             "participants": participants,
@@ -973,6 +998,80 @@ class SopWorkflowService:
                     transaction_hook(connection, vmk)
         return self.get_affair(token=token, affair_id=affair_id)
 
+    def discard_affair(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        operation_id: str,
+        revision: int,
+        reason: str,
+        transaction_hook: Callable[[Any, bytes], None] | None = None,
+    ) -> dict[str, object]:
+        """弃用事务：终态，不检查必做步骤，也不允许重开。"""
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "sop.affair.discard")
+        if replay is not None:
+            return self.get_affair(token=token, affair_id=affair_id)
+        clean_reason = self._text(reason, "弃用原因", 4000)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                row = self._active_affair(connection, affair_id)
+                payload, current_revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(row["payload_object_id"]),
+                )
+                if current_revision != revision:
+                    self._revision_conflict("事务")
+                occurrence = connection.execute(
+                    """
+                    SELECT occurrence_id FROM affair_occurrences
+                    WHERE affair_id = ? ORDER BY sequence DESC LIMIT 1
+                    """,
+                    (affair_id,),
+                ).fetchone()
+                timestamp = _iso()
+                self._supersede_steps(
+                    connection,
+                    vmk,
+                    str(occurrence["occurrence_id"]),
+                    required_only=False,
+                )
+                payload.update(
+                    {
+                        "state": "discarded",
+                        "discard_reason": clean_reason,
+                        "updated_at": timestamp,
+                    }
+                )
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(row["payload_object_id"]),
+                    object_type="affair",
+                    payload=payload,
+                    expected_revision=revision,
+                )
+                connection.execute(
+                    """
+                    UPDATE affairs
+                    SET state = 'discarded', updated_at = ?
+                    WHERE affair_id = ?
+                    """,
+                    (timestamp, affair_id),
+                )
+                self._event(connection, affair_id, None, "affair.discarded")
+                self._remember(
+                    connection,
+                    operation_id,
+                    "sop.affair.discard",
+                    {"affair_id": affair_id},
+                )
+                if transaction_hook is not None:
+                    transaction_hook(connection, vmk)
+        return self.get_affair(token=token, affair_id=affair_id)
+
     def reopen_affair(
         self,
         *,
@@ -1102,6 +1201,14 @@ class SopWorkflowService:
             "summary": str(affair.get("summary") or ""),
             "template_key": str(affair.get("template_key") or ""),
             "state": str(affair.get("state") or ""),
+            "participants": [
+                {
+                    "subject_id": str(item.get("subject_id")),
+                    "reference": str(item.get("reference") or ""),
+                }
+                for item in list(affair.get("participants") or [])
+                if isinstance(item, dict) and item.get("subject_id")
+            ],
             "steps": [
                 {
                     "key": str(step.get("key") or ""),
@@ -1226,8 +1333,14 @@ class SopWorkflowService:
         sync_id: str,
         assistant_message: str,
         items: list[dict[str, object]],
+        profile_update_suggestions: list[dict[str, object]] | None = None,
+        source_task_id: str | None = None,
     ) -> dict[str, object]:
-        """把模型流程修订作为待审草稿写入事务；安全过滤在这里强制执行。"""
+        """把模型流程修订作为待审草稿写入事务；安全过滤在这里强制执行。
+
+        档案更新建议在同事务内落成逐人待确认草稿（不直接写档案）；
+        教师 decide 流程修订不影响档案草稿，确认动作只在档案抽屉。
+        """
         vmk = self._key_provider(token)
         with closing(self.database.connect()) as connection:
             with connection:
@@ -1368,6 +1481,97 @@ class SopWorkflowService:
                     "decided_at": None,
                     "accepted_item_ids": [],
                 }
+                validated_updates: list[dict[str, object]] = []
+                suggestions = [
+                    dict(item)
+                    for item in list(profile_update_suggestions or [])[:8]
+                    if isinstance(item, dict)
+                ]
+                if suggestions:
+                    participant_rows = connection.execute(
+                        """
+                        SELECT l.subject_id, p.payload_object_id
+                        FROM affair_student_links l
+                        JOIN affair_participants p
+                            ON p.participant_id = l.participant_id
+                        WHERE l.affair_id = ?
+                        """,
+                        (affair_id,),
+                    ).fetchall()
+                    participant_names: dict[str, str] = {}
+                    for participant_row in participant_rows:
+                        identity, _identity_revision = self.repository.get(
+                            connection,
+                            vmk=vmk,
+                            object_id=str(participant_row["payload_object_id"]),
+                        )
+                        participant_names[str(participant_row["subject_id"])] = str(
+                            identity.get("reference") or "学生"
+                        )
+                    for index, candidate in enumerate(suggestions, start=1):
+                        suggestion_id = str(
+                            candidate.get("suggestion_id") or f"prof-{index}"
+                        )
+                        subject_id = str(candidate.get("subject_id") or "").strip()
+                        if subject_id not in participant_names:
+                            dropped.append({
+                                "item_id": suggestion_id,
+                                "reason": "档案建议没有绑定本事务参与学生",
+                            })
+                            continue
+                        if self.student_cards is None:
+                            dropped.append({
+                                "item_id": suggestion_id,
+                                "reason": "档案服务未就绪",
+                            })
+                            continue
+                        if not str(candidate.get("record_kind") or "").strip():
+                            candidate["record_kind"] = "reported_statement"
+                        if not str(candidate.get("source") or "").strip():
+                            candidate["source"] = "教师补充新情况，采用前核对"
+                        if not str(candidate.get("observed_at") or "").strip():
+                            candidate["observed_at"] = _iso()
+                        base_revision = candidate.get("profile_base_revision")
+                        if (
+                            isinstance(base_revision, bool)
+                            or not isinstance(base_revision, int)
+                            or base_revision < 0
+                        ):
+                            candidate["profile_base_revision"] = (
+                                self._current_profile_revision(subject_id)
+                            )
+                        try:
+                            from .intake.adoption import (
+                                validated_sop_profile_update_entry,
+                            )
+
+                            update = validated_sop_profile_update_entry(
+                                candidate,
+                                subject_id=subject_id,
+                                validate_profile_update=(
+                                    self.student_cards.validate_profile_update
+                                ),
+                            )
+                        except VaultError as exc:
+                            dropped.append({
+                                "item_id": suggestion_id,
+                                "reason": exc.message,
+                            })
+                            continue
+                        update["display_name"] = participant_names[subject_id]
+                        validated_updates.append(update)
+                profile_draft_ids: list[str] = []
+                if validated_updates:
+                    profile_draft_ids = (
+                        self._insert_profile_update_drafts_in_connection(
+                            connection,
+                            vmk=vmk,
+                            affair_id=affair_id,
+                            updates=validated_updates,
+                            source_task_id=source_task_id,
+                        )
+                    )
+                entry["profile_update_draft_ids"] = profile_draft_ids
                 revisions.append(entry)
                 payload["flow_revisions"] = revisions[-10:]
                 sync["state"] = "answered"
@@ -1692,6 +1896,439 @@ class SopWorkflowService:
                 )
         return self.get_affair(token=token, affair_id=affair_id)
 
+    def _insert_profile_update_drafts_in_connection(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        affair_id: str,
+        updates: list[dict[str, object]],
+        source_task_id: str | None = None,
+    ) -> list[str]:
+        """在建单/修订事务内写入档案待确认草稿（每名学生一条，不直接写档案）。
+
+        同一（affair_id, subject_id）已有 pending/discarded 草稿时，新的拟更新
+        整体替换旧 payload 并回到 pending；state='confirmed' 的既有草稿是
+        教师已确认写入的结果，不再被后续建议替换（跳过本条，不计入返回列表）。
+        """
+        draft_ids: list[str] = []
+        timestamp = _iso()
+        for update in updates:
+            subject_id = str(update["subject_id"])
+            payload = {
+                "subject_id": subject_id,
+                "display_name": str(update.get("display_name") or "学生"),
+                "record_kind": str(update["record_kind"]),
+                "source": str(update["source"]),
+                "basis": (
+                    str(update["basis"]) if update.get("basis") is not None else None
+                ),
+                "counterexample": (
+                    str(update["counterexample"])
+                    if update.get("counterexample") is not None
+                    else None
+                ),
+                "record_summary": str(update["record_summary"]),
+                "scene": str(update["scene"]),
+                "category": (
+                    str(update["category"])
+                    if update.get("category") is not None
+                    else None
+                ),
+                "observed_at": str(update["observed_at"]),
+                "review_at": (
+                    str(update["review_at"])
+                    if update.get("review_at") is not None
+                    else None
+                ),
+                "expires_at": (
+                    str(update["expires_at"])
+                    if update.get("expires_at") is not None
+                    else None
+                ),
+                "profile_base_revision": int(update["profile_base_revision"]),
+                "profile_update": dict(update["profile_update"]),
+                "source_task_id": (
+                    str(source_task_id)[:128] if source_task_id else None
+                ),
+                "confirmed_record_id": None,
+            }
+            existing = connection.execute(
+                """
+                SELECT draft_id, payload_object_id, revision, state
+                FROM affair_profile_update_drafts
+                WHERE affair_id = ? AND subject_id = ?
+                """,
+                (affair_id, subject_id),
+            ).fetchone()
+            if existing is not None and str(existing["state"]) == "confirmed":
+                # 教师已确认写入的草稿不被后续 AI 建议静默改写。
+                continue
+            if existing is None:
+                draft_id = uuid4().hex
+                object_id = f"affair-profile-draft-{draft_id}"
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=object_id,
+                    object_type="affair_profile_update_draft",
+                    payload=payload,
+                )
+                connection.execute(
+                    """
+                    INSERT INTO affair_profile_update_drafts (
+                        draft_id, affair_id, subject_id, state,
+                        payload_object_id, revision, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'pending', ?, 1, ?, ?)
+                    """,
+                    (
+                        draft_id,
+                        affair_id,
+                        subject_id,
+                        object_id,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            else:
+                draft_id = str(existing["draft_id"])
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(existing["payload_object_id"]),
+                    object_type="affair_profile_update_draft",
+                    payload=payload,
+                )
+                connection.execute(
+                    """
+                    UPDATE affair_profile_update_drafts
+                    SET state = 'pending', revision = ?, confirmed_at = NULL,
+                        updated_at = ?
+                    WHERE draft_id = ?
+                    """,
+                    (int(existing["revision"]) + 1, timestamp, draft_id),
+                )
+            draft_ids.append(draft_id)
+        return draft_ids
+
+    def confirm_profile_update_draft(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        draft_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """教师确认后同事务写支持记录并合并学生当前档案；乐观锁冲突 409 直传。"""
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "sop.affair.profile_draft.confirm")
+        if replay is not None:
+            return self._profile_update_draft(
+                token=token,
+                affair_id=affair_id,
+                draft_id=str(replay["draft_id"]),
+            )
+        if self.support_records is None or self.student_cards is None:
+            raise VaultError(
+                "sop_profile_draft_unavailable",
+                "档案确认服务未就绪",
+                status_code=409,
+            )
+        with closing(self.database.connect()) as connection:
+            with connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM affair_profile_update_drafts
+                    WHERE draft_id = ? AND affair_id = ?
+                    """,
+                    (draft_id, affair_id),
+                ).fetchone()
+                if row is None:
+                    raise VaultError(
+                        "sop_profile_draft_not_found",
+                        "档案草稿不存在",
+                        status_code=404,
+                    )
+                if str(row["state"]) == "confirmed":
+                    return self._profile_update_draft_detail(connection, vmk, row)
+                if str(row["state"]) != "pending":
+                    raise VaultError(
+                        "sop_profile_draft_not_pending",
+                        "此档案草稿已处理，不能再次确认",
+                        status_code=409,
+                    )
+                payload, payload_revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(row["payload_object_id"]),
+                )
+                from .intake.adoption import validated_sop_profile_update_entry
+
+                update = validated_sop_profile_update_entry(
+                    payload,
+                    subject_id=str(row["subject_id"]),
+                    validate_profile_update=self.student_cards.validate_profile_update,
+                )
+                record_id = self.support_records.create_record_in_connection(
+                    connection,
+                    vmk=vmk,
+                    operation_id=f"{operation_id[:100]}-record",
+                    subject_id=str(row["subject_id"]),
+                    record_kind=str(update["record_kind"]),
+                    content=str(update["record_summary"]),
+                    scene=str(update["scene"]),
+                    source=str(update["source"]),
+                    basis=(
+                        str(update["basis"])
+                        if update.get("basis") is not None
+                        else None
+                    ),
+                    counterexample=(
+                        str(update["counterexample"])
+                        if update.get("counterexample") is not None
+                        else None
+                    ),
+                    category=str(update["category"]),
+                    observed_at=str(update["observed_at"]),
+                    review_at=(
+                        str(update["review_at"])
+                        if update.get("review_at") is not None
+                        else None
+                    ),
+                    expires_at=(
+                        str(update["expires_at"])
+                        if update.get("expires_at") is not None
+                        else None
+                    ),
+                )
+                task_id = str(payload.get("source_task_id") or draft_id)
+                self.student_cards.upsert_current_profile_in_connection(
+                    connection,
+                    vmk=vmk,
+                    subject_id=str(row["subject_id"]),
+                    profile_update=dict(update["profile_update"]),
+                    expected_revision=update.get("profile_base_revision"),
+                    operation_id=f"{operation_id[:100]}-profile",
+                    model_operation_id=(
+                        f"{task_id[:80]}-profile-{draft_id[:12]}"
+                    ),
+                    teacher_quote=str(update["record_summary"]),
+                    model_draft=json.dumps(
+                        update["profile_update"],
+                        ensure_ascii=False,
+                    ),
+                    source_record_id=record_id,
+                )
+                payload["confirmed_record_id"] = record_id
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(row["payload_object_id"]),
+                    object_type="affair_profile_update_draft",
+                    payload=payload,
+                    expected_revision=payload_revision,
+                )
+                timestamp = _iso()
+                connection.execute(
+                    """
+                    UPDATE affair_profile_update_drafts
+                    SET state = 'confirmed', revision = revision + 1,
+                        confirmed_at = ?, updated_at = ?
+                    WHERE draft_id = ?
+                    """,
+                    (timestamp, timestamp, draft_id),
+                )
+                self._event(
+                    connection,
+                    affair_id,
+                    None,
+                    "affair.profile_draft_confirmed",
+                )
+                self._remember(
+                    connection,
+                    operation_id,
+                    "sop.affair.profile_draft.confirm",
+                    {
+                        "affair_id": affair_id,
+                        "draft_id": draft_id,
+                        "record_id": record_id,
+                    },
+                )
+                row = connection.execute(
+                    """
+                    SELECT * FROM affair_profile_update_drafts
+                    WHERE draft_id = ?
+                    """,
+                    (draft_id,),
+                ).fetchone()
+                return self._profile_update_draft_detail(connection, vmk, row)
+
+    def discard_profile_update_draft(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        draft_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """教师选择不写入档案：pending 草稿翻为 discarded（终态）。"""
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "sop.affair.profile_draft.discard")
+        if replay is not None:
+            return self._profile_update_draft(
+                token=token,
+                affair_id=affair_id,
+                draft_id=str(replay["draft_id"]),
+            )
+        with closing(self.database.connect()) as connection:
+            with connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM affair_profile_update_drafts
+                    WHERE draft_id = ? AND affair_id = ?
+                    """,
+                    (draft_id, affair_id),
+                ).fetchone()
+                if row is None:
+                    raise VaultError(
+                        "sop_profile_draft_not_found",
+                        "档案草稿不存在",
+                        status_code=404,
+                    )
+                if str(row["state"]) == "discarded":
+                    return self._profile_update_draft_detail(connection, vmk, row)
+                if str(row["state"]) != "pending":
+                    raise VaultError(
+                        "sop_profile_draft_not_pending",
+                        "此档案草稿已确认写入，不能丢弃",
+                        status_code=409,
+                    )
+                timestamp = _iso()
+                connection.execute(
+                    """
+                    UPDATE affair_profile_update_drafts
+                    SET state = 'discarded', revision = revision + 1,
+                        updated_at = ?
+                    WHERE draft_id = ?
+                    """,
+                    (timestamp, draft_id),
+                )
+                self._event(
+                    connection,
+                    affair_id,
+                    None,
+                    "affair.profile_draft_discarded",
+                )
+                self._remember(
+                    connection,
+                    operation_id,
+                    "sop.affair.profile_draft.discard",
+                    {"affair_id": affair_id, "draft_id": draft_id},
+                )
+                row = connection.execute(
+                    """
+                    SELECT * FROM affair_profile_update_drafts
+                    WHERE draft_id = ?
+                    """,
+                    (draft_id,),
+                ).fetchone()
+                return self._profile_update_draft_detail(connection, vmk, row)
+
+    def _current_profile_revision(self, subject_id: str) -> int:
+        if self.student_cards is None:
+            return 0
+        try:
+            context = self.student_cards.model_context(token="", subject_id=subject_id)
+        except Exception:
+            return 0
+        profile = context.get("profile") if isinstance(context, dict) else None
+        if not isinstance(profile, dict):
+            return 0
+        revision = profile.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            return 0
+        return revision
+
+    def _profile_update_draft(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        draft_id: str,
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM affair_profile_update_drafts
+                WHERE draft_id = ? AND affair_id = ?
+                """,
+                (draft_id, affair_id),
+            ).fetchone()
+            if row is None:
+                raise VaultError(
+                    "sop_profile_draft_not_found",
+                    "档案草稿不存在",
+                    status_code=404,
+                )
+            return self._profile_update_draft_detail(connection, vmk, row)
+
+    @staticmethod
+    def _student_ref_for(connection: Any, subject_id: object) -> str | None:
+        """内部档案编号 → 对外学生编号（稳定学籍标识），
+        走唯一身份映射 student_subject_links。"""
+        row = connection.execute(
+            "SELECT source_fingerprint FROM student_subject_links WHERE subject_id=? AND state='active'",
+            (str(subject_id),),
+        ).fetchone()
+        return None if row is None else str(row["source_fingerprint"])
+
+    def _profile_update_drafts_in_connection(
+        self,
+        connection: Any,
+        vmk: bytes,
+        affair_id: str,
+    ) -> list[dict[str, object]]:
+        rows = connection.execute(
+            """
+            SELECT * FROM affair_profile_update_drafts
+            WHERE affair_id = ? ORDER BY created_at, draft_id
+            """,
+            (affair_id,),
+        ).fetchall()
+        return [
+            self._profile_update_draft_detail(connection, vmk, row)
+            for row in rows
+        ]
+
+    def _profile_update_draft_detail(
+        self,
+        connection: Any,
+        vmk: bytes,
+        row: Any,
+    ) -> dict[str, object]:
+        payload, _payload_revision = self.repository.get(
+            connection,
+            vmk=vmk,
+            object_id=str(row["payload_object_id"]),
+        )
+        return {
+            "draft_id": str(row["draft_id"]),
+            "affair_id": str(row["affair_id"]),
+            "subject_id": str(row["subject_id"]),
+            "student_ref": self._student_ref_for(connection, row["subject_id"]),
+            "state": str(row["state"]),
+            "revision": int(row["revision"]),
+            **payload,
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "confirmed_at": (
+                str(row["confirmed_at"])
+                if row["confirmed_at"] is not None
+                else None
+            ),
+        }
+
     def _instantiate_steps(
         self,
         connection: Any,
@@ -1999,10 +2636,21 @@ class SopWorkflowService:
         vmk: bytes,
         occurrence_id: str,
     ) -> None:
+        self._supersede_steps(connection, vmk, occurrence_id, required_only=True)
+
+    def _supersede_steps(
+        self,
+        connection: Any,
+        vmk: bytes,
+        occurrence_id: str,
+        *,
+        required_only: bool,
+    ) -> None:
         rows = connection.execute(
-            """
+            f"""
             SELECT * FROM step_instances
-            WHERE occurrence_id = ? AND is_required = 0
+            WHERE occurrence_id = ?
+              {"AND is_required = 0" if required_only else ""}
               AND state NOT IN ('completed', 'waived', 'superseded')
             """,
             (occurrence_id,),
@@ -2191,10 +2839,16 @@ class SopWorkflowService:
 
     def _active_affair(self, connection: Any, affair_id: str) -> Any:
         row = self._affair(connection, affair_id)
-        if str(row["state"]) != "active":
+        state = str(row["state"])
+        if state != "active":
+            message = (
+                "事务已弃用，不可重开"
+                if state == "discarded"
+                else "事务已经结案，请先重开"
+            )
             raise VaultError(
                 "sop_affair_closed",
-                "事务已经结案，请先重开",
+                message,
                 status_code=409,
             )
         return row

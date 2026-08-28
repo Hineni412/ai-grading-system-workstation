@@ -325,6 +325,7 @@ export interface QuestionBankFacets {
   thoughts: QuestionBankFacet[]
   models: QuestionBankFacet[]
   special_types: QuestionBankFacet[]
+  error_types: QuestionBankFacet[]
   student_levels: QuestionBankFacet[]
   teaching_stages: QuestionBankFacet[]
   sub_skills: QuestionBankFacet[]
@@ -466,6 +467,7 @@ export interface QuestionBankFilters {
   thoughts?: string[]
   models?: string[]
   specialTypes?: string[]
+  errorTypes?: string[]
   studentLevels?: string[]
   teachingStages?: string[]
   subSkills?: string[]
@@ -483,6 +485,7 @@ export interface QuestionBankFilters {
   analysisStatus?: QuestionBankAnalysisStatus
   sort?: QuestionBankSort
   criteriaNeedsReview?: boolean
+  teachingProgressChapter?: string
 }
 
 const QUESTION_LIST_KEYS = [
@@ -1128,6 +1131,7 @@ export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
     'thoughts',
     'models',
     'special_types',
+    'error_types',
     'student_levels',
     'teaching_stages',
     'sub_skills',
@@ -1522,6 +1526,7 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'thoughts', filters.thoughts)
   appendTexts(parameters, 'models', filters.models)
   appendTexts(parameters, 'special_types', filters.specialTypes)
+  appendTexts(parameters, 'error_types', filters.errorTypes)
   appendTexts(parameters, 'student_levels', filters.studentLevels)
   appendTexts(parameters, 'teaching_stages', filters.teachingStages)
   appendTexts(parameters, 'sub_skills', filters.subSkills)
@@ -1530,6 +1535,10 @@ function questionListPath(filters: QuestionBankFilters): string {
   parameters.set('sort', filters.sort ?? 'newest')
   if (filters.criteriaNeedsReview === true) {
     parameters.set('criteria_needs_review', 'true')
+  }
+  const teachingProgressChapter = filters.teachingProgressChapter?.trim()
+  if (teachingProgressChapter) {
+    parameters.set('teaching_progress_chapter', teachingProgressChapter)
   }
   return `/api/question-bank/questions?${parameters.toString()}`
 }

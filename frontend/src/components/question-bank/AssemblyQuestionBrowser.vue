@@ -45,6 +45,7 @@ const facets = shallowRef<QuestionBankFacets>({
   thoughts: [],
   models: [],
   special_types: [],
+  error_types: [],
   student_levels: [],
   teaching_stages: [],
   sub_skills: [],
@@ -63,6 +64,7 @@ const baseFacets = shallowRef<QuestionBankFacets>({
   thoughts: [],
   models: [],
   special_types: [],
+  error_types: [],
   student_levels: [],
   teaching_stages: [],
   sub_skills: [],
@@ -94,6 +96,7 @@ const filters = reactive({
   thoughts: [] as string[],
   models: [] as string[],
   specialTypes: [] as string[],
+  errorTypes: [] as string[],
   difficultyMin: 1,
   difficultyMax: 10,
   questionType: '',
@@ -118,6 +121,7 @@ type TagArrayFilterKey =
   | 'thoughts'
   | 'models'
   | 'specialTypes'
+  | 'errorTypes'
 
 type ActiveFilterKey = TextFilterKey | TagArrayFilterKey | 'scope' | 'tagStatus' | 'difficulty'
 
@@ -233,6 +237,12 @@ const primaryTagRows = computed<TagFilterRow[]>(() => [
     items: facets.value.special_types,
     visibleLimit: 10,
   },
+  {
+    key: 'errorTypes',
+    label: '错因',
+    items: facets.value.error_types,
+    visibleLimit: 10,
+  },
 ])
 
 const activeTagRow = computed(() => (
@@ -241,6 +251,36 @@ const activeTagRow = computed(() => (
   ?? null
 ))
 
+// 知识点行按当前册别分区：本册知识点超出 visibleLimit 的部分收进"更多知识点"展开器，
+// 之前册别收进"展开前置知识点"展开器；无册别上下文时保持原"前 12 个 + 更多"行为。
+const knowledgePointPartition = computed(() => {
+  const volumeLabel = currentVolume.value?.label
+  if (!volumeLabel) return null
+  const current: QuestionBankFacet[] = []
+  const prerequisite: QuestionBankFacet[] = []
+  for (const item of facets.value.knowledge_points) {
+    if (item.value.startsWith(`${volumeLabel}｜`)) current.push(item)
+    else prerequisite.push(item)
+  }
+  return { current, prerequisite }
+})
+
+const activeKnowledgePartition = computed(() => (
+  activeTagRow.value?.key === 'knowledgePoints' ? knowledgePointPartition.value : null
+))
+
+// 严格教学进度开关不持久化，刷新页面后恢复关闭。
+const strictProgress = ref(false)
+const strictProgressAvailable = computed(() => Boolean(
+  selectedChapterId.value || selectedVolumeId.value,
+))
+const strictProgressChapterId = computed(() => {
+  if (!strictProgress.value) return ''
+  if (selectedChapterId.value) return selectedChapterId.value
+  const chapters = currentVolume.value?.chapters ?? []
+  return chapters.length ? chapters[chapters.length - 1]?.id ?? '' : ''
+})
+
 const activeFilterLabels: Record<TagArrayFilterKey, string> = {
   knowledgePoints: '知识点',
   abilities: '能力',
@@ -248,6 +288,7 @@ const activeFilterLabels: Record<TagArrayFilterKey, string> = {
   thoughts: '数学思想',
   models: '模型',
   specialTypes: '特殊题型/考法',
+  errorTypes: '错因',
 }
 
 const activeFilters = computed<ActiveFilter[]>(() => {
@@ -369,6 +410,7 @@ function queryFilters(): QuestionBankFilters {
     thoughts: [...filters.thoughts],
     models: [...filters.models],
     specialTypes: [...filters.specialTypes],
+    errorTypes: [...filters.errorTypes],
     difficultyMin: filters.difficultyMin === 1 && filters.difficultyMax === 10
       ? undefined : filters.difficultyMin,
     difficultyMax: filters.difficultyMin === 1 && filters.difficultyMax === 10
@@ -384,6 +426,7 @@ function queryFilters(): QuestionBankFilters {
     curriculumSections: selectedSectionId.value ? [selectedSectionId.value] : [],
     tagStatus: filters.tagStatus,
     sort: filters.sort,
+    teachingProgressChapter: strictProgressChapterId.value || undefined,
   }
 }
 
@@ -583,6 +626,12 @@ function chooseTagStatus(value: 'all' | 'tagged' | 'untagged'): void {
   void loadQuestions(true)
 }
 
+function toggleStrictProgress(): void {
+  if (!strictProgressAvailable.value) return
+  strictProgress.value = !strictProgress.value
+  void loadQuestions(true)
+}
+
 function clearActiveFilter(filter: ActiveFilter): void {
   if (filter.key === 'scope') {
     selectedChapterId.value = ''
@@ -618,6 +667,7 @@ function resetFilters(): void {
     thoughts: [],
     models: [],
     specialTypes: [],
+    errorTypes: [],
     difficultyMin: 1,
     difficultyMax: 10,
     questionType: '',
@@ -832,6 +882,19 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
             <h2>按标签筛题</h2>
             <p>同一行可多选、满足任一项；不同行同时满足。数字为当前题库标签计数。</p>
           </div>
+          <label
+            class="assembly-strict-progress"
+            :class="{ 'is-disabled': !strictProgressAvailable }"
+            :title="strictProgressAvailable ? '只保留知识点全部属于已学章节范围的题目' : '先在左侧选择教材章节'"
+          >
+            <input
+              type="checkbox"
+              :checked="strictProgress"
+              :disabled="!strictProgressAvailable"
+              @change="toggleStrictProgress"
+            >
+            <span>严格教学进度：排除涉及未学章节的题</span>
+          </label>
           <strong v-if="activeFilterCount">{{ activeFilterCount }} 项已选</strong>
         </header>
 
@@ -902,40 +965,94 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
               >
                 全部 <small>{{ total }}</small>
               </button>
-              <button
-                v-for="item in activeTagRow.items.slice(0, activeTagRow.visibleLimit)"
-                :key="item.value"
-                type="button"
-                :class="{ 'is-active': filters[activeTagRow.key].includes(item.value) }"
-                :aria-pressed="filters[activeTagRow.key].includes(item.value)"
-                @click="toggleTagFilter(activeTagRow.key, item.value)"
-              >
-                <span :title="activeTagRow.key === 'knowledgePoints' ? item.value : undefined">
-                  {{ activeTagRow.key === 'knowledgePoints' ? knowledgeLeafLabel(item.value) : item.value }}
-                </span> <small>{{ item.count }}</small>
-              </button>
-              <details
-                v-if="activeTagRow.items.length > activeTagRow.visibleLimit"
-                class="assembly-filter-more"
-              >
-                <summary>
-                  更多{{ activeTagRow.label }}（{{ activeTagRow.items.length - activeTagRow.visibleLimit }}）
-                </summary>
-                <div>
-                  <button
-                    v-for="item in activeTagRow.items.slice(activeTagRow.visibleLimit)"
-                    :key="item.value"
-                    type="button"
-                    :class="{ 'is-active': filters[activeTagRow.key].includes(item.value) }"
-                    :aria-pressed="filters[activeTagRow.key].includes(item.value)"
-                    @click="toggleTagFilter(activeTagRow.key, item.value)"
-                  >
-                    <span :title="activeTagRow.key === 'knowledgePoints' ? item.value : undefined">
-                      {{ activeTagRow.key === 'knowledgePoints' ? knowledgeLeafLabel(item.value) : item.value }}
-                    </span> <small>{{ item.count }}</small>
-                  </button>
-                </div>
-              </details>
+              <template v-if="activeKnowledgePartition">
+                <button
+                  v-for="item in activeKnowledgePartition.current.slice(0, activeTagRow.visibleLimit)"
+                  :key="item.value"
+                  type="button"
+                  :class="{ 'is-active': filters.knowledgePoints.includes(item.value) }"
+                  :aria-pressed="filters.knowledgePoints.includes(item.value)"
+                  @click="toggleTagFilter('knowledgePoints', item.value)"
+                >
+                  <span :title="item.value">{{ knowledgeLeafLabel(item.value) }}</span> <small>{{ item.count }}</small>
+                </button>
+                <details
+                  v-if="activeKnowledgePartition.current.length > activeTagRow.visibleLimit"
+                  class="assembly-filter-more"
+                >
+                  <summary>
+                    更多知识点（{{ activeKnowledgePartition.current.length - activeTagRow.visibleLimit }}）
+                  </summary>
+                  <div>
+                    <button
+                      v-for="item in activeKnowledgePartition.current.slice(activeTagRow.visibleLimit)"
+                      :key="item.value"
+                      type="button"
+                      :class="{ 'is-active': filters.knowledgePoints.includes(item.value) }"
+                      :aria-pressed="filters.knowledgePoints.includes(item.value)"
+                      @click="toggleTagFilter('knowledgePoints', item.value)"
+                    >
+                      <span :title="item.value">{{ knowledgeLeafLabel(item.value) }}</span> <small>{{ item.count }}</small>
+                    </button>
+                  </div>
+                </details>
+                <details
+                  v-if="activeKnowledgePartition.prerequisite.length"
+                  class="assembly-filter-more"
+                >
+                  <summary>
+                    展开前置知识点（{{ activeKnowledgePartition.prerequisite.length }}）
+                  </summary>
+                  <div>
+                    <button
+                      v-for="item in activeKnowledgePartition.prerequisite"
+                      :key="item.value"
+                      type="button"
+                      :class="{ 'is-active': filters.knowledgePoints.includes(item.value) }"
+                      :aria-pressed="filters.knowledgePoints.includes(item.value)"
+                      @click="toggleTagFilter('knowledgePoints', item.value)"
+                    >
+                      <span :title="item.value">{{ knowledgeLeafLabel(item.value) }}</span> <small>{{ item.count }}</small>
+                    </button>
+                  </div>
+                </details>
+              </template>
+              <template v-else>
+                <button
+                  v-for="item in activeTagRow.items.slice(0, activeTagRow.visibleLimit)"
+                  :key="item.value"
+                  type="button"
+                  :class="{ 'is-active': filters[activeTagRow.key].includes(item.value) }"
+                  :aria-pressed="filters[activeTagRow.key].includes(item.value)"
+                  @click="toggleTagFilter(activeTagRow.key, item.value)"
+                >
+                  <span :title="activeTagRow.key === 'knowledgePoints' ? item.value : undefined">
+                    {{ activeTagRow.key === 'knowledgePoints' ? knowledgeLeafLabel(item.value) : item.value }}
+                  </span> <small>{{ item.count }}</small>
+                </button>
+                <details
+                  v-if="activeTagRow.items.length > activeTagRow.visibleLimit"
+                  class="assembly-filter-more"
+                >
+                  <summary>
+                    更多{{ activeTagRow.label }}（{{ activeTagRow.items.length - activeTagRow.visibleLimit }}）
+                  </summary>
+                  <div>
+                    <button
+                      v-for="item in activeTagRow.items.slice(activeTagRow.visibleLimit)"
+                      :key="item.value"
+                      type="button"
+                      :class="{ 'is-active': filters[activeTagRow.key].includes(item.value) }"
+                      :aria-pressed="filters[activeTagRow.key].includes(item.value)"
+                      @click="toggleTagFilter(activeTagRow.key, item.value)"
+                    >
+                      <span :title="activeTagRow.key === 'knowledgePoints' ? item.value : undefined">
+                        {{ activeTagRow.key === 'knowledgePoints' ? knowledgeLeafLabel(item.value) : item.value }}
+                      </span> <small>{{ item.count }}</small>
+                    </button>
+                  </div>
+                </details>
+              </template>
               <span v-if="activeTagRow.items.length === 0" class="assembly-filter-empty">
                 暂无{{ activeTagRow.label }}标签
               </span>

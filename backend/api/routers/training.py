@@ -261,6 +261,7 @@ def create_personalized_recommendation_draft(
                 exclude_current_exam_originals=(
                     body.exclude_current_exam_originals
                 ),
+                curriculum_volume_id=body.curriculum_volume_id or "",
             ),
             actor_ref="local_teacher",
         )
@@ -432,6 +433,7 @@ def create_personalized_paper_instance(
                 student_id=body.student_id,
                 actor_ref="local_teacher",
                 context_window_tokens=body.context_window_tokens,
+                direct_freeze=body.direct_freeze,
             ),
         )
     except (
@@ -469,6 +471,7 @@ def create_personalized_paper_batch(
             student_ids=body.student_ids,
             actor_ref="local_teacher",
             context_window_tokens=body.context_window_tokens,
+            direct_freeze=body.direct_freeze,
         )
     except (
         PersonalizedPaperError,

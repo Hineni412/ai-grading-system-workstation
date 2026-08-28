@@ -63,6 +63,11 @@ const visibleHandoffs = computed(() => {
 })
 const recentConversations = computed(() => recent.value.filter((item) => Boolean(item.first_message)).slice(0, 5))
 const taskInFlight = computed(() => conversation.value?.state === 'ai_running')
+// 最新一轮仍有追问且会话已落地时，在输入框上方常驻提示，让"还在等你回答"持续可见。
+const awaitingAnswers = computed(() => {
+  if (!conversation.value || taskInFlight.value) return []
+  return latestTurn.value?.clarification_questions ?? []
+})
 const domains = [
   ['student_growth', '成长记录', '观察、谈话、阶段变化'],
   ['student_support', '学生支持', '家校沟通、个别关怀'],
@@ -112,8 +117,18 @@ function handoffTitle(handoff: IntakeHandoffSummary): string {
   return isStudentRecord(handoff) ? '学生个人档案' : `${modeLabels[handoff.handling_mode]}草稿`
 }
 
+function handoffStateLabel(handoff: IntakeHandoffSummary): string {
+  if (handoff.adoption_state === 'adopted') return '已并入'
+  if (handoff.adoption_state === 'reverted') return '已撤回'
+  if (handoff.adoption_state === 'discarded') return '已放弃'
+  return '待核对'
+}
+
 function handoffHint(handoff: IntakeHandoffSummary): string {
-  if (handoff.adoption_state === 'adopted') return isStudentRecord(handoff) ? '已自动并入档案，可一键撤回' : '教师已确认保存'
+  if (handoff.adoption_state === 'adopted') {
+    if (handoff.handling_mode === 'sop' && handoff.affair_id) return '已建立 · 打开 SOP 工作区'
+    return isStudentRecord(handoff) ? '已自动并入档案，可一键撤回' : '教师已确认保存'
+  }
   if (handoff.adoption_state === 'reverted') return '已撤回，档案回到本轮更新前'
   if (handoff.adoption_state === 'discarded') return '已丢弃'
   if (isStudentRecord(handoff) && handoff.subject_ref_count !== 1) return '请先在对话里确认是哪名学生'
@@ -468,7 +483,7 @@ onMounted(async () => {
         <section v-if="visibleHandoffs.length" class="handoffs" aria-label="交接草稿">
           <div v-for="handoff in visibleHandoffs" :key="handoff.handoff_id" class="handoff-entry">
             <button type="button" :data-mode="handoff.handling_mode" :data-work-item="handoff.work_item_id" @click="openHandoffCard(handoff)">
-              <span>{{ domainLabels[handoff.domain] }}</span><strong>{{ handoffTitle(handoff) }}</strong><small>{{ handoffHint(handoff) }}</small>
+              <span>{{ domainLabels[handoff.domain] }}</span><strong>{{ handoffTitle(handoff) }}</strong><em class="handoff-state" :data-state="handoff.adoption_state">{{ handoffStateLabel(handoff) }}</em><small>{{ handoffHint(handoff) }}</small>
               <ul v-if="handoff.missing_fields.length" class="handoff-warnings"><li v-for="item in handoff.missing_fields" :key="item">{{ item }}</li></ul>
             </button>
             <AppButton v-if="handoff.adoption_state === 'adopted' && isStudentRecord(handoff)" variant="ghost" class="handoff-revert" :disabled="busy" @click="revertAdoption(handoff)">撤回本轮更新</AppButton>
@@ -481,6 +496,7 @@ onMounted(async () => {
         </div>
 
         <form class="composer" @submit.prevent="send">
+          <p v-if="awaitingAnswers.length" class="awaiting-answers" role="status">AI 还有 {{ awaitingAnswers.length }} 个追问待你回答，直接在下方回复即可；回答后追问状态会自动结束。</p>
           <label for="class-teacher-message">继续说明或补充</label>
           <textarea id="class-teacher-message" ref="composer" v-model="message" rows="3" maxlength="4000" :disabled="taskInFlight" placeholder="例如：月底提醒我复查；已确认双方目前都安全" @keydown="onComposerKeydown"></textarea>
           <div class="composer__actions">
@@ -538,5 +554,7 @@ onMounted(async () => {
 .domain-band > button:hover { background: var(--accent); }
 .handoff-warnings{margin:2px 0 0;padding-left:16px;color:var(--destructive);font-size:12px;line-height:1.35}
 .handoff-entry{display:grid;gap:4px;justify-items:start}.handoff-revert{min-height:28px;padding:0 8px;font-size:12px}
+.handoff-state{margin:0 6px;padding:0 6px;border:1px solid var(--border);border-radius:999px;font-style:normal;font-size:11px;font-weight:700;color:var(--muted-foreground);vertical-align:1px}.handoff-state[data-state=pending],.handoff-state[data-state=opened],.handoff-state[data-state=adoption_started]{border-color:var(--color-warning);color:var(--color-warning)}.handoff-state[data-state=adopted]{border-color:var(--primary);color:var(--primary)}
+.awaiting-answers{margin:0 0 8px;padding:8px 11px;border:1px solid var(--color-warning);border-radius:var(--radius);background:var(--color-warning-subtle);color:var(--foreground);font-size:12px;font-weight:600;line-height:1.5}
 .turn-retry{margin-top:6px}
 </style>

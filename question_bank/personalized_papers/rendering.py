@@ -45,8 +45,10 @@ PDF_MEDIA_TYPE = "application/pdf"
 _INK = RGBColor(30, 41, 59)
 _BLUE = RGBColor(30, 84, 120)
 _MUTED = RGBColor(100, 116, 139)
-_FONT_LATIN = "Calibri"
-_FONT_EAST_ASIA = "Microsoft YaHei"
+_FONT_LATIN = "Times New Roman"
+# 宋体是中文试卷常规正文字体；转换器可以子集化嵌入。
+# 微软雅黑会被整体嵌入（约 19MB），导致每份 PDF 超过 12MB。
+_FONT_EAST_ASIA = "SimSun"
 _MATH_RUN = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.DOTALL)
 
 
@@ -150,34 +152,21 @@ def render_review_docx(
     _add_run(
         header,
         (
-            f"{student.get('student_name') or student.get('student_code') or student.get('student_id')}"
-            "  ·  个性化训练卷"
+            f"姓名：{student.get('student_name') or student.get('student_code') or student.get('student_id')}"
+            f"    班级：{student.get('class_id') or '________'}"
+            "    日期：____年__月__日"
         ),
         size=9,
         color=_MUTED,
     )
+    _add_hidden_run(header, paper_id)
 
-    title = document.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title.paragraph_format.space_after = Pt(3)
-    _add_run(title, "个性化训练卷", size=18, bold=True, color=_BLUE)
-
-    identity = document.add_paragraph()
-    identity.paragraph_format.space_before = Pt(1)
-    identity.paragraph_format.space_after = Pt(7)
-    identity.paragraph_format.keep_with_next = True
-    _add_run(
-        identity,
-        (
-            f"姓名：{student.get('student_name') or student.get('student_code') or '学生'}"
-            f"    班级：{student.get('class_id') or '________'}"
-            "    日期：____年__月__日"
-        ),
-        size=10.5,
-        color=_INK,
-    )
-    _add_hidden_run(identity, paper_id)
-    _paragraph_bottom_border(identity, color="94A3B8", size="5")
+    # 隐藏实例身份码必须留在正文：inspect_docx 只扫描 body。
+    marker = document.add_paragraph()
+    marker.paragraph_format.space_before = Pt(0)
+    marker.paragraph_format.space_after = Pt(0)
+    marker.paragraph_format.keep_with_next = True
+    _add_hidden_run(marker, paper_id)
 
     for index, item in enumerate(items, start=1):
         question = _mapping(item.get("question_snapshot"))
@@ -185,13 +174,14 @@ def render_review_docx(
         question_type = str(context.get("question_type") or "")
         inline_prefix = f"{index}. "
         question_paragraph_start = len(document.paragraphs)
+        question_text = str(context.get("question_text") or "")
         rich_result = renderer.add_rich_blocks(
             document,
             _mappings(question.get("rich_question_blocks")),
             strip_leading_number=True,
             inline_prefix=inline_prefix,
             compact_standalone_images_with_text=(
-                answer_space_lines(question_type) == 0
+                answer_space_lines(question_type, question_text) == 0
             ),
         )
         if not rich_result.appended:
@@ -248,10 +238,10 @@ def render_review_docx(
             skip_assets=set(rich_result.embedded_assets),
         )
         for image_paragraph in document.paragraphs[image_paragraph_start:]:
-            image_paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            image_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             image_paragraph.paragraph_format.keep_together = True
         question_paragraphs = document.paragraphs[question_paragraph_start:]
-        minimum_lines = answer_space_lines(question_type)
+        minimum_lines = answer_space_lines(question_type, question_text)
         if minimum_lines:
             add_answer_space(
                 document,
@@ -379,6 +369,8 @@ def stamp_frozen_pdf(
             )
         output = Path(output_pdf)
         output.parent.mkdir(parents=True, exist_ok=True)
+        # 盖章用 CJK 字体会被整体嵌入（雅黑约 19MB），保存前统一子集化。
+        source.subset_fonts()
         source.save(output, garbage=4, deflate=True)
     finally:
         source.close()
@@ -555,6 +547,86 @@ def pdf_page_count(path: Path) -> int:
         raise PaperRenderError("PDF output is invalid") from exc
 
 
+def append_scratch_page(source_pdf: Path, output_pdf: Path) -> None:
+    """为奇数页的成品卷追加一页演算草稿区，凑满双面打印。
+
+    一张 A4 双面是一所学校最常用的整卷印制单位；内容只有奇数页时，
+    最后一面留空不如给学生一页带浅色方格的草稿纸。草稿页与其余页面
+    一样在盖章阶段获得页脚身份与二维码。
+    """
+    target = Path(output_pdf)
+    document = fitz.open(source_pdf)
+    try:
+        if document.page_count <= 0:
+            raise PaperRenderError("converted PDF has no pages")
+        reference = document[0]
+        page = document.new_page(
+            width=float(reference.rect.width),
+            height=float(reference.rect.height),
+        )
+        width = float(page.rect.width)
+        height = float(page.rect.height)
+        title = "Scratch Paper"
+        subtitle = "This page is for scratch work only."
+        fontname = "helv"
+        font_path = _visible_identity_font()
+        if font_path is not None:
+            fontname = "p4-cjk-scratch"
+            page.insert_font(fontname=fontname, fontfile=str(font_path))
+            title = "演算草稿区"
+            subtitle = "本页用于演算草稿，作答请写在题目下方的作答区。"
+        page.insert_textbox(
+            fitz.Rect(0.0, 54.0, width, 76.0),
+            title,
+            fontsize=13.0,
+            fontname=fontname,
+            align=fitz.TEXT_ALIGN_CENTER,
+            color=(0.25, 0.32, 0.4),
+        )
+        page.insert_textbox(
+            fitz.Rect(0.0, 76.0, width, 92.0),
+            subtitle,
+            fontsize=8.5,
+            fontname=fontname,
+            align=fitz.TEXT_ALIGN_CENTER,
+            color=(0.45, 0.5, 0.56),
+        )
+        # 浅色方格草稿纸：10mm 间距，避开页脚盖章区。
+        step = 28.35
+        top, left = 108.0, 42.0
+        right, bottom = width - 42.0, height - 96.0
+        grid_color = (0.86, 0.88, 0.9)
+        x = left
+        while x <= right + 0.01:
+            page.draw_line(
+                fitz.Point(x, top),
+                fitz.Point(x, bottom),
+                color=grid_color,
+                width=0.5,
+            )
+            x += step
+        y = top
+        while y <= bottom + 0.01:
+            page.draw_line(
+                fitz.Point(left, y),
+                fitz.Point(right, y),
+                color=grid_color,
+                width=0.5,
+            )
+            y += step
+        page.draw_rect(
+            fitz.Rect(left, top, right, bottom),
+            color=(0.78, 0.81, 0.84),
+            width=0.8,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        document.save(target, garbage=4, deflate=True)
+    finally:
+        document.close()
+    if not target.is_file() or target.stat().st_size <= 0:
+        raise PaperRenderError("scratch-padded PDF was not created")
+
+
 def _configure_document(document: Document) -> None:
     section = document.sections[0]
     section.page_width = Mm(210)
@@ -588,6 +660,31 @@ def _configure_document(document: Document) -> None:
         style.paragraph_format.space_after = Pt(after)
 
 
+_IMAGE_ASSUMED_DPI = 96.0
+_IMAGE_MAX_WIDTH_MM = 90.0
+_IMAGE_OBJECTIVE_MAX_WIDTH_MM = 55.0
+_CONTENT_WIDTH_MM = 172.0
+
+
+def _image_physical_width_mm(payload: bytes) -> float | None:
+    try:
+        with Image.open(BytesIO(payload)) as source:
+            width_px = float(source.width)
+            dpi = source.info.get("dpi") or (
+                _IMAGE_ASSUMED_DPI,
+                _IMAGE_ASSUMED_DPI,
+            )
+            try:
+                x_dpi = float(dpi[0]) or _IMAGE_ASSUMED_DPI
+            except (TypeError, IndexError):
+                x_dpi = _IMAGE_ASSUMED_DPI
+    except Exception:
+        return None
+    if width_px <= 0:
+        return None
+    return width_px / max(x_dpi, 1.0) * 25.4
+
+
 def _add_question_images(
     document: Document,
     question: Mapping[str, Any],
@@ -595,8 +692,8 @@ def _add_question_images(
     data_root: Path,
     skip_assets: set[str] | None = None,
 ) -> None:
-    images = _mappings(question.get("images"))
-    for image in images:
+    payloads: list[bytes] = []
+    for image in _mappings(question.get("images")):
         if image.get("role") != "question":
             continue
         relative = Path(str(image.get("asset_path") or ""))
@@ -606,15 +703,39 @@ def _add_question_images(
             raise PaperRenderError("frozen question image is missing")
         if str(resolved) in (skip_assets or set()):
             continue
-        payload = resolved.read_bytes()
+        payloads.append(resolved.read_bytes())
+    if not payloads:
+        return
+    # 图片限宽：客观题（无作答区）不超过 55mm，其余不超过 90mm；
+    # 多图并排一行按比例分配。
+    context = _mapping(question.get("tagging_context"))
+    objective = answer_space_lines(
+        str(context.get("question_type") or ""),
+        str(context.get("question_text") or ""),
+    ) == 0
+    single_cap = (
+        _IMAGE_OBJECTIVE_MAX_WIDTH_MM
+        if objective
+        else _IMAGE_MAX_WIDTH_MM
+    )
+    per_image_cap = min(
+        single_cap,
+        (_CONTENT_WIDTH_MM - 6.0 * (len(payloads) - 1)) / len(payloads),
+    )
+    paragraph = document.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for payload in payloads:
+        physical = _image_physical_width_mm(payload)
+        width_mm = per_image_cap if physical is None else min(physical, per_image_cap)
+        run = paragraph.add_run()
         try:
-            document.add_picture(BytesIO(payload), width=Mm(120))
+            run.add_picture(BytesIO(payload), width=Mm(width_mm))
         except Exception:
             with Image.open(BytesIO(payload)) as source:
                 converted = BytesIO()
                 source.convert("RGB").save(converted, format="PNG")
                 converted.seek(0)
-                document.add_picture(converted, width=Mm(120))
+                run.add_picture(converted, width=Mm(width_mm))
 
 
 def _add_run(

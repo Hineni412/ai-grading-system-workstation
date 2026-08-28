@@ -12,6 +12,7 @@ from .router import (
     _no_store,
     _require_trusted_mutation,
     _service,
+    _student_subject_id,
 )
 from .support_schemas import (
     AffairProjectionRequest,
@@ -20,7 +21,11 @@ from .support_schemas import (
     AttentionDecisionRequest,
     AttentionResolveRequest,
     EvidenceBatchRequest,
+    EvidenceGlobalMaxScoresRequest,
     EvidenceLinkRequest,
+    EvidenceSessionDeleteRequest,
+    EvidenceSessionMaxScoresRequest,
+    EvidenceSessionUpdateRequest,
     EvidenceSupersedeRequest,
     FollowUpPostponeRequest,
     SpreadsheetPreviewRequest,
@@ -42,10 +47,10 @@ from .support_schemas import (
 
 def _roster_preview_identity(
     service: VaultService,
-    subject_id: str,
+    student_ref: str,
 ) -> dict[str, object]:
     identity = service.class_roster.roster_identity_for_ref(
-        roster_ref=subject_id,
+        roster_ref=student_ref,
     )
     if identity is None:
         raise VaultError(
@@ -54,20 +59,21 @@ def _roster_preview_identity(
     return identity
 
 
-def _workspace_header(service: VaultService, subject_id: str) -> dict[str, object]:
+def _workspace_header(service: VaultService, student_ref: str) -> dict[str, object]:
     try:
-        return service.student_directory.open(token="", subject_id=subject_id)
+        return service.student_directory.open(token="", subject_id=student_ref)
     except VaultError as exc:
         if exc.code != "support_subject_not_found":
             raise
-    identity = _roster_preview_identity(service, subject_id)
+    identity = _roster_preview_identity(service, student_ref)
     linked_subject_id = identity.get("subject_id")
     if linked_subject_id:
         return service.student_directory.open(
             token="", subject_id=str(linked_subject_id)
         )
     return {
-        "subject_id": subject_id,
+        "subject_id": student_ref,
+        "student_ref": student_ref,
         "source_student_id": str(identity["source_student_id"]),
         "display_name": str(identity["display_name"]),
         "class_label": str(identity["class_label"]),
@@ -83,13 +89,13 @@ def _workspace_header(service: VaultService, subject_id: str) -> dict[str, objec
     }
 
 
-def _student_card(service: VaultService, subject_id: str) -> dict[str, object]:
+def _student_card(service: VaultService, student_ref: str) -> dict[str, object]:
     try:
-        return service.student_cards.get_card(token="", subject_id=subject_id)
+        return service.student_cards.get_card(token="", subject_id=student_ref)
     except VaultError as exc:
         if exc.code != "support_subject_not_found":
             raise
-    identity = _roster_preview_identity(service, subject_id)
+    identity = _roster_preview_identity(service, student_ref)
     linked_subject_id = identity.get("subject_id")
     if linked_subject_id:
         return service.student_cards.get_card(
@@ -97,7 +103,8 @@ def _student_card(service: VaultService, subject_id: str) -> dict[str, object]:
         )
     return {
         "subject": {
-            "subject_id": subject_id,
+            "subject_id": student_ref,
+            "student_ref": student_ref,
             "revision": 0,
             "state": "not_created",
             "source_student_id": str(identity["source_student_id"]),
@@ -187,31 +194,31 @@ def create_support_router() -> APIRouter:
             )
         )
 
-    @router.get("/support/subjects/{subject_id}/workspace-header")
+    @router.get("/support/subjects/{student_ref}/workspace-header")
     def workspace_header(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
     ):
         _no_store(response)
         return _call(
-            lambda: _workspace_header(_service(request), subject_id)
+            lambda: _workspace_header(_service(request), student_ref)
         )
 
-    @router.get("/support/subjects/{subject_id}/student-card")
+    @router.get("/support/subjects/{student_ref}/student-card")
     def student_card(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
     ):
         _no_store(response)
         return _call(
-            lambda: _student_card(_service(request), subject_id)
+            lambda: _student_card(_service(request), student_ref)
         )
 
-    @router.get("/support/subjects/{subject_id}/academic-analysis")
+    @router.get("/support/subjects/{student_ref}/academic-analysis")
     def academic_analysis(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
         time_range: str = "all",
@@ -220,14 +227,17 @@ def create_support_router() -> APIRouter:
         comparable_only: bool = False,
     ):
         _no_store(response)
-        return _call(lambda: _service(request).academic.read(
-            token="",
-            subject_id=subject_id,
-            time_range=time_range,
-            comparison_series=comparison_series,
-            subject_name=subject_name,
-            comparable_only=comparable_only,
-        ))
+        def read():
+            service = _service(request)
+            return service.academic.read(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                time_range=time_range,
+                comparison_series=comparison_series,
+                subject_name=subject_name,
+                comparable_only=comparable_only,
+            )
+        return _call(read)
 
     @router.get("/evidence/{evidence_version_id}/snapshot")
     def evidence_snapshot(
@@ -262,78 +272,91 @@ def create_support_router() -> APIRouter:
             token=""
         ))
 
-    @router.put("/support/subjects/{subject_id}")
+    @router.put("/support/subjects/{student_ref}")
     def update_subject(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         body: SubjectUpdateRequest,
         response: Response,
     ):
         _require_trusted_mutation(request)
         _no_store(response)
-        return _call(lambda: _service(request).support.update_subject(
-            token="",
-            subject_id=subject_id,
-            **body.model_dump(),
-        ))
+        def update():
+            service = _service(request)
+            return service.support.update_subject(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                **body.model_dump(),
+            )
+        return _call(update)
 
-    @router.delete("/support/subjects/{subject_id}")
+    @router.delete("/support/subjects/{student_ref}")
     def delete_subject(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         body: SubjectDeleteRequest,
         response: Response,
     ):
         _require_trusted_mutation(request)
         _no_store(response)
-        return _call(lambda: _service(request).support.delete_subject(
-            token="",
-            subject_id=subject_id,
-            **body.model_dump(),
-        ))
+        def delete():
+            service = _service(request)
+            return service.support.delete_subject(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                **body.model_dump(),
+            )
+        return _call(delete)
 
-    @router.get("/support/subjects/{subject_id}/deletion-preview")
+    @router.get("/support/subjects/{student_ref}/deletion-preview")
     def preview_subject_deletion(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
     ):
         _no_store(response)
-        return _call(
-            lambda: _service(request).support.preview_subject_deletion(
+        def preview():
+            service = _service(request)
+            return service.support.preview_subject_deletion(
                 token="",
-                subject_id=subject_id,
+                subject_id=_student_subject_id(service, student_ref),
             )
-        )
+        return _call(preview)
 
-    @router.post("/support/subjects/{subject_id}/records")
+    @router.post("/support/subjects/{student_ref}/records")
     def create_record(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         body: RecordCreateRequest,
         response: Response,
     ):
         _require_trusted_mutation(request)
         _no_store(response)
-        return _call(lambda: _service(request).support.create_record(
-            token="",
-            subject_id=subject_id,
-            **body.model_dump(),
-        ))
+        def create():
+            service = _service(request)
+            return service.support.create_record(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                **body.model_dump(),
+            )
+        return _call(create)
 
-    @router.get("/support/subjects/{subject_id}/records")
+    @router.get("/support/subjects/{student_ref}/records")
     def list_records(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
         include_inactive: bool = Query(True),
     ):
         _no_store(response)
-        return _call(lambda: _service(request).support.list_records(
-            token="",
-            subject_id=subject_id,
-            include_inactive=include_inactive,
-        ))
+        def read():
+            service = _service(request)
+            return service.support.list_records(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                include_inactive=include_inactive,
+            )
+        return _call(read)
 
     @router.put("/support/records/{record_id}")
     def revise_record(
@@ -380,19 +403,22 @@ def create_support_router() -> APIRouter:
             **body.model_dump(),
         ))
 
-    @router.get("/support/subjects/{subject_id}/summary")
+    @router.get("/support/subjects/{student_ref}/summary")
     def get_summary(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
         as_of: str | None = Query(None),
     ):
         _no_store(response)
-        return _call(lambda: _service(request).support.get_summary(
-            token="",
-            subject_id=subject_id,
-            as_of=as_of,
-        ))
+        def read():
+            service = _service(request)
+            return service.support.get_summary(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                as_of=as_of,
+            )
+        return _call(read)
 
     @router.post("/support/observation-evidence")
     def link_evidence(
@@ -408,49 +434,56 @@ def create_support_router() -> APIRouter:
             )
         )
 
-    @router.post("/support/subjects/{subject_id}/plans")
+    @router.post("/support/subjects/{student_ref}/plans")
     def create_support_plan(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         body: SupportPlanCreateRequest,
         response: Response,
     ):
         _require_trusted_mutation(request)
         _no_store(response)
-        return _call(lambda: _service(request).support.create_support_plan(
-            token="",
-            subject_id=subject_id,
-            **body.model_dump(),
-        ))
+        def create():
+            service = _service(request)
+            return service.support.create_support_plan(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                **body.model_dump(),
+            )
+        return _call(create)
 
-    @router.post("/support/subjects/{subject_id}/plans/ai-draft")
+    @router.post("/support/subjects/{student_ref}/plans/ai-draft")
     def draft_support_plan_with_ai(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         body: SupportPlanAiDraftRequest,
         response: Response,
     ):
         _require_trusted_mutation(request)
         _no_store(response)
-        return _call(lambda: _service(request).support_plan_drafts.draft_plan(
-            token="",
-            subject_id=subject_id,
-            operation_id=body.operation_id,
-        ))
+        def draft():
+            service = _service(request)
+            return service.support_plan_drafts.draft_plan(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                operation_id=body.operation_id,
+            )
+        return _call(draft)
 
-    @router.get("/support/subjects/{subject_id}/plans")
+    @router.get("/support/subjects/{student_ref}/plans")
     def list_support_plans(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
     ):
         _no_store(response)
-        return _call(
-            lambda: _service(request).support.list_support_plans(
+        def read():
+            service = _service(request)
+            return service.support.list_support_plans(
                 token="",
-                subject_id=subject_id,
+                subject_id=_student_subject_id(service, student_ref),
             )
-        )
+        return _call(read)
 
     @router.post("/support/plans/{support_plan_id}/complete")
     def complete_support_plan(
@@ -495,20 +528,23 @@ def create_support_router() -> APIRouter:
             projection_id=projection_id,
         ))
 
-    @router.post("/support/subjects/{subject_id}/project-affair")
+    @router.post("/support/subjects/{student_ref}/project-affair")
     def project_affair(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         body: AffairProjectionRequest,
         response: Response,
     ):
         _require_trusted_mutation(request)
         _no_store(response)
-        return _call(lambda: _service(request).support.project_closed_affair(
-            token="",
-            subject_id=subject_id,
-            **body.model_dump(),
-        ))
+        def project():
+            service = _service(request)
+            return service.support.project_closed_affair(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                **body.model_dump(),
+            )
+        return _call(project)
 
     @router.get("/quick-inbox/capabilities")
     def quick_capabilities(request: Request, response: Response):
@@ -523,9 +559,16 @@ def create_support_router() -> APIRouter:
     ):
         _require_trusted_mutation(request)
         _no_store(response)
-        return _call(lambda: _service(request).quick_inbox.create_text(
-            token="", **body.model_dump()
-        ))
+        def create():
+            service = _service(request)
+            payload = body.model_dump()
+            if payload.get("subject_id"):
+                # 对外学生编号统一为稳定学籍标识；兼容旧 uuid，入口归一为内部编号。
+                payload["subject_id"] = _student_subject_id(
+                    service, str(payload["subject_id"])
+                )
+            return service.quick_inbox.create_text(token="", **payload)
+        return _call(create)
 
     @router.get("/quick-inbox")
     def list_quick_text(
@@ -634,18 +677,20 @@ def create_support_router() -> APIRouter:
             sheet_name=body.sheet_name,
         ))
 
-    @router.get("/evidence/subjects/{subject_id}")
+    @router.get("/evidence/subjects/{student_ref}")
     def list_evidence(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
     ):
         _no_store(response)
-        return _call(
-            lambda: _service(request).evidence.list_subject_evidence(
-                token="", subject_id=subject_id
+        def read():
+            service = _service(request)
+            return service.evidence.list_subject_evidence(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
             )
-        )
+        return _call(read)
 
     @router.get("/evidence/compare")
     def compare_evidence(
@@ -661,19 +706,22 @@ def create_support_router() -> APIRouter:
             newer_evidence_version_id=newer,
         ))
 
-    @router.get("/evidence/subjects/{subject_id}/trend")
+    @router.get("/evidence/subjects/{student_ref}/trend")
     def evidence_trend(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
         subject_name: str = Query(...),
     ):
         _no_store(response)
-        return _call(lambda: _service(request).evidence.trend(
-            token="",
-            subject_id=subject_id,
-            subject_name=subject_name,
-        ))
+        def read():
+            service = _service(request)
+            return service.evidence.trend(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+                subject_name=subject_name,
+            )
+        return _call(read)
 
     @router.post("/evidence/{evidence_version_id}/supersede")
     def supersede_evidence(
@@ -690,6 +738,114 @@ def create_support_router() -> APIRouter:
             **body.model_dump(),
         ))
 
+    @router.patch("/evidence/sessions/{session_id}")
+    def update_session_metadata(
+        session_id: str,
+        request: Request,
+        body: EvidenceSessionUpdateRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).evidence.update_session_metadata(
+            token="",
+            session_id=session_id,
+            operation_id=body.operation_id,
+            fields=body.model_dump(
+                exclude={"operation_id"},
+                exclude_none=True,
+            ),
+        ))
+
+    @router.get("/evidence/sessions/{session_id}/delete-preview")
+    def preview_session_deletion(
+        session_id: str,
+        request: Request,
+        response: Response,
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).evidence.preview_delete_session(
+                token="",
+                session_id=session_id,
+            )
+        )
+
+    @router.get("/evidence/sessions/{session_id}/class-results")
+    def session_class_results(
+        session_id: str,
+        request: Request,
+        response: Response,
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).class_overview.session_class_results(
+                token="",
+                session_id=session_id,
+            )
+        )
+
+    @router.get("/evidence/class-trend")
+    def evidence_class_trend(
+        request: Request,
+        response: Response,
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).class_overview.class_trend(token="")
+        )
+
+    @router.patch("/evidence/sessions/{session_id}/max-scores")
+    def update_session_max_scores(
+        session_id: str,
+        request: Request,
+        body: EvidenceSessionMaxScoresRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).evidence.update_session_max_scores(
+                token="",
+                session_id=session_id,
+                operation_id=body.operation_id,
+                max_scores=body.max_scores,
+                participant_count=body.participant_count,
+            )
+        )
+
+    @router.patch("/evidence/max-scores/global")
+    def update_global_max_scores(
+        request: Request,
+        body: EvidenceGlobalMaxScoresRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).evidence.update_global_max_scores(
+                token="",
+                operation_id=body.operation_id,
+                max_scores=body.max_scores,
+                participant_count=body.participant_count,
+            )
+        )
+
+    @router.delete("/evidence/sessions/{session_id}")
+    def delete_session(
+        session_id: str,
+        request: Request,
+        body: EvidenceSessionDeleteRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).evidence.delete_session(
+            token="",
+            session_id=session_id,
+            **body.model_dump(),
+        ))
+
     @router.post("/attention-cards")
     def create_attention(
         request: Request,
@@ -702,16 +858,20 @@ def create_support_router() -> APIRouter:
             token="", **body.model_dump()
         ))
 
-    @router.get("/attention-cards/subjects/{subject_id}")
+    @router.get("/attention-cards/subjects/{student_ref}")
     def list_attention(
-        subject_id: str,
+        student_ref: str,
         request: Request,
         response: Response,
     ):
         _no_store(response)
-        return _call(lambda: _service(request).attention.list_for_subject(
-            token="", subject_id=subject_id
-        ))
+        def read():
+            service = _service(request)
+            return service.attention.list_for_subject(
+                token="",
+                subject_id=_student_subject_id(service, student_ref),
+            )
+        return _call(read)
 
     @router.post("/attention-cards/{attention_card_id}/resolve")
     def resolve_attention(

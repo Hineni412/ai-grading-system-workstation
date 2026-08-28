@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+from contextlib import closing
 
 from ..errors import VaultError
 from ..model_approval import ModelDestinationChanged, ModelDispatchDisabled
@@ -54,6 +55,9 @@ class ClassTeacherIntake:
         bind_adoption = getattr(task_port, "bind_adoption", None)
         if callable(bind_adoption):
             bind_adoption(self.adoption.adopt)
+        self.sop = sop
+        self.conversations.auto_adopt_sop = self._auto_adopt_sop_handoffs
+        self.conversations.sop_followup = self._start_sop_followup
         self.ai_task_adapter = ClassTeacherAITaskAdapter(
             self.conversations,
             class_roster,
@@ -75,12 +79,19 @@ class ClassTeacherIntake:
         subject_id: str | None = None,
     ) -> dict[str, object]:
         preference = self.preferences.get()
+        support = self.ai_task_adapter.student_cards.support
+        # 入参为对外学生编号（稳定学籍标识「班级|学号」），兼容旧 uuid 档案编号；
+        # 统一经 student_subject_links 解析为内部编号后走既有逻辑。
+        internal_id: str | None = None
+        if str(subject_id or "").strip():
+            text = str(subject_id).strip()
+            internal_id = support.subject_id_for_ref(student_ref=text) or text
         subject = (
             None
-            if not str(subject_id or "").strip()
-            else self.ai_task_adapter.student_cards.support.get_subject(
+            if internal_id is None
+            else support.get_subject(
                 token=token,
-                subject_id=str(subject_id),
+                subject_id=internal_id,
             )
         )
         return self.conversations.start(
@@ -235,13 +246,21 @@ class ClassTeacherIntake:
         affair_revision: int,
         sync_id: str,
         operation_id: str,
+        turn_id: str | None = None,
     ) -> dict[str, object]:
         """为已建立事务的“同步新情况”发起一次流程修订 AI 任务（最多发送一次）。"""
         request = {
             "module": "class_teacher",
             "task_kind": "class_teacher.affair_flow_revision",
             "source_ref": {"kind": "affair", "id": affair_id, "revision": str(affair_revision)},
-            "context_refs": [{"kind": "affair_sync", "id": sync_id, "revision": "1"}],
+            "context_refs": [
+                {"kind": "affair_sync", "id": sync_id, "revision": "1"},
+                *(
+                    [{"kind": "turn", "id": turn_id, "revision": "1"}]
+                    if turn_id
+                    else []
+                ),
+            ],
             "prompt_contract_version": "class_teacher_affair_flow_revision.v1",
             "model_destination_fingerprint": "configured-workspace-model",
             "return_target": "class_teacher.affair.sop",
@@ -261,8 +280,128 @@ class ClassTeacherIntake:
             "task_state": snapshot.state,
         }
 
+    def _auto_adopt_sop_handoffs(self, *, conversation_id: str, turn_id: str) -> None:
+        """SOP 生成即生效：本轮可建单的 SOP 交接直接建成正式事务。
+
+        模板缺失、参与人未确定或建单失败时保留待确认草稿页行为。
+        采用收据幂等：已建单的交接不会重复建单。
+        """
+        conversation = self.conversations.get(conversation_id)
+        for summary in list(conversation.get("handoffs") or []):
+            if str(summary.get("turn_id") or "") != turn_id:
+                continue
+            if str(summary.get("destination_key") or "") != "class_teacher.affair.sop":
+                continue
+            if str(summary.get("adoption_state") or "") not in {"pending", "opened"}:
+                continue
+            handoff = self.conversations.handoff_for_adapter(str(summary["handoff_id"]))
+            content = handoff.get("content")
+            if not isinstance(content, dict):
+                continue
+            if not str(content.get("template_key") or "").strip():
+                continue
+            participant_refs = [
+                str(item).strip()
+                for item in list(content.get("participant_refs") or [])
+                if str(item).strip()
+            ]
+            if not list(handoff.get("subject_refs") or []) and not participant_refs:
+                continue
+            handoff_id = str(handoff["handoff_id"])
+            adoption_id = str(handoff["adoption_id"])
+            try:
+                self.adoption.adopt(
+                    token="",
+                    handoff_id=handoff_id,
+                    draft_revision=int(handoff["draft_revision"]),
+                    target_revision="auto",
+                    operation_id=f"auto-adopt-{handoff_id}",
+                )
+            except Exception:
+                try:
+                    if self.adoption.find_receipt(adoption_id) is None:
+                        self.adoption.release_uncommitted(
+                            handoff_id=handoff_id,
+                            adoption_id=adoption_id,
+                            target_revision="auto",
+                        )
+                except Exception:
+                    pass
+
+    def _start_sop_followup(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        message: str,
+        operation_id: str,
+    ) -> dict[str, object] | None:
+        """已建单会话的补充轮：同步到既有事务并发起流程修订。
+
+        返回 None 表示本轮不改道（无生效事务或事务已结束），
+        走常规分诊；返回字典时由调用方把修订任务绑定到会话轮次。
+        """
+        affair_id = self.conversations.adopted_sop_affair_id(conversation_id)
+        if affair_id is None:
+            return None
+        try:
+            with closing(self.sop.database.connect()) as connection:
+                expected_revision = self.sop._workspace_revision(connection, affair_id)
+            created = self.sop.create_sync_request(
+                token="",
+                affair_id=affair_id,
+                expected_revision=expected_revision,
+                text=message[:2000],
+                operation_id=operation_id,
+            )
+        except VaultError:
+            return None
+        except Exception:
+            return {"task_id": "", "task_state": "failed_before_dispatch"}
+        try:
+            return self.start_affair_flow_revision(
+                affair_id=affair_id,
+                affair_revision=int(created["affair_revision"]),
+                sync_id=str(created["sync_id"]),
+                operation_id=operation_id,
+                turn_id=turn_id,
+            )
+        except Exception:
+            try:
+                self.sop.mark_sync_request_failed(
+                    token="",
+                    affair_id=affair_id,
+                    sync_id=str(created["sync_id"]),
+                    outcome="failed",
+                )
+            except Exception:
+                pass
+            return {"task_id": "", "task_state": "failed_before_dispatch"}
+
     def list_conversations(self, *, limit: int = 5) -> dict[str, object]:
         return self.conversations.list_recent(limit=limit)
+
+    def pending_student_handoffs(self, student_ref: str) -> dict[str, object]:
+        """对外学生编号统一为稳定学籍标识「班级|学号」；兼容输入旧 uuid 档案编号。
+        对话交接 ref 本身就是稳定标识，直接相等即可命中；
+        student_subject_links 只用于兼容历史 uuid 格式的交接与入参。"""
+        support = self.ai_task_adapter.student_cards.support
+        text = str(student_ref or "").strip()
+        internal_id = support.subject_id_for_ref(student_ref=text)
+        if internal_id is not None:
+            accepted = {text, internal_id}
+            canonical_ref = text
+        else:
+            fingerprints = support.subject_fingerprints(subject_id=text)
+            accepted = {text, *fingerprints}
+            canonical_ref = fingerprints[0] if fingerprints else text
+        result = self.conversations.pending_student_handoffs(
+            internal_id or text,
+            accepted_ref_ids=accepted,
+        )
+        for item in result["items"]:
+            item["student_ref"] = canonical_ref
+        return result
 
     def delete_conversation(self, conversation_id: str) -> dict[str, object]:
         return self.conversations.delete(conversation_id)

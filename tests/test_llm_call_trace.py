@@ -152,7 +152,10 @@ def test_first_party_sdk_calls_stay_inside_the_llm_gateway():
         ".worktrees",
         "node_modules",
         "runtime",
+        # 本机草稿与审计目录（gitignore）：不受源码治理规则约束。
+        "scratch",
         "tests",
+        "tmp",
         "user_data",
     }
     allowed = Path("backend/llm/gateway.py")
