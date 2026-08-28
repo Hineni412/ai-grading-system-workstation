@@ -255,9 +255,11 @@ def bootstrap_release(
 ) -> str:
     """Atomically install the first immutable current standard.
 
-    Legacy live mappings and relations are deliberately neither read nor
-    changed.  Runtime current-graph consumers read the release payload, while
-    the old governance rows remain available as historical records.
+    Identity statuses are synced to the release payload so relation governance
+    accepts the installed vocabulary from the start.  Legacy live mappings and
+    relations are deliberately neither read nor changed.  Runtime current-graph
+    consumers read the release payload, while the old governance rows remain
+    available as historical records.
     """
 
     candidate = release or load_release()
@@ -334,6 +336,7 @@ def bootstrap_release(
                 ),
             )
             _insert_release_rows(connection, candidate)
+            _apply_identity_states(connection, candidate)
             connection.execute(
                 """
                 INSERT INTO knowledge_graph_release_events (

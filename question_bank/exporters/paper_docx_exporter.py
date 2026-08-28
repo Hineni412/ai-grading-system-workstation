@@ -78,7 +78,10 @@ def _render_question_body(
     """
     inline_prefix = _question_prefix(index)
     question_paragraph_start = len(document.paragraphs)
-    minimum_lines = answer_space_lines(question.get("question_type"))
+    minimum_lines = answer_space_lines(
+        question.get("question_type"),
+        question.get("question_text"),
+    )
     style_profile = WordStyleProfile.from_export_config(config)
     metadata = metadata_by_id[int(question["id"])]
     rich_content = metadata.rich_content

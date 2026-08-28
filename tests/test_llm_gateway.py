@@ -522,7 +522,7 @@ def test_chat_and_responses_receive_explicit_timeout_and_preserve_kwargs():
             "input": "x",
             "metadata": {"source": "test"},
             "model": "t",
-            "timeout": 240.0,
+            "timeout": 480.0,
         }
     ]
     assert chat_kwargs == chat_original

@@ -27,6 +27,7 @@ from question_bank.personalized_papers import (
     PersonalizedPaperModule,
 )
 from question_bank.personalized_papers import module as personalized_paper_module
+from question_bank.personalized_papers.latex_render import LatexRenderError
 from question_bank.personalized_papers.rendering import (
     decode_page_identity,
     page_identity,
@@ -45,19 +46,46 @@ from tests.current_knowledge_support import install_current_knowledge
 
 
 class SyntheticPdfConverter:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, pages: int = 2) -> None:
         self.fail = fail
+        self.pages = pages
 
     def convert(self, source_docx: Path, output_pdf: Path) -> None:
         if self.fail:
             raise OSError("synthetic conversion failure")
         document = fitz.open()
         try:
-            for page_number in (1, 2):
+            for page_number in range(1, self.pages + 1):
                 page = document.new_page(width=595, height=842)
                 page.insert_text(
                     fitz.Point(72, 96),
                     f"Synthetic reviewed page {page_number}",
+                    fontsize=14,
+                )
+            document.save(output_pdf)
+        finally:
+            document.close()
+
+
+class SyntheticLatexCompiler:
+    def __init__(self, *, fail: bool = False, pages: int = 2) -> None:
+        self.fail = fail
+        self.pages = pages
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def compile(self, tex_source: str, output_pdf: Path) -> None:
+        if self.fail:
+            raise LatexRenderError("synthetic latex failure")
+        document = fitz.open()
+        try:
+            for page_number in range(1, self.pages + 1):
+                page = document.new_page(width=595, height=842)
+                page.insert_text(
+                    fitz.Point(72, 96),
+                    f"Synthetic latex page {page_number}",
                     fontsize=14,
                 )
             document.save(output_pdf)
@@ -92,6 +120,7 @@ def paper_workspace(
         db_path=db_path,
         data_root=data_root,
         pdf_converter=SyntheticPdfConverter(),
+        latex_compiler=SyntheticLatexCompiler(),
         clock=lambda: NOW,
     )
     return module, draft, db_path, data_root
@@ -150,6 +179,7 @@ def test_question_snapshot_rewrites_word_images_to_frozen_assets(
         db_path=tmp_path / "question-bank.db",
         data_root=tmp_path / "data",
         pdf_converter=SyntheticPdfConverter(),
+        latex_compiler=SyntheticLatexCompiler(),
     )
 
     snapshot = module._question_snapshot(  # noqa: SLF001
@@ -402,6 +432,7 @@ def test_multi_student_batch_prepares_database_once_and_keeps_all_results(
         db_path=db_path,
         data_root=data_root,
         pdf_converter=SyntheticPdfConverter(),
+        latex_compiler=SyntheticLatexCompiler(),
         clock=lambda: NOW,
     )
     initialize_calls = _record_database_initialization(monkeypatch)
@@ -667,6 +698,7 @@ def test_conversion_failure_and_concurrent_confirmation_leave_no_half_pdf(
         db_path=db_path,
         data_root=data_root,
         pdf_converter=SyntheticPdfConverter(fail=True),
+        latex_compiler=SyntheticLatexCompiler(),
         clock=lambda: NOW,
     )
     with pytest.raises(PaperRenderUnavailable):
@@ -696,45 +728,81 @@ def test_conversion_failure_and_concurrent_confirmation_leave_no_half_pdf(
     assert module.get(instance["paper_instance_id"])["status"] == "frozen"
 
 
-def test_whole_paper_budget_blocks_before_document_creation(
+def test_whole_paper_budget_blocks_only_hard_limits(
     paper_workspace,
 ) -> None:
-    module, _draft, db_path, data_root = paper_workspace
-    with connect(db_path) as connection:
-        rows = connection.execute(
-            """
-            SELECT version_id, criteria_json
-            FROM training_criterion_versions
-            """
-        ).fetchall()
-        for row in rows:
-            criteria = json.loads(str(row["criteria_json"]))
-            criteria["rationale"] = "超长合成判定依据" * 5000
-            encoded = json.dumps(
-                criteria,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            connection.execute(
+    module, draft, db_path, data_root = paper_workspace
+
+    def _rewrite_criteria(mutate) -> None:
+        with connect(db_path) as connection:
+            rows = connection.execute(
                 """
-                UPDATE training_criterion_versions
-                SET criteria_json = ?, criteria_hash = ?
-                WHERE version_id = ?
-                """,
-                (
-                    encoded,
-                    hashlib.sha256(encoded.encode()).hexdigest(),
-                    row["version_id"],
-                ),
-            )
+                SELECT version_id, criteria_json
+                FROM training_criterion_versions
+                """
+            ).fetchall()
+            for row in rows:
+                criteria = json.loads(str(row["criteria_json"]))
+                mutate(criteria)
+                encoded = json.dumps(
+                    criteria,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                connection.execute(
+                    """
+                    UPDATE training_criterion_versions
+                    SET criteria_json = ?, criteria_hash = ?
+                    WHERE version_id = ?
+                    """,
+                    (
+                        encoded,
+                        hashlib.sha256(encoded.encode()).hexdigest(),
+                        row["version_id"],
+                    ),
+                )
+
+    # 出卷不调用模型：内容体积再大也只是诊断信息，不再拦截出卷。
+    _rewrite_criteria(
+        lambda criteria: criteria.update(
+            {"rationale": "超长合成判定依据" * 5000}
+        )
+    )
     recommendation = PersonalizedRecommendationModule(
         db_path=db_path,
         data_root=data_root,
         clock=lambda: NOW,
     )
-    draft = recommendation.create(
-        request_token="b" * 32,
+    fat_draft = recommendation.create(
+        request_token="2" * 32,
+        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
+        config=PersonalizedRecommendationConfig(
+            question_count=8,
+            expected_minutes=120,
+        ),
+        actor_ref="teacher-1",
+    )
+    instance = module.create_review_instance(
+        str(fat_draft["draft_id"]),
+        _create_command("c", fat_draft),
+    )
+    assert instance["budget"]["status"] == "ready"
+    assert instance["budget"]["estimated_total_tokens"] > 32768
+
+    # 硬上限仍然拦截：判定点超过 120 拒绝出卷，不留半成品实例。
+    _rewrite_criteria(
+        lambda criteria: criteria.update(
+            {
+                "points": [
+                    {"point_id": f"p{index}", "text": f"合成判定点{index}"}
+                    for index in range(130)
+                ]
+            }
+        )
+    )
+    heavy_draft = recommendation.create(
+        request_token="3" * 32,
         diagnosis=_diagnosis(student_ids=("SYN-S01",)),
         config=PersonalizedRecommendationConfig(
             question_count=8,
@@ -744,14 +812,264 @@ def test_whole_paper_budget_blocks_before_document_creation(
     )
     with pytest.raises(PaperBudgetExceeded) as error:
         module.create_review_instance(
-            str(draft["draft_id"]),
-            _create_command("c", draft),
+            str(heavy_draft["draft_id"]),
+            _create_command("d", heavy_draft),
         )
-    assert "context_window_limit" in error.value.budget["blockers"]
+    assert "criterion_point_limit" in error.value.budget["blockers"]
     with connect(db_path) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM personalized_paper_instances"
-        ).fetchone()[0] == 0
+        ).fetchone()[0] == 1
+
+
+def _direct_freeze_workspace(
+    tmp_path: Path,
+    *,
+    latex_pages: int = 2,
+) -> tuple[PersonalizedPaperModule, dict[str, object], Path, Path]:
+    """直接出卷工作区：LaTeX 路径需要冻结富文本块，先写结构化富文本
+    再播种，保证判定点哈希与后续加载一致。"""
+    from docx import Document as _DocxDocument
+    db_path = tmp_path / "question_bank.db"
+    data_root = tmp_path / "data"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
+    rich_dir = data_root / "question_bank" / "rich_content"
+    rich_dir.mkdir(parents=True, exist_ok=True)
+    seed_texts = {
+        1: "1. 坐标基础选择题",
+        2: "2. 代数基础填空题",
+        3: "3. 解一元一次方程",
+        4: "4. 证明两个三角形全等",
+        5: "5. 尺规作图",
+        6: "6. 解另一道一元一次方程",
+        7: "7. 解第三道一元一次方程",
+        8: "8. 解基础一元一次方程",
+        9: "9. 再解一道基础一元一次方程",
+        10: "10. 基础全等三角形证明",
+    }
+    for qid, text in seed_texts.items():
+        source = _DocxDocument()
+        source.add_paragraph(text)
+        rich_payload = {
+            "version": 3,
+            "question_id": qid,
+            "question_blocks": [
+                {"text": text, "xml": source.paragraphs[0]._p.xml},  # noqa: SLF001
+            ],
+            "answer_blocks": [],
+        }
+        (rich_dir / f"question_{qid}.json").write_text(
+            json.dumps(rich_payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    _seed_recommendation_sources(db_path, data_root)
+    recommendation = PersonalizedRecommendationModule(
+        db_path=db_path,
+        data_root=data_root,
+        clock=lambda: NOW,
+    )
+    draft = recommendation.create(
+        request_token="1" * 32,
+        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
+        config=PersonalizedRecommendationConfig(
+            question_count=8,
+            expected_minutes=120,
+        ),
+        actor_ref="teacher-1",
+    )
+    module = PersonalizedPaperModule(
+        db_path=db_path,
+        data_root=data_root,
+        pdf_converter=SyntheticPdfConverter(),
+        latex_compiler=SyntheticLatexCompiler(pages=latex_pages),
+        clock=lambda: NOW,
+    )
+    return module, draft, db_path, data_root
+
+
+def test_direct_freeze_creates_stamped_pdf_without_upload(
+    tmp_path: Path,
+) -> None:
+    module, draft, db_path, _data_root = _direct_freeze_workspace(tmp_path)
+    command = CreatePaperCommand(
+        operation_token="4" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        student_id="SYN-S01",
+        actor_ref="teacher-1",
+        direct_freeze=True,
+    )
+
+    instance = module.create_review_instance(str(draft["draft_id"]), command)
+
+    assert instance["status"] == "frozen"
+    assert instance["frozen_pdf_sha256"]
+    assert len(instance["pages"]) == 2  # SyntheticPdfConverter 固定两页
+    with connect(db_path) as connection:
+        stored = json.loads(str(connection.execute(
+            "SELECT snapshot_json FROM personalized_paper_instances"
+            " WHERE paper_instance_id = ?",
+            (instance["paper_instance_id"],),
+        ).fetchone()[0]))
+    renderers = {
+        str(item.get("question_snapshot", {}).get("question_id") or 0)
+        for item in stored["items"]
+    }
+    assert renderers  # 快照包含题目快照
+    assert stored["render_info"]["renderer"] == "latex", stored["render_info"]
+    assert stored["render_info"]["fallback_reason"] is None
+    # 两页已是偶数双面，不需要补草稿页。
+    assert stored["render_info"]["scratch_page_added"] is False
+    frozen_path, _media_type = module.artifact_path(
+        instance["paper_instance_id"],
+        "frozen-pdf",
+    )
+    with fitz.open(frozen_path) as document:
+        assert document.page_count == 2
+
+    # 幂等：同一操作令牌重复请求返回同一份冻结卷。
+    repeated = module.create_review_instance(str(draft["draft_id"]), command)
+    assert repeated == instance
+
+
+def test_direct_freeze_pads_odd_page_count_with_scratch_page(
+    tmp_path: Path,
+) -> None:
+    module, draft, db_path, _data_root = _direct_freeze_workspace(
+        tmp_path,
+        latex_pages=1,
+    )
+    command = CreatePaperCommand(
+        operation_token="7" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        student_id="SYN-S01",
+        actor_ref="teacher-1",
+        direct_freeze=True,
+    )
+
+    instance = module.create_review_instance(str(draft["draft_id"]), command)
+
+    assert instance["status"] == "frozen"
+    # 内容只有一页时补一页演算草稿区，凑满一张 A4 双面。
+    assert len(instance["pages"]) == 2
+    with connect(db_path) as connection:
+        stored = json.loads(str(connection.execute(
+            "SELECT snapshot_json FROM personalized_paper_instances"
+            " WHERE paper_instance_id = ?",
+            (instance["paper_instance_id"],),
+        ).fetchone()[0]))
+    assert stored["render_info"]["renderer"] == "latex"
+    assert stored["render_info"]["scratch_page_added"] is True
+    frozen_path, _media_type = module.artifact_path(
+        instance["paper_instance_id"],
+        "frozen-pdf",
+    )
+    with fitz.open(frozen_path) as document:
+        assert document.page_count == 2
+        scratch_text = document[1].get_text()
+        assert "Synthetic latex page" not in scratch_text
+        assert (
+            "演算草稿区" in scratch_text or "Scratch Paper" in scratch_text
+        )
+        # 草稿页与其余页面一样盖章：页脚身份与页码都在。
+        normalized = scratch_text.replace("\xa0", " ")
+        assert (
+            "第 2 页 / 共 2 页" in normalized
+            or "Page 2/2" in normalized
+        )
+
+
+def test_teacher_reviewed_freeze_keeps_teacher_layout_unpadded(
+    paper_workspace,
+) -> None:
+    module, draft, db_path, _data_root = paper_workspace
+    module.pdf_converter = SyntheticPdfConverter(pages=1)
+    instance = module.create_review_instance(
+        str(draft["draft_id"]),
+        _create_command("8", draft),
+    )
+    review_path, _media_type = module.artifact_path(
+        instance["paper_instance_id"],
+        "review-docx",
+    )
+    payload = review_path.read_bytes()
+    command = FreezePaperCommand(
+        operation_token="9" * 32,
+        expected_revision=instance["revision"],
+        content_sha256=hashlib.sha256(payload).hexdigest(),
+        filename="reviewed.docx",
+        actor_ref="teacher-1",
+    )
+
+    frozen = module.freeze(
+        instance["paper_instance_id"],
+        command,
+        BytesIO(payload),
+    )
+
+    # 教师上传的审阅稿保持教师版面：即使只有一页也不补草稿页。
+    assert frozen["status"] == "frozen"
+    assert len(frozen["pages"]) == 1
+    with connect(db_path) as connection:
+        stored = json.loads(str(connection.execute(
+            "SELECT snapshot_json FROM personalized_paper_instances"
+            " WHERE paper_instance_id = ?",
+            (instance["paper_instance_id"],),
+        ).fetchone()[0]))
+    assert stored["render_info"]["scratch_page_added"] is False
+
+
+def test_direct_freeze_falls_back_to_docx_when_latex_fails(
+    paper_workspace,
+) -> None:
+    module, draft, db_path, _data_root = paper_workspace
+    module.latex_compiler = SyntheticLatexCompiler(fail=True)
+    command = CreatePaperCommand(
+        operation_token="6" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        student_id="SYN-S01",
+        actor_ref="teacher-1",
+        direct_freeze=True,
+    )
+
+    instance = module.create_review_instance(str(draft["draft_id"]), command)
+
+    assert instance["status"] == "frozen"
+    with connect(db_path) as connection:
+        stored = json.loads(str(connection.execute(
+            "SELECT snapshot_json FROM personalized_paper_instances"
+            " WHERE paper_instance_id = ?",
+            (instance["paper_instance_id"],),
+        ).fetchone()[0]))
+    assert stored["render_info"]["renderer"] == "docx"
+    assert "LatexRenderError" in str(stored["render_info"]["fallback_reason"])
+
+
+def test_direct_freeze_batch_freezes_each_student(
+    paper_workspace,
+) -> None:
+    module, draft, _db_path, _data_root = paper_workspace
+
+    batch = module.create_review_batch(
+        str(draft["draft_id"]),
+        operation_token="5" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        student_ids=("SYN-S01",),
+        actor_ref="teacher-1",
+        direct_freeze=True,
+    )
+
+    assert batch["succeeded_count"] == 1
+    assert batch["failed_count"] == 0
+    assert batch["items"][0]["status"] == "frozen"
+    assert batch["downloads"]["frozen_bundle"]
+    frozen_zip, _media_type = module.batch_artifact_path(
+        batch["batch_run_id"],
+        "frozen-bundle",
+    )
+    with ZipFile(frozen_zip) as archive:
+        names = archive.namelist()
+    assert any(name.endswith(".pdf") for name in names)
 
 
 def _create_command(

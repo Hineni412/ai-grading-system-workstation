@@ -157,6 +157,32 @@ class AffairSyncRequest(BaseModel):
     created_at: str
 
 
+class AffairProfileDraftResponse(BaseModel):
+    draft_id: str
+    affair_id: str
+    subject_id: str
+    display_name: str = ""
+    state: Literal["pending", "confirmed", "discarded"]
+    revision: int
+    record_kind: str
+    source: str
+    basis: str | None = None
+    counterexample: str | None = None
+    record_summary: str
+    scene: str = ""
+    category: str | None = None
+    observed_at: str
+    review_at: str | None = None
+    expires_at: str | None = None
+    profile_base_revision: int
+    profile_update: dict[str, object] = Field(default_factory=dict)
+    source_task_id: str | None = None
+    confirmed_record_id: str | None = None
+    created_at: str
+    updated_at: str
+    confirmed_at: str | None = None
+
+
 class AffairResponse(BaseModel):
     affair_id: str
     revision: int
@@ -164,7 +190,7 @@ class AffairResponse(BaseModel):
     plan_id: str
     title: str
     summary: str | None
-    state: Literal["active", "closed"]
+    state: Literal["active", "closed", "discarded"]
     template_key: str
     template_version: int
     workflow_scope: Literal["personal_checklist", "school_confirmed"] = (
@@ -173,6 +199,8 @@ class AffairResponse(BaseModel):
     risk_level: Literal["ordinary", "elevated", "emergency"] = "ordinary"
     emergency_prompt: str | None = None
     school_config_gaps: list[str] = Field(default_factory=list)
+    to_verify: list[str] = Field(default_factory=list)
+    discard_reason: str | None = None
     model_enabled: bool = False
     physical_request_count: int = 0
     current_occurrence_sequence: int
@@ -186,6 +214,9 @@ class AffairResponse(BaseModel):
     decisions: list[AffairDecision]
     flow_revisions: list[AffairFlowRevision] = Field(default_factory=list)
     sync_requests: list[AffairSyncRequest] = Field(default_factory=list)
+    profile_update_drafts: list[AffairProfileDraftResponse] = Field(
+        default_factory=list
+    )
     created_at: str
     updated_at: str
     closed_at: str | None
@@ -209,7 +240,7 @@ class AffairSummaryResponse(BaseModel):
     affair_id: str
     title: str
     summary: str | None
-    state: Literal["active", "closed"]
+    state: Literal["active", "closed", "discarded"]
     revision: int
     occurrence_id: str
     occurrence_sequence: int
@@ -257,6 +288,16 @@ class AffairReopenRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
 
 
+class AffairDiscardRequest(BaseModel):
+    operation_id: str = Field(min_length=8, max_length=128)
+    revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class AffairProfileDraftCommandRequest(BaseModel):
+    operation_id: str = Field(min_length=8, max_length=128)
+
+
 class AffairDraftRequest(BaseModel):
     draft_kind: Literal["fact", "communication"]
     text: str = Field(min_length=1, max_length=8000)
@@ -265,7 +306,9 @@ class AffairDraftRequest(BaseModel):
 
 
 class AffairCommandRequest(BaseModel):
-    command: Literal["complete_step", "teacher_decision", "close", "reopen"]
+    command: Literal[
+        "complete_step", "teacher_decision", "close", "reopen", "discard"
+    ]
     operation_id: str = Field(min_length=8, max_length=128)
     expected_revision: int = Field(ge=1)
     step_instance_id: str | None = None
@@ -300,10 +343,13 @@ __all__ = [
     "AffairCloseRequest",
     "AffairCommandRequest",
     "AffairCreateRequest",
+    "AffairDiscardRequest",
     "AffairDraftRequest",
     "AffairDraftResponse",
     "AffairFlowRevisionDecideRequest",
     "AffairListResponse",
+    "AffairProfileDraftCommandRequest",
+    "AffairProfileDraftResponse",
     "AffairReopenRequest",
     "AffairResponse",
     "AffairSyncUpdateRequest",

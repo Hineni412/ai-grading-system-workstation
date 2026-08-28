@@ -35,7 +35,7 @@ from question_bank.models.question import (
     CORE_ANALYSIS_TAG_TYPES,
     has_complete_analysis_tags,
 )
-from question_bank.models.tag_schema import TagAnalysis
+from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, TagAnalysis
 from question_bank.services.asset_path_service import (
     AmbiguousQuestionBankAssetPathError,
     resolve_question_bank_asset_path,
@@ -49,6 +49,7 @@ from question_bank.services.similarity_service import text_similarity
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_chapter_exam_scope_values,
     curriculum_volume,
+    teaching_progress_allowed_prefixes,
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
 
@@ -477,6 +478,7 @@ class QuestionReadFilters:
     thoughts: tuple[str, ...] = ()
     models: tuple[str, ...] = ()
     special_types: tuple[str, ...] = ()
+    error_types: tuple[str, ...] = ()
     student_levels: tuple[str, ...] = ()
     teaching_stages: tuple[str, ...] = ()
     sub_skills: tuple[str, ...] = ()
@@ -494,6 +496,7 @@ class QuestionReadFilters:
     analysis_status: str = "all"
     sort: str = "newest"
     criteria_needs_review: bool = False
+    teaching_progress_chapter: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1621,6 +1624,7 @@ class QuestionBankReadService:
             "thoughts": facet_source(thoughts=()),
             "models": facet_source(models=()),
             "special_types": facet_source(special_types=()),
+            "error_types": facet_source(error_types=()),
             "student_levels": facet_source(student_levels=()),
             "teaching_stages": facet_source(teaching_stages=()),
             "sub_skills": facet_source(sub_skills=()),
@@ -1649,6 +1653,7 @@ class QuestionBankReadService:
             thought_sql, thought_params = source("thoughts")
             model_sql, model_params = source("models")
             special_type_sql, special_type_params = source("special_types")
+            error_type_sql, error_type_params = source("error_types")
             student_level_sql, student_level_params = source(
                 "student_levels"
             )
@@ -1734,6 +1739,13 @@ class QuestionBankReadService:
                     taxonomy_dimension="special_type",
                     taxonomy_snapshot=taxonomy_snapshot,
                     taxonomy_identity_lookup=taxonomy_identity_lookup,
+                ),
+                "error_types": _tag_facet(
+                    conn,
+                    error_type_sql,
+                    error_type_params,
+                    tag_type="error_type",
+                    allowed_values=frozenset(ERROR_PRONE_CATEGORIES),
                 ),
                 "student_levels": _tag_facet(
                     conn,
@@ -2352,6 +2364,8 @@ def _question_filter_parts(
                     "special_type",
                     expand("special_type", filters.special_types),
                 ),
+                # 错因不在治理维度内，直接精确匹配，不做别名扩展。
+                ("error_type", filters.error_types),
                 ("student_level", filters.student_levels),
                 ("teaching_stage", filters.teaching_stages),
                 ("sub_skill", filters.sub_skills),
@@ -2399,6 +2413,27 @@ def _question_filter_parts(
         params.extend(CORE_ANALYSIS_TAG_TYPES)
     if filters.criteria_needs_review:
         where.append(_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id"))
+    if filters.teaching_progress_chapter.strip():
+        allowed_prefixes = teaching_progress_allowed_prefixes(
+            filters.teaching_progress_chapter
+        )
+        if allowed_prefixes is None:
+            # 无法解析进度上限时失败关闭，不静默放行。
+            where.append("1 = 0")
+        else:
+            prefix_clauses = " OR ".join(
+                "tp.tag_value LIKE ?" for _ in allowed_prefixes
+            )
+            where.append(
+                "NOT EXISTS ("
+                "SELECT 1 FROM question_tags tp "
+                "WHERE tp.question_id = q.id "
+                "AND tp.tag_type = 'knowledge_point' "
+                "AND COALESCE(tp.tag_value, '') <> '' "
+                f"AND NOT ({prefix_clauses})"
+                ")"
+            )
+            params.extend(f"{prefix}%" for prefix in allowed_prefixes)
     return joins, where, params
 
 
@@ -2462,10 +2497,12 @@ def _tag_facet(
     taxonomy_snapshot: dict[str, Any] | None = None,
     taxonomy_identity_lookup: dict[str, dict[str, str]] | None = None,
     current_knowledge: CurrentKnowledgeResolver | None = None,
+    allowed_values: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     if tag_type not in {
         "ability",
         "curriculum_section",
+        "error_type",
         "exam_scope",
         "knowledge_point",
         "method",
@@ -2508,7 +2545,10 @@ def _tag_facet(
         """,
         params,
     ).fetchall()
-    return _public_facet_items(rows)
+    items = _public_facet_items(rows)
+    if allowed_values is not None:
+        items = [item for item in items if item["value"] in allowed_values]
+    return items
 
 
 def _controlled_taxonomy_facet(

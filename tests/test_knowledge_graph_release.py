@@ -11,6 +11,7 @@ from question_bank.knowledge_graph_release import (
     KnowledgeGraphReleaseConflict,
     active_release_id,
     activate_release,
+    bootstrap_release,
     load_release,
     load_release_for_taxonomy_revision,
     load_taxonomy_catalog,
@@ -60,6 +61,35 @@ def test_checked_in_release_covers_every_governed_knowledge_term() -> None:
     ) == 1124
     assert len(release.payload["mappings"]) == 1124
     assert len(release.payload["relations"]) == 1088
+
+
+def test_bootstrap_release_syncs_identity_states(tmp_path: Path) -> None:
+    db_path = _database(tmp_path)
+    release = load_release()
+
+    bootstrap_release(
+        db_path,
+        release,
+        actor_ref="teacher:test",
+        source_reference="test-release",
+        reason="test bootstrap",
+    )
+
+    expected = {
+        str(node["stable_key"]): str(node["display_name"])
+        for node in release.payload["core_nodes"]
+        if node["status"] == "active"
+    }
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT stable_key, display_name
+            FROM knowledge_tag_identities
+            WHERE status = 'active' AND origin = 'local'
+            """
+        ).fetchall()
+    actual = {str(row[0]): str(row[1]) for row in rows}
+    assert actual == expected
 
 
 def test_release_can_be_staged_activated_and_rolled_back_atomically(

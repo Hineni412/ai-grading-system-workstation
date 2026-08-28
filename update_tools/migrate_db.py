@@ -112,6 +112,7 @@ _APPROVED_TABLE_REBUILDS = {
     ),
     "008_intake_handoff_revert_state": frozenset({"intake_handoffs"}),
     "027_roster_memberships_stable_keys": frozenset({"class_roster_memberships"}),
+    "030_affair_discarded_state": frozenset({"affairs"}),
 }
 _APPROVED_TABLE_DROPS = {
     "008_drop_legacy_cli_tables": frozenset(

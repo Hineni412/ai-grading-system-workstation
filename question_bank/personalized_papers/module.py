@@ -20,6 +20,11 @@ from typing import Any, BinaryIO, Literal
 
 from question_bank.database.schema import connect, initialize_database
 from question_bank.document_pipeline import build_math_expression
+from question_bank.personalized_papers.latex_render import (
+    LatexRenderError,
+    TectonicCompiler,
+    render_training_tex,
+)
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationModule,
     RecommendationDraftNotFound,
@@ -40,6 +45,7 @@ from .rendering import (
     OfficePdfConverter,
     PaperRenderError,
     PdfConversionAdapter,
+    append_scratch_page,
     decode_page_identity,
     inspect_docx,
     page_signature,
@@ -118,6 +124,7 @@ class CreatePaperCommand:
     student_id: str
     actor_ref: str
     context_window_tokens: int = 32_768
+    direct_freeze: bool = False
 
     def __post_init__(self) -> None:
         token = _token(self.operation_token)
@@ -134,6 +141,7 @@ class CreatePaperCommand:
         object.__setattr__(self, "actor_ref", actor)
         object.__setattr__(self, "expected_draft_revision", revision)
         object.__setattr__(self, "context_window_tokens", context)
+        object.__setattr__(self, "direct_freeze", self.direct_freeze is True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +184,7 @@ class PersonalizedPaperModule:
         db_path: Path,
         data_root: Path,
         pdf_converter: PdfConversionAdapter | None = None,
+        latex_compiler: TectonicCompiler | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.db_path = Path(db_path)
@@ -184,6 +193,9 @@ class PersonalizedPaperModule:
             self.data_root / "question_bank" / "personalized_papers"
         )
         self.pdf_converter = pdf_converter or OfficePdfConverter()
+        self.latex_compiler = (
+            latex_compiler if latex_compiler is not None else TectonicCompiler()
+        )
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def create_review_instance(
@@ -193,7 +205,13 @@ class PersonalizedPaperModule:
     ) -> dict[str, Any]:
         clean_draft_id = _identifier(draft_id, "draft_id")
         initialize_database(self.db_path)
-        return self._create_review_instance_ready(clean_draft_id, command)
+        result = self._create_review_instance_ready(clean_draft_id, command)
+        if command.direct_freeze and str(result["status"]) == "review_pending":
+            return self._freeze_rendered(
+                str(result["paper_instance_id"]),
+                command=command,
+            )
+        return result
 
     def _create_review_instance_ready(
         self,
@@ -399,71 +417,204 @@ class PersonalizedPaperModule:
                     raise PaperInvalid(
                         "reviewed DOCX no longer matches the paper"
                     ) from exc
-                converted = temporary_path / "converted.pdf"
-                try:
-                    self.pdf_converter.convert(uploaded, converted)
-                except (OSError, subprocess.SubprocessError, PaperRenderError) as exc:
-                    raise PaperRenderUnavailable(
-                        "reviewed DOCX could not be converted to PDF"
-                    ) from exc
-                pages = pdf_page_count(converted)
-                final_budget = _paper_budget(
-                    items,
-                    context_window_tokens=int(
-                        _mapping(snapshot["budget"])[
-                            "context_window_tokens"
-                        ]
-                    ),
-                    page_count=pages,
-                    page_count_is_estimate=False,
-                )
-                if final_budget["status"] != "ready":
-                    raise PaperBudgetExceeded(final_budget)
-                stamped = temporary_path / "frozen.pdf"
-                page_rows = stamp_frozen_pdf(
-                    converted,
-                    stamped,
-                    paper_instance_id=clean_id,
-                    paper_batch_id=str(row["paper_batch_id"]),
-                    series_version=int(row["series_version"]),
-                    student_name=str(row["student_name_snapshot"] or ""),
-                    student_code=str(row["student_code_snapshot"] or ""),
-                    class_id=str(row["class_id_snapshot"] or ""),
-                    signing_secret=str(row["signing_secret"]),
-                    reviewed_docx_sha256=received_hash,
-                    layout_version=str(row["layout_version"]),
-                )
                 reviewed_relative = self._relative_artifact(
                     clean_id,
                     f"reviewed-v{int(row['series_version'])}-{received_hash[:12]}.docx",
                 )
-                pdf_hash = _file_sha256(stamped)
-                pdf_relative = self._relative_artifact(
-                    clean_id,
-                    f"frozen-v{int(row['series_version'])}-{pdf_hash[:12]}.pdf",
+                return self._convert_and_commit_frozen(
+                    row,
+                    source_docx=uploaded,
+                    reviewed_relative=reviewed_relative,
+                    reviewed_hash=received_hash,
+                    publish_source=True,
+                    command=command,
+                    fingerprint=fingerprint,
                 )
-                reviewed_final = self._absolute_artifact(reviewed_relative)
-                pdf_final = self._absolute_artifact(pdf_relative)
-                _atomic_publish(uploaded, reviewed_final)
-                _atomic_publish(stamped, pdf_final)
+
+    def _freeze_rendered(
+        self,
+        paper_instance_id: str,
+        *,
+        command: CreatePaperCommand,
+    ) -> dict[str, Any]:
+        """Freeze the freshly rendered review DOCX without a teacher upload."""
+        row = self._instance_row(paper_instance_id)
+        if str(row["status"]) == "frozen":
+            return self._public_instance(row)
+        freeze_command = FreezePaperCommand(
+            operation_token=_direct_freeze_token(command.operation_token),
+            expected_revision=int(row["revision"]),
+            content_sha256=str(row["review_docx_sha256"]),
+            filename="review.docx",
+            actor_ref=command.actor_ref,
+        )
+        fingerprint = _hash_payload(
+            {
+                "paper_instance_id": paper_instance_id,
+                **asdict(freeze_command),
+            }
+        )
+        repeated = self._event_result(
+            freeze_command.operation_token,
+            fingerprint,
+        )
+        if repeated is not None:
+            return repeated
+        with _instance_lock(paper_instance_id):
+            row = self._instance_row(paper_instance_id)
+            if str(row["status"]) == "frozen":
+                return self._public_instance(row)
+            if str(row["status"]) != "review_pending":
+                raise PaperInvalid(
+                    "only a review-pending paper can be frozen"
+                )
+            return self._convert_and_commit_frozen(
+                row,
+                source_docx=self._absolute_artifact(
+                    str(row["review_docx_path"])
+                ),
+                reviewed_relative=str(row["review_docx_path"]),
+                reviewed_hash=str(row["review_docx_sha256"]),
+                publish_source=False,
+                command=freeze_command,
+                fingerprint=fingerprint,
+            )
+
+    def _convert_and_commit_frozen(
+        self,
+        row,
+        *,
+        source_docx: Path,
+        reviewed_relative: str,
+        reviewed_hash: str,
+        publish_source: bool,
+        command: FreezePaperCommand,
+        fingerprint: str,
+    ) -> dict[str, Any]:
+        clean_id = str(row["paper_instance_id"])
+        snapshot = json.loads(str(row["snapshot_json"]))
+        items = _snapshot_items(snapshot)
+        self.artifact_root.mkdir(parents=True, exist_ok=True)
+        temp_root = self.artifact_root / ".tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f"{clean_id[:12]}-",
+            dir=temp_root,
+            ignore_cleanup_errors=True,
+        ) as temporary:
+            temporary_path = Path(temporary)
+            converted = temporary_path / "converted.pdf"
+            render_info: dict[str, Any] = {
+                "renderer": "docx",
+                "fallback_reason": None,
+                "scratch_page_added": False,
+            }
+            if not publish_source:
+                # 直接出卷：优先本机 LaTeX 排版正文；任何失败回退 DOCX 转换，
+                # 出卷永不被 LaTeX 问题阻断，回退原因如实记录。
                 try:
-                    return self._commit_frozen(
-                        row=row,
-                        command=command,
-                        fingerprint=fingerprint,
-                        budget=final_budget,
-                        reviewed_relative=reviewed_relative,
-                        reviewed_hash=received_hash,
-                        pdf_relative=pdf_relative,
-                        pdf_hash=pdf_hash,
-                        pages=page_rows,
+                    if not self.latex_compiler.available:
+                        raise LatexRenderError("no tectonic engine is available")
+                    tex_source = render_training_tex(
+                        snapshot,
+                        data_root=self.data_root,
                     )
-                except Exception:
-                    self._remove_unreferenced(
-                        clean_id,
-                        (reviewed_relative, pdf_relative),
+                    self.latex_compiler.compile(tex_source, converted)
+                    render_info["renderer"] = "latex"
+                except (
+                    LatexRenderError,
+                    OSError,
+                    subprocess.SubprocessError,
+                ) as exc:
+                    render_info["fallback_reason"] = (
+                        f"{type(exc).__name__}: {exc}"[:200]
                     )
-                    raise
+                    try:
+                        self.pdf_converter.convert(source_docx, converted)
+                    except (
+                        OSError,
+                        subprocess.SubprocessError,
+                        PaperRenderError,
+                    ) as convert_exc:
+                        raise PaperRenderUnavailable(
+                            "reviewed DOCX could not be converted to PDF"
+                        ) from convert_exc
+            else:
+                try:
+                    self.pdf_converter.convert(source_docx, converted)
+                except (OSError, subprocess.SubprocessError, PaperRenderError) as exc:
+                    raise PaperRenderUnavailable(
+                        "reviewed DOCX could not be converted to PDF"
+                    ) from exc
+            pages = pdf_page_count(converted)
+            if not publish_source and pages % 2 == 1:
+                # 直接出卷按一张 A4 双面印制：奇数页时追加一页演算草稿区
+                # 凑满双面；草稿页随后与其余页面一起盖章。教师上传的审阅
+                # 稿保持原样，不替教师改版面。
+                padded = temporary_path / "padded.pdf"
+                append_scratch_page(converted, padded)
+                converted = padded
+                pages = pdf_page_count(converted)
+                render_info["scratch_page_added"] = True
+            final_budget = _paper_budget(
+                items,
+                context_window_tokens=int(
+                    _mapping(snapshot["budget"])[
+                        "context_window_tokens"
+                    ]
+                ),
+                page_count=pages,
+                page_count_is_estimate=False,
+            )
+            if final_budget["status"] != "ready":
+                raise PaperBudgetExceeded(final_budget)
+            stamped = temporary_path / "frozen.pdf"
+            page_rows = stamp_frozen_pdf(
+                converted,
+                stamped,
+                paper_instance_id=clean_id,
+                paper_batch_id=str(row["paper_batch_id"]),
+                series_version=int(row["series_version"]),
+                student_name=str(row["student_name_snapshot"] or ""),
+                student_code=str(row["student_code_snapshot"] or ""),
+                class_id=str(row["class_id_snapshot"] or ""),
+                signing_secret=str(row["signing_secret"]),
+                reviewed_docx_sha256=reviewed_hash,
+                layout_version=str(row["layout_version"]),
+            )
+            pdf_hash = _file_sha256(stamped)
+            pdf_relative = self._relative_artifact(
+                clean_id,
+                f"frozen-v{int(row['series_version'])}-{pdf_hash[:12]}.pdf",
+            )
+            pdf_final = self._absolute_artifact(pdf_relative)
+            if publish_source:
+                _atomic_publish(
+                    source_docx,
+                    self._absolute_artifact(reviewed_relative),
+                )
+            _atomic_publish(stamped, pdf_final)
+            try:
+                return self._commit_frozen(
+                    row=row,
+                    command=command,
+                    fingerprint=fingerprint,
+                    budget=final_budget,
+                    reviewed_relative=reviewed_relative,
+                    reviewed_hash=reviewed_hash,
+                    pdf_relative=pdf_relative,
+                    pdf_hash=pdf_hash,
+                    pages=page_rows,
+                    render_info=render_info,
+                )
+            except Exception:
+                relatives = (
+                    (reviewed_relative, pdf_relative)
+                    if publish_source
+                    else (pdf_relative,)
+                )
+                self._remove_unreferenced(clean_id, relatives)
+                raise
 
     def get(self, paper_instance_id: str) -> dict[str, Any]:
         clean_id = _identifier(paper_instance_id, "paper_instance_id")
@@ -499,6 +650,7 @@ class PersonalizedPaperModule:
         student_ids: Sequence[str] = (),
         actor_ref: str,
         context_window_tokens: int = 32_768,
+        direct_freeze: bool = False,
     ) -> dict[str, Any]:
         clean_draft_id = _identifier(draft_id, "draft_id")
         clean_token = _token(operation_token)
@@ -510,6 +662,7 @@ class PersonalizedPaperModule:
             student_ids=student_ids,
             actor_ref=actor_ref,
             context_window_tokens=context_window_tokens,
+            direct_freeze=direct_freeze,
         )
 
     def _create_review_batch_ready(
@@ -521,6 +674,7 @@ class PersonalizedPaperModule:
         student_ids: Sequence[str] = (),
         actor_ref: str,
         context_window_tokens: int = 32_768,
+        direct_freeze: bool = False,
     ) -> dict[str, Any]:
         """Create a batch after the caller prepared the database."""
 
@@ -536,6 +690,7 @@ class PersonalizedPaperModule:
             "requested_student_ids": list(requested),
             "actor_ref": _required_text(actor_ref, "actor_ref", 100),
             "context_window_tokens": int(context_window_tokens),
+            "direct_freeze": bool(direct_freeze),
         })
         existing = self._batch_by_operation(clean_token)
         if existing is not None:
@@ -628,6 +783,14 @@ class PersonalizedPaperModule:
                     f"batch:{clean_draft_id}:{expected_draft_revision}:{student_id}".encode("utf-8")
                 ).hexdigest()
                 with _instance_lock(lock_id):
+                    per_student_command = CreatePaperCommand(
+                        operation_token=per_student_token,
+                        expected_draft_revision=int(expected_draft_revision),
+                        student_id=student_id,
+                        actor_ref=actor_ref,
+                        context_window_tokens=context_window_tokens,
+                        direct_freeze=direct_freeze,
+                    )
                     instance = self._current_instance_for_student(
                         clean_draft_id,
                         student_id=student_id,
@@ -643,30 +806,22 @@ class PersonalizedPaperModule:
                             row = self._instance_row(str(instance["paper_instance_id"]))
                             if str(row["status"]) == "frozen":
                                 raise
-                            repair_command = CreatePaperCommand(
-                                operation_token=per_student_token,
-                                expected_draft_revision=int(expected_draft_revision),
-                                student_id=student_id,
-                                actor_ref=actor_ref,
-                                context_window_tokens=context_window_tokens,
-                            )
                             instance = self._resume_review_document(
                                 row,
                                 snapshot=json.loads(str(row["snapshot_json"])),
-                                command=repair_command,
+                                command=per_student_command,
                                 fingerprint=str(row["operation_fingerprint"]),
                                 record_event=False,
                             )
                     else:
                         instance = self._create_review_instance_ready(
                             clean_draft_id,
-                            CreatePaperCommand(
-                                operation_token=per_student_token,
-                                expected_draft_revision=int(expected_draft_revision),
-                                student_id=student_id,
-                                actor_ref=actor_ref,
-                                context_window_tokens=context_window_tokens,
-                            ),
+                            per_student_command,
+                        )
+                    if direct_freeze and str(instance["status"]) == "review_pending":
+                        instance = self._freeze_rendered(
+                            str(instance["paper_instance_id"]),
+                            command=per_student_command,
                         )
                 created.append(instance)
                 self._finish_batch_item(
@@ -1931,6 +2086,7 @@ class PersonalizedPaperModule:
         pdf_relative: str,
         pdf_hash: str,
         pages: Sequence[Mapping[str, Any]],
+        render_info: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         paper_instance_id = str(row["paper_instance_id"])
         next_revision = int(row["revision"]) + 1
@@ -1952,6 +2108,8 @@ class PersonalizedPaperModule:
                 return json.loads(str(repeated["resulting_instance_json"]))
             current_snapshot = json.loads(str(row["snapshot_json"]))
             current_snapshot["budget"] = dict(budget)
+            if render_info is not None:
+                current_snapshot["render_info"] = dict(render_info)
             updated = connection.execute(
                 """
                 UPDATE personalized_paper_instances
@@ -2353,8 +2511,8 @@ def _paper_budget(
         blockers.append("image_limit")
     if int(page_count) > MAX_PAGES:
         blockers.append("page_limit")
-    if estimated_total_tokens > int(context_window_tokens):
-        blockers.append("context_window_limit")
+    # 出卷全程本机排版，不调用模型：token 估算只作诊断信息，不再拦截。
+    # 真实保护由上面的题量、判定点、图片、页数硬上限承担。
     return {
         "version": BUDGET_VERSION,
         "status": "blocked" if blockers else "ready",
@@ -2498,6 +2656,13 @@ def _token(value: object) -> str:
     if not _TOKEN_PATTERN.fullmatch(result):
         raise ValueError("operation_token is invalid")
     return result
+
+
+def _direct_freeze_token(operation_token: str) -> str:
+    """Derive a separate idempotency token for the direct-freeze step."""
+    return hashlib.sha256(
+        f"{operation_token}:direct-freeze".encode("utf-8")
+    ).hexdigest()[:32]
 
 
 def _required_text(value: object, name: str, maximum: int) -> str:

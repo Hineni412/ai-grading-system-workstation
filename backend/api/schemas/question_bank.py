@@ -351,6 +351,7 @@ class QuestionFacetsResponse(_QuestionBankModel):
     thoughts: list[QuestionFacetItem]
     models: list[QuestionFacetItem]
     special_types: list[QuestionFacetItem]
+    error_types: list[QuestionFacetItem]
     student_levels: list[QuestionFacetItem]
     teaching_stages: list[QuestionFacetItem]
     sub_skills: list[QuestionFacetItem]

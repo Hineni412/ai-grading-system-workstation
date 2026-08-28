@@ -35,12 +35,9 @@ from backend.review.service import (
     ReviewRevisionConflictError,
     ReviewValidationError,
 )
-from backend.grading_workflow import effective_preflight_papers
 from backend.repositories.access import GradingRepositoryAccess
-from backend.scan_grading.workspace import (
-    ScanGradingWorkspace,
-    ScanGradingWorkspaceError,
-)
+from backend.review.manual_context import current_manual_context
+from backend.scan_grading.workspace import ScanGradingWorkspace
 
 
 router = APIRouter(prefix="/api", tags=["review"])
@@ -65,7 +62,7 @@ def list_review_questions(
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ReviewQuestionListResponse:
     session = _require_session(db, session_id)
-    manual_context = _current_manual_context(session_id, workspace)
+    manual_context = current_manual_context(session_id, workspace)
     questions = review_service.list_questions(
         session_id,
         session,
@@ -100,7 +97,7 @@ def list_review_question_items(
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ReviewItemListResponse:
     session = _require_session(db, session_id)
-    manual_context = _current_manual_context(session_id, workspace)
+    manual_context = current_manual_context(session_id, workspace)
     review_items = review_service.list_items(
         session_id,
         session,
@@ -167,7 +164,7 @@ def confirm_review_question_items(
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ReviewConfirmResponse:
     session = _require_session(db, session_id)
-    manual_context = _current_manual_context(session_id, workspace)
+    manual_context = current_manual_context(session_id, workspace)
     try:
         result = review_service.confirm(
             session_id,
@@ -285,24 +282,3 @@ def _review_item_response(item: object) -> ReviewItemResponse:
             annotated_back_url=f"{result_root}/pages/back?variant=annotated",
         )
     return ReviewItemResponse.model_validate(values)
-
-
-def _current_manual_context(
-    session_id: int,
-    workspace: ScanGradingWorkspace,
-) -> dict[str, object] | None:
-    try:
-        state = workspace.get_workspace(session_id)
-        upload_batch = state.get("upload_batch")
-        if (
-            not isinstance(upload_batch, dict)
-            or upload_batch.get("state") != "frozen"
-        ):
-            return None
-        preflight = workspace.get_preflight(session_id)
-    except ScanGradingWorkspaceError:
-        return None
-    return {
-        "scan_batch_id": str(upload_batch["batch_id"]),
-        "papers": effective_preflight_papers(preflight),
-    }

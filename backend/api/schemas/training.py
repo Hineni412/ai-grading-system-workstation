@@ -146,6 +146,15 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
     scope_keys: list[str] = Field(default_factory=list, max_length=50)
     target_names: list[str] = Field(default_factory=list, max_length=50)
     exclude_current_exam_originals: bool = True
+    curriculum_volume_id: str | None = None
+
+    @field_validator("curriculum_volume_id")
+    @classmethod
+    def normalize_curriculum_volume_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        clean = str(value).strip()
+        return clean or None
 
     @field_validator("target_keys", "scope_keys")
     @classmethod
@@ -220,6 +229,7 @@ class PersonalizedPaperCreateRequest(_TrainingModel):
     expected_draft_revision: int = Field(ge=1)
     student_id: str = Field(min_length=1, max_length=100)
     context_window_tokens: Literal[32768, 65536, 128000] = 32768
+    direct_freeze: bool = False
 
 
 class PersonalizedPaperBatchCreateRequest(_TrainingModel):
@@ -227,6 +237,7 @@ class PersonalizedPaperBatchCreateRequest(_TrainingModel):
     expected_draft_revision: int = Field(ge=1)
     student_ids: list[str] = Field(default_factory=list, max_length=500)
     context_window_tokens: Literal[32768, 65536, 128000] = 32768
+    direct_freeze: bool = False
 
     @field_validator("student_ids")
     @classmethod

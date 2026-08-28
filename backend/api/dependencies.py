@@ -448,6 +448,8 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
     )
     manager = JobManager(
         JobStore(paths.db_path),
+        # 题库打标等后台任务一次最多并行 4 个；阅卷全流程走独立线程池不受影响。
+        max_workers=4,
         interrupted_input_root=Path(upload_config_dir),
         question_bank_db_path=Path(question_bank_db_path),
     )

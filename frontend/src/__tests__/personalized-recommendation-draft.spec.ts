@@ -2,6 +2,7 @@ import { createApp, nextTick, type App } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  PersonalizedPaperBatch,
   PersonalizedPaperInstance,
   PersonalizedRecommendationDraft,
   TrainingDiagnosis,
@@ -10,15 +11,28 @@ import PersonalizedRecommendationDraftView from '../components/training/Personal
 
 const trainingApiMock = vi.hoisted(() => ({
   createPersonalizedDraft: vi.fn(),
+  getPersonalizedDraft: vi.fn(),
   editPersonalizedDraft: vi.fn(),
+  listPaperInstances: vi.fn(),
+  listPaperBatches: vi.fn(),
   createPaperInstance: vi.fn(),
+  createPaperBatch: vi.fn(),
   freezePaperInstance: vi.fn(),
   downloadPaperArtifact: vi.fn(),
+}))
+
+const questionBankApiMock = vi.hoisted(() => ({
+  getQuestion: vi.fn(),
 }))
 
 vi.mock('../api/training', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/training')>(),
   trainingApi: trainingApiMock,
+}))
+
+vi.mock('../api/question-bank', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../api/question-bank')>(),
+  questionBankApi: questionBankApiMock,
 }))
 
 const diagnosis = {
@@ -114,8 +128,8 @@ const paper = {
   student_name: '合成学生',
   class_id: 'SYN-C01',
   series_version: 1,
-  status: 'review_pending',
-  revision: 1,
+  status: 'frozen',
+  revision: 2,
   layout_version: 'personalized-paper-school-a4-v1',
   budget: {
     version: 'whole-paper-context-budget-v1',
@@ -124,8 +138,8 @@ const paper = {
     question_count: 1,
     criterion_point_count: 3,
     image_count: 0,
-    page_count: 1,
-    page_count_is_estimate: true,
+    page_count: 2,
+    page_count_is_estimate: false,
     estimated_input_tokens: 3200,
     estimated_output_tokens: 1340,
     estimated_total_tokens: 4540,
@@ -135,19 +149,95 @@ const paper = {
   question_count: 1,
   criterion_point_count: 3,
   items: [],
-  pages: [],
+  pages: [{ page_number: 1 }, { page_number: 2 }],
   review_docx_sha256: '1'.repeat(64),
-  reviewed_docx_sha256: null,
-  frozen_pdf_sha256: null,
+  reviewed_docx_sha256: '1'.repeat(64),
+  frozen_pdf_sha256: '2'.repeat(64),
   downloads: {
     review_docx: `/api/training/paper-instances/${'e'.repeat(64)}/files/review-docx`,
     reviewed_docx: null,
-    frozen_pdf: null,
+    frozen_pdf: `/api/training/paper-instances/${'e'.repeat(64)}/files/frozen-pdf`,
   },
   error_code: null,
   created_at: '2026-07-30 08:00:00',
-  frozen_at: null,
+  frozen_at: '2026-07-30 08:05:00',
 } satisfies PersonalizedPaperInstance
+
+const paperBatch = {
+  batch_run_id: 'b'.repeat(64),
+  paper_batch_id: 'f'.repeat(64),
+  status: 'complete',
+  requested_count: 1,
+  succeeded_count: 1,
+  failed_count: 0,
+  items: [paper],
+  failures: [],
+  downloads: { bundle: null, manifest: null, frozen_bundle: '/api/training/paper-batches/' + 'b'.repeat(64) + '/files/frozen-bundle' },
+} satisfies PersonalizedPaperBatch
+
+const matchedDiagnosis = {
+  ...diagnosis,
+  students: [{
+    ...diagnosis.students[0]!,
+    weak_points: [{
+      ...diagnosis.students[0]!.weak_points[0]!,
+      source_question_refs: [{
+        session_id: 7,
+        session_name: '合成考试',
+        question_id: '5',
+        bank_question_id: 88,
+        score_awarded: 3,
+        full_score: 10,
+        score_rate: 0.3,
+      }],
+    }],
+  }],
+} satisfies TrainingDiagnosis
+
+const matchedDraft = {
+  ...draft,
+  students: [{
+    ...draft.students[0]!,
+    targets: [{
+      stable_key: 'knowledge_point:一元一次方程',
+      display_name: '一元一次方程',
+    }],
+    items: [{
+      ...draft.students[0]!.items[0]!,
+      question_text: '解方程 2x + 3 = 9。',
+      matched_name: '第三章 方程｜一元一次方程',
+      target: { stable_key: 'knowledge_point:一元一次方程' },
+    }, {
+      item_id: 'item-2',
+      item_order: 2,
+      slot: 2,
+      question_id: 32,
+      question_number: '4',
+      stage: 'transfer',
+      target: { stable_key: 'knowledge_point:二元一次方程' },
+      matched_key: 'knowledge_point:二元一次方程',
+      matched_name: '二元一次方程',
+      relation: null,
+      criterion_version_id: 'c'.repeat(64),
+      criterion_point_count: 2,
+      difficulty: 6,
+      estimated_minutes: 5,
+      source_paper: '合成题源',
+      reason: '练习迁移。',
+      locked: false,
+      replacement_history: [],
+    }],
+    shortages: [{
+      stage: 'prerequisite',
+      requested_count: 2,
+      selected_count: 0,
+      missing_count: 2,
+      reason_code: 'stage_targets_empty',
+    }],
+    warnings: ['先修补强少配 2 题：当前知识标准中没有这些细点已确认的先修关系，无法推导先修补强目标。'],
+  }],
+  warnings: ['先修补强少配 2 题：当前知识标准中没有这些细点已确认的先修关系，无法推导先修补强目标。'],
+} satisfies PersonalizedRecommendationDraft
 
 const mounted: App[] = []
 
@@ -159,7 +249,11 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  globalThis.localStorage?.clear()
   trainingApiMock.createPersonalizedDraft.mockResolvedValue(draft)
+  trainingApiMock.getPersonalizedDraft.mockResolvedValue(draft)
+  trainingApiMock.listPaperInstances.mockResolvedValue([])
+  trainingApiMock.listPaperBatches.mockResolvedValue([])
   trainingApiMock.editPersonalizedDraft.mockResolvedValue({
     ...draft,
     revision: 2,
@@ -169,6 +263,22 @@ beforeEach(() => {
     }],
   })
   trainingApiMock.createPaperInstance.mockResolvedValue(paper)
+  trainingApiMock.createPaperBatch.mockResolvedValue(paperBatch)
+  questionBankApiMock.getQuestion.mockResolvedValue({
+    id: 88,
+    question_number: '5',
+    paper_title: '合成题源',
+    question_type: '计算题',
+    difficulty: 5,
+    question_text: '错题题干',
+    answer_text: '错题答案',
+    page_range: null,
+    has_images: false,
+    assets: [],
+    rich_content: { question_blocks: [], answer_blocks: [] },
+    previews: [],
+    tags: [],
+  })
 })
 
 afterEach(() => {
@@ -237,22 +347,328 @@ describe('personalized recommendation draft', () => {
     )
     expect(host.textContent).toContain('已锁定该题')
     expect(host.textContent).toContain('解锁')
+    // 体积上限参数与单人生成入口对教师不可见，只保留批量生成。
+    expect(host.textContent).not.toContain('容量')
+    expect(host.textContent).not.toContain('只为该生生成审核稿')
 
-    const createPaper = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '生成 WPS 审核稿')
-    createPaper?.click()
+    const createBatch = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '生成全部 PDF 试卷（可直接打印）')
+    createBatch?.click()
     await settle()
 
-    expect(trainingApiMock.createPaperInstance).toHaveBeenCalledWith(
+    expect(trainingApiMock.createPaperBatch).toHaveBeenCalledWith(
       draft.draft_id,
       expect.objectContaining({
         expected_draft_revision: 2,
-        student_id: 'SYN-S01',
-        context_window_tokens: 32768,
+        student_ids: ['SYN-S01'],
+        context_window_tokens: 128000,
+        direct_freeze: true,
       }),
     )
+    expect(host.textContent).toContain('已生成 1 份实名 PDF 试卷')
     expect(host.textContent).toContain('V1')
-    expect(host.textContent).toContain('等待 WPS 审核')
+    expect(host.textContent).toContain('2 页冻结 PDF')
+    expect(host.textContent).toContain('下载 PDF 试卷')
     expect(host.textContent).toContain('不会自动打印')
+  })
+
+  it('pairs each recommended question with its source evidence in external setup mode', async () => {
+    trainingApiMock.createPersonalizedDraft.mockResolvedValue(matchedDraft)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(PersonalizedRecommendationDraftView, {
+      diagnosis: matchedDiagnosis,
+      externalSetup: true,
+      scope: { mode: 'student', student_ids: ['SYN-S01'] },
+      examScope: { mode: 'current', session_ids: [7] },
+      questionCount: 8,
+      stageRatios: {
+        direct: 0.6,
+        prerequisite: 0.3,
+        transfer: 0.1,
+      },
+      excludeCurrentExamOriginals: true,
+      targetKeys: ['knowledge_point:一元一次方程'],
+    })
+    const view = app.mount(host) as unknown as { generate: () => Promise<void> }
+    mounted.push(app)
+    await settle()
+
+    await view.generate()
+    await settle()
+
+    // 头部只保留人数与选稿方式，不再拼接全部细点路径。
+    const studentCard = host.querySelector<HTMLElement>('.personalized-student')!
+    expect(studentCard.querySelector('header')?.textContent).toContain('按掌握证据推荐')
+    expect(studentCard.querySelector('header')?.textContent).not.toContain('细点')
+
+    // 配对卡片：错题依据 → 推荐题。
+    const firstPair = host.querySelector<HTMLElement>('.personalized-match')!
+    expect(firstPair.querySelector('.personalized-match__evidence')?.textContent).toContain('错题依据')
+    expect(firstPair.querySelector('.personalized-match__evidence')?.textContent)
+      .toContain('合成考试 · 第 5 题 · 得 3/10 分')
+    expect(firstPair.querySelector('.personalized-stage-badge')?.textContent).toContain('直接巩固')
+    expect(firstPair.querySelector('.personalized-match__head strong')?.textContent).toBe('一元一次方程')
+    expect(firstPair.querySelector('.personalized-match__stem')?.textContent).toContain('解方程 2x + 3 = 9。')
+    expect(firstPair.textContent).toContain('来源：合成题源')
+    // 直接巩固卡不重复显示理由（与左栏错题依据重复）。
+    expect(firstPair.querySelector('.personalized-match__reason')).toBeNull()
+
+    // 旧草稿项没有题干时给出诚实提示；无匹配细点时给出空依据提示。
+    const pairs = [...host.querySelectorAll<HTMLElement>('.personalized-match')]
+    expect(pairs[1]!.querySelector('.personalized-match__stem')?.textContent)
+      .toContain('旧草稿未包含题干，重新生成后可见')
+    expect(pairs[1]!.querySelector('.personalized-match__evidence')?.textContent)
+      .toContain('该细点在当前范围内暂无逐题失分记录')
+    expect(pairs[1]!.querySelector('.personalized-stage-badge')?.textContent).toContain('迁移应用')
+    // 非直接阶段卡显示推荐理由，教师可看到兜底来源说明。
+    expect(pairs[1]!.querySelector('.personalized-match__reason')?.textContent).toContain('练习迁移。')
+
+    // 缺题卡片沿用现有 warning 文案。
+    const shortage = host.querySelector<HTMLElement>('.personalized-shortage')
+    expect(shortage?.textContent).toContain('先修补强')
+    expect(shortage?.textContent).toContain('待配 2 题')
+    expect(host.textContent).toContain('无法推导先修补强目标')
+  })
+
+  const externalProps = {
+    diagnosis,
+    externalSetup: true,
+    scope: { mode: 'student', student_ids: ['SYN-S01'] },
+    examScope: { mode: 'current', session_ids: [7] },
+    questionCount: 8,
+    stageRatios: {
+      direct: 0.6,
+      prerequisite: 0.3,
+      transfer: 0.1,
+    },
+    excludeCurrentExamOriginals: true,
+    targetKeys: ['knowledge_point:一元一次方程'],
+  }
+
+  it('restores the saved draft after returning with unchanged settings', async () => {
+    const host1 = document.createElement('div')
+    document.body.append(host1)
+    const app1 = createApp(PersonalizedRecommendationDraftView, externalProps)
+    const view1 = app1.mount(host1) as unknown as { generate: () => Promise<void> }
+    mounted.push(app1)
+    await settle()
+    await view1.generate()
+    await settle()
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledTimes(1)
+    expect(host1.textContent).toContain('尚未形成正式训练卷')
+
+    const host2 = document.createElement('div')
+    document.body.append(host2)
+    const app2 = createApp(PersonalizedRecommendationDraftView, externalProps)
+    app2.mount(host2)
+    mounted.push(app2)
+
+    await vi.waitFor(() => {
+      expect(host2.textContent).toContain('已恢复上次生成的草稿')
+    })
+    expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(draft.draft_id)
+    expect(host2.textContent).toContain('直接巩固')
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores the saved draft when paper settings changed', async () => {
+    const host1 = document.createElement('div')
+    document.body.append(host1)
+    const app1 = createApp(PersonalizedRecommendationDraftView, externalProps)
+    const view1 = app1.mount(host1) as unknown as { generate: () => Promise<void> }
+    mounted.push(app1)
+    await settle()
+    await view1.generate()
+    await settle()
+
+    const host2 = document.createElement('div')
+    document.body.append(host2)
+    const app2 = createApp(PersonalizedRecommendationDraftView, {
+      ...externalProps,
+      questionCount: 10,
+    })
+    app2.mount(host2)
+    mounted.push(app2)
+    await settle()
+
+    expect(trainingApiMock.getPersonalizedDraft).not.toHaveBeenCalled()
+    expect(host2.textContent).not.toContain('已恢复上次生成的草稿')
+  })
+
+  it('discards the draft on demand and stops restoring it', async () => {
+    const host1 = document.createElement('div')
+    document.body.append(host1)
+    const app1 = createApp(PersonalizedRecommendationDraftView, externalProps)
+    const view1 = app1.mount(host1) as unknown as { generate: () => Promise<void> }
+    mounted.push(app1)
+    await settle()
+    await view1.generate()
+    await settle()
+
+    expect(host1.textContent).toContain('草稿已自动暂存')
+    host1.querySelector<HTMLButtonElement>('[data-testid="discard-paper-draft"]')!.click()
+    await settle()
+    expect(host1.textContent).toContain('确认放弃')
+    host1.querySelector<HTMLButtonElement>('[data-testid="confirm-discard-paper-draft"]')!.click()
+    await settle()
+
+    expect(host1.textContent).toContain('已放弃该草稿')
+    expect(host1.querySelector('.personalized-workbench')).toBeNull()
+    expect(globalThis.localStorage.getItem('ai-grading:personalized-paper-draft:v1')).toBeNull()
+
+    // 放弃后重新进入页面：不再自动恢复，教师重新生成会得到新草稿。
+    const host2 = document.createElement('div')
+    document.body.append(host2)
+    const app2 = createApp(PersonalizedRecommendationDraftView, externalProps)
+    app2.mount(host2)
+    mounted.push(app2)
+    await settle()
+
+    expect(trainingApiMock.getPersonalizedDraft).not.toHaveBeenCalled()
+    expect(host2.textContent).not.toContain('已恢复上次生成的草稿')
+  })
+
+  it('shows one representative evidence and previews bank questions', async () => {
+    trainingApiMock.createPersonalizedDraft.mockResolvedValue(matchedDraft)
+    const multiRefDiagnosis = {
+      ...matchedDiagnosis,
+      students: [{
+        ...matchedDiagnosis.students[0]!,
+        weak_points: [{
+          ...matchedDiagnosis.students[0]!.weak_points[0]!,
+          source_question_refs: [
+            {
+              session_id: 8,
+              session_name: '历史考试',
+              question_id: '9',
+              bank_question_id: 77,
+              score_awarded: 0,
+              full_score: 8,
+              score_rate: 0,
+              source_kind: 'historical_exam' as const,
+            },
+            {
+              session_id: 7,
+              session_name: '合成考试',
+              question_id: '5',
+              bank_question_id: 88,
+              score_awarded: 3,
+              full_score: 10,
+              score_rate: 0.3,
+              source_kind: 'current_exam' as const,
+            },
+          ],
+        }],
+      }],
+    } satisfies TrainingDiagnosis
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(PersonalizedRecommendationDraftView, {
+      ...externalProps,
+      diagnosis: multiRefDiagnosis,
+    })
+    const view = app.mount(host) as unknown as { generate: () => Promise<void> }
+    mounted.push(app)
+    await settle()
+    await view.generate()
+    await settle()
+
+    // 代表错题：本次考试优先，即使历史考试失分更重。
+    const evidence = host.querySelector<HTMLElement>('.personalized-match__evidence')!
+    expect(evidence.querySelector('span[title]')?.textContent)
+      .toContain('合成考试 · 第 5 题 · 得 3/10 分')
+    expect(evidence.querySelector('summary')?.textContent).toContain('全部 2 条依据')
+
+    const evidencePreview = [...evidence.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '预览')
+    evidencePreview?.click()
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('错题题干')
+    })
+    expect(questionBankApiMock.getQuestion).toHaveBeenCalledWith(88, expect.anything())
+    document.querySelector<HTMLButtonElement>('.question-preview__close')?.click()
+    await settle()
+
+    const actions = host.querySelector<HTMLElement>(
+      '.personalized-match .personalized-item-actions',
+    )!
+    const stemPreview = [...actions.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '预览')
+    stemPreview?.click()
+    await vi.waitFor(() => {
+      expect(questionBankApiMock.getQuestion).toHaveBeenCalledWith(31, expect.anything())
+    })
+  })
+
+  it('aggregates sub-question evidence to the question level', async () => {
+    trainingApiMock.createPersonalizedDraft.mockResolvedValue(matchedDraft)
+    const subQuestionDiagnosis = {
+      ...matchedDiagnosis,
+      students: [{
+        ...matchedDiagnosis.students[0]!,
+        weak_points: [{
+          ...matchedDiagnosis.students[0]!.weak_points[0]!,
+          source_question_refs: [
+            {
+              session_id: 7,
+              session_name: '合成考试',
+              question_id: 'Q10(P1)',
+              bank_question_id: 91,
+              score_awarded: 0,
+              full_score: 8,
+              score_rate: 0,
+              source_kind: 'current_exam' as const,
+            },
+            {
+              session_id: 7,
+              session_name: '合成考试',
+              question_id: 'Q10(P2)',
+              bank_question_id: 92,
+              score_awarded: 2,
+              full_score: 8,
+              score_rate: 0.25,
+              source_kind: 'current_exam' as const,
+            },
+            {
+              session_id: 7,
+              session_name: '合成考试',
+              question_id: 'Q7',
+              bank_question_id: 93,
+              score_awarded: 0,
+              full_score: 6,
+              score_rate: 0,
+              source_kind: 'current_exam' as const,
+            },
+          ],
+        }],
+      }],
+    } satisfies TrainingDiagnosis
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(PersonalizedRecommendationDraftView, {
+      ...externalProps,
+      diagnosis: subQuestionDiagnosis,
+    })
+    const view = app.mount(host) as unknown as { generate: () => Promise<void> }
+    mounted.push(app)
+    await settle()
+    await view.generate()
+    await settle()
+
+    // Q10(P1)+Q10(P2) 合并为题目层级的一条依据，合计得分。
+    const evidence = host.querySelector<HTMLElement>('.personalized-match__evidence')!
+    expect(evidence.querySelector('span[title]')?.textContent)
+      .toContain('合成考试 · 第 Q10 题 · 得 2/16 分')
+    expect(evidence.querySelector('summary')?.textContent).toContain('全部 2 条依据')
+    expect(evidence.textContent).not.toContain('P1')
+
+    // 预览打开失分最重的 P1 小问对应的题库原题。
+    const preview = [...evidence.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '预览')
+    preview?.click()
+    await vi.waitFor(() => {
+      expect(questionBankApiMock.getQuestion).toHaveBeenCalledWith(91, expect.anything())
+    })
   })
 })

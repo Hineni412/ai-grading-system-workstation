@@ -44,6 +44,7 @@ class StudentDirectory:
             rows = connection.execute(
                 """
                 SELECT s.subject_id, s.payload_object_id, s.state, s.updated_at,
+                       s.source_fingerprint,
                        (SELECT COUNT(*) FROM support_records r
                         WHERE r.subject_id = s.subject_id AND r.state = 'active') AS support_record_count,
                        (SELECT COUNT(*) FROM support_plans p
@@ -81,6 +82,7 @@ class StudentDirectory:
                 )
                 item = {
                     "subject_id": str(row["subject_id"]),
+                    "student_ref": str(row["source_fingerprint"]),
                     "source_student_id": str(identity.get("source_student_id") or ""),
                     "display_name": str(identity.get("display_name") or ""),
                     "class_label": str(identity.get("class_label") or ""),
@@ -130,7 +132,7 @@ class StudentDirectory:
         with closing(self.database.connect()) as connection:
             row = connection.execute(
                 """
-                SELECT s.payload_object_id,
+                SELECT s.payload_object_id, s.source_fingerprint,
                   (SELECT COUNT(*) FROM support_records r WHERE r.subject_id=s.subject_id AND r.state='active') support_record_count,
                   (SELECT COUNT(*) FROM support_plans p WHERE p.subject_id=s.subject_id AND p.state='active') support_plan_count,
                   (SELECT COUNT(*) FROM attention_cards a WHERE a.subject_id=s.subject_id AND a.state='draft') attention_pending_count,
@@ -176,6 +178,7 @@ class StudentDirectory:
                 )
         return {
             "subject_id": subject_id,
+            "student_ref": str(row["source_fingerprint"]),
             "source_student_id": str(identity.get("source_student_id") or ""),
             "display_name": str(identity.get("display_name") or ""),
             "class_label": str(identity.get("class_label") or ""),

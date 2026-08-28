@@ -4,6 +4,7 @@ const CLIENT_HEADER = 'class-teacher-browser-v1'
 
 export interface SupportSubject {
   subject_id: string
+  student_ref?: string
   revision: number
   source_student_id: string
   display_name: string
@@ -145,6 +146,29 @@ export interface SpreadsheetPreview {
   temporary_file_created: false
 }
 
+export interface EvidenceSessionUpdateFields {
+  title?: string
+  grade?: string | null
+  term?: string | null
+  exam_type?: string | null
+  occurred_on?: string
+  academic_year?: string | null
+}
+
+export interface EvidenceSessionDeletePreview {
+  session_id: string
+  title: string
+  counts: { results: number; assessments: number; imports: number; attention_cards: number }
+  preview_version: string
+  confirmation_phrase: string
+}
+
+export interface EvidenceGlobalSettingsResult {
+  sessions_updated: number
+  subjects: Record<string, number>
+  participant_count: number | null
+}
+
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('contract')
   return value as Record<string, unknown>
@@ -232,20 +256,20 @@ export const supportApi = {
       decode: subject,
     })
   },
-  previewSubjectDeletion(subjectId: string) {
+  previewSubjectDeletion(studentRef: string) {
     return apiClient.request(
-      `/api/class-teacher/support/subjects/${subjectId}/deletion-preview`,
+      `/api/class-teacher/support/subjects/${encodeURIComponent(studentRef)}/deletion-preview`,
       {
         decode: (payload) => record(payload) as unknown as SubjectDeletionPreview,
       },
     )
   },
   deleteSubject(
-    subjectId: string,
+    studentRef: string,
     preview: SubjectDeletionPreview,
     operationIdValue: string,
   ) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}`, {
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(studentRef)}`, {
       method: 'DELETE',
       headers: headers(),
       body: {
@@ -256,8 +280,8 @@ export const supportApi = {
       decode: record,
     })
   },
-  listRecords(subjectId: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/records`, {
+  listRecords(studentRef: string) {
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(studentRef)}/records`, {
       decode: (payload) => list(payload, supportRecord),
     })
   },
@@ -278,13 +302,13 @@ export const supportApi = {
       decode: supportRecord,
     })
   },
-  getSummary(subjectId: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/summary`, {
+  getSummary(studentRef: string) {
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(studentRef)}/summary`, {
       decode: (payload) => record(payload) as unknown as SupportSummary,
     })
   },
   createRecord(
-    subjectId: string,
+    studentRef: string,
     input: {
       record_kind: string
       content: string
@@ -300,7 +324,7 @@ export const supportApi = {
     },
     operationIdValue = operationId(),
   ) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/records`, {
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(studentRef)}/records`, {
       method: 'POST',
       headers: headers(),
       body: { ...input, operation_id: operationIdValue },
@@ -333,18 +357,18 @@ export const supportApi = {
     })
   },
   createSupportPlan(
-    subjectId: string,
+    studentRef: string,
     input: { goal: string; support_actions: string[]; review_at: string },
   ) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/plans`, {
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(studentRef)}/plans`, {
       method: 'POST',
       headers: headers(),
       body: { ...input, action_id: null, operation_id: operationId() },
       decode: supportPlan,
     })
   },
-  draftSupportPlan(subjectId: string, operationIdValue: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/plans/ai-draft`, {
+  draftSupportPlan(studentRef: string, operationIdValue: string) {
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(studentRef)}/plans/ai-draft`, {
       method: 'POST',
       headers: headers(),
       body: { operation_id: operationIdValue },
@@ -352,8 +376,8 @@ export const supportApi = {
       decode: (payload) => record(payload) as unknown as SupportPlanAiDraft,
     })
   },
-  listSupportPlans(subjectId: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/plans`, {
+  listSupportPlans(studentRef: string) {
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(studentRef)}/plans`, {
       decode: (payload) => list(
         payload,
         supportPlan,
@@ -378,8 +402,8 @@ export const supportApi = {
       decode: supportPlan,
     })
   },
-  projectAffair(subjectId: string, affairId: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/project-affair`, {
+  projectAffair(studentRef: string, affairId: string) {
+    return apiClient.request(`/api/class-teacher/support/subjects/${encodeURIComponent(studentRef)}/project-affair`, {
       method: 'POST',
       headers: headers(),
       body: { operation_id: operationId(), affair_id: affairId },
@@ -406,11 +430,11 @@ export const supportApi = {
       decode: quick,
     })
   },
-  createQuickText(text: string, subjectId: string | null) {
+  createQuickText(text: string, studentRef: string | null) {
     return apiClient.request('/api/class-teacher/quick-inbox', {
       method: 'POST',
       headers: headers(),
-      body: { operation_id: operationId(), text, subject_id: subjectId },
+      body: { operation_id: operationId(), text, subject_id: studentRef },
       decode: quick,
     })
   },
@@ -443,8 +467,8 @@ export const supportApi = {
       decode: record,
     })
   },
-  listEvidence(subjectId: string) {
-    return apiClient.request(`/api/class-teacher/evidence/subjects/${subjectId}`, {
+  listEvidence(studentRef: string) {
+    return apiClient.request(`/api/class-teacher/evidence/subjects/${encodeURIComponent(studentRef)}`, {
       decode: (payload) => list(payload, evidence),
     })
   },
@@ -455,6 +479,50 @@ export const supportApi = {
       method: 'POST',
       headers: headers(),
       body: { operation_id: operationId(), batch },
+      decode: record,
+    })
+  },
+  updateEvidenceSession(sessionId: string, fields: EvidenceSessionUpdateFields) {
+    return apiClient.request(`/api/class-teacher/evidence/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: { operation_id: operationId(), ...fields },
+      decode: record,
+    })
+  },
+  updateEvidenceSessionMaxScores(sessionId: string, maxScores: Record<string, number>, participantCount?: number) {
+    return apiClient.request(`/api/class-teacher/evidence/sessions/${encodeURIComponent(sessionId)}/max-scores`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: { operation_id: operationId(), max_scores: maxScores, ...(participantCount != null ? { participant_count: participantCount } : {}) },
+      decode: record,
+    })
+  },
+  updateGlobalEvidenceSettings(maxScores: Record<string, number>, participantCount?: number) {
+    return apiClient.request('/api/class-teacher/evidence/max-scores/global', {
+      method: 'PATCH',
+      headers: headers(),
+      body: { operation_id: operationId(), max_scores: maxScores, ...(participantCount != null ? { participant_count: participantCount } : {}) },
+      decode: (payload) => record(payload) as unknown as EvidenceGlobalSettingsResult,
+    })
+  },
+  previewDeleteEvidenceSession(sessionId: string) {
+    return apiClient.request(
+      `/api/class-teacher/evidence/sessions/${encodeURIComponent(sessionId)}/delete-preview`,
+      {
+        decode: (payload) => record(payload) as unknown as EvidenceSessionDeletePreview,
+      },
+    )
+  },
+  deleteEvidenceSession(sessionId: string, previewVersion: string, confirmationPhrase: string) {
+    return apiClient.request(`/api/class-teacher/evidence/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      headers: headers(),
+      body: {
+        operation_id: operationId(),
+        preview_version: previewVersion,
+        confirmation_phrase: confirmationPhrase,
+      },
       decode: record,
     })
   },
@@ -474,8 +542,8 @@ export const supportApi = {
       decode: (payload) => record(payload) as unknown as SpreadsheetPreview,
     })
   },
-  listAttention(subjectId: string) {
-    return apiClient.request(`/api/class-teacher/attention-cards/subjects/${subjectId}`, {
+  listAttention(studentRef: string) {
+    return apiClient.request(`/api/class-teacher/attention-cards/subjects/${encodeURIComponent(studentRef)}`, {
       decode: (payload) => list(payload, attention),
     })
   },

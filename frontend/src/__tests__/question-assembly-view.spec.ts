@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import QuestionAssemblyView from '../views/QuestionAssemblyView.vue'
 import { useAssemblyStore } from '../stores/assembly'
 import { CURRICULUM_SCOPE_STORAGE_KEY } from '../stores/curriculum-scope'
-import type { QuestionBankListItem } from '../api/question-bank'
+import type { QuestionBankFacets, QuestionBankListItem } from '../api/question-bank'
 
 const revisionA = 'a'.repeat(64)
 const revisionB = 'b'.repeat(64)
@@ -435,6 +435,164 @@ describe('question assembly view', () => {
     )).toBe(true)
   })
 
+  it('collapses overflow current-semester knowledge chips and prerequisite ones', async () => {
+    const facets = questionFacets()
+    facets.knowledge_points = [
+      ...Array.from({ length: 13 }, (_, index) => ({
+        value: `七年级上册｜第一章 有理数｜1 认识有理数｜本学期知识点${index + 1}`,
+        count: 2,
+      })),
+      { value: '八年级上册｜第一章 勾股定理｜1 探索勾股定理｜前置知识点甲', count: 5 },
+      { value: '八年级上册｜第二章 实数｜1 认识无理数｜前置知识点乙', count: 3 },
+    ]
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') return json(draft())
+      if (url === '/api/question-assembly/records?limit=100') return json({ items: [], total: 0 })
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') return json(curriculumCatalog())
+      if (url.startsWith('/api/question-bank/facets?')) return json(facets)
+      if (url.startsWith('/api/question-bank/questions?')) return json(questionPage(bankQuestion(17, '分区题目')))
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    // 默认选中七年级上册：13 个本学期知识点前 12 个直接显示，其余收进"更多知识点"展开器。
+    await vi.waitFor(() => {
+      const summaries = [...host.querySelectorAll('.assembly-filter-more summary')]
+        .map((summary) => summary.textContent ?? '')
+      expect(summaries.some((text) => text.includes('更多知识点（1）'))).toBe(true)
+    })
+    const moreExpander = [...host.querySelectorAll<HTMLDetailsElement>('.assembly-filter-more')]
+      .find((details) => details.querySelector('summary')?.textContent?.includes('更多知识点（1）'))
+    expect(moreExpander).toBeTruthy()
+    expect(moreExpander!.hasAttribute('open')).toBe(false)
+    const directChips = [...host.querySelectorAll<HTMLButtonElement>('.assembly-filter-chips > button')]
+      .map((button) => button.textContent ?? '')
+    expect(directChips.some((text) => text.includes('本学期知识点12'))).toBe(true)
+    expect(directChips.some((text) => text.includes('本学期知识点13'))).toBe(false)
+    moreExpander!.querySelector('summary')!.click()
+    await settle()
+    expect(moreExpander!.textContent).toContain('本学期知识点13')
+
+    const expander = [...host.querySelectorAll<HTMLDetailsElement>('.assembly-filter-more')]
+      .find((details) => details.querySelector('summary')?.textContent?.includes('展开前置知识点（2）'))
+    expect(expander).toBeTruthy()
+    expect(expander!.hasAttribute('open')).toBe(false)
+
+    expander!.querySelector('summary')!.click()
+    await settle()
+    expect(expander!.hasAttribute('open')).toBe(true)
+    const prerequisiteChip = [...expander!.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('前置知识点甲'))
+    expect(prerequisiteChip).toBeTruthy()
+    prerequisiteChip!.click()
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/questions?')
+        && String(input).includes('knowledge_points=')
+      ),
+    )).toBe(true))
+  })
+
+  it('filters by error type from the tag dimension rows', async () => {
+    const facets = questionFacets()
+    facets.error_types = [{ value: '运算化简错误', count: 4 }]
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') return json(draft())
+      if (url === '/api/question-assembly/records?limit=100') return json({ items: [], total: 0 })
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') return json(curriculumCatalog())
+      if (url.startsWith('/api/question-bank/facets?')) return json(facets)
+      if (url.startsWith('/api/question-bank/questions?')) return json(questionPage(bankQuestion(17, '错因题目')))
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.textContent).toContain('错因题目'))
+    const dimension = [...host.querySelectorAll<HTMLButtonElement>('.assembly-tag-dimensions button')]
+      .find((button) => button.textContent?.includes('错因'))
+    expect(dimension).toBeTruthy()
+    dimension!.click()
+    await settle()
+    const chip = [...host.querySelectorAll<HTMLButtonElement>('.assembly-filter-chips button')]
+      .find((button) => button.textContent?.includes('运算化简错误'))
+    expect(chip).toBeTruthy()
+    chip!.click()
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/questions?')
+        && String(input).includes('error_types=')
+      ),
+    )).toBe(true))
+  })
+
+  it('sends the selected chapter as the strict teaching-progress boundary', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') return json(draft())
+      if (url === '/api/question-assembly/records?limit=100') return json({ items: [], total: 0 })
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') return json(curriculumCatalog())
+      if (url.startsWith('/api/question-bank/facets?')) return json(questionFacets())
+      if (url.startsWith('/api/question-bank/questions?')) return json(questionPage(bankQuestion(17, '严格进度题目')))
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(
+      host.querySelector<HTMLButtonElement>('.assembly-curriculum-node__chapter'),
+    ).toBeTruthy())
+    const strictSwitch = host.querySelector<HTMLInputElement>('.assembly-strict-progress input')
+    expect(strictSwitch).toBeTruthy()
+    expect(strictSwitch!.disabled).toBe(false)
+
+    // 只选册时传该册最后一章的稳定 ID。
+    strictSwitch!.click()
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/questions?')
+        && String(input).includes('teaching_progress_chapter=bnu24-math-g7-upper-c01')
+      ),
+    )).toBe(true))
+
+    strictSwitch!.click()
+    await vi.waitFor(() => {
+      const calls = fetchSpy.mock.calls.filter(
+        ([input]) => String(input).startsWith('/api/question-bank/questions?'),
+      )
+      expect(String(calls[calls.length - 1]?.[0])).not.toContain('teaching_progress_chapter=')
+    })
+
+    // 选中章后开启，传该章的稳定 ID。
+    host.querySelector<HTMLButtonElement>('.assembly-curriculum-node__chapter')!.click()
+    await settle()
+    strictSwitch!.click()
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/questions?')
+        && String(input).includes('teaching_progress_chapter=bnu24-math-g7-upper-c01')
+        && String(input).includes('exam_scopes=')
+      ),
+    )).toBe(true))
+  })
+
   it('adds selected question-bank rows to the paper basket and submits an export job', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -696,7 +854,7 @@ function questionPage(item: ReturnType<typeof bankQuestion>, page = 1) {
   }
 }
 
-function questionFacets() {
+function questionFacets(): QuestionBankFacets {
   return {
     exam_scopes: [],
     curriculum_sections: [],
@@ -707,6 +865,7 @@ function questionFacets() {
     thoughts: [],
     models: [],
     special_types: [{ value: '动态几何题', count: 1 }],
+    error_types: [],
     student_levels: [],
     teaching_stages: [],
     sub_skills: [],

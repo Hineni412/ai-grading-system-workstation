@@ -134,6 +134,7 @@ class SharedWordQuestionRenderer:
                 if strip_leading_number and index == 0:
                     _strip_leading_question_number(element)
                 _style_rich_paragraphs(element, line_spacing=self.style.line_spacing)
+                _cap_option_picture_height(element)
                 if align_standalone_images_right:
                     _align_standalone_picture_paragraphs_right(element)
                 relationships = block.get("image_relationships")
@@ -196,6 +197,10 @@ class SharedWordQuestionRenderer:
                 prepared,
                 content_width_dxa=self.style.content_width_dxa,
             )
+        prepared, _gridded_option_count = _grid_option_picture_groups(
+            prepared,
+            content_width_dxa=self.style.content_width_dxa,
+        )
 
         try:
             for element, relationships in prepared:
@@ -543,9 +548,26 @@ def compact_source_label(
     return f"（{'·'.join(parts)}）" if parts else ""
 
 
-def answer_space_lines(question_type: object) -> int:
+_SCORE_PREFIX = re.compile(r"^\s*[（(]\s*(\d+)\s*分")
+
+
+def answer_space_lines(
+    question_type: object,
+    question_text: object = None,
+) -> int:
+    """Reserved handwriting lines: selection none; big questions by score.
+
+    题型标注不可靠（大量解答题被标成填空），题干开头的（N 分）更可信：
+    6 分及以上按分值留空间（约 1 行/分，封顶 10 行）。
+    """
     value = str(question_type or "").casefold()
-    if any(token in value for token in ("选择", "choice", "填空", "fill")):
+    if any(token in value for token in ("选择", "choice")):
+        return 0
+    match = _SCORE_PREFIX.match(str(question_text or ""))
+    score = int(match.group(1)) if match else 0
+    if score >= 6:
+        return min(score, 10)
+    if any(token in value for token in ("填空", "fill")):
         return 0
     return 3
 
@@ -558,7 +580,11 @@ def add_answer_space(
     line_height_mm: float = 9.0,
     content_width_dxa: int = 9865,
 ) -> None:
-    """Reserve invisible handwriting space, reusing a trailing right-side figure."""
+    """Reserve handwriting space; a trailing figure moves beside it.
+
+    题末有独立图片时，图片排右、作答区排左侧整列，高度约为
+    普通留白的一半（学生直接在图旁作答，省页且可见）。
+    """
 
     if int(minimum_lines) <= 0:
         return
@@ -575,10 +601,10 @@ def add_answer_space(
     ]
     if text_paragraphs:
         text_paragraphs[-1].paragraph_format.keep_with_next = True
-    minimum_height_mm = float(minimum_lines) * float(line_height_mm)
     blank = OxmlElement("w:p")
     _style_rich_paragraphs(blank, line_spacing=1.1)
     if trailing_picture is not None:
+        minimum_height_mm = float(minimum_lines) * float(line_height_mm) / 2
         widths = _split_widths(content_width_dxa, right_fraction=0.42)
         _fit_picture_to_width(
             trailing_picture._p,
@@ -590,12 +616,64 @@ def add_answer_space(
             minimum_height_mm=minimum_height_mm,
         )
     else:
+        minimum_height_mm = float(minimum_lines) * float(line_height_mm)
         table = _build_borderless_layout_table(
             columns=((blank,),),
             widths=(int(content_width_dxa),),
             minimum_height_mm=minimum_height_mm,
         )
     _append_to_document_body(document, table)
+
+
+def _is_option_picture_paragraph(element) -> bool:
+    if element.tag != qn("w:p") or not _paragraph_has_picture(element):
+        return False
+    return bool(_OPTION_LETTER_PREFIX.match(_paragraph_visible_text(element)))
+
+
+def _grid_option_picture_groups(
+    prepared: list[tuple[object, dict[str, Path]]],
+    *,
+    content_width_dxa: int,
+) -> tuple[list[tuple[object, dict[str, Path]]], int]:
+    """Pack consecutive A./B./C./D. picture options into two-column rows."""
+    result: list[tuple[object, dict[str, Path]]] = []
+    gridded = 0
+    index = 0
+    while index < len(prepared):
+        if not _is_option_picture_paragraph(prepared[index][0]):
+            result.append(prepared[index])
+            index += 1
+            continue
+        run: list[tuple[object, dict[str, Path]]] = []
+        while index < len(prepared) and _is_option_picture_paragraph(
+            prepared[index][0]
+        ):
+            run.append(prepared[index])
+            index += 1
+        if len(run) < 2:
+            result.extend(run)
+            continue
+        widths = _split_widths(content_width_dxa, right_fraction=0.5)
+        for start in range(0, len(run), 2):
+            pair = run[start : start + 2]
+            left_element, left_relationships = pair[0]
+            if len(pair) == 2:
+                right_element, right_relationships = pair[1]
+                relationships = {**left_relationships, **right_relationships}
+                columns = ((left_element,), (right_element,))
+            else:
+                relationships = dict(left_relationships)
+                columns = ((left_element,), (OxmlElement("w:p"),))
+            table = _build_borderless_layout_table(
+                columns=columns,
+                widths=widths,
+            )
+            result.append((table, relationships))
+            gridded += 1
+            # 相邻表格之间必须有段落分隔，否则 Word/WPS 会把它们合并成一个表格。
+            result.append((OxmlElement("w:p"), {}))
+    return result, gridded
 
 
 def _compact_image_pairs(
@@ -617,7 +695,13 @@ def _compact_image_pairs(
             and _is_standalone_picture_paragraph(picture)
         ):
             widths = _split_widths(content_width_dxa, right_fraction=0.32)
-            _fit_picture_to_width(picture, max_width_dxa=widths[1] - 160)
+            _fit_picture_to_width(
+                picture,
+                max_width_dxa=min(
+                    widths[1] - 160,
+                    _OBJECTIVE_PICTURE_MAX_WIDTH_DXA,
+                ),
+            )
             table = _build_borderless_layout_table(
                 columns=((previous,), (picture,)),
                 widths=widths,
@@ -780,6 +864,41 @@ def _style_rich_paragraphs(element, *, line_spacing: float) -> None:
             properties.append(OxmlElement("w:widowControl"))
 
 
+_OPTION_LETTER_PREFIX = re.compile(r"^\s*[A-DＡ-Ｄ][.、．]")
+_OPTION_PICTURE_MAX_HEIGHT_MM = 22.0
+# 客观题配图上限：能看清即可，不超过 55mm，避免占掉作答空间。
+_OBJECTIVE_PICTURE_MAX_WIDTH_DXA = 3119
+
+
+def _cap_option_picture_height(element) -> None:
+    """选项（A./B./C./D.）行内的图片限高，避免选项图撑满整行。"""
+    max_height_emu = int(_OPTION_PICTURE_MAX_HEIGHT_MM * 36000)
+    for paragraph in element.iter(qn("w:p")):
+        visible_text = "".join(
+            child.text or ""
+            for child in paragraph.iter()
+            if child.tag in {qn("w:t"), qn("m:t")}
+        ).strip()
+        if not _OPTION_LETTER_PREFIX.match(visible_text):
+            continue
+        for extent in paragraph.iter(qn("wp:extent")):
+            try:
+                width = int(extent.get("cx") or 0)
+                height = int(extent.get("cy") or 0)
+            except ValueError:
+                continue
+            if height <= max_height_emu or height <= 0 or width <= 0:
+                continue
+            ratio = max_height_emu / height
+            new_width = int(round(width * ratio))
+            extent.set("cx", str(new_width))
+            extent.set("cy", str(max_height_emu))
+            for child in paragraph.iter():
+                if child.tag == qn("a:ext"):
+                    child.set("cx", str(new_width))
+                    child.set("cy", str(max_height_emu))
+
+
 def _align_standalone_picture_paragraphs_right(element) -> None:
     for paragraph in element.iter(qn("w:p")):
         has_picture = any(
@@ -857,14 +976,23 @@ def _keep_text_with_following_picture(elements: Sequence[object]) -> None:
         )
         if not has_picture:
             continue
-        for previous in elements[:index]:
-            for paragraph in previous.iter(qn("w:p")):
-                properties = paragraph.find(qn("w:pPr"))
-                if properties is None:
-                    properties = OxmlElement("w:pPr")
-                    paragraph.insert(0, properties)
-                if properties.find(qn("w:keepNext")) is None:
-                    properties.append(OxmlElement("w:keepNext"))
+        # 只锁定图片前的最后一个文本段落：图与引言不分页即可；
+        # 整题加 keepNext 会把不可拆的长链整体推到下一页，造成空白首页。
+        text_paragraphs = [
+            paragraph
+            for previous in elements[:index]
+            for paragraph in previous.iter(qn("w:p"))
+            if _paragraph_visible_text(paragraph)
+        ]
+        if not text_paragraphs:
+            continue
+        paragraph = text_paragraphs[-1]
+        properties = paragraph.find(qn("w:pPr"))
+        if properties is None:
+            properties = OxmlElement("w:pPr")
+            paragraph.insert(0, properties)
+        if properties.find(qn("w:keepNext")) is None:
+            properties.append(OxmlElement("w:keepNext"))
 
 
 def _append_to_document_body(document, element) -> None:

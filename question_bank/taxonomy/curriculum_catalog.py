@@ -508,6 +508,38 @@ def curriculum_volume_contract(volume_id: object) -> dict[str, Any] | None:
     }
 
 
+def teaching_progress_allowed_prefixes(chapter_id: object) -> tuple[str, ...] | None:
+    """返回该章作为教学进度上限时，已学范围允许的知识点路径前缀。
+
+    已学范围 = 目录中册序更小的所有册（整册）+ 本册章序不超过该章的所有章。
+    章节 ID 无法解析时返回 None（调用方失败关闭，不加过滤）。"""
+
+    clean_id = str(chapter_id or "").strip()
+    if not clean_id:
+        return None
+    for volume in load_curriculum_catalog()["volumes"]:
+        chapter = next(
+            (item for item in volume["chapters"] if item["id"] == clean_id),
+            None,
+        )
+        if chapter is None:
+            continue
+        volume_order = int(volume["order"])
+        chapter_order = int(chapter["order"])
+        prefixes = [
+            f"{item['label']}｜"
+            for item in load_curriculum_catalog()["volumes"]
+            if int(item["order"]) < volume_order
+        ]
+        prefixes.extend(
+            f"{volume['label']}｜{item['label']}｜"
+            for item in volume["chapters"]
+            if int(item["order"]) <= chapter_order
+        )
+        return tuple(prefixes)
+    return None
+
+
 def infer_curriculum_volume_from_text(value: object) -> dict[str, Any] | None:
     """Infer only when one grade and one semester marker are unambiguous."""
 
@@ -543,4 +575,5 @@ __all__ = [
     "eligible_curriculum_knowledge_nodes",
     "infer_curriculum_volume_from_text",
     "load_curriculum_catalog",
+    "teaching_progress_allowed_prefixes",
 ]

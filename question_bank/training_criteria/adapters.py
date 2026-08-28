@@ -34,6 +34,7 @@ from question_bank.training_criteria.analysis import (
     PlannedAnalysisBatch,
     QuestionAnalysisImage,
     QuestionAnalysisInput,
+    QuestionTypeSuggestion,
     TaxonomyProjectionReviewRequired,
     combined_response_format,
     controlled_term_ids_from_questions,
@@ -87,8 +88,14 @@ class ExistingTagProjectionWriter:
             question_ref=str(question.question_id),
         )
         if not is_auto_saveable_result(checked):
+            reasons = "；".join(
+                str(note).strip()
+                for note in checked.quality_notes
+                if str(note).strip()
+            )
             raise TaxonomyProjectionReviewRequired(
                 "tag projection requires taxonomy review"
+                + (f": {reasons}" if reasons else "")
             )
         assert checked.analysis is not None
         persisted_proposals: list[dict[str, Any]] = []
@@ -225,6 +232,30 @@ class ExistingTagProjectionWriter:
             "retrieval_miss_question_ids": retrieval_question_ids,
             "proposal_question_ids": proposal_question_ids,
         }
+
+
+class BankQuestionTypeSuggestionWriter:
+    """Adapter that lands model question-type suggestions on the write seam."""
+
+    def __init__(self, *, write_service: QuestionBankWriteService) -> None:
+        self.write_service = write_service
+
+    def apply(
+        self,
+        question: QuestionAnalysisInput,
+        suggestion: QuestionTypeSuggestion,
+        *,
+        model_name: str,
+        operation_id: str,
+    ) -> Mapping[str, Any]:
+        return self.write_service.apply_question_type_suggestion(
+            question.question_id,
+            suggested_type=suggestion.question_type,
+            question_type_confirmed=question.question_type_confirmed,
+            reason=suggestion.reason,
+            model_name=model_name,
+            operation_id=operation_id,
+        )
 
 
 class OpenAICombinedAnalysisGateway:
@@ -641,6 +672,8 @@ def _combined_prompt(
     instructions = (
         "只分析列出的初中数学题。每个列出的 question_id 必须恰好返回一条结果，"
         "并把该整数原样写入 result 与 solution_evidence，不得串题或混用候选。"
+        "一道题只返回一份 result；多问大题的小问只能拆在该结果内部的 "
+        "solution_evidence.parts 里，禁止按小问拆成多条 result。"
         "除公式、变量、选项字母、机器标识和原答案片段外，所有教师可见自由文本"
         "必须使用简体中文；返回英文说明即为失败。"
         "候选知识表是所选册别及以前册别的完整教材目录树，必须先在整棵树中按稳定 ID 选择，"
@@ -690,13 +723,19 @@ def _combined_prompt(
         "若只能确认一个台阶，改用匹配的非过程 response_mode，不得为凑数量发明步骤。"
         "不要从标点、等式、角符号或连接词推断证据点个数。"
         "question_type_confirmed=false 的本地题型只是预览提示，不是评分事实。"
+        "每题必须返回 question_type_suggestion（question_type 与 reason）："
+        "question_type 只能取 选择题、多选题、填空题、解答题、解答题（计算）、"
+        "解答题（证明）、解答题（画图）；认可本地题型时原样返回对应值，认为本地"
+        "题型有误时返回真实题型并在 reason 写一句依据。question_type_confirmed=true "
+        "的题型是教师确认事实，question_type_suggestion 必须与之一致。"
         "每个 part 的 response_mode 必须根据题目、完整答案和解析单独判定。"
         "第(1)问的一个填空位不得把后续过程问压成整题填空。出现 expected_part_count 时，"
         "必须按给定顺序返回恰好那么多 part。"
-        "response_shape 是本地确定事实：single_choice 与 single_blank 必须各返回一个 "
+        "response_shape 是本地预览提示：single_choice 与 single_blank 默认各返回一个 "
         "exact_objective part，且只有一个最终答案 evidence point；不得把逐项排除或解释"
         "过程拆成额外点。multiple_blank 保留可分别观察的各空答案；unknown 不得被强行"
-        "改成客观题形态。"
+        "改成客观题形态。仅当 question_type_suggestion 返回了与本地不同的真实题型时，"
+        "才按该真实题型组织 solution_evidence（例如把误判为填空的解答题改按过程题拆分）。"
     )
     questions = []
     for item in batch.questions:
@@ -931,7 +970,26 @@ def _combined_evidence_examples() -> dict[str, Any]:
                 }
             ],
         },
+        "duplicate_result_negative": {
+            "do_not_return": (
+                "同一 question_id 返回多条 result 是错误返回：多问大题的各个小问"
+                "必须全部放进唯一一份 result 的 solution_evidence.parts 里"
+                "（part-1、part-2……），不得每个小问各返回一份完整 result。"
+            ),
+            "wrong_shape": [
+                {"question_id": 11, "solution_evidence": {"parts": ["第1问…"]}},
+                {"question_id": 11, "solution_evidence": {"parts": ["第2问…"]}},
+            ],
+            "correct_shape": [
+                {
+                    "question_id": 11,
+                    "solution_evidence": {"parts": ["第1问…", "第2问…"]},
+                }
+            ],
+        },
         "pre_output_checklist": [
+            "每个 question_id 只返回一份 result，多问大题的小问都在该 result 的 parts 里。",
+            "每个 result 都带 question_type_suggestion，question_type 取自封闭枚举。",
             "每个能单独给分的有意义中间结果都有自己的 evidence_point。",
             "没有任何 evidence_point 把多个独立可评分台阶合在一起。",
             "没有把无意义的代数书写或重复结论拆成新点。",
@@ -1051,6 +1109,7 @@ def _word_block(
 
 __all__ = [
     "ExistingTagProjectionWriter",
+    "BankQuestionTypeSuggestionWriter",
     "OpenAICombinedAnalysisGateway",
     "QuestionAnalysisInputLoader",
     "question_analysis_input_from_config_source",

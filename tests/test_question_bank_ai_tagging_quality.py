@@ -610,7 +610,7 @@ def test_single_responses_uses_tagging_gateway_with_raw_client(monkeypatch) -> N
             },
             "input": _prompt_input(context, taxonomy_contract),
             "model": "fake-tagging-model",
-            "timeout": 240.0,
+            "timeout": 480.0,
         }
     ]
     assert math.isfinite(provider_calls[0]["timeout"])
@@ -707,7 +707,7 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
             },
             "input": _prompt_input(contexts[1], single_contract),
             "model": "fake-tagging-model",
-            "timeout": 240.0,
+            "timeout": 480.0,
         },
         {
             "text": {
@@ -715,7 +715,7 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
             },
             "input": _batch_prompt_input(batch_items, batch_contracts),
             "model": "fake-tagging-model",
-            "timeout": 240.0,
+            "timeout": 480.0,
         }
     ]
     assert all(math.isfinite(call["timeout"]) for call in provider_calls)

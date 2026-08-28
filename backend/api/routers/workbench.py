@@ -4,13 +4,19 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 
-from backend.api.dependencies import get_grading_db, get_workbench_service
+from backend.api.dependencies import (
+    get_grading_db,
+    get_scan_grading_workspace,
+    get_workbench_service,
+)
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.workbench import (
     SessionAnomalyListResponse,
     SessionAnomalyResponse,
     WorkbenchOverviewResponse,
 )
+from backend.review.manual_context import current_manual_context
+from backend.scan_grading.workspace import ScanGradingWorkspace
 from backend.workbench.service import WorkbenchService
 from backend.repositories.access import GradingRepositoryAccess
 
@@ -24,10 +30,15 @@ def get_workbench_overview(
     recent_limit: int = Query(5, ge=1, le=20),
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: WorkbenchService = Depends(get_workbench_service),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> WorkbenchOverviewResponse:
+    manual_context = None
     if session_id is not None:
         _require_session(db, session_id)
-    return WorkbenchOverviewResponse(**service.overview(session_id, recent_limit))
+        manual_context = current_manual_context(session_id, workspace)
+    return WorkbenchOverviewResponse(
+        **service.overview(session_id, recent_limit, manual_context=manual_context)
+    )
 
 
 @router.get(

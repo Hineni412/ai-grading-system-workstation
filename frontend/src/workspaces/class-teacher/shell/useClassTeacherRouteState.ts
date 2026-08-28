@@ -15,6 +15,7 @@ export interface ClassTeacherRouteState {
   workItemId: string | null
   handoffId: string | null
   subjectId: string | null
+  affairId: string | null
 }
 
 const surfaces = new Set<ClassTeacherSurface>(['home', 'calendar', 'affairs', 'students'])
@@ -22,6 +23,9 @@ const panels = new Set<StudentPanel>(['directory', 'support', 'academic'])
 const ranges = new Set<WorkRange>(['today', 'week', 'timeline', 'all'])
 const isoDate = /^\d{4}-\d{2}-\d{2}$/
 const opaqueIdPattern = /^[A-Za-z0-9_-]{8,128}$/
+// 学生编号对外统一为稳定学籍标识「班级|学号」，可含竖线、转义符与中文；
+// 与后端 SUBJECT_REF_PATTERN 一致：不含控制字符的短文本。
+const studentRefPattern = /^[^\x00-\x1f]{1,240}$/
 
 function first(value: unknown): string | null {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : null
@@ -62,8 +66,10 @@ function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteSt
   const workItemId = rawWorkItem && opaqueIdPattern.test(rawWorkItem) ? rawWorkItem : null
   const handoffCandidate = rawHandoff || (sharedHandoffReturn ? rawSourceRef : null)
   const handoffId = handoffCandidate && opaqueIdPattern.test(handoffCandidate) ? handoffCandidate : null
-  const subjectId = rawSubject && opaqueIdPattern.test(rawSubject) ? rawSubject : null
-  const allowed = new Set(['surface', 'panel', 'range', 'week', 'conversation', 'turn', 'work_item', 'handoff', 'student', 'destination', 'source_task_id', 'source_ref'])
+  const subjectId = rawSubject && studentRefPattern.test(rawSubject) ? rawSubject : null
+  const rawAffair = first(query.affair)
+  const affairId = rawAffair && opaqueIdPattern.test(rawAffair) ? rawAffair : null
+  const allowed = new Set(['surface', 'panel', 'range', 'week', 'conversation', 'turn', 'work_item', 'handoff', 'student', 'affair', 'destination', 'source_task_id', 'source_ref'])
   const unknown = Object.keys(query).some((key) => !allowed.has(key))
   const valid = !unknown
     && rawSurface === surface
@@ -78,7 +84,8 @@ function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteSt
     && (!rawWorkItem || rawWorkItem === workItemId)
     && (!rawHandoff || rawHandoff === handoffId)
     && (!rawSubject || (surface === 'students' && rawSubject === subjectId))
-  return { state: { surface, panel, range, week, conversationId, turnId, workItemId, handoffId, subjectId }, valid, sharedReturn: Boolean(sharedReturn) }
+    && (!rawAffair || (surface === 'affairs' && rawAffair === affairId))
+  return { state: { surface, panel, range, week, conversationId, turnId, workItemId, handoffId, subjectId, affairId }, valid, sharedReturn: Boolean(sharedReturn) }
 }
 
 function browserQuery(): Record<string, string> {
@@ -108,6 +115,7 @@ export function useClassTeacherRouteState(): {
       target.panel = next.panel
       if (next.subjectId) target.student = next.subjectId
     }
+    if (next.surface === 'affairs' && next.affairId) target.affair = next.affairId
     if (next.conversationId) target.conversation = next.conversationId
     if (next.turnId) target.turn = next.turnId
     if (next.workItemId) target.work_item = next.workItemId
@@ -130,7 +138,7 @@ export function useClassTeacherRouteState(): {
     if (!normalized.value.valid) {
       await commit(normalized.value.sharedReturn
         ? normalized.value.state
-        : { surface: 'home', panel: 'directory', range: 'week', week: null, conversationId: null, turnId: null, workItemId: null, handoffId: null, subjectId: null }, true)
+        : { surface: 'home', panel: 'directory', range: 'week', week: null, conversationId: null, turnId: null, workItemId: null, handoffId: null, subjectId: null, affairId: null }, true)
     }
   }
 

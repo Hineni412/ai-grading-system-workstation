@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from pathlib import Path
@@ -24,6 +25,7 @@ from question_bank.solution_evidence import (
     SolutionEvidenceRepository,
 )
 from question_bank.training_criteria import (
+    BankQuestionTypeSuggestionWriter,
     CombinedAnalysisRepository,
     CombinedQuestionAnalysisModule,
     ExistingTagProjectionWriter,
@@ -40,6 +42,7 @@ from .manager import JobContext
 
 
 TaggingFactory = Callable[[], AITaggingService]
+LOGGER = logging.getLogger(__name__)
 _RETRYABLE_CATEGORIES = {
     "rate_limit",
     "timeout",
@@ -416,8 +419,14 @@ def _run_tagging_sync_job_locked(
                         allocated=observation_sequences,
                     )
                 except Exception:  # noqa: BLE001
-                    failures.append(_failure(question_id, "save"))
-                    continue
+                    # Same rule as the combined path: the tag is already
+                    # saved, so an audit-registration failure is logged but
+                    # never marks the question as failed.
+                    LOGGER.warning(
+                        "observation registration failed for question %s",
+                        question_id,
+                        exc_info=True,
+                    )
                 tagged_count += 1
                 successful_ids.append(question_id)
 
@@ -590,6 +599,9 @@ def _run_unified_tagging_analysis(
         tag_writer=tag_writer,
         evidence_writer=evidence_writer,
         criterion_module=criterion_module,
+        question_type_writer=BankQuestionTypeSuggestionWriter(
+            write_service=tag_write_service,
+        ),
     )
     explicit_evidence_retry_set = set(retry_evidence_question_ids)
     evidence_only_set = set(evidence_only_ids) | explicit_evidence_retry_set
@@ -607,7 +619,6 @@ def _run_unified_tagging_analysis(
         publish_saved = evidence_ready and not criteria_ready
         analyze_tag = (
             question_id not in complete_set
-            and question_id not in explicit_evidence_retry_set
             and question_id not in set(evidence_only_ids)
         )
         analyze_evidence = (
@@ -722,15 +733,28 @@ def _run_unified_tagging_analysis(
                         allocated=observation_sequences,
                     )
                 except Exception:  # noqa: BLE001
-                    failures.append(_failure(question_id, "save"))
-                    continue
+                    # Observation registration is an audit projection. The tag
+                    # itself is already persisted; the re-verification below
+                    # re-reads the question-bank truth, so a registration
+                    # failure must not mark this question as failed.
+                    LOGGER.warning(
+                        "observation registration failed for question %s",
+                        question_id,
+                        exc_info=True,
+                    )
                 tag_success.append(question_id)
                 newly_tagged.append(question_id)
             else:
                 category = _combined_public_category(
                     str(item.get("tag_error_category") or "")
                 )
-                failures.append(_failure(question_id, category))
+                failures.append(
+                    _failure(
+                        question_id,
+                        category,
+                        detail=str(item.get("tag_error_detail") or ""),
+                    )
+                )
         if question_id not in tag_only_set:
             if str(item.get("criteria_status")) == "succeeded":
                 evidence_success.append(question_id)
@@ -740,7 +764,13 @@ def _run_unified_tagging_analysis(
                     int(entry["question_id"]) == question_id
                     for entry in failures
                 ):
-                    failures.append(_failure(question_id, "evidence"))
+                    failures.append(
+                        _failure(
+                            question_id,
+                            "evidence",
+                            detail=str(item.get("criteria_error_detail") or ""),
+                        )
+                    )
         criterion_status = str(
             criterion_audit_by_id.get(question_id, {}).get("status")
             or "not_requested"
@@ -1503,10 +1533,19 @@ def _result_failure(question_id: int, result: AITaggingResult) -> dict[str, obje
     return _failure(question_id, classify_tagging_error(error))
 
 
-def _failure(question_id: int, category: str) -> dict[str, object]:
+def _failure(
+    question_id: int,
+    category: str,
+    *,
+    detail: str = "",
+) -> dict[str, object]:
     safe_category = category if category in _PUBLIC_FAILURE_MESSAGES else "unknown"
-    return {
+    entry: dict[str, object] = {
         "question_id": int(question_id),
         "category": safe_category,
         "message": _PUBLIC_FAILURE_MESSAGES[safe_category],
     }
+    safe_detail = str(detail or "").strip()
+    if safe_detail:
+        entry["detail"] = safe_detail
+    return entry

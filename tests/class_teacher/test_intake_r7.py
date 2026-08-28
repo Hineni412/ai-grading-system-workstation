@@ -1148,18 +1148,11 @@ def test_sop_adoption_reuses_legacy_student_code_subject_for_roster_candidate(
     )
     handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
 
-    receipt = service.intake.adopt_handoff(
-        token="",
-        handoff_id=str(handoff["handoff_id"]),
-        draft_revision=int(handoff["draft_revision"]),
-        target_revision="new",
-        operation_id="adopt-sop-current-roster-candidate",
-    )
-
-    assert receipt["formal_object_type"] == "sop_affair"
+    # 新语义：可建单的 SOP 交接在结果落库时已自动建成正式事务。
+    assert handoff["adoption_state"] == "adopted"
     affair = service.sop.get_affair(
         token="",
-        affair_id=str(receipt["formal_object_id"]),
+        affair_id=str(handoff["affair_id"]),
     )
     assert affair["participants"][0]["subject_id"] == subject["subject_id"]
 
@@ -2555,12 +2548,10 @@ def test_sop_adoption_creates_unfinished_affair_without_decision_or_closure(tmp_
     ready = service.intake.apply_triage_result(
         turn_id=str(turn["turn_id"]), task_id=str(turn["task_id"]), payload=payload,
     )
-    receipt = service.intake.adopt_handoff(
-        token="", handoff_id=str(ready["handoffs"][0]["handoff_id"]), draft_revision=1,
-        target_revision="new", operation_id="adopt-sop-receipt",
-    )
-    assert receipt["formal_object_type"] == "sop_affair"
-    affair = service.sop.get_affair(token="", affair_id=str(receipt["formal_object_id"]))
+    # 新语义：可建单的 SOP 交接在结果落库时已自动建成正式事务。
+    handoff = ready["handoffs"][0]
+    assert handoff["adoption_state"] == "adopted"
+    affair = service.sop.get_affair(token="", affair_id=str(handoff["affair_id"]))
     assert affair["state"] != "closed"
     assert affair.get("teacher_decision") in (None, {})
     steps = [
@@ -3158,7 +3149,7 @@ def test_complete_professional_material_uses_explicit_date_and_does_not_repeat_a
     assert card["current_profile"]["revision"] == 1
 
 
-def test_sop_adoption_updates_each_selected_students_record_and_current_profile(
+def test_sop_adoption_drafts_profile_updates_until_teacher_confirms(
     tmp_path: Path,
 ) -> None:
     service, port = _service(tmp_path)
@@ -3249,13 +3240,29 @@ def test_sop_adoption_updates_each_selected_students_record_and_current_profile(
     )
     handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
 
-    service.intake.adopt_handoff(
-        token="",
-        handoff_id=str(handoff["handoff_id"]),
-        draft_revision=int(handoff["draft_revision"]),
-        target_revision="new",
-        operation_id="adopt-requested-conflict-profile-item",
-    )
+    # 新语义：可建单的 SOP 交接在结果落库时已自动建成正式事务，
+    # 建单只生成逐人待确认的档案草稿，不直接写支持记录与档案。
+    assert handoff["adoption_state"] == "adopted"
+    affair_id = str(handoff["affair_id"])
+    affair = service.sop.get_affair(token="", affair_id=affair_id)
+    drafts = list(affair["profile_update_drafts"])
+    assert len(drafts) == 2
+    assert all(draft["state"] == "pending" for draft in drafts)
+    assert {
+        str(draft["subject_id"]) for draft in drafts
+    } == {str(subject["subject_id"]) for subject in subjects}
+    with closing(service.database.connect()) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM student_card_entries").fetchone()[0] == 0
+
+    # 教师逐人确认后，支持记录与当前档案才真正写入。
+    for index, draft in enumerate(drafts, start=1):
+        service.sop.confirm_profile_update_draft(
+            token="",
+            affair_id=affair_id,
+            draft_id=str(draft["draft_id"]),
+            operation_id=f"confirm-requested-conflict-profile-{index}",
+        )
 
     cards = [
         service.student_cards.get_card(token="", subject_id=str(subject["subject_id"]))
@@ -3952,3 +3959,538 @@ def test_adopting_draft_with_legacy_hex_ref_marks_stale(tmp_path: Path) -> None:
     assert restored["handoffs"][0]["adoption_state"] == "stale"
     with closing(service.database.connect()) as connection:
         assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 0
+
+
+def _conflict_roster_service(
+    tmp_path: Path,
+) -> tuple[VaultService, FakeWorkspaceAITaskPort, list[dict[str, object]]]:
+    service, port = _service(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
+        connection.execute("UPDATE students SET class_name='一班' WHERE id=2")
+        connection.commit()
+    subjects = [
+        service.support.create_subject_for_roster_source(
+            token="",
+            operation_id=f"auto-adopt-subject-{index}",
+            source_student_id=str(index),
+            legacy_student_code=code,
+            display_name=name,
+            class_label="一班",
+        )
+        for index, (code, name) in enumerate(
+            (("A001", "合成学生甲"), ("B001", "合成学生乙")), start=1
+        )
+    ]
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="auto-adopt-homeroom",
+    )
+    return service, port, subjects
+
+
+def _conflict_roster_refs(service: VaultService) -> list[dict[str, str]]:
+    return [
+        {
+            "kind": "student",
+            "id": str(candidate["id"]),
+            "revision": str(candidate["revision"]),
+        }
+        for candidate in service.class_roster.ai_candidates(
+            token="", class_label="一班"
+        )
+    ]
+
+
+def _auto_adoptable_sop_result(
+    refs: list[dict[str, str]],
+    *,
+    template_key: str = "baseline.student_conflict",
+) -> dict[str, object]:
+    return {
+        "contract_version": "class_teacher_triage.v1",
+        "assistant_message": "已按冲突流程建立事务。",
+        "clarification_questions": [],
+        "work_items": [_work_item(
+            "auto-adopt-sop-item",
+            domain="conflict_safety",
+            mode="sop",
+            intent="create",
+            refs=refs,
+            draft={
+                "summary": "两名合成学生因座位起了争执，目前已分开且无人受伤。",
+                "template_key": template_key,
+                "to_verify": ["双方分别陈述的经过仍待核对"],
+                "observed_at": "2026-08-10T10:00:00+08:00",
+            },
+        )],
+    }
+
+
+def test_sop_handoff_is_auto_adopted_into_an_affair(tmp_path: Path) -> None:
+    service, port, subjects = _conflict_roster_service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "auto-adopt-first-turn",
+        message="合成学生甲和合成学生乙已经分开，无人受伤，刚才因座位起了争执。",
+    )
+    task = port.prepare_calls[-1]
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result=_auto_adoptable_sop_result(_conflict_roster_refs(service)),
+    )
+
+    saved = service.intake.get_conversation(str(turn["conversation_id"]))
+    handoff = next(
+        item for item in saved["handoffs"]
+        if str(item["handoff_id"]) == str(outcome["handoff_ids"][0])
+    )
+    assert handoff["adoption_state"] == "adopted"
+    affair_id = str(handoff["affair_id"] or "")
+    assert affair_id
+    assert saved["state"] == "teacher_confirmed"
+
+    affair = service.sop.get_affair(token="", affair_id=affair_id)
+    assert affair["state"] == "active"
+    assert "双方分别陈述的经过仍待核对" in list(affair["to_verify"])
+    assert {
+        str(item["subject_id"]) for item in affair["participants"] if item["subject_id"]
+    } == {str(subject["subject_id"]) for subject in subjects}
+    assert affair["profile_update_drafts"] == []
+
+    detail = service.intake.open_handoff(str(handoff["handoff_id"]))
+    assert detail["affair_id"] == affair_id
+
+    # 幂等：再次触发自动建单与重复采用都指向同一事务。
+    service.intake._auto_adopt_sop_handoffs(
+        conversation_id=str(saved["conversation_id"]),
+        turn_id=str(turn["turn_id"]),
+    )
+    replay = service.intake.adoption.adopt(
+        token="",
+        handoff_id=str(handoff["handoff_id"]),
+        draft_revision=int(handoff["draft_revision"]),
+        target_revision="auto",
+        operation_id=f"auto-adopt-{handoff['handoff_id']}",
+    )
+    assert replay["replayed"] is True
+    assert str(replay["formal_object_id"]) == affair_id
+    assert len(service.sop.list_affairs(token="")["items"]) == 1
+
+
+def test_sop_auto_adoption_falls_back_to_pending_draft_on_failure(
+    tmp_path: Path,
+) -> None:
+    service, _port = _service(tmp_path)
+    conversation = service.intake.start_conversation()
+    payload = _audio_sop_payload(summary="两名合成学生发生争执，目前已分开。")
+    payload["work_items"][0]["draft"]["template_key"] = "baseline.not_exists"
+
+    saved = service.intake.conversations.append_resolved_audio_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(conversation["revision"]),
+        transcript="合成学生甲和合成学生乙已经分开，无人受伤。",
+        operation_id="audio-auto-adopt-bad-template",
+        payload=payload,
+    )
+
+    # 模板无法解析时回退为待确认草稿，不影响本轮落库。
+    assert len(saved["handoffs"]) == 1
+    handoff = saved["handoffs"][0]
+    assert handoff["adoption_state"] in {"pending", "opened"}
+    assert handoff["affair_id"] is None
+    assert service.sop.list_affairs(token="")["items"] == []
+
+
+def test_sop_auto_adoption_is_skipped_without_template_or_participants(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "auto-adopt-skip-turn",
+        message="两名合成学生已经分开，无人受伤，刚才起了争执。",
+    )
+    task = port.prepare_calls[-1]
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "模板与参与人未定，先保留草稿。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "auto-adopt-skip-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="create",
+                draft={
+                    "summary": "两名合成学生起了争执，模板与参与人未定。",
+                    "template_key": "",
+                },
+            )],
+        },
+    )
+
+    saved = service.intake.get_conversation(str(turn["conversation_id"]))
+    handoff = next(
+        item for item in saved["handoffs"]
+        if str(item["handoff_id"]) == str(outcome["handoff_ids"][0])
+    )
+    assert handoff["adoption_state"] == "pending"
+    assert handoff["affair_id"] is None
+    assert service.sop.list_affairs(token="")["items"] == []
+
+
+def _audio_sop_payload(*, summary: str) -> dict[str, object]:
+    return {
+        "contract_version": "class_teacher_triage.v1",
+        "assistant_message": "已按语音整理冲突流程。",
+        "clarification_questions": [],
+        "work_items": [{
+            "work_item_id": "audio-sop-item-001",
+            "domain": "conflict_safety",
+            "primary_mode": "sop",
+            "secondary_modes": [],
+            "intent": "create",
+            "reason_summary": "合成语音冲突分诊",
+            "subject_refs": [],
+            "time_facts": [],
+            "safety_level": "teacher_review_required",
+            "missing_fields": [],
+            "draft": {
+                "summary": summary,
+                "template_key": "baseline.student_conflict",
+                "participant_refs": ["合成学生甲", "合成学生乙"],
+            },
+        }],
+    }
+
+
+def test_audio_turn_auto_adopts_sop_handoff(tmp_path: Path) -> None:
+    service, _port = _service(tmp_path)
+    conversation = service.intake.start_conversation()
+
+    saved = service.intake.conversations.append_resolved_audio_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(conversation["revision"]),
+        transcript="合成学生甲和合成学生乙已经分开，无人受伤。",
+        operation_id="audio-auto-adopt-001",
+        payload=_audio_sop_payload(summary="两名合成学生发生争执，目前已分开。"),
+    )
+
+    assert len(saved["handoffs"]) == 1
+    handoff = saved["handoffs"][0]
+    assert handoff["adoption_state"] == "adopted"
+    affair_id = str(handoff["affair_id"] or "")
+    assert affair_id
+    affair = service.sop.get_affair(token="", affair_id=affair_id)
+    assert {str(item["reference"]) for item in affair["participants"]} == {
+        "合成学生甲",
+        "合成学生乙",
+    }
+
+
+def test_follow_up_turn_diverts_to_flow_revision_without_second_affair(
+    tmp_path: Path,
+) -> None:
+    service, port, subjects = _conflict_roster_service(tmp_path)
+    conversation, first_turn = _conversation_with_turn(
+        service,
+        "divert-first-turn",
+        message="合成学生甲和合成学生乙已经分开，无人受伤，刚才因座位起了争执。",
+    )
+    first_task = port.prepare_calls[-1]
+    service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(first_turn["task_id"]),
+        source_ref=first_task["source_ref"],
+        context_refs=first_task["context_refs"],
+        result=_auto_adoptable_sop_result(_conflict_roster_refs(service)),
+    )
+    ready = service.intake.get_conversation(str(conversation["conversation_id"]))
+    affair_id = str(ready["handoffs"][0]["affair_id"])
+
+    continued = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(ready["revision"]),
+        message="双方已经约定先询问再使用座位。",
+        operation_id="divert-second-turn",
+    )
+
+    # 补充轮照常分诊；分诊结果落库时冲突类补充改道既有事务的流程修订。
+    triage_task = port.prepare_calls[-1]
+    assert triage_task["task_kind"] == "class_teacher.intake_triage"
+    triage_turn = continued["turns"][-1]
+    service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(triage_turn["task_id"]),
+        source_ref=triage_task["source_ref"],
+        context_refs=triage_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理本轮补充。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "divert-second-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="append",
+                refs=_conflict_roster_refs(service),
+                draft={
+                    "summary": "双方已经约定先询问再使用座位。",
+                    "template_key": "baseline.student_conflict",
+                },
+            )],
+        },
+    )
+
+    # 不再建第二个交接，也不产生第二个事务；本轮改道既有事务的流程修订。
+    continued = service.intake.get_conversation(str(conversation["conversation_id"]))
+    assert len(continued["handoffs"]) == 1
+    assert continued["handoffs"][0]["adoption_state"] == "adopted"
+    assert len(service.sop.list_affairs(token="")["items"]) == 1
+    second_task = port.prepare_calls[-1]
+    assert second_task["task_kind"] == "class_teacher.affair_flow_revision"
+    assert str(second_task["source_ref"]["id"]) == affair_id
+    second_turn = continued["turns"][-1]
+    assert str(second_turn["task_id"] or "")
+    affair = service.sop.get_affair(token="", affair_id=affair_id)
+    sync_requests = list(affair.get("sync_requests") or [])
+    assert [str(item["text"]) for item in sync_requests] == [
+        "双方已经约定先询问再使用座位。"
+    ]
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(second_turn["task_id"]),
+        source_ref=second_task["source_ref"],
+        context_refs=second_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_affair_flow_revision.v1",
+            "assistant_message": "已根据补充更新后续步骤。",
+            "items": [{
+                "item_id": "rev-1",
+                "kind": "note",
+                "text": "本周课间继续留意两人互动",
+                "reason": "预防升级",
+            }],
+            "profile_update_suggestions": [{
+                "suggestion_id": "prof-1",
+                "subject_id": str(subjects[0]["subject_id"]),
+                "record_summary": "合成学生甲在座位争执后已能约定先询问再使用。",
+                "profile_update": {
+                    "summary": "合成学生甲在同伴分歧中正学习先询问再使用。",
+                    "dimensions": [],
+                    "open_questions": [],
+                    "support_focus": [],
+                },
+            }],
+        },
+    )
+
+    assert outcome["proposal_ref"]["kind"] == "flow_revision"
+    saved = service.intake.get_conversation(str(conversation["conversation_id"]))
+    assert saved["turns"][-1]["assistant_message"] == "已根据补充更新后续步骤。"
+    assert saved["turns"][-1]["task_state"] == "response_persisted"
+    assert saved["state"] == "teacher_confirmed"
+
+    affair = service.sop.get_affair(token="", affair_id=affair_id)
+    drafts = list(affair["profile_update_drafts"])
+    assert len(drafts) == 1
+    assert drafts[0]["state"] == "pending"
+    assert str(drafts[0]["subject_id"]) == str(subjects[0]["subject_id"])
+    sync_id = str(sync_requests[0]["sync_id"])
+    entry = service.sop.flow_revision_for_sync(
+        token="", affair_id=affair_id, sync_id=sync_id
+    )
+    assert entry is not None
+    assert list(entry["profile_update_draft_ids"]) == [str(drafts[0]["draft_id"])]
+
+
+def test_audio_follow_up_turn_diverts_to_flow_revision(tmp_path: Path) -> None:
+    service, port = _service(tmp_path)
+    conversation = service.intake.start_conversation()
+    first = service.intake.conversations.append_resolved_audio_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(conversation["revision"]),
+        transcript="合成学生甲和合成学生乙已经分开，无人受伤。",
+        operation_id="audio-divert-001",
+        payload=_audio_sop_payload(summary="两名合成学生发生争执，目前已分开。"),
+    )
+    affair_id = str(first["handoffs"][0]["affair_id"])
+
+    second = service.intake.conversations.append_resolved_audio_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(first["revision"]),
+        transcript="双方已经和好，约定轮流使用座位。",
+        operation_id="audio-divert-002",
+        payload=_audio_sop_payload(summary="双方已和好，约定轮流使用座位。"),
+    )
+
+    # 冲突类补充不再产生第二份 SOP 交接，改为既有事务的一次同步修订。
+    assert len(second["handoffs"]) == 1
+    assert port.prepare_calls[-1]["task_kind"] == "class_teacher.affair_flow_revision"
+    affair = service.sop.get_affair(token="", affair_id=affair_id)
+    sync_requests = list(affair.get("sync_requests") or [])
+    assert [str(item["text"]) for item in sync_requests] == [
+        "双方已经和好，约定轮流使用座位。"
+    ]
+    assert len(service.sop.list_affairs(token="")["items"]) == 1
+
+
+def test_mixed_follow_up_turn_diverts_only_the_sop_item(tmp_path: Path) -> None:
+    service, port, _subjects = _conflict_roster_service(tmp_path)
+    conversation, first_turn = _conversation_with_turn(
+        service,
+        "divert-mixed-first-turn",
+        message="合成学生甲和合成学生乙已经分开，无人受伤，刚才因座位起了争执。",
+    )
+    first_task = port.prepare_calls[-1]
+    service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(first_turn["task_id"]),
+        source_ref=first_task["source_ref"],
+        context_refs=first_task["context_refs"],
+        result=_auto_adoptable_sop_result(_conflict_roster_refs(service)),
+    )
+    ready = service.intake.get_conversation(str(conversation["conversation_id"]))
+    affair_id = str(ready["handoffs"][0]["affair_id"])
+
+    continued = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(ready["revision"]),
+        message="双方已约定先询问再使用座位；另外合成学生甲今天主动帮助同学。",
+        operation_id="divert-mixed-second-turn",
+    )
+    triage_turn = continued["turns"][-1]
+    triage_task = port.prepare_calls[-1]
+    assert triage_task["task_kind"] == "class_teacher.intake_triage"
+    service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(triage_turn["task_id"]),
+        source_ref=triage_task["source_ref"],
+        context_refs=triage_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理一条冲突补充和一条学生记录。",
+            "clarification_questions": [],
+            "work_items": [
+                _work_item(
+                    "divert-mixed-sop-item",
+                    domain="conflict_safety",
+                    mode="sop",
+                    intent="append",
+                    refs=_conflict_roster_refs(service),
+                    draft={
+                        "summary": "双方已约定先询问再使用座位。",
+                        "template_key": "baseline.student_conflict",
+                    },
+                ),
+                _work_item(
+                    "divert-mixed-record-item",
+                    domain="student_growth",
+                    mode="record",
+                    intent="append",
+                    refs=[_conflict_roster_refs(service)[0]],
+                    draft={
+                        "summary": "合成学生甲今天主动帮助同学。",
+                        "profile_update": {
+                            "summary": "合成学生甲乐于帮助同学。",
+                            "dimensions": [],
+                            "open_questions": [],
+                            "support_focus": [],
+                        },
+                    },
+                ),
+            ],
+        },
+    )
+
+    saved = service.intake.get_conversation(str(conversation["conversation_id"]))
+    assert len(saved["handoffs"]) == 2
+    record_handoff = next(
+        item for item in saved["handoffs"]
+        if str(item["destination_key"]) == "class_teacher.student.record"
+    )
+    assert record_handoff["adoption_state"] == "pending"
+    assert str(record_handoff["turn_id"]) == str(triage_turn["turn_id"])
+    assert saved["state"] == "handoff_ready"
+    revision_task = port.prepare_calls[-1]
+    assert revision_task["task_kind"] == "class_teacher.affair_flow_revision"
+    assert str(revision_task["source_ref"]["id"]) == affair_id
+    affair = service.sop.get_affair(token="", affair_id=affair_id)
+    assert [str(item["text"]) for item in list(affair.get("sync_requests") or [])] == [
+        "双方已约定先询问再使用座位；另外合成学生甲今天主动帮助同学。"
+    ]
+    assert len(service.sop.list_affairs(token="")["items"]) == 1
+
+
+def test_record_only_follow_up_turn_still_creates_a_record_handoff(
+    tmp_path: Path,
+) -> None:
+    service, port, _subjects = _conflict_roster_service(tmp_path)
+    conversation, first_turn = _conversation_with_turn(
+        service,
+        "divert-record-first-turn",
+        message="合成学生甲和合成学生乙已经分开，无人受伤，刚才因座位起了争执。",
+    )
+    first_task = port.prepare_calls[-1]
+    service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(first_turn["task_id"]),
+        source_ref=first_task["source_ref"],
+        context_refs=first_task["context_refs"],
+        result=_auto_adoptable_sop_result(_conflict_roster_refs(service)),
+    )
+    ready = service.intake.get_conversation(str(conversation["conversation_id"]))
+
+    continued = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(ready["revision"]),
+        message="合成学生乙今天按时完成了值日。",
+        operation_id="divert-record-second-turn",
+    )
+    triage_turn = continued["turns"][-1]
+    triage_task = port.prepare_calls[-1]
+    assert triage_task["task_kind"] == "class_teacher.intake_triage"
+    service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(triage_turn["task_id"]),
+        source_ref=triage_task["source_ref"],
+        context_refs=triage_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理一条学生记录。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "divert-record-only-item",
+                domain="student_growth",
+                mode="record",
+                intent="append",
+                refs=[_conflict_roster_refs(service)[1]],
+                draft={
+                    "summary": "合成学生乙今天按时完成了值日。",
+                    "profile_update": {
+                        "summary": "合成学生乙值日负责。",
+                        "dimensions": [],
+                        "open_questions": [],
+                        "support_focus": [],
+                    },
+                },
+            )],
+        },
+    )
+
+    # 纯记录诉求不触发流程修订，照常建 record 交接。
+    assert port.prepare_calls[-1] is triage_task
+    saved = service.intake.get_conversation(str(conversation["conversation_id"]))
+    assert len(saved["handoffs"]) == 2
+    record_handoff = saved["handoffs"][-1]
+    assert str(record_handoff["destination_key"]) == "class_teacher.student.record"
+    assert record_handoff["adoption_state"] == "pending"
+    assert saved["state"] == "handoff_ready"
+    affair_id = str(ready["handoffs"][0]["affair_id"])
+    affair = service.sop.get_affair(token="", affair_id=affair_id)
+    assert list(affair.get("sync_requests") or []) == []
+    assert len(service.sop.list_affairs(token="")["items"]) == 1

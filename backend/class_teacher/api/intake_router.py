@@ -85,6 +85,11 @@ def create_intake_router() -> APIRouter:
         _no_store(response)
         return _call(lambda: _service(request).intake.list_conversations(limit=limit))
 
+    @router.get("/subjects/{student_ref}/pending-handoffs")
+    def pending_student_handoffs(student_ref: str, request: Request, response: Response):
+        _no_store(response)
+        return _call(lambda: _service(request).intake.pending_student_handoffs(student_ref))
+
     @router.get("/conversations/{conversation_id}")
     def get_conversation(conversation_id: str, request: Request, response: Response):
         _no_store(response)

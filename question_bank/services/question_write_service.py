@@ -23,6 +23,7 @@ from question_bank.models.question import (
     TagCreate,
 )
 from question_bank.models.tag_schema import MAX_TAG_LENGTH, TagAnalysis
+from question_bank.parsers.type_detector import QUESTION_TYPES
 from question_bank.services.question_revision import question_revision
 
 if TYPE_CHECKING:
@@ -549,6 +550,57 @@ class QuestionBankWriteService:
                 external_connection=connection,
                 current_knowledge=resolver,
             ).invalidate_frequency_cache_for_questions(question_ids)
+
+    def apply_question_type_suggestion(
+        self,
+        question_id: int,
+        *,
+        suggested_type: str,
+        question_type_confirmed: bool,
+        reason: str,
+        model_name: str | None,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """应用联合分析的题型建议；教师确认的题型只登记冲突不改数据。"""
+
+        question_id = int(question_id)
+        suggested = str(suggested_type or "").strip()
+        if suggested not in QUESTION_TYPES:
+            raise ValueError("suggested question type is not a supported type")
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT question_type FROM questions "
+                "WHERE id = ? AND is_deleted = 0",
+                (question_id,),
+            ).fetchone()
+            if row is None:
+                raise QuestionWriteNotFound("Question not found")
+            local_type = str(row["question_type"] or "").strip()
+            audit: dict[str, Any] = {
+                "local_type": local_type,
+                "suggested_type": suggested,
+                "reason": str(reason or "").strip(),
+                "model_name": str(model_name or "").strip(),
+                "operation_id": str(operation_id or "").strip(),
+            }
+            if question_type_confirmed:
+                audit["action"] = "conflict_only"
+            elif local_type == suggested:
+                audit["action"] = "unchanged"
+            else:
+                conn.execute(
+                    """
+                    UPDATE questions
+                    SET question_type = ?,
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ? AND is_deleted = 0
+                    """,
+                    (suggested, question_id),
+                )
+                audit["action"] = "applied"
+        return audit
 
     def save_question_preview(
         self,

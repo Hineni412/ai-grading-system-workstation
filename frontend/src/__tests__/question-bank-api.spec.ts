@@ -107,6 +107,59 @@ describe('question bank API contracts', () => {
     })).toThrow('Invalid question bank detail')
   })
 
+  it('decodes facets with the controlled error-type dimension', async () => {
+    const { decodeQuestionBankFacets } = await import('../api/question-bank')
+    const payload = {
+      exam_scopes: [],
+      curriculum_sections: [],
+      knowledge_points: [],
+      curriculum_chapters: [],
+      abilities: [],
+      methods: [],
+      thoughts: [],
+      models: [],
+      special_types: [],
+      error_types: [{ value: '运算化简错误', count: 4 }],
+      student_levels: [],
+      teaching_stages: [],
+      sub_skills: [],
+      question_types: [],
+      years: [],
+      exam_types: [],
+      grades: [],
+    }
+
+    expect(decodeQuestionBankFacets(payload)).toEqual(payload)
+    const missingErrorTypes = Object.fromEntries(
+      Object.entries(payload).filter(([key]) => key !== 'error_types'),
+    )
+    expect(() => decodeQuestionBankFacets(missingErrorTypes))
+      .toThrow('Invalid question bank facets')
+  })
+
+  it('serializes error types and the teaching-progress boundary into the query', async () => {
+    const { questionBankApi } = await import('../api/question-bank')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({
+        items: [question],
+        total: 1,
+        page: 1,
+        page_size: 20,
+        total_pages: 1,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await questionBankApi.listQuestions({
+      errorTypes: ['运算化简错误'],
+      teachingProgressChapter: 'bnu24-math-g8-upper-c01',
+    })
+
+    const requested = String(fetchSpy.mock.calls[0]?.[0])
+    expect(requested).toContain('error_types=')
+    expect(requested).toContain('teaching_progress_chapter=bnu24-math-g8-upper-c01')
+  })
+
   it('serializes the applied server filters without sending empty draft values', async () => {
     const { questionBankApi } = await import('../api/question-bank')
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(

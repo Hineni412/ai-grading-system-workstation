@@ -40,6 +40,7 @@ export interface IntakeHandoffSummary {
   subject_ref_count: number
   subject_id: string | null
   auto_open_allowed: boolean
+  affair_id?: string | null
 }
 
 export interface IntakeConversation {
@@ -203,6 +204,7 @@ function decodeHandoffSummary(value: unknown): IntakeHandoffSummary {
     adoption_state: adoptionState as IntakeHandoffSummary['adoption_state'],
     missing_fields: list(item.missing_fields).map(text), subject_ref_count: integer(item.subject_ref_count),
     subject_id: item.subject_id == null ? null : text(item.subject_id),
+    affair_id: item.affair_id == null ? null : text(item.affair_id),
     auto_open_allowed: item.auto_open_allowed,
   }
 }
@@ -310,6 +312,27 @@ function decodeConversationSummary(value: unknown): IntakeConversationSummary {
   }
 }
 
+export interface PendingStudentHandoff {
+  handoff_id: string
+  adoption_state: string
+  updated_at: string
+  summary: string
+  subject_id: string
+  student_ref: string
+}
+
+function decodePendingStudentHandoff(value: unknown): PendingStudentHandoff {
+  const item = record(value)
+  return {
+    handoff_id: text(item.handoff_id),
+    adoption_state: text(item.adoption_state),
+    updated_at: text(item.updated_at),
+    summary: text(item.summary),
+    subject_id: text(item.subject_id),
+    student_ref: text(item.student_ref),
+  }
+}
+
 function decodeDraftRevision(value: unknown): DraftRevisionSnapshot {
   const item = record(value)
   return {
@@ -366,14 +389,19 @@ export const intakeApi = {
       method: 'POST', headers: headers(), decode: decodeIntakeConversation,
     })
   },
-  startStudentConversation(subjectId: string) {
+  startStudentConversation(studentRef: string) {
     return apiClient.request('/api/class-teacher/intake/conversations', {
-      method: 'POST', headers: headers(), body: { subject_id: subjectId }, decode: decodeIntakeConversation,
+      method: 'POST', headers: headers(), body: { subject_id: studentRef }, decode: decodeIntakeConversation,
     })
   },
   listConversations(limit = 5) {
     return apiClient.request(`/api/class-teacher/intake/conversations?limit=${limit}`, {
       decode: (value) => list(record(value).items).map(decodeConversationSummary),
+    })
+  },
+  pendingStudentHandoffs(studentRef: string) {
+    return apiClient.request(`/api/class-teacher/intake/subjects/${encodeURIComponent(studentRef)}/pending-handoffs`, {
+      decode: (value) => list(record(value).items).map(decodePendingStudentHandoff),
     })
   },
   conversation(id: string) {

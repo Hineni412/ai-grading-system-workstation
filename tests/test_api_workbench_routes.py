@@ -56,11 +56,23 @@ def test_public_diagnostic_whitelist_keeps_known_safe_templates(
 @pytest.fixture
 def workbench_client(tmp_path: Path):
     from backend.api.app import create_app
-    from backend.api.dependencies import get_grading_db, get_job_manager
+    from backend.api.dependencies import (
+        get_grading_db,
+        get_job_manager,
+        get_scan_grading_workspace,
+    )
     from backend.api.routers.workbench import router as workbench_router
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
+    from backend.scan_grading.workspace import ScanGradingWorkspaceError
     from db_manager import DBManager
+
+    class _UnavailableWorkspace:
+        def get_workspace(self, session_id: int) -> dict:
+            raise ScanGradingWorkspaceError("workspace unavailable in tests")
+
+        def get_preflight(self, session_id: int) -> dict:
+            raise ScanGradingWorkspaceError("workspace unavailable in tests")
 
     db_dir = tmp_path / "databases"
     db_dir.mkdir()
@@ -185,6 +197,9 @@ def workbench_client(tmp_path: Path):
     app.include_router(workbench_router)
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
+    app.dependency_overrides[get_scan_grading_workspace] = (
+        lambda: _UnavailableWorkspace()
+    )
     with TestClient(app) as client:
         try:
             yield client, session_id, db_path, latest_job.id
@@ -218,6 +233,86 @@ def test_overview_returns_existing_counts_and_recent_sessions(workbench_client) 
     assert "result" not in response.text
     assert "private-token" not in response.text
     assert "C:/private" not in response.text
+
+
+def test_overview_review_count_honors_teacher_lock_in_frozen_batch(
+    workbench_client,
+) -> None:
+    """Homepage review count must match the review queue口径.
+
+    Regression: a legacy AI row still carrying the "需复核" marker kept
+    counting as pending on the homepage even after the teacher confirmed it
+    via a score lock, because the overview ignored the frozen batch context.
+    """
+    from backend.api.dependencies import get_scan_grading_workspace
+
+    client, session_id, db_path, _latest_job_id = workbench_client
+    with sqlite3.connect(db_path) as conn:
+        student_id = int(
+            conn.execute(
+                "SELECT id FROM students WHERE student_code = 'S001'"
+            ).fetchone()[0]
+        )
+
+    class _FrozenWorkspace:
+        def get_workspace(self, requested_session_id: int) -> dict:
+            assert int(requested_session_id) == int(session_id)
+            return {
+                "upload_batch": {
+                    "state": "frozen",
+                    "batch_id": "batch-frozen",
+                }
+            }
+
+        def get_preflight(self, requested_session_id: int) -> dict:
+            assert int(requested_session_id) == int(session_id)
+            return {
+                "groups": [
+                    {
+                        "id": "g-1",
+                        "student_id": student_id,
+                        "student_name": "Alice",
+                        "front_media_url": "",
+                        "back_media_url": None,
+                    }
+                ],
+                "decisions": [],
+                "issues": [],
+            }
+
+    client.app.dependency_overrides[get_scan_grading_workspace] = (
+        lambda: _FrozenWorkspace()
+    )
+
+    pending = client.get(
+        "/api/workbench/overview",
+        params={"session_id": session_id},
+    )
+    assert pending.status_code == 200
+    assert pending.json()["review"] == {"question_count": 1, "item_count": 1}
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO teacher_score_locks (
+                session_id, scan_batch_id, student_id, question_id,
+                score_awarded, max_score, deduction_reason,
+                source_target_type, source_target_id, revision,
+                created_at, updated_at
+            ) VALUES (?, 'batch-frozen', ?, 'Q1', 8, 10, NULL,
+                      'answer_region', 1, 1,
+                      '2026-08-20 11:17:46', '2026-08-20 11:17:46')
+            """,
+            (session_id, student_id),
+        )
+        conn.commit()
+
+    confirmed = client.get(
+        "/api/workbench/overview",
+        params={"session_id": session_id},
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["review"] == {"question_count": 0, "item_count": 0}
 
 
 def test_overview_without_session_does_not_choose_one(workbench_client) -> None:

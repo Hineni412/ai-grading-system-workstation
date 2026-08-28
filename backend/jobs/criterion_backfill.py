@@ -12,6 +12,7 @@ from question_bank.solution_evidence import (
     SolutionEvidenceRepository,
 )
 from question_bank.training_criteria import (
+    BankQuestionTypeSuggestionWriter,
     CombinedAnalysisRepository,
     CombinedQuestionAnalysisModule,
     CriterionRevisionConflict,
@@ -135,19 +136,23 @@ def run_criterion_backfill_job(
             mapping_repository = CurrentFineTermResolver.from_active_database(
                 db_path
             )
+            write_service = QuestionBankWriteService(
+                db_path,
+                data_root=root,
+            )
             analysis_module = CombinedQuestionAnalysisModule(
                 repository=CombinedAnalysisRepository(db_path),
                 gateway=gateway,
                 tag_writer=ExistingTagProjectionWriter(
-                    write_service=QuestionBankWriteService(
-                        db_path,
-                        data_root=root,
-                    ),
+                    write_service=write_service,
                     tagging_service=tagging_service,
                 ),
                 evidence_writer=SolutionEvidenceProjectionWriter(
                     mapping_repository=mapping_repository,
                     evidence_repository=SolutionEvidenceRepository(db_path),
+                ),
+                question_type_writer=BankQuestionTypeSuggestionWriter(
+                    write_service=write_service,
                 ),
             )
             summary = analysis_module.analyze(

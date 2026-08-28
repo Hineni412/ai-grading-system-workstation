@@ -166,4 +166,50 @@ describe('ConversationDesk 学生档案自动并入与撤回', () => {
       .filter((item) => item.textContent?.includes('撤回本轮更新'))
     expect(revertButtons).toHaveLength(1)
   })
+
+  it('keeps the unanswered-clarification hint visible until the teacher replies', async () => {
+    const asking: IntakeConversation = {
+      ...conversation('needs_input'), revision: 2,
+      turns: [{
+        turn_id: 'turn-ask', conversation_id: 'conversation-1234', sequence: 1,
+        operation_id: 'operation-ask', teacher_message: '合成学生近况', assistant_message: '还需要补充一点信息。',
+        clarification_questions: ['具体表现发生在哪些情境？', '之前试过哪些办法？'],
+        task_id: 'task-ask', task_state: 'response_persisted',
+        created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z',
+      }],
+    }
+    const host = await mountDesk(asking)
+
+    expect(host.textContent).toContain('AI 还有 2 个追问待你回答，直接在下方回复即可')
+
+    const answered: IntakeConversation = {
+      ...asking, revision: 3, state: 'handoff_ready',
+      turns: [...asking.turns, {
+        turn_id: 'turn-answer', conversation_id: 'conversation-1234', sequence: 2,
+        operation_id: 'operation-answer', teacher_message: '都在小组任务里，试过同桌提醒。',
+        assistant_message: '已整理到当前档案。', clarification_questions: [],
+        task_id: 'task-answer', task_state: 'response_persisted',
+        created_at: '2026-08-05T00:01:00Z', updated_at: '2026-08-05T00:01:00Z',
+      }],
+    }
+    vi.spyOn(intakeApi, 'appendTurn').mockResolvedValue(answered)
+    await sendMessage(host, '都在小组任务里，试过同桌提醒。')
+
+    expect(host.textContent).not.toContain('个追问待你回答')
+  })
+
+  it('labels handoff cards with their adoption state', async () => {
+    const host = await mountDesk({
+      ...conversation('teacher_confirmed'), revision: 3,
+      handoffs: [
+        profileHandoff('handoff-state-pending', 'pending'),
+        { ...profileHandoff('handoff-state-adopted', 'adopted'), subject_id: 'subject-02' },
+      ],
+    })
+
+    const pending = host.querySelector('[data-work-item="work-handoff-state-pending"] .handoff-state')
+    const adopted = host.querySelector('[data-work-item="work-handoff-state-adopted"] .handoff-state')
+    expect(pending?.textContent).toBe('待核对')
+    expect(adopted?.textContent).toBe('已并入')
+  })
 })

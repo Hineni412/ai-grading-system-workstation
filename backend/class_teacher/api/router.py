@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -9,6 +10,30 @@ from ..vault_service import VaultService
 
 
 _CLIENT_HEADER = "class-teacher-browser-v1"
+# 内部档案编号（uuid hex）只作兼容输入识别；对外学生编号统一为稳定学籍标识。
+_INTERNAL_SUBJECT_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def _student_subject_id(service: VaultService, student_ref: str) -> str:
+    """对外学生标识统一为稳定学籍标识「班级|学号」（student_stable_ref）。
+    入口统一解析为内部 subject_id 后走既有逻辑；旧 uuid 档案编号按兼容输入接受。
+    解析失败沿用「学生引用已失效」风格。"""
+    text = str(student_ref or "").strip()
+    if _INTERNAL_SUBJECT_ID.fullmatch(text):
+        return text
+    linked = service.support.subject_id_for_ref(student_ref=text)
+    if linked is not None:
+        return linked
+    identity = service.class_roster.roster_identity_for_ref(roster_ref=text)
+    if identity is None:
+        raise VaultError(
+            "class_teacher_subject_ref_invalid",
+            "学生引用已失效，请重新选择",
+            status_code=409,
+        )
+    raise VaultError(
+        "support_subject_not_found", "学生档案不存在", status_code=404
+    )
 
 
 def _api_error(

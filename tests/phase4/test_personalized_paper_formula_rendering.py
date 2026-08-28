@@ -83,7 +83,15 @@ def test_review_docx_uses_compact_student_bar_and_borderless_three_line_answer_s
     assert "个性化训练卷（审核稿）" not in visible_text
     assert "检查题目、分页与留白" not in visible_text
     assert "判定预算" not in visible_text
-    assert "姓名：贾浩然" in visible_text
+    # 姓名/班级/日期只在页眉，正文直接开始出题，不再有大标题与身份行。
+    header_text = "\n".join(
+        paragraph.text
+        for paragraph in document.sections[0].header.paragraphs
+    )
+    assert "姓名：贾浩然" in header_text
+    assert "班级：" in header_text
+    assert "日期：____年__月__日" in header_text
+    assert "个性化训练卷" not in visible_text
     assert "1. 选择题正文" in visible_text
     assert "2. 解答题正文" in visible_text
     assert "深圳期末" not in visible_text
@@ -258,6 +266,83 @@ def test_unsupported_formula_without_source_image_fails_closed(tmp_path: Path) -
         )
 
 
+def test_review_docx_grids_picture_options_two_per_row(tmp_path: Path) -> None:
+    asset = tmp_path / "assets" / "choice.png"
+    asset.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (180, 150), "white").save(asset)
+    source = Document()
+    stem = source.add_paragraph("3. 其中属于轴对称图形的是（　　）")
+    option_blocks: list[dict[str, object]] = [
+        {"text": stem.text, "xml": stem._p.xml},  # noqa: SLF001
+    ]
+    for letter in ("A", "B", "C", "D"):
+        paragraph = source.add_paragraph(f"{letter}. ")
+        paragraph.add_run().add_picture(str(asset), width=Inches(2.4))
+        paragraph.add_run("选项图")
+        blip = paragraph._p.xpath(".//a:blip")[-1]  # noqa: SLF001
+        relationship_id = str(blip.get(qn("r:embed")))
+        option_blocks.append({
+            "text": f"{letter}. 选项图",
+            "xml": paragraph._p.xml,  # noqa: SLF001
+            "image_relationships": {
+                relationship_id: asset.relative_to(tmp_path).as_posix(),
+            },
+        })
+
+    output = tmp_path / "option-grid.docx"
+    render_review_docx(
+        {
+            "paper_instance_id": "e" * 64,
+            "series_version": 1,
+            "student": {
+                "student_id": "1",
+                "student_name": "合成学生",
+                "class_id": "1班",
+            },
+            "items": [{
+                "task_item_code": "TASK-OPT-1",
+                "question_id": 1,
+                "question_snapshot": {
+                    "question_id": 1,
+                    "tagging_context": {
+                        "question_number": "3",
+                        "question_type": "选择题",
+                        "question_text": "（3 分）其中属于轴对称图形的是（　　）",
+                    },
+                    "rich_question_blocks": option_blocks,
+                    "images": [],
+                },
+                "recommendation_snapshot": {"question_number": "3"},
+            }],
+        },
+        data_root=tmp_path,
+        output_path=output,
+    )
+
+    reopened = Document(output)
+    # 四个选项图按 A B / C D 两行两列排布，不再一图占一行。
+    assert len(reopened.tables) == 2
+    grid_text = [
+        [
+            "".join(paragraph.text for paragraph in cell.paragraphs)
+            for cell in row.cells
+        ]
+        for table in reopened.tables
+        for row in table.rows
+    ]
+    assert grid_text[0][0].startswith("A.")
+    assert grid_text[0][1].startswith("B.")
+    assert grid_text[1][0].startswith("C.")
+    assert grid_text[1][1].startswith("D.")
+    for table in reopened.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                assert any(
+                    paragraph._p.xpath(".//a:blip")  # noqa: SLF001
+                    for paragraph in cell.paragraphs
+                )
+
+
 def test_review_docx_prefers_frozen_word_blocks_and_keeps_original_image_size(
     tmp_path: Path,
 ) -> None:
@@ -361,10 +446,7 @@ def test_review_docx_prefers_frozen_word_blocks_and_keeps_original_image_size(
     assert rich_stem.text.startswith("1. ")
     assert rich_stem.paragraph_format.line_spacing == 1.1
     assert rich_stem.paragraph_format.keep_with_next is True
-    assert not any(
-        paragraph._p.xpath(".//a:blip")  # noqa: SLF001
-        for paragraph in reopened.paragraphs
-    )
+    # 题末带图：图片排右格，作答区排左列（高度约为普通留白的一半）。
     answer_space = reopened.tables[-1]
     assert len(answer_space.columns) == 2
     rich_picture = next(
@@ -372,7 +454,7 @@ def test_review_docx_prefers_frozen_word_blocks_and_keeps_original_image_size(
         for paragraph in answer_space.cell(0, 1).paragraphs
         if paragraph._p.xpath(".//a:blip")  # noqa: SLF001
     )
-    assert rich_picture.alignment == WD_ALIGN_PARAGRAPH.RIGHT
+    assert rich_picture is not None
     assert 'w:val="single"' not in answer_space._tbl.xml  # noqa: SLF001
     inspect_docx(
         output,

@@ -127,6 +127,7 @@ async function openRosterStudent(student: ExistingRosterStudent): Promise<void> 
     })
     const emptyDossier: DirectorySubject = {
       ...created,
+      student_ref: created.student_ref ?? created.subject_id,
       support_record_count: 0,
       support_plan_count: 0,
       confirmed_entry_count: 0,

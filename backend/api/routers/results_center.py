@@ -11,13 +11,10 @@ from backend.api.dependencies import (
 )
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.results_center import ResultsCenterResponse
-from backend.grading_workflow import effective_preflight_papers
 from backend.repositories.access import GradingRepositoryAccess
 from backend.results_center.service import ResultsCenterService
-from backend.scan_grading.workspace import (
-    ScanGradingWorkspace,
-    ScanGradingWorkspaceError,
-)
+from backend.review.manual_context import current_manual_context
+from backend.scan_grading.workspace import ScanGradingWorkspace
 
 
 router = APIRouter(prefix="/api", tags=["results-center"])
@@ -39,27 +36,6 @@ def get_results_center(
     snapshot = results_service.get_snapshot(
         session_id,
         session,
-        manual_context=_current_manual_context(session_id, workspace),
+        manual_context=current_manual_context(session_id, workspace),
     )
     return ResultsCenterResponse.model_validate(asdict(snapshot))
-
-
-def _current_manual_context(
-    session_id: int,
-    workspace: ScanGradingWorkspace,
-) -> dict[str, object] | None:
-    try:
-        state = workspace.get_workspace(session_id)
-        upload_batch = state.get("upload_batch")
-        if (
-            not isinstance(upload_batch, dict)
-            or upload_batch.get("state") != "frozen"
-        ):
-            return None
-        preflight = workspace.get_preflight(session_id)
-    except ScanGradingWorkspaceError:
-        return None
-    return {
-        "scan_batch_id": str(upload_batch["batch_id"]),
-        "papers": effective_preflight_papers(preflight),
-    }

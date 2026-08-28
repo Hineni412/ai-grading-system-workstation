@@ -1,308 +1,68 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onMounted, ref } from 'vue'
 
 import AppButton from '@/components/design-system/AppButton.vue'
 import StatusBadge from '@/components/design-system/StatusBadge.vue'
-import { affairR1Api, type AffairDetail, type AffairStep, type AffairSummary } from '../api/r1'
 
-const props = defineProps<{ targetId?: string | null }>()
+import { affairR1Api, type AffairSummary } from '../api/r1'
+
+const emit = defineEmits<{ open: [affairId: string] }>()
+
 const items = ref<AffairSummary[]>([])
-const selected = ref<AffairDetail | null>(null)
-const draftText = ref('')
-const draftKind = ref<'fact' | 'communication'>('fact')
 const busy = ref(false)
 const error = ref('')
-const decisionSummary = ref('')
-const selectedDecisionOption = ref('')
-const closureSummary = ref('')
-const reopenReason = ref('')
-const syncText = ref('')
-const syncBusy = ref(false)
-const syncMessage = ref('')
-const syncError = ref('')
-const revisionChecks = ref<Record<string, boolean>>({})
-let syncTimer: number | null = null
-let syncGeneration = 0
-function lastOf<T>(list: T[]): T | null {
-  return list.length ? (list[list.length - 1] as T) : null
-}
-
-const currentSteps = computed(() => selected.value?.current_steps ?? [])
-const decisionStep = computed(() => currentSteps.value.find((step) => step.decision_key || step.decision_prompt) ?? null)
-const pendingRevision = computed(() => lastOf((selected.value?.flow_revisions ?? []).filter((item) => item.state === 'pending_review')))
-const queuedSync = computed(() => lastOf((selected.value?.sync_requests ?? []).filter((item) => item.state === 'queued')))
-const failedSync = computed(() => lastOf((selected.value?.sync_requests ?? []).filter((item) => ['failed', 'invalid_result'].includes(item.state))))
 const baselines = ['学生安全与紧急处置','欺凌线索核实','家校沟通','纪律与教育支持','缺勤与返校','阶段性关怀']
+
+function stateTone(state: string): { tone: 'info' | 'success' | 'danger'; label: string } {
+  if (state === 'discarded') return { tone: 'danger', label: '已弃用' }
+  if (state === 'closed') return { tone: 'success', label: '已结案' }
+  return { tone: 'info', label: '进行中' }
+}
 
 async function load() {
   busy.value = true; error.value = ''
   try {
-    const selectedId = selected.value?.affair_id || props.targetId
     items.value = await affairR1Api.list()
-    const target = items.value.find((item) => item.affair_id === selectedId)
-    if (target) await open(target)
   } catch { error.value = '事务列表暂时无法读取。' } finally { busy.value = false }
 }
-function refresh(): void {
-  void load()
-}
-async function open(item: AffairSummary) {
-  stopSyncPolling()
-  syncBusy.value = false; syncMessage.value = ''; syncError.value = ''; syncText.value = ''
-  selected.value = await affairR1Api.read(item.affair_id)
-  if (queuedSync.value) {
-    syncBusy.value = true
-    pollSyncResult()
-  }
-}
-async function saveDraft(step: AffairStep) {
-  if (!selected.value || !draftText.value.trim()) return
-  const prior = selected.value.drafts?.find((item) => item.step_instance_id === step.step_instance_id && item.draft_kind === draftKind.value)
-  await affairR1Api.saveDraft(selected.value.affair_id, step.step_instance_id, draftKind.value, draftText.value, prior?.revision ?? null)
-  draftText.value = ''; selected.value = await affairR1Api.read(selected.value.affair_id)
-}
-async function complete(step: AffairStep) {
-  if (!selected.value) return
-  selected.value = await affairR1Api.command(selected.value, 'complete_step', {
-    step_instance_id: step.step_instance_id, outcome: 'completed', result: '教师确认该步骤已完成',
-  })
-  await load()
-}
-async function command(name: 'teacher_decision' | 'close' | 'reopen') {
-  if (!selected.value) return
-  const input = name === 'teacher_decision'
-    ? {
-        decision_kind:'teacher',
-        summary:decisionSummary.value,
-        step_instance_id:decisionStep.value?.step_instance_id,
-        decision_key:decisionStep.value?.decision_key,
-        selected_option:selectedDecisionOption.value || null,
-      }
-    : name === 'close' ? { summary:closureSummary.value } : { reason:reopenReason.value }
-  selected.value = await affairR1Api.command(selected.value, name, input)
-  decisionSummary.value=''; selectedDecisionOption.value=''; closureSummary.value=''; reopenReason.value=''; await load()
-}
 
-function stopSyncPolling(): void {
-  syncGeneration += 1
-  if (syncTimer !== null) window.clearTimeout(syncTimer)
-  syncTimer = null
-}
-
-function pollSyncResult(): void {
-  stopSyncPolling()
-  const generation = syncGeneration
-  const poll = async () => {
-    if (generation !== syncGeneration || !selected.value) return
-    try {
-      selected.value = await affairR1Api.read(selected.value.affair_id)
-    } catch {
-      syncTimer = window.setTimeout(poll, 2500)
-      return
-    }
-    if (generation !== syncGeneration) return
-    if (pendingRevision.value) {
-      syncTimer = null
-      syncBusy.value = false
-      syncMessage.value = 'AI 已给出流程修订建议，请逐项核对后接受或拒绝。'
-      return
-    }
-    if (failedSync.value && !queuedSync.value) {
-      syncTimer = null
-      syncBusy.value = false
-      syncError.value = 'AI 没有形成可用的修订建议。原文仍保留，可以修改后再次同步。'
-      return
-    }
-    syncTimer = window.setTimeout(poll, 2000)
-  }
-  syncTimer = window.setTimeout(poll, 1200)
-}
-
-async function sendSync(): Promise<void> {
-  if (!selected.value || !syncText.value.trim() || syncBusy.value) return
-  syncBusy.value = true; syncError.value = ''; syncMessage.value = ''
-  try {
-    await affairR1Api.syncUpdate(selected.value, syncText.value.trim())
-    syncText.value = ''
-    selected.value = await affairR1Api.read(selected.value.affair_id)
-    syncMessage.value = '已发送给 AI；最多调用一次，失败不会自动重发。'
-    pollSyncResult()
-  } catch {
-    syncBusy.value = false
-    syncError.value = '同步没有提交成功；事务内容没有变化。'
-  }
-}
-
-async function decideRevision(accept: boolean): Promise<void> {
-  const revision = pendingRevision.value
-  if (!selected.value || !revision || syncBusy.value) return
-  syncBusy.value = true; syncError.value = ''; syncMessage.value = ''
-  try {
-    const accepted = accept
-      ? revision.items.filter((item) => revisionChecks.value[item.item_id] !== false).map((item) => item.item_id)
-      : []
-    selected.value = await affairR1Api.decideFlowRevision(selected.value, revision.revision_id, accepted)
-    syncMessage.value = accept ? '已接受所选调整；安全必做步骤和教师分流决定不受影响。' : '已拒绝本次全部修订建议；流程保持原样。'
-    await load()
-  } catch {
-    syncError.value = '决定没有保存；请刷新后重试。'
-  } finally { syncBusy.value = false }
-}
-
-watch(pendingRevision, (revision) => {
-  revisionChecks.value = Object.fromEntries((revision?.items ?? []).map((item) => [item.item_id, true]))
-}, { immediate: true })
-watch(() => props.targetId, () => { stopSyncPolling() })
-onBeforeUnmount(stopSyncPolling)
 onMounted(() => { void load() })
 </script>
 
 <template>
   <section class="affairs">
-    <header><div><p>连续事务</p><h2>每件事只沿一条流程推进</h2></div><AppButton variant="secondary" @click="refresh">刷新</AppButton></header>
+    <header><div><p>连续事务</p><h2>每件事只沿一条流程推进</h2></div><AppButton variant="secondary" @click="load">刷新</AppButton></header>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <div class="layout">
-      <nav aria-label="事务列表">
-        <strong v-if="items.length" class="list-heading">已保存事务 · {{ items.length }}</strong>
-        <button v-for="item in items" :key="item.affair_id" type="button" :class="{ active: selected?.affair_id === item.affair_id }" @click="open(item)">
-          <i aria-hidden="true"></i><span><strong>{{ item.title }}</strong><small>{{ item.current_step_count }} 个当前步骤 · {{ item.completed_step_count }} 个已完成</small></span><StatusBadge class="affair-state" :tone="item.projection_state === 'applied' ? 'success' : 'warning'" :label="item.projection_state === 'applied' ? '已同步' : '待同步'" />
-        </button>
-        <div v-if="!items.length && !busy" class="baselines"><strong>当前没有事务</strong><p>学校流程基线仍可查看：</p><span v-for="baseline in baselines" :key="baseline">{{ baseline }}</span></div>
-      </nav>
-      <article v-if="selected" class="detail">
-        <p class="eyebrow">{{ selected.template_key }} · 第 {{ selected.occurrence_sequence }} 轮</p>
-        <h3>{{ selected.title }}</h3><p class="muted">{{ selected.summary }}</p>
-        <div class="rail" aria-label="SOP 步骤轨迹">
-          <section v-for="step in [...selected.completed_steps, ...currentSteps, ...selected.preview_steps]" :key="step.step_instance_id" :data-state="step.state">
-            <span aria-hidden="true"></span><div><strong>{{ step.title }}</strong><small>{{ step.state }}<template v-if="step.safety_required"> · 安全必做</template><template v-if="step.decision_key"> · 分流点</template><template v-if="step.activation"> · 分支步骤</template><template v-if="step.origin === 'ai_flow_revision'"> · 教师接受的 AI 建议</template></small><p v-if="step.details">{{ step.details }}</p></div>
-            <AppButton v-if="currentSteps.some((item) => item.step_instance_id === step.step_instance_id)" variant="secondary" @click="complete(step)">确认完成</AppButton>
-          </section>
-        </div>
-        <section v-if="selected.state !== 'closed'" class="sync-box">
-          <h4>同步新情况</h4>
-          <p class="section-note">事件有新进展时写在这里；AI 会基于当前流程给出修订建议，由你逐项决定，安全必做步骤不会被改动。</p>
-          <textarea v-model="syncText" rows="3" maxlength="2000" placeholder="例如：了解到起因是对方先嘲笑；或家长已回复……" :disabled="syncBusy || !!queuedSync"></textarea>
-          <AppButton variant="secondary" :disabled="!syncText.trim() || syncBusy || !!queuedSync" @click="sendSync">{{ queuedSync ? 'AI 正在阅读新情况…' : '同步给 AI 并获取修订建议' }}</AppButton>
-          <p v-if="syncMessage" class="status" role="status">{{ syncMessage }}</p>
-          <p v-if="syncError" class="error" role="alert">{{ syncError }}</p>
-        </section>
-        <section v-if="pendingRevision" class="revision-box">
-          <h4>AI 流程修订建议</h4>
-          <p class="section-note">基于你同步的新情况：“{{ pendingRevision.source_text }}”</p>
-          <p class="assistant">{{ pendingRevision.assistant_message }}</p>
-          <label v-for="item in pendingRevision.items" :key="item.item_id" class="revision-item">
-            <input v-model="revisionChecks[item.item_id]" type="checkbox">
-            <span>
-              <em>{{ item.kind === 'add_step' ? '新增步骤' : item.kind === 'revise_step' ? '修改步骤' : '核对建议' }}</em>
-              <strong>{{ item.kind === 'note' ? item.text : item.title }}</strong>
-              <small v-if="item.kind !== 'note' && item.details">{{ item.details }}</small>
-              <small v-if="item.kind === 'add_step' && item.depends_on?.length">前置：{{ item.depends_on.join('、') }}</small>
-              <small v-if="item.reason">理由：{{ item.reason }}</small>
-            </span>
-          </label>
-          <div v-if="pendingRevision.dropped_items?.length" class="dropped"><strong>系统未采纳的建议</strong><ul><li v-for="dropped in pendingRevision.dropped_items" :key="dropped.item_id">{{ dropped.reason }}</li></ul></div>
-          <div class="revision-actions">
-            <AppButton variant="primary" :disabled="syncBusy" @click="decideRevision(true)">接受所选调整</AppButton>
-            <AppButton variant="ghost" :disabled="syncBusy" @click="decideRevision(false)">全部拒绝</AppButton>
-          </div>
-        </section>
-        <section v-if="currentSteps.length" class="draft-box">
-          <h4>当前步骤草稿</h4><select v-model="draftKind"><option value="fact">事实草稿</option><option value="communication">沟通草稿</option></select>
-          <textarea v-model="draftText" rows="4" maxlength="8000" placeholder="草稿只保存在班主任工作台，7 天后自动过期。"></textarea>
-          <AppButton variant="secondary" :disabled="!draftText.trim() || !currentSteps[0]" @click="currentSteps[0] && saveDraft(currentSteps[0])">保存到当前步骤</AppButton>
-        </section>
-        <section v-if="decisionStep" class="decision-box"><h4>教师决定 · {{ decisionStep.title }}</h4><p>{{ decisionStep.decision_prompt || '请记录教师已经作出的决定。' }}</p><select v-if="decisionStep.decision_options?.length" v-model="selectedDecisionOption"><option value="">请选择</option><option v-for="option in decisionStep.decision_options" :key="option.value" :value="option.value">{{ option.label }}</option></select><textarea v-model="decisionSummary" rows="3" maxlength="8000" placeholder="记录教师或学校已经作出的决定；AI 建议不能驱动高影响分支。"></textarea><AppButton variant="primary" :disabled="!decisionSummary.trim() || (!!decisionStep.decision_options?.length && !selectedDecisionOption)" @click="command('teacher_decision')">保存教师决定</AppButton></section>
-      </article>
-      <div v-else class="empty"><span>↗</span><strong>选择一件事务</strong><p>查看当前步骤、依赖关系与教师草稿。</p></div>
-      <aside v-if="selected" class="next-panel">
-        <p class="eyebrow">后续与安全</p><h3>流程边界</h3>
-        <section><strong>后续步骤</strong><p v-if="!selected.preview_steps?.length">当前没有被依赖阻塞的后续步骤。</p><ul><li v-for="step in selected.preview_steps" :key="step.step_instance_id">{{ step.title }} · 等待依赖</li></ul></section>
-        <section><strong>并行分支</strong><p>{{ currentSteps.length > 1 ? `当前有 ${currentSteps.length} 个步骤可并行推进。` : '当前没有并行分支。' }}</p></section>
-        <section v-if="selected.school_config_gaps?.length" class="warning"><strong>学校配置缺口</strong><ul><li v-for="gap in selected.school_config_gaps" :key="gap">{{ gap }}</li></ul></section>
-        <section v-if="selected.emergency_prompt" class="warning"><strong>安全提示</strong><p>{{ selected.emergency_prompt }}</p></section>
-        <section v-if="selected.state!=='closed'"><strong>结案</strong><p v-if="currentSteps.length || selected.preview_steps?.length">必做步骤未完成，暂不能结案。</p><textarea v-model="closureSummary" rows="3" placeholder="结案摘要"></textarea><AppButton variant="secondary" :disabled="!closureSummary.trim() || currentSteps.length>0 || selected.preview_steps?.length>0" @click="command('close')">确认结案</AppButton></section>
-        <section v-else><strong>重开新一轮</strong><p>重开会创建新的 occurrence，不覆盖上一轮。</p><textarea v-model="reopenReason" rows="3" placeholder="重开理由（必填）"></textarea><AppButton variant="secondary" :disabled="!reopenReason.trim()" @click="command('reopen')">填写理由并重开</AppButton></section>
-      </aside>
-    </div>
+    <nav aria-label="事务列表" class="affair-list">
+      <strong v-if="items.length" class="list-heading">已保存事务 · {{ items.length }}</strong>
+      <button v-for="item in items" :key="item.affair_id" type="button" @click="emit('open', item.affair_id)">
+        <i aria-hidden="true"></i>
+        <span>
+          <strong>{{ item.title }}</strong>
+          <small>{{ item.current_step_count }} 个当前步骤 · {{ item.completed_step_count }} 个已完成</small>
+        </span>
+        <StatusBadge class="affair-state" :tone="stateTone(item.state).tone" :label="stateTone(item.state).label" />
+      </button>
+      <div v-if="!items.length && !busy" class="baselines"><strong>当前没有事务</strong><p>学校流程基线仍可查看：</p><span v-for="baseline in baselines" :key="baseline">{{ baseline }}</span></div>
+    </nav>
   </section>
 </template>
 
 <style scoped>
 .affairs{overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}
 header{display:flex;justify-content:space-between;align-items:end;padding:var(--space-5);border-bottom:1px solid var(--border)}
-header p,.eyebrow{margin:0 0 2px;color:var(--primary);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.08em}
+header p{margin:0 0 2px;color:var(--primary);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.08em}
 h2{margin:0;font-size:var(--font-size-h2)}
-button,input,select,textarea{font:inherit}
-.layout{display:grid;grid-template-columns:240px minmax(0,1fr) 300px;min-height:560px}
-.layout>nav{padding:var(--space-3);border-right:1px solid var(--border);background:var(--muted)}
-nav>button{display:grid;grid-template-columns:4px 1fr;gap:var(--space-2);width:100%;padding:var(--space-3);border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left;cursor:pointer}
-nav>button:hover{background:var(--accent)}
-nav>button.active{background:var(--card)}
-nav i{background:var(--primary);border-radius:2px}
-nav span{display:grid;gap:3px}
-nav small{color:var(--color-text-secondary)}
-.affair-state{grid-column:2;justify-self:start;margin-top:2px}
+.affair-list{display:grid;padding:var(--space-3)}
+.affair-list>button{display:grid;grid-template-columns:4px 1fr auto;gap:var(--space-2);align-items:center;width:100%;padding:var(--space-3);border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left;cursor:pointer;font:inherit}
+.affair-list>button:hover{background:var(--accent)}
+.affair-list i{align-self:stretch;background:var(--primary);border-radius:2px}
+.affair-list span{display:grid;gap:3px}
+.affair-list small{color:var(--color-text-secondary)}
+.affair-state{justify-self:end}
 .baselines{display:grid;gap:var(--space-1);padding:var(--space-3)}
 .baselines span{padding:var(--space-1);border-bottom:1px solid var(--color-border-subtle);font-size:var(--font-size-dense)}
-.detail{padding:var(--space-5)}
-.detail h3{margin:0;font-size:var(--font-size-h2)}
-.muted{color:var(--color-text-secondary)}
-.rail{margin-top:var(--space-5);border-left:2px solid var(--accent)}
-.rail section{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:var(--space-3);align-items:start;margin-left:-8px;padding:0 0 var(--space-5)}
-.rail section>span{width:14px;height:14px;border:3px solid var(--card);border-radius:50%;background:var(--primary)}
-.rail section[data-state="blocked"]>span{background:var(--muted-foreground)}
-.rail div{display:grid;gap:3px}
-.rail small{color:var(--muted-foreground)}
-.rail p{margin:var(--space-1) 0 0;color:var(--color-text-secondary)}
-.draft-box,.decision-box{display:grid;grid-template-columns:180px 1fr;gap:var(--space-2);margin-top:var(--space-4);padding:var(--space-4);border:1px solid var(--border);border-radius:var(--radius);background:var(--muted)}
-.draft-box h4,.decision-box h4{grid-column:1/-1;margin:0}
-.draft-box select,.decision-box select{align-self:start;min-height:36px;padding:0 var(--space-2);border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}
-.draft-box textarea,.decision-box textarea{grid-column:1/-1;padding:var(--space-2);border:1px solid var(--border);border-radius:var(--radius);background:var(--card);resize:vertical}
-.draft-box button,.decision-box button{grid-column:2;justify-self:end}
-.next-panel{padding:var(--space-4);border-left:1px solid var(--border);background:var(--muted)}
-.next-panel>section{margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--color-border-subtle)}
-.next-panel p,.next-panel li{color:var(--color-text-secondary);font-size:var(--font-size-dense)}
-.next-panel textarea{width:100%;box-sizing:border-box;margin-top:var(--space-2);padding:var(--space-2);border:1px solid var(--border);border-radius:var(--radius);background:var(--card);resize:vertical}
-.next-panel .app-button{margin-top:var(--space-2)}
-.warning{border-left:3px solid var(--color-warning);padding-left:var(--space-3)!important}
-.empty{display:grid;place-items:center;align-content:center;text-align:center;color:var(--color-text-secondary)}
-.empty span{font-size:36px;color:var(--primary)}
+.list-heading{display:block;padding:var(--space-1) var(--space-2);color:var(--color-text-secondary);font-size:var(--font-size-caption)}
 .error{padding:var(--space-3);color:var(--destructive)}
-.creation-prefill{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3);padding:var(--space-4) var(--space-5);border-bottom:1px solid var(--border);background:var(--color-warning-subtle)}
-.creation-prefill>div:first-child,.creation-prefill .wide,.ai-reference,.prefill-actions,.creation-prefill .message{grid-column:1/-1}
-.creation-prefill h3{margin:0}
-.creation-prefill label{display:grid;gap:var(--space-1);font-size:var(--font-size-dense);font-weight:650}
-.creation-prefill input,.creation-prefill select,.creation-prefill textarea{box-sizing:border-box;width:100%;padding:var(--space-2);border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}
-.ai-reference{padding:var(--space-3);border-left:3px solid var(--color-warning);background:var(--card);overflow-wrap:anywhere}
-.retain-reference{display:flex!important;align-items:flex-start;gap:var(--space-2);margin-top:var(--space-2)}
-.retain-reference input{width:auto}
-.prefill-actions{display:flex;gap:var(--space-2)}
-.prefill-actions button{min-height:38px;padding:0 var(--space-3);border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}
-.prefill-actions button:first-child{border-color:var(--primary);background:var(--primary);color:var(--primary-foreground)}
-.creation-prefill .message{margin:0;color:var(--color-accent-active)}
-.draft-list{display:grid;gap:var(--space-2);margin-bottom:var(--space-3);padding-bottom:var(--space-3);border-bottom:1px solid var(--border)}
-.draft-list>strong,.list-heading{display:block;padding:var(--space-1) var(--space-2);color:var(--color-text-secondary);font-size:var(--font-size-caption)}
-.draft-list button{width:100%;padding:var(--space-3);border:1px solid var(--border);border-left:4px solid var(--primary);border-radius:var(--radius);background:var(--card);text-align:left}
-.draft-list button[data-kind="affair_recommendation"]{border-left-color:var(--color-warning)}
-.draft-list button[data-kind="student_support_recommendation"]{border-left-color:var(--color-ai)}
-.draft-list button span{display:grid;gap:3px}
-.draft-list button small{color:var(--color-text-secondary)}
-.sync-box,.revision-box{margin-top:var(--space-5);padding:var(--space-4);border:1px solid var(--border);border-radius:var(--radius);background:var(--muted)}
-.sync-box h4,.revision-box h4{margin:0 0 var(--space-2);font-size:var(--font-size-h4)}
-.section-note{margin:0 0 var(--space-3);color:var(--color-text-secondary);font-size:var(--font-size-caption)}
-.sync-box textarea{box-sizing:border-box;width:100%;margin-bottom:var(--space-3);padding:var(--space-2);border:1px solid var(--border);border-radius:var(--radius);background:var(--card);resize:vertical}
-.sync-box .status{color:var(--color-info);font-size:var(--font-size-caption)}
-.revision-box{border-color:var(--color-ai)}
-.revision-box .assistant{margin:0 0 var(--space-3)}
-.revision-item{display:flex;align-items:flex-start;gap:var(--space-2);margin-bottom:var(--space-3);padding:var(--space-3);border:1px solid var(--color-border-subtle);border-radius:var(--radius);background:var(--card)}
-.revision-item input{margin-top:3px}
-.revision-item span{display:grid;gap:3px}
-.revision-item em{color:var(--color-ai);font-size:var(--font-size-caption);font-style:normal;font-weight:700}
-.revision-item small{color:var(--color-text-secondary)}
-.dropped{margin:var(--space-3) 0;padding:var(--space-3);border:1px dashed var(--border);border-radius:var(--radius);font-size:var(--font-size-caption)}
-.dropped ul{margin:var(--space-1) 0 0;padding-left:var(--space-5)}
-.revision-actions{display:flex;gap:var(--space-3)}
-select:focus-visible,textarea:focus-visible,nav>button:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
-@media(max-width:1050px){.layout{grid-template-columns:220px 1fr}.next-panel{grid-column:1/-1;border-top:1px solid var(--border);border-left:0}}
-@media(max-width:750px){.creation-prefill{grid-template-columns:1fr}.creation-prefill>*{grid-column:1!important}.layout{grid-template-columns:1fr}.layout>nav{border-right:0;border-bottom:1px solid var(--border)}}
+.affair-list>button:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
 </style>

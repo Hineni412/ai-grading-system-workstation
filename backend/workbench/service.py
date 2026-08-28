@@ -24,6 +24,8 @@ class WorkbenchService:
         self,
         session_id: int | None,
         recent_limit: int,
+        *,
+        manual_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Aggregate existing read models without internal HTTP calls."""
         recent_sessions = []
@@ -48,6 +50,7 @@ class WorkbenchService:
                 questions = self.review_service.list_questions(
                     int(session_id),
                     session,
+                    manual_context=manual_context,
                 )
                 review_questions = [
                     question

@@ -9,6 +9,7 @@ from question_bank.training_criteria.analysis import (
     QuestionAnalysisImage,
     QuestionAnalysisInput,
     QuestionAnalysisWorkItem,
+    QuestionTypeSuggestion,
     TagOnlyV1ResultAdapter,
     TaxonomyProjectionReviewRequired,
     TrainingCriteriaDraft,
@@ -27,6 +28,7 @@ from question_bank.training_criteria.repository import (
     CombinedAnalysisRepository,
 )
 from question_bank.training_criteria.adapters import (
+    BankQuestionTypeSuggestionWriter,
     ExistingTagProjectionWriter,
     OpenAICombinedAnalysisGateway,
     QuestionAnalysisInputLoader,
@@ -64,6 +66,7 @@ __all__ = [
     "AnalysisConflictError",
     "AnalysisRequestCheckpoint",
     "ApprovedCriterionMissing",
+    "BankQuestionTypeSuggestionWriter",
     "CombinedAnalysisRepository",
     "CombinedQuestionAnalysisModule",
     "ConfirmedQuestionAdoptionLink",
@@ -91,6 +94,7 @@ __all__ = [
     "QuestionAnalysisInput",
     "QuestionAnalysisWorkItem",
     "QuestionAnalysisInputLoader",
+    "QuestionTypeSuggestion",
     "question_analysis_input_from_config_source",
     "QualityGateResult",
     "TagOnlyV1ResultAdapter",

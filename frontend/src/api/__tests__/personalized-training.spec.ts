@@ -33,6 +33,7 @@ const draftPayload = {
       slot: 1,
       question_id: 31,
       question_number: '3',
+      question_text: '解方程 3x + 1 = 7。',
       stage: 'direct',
       target: {
         stable_key: 'kp_alg_linear_equation',
@@ -162,9 +163,17 @@ describe('personalized training API', () => {
 
     expect(decoded.students[0]?.items[0]).toMatchObject({
       question_id: 31,
+      question_text: '解方程 3x + 1 = 7。',
       criterion_point_count: 3,
       matched_key: 'kp_alg_linear_equation',
     })
+    // 旧草稿没有 question_text，仍按可选字段解码。
+    const legacyItem = { ...draftPayload.students[0]!.items[0]! } as Record<string, unknown>
+    delete legacyItem.question_text
+    expect(decodePersonalizedRecommendationDraft({
+      ...draftPayload,
+      students: [{ ...draftPayload.students[0]!, items: [legacyItem] }],
+    }).students[0]?.items[0]?.question_text).toBeUndefined()
     expect(() => decodePersonalizedRecommendationDraft({
       ...draftPayload,
       output_path: 'C:\\private\\draft.json',

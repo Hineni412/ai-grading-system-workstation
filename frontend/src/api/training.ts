@@ -64,6 +64,7 @@ export interface PersonalizedRecommendationCreateRequest
   scope_keys?: string[]
   target_names: string[]
   exclude_current_exam_originals: boolean
+  curriculum_volume_id?: string | null
 }
 
 export interface PersonalizedRecommendationEditRequest {
@@ -91,6 +92,8 @@ export interface PersonalizedRecommendationItem {
   slot: number
   question_id: number
   question_number: string
+  // 旧草稿没有题干；新建/替换的草稿项才带 question_text。
+  question_text?: string
   stage: TrainingStage
   target: Record<string, unknown>
   matched_key: string
@@ -847,6 +850,7 @@ function isRecommendationItem(
     && isInteger(value.slot, 1)
     && isInteger(value.question_id, 1)
     && typeof value.question_number === 'string'
+    && (value.question_text === undefined || typeof value.question_text === 'string')
     && isStage(value.stage)
     && isRecord(value.target)
     && isNonEmptyString(value.matched_key)
@@ -1391,6 +1395,7 @@ export const trainingApi = {
       expected_draft_revision: number
       student_ids: string[]
       context_window_tokens: 32768 | 65536 | 128000
+      direct_freeze?: boolean
     },
   ): Promise<PersonalizedPaperBatch> {
     return apiClient.request(

@@ -91,6 +91,8 @@ def test_personalized_draft_create_and_get_have_public_contract(
 
     assert response.status_code == 200
     assert response.json()["draft_id"] == "d" * 64
+    response_item = response.json()["students"][0]["items"][0]
+    assert response_item["question_text"] == "解方程 3x + 1 = 7。"
     assert module.created["actor_ref"] == "local_teacher"
     assert module.created["config"].expected_minutes == 50
     assert module.created["config"].difficulty_min == 3
@@ -163,6 +165,36 @@ def test_personalized_edit_uses_revision_and_safe_errors(
     assert "source_version" not in changed.text
 
 
+def test_personalized_draft_accepts_curriculum_volume_bound(
+    personalized_client: tuple[TestClient, FakeRecommendation],
+) -> None:
+    client, module = personalized_client
+    response = client.post(
+        "/api/training/personalized-drafts",
+        json={
+            **_create_body(),
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+        },
+    )
+    assert response.status_code == 200
+    assert module.created["config"].curriculum_volume_id == (
+        "bnu24-math-g7-lower"
+    )
+
+    unknown = client.post(
+        "/api/training/personalized-drafts",
+        json={
+            **_create_body(),
+            "request_token": "9" * 32,
+            "curriculum_volume_id": "bnu24-math-g6-lower",
+        },
+    )
+    assert unknown.status_code == 422
+    assert unknown.json()["error"]["code"] == (
+        "personalized_recommendation_invalid"
+    )
+
+
 def _create_body() -> dict[str, object]:
     return {
         "request_token": "1" * 32,
@@ -198,7 +230,44 @@ def _draft() -> dict[str, object]:
         "engine_version": "personalized-recommendation-v1",
         "source_version": "b" * 64,
         "config": {},
-        "students": [],
+        "students": [
+            {
+                "student_id": "SYN-S01",
+                "student_code": "S01",
+                "student_name": "合成学生",
+                "class_id": "SYN-C01",
+                "selection_mode": "mastery_targeted",
+                "targets": [],
+                "items": [
+                    {
+                        "item_id": "item-1",
+                        "item_order": 1,
+                        "slot": 1,
+                        "question_id": 31,
+                        "question_number": "3",
+                        "question_text": "解方程 3x + 1 = 7。",
+                        "stage": "direct",
+                        "target": {
+                            "stable_key": "kp_alg_linear_equation",
+                        },
+                        "matched_key": "kp_alg_linear_equation",
+                        "matched_name": "一元一次方程",
+                        "relation": None,
+                        "criterion_version_id": "c" * 64,
+                        "criterion_point_count": 1,
+                        "difficulty": 5,
+                        "estimated_minutes": 6,
+                        "source_paper": "合成题源",
+                        "reason": "直接巩固一元一次方程。",
+                        "locked": False,
+                        "replacement_history": [],
+                    }
+                ],
+                "shortages": [],
+                "warnings": [],
+                "estimated_minutes": 6,
+            }
+        ],
         "warnings": [],
         "history": [],
     }

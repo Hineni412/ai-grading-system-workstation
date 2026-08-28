@@ -8,6 +8,8 @@ import csv
 from io import BytesIO, StringIO
 from contextlib import closing
 from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
@@ -15,6 +17,7 @@ from .encrypted_database import EncryptedDatabase
 from .errors import VaultError
 from .existing_student_roster import ExistingStudent, ExistingStudentRosterSource
 from .secure_repository import EncryptedObjectRepository
+from .subject_canonical import canonical_subjects
 
 
 _RESULT_STATES = {
@@ -25,6 +28,40 @@ _RESULT_STATES = {
     "incomplete",
     "makeup",
 }
+
+# 场次指纹与 metadata_complete 判定共用的 8 个必填元数据字段。
+_SESSION_REQUIRED_FIELDS = (
+    "title",
+    "academic_year",
+    "term",
+    "grade",
+    "exam_type",
+    "comparison_series",
+    "occurred_on",
+    "source_reference",
+)
+
+# 允许教师事后更正的场次元数据字段；comparison_series 与 source_reference
+# 参与归组与来源追溯，不在更正范围内。
+_SESSION_EDITABLE_FIELDS = (
+    "title",
+    "grade",
+    "term",
+    "exam_type",
+    "occurred_on",
+    "academic_year",
+)
+
+_SESSION_EDITABLE_LABELS = {
+    "title": ("考试名称", 500),
+    "grade": ("年级", 40),
+    "term": ("学期", 40),
+    "exam_type": ("考试类型", 120),
+    "occurred_on": ("考试日期", 40),
+    "academic_year": ("学年", 40),
+}
+
+_SESSION_DELETE_CONFIRMATION_PHRASE = "确认删除本场考试"
 
 
 def _iso() -> str:
@@ -255,12 +292,14 @@ class AssessmentEvidenceService:
         key_provider: Callable[[str], bytes],
         subject_ensurer: Callable[..., str] | None = None,
         roster_source: ExistingStudentRosterSource | None = None,
+        projections: Any | None = None,
     ) -> None:
         self.database = database
         self.repository = repository
         self._key_provider = key_provider
         self._subject_ensurer = subject_ensurer
         self._roster_source = roster_source
+        self.projections = projections
 
     def confirm_batch(
         self,
@@ -613,6 +652,881 @@ class AssessmentEvidenceService:
                 )
         return result
 
+    def update_session_metadata(
+        self,
+        *,
+        token: str,
+        operation_id: str,
+        session_id: str,
+        fields: dict[str, object],
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "evidence.session_update")
+        if replay is not None:
+            return replay
+        updates = self._validated_session_updates(fields)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                row = connection.execute(
+                    """
+                    SELECT session_id, payload_object_id
+                    FROM assessment_sessions
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    raise VaultError(
+                        "assessment_session_not_found",
+                        "成绩场次不存在",
+                        status_code=404,
+                    )
+                payload, revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(row["payload_object_id"]),
+                )
+                merged = {**payload, **updates}
+                merged["metadata_complete"] = all(
+                    str(merged.get(key) or "").strip()
+                    for key in _SESSION_REQUIRED_FIELDS
+                )
+                fingerprint = self._session_fingerprint(vmk, merged)
+                conflict = connection.execute(
+                    """
+                    SELECT session_id FROM assessment_sessions
+                    WHERE source_fingerprint = ? AND session_id != ?
+                    """,
+                    (fingerprint, session_id),
+                ).fetchone()
+                if conflict is not None:
+                    raise VaultError(
+                        "assessment_session_conflict",
+                        "已存在相同场次，可删除本场次后重新上传",
+                        status_code=409,
+                    )
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(row["payload_object_id"]),
+                    object_type="assessment_session",
+                    payload=merged,
+                    expected_revision=revision,
+                )
+                connection.execute(
+                    """
+                    UPDATE assessment_sessions
+                    SET source_fingerprint = ?, metadata_complete = ?,
+                        updated_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (
+                        fingerprint,
+                        int(bool(merged["metadata_complete"])),
+                        _iso(),
+                        session_id,
+                    ),
+                )
+                result = {
+                    "session_id": session_id,
+                    "updated": True,
+                    "session": {
+                        key: merged.get(key)
+                        for key in _SESSION_REQUIRED_FIELDS
+                    }
+                    | {"metadata_complete": bool(merged["metadata_complete"])},
+                }
+                self._remember(
+                    connection,
+                    operation_id,
+                    "evidence.session_update",
+                    result,
+                )
+        return result
+
+    def update_session_max_scores(
+        self,
+        *,
+        token: str,
+        operation_id: str,
+        session_id: str,
+        max_scores: dict[str, float],
+        participant_count: int | None = None,
+    ) -> dict[str, object]:
+        """更正场次满分与年级人数：满分改考试/证据两级，人数改全部排名上下文。"""
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "evidence.session_max_scores")
+        if replay is not None:
+            return replay
+        cleaned = self._validated_max_score_updates(max_scores, participant_count)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                self._session_row(connection, session_id)
+                updated = self._apply_session_max_scores(
+                    connection,
+                    vmk,
+                    session_id=session_id,
+                    max_scores=cleaned,
+                    participant_count=participant_count,
+                )
+                result = {
+                    "session_id": session_id,
+                    "updated": True,
+                    "subjects": sorted(updated),
+                    "participant_count": participant_count,
+                }
+                self._remember(
+                    connection,
+                    operation_id,
+                    "evidence.session_max_scores",
+                    result,
+                )
+        return result
+
+    def update_global_max_scores(
+        self,
+        *,
+        token: str,
+        operation_id: str,
+        max_scores: dict[str, float],
+        participant_count: int | None = None,
+    ) -> dict[str, object]:
+        """全年级统一更正：对所有 active 场次按归一科目名覆盖满分与年级人数。
+
+        覆盖语义：有值即覆盖（包括已有值）。max_scores 的键是归一展示名，
+        每场先用归一映射反查该场次的原始列名再更新；该场无此科目则跳过，
+        实际覆盖的场次数计入返回。
+        """
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "evidence.global_max_scores")
+        if replay is not None:
+            return replay
+        cleaned = self._validated_max_score_updates(max_scores, participant_count)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                session_ids = [
+                    str(row["session_id"])
+                    for row in connection.execute(
+                        """
+                        SELECT session_id FROM assessment_sessions
+                        WHERE state = 'active'
+                        ORDER BY session_id
+                        """
+                    ).fetchall()
+                ]
+                sessions_updated = 0
+                subject_hits = {name: 0 for name in cleaned}
+                for session_id in session_ids:
+                    name_map = canonical_subjects(
+                        self._session_subject_names(connection, vmk, session_id)
+                    )
+                    translated = {
+                        raw: cleaned[canonical]
+                        for raw, canonical in name_map.items()
+                        if canonical in cleaned
+                    }
+                    if not translated and participant_count is None:
+                        continue
+                    updated = self._apply_session_max_scores(
+                        connection,
+                        vmk,
+                        session_id=session_id,
+                        max_scores=translated,
+                        participant_count=participant_count,
+                    )
+                    sessions_updated += 1
+                    for canonical in {name_map[raw] for raw in updated}:
+                        subject_hits[canonical] += 1
+                result = {
+                    "sessions_updated": sessions_updated,
+                    "subjects": subject_hits,
+                    "participant_count": participant_count,
+                }
+                self._remember(
+                    connection,
+                    operation_id,
+                    "evidence.global_max_scores",
+                    result,
+                )
+        return result
+
+    @staticmethod
+    def _validated_max_score_updates(
+        max_scores: dict[str, float],
+        participant_count: int | None,
+    ) -> dict[str, float]:
+        """满分/年级人数校验：空更新、非正人数、非正满分都在这里拒绝。
+
+        「总分」键被忽略：总分满分由读取层按其余展示科目满分之和派生，
+        不再单独维护；旧客户端仍带该键时按未填写处理，不报错。
+        """
+        max_scores = {
+            name: value
+            for name, value in max_scores.items()
+            if str(name).strip() != "总分"
+        }
+        if not max_scores and participant_count is None:
+            raise VaultError(
+                "assessment_session_update_empty",
+                "没有需要保存的更正内容",
+                status_code=422,
+            )
+        if participant_count is not None and (
+            isinstance(participant_count, bool)
+            or not isinstance(participant_count, int)
+            or participant_count <= 0
+        ):
+            raise VaultError(
+                "assessment_participant_count_invalid",
+                "年级人数必须是正整数",
+                status_code=422,
+            )
+        cleaned: dict[str, float] = {}
+        for name, value in max_scores.items():
+            subject_name = str(name).strip()
+            try:
+                number = float(value)
+            except (TypeError, ValueError) as exc:
+                raise VaultError(
+                    "assessment_max_score_invalid",
+                    "满分必须是正数",
+                    status_code=422,
+                ) from exc
+            if not number > 0:
+                raise VaultError(
+                    "assessment_max_score_invalid",
+                    "满分必须是正数",
+                    status_code=422,
+                )
+            cleaned[subject_name] = number
+        return cleaned
+
+    def _session_subject_names(
+        self,
+        connection: Any,
+        vmk: bytes,
+        session_id: str,
+    ) -> set[str]:
+        """场次内全部 active 考试的原始科目名（未归一）。"""
+        rows = connection.execute(
+            """
+            SELECT DISTINCT a.payload_object_id AS assessment_object
+            FROM assessment_session_members m
+            JOIN evidence_versions ev
+              ON ev.evidence_version_id = m.evidence_version_id
+            JOIN subject_results sr ON sr.result_id = ev.result_id
+            JOIN assessments a ON a.assessment_id = sr.assessment_id
+            WHERE m.session_id = ? AND ev.state = 'active'
+            """,
+            (session_id,),
+        ).fetchall()
+        names: set[str] = set()
+        for row in rows:
+            payload, _revision = self.repository.get(
+                connection,
+                vmk=vmk,
+                object_id=str(row["assessment_object"]),
+            )
+            subject_name = str(payload.get("subject_name") or "")
+            if subject_name:
+                names.add(subject_name)
+        return names
+
+    def _apply_session_max_scores(
+        self,
+        connection: Any,
+        vmk: bytes,
+        *,
+        session_id: str,
+        max_scores: dict[str, float],
+        participant_count: int | None,
+    ) -> list[str]:
+        """单场应用满分/人数更正，返回实际更新的原始科目名。"""
+        member_rows = connection.execute(
+            """
+            SELECT ev.payload_object_id AS evidence_object,
+                   a.assessment_id,
+                   a.payload_object_id AS assessment_object
+            FROM assessment_session_members m
+            JOIN evidence_versions ev
+              ON ev.evidence_version_id = m.evidence_version_id
+            JOIN subject_results sr ON sr.result_id = ev.result_id
+            JOIN assessments a ON a.assessment_id = sr.assessment_id
+            WHERE m.session_id = ? AND ev.state = 'active'
+            """,
+            (session_id,),
+        ).fetchall()
+        assessments: dict[str, dict[str, Any]] = {}
+        for row in member_rows:
+            entry = assessments.setdefault(
+                str(row["assessment_id"]),
+                {
+                    "assessment_object": str(row["assessment_object"]),
+                    "evidence_objects": [],
+                },
+            )
+            entry["evidence_objects"].append(
+                str(row["evidence_object"])
+            )
+        payloads: dict[str, tuple[dict[str, Any], int, str]] = {}
+        session_subjects: set[str] = set()
+        for assessment_id, entry in assessments.items():
+            payload, revision = self.repository.get(
+                connection,
+                vmk=vmk,
+                object_id=str(entry["assessment_object"]),
+            )
+            subject_name = str(payload.get("subject_name") or "")
+            payloads[assessment_id] = (payload, revision, subject_name)
+            if subject_name:
+                session_subjects.add(subject_name)
+        unknown = sorted(set(max_scores) - session_subjects)
+        if unknown:
+            raise VaultError(
+                "assessment_subject_not_in_session",
+                "场次不包含学科："
+                + "、".join(unknown)
+                + "；本场次学科："
+                + "、".join(sorted(session_subjects)),
+                status_code=422,
+            )
+        updated: list[str] = []
+        for assessment_id, (
+            payload,
+            revision,
+            subject_name,
+        ) in payloads.items():
+            if subject_name not in max_scores:
+                continue
+            new_max = max_scores[subject_name]
+            payload["max_score"] = new_max
+            self.repository.put(
+                connection,
+                vmk=vmk,
+                object_id=str(
+                    assessments[assessment_id]["assessment_object"]
+                ),
+                object_type="assessment",
+                payload=payload,
+                expected_revision=revision,
+            )
+            for evidence_object in assessments[assessment_id][
+                "evidence_objects"
+            ]:
+                evidence, evidence_revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(evidence_object),
+                )
+                evidence["max_score"] = new_max
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(evidence_object),
+                    object_type="assessment_evidence_version",
+                    payload=evidence,
+                    expected_revision=evidence_revision,
+                )
+            updated.append(subject_name)
+        if participant_count is not None:
+            # 年级人数写进该场次全部 active 证据对应的排名上下文。
+            rank_rows = connection.execute(
+                """
+                SELECT rc.payload_object_id AS rank_object
+                FROM assessment_session_members m
+                JOIN evidence_versions ev
+                  ON ev.evidence_version_id = m.evidence_version_id
+                JOIN rank_contexts rc ON rc.result_id = ev.result_id
+                WHERE m.session_id = ? AND ev.state = 'active'
+                """,
+                (session_id,),
+            ).fetchall()
+            for rank_row in rank_rows:
+                rank_object = str(rank_row["rank_object"])
+                rank_context, rank_revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=rank_object,
+                )
+                rank_context["participant_count"] = participant_count
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=rank_object,
+                    object_type="rank_context",
+                    payload=rank_context,
+                    expected_revision=rank_revision,
+                )
+        return updated
+
+    def preview_delete_session(
+        self,
+        *,
+        token: str,
+        session_id: str,
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            row = self._session_row(connection, session_id)
+            payload, _revision = self.repository.get(
+                connection,
+                vmk=vmk,
+                object_id=str(row["payload_object_id"]),
+            )
+            impact = self._session_impact(connection, session_id)
+        counts = {
+            "results": len(impact["result_ids"]),
+            "assessments": len(impact["assessment_ids"]),
+            "imports": len(impact["import_ids"]),
+            "attention_cards": len(impact["attention_card_ids"]),
+        }
+        version_payload = {
+            "session_id": session_id,
+            "evidence_version_ids": sorted(impact["evidence_version_ids"]),
+            "result_ids": sorted(impact["result_ids"]),
+            "assessment_ids": sorted(impact["assessment_ids"]),
+            "import_ids": sorted(impact["import_ids"]),
+            "attention_card_ids": sorted(impact["attention_card_ids"]),
+            "counts": counts,
+        }
+        preview_version = hashlib.sha256(
+            json.dumps(
+                version_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "session_id": session_id,
+            "title": str(payload.get("title") or ""),
+            "counts": counts,
+            "preview_version": preview_version,
+            "confirmation_phrase": _SESSION_DELETE_CONFIRMATION_PHRASE,
+        }
+
+    def delete_session(
+        self,
+        *,
+        token: str,
+        operation_id: str,
+        session_id: str,
+        preview_version: str | None = None,
+        confirmation_phrase: str,
+    ) -> dict[str, object]:
+        self._key_provider(token)
+        if re.fullmatch(r"[A-Za-z0-9_-]{8,128}", operation_id) is None:
+            raise VaultError(
+                "vault_operation_id_invalid",
+                "操作编号无效，请刷新页面后重试",
+                status_code=422,
+            )
+        replay = self._idempotent(operation_id, "evidence.session_delete")
+        if replay is not None:
+            return replay
+        preview = self.preview_delete_session(
+            token=token,
+            session_id=session_id,
+        )
+        if (
+            preview_version is not None
+            and preview_version != preview["preview_version"]
+        ):
+            raise VaultError(
+                "assessment_session_delete_preview_changed",
+                "删除影响已经变化，请重新查看并确认",
+                status_code=409,
+                details=preview,
+            )
+        live_database = self.database
+        snapshot = live_database.snapshot_bytes()
+        with TemporaryDirectory(
+            prefix=".session-delete-candidate-",
+            dir=live_database.root,
+        ) as candidate_root:
+            candidate_database = live_database.isolated_copy(
+                snapshot,
+                root=Path(candidate_root),
+            )
+            self.database = candidate_database
+            try:
+                result = self._delete_session_once(
+                    token=token,
+                    operation_id=operation_id,
+                    session_id=session_id,
+                    confirmation_phrase=confirmation_phrase,
+                )
+                candidate_snapshot = candidate_database.snapshot_bytes()
+            finally:
+                self.database = live_database
+        transaction: Path | None = None
+        tombstoned: list[dict[str, object]] = []
+        try:
+            if self.projections is not None:
+                with closing(live_database.connect()) as connection:
+                    rows = connection.execute(
+                        """
+                        SELECT g.* FROM sensitive_work_groups g
+                        WHERE g.source_kind = 'attention_followup'
+                          AND g.source_id IN (
+                            SELECT attention_card_id FROM attention_cards
+                            WHERE evidence_version_id IN (
+                                SELECT evidence_version_id
+                                FROM assessment_session_members
+                                WHERE session_id = ?
+                            )
+                        )
+                        """,
+                        (session_id,),
+                    ).fetchall()
+                    tombstoned = [dict(row) for row in rows]
+                for group in tombstoned:
+                    self.projections.tombstone(
+                        token=token,
+                        group_id=str(group["group_id"]),
+                    )
+            transaction = live_database.create_subject_delete_transaction(
+                operation_id=operation_id,
+                database_snapshot=snapshot,
+            )
+            live_database.replace_from_snapshot_atomically(
+                candidate_snapshot
+            )
+            live_database.commit_subject_delete_transaction(transaction)
+            return result
+        except Exception:
+            if transaction is not None and transaction.exists():
+                live_database.recover_interrupted_operations()
+            if self.projections is not None:
+                for group in tombstoned:
+                    try:
+                        self.projections.upsert(
+                            token=token,
+                            source_kind=str(group["source_kind"]),
+                            source_id=str(group["source_id"]),
+                            occurrence_id=str(group["occurrence_id"] or "") or None,
+                            state=str(group["state"]),
+                            due_date=None
+                            if group["due_date"] is None
+                            else str(group["due_date"]),
+                        )
+                    except Exception:
+                        pass
+            raise
+
+    def _delete_session_once(
+        self,
+        *,
+        token: str,
+        operation_id: str,
+        session_id: str,
+        confirmation_phrase: str,
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "evidence.session_delete")
+        if replay is not None:
+            return replay
+        if confirmation_phrase != _SESSION_DELETE_CONFIRMATION_PHRASE:
+            raise VaultError(
+                "assessment_session_delete_confirmation_required",
+                f"请输入“{_SESSION_DELETE_CONFIRMATION_PHRASE}”后再删除",
+                status_code=422,
+            )
+        with closing(self.database.connect()) as connection:
+            with connection:
+                row = self._session_row(connection, session_id)
+                impact = self._session_impact(connection, session_id)
+                object_ids = set(impact["object_ids"])
+                object_ids.add(str(row["payload_object_id"]))
+
+                def _placeholders(values: list[str]) -> str:
+                    return ",".join("?" for _ in values)
+
+                # 被删关注卡片的敏感事项投影按 attention_card_id 关联，
+                # 与 delete_subject 同法：在事务内删除投影组（outbox 随之
+                # 级联删除），跨库墓碑由 delete_session 在落盘前处理。
+                projection_groups = connection.execute(
+                    """
+                    SELECT g.group_id FROM sensitive_work_groups g
+                    WHERE g.source_kind = 'attention_followup'
+                      AND g.source_id IN (
+                        SELECT attention_card_id FROM attention_cards
+                        WHERE evidence_version_id IN (
+                            SELECT evidence_version_id
+                            FROM assessment_session_members
+                            WHERE session_id = ?
+                        )
+                    )
+                    """,
+                    (session_id,),
+                ).fetchall()
+                projection_group_ids = [
+                    str(item[0]) for item in projection_groups
+                ]
+                if projection_group_ids:
+                    group_placeholders = _placeholders(projection_group_ids)
+                    object_ids.update(
+                        str(item[0])
+                        for item in connection.execute(
+                            f"""
+                            SELECT envelope_object_id
+                            FROM sensitive_work_projection_outbox
+                            WHERE group_id IN ({group_placeholders})
+                            """,
+                            projection_group_ids,
+                        ).fetchall()
+                    )
+                    connection.execute(
+                        f"""
+                        DELETE FROM sensitive_work_groups
+                        WHERE group_id IN ({group_placeholders})
+                        """,
+                        projection_group_ids,
+                    )
+                evidence_ids = impact["evidence_version_ids"]
+                if evidence_ids:
+                    evidence_placeholders = _placeholders(evidence_ids)
+                    connection.execute(
+                        f"""
+                        DELETE FROM attention_card_evidence_links
+                        WHERE evidence_version_id IN ({evidence_placeholders})
+                        """,
+                        evidence_ids,
+                    )
+                    connection.execute(
+                        f"""
+                        DELETE FROM attention_cards
+                        WHERE evidence_version_id IN ({evidence_placeholders})
+                        """,
+                        evidence_ids,
+                    )
+                    connection.execute(
+                        f"""
+                        DELETE FROM evidence_versions
+                        WHERE evidence_version_id IN ({evidence_placeholders})
+                        """,
+                        evidence_ids,
+                    )
+                result_ids = impact["result_ids"]
+                if result_ids:
+                    result_placeholders = _placeholders(result_ids)
+                    connection.execute(
+                        f"""
+                        DELETE FROM rank_contexts
+                        WHERE result_id IN ({result_placeholders})
+                        """,
+                        result_ids,
+                    )
+                    connection.execute(
+                        f"""
+                        DELETE FROM subject_results
+                        WHERE result_id IN ({result_placeholders})
+                        """,
+                        result_ids,
+                    )
+                assessment_ids = impact["assessment_ids"]
+                if assessment_ids:
+                    connection.execute(
+                        f"""
+                        DELETE FROM assessments
+                        WHERE assessment_id IN ({_placeholders(assessment_ids)})
+                        """,
+                        assessment_ids,
+                    )
+                connection.execute(
+                    """
+                    DELETE FROM assessment_session_members
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                )
+                # payload_object_id 外键是 RESTRICT，必须先删场次行再删对象。
+                connection.execute(
+                    "DELETE FROM assessment_sessions WHERE session_id = ?",
+                    (session_id,),
+                )
+                import_ids = impact["import_ids"]
+                if import_ids:
+                    import_placeholders = _placeholders(import_ids)
+                    connection.execute(
+                        f"""
+                        DELETE FROM source_fingerprints
+                        WHERE import_id IN ({import_placeholders})
+                        """,
+                        import_ids,
+                    )
+                    connection.execute(
+                        f"""
+                        DELETE FROM assessment_imports
+                        WHERE import_id IN ({import_placeholders})
+                        """,
+                        import_ids,
+                    )
+                connection.executemany(
+                    "DELETE FROM encrypted_objects WHERE object_id = ?",
+                    [(object_id,) for object_id in sorted(object_ids)],
+                )
+                result = {
+                    "session_id": session_id,
+                    "deleted": True,
+                    "counts": {
+                        "results": len(result_ids),
+                        "assessments": len(assessment_ids),
+                        "imports": len(import_ids),
+                        "attention_cards": len(impact["attention_card_ids"]),
+                    },
+                }
+                self._remember(
+                    connection,
+                    operation_id,
+                    "evidence.session_delete",
+                    result,
+                )
+        return result
+
+    def _session_row(self, connection: Any, session_id: str) -> Any:
+        row = connection.execute(
+            """
+            SELECT session_id, payload_object_id
+            FROM assessment_sessions
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            raise VaultError(
+                "assessment_session_not_found",
+                "成绩场次不存在",
+                status_code=404,
+            )
+        return row
+
+    def _session_impact(
+        self,
+        connection: Any,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """收集删除场次会牵连的全部行标识与加密对象标识。"""
+        evidence_version_ids = [
+            str(row[0])
+            for row in connection.execute(
+                """
+                SELECT evidence_version_id
+                FROM assessment_session_members
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchall()
+        ]
+        result_ids: list[str] = []
+        attention_card_ids: list[str] = []
+        object_ids: set[str] = set()
+        if evidence_version_ids:
+            placeholders = ",".join("?" for _ in evidence_version_ids)
+            evidence_rows = connection.execute(
+                f"""
+                SELECT result_id, payload_object_id
+                FROM evidence_versions
+                WHERE evidence_version_id IN ({placeholders})
+                """,
+                evidence_version_ids,
+            ).fetchall()
+            result_ids = sorted({str(row["result_id"]) for row in evidence_rows})
+            object_ids.update(
+                str(row["payload_object_id"]) for row in evidence_rows
+            )
+            attention_rows = connection.execute(
+                f"""
+                SELECT attention_card_id, payload_object_id
+                FROM attention_cards
+                WHERE evidence_version_id IN ({placeholders})
+                """,
+                evidence_version_ids,
+            ).fetchall()
+            attention_card_ids = [
+                str(row["attention_card_id"]) for row in attention_rows
+            ]
+            object_ids.update(
+                str(row["payload_object_id"]) for row in attention_rows
+            )
+        assessment_ids: list[str] = []
+        if result_ids:
+            placeholders = ",".join("?" for _ in result_ids)
+            result_rows = connection.execute(
+                f"""
+                SELECT assessment_id, payload_object_id
+                FROM subject_results
+                WHERE result_id IN ({placeholders})
+                """,
+                result_ids,
+            ).fetchall()
+            assessment_ids = sorted(
+                {str(row["assessment_id"]) for row in result_rows}
+            )
+            object_ids.update(
+                str(row["payload_object_id"]) for row in result_rows
+            )
+            object_ids.update(
+                str(row[0])
+                for row in connection.execute(
+                    f"""
+                    SELECT payload_object_id FROM rank_contexts
+                    WHERE result_id IN ({placeholders})
+                    """,
+                    result_ids,
+                ).fetchall()
+            )
+        import_ids: list[str] = []
+        if assessment_ids:
+            placeholders = ",".join("?" for _ in assessment_ids)
+            assessment_rows = connection.execute(
+                f"""
+                SELECT import_id, payload_object_id
+                FROM assessments
+                WHERE assessment_id IN ({placeholders})
+                """,
+                assessment_ids,
+            ).fetchall()
+            object_ids.update(
+                str(row["payload_object_id"]) for row in assessment_rows
+            )
+            # 一个导入批次的全部考试都随本场次删除时才连带删除批次，
+            # 否则保留，避免误删其他场次的成绩。
+            for import_id in sorted(
+                {str(row["import_id"]) for row in assessment_rows}
+            ):
+                shared = connection.execute(
+                    f"""
+                    SELECT 1 FROM assessments
+                    WHERE import_id = ?
+                      AND assessment_id NOT IN ({placeholders})
+                    LIMIT 1
+                    """,
+                    [import_id, *assessment_ids],
+                ).fetchone()
+                if shared is None:
+                    import_ids.append(import_id)
+            if import_ids:
+                import_placeholders = ",".join("?" for _ in import_ids)
+                object_ids.update(
+                    str(row[0])
+                    for row in connection.execute(
+                        f"""
+                        SELECT payload_object_id FROM assessment_imports
+                        WHERE import_id IN ({import_placeholders})
+                        """,
+                        import_ids,
+                    ).fetchall()
+                )
+        return {
+            "evidence_version_ids": evidence_version_ids,
+            "result_ids": result_ids,
+            "assessment_ids": assessment_ids,
+            "import_ids": import_ids,
+            "attention_card_ids": attention_card_ids,
+            "object_ids": object_ids,
+        }
+
     def _insert_assessment(
         self,
         connection: Any,
@@ -765,6 +1679,7 @@ class AssessmentEvidenceService:
             "score": score,
             "result_state": result_state,
             "teacher_note": str(result.get("teacher_note") or "") or None,
+            "grade_level": self._optional_grade_level(result.get("grade_level")),
         }
         self.repository.put(
             connection,
@@ -910,8 +1825,7 @@ class AssessmentEvidenceService:
             "raw_file_retained": False,
             "metadata_complete": metadata_complete,
         }
-        signature = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        fingerprint = hmac.new(vmk, f"assessment-session|{signature}".encode("utf-8"), hashlib.sha256).digest()
+        fingerprint = self._session_fingerprint(vmk, payload)
         row = connection.execute(
             "SELECT session_id FROM assessment_sessions WHERE source_fingerprint = ?",
             (fingerprint,),
@@ -1142,12 +2056,69 @@ class AssessmentEvidenceService:
         )
 
     @staticmethod
+    def _session_fingerprint(vmk: bytes, payload: dict[str, object]) -> bytes:
+        """场次归并指纹：只覆盖 _SESSION_REQUIRED_FIELDS 的 8 个元数据字段。
+
+        teacher_confirmed_at、raw_file_retained、metadata_complete 不参与
+        指纹：同一场考试分多次（分学科）确认时，每次确认时刻各不相同，
+        但成绩必须归并到同一 session。登记（_ensure_session）与元数据
+        更正（update_session_metadata）必须使用同一算法。
+        """
+        metadata = {key: payload.get(key) for key in _SESSION_REQUIRED_FIELDS}
+        signature = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hmac.new(vmk, f"assessment-session|{signature}".encode("utf-8"), hashlib.sha256).digest()
+
+    @classmethod
+    def _validated_session_updates(
+        cls,
+        fields: dict[str, object],
+    ) -> dict[str, str]:
+        unknown = sorted(set(fields) - set(_SESSION_EDITABLE_FIELDS))
+        if unknown:
+            raise VaultError(
+                "assessment_session_field_invalid",
+                f"场次字段不可更正：{', '.join(unknown)}",
+                status_code=422,
+            )
+        updates: dict[str, str] = {}
+        for key, value in fields.items():
+            label, maximum = _SESSION_EDITABLE_LABELS[key]
+            clean = cls._text(value, label, maximum)
+            if key == "occurred_on":
+                try:
+                    datetime.fromisoformat(clean)
+                except ValueError as exc:
+                    raise VaultError(
+                        "assessment_date_invalid",
+                        "考试日期无效",
+                        status_code=422,
+                    ) from exc
+            updates[key] = clean
+        return updates
+
+    @staticmethod
     def _text(value: object, label: str, maximum: int) -> str:
         clean = str(value or "").strip()
         if not clean or len(clean) > maximum:
             raise VaultError(
                 "assessment_text_invalid",
                 f"{label}不能为空且不能超过 {maximum} 个字符",
+                status_code=422,
+            )
+        return clean
+
+    @staticmethod
+    def _optional_grade_level(value: object) -> str | None:
+        """等级原样保存：trim 后非空才存，超长拒绝；缺省为 None。"""
+        if value is None:
+            return None
+        clean = str(value).strip()
+        if not clean:
+            return None
+        if len(clean) > 20:
+            raise VaultError(
+                "assessment_grade_level_invalid",
+                "等级不能超过 20 个字符",
                 status_code=422,
             )
         return clean

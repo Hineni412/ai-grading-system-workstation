@@ -58,7 +58,7 @@ DEFAULT_POLICIES: Mapping[LLMRequestKind, LLMRequestPolicy] = MappingProxyType(
             600.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
         ),
         LLMRequestKind.TAGGING: LLMRequestPolicy(
-            240.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
+            480.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
         ),
         LLMRequestKind.TAGGING_BATCH: LLMRequestPolicy(
             3600.0, 10, 1000, (2.0, 5.0, 10.0, 20.0, 40.0), False

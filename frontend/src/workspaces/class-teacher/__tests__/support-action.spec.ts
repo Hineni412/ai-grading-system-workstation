@@ -35,7 +35,7 @@ async function flush() {
 }
 afterEach(() => { apps.splice(0).forEach((app) => app.unmount()); document.body.innerHTML=''; window.history.replaceState({}, '', '/'); vi.restoreAllMocks() })
 
-const subject = { subject_id:'s1', display_name:'合成学生', source_student_id:'S1', class_label:'一班', support_record_count:0, support_plan_count:1, confirmed_entry_count:0, projection_state:'none', attention_pending_count:0, last_confirmed_at:null }
+const subject = { subject_id:'s1', student_ref:'s1', display_name:'合成学生', source_student_id:'S1', class_label:'一班', support_record_count:0, support_plan_count:1, confirmed_entry_count:0, projection_state:'none', attention_pending_count:0, last_confirmed_at:null }
 
 function planFixture(overrides: Partial<SupportPlan> = {}): SupportPlan {
   return {

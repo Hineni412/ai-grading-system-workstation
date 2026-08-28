@@ -404,7 +404,7 @@ def test_approving_new_version_supersedes_old_but_keeps_old_readable(
     ]["criteria"]
 
 
-def test_content_change_marks_approved_head_stale_and_blocks_freeze(
+def test_content_change_blocks_freeze_without_stale_marking_on_read(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "question-bank.db"
@@ -429,11 +429,46 @@ def test_content_change_marks_approved_head_stale_and_blocks_freeze(
     workspace = module.read(changed)
 
     assert workspace["available"] is False
-    assert workspace["current_version"]["status"] == "stale"
-    assert module.get_version(version_id)["status"] == "stale"
+    assert workspace["current_version"]["status"] == "approved"
+    assert module.get_version(version_id)["status"] == "approved"
     with pytest.raises(ApprovedCriterionMissing) as exc:
         module.freeze((changed,))
     assert exc.value.question_ids == (1,)
+
+    module.propose(
+        question=changed,
+        draft=_draft(changed),
+        source_kind="backfill",
+        source_reference="analysis:synthetic:2",
+        actor_ref="synthetic-job",
+        reason="内容变化后重新生成",
+    )
+    assert module.get_version(version_id)["status"] == "stale"
+
+
+def test_read_has_no_write_side_effect(tmp_path: Path) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed(database)
+    module = TrainingCriterionModule(database)
+    question = _question(1)
+    proposed = _propose(module, question)
+    version_id = proposed["current_version"]["version_id"]
+
+    changed = _question(1, text="题干已经改变：解方程 x+2=3。")
+    workspace = module.read(changed)
+
+    assert workspace["available"] is False
+    assert workspace["revision"] == proposed["revision"]
+    assert module.get_version(version_id)["status"] == "proposed"
+    with connect(database) as connection:
+        stale_events = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM training_criterion_events
+            WHERE question_id = 1 AND event_type = 'stale'
+            """
+        ).fetchone()[0]
+    assert stale_events == 0
 
 
 def test_revision_and_request_tokens_prevent_duplicate_or_stale_writes(
