@@ -112,8 +112,16 @@ def test_drawable_canvas_dependency_is_retired() -> None:
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
     constraints = (ROOT / "constraints.txt").read_text(encoding="utf-8")
 
-    assert "streamlit-drawable-canvas" not in requirements
-    assert "streamlit-drawable-canvas" not in constraints
+    for marker in (
+        "streamlit-drawable-canvas",
+        "streamlit>=",
+        "streamlit==",
+        "google-generativeai",
+        "faster-whisper",
+        "pyarrow==",
+    ):
+        assert marker not in requirements
+        assert marker not in constraints
 
 
 def test_retirement_guard_covers_first_party_build_and_config_files() -> None:
