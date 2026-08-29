@@ -32,6 +32,7 @@ from question_bank.training_criteria.adapters import (
     ExistingTagProjectionWriter,
     OpenAICombinedAnalysisGateway,
     QuestionAnalysisInputLoader,
+    combined_analysis_retry_budget,
     question_analysis_input_from_config_source,
 )
 from question_bank.training_criteria.versioning import (
@@ -103,6 +104,7 @@ __all__ = [
     "TrainingCriterionModule",
     "TrainingCriterionPoint",
     "UnmappedFineTermResolver",
+    "combined_analysis_retry_budget",
     "combined_response_format",
     "compose_generated_config_from_skeletons",
     "criteria_from_confirmed_rubric",

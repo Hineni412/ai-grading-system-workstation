@@ -70,6 +70,7 @@ class WorkCommandRequest(BaseModel):
         "record_progress",
         "update_collection_summary",
         "open_restricted_projection",
+        "delete",
     ]
     expected_revision: int = Field(ge=1)
     operation_id: str = Field(min_length=8, max_length=128)

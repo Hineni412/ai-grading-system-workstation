@@ -59,21 +59,6 @@ class VaultService:
             self._key_provider,
             model_gateway,
         )
-        from .home_intake import HomeIntake
-
-        self.home_intake = HomeIntake(
-            self.ordinary_database,
-            self.work,
-            self.model_approval,
-        )
-        from .home_intake_drafts import HomeIntakeDrafts
-
-        self.home_intake_drafts = HomeIntakeDrafts(
-            self.database,
-            self.repository,
-            self._key_provider,
-            self.ordinary_database,
-        )
         from .sensitive_work_projection import SensitiveWorkProjection
 
         self.projections = SensitiveWorkProjection(
@@ -83,13 +68,10 @@ class VaultService:
             self.work,
         )
         from .action_ledger_service import ActionLedgerService
-        from .planning_service import PlanningService
         from .sop_workflow_service import SopWorkflowService
-        from .collection_service import CollectionService
         from .sop_baseline_service import SopBaselineService
         from .support_record_service import SupportRecordService
         from .student_card_service import StudentCardService
-        from .quick_inbox_service import QuickInboxService
         from .assessment_evidence_service import AssessmentEvidenceService
         from .attention_service import AttentionService
         from .local_speech import LocalSpeechTranscriber
@@ -99,21 +81,10 @@ class VaultService:
             self.repository,
             self._key_provider,
         )
-        self.planning = PlanningService(
-            self.database,
-            self.repository,
-            self._key_provider,
-        )
         self.sop = SopWorkflowService(
             self.database,
             self.repository,
             self._key_provider,
-        )
-        self.collections = CollectionService(
-            self.database,
-            self.repository,
-            self._key_provider,
-            self.planning,
         )
         self.sop_baselines = SopBaselineService(self.sop)
         self.support = SupportRecordService(
@@ -150,14 +121,6 @@ class VaultService:
             model_gateway=self.workspace_model_gateway,
             student_cards=self.student_cards,
             support=self.support,
-        )
-        self.quick_inbox = QuickInboxService(
-            self.database,
-            self.repository,
-            self._key_provider,
-            self.support,
-            self.actions,
-            self.sop,
         )
         self.evidence = AssessmentEvidenceService(
             self.database,
@@ -203,7 +166,6 @@ class VaultService:
             repository=self.repository,
             key_provider=self._key_provider,
             support=self.support,
-            planning=self.planning,
             work=self.work,
             sop=self.sop,
             sop_baselines=self.sop_baselines,
@@ -215,18 +177,8 @@ class VaultService:
     def _initialize_business_facades(self) -> None:
         from .affair_workspace import AffairWorkspace
         from .class_overview import ClassOverview
-        from .home_intake_finalizer import HomeIntakeFinalizer
         from .student_directory import StudentDirectory
-        from .support_ai_review import SupportRecordAIReview
 
-        self.support_ai_reviews = SupportRecordAIReview(
-            self.database,
-            self.repository,
-            self._key_provider,
-            self.support,
-            self.model_approval,
-            self.projections,
-        )
         self.student_directory = StudentDirectory(
             self.database,
             self.repository,
@@ -243,13 +195,6 @@ class VaultService:
             self._key_provider,
             self.sop,
             self.projections,
-        )
-        self.home_intake_finalizer = HomeIntakeFinalizer(
-            self.home_intake,
-            self.sop_baselines,
-            self.affairs,
-            self.projections,
-            self.home_intake_drafts,
         )
 
     def prepare_existing_plaintext_runtime(self) -> bool:

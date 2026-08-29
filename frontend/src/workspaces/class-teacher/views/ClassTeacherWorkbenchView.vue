@@ -72,8 +72,14 @@ async function openRestricted(projectionId: string, projectionType: string | nul
   }
 }
 
-function rememberConversation(conversationId: string): void {
-  void navigate({ surface: 'home', conversationId, handoffId: null })
+function rememberConversation(conversationId: string, options?: { fresh?: boolean }): void {
+  void navigate({
+    surface: 'home',
+    conversationId,
+    handoffId: null,
+    // 新建对话时清掉上一份交接留下的定位参数，避免 URL 带着过期的 turn/work_item。
+    ...(options?.fresh ? { turnId: null, workItemId: null } : {}),
+  })
 }
 
 function openHandoff(handoff: { handoff_id: string; turn_id: string; work_item_id: string; handling_mode?: string; adoption_state?: string; affair_id?: string | null }): void {
@@ -136,7 +142,12 @@ function returnToConversation(conversationId: string, workItemId: string): void 
   void navigate({ surface: 'home', conversationId, workItemId, handoffId: null })
 }
 
-function handoffCompleted(conversationId: string): void {
+function handoffCompleted(conversationId: string, affairId?: string | null): void {
+  // SOP 采用即已生成事务：直接进入工作区，而不是让教师回对话再点一次卡片。
+  if (affairId) {
+    void navigate({ surface: 'affairs', affairId, conversationId, handoffId: null, turnId: null, workItemId: null })
+    return
+  }
   void navigate({ surface: 'home', conversationId, handoffId: null })
 }
 

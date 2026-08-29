@@ -13,7 +13,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections.abc import AsyncIterable, Callable, Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import anyio
 
 from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.database.schema import connect, initialize_database
@@ -1253,6 +1255,13 @@ class QuestionBankWriteService:
         destination = uploads_root / upload_id
         digest = hashlib.sha256()
         size = 0
+
+        def write_chunk(handle: Any, chunk: bytes) -> None:
+            # Disk writes and hashing run in the worker thread pool so a long
+            # upload cannot stall the API event loop for other requests.
+            digest.update(chunk)
+            handle.write(chunk)
+
         try:
             with (temporary / f"source{suffix}").open("wb") as handle:
                 async for chunk in chunks:
@@ -1263,8 +1272,9 @@ class QuestionBankWriteService:
                         raise QuestionImportTooLarge(
                             "Question import upload is too large"
                         )
-                    digest.update(chunk)
-                    handle.write(chunk)
+                    await anyio.to_thread.run_sync(
+                        write_chunk, handle, chunk
+                    )
             if size == 0:
                 raise ValueError("Question import upload is empty")
             upload = StagedImportUpload(

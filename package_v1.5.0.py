@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import os
 import shutil
@@ -67,6 +66,7 @@ ROOT_EXCLUDE_EXACT = {
     "database.sqlite",
     "last_batch_id.txt",
     "package_v1.4.0.py",
+    "package_v1.5.0.py",
     "test.pdf",
 }
 
@@ -233,29 +233,48 @@ def copy_sources(src_dir: Path, pkg_dir: Path, version: str) -> dict[str, int]:
 
 
 def copy_private_user_data(src_dir: Path, pkg_dir: Path) -> None:
+    """Copy user_data into the package as a full machine snapshot.
+
+    包内包含全部业务数据(工作区)与 api_profiles.json 中的模型密钥,
+    只允许本机私有保存;不得进入 Git、普通备份同步或对外分发。
+    """
     src = src_dir / "user_data"
     dst = pkg_dir / "user_data"
     if not src.exists():
         dst.mkdir(parents=True, exist_ok=True)
         return
 
-    source_root = src.resolve()
+    shutil.copytree(src, dst, ignore=_ignore_runtime_caches)
 
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        ignored: set[str] = set()
-        for name in names:
-            if name in {"__pycache__", ".pytest_cache", "api_profiles.json"}:
-                ignored.add(name)
-            elif (
-                Path(directory).resolve() == source_root
-                and name.casefold() == "workspaces"
-            ):
-                ignored.add(name)
-            elif name.endswith((".pyc", ".pyo")):
-                ignored.add(name)
-        return ignored
 
-    shutil.copytree(src, dst, ignore=ignore, dirs_exist_ok=True)
+def _ignore_runtime_caches(directory: str, names: list[str]) -> set[str]:
+    ignored: set[str] = set()
+    for name in names:
+        if name in {"__pycache__", ".pytest_cache"}:
+            ignored.add(name)
+        elif name.endswith((".pyc", ".pyo")):
+            ignored.add(name)
+    return ignored
+
+
+RUNTIME_EXTRAS = ("models", "tectonic")
+
+
+def copy_runtime_extras(src_dir: Path, pkg_dir: Path) -> list[str]:
+    """Copy bundled runtime assets (local models, tectonic) when present."""
+    included: list[str] = []
+    for name in RUNTIME_EXTRAS:
+        src = src_dir / "runtime" / name
+        if not src.exists():
+            continue
+        shutil.copytree(
+            src,
+            pkg_dir / "runtime" / name,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+            dirs_exist_ok=True,
+        )
+        included.append(name)
+    return included
 
 
 def _configure_embed_pth(runtime_dir: Path) -> None:
@@ -440,7 +459,13 @@ def clean_generated_artifacts(pkg_dir: Path) -> None:
                 file_path.unlink()
 
 
-def write_manifest(pkg_dir: Path, version: str, *, runtime_included: bool) -> None:
+def write_manifest(
+    pkg_dir: Path,
+    version: str,
+    *,
+    runtime_included: bool,
+    runtime_extras: list[str] | None = None,
+) -> None:
     manifest = {
         "app_version": version,
         "package_type": "private_portable_source_runtime",
@@ -449,11 +474,13 @@ def write_manifest(pkg_dir: Path, version: str, *, runtime_included: bool) -> No
             "included": runtime_included,
             "python_version": PYTHON_VERSION if runtime_included else None,
             "path": "runtime/python" if runtime_included else None,
+            "extras": list(runtime_extras or []),
         },
         "data": {
             "included": True,
-            "api_profiles_included": False,
-            "api_profiles_location": "user_data/config/api_profiles.json",
+            "full_data_included": True,
+            "api_profiles_included": True,
+            "workspaces_included": True,
             "path": "user_data",
         },
         "cleanup": {
@@ -466,23 +493,6 @@ def write_manifest(pkg_dir: Path, version: str, *, runtime_included: bool) -> No
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-
-
-def make_archive(pkg_dir: Path) -> tuple[Path, Path]:
-    zip_base = pkg_dir.parent / pkg_dir.name
-    print(f"Creating archive: {zip_base}.zip")
-    archive_path = Path(shutil.make_archive(str(zip_base), "zip", pkg_dir.parent, pkg_dir.name))
-    sha256_path = archive_path.with_suffix(archive_path.suffix + ".sha256")
-
-    hasher = hashlib.sha256()
-    with archive_path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            hasher.update(chunk)
-    sha256_path.write_text(
-        f"{hasher.hexdigest()} *{archive_path.name}\n",
-        encoding="utf-8",
-    )
-    return archive_path, sha256_path
 
 
 def build_package(args: argparse.Namespace) -> None:
@@ -501,19 +511,21 @@ def build_package(args: argparse.Namespace) -> None:
     copy_private_user_data(src_dir, pkg_dir)
 
     runtime_included = not args.skip_runtime
+    runtime_extras: list[str] = []
     if runtime_included:
         cache_dir = src_dir / ".portable_runtime_cache"
         runtime = build_runtime(src_dir, cache_dir, rebuild=args.rebuild_runtime)
         copy_runtime(runtime, pkg_dir)
+        runtime_extras = copy_runtime_extras(src_dir, pkg_dir)
 
     write_launchers(src_dir, pkg_dir)
     clean_generated_artifacts(pkg_dir)
-    write_manifest(pkg_dir, version, runtime_included=runtime_included)
-
-    archive_path = None
-    sha256_path = None
-    if not args.no_zip:
-        archive_path, sha256_path = make_archive(pkg_dir)
+    write_manifest(
+        pkg_dir,
+        version,
+        runtime_included=runtime_included,
+        runtime_extras=runtime_extras,
+    )
 
     stats = _dir_stats(pkg_dir)
     print("")
@@ -521,9 +533,6 @@ def build_package(args: argparse.Namespace) -> None:
     print(f"Folder: {pkg_dir}")
     print(f"Files: {stats['files']}")
     print(f"Size MB: {stats['size_mb']}")
-    if archive_path:
-        print(f"Zip: {archive_path}")
-        print(f"SHA256: {sha256_path}")
 
 
 def parse_args(argv: Iterable[str]) -> argparse.Namespace:
@@ -538,11 +547,6 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
         "--rebuild-runtime",
         action="store_true",
         help="Rebuild the cached portable Python runtime from scratch.",
-    )
-    parser.add_argument(
-        "--no-zip",
-        action="store_true",
-        help="Only create the release folder, not the zip archive.",
     )
     return parser.parse_args(list(argv))
 

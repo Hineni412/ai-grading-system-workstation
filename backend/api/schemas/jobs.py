@@ -45,3 +45,17 @@ class JobSummaryListResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+class JobStatusBatchRequest(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=50)
+
+
+class JobStatusBatchItem(BaseModel):
+    id: int
+    found: bool
+    job: JobResponse | None = None
+
+
+class JobStatusBatchResponse(BaseModel):
+    items: list[JobStatusBatchItem]

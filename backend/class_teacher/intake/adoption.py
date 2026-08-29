@@ -1,19 +1,28 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
 from typing import Any, Callable
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from ..encrypted_database import EncryptedDatabase
 from ..errors import VaultError
-from ..planning_service import PlanningService
 from ..secure_repository import EncryptedObjectRepository
 from ..sop_baseline_service import SopBaselineService
 from ..sop_workflow_service import SopWorkflowService
 from ..support_record_service import SupportRecordService
 from .conversations import ConversationStore
+
+
+# 计划节点编号从采用编号确定性派生：同一采用的重放得到同一批编号，
+# 工作图按「操作编号+操作内容」判定重放，编号漂移会被当成不同操作拒绝。
+_HANDOFF_PLAN_NAMESPACE = uuid5(NAMESPACE_URL, "class-teacher:handoff-plan")
+
+
+def _stable_plan_id(*parts: str) -> str:
+    return uuid5(_HANDOFF_PLAN_NAMESPACE, ":".join(parts)).hex
 
 
 _CONFIRMED_RECORD_KINDS = frozenset(
@@ -114,7 +123,6 @@ class HandoffAdoption:
         repository: EncryptedObjectRepository,
         key_provider,
         support: SupportRecordService,
-        planning: PlanningService,
         work,
         sop: SopWorkflowService,
         sop_baselines: SopBaselineService,
@@ -126,7 +134,6 @@ class HandoffAdoption:
         self.repository = repository
         self._key_provider = key_provider
         self.support = support
-        self.planning = planning
         self.work = work
         self.sop = sop
         self.sop_baselines = sop_baselines
@@ -469,31 +476,45 @@ class HandoffAdoption:
         deadline = str(content.get("final_deadline") or "").strip()
         if not deadline:
             raise VaultError("class_teacher_plan_deadline_required", "加入正式日历前请确认截止时间", status_code=422)
-        draft = self.planning.create_draft(
-            token=token,
-            operation_id=f"{operation_id}-draft-r{handoff['draft_revision']}",
-            raw_input=str(content.get("summary") or content.get("plan_title") or "班主任计划"),
-            reference_at=str(content.get("reference_at") or "").strip() or None,
+        clean_actions = [dict(item) for item in actions if isinstance(item, dict)]
+        for item in clean_actions:
+            if not str(item.get("due_at") or "").strip():
+                raise VaultError("class_teacher_plan_action_deadline_required", "行动缺少截止时间", status_code=422)
+        plan_title = str(content.get("plan_title") or content.get("summary") or "班主任计划")
+        # 台账双写已收敛：工作图是计划的唯一正式载体，页面（首页/日历）只读工作图。
+        # 节点编号从采用编号确定性派生；收据以工作图返回的编号为准，
+        # 同一 operation 的重放会返回原节点，收据与节点据此幂等收敛。
+        adoption_id = str(handoff["adoption_id"])
+        action_ids = [
+            _stable_plan_id(adoption_id, "action", str(item.get("draft_action_id") or index))
+            for index, item in enumerate(clean_actions)
+        ]
+        result = self.work.create_confirmed_plan(
+            plan_id=_stable_plan_id(adoption_id),
+            action_ids=action_ids,
+            plan_title=plan_title,
             final_deadline=deadline,
+            actions=clean_actions,
+            operation_id=f"handoff_plan_{adoption_id}",
         )
-        hook = self._receipt_hook(handoff, target_revision, "plan")
-        confirmed = self.planning.confirm_draft(
-            token=token,
-            draft_id=str(draft["draft_id"]),
-            operation_id=operation_id,
-            revision=int(draft["revision"]),
-            plan_title=str(content.get("plan_title") or content.get("summary") or "班主任计划"),
-            actions=[dict(item) for item in actions if isinstance(item, dict)],
-            transaction_hook=lambda connection, vmk, plan_id: hook(connection, vmk, plan_id),
-        )
-        self.work.create_confirmed_plan(
-            plan_id=str(confirmed["plan_id"]),
-            action_ids=[str(item) for item in list(confirmed["action_ids"])],
-            plan_title=str(content.get("plan_title") or content.get("summary") or "班主任计划"),
-            final_deadline=deadline,
-            actions=[dict(item) for item in actions if isinstance(item, dict)],
-            operation_id=f"handoff_plan_{handoff['adoption_id']}",
-        )
+        self._write_plan_receipt(handoff, target_revision, str(result["plan_id"]))
+
+    def _write_plan_receipt(
+        self,
+        handoff: dict[str, object],
+        target_revision: str,
+        plan_id: str,
+    ) -> None:
+        # 先走密钥入口完成明文库初始化，再写收据。
+        self._key_provider()
+        try:
+            with closing(self.database.connect()) as connection:
+                with connection:
+                    self._write_receipt(connection, handoff, target_revision, "plan", plan_id)
+        except sqlite3.IntegrityError:
+            # 同一采用编号的收据已存在（上次写库后中断）：入口的 find_receipt
+            # 重放路径会按收据重新投影并标记已并入，这里不必重复写。
+            pass
 
     def _adopt_sop(
         self,

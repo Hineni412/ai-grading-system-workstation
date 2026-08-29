@@ -26,6 +26,19 @@ async function load() {
   } catch { error.value = '事务列表暂时无法读取。' } finally { busy.value = false }
 }
 
+async function removeAffair(item: AffairSummary) {
+  if (busy.value) return
+  const confirmed = window.confirm(
+    `彻底删除「${item.title}」后无法恢复：步骤、记录和草稿会一并删除，日历中的对应提醒会同步移除；已并入学生档案的内容不受影响。确定删除？`,
+  )
+  if (!confirmed) return
+  busy.value = true; error.value = ''
+  try {
+    await affairR1Api.destroy(item.affair_id)
+    await load()
+  } catch { error.value = '这条事务没有删除，请稍后再试。' } finally { busy.value = false }
+}
+
 onMounted(() => { void load() })
 </script>
 
@@ -35,14 +48,17 @@ onMounted(() => { void load() })
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <nav aria-label="事务列表" class="affair-list">
       <strong v-if="items.length" class="list-heading">已保存事务 · {{ items.length }}</strong>
-      <button v-for="item in items" :key="item.affair_id" type="button" @click="emit('open', item.affair_id)">
-        <i aria-hidden="true"></i>
-        <span>
-          <strong>{{ item.title }}</strong>
-          <small>{{ item.current_step_count }} 个当前步骤 · {{ item.completed_step_count }} 个已完成</small>
-        </span>
-        <StatusBadge class="affair-state" :tone="stateTone(item.state).tone" :label="stateTone(item.state).label" />
-      </button>
+      <div v-for="item in items" :key="item.affair_id" class="affair-row">
+        <button type="button" class="affair-open" @click="emit('open', item.affair_id)">
+          <i aria-hidden="true"></i>
+          <span>
+            <strong>{{ item.title }}</strong>
+            <small>{{ item.current_step_count }} 个当前步骤 · {{ item.completed_step_count }} 个已完成</small>
+          </span>
+          <StatusBadge class="affair-state" :tone="stateTone(item.state).tone" :label="stateTone(item.state).label" />
+        </button>
+        <AppButton variant="ghost" class="affair-delete" :disabled="busy" @click="removeAffair(item)">删除</AppButton>
+      </div>
       <div v-if="!items.length && !busy" class="baselines"><strong>当前没有事务</strong><p>学校流程基线仍可查看：</p><span v-for="baseline in baselines" :key="baseline">{{ baseline }}</span></div>
     </nav>
   </section>
@@ -54,15 +70,19 @@ header{display:flex;justify-content:space-between;align-items:end;padding:var(--
 header p{margin:0 0 2px;color:var(--primary);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.08em}
 h2{margin:0;font-size:var(--font-size-h2)}
 .affair-list{display:grid;padding:var(--space-3)}
-.affair-list>button{display:grid;grid-template-columns:4px 1fr auto;gap:var(--space-2);align-items:center;width:100%;padding:var(--space-3);border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left;cursor:pointer;font:inherit}
-.affair-list>button:hover{background:var(--accent)}
-.affair-list i{align-self:stretch;background:var(--primary);border-radius:2px}
-.affair-list span{display:grid;gap:3px}
-.affair-list small{color:var(--color-text-secondary)}
+.affair-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;border-bottom:1px solid var(--color-border-subtle)}
+.affair-row:last-of-type{border-bottom:0}
+.affair-open{display:grid;grid-template-columns:4px 1fr auto;gap:var(--space-2);align-items:center;min-width:0;padding:var(--space-3);border:0;background:transparent;text-align:left;cursor:pointer;font:inherit}
+.affair-open:hover{background:var(--accent)}
+.affair-open i{align-self:stretch;background:var(--primary);border-radius:2px}
+.affair-open span{display:grid;gap:3px;min-width:0}
+.affair-open small{color:var(--color-text-secondary)}
+.affair-open strong{overflow-wrap:anywhere}
 .affair-state{justify-self:end}
+.affair-delete{min-height:32px;padding:0 8px;font-size:12px;color:var(--destructive)}
 .baselines{display:grid;gap:var(--space-1);padding:var(--space-3)}
 .baselines span{padding:var(--space-1);border-bottom:1px solid var(--color-border-subtle);font-size:var(--font-size-dense)}
 .list-heading{display:block;padding:var(--space-1) var(--space-2);color:var(--color-text-secondary);font-size:var(--font-size-caption)}
 .error{padding:var(--space-3);color:var(--destructive)}
-.affair-list>button:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
+.affair-open:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
 </style>

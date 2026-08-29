@@ -33,6 +33,7 @@ from question_bank.training_criteria import (
     QuestionAnalysisInputLoader,
     QuestionAnalysisWorkItem,
     TrainingCriterionModule,
+    combined_analysis_retry_budget,
     solution_evidence_source_content_hash,
 )
 from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
@@ -576,6 +577,7 @@ def _run_unified_tagging_analysis(
         OpenAICombinedAnalysisGateway(
             protocol_adapter=protocol_adapter,
             model_name=ai_service.model,
+            max_auto_retries=combined_analysis_retry_budget(ai_service),
         ),
         context,
     )
@@ -1165,6 +1167,10 @@ def _load_tag_source_currentness(
     current_inputs: Sequence[Any],
 ) -> dict[int, bool]:
     """Compare current inputs with the latest persisted successful tag run.
+
+    The fingerprint covers question content only (text, answer, type, images,
+    volume). Taxonomy/vocabulary state is deliberately excluded: a vocabulary
+    revision bump must not invalidate already-saved tags.
 
     Rows without combined-analysis history are legacy-compatible: their tag
     presence remains authoritative. Once a question has a versioned tag run,

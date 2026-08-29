@@ -9,7 +9,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from backend.schema_migrations import ensure_schema_current
 
@@ -1236,6 +1236,19 @@ class JobStore:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job_id),)).fetchone()
         return _job_record(row) if row is not None else None
+
+    def get_jobs(self, job_ids: Sequence[int]) -> dict[int, JobRecord]:
+        """Load many jobs in one query; missing ids are simply absent."""
+        unique_ids = sorted({int(value) for value in job_ids})
+        if not unique_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in unique_ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM jobs WHERE id IN ({placeholders})",
+                unique_ids,
+            ).fetchall()
+        return {int(row["id"]): _job_record(row) for row in rows if row is not None}
 
     def list_jobs(
         self,

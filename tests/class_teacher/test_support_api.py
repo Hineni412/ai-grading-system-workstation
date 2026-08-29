@@ -41,7 +41,7 @@ def test_retired_vault_routes_are_not_registered() -> None:
     assert not any(path.startswith("/vault") for path in paths)
 
 
-def test_support_quick_evidence_and_attention_routes_are_wired(
+def test_support_evidence_and_attention_routes_are_wired(
     tmp_path: Path,
 ) -> None:
     client, headers = _client(tmp_path)
@@ -58,18 +58,6 @@ def test_support_quick_evidence_and_attention_routes_are_wired(
     assert subject_response.status_code == 200
     assert subject_response.headers["cache-control"] == "no-store, max-age=0"
     subject_id = subject_response.json()["subject_id"]
-
-    quick_response = client.post(
-        "/api/class-teacher/quick-inbox",
-        headers=headers,
-        json={
-            "operation_id": "api-create-quick-text",
-            "text": "合成接口文字速记。",
-            "subject_id": subject_id,
-        },
-    )
-    assert quick_response.status_code == 200
-    assert quick_response.json()["voice_inbox_available"] is False
 
     evidence_response = client.post(
         "/api/class-teacher/evidence/batches",

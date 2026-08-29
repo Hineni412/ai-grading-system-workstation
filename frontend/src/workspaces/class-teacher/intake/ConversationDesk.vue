@@ -22,7 +22,7 @@ type ClassTeacherDomain =
 
 const props = defineProps<{ conversationId?: string | null; focusWorkItemId?: string | null }>()
 const emit = defineEmits<{
-  conversationChanged: [conversationId: string]
+  conversationChanged: [conversationId: string, options?: { fresh?: boolean }]
   openHandoff: [handoff: IntakeHandoffSummary]
   openStudentProfile: [handoff: IntakeHandoffSummary]
   openCalendar: []
@@ -50,8 +50,10 @@ const latestTurn = computed(() => {
 })
 const pendingHandoffs = computed(() => conversation.value?.handoffs.filter((item) => ['pending', 'opened', 'adoption_started'].includes(item.adoption_state)) ?? [])
 // 学生档案卡按学生去重：同一学生只保留最新一张（列表按创建顺序排列），撤回按钮也挂在最新卡上。
+// 交接卡片：过期（stale）的草稿也要显示——教师回答追问后旧草稿会作废，
+// 但里面仍有已收集的上下文；隐藏会让草稿在模型失败时彻底不可达。
 const visibleHandoffs = computed(() => {
-  const all = conversation.value?.handoffs.filter((item) => item.adoption_state !== 'stale') ?? []
+  const all = conversation.value?.handoffs ?? []
   const latestByStudent = new Map<string, number>()
   all.forEach((item, index) => {
     if (isStudentRecord(item) && item.subject_id) latestByStudent.set(item.subject_id, index)
@@ -62,6 +64,10 @@ const visibleHandoffs = computed(() => {
   })
 })
 const recentConversations = computed(() => recent.value.filter((item) => Boolean(item.first_message)).slice(0, 5))
+// 右栏「本周应做的事」只保留最近 5 条：事务一多会把「最近会话」整个顶出屏幕，
+// 完整列表始终在日历页，这里只做快速入口。
+const nearWorkLimit = 5
+const visibleNearWork = computed(() => nearWork.value.slice(0, nearWorkLimit))
 const taskInFlight = computed(() => conversation.value?.state === 'ai_running')
 // 最新一轮仍有追问且会话已落地时，在输入框上方常驻提示，让"还在等你回答"持续可见。
 const awaitingAnswers = computed(() => {
@@ -121,10 +127,12 @@ function handoffStateLabel(handoff: IntakeHandoffSummary): string {
   if (handoff.adoption_state === 'adopted') return '已并入'
   if (handoff.adoption_state === 'reverted') return '已撤回'
   if (handoff.adoption_state === 'discarded') return '已放弃'
+  if (handoff.adoption_state === 'stale') return '已过期'
   return '待核对'
 }
 
 function handoffHint(handoff: IntakeHandoffSummary): string {
+  if (handoff.adoption_state === 'stale') return '内容在交接后有了新情况；打开核对最新资料，可重新保存或丢弃'
   if (handoff.adoption_state === 'adopted') {
     if (handoff.handling_mode === 'sop' && handoff.affair_id) return '已建立 · 打开 SOP 工作区'
     return isStudentRecord(handoff) ? '已自动并入档案，可一键撤回' : '教师已确认保存'
@@ -255,7 +263,7 @@ async function start(): Promise<void> {
   busy.value = true; error.value = ''; notice.value = ''
   try {
     conversation.value = await intakeApi.startConversation()
-    emit('conversationChanged', conversation.value.conversation_id)
+    emit('conversationChanged', conversation.value.conversation_id, { fresh: true })
     message.value = ''
     await nextTick(); composer.value?.focus()
     await loadRecent()
@@ -484,7 +492,7 @@ onMounted(async () => {
           <div v-for="handoff in visibleHandoffs" :key="handoff.handoff_id" class="handoff-entry">
             <button type="button" :data-mode="handoff.handling_mode" :data-work-item="handoff.work_item_id" @click="openHandoffCard(handoff)">
               <span>{{ domainLabels[handoff.domain] }}</span><strong>{{ handoffTitle(handoff) }}</strong><em class="handoff-state" :data-state="handoff.adoption_state">{{ handoffStateLabel(handoff) }}</em><small>{{ handoffHint(handoff) }}</small>
-              <ul v-if="handoff.missing_fields.length" class="handoff-warnings"><li v-for="item in handoff.missing_fields" :key="item">{{ item }}</li></ul>
+              <ul v-if="handoff.missing_fields.length && !['adopted','reverted','discarded'].includes(handoff.adoption_state)" class="handoff-warnings"><li v-for="item in handoff.missing_fields" :key="item">{{ item }}</li></ul>
             </button>
             <AppButton v-if="handoff.adoption_state === 'adopted' && isStudentRecord(handoff)" variant="ghost" class="handoff-revert" :disabled="busy" @click="revertAdoption(handoff)">撤回本轮更新</AppButton>
           </div>
@@ -510,7 +518,7 @@ onMounted(async () => {
       </article>
 
       <aside class="side-notes" aria-label="本周事项与最近会话">
-        <section class="near-work"><header><span>本周应做的事</span></header><button v-for="item in nearWork" :key="item.node_id" type="button" @click="openNearWork(item)"><strong>{{ item.title }}</strong><small>{{ dueLabel(item.due_date) }}</small></button><p v-if="!nearWork.length">本周还没有应做的事。</p></section>
+        <section class="near-work"><header><span>本周应做的事</span><strong v-if="nearWork.length">{{ nearWork.length }}</strong></header><button v-for="item in visibleNearWork" :key="item.node_id" type="button" @click="openNearWork(item)"><strong>{{ item.title }}</strong><small>{{ dueLabel(item.due_date) }}</small></button><button v-if="nearWork.length > visibleNearWork.length" type="button" class="near-work__more" @click="emit('openCalendar')">查看全部 {{ nearWork.length }} 项</button><p v-if="!nearWork.length">本周还没有应做的事。</p></section>
         <section><header><span>待核对</span><strong>{{ pendingHandoffs.length }}</strong></header><p>{{ pendingHandoffs.length ? '学生档案草稿会自动并入档案、可一键撤回；其余草稿在你确认后才会成为正式记录。' : '当前没有等待确认的交接草稿。' }}</p></section>
         <section class="recent">
           <header>
@@ -537,7 +545,7 @@ onMounted(async () => {
 
 <style scoped>
 .desk{color:var(--foreground)}.desk__masthead{display:flex;align-items:end;justify-content:space-between;gap:16px;padding:12px 16px;border:1px solid var(--border);border-radius:var(--radius) var(--radius) 0 0;background:var(--card)}.desk__masthead p{margin:0 0 2px;color:var(--primary);font-size:11px;font-weight:700;letter-spacing:.12em}.desk__masthead h1{max-width:720px;margin:0;font-size:clamp(18px,2.1vw,24px);font-weight:700;letter-spacing:-.02em}.desk__tools{display:flex;align-items:end;gap:10px}.desk__homeroom{display:flex;align-items:baseline;gap:8px;margin:0;font-size:12px;font-weight:600;color:var(--color-text-secondary);white-space:nowrap}.desk__homeroom strong{font-size:16px;font-weight:700;color:var(--foreground)}.desk__body{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(240px,.64fr);border-right:1px solid var(--border);border-left:1px solid var(--border);background:var(--card)}.conversation{min-width:0;padding:14px 16px 16px;border-right:1px solid var(--border)}.opening{min-height:120px;display:grid;align-content:center;justify-items:center;text-align:center}.opening p{max-width:36em;margin:0;font-size:14px;font-weight:600;line-height:1.5}.opening ul{display:grid;gap:8px;padding:0;list-style:none;color:var(--color-text-secondary)}.messages{display:grid;gap:10px;margin:0;padding:0;list-style:none}.turn{display:grid;gap:6px}.turn blockquote{width:fit-content;max-width:76%;margin:0 0 0 auto;padding:6px 10px;border-radius:var(--radius) var(--radius) 2px var(--radius);background:var(--accent);font-size:13px;line-height:1.45}.turn blockquote span,.assistant>span{display:inline;margin:0 6px 0 0;color:var(--primary);font-size:11px;font-weight:700;letter-spacing:.04em}.assistant{width:fit-content;max-width:82%;padding:6px 10px;border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:var(--radius);background:var(--card);font-size:13px;line-height:1.45}.assistant p{display:inline;margin:0}.assistant ul{display:grid;gap:2px;margin:6px 0 0;padding-left:1.15em}.assistant li{line-height:1.4}.assistant[data-state="failed_before_dispatch"]{border-left-color:var(--color-warning)}.handoffs{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 0}.handoffs button{display:grid;gap:2px;min-width:min(100%,168px);max-width:280px;min-height:0;padding:8px 10px;border:1px solid var(--border);border-top:3px solid var(--primary);border-radius:var(--radius);background:var(--card);text-align:left;cursor:pointer}.handoffs button:hover{background:var(--accent)}.handoffs button[data-mode="plan_calendar"]{border-top-color:var(--color-info)}.handoffs button[data-mode="sop"]{border-top-color:var(--color-warning)}.handoffs span,.handoffs small{color:var(--color-text-secondary);font-size:12px;line-height:1.35}.manual-route{display:flex;flex-wrap:wrap;gap:8px;padding:14px;border:1px dashed var(--color-warning);border-radius:var(--radius);background:var(--color-warning-subtle)}.manual-route p{flex:1 1 100%;margin:0 0 4px}.composer{display:grid;gap:6px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}.composer label{font-weight:600;font-size:13px}.composer textarea{width:100%;resize:vertical;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card);font:inherit;line-height:1.5}.composer textarea:focus-visible{border-color:var(--ring);box-shadow:var(--focus-ring);outline:0}.composer>div{display:flex;align-items:center;justify-content:space-between;gap:15px}.composer small{color:var(--muted-foreground)}.side-notes{display:grid;align-content:start;gap:12px;padding:16px;background:var(--background)}.side-notes section{padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}.side-notes header{display:flex;align-items:center;justify-content:space-between}.side-notes header strong{font-size:24px;color:var(--primary)}.side-notes p{color:var(--color-text-secondary);font-size:13px}.recent,.near-work{display:grid;gap:7px}.near-work button,.recent-open{display:grid;gap:3px;padding:10px 0;border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left;cursor:pointer}.near-work button:hover strong,.recent-open:hover strong{color:var(--primary)}.recent-open strong,.near-work strong{display:-webkit-box;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.recent-open small,.near-work small{color:var(--muted-foreground)}.domain-band{display:grid;grid-template-columns:repeat(6,1fr);border:1px solid var(--border);border-radius:0 0 var(--radius) var(--radius);overflow:hidden;background:var(--card)}.domain-band>div{display:grid;gap:3px;min-height:74px;padding:12px;border-right:1px solid var(--color-border-subtle);background:var(--card);text-align:left}.domain-band span{font-weight:600}.domain-band small{color:var(--muted-foreground);font-size:11px}.notice,.error{margin:0;padding:7px 16px;border-inline:1px solid var(--border);font-size:13px}.notice{background:var(--accent)}.error{background:var(--color-danger-subtle);color:var(--destructive)}button:focus-visible,select:focus-visible{outline:2px solid var(--ring);outline-offset:2px}@media(max-width:980px){.desk__masthead{align-items:flex-start;flex-direction:column}.desk__body{grid-template-columns:1fr}.conversation{border-right:0}.side-notes{grid-template-columns:1fr 1fr}.domain-band{grid-template-columns:repeat(3,1fr)}}@media(max-width:640px){.desk__masthead,.conversation{padding:16px}.desk__tools{width:100%;align-items:stretch;flex-direction:column}.desk__homeroom{width:100%}.turn blockquote,.assistant{max-width:100%}.composer>div{align-items:stretch;flex-direction:column}.side-notes{grid-template-columns:1fr}.domain-band{grid-template-columns:repeat(2,1fr)}}
-.composer__buttons{display:flex;align-items:flex-start;gap:9px}.composer__buttons>button[type="submit"]{flex:0 0 auto}.recent-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;border-bottom:1px solid var(--color-border-subtle)}.recent-item .recent-open{border-bottom:0;min-width:0}.recent-item .recent-delete{min-height:32px;padding:0 6px;font-size:12px;color:var(--destructive)}.recent>header :deep(.app-button){min-height:32px;padding:0 10px;font-size:12px}@media(max-width:640px){.composer__buttons{width:100%;align-items:stretch;flex-direction:column}.composer__buttons>button[type="submit"]{width:100%}}
+.composer__buttons{display:flex;align-items:flex-start;gap:9px}.composer__buttons>button[type="submit"]{flex:0 0 auto}.recent-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;border-bottom:1px solid var(--color-border-subtle)}.recent-item .recent-open{border-bottom:0;min-width:0}.recent-item .recent-delete{min-height:32px;padding:0 6px;font-size:12px;color:var(--destructive)}.recent>header :deep(.app-button){min-height:32px;padding:0 10px;font-size:12px}.near-work__more{text-align:center;color:var(--primary);font-weight:600;border-bottom:0}@media(max-width:640px){.composer__buttons{width:100%;align-items:stretch;flex-direction:column}.composer__buttons>button[type="submit"]{width:100%}}
 .domain-band > button {
   background: var(--card);
   border: 0;
@@ -554,7 +562,7 @@ onMounted(async () => {
 .domain-band > button:hover { background: var(--accent); }
 .handoff-warnings{margin:2px 0 0;padding-left:16px;color:var(--destructive);font-size:12px;line-height:1.35}
 .handoff-entry{display:grid;gap:4px;justify-items:start}.handoff-revert{min-height:28px;padding:0 8px;font-size:12px}
-.handoff-state{margin:0 6px;padding:0 6px;border:1px solid var(--border);border-radius:999px;font-style:normal;font-size:11px;font-weight:700;color:var(--muted-foreground);vertical-align:1px}.handoff-state[data-state=pending],.handoff-state[data-state=opened],.handoff-state[data-state=adoption_started]{border-color:var(--color-warning);color:var(--color-warning)}.handoff-state[data-state=adopted]{border-color:var(--primary);color:var(--primary)}
+.handoff-state{margin:0 6px;padding:0 6px;border:1px solid var(--border);border-radius:999px;font-style:normal;font-size:11px;font-weight:700;color:var(--muted-foreground);vertical-align:1px}.handoff-state[data-state=pending],.handoff-state[data-state=opened],.handoff-state[data-state=adoption_started]{border-color:var(--color-warning);color:var(--color-warning)}.handoff-state[data-state=adopted]{border-color:var(--primary);color:var(--primary)}.handoff-state[data-state=stale]{border-style:dashed;color:var(--muted-foreground)}
 .awaiting-answers{margin:0 0 8px;padding:8px 11px;border:1px solid var(--color-warning);border-radius:var(--radius);background:var(--color-warning-subtle);color:var(--foreground);font-size:12px;font-weight:600;line-height:1.5}
 .turn-retry{margin-top:6px}
 </style>

@@ -128,18 +128,12 @@ def create_router() -> APIRouter:
             )
         )
 
-    from .action_router import create_action_router
-    from .planning_router import create_planning_router
     from .sop_router import create_sop_router
-    from .collection_router import create_collection_router
     from .support_router import create_support_router
     from .work_router import create_work_router
     from .intake_router import create_intake_router
 
-    router.include_router(create_action_router())
-    router.include_router(create_planning_router())
     router.include_router(create_sop_router())
-    router.include_router(create_collection_router())
     router.include_router(create_support_router())
     router.include_router(create_intake_router())
     router.include_router(create_work_router())

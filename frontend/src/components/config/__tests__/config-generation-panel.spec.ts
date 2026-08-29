@@ -152,7 +152,7 @@ beforeEach(async () => {
   configStore.selectSession(7)
   configStore.setSource(source())
   await useJobStore().initialize({
-    api: { getJob: vi.fn(), cancelJob: vi.fn() }, now: () => new Date(0),
+    api: { getJob: vi.fn(), cancelJob: vi.fn(), getJobStatusBatch: vi.fn(async () => []) }, now: () => new Date(0),
     schedule: vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>), cancelScheduled: vi.fn(),
     pollIntervalMs: 2_000, maxBackoffMs: 30_000,
   })

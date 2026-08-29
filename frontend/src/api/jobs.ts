@@ -38,6 +38,13 @@ export interface JobResponse {
 export interface JobApi {
   getJob(id: number, signal?: AbortSignal): Promise<JobResponse>
   cancelJob(id: number, signal?: AbortSignal): Promise<JobResponse>
+  getJobStatusBatch(ids: number[], signal?: AbortSignal): Promise<JobStatusBatchItem[]>
+}
+
+export interface JobStatusBatchItem {
+  id: number
+  found: boolean
+  job: JobResponse | null
 }
 
 interface JobIdListResponse {
@@ -80,6 +87,30 @@ export function decodeJobResponse(value: unknown): JobResponse {
 function requireJobId(id: number): number {
   if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid Job id')
   return id
+}
+
+function decodeJobStatusBatch(value: unknown): JobStatusBatchItem[] {
+  assertNoPathLikeKeys(value)
+  if (!isRecord(value) || !Array.isArray(value.items)) {
+    throw new Error('Invalid job status batch response')
+  }
+  return value.items.map((item) => {
+    if (
+      !isRecord(item) ||
+      !Number.isSafeInteger(item.id) ||
+      Number(item.id) <= 0 ||
+      typeof item.found !== 'boolean'
+    ) {
+      throw new Error('Invalid job status batch response')
+    }
+    if (item.found) {
+      return { id: Number(item.id), found: true, job: decodeJobResponse(item.job) }
+    }
+    if (item.job !== null && item.job !== undefined) {
+      throw new Error('Invalid job status batch response')
+    }
+    return { id: Number(item.id), found: false, job: null }
+  })
 }
 
 function decodeJobIdList(value: unknown): JobIdListResponse {
@@ -133,6 +164,18 @@ export const jobApi: JobApi = {
     const jobId = requireJobId(id)
     return apiClient.request(`/api/jobs/${jobId}`, {
       decode: decodeJobResponse,
+      signal,
+    })
+  },
+  async getJobStatusBatch(ids, signal) {
+    const unique = [...new Set(ids.map(requireJobId))]
+    if (unique.length === 0 || unique.length > 50) {
+      throw new Error('Invalid job id batch')
+    }
+    return apiClient.request('/api/jobs/status-batch', {
+      method: 'POST',
+      body: { ids: unique },
+      decode: decodeJobStatusBatch,
       signal,
     })
   },

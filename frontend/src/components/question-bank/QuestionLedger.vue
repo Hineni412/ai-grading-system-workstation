@@ -40,8 +40,10 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
     .map((tag) => tag.tag_value)
 }
 
+const basketIdSet = computed(() => new Set(assembly.draft.basket_ids))
+
 function isInBasket(questionId: number): boolean {
-  return assembly.draft.basket_ids.includes(questionId)
+  return basketIdSet.value.has(questionId)
 }
 
 async function ensureAssembly(): Promise<void> {

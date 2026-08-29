@@ -161,7 +161,8 @@ class ClassRosterService:
                 if link is not None:
                     subject_id = str(link["subject_id"])
         return {
-            "source_student_id": student.source_key,
+            # 对外「学号」用花名册学籍号；source_key 只是花名册行号，不能当学号展示。
+            "source_student_id": student.student_code or student.source_key,
             "display_name": student.display_name,
             "class_label": student.class_label,
             "subject_id": subject_id,

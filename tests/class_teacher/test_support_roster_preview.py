@@ -89,7 +89,8 @@ def test_header_and_card_preview_resolve_stable_roster_ref_without_writing(
     assert body["subject_id"] == ref
     assert body["display_name"] == "合成预览学生"
     assert body["class_label"] == "一班"
-    assert body["source_student_id"] == "1"
+    # 对外学号展示花名册学籍号，不是花名册行号。
+    assert body["source_student_id"] == "A001"
     assert body["confirmed_entry_count"] == 0
     assert body["support_record_count"] == 0
     assert body["related_affairs"] == []

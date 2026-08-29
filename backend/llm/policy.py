@@ -86,6 +86,11 @@ _EXECUTION_PROFILE_FIELDS = frozenset(
         "requests_per_minute",
     }
 )
+# Channel-level default for automatic retries.  When present it replaces the
+# per-kind default; the finer-grained llm_{kind}_max_retries keys still win.
+MAX_AUTO_RETRIES_PROFILE_FIELD = "max_auto_retries"
+MAX_AUTO_RETRIES_MIN = 0
+MAX_AUTO_RETRIES_MAX = 5
 EXECUTION_SCOPE_PROFILE_FIELD = "_llm_execution_scope_key"
 
 
@@ -174,7 +179,16 @@ def policy_from_profile(
     retries = _bounded_int(
         values,
         f"{prefix}_max_retries",
-        base.max_retries,
+        _bounded_int(
+            values,
+            MAX_AUTO_RETRIES_PROFILE_FIELD,
+            base.max_retries,
+            MAX_AUTO_RETRIES_MIN,
+            min(
+                MAX_AUTO_RETRIES_MAX,
+                _RETRY_COUNT_CAPS.get(request_kind, _DEFAULT_RETRY_COUNT_CAP),
+            ),
+        ),
         0,
         _RETRY_COUNT_CAPS.get(request_kind, _DEFAULT_RETRY_COUNT_CAP),
     )
@@ -212,6 +226,7 @@ def policy_overrides_from_profile(
         for field, value in values.items()
         if field in _POLICY_OVERRIDE_FIELDS
         or field in _EXECUTION_PROFILE_FIELDS
+        or field == MAX_AUTO_RETRIES_PROFILE_FIELD
     }
     overrides[EXECUTION_SCOPE_PROFILE_FIELD] = execution_scope_key(values)
     return overrides

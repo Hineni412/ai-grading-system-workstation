@@ -114,14 +114,14 @@ export const useAssemblyStore = defineStore('assembly', () => {
     try {
       draft.value = await dependencies.api.getDraft()
       loadState.value = draft.value.order_ids.length ? 'ready' : 'empty'
-      await Promise.all([loadQuestions(), loadRecords()])
+      await Promise.all([loadQuestions(true), loadRecords()])
     } catch (error) {
       loadState.value = 'error'
       message.value = safeMessage(error)
     }
   }
 
-  async function loadQuestions(): Promise<void> {
+  async function loadQuestions(force = false): Promise<void> {
     const ids = [...draft.value.order_ids]
     const generation = ++questionGeneration
     if (!ids.length) {
@@ -131,15 +131,35 @@ export const useAssemblyStore = defineStore('assembly', () => {
       return
     }
     questionsState.value = 'loading'
+    // 增量合并：只抓取尚未解析过的题目 id。题目内容在一次编辑会话内是
+    // 稳定的，进入页面或恢复记录时的 force=true 才做全量刷新，避免每次
+    // 保存都重拉全部（最多 500 题）富文本 payload。
+    const keep = new Set(ids)
+    const knownIds = new Set(questions.value.map((item) => item.id))
+    const fetchIds = force
+      ? [...new Set(ids)]
+      : [...new Set(ids.filter((id) => !knownIds.has(id)))]
     try {
-      const result = await dependencies.api.resolveQuestions(ids)
+      let merged = questions.value.filter((item) => keep.has(item.id))
+      let missing: number[] = []
+      if (fetchIds.length) {
+        const result = await dependencies.api.resolveQuestions(fetchIds)
+        if (
+          generation !== questionGeneration ||
+          ids.join(',') !== draft.value.order_ids.join(',')
+        ) return
+        const byId = new Map(merged.map((item) => [item.id, item]))
+        for (const item of result.items) byId.set(item.id, item)
+        merged = [...byId.values()].filter((item) => keep.has(item.id))
+        missing = result.missing_question_ids
+      }
       if (
         generation !== questionGeneration ||
         ids.join(',') !== draft.value.order_ids.join(',')
       ) return
-      questions.value = result.items
-      missingQuestionIds.value = result.missing_question_ids
-      questionsState.value = result.items.length ? 'ready' : 'empty'
+      questions.value = merged
+      missingQuestionIds.value = missing
+      questionsState.value = merged.length ? 'ready' : 'empty'
     } catch (error) {
       if (
         generation !== questionGeneration ||
@@ -371,7 +391,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
       draft.value = await dependencies.api.restoreRecord(recordId, draft.value.revision)
       saveState.value = 'idle'
       loadState.value = draft.value.order_ids.length ? 'ready' : 'empty'
-      await loadQuestions()
+      await loadQuestions(true)
       return true
     } catch (error) {
       saveState.value = error instanceof ApiError && error.code === 'assembly_draft_conflict'

@@ -30,7 +30,6 @@ def test_b01_to_b10_payloads_remain_readable_in_current_plaintext_store(
     token = ""
     identity_marker = "极敏感合成身份标记-B11"
     record_marker = "极敏感合成观察正文-B11"
-    quick_marker = "极敏感合成速记正文-B11"
     evidence_marker = "极敏感合成考试名称-B11"
     attention_marker = "极敏感合成关注事实-B11"
 
@@ -56,12 +55,6 @@ def test_b01_to_b10_payloads_remain_readable_in_current_plaintext_store(
         observed_at="2026-08-03T09:00:00+08:00",
         review_at=None,
         expires_at=None,
-    )
-    service.quick_inbox.create_text(
-        token=token,
-        operation_id="b11-create-quick",
-        text=quick_marker,
-        subject_id=subject_id,
     )
     batch = ConfirmedSpreadsheetAdapter().read(
         {
@@ -111,7 +104,6 @@ def test_b01_to_b10_payloads_remain_readable_in_current_plaintext_store(
     for marker in (
         identity_marker,
         record_marker,
-        quick_marker,
         evidence_marker,
         "b11-secret-source-id",
     ):

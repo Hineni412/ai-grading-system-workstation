@@ -7,7 +7,7 @@ import math
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from collections.abc import Iterable
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
@@ -76,7 +76,11 @@ class ProjectionValidationError(ValueError):
 class GatewayResponseParseError(ValueError):
     """A physical model response arrived but its payload was unusable."""
 
-    pass
+    def __init__(self, message: str, *, raw_text: str = "") -> None:
+        super().__init__(message)
+        # Raw model output kept for repair-feedback retries; the caller must
+        # treat it as untrusted model text and never as local instructions.
+        self.raw_text = str(raw_text or "")
 
 
 class TaxonomyProjectionReviewRequired(ValueError):
@@ -258,6 +262,10 @@ class QuestionAnalysisInput:
 
     @property
     def source_content_hash(self) -> str:
+        # 题目指纹只描述"这道题现在的样子"：题干、答案、题型、配图与册别。
+        # 词表/知识标准状态绝不进入指纹——它是逐题的"题变了才重做"开关，
+        # 词表版本是全局的；一旦嵌入，教师确认一个新词就会让全库已保存的
+        # 标签整体过期。需要按新词表刷新时，用显式的"重新打标签"提交。
         return _hash_payload(
             {
                 "question_id": self.question_id,
@@ -274,7 +282,6 @@ class QuestionAnalysisInput:
                     }
                     for image in self.images
                 ],
-                "taxonomy_contract": self.taxonomy_snapshot.to_dict(),
                 "reference_solution": self.reference_solution,
             }
         )
@@ -1151,46 +1158,97 @@ class CombinedQuestionAnalysisModule:
                 0,
             )
         )
-        future_map: dict[
-            Future[GatewayBatchResponse],
-            tuple[int, PlannedAnalysisBatch, str],
-        ] = {}
+        future_map: dict[Future[GatewayBatchResponse], _BatchAttempt] = {}
         next_batch_index = 0
+        repair_request_count = 0
         processed_batches = 0
         processed_questions = 0
         stop_scheduling = False
         stop_category = "cancelled"
         canary_succeeded = False
+        feedback_budget = _gateway_feedback_limit(self.gateway)
 
-        def submit_next(
+        def issue_request(
             executor: ThreadPoolExecutor,
+            *,
+            request_batch: PlannedAnalysisBatch,
+            feedback_left: int,
+            question_count: int,
+            request_number: int,
+            repair_scopes: Mapping[int, frozenset[str]] | None = None,
         ) -> None:
-            nonlocal next_batch_index
-            batch_index = next_batch_index
-            batch = batches[batch_index]
-            next_batch_index += 1
             request_id = _hash_payload(
                 {
                     "operation_id": operation_id,
                     "projection": projection,
-                    "batch_hash": batch.batch_hash,
-                    "request_number": base_request_count + batch_index + 1,
+                    "batch_hash": request_batch.batch_hash,
+                    "request_number": request_number,
                 }
             )
             self.repository.record_request_started(
                 operation_id=operation_id,
                 request_id=request_id,
                 projection=projection,
-                batch=batch,
+                batch=request_batch,
             )
             future = executor.submit(
                 self.gateway.analyze,
-                batch,
+                request_batch,
                 projection=projection,
                 operation_id=operation_id,
                 request_id=request_id,
             )
-            future_map[future] = (batch_index, batch, request_id)
+            future_map[future] = _BatchAttempt(
+                batch=request_batch,
+                request_id=request_id,
+                feedback_left=feedback_left,
+                question_count=question_count,
+                repair_scopes=repair_scopes,
+            )
+
+        def submit_next(
+            executor: ThreadPoolExecutor,
+        ) -> None:
+            nonlocal next_batch_index
+            batch_index = next_batch_index
+            next_batch_index += 1
+            issue_request(
+                executor,
+                request_batch=batches[batch_index],
+                feedback_left=feedback_budget,
+                question_count=len(batches[batch_index].questions),
+                request_number=base_request_count + batch_index + 1,
+            )
+
+        def submit_repair(
+            executor: ThreadPoolExecutor,
+            *,
+            questions: tuple[QuestionAnalysisInput, ...],
+            source_attempt: _BatchAttempt,
+            repair_scopes: Mapping[int, frozenset[str]] | None = None,
+        ) -> None:
+            nonlocal repair_request_count
+            repair_request_count += 1
+            issue_request(
+                executor,
+                request_batch=PlannedAnalysisBatch(
+                    questions=questions,
+                    estimated_input_tokens=(
+                        source_attempt.batch.estimated_input_tokens
+                    ),
+                    estimated_output_tokens=(
+                        source_attempt.batch.estimated_output_tokens
+                    ),
+                ),
+                feedback_left=source_attempt.feedback_left - 1,
+                # Repair attempts carry the original chain's question count so
+                # the progress totals stay stable across retries.
+                question_count=source_attempt.question_count,
+                repair_scopes=repair_scopes,
+                request_number=(
+                    base_request_count + len(batches) + repair_request_count
+                ),
+            )
 
         def fill_available_slots(
             executor: ThreadPoolExecutor,
@@ -1203,6 +1261,20 @@ class CombinedQuestionAnalysisModule:
             ):
                 submit_next(executor)
 
+        def finalize(question_count: int) -> None:
+            nonlocal processed_batches, processed_questions
+            processed_batches += 1
+            processed_questions += question_count
+            self._report_progress(
+                progress_callback,
+                operation_id=operation_id,
+                projection=projection,
+                processed_batches=processed_batches,
+                total_batches=len(batches),
+                processed_questions=processed_questions,
+                total_questions=total_questions,
+            )
+
         with ThreadPoolExecutor(
             max_workers=worker_count,
             thread_name_prefix="question-analysis",
@@ -1210,14 +1282,57 @@ class CombinedQuestionAnalysisModule:
             fill_available_slots(executor)
             while future_map:
                 future = next(as_completed(tuple(future_map)))
-                batch_index, batch, request_id = future_map.pop(future)
+                attempt = future_map.pop(future)
+                batch = attempt.batch
+
+                response: GatewayBatchResponse | None = None
                 try:
                     response = future.result()
-                    items, merge_notes = _response_items(response.payload, batch)
+                except GatewayResponseParseError as exc:
+                    # The response arrived but was not usable JSON; hand the
+                    # sanitized error and raw output back to the model once per
+                    # remaining budget unit.
+                    category = _error_category(exc)
+                    self.repository.record_request_finished(
+                        request_id=attempt.request_id,
+                        status="failed",
+                        error_category=category,
+                    )
+                    if attempt.feedback_left > 0 and not stop_scheduling:
+                        submit_repair(
+                            executor,
+                            questions=tuple(
+                                _question_with_repair_context(
+                                    question,
+                                    validation_error=_projection_error_detail(
+                                        exc
+                                    ),
+                                    previous_result=_raw_text_previous_result(
+                                        exc.raw_text
+                                    ),
+                                )
+                                for question in batch.questions
+                            ),
+                            source_attempt=attempt,
+                        )
+                        continue
+                    self._fail_batch(
+                        operation_id=operation_id,
+                        batch=batch,
+                        projection=projection,
+                        retry=retry,
+                        category=category,
+                    )
+                    if _stops_batch_scheduling(category):
+                        stop_scheduling = True
+                        stop_category = category
+                    finalize(attempt.question_count)
+                    fill_available_slots(executor)
+                    continue
                 except Exception as exc:
                     category = _error_category(exc)
                     self.repository.record_request_finished(
-                        request_id=request_id,
+                        request_id=attempt.request_id,
                         status="failed",
                         error_category=category,
                     )
@@ -1231,77 +1346,194 @@ class CombinedQuestionAnalysisModule:
                     if _stops_batch_scheduling(category):
                         stop_scheduling = True
                         stop_category = category
-                else:
-                    canary_succeeded = True
-                    self.repository.record_request_finished(
-                        request_id=request_id,
-                        status="succeeded",
-                        response=response,
-                    )
-                    for merged_question_id, merge_note in merge_notes.items():
-                        self._record_projection_note(
-                            operation_id,
-                            merged_question_id,
-                            "merge_note",
-                            merge_note,
-                        )
-                    for question in batch.questions:
-                        raw = items.get(question.question_id)
-                        if raw is None:
-                            self._fail_question(
-                                operation_id=operation_id,
-                                question=question,
-                                projection=projection,
-                                retry=retry,
-                                category="missing_result",
-                            )
-                            continue
-                        if "tag" in selected:
-                            status = self.repository.projection_status(
-                                operation_id,
-                                question.question_id,
-                                "tag",
-                            )
-                            if not retry or status in {
-                                "failed",
-                                "cancelled",
-                                "pending",
-                            }:
-                                self._save_tag(
-                                    operation_id,
-                                    question,
-                                    raw,
-                                    response.model_name,
-                                )
-                        if "training_criteria" in selected:
-                            status = self.repository.projection_status(
-                                operation_id,
-                                question.question_id,
-                                "training_criteria",
-                            )
-                            if not retry or status in {
-                                "failed",
-                                "cancelled",
-                                "pending",
-                            }:
-                                self._save_criteria(
-                                    operation_id,
-                                    question,
-                                    raw,
-                                    response.model_name,
-                                )
+                    finalize(attempt.question_count)
+                    fill_available_slots(executor)
+                    continue
 
-                processed_batches += 1
-                processed_questions += len(batch.questions)
-                self._report_progress(
-                    progress_callback,
-                    operation_id=operation_id,
-                    projection=projection,
-                    processed_batches=processed_batches,
-                    total_batches=len(batches),
-                    processed_questions=processed_questions,
-                    total_questions=total_questions,
+                try:
+                    items, merge_notes = _response_items(
+                        response.payload,
+                        batch,
+                    )
+                except ProjectionValidationError as exc:
+                    category = _error_category(exc)
+                    self.repository.record_request_finished(
+                        request_id=attempt.request_id,
+                        status="failed",
+                        error_category=category,
+                    )
+                    if attempt.feedback_left > 0 and not stop_scheduling:
+                        submit_repair(
+                            executor,
+                            questions=tuple(
+                                _question_with_repair_context(
+                                    question,
+                                    validation_error=_projection_error_detail(
+                                        exc
+                                    ),
+                                    previous_result=_repair_previous_result(
+                                        response.payload
+                                    ),
+                                )
+                                for question in batch.questions
+                            ),
+                            source_attempt=attempt,
+                        )
+                        continue
+                    self._fail_batch(
+                        operation_id=operation_id,
+                        batch=batch,
+                        projection=projection,
+                        retry=retry,
+                        category=category,
+                    )
+                    if _stops_batch_scheduling(category):
+                        stop_scheduling = True
+                        stop_category = category
+                    finalize(attempt.question_count)
+                    fill_available_slots(executor)
+                    continue
+                except Exception as exc:
+                    category = _error_category(exc)
+                    self.repository.record_request_finished(
+                        request_id=attempt.request_id,
+                        status="failed",
+                        error_category=category,
+                    )
+                    self._fail_batch(
+                        operation_id=operation_id,
+                        batch=batch,
+                        projection=projection,
+                        retry=retry,
+                        category=category,
+                    )
+                    if _stops_batch_scheduling(category):
+                        stop_scheduling = True
+                        stop_category = category
+                    finalize(attempt.question_count)
+                    fill_available_slots(executor)
+                    continue
+
+                canary_succeeded = True
+                self.repository.record_request_finished(
+                    request_id=attempt.request_id,
+                    status="succeeded",
+                    response=response,
                 )
+                for merged_question_id, merge_note in merge_notes.items():
+                    self._record_projection_note(
+                        operation_id,
+                        merged_question_id,
+                        "merge_note",
+                        merge_note,
+                    )
+                failed_feedback: dict[
+                    int,
+                    tuple[str, Mapping[str, Any], frozenset[str]],
+                ] = {}
+                repair_scopes = attempt.repair_scopes
+                for question in batch.questions:
+                    raw = items.get(question.question_id)
+                    if raw is None:
+                        self._fail_question(
+                            operation_id=operation_id,
+                            question=question,
+                            projection=projection,
+                            retry=retry,
+                            category="missing_result",
+                        )
+                        failed_feedback[question.question_id] = (
+                            "响应缺少该题的分析结果。",
+                            {},
+                            frozenset(selected),
+                        )
+                        continue
+                    scopes = (
+                        repair_scopes.get(question.question_id)
+                        if repair_scopes is not None
+                        else None
+                    )
+                    detail: str | None = None
+                    failed_here: set[str] = set()
+                    if "tag" in selected and (
+                        scopes is None or "tag" in scopes
+                    ):
+                        status = self.repository.projection_status(
+                            operation_id,
+                            question.question_id,
+                            "tag",
+                        )
+                        if not retry or status in {
+                            "failed",
+                            "cancelled",
+                            "pending",
+                        }:
+                            detail = self._save_tag(
+                                operation_id,
+                                question,
+                                raw,
+                                response.model_name,
+                            )
+                            if detail:
+                                failed_here.add("tag")
+                    if "training_criteria" in selected and (
+                        scopes is None or "training_criteria" in scopes
+                    ):
+                        status = self.repository.projection_status(
+                            operation_id,
+                            question.question_id,
+                            "training_criteria",
+                        )
+                        if not retry or status in {
+                            "failed",
+                            "cancelled",
+                            "pending",
+                        }:
+                            criteria_detail = self._save_criteria(
+                                operation_id,
+                                question,
+                                raw,
+                                response.model_name,
+                            )
+                            if criteria_detail:
+                                failed_here.add("training_criteria")
+                                if detail is None:
+                                    detail = criteria_detail
+                    if failed_here:
+                        failed_feedback[question.question_id] = (
+                            detail or "分析结果未通过本地校验。",
+                            raw,
+                            frozenset(failed_here),
+                        )
+                if (
+                    failed_feedback
+                    and attempt.feedback_left > 0
+                    and not stop_scheduling
+                ):
+                    submit_repair(
+                        executor,
+                        questions=tuple(
+                            _question_with_repair_context(
+                                question,
+                                validation_error=failed_feedback[
+                                    question.question_id
+                                ][0],
+                                previous_result=_repair_previous_result(
+                                    failed_feedback[question.question_id][1]
+                                ),
+                            )
+                            for question in batch.questions
+                            if question.question_id in failed_feedback
+                        ),
+                        source_attempt=attempt,
+                        repair_scopes={
+                            question_id: scopes
+                            for question_id, (_, _, scopes) in
+                            failed_feedback.items()
+                        },
+                    )
+                    continue
+                finalize(attempt.question_count)
                 fill_available_slots(executor)
 
         if stop_scheduling and next_batch_index < len(batches):
@@ -1421,7 +1653,8 @@ class CombinedQuestionAnalysisModule:
         question: QuestionAnalysisInput,
         raw: Mapping[str, Any],
         model_name: str,
-    ) -> None:
+    ) -> str | None:
+        """Persist the tag projection; return a sanitized failure detail."""
         payload = raw.get("tag_analysis")
         if not isinstance(payload, Mapping):
             self.repository.save_projection(
@@ -1431,7 +1664,7 @@ class CombinedQuestionAnalysisModule:
                 status="failed",
                 error_category="tag_validation",
             )
-            return
+            return "响应缺少 tag_analysis 对象。"
         try:
             normalized = self.tag_writer.write(
                 question,
@@ -1454,7 +1687,7 @@ class CombinedQuestionAnalysisModule:
                 status="failed",
                 error_category="tag_validation",
             )
-            return
+            return detail
         self.repository.save_projection(
             operation_id=operation_id,
             question_id=question.question_id,
@@ -1462,6 +1695,7 @@ class CombinedQuestionAnalysisModule:
             status="succeeded",
             payload=normalized,
         )
+        return None
 
     def _save_criteria(
         self,
@@ -1469,7 +1703,8 @@ class CombinedQuestionAnalysisModule:
         question: QuestionAnalysisInput,
         raw: Mapping[str, Any],
         model_name: str,
-    ) -> None:
+    ) -> str | None:
+        """Persist the criteria/evidence projection; return failure detail."""
         evidence_payload = raw.get("solution_evidence")
         legacy_payload = raw.get("training_criteria")
         if not isinstance(evidence_payload, Mapping) and not isinstance(
@@ -1483,7 +1718,7 @@ class CombinedQuestionAnalysisModule:
                 status="failed",
                 error_category="criteria_validation",
             )
-            return
+            return "响应缺少 solution_evidence 对象。"
         suggestion = self._question_type_suggestion(
             operation_id,
             question,
@@ -1547,7 +1782,7 @@ class CombinedQuestionAnalysisModule:
                     else "criteria_validation"
                 ),
             )
-            return
+            return detail
         criterion_audit = self._publish_criterion_draft(
             question=question,
             draft=draft,
@@ -1586,6 +1821,7 @@ class CombinedQuestionAnalysisModule:
             status="succeeded",
             payload=payload,
         )
+        return None
 
     def _question_type_suggestion(
         self,
@@ -3301,6 +3537,63 @@ def _stops_batch_scheduling(category: str) -> bool:
         "invalid_request",
         "parameter_incompatible",
     }
+
+
+def _gateway_feedback_limit(gateway: object) -> int:
+    """Local repair-retry budget carried by the gateway (0 = never re-ask)."""
+    value = getattr(gateway, "max_auto_retries", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, min(5, value))
+
+
+def _repair_previous_result(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Bound the previous model payload handed back as repair feedback."""
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return {}
+    if len(serialized) <= 40_000:
+        return dict(payload)
+    return {"raw_output": serialized[:8_000]}
+
+
+def _raw_text_previous_result(raw_text: str) -> Mapping[str, Any]:
+    text = str(raw_text or "").strip()
+    if not text:
+        return {}
+    return {"raw_output": text[:8_000]}
+
+
+def _question_with_repair_context(
+    question: QuestionAnalysisInput,
+    *,
+    validation_error: str,
+    previous_result: Mapping[str, Any],
+) -> QuestionAnalysisInput:
+    return dataclass_replace(
+        question,
+        repair_context={
+            "mode": "repair_previous_rejected_result",
+            "validation_error": validation_error,
+            "previous_result": previous_result,
+        },
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchAttempt:
+    """One in-flight batch plus its remaining local repair budget."""
+
+    batch: PlannedAnalysisBatch
+    request_id: str
+    feedback_left: int
+    question_count: int
+    # None = initial/whole-shape attempt (save every selected projection);
+    # otherwise only the listed projections are (re)saved per question, so a
+    # repair response that omits sibling projections cannot overwrite
+    # already-succeeded work.
+    repair_scopes: Mapping[int, frozenset[str]] | None = None
 
 
 def _hash_payload(value: object) -> str:

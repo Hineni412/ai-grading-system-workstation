@@ -204,28 +204,4 @@ export const workApi = {
       decode: (payload) => record(payload),
     })
   },
-  query(startDate?: string, endDate?: string) {
-    const params = new URLSearchParams()
-    if (startDate) params.set('start_date', startDate)
-    if (endDate) params.set('end_date', endDate)
-    const query = params.size ? `?${params.toString()}` : ''
-    return apiClient.request(`/api/class-teacher/work${query}`, { decode: snapshot })
-  },
-  update(
-    nodeValue: WorkNode,
-    status: Exclude<WorkStatus, 'draft'>,
-    operationId: string,
-  ) {
-    return apiClient.request(`/api/class-teacher/work/nodes/${nodeValue.node_id}`, {
-      method: 'PATCH',
-      headers: mutationHeaders(),
-      body: {
-        revision: nodeValue.revision,
-        status,
-        due_date: nodeValue.due_date,
-        operation_id: operationId,
-      },
-      decode: node,
-    })
-  },
 }

@@ -178,15 +178,90 @@ export const useJobStore = defineStore('jobs', () => {
     return generations.get(id) ?? 0
   }
 
+  const dueIds = new Set<number>()
+  let flushHandle: ReturnType<typeof setTimeout> | null = null
+
   function schedulePolling(id: number, delay?: number): void {
     if (timers.has(id) || !references.has(id)) return
     const snapshot = jobs.value[id]
     if (snapshot && TERMINAL_JOB_STATUSES.has(snapshot.status)) return
     const handle = dependencies.schedule(() => {
       timers.delete(id)
-      void refresh(id)
+      // Coalesce timer firings into one flush so N active jobs produce one
+      // batch request per tick instead of N individual GETs.
+      dueIds.add(id)
+      scheduleFlush()
     }, delay ?? dependencies.pollIntervalMs)
     timers.set(id, handle)
+  }
+
+  function scheduleFlush(): void {
+    if (flushHandle !== null) return
+    flushHandle = dependencies.schedule(() => {
+      flushHandle = null
+      const ids = [...dueIds]
+      dueIds.clear()
+      if (ids.length === 0) return
+      if (ids.length === 1) {
+        void refresh(ids[0]!)
+        return
+      }
+      void refreshMany(ids)
+    }, 0)
+  }
+
+  async function refreshMany(ids: number[]): Promise<void> {
+    const pending = ids.filter((id) => references.has(id) && !inFlight.has(id))
+    if (pending.length === 0) return
+    const generationBy = new Map(pending.map((id) => [id, currentGeneration(id)]))
+    const promise = (async () => {
+      try {
+        const response = await dependencies.api.getJobStatusBatch(pending)
+        for (const item of response) {
+          const id = item.id
+          if (generationBy.get(id) !== currentGeneration(id)) continue
+          if (!references.has(id)) continue
+          if (!item.found || !item.job) {
+            stopPolling(id)
+            removeReference(id)
+            delete jobs.value[id]
+            continue
+          }
+          const job = item.job
+          if (shouldReplaceJob(jobs.value[id], job)) jobs.value[id] = job
+          delete syncErrors.value[id]
+          retryCounts.delete(id)
+          const snapshot = jobs.value[id]!
+          const terminal = TERMINAL_JOB_STATUSES.has(snapshot.status)
+          persistTerminalState(id, terminal)
+          if (terminal) stopPolling(id)
+          else schedulePolling(id)
+        }
+      } catch (error) {
+        for (const id of pending) {
+          if (generationBy.get(id) !== currentGeneration(id)) continue
+          if (!references.has(id)) continue
+          const safe = safeSyncError(error)
+          syncErrors.value[id] = safe
+          if (safe.retryable && (safe.kind === 'network' || safe.kind === 'server')) {
+            const retryCount = (retryCounts.get(id) ?? 0) + 1
+            retryCounts.set(id, retryCount)
+            schedulePolling(
+              id,
+              jobPollDelay(
+                retryCount,
+                dependencies.pollIntervalMs,
+                dependencies.maxBackoffMs,
+              ),
+            )
+          }
+        }
+      } finally {
+        for (const id of pending) inFlight.delete(id)
+      }
+    })()
+    for (const id of pending) inFlight.set(id, promise)
+    await promise
   }
 
   function stopPolling(id: number): void {

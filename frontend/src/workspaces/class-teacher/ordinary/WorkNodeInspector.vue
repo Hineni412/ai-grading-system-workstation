@@ -18,6 +18,7 @@ const receivedCount = ref(0)
 const needsReviewCount = ref(0)
 const confirmingCancel = ref(false)
 const confirmingDismiss = ref(false)
+const confirmingDelete = ref(false)
 const detail = computed(() => props.module.selected.value)
 
 watch(detail, (value) => {
@@ -29,6 +30,7 @@ watch(detail, (value) => {
   message.value = ''
   confirmingCancel.value = false
   confirmingDismiss.value = false
+  confirmingDelete.value = false
 })
 
 async function run(node: WorkNode, command: string, fields: Record<string, unknown> = {}) {
@@ -39,6 +41,10 @@ async function run(node: WorkNode, command: string, fields: Record<string, unkno
     if (command === 'open_restricted_projection') {
       const projectionId = String(result.projection_id ?? detail.value?.projection_id ?? '')
       if (projectionId) emit('openRestricted', projectionId, detail.value?.node.projection_type ?? null)
+    } else if (command === 'delete') {
+      confirmingDelete.value = false
+      message.value = '这项工作已彻底删除，无法恢复。'
+      props.module.clearSelection()
     } else if (command === 'update_status' && fields.status === 'cancelled') {
       message.value = '已移出默认日历；工作记录仍保留，可以恢复。'
       confirmingCancel.value = false
@@ -134,6 +140,14 @@ async function dismissFollowUp() {
           <AppButton v-if="!confirmingCancel" variant="secondary" :disabled="busy" @click="confirmingCancel = true">移出日历</AppButton>
           <template v-else><span class="confirm-copy">确定移出？记录会保留。</span><AppButton variant="danger" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'cancelled' })">确认移出</AppButton><AppButton variant="ghost" :disabled="busy" @click="confirmingCancel = false">不移出</AppButton></template>
         </div>
+        <div v-if="!confirmingDelete" class="command-row">
+          <AppButton variant="ghost" class="inspector__delete" :disabled="busy" @click="confirmingDelete = true">彻底删除</AppButton>
+        </div>
+        <div v-else class="command-row delete-confirm">
+          <span class="confirm-copy">彻底删除后无法恢复：日期、进展和上下游关系会一并删除。</span>
+          <AppButton variant="danger" :disabled="busy" @click="run(detail.node, 'delete')">确认删除</AppButton>
+          <AppButton variant="ghost" :disabled="busy" @click="confirmingDelete = false">保留</AppButton>
+        </div>
         <label>
           <span>调整到期日期</span>
           <span class="inline"><input v-model="dueDate" type="date"><AppButton variant="secondary" :disabled="busy || !dueDate" @click="run(detail.node, 'reschedule', { due_date: dueDate })">保存</AppButton></span>
@@ -199,6 +213,7 @@ h2 { margin: 0 0 var(--space-2); font-size: var(--font-size-h2); }
 label { display: grid; gap: var(--space-2); margin-top: var(--space-4); font-size: var(--font-size-dense); font-weight: 650; }
 .inline,.command-row { display: flex; gap: var(--space-2); }.inline input { flex: 1; }
 .command-row{flex-wrap:wrap;align-items:center}.confirm-copy{color:var(--color-text-secondary);font-size:var(--font-size-caption)}.restore-panel{margin-top:var(--space-4);padding:var(--space-3);border-left:3px solid var(--color-warning);border-radius:0 var(--radius) var(--radius) 0;background:var(--color-warning-subtle)}.restore-panel p{margin-top:0;color:var(--color-text-secondary)}
+.inspector__delete{color:var(--destructive)}.delete-confirm{margin-top:calc(var(--space-2) * -1)}
 button,input,textarea { font: inherit; }
 input,textarea { padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
 input { min-height: 36px; }

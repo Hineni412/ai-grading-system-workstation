@@ -91,7 +91,7 @@ function dependencies(
         revision: 4,
       })),
     },
-    legacyJobApi: { getJob, cancelJob: vi.fn() },
+    legacyJobApi: { getJob, cancelJob: vi.fn(), getJobStatusBatch: vi.fn(async () => []) },
     now: () => new Date('2026-08-05T00:00:00Z'),
     schedule: vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>),
     cancelScheduled: vi.fn(),

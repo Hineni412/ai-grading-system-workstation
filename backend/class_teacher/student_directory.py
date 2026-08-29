@@ -8,6 +8,17 @@ from .errors import VaultError
 from .secure_repository import EncryptedObjectRepository
 
 
+def _display_student_id(identity: dict[str, object], student_ref: str) -> str:
+    """对外展示的学号：优先档案里存的学籍号；旧数据存的是花名册行号时，
+    从稳定学籍标识「班级|学号」取真实学号兜底（仅当尾段更像学籍号）。"""
+    stored = str(identity.get("source_student_id") or "").strip()
+    tail = student_ref.split("|", 1)[1].strip() if "|" in student_ref else ""
+    if tail.isdigit() and len(tail) > len(stored):
+        return tail
+    return stored
+
+
+
 class StudentDirectory:
     """Read only identity metadata and aggregate counts for the roster."""
 
@@ -80,10 +91,11 @@ class StudentDirectory:
                     vmk=vmk,
                     object_id=str(row["payload_object_id"]),
                 )
+                student_ref = str(row["source_fingerprint"])
                 item = {
                     "subject_id": str(row["subject_id"]),
-                    "student_ref": str(row["source_fingerprint"]),
-                    "source_student_id": str(identity.get("source_student_id") or ""),
+                    "student_ref": student_ref,
+                    "source_student_id": _display_student_id(identity, student_ref),
                     "display_name": str(identity.get("display_name") or ""),
                     "class_label": str(identity.get("class_label") or ""),
                     "confirmed_entry_count": int(row["confirmed_entry_count"]),
@@ -179,7 +191,9 @@ class StudentDirectory:
         return {
             "subject_id": subject_id,
             "student_ref": str(row["source_fingerprint"]),
-            "source_student_id": str(identity.get("source_student_id") or ""),
+            "source_student_id": _display_student_id(
+                identity, str(row["source_fingerprint"])
+            ),
             "display_name": str(identity.get("display_name") or ""),
             "class_label": str(identity.get("class_label") or ""),
             "support_record_count": int(row["support_record_count"]),

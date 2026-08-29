@@ -22,6 +22,7 @@ from question_bank.training_criteria import (
     QuestionAnalysisInputLoader,
     TrainingCriteriaDraft,
     TrainingCriterionModule,
+    combined_analysis_retry_budget,
     usable_training_criterion,
 )
 
@@ -130,6 +131,9 @@ def run_criterion_backfill_job(
                 OpenAICombinedAnalysisGateway(
                     protocol_adapter=protocol_adapter,
                     model_name=tagging_service.model,
+                    max_auto_retries=combined_analysis_retry_budget(
+                        tagging_service
+                    ),
                 ),
                 context,
             )

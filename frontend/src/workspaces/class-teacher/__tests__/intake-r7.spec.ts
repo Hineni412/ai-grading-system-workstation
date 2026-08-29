@@ -579,9 +579,13 @@ describe('B-UI-R7 conversation desk', () => {
       ],
     })
 
-    expect(host.querySelector('[data-work-item="old-conflict-work"]')).toBeNull()
+    // 过期的旧草稿仍要显示（带「已过期」标记）：隐藏会让教师在模型失败后
+    // 彻底找不到已收集的上下文。
+    const oldCard = host.querySelector('[data-work-item="old-conflict-work"]')
+    expect(oldCard).not.toBeNull()
+    expect(oldCard!.textContent).toContain('已过期')
     expect(host.querySelector('[data-work-item="current-conflict-work"]')).not.toBeNull()
-    expect(host.querySelectorAll('.handoffs button')).toHaveLength(1)
+    expect(host.querySelectorAll('.handoffs button')).toHaveLength(2)
   })
 
   it('waits for a running turn before accepting another message', async () => {
@@ -616,6 +620,21 @@ describe('B-UI-R7 conversation desk', () => {
     expect(host.textContent).toContain('合成近期检查任务')
     expect(host.textContent).toContain('合成无日期班务')
     expect(workApi.read).toHaveBeenCalledWith('week')
+  })
+
+  it('caps the near-work list and links to the calendar for the rest', async () => {
+    const many: WorkNode[] = Array.from({ length: 7 }, (_, index) => ({
+      node_id: `node-near-${String(index + 1).padStart(3, '0')}`, kind: 'task', classification: 'ordinary',
+      title: `合成事项${index + 1}`, details: null, status: 'pending',
+      due_date: '2026-08-06T16:00:00+08:00', revision: 1,
+      created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z',
+    }))
+    const host = await mountDesk(conversation(), many)
+
+    const buttons = [...host.querySelectorAll('.near-work button')]
+      .map((node) => node.textContent ?? '')
+    expect(buttons.filter((label) => label.includes('合成事项')).length).toBe(5)
+    expect(host.textContent).toContain('查看全部 7 项')
   })
 
   it('rejects an arbitrary destination before navigation', () => {

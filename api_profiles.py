@@ -18,6 +18,9 @@ _DEPRECATED_OBJECTIVE_PROFILE_KEYS = {
     "objective_timeout",
     "objective_max_tokens",
 }
+# Sentinel consumed by update_named(): pop the key instead of storing a value,
+# so callers can reset an optional field back to "unset".
+PROFILE_FIELD_REMOVE = object()
 _PROFILE_PROCESS_LOCK = threading.RLock()
 _LOCK_TIMEOUT_SECONDS = 10.0
 MODEL_TASK_KEYS = (
@@ -433,6 +436,9 @@ class ApiProfileStore:
                     break
             for key, value in updates.items():
                 normalized_key = str(key)
+                if value is PROFILE_FIELD_REMOVE:
+                    profile.pop(normalized_key, None)
+                    continue
                 if (
                     normalized_key in preserved
                     and _is_blank(value)

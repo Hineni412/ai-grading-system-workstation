@@ -319,6 +319,20 @@ class QuestionListResponse(_QuestionBankModel):
     total_pages: int
 
 
+class QuestionRefListItem(_QuestionBankModel):
+    id: int
+    paper_id: int
+    question_number: str
+
+
+class QuestionRefListResponse(_QuestionBankModel):
+    items: list[QuestionRefListItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
 class QuestionDetailResponse(QuestionListItem):
     page_range: str | None = None
     assets: list[QuestionAssetLink]

@@ -40,6 +40,7 @@ interface ModelProfileDraft {
   requestSpeedMode: RequestSpeedMode
   maxConcurrentRequests: number
   requestsPerMinute: number
+  maxAutoRetries: number | null
   batchEnabled: boolean
   batchModel: string
 }
@@ -83,6 +84,7 @@ const draft = reactive<ModelProfileDraft>({
   requestSpeedMode: 'automatic',
   maxConcurrentRequests: 20,
   requestsPerMinute: 1000,
+  maxAutoRetries: null,
   batchEnabled: false,
   batchModel: '',
 })
@@ -103,6 +105,7 @@ function draftSnapshot(): string {
     requestSpeedMode: draft.requestSpeedMode,
     maxConcurrentRequests: draft.maxConcurrentRequests,
     requestsPerMinute: draft.requestsPerMinute,
+    maxAutoRetries: draft.maxAutoRetries,
     batchEnabled: draft.batchEnabled,
     batchModel: draft.batchModel,
   })
@@ -212,6 +215,7 @@ function applyProfile(profile: ModelProfile): void {
     requestSpeedMode: profile.request_speed_mode,
     maxConcurrentRequests: profile.max_concurrent_requests,
     requestsPerMinute: profile.requests_per_minute,
+    maxAutoRetries: profile.max_auto_retries,
     batchEnabled: profile.batch_enabled,
     batchModel: profile.batch_model,
   } satisfies ModelProfileDraft)
@@ -237,6 +241,7 @@ function applyBlankProfile(): void {
     requestSpeedMode: 'automatic',
     maxConcurrentRequests: 20,
     requestsPerMinute: 1000,
+    maxAutoRetries: null,
     batchEnabled: false,
     batchModel: '',
   } satisfies ModelProfileDraft)
@@ -285,6 +290,7 @@ async function beginNewProfile(): Promise<void> {
 }
 
 function toUpsertInput(): ModelProfileUpsertInput {
+  const rawRetries = draft.maxAutoRetries as number | null | '' | undefined
   return {
     name: draft.name,
     base_url: draft.baseUrl,
@@ -299,6 +305,9 @@ function toUpsertInput(): ModelProfileUpsertInput {
     request_speed_mode: draft.requestSpeedMode,
     max_concurrent_requests: draft.maxConcurrentRequests,
     requests_per_minute: draft.requestsPerMinute,
+    max_auto_retries: rawRetries === '' || rawRetries === undefined
+      ? null
+      : rawRetries,
     batch_enabled: draft.batchEnabled,
     batch_model: draft.batchModel,
   }
@@ -712,6 +721,25 @@ onBeforeUnmount(() => {
                 required
               >
               <small>RPM 只限制启动频率，不会自动增加同时处理数量。</small>
+            </label>
+          </div>
+          <div class="model-profile-execution__custom">
+            <label class="model-profile-field">
+              <span>允许自动重试次数</span>
+              <input
+                v-model.number="draft.maxAutoRetries"
+                name="max-auto-retries"
+                type="number"
+                min="0"
+                :max="MODEL_PROFILE_LIMITS.maxAutoRetries"
+                step="1"
+                :disabled="isBusy"
+                placeholder="默认"
+              >
+              <small>
+                请求失败（限流、超时、断连）或模型输出不符合要求时自动补试的次数上限；
+                留空使用各任务默认，填 0 表示失败就直接停。题库打标会把失败原因带给模型自动重试。
+              </small>
             </label>
           </div>
           <p class="model-profile-execution__summary" aria-live="polite">

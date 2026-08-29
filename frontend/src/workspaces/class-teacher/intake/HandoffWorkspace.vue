@@ -10,7 +10,7 @@ import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import AppButton from '@/components/design-system/AppButton.vue'
 
 const props = defineProps<{ handoffId: string }>()
-const emit = defineEmits<{ back: [conversationId: string, workItemId: string]; completed: [conversationId: string] }>()
+const emit = defineEmits<{ back: [conversationId: string, workItemId: string]; completed: [conversationId: string, affairId?: string | null] }>()
 
 const draft = ref<HandoffDraft | null>(null)
 const content = ref<Record<string, unknown>>({})
@@ -354,8 +354,10 @@ function pollRevision(requestId: string): void {
         await load()
         message.value = 'AI 调整已形成新的草稿版本，仍需你核对和确认。'
       } else if (snapshot.task_state === 'result_unknown') {
+        message.value = ''
         error.value = '调整请求可能已经发出，但本机没有可靠结果；系统不会自动重发。'
       } else {
+        message.value = ''
         error.value = 'AI 调整没有形成新草稿。原草稿仍保留，系统不会自动重发。'
       }
     } catch {
@@ -428,6 +430,11 @@ async function adopt(): Promise<void> {
     error.value = '加入正式日历前，请填写计划目标、最终截止时间，并逐项补全行动名称和截止时间。'
     return
   }
+  const actionTitles = planActions.value.map((item) => item.title.trim()).filter(Boolean)
+  if (draft.value?.handling_mode === 'plan_calendar' && new Set(actionTitles).size !== actionTitles.length) {
+    error.value = '存在同名的行动，请先确认是否重复，或修改名称以便区分。'
+    return
+  }
   if (draft.value?.handling_mode === 'sop' && !sopTemplateKey.value) {
     error.value = '请先选择与实际情况相符的学校流程模板。'
     return
@@ -466,7 +473,12 @@ async function adopt(): Promise<void> {
     const targetRevision = isStudentRecord.value ? selectedSubjectRevision.value : 'new'
     await intakeApi.adopt(current, targetRevision)
     message.value = '已按教师确认保存为正式内容。'
-    emit('completed', current.conversation_id)
+    let affairId: string | null = null
+    if (current.handling_mode === 'sop') {
+      const refreshed = await intakeApi.handoff(current.handoff_id).catch(() => null)
+      affairId = refreshed?.affair_id ?? null
+    }
+    emit('completed', current.conversation_id, affairId)
   } catch {
     await load()
     error.value = '正式保存没有完成。现有正式数据不会重复创建；若对象已变化，请重新选择后再确认。'

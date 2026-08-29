@@ -285,20 +285,14 @@ describe('question bank workspace', () => {
   it('shows incomplete questions from paper fields even without tracked jobs', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
-      if (url.startsWith('/api/question-bank/questions?')) {
+      if (url.startsWith('/api/question-bank/question-refs')) {
         if (!url.includes('analysis_status=incomplete')) {
           throw new Error(`expected incomplete analysis filter: ${url}`)
         }
-        return response({
-          items: [
-            { ...item, id: 21, paper_id: 4, question_number: '1' },
-            { ...item, id: 22, paper_id: 4, question_number: '3' },
-          ],
-          total: 2,
-          page: 1,
-          page_size: 100,
-          total_pages: 1,
-        })
+        return questionRefs([
+          { id: 21, paper_id: 4, question_number: '1' },
+          { id: 22, paper_id: 4, question_number: '3' },
+        ])
       }
       throw new Error(`unexpected request: ${url}`)
     })
@@ -387,19 +381,12 @@ describe('question bank workspace', () => {
     }]
     store.papersState = 'ready'
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      if (String(input).startsWith('/api/question-bank/questions?')) {
-        return response({
-          items: [5, 8, 9, 11, 12].map((id, index) => ({
-            ...item,
-            id,
-            paper_id: 4,
-            question_number: String(index + 1),
-          })),
-          total: 5,
-          page: 1,
-          page_size: 100,
-          total_pages: 1,
-        })
+      if (String(input).startsWith('/api/question-bank/question-refs')) {
+        return questionRefs([5, 8, 9, 11, 12].map((id, index) => ({
+          id,
+          paper_id: 4,
+          question_number: String(index + 1),
+        })))
       }
       if (String(input) === '/api/question-bank/papers') {
         return response({ items: store.papers, total: 1 })
@@ -1050,14 +1037,10 @@ describe('question bank workspace', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url.startsWith('/api/question-bank/questions?')) {
-        return response({
-          items: [item],
-          total: 1,
-          page: 1,
-          page_size: 100,
-          total_pages: 1,
-        })
+      if (url.startsWith('/api/question-bank/question-refs')) {
+        return questionRefs([
+          { id: 17, paper_id: 4, question_number: '1' },
+        ])
       }
       if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
         return response({
@@ -1116,17 +1099,14 @@ describe('question bank workspace', () => {
     let questionListUrl = ''
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url.startsWith('/api/question-bank/questions?')) {
+      if (url.startsWith('/api/question-bank/question-refs')) {
         if (url.includes('analysis_status=all')) {
           questionListUrl = url
         }
-        return response({
-          items: [item, { ...item, id: 18 }],
-          total: 2,
-          page: 1,
-          page_size: 100,
-          total_pages: 1,
-        })
+        return questionRefs([
+          { id: 17, paper_id: 4, question_number: '1' },
+          { id: 18, paper_id: 4, question_number: '2' },
+        ])
       }
       if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
         return response({
@@ -1170,7 +1150,7 @@ describe('question bank workspace', () => {
     expect(host.textContent).toContain('2 道题等待后端核对')
   })
 
-  it('loads 24 papers from the same curriculum in one question-list request', async () => {
+  it('loads 24 papers from the same curriculum in one question-refs request', async () => {
     const host = document.createElement('div')
     document.body.append(host)
     const pinia = createPinia()
@@ -1191,25 +1171,18 @@ describe('question bank workspace', () => {
     const taggingBodies: Array<Record<string, unknown>> = []
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url.startsWith('/api/question-bank/questions?')) {
+      if (url.startsWith('/api/question-bank/question-refs')) {
         if (url.includes('analysis_status=all')) {
           questionListUrls.push(url)
         }
         const paperIds = new URL(url, 'http://local.test').searchParams
           .getAll('paper_ids')
           .map(Number)
-        return response({
-          items: paperIds.map((paperId) => ({
-            ...item,
-            id: 1_000 + paperId,
-            paper_id: paperId,
-            question_number: String(paperId),
-          })),
-          total: paperIds.length,
-          page: 1,
-          page_size: 100,
-          total_pages: 1,
-        })
+        return questionRefs(paperIds.map((paperId) => ({
+          id: 1_000 + paperId,
+          paper_id: paperId,
+          question_number: String(paperId),
+        })))
       }
       if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
         taggingBodies.push(JSON.parse(String(init.body)))
@@ -1270,23 +1243,16 @@ describe('question bank workspace', () => {
     const taggingBodies: Array<Record<string, unknown>> = []
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url.startsWith('/api/question-bank/questions?')) {
+      if (url.startsWith('/api/question-bank/question-refs')) {
         const paperIds = new URL(url, 'http://local.test').searchParams
           .getAll('paper_ids')
           .map(Number)
         questionPaperGroups.push(paperIds)
-        return response({
-          items: paperIds.map((paperId) => ({
-            ...item,
-            id: 2_000 + paperId,
-            paper_id: paperId,
-            question_number: String(paperId),
-          })),
-          total: paperIds.length,
-          page: 1,
-          page_size: 100,
-          total_pages: 1,
-        })
+        return questionRefs(paperIds.map((paperId) => ({
+          id: 2_000 + paperId,
+          paper_id: paperId,
+          question_number: String(paperId),
+        })))
       }
       if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
         taggingBodies.push(JSON.parse(String(init.body)))
@@ -1717,17 +1683,15 @@ describe('question bank workspace', () => {
     const taggingBodies: Array<Record<string, unknown>> = []
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url.startsWith('/api/question-bank/questions?')) {
+      if (url.startsWith('/api/question-bank/question-refs')) {
         const paperIds = new URL(url, 'http://local.test').searchParams
           .getAll('paper_ids')
           .map(Number)
-        return response({
-          items: paperIds.map((paperId) => ({ ...item, id: 3_000 + paperId, paper_id: paperId })),
-          total: paperIds.length,
-          page: 1,
-          page_size: 100,
-          total_pages: 1,
-        })
+        return questionRefs(paperIds.map((paperId) => ({
+          id: 3_000 + paperId,
+          paper_id: paperId,
+          question_number: String(paperId),
+        })))
       }
       if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
         taggingBodies.push(JSON.parse(String(init.body)))
@@ -1846,6 +1810,18 @@ describe('question bank workspace', () => {
     expect(host.textContent).toContain('未选中试卷')
   })
 })
+
+function questionRefs(
+  items: Array<{ id: number; paper_id: number; question_number: string }>,
+): Promise<Response> {
+  return response({
+    items,
+    total: items.length,
+    page: 1,
+    page_size: 500,
+    total_pages: 1,
+  })
+}
 
 function response(body: unknown, status = 200): Promise<Response> {
   return Promise.resolve(new Response(JSON.stringify(body), {

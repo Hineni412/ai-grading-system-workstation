@@ -9,6 +9,9 @@ from backend.api.app import ApiError
 from backend.api.dependencies import get_job_manager
 from backend.api.schemas.jobs import (
     JobResponse,
+    JobStatusBatchItem,
+    JobStatusBatchRequest,
+    JobStatusBatchResponse,
     JobSubmitRequest,
     JobSummaryListResponse,
     JobSummaryResponse,
@@ -559,6 +562,30 @@ def list_jobs(
         page=page,
         page_size=page_size,
         total_pages=(total + page_size - 1) // page_size,
+    )
+
+
+@router.post("/jobs/status-batch", response_model=JobStatusBatchResponse)
+def get_job_status_batch(
+    request: JobStatusBatchRequest,
+    manager: JobManager = Depends(get_job_manager),
+) -> JobStatusBatchResponse:
+    """One query for many pollers; per-job shape matches GET /jobs/{id}."""
+    unique_ids = list(dict.fromkeys(int(value) for value in request.ids))
+    records = manager.store.get_jobs(unique_ids)
+    return JobStatusBatchResponse(
+        items=[
+            JobStatusBatchItem(
+                id=job_id,
+                found=job_id in records,
+                job=(
+                    _job_response(records[job_id])
+                    if job_id in records
+                    else None
+                ),
+            )
+            for job_id in unique_ids
+        ],
     )
 
 

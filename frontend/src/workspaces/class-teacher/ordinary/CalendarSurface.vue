@@ -28,7 +28,7 @@ onMounted(() => { void props.module.load('week', anchor.value) })
 
 <template>
   <section class="calendar-surface">
-    <header><div><p>日历与唯一工作图</p><h2>把时间、包含、依赖和接续放在一起看</h2></div><div class="controls"><nav aria-label="查看范围"><button v-for="value in (['today','week','timeline','all'] as const)" :key="value" :aria-current="mode===value?'page':undefined" @click="selectMode(value)">{{ {today:'今天',week:'本周',timeline:'时间线',all:'全部'}[value] }}</button></nav><nav aria-label="切换周"><button @click="move(-7)">上一周</button><button @click="move(0)">本周</button><button @click="move(7)">下一周</button></nav></div></header>
+    <header><div><p>日历与唯一工作图</p><h2>把时间、包含、依赖和接续放在一起看</h2></div><div class="controls"><nav aria-label="查看范围"><button v-for="value in (['week','all'] as const)" :key="value" :aria-current="mode===value?'page':undefined" @click="selectMode(value)">{{ {week:'本周',all:'全部'}[value] }}</button></nav><nav v-if="mode==='week'" aria-label="切换周"><button @click="move(-7)">上一周</button><button @click="move(0)">本周</button><button @click="move(7)">下一周</button></nav></div></header>
     <div class="calendar-layout">
       <div class="canvas">
       <div v-if="mode==='week'" class="week" role="grid" aria-label="一周工作">
