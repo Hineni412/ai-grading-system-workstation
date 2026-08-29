@@ -1988,6 +1988,28 @@ class JobStore:
                 input_ids.add(input_id)
         return input_ids
 
+    def clear_downloadable_file(self, job_id: int) -> bool:
+        job = self.get_job(job_id)
+        if job is None or job.status != "succeeded":
+            return False
+        result = dict(job.result or {})
+        if not str(result.get("file_path") or "").strip():
+            return True
+        result.pop("file_path", None)
+        result["consumed"] = True
+        result_json = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE jobs
+                SET result_json = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE id = ? AND status = 'succeeded'
+                """,
+                (result_json, int(job_id)),
+            )
+        return cursor.rowcount == 1
+
     def update_succeeded_config_result(
         self,
         job_id: int,

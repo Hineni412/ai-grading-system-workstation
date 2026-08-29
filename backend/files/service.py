@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from backend.file_access import ControlledFileExpired, ResolvedFile, resolve_controlled_file
-from backend.jobs.store import JobRecord
+from backend.jobs.store import JobRecord, JobStore
 
 
 class JobFileUnavailable(RuntimeError):
@@ -21,6 +22,7 @@ class JobFileRule:
     allowed_suffixes: frozenset[str]
     root_name: str
     data_root_depth: int
+    consume_after_download: bool = False
 
 
 JOB_FILE_RULES = {
@@ -29,12 +31,14 @@ JOB_FILE_RULES = {
         allowed_suffixes=frozenset({".pdf", ".xlsx"}),
         root_name="reports_dir",
         data_root_depth=1,
+        consume_after_download=True,
     ),
     "training_export": JobFileRule(
         result_field="file_path",
         allowed_suffixes=frozenset({".docx", ".md", ".zip"}),
         root_name="training_outputs_dir",
         data_root_depth=2,
+        consume_after_download=True,
     ),
     "assembly_export": JobFileRule(
         result_field="file_path",
@@ -98,3 +102,45 @@ class JobFileService:
             data_root=data_root,
             allowed_suffixes=rule.allowed_suffixes,
         )
+
+    def should_consume(self, job: JobRecord) -> bool:
+        rule = JOB_FILE_RULES.get(job.job_type)
+        return bool(rule and rule.consume_after_download)
+
+    def consume_after_send(
+        self,
+        job: JobRecord,
+        resolved: ResolvedFile,
+        store: JobStore,
+    ) -> None:
+        if not self.should_consume(job):
+            return
+        self._unlink_quietly(resolved.path)
+        self._cleanup_training_job_dir(job, resolved.path)
+        store.clear_downloadable_file(job.id)
+
+    def _cleanup_training_job_dir(self, job: JobRecord, file_path: Path) -> None:
+        if job.job_type != "training_export" or self.training_outputs_dir is None:
+            return
+        parent = file_path.parent
+        if parent.name != f"job-{int(job.id)}":
+            return
+        try:
+            parent.resolve().relative_to(self.training_outputs_dir.resolve())
+        except ValueError:
+            return
+        shutil.rmtree(parent, ignore_errors=True)
+
+    @staticmethod
+    def _unlink_quietly(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except OSError:
+            pass
+        try:
+            graveyard = path.with_name(path.name + ".downloaded")
+            path.replace(graveyard)
+            graveyard.unlink(missing_ok=True)
+        except OSError:
+            return

@@ -263,6 +263,29 @@ def test_job_store_updates_progress_and_finishes(tmp_path) -> None:
     assert loaded.finished_at is not None
 
 
+def test_job_store_clears_downloadable_file_on_succeeded_job(tmp_path) -> None:
+    from backend.jobs.store import JobStore
+
+    store = JobStore(tmp_path / "jobs.db")
+    job = store.create_job("report_export", {"session_id": 3})
+    assert store.mark_running(job.id) is True
+    store.finish(
+        job.id,
+        "succeeded",
+        result={"file_path": "reports/out.xlsx", "filename": "out.xlsx"},
+    )
+
+    assert store.clear_downloadable_file(job.id) is True
+
+    loaded = store.get_job(job.id)
+    assert loaded is not None
+    assert loaded.status == "succeeded"
+    assert "file_path" not in loaded.result
+    assert loaded.result["filename"] == "out.xlsx"
+    assert loaded.result["consumed"] is True
+    assert store.clear_downloadable_file(job.id) is True
+
+
 def test_job_store_records_cancellation_request(tmp_path) -> None:
     from backend.jobs.store import JobStore
 
