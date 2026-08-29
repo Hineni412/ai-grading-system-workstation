@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from backend.api.app import ApiError
 from backend.api.dependencies import get_job_file_service, get_job_manager
@@ -92,9 +93,18 @@ def download_job_file(
             {"job_id": int(job_id)},
             headers=NO_STORE_HEADERS,
         ) from exc
+    background = None
+    if file_service.should_consume(job):
+        background = BackgroundTask(
+            file_service.consume_after_send,
+            job,
+            resolved,
+            manager.store,
+        )
     return FileResponse(
         resolved.path,
         filename=resolved.path.name,
         media_type=resolved.media_type,
         headers={"Cache-Control": "no-store"},
+        background=background,
     )

@@ -174,6 +174,17 @@ def test_training_job_download_streams_controlled_file(
     assert response.headers["content-type"] == media_type
     assert response.headers["cache-control"] == "no-store"
     assert exported.name in response.headers["content-disposition"]
+    loaded = store.get_job(job.id)
+    assert loaded is not None
+    assert not str(loaded.result.get("file_path") or "").strip()
+    assert loaded.result.get("filename") == exported.name
+    assert not exported.exists()
+    public = client.get(f"/api/jobs/{job.id}")
+    assert public.status_code == 200
+    assert "download_url" not in public.json()["result"]
+    second = client.get(f"/api/jobs/{job.id}/download")
+    assert second.status_code == 410
+    assert second.json()["error"]["code"] == "job_file_expired"
 
 
 def test_report_job_download_streams_controlled_file(file_client) -> None:
@@ -200,6 +211,15 @@ def test_report_job_download_streams_controlled_file(file_client) -> None:
     assert response.headers["content-disposition"].startswith("attachment;")
     assert "report.xlsx" in response.headers["content-disposition"]
     assert response.headers["cache-control"] == "no-store"
+    loaded = store.get_job(job.id)
+    assert loaded is not None
+    assert not str(loaded.result.get("file_path") or "").strip()
+    assert not report.exists()
+    public = client.get(f"/api/jobs/{job.id}")
+    assert "download_url" not in public.json()["result"]
+    second = client.get(f"/api/jobs/{job.id}/download")
+    assert second.status_code == 410
+    assert second.json()["error"]["code"] == "job_file_expired"
 
 
 def test_annotated_original_pdf_download_preserves_chinese_filename(file_client) -> None:
@@ -258,6 +278,7 @@ def test_ops_job_download_uses_operation_specific_root(
     assert response.content == b"zip"
     assert response.headers["content-type"] == "application/zip"
     assert response.headers["cache-control"] == "no-store"
+    assert exported.exists()
     assert public.json()["result"] == {
         "operation_id": "11111111-1111-4111-8111-111111111111",
         "operation": "backup" if job_type == "ops_backup" else "transfer_export",

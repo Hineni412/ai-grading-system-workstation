@@ -38,7 +38,7 @@ from grading_limits import (
     bounded_int,
 )
 from grading_completeness import audit_grading_details, major_question_id, major_question_ids_for_issues
-from image_preprocessor import enhance_image_file
+from image_preprocessor import enhance_image_file, is_standard_pdf_page
 from integration.question_tag_projection_service import QuestionTagProjectionService
 from llm_client import LLMClient
 from path_manager import get_path_manager
@@ -1768,7 +1768,7 @@ def _attach_enhanced_paths(analysis: ScanAnalysis, output_dir: Path) -> None:
 
 
 def _enhance_or_original(path: Path, output_dir: Path) -> Path:
-    if _is_standard_pdf_page(path):
+    if is_standard_pdf_page(path):
         return path
     try:
         return enhance_image_file(path, output_dir)
@@ -1777,11 +1777,7 @@ def _enhance_or_original(path: Path, output_dir: Path) -> Path:
 
 
 def _is_standard_pdf_page(path: Path) -> bool:
-    page_dir = Path(path).parent
-    if page_dir.parent.name != "_pdf_pages":
-        return False
-    manifest_path = page_dir / "source_manifest.json"
-    return manifest_path.exists()
+    return is_standard_pdf_page(path)
 
 
 def _clear_enhanced_paths(analysis: ScanAnalysis) -> None:

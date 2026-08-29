@@ -251,7 +251,7 @@ async function generateReport(type: ReportType, forceRegenerate = false): Promis
     await fileCenter.load(sessionId)
     if (sessionStore.selectedSessionId !== sessionId) return
     actionMessage.value = job.status === 'succeeded'
-      ? '已有可用文件，已保留原文件。'
+      ? '已有可下载文件。'
       : `${reportTypeLabel(type)}已加入生成队列。`
   } catch {
     if (sessionStore.selectedSessionId !== sessionId) return
@@ -304,7 +304,7 @@ async function submitConfiguredScoreExcel(): Promise<void> {
     if (sessionStore.selectedSessionId !== sessionId) return
     closeExcelSettings()
     actionMessage.value = job.status === 'succeeded'
-      ? '已有相同设置的成绩表，已保留原文件。'
+      ? '已有相同设置的成绩表。'
       : '成绩表已按当前设置加入生成队列。'
   } catch {
     if (sessionStore.selectedSessionId !== sessionId) return
@@ -389,7 +389,15 @@ async function download(jobId: number): Promise<void> {
     anchor.click()
     anchor.remove()
     URL.revokeObjectURL(url)
-    actionMessage.value = `已开始下载：${downloaded.filename}`
+    actionMessage.value = `已开始下载：${downloaded.filename}。本机副本随后删除，需要时请重新生成。`
+    const sessionId = sessionStore.selectedSessionId
+    if (sessionId !== null) {
+      try {
+        await fileCenter.load(sessionId)
+      } catch {
+        // 浏览器已拿到文件；登记簿刷新失败不改下载结果。
+      }
+    }
   } catch {
     actionError.value = '文件已失效或暂时无法下载，可以重新生成后再试。'
   }

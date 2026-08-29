@@ -129,6 +129,49 @@ def test_plain_standard_page_does_not_create_enhanced_copy_later(tmp_path: Path)
     assert not output_dir.exists()
 
 
+def test_jpeg_enhance_replaces_source_without_second_copy(tmp_path: Path) -> None:
+    from image_preprocessor import enhance_image_file
+
+    source = tmp_path / "scan.jpg"
+    Image.new("RGB", (48, 30), (176, 176, 176)).save(source, "JPEG", quality=95)
+    before = _mean_luma(source)
+    original_bytes = source.read_bytes()
+
+    selected = enhance_image_file(source, tmp_path / "_enhanced")
+
+    assert selected == source
+    assert source.exists()
+    assert source.read_bytes() != original_bytes
+    assert _mean_luma(source) > before
+    assert not (tmp_path / "_enhanced").exists()
+    assert not any(tmp_path.glob(".*enhancing"))
+
+    after_first = _mean_luma(source)
+    again = enhance_image_file(source, tmp_path / "_enhanced")
+    assert again == source
+    assert abs(_mean_luma(source) - after_first) < 0.5
+    assert not (tmp_path / "_enhanced").exists()
+
+
+def test_jpeg_enhance_adopts_legacy_enhanced_copy(tmp_path: Path) -> None:
+    from image_preprocessor import _enhanced_name, enhance_image_file
+
+    source = tmp_path / "scan.jpg"
+    Image.new("RGB", (48, 30), (150, 150, 150)).save(source, "JPEG", quality=95)
+    legacy_dir = tmp_path / "_enhanced"
+    legacy_dir.mkdir()
+    legacy = legacy_dir / _enhanced_name(source)
+    Image.new("RGB", (48, 30), (240, 240, 240)).save(legacy, "JPEG", quality=95)
+    legacy_luma = _mean_luma(legacy)
+
+    selected = enhance_image_file(source, legacy_dir)
+
+    assert selected == source
+    assert not legacy.exists()
+    assert not legacy_dir.exists()
+    assert _mean_luma(source) == pytest.approx(legacy_luma, abs=2.0)
+
+
 def test_enhanced_standard_page_is_brighter_than_plain_render(tmp_path: Path) -> None:
     enhanced_pdf = _make_pdf(tmp_path / "enhanced" / "class.pdf")
     plain_pdf = _make_pdf(tmp_path / "plain" / "class.pdf")
