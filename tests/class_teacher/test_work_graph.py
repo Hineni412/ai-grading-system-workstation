@@ -686,3 +686,80 @@ def test_legacy_work_model_preview_api_is_retired_while_calendar_read_remains(
     assert previewed.status_code == 404
     assert not service.database.exists
     assert not service.ordinary_database.exists
+
+
+def test_delete_command_removes_node_edges_and_replays_idempotently(
+    tmp_path: Path,
+) -> None:
+    graph, _gateway = _graph(tmp_path)
+    created = _create(graph, suffix="delete")
+    parent = created["nodes"][0]
+    child = created["nodes"][-1]
+    assert str(child["node_id"]) != str(parent["node_id"])
+
+    deleted = graph.command(
+        node_id=str(child["node_id"]),
+        command="delete",
+        expected_revision=int(child["revision"]),
+        operation_id="work-delete-001",
+    )
+    assert deleted["deleted"] is True
+
+    snapshot = graph.query(as_of="2026-08-03")
+    remaining_ids = {str(item["node_id"]) for item in snapshot["nodes"]}
+    assert str(child["node_id"]) not in remaining_ids
+    assert str(parent["node_id"]) in remaining_ids
+    assert all(
+        str(edge["source_node_id"]) != str(child["node_id"])
+        and str(edge["target_node_id"]) != str(child["node_id"])
+        for edge in snapshot["edges"]
+    )
+
+    replayed = graph.command(
+        node_id=str(child["node_id"]),
+        command="delete",
+        expected_revision=int(child["revision"]),
+        operation_id="work-delete-001",
+    )
+    assert replayed == deleted
+
+    with pytest.raises(VaultError) as missing:
+        graph.command(
+            node_id=str(child["node_id"]),
+            command="delete",
+            expected_revision=int(child["revision"]),
+            operation_id="work-delete-002",
+        )
+    assert missing.value.status_code == 404
+
+
+def test_delete_command_rejects_stale_revision(tmp_path: Path) -> None:
+    graph, _gateway = _graph(tmp_path)
+    created = _create(graph, suffix="stale")
+    node = created["nodes"][0]
+    graph.command(
+        node_id=str(node["node_id"]),
+        command="update_status",
+        expected_revision=int(node["revision"]),
+        operation_id="work-status-first",
+        status="in_progress",
+    )
+
+    with pytest.raises(VaultError) as conflict:
+        graph.command(
+            node_id=str(node["node_id"]),
+            command="delete",
+            expected_revision=int(node["revision"]),
+            operation_id="work-delete-stale",
+        )
+    assert conflict.value.code == "class_teacher_work_revision_conflict"
+
+    detail = graph.detail(node_id=str(node["node_id"]))
+    assert detail["allowed_commands"]
+
+
+def test_detail_lists_delete_for_ordinary_nodes_only(tmp_path: Path) -> None:
+    graph, _gateway = _graph(tmp_path)
+    created = _create(graph, suffix="allowed")
+    for node in created["nodes"]:
+        assert "delete" in graph.detail(node_id=str(node["node_id"]))["allowed_commands"]

@@ -33,7 +33,8 @@ export function createOrdinaryWorkModule() {
   async function command(node: WorkNode, name: string, fields: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const result = await workApi.command(node, name, fields)
     await load(snapshot.value?.view ?? 'today')
-    if (name !== 'open_restricted_projection') await inspect(node)
+    // 删除后节点已不存在，不能再读取详情；打开受保护事项会直接跳转。
+    if (name !== 'open_restricted_projection' && name !== 'delete') await inspect(node)
     return result
   }
 

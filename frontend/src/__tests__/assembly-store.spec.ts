@@ -98,6 +98,38 @@ describe('assembly store', () => {
     expect(useJobStore().jobs[31]?.job_type).toBe('assembly_export')
   })
 
+  it('fetches only newly added question ids when the basket grows', async () => {
+    const { useAssemblyStore } = await import('../stores/assembly')
+    const store = useAssemblyStore()
+    const api = {
+      getDraft: vi.fn(async () => draft({ basket_ids: [7], order_ids: [7] })),
+      saveDraft: vi.fn(async (_revision: string, nextDraft: AssemblyDraft) => ({
+        ...nextDraft,
+        revision: revisionB,
+      })),
+      resolveQuestions: vi.fn(async (ids: readonly number[]) => ({
+        items: ids.map(question),
+        missing_question_ids: [],
+      })),
+      listRecords: vi.fn(async (): Promise<AssemblyRecordList> => ({ items: [], total: 0 })),
+      deleteRecord: vi.fn(),
+      restoreRecord: vi.fn(),
+      submitExport: vi.fn(),
+      retryExport: vi.fn(),
+    }
+
+    await store.load({ api })
+    expect(api.resolveQuestions).toHaveBeenCalledTimes(1)
+    expect(api.resolveQuestions).toHaveBeenLastCalledWith([7])
+
+    await store.addQuestions([8, 9])
+
+    // Only the two new ids are resolved; id 7 comes from the in-memory map.
+    expect(api.resolveQuestions).toHaveBeenCalledTimes(2)
+    expect(api.resolveQuestions).toHaveBeenLastCalledWith([8, 9])
+    expect(store.orderedQuestions.map((item) => item.id)).toEqual([7, 8, 9])
+  })
+
   it('keeps loaded questions for settings-only saves and reloads if the saved order changes', async () => {
     const { useAssemblyStore } = await import('../stores/assembly')
     const store = useAssemblyStore()
@@ -135,8 +167,10 @@ describe('assembly store', () => {
     await store.updateSettings({ header_text: '班级：____' })
 
     expect(store.draft.order_ids).toEqual([8, 7])
-    expect(api.resolveQuestions).toHaveBeenCalledTimes(2)
-    expect(api.resolveQuestions).toHaveBeenLastCalledWith([8, 7])
+    // Incremental question loading: both ids are already resolved, so a
+    // settings save that lands with a reordered server draft refetches
+    // nothing.
+    expect(api.resolveQuestions).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the draft visible when a revision conflict rejects save', async () => {
@@ -296,7 +330,8 @@ describe('assembly store', () => {
     expect(api.saveDraft).toHaveBeenLastCalledWith(revisionA, expect.objectContaining({
       sections: [expect.objectContaining({ id: 'section-a', question_ids: [8, 7, 9] })],
     }))
-    expect(api.resolveQuestions).toHaveBeenCalledTimes(2)
+    // Reordering alone must not refetch already resolved questions.
+    expect(api.resolveQuestions).toHaveBeenCalledTimes(1)
     expect(store.draft.sections[0]?.question_ids).toEqual([8, 7, 9])
   })
 

@@ -672,18 +672,18 @@ def _capture_question_list_sql(
     call: Callable[[], Any],
 ) -> str:
     statements: list[str] = []
-    original = read_module._open_snapshot_connection
+    original = read_module._open_direct_read_connection
 
     def traced(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         conn = original(*args, **kwargs)
         conn.set_trace_callback(statements.append)
         return conn
 
-    read_module._open_snapshot_connection = traced
+    read_module._open_direct_read_connection = traced
     try:
         call()
     finally:
-        read_module._open_snapshot_connection = original
+        read_module._open_direct_read_connection = original
     return next(
         statement
         for statement in statements

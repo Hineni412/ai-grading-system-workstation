@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 
 import type { AssemblyQuestion, AssemblySection } from '../../api/assembly'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
@@ -29,7 +29,23 @@ const assignedQuestionIds = computed(() => new Set(
   editableSections.value.flatMap((section) => section.question_ids),
 ))
 
-function previewSections(): Array<{ id: string; title: string; questions: AssemblyQuestion[] }> {
+// 试卷篮预览一次最多渲染这么多题；更多内容用"加载更多"分块展开，
+// 避免大题篮（上限 500 题）一次性渲染全部富文本与配图。
+const PREVIEW_CHUNK_SIZE = 20
+const previewVisibleCounts = reactive(new Map<string, number>())
+
+function previewVisibleCount(sectionId: string): number {
+  return previewVisibleCounts.get(sectionId) ?? PREVIEW_CHUNK_SIZE
+}
+
+function expandPreview(sectionId: string): void {
+  previewVisibleCounts.set(
+    sectionId,
+    previewVisibleCount(sectionId) + PREVIEW_CHUNK_SIZE,
+  )
+}
+
+const previewSections = computed<Array<{ id: string; title: string; questions: AssemblyQuestion[] }>>(() => {
   if (assembly.draft.layout_mode === 'sections' && editableSections.value.length > 0) {
     const manualSections = editableSections.value.map((section) => ({
       id: section.id,
@@ -62,7 +78,7 @@ function previewSections(): Array<{ id: string; title: string; questions: Assemb
     title: '试题',
     questions: assembly.orderedQuestions,
   }]
-}
+})
 
 function addSection(): void {
   const section: AssemblySection = {
@@ -352,10 +368,13 @@ async function deleteRecord(recordId: string): Promise<void> {
             <h2>{{ assembly.draft.title || '未命名试卷' }}</h2>
             <p>{{ assembly.draft.header_text || '姓名：__________　班级：__________　日期：__________' }}</p>
           </header>
-          <section v-for="section in previewSections()" :key="section.id">
+          <section v-for="section in previewSections" :key="section.id">
             <h3>{{ section.title }}</h3>
             <ol>
-              <li v-for="question in section.questions" :key="question.id">
+              <li
+                v-for="question in section.questions.slice(0, previewVisibleCount(section.id))"
+                :key="question.id"
+              >
                 <div class="assembly-sheet__question">
                   <span v-if="question.score_value !== null" class="assembly-sheet__score">
                     （{{ question.score_value }} 分）
@@ -391,6 +410,14 @@ async function deleteRecord(recordId: string): Promise<void> {
                 </div>
               </li>
             </ol>
+            <button
+              v-if="section.questions.length > previewVisibleCount(section.id)"
+              type="button"
+              class="assembly-sheet__more"
+              @click="expandPreview(section.id)"
+            >
+              加载更多题目（还有 {{ section.questions.length - previewVisibleCount(section.id) }} 题）
+            </button>
           </section>
           <p v-if="!assembly.orderedQuestions.length" class="assembly-editor-empty">返回选题，把题目加入试卷篮后会在这里生成预览。</p>
         </article>

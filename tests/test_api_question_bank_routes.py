@@ -927,280 +927,56 @@ def _path_from_file_uri(uri: str) -> Path:
     return Path(path_text)
 
 
-def test_quiescent_wal_read_keeps_source_bytes_and_sidecars_absent(
-    tmp_path: Path,
-) -> None:
+def test_quiescent_read_lists_empty_papers(tmp_path: Path) -> None:
     db_path = tmp_path / "quiescent.db"
     initialize_database(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         assert checkpoint is not None and checkpoint[0] == 0
-    before = _wal_source_state(db_path)
-    assert before["wal"] == (False, None)
-    assert before["shm"] == (False, None)
 
     assert QuestionBankReadService(db_path).list_papers() == []
 
-    assert _wal_source_state(db_path) == before
 
-
-def test_active_wal_snapshot_sees_committed_row_without_changing_source(
-    tmp_path: Path,
-) -> None:
+def test_active_wal_read_sees_committed_row(tmp_path: Path) -> None:
     db_path = tmp_path / "active.db"
     writer = _open_wal_writer(db_path, paper_id=601, title="Committed in WAL")
     try:
-        before = _wal_source_state(db_path)
-
         papers = QuestionBankReadService(db_path).list_papers()
-
         assert [paper["title"] for paper in papers] == ["Committed in WAL"]
-        assert _wal_source_state(db_path) == before
     finally:
         writer.close()
 
 
-def test_wal_checkpoint_between_capture_and_compare_retries_stable_snapshot(
+def test_uncommitted_write_does_not_block_or_corrupt_reads(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "checkpoint-race.db"
-    writer = _open_wal_writer(db_path, paper_id=602, title="Checkpointed row")
-    attempts: list[int] = []
-
-    def checkpoint_after_first_wal_capture(source: Path, attempt: int) -> None:
-        assert source == db_path
-        attempts.append(attempt)
-        if attempt == 1:
-            checkpoint = writer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-            assert checkpoint is not None and checkpoint[0] == 0
-
-    monkeypatch.setattr(
-        question_read_module,
-        "_snapshot_compare_hook",
-        checkpoint_after_first_wal_capture,
-        raising=False,
-    )
-    try:
-        papers = QuestionBankReadService(db_path).list_papers()
-    finally:
-        writer.close()
-
-    assert attempts == [1, 2]
-    assert [paper["title"] for paper in papers] == ["Checkpointed row"]
-
-
-def test_exhausted_wal_instability_maps_to_sanitized_busy_response(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "busy.db"
-    writer = _open_wal_writer(db_path, paper_id=603, title="Initial row")
-    attempts: list[int] = []
-
-    def commit_after_every_wal_capture(source: Path, attempt: int) -> None:
-        assert source == db_path
-        attempts.append(attempt)
-        writer.execute(
-            "INSERT INTO papers (id, title, import_status) VALUES (?, ?, 'success')",
-            (700 + attempt, f"Busy row {attempt}"),
-        )
-        writer.commit()
-
-    monkeypatch.setattr(
-        question_read_module,
-        "_snapshot_compare_hook",
-        commit_after_every_wal_capture,
-        raising=False,
-    )
-    original_connect = sqlite3.connect
-    connect_targets: list[str] = []
-
-    def connect_spy(database: object, *args: object, **kwargs: object):
-        connect_targets.append(str(database))
-        return original_connect(database, *args, **kwargs)
-
-    monkeypatch.setattr(question_read_module.sqlite3, "connect", connect_spy)
-    client = _question_bank_client(
-        QuestionBankReadService(db_path),
-        raise_server_exceptions=False,
-    )
-    try:
-        response = client.get(
-            "/api/question-bank/papers",
-            headers={"x-request-id": "rid-snapshot-busy"},
-        )
-    finally:
-        writer.close()
-
-    assert attempts == [1, 2, 3, 4]
-    assert connect_targets == []
-    assert response.status_code == 503
-    assert response.headers["retry-after"] == "1"
-    assert response.headers["cache-control"] == "no-store"
-    assert response.json() == {
-        "error": {
-            "code": "question_bank_snapshot_busy",
-            "message": "Question bank snapshot is temporarily busy",
-            "details": {},
-            "request_id": "rid-snapshot-busy",
-        }
-    }
-    assert str(db_path) not in response.text
-    assert "Busy row" not in response.text
-
-
-def test_read_service_reuses_only_a_validated_system_temp_candidate(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "connect-spy.db"
+    db_path = tmp_path / "concurrent.db"
     initialize_database(db_path)
-    original_connect = sqlite3.connect
-    connect_targets: list[str] = []
-
-    def connect_spy(database: object, *args: object, **kwargs: object):
-        connect_targets.append(str(database))
-        return original_connect(database, *args, **kwargs)
-
-    question_read_module._clear_question_read_snapshot_cache_for_tests()
-    monkeypatch.setattr(question_read_module.sqlite3, "connect", connect_spy)
-    service = QuestionBankReadService(db_path)
-
-    assert service.list_papers() == []
-
-    assert len(connect_targets) == 1
-    assert not connect_targets[0].startswith(db_path.resolve().as_uri())
-    assert "immutable" not in connect_targets[0].casefold()
-    assert "nolock" not in connect_targets[0].casefold()
-    candidate = _path_from_file_uri(connect_targets[0])
-    candidate.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
-    assert candidate.exists()
-    assert candidate.parent.exists()
-
-    assert service.tag_value_counts("method", ["not-present"]) == {
-        "not-present": 0
-    }
-    assert connect_targets == [connect_targets[0], connect_targets[0]]
-
-    question_read_module._clear_question_read_snapshot_cache_for_tests()
-    assert not candidate.exists()
-    assert not candidate.parent.exists()
+    writer = sqlite3.connect(db_path, timeout=5.0)
+    try:
+        writer.execute("PRAGMA busy_timeout = 5000")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            "INSERT INTO papers (id, title, import_status) "
+            "VALUES (701, 'Uncommitted row', 'success')"
+        )
+        # WAL snapshot isolation: the reader keeps its own view of the last
+        # committed generation while the write transaction is open.
+        papers = QuestionBankReadService(db_path).list_papers()
+        assert papers == []
+        writer.commit()
+        papers_after = QuestionBankReadService(db_path).list_papers()
+        assert [paper["title"] for paper in papers_after] == ["Uncommitted row"]
+    finally:
+        writer.close()
 
 
-@pytest.mark.parametrize(
-    "route",
-    [
-        "/api/question-bank/papers",
-        "/api/question-bank/questions",
-        "/api/question-bank/questions/1",
-        "/api/question-bank/questions/1/assets/0",
-        "/api/question-bank/questions/1/previews/question",
-    ],
-)
-def test_all_question_bank_routes_map_missing_snapshot_to_unavailable(
+def test_read_error_maps_to_sanitized_unavailable_503(
     tmp_path: Path,
-    route: str,
 ) -> None:
-    db_path = tmp_path / "missing.db"
-    client = _question_bank_client(
-        QuestionBankReadService(db_path),
-        raise_server_exceptions=False,
-    )
-
-    response = client.get(route, headers={"x-request-id": "rid-snapshot-unavailable"})
-
-    assert response.status_code == 503
-    assert response.headers["cache-control"] == "no-store"
-    assert "retry-after" not in response.headers
-    assert response.json() == {
-        "error": {
-            "code": "question_bank_snapshot_unavailable",
-            "message": "Question bank snapshot is unavailable",
-            "details": {},
-            "request_id": "rid-snapshot-unavailable",
-        }
-    }
-    assert str(db_path) not in response.text
-
-
-class _SnapshotBusyService:
-    @staticmethod
-    def _raise() -> None:
-        error_type = getattr(question_read_module, "QuestionBankSnapshotBusy")
-        raise error_type("internal source path must not escape")
-
-    def list_papers(self) -> None:
-        self._raise()
-
-    def list_questions(self, _filters: object) -> None:
-        self._raise()
-
-    def get_question(self, _question_id: int) -> None:
-        self._raise()
-
-    def resolve_asset(self, _question_id: int, _asset_index: int) -> None:
-        self._raise()
-
-    def resolve_preview(self, _question_id: int, _preview_type: str) -> None:
-        self._raise()
-
-
-@pytest.mark.parametrize(
-    "route",
-    [
-        "/api/question-bank/papers",
-        "/api/question-bank/questions",
-        "/api/question-bank/questions/1",
-        "/api/question-bank/questions/1/assets/0",
-        "/api/question-bank/questions/1/previews/question",
-    ],
-)
-def test_all_question_bank_routes_map_busy_snapshot_to_retryable_503(
-    route: str,
-) -> None:
-    client = _question_bank_client(
-        _SnapshotBusyService(),  # type: ignore[arg-type]
-        raise_server_exceptions=False,
-    )
-
-    response = client.get(route, headers={"x-request-id": "rid-all-routes-busy"})
-
-    assert response.status_code == 503
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["retry-after"] == "1"
-    assert response.json() == {
-        "error": {
-            "code": "question_bank_snapshot_busy",
-            "message": "Question bank snapshot is temporarily busy",
-            "details": {},
-            "request_id": "rid-all-routes-busy",
-        }
-    }
-    assert "internal source path" not in response.text
-
-
-@pytest.mark.parametrize("invalid_kind", ["corrupt", "missing_tables"])
-def test_stable_invalid_snapshot_maps_to_unavailable(
-    tmp_path: Path,
-    invalid_kind: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / f"{invalid_kind}.db"
-    if invalid_kind == "corrupt":
-        db_path.write_bytes(b"not-a-sqlite-database")
-    else:
-        with closing(sqlite3.connect(db_path)):
-            pass
-    original_connect = sqlite3.connect
-    connect_targets: list[str] = []
-
-    def connect_spy(database: object, *args: object, **kwargs: object):
-        connect_targets.append(str(database))
-        return original_connect(database, *args, **kwargs)
-
-    monkeypatch.setattr(question_read_module.sqlite3, "connect", connect_spy)
+    db_path = tmp_path / "corrupt.db"
+    db_path.write_bytes(b"not-a-sqlite-database")
     client = _question_bank_client(
         QuestionBankReadService(db_path),
         raise_server_exceptions=False,
@@ -1213,39 +989,17 @@ def test_stable_invalid_snapshot_maps_to_unavailable(
 
     assert response.status_code == 503
     assert response.headers["cache-control"] == "no-store"
+    assert "retry-after" not in response.headers
     assert response.json()["error"]["code"] == "question_bank_snapshot_unavailable"
     assert response.json()["error"]["request_id"] == "rid-invalid-snapshot"
     assert str(db_path) not in response.text
-    assert len(connect_targets) == 1
-    candidate = _path_from_file_uri(connect_targets[0])
-    candidate.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
-    assert not candidate.exists()
-    assert not candidate.parent.exists()
 
 
-def test_snapshot_query_error_closes_connection_before_temp_cleanup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "invalid-query-schema.db"
+def test_wrong_schema_maps_to_unavailable_503(tmp_path: Path) -> None:
+    db_path = tmp_path / "wrong-schema.db"
     with closing(sqlite3.connect(db_path)) as conn:
-        for table_name in (
-            "papers",
-            "questions",
-            "question_tags",
-            "question_frequency_cache",
-            "question_previews",
-        ):
-            conn.execute(f'CREATE TABLE "{table_name}" (id INTEGER PRIMARY KEY)')
+        conn.execute("CREATE TABLE papers (id INTEGER PRIMARY KEY)")
         conn.commit()
-    original_connect = sqlite3.connect
-    connect_targets: list[str] = []
-
-    def connect_spy(database: object, *args: object, **kwargs: object):
-        connect_targets.append(str(database))
-        return original_connect(database, *args, **kwargs)
-
-    monkeypatch.setattr(question_read_module.sqlite3, "connect", connect_spy)
     client = _question_bank_client(
         QuestionBankReadService(db_path),
         raise_server_exceptions=False,
@@ -1255,35 +1009,21 @@ def test_snapshot_query_error_closes_connection_before_temp_cleanup(
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "question_bank_snapshot_unavailable"
-    assert len(connect_targets) == 1
-    candidate = _path_from_file_uri(connect_targets[0])
-    candidate.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
-    assert not candidate.exists()
-    assert not candidate.parent.exists()
+    assert str(db_path) not in response.text
 
 
-def test_visible_rollback_journal_exhausts_to_busy_without_source_changes(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "rollback.db"
-    initialize_database(db_path)
-    journal_path = Path(f"{db_path}-journal")
-    journal_path.write_bytes(b"visible rollback journal")
-    before = {
-        "main": db_path.read_bytes(),
-        "journal": journal_path.read_bytes(),
-    }
-    client = _question_bank_client(
-        QuestionBankReadService(db_path),
-        raise_server_exceptions=False,
+def test_direct_read_error_mapping() -> None:
+    busy = question_read_module._direct_read_error(
+        sqlite3.OperationalError("database is locked")
+    )
+    unavailable = question_read_module._direct_read_error(
+        sqlite3.OperationalError("no such table: papers")
     )
 
-    response = client.get("/api/question-bank/papers")
-
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "question_bank_snapshot_busy"
-    assert db_path.read_bytes() == before["main"]
-    assert journal_path.read_bytes() == before["journal"]
+    assert isinstance(busy, question_read_module.QuestionBankSnapshotBusy)
+    assert isinstance(
+        unavailable, question_read_module.QuestionBankSnapshotUnavailable
+    )
 
 
 def test_question_bank_routes_registration_and_empty_state(tmp_path: Path) -> None:

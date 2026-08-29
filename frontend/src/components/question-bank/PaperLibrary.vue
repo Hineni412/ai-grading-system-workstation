@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  onScopeDispose,
+  ref,
+  watch,
+} from 'vue'
 import { storeToRefs } from 'pinia'
 
 import type {
@@ -48,6 +55,21 @@ const store = useQuestionBankStore()
 const jobStore = useJobStore()
 const curriculumScope = useCurriculumScopeStore()
 const keyword = ref('')
+// 搜索输入防抖：逐键全量筛选 + 分组重算在试卷多时明显卡顿。
+const debouncedKeyword = ref('')
+let keywordDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(keyword, (value) => {
+  if (keywordDebounceTimer !== null) clearTimeout(keywordDebounceTimer)
+  keywordDebounceTimer = setTimeout(() => {
+    keywordDebounceTimer = null
+    debouncedKeyword.value = value
+  }, 300)
+})
+
+onScopeDispose(() => {
+  if (keywordDebounceTimer !== null) clearTimeout(keywordDebounceTimer)
+})
 const year = ref('')
 const examType = ref('')
 const sourceType = ref('')
@@ -97,7 +119,7 @@ const canConfirmPermanentDelete = computed(() => (
 ))
 
 const filteredPapers = computed(() => {
-  const search = keyword.value.trim().toLocaleLowerCase()
+  const search = debouncedKeyword.value.trim().toLocaleLowerCase()
   return [...store.papers]
     .filter((paper) => {
       if (year.value && paper.year !== year.value) return false
@@ -346,6 +368,10 @@ function schedulePapersRefresh(): void {
   }, 400)
 }
 
+// 批量打标/导入运行期间，试卷计数与任务状态高频变化；两张题号表只依赖
+// 轻量的 id/题号引用接口，且 800ms 防抖合并，避免反复全量拉取。
+let refRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
 watch(
   () => [
     libraryJobs.value.map((job) => `${job.id}:${job.status}`).join('|'),
@@ -353,11 +379,19 @@ watch(
     [...jobPaperLinks.value.entries()].map(([jobId, paperId]) => `${jobId}:${paperId}`).join('|'),
   ].join('/'),
   () => {
-    void refreshQuestionRefs()
-    void refreshIncompleteNumbers()
+    if (refRefreshTimer !== null) clearTimeout(refRefreshTimer)
+    refRefreshTimer = setTimeout(() => {
+      refRefreshTimer = null
+      void refreshQuestionRefs()
+      void refreshIncompleteNumbers()
+    }, 800)
   },
   { immediate: true },
 )
+
+onScopeDispose(() => {
+  if (refRefreshTimer !== null) clearTimeout(refRefreshTimer)
+})
 
 function rememberJobPaper(jobId: number, paperId: number): void {
   const next = new Map(jobPaperLinks.value)
@@ -385,20 +419,17 @@ async function refreshQuestionRefs(): Promise<void> {
   let page = 1
   try {
     while (true) {
-      const result = await questionBankApi.listQuestions({
+      const result = await questionBankApi.listQuestionRefs({
         page,
-        pageSize: 100,
+        pageSize: 500,
         paperIds,
-        sort: 'paper_order',
       })
       for (const item of result.items) {
-        if (item.paper_id) {
-          next.set(item.id, {
-            id: item.id,
-            paperId: item.paper_id,
-            number: item.question_number,
-          })
-        }
+        next.set(item.id, {
+          id: item.id,
+          paperId: item.paper_id,
+          number: item.question_number,
+        })
       }
       if (page >= result.total_pages) break
       page += 1
@@ -426,15 +457,13 @@ async function refreshIncompleteNumbers(): Promise<void> {
   let page = 1
   try {
     while (true) {
-      const result = await questionBankApi.listQuestions({
+      const result = await questionBankApi.listQuestionRefs({
         page,
-        pageSize: 100,
+        pageSize: 500,
         paperIds,
         analysisStatus: 'incomplete',
-        sort: 'paper_order',
       })
       for (const item of result.items) {
-        if (!item.paper_id) continue
         const numbers = next.get(item.paper_id) ?? []
         numbers.push(item.question_number)
         next.set(item.paper_id, numbers)
@@ -458,6 +487,23 @@ function analysisJobForPaper(paper: QuestionBankPaper): JobResponse | undefined 
   return matching.find((job) => !TERMINAL_JOB_STATUSES.has(job.status))
     ?? matching.find((job) => TERMINAL_JOB_STATUSES.has(job.status))
 }
+
+interface PaperStatusLine {
+  live: string
+  leftovers: string[]
+}
+
+// 一次重算替代"每卡片每次渲染 3 次调用"，且只在任务/试卷/映射真正变化时重算。
+const paperStatusLines = computed(() => {
+  const map = new Map<number, PaperStatusLine>()
+  for (const paper of store.papers) {
+    map.set(paper.id, {
+      live: liveAnalysisLine(paper),
+      leftovers: leftoverLines(paper),
+    })
+  }
+  return map
+})
 
 function liveAnalysisLine(paper: QuestionBankPaper): string {
   const current = analysisJobForPaper(paper)
@@ -526,14 +572,16 @@ function sourceLabel(source: QuestionBankPaper['source_type']): string {
   return '文件'
 }
 
+const paperDateFormatter = new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
 function formatDate(value: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '日期未知'
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(date)
+  return paperDateFormatter.format(date)
 }
 
 function resetFilters(): void {
@@ -551,12 +599,11 @@ async function loadQuestionIds(
   const ids: number[] = []
   let page = 1
   while (true) {
-    const result = await questionBankApi.listQuestions({
+    const result = await questionBankApi.listQuestionRefs({
       page,
-      pageSize: 100,
+      pageSize: 500,
       paperIds,
       analysisStatus,
-      sort: 'paper_order',
     })
     ids.push(...result.items.map((item) => item.id))
     if (page >= result.total_pages) break
@@ -1195,8 +1242,12 @@ async function confirmPermanentDelete(): Promise<void> {
             <span>联合分析完整度</span>
             <strong>{{ paper.complete_analysis_count }} / {{ paper.question_count }} 道</strong>
           </div>
-          <p v-if="liveAnalysisLine(paper)" class="paper-card__live" role="status">
-            {{ liveAnalysisLine(paper) }}
+          <p
+            v-if="paperStatusLines.get(paper.id)?.live"
+            class="paper-card__live"
+            role="status"
+          >
+            {{ paperStatusLines.get(paper.id)?.live }}
           </p>
           <div
             class="paper-card__progress"
@@ -1216,8 +1267,16 @@ async function confirmPermanentDelete(): Promise<void> {
               · 待审核判定点 {{ paper.criteria_needs_review_count }}
             </template>
           </p>
-          <ul v-if="leftoverLines(paper).length" class="paper-card__leftovers">
-            <li v-for="line in leftoverLines(paper)" :key="line">{{ line }}</li>
+          <ul
+            v-if="paperStatusLines.get(paper.id)?.leftovers.length"
+            class="paper-card__leftovers"
+          >
+            <li
+              v-for="line in paperStatusLines.get(paper.id)?.leftovers"
+              :key="line"
+            >
+              {{ line }}
+            </li>
           </ul>
           <footer>
             <span>更新于 {{ formatDate(paper.updated_at) }}</span>

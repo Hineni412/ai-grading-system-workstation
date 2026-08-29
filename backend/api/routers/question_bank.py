@@ -26,6 +26,8 @@ from backend.api.schemas.question_bank import (
     QuestionFacetsResponse,
     QuestionListItem,
     QuestionListResponse,
+    QuestionRefListItem,
+    QuestionRefListResponse,
     QuestionPaperListItem,
     QuestionPaperListResponse,
     QuestionPaperMetadataUpdateRequest,
@@ -2019,6 +2021,40 @@ def list_questions(
         items = [_compact_question_list_item(item) for item in items]
     return QuestionListResponse(
         items=[QuestionListItem(**item) for item in items],
+        total=result.total,
+        page=result.page,
+        page_size=result.page_size,
+        total_pages=result.total_pages,
+    )
+
+
+@router.get(
+    "/question-refs",
+    response_model=QuestionRefListResponse,
+    responses=QUESTION_SNAPSHOT_ERROR_RESPONSES,
+)
+def list_question_refs(
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=500)] = 500,
+    paper_ids: Annotated[list[int] | None, Query()] = None,
+    analysis_status: Literal["all", "complete", "incomplete"] = "all",
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+) -> QuestionRefListResponse:
+    """Slim question identity rows for poll-driven UI refresh cascades."""
+    try:
+        result = service.list_question_refs(
+            QuestionReadFilters(
+                page=page,
+                page_size=page_size,
+                paper_ids=tuple(paper_ids or ()),
+                analysis_status=analysis_status,
+                sort="paper_order",
+            )
+        )
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    return QuestionRefListResponse(
+        items=[QuestionRefListItem(**item) for item in result.items],
         total=result.total,
         page=result.page,
         page_size=result.page_size,

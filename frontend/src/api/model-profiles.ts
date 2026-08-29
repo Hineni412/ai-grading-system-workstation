@@ -8,6 +8,7 @@ export const MODEL_PROFILE_LIMITS = {
   apiKey: 8192,
   concurrentRequests: 100,
   requestsPerMinute: 10000,
+  maxAutoRetries: 5,
 } as const
 
 export type RequestSpeedMode = 'automatic' | 'conservative' | 'custom'
@@ -49,6 +50,7 @@ export interface ModelProfile {
   request_speed_mode: RequestSpeedMode
   max_concurrent_requests: number
   requests_per_minute: number
+  max_auto_retries: number | null
   batch_enabled: boolean
   batch_model: string
   batch_base_url: string
@@ -93,6 +95,7 @@ export interface ModelProfileUpsertInput {
   request_speed_mode: RequestSpeedMode
   max_concurrent_requests: number
   requests_per_minute: number
+  max_auto_retries?: number | null
   batch_enabled?: boolean
   batch_model?: string
   batch_base_url?: string
@@ -125,6 +128,7 @@ const PROFILE_KEYS = [
   'request_speed_mode',
   'max_concurrent_requests',
   'requests_per_minute',
+  'max_auto_retries',
   'batch_enabled',
   'batch_model',
   'batch_base_url',
@@ -217,6 +221,15 @@ function isModelProfile(value: unknown): value is ModelProfile {
     && Number(value.requests_per_minute) >= 1
     && Number(value.requests_per_minute)
       <= MODEL_PROFILE_LIMITS.requestsPerMinute
+    && (
+      value.max_auto_retries === null
+      || (
+        Number.isInteger(value.max_auto_retries)
+        && Number(value.max_auto_retries) >= 0
+        && Number(value.max_auto_retries)
+          <= MODEL_PROFILE_LIMITS.maxAutoRetries
+      )
+    )
     && typeof value.batch_enabled === 'boolean'
     && isBoundedText(value.batch_model, 0, MODEL_PROFILE_LIMITS.model)
     && isBoundedText(value.batch_base_url, 0, MODEL_PROFILE_LIMITS.url)
@@ -421,6 +434,20 @@ function normalizeInteger(
   return value
 }
 
+function normalizeOptionalInteger(
+  value: number | null,
+  label: string,
+  maximum: number,
+): number | null {
+  if (value === null) return null
+  if (!Number.isInteger(value) || value < 0 || value > maximum) {
+    throw new ModelProfileInputError(
+      `${label}需要填写 0–${maximum} 的整数，或留空使用默认。`,
+    )
+  }
+  return value
+}
+
 export function normalizeModelProfileInput(
   input: ModelProfileUpsertInput,
   requireApiKey = false,
@@ -493,6 +520,14 @@ export function normalizeModelProfileInput(
       '每分钟请求数',
       MODEL_PROFILE_LIMITS.requestsPerMinute,
     ),
+    max_auto_retries:
+      input.max_auto_retries === undefined
+        ? undefined
+        : normalizeOptionalInteger(
+            input.max_auto_retries,
+            '允许自动重试次数',
+            MODEL_PROFILE_LIMITS.maxAutoRetries,
+          ),
     batch_enabled: input.batch_enabled === true,
     batch_model: normalizeBoundedText(
       input.batch_model ?? '',
@@ -542,7 +577,7 @@ export const modelProfilesApi = {
   ): Promise<ModelProfilesState> {
     const pathName = requireProfilePathName(profileName)
     const normalized = normalizeModelProfileInput(input, options.requireApiKey)
-    const body: Record<string, string | number | boolean> = {
+    const body: Record<string, string | number | boolean | null> = {
       base_url: normalized.base_url,
       ocr_model: normalized.ocr_model,
       grading_model: normalized.grading_model,
@@ -555,6 +590,9 @@ export const modelProfilesApi = {
       requests_per_minute: normalized.requests_per_minute,
       batch_enabled: normalized.batch_enabled ?? false,
       batch_model: normalized.batch_model ?? '',
+    }
+    if (normalized.max_auto_retries !== undefined) {
+      body.max_auto_retries = normalized.max_auto_retries
     }
     if (normalized.batch_base_url) {
       body.batch_base_url = normalized.batch_base_url

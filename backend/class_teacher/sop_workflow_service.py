@@ -1072,6 +1072,149 @@ class SopWorkflowService:
                     transaction_hook(connection, vmk)
         return self.get_affair(token=token, affair_id=affair_id)
 
+    def delete_affair(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        operation_id: str,
+        transaction_hook: Callable[[Any, bytes], None] | None = None,
+    ) -> dict[str, object]:
+        """彻底删除事务：物理删除，不可恢复，任何状态都允许删除。
+
+        级联删除全部轮次、步骤、决定、参与引用、事件、草稿、方案动作
+        以及对应密文对象。transaction_hook 在同一事务内执行，用于把该
+        事务在日历中的受保护投影入队墓碑（outbox 负责跨库补投递）。
+        """
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "sop.affair.delete")
+        if replay is not None:
+            return dict(replay)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                row = connection.execute(
+                    "SELECT * FROM affairs WHERE affair_id = ?",
+                    (affair_id,),
+                ).fetchone()
+                if row is None:
+                    raise VaultError(
+                        "sop_affair_not_found",
+                        "事务不存在，可能已经被删除",
+                        status_code=404,
+                    )
+                object_ids = [str(row["payload_object_id"])]
+                plan_id = str(row["plan_id"])
+
+                for table in (
+                    "affair_profile_update_drafts",
+                    "sop_step_drafts",
+                    "decision_records",
+                    "affair_participants",
+                ):
+                    payload_rows = connection.execute(
+                        f"SELECT payload_object_id FROM {table} WHERE affair_id = ?",
+                        (affair_id,),
+                    ).fetchall()
+                    object_ids.extend(
+                        str(item["payload_object_id"]) for item in payload_rows
+                    )
+                    connection.execute(
+                        f"DELETE FROM {table} WHERE affair_id = ?",
+                        (affair_id,),
+                    )
+
+                connection.execute(
+                    "DELETE FROM affair_events WHERE affair_id = ?",
+                    (affair_id,),
+                )
+
+                step_rows = connection.execute(
+                    "SELECT action_id, payload_object_id FROM step_instances WHERE affair_id = ?",
+                    (affair_id,),
+                ).fetchall()
+                object_ids.extend(str(item["payload_object_id"]) for item in step_rows)
+                connection.execute(
+                    "DELETE FROM step_instances WHERE affair_id = ?",
+                    (affair_id,),
+                )
+
+                for table in ("affair_occurrences",):
+                    payload_rows = connection.execute(
+                        f"SELECT payload_object_id FROM {table} WHERE affair_id = ?",
+                        (affair_id,),
+                    ).fetchall()
+                    object_ids.extend(
+                        str(item["payload_object_id"]) for item in payload_rows
+                    )
+                    connection.execute(
+                        f"DELETE FROM {table} WHERE affair_id = ?",
+                        (affair_id,),
+                    )
+
+                action_ids = [
+                    str(item["action_id"])
+                    for item in step_rows
+                    if item["action_id"] is not None
+                ]
+                plan_action_rows = connection.execute(
+                    "SELECT action_id, payload_object_id FROM actions WHERE plan_id = ?",
+                    (plan_id,),
+                ).fetchall()
+                object_ids.extend(
+                    str(item["payload_object_id"]) for item in plan_action_rows
+                )
+                all_action_ids = list(dict.fromkeys(
+                    [
+                        *action_ids,
+                        *(str(item["action_id"]) for item in plan_action_rows),
+                    ]
+                ))
+                for action_id in all_action_ids:
+                    connection.execute(
+                        "DELETE FROM action_dependencies WHERE action_id = ? OR depends_on_action_id = ?",
+                        (action_id, action_id),
+                    )
+                    connection.execute(
+                        "DELETE FROM action_audit_events WHERE action_id = ?",
+                        (action_id,),
+                    )
+                connection.execute(
+                    "DELETE FROM actions WHERE plan_id = ?",
+                    (plan_id,),
+                )
+
+                plan_row = connection.execute(
+                    "SELECT payload_object_id FROM work_plans WHERE plan_id = ?",
+                    (plan_id,),
+                ).fetchone()
+                if plan_row is not None:
+                    object_ids.append(str(plan_row["payload_object_id"]))
+
+                connection.execute(
+                    "DELETE FROM affairs WHERE affair_id = ?",
+                    (affair_id,),
+                )
+                connection.execute(
+                    "DELETE FROM work_plans WHERE plan_id = ?",
+                    (plan_id,),
+                )
+
+                placeholders = ",".join("?" for _ in object_ids)
+                connection.execute(
+                    f"DELETE FROM encrypted_objects WHERE object_id IN ({placeholders})",
+                    object_ids,
+                )
+
+                self._remember(
+                    connection,
+                    operation_id,
+                    "sop.affair.delete",
+                    {"deleted": True, "affair_id": affair_id},
+                )
+                if transaction_hook is not None:
+                    transaction_hook(connection, vmk)
+        return {"deleted": True, "affair_id": affair_id}
+
     def reopen_affair(
         self,
         *,

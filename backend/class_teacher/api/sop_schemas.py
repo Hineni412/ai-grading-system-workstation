@@ -294,6 +294,15 @@ class AffairDiscardRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
 
 
+class AffairDeleteRequest(BaseModel):
+    operation_id: str = Field(min_length=8, max_length=128)
+
+
+class AffairDeleteResponse(BaseModel):
+    deleted: bool
+    affair_id: str
+
+
 class AffairProfileDraftCommandRequest(BaseModel):
     operation_id: str = Field(min_length=8, max_length=128)
 
@@ -343,6 +352,8 @@ __all__ = [
     "AffairCloseRequest",
     "AffairCommandRequest",
     "AffairCreateRequest",
+    "AffairDeleteRequest",
+    "AffairDeleteResponse",
     "AffairDiscardRequest",
     "AffairDraftRequest",
     "AffairDraftResponse",

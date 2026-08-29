@@ -700,16 +700,10 @@ def test_observe_requires_date_and_no_action_requires_reason(
         )
 
 
-def test_full_subject_delete_removes_quick_evidence_attention_and_linked_action(
+def test_full_subject_delete_removes_evidence_attention_and_linked_action(
     tmp_path: Path,
 ) -> None:
     service, token, subject_id = _service(tmp_path)
-    quick = service.quick_inbox.create_text(
-        token=token,
-        operation_id="create-delete-quick",
-        text="删除检查使用的合成速记。",
-        subject_id=subject_id,
-    )
     service.evidence.confirm_batch(
         token=token,
         operation_id="confirm-delete-evidence",
@@ -771,7 +765,6 @@ def test_full_subject_delete_removes_quick_evidence_attention_and_linked_action(
     ) == deletion
     with closing(service.database.connect()) as connection:
         for table in (
-            "quick_inbox_items",
             "subject_results",
             "evidence_versions",
             "attention_cards",
@@ -790,13 +783,12 @@ def test_full_subject_delete_removes_quick_evidence_attention_and_linked_action(
             """
             SELECT COUNT(*) FROM encrypted_objects
             WHERE object_type IN (
-                'student_subject', 'quick_inbox_item', 'subject_result',
+                'student_subject', 'subject_result',
                 'rank_context', 'assessment_evidence_version',
                 'attention_card', 'action_item'
             )
             """
         ).fetchone()[0] == 0
-    assert quick["state"] == "draft"
     with pytest.raises(VaultError):
         service.attention.resolve(
             token=token,

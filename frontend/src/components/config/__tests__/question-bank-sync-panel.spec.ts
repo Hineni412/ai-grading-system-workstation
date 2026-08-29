@@ -67,7 +67,7 @@ beforeEach(async () => {
   localStorage.clear()
   setActivePinia(createPinia())
   await useJobStore().initialize({
-    api: { getJob: vi.fn(), cancelJob: vi.fn() },
+    api: { getJob: vi.fn(), cancelJob: vi.fn(), getJobStatusBatch: vi.fn(async () => []) },
     now: () => new Date(0),
     schedule: vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>),
     cancelScheduled: vi.fn(),

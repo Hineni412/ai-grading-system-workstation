@@ -84,7 +84,7 @@ def test_progress_and_collection_history_are_read_through_node_detail(tmp_path: 
     )
 
     assert detail["progress_events"][0]["summary"] == "已完成材料初步核对。"
-    assert detail["allowed_commands"] == ["update_status", "reschedule", "record_progress"]
+    assert detail["allowed_commands"] == ["update_status", "reschedule", "record_progress", "delete"]
 
 
 def test_progress_response_loss_replays_once_and_payload_reuse_conflicts(tmp_path: Path) -> None:

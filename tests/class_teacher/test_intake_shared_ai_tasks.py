@@ -1217,8 +1217,12 @@ def test_plan_validation_failure_reopens_both_layers_and_can_be_corrected(tmp_pa
         assert str(receipt["object_ref"]).startswith("class_teacher:plan:")
         assert common.get(task_id=task_id).handoffs[0].adoption_state == "adopted"
         with closing(domain.database.connect()) as connection:
-            assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 0
             assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
+        with closing(domain.ordinary_database.connect()) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM work_nodes WHERE kind='goal'"
+            ).fetchone()[0] == 1
     finally:
         manager.shutdown()
 

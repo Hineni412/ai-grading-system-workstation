@@ -84,9 +84,9 @@ def test_three_plaintext_reads_complete_without_session_or_worker_starvation(
 
     try:
         paths = (
-            "/planning/drafts",
-            "/meeting-inboxes",
-            "/calendar",
+            "/support/directory",
+            "/work?view=week",
+            "/sop/affairs",
         )
 
         def read_status(path: str) -> tuple[str, int | str]:

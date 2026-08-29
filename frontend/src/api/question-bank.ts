@@ -79,6 +79,20 @@ export interface QuestionBankListResponse {
   total_pages: number
 }
 
+export interface QuestionBankQuestionRef {
+  id: number
+  paper_id: number
+  question_number: string
+}
+
+export interface QuestionBankQuestionRefListResponse {
+  items: QuestionBankQuestionRef[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
 export interface QuestionBankPaper {
   id: number
   title: string | null
@@ -749,6 +763,35 @@ function isPreview(value: unknown): value is QuestionBankPreview {
     typeof value.updated_at === 'string' &&
     (value.url === null || isControlledQuestionUrl(value.url))
   )
+}
+
+const QUESTION_REF_KEYS = ['id', 'paper_id', 'question_number'] as const
+
+function isQuestionBankQuestionRef(value: unknown): value is QuestionBankQuestionRef {
+  return isRecord(value)
+    && hasExactKeys(value, QUESTION_REF_KEYS)
+    && isPositiveInteger(value.id)
+    && isPositiveInteger(value.paper_id)
+    && typeof value.question_number === 'string'
+}
+
+export function decodeQuestionRefListResponse(
+  value: unknown,
+): QuestionBankQuestionRefListResponse {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['items', 'total', 'page', 'page_size', 'total_pages']) ||
+    !Array.isArray(value.items) ||
+    !value.items.every(isQuestionBankQuestionRef) ||
+    !isNonnegativeInteger(value.total) ||
+    !isPositiveInteger(value.page) ||
+    !isPositiveInteger(value.page_size) ||
+    !isNonnegativeInteger(value.total_pages) ||
+    value.items.length > Number(value.page_size)
+  ) {
+    throw new Error('Invalid question ref list')
+  }
+  return value as unknown as QuestionBankQuestionRefListResponse
 }
 
 export function decodeQuestionListResponse(value: unknown): QuestionBankListResponse {
@@ -1716,6 +1759,30 @@ export const questionBankApi = {
       decode: decodeQuestionListResponse,
       signal,
     })
+  },
+
+  listQuestionRefs(
+    filters: Pick<QuestionBankFilters, 'paperIds' | 'analysisStatus'> & {
+      page?: number
+      pageSize?: number
+    } = {},
+    signal?: AbortSignal,
+  ): Promise<QuestionBankQuestionRefListResponse> {
+    const page = filters.page ?? 1
+    const pageSize = filters.pageSize ?? 500
+    if (!isPositiveInteger(page) || !isPositiveInteger(pageSize) || pageSize > 500) {
+      throw new Error('Invalid question ref filters')
+    }
+    const parameters = new URLSearchParams({
+      page: String(page),
+      page_size: String(pageSize),
+      analysis_status: filters.analysisStatus ?? 'all',
+    })
+    appendIds(parameters, 'paper_ids', filters.paperIds)
+    return apiClient.request(
+      `/api/question-bank/question-refs?${parameters.toString()}`,
+      { decode: decodeQuestionRefListResponse, signal },
+    )
   },
 
   listFacets(

@@ -94,12 +94,19 @@ def _merge_draft_revision_content(
 ) -> dict[str, object]:
     merged = {**current, **proposed}
     if handling_mode == "plan_calendar":
-        merged["actions"] = _merge_keyed_draft_items(
-            current.get("actions"),
-            proposed.get("actions"),
-            key=lambda item: str(item.get("draft_action_id") or ""),
-        )
+        # 计划行动没有安全概念；模型返回的清单就是教师勾选后的完整意图，
+        # 采用替换语义，否则「移除不需要的事项」永远无法生效。
+        if isinstance(proposed.get("actions"), list):
+            merged["actions"] = proposed["actions"]
+        else:
+            merged["actions"] = _merge_keyed_draft_items(
+                current.get("actions"),
+                proposed.get("actions"),
+                key=lambda item: str(item.get("draft_action_id") or ""),
+            )
     elif handling_mode == "sop":
+        # SOP 修订按产品边界只允许新增普通步骤、修改未开始普通步骤的文案；
+        # 模型未提及的步骤一律保留，安全必做步骤与教师决策点本就不接受 AI 改动。
         merged["steps"] = _merge_keyed_draft_items(
             current.get("steps"),
             proposed.get("steps"),
@@ -934,8 +941,24 @@ class ConversationStore:
             }:
                 raise VaultError("class_teacher_manual_route_unavailable", "当前任务仍在处理或已有可用结果", status_code=409)
         domain = "conflict_safety" if mode == "sop" else "class_operations"
+        # 手动分流的草稿要带上整个会话的上下文：模型失败前教师可能已补充多轮，
+        # 只取最后一轮会把事件本身丢掉，教师还得整段重打。
+        with closing(self.database.connect()) as connection:
+            turn_rows = connection.execute(
+                "SELECT teacher_message FROM intake_turns WHERE conversation_id=? ORDER BY sequence",
+                (str(turn["conversation_id"]),),
+            ).fetchall()
+        context_parts: list[str] = []
+        for row in turn_rows:
+            text = str(row["teacher_message"] or "").strip()
+            if not text:
+                continue
+            context_parts.append(text if len(text) <= 200 else f"{text[:200]}…")
+            if sum(len(part) for part in context_parts) > 1200:
+                break
+        context_text = "\n".join(context_parts) or str(turn["teacher_message"])
         manual_draft: dict[str, object] = {
-            "summary": str(turn["teacher_message"]),
+            "summary": f"【教师手动登记】{context_text}",
             "manual_routing": True,
             "steps": [],
         }
@@ -1054,17 +1077,15 @@ class ConversationStore:
                 if int(row["revision"]) != int(expected_revision):
                     raise VaultError("class_teacher_draft_conflict", "草稿已在其他页面更新，请刷新后继续", status_code=409)
                 stale_rebind = (
-                    str(row["state"]) == "stale"
-                    and str(row["destination_key"]) == "class_teacher.student.record"
-                    and subject_refs is not None
-                )
-                if (
-                    not stale_rebind
-                    and (
-                        str(row["state"]) != "open"
-                        or str(row["adoption_state"])
-                        in {"adoption_started", "adopted", "reverted", "discarded", "stale"}
-                    )
+                    str(row["state"]) == "stale" or str(row["adoption_state"]) == "stale"
+                ) and subject_refs is not None
+                if stale_rebind:
+                    # 过期草稿教师打开核对后允许重新保存：草稿恢复 open，交接重新打开。
+                    pass
+                elif (
+                    str(row["state"]) != "open"
+                    or str(row["adoption_state"])
+                    in {"adoption_started", "adopted", "reverted", "discarded"}
                 ):
                     raise VaultError("class_teacher_draft_not_editable", "这份草稿当前不能修改", status_code=409)
                 refs = self._subject_refs(

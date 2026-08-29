@@ -152,3 +152,74 @@ def test_packager_uses_current_root_readme_only() -> None:
     assert "README_工作机使用说明.md" not in packager.ROOT_INCLUDE_EXACT
     assert packager._should_copy_root_file(Path("README.md"))
     assert not packager._should_copy_root_file(Path("README_旧说明.md"))
+
+
+def test_copy_private_user_data_carries_full_data(tmp_path: Path) -> None:
+    packager = _load_packager()
+    source = tmp_path / "source"
+    package = tmp_path / "package"
+    package.mkdir()
+    user_data = source / "user_data"
+    (user_data / "config").mkdir(parents=True)
+    (user_data / "workspaces" / "class-teacher").mkdir(parents=True)
+    (user_data / "databases").mkdir(parents=True)
+    (user_data / "__pycache__").mkdir(parents=True)
+    (user_data / "config" / "api_profiles.json").write_text("{}", encoding="utf-8")
+    (user_data / "workspaces" / "class-teacher" / "data.db").write_bytes(b"x")
+    (user_data / "databases" / "grading_system.db").write_bytes(b"x")
+    (user_data / "__pycache__" / "junk.pyc").write_bytes(b"x")
+
+    packager.copy_private_user_data(source, package)
+
+    dst = package / "user_data"
+    assert (dst / "config" / "api_profiles.json").is_file()
+    assert (dst / "workspaces" / "class-teacher" / "data.db").is_file()
+    assert (dst / "databases" / "grading_system.db").is_file()
+    assert not (dst / "__pycache__").exists()
+
+
+def test_copy_runtime_extras_copies_bundled_assets(tmp_path: Path) -> None:
+    packager = _load_packager()
+    source = tmp_path / "source"
+    package = tmp_path / "package"
+    package.mkdir()
+    (source / "runtime" / "models" / "asr").mkdir(parents=True)
+    (source / "runtime" / "models" / "asr" / "model.onnx").write_bytes(b"m")
+    (source / "runtime" / "tectonic").mkdir(parents=True)
+    (source / "runtime" / "tectonic" / "tectonic.exe").write_bytes(b"t")
+    (source / "runtime" / "python").mkdir(parents=True)
+    (source / "runtime" / "python" / "python.exe").write_bytes(b"p")
+
+    extras = packager.copy_runtime_extras(source, package)
+
+    assert extras == ["models", "tectonic"]
+    assert (package / "runtime" / "models" / "asr" / "model.onnx").is_file()
+    assert (package / "runtime" / "tectonic" / "tectonic.exe").is_file()
+    assert not (package / "runtime" / "python").exists()
+
+
+def test_copy_runtime_extras_skips_missing_assets(tmp_path: Path) -> None:
+    packager = _load_packager()
+    source = tmp_path / "source"
+    package = tmp_path / "package"
+    package.mkdir()
+    (source / "runtime" / "models").mkdir(parents=True)
+    (source / "runtime" / "models" / "model.onnx").write_bytes(b"m")
+
+    extras = packager.copy_runtime_extras(source, package)
+
+    assert extras == ["models"]
+    assert not (package / "runtime" / "tectonic").exists()
+
+
+def test_packager_no_longer_builds_zip_archive() -> None:
+    packager = _load_packager()
+
+    assert not hasattr(packager, "make_archive")
+
+
+def test_packager_excludes_itself_from_packages() -> None:
+    packager = _load_packager()
+
+    assert "package_v1.5.0.py" in packager.ROOT_EXCLUDE_EXACT
+    assert not packager._should_copy_root_file(Path("package_v1.5.0.py"))

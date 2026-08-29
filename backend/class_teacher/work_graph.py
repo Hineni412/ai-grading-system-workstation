@@ -333,6 +333,7 @@ class WorkGraph:
                     "update_status",
                     "reschedule",
                     "record_progress",
+                    "delete",
                     *( ["update_collection_summary"] if str(row["kind"]) == "collection" else [] ),
                 ]
             ),
@@ -418,7 +419,7 @@ class WorkGraph:
         self._validate_operation_id(operation_id)
         command_operation_type: str | None = None
         normalized_command_due: str | None = None
-        if command in {"update_status", "reschedule"}:
+        if command in {"update_status", "reschedule", "delete"}:
             if command == "reschedule":
                 normalized_command_due = _iso_date(due_date, label="任务日期")
             command_operation_type = self._mutation_operation_type(
@@ -470,6 +471,47 @@ class WorkGraph:
                 operation_id=operation_id,
                 _operation_type=command_operation_type,
             )
+        if command == "delete":
+            with closing(self.database.connect()) as connection:
+                with connection:
+                    replay = self._replay(connection, operation_id, command_operation_type)
+                    if replay is not None:
+                        return replay
+                    current = connection.execute(
+                        "SELECT * FROM work_nodes WHERE node_id = ?",
+                        (node_id,),
+                    ).fetchone()
+                    if current is None:
+                        raise VaultError(
+                            "class_teacher_work_node_not_found",
+                            "普通工作项不存在",
+                            status_code=404,
+                        )
+                    if int(current["revision"]) != expected_revision:
+                        raise VaultError(
+                            "class_teacher_work_revision_conflict",
+                            "任务已经变化，请刷新后再保存",
+                            status_code=409,
+                        )
+                    result = {"deleted": True, "node": self._node(current)}
+                    connection.execute(
+                        "DELETE FROM work_edges WHERE source_node_id = ? OR target_node_id = ?",
+                        (node_id, node_id),
+                    )
+                    connection.execute(
+                        "DELETE FROM work_node_events WHERE node_id = ?",
+                        (node_id,),
+                    )
+                    connection.execute(
+                        "DELETE FROM work_collection_snapshots WHERE node_id = ?",
+                        (node_id,),
+                    )
+                    connection.execute(
+                        "DELETE FROM work_nodes WHERE node_id = ?",
+                        (node_id,),
+                    )
+                    self._remember(connection, operation_id, command_operation_type, result)
+                    return result
         timestamp = _now()
         if command == "record_progress":
             clean = self._ordinary_title(progress or "")
@@ -906,10 +948,10 @@ class WorkGraph:
     ) -> dict[str, object]:
         """Project one teacher-confirmed plan into the calendar work graph.
 
-        The encrypted planning store remains the formal plan ledger.  Reusing
-        its plan/action ids here gives the plan page and calendar one stable
-        business identity, while ``work_operations`` makes a lost response or
-        later receipt recovery safe to replay without duplicate nodes.
+        The work graph is the single formal store for confirmed plans; the
+        caller derives stable plan/action ids from the adoption id so a lost
+        response or later receipt recovery replays the same operation instead
+        of creating duplicate nodes.
         """
 
         self._validate_operation_id(operation_id)

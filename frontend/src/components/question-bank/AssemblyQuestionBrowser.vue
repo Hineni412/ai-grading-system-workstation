@@ -460,7 +460,16 @@ async function loadQuestions(
   }
 }
 
+// 筛选参数未变化时复用上一次 facets 结果，避免与列表请求成对重复拉取。
+let lastFacetsKey = ''
+
+function facetRequestKey(requestFilters: QuestionBankFilters): string {
+  return JSON.stringify({ ...requestFilters, page: 0, pageSize: 0 })
+}
+
 async function loadFilteredFacets(requestFilters: QuestionBankFilters): Promise<void> {
+  const requestKey = facetRequestKey(requestFilters)
+  if (requestKey === lastFacetsKey && facetsState.value === 'ready') return
   facetsAbortController?.abort()
   const controller = new AbortController()
   const requestSerial = ++facetsRequestSerial
@@ -475,6 +484,7 @@ async function loadFilteredFacets(requestFilters: QuestionBankFilters): Promise<
     facets.value = loaded
     hasFacetData.value = true
     facetsState.value = 'ready'
+    lastFacetsKey = requestKey
   } catch {
     if (controller.signal.aborted || requestSerial !== facetsRequestSerial) return
     facetsState.value = 'error'
@@ -700,8 +710,10 @@ function unassignedSectionCount(chapter: CurriculumChapter): number {
   return Math.max(0, chapterCount(chapter.id) - assigned)
 }
 
+const basketIdSet = computed(() => new Set(assembly.draft.basket_ids))
+
 function isInBasket(questionId: number): boolean {
-  return assembly.draft.basket_ids.includes(questionId)
+  return basketIdSet.value.has(questionId)
 }
 
 async function toggleBasket(questionId: number): Promise<void> {

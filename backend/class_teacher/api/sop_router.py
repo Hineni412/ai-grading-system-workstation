@@ -12,6 +12,8 @@ from .sop_schemas import (
     AffairCloseRequest,
     AffairCommandRequest,
     AffairCreateRequest,
+    AffairDeleteRequest,
+    AffairDeleteResponse,
     AffairDiscardRequest,
     AffairDraftRequest,
     AffairDraftResponse,
@@ -293,6 +295,23 @@ def create_sop_router() -> APIRouter:
                 operation_id=body.operation_id,
                 expected_revision=body.revision,
                 reason=body.reason,
+            )
+        )
+
+    @router.post("/sop/affairs/{affair_id}/delete", response_model=AffairDeleteResponse)
+    def delete_affair(
+        affair_id: str,
+        request: Request,
+        body: AffairDeleteRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).affairs.delete(
+                token="",
+                affair_id=affair_id,
+                operation_id=body.operation_id,
             )
         )
 

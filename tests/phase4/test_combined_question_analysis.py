@@ -21,6 +21,7 @@ from question_bank.training_criteria import (
     CombinedQuestionAnalysisModule,
     ExistingTagProjectionWriter,
     GatewayBatchResponse,
+    GatewayResponseParseError,
     GatewayUsage,
     OpenAICombinedAnalysisGateway,
     ProjectionValidationError,
@@ -2035,3 +2036,263 @@ def test_angle_bisector_rule_flags_quoted_term_without_definition_intro() -> Non
     notes = _rule_conflict_notes(context, analysis)
 
     assert any("角平分线" in note for note in notes)
+
+
+class RepairQueueGateway:
+    """QueueGateway variant carrying a channel retry budget.
+
+    Captures each batch's repair_context payloads so tests can assert what
+    feedback the model would actually receive.
+    """
+
+    def __init__(
+        self,
+        responses: list[Any],
+        *,
+        max_auto_retries: int = 0,
+    ) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+        self.max_auto_retries = max_auto_retries
+
+    def analyze(
+        self,
+        batch: Any,
+        *,
+        projection: Any,
+        operation_id: str,
+        request_id: str,
+    ) -> GatewayBatchResponse:
+        self.calls.append(
+            {
+                "question_ids": batch.question_ids,
+                "repair_contexts": [
+                    dict(question.repair_context)
+                    for question in batch.questions
+                ],
+            }
+        )
+        payload = self.responses.pop(0)
+        if isinstance(payload, Exception):
+            raise payload
+        return GatewayBatchResponse(
+            payload=payload,
+            model_name="synthetic-model",
+            usage=GatewayUsage(100, 50, 150),
+            latency_ms=12,
+        )
+
+
+def test_shape_failure_retries_with_repair_context(tmp_path: Path) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database, count=1)
+    gateway = RepairQueueGateway(
+        [
+            {"unexpected_shape": True},
+            {
+                "results": [
+                    {
+                        "question_id": 1,
+                        "tag_analysis": _tag_payload(),
+                        "training_criteria": _criteria_payload(1),
+                    }
+                ]
+            },
+        ],
+        max_auto_retries=2,
+    )
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database),
+        gateway=gateway,
+        tag_writer=FakeTagWriter(),
+    )
+
+    module.analyze_work_items(
+        operation_id="repair-shape",
+        work_items=(QuestionAnalysisWorkItem(question=_question(1)),),
+    )
+
+    assert len(gateway.calls) == 2
+    assert gateway.calls[0]["repair_contexts"] == [{}]
+    repair_context = gateway.calls[1]["repair_contexts"][0]
+    assert repair_context["mode"] == "repair_previous_rejected_result"
+    assert "combined response has no results" in repair_context[
+        "validation_error"
+    ]
+    assert repair_context["previous_result"] == {"unexpected_shape": True}
+    repository = CombinedAnalysisRepository(database)
+    assert repository.projection_status("repair-shape", 1, "tag") == "succeeded"
+    assert (
+        repository.projection_status(
+            "repair-shape", 1, "training_criteria"
+        )
+        == "succeeded"
+    )
+
+
+def test_parse_failure_retries_with_raw_output_feedback(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database, count=1)
+    gateway = RepairQueueGateway(
+        [
+            GatewayResponseParseError(
+                "combined model response JSON parsing failed",
+                raw_text="前缀杂质 {\"broken\": true",
+            ),
+            {
+                "results": [
+                    {
+                        "question_id": 1,
+                        "tag_analysis": _tag_payload(),
+                        "training_criteria": _criteria_payload(1),
+                    }
+                ]
+            },
+        ],
+        max_auto_retries=2,
+    )
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database),
+        gateway=gateway,
+        tag_writer=FakeTagWriter(),
+    )
+
+    module.analyze_work_items(
+        operation_id="repair-parse",
+        work_items=(QuestionAnalysisWorkItem(question=_question(1)),),
+    )
+
+    assert len(gateway.calls) == 2
+    repair_context = gateway.calls[1]["repair_contexts"][0]
+    assert repair_context["previous_result"] == {
+        "raw_output": "前缀杂质 {\"broken\": true"
+    }
+    repository = CombinedAnalysisRepository(database)
+    assert repository.projection_status("repair-parse", 1, "tag") == "succeeded"
+
+
+def test_shape_failure_budget_exhaustion_fails_without_extra_calls(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database, count=1)
+    gateway = RepairQueueGateway(
+        [{"bad": 1}, {"bad": 2}, {"bad": 3}],
+        max_auto_retries=2,
+    )
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database),
+        gateway=gateway,
+        tag_writer=FakeTagWriter(),
+    )
+
+    module.analyze_work_items(
+        operation_id="repair-exhausted",
+        work_items=(QuestionAnalysisWorkItem(question=_question(1)),),
+    )
+
+    assert len(gateway.calls) == 3
+    assert not gateway.responses
+    repository = CombinedAnalysisRepository(database)
+    assert repository.projection_status("repair-exhausted", 1, "tag") == (
+        "failed"
+    )
+    assert (
+        repository.projection_status(
+            "repair-exhausted", 1, "training_criteria"
+        )
+        == "failed"
+    )
+
+
+def test_zero_budget_keeps_single_shot_behavior(tmp_path: Path) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database, count=1)
+    gateway = RepairQueueGateway([{"bad": 1}], max_auto_retries=0)
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database),
+        gateway=gateway,
+        tag_writer=FakeTagWriter(),
+    )
+
+    module.analyze_work_items(
+        operation_id="repair-zero",
+        work_items=(QuestionAnalysisWorkItem(question=_question(1)),),
+    )
+
+    assert len(gateway.calls) == 1
+    repository = CombinedAnalysisRepository(database)
+    assert repository.projection_status("repair-zero", 1, "tag") == "failed"
+
+
+def test_question_level_validation_failure_repairs_failed_questions_only(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database, count=2)
+    incomplete_tag = {**_tag_payload(), "knowledge_points": []}
+    gateway = RepairQueueGateway(
+        [
+            {
+                "results": [
+                    {
+                        "question_id": 1,
+                        "tag_analysis": incomplete_tag,
+                        "training_criteria": _criteria_payload(1),
+                    },
+                    {
+                        "question_id": 2,
+                        "tag_analysis": _tag_payload(),
+                        "training_criteria": _criteria_payload(2),
+                    },
+                ]
+            },
+            {
+                "results": [
+                    {"question_id": 1, "tag_analysis": _tag_payload()}
+                ]
+            },
+        ],
+        max_auto_retries=2,
+    )
+    writer = FakeTagWriter()
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database),
+        gateway=gateway,
+        tag_writer=writer,
+    )
+
+    module.analyze_work_items(
+        operation_id="repair-question",
+        work_items=(
+            QuestionAnalysisWorkItem(question=_question(1)),
+            QuestionAnalysisWorkItem(question=_question(2)),
+        ),
+    )
+
+    assert len(gateway.calls) == 2
+    assert gateway.calls[1]["question_ids"] == (1,)
+    repair_context = gateway.calls[1]["repair_contexts"][0]
+    assert (
+        "synthetic tag projection is incomplete"
+        in repair_context["validation_error"]
+    )
+    assert repair_context["previous_result"]["tag_analysis"] == incomplete_tag
+    repository = CombinedAnalysisRepository(database)
+    assert repository.projection_status("repair-question", 1, "tag") == (
+        "succeeded"
+    )
+    # The sibling projection succeeded on the first attempt and the repair
+    # response omits it; it must stay succeeded, not be overwritten.
+    assert (
+        repository.projection_status(
+            "repair-question", 1, "training_criteria"
+        )
+        == "succeeded"
+    )
+    assert repository.projection_status("repair-question", 2, "tag") == (
+        "succeeded"
+    )
+    assert [call[0] for call in writer.calls] == [2, 1]

@@ -207,6 +207,62 @@ class SensitiveWorkProjection:
             "queued": True,
         }
 
+    def write_tombstone(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        group_row: Any,
+    ) -> dict[str, object]:
+        """在调用方事务内取消该投影组并入队墓碑信封。
+
+        普通工作库消费墓碑信封时会物理删除对应日历节点；outbox 保证
+        普通库暂时不可用时之后仍会补投递，跨库不要求原子事务。
+        """
+        group_id = str(group_row["group_id"])
+        revision = int(group_row["group_revision"]) + 1
+        envelope = {
+            "projection_id": str(group_row["projection_id"]),
+            "projection_type": str(group_row["source_kind"]),
+            "state": "tombstoned",
+            "due_date": None,
+            "source_revision": revision,
+        }
+        fingerprint = hashlib.sha256(canonical_json(envelope)).hexdigest()
+        envelope["envelope_fingerprint"] = fingerprint
+        object_id = f"projection-envelope-{uuid4().hex}"
+        timestamp = _iso()
+        self.repository.put(
+            connection,
+            vmk=vmk,
+            object_id=object_id,
+            object_type="sensitive_work_projection_envelope",
+            payload=envelope,
+        )
+        connection.execute(
+            "UPDATE sensitive_work_groups SET group_revision = ?, state = 'cancelled', updated_at = ? WHERE group_id = ?",
+            (revision, timestamp, group_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO sensitive_work_projection_outbox (
+                event_id, group_id, source_revision,
+                envelope_fingerprint, envelope_object_id, state,
+                attempts, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+            """,
+            (
+                uuid4().hex,
+                group_id,
+                revision,
+                fingerprint,
+                object_id,
+                timestamp,
+                timestamp,
+            ),
+        )
+        return {"tombstoned": True, "group_id": group_id}
+
     def tombstone(self, *, token: str, group_id: str) -> dict[str, object]:
         vmk = self._key_provider(token)
         with closing(self.database.connect()) as connection:
@@ -222,47 +278,7 @@ class SensitiveWorkProjection:
                         "敏感事项投影不存在",
                         status_code=404,
                     )
-                revision = int(row["group_revision"]) + 1
-                envelope = {
-                    "projection_id": str(row["projection_id"]),
-                    "projection_type": str(row["source_kind"]),
-                    "state": "tombstoned",
-                    "due_date": None,
-                    "source_revision": revision,
-                }
-                fingerprint = hashlib.sha256(canonical_json(envelope)).hexdigest()
-                envelope["envelope_fingerprint"] = fingerprint
-                object_id = f"projection-envelope-{uuid4().hex}"
-                timestamp = _iso()
-                self.repository.put(
-                    connection,
-                    vmk=vmk,
-                    object_id=object_id,
-                    object_type="sensitive_work_projection_envelope",
-                    payload=envelope,
-                )
-                connection.execute(
-                    "UPDATE sensitive_work_groups SET group_revision = ?, state = 'cancelled', updated_at = ? WHERE group_id = ?",
-                    (revision, timestamp, group_id),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO sensitive_work_projection_outbox (
-                        event_id, group_id, source_revision,
-                        envelope_fingerprint, envelope_object_id, state,
-                        attempts, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
-                    """,
-                    (
-                        uuid4().hex,
-                        group_id,
-                        revision,
-                        fingerprint,
-                        object_id,
-                        timestamp,
-                        timestamp,
-                    ),
-                )
+                self.write_tombstone(connection, vmk=vmk, group_row=row)
                 connection.commit()
             except Exception:
                 connection.rollback()

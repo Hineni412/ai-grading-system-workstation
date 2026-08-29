@@ -836,6 +836,60 @@ def test_fill_retags_when_saved_tags_belong_to_an_old_question_source(
     assert result["failed_question_ids"] == []
 
 
+def test_source_content_hash_ignores_taxonomy_contract_changes(
+    tmp_path: Path,
+) -> None:
+    # 词表状态绝不参与题目指纹：确认新词、升级词表不能让已保存标签过期，
+    # 否则一次全局版本提升会触发全库重打。题目内容变化才改变指纹。
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_id = _seed(db_path, 1)[0]
+    governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-fingerprint-kg.db",
+    )
+    loader = QuestionAnalysisInputLoader(db_path=db_path, data_root=data_root)
+
+    without_contract = loader.load(
+        (question_id,),
+        curriculum_volume_id="bnu24-math-g7-lower",
+    )[0]
+    contract = governance.prompt_contract(
+        without_contract.tagging_context.to_dict()
+    )
+    with_contract = loader.load(
+        (question_id,),
+        taxonomy_contracts={question_id: contract},
+        curriculum_volume_id="bnu24-math-g7-lower",
+    )[0]
+    assert with_contract.source_content_hash == without_contract.source_content_hash
+
+    mutated_contract = dict(contract)
+    mutated_contract["candidate_fingerprint"] = "changed-fingerprint"
+    mutated_contract["allowed_term_ids"] = {"knowledge": ["kp-changed"]}
+    with_mutated_contract = loader.load(
+        (question_id,),
+        taxonomy_contracts={question_id: mutated_contract},
+        curriculum_volume_id="bnu24-math-g7-lower",
+    )[0]
+    assert (
+        with_mutated_contract.source_content_hash
+        == without_contract.source_content_hash
+    )
+
+    with connect(db_path) as connection:
+        connection.execute(
+            "UPDATE questions SET question_text = '修改后的题干' WHERE id = ?",
+            (question_id,),
+        )
+    changed = loader.load(
+        (question_id,),
+        curriculum_volume_id="bnu24-math-g7-lower",
+    )[0]
+    assert changed.source_content_hash != without_contract.source_content_hash
+
+
 def test_tagging_sync_reports_local_retrieval_misses_without_retry(
     tmp_path: Path,
 ) -> None:

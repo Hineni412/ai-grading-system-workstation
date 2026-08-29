@@ -27,23 +27,6 @@ export interface SupportRecord {
   expires_at: string | null
 }
 
-export interface QuickFragment {
-  fragment_id: string
-  text: string
-  suggested_kind: string
-}
-
-export interface QuickInboxItem {
-  inbox_item_id: string
-  revision: number
-  subject_id: string | null
-  state: string
-  original_text: string | null
-  fragments: QuickFragment[]
-  voice_inbox_available: boolean
-  external_transcription_allowed: boolean
-}
-
 export interface SupportSummary {
   subject_id: string
   as_of: string
@@ -192,12 +175,6 @@ function supportRecord(payload: unknown): SupportRecord {
 
 function supportPlan(payload: unknown): SupportPlan {
   return record(payload) as unknown as SupportPlan
-}
-
-function quick(payload: unknown): QuickInboxItem {
-  const value = record(payload)
-  if (!Array.isArray(value.fragments)) throw new Error('contract')
-  return value as unknown as QuickInboxItem
 }
 
 function evidence(payload: unknown): AssessmentEvidence {
@@ -408,63 +385,6 @@ export const supportApi = {
       headers: headers(),
       body: { operation_id: operationId(), affair_id: affairId },
       decode: supportRecord,
-    })
-  },
-  listQuickInbox() {
-    return apiClient.request('/api/class-teacher/quick-inbox', {
-      decode: (payload) => list(payload, quick),
-    })
-  },
-  updateQuickFragments(
-    item: QuickInboxItem,
-    fragments: QuickFragment[],
-  ) {
-    return apiClient.request(`/api/class-teacher/quick-inbox/${item.inbox_item_id}`, {
-      method: 'PUT',
-      headers: headers(),
-      body: {
-        operation_id: operationId(),
-        revision: item.revision,
-        fragments,
-      },
-      decode: quick,
-    })
-  },
-  createQuickText(text: string, studentRef: string | null) {
-    return apiClient.request('/api/class-teacher/quick-inbox', {
-      method: 'POST',
-      headers: headers(),
-      body: { operation_id: operationId(), text, subject_id: studentRef },
-      decode: quick,
-    })
-  },
-  confirmQuickRecord(
-    item: QuickInboxItem,
-    fragment: QuickFragment,
-    targetKind: 'support_record' | 'action' | 'sop',
-    options: Record<string, unknown>,
-  ) {
-    return apiClient.request(
-      `/api/class-teacher/quick-inbox/${item.inbox_item_id}/confirm`,
-      {
-        method: 'POST',
-        headers: headers(),
-        body: {
-          operation_id: operationId(),
-          fragment_id: fragment.fragment_id,
-          target_kind: targetKind,
-          target_options: options,
-        },
-        decode: record,
-      },
-    )
-  },
-  cancelQuick(itemId: string) {
-    return apiClient.request(`/api/class-teacher/quick-inbox/${itemId}/cancel`, {
-      method: 'POST',
-      headers: headers(),
-      body: { operation_id: operationId() },
-      decode: record,
     })
   },
   listEvidence(studentRef: string) {

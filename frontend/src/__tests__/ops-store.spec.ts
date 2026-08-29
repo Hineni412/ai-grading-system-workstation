@@ -144,6 +144,9 @@ function jobDependencies(overrides: Partial<JobStoreDependencies> = {}): JobStor
   return {
     api: {
       getJob: vi.fn(async () => makeJob()),
+      getJobStatusBatch: vi.fn(async (ids: number[]) =>
+        ids.map((id) => ({ id, found: true, job: makeJob() })),
+      ),
       cancelJob: vi.fn(async () => makeJob({
         status: 'cancelled',
         finished_at: '2026-07-19T12:02:00Z',

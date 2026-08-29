@@ -172,3 +172,31 @@ describe('学生支持待跟进提醒', () => {
     expect(query.get('student')).toBeNull()
   })
 })
+
+describe('日历普通工作彻底删除', () => {
+  it('deletes an ordinary work node only after a second confirmation', async () => {
+    const ordinaryNode: WorkNode = {
+      node_id: 'ordinary-1', kind: 'task', classification: 'ordinary',
+      title: '合成普通班务', details: null, status: 'pending', due_date: '2026-08-10',
+      revision: 1, created_at: '2026-08-01', updated_at: '2026-08-01',
+    }
+    const detail: WorkNodeDetail = {
+      node: ordinaryNode, upstream: [], downstream: [], progress_events: [],
+      collection_summary: null, pending_ai_branches: [],
+      allowed_commands: ['update_status', 'reschedule', 'record_progress', 'delete'],
+      projection_id: null,
+    }
+    const selected = ref<WorkNodeDetail | null>(detail)
+    const module = { ...fakeModule(selected), command: vi.fn(async () => ({ deleted: true })) }
+    const host = await mount(WorkNodeInspector, { module })
+
+    clickByText(host, '彻底删除'); await nextTick()
+    expect(module.command).not.toHaveBeenCalled()
+
+    clickByText(host, '确认删除')
+    await new Promise((resolve) => setTimeout(resolve, 0)); await nextTick()
+
+    expect(module.command).toHaveBeenCalledWith(ordinaryNode, 'delete', {})
+    expect(module.clearSelection).toHaveBeenCalled()
+  })
+})

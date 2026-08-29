@@ -22,6 +22,8 @@ const drawerSubjectId = ref<string | null>(null)
 const discardOpen = ref(false)
 const discardReason = ref('')
 const discardBusy = ref(false)
+const deleteOpen = ref(false)
+const deleteBusy = ref(false)
 const closureSummary = ref('')
 const reopenReason = ref('')
 const syncBusy = ref(false)
@@ -134,6 +136,19 @@ async function discardAffair(): Promise<void> {
   }
 }
 
+async function deleteAffair(): Promise<void> {
+  if (!affair.value || deleteBusy.value) return
+  deleteBusy.value = true
+  try {
+    await affairR1Api.destroy(affair.value.affair_id)
+    emit('discarded')
+  } catch {
+    deleteBusy.value = false
+    notice.value = { tone: 'error', title: '删除没有完成', description: '事务可能已经变化，请刷新后重试。' }
+    await load()
+  }
+}
+
 async function closeAffair(): Promise<void> {
   if (!affair.value || !closureSummary.value.trim()) return
   try {
@@ -193,6 +208,7 @@ onMounted(() => { void load() })
         <div class="sop-workspace__actions">
           <AppButton variant="secondary" :loading="syncBusy" loading-label="AI 正在更新" :disabled="affair.state !== 'active'" @click="requestAiUpdate">让 AI 更新后续步骤</AppButton>
           <AppButton v-if="affair.state === 'active'" variant="danger" @click="discardOpen = !discardOpen">弃用此 SOP</AppButton>
+          <AppButton v-if="affair.state !== 'active'" variant="ghost" class="sop-workspace__delete" :disabled="deleteBusy" @click="deleteOpen = !deleteOpen">彻底删除</AppButton>
           <AppButton variant="secondary" @click="emit('back')">返回对话</AppButton>
         </div>
       </header>
@@ -217,6 +233,15 @@ onMounted(() => { void load() })
         title="安全提示"
         :description="affair.emergency_prompt"
       />
+
+      <div v-if="deleteOpen" class="discard-confirm">
+        <strong>彻底删除后无法恢复</strong>
+        <p>全部轮次、步骤、记录和草稿会一并删除，日历中的对应提醒会同步移除；已并入学生档案的内容不受影响。</p>
+        <div>
+          <AppButton variant="danger" :disabled="deleteBusy" @click="deleteAffair">确认彻底删除</AppButton>
+          <AppButton variant="secondary" :disabled="deleteBusy" @click="deleteOpen = false">保留</AppButton>
+        </div>
+      </div>
 
       <div v-if="discardOpen" class="discard-confirm">
         <strong>弃用后不可恢复</strong>
@@ -277,6 +302,7 @@ onMounted(() => { void load() })
 .participants{display:flex;gap:8px;flex-wrap:wrap}
 .chip{padding:2px 12px;border:1px solid var(--border);border-radius:999px;background:var(--muted);font-size:12px}
 .sop-workspace__actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.sop-workspace__delete{color:var(--destructive)}
 .discard-confirm{display:grid;gap:8px;padding:16px;border:1px solid var(--destructive);border-radius:var(--radius);background:var(--color-danger-subtle)}
 .discard-confirm p{margin:0;font-size:13px;color:var(--color-text-secondary)}
 .discard-confirm textarea{padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card);font:inherit;resize:vertical}

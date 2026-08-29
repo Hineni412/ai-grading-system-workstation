@@ -273,6 +273,32 @@ def test_ai_sop_revision_cannot_replace_the_teacher_route_decision_with_a_verdic
     assert route["details"] == "系统不作欺凌认定；教师只选择当前工作分流。"
 
 
+def test_ai_plan_revision_replaces_actions_so_teacher_exclusions_take_effect() -> None:
+    revised = _merge_draft_revision_content(
+        handling_mode="plan_calendar",
+        current={
+            "plan_title": "开学前准备",
+            "actions": [
+                {"draft_action_id": "a1", "title": "完成教室清洁布置", "due_at": "2026-08-30T17:00"},
+                {"draft_action_id": "a2", "title": "筹备教学物资", "due_at": "2026-08-30T18:00"},
+            ],
+        },
+        proposed={
+            "actions": [
+                {"draft_action_id": "a1", "title": "完成教室清洁布置", "due_at": "2026-08-30T17:00"},
+                {"draft_action_id": "a3", "title": "准备开学第一课发言稿", "due_at": "2026-08-31T16:00"},
+            ],
+        },
+    )
+
+    # 教师取消勾选的候选对应的行动，模型修订清单未再提出：替换语义下应被移除，
+    # 否则「按勾选重新拆解」的移除意图永远无法生效。
+    assert [item["title"] for item in revised["actions"]] == [
+        "完成教室清洁布置",
+        "准备开学第一课发言稿",
+    ]
+
+
 @pytest.mark.parametrize(
     ("mode", "domain", "intent"),
     [
@@ -2191,6 +2217,36 @@ def test_invalid_model_result_is_persisted_without_local_ai_conclusion(tmp_path:
     assert restored["handoffs"] == []
 
 
+def test_manual_route_draft_keeps_full_conversation_context(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    conversation, first_turn = _conversation_with_turn(
+        service, "conversation-manual-context", message="张立璞和钱肖白信息课发生了肢体冲突"
+    )
+    service.intake.mark_task_outcome(
+        turn_id=str(first_turn["turn_id"]),
+        task_id=str(first_turn["task_id"]),
+        task_state="failed_before_dispatch",
+    )
+    conversation = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(conversation["revision"]),
+        message="已经分开了，没有人受伤，目击同学说法与钱肖白一致",
+        operation_id="conversation-manual-context-turn-2",
+    )
+    last_turn = conversation["turns"][-1]
+    service.intake.mark_task_outcome(
+        turn_id=str(last_turn["turn_id"]),
+        task_id=str(last_turn["task_id"]),
+        task_state="result_unknown",
+    )
+    routed = service.intake.manual_route(turn_id=str(last_turn["turn_id"]), mode="sop")
+    handoff = service.intake.open_handoff(str(routed["handoffs"][0]["handoff_id"]))
+    summary = str(handoff["content"]["summary"])
+    # 手动分流必须带上整个会话的上下文：只有最后一轮会把事件本身丢掉。
+    assert "张立璞和钱肖白信息课发生了肢体冲突" in summary
+    assert "已经分开了，没有人受伤" in summary
+
+
 def test_manual_routing_after_failure_creates_no_second_ai_task(tmp_path: Path) -> None:
     service, port = _service(tmp_path)
     conversation, turn = _conversation_with_turn(service, "conversation-manual-route")
@@ -2337,14 +2393,14 @@ def test_plan_adoption_writes_plan_and_receipt_in_domain_transaction(tmp_path: P
     )
     assert receipt["formal_object_type"] == "plan"
     with closing(service.database.connect()) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 1
+        # 台账收敛：计划不再写 work_plans/actions，正式载体是工作图节点。
+        assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
-        action_id = str(connection.execute("SELECT action_id FROM actions").fetchone()[0])
     calendar = service.work.read(view="all", anchor="2026-08-15")
-    assert {item["node_id"] for item in calendar["nodes"]} == {
-        receipt["formal_object_id"],
-        action_id,
-    }
+    goal = next(
+        item for item in calendar["nodes"] if item["node_id"] == str(receipt["formal_object_id"])
+    )
+    assert goal["kind"] == "goal"
     assert {item["title"] for item in calendar["nodes"]} == {
         "合成黑板报",
         "合成初稿检查",
@@ -2422,7 +2478,7 @@ def test_plan_receipt_recovers_calendar_projection_without_duplicate_plan(
     assert recovered["formal_object_type"] == "plan"
     assert calls == 2
     with closing(service.database.connect()) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
     assert len(service.work.read(view="all", anchor="2026-08-15")["nodes"]) == 2
 
@@ -2503,19 +2559,10 @@ def test_plan_validation_retry_uses_the_revised_deadline_in_plan_and_calendar(
     )
 
     with closing(service.database.connect()) as connection:
-        row = connection.execute(
-            "SELECT payload_object_id FROM work_plans WHERE plan_id=?",
-            (str(receipt["formal_object_id"]),),
-        ).fetchone()
-        assert row is not None
-        payload, _revision = service.repository.get(
-            connection,
-            vmk=service.ensure_plaintext_ready(),
-            object_id=str(row["payload_object_id"]),
-        )
-    assert str(payload["final_deadline"]).startswith("2026-08-25")
+        assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 0
     calendar = service.work.read(view="all", anchor="2026-08-25")
     goal = next(item for item in calendar["nodes"] if item["kind"] == "goal")
+    assert goal["node_id"] == str(receipt["formal_object_id"])
     assert goal["due_date"] == "2026-08-25"
 
 

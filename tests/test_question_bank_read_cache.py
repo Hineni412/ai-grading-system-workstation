@@ -4,11 +4,10 @@ import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier, Event, Lock
+from typing import Any
 
 import pytest
 
-from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.database.schema import initialize_database
 from question_bank.services import question_read_service as read_module
 from question_bank.services.question_read_service import (
@@ -20,387 +19,155 @@ from question_bank.services.question_read_service import (
 
 
 @pytest.fixture(autouse=True)
-def _clear_question_snapshot_cache():
-    read_module._clear_question_read_snapshot_cache_for_tests()
+def _clear_read_result_cache():
+    read_module._READ_RESULT_CACHE.clear()
     yield
-    read_module._clear_question_read_snapshot_cache_for_tests()
+    read_module._READ_RESULT_CACHE.clear()
 
 
-def test_repeated_paper_refresh_reuses_stable_snapshot_and_invalidates_on_write(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
+def _seed_paper(db_path: Path, paper_id: int = 1, title: str = "Paper") -> None:
     initialize_database(db_path)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            "INSERT INTO papers (id, title, import_status) VALUES (1, 'First', 'success')"
-        )
-
-    captures = 0
-    original_capture = read_module._capture_snapshot_attempt
-
-    def tracked_capture(*args, **kwargs):
-        nonlocal captures
-        captures += 1
-        return original_capture(*args, **kwargs)
-
-    monkeypatch.setattr(read_module, "_capture_snapshot_attempt", tracked_capture)
-    service = QuestionBankReadService(db_path)
-
-    assert [item["title"] for item in service.list_papers()] == ["First"]
-    assert [item["title"] for item in service.list_papers()] == ["First"]
-    assert captures == 1
-
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            "INSERT INTO papers (id, title, import_status) VALUES (2, 'Second', 'success')"
-        )
-
-    assert {item["title"] for item in service.list_papers()} == {"First", "Second"}
-    assert captures == 2
-
-
-def test_distinct_question_reads_share_one_validated_database_generation(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    initialize_database(db_path)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            "INSERT INTO papers (id, title, import_status) VALUES (1, 'Paper', 'success')"
-        )
-        connection.execute(
-            """
-            INSERT INTO questions (id, paper_id, question_number, question_text)
-            VALUES (1, 1, '1', 'Question')
-            """
-        )
-
-    captures = 0
-    validations: list[bool] = []
-    original_capture = read_module._capture_snapshot_attempt
-    original_open = read_module._open_snapshot_connection
-
-    def tracked_capture(*args, **kwargs):
-        nonlocal captures
-        captures += 1
-        return original_capture(*args, **kwargs)
-
-    def tracked_open(*args, **kwargs):
-        validations.append(bool(kwargs.get("validate_snapshot", True)))
-        return original_open(*args, **kwargs)
-
-    monkeypatch.setattr(read_module, "_capture_snapshot_attempt", tracked_capture)
-    monkeypatch.setattr(read_module, "_open_snapshot_connection", tracked_open)
-    service = QuestionBankReadService(db_path)
-
-    assert service.list_papers()[0]["title"] == "Paper"
-    assert service.list_questions(QuestionReadFilters()).total == 1
-    assert service.list_facets(QuestionReadFilters())["question_types"] == []
-
-    assert captures == 1
-    assert validations.count(True) == 1
-    assert validations.count(False) == 2
-
-
-def test_non_knowledge_reads_do_not_load_current_knowledge(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    initialize_database(db_path)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            "INSERT INTO papers (id, title, import_status) VALUES (1, 'Paper', 'success')"
-        )
-        connection.execute(
-            """
-            INSERT INTO questions (id, paper_id, question_number, question_text)
-            VALUES (1, 1, '1', 'Question')
-            """
-        )
-
-    calls = 0
-    original_loader = CurrentKnowledgeResolver.from_connection.__func__
-
-    def counted_loader(cls, connection, *, taxonomy_catalog=None):
-        nonlocal calls
-        calls += 1
-        return original_loader(
-            cls,
-            connection,
-            taxonomy_catalog=taxonomy_catalog,
-        )
-
-    monkeypatch.setattr(
-        CurrentKnowledgeResolver,
-        "from_connection",
-        classmethod(counted_loader),
-    )
-    service = QuestionBankReadService(db_path)
-
-    assert service.list_papers()[0]["title"] == "Paper"
-    assert service.tag_value_counts("method", ["not-present"]) == {
-        "not-present": 0
-    }
-    assert calls == 0
-
-    assert service.list_questions(QuestionReadFilters()).total == 1
-    assert calls == 1
-
-
-def test_concurrent_cold_reads_publish_one_snapshot(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    initialize_database(db_path)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            "INSERT INTO papers (id, title, import_status) VALUES (1, 'Paper', 'success')"
-        )
-        connection.execute(
-            """
-            INSERT INTO questions (id, paper_id, question_number, question_text)
-            VALUES (1, 1, '1', 'Question')
-            """
-        )
-
-    capture_started = Event()
-    allow_capture = Event()
-    second_started = Event()
-    count_lock = Lock()
-    captures = 0
-    original_capture = read_module._capture_snapshot_attempt
-
-    def blocked_capture(*args, **kwargs):
-        nonlocal captures
-        with count_lock:
-            captures += 1
-        capture_started.set()
-        assert allow_capture.wait(timeout=5)
-        return original_capture(*args, **kwargs)
-
-    def read_questions():
-        second_started.set()
-        return QuestionBankReadService(db_path).list_questions(
-            QuestionReadFilters()
-        )
-
-    monkeypatch.setattr(read_module, "_capture_snapshot_attempt", blocked_capture)
+    connection = sqlite3.connect(db_path)
     try:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            papers_future = executor.submit(
-                QuestionBankReadService(db_path).list_papers
-            )
-            assert capture_started.wait(timeout=5)
-            questions_future = executor.submit(read_questions)
-            assert second_started.wait(timeout=5)
-            allow_capture.set()
-            assert papers_future.result(timeout=10)[0]["title"] == "Paper"
-            assert questions_future.result(timeout=10).total == 1
+        connection.execute(
+            "INSERT INTO papers (id, title, import_status) VALUES (?, ?, 'success')",
+            (paper_id, title),
+        )
+        connection.commit()
+        # Fold the WAL into the main file up front so a later read-only
+        # connection close cannot checkpoint and shift the generation token
+        # mid-test.
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
-        allow_capture.set()
-
-    assert captures == 1
+        connection.close()
 
 
-def test_reused_snapshot_opens_independent_read_only_transactions(
-    tmp_path: Path,
-) -> None:
+def test_result_cache_reuses_read_within_same_generation(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
-    initialize_database(db_path)
-    barrier = Barrier(2)
-
-    def borrow_connection() -> tuple[int, Path, int, bool]:
-        with read_module._read_connection(db_path) as connection:
-            candidate = next(
-                Path(str(row[2]))
-                for row in connection.execute("PRAGMA database_list").fetchall()
-                if str(row[1]) == "main"
-            )
-            result = (
-                id(connection),
-                candidate,
-                int(connection.execute("PRAGMA query_only").fetchone()[0]),
-                bool(connection.in_transaction),
-            )
-            barrier.wait(timeout=5)
-            return result
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        first, second = list(executor.map(lambda _index: borrow_connection(), range(2)))
-
-    assert first[0] != second[0]
-    assert first[1] == second[1]
-    assert first[2:] == second[2:] == (1, True)
-
-
-def test_old_snapshot_is_cleaned_after_its_last_reader_exits(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    initialize_database(db_path)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            "INSERT INTO papers (id, title, import_status) VALUES (1, 'First', 'success')"
-        )
-
-    with read_module._read_connection(db_path) as old_connection:
-        old_candidate = next(
-            Path(str(row[2]))
-            for row in old_connection.execute("PRAGMA database_list").fetchall()
-            if str(row[1]) == "main"
-        )
-        assert old_connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
-        with sqlite3.connect(db_path) as writer:
-            writer.execute(
-                "INSERT INTO papers (id, title, import_status) VALUES (2, 'Second', 'success')"
-            )
-
-        def read_new_generation() -> tuple[Path, int]:
-            with read_module._read_connection(db_path) as new_connection:
-                candidate = next(
-                    Path(str(row[2]))
-                    for row in new_connection.execute("PRAGMA database_list").fetchall()
-                    if str(row[1]) == "main"
-                )
-                count = int(
-                    new_connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
-                )
-                return candidate, count
-
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            new_candidate, new_count = executor.submit(
-                read_new_generation
-            ).result(timeout=10)
-
-        assert new_count == 2
-        assert new_candidate != old_candidate
-        assert new_candidate.exists()
-        assert old_candidate.exists()
-        assert old_connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
-
-    assert not old_candidate.exists()
-    assert new_candidate.exists()
-    read_module._clear_question_read_snapshot_cache_for_tests()
-    assert not new_candidate.exists()
-
-
-def test_snapshot_validation_failure_is_not_cached(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    initialize_database(db_path)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            "INSERT INTO papers (id, title, import_status) VALUES (1, 'Paper', 'success')"
-        )
-
-    original_open = read_module._open_snapshot_connection
-    validation_attempts = 0
-    failed_candidate: Path | None = None
-
-    def flaky_open(candidate, *args, **kwargs):
-        nonlocal validation_attempts, failed_candidate
-        if kwargs.get("validate_snapshot", True):
-            validation_attempts += 1
-            if validation_attempts == 1:
-                failed_candidate = Path(candidate)
-                raise QuestionBankSnapshotUnavailable(
-                    "synthetic snapshot validation failure"
-                )
-        return original_open(candidate, *args, **kwargs)
-
-    monkeypatch.setattr(read_module, "_open_snapshot_connection", flaky_open)
+    _seed_paper(db_path)
     service = QuestionBankReadService(db_path)
 
-    with pytest.raises(QuestionBankSnapshotUnavailable):
-        service.list_papers()
-    assert failed_candidate is not None
-    assert not failed_candidate.exists()
+    # Warm-up: the first read may checkpoint the WAL on close, which changes
+    # the source generation once; steady-state repeats must hit the cache.
+    assert [paper["title"] for paper in service.list_papers()] == ["Paper"]
 
-    assert service.list_papers()[0]["title"] == "Paper"
-    assert validation_attempts == 2
+    underlying_calls = 0
+    original = service._list_papers
 
+    def counted(*args: Any, **kwargs: Any):
+        nonlocal underlying_calls
+        underlying_calls += 1
+        return original(*args, **kwargs)
 
-def test_wal_growth_and_checkpoint_invalidate_cached_snapshot(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    initialize_database(db_path)
-    writer = sqlite3.connect(db_path)
-    assert writer.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
-    writer.execute("PRAGMA wal_autocheckpoint = 0")
-    checkpoint = writer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-    assert checkpoint is not None and checkpoint[0] == 0
-    writer.execute(
-        "INSERT INTO papers (id, title, import_status) VALUES (1, 'First', 'success')"
-    )
-    writer.commit()
-
-    captures = 0
-    original_capture = read_module._capture_snapshot_attempt
-
-    def tracked_capture(*args, **kwargs):
-        nonlocal captures
-        captures += 1
-        return original_capture(*args, **kwargs)
-
-    monkeypatch.setattr(read_module, "_capture_snapshot_attempt", tracked_capture)
-    service = QuestionBankReadService(db_path)
+    service._list_papers = counted  # type: ignore[method-assign]
     try:
-        assert [item["title"] for item in service.list_papers()] == ["First"]
-        assert captures == 1
+        assert [paper["title"] for paper in service.list_papers()] == ["Paper"]
+        assert [paper["title"] for paper in service.list_papers()] == ["Paper"]
+    finally:
+        service._list_papers = original  # type: ignore[method-assign]
 
-        writer.execute(
+    # Both repeated reads hit the result cache: the seeded generation stays
+    # stable, so no underlying query runs at all.
+    assert underlying_calls == 0
+
+
+def test_write_invalidates_result_cache_and_new_row_becomes_visible(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    _seed_paper(db_path)
+    service = QuestionBankReadService(db_path)
+
+    assert [paper["title"] for paper in service.list_papers()] == ["Paper"]
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
             "INSERT INTO papers (id, title, import_status) VALUES (2, 'Second', 'success')"
         )
-        writer.commit()
-        assert {item["title"] for item in service.list_papers()} == {
-            "First",
-            "Second",
-        }
-        assert captures == 2
 
-        checkpoint = writer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        assert checkpoint is not None and checkpoint[0] == 0
-        assert {item["title"] for item in service.list_papers()} == {
-            "First",
-            "Second",
-        }
-        assert captures == 3
+    titles = {paper["title"] for paper in service.list_papers()}
+    assert titles == {"Paper", "Second"}
+
+
+def test_read_connection_runs_inside_one_deferred_transaction(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    _seed_paper(db_path)
+
+    with read_module._read_connection(db_path) as connection:
+        assert connection.row_factory is sqlite3.Row
+        assert connection.in_transaction is True
+        row = connection.execute("SELECT COUNT(*) AS n FROM papers").fetchone()
+        assert row["n"] == 1
+
+
+def test_uncommitted_writer_does_not_block_or_leak_into_reads(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    _seed_paper(db_path)
+    writer = sqlite3.connect(db_path, timeout=5.0)
+    try:
+        writer.execute("PRAGMA busy_timeout = 5000")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            "INSERT INTO papers (id, title, import_status) VALUES (9, 'Uncommitted', 'success')"
+        )
+
+        def read_titles() -> list[str]:
+            return [
+                paper["title"]
+                for paper in QuestionBankReadService(db_path).list_papers()
+            ]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            reader = executor.submit(read_titles)
+            assert set(reader.result(timeout=10)) == {"Paper"}
+
+        writer.commit()
+        assert set(read_titles()) == {"Paper", "Uncommitted"}
     finally:
         writer.close()
 
 
-def test_visible_rollback_journal_never_reuses_cached_snapshot(
-    tmp_path: Path,
-) -> None:
+def test_hot_rollback_journal_maps_to_unavailable(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
-    initialize_database(db_path)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            "INSERT INTO papers (id, title, import_status) VALUES (1, 'Paper', 'success')"
-        )
+    _seed_paper(db_path)
+    Path(f"{db_path}-journal").write_bytes(b"hot rollback journal")
 
-    service = QuestionBankReadService(db_path)
-    assert service.list_papers()[0]["title"] == "Paper"
-    journal = Path(f"{db_path}-journal")
-    journal.write_bytes(b"synthetic visible rollback journal")
-    try:
-        with pytest.raises(QuestionBankSnapshotBusy):
-            service.list_papers()
-    finally:
-        journal.unlink()
+    # A hot journal needs a writable recovery pass; a read-only connection
+    # fails closed instead of returning uncommitted data.
+    with pytest.raises(QuestionBankSnapshotUnavailable):
+        with read_module._read_connection(db_path) as connection:
+            connection.execute("SELECT COUNT(*) FROM papers")
 
-    assert service.tag_value_counts("method", ["not-present"]) == {
-        "not-present": 0
-    }
+
+def test_missing_database_maps_to_unavailable(tmp_path: Path) -> None:
+    with pytest.raises(QuestionBankSnapshotUnavailable):
+        with read_module._read_connection(tmp_path / "missing.db"):
+            pass  # pragma: no cover - the context manager raises on entry
+
+
+def test_corrupt_database_maps_to_unavailable(tmp_path: Path) -> None:
+    db_path = tmp_path / "corrupt.db"
+    db_path.write_bytes(b"not-a-sqlite-database")
+
+    with pytest.raises(QuestionBankSnapshotUnavailable):
+        with read_module._read_connection(db_path) as connection:
+            connection.execute("SELECT COUNT(*) FROM papers")
+
+
+def test_busy_error_mapping() -> None:
+    busy = read_module._direct_read_error(
+        sqlite3.OperationalError("database is locked")
+    )
+    unavailable = read_module._direct_read_error(
+        sqlite3.OperationalError("file is not a database")
+    )
+
+    assert isinstance(busy, QuestionBankSnapshotBusy)
+    assert isinstance(unavailable, QuestionBankSnapshotUnavailable)
 
 
 def test_question_cache_is_scoped_to_the_service_data_root(tmp_path: Path) -> None:

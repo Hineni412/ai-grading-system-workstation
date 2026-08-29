@@ -409,6 +409,13 @@ export const affairR1Api = {
       decode: (value) => record(value) as unknown as AffairDetail,
     })
   },
+  destroy(affairId: string) {
+    return apiClient.request(`/api/class-teacher/sop/affairs/${affairId}/delete`, {
+      method: 'POST', headers: writeHeaders(),
+      body: { operation_id: operationId() },
+      decode: (value) => record(value) as unknown as { deleted: boolean; affair_id: string },
+    })
+  },
   confirmProfileDraft(affairId: string, draftId: string) {
     return apiClient.request(`/api/class-teacher/sop/affairs/${affairId}/profile-drafts/${draftId}/confirm`, {
       method: 'POST', headers: writeHeaders(),

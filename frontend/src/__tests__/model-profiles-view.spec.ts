@@ -284,6 +284,7 @@ describe('ModelProfilesView', () => {
       request_speed_mode: 'automatic' as const,
       max_concurrent_requests: 20,
       requests_per_minute: 1000,
+      max_auto_retries: null,
       batch_enabled: false,
       batch_model: '',
       batch_base_url: '',

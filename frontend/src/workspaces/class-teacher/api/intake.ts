@@ -113,6 +113,8 @@ export interface HandoffDraft {
   subject_refs: Array<{ kind: string; id: string; revision: string }>
   missing_fields: string[]
   return_context: { destination_key: string; focus_ref: string }
+  /** SOP 采用后生成的连续事务编号；其余处理方式为 null。 */
+  affair_id?: string | null
 }
 
 export interface DraftRevisionSnapshot {
@@ -235,6 +237,7 @@ export function decodeHandoffDraft(value: unknown): HandoffDraft {
     destination_key: destination, adoption_id: text(item.adoption_id), adoption_state: adoptionState,
     content: record(item.content), subject_refs: list(item.subject_refs).map(decodeSubjectRef),
     missing_fields: list(item.missing_fields).map(text),
+    affair_id: item.affair_id == null ? null : text(item.affair_id),
     return_context: (() => {
       const context = record(item.return_context)
       if (context.destination_key !== 'class_teacher.home') return invalid()

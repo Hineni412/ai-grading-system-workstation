@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import Any, Mapping, Sequence
 
 from backend.llm import LLMRequestKind, usage_fields
+from backend.llm.policy import policy_from_profile
 from question_bank.database.schema import connect
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
 from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
@@ -258,14 +259,48 @@ class BankQuestionTypeSuggestionWriter:
         )
 
 
-class OpenAICombinedAnalysisGateway:
-    """Production Adapter with zero automatic model retries."""
+def combined_analysis_retry_budget(tagging_service: Any) -> int:
+    """Channel automatic-retry budget shared by transport and feedback retries.
 
-    def __init__(self, *, protocol_adapter: Any, model_name: str) -> None:
+    Resolved from the tagging service's policy profile so the runner-level
+    feedback retry count always equals the gateway transport retry count for
+    the same channel.
+    """
+    profile = getattr(tagging_service, "_tagging_policy_profile", None)
+    policy = policy_from_profile(
+        LLMRequestKind.TAGGING,
+        profile if isinstance(profile, Mapping) else {},
+    )
+    return int(policy.max_retries)
+
+
+class OpenAICombinedAnalysisGateway:
+    """Production adapter for the combined tagging analysis.
+
+    Transport-level retries (429/timeout/connection/5xx) follow the channel
+    policy via the gateway; the channel attribute ``max_auto_retries`` bounds
+    them.  Local parse/validation feedback retries live in the analysis
+    runner, bounded by :attr:`max_auto_retries` as well.
+    """
+
+    def __init__(
+        self,
+        *,
+        protocol_adapter: Any,
+        model_name: str,
+        max_auto_retries: int = 0,
+    ) -> None:
         self.protocol_adapter = protocol_adapter
         self.model_name = str(model_name or "").strip()
         if not self.model_name:
             raise ValueError("model_name must not be empty")
+        if isinstance(max_auto_retries, bool) or not isinstance(
+            max_auto_retries, int
+        ):
+            raise ValueError("max_auto_retries must be an integer")
+        if not 0 <= max_auto_retries <= 5:
+            raise ValueError("max_auto_retries must be between 0 and 5")
+        self.max_auto_retries = max_auto_retries
 
     @property
     def max_parallel_requests(self) -> int:
@@ -305,7 +340,7 @@ class OpenAICombinedAnalysisGateway:
             model=self.model_name,
             request_id=request_id,
             operation_id=operation_id,
-            allow_retry=False,
+            allow_retry=self.max_auto_retries > 0,
             kwargs={
                 "text": {
                     "format": combined_response_format(
@@ -326,11 +361,13 @@ class OpenAICombinedAnalysisGateway:
             payload = parsed.payload
         except (TypeError, ValueError) as exc:
             raise GatewayResponseParseError(
-                "combined model response JSON parsing failed"
+                "combined model response JSON parsing failed",
+                raw_text=output_text,
             ) from exc
         if not isinstance(payload, Mapping):
             raise GatewayResponseParseError(
-                "combined model response JSON must be an object"
+                "combined model response JSON must be an object",
+                raw_text=output_text,
             )
         normalized_usage = usage_fields(response)
         return GatewayBatchResponse(

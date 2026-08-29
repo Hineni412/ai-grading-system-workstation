@@ -524,6 +524,36 @@ class AffairWorkspace:
         self.projections.drain(token=token)
         return self.read(token=token, affair_id=affair_id)
 
+    def delete(
+        self,
+        *,
+        token: str,
+        affair_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """彻底删除事务，并让日历中的受保护投影随墓碑一并移除。"""
+        self._validate_operation(operation_id)
+
+        def tombstone_projection(connection: Any, hook_vmk: bytes) -> None:
+            groups = connection.execute(
+                """
+                SELECT * FROM sensitive_work_groups
+                WHERE source_kind = 'sensitive_affair' AND source_id = ?
+                """,
+                (affair_id,),
+            ).fetchall()
+            for group in groups:
+                self.projections.write_tombstone(connection, vmk=hook_vmk, group_row=group)
+
+        result = self.sop.delete_affair(
+            token=token,
+            affair_id=affair_id,
+            operation_id=operation_id,
+            transaction_hook=tombstone_projection,
+        )
+        self.projections.drain(token=token)
+        return result
+
     @staticmethod
     def _workspace_revision(connection: Any, affair_id: str) -> int:
         exists = connection.execute(

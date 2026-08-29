@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from api_profiles import ApiProfileStore
+from api_profiles import ApiProfileStore, PROFILE_FIELD_REMOVE
 from backend.llm.execution import (
     LLMExecutionGovernorRegistry,
     LLMExecutionSettingsError,
@@ -31,6 +31,7 @@ _EDITABLE_FIELDS = frozenset(
         "request_speed_mode",
         "max_concurrent_requests",
         "requests_per_minute",
+        "max_auto_retries",
         "batch_enabled",
         "batch_model",
         "batch_base_url",
@@ -240,6 +241,10 @@ def _validated_updates(values: Mapping[str, Any]) -> dict[str, Any]:
     if unknown:
         raise ModelProfileInvalid("Model profile fields are invalid")
     updates: dict[str, Any] = {}
+    if "max_auto_retries" in values:
+        updates["max_auto_retries"] = _validated_max_auto_retries(
+            values["max_auto_retries"]
+        )
     execution_updates = {
         key: value
         for key, value in values.items()
@@ -260,7 +265,7 @@ def _validated_updates(values: Mapping[str, Any]) -> dict[str, Any]:
         for key in execution_updates:
             updates[key] = normalized_execution[key]
     for field_name, raw_value in values.items():
-        if field_name in execution_updates:
+        if field_name in execution_updates or field_name == "max_auto_retries":
             continue
         if raw_value is None:
             continue
@@ -278,6 +283,26 @@ def _validated_updates(values: Mapping[str, Any]) -> dict[str, Any]:
                 raise ModelProfileInvalid("API key is too long")
             updates[field_name] = value
     return updates
+
+
+def _validated_max_auto_retries(value: object) -> int | object:
+    if value is None:
+        return PROFILE_FIELD_REMOVE
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ModelProfileInvalid(
+            "Auto retry limit must be an integer between 0 and 5"
+        )
+    if not 0 <= value <= 5:
+        raise ModelProfileInvalid(
+            "Auto retry limit must be an integer between 0 and 5"
+        )
+    return value
+
+
+def _public_max_auto_retries(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= 5 else None
 
 
 def _validated_endpoint(value: str) -> str:
@@ -327,6 +352,9 @@ def _public_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
         "request_speed_mode": execution.mode,
         "max_concurrent_requests": execution.max_in_flight,
         "requests_per_minute": execution.requests_per_minute,
+        "max_auto_retries": _public_max_auto_retries(
+            profile.get("max_auto_retries")
+        ),
         "batch_enabled": bool(profile.get("batch_enabled")),
         "batch_model": _clean_existing_text(profile.get("batch_model")),
         "batch_base_url": _public_endpoint(profile.get("batch_base_url")),

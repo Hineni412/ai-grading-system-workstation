@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import atexit
 import json
 import math
 import os
@@ -395,6 +394,15 @@ _READ_RESULT_CACHE_LIMIT = 48
 _READ_RESULT_CACHE_LOCK = threading.Lock()
 _READ_RESULT_CACHE: OrderedDict[tuple[object, ...], object] = OrderedDict()
 _CACHE_MISS = object()
+# Parsed rich-content sidecars keyed by (root, question_id, mtime_ns, size);
+# a stat per hit keeps entries automatically correct when a sidecar is
+# rewritten, and avoids re-reading plus re-parsing JSON on every request.
+_RICH_CONTENT_CACHE_LIMIT = 512
+_RICH_CONTENT_CACHE_LOCK = threading.Lock()
+_RICH_CONTENT_CACHE: OrderedDict[
+    tuple[str, int, int, int],
+    dict[str, Any],
+] = OrderedDict()
 _ACTIVE_QUESTION_PREDICATE_SQL = """
     q.id = ?
     AND COALESCE(q.is_deleted, 0) = 0
@@ -515,17 +523,57 @@ def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     if active is not None and active.source == requested:
         yield active.connection
         return
-    with _cached_question_read_connection(db_path) as conn:
-        token = _ACTIVE_READ_SCOPE.set(
-            _ActiveQuestionReadScope(
-                source=requested,
-                connection=conn,
-            )
+    connection = _open_direct_read_connection(requested)
+    token = _ACTIVE_READ_SCOPE.set(
+        _ActiveQuestionReadScope(
+            source=requested,
+            connection=connection,
         )
-        try:
-            yield conn
-        finally:
-            _ACTIVE_READ_SCOPE.reset(token)
+    )
+    try:
+        yield connection
+    except sqlite3.Error as exc:
+        raise _direct_read_error(exc) from exc
+    finally:
+        _ACTIVE_READ_SCOPE.reset(token)
+        connection.close()
+
+
+# WAL readers never block the grading/import writers; the busy timeout only
+# covers -shm handover windows.  Reads run inside one deferred transaction so
+# every statement of a request observes the same committed generation.
+_DIRECT_READ_BUSY_TIMEOUT_SECONDS = 5.0
+
+
+def _open_direct_read_connection(source: Path) -> sqlite3.Connection:
+    try:
+        connection = sqlite3.connect(
+            f"{source.as_uri()}?mode=ro",
+            uri=True,
+            timeout=_DIRECT_READ_BUSY_TIMEOUT_SECONDS,
+        )
+    except sqlite3.Error as exc:
+        raise _direct_read_error(exc) from exc
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN DEFERRED")
+    except sqlite3.Error as exc:
+        connection.close()
+        raise _direct_read_error(exc) from exc
+    return connection
+
+
+def _direct_read_error(exc: sqlite3.Error) -> QuestionBankSnapshotError:
+    text = str(exc).casefold()
+    if "locked" in text or "busy" in text:
+        return QuestionBankSnapshotBusy(
+            "Question bank is busy; retry shortly"
+        )
+    return QuestionBankSnapshotUnavailable(
+        "Question bank is unavailable"
+    )
 
 
 @contextmanager
@@ -888,13 +936,17 @@ def _source_generation_token(db_path: Path) -> tuple[object, ...] | None:
             return None
         if not stat.S_ISREG(info.st_mode):
             return None
-        token.append(
-            (
-                int(info.st_size),
-                int(info.st_mtime_ns),
-                int(info.st_ctime_ns),
-            )
+        identity = (
+            int(info.st_size),
+            int(info.st_mtime_ns),
+            int(info.st_ctime_ns),
         )
+        if candidate != source and int(info.st_size) == 0:
+            # An empty WAL carries no frames; read-only connections delete it
+            # on close, so "absent" and "zero length" must share one token or
+            # every read would mint a fresh generation for identical data.
+            identity = None
+        token.append(identity)
     return tuple(token)
 
 
@@ -937,210 +989,26 @@ def _read_result_cache_put(key: tuple[object, ...], value: object) -> None:
             _READ_RESULT_CACHE.popitem(last=False)
 
 
-_QUESTION_READ_SNAPSHOT_CACHE_LIMIT = 4
+def _rich_content_cache_get(
+    key: tuple[str, int, int, int],
+) -> dict[str, Any] | None:
+    with _RICH_CONTENT_CACHE_LOCK:
+        payload = _RICH_CONTENT_CACHE.get(key)
+        if payload is None:
+            return None
+        _RICH_CONTENT_CACHE.move_to_end(key)
+        return deepcopy(payload)
 
 
-@dataclass(slots=True)
-class _CachedQuestionReadSnapshot:
-    source: Path
-    generation: tuple[object, ...] | None
-    owner: Any
-    candidate: Path
-    readers: int = 0
-    retired: bool = False
-    cleaned: bool = False
-
-
-class _QuestionReadSnapshotCache:
-    """Keep one validated immutable candidate per unchanged question-bank source."""
-
-    def __init__(self, *, limit: int) -> None:
-        self._limit = max(1, int(limit))
-        self._condition = threading.Condition()
-        self._entries: OrderedDict[Path, _CachedQuestionReadSnapshot] = OrderedDict()
-        self._capturing: set[Path] = set()
-
-    def acquire(
-        self,
-        db_path: Path,
-    ) -> tuple[_CachedQuestionReadSnapshot, sqlite3.Connection | None]:
-        source = Path(db_path).resolve(strict=False)
-        stale_to_cleanup: list[_CachedQuestionReadSnapshot] = []
-        while True:
-            observed_generation = _source_generation_token(source)
-            with self._condition:
-                cached = self._entries.get(source)
-                if (
-                    observed_generation is not None
-                    and cached is not None
-                    and not cached.retired
-                    and cached.generation == observed_generation
-                ):
-                    cached.readers += 1
-                    self._entries.move_to_end(source)
-                    return cached, None
-                if source in self._capturing:
-                    self._condition.wait()
-                    continue
-                if cached is not None:
-                    self._entries.pop(source, None)
-                    if self._retire_locked(cached):
-                        stale_to_cleanup.append(cached)
-                self._capturing.add(source)
-                break
-
-        try:
-            for stale in stale_to_cleanup:
-                self._cleanup(stale)
-            entry, initial_connection = self._capture(
-                source,
-                observed_generation,
-            )
-        except BaseException:
-            with self._condition:
-                self._capturing.discard(source)
-                self._condition.notify_all()
-            raise
-
-        evicted_to_cleanup: list[_CachedQuestionReadSnapshot] = []
-        with self._condition:
-            if entry.generation is not None:
-                self._entries[source] = entry
-                self._entries.move_to_end(source)
-                while len(self._entries) > self._limit:
-                    _, evicted = self._entries.popitem(last=False)
-                    if self._retire_locked(evicted):
-                        evicted_to_cleanup.append(evicted)
-            else:
-                entry.retired = True
-            entry.readers = 1
-            self._capturing.discard(source)
-            self._condition.notify_all()
-
-        for evicted in evicted_to_cleanup:
-            self._cleanup(evicted)
-        return entry, initial_connection
-
-    def release(self, entry: _CachedQuestionReadSnapshot) -> None:
-        cleanup = False
-        with self._condition:
-            if entry.readers <= 0:
-                raise RuntimeError("Question-bank snapshot lease was released twice")
-            entry.readers -= 1
-            if entry.retired and entry.readers == 0 and not entry.cleaned:
-                entry.cleaned = True
-                cleanup = True
-        if cleanup:
-            self._cleanup(entry)
-
-    def discard(self, entry: _CachedQuestionReadSnapshot) -> None:
-        cleanup = False
-        with self._condition:
-            if self._entries.get(entry.source) is entry:
-                self._entries.pop(entry.source, None)
-            if self._retire_locked(entry):
-                cleanup = True
-        if cleanup:
-            self._cleanup(entry)
-
-    def clear(self) -> None:
-        to_cleanup: list[_CachedQuestionReadSnapshot] = []
-        with self._condition:
-            entries = list(self._entries.values())
-            self._entries.clear()
-            for entry in entries:
-                if self._retire_locked(entry):
-                    to_cleanup.append(entry)
-        for entry in to_cleanup:
-            self._cleanup(entry)
-
-    def _capture(
-        self,
-        source: Path,
-        observed_generation: tuple[object, ...] | None,
-    ) -> tuple[_CachedQuestionReadSnapshot, sqlite3.Connection]:
-        owner = _captured_snapshot_candidate(source)
-        try:
-            candidate = owner.__enter__()
-        except BaseException:
-            raise
-        try:
-            initial_connection = _open_snapshot_connection(
-                candidate,
-                required_tables=_SNAPSHOT_REQUIRED_TABLES,
-            )
-        except BaseException as exc:
-            owner.__exit__(type(exc), exc, exc.__traceback__)
-            raise
-
-        current_generation = _source_generation_token(source)
-        return (
-            _CachedQuestionReadSnapshot(
-                source=source,
-                generation=(
-                    current_generation
-                    if observed_generation is not None
-                    and current_generation == observed_generation
-                    else None
-                ),
-                owner=owner,
-                candidate=candidate,
-            ),
-            initial_connection,
-        )
-
-    @staticmethod
-    def _retire_locked(entry: _CachedQuestionReadSnapshot) -> bool:
-        entry.retired = True
-        if entry.readers == 0 and not entry.cleaned:
-            entry.cleaned = True
-            return True
-        return False
-
-    @staticmethod
-    def _cleanup(entry: _CachedQuestionReadSnapshot) -> None:
-        entry.owner.__exit__(None, None, None)
-
-
-_QUESTION_READ_SNAPSHOT_CACHE = _QuestionReadSnapshotCache(
-    limit=_QUESTION_READ_SNAPSHOT_CACHE_LIMIT,
-)
-atexit.register(_QUESTION_READ_SNAPSHOT_CACHE.clear)
-
-
-def _clear_question_read_snapshot_cache_for_tests() -> None:
-    _QUESTION_READ_SNAPSHOT_CACHE.clear()
-
-
-@contextmanager
-def _cached_question_read_connection(
-    db_path: Path,
-) -> Iterator[sqlite3.Connection]:
-    entry, conn = _QUESTION_READ_SNAPSHOT_CACHE.acquire(db_path)
-    try:
-        if conn is None:
-            try:
-                conn = _open_snapshot_connection(
-                    entry.candidate,
-                    required_tables=_SNAPSHOT_REQUIRED_TABLES,
-                    validate_snapshot=False,
-                )
-            except QuestionBankSnapshotError:
-                _QUESTION_READ_SNAPSHOT_CACHE.discard(entry)
-                raise
-        try:
-            yield conn
-        except sqlite3.DatabaseError as exc:
-            _QUESTION_READ_SNAPSHOT_CACHE.discard(entry)
-            raise QuestionBankSnapshotUnavailable(
-                "Question bank snapshot is unavailable"
-            ) from exc
-    finally:
-        try:
-            if conn is not None:
-                conn.close()
-        finally:
-            _QUESTION_READ_SNAPSHOT_CACHE.release(entry)
+def _rich_content_cache_put(
+    key: tuple[str, int, int, int],
+    payload: dict[str, Any],
+) -> None:
+    with _RICH_CONTENT_CACHE_LOCK:
+        _RICH_CONTENT_CACHE[key] = deepcopy(payload)
+        _RICH_CONTENT_CACHE.move_to_end(key)
+        while len(_RICH_CONTENT_CACHE) > _RICH_CONTENT_CACHE_LIMIT:
+            _RICH_CONTENT_CACHE.popitem(last=False)
 
 
 class QuestionBankReadService:
@@ -1506,6 +1374,62 @@ class QuestionBankReadService:
         ]
         for item in items:
             item["criteria_needs_review"] = int(item["id"]) in review_ids
+        return QuestionReadPage(
+            items=items,
+            total=total,
+            page=filters.page,
+            page_size=filters.page_size,
+            total_pages=max(math.ceil(total / filters.page_size), 1),
+        )
+
+    def list_question_refs(self, filters: QuestionReadFilters) -> QuestionReadPage:
+        """Slim question identity rows for UI refresh cascades.
+
+        Returns only id/paper_id/question_number so poll-driven refreshes do
+        not drag rich content, tags or asset files across the wire.
+        """
+        joins, where, params = _question_filter_parts(
+            filters,
+            current_knowledge=self.current_knowledge,
+        )
+        where_sql = "WHERE " + " AND ".join(where) if where else ""
+        count_sql = " ".join(
+            [
+                "SELECT COUNT(DISTINCT q.id) FROM questions q",
+                *joins,
+                where_sql,
+            ]
+        )
+        list_sql = " ".join(
+            [
+                """
+                SELECT DISTINCT
+                    q.id,
+                    q.paper_id,
+                    q.question_number
+                FROM questions q
+                """,
+                *joins,
+                where_sql,
+                f"ORDER BY {_QUESTION_SORT_CLAUSES['paper_order']}",
+                "LIMIT ? OFFSET ?",
+            ]
+        )
+        offset = (filters.page - 1) * filters.page_size
+        with _read_connection(self.db_path) as conn:
+            total = int(conn.execute(count_sql, params).fetchone()[0] or 0)
+            rows = conn.execute(
+                list_sql,
+                [*params, filters.page_size, offset],
+            ).fetchall()
+        items = [
+            {
+                "id": int(row["id"]),
+                "paper_id": int(row["paper_id"]),
+                "question_number": str(row["question_number"] or ""),
+            }
+            for row in rows
+        ]
         return QuestionReadPage(
             items=items,
             total=total,
@@ -2251,6 +2175,16 @@ class QuestionBankReadService:
             sidecar.relative_to(rich_root)
             if not sidecar.is_file():
                 return None
+            info = sidecar.stat()
+            cache_key = (
+                str(rich_root),
+                int(question_id),
+                int(info.st_mtime_ns),
+                int(info.st_size),
+            )
+            cached = _rich_content_cache_get(cache_key)
+            if cached is not None:
+                return cached
             payload = json.loads(sidecar.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):
             return None
@@ -2271,6 +2205,7 @@ class QuestionBankReadService:
         payload["question_blocks"] = clean_question_blocks(
             payload["question_blocks"]
         )
+        _rich_content_cache_put(cache_key, payload)
         return payload
 
 

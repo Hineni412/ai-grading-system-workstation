@@ -137,8 +137,6 @@ def test_production_workbench_is_open_and_persists_student_content_as_plaintext(
         "display_name"
     ] == "合成学生甲"
     assert service.affairs.list(token="")["items"] == []
-    assert service.home_intake_finalizer is not None
-    assert service.support_ai_reviews is not None
     with sqlite3.connect(service.database.database_path) as connection:
         payload = connection.execute(
             "SELECT payload_ciphertext FROM encrypted_objects "

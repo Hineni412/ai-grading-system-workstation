@@ -33,6 +33,9 @@ function makeDependencies(apiOverrides: Partial<JobApi> = {}) {
   const api = {
     getJob: vi.fn(async () => makeJob()),
     cancelJob: vi.fn(async () => makeJob({ cancel_requested: true })),
+    getJobStatusBatch: vi.fn(async (ids: number[]) =>
+      ids.map((id) => ({ id, found: true, job: makeJob() })),
+    ),
     ...apiOverrides,
   }
   return {
@@ -214,12 +217,16 @@ describe('Job Store persistence and recovery', () => {
 
     expect(store.jobs[41]).toBeUndefined()
     expect(callbacks).toHaveLength(1)
+    // Firing the retry timer now enqueues the coalescing flush, whose
+    // callback retries the terminal reference via getJob.
+    callbacks.shift()?.()
+    expect(callbacks).toHaveLength(1)
     callbacks.shift()?.()
     await vi.waitFor(() => {
       expect(store.jobs[41]?.status).toBe('succeeded')
     })
     expect(getJob).toHaveBeenCalledTimes(2)
-    expect(dependencies.schedule).toHaveBeenCalledTimes(1)
+    expect(dependencies.schedule).toHaveBeenCalledTimes(2)
     expect(store.syncErrors[41]).toBeUndefined()
   })
 
@@ -410,6 +417,30 @@ describe('Job Store polling and cancellation', () => {
 
     expect(dependencies.schedule).toHaveBeenCalledTimes(1)
     expect(store.jobs[41]?.progress).toBe(0.6)
+  })
+
+  it('coalesces multiple due jobs into one status-batch request', async () => {
+    const dependencies = makeDependencies()
+    const store = useJobStore()
+    store.track(makeJob({ id: 61, status: 'running', progress: 0.1 }), dependencies)
+    store.track(makeJob({ id: 62, status: 'running', progress: 0.2 }), dependencies)
+    // Fire both per-job timers without yielding: the two due ids must be
+    // flushed together through getJobStatusBatch, not two GETs.
+    for (const callback of [...dependencies.schedule.mock.calls.map(([cb]) => cb)]) {
+      callback()
+    }
+    dependencies.schedule.mock.results.forEach(() => undefined)
+    // Flush both timers; the second schedule call is the coalesced flush.
+    const scheduled = dependencies.schedule.mock.calls.map(([cb]) => cb)
+    const flush = scheduled[scheduled.length - 1]!
+    flush()
+    await vi.waitFor(() => {
+      expect(dependencies.api.getJobStatusBatch).toHaveBeenCalledTimes(1)
+    })
+    expect(dependencies.api.getJob).toHaveBeenCalledTimes(0)
+    expect(dependencies.api.getJobStatusBatch).toHaveBeenCalledWith([61, 62])
+    expect(store.jobs[61]?.progress).toBe(0.5)
+    expect(store.jobs[62]?.progress).toBe(0.5)
   })
 
   it('stops polling and ignores an old in-flight response', async () => {

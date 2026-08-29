@@ -30,9 +30,6 @@ from .support_schemas import (
     FollowUpPostponeRequest,
     SpreadsheetPreviewRequest,
     OperationRequest,
-    QuickConfirmRequest,
-    QuickTextRequest,
-    QuickUpdateRequest,
     RecordCreateRequest,
     RecordReviseRequest,
     RecordStateRequest,
@@ -545,89 +542,6 @@ def create_support_router() -> APIRouter:
                 **body.model_dump(),
             )
         return _call(project)
-
-    @router.get("/quick-inbox/capabilities")
-    def quick_capabilities(request: Request, response: Response):
-        _no_store(response)
-        return _service(request).quick_inbox.capabilities()
-
-    @router.post("/quick-inbox")
-    def create_quick_text(
-        request: Request,
-        body: QuickTextRequest,
-        response: Response,
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        def create():
-            service = _service(request)
-            payload = body.model_dump()
-            if payload.get("subject_id"):
-                # 对外学生编号统一为稳定学籍标识；兼容旧 uuid，入口归一为内部编号。
-                payload["subject_id"] = _student_subject_id(
-                    service, str(payload["subject_id"])
-                )
-            return service.quick_inbox.create_text(token="", **payload)
-        return _call(create)
-
-    @router.get("/quick-inbox")
-    def list_quick_text(
-        request: Request,
-        response: Response,
-    ):
-        _no_store(response)
-        return _call(lambda: _service(request).quick_inbox.list_drafts(
-            token=""
-        ))
-
-    @router.put("/quick-inbox/{inbox_item_id}")
-    def update_quick_text(
-        inbox_item_id: str,
-        request: Request,
-        body: QuickUpdateRequest,
-        response: Response,
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        payload = body.model_dump()
-        payload["fragments"] = [
-            item.model_dump() for item in body.fragments
-        ]
-        return _call(lambda: _service(request).quick_inbox.update_fragments(
-            token="",
-            inbox_item_id=inbox_item_id,
-            **payload,
-        ))
-
-    @router.post("/quick-inbox/{inbox_item_id}/confirm")
-    def confirm_quick_text(
-        inbox_item_id: str,
-        request: Request,
-        body: QuickConfirmRequest,
-        response: Response,
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(lambda: _service(request).quick_inbox.confirm(
-            token="",
-            inbox_item_id=inbox_item_id,
-            **body.model_dump(),
-        ))
-
-    @router.post("/quick-inbox/{inbox_item_id}/cancel")
-    def cancel_quick_text(
-        inbox_item_id: str,
-        request: Request,
-        body: OperationRequest,
-        response: Response,
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(lambda: _service(request).quick_inbox.cancel(
-            token="",
-            inbox_item_id=inbox_item_id,
-            operation_id=body.operation_id,
-        ))
 
     @router.post("/evidence/batches")
     def confirm_evidence_batch(

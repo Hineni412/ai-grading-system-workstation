@@ -8,8 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
+from backend.api.app import ApiError
 from backend.class_teacher.api.router import create_router
 from backend.class_teacher.errors import VaultError
 from backend.class_teacher.vault_service import VaultService
@@ -250,3 +252,127 @@ def test_affair_workspace_api_filters_internal_projection_mapping(tmp_path: Path
     assert "projection" not in payload
     assert "group_id" not in response.text
     assert "source_id" not in response.text
+
+
+def test_affair_delete_cascades_and_removes_calendar_projection(tmp_path: Path) -> None:
+    service, token, affair = _decision_affair(tmp_path)
+    affair_id = str(affair["affair_id"])
+    step = affair["current_steps"][0]
+    service.affairs.advance(
+        token=token,
+        affair_id=affair_id,
+        command="teacher_decision",
+        operation_id="affair-delete-decision",
+        expected_revision=int(affair["revision"]),
+        step_instance_id=str(step["step_instance_id"]),
+        decision_kind="teacher",
+        summary="删除前的一条正式决定。",
+        decision_key="manual_route",
+        selected_option="observe",
+    )
+    service.affairs.save_draft(
+        token=token,
+        affair_id=affair_id,
+        step_instance_id=str(step["step_instance_id"]),
+        draft_kind="fact",
+        text="删除前的合成草稿",
+        expected_revision=None,
+        operation_id="affair-delete-draft",
+    )
+    with closing(service.database.connect()) as connection:
+        group_rows = connection.execute(
+            """
+            SELECT projection_id FROM sensitive_work_groups
+            WHERE source_kind = 'sensitive_affair' AND source_id = ?
+            """,
+            (affair_id,),
+        ).fetchall()
+    assert len(group_rows) == 1
+    projection_id = str(group_rows[0]["projection_id"])
+    calendar_before = [
+        str(item["node_id"])
+        for item in service.work.query(as_of="2026-08-03")["nodes"]
+    ]
+    assert len(calendar_before) == 1
+
+    result = service.affairs.delete(
+        token=token,
+        affair_id=affair_id,
+        operation_id="affair-delete-001",
+    )
+    assert result == {"deleted": True, "affair_id": affair_id}
+
+    with closing(service.database.connect()) as connection:
+        for table in (
+            "affairs",
+            "affair_occurrences",
+            "step_instances",
+            "decision_records",
+            "affair_participants",
+            "affair_events",
+            "sop_step_drafts",
+            "affair_profile_update_drafts",
+            "affair_student_links",
+            "work_plans",
+            "actions",
+            "action_dependencies",
+            "action_audit_events",
+        ):
+            assert connection.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0] == 0, table
+        assert connection.execute(
+            "SELECT COUNT(*) FROM encrypted_objects WHERE object_id = ?",
+            (f"affair-{affair_id}",),
+        ).fetchone()[0] == 0
+
+    # 日历上的受保护事项随墓碑信封一并物理删除。
+    assert service.work.query(as_of="2026-08-03")["nodes"] == []
+    assert service.affairs.list(token=token)["items"] == []
+
+    replayed = service.affairs.delete(
+        token=token,
+        affair_id=affair_id,
+        operation_id="affair-delete-001",
+    )
+    assert replayed == {"deleted": True, "affair_id": affair_id}
+
+
+def test_affair_delete_endpoint_is_wired_and_requires_trusted_client(
+    tmp_path: Path,
+) -> None:
+    service, token, affair = _decision_affair(tmp_path)
+    app = FastAPI()
+
+    @app.exception_handler(ApiError)
+    async def _api_error(_request: object, exc: ApiError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"error": {"code": exc.code}})
+
+    app.state.workspace_services = {"class-teacher": service}
+    app.include_router(create_router(), prefix="/api/class-teacher")
+    client = TestClient(app)
+
+    rejected = client.post(
+        f"/api/class-teacher/sop/affairs/{affair['affair_id']}/delete",
+        headers={"x-class-teacher-session": token},
+        json={"operation_id": "affair-delete-api-000"},
+    )
+    assert rejected.status_code == 403
+
+    response = client.post(
+        f"/api/class-teacher/sop/affairs/{affair['affair_id']}/delete",
+        headers={
+            "x-class-teacher-session": token,
+            "x-class-teacher-client": "class-teacher-browser-v1",
+        },
+        json={"operation_id": "affair-delete-api-001"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True, "affair_id": affair["affair_id"]}
+
+    listing = client.get(
+        "/api/class-teacher/sop/affairs",
+        headers={"x-class-teacher-session": token},
+    )
+    assert listing.status_code == 200
+    assert listing.json()["items"] == []
