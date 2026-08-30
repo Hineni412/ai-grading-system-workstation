@@ -149,6 +149,18 @@ def _run_question_import_job_locked(
             else ("import" if failed_count else "")
         ),
         "retryable": bool(failed_count) and not trash_collisions,
+        "exact_duplicate_count": int(result.exact_duplicate_count),
+        "analysis_reused_count": int(result.analysis_reused_count),
+        "near_duplicate_hints": [
+            {
+                "question_number": str(hint.get("question_number") or ""),
+                "matched_question_id": int(hint.get("matched_question_id") or 0),
+                "matched_paper_title": str(hint.get("matched_paper_title") or ""),
+                "similarity": float(hint.get("similarity") or 0),
+                "high": bool(hint.get("high")),
+            }
+            for hint in result.near_duplicate_hints
+        ],
     }
     if trash_collisions:
         public_result.update(

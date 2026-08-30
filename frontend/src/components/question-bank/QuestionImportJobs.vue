@@ -53,13 +53,56 @@ function safeCount(result: Record<string, unknown>, key: string): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
 }
 
+interface NearDuplicateHint {
+  questionNumber: string
+  matchedPaperTitle: string
+  similarity: number
+  high: boolean
+}
+
+function nearDuplicateHints(result: Record<string, unknown>): NearDuplicateHint[] {
+  const raw = result.near_duplicate_hints
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+    .map((item) => ({
+      questionNumber: typeof item.question_number === 'string' ? item.question_number : '',
+      matchedPaperTitle: typeof item.matched_paper_title === 'string' ? item.matched_paper_title : '',
+      similarity: typeof item.similarity === 'number' ? item.similarity : 0,
+      high: item.high === true,
+    }))
+}
+
+function questionImportCompletionNote(result: Record<string, unknown>): string {
+  const notes = ['试卷已入库，尚未执行标签与判定点分析。']
+  const exactCount = safeCount(result, 'exact_duplicate_count')
+  if (exactCount > 0) {
+    const reusedCount = safeCount(result, 'analysis_reused_count')
+    notes.push(
+      `${exactCount} 道题与题库已有题目完全相同，已自动关联并复用已有标签`
+      + (reusedCount > 0 ? `，其中 ${reusedCount} 道同时复用了判定点与解题证据` : '')
+      + '。',
+    )
+  }
+  const hints = nearDuplicateHints(result)
+  if (hints.length > 0) {
+    const numbers = hints.map((hint) => hint.questionNumber).filter(Boolean).join('、')
+    notes.push(
+      `${hints.length} 道题与题库已有题目近似`
+      + (numbers ? `（第 ${numbers} 题）` : '')
+      + '，已照常入库，如有需要请自行核对。',
+    )
+  }
+  return notes.join(' ')
+}
+
 function jobCompletionNote(job: JobResponse): string {
   if (!TERMINAL_JOB_STATUSES.has(job.status)) return job.detail || job.stage || '任务等待服务处理'
   if (job.status === 'failed') return job.job_type === 'question_import'
     ? '试卷没有完成入库。'
     : '标签或判定点没有完成；已保存结果不会撤销。'
   if (job.status === 'cancelled') return '任务已取消；已保存结果不会撤销。'
-  if (job.job_type === 'question_import') return '试卷已入库，尚未执行标签与判定点分析。'
+  if (job.job_type === 'question_import') return questionImportCompletionNote(job.result)
   const reviewCount = safeCount(job.result, 'criteria_needs_review_count')
   if (reviewCount > 0) return `${reviewCount} 道题的判定点需要审核，本任务不计为分析成功。`
   if (job.result.outcome === 'complete') return '标签和判定点均已完成。'
