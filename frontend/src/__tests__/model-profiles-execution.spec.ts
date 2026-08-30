@@ -24,6 +24,7 @@ function profile(overrides: Record<string, unknown> = {}) {
     max_concurrent_requests: 20,
     requests_per_minute: 1000,
     max_auto_retries: null,
+    request_timeout_seconds: null,
     batch_enabled: false,
     batch_model: '',
     batch_base_url: '',
@@ -134,6 +135,106 @@ describe('model profile request speed contract', () => {
       requests_per_minute: 1000,
       max_auto_retries: 6,
     })).toThrow('允许自动重试次数')
+  })
+
+  it('normalizes the request timeout within 30–600 and keeps null', () => {
+    const base = {
+      name: '高并发模型',
+      base_url: 'https://example.test/v1',
+      api_key: 'secret',
+      ocr_model: 'ocr',
+      grading_model: 'grading',
+      config_base_url: '',
+      config_model: '',
+      request_speed_mode: 'custom' as const,
+      max_concurrent_requests: 20,
+      requests_per_minute: 1000,
+    }
+    expect(normalizeModelProfileInput({
+      ...base,
+      request_timeout_seconds: 30,
+    })).toMatchObject({ request_timeout_seconds: 30 })
+    expect(normalizeModelProfileInput({
+      ...base,
+      request_timeout_seconds: 600,
+    })).toMatchObject({ request_timeout_seconds: 600 })
+    expect(normalizeModelProfileInput({
+      ...base,
+      request_timeout_seconds: null,
+    })).toMatchObject({ request_timeout_seconds: null })
+  })
+
+  it('rejects out-of-range request timeouts', () => {
+    const base = {
+      name: '高并发模型',
+      base_url: 'https://example.test/v1',
+      api_key: 'secret',
+      ocr_model: 'ocr',
+      grading_model: 'grading',
+      config_base_url: '',
+      config_model: '',
+      request_speed_mode: 'custom' as const,
+      max_concurrent_requests: 20,
+      requests_per_minute: 1000,
+    }
+    expect(() => normalizeModelProfileInput({
+      ...base,
+      request_timeout_seconds: 29,
+    })).toThrow('单次请求超时')
+    expect(() => normalizeModelProfileInput({
+      ...base,
+      request_timeout_seconds: 601,
+    })).toThrow('单次请求超时')
+    expect(() => normalizeModelProfileInput({
+      ...base,
+      request_timeout_seconds: 45.5,
+    })).toThrow('单次请求超时')
+  })
+
+  it('sends explicit null when the request timeout is cleared', async () => {
+    const { modelProfilesApi } = await import('../api/model-profiles')
+    const active = profile({ request_timeout_seconds: null })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
+      JSON.stringify({
+        profiles: [active],
+        active_profile_name: '校内模型',
+        active_profile: active,
+        task_bindings: taskBindings(),
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await modelProfilesApi.saveProfile('校内模型', {
+      name: '校内模型',
+      base_url: 'https://example.test/v1',
+      api_key: 'secret',
+      ocr_model: 'ocr',
+      grading_model: 'grading',
+      config_base_url: '',
+      config_model: '',
+      request_speed_mode: 'automatic',
+      max_concurrent_requests: 20,
+      requests_per_minute: 1000,
+      request_timeout_seconds: null,
+    })
+    const body = JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))
+    expect(body).toHaveProperty('request_timeout_seconds', null)
+
+    await modelProfilesApi.saveProfile('校内模型', {
+      name: '校内模型',
+      base_url: 'https://example.test/v1',
+      api_key: 'secret',
+      ocr_model: 'ocr',
+      grading_model: 'grading',
+      config_base_url: '',
+      config_model: '',
+      request_speed_mode: 'automatic',
+      max_concurrent_requests: 20,
+      requests_per_minute: 1000,
+      request_timeout_seconds: 90,
+    })
+    const secondBody = JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))
+    expect(secondBody).toHaveProperty('request_timeout_seconds', 90)
   })
 
   it('sends explicit null when the auto retry budget is cleared', async () => {

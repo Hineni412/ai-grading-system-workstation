@@ -27,6 +27,7 @@ class ModelProfileUpdateRequest(_ModelProfileModel):
     max_concurrent_requests: int | None = Field(default=None, ge=1, le=100)
     requests_per_minute: int | None = Field(default=None, ge=1, le=10_000)
     max_auto_retries: int | None = Field(default=None, ge=0, le=5)
+    request_timeout_seconds: int | None = Field(default=None, ge=30, le=600)
     batch_enabled: bool | None = None
     batch_model: str | None = Field(default=None, max_length=200)
     batch_base_url: str | None = Field(default=None, max_length=2048)
@@ -48,6 +49,7 @@ class ModelProfileResponse(_ModelProfileModel):
     max_concurrent_requests: int
     requests_per_minute: int
     max_auto_retries: int | None = None
+    request_timeout_seconds: int | None = Field(default=None, ge=30, le=600)
     batch_enabled: bool
     batch_model: str
     batch_base_url: str
