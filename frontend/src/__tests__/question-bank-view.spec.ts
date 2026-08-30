@@ -302,7 +302,15 @@ describe('question bank workspace', () => {
     const app = createApp(PaperLibrary)
     app.use(pinia)
     const store = useQuestionBankStore(pinia)
-    store.papers = [{ ...paper, question_count: 5, complete_analysis_count: 3 }]
+    store.papers = [{
+      ...paper,
+      question_count: 5,
+      tagged_question_count: 5,
+      tagged_any_question_count: 5,
+      evidence_question_count: 3,
+      criteria_question_count: 3,
+      complete_analysis_count: 3,
+    }]
     store.papersState = 'ready'
     app.mount(host)
     mounted.push(app)
@@ -363,7 +371,7 @@ describe('question bank workspace', () => {
     expect(host.textContent).toContain('匿名期末试卷')
   })
 
-  it('does not call incomplete tags successful when new taxonomy terms need review', async () => {
+  it('does not treat untagged papers as complete even when a finished job is still tracked', async () => {
     const host = document.createElement('div')
     document.body.append(host)
     const pinia = createPinia()
@@ -408,11 +416,66 @@ describe('question bank workspace', () => {
       created_at: '2026-08-08T23:46:00Z', started_at: '2026-08-08T23:46:01Z',
       updated_at: '2026-08-08T23:47:00Z', finished_at: '2026-08-08T23:47:00Z',
     })
-    await vi.waitFor(() => expect(host.textContent).toContain('第1、2、3、4、5题产生了待审核新词'))
+    await vi.waitFor(() => expect(host.textContent).toContain('5 道题标签未打全'))
 
+    expect(host.textContent).not.toContain('产生了待审核新词')
     expect(host.textContent).not.toContain('AI 解析进度')
     expect(host.textContent).not.toContain('标签、解题证据和训练判定点均已完成')
     expect(host.textContent).not.toContain('解题证据')
+  })
+
+  it('ignores a finished timeout job when the paper only still needs criterion review', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [{
+      ...paper,
+      question_count: 20,
+      tagged_question_count: 20,
+      tagged_any_question_count: 20,
+      evidence_question_count: 20,
+      criteria_question_count: 20,
+      complete_analysis_count: 18,
+      criteria_needs_review_count: 2,
+    }]
+    store.papersState = 'ready'
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).startsWith('/api/question-bank/question-refs')) {
+        return questionRefs([
+          { id: 16, paper_id: 4, question_number: '13' },
+          { id: 19, paper_id: 4, question_number: '16' },
+          { id: 22, paper_id: 4, question_number: '19' },
+        ])
+      }
+      throw new Error(`unexpected request: ${String(input)}`)
+    })
+    app.mount(host)
+    mounted.push(app)
+    useJobStore(pinia).track({
+      id: 141,
+      job_type: 'tagging_sync',
+      payload: { question_ids: [16, 19, 22] },
+      result: {
+        outcome: 'partial',
+        failed_question_ids: [16],
+        review_question_ids: [19, 22],
+        failures: [
+          { question_id: 16, category: 'timeout', message: '分析超时，可稍后补齐未完成题目。' },
+        ],
+      },
+      status: 'succeeded', progress: 1, stage: 'tagging_sync', detail: '',
+      error: null, cancel_requested: false,
+      created_at: '2026-08-25T10:00:00Z', started_at: '2026-08-25T10:00:01Z',
+      updated_at: '2026-08-25T10:12:00Z', finished_at: '2026-08-25T10:12:00Z',
+    })
+    await vi.waitFor(() => expect(host.textContent).toContain('2 道题判定点待您审核'))
+    expect(host.textContent).toContain('待审核判定点 2')
+    expect(host.textContent).not.toContain('分析超时')
+    expect(host.textContent).not.toContain('分析未完成')
+    expect(host.textContent).not.toContain('产生了待审核新词')
   })
 
   it('keeps criterion review visible on paper cards after jobs disappear', async () => {
