@@ -41,6 +41,7 @@ interface ModelProfileDraft {
   maxConcurrentRequests: number
   requestsPerMinute: number
   maxAutoRetries: number | null
+  requestTimeoutSeconds: number | null
   batchEnabled: boolean
   batchModel: string
 }
@@ -85,6 +86,7 @@ const draft = reactive<ModelProfileDraft>({
   maxConcurrentRequests: 20,
   requestsPerMinute: 1000,
   maxAutoRetries: null,
+  requestTimeoutSeconds: null,
   batchEnabled: false,
   batchModel: '',
 })
@@ -106,6 +108,7 @@ function draftSnapshot(): string {
     maxConcurrentRequests: draft.maxConcurrentRequests,
     requestsPerMinute: draft.requestsPerMinute,
     maxAutoRetries: draft.maxAutoRetries,
+    requestTimeoutSeconds: draft.requestTimeoutSeconds,
     batchEnabled: draft.batchEnabled,
     batchModel: draft.batchModel,
   })
@@ -216,6 +219,7 @@ function applyProfile(profile: ModelProfile): void {
     maxConcurrentRequests: profile.max_concurrent_requests,
     requestsPerMinute: profile.requests_per_minute,
     maxAutoRetries: profile.max_auto_retries,
+    requestTimeoutSeconds: profile.request_timeout_seconds,
     batchEnabled: profile.batch_enabled,
     batchModel: profile.batch_model,
   } satisfies ModelProfileDraft)
@@ -242,6 +246,7 @@ function applyBlankProfile(): void {
     maxConcurrentRequests: 20,
     requestsPerMinute: 1000,
     maxAutoRetries: null,
+    requestTimeoutSeconds: null,
     batchEnabled: false,
     batchModel: '',
   } satisfies ModelProfileDraft)
@@ -291,6 +296,8 @@ async function beginNewProfile(): Promise<void> {
 
 function toUpsertInput(): ModelProfileUpsertInput {
   const rawRetries = draft.maxAutoRetries as number | null | '' | undefined
+  const rawTimeout =
+    draft.requestTimeoutSeconds as number | null | '' | undefined
   return {
     name: draft.name,
     base_url: draft.baseUrl,
@@ -308,6 +315,9 @@ function toUpsertInput(): ModelProfileUpsertInput {
     max_auto_retries: rawRetries === '' || rawRetries === undefined
       ? null
       : rawRetries,
+    request_timeout_seconds: rawTimeout === '' || rawTimeout === undefined
+      ? null
+      : rawTimeout,
     batch_enabled: draft.batchEnabled,
     batch_model: draft.batchModel,
   }
@@ -739,6 +749,23 @@ onBeforeUnmount(() => {
               <small>
                 请求失败（限流、超时、断连）或模型输出不符合要求时自动补试的次数上限；
                 留空使用各任务默认，填 0 表示失败就直接停。题库打标会把失败原因带给模型自动重试。
+              </small>
+            </label>
+            <label class="model-profile-field">
+              <span>单次请求超时（秒）</span>
+              <input
+                v-model.number="draft.requestTimeoutSeconds"
+                name="request-timeout-seconds"
+                type="number"
+                min="30"
+                :max="MODEL_PROFILE_LIMITS.requestTimeoutSeconds"
+                step="1"
+                :disabled="isBusy"
+                placeholder="默认"
+              >
+              <small>
+                超过多少秒算一次调用失败；留空按任务默认（阅卷 300 秒、识别 60 秒、打标 480 秒等）。
+                批量推理不受此设置影响；个别工作台短任务有自己的上限。
               </small>
             </label>
           </div>

@@ -64,6 +64,7 @@ def test_model_profile_saves_custom_request_speed_settings(tmp_path) -> None:
         "max_concurrent_requests": 37,
         "requests_per_minute": 10_000,
         "max_auto_retries": None,
+        "request_timeout_seconds": None,
         "batch_enabled": False,
         "batch_model": "",
         "batch_base_url": "",

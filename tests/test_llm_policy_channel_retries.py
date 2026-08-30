@@ -64,6 +64,119 @@ def test_channel_retry_budget_rejects_out_of_range_values() -> None:
         )
 
 
+def test_request_timeout_replaces_online_kind_default() -> None:
+    profile = {"name": "x", "request_timeout_seconds": 45}
+
+    grading = policy_from_profile(LLMRequestKind.GRADING, profile)
+    recognition = policy_from_profile(LLMRequestKind.RECOGNITION, profile)
+    tagging = policy_from_profile(LLMRequestKind.TAGGING, profile)
+    workspace = policy_from_profile(LLMRequestKind.WORKSPACE, profile)
+
+    assert grading.timeout_seconds == 45.0
+    assert recognition.timeout_seconds == 45.0
+    assert tagging.timeout_seconds == 45.0
+    assert workspace.timeout_seconds == 45.0
+
+
+def test_request_timeout_per_kind_override_wins() -> None:
+    policy = policy_from_profile(
+        LLMRequestKind.GRADING,
+        {
+            "name": "x",
+            "request_timeout_seconds": 45,
+            "llm_grading_timeout_seconds": 120,
+        },
+    )
+
+    assert policy.timeout_seconds == 120.0
+
+
+def test_request_timeout_ignored_by_batch_channels() -> None:
+    profile = {"name": "x", "request_timeout_seconds": 45}
+
+    grading_batch = policy_from_profile(LLMRequestKind.GRADING_BATCH, profile)
+    tagging_batch = policy_from_profile(LLMRequestKind.TAGGING_BATCH, profile)
+
+    assert grading_batch.timeout_seconds == 3600.0
+    assert tagging_batch.timeout_seconds == 3600.0
+
+
+def test_request_timeout_rejects_out_of_range_values() -> None:
+    for invalid in (29, 601, 29.5, "45"):
+        with pytest.raises(LLMPolicyError):
+            policy_from_profile(
+                LLMRequestKind.GRADING,
+                {"name": "x", "request_timeout_seconds": invalid},
+            )
+
+
+def test_request_timeout_overrides_pass_through() -> None:
+    overrides = policy_overrides_from_profile(
+        {
+            "name": "x",
+            "api_key": "secret",
+            "request_timeout_seconds": 90,
+        }
+    )
+
+    assert overrides["request_timeout_seconds"] == 90
+    assert "api_key" not in overrides
+
+
+def test_model_profile_service_round_trips_request_timeout(tmp_path) -> None:
+    service = ModelProfileService(ApiProfileStore(tmp_path / "profiles.json"))
+
+    saved = service.upsert(
+        "智谱",
+        {
+            "api_key": "secret",
+            "base_url": "https://example.test/v1",
+            "request_timeout_seconds": 45,
+        },
+    )
+
+    assert saved["profiles"][0]["request_timeout_seconds"] == 45
+
+    cleared = service.upsert("智谱", {"request_timeout_seconds": None})
+
+    assert cleared["profiles"][0]["request_timeout_seconds"] is None
+    stored = ApiProfileStore(tmp_path / "profiles.json").load()
+    assert "request_timeout_seconds" not in stored[0]
+
+
+def test_model_profile_service_accepts_timeout_boundaries(tmp_path) -> None:
+    service = ModelProfileService(ApiProfileStore(tmp_path / "profiles.json"))
+    service.upsert(
+        "智谱",
+        {"api_key": "secret", "base_url": "https://example.test/v1"},
+    )
+
+    lowered = service.upsert("智谱", {"request_timeout_seconds": 30})
+    assert lowered["profiles"][0]["request_timeout_seconds"] == 30
+
+    raised = service.upsert("智谱", {"request_timeout_seconds": 600})
+    assert raised["profiles"][0]["request_timeout_seconds"] == 600
+
+
+def test_model_profile_service_rejects_invalid_request_timeout(
+    tmp_path,
+) -> None:
+    service = ModelProfileService(ApiProfileStore(tmp_path / "profiles.json"))
+    service.upsert(
+        "智谱",
+        {"api_key": "secret", "base_url": "https://example.test/v1"},
+    )
+
+    with pytest.raises(ModelProfileInvalid):
+        service.upsert("智谱", {"request_timeout_seconds": 29})
+    with pytest.raises(ModelProfileInvalid):
+        service.upsert("智谱", {"request_timeout_seconds": 601})
+    with pytest.raises(ModelProfileInvalid):
+        service.upsert("智谱", {"request_timeout_seconds": "45"})
+    with pytest.raises(ModelProfileInvalid):
+        service.upsert("智谱", {"request_timeout_seconds": 45.5})
+
+
 def test_policy_overrides_keep_channel_budget_and_drop_secrets() -> None:
     overrides = policy_overrides_from_profile(
         {

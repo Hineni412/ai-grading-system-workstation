@@ -91,6 +91,15 @@ _EXECUTION_PROFILE_FIELDS = frozenset(
 MAX_AUTO_RETRIES_PROFILE_FIELD = "max_auto_retries"
 MAX_AUTO_RETRIES_MIN = 0
 MAX_AUTO_RETRIES_MAX = 5
+# Channel-level default for a single request timeout on online channels.
+# When present it replaces each online kind's default; the finer-grained
+# llm_{kind}_timeout_seconds keys still win, and batch channels ignore it.
+REQUEST_TIMEOUT_PROFILE_FIELD = "request_timeout_seconds"
+REQUEST_TIMEOUT_MIN = 30.0
+REQUEST_TIMEOUT_MAX = 600.0
+_BATCH_REQUEST_KINDS = frozenset(
+    {LLMRequestKind.GRADING_BATCH, LLMRequestKind.TAGGING_BATCH}
+)
 EXECUTION_SCOPE_PROFILE_FIELD = "_llm_execution_scope_key"
 
 
@@ -172,7 +181,17 @@ def policy_from_profile(
     timeout = _bounded_float(
         values,
         f"{prefix}_timeout_seconds",
-        base.timeout_seconds,
+        (
+            base.timeout_seconds
+            if request_kind in _BATCH_REQUEST_KINDS
+            else _bounded_float(
+                values,
+                REQUEST_TIMEOUT_PROFILE_FIELD,
+                base.timeout_seconds,
+                REQUEST_TIMEOUT_MIN,
+                REQUEST_TIMEOUT_MAX,
+            )
+        ),
         1.0,
         _TIMEOUT_OVERRIDE_CAPS.get(request_kind, _DEFAULT_TIMEOUT_OVERRIDE_CAP),
     )
@@ -227,6 +246,7 @@ def policy_overrides_from_profile(
         if field in _POLICY_OVERRIDE_FIELDS
         or field in _EXECUTION_PROFILE_FIELDS
         or field == MAX_AUTO_RETRIES_PROFILE_FIELD
+        or field == REQUEST_TIMEOUT_PROFILE_FIELD
     }
     overrides[EXECUTION_SCOPE_PROFILE_FIELD] = execution_scope_key(values)
     return overrides

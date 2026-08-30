@@ -9,6 +9,7 @@ export const MODEL_PROFILE_LIMITS = {
   concurrentRequests: 100,
   requestsPerMinute: 10000,
   maxAutoRetries: 5,
+  requestTimeoutSeconds: 600,
 } as const
 
 export type RequestSpeedMode = 'automatic' | 'conservative' | 'custom'
@@ -51,6 +52,7 @@ export interface ModelProfile {
   max_concurrent_requests: number
   requests_per_minute: number
   max_auto_retries: number | null
+  request_timeout_seconds: number | null
   batch_enabled: boolean
   batch_model: string
   batch_base_url: string
@@ -96,6 +98,7 @@ export interface ModelProfileUpsertInput {
   max_concurrent_requests: number
   requests_per_minute: number
   max_auto_retries?: number | null
+  request_timeout_seconds?: number | null
   batch_enabled?: boolean
   batch_model?: string
   batch_base_url?: string
@@ -129,6 +132,7 @@ const PROFILE_KEYS = [
   'max_concurrent_requests',
   'requests_per_minute',
   'max_auto_retries',
+  'request_timeout_seconds',
   'batch_enabled',
   'batch_model',
   'batch_base_url',
@@ -228,6 +232,15 @@ function isModelProfile(value: unknown): value is ModelProfile {
         && Number(value.max_auto_retries) >= 0
         && Number(value.max_auto_retries)
           <= MODEL_PROFILE_LIMITS.maxAutoRetries
+      )
+    )
+    && (
+      value.request_timeout_seconds === null
+      || (
+        Number.isInteger(value.request_timeout_seconds)
+        && Number(value.request_timeout_seconds) >= 30
+        && Number(value.request_timeout_seconds)
+          <= MODEL_PROFILE_LIMITS.requestTimeoutSeconds
       )
     )
     && typeof value.batch_enabled === 'boolean'
@@ -438,11 +451,12 @@ function normalizeOptionalInteger(
   value: number | null,
   label: string,
   maximum: number,
+  minimum = 0,
 ): number | null {
   if (value === null) return null
-  if (!Number.isInteger(value) || value < 0 || value > maximum) {
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
     throw new ModelProfileInputError(
-      `${label}需要填写 0–${maximum} 的整数，或留空使用默认。`,
+      `${label}需要填写 ${minimum}–${maximum} 的整数，或留空使用默认。`,
     )
   }
   return value
@@ -528,6 +542,15 @@ export function normalizeModelProfileInput(
             '允许自动重试次数',
             MODEL_PROFILE_LIMITS.maxAutoRetries,
           ),
+    request_timeout_seconds:
+      input.request_timeout_seconds === undefined
+        ? undefined
+        : normalizeOptionalInteger(
+            input.request_timeout_seconds,
+            '单次请求超时（秒）',
+            MODEL_PROFILE_LIMITS.requestTimeoutSeconds,
+            30,
+          ),
     batch_enabled: input.batch_enabled === true,
     batch_model: normalizeBoundedText(
       input.batch_model ?? '',
@@ -593,6 +616,9 @@ export const modelProfilesApi = {
     }
     if (normalized.max_auto_retries !== undefined) {
       body.max_auto_retries = normalized.max_auto_retries
+    }
+    if (normalized.request_timeout_seconds !== undefined) {
+      body.request_timeout_seconds = normalized.request_timeout_seconds
     }
     if (normalized.batch_base_url) {
       body.batch_base_url = normalized.batch_base_url

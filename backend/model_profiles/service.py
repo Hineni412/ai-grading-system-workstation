@@ -32,6 +32,7 @@ _EDITABLE_FIELDS = frozenset(
         "max_concurrent_requests",
         "requests_per_minute",
         "max_auto_retries",
+        "request_timeout_seconds",
         "batch_enabled",
         "batch_model",
         "batch_base_url",
@@ -245,6 +246,10 @@ def _validated_updates(values: Mapping[str, Any]) -> dict[str, Any]:
         updates["max_auto_retries"] = _validated_max_auto_retries(
             values["max_auto_retries"]
         )
+    if "request_timeout_seconds" in values:
+        updates["request_timeout_seconds"] = _validated_request_timeout(
+            values["request_timeout_seconds"]
+        )
     execution_updates = {
         key: value
         for key, value in values.items()
@@ -265,7 +270,11 @@ def _validated_updates(values: Mapping[str, Any]) -> dict[str, Any]:
         for key in execution_updates:
             updates[key] = normalized_execution[key]
     for field_name, raw_value in values.items():
-        if field_name in execution_updates or field_name == "max_auto_retries":
+        if (
+            field_name in execution_updates
+            or field_name == "max_auto_retries"
+            or field_name == "request_timeout_seconds"
+        ):
             continue
         if raw_value is None:
             continue
@@ -303,6 +312,26 @@ def _public_max_auto_retries(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value if 0 <= value <= 5 else None
+
+
+def _validated_request_timeout(value: object) -> int | object:
+    if value is None:
+        return PROFILE_FIELD_REMOVE
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ModelProfileInvalid(
+            "Request timeout must be an integer between 30 and 600"
+        )
+    if not 30 <= value <= 600:
+        raise ModelProfileInvalid(
+            "Request timeout must be an integer between 30 and 600"
+        )
+    return value
+
+
+def _public_request_timeout(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 30 <= value <= 600 else None
 
 
 def _validated_endpoint(value: str) -> str:
@@ -354,6 +383,9 @@ def _public_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
         "requests_per_minute": execution.requests_per_minute,
         "max_auto_retries": _public_max_auto_retries(
             profile.get("max_auto_retries")
+        ),
+        "request_timeout_seconds": _public_request_timeout(
+            profile.get("request_timeout_seconds")
         ),
         "batch_enabled": bool(profile.get("batch_enabled")),
         "batch_model": _clean_existing_text(profile.get("batch_model")),
