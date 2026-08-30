@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from api_profiles import ApiProfileStore, PROFILE_FIELD_REMOVE
+from backend.llm.policy import REQUEST_TIMEOUT_MAX, REQUEST_TIMEOUT_MIN
 from backend.llm.execution import (
     LLMExecutionGovernorRegistry,
     LLMExecutionSettingsError,
@@ -314,24 +315,32 @@ def _public_max_auto_retries(value: object) -> int | None:
     return value if 0 <= value <= 5 else None
 
 
+_REQUEST_TIMEOUT_MIN = int(REQUEST_TIMEOUT_MIN)
+_REQUEST_TIMEOUT_MAX = int(REQUEST_TIMEOUT_MAX)
+_REQUEST_TIMEOUT_RANGE = (
+    f"Request timeout must be an integer between "
+    f"{_REQUEST_TIMEOUT_MIN} and {_REQUEST_TIMEOUT_MAX}"
+)
+
+
 def _validated_request_timeout(value: object) -> int | object:
     if value is None:
         return PROFILE_FIELD_REMOVE
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ModelProfileInvalid(
-            "Request timeout must be an integer between 30 and 600"
-        )
-    if not 30 <= value <= 600:
-        raise ModelProfileInvalid(
-            "Request timeout must be an integer between 30 and 600"
-        )
+        raise ModelProfileInvalid(_REQUEST_TIMEOUT_RANGE)
+    if not _REQUEST_TIMEOUT_MIN <= value <= _REQUEST_TIMEOUT_MAX:
+        raise ModelProfileInvalid(_REQUEST_TIMEOUT_RANGE)
     return value
 
 
 def _public_request_timeout(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
-    return value if 30 <= value <= 600 else None
+    return (
+        value
+        if _REQUEST_TIMEOUT_MIN <= value <= _REQUEST_TIMEOUT_MAX
+        else None
+    )
 
 
 def _validated_endpoint(value: str) -> str:

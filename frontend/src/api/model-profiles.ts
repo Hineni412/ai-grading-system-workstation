@@ -9,7 +9,7 @@ export const MODEL_PROFILE_LIMITS = {
   concurrentRequests: 100,
   requestsPerMinute: 10000,
   maxAutoRetries: 5,
-  requestTimeoutSeconds: 600,
+  requestTimeoutSeconds: 1200,
 } as const
 
 export type RequestSpeedMode = 'automatic' | 'conservative' | 'custom'

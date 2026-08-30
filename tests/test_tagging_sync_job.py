@@ -181,6 +181,31 @@ def _seed_current_projection_rows(db_path: Path, question) -> None:
         )
 
 
+def _mark_criterion_stale(db_path: Path, question_id: int) -> None:
+    """Reproduce a leftover fill: tags and evidence stay current, criteria expired."""
+
+    stale_hash = hashlib.sha256(b"stale-criterion-hash").hexdigest()
+    live_hash = hashlib.sha256(b"live-criterion-hash").hexdigest()
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE training_criterion_versions
+            SET status = 'stale',
+                source_content_hash = ?
+            WHERE question_id = ?
+            """,
+            (stale_hash, question_id),
+        )
+        connection.execute(
+            """
+            UPDATE training_criterion_heads
+            SET current_source_hash = ?
+            WHERE question_id = ?
+            """,
+            (live_hash, question_id),
+        )
+
+
 def _seed_successful_tag_source(
     db_path: Path,
     *,
@@ -688,6 +713,146 @@ def test_fill_twelve_questions_only_analyzes_five_missing_and_refreshes_counts(
             analysis_status="incomplete",
         )
     ).total == 0
+
+
+def test_fill_reanalyzes_stale_criteria_without_retagging_complete_neighbors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """补齐 must resend only leftover questions, not the rest of the paper.
+
+    Tags plus current evidence with a stale training criterion used to take a
+    local-only republish path. That path never called the model, so retrying
+    补齐 finished in seconds with no send record and the same leftover question.
+    """
+
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_ids = _seed(db_path, 3)
+    complete_ids = question_ids[:2]
+    leftover_id = question_ids[2]
+    loaded = QuestionAnalysisInputLoader(
+        db_path=db_path,
+        data_root=data_root,
+    ).load(
+        question_ids,
+        curriculum_volume_id="bnu24-math-g7-lower",
+    )
+    bank = QuestionBankTestStore(db_path)
+    for question in loaded:
+        assert bank.save_tag_analysis(
+            question.question_id,
+            _analysis(),
+            model_name="existing",
+        )
+        _seed_current_projection_rows(db_path, question)
+    _mark_criterion_stale(db_path, leftover_id)
+
+    analyzed: list[tuple[int, bool, bool, bool]] = []
+
+    class RecordingCombinedModule:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze_work_items(self, *, work_items, **_kwargs):
+            for item in work_items:
+                analyzed.append(
+                    (
+                        item.question.question_id,
+                        bool(item.analyze_tag),
+                        bool(item.analyze_solution_evidence),
+                        bool(item.publish_saved_criterion),
+                    )
+                )
+                current_hash = item.question.criterion_source_content_hash
+                with connect(db_path) as connection:
+                    connection.execute(
+                        """
+                        UPDATE training_criterion_versions
+                        SET status = 'proposed',
+                            source_content_hash = ?
+                        WHERE question_id = ?
+                        """,
+                        (current_hash, item.question.question_id),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE training_criterion_heads
+                        SET current_source_hash = ?
+                        WHERE question_id = ?
+                        """,
+                        (current_hash, item.question.question_id),
+                    )
+            return {
+                "items": [
+                    {
+                        "question_id": item.question.question_id,
+                        "tag_status": "not_requested",
+                        "tag_error_category": "",
+                        "criteria_status": "succeeded",
+                        "criteria_error_category": "",
+                    }
+                    for item in work_items
+                ],
+                "criterion_audit": {
+                    "items": [
+                        {
+                            "question_id": item.question.question_id,
+                            "status": "succeeded",
+                        }
+                        for item in work_items
+                    ]
+                },
+                "projection_audit": {
+                    "retrieval_misses": [],
+                    "proposals": [],
+                    "secondary_matches": [],
+                    "relation_hints": [],
+                    "retrieval_miss_question_ids": [],
+                    "proposal_question_ids": [],
+                },
+                "question_projection_audits": {},
+            }
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "CombinedQuestionAnalysisModule",
+        RecordingCombinedModule,
+    )
+    governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "governance-stale-fill-kg.db",
+    )
+    ai_service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-combined",
+        },
+        protocol_adapter=object(),
+        taxonomy_governance=governance,
+    )
+    context, _store = _context(
+        tmp_path,
+        {
+            "question_ids": question_ids,
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+        },
+    )
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: ai_service,
+        taxonomy_governance=governance,
+    )
+
+    assert analyzed == [(leftover_id, False, True, False)]
+    assert result["outcome"] == "complete"
+    assert result["tagged_count"] == 0
+    assert result["failed_question_ids"] == []
+    assert set(complete_ids).isdisjoint({item[0] for item in analyzed})
 
 
 def test_fill_retags_when_saved_tags_belong_to_an_old_question_source(

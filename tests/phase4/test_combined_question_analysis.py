@@ -909,6 +909,8 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
     assert point["properties"]["justification"]["minLength"] == 1
     assert point["properties"]["answer_anchor"]["minLength"] == 1
     assert point["properties"]["depends_on"]["items"]["pattern"] == expected_identifier
+    assert "uniqueItems" not in point["properties"]["depends_on"]
+    assert "uniqueItems" not in json.dumps(schema)
     assert point["properties"]["observable_evidence"]["minLength"] == 1
     assert evidence["properties"]["schema_version"]["enum"] == [
         "question-solution-evidence-v2"
