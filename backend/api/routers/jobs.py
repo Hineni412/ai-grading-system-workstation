@@ -264,6 +264,9 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "restore_required",
             "restore_paper_id",
             "relation_governance_failed_question_ids",
+            "exact_duplicate_count",
+            "analysis_reused_count",
+            "near_duplicate_hints",
         )
         return sanitize_public_mapping(
             {key: job.result[key] for key in allowed if key in job.result}

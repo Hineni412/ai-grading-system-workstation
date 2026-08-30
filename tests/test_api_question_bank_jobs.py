@@ -92,6 +92,51 @@ def test_question_import_route_submits_safe_queryable_job(tmp_path: Path) -> Non
     assert str(tmp_path) not in json.dumps(queried)
 
 
+def test_question_import_result_exposes_duplicate_reuse_fields(tmp_path: Path) -> None:
+    client, manager, _service, _request = _client(tmp_path)
+    job = manager.store.create_job("question_import", {"request_id": "b" * 32})
+    assert manager.store.mark_running(job.id)
+    manager.store.finish(
+        job.id,
+        "succeeded",
+        result={
+            "request_id": "b" * 32,
+            "outcome": "complete",
+            "imported_papers": 1,
+            "question_count": 2,
+            "failed_count": 0,
+            "successful_question_ids": [21, 22],
+            "failed_question_ids": [],
+            "failure_category": "",
+            "retryable": False,
+            "exact_duplicate_count": 1,
+            "analysis_reused_count": 1,
+            "near_duplicate_hints": [
+                {
+                    "question_number": "2",
+                    "matched_question_id": 11,
+                    "matched_paper_title": "旧卷",
+                    "similarity": 0.87,
+                    "high": True,
+                }
+            ],
+        },
+    )
+
+    result = client.get(f"/api/jobs/{job.id}").json()["result"]
+    assert result["exact_duplicate_count"] == 1
+    assert result["analysis_reused_count"] == 1
+    assert result["near_duplicate_hints"] == [
+        {
+            "question_number": "2",
+            "matched_question_id": 11,
+            "matched_paper_title": "旧卷",
+            "similarity": 0.87,
+            "high": True,
+        }
+    ]
+
+
 def test_question_import_route_rejects_missing_server_request(tmp_path: Path) -> None:
     client, _manager, _service, _request = _client(tmp_path)
 
