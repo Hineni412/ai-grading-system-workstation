@@ -6,6 +6,7 @@ import {
   isQuestionBankLibraryJob,
   jobBelongsToPaper,
   libraryJobDetailLine,
+  paperCurrentStatusLines,
   paperLeftoverLines,
   paperLiveAnalysisLine,
   parseAnalysisProcessed,
@@ -110,5 +111,32 @@ describe('paper analysis status', () => {
 
   it('formats question numbers in reading order', () => {
     expect(formatQuestionLabel(['19', '5', '18'])).toBe('第5、18、19题')
+  })
+
+  it('uses current paper fields for leftover copy, not a finished job timeout', () => {
+    expect(paperCurrentStatusLines({
+      question_count: 20,
+      tagged_question_count: 20,
+      complete_analysis_count: 18,
+      criteria_needs_review_count: 2,
+    }, ['13', '16', '19'])).toEqual(['2 道题判定点待您审核'])
+  })
+
+  it('mentions missing tags instead of leftover analysis copy', () => {
+    expect(paperCurrentStatusLines({
+      question_count: 5,
+      tagged_question_count: 0,
+      complete_analysis_count: 0,
+      criteria_needs_review_count: 0,
+    }, ['1', '2', '3', '4', '5'])).toEqual(['5 道题标签未打全'])
+  })
+
+  it('lists incomplete question numbers only when tags are complete and nothing is waiting for review', () => {
+    expect(paperCurrentStatusLines({
+      question_count: 5,
+      tagged_question_count: 5,
+      complete_analysis_count: 3,
+      criteria_needs_review_count: 0,
+    }, ['1', '3'])).toEqual(['第1、3题分析未完成'])
   })
 })

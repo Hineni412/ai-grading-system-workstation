@@ -1,5 +1,5 @@
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
-import { questionJobFailures } from '../../api/question-bank'
+import { questionJobFailures, type QuestionBankPaper } from '../../api/question-bank'
 
 export const QUESTION_BANK_LIBRARY_JOB_TYPES = new Set(['question_import', 'tagging_sync'])
 
@@ -112,6 +112,39 @@ export function formatQuestionLabel(numbers: string[]): string {
   if (unique.length === 1) return `第${unique[0]}题`
   const last = unique[unique.length - 1]
   return `第${unique.slice(0, -1).join('、')}、${last}题`
+}
+
+export function paperCurrentStatusLines(
+  paper: Pick<
+    QuestionBankPaper,
+    | 'question_count'
+    | 'tagged_question_count'
+    | 'complete_analysis_count'
+    | 'criteria_needs_review_count'
+  >,
+  incompleteNumbers: readonly string[] = [],
+): string[] {
+  const questions = paper.question_count
+  if (questions <= 0) return []
+
+  const review = Math.max(0, paper.criteria_needs_review_count)
+  const missingTags = Math.max(0, questions - paper.tagged_question_count)
+  const missingAnalysis = Math.max(0, questions - paper.complete_analysis_count - review)
+
+  const lines: string[] = []
+  if (review > 0) {
+    lines.push(`${review} 道题判定点待您审核`)
+  }
+  if (missingTags > 0) {
+    lines.push(`${missingTags} 道题标签未打全`)
+  } else if (missingAnalysis > 0) {
+    if (review === 0 && incompleteNumbers.length > 0) {
+      lines.push(`${formatQuestionLabel([...incompleteNumbers])}分析未完成`)
+    } else {
+      lines.push(`${missingAnalysis} 道题分析未完成`)
+    }
+  }
+  return lines
 }
 
 export function paperLeftoverLines(

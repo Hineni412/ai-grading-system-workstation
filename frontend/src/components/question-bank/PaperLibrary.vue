@@ -22,10 +22,9 @@ import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import AppButton from '../design-system/AppButton.vue'
 import {
-  formatQuestionLabel,
   isQuestionBankLibraryJob,
   jobBelongsToPaper,
-  paperLeftoverLines,
+  paperCurrentStatusLines,
   paperLiveAnalysisLine,
   type PaperQuestionRef,
 } from './paper-analysis-status'
@@ -436,7 +435,7 @@ async function refreshQuestionRefs(): Promise<void> {
     }
     questionRefs.value = next
   } catch {
-    // Keep the last successful mapping; leftover copy can still use counts.
+    // Keep the last successful mapping; live analysis matching can still use paper links.
   }
 }
 
@@ -512,28 +511,10 @@ function liveAnalysisLine(paper: QuestionBankPaper): string {
 }
 
 function leftoverLines(paper: QuestionBankPaper): string[] {
-  const current = analysisJobForPaper(paper)
-  const lines = current
-    ? paperLeftoverLines(current, questionRefs.value, paper.id)
-    : []
-  // 任务结果给不出提示时（映射丢失、任务进行中、浏览器任务记录已清），
-  // 用与进度条同一口径的试卷字段兜底，保证刷新后提示不消失。
-  if (
-    lines.length === 0
-    && paper.complete_analysis_count < paper.question_count
-  ) {
-    const numbers = incompleteQuestionNumbers.value.get(paper.id)
-    if (numbers?.length) {
-      lines.push(`${formatQuestionLabel(numbers)}分析未完成`)
-    }
-  }
-  if (
-    paper.criteria_needs_review_count > 0
-    && !lines.some((line) => line.includes('判定点待您审核'))
-  ) {
-    lines.push(`${paper.criteria_needs_review_count} 道题判定点待您审核`)
-  }
-  return lines
+  return paperCurrentStatusLines(
+    paper,
+    incompleteQuestionNumbers.value.get(paper.id) ?? [],
+  )
 }
 
 function uniqueValues(values: Array<string | null>): string[] {
