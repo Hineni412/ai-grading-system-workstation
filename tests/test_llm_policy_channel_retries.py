@@ -101,8 +101,17 @@ def test_request_timeout_ignored_by_batch_channels() -> None:
     assert tagging_batch.timeout_seconds == 3600.0
 
 
+def test_request_timeout_accepts_online_maximum() -> None:
+    policy = policy_from_profile(
+        LLMRequestKind.TAGGING,
+        {"name": "x", "request_timeout_seconds": 1200},
+    )
+
+    assert policy.timeout_seconds == 1200.0
+
+
 def test_request_timeout_rejects_out_of_range_values() -> None:
-    for invalid in (29, 601, 29.5, "45"):
+    for invalid in (29, 1201, 29.5, "45"):
         with pytest.raises(LLMPolicyError):
             policy_from_profile(
                 LLMRequestKind.GRADING,
@@ -154,8 +163,11 @@ def test_model_profile_service_accepts_timeout_boundaries(tmp_path) -> None:
     lowered = service.upsert("智谱", {"request_timeout_seconds": 30})
     assert lowered["profiles"][0]["request_timeout_seconds"] == 30
 
-    raised = service.upsert("智谱", {"request_timeout_seconds": 600})
-    assert raised["profiles"][0]["request_timeout_seconds"] == 600
+    mid = service.upsert("智谱", {"request_timeout_seconds": 600})
+    assert mid["profiles"][0]["request_timeout_seconds"] == 600
+
+    raised = service.upsert("智谱", {"request_timeout_seconds": 1200})
+    assert raised["profiles"][0]["request_timeout_seconds"] == 1200
 
 
 def test_model_profile_service_rejects_invalid_request_timeout(
@@ -170,7 +182,7 @@ def test_model_profile_service_rejects_invalid_request_timeout(
     with pytest.raises(ModelProfileInvalid):
         service.upsert("智谱", {"request_timeout_seconds": 29})
     with pytest.raises(ModelProfileInvalid):
-        service.upsert("智谱", {"request_timeout_seconds": 601})
+        service.upsert("智谱", {"request_timeout_seconds": 1201})
     with pytest.raises(ModelProfileInvalid):
         service.upsert("智谱", {"request_timeout_seconds": "45"})
     with pytest.raises(ModelProfileInvalid):

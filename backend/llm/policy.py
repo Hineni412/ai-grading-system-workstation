@@ -96,7 +96,7 @@ MAX_AUTO_RETRIES_MAX = 5
 # llm_{kind}_timeout_seconds keys still win, and batch channels ignore it.
 REQUEST_TIMEOUT_PROFILE_FIELD = "request_timeout_seconds"
 REQUEST_TIMEOUT_MIN = 30.0
-REQUEST_TIMEOUT_MAX = 600.0
+REQUEST_TIMEOUT_MAX = 1200.0
 _BATCH_REQUEST_KINDS = frozenset(
     {LLMRequestKind.GRADING_BATCH, LLMRequestKind.TAGGING_BATCH}
 )
@@ -146,7 +146,7 @@ _TIMEOUT_OVERRIDE_CAPS: Mapping[LLMRequestKind, float] = MappingProxyType(
         LLMRequestKind.TAGGING_BATCH: 7200.0,
     }
 )
-_DEFAULT_TIMEOUT_OVERRIDE_CAP = 600.0
+_DEFAULT_TIMEOUT_OVERRIDE_CAP = REQUEST_TIMEOUT_MAX
 
 # A rejected (429/503) batch attempt is never billed, so batch channels may
 # keep drawing tickets far longer than online channels.

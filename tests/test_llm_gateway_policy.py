@@ -88,7 +88,7 @@ def test_five_retries_have_five_deterministic_delays():
     [
         ("llm_grading_timeout_seconds", None),
         ("llm_grading_timeout_seconds", 0),
-        ("llm_grading_timeout_seconds", 601),
+        ("llm_grading_timeout_seconds", 1201),
         ("llm_grading_timeout_seconds", float("inf")),
         ("llm_grading_max_retries", 6),
         ("llm_grading_max_retries", True),

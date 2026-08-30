@@ -610,7 +610,6 @@ def _run_unified_tagging_analysis(
     complete_set = set(complete_ids)
     work_items: list[QuestionAnalysisWorkItem] = []
     tag_only_set: set[int] = set()
-    saved_criterion_ids: set[int] = set()
     for question_id in pending_ids:
         question = loaded_by_id.get(question_id)
         if question is None:
@@ -618,28 +617,25 @@ def _run_unified_tagging_analysis(
         gap = analysis_gaps.get(question_id, {})
         evidence_ready = bool(gap.get("evidence_ready"))
         criteria_ready = bool(gap.get("criteria_ready"))
-        publish_saved = evidence_ready and not criteria_ready
+        # 补齐只重做未就绪的投影。判定点过期、缺失或失败时必须再走模型；
+        # 仅用已存解题证据本地发布会跳过发送，且过期判定点会写失败。
         analyze_tag = (
             question_id not in complete_set
             and question_id not in set(evidence_only_ids)
         )
         analyze_evidence = (
-            not publish_saved
-            and (
-                question_id in evidence_only_set
-                or not evidence_ready
-            )
+            question_id in evidence_only_set
+            or not evidence_ready
+            or not criteria_ready
         )
-        if analyze_tag and not analyze_evidence and not publish_saved:
+        if analyze_tag and not analyze_evidence:
             tag_only_set.add(question_id)
-        if publish_saved:
-            saved_criterion_ids.add(question_id)
         work_items.append(
             QuestionAnalysisWorkItem(
                 question=question,
                 analyze_tag=analyze_tag,
                 analyze_solution_evidence=analyze_evidence,
-                publish_saved_criterion=publish_saved,
+                publish_saved_criterion=False,
             )
         )
 
@@ -1228,8 +1224,9 @@ def _load_analysis_gaps(
     """Read which saved analysis projections can be reused.
 
     The question-bank "补齐" action must also repair an evidence or training
-    point that failed after tags were saved.  The caller can then request only
-    the missing projection instead of sending the same combined request again.
+    point that failed or went stale after tags were saved.  The caller then
+    requests only the missing projection; already-complete questions stay
+    skipped, so one leftover question does not retag the rest of the paper.
     """
 
     ids = [int(value) for value in question_ids]

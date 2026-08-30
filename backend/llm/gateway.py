@@ -20,6 +20,7 @@ from .policy import (
     LLMPolicyError,
     LLMProtocol,
     LLMRequestKind,
+    REQUEST_TIMEOUT_MAX,
     policy_from_profile,
 )
 from .usage import (
@@ -70,9 +71,10 @@ def _resolved_timeout_seconds(
             "timeout_override_seconds must be a finite number"
         )
     parsed = float(timeout_override_seconds)
-    if not math.isfinite(parsed) or not 1.0 <= parsed <= 600.0:
+    if not math.isfinite(parsed) or not 1.0 <= parsed <= REQUEST_TIMEOUT_MAX:
         raise LLMPolicyError(
-            "timeout_override_seconds must be between 1.0 and 600.0"
+            "timeout_override_seconds must be between "
+            f"1.0 and {REQUEST_TIMEOUT_MAX}"
         )
     return parsed
 

@@ -3034,8 +3034,8 @@ def _solution_evidence_schema(
         "answer_anchor": non_empty_text,
         "observable_evidence": non_empty_text,
         "depends_on": {
+            # OpenAI 兼容的 json_schema 不允许 uniqueItems；去重在本机写入时校验。
             "type": "array",
-            "uniqueItems": True,
             "items": machine_identifier,
         },
         "fine_term_links": {

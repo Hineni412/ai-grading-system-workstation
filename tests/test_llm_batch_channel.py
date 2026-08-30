@@ -150,16 +150,22 @@ def test_batch_policy_accepts_overrides_beyond_the_online_cap() -> None:
         )
 
 
-def test_online_policy_timeout_cap_is_unchanged() -> None:
+def test_online_policy_timeout_cap_is_below_batch_cap() -> None:
+    policy = policy_from_profile(
+        LLMRequestKind.GRADING,
+        {"llm_grading_timeout_seconds": 1200},
+    )
+    assert policy.timeout_seconds == 1200.0
+
     with pytest.raises(LLMPolicyError):
         policy_from_profile(
             LLMRequestKind.GRADING,
-            {"llm_grading_timeout_seconds": 601},
+            {"llm_grading_timeout_seconds": 1201},
         )
 
-    policy = policy_from_profile(LLMRequestKind.GRADING, {})
-    assert policy.timeout_seconds == 300.0
-    assert policy.retry_on_timeout is True
+    default = policy_from_profile(LLMRequestKind.GRADING, {})
+    assert default.timeout_seconds == 300.0
+    assert default.retry_on_timeout is True
 
 
 # ---------------------------------------------------------------------------

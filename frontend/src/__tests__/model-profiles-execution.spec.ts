@@ -137,7 +137,7 @@ describe('model profile request speed contract', () => {
     })).toThrow('允许自动重试次数')
   })
 
-  it('normalizes the request timeout within 30–600 and keeps null', () => {
+  it('normalizes the request timeout within 30–1200 and keeps null', () => {
     const base = {
       name: '高并发模型',
       base_url: 'https://example.test/v1',
@@ -154,6 +154,10 @@ describe('model profile request speed contract', () => {
       ...base,
       request_timeout_seconds: 30,
     })).toMatchObject({ request_timeout_seconds: 30 })
+    expect(normalizeModelProfileInput({
+      ...base,
+      request_timeout_seconds: 1200,
+    })).toMatchObject({ request_timeout_seconds: 1200 })
     expect(normalizeModelProfileInput({
       ...base,
       request_timeout_seconds: 600,
@@ -183,7 +187,7 @@ describe('model profile request speed contract', () => {
     })).toThrow('单次请求超时')
     expect(() => normalizeModelProfileInput({
       ...base,
-      request_timeout_seconds: 601,
+      request_timeout_seconds: 1201,
     })).toThrow('单次请求超时')
     expect(() => normalizeModelProfileInput({
       ...base,
