@@ -967,6 +967,51 @@ describe('question bank workspace', () => {
     expect(host.textContent).not.toContain('重试允许的失败项')
   })
 
+  it('surfaces exact duplicate links and near-duplicate hints on import completion', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(QuestionImportJobs)
+    app.use(pinia)
+    app.mount(host)
+    mounted.push(app)
+
+    useJobStore(pinia).track({
+      id: 43,
+      job_type: 'question_import',
+      payload: {},
+      result: {
+        outcome: 'complete',
+        exact_duplicate_count: 2,
+        analysis_reused_count: 1,
+        near_duplicate_hints: [
+          {
+            question_number: '5',
+            matched_question_id: 88,
+            matched_paper_title: '既有试卷',
+            similarity: 0.83,
+            high: false,
+          },
+        ],
+      },
+      status: 'succeeded',
+      progress: 1,
+      stage: 'question_import',
+      detail: '',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-03T10:00:00Z',
+      started_at: '2026-08-03T10:00:01Z',
+      updated_at: '2026-08-03T10:00:02Z',
+      finished_at: '2026-08-03T10:00:02Z',
+    })
+    await nextTick()
+
+    expect(host.textContent).toContain('2 道题与题库已有题目完全相同，已自动关联并复用已有标签')
+    expect(host.textContent).toContain('其中 1 道同时复用了判定点与解题证据')
+    expect(host.textContent).toContain('1 道题与题库已有题目近似（第 5 题），已照常入库')
+  })
+
   it('edits paper metadata from its card and shows the saved values immediately', async () => {
     const host = document.createElement('div')
     document.body.append(host)

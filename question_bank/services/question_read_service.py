@@ -32,6 +32,7 @@ from question_bank.current_knowledge import (
 from question_bank.models.question import (
     ALLOWED_TAG_TYPES,
     CORE_ANALYSIS_TAG_TYPES,
+    duplicate_question_key,
     has_complete_analysis_tags,
 )
 from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, TagAnalysis
@@ -241,20 +242,6 @@ def build_question_filter_query(
 
 def _filter_text(value: object) -> str:
     return str(value or "").strip()
-
-
-def _duplicate_question_key(question: Mapping[str, Any]) -> str:
-    question_text = re.sub(
-        r"\s+",
-        "",
-        str(question.get("question_text") or ""),
-    ).strip()
-    answer_text = re.sub(
-        r"\s+",
-        "",
-        str(question.get("answer_text") or ""),
-    ).strip()
-    return f"{question_text}\n{answer_text}" if question_text else ""
 
 
 def _analysis_from_question(
@@ -1914,7 +1901,7 @@ class QuestionBankReadService:
             ).fetchone()
             if target is None:
                 return None
-            target_key = _duplicate_question_key(dict(target))
+            target_key = duplicate_question_key(dict(target))
             if not target_key:
                 return None
             rows = conn.execute(
@@ -1929,7 +1916,7 @@ class QuestionBankReadService:
                 (int(question_id),),
             ).fetchall()
             for row in rows:
-                if _duplicate_question_key(dict(row)) != target_key:
+                if duplicate_question_key(dict(row)) != target_key:
                     continue
                 tags = [
                     dict(tag)

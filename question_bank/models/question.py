@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -24,6 +25,26 @@ ALLOWED_TAG_TYPES = {
 }
 
 CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope")
+
+
+def duplicate_question_key(question: Mapping[str, object]) -> str:
+    """Canonical identity key for "exactly the same question" detection.
+
+    Whitespace-insensitive question text plus answer text; empty when the
+    question text itself is empty.  Used by import-time duplicate linking and
+    by the tag-analysis reuse lookup, so the two must never drift apart.
+    """
+    question_text = re.sub(
+        r"\s+",
+        "",
+        str(question.get("question_text") or ""),
+    ).strip()
+    answer_text = re.sub(
+        r"\s+",
+        "",
+        str(question.get("answer_text") or ""),
+    ).strip()
+    return f"{question_text}\n{answer_text}" if question_text else ""
 
 
 def has_complete_analysis_tags(question: Mapping[str, object]) -> bool:

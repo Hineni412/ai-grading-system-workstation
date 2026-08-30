@@ -127,6 +127,9 @@ def test_question_import_job_uses_server_request_and_returns_safe_ids(
         "failed_question_ids": [],
         "failure_category": "",
         "retryable": False,
+        "exact_duplicate_count": 0,
+        "analysis_reused_count": 0,
+        "near_duplicate_hints": [],
     }
     assert str(tmp_path) not in json.dumps(result, ensure_ascii=False)
 
