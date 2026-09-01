@@ -105,7 +105,7 @@ async function dismissFollowUp() {
       <dl class="facts">
         <div><dt>状态</dt><dd><StatusBadge tone="neutral" :label="detail.node.status" /></dd></div>
         <div><dt>到期</dt><dd>{{ detail.node.due_date || '未设置' }}</dd></div>
-        <div><dt>上游 / 下游</dt><dd>{{ detail.upstream.length }} / {{ detail.downstream.length }}</dd></div>
+        <div><dt>前置 / 后续</dt><dd>{{ detail.upstream.length }} / {{ detail.downstream.length }}</dd></div>
       </dl>
 
       <AppButton
@@ -154,7 +154,7 @@ async function dismissFollowUp() {
         </label>
         <label>
           <span>记录进展</span>
-          <textarea v-model="progress" rows="3" maxlength="240" placeholder="只记录普通工作信息"></textarea>
+          <textarea v-model="progress" rows="3" maxlength="240" placeholder="记录这一步做了什么"></textarea>
           <AppButton variant="secondary" :disabled="busy || !progress.trim()" @click="run(detail.node, 'record_progress', { progress: progress })">加入轨迹</AppButton>
         </label>
         <section v-if="detail.node.kind === 'collection'" class="collection-summary">
@@ -168,14 +168,14 @@ async function dismissFollowUp() {
 
       <section class="relations" aria-label="工作关系">
         <h3>目标、步骤与依赖</h3>
-        <p><strong>上游：</strong>{{ detail.upstream.map((item) => item.title).join('；') || '无' }}</p>
-        <p><strong>下游：</strong>{{ detail.downstream.map((item) => item.title).join('；') || '无' }}</p>
+        <p><strong>前置：</strong>{{ detail.upstream.map((item) => item.title).join('；') || '无' }}</p>
+        <p><strong>后续：</strong>{{ detail.downstream.map((item) => item.title).join('；') || '无' }}</p>
       </section>
 
       <section class="ai-branches" aria-label="待确认 AI 分支">
         <h3>待确认 AI 分支</h3>
         <article v-for="branch in (detail.pending_ai_branches ?? [])" :key="branch.operation_id">
-          <strong>AI 草案 · 尚未进入正式工作图</strong>
+          <strong>AI 草案 · 待确认</strong>
           <ul><li v-for="node in branch.nodes" :key="`${branch.operation_id}-${node.title}`">{{ node.title }} · {{ node.due_date || '日期待定' }}</li></ul>
         </article>
         <p v-if="!(detail.pending_ai_branches?.length)" class="muted">当前没有待教师确认的 AI 分支。</p>
@@ -196,7 +196,7 @@ async function dismissFollowUp() {
     <div v-else class="inspector__empty">
       <span aria-hidden="true">↗</span>
       <strong>选择一项工作</strong>
-      <p>这里会显示上下游、进展和可执行操作。</p>
+      <p>这里会显示前置与后续、进展和可执行操作。</p>
     </div>
   </aside>
 </template>

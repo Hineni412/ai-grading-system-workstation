@@ -40,6 +40,7 @@ from backend.api.schemas.question_bank import (
     QuestionPaperStateWriteResponse,
     QuestionSolutionEvidenceResponse,
     QuestionImportRequestCreate,
+    QuestionImportJobSubmitRequest,
     QuestionImportRequestResponse,
     QuestionImportUploadResponse,
     QuestionJobRetryRequest,
@@ -984,6 +985,27 @@ QUESTION_IMPORT_SUBMIT_RESPONSES = {
 }
 
 
+def _import_paper_defaults(
+    curriculum_volume_id: str | None,
+) -> dict[str, str] | None:
+    """把可选的教材册别转成导入默认值；文件名已推断的字段仍然优先。"""
+    clean_id = str(curriculum_volume_id or "").strip()
+    if not clean_id:
+        return None
+    volume = curriculum_volume(volume_id=clean_id)
+    if volume is None:
+        raise ApiError(
+            422,
+            "curriculum_volume_invalid",
+            "请选择有效的教材册别后再导入",
+        )
+    return {
+        "grade": str(volume["grade"]),
+        "semester": str(volume["semester"]),
+        "textbook_version": str(volume["textbook_version"]),
+    }
+
+
 @router.post(
     "/import-requests/{request_id}/jobs",
     response_model=JobResponse,
@@ -992,6 +1014,7 @@ QUESTION_IMPORT_SUBMIT_RESPONSES = {
 )
 def submit_question_import_job(
     request_id: str,
+    body: QuestionImportJobSubmitRequest | None = None,
     service: QuestionBankWriteService = Depends(get_question_bank_write_service),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
@@ -1003,10 +1026,16 @@ def submit_question_import_job(
             "question_import_request_not_found",
             "Question import request not found",
         ) from exc
+    payload: dict[str, Any] = {"request_id": resource.request_id}
+    paper_defaults = _import_paper_defaults(
+        None if body is None else body.curriculum_volume_id
+    )
+    if paper_defaults is not None:
+        payload["paper_defaults"] = paper_defaults
     return _submit_question_bank_job(
         manager,
         "question_import",
-        {"request_id": resource.request_id},
+        payload,
     )
 
 
@@ -1046,10 +1075,18 @@ def retry_question_import_job(
             "question_import_request_not_found",
             "Question import request not found",
         ) from exc
+    payload: dict[str, Any] = {
+        "request_id": resource.request_id,
+        "retry_of_job_id": source.id,
+    }
+    # 首次提交时选择的教材册别要在重试中保留，否则补齐的元数据会丢失。
+    paper_defaults = source.payload.get("paper_defaults")
+    if isinstance(paper_defaults, dict):
+        payload["paper_defaults"] = dict(paper_defaults)
     return _submit_question_bank_job(
         manager,
         "question_import",
-        {"request_id": resource.request_id, "retry_of_job_id": source.id},
+        payload,
     )
 
 

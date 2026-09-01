@@ -10,7 +10,7 @@ import QuestionInspector from '../components/question-bank/QuestionInspector.vue
 import QuestionImportJobs from '../components/question-bank/QuestionImportJobs.vue'
 import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
-import { useCurriculumScopeStore } from '../stores/curriculum-scope'
+import { useCurriculumScopeStore, CURRICULUM_SCOPE_STORAGE_KEY } from '../stores/curriculum-scope'
 import { createAppRouter } from '../router'
 
 const revision = 'a'.repeat(64)
@@ -1075,6 +1075,87 @@ describe('question bank workspace', () => {
     expect(host.textContent).toContain('1 道题与题库已有题目近似（第 5 题），已照常入库')
   })
 
+  it('lets the teacher pick a curriculum volume for import and submits it with the job', async () => {
+    localStorage.setItem(CURRICULUM_SCOPE_STORAGE_KEY, 'volume-3')
+    const uploadId = 'a'.repeat(32)
+    const requestId = 'b'.repeat(32)
+    const submittedBodies: unknown[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') {
+        return response(importVolumeCatalog())
+      }
+      if (url.startsWith('/api/question-bank/import-uploads?')) {
+        return response({
+          upload_id: uploadId,
+          filename: '八年级（上）期末数学试卷.docx',
+          suffix: '.docx',
+          size: 4,
+          sha256: '1'.repeat(64),
+        }, 201)
+      }
+      if (url === '/api/question-bank/import-requests') {
+        return response({
+          request_id: requestId,
+          upload_id: uploadId,
+          filename: '八年级（上）期末数学试卷.docx',
+          size: 4,
+          sha256: '1'.repeat(64),
+          status: 'pending',
+        }, 201)
+      }
+      if (url === `/api/question-bank/import-requests/${requestId}/jobs`) {
+        submittedBodies.push(JSON.parse(String(init?.body)))
+        return response({
+          id: 44,
+          job_type: 'question_import',
+          payload: { request_id: requestId },
+          result: {},
+          status: 'queued',
+          progress: 0,
+          stage: '',
+          detail: '',
+          error: null,
+          cancel_requested: false,
+          created_at: '2026-08-03T10:00:00Z',
+          started_at: null,
+          updated_at: '2026-08-03T10:00:00Z',
+          finished_at: null,
+        }, 202)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(QuestionImportJobs)
+    app.use(pinia)
+    app.mount(host)
+    mounted.push(app)
+
+    const picker = await vi.waitFor(() => {
+      const select = host.querySelector<HTMLSelectElement>('.qb-volume-picker select')
+      expect(select).toBeTruthy()
+      return select!
+    })
+    // 记住的教学册别会作为默认选择，避免每次导入重新挑选。
+    expect(picker.value).toBe('volume-3')
+    expect(picker.textContent).toContain('八年级上册')
+
+    const input = host.querySelector<HTMLInputElement>('.qb-file-picker input')!
+    const file = new File(
+      ['test'],
+      '八年级（上）期末数学试卷.docx',
+      { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+    )
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    input.dispatchEvent(new Event('change'))
+
+    await vi.waitFor(() => expect(submittedBodies).toHaveLength(1))
+    expect(submittedBodies[0]).toEqual({ curriculum_volume_id: 'volume-3' })
+  })
+
   it('edits paper metadata from its card and shows the saved values immediately', async () => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -1936,4 +2017,53 @@ function response(body: unknown, status = 200): Promise<Response> {
     status,
     headers: { 'content-type': 'application/json' },
   }))
+}
+
+function importVolumeCatalog() {
+  const volumes = [
+    ['volume-1', '七年级', '上学期'],
+    ['volume-2', '七年级', '下学期'],
+    ['volume-3', '八年级', '上学期'],
+    ['volume-4', '八年级', '下学期'],
+    ['volume-5', '九年级', '上学期'],
+  ] as const
+  return {
+    schema_version: 2,
+    catalog_id: 'bnu-math-2024',
+    knowledge_standard_id: 'bnu-math-2024-curriculum-knowledge-v2',
+    publisher: '北京师范大学出版社',
+    subject: '初中数学',
+    edition: '2024',
+    statistics: {
+      raw_nodes: 5,
+      excluded_nodes: 0,
+      retained_nodes: 5,
+      chapters: 5,
+      sections: 0,
+      knowledge_points: 0,
+    },
+    volumes: volumes.map(([id, grade, semester], index) => ({
+      id,
+      order: index + 1,
+      label: `${grade}${semester === '上学期' ? '上册' : '下册'}`,
+      grade,
+      semester,
+      textbook_version: '北师大版（2024）',
+      source: { provider: '组卷网' },
+      statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 },
+      chapters: [{
+        id: `${id}-c01`,
+        knowledge_id: `${id}-c01`,
+        order: 1,
+        number: '第一章',
+        title: '测试章节',
+        label: '第一章 测试章节',
+        kind: 'chapter',
+        display_name: `${grade}｜第一章 测试章节`,
+        source_ref: { node_id: `node-${index + 1}`, relative_url: `/czsx/zj${index + 1}` },
+        exam_scope_values: [`${grade} 测试范围`],
+        sections: [],
+      }],
+    })),
+  }
 }

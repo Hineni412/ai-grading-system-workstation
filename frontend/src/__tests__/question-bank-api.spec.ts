@@ -77,6 +77,7 @@ describe('question bank API contracts', () => {
           kind: 'paragraph',
           segments: [],
           rows: [],
+          html: '',
           text: '题干公式块',
           asset_indexes: [0],
           asset_urls: ['/api/question-bank/questions/17/assets/0'],
@@ -85,6 +86,7 @@ describe('question bank API contracts', () => {
           kind: 'paragraph',
           segments: [],
           rows: [],
+          html: '',
           text: '答案公式块',
           asset_indexes: [],
           asset_urls: [],
@@ -459,6 +461,43 @@ describe('question bank API contracts', () => {
     expect(String(fetchSpy.mock.calls[2]?.[0])).toBe(
       `/api/question-bank/import-requests/${requestId}/jobs`,
     )
+  })
+
+  it('submits import jobs with an optional curriculum volume', async () => {
+    const { questionBankApi } = await import('../api/question-bank')
+    const requestId = 'f'.repeat(32)
+    const job = {
+      id: 32,
+      job_type: 'question_import',
+      payload: { request_id: requestId },
+      result: {},
+      status: 'queued',
+      progress: 0,
+      stage: '',
+      detail: '',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-07-18T10:00:00Z',
+      started_at: null,
+      updated_at: '2026-07-18T10:00:00Z',
+      finished_at: null,
+    }
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(
+      new Response(
+        JSON.stringify(job),
+        { status: 202, headers: { 'content-type': 'application/json' } },
+      ),
+    ))
+
+    await expect(
+      questionBankApi.submitImportJob(requestId, 'bnu24-math-g8-upper'),
+    ).resolves.toEqual(job)
+    expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toEqual({
+      curriculum_volume_id: 'bnu24-math-g8-upper',
+    })
+
+    await expect(questionBankApi.submitImportJob(requestId)).resolves.toEqual(job)
+    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual({})
   })
 
   it('rejects unsupported, empty and oversized import files before any request', async () => {

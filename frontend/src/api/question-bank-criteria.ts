@@ -163,7 +163,7 @@ function decodeDraft(value: unknown): TrainingCriterionDraft {
     || typeof value.rationale !== 'string'
     || typeof value.confidence !== 'number'
     || !['combined_model', 'confirmed_rubric_adapter'].includes(String(value.source_kind))
-    || (value.solution_evidence !== undefined && !isRecord(value.solution_evidence))
+    || (value.solution_evidence != null && !isRecord(value.solution_evidence))
   ) throw new Error('Invalid training criterion draft')
   return {
     schema_version: value.schema_version as CriterionSchemaVersion,

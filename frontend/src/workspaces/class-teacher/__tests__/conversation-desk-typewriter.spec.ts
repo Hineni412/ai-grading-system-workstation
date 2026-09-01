@@ -84,11 +84,11 @@ function failedConversation(taskState: string): IntakeConversation {
 }
 
 describe('ConversationDesk 失败轮重试', () => {
-  it('offers 重新整理本轮 on invalid_result and resends the original text on click', async () => {
+  it('offers 重新整理 on invalid_result and resends the original text on click', async () => {
     const failed = failedConversation('invalid_result')
     const host = await mountDesk(failed)
     expect(host.textContent).toContain('返回内容未通过校验')
-    const button = [...host.querySelectorAll('button')].find((item) => item.textContent?.includes('重新整理本轮'))
+    const button = [...host.querySelectorAll('button')].find((item) => item.textContent?.includes('重新整理'))
     expect(button).toBeTruthy()
 
     const retried: IntakeConversation = {
@@ -114,7 +114,7 @@ describe('ConversationDesk 失败轮重试', () => {
       '合成教师原文',
     )
     expect(host.querySelector('.assistant[data-state="response_persisted"]')).not.toBeNull()
-    expect([...host.querySelectorAll('button')].some((item) => item.textContent?.includes('重新整理本轮'))).toBe(false)
+    expect([...host.querySelectorAll('button')].some((item) => item.textContent?.includes('重新整理'))).toBe(false)
   })
 
   it('explains truncation distinctly and still offers the retry button', async () => {
@@ -122,7 +122,7 @@ describe('ConversationDesk 失败轮重试', () => {
 
     expect(host.textContent).toContain('模型输出达到长度上限被截断')
     expect(host.textContent).not.toContain('返回内容未通过校验')
-    expect([...host.querySelectorAll('button')].some((item) => item.textContent?.includes('重新整理本轮'))).toBe(true)
+    expect([...host.querySelectorAll('button')].some((item) => item.textContent?.includes('重新整理'))).toBe(true)
   })
 })
 

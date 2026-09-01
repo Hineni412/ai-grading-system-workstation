@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import {
   questionBankApi,
   questionJobFailures,
   questionJobFailuresCsv,
   questionJobRetryIds,
+  type CurriculumVolume,
 } from '../../api/question-bank'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
+import { CURRICULUM_SCOPE_STORAGE_KEY } from '../../stores/curriculum-scope'
 import { useJobStore } from '../../stores/jobs'
 import { useQuestionBankStore } from '../../stores/question-bank'
 
@@ -34,6 +36,25 @@ const jobStore = useJobStore()
 const busy = ref(false)
 const feedback = ref('')
 const queuedFiles = ref<Array<{ name: string; state: string }>>([])
+
+// 导入时可指定教材册别，用来补齐文件名推断不出的年级/学期/教材版本。
+const volumeOptions = ref<CurriculumVolume[]>([])
+const importVolumeId = ref('')
+
+onMounted(async () => {
+  try {
+    const catalog = await questionBankApi.getCurriculum(undefined, false)
+    volumeOptions.value = catalog.volumes
+    const remembered = globalThis.localStorage
+      ?.getItem(CURRICULUM_SCOPE_STORAGE_KEY)
+      ?.trim()
+    if (remembered && catalog.volumes.some((volume) => volume.id === remembered)) {
+      importVolumeId.value = remembered
+    }
+  } catch {
+    volumeOptions.value = []
+  }
+})
 
 const jobs = computed(() => Object.values(jobStore.jobs)
   .filter((job) => job.job_type === 'question_import' || job.job_type === 'tagging_sync')
@@ -126,7 +147,10 @@ async function chooseFiles(event: Event): Promise<void> {
       row.state = '正在核对导入请求'
       const request = await questionBankApi.createImportRequest(upload.upload_id)
       row.state = '已提交任务'
-      jobStore.track(await questionBankApi.submitImportJob(request.request_id))
+      jobStore.track(await questionBankApi.submitImportJob(
+        request.request_id,
+        importVolumeId.value || undefined,
+      ))
     } catch {
       row.state = '提交失败'
     }
@@ -233,6 +257,17 @@ function downloadFailures(job: JobResponse): void {
         </button>
       </div>
     </header>
+
+    <label v-if="volumeOptions.length" class="qb-volume-picker">
+      <span>教材册别</span>
+      <select v-model="importVolumeId" :disabled="busy" aria-label="选择导入试卷的教材册别">
+        <option value="">不指定（仅按文件名推断）</option>
+        <option v-for="volume in volumeOptions" :key="volume.id" :value="volume.id">
+          {{ volume.label }}
+        </option>
+      </select>
+      <small>用于补齐试卷的年级、学期与教材版本</small>
+    </label>
 
     <div class="qb-jobs__actions">
       <label class="qb-file-picker">

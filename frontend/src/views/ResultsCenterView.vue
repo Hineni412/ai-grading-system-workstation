@@ -9,6 +9,7 @@ import type {
   ResultsScoreStatus,
   ResultsStudentStatus,
 } from '../api/results-center'
+import ClassAnalysisPanel from '../components/results-center/ClassAnalysisPanel.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import { Input } from '../components/ui/input'
 import { useResultsCenterStore } from '../stores/results-center'
@@ -16,7 +17,7 @@ import { useSessionStore } from '../stores/session'
 import { translateGradingReason } from '../utils/grading-reasons'
 import FileCenterView from './FileCenterView.vue'
 
-type ResultsTab = 'overview' | 'details' | 'exports'
+type ResultsTab = 'overview' | 'details' | 'analysis' | 'exports'
 type DetailFilter = 'all' | ResultsStudentStatus
 type MatrixSortKey = 'student' | 'total' | 'question'
 type SortDirection = 'ascending' | 'descending'
@@ -43,6 +44,7 @@ let drawerTrigger: HTMLElement | null = null
 const tabs: Array<{ id: ResultsTab; label: string }> = [
   { id: 'overview', label: '成绩总览' },
   { id: 'details', label: '成绩明细' },
+  { id: 'analysis', label: '班级分析' },
   { id: 'exports', label: '导出文件' },
 ]
 
@@ -66,7 +68,9 @@ function positiveIntegerQuery(value: unknown): number | null {
 
 const activeTab = computed<ResultsTab>(() => {
   const candidate = stringQuery(route.query.tab)
-  return candidate === 'details' || candidate === 'exports' ? candidate : 'overview'
+  return candidate === 'details' || candidate === 'analysis' || candidate === 'exports'
+    ? candidate
+    : 'overview'
 })
 
 const activeFilter = computed<DetailFilter>(() => {
@@ -511,7 +515,10 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
         <h1 id="results-center-title" tabindex="-1">成绩中心</h1>
         <p>集中查看班级成绩、定位需要处理的题目，并导出正式文件。</p>
       </div>
-      <div v-if="activeTab !== 'exports'" class="results-center__hero-actions">
+      <div
+        v-if="activeTab === 'overview' || activeTab === 'details'"
+        class="results-center__hero-actions"
+      >
         <span v-if="resultsStore.updatedAt">
           已更新 {{ resultsStore.updatedAt.replace('T', ' ').slice(0, 19) }}
         </span>
@@ -535,6 +542,11 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
     </nav>
 
     <FileCenterView v-if="activeTab === 'exports'" embedded />
+
+    <ClassAnalysisPanel
+      v-else-if="activeTab === 'analysis'"
+      :session-id="sessionStore.selectedSessionId"
+    />
 
     <template v-else>
       <div v-if="sessionStore.selectedSessionId === null" class="results-state-panel">

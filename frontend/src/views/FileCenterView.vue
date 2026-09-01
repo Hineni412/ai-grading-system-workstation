@@ -2,12 +2,14 @@
 import { computed, ref, watch } from 'vue'
 
 import type {
+  AnalysisPreflight,
   ReportFileStatus,
   ReportHistoryJob,
   ReportType,
   ScoreExcelOptions,
   TrainingExportRequest,
 } from '../api/exports'
+import { exportsApi } from '../api/exports'
 import {
   TERMINAL_JOB_STATUSES,
   type JobResponse,
@@ -42,7 +44,16 @@ const trainingMode = ref<'bundle' | 'variant'>('bundle')
 const trainingVariantId = ref('')
 const trainingFormat = ref<'docx' | 'markdown'>('docx')
 const trainingAudience = ref<'student' | 'teacher'>('student')
+const analysisConfirmOpen = ref(false)
+const analysisPreflight = ref<AnalysisPreflight | null>(null)
+const analysisPreflightLoading = ref(false)
+const analysisPreflightType = ref<ReportType | null>(null)
+const analysisForceRegenerate = ref(false)
 type ReportDisplayStatus = ReportFileStatus | 'stale'
+
+const ANALYSIS_REPORT_TYPES = new Set<ReportType>([
+  'personal_analysis_html',
+])
 
 const eligibleExcelStudents = computed(() => (
   resultsStore.results?.students ?? []
@@ -117,6 +128,12 @@ const reportDefinitions: Array<{
     title: '批注原卷',
     description: '保留原始试卷版面和批改标记的 PDF 文件。',
   },
+  {
+    type: 'personal_analysis_html',
+    eyebrow: 'AI 分析',
+    title: '学生个人分析报告',
+    description: '每名学生一份自包含 HTML 分析报告，打包为 ZIP，含 AI 生成的个性化叙述。',
+  },
 ]
 
 const liveJobs = computed(() => Object.values(jobStore.jobs)
@@ -139,6 +156,7 @@ watch(
     actionMessage.value = ''
     actionError.value = ''
     excelSettingsOpen.value = false
+    analysisConfirmOpen.value = false
     manualHiddenStudentIds.value = []
     manualStudentSearch.value = ''
     refreshedTerminalReportIds.clear()
@@ -185,6 +203,7 @@ function reportFilename(job: ReportHistoryJob): string {
 function reportTypeLabel(value: unknown): string {
   if (value === 'score_excel') return '成绩表'
   if (value === 'annotated_original_pdf') return '批注原卷'
+  if (value === 'personal_analysis_html') return '学生个人分析报告'
   return '报表文件'
 }
 
@@ -237,6 +256,10 @@ async function generateReport(type: ReportType, forceRegenerate = false): Promis
     openExcelSettings(forceRegenerate)
     return
   }
+  if (ANALYSIS_REPORT_TYPES.has(type)) {
+    await openAnalysisConfirm(type, forceRegenerate)
+    return
+  }
   const sessionId = sessionStore.selectedSessionId
   if (sessionId === null) return
   actionError.value = ''
@@ -263,6 +286,69 @@ function openExcelSettings(forceRegenerate = false): void {
   excelForceRegenerate.value = forceRegenerate
   excelSettingsOpen.value = true
   actionError.value = ''
+}
+
+async function openAnalysisConfirm(
+  type: ReportType,
+  forceRegenerate: boolean,
+): Promise<void> {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId === null) return
+  analysisPreflightType.value = type
+  analysisForceRegenerate.value = forceRegenerate
+  analysisPreflight.value = null
+  analysisPreflightLoading.value = true
+  analysisConfirmOpen.value = true
+  actionError.value = ''
+  try {
+    const preflight = await exportsApi.getAnalysisPreflight(sessionId, type)
+    if (sessionStore.selectedSessionId !== sessionId) return
+    analysisPreflight.value = preflight
+  } catch {
+    if (sessionStore.selectedSessionId !== sessionId) return
+    analysisConfirmOpen.value = false
+    actionError.value = '分析报告生成条件暂时无法读取，请稍后重试。'
+  } finally {
+    if (sessionStore.selectedSessionId === sessionId) {
+      analysisPreflightLoading.value = false
+    }
+  }
+}
+
+function closeAnalysisConfirm(): void {
+  analysisConfirmOpen.value = false
+  analysisPreflight.value = null
+  analysisPreflightType.value = null
+}
+
+async function confirmAnalysis(): Promise<void> {
+  const sessionId = sessionStore.selectedSessionId
+  const type = analysisPreflightType.value
+  if (sessionId === null || type === null) return
+  if (analysisPreflightLoading.value || analysisPreflight.value?.configured !== true) return
+  actionError.value = ''
+  actionMessage.value = ''
+  try {
+    const job = await fileCenter.submitReport(
+      sessionId,
+      type,
+      analysisForceRegenerate.value,
+    )
+    if (sessionStore.selectedSessionId !== sessionId) return
+    await fileCenter.load(sessionId)
+    if (sessionStore.selectedSessionId !== sessionId) return
+    closeAnalysisConfirm()
+    actionMessage.value = job.status === 'succeeded'
+      ? '已有可下载文件。'
+      : `${reportTypeLabel(type)}已加入生成队列。`
+  } catch {
+    if (sessionStore.selectedSessionId !== sessionId) return
+    actionError.value = '分析报告生成请求未能提交，请稍后重试。'
+  }
+}
+
+function formatTokenCount(value: number): string {
+  return value.toLocaleString('zh-CN')
 }
 
 function closeExcelSettings(): void {
@@ -684,6 +770,122 @@ function isTrainingDownloadable(job: JobResponse): boolean {
                   :disabled="fileCenter.submittingKey === 'report:score_excel'"
                 >
                   生成成绩表
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <div
+          v-if="analysisConfirmOpen"
+          class="excel-settings-backdrop"
+          data-testid="analysis-confirm-backdrop"
+          @click.self="closeAnalysisConfirm"
+        >
+          <form
+            class="excel-settings-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="analysis-confirm-title"
+            data-testid="analysis-confirm-dialog"
+            @submit.prevent="confirmAnalysis"
+          >
+            <div class="excel-settings-dialog__heading">
+              <div>
+                <p class="file-center__eyebrow">AI 内容生成确认</p>
+                <h3 id="analysis-confirm-title">
+                  {{ analysisPreflightType ? reportTypeLabel(analysisPreflightType) : '分析报告' }}
+                </h3>
+              </div>
+              <button
+                type="button"
+                class="file-link-button"
+                @click="closeAnalysisConfirm"
+              >
+                关闭
+              </button>
+            </div>
+
+            <p
+              v-if="analysisPreflightLoading"
+              class="excel-settings-dialog__explanation"
+              role="status"
+            >
+              正在读取生成条件…
+            </p>
+
+            <template v-else-if="analysisPreflight">
+              <p
+                v-if="!analysisPreflight.configured"
+                class="file-center__warning"
+                role="alert"
+                data-testid="analysis-not-configured"
+              >
+                未配置内容生成模型，请前往 设置→模型配置 绑定后重试。
+              </p>
+
+              <div class="excel-settings-preview" aria-label="生成条件概览">
+                <div>
+                  <span>目标服务</span>
+                  <strong data-testid="analysis-service">
+                    {{ analysisPreflight.service_name ?? '未配置' }}
+                  </strong>
+                </div>
+                <div>
+                  <span>模型</span>
+                  <strong data-testid="analysis-model">
+                    {{ analysisPreflight.model_name ?? '未配置' }}
+                  </strong>
+                </div>
+                <div>
+                  <span>模型调用次数</span>
+                  <strong data-testid="analysis-call-count">
+                    {{ analysisPreflight.call_count }} 次
+                  </strong>
+                </div>
+                <div>
+                  <span>预计 token 量（粗略估算）</span>
+                  <strong data-testid="analysis-tokens">
+                    {{ formatTokenCount(analysisPreflight.estimated_total_tokens) }}
+                  </strong>
+                </div>
+              </div>
+
+              <p
+                v-if="analysisPreflight.cache_hits > 0"
+                class="excel-settings-dialog__explanation"
+                data-testid="analysis-cache-hits"
+              >
+                其中 {{ analysisPreflight.cache_hits }} 份复用已生成内容，不重复计费。
+              </p>
+
+              <p class="excel-settings-dialog__explanation">
+                实际费用取决于服务商定价。AI 分析内容仅供参考，建议抽查后再使用。
+              </p>
+            </template>
+
+            <div class="excel-settings-dialog__actions">
+              <span>确认后才会发起模型调用并产生费用。</span>
+              <div>
+                <button
+                  type="button"
+                  class="file-button file-button--secondary"
+                  @click="closeAnalysisConfirm"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  class="file-button file-button--primary"
+                  data-testid="confirm-analysis"
+                  :disabled="
+                    analysisPreflightLoading
+                    || analysisPreflight?.configured !== true
+                    || (analysisPreflightType !== null
+                      && fileCenter.submittingKey === `report:${analysisPreflightType}`)
+                  "
+                >
+                  确认生成
                 </button>
               </div>
             </div>

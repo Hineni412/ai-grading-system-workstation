@@ -197,8 +197,8 @@ describe('B-UI-R7 handoff workspaces', () => {
   })
 
   it.each([
-    ['plan_calendar', '计划／日历草稿', '确认加入计划／日历', '日期可修改'],
-    ['sop', 'SOP 处理草稿', '确认建立 SOP', '先确认即时安全'],
+    ['plan_calendar', '计划／日历草稿', '确认加入计划／日历', '日期和前置由你逐项确认'],
+    ['sop', '处理流程草稿', '确认建立处理流程', '先确认即时安全'],
   ] as const)('renders the %s decision style without adopting on open', async (mode, heading, action, guidance) => {
     const value = draft({
       handling_mode: mode,
@@ -308,14 +308,14 @@ describe('B-UI-R7 handoff workspaces', () => {
 
     expect(host.textContent).toContain('拟写入学生档案')
     expect(host.textContent).toContain('同步更新 合成学生甲 的档案')
-    expect(host.textContent).toContain('确认建立 SOP 并更新 2 份档案')
+    expect(host.textContent).toContain('确认建立处理流程并更新 2 份档案')
     const toggles = host.querySelectorAll<HTMLInputElement>('.include-update input[type="checkbox"]')
     expect(toggles).toHaveLength(2)
     toggles[1]!.click()
     await nextTick()
-    expect(host.textContent).toContain('确认建立 SOP 并更新 1 份档案')
+    expect(host.textContent).toContain('确认建立处理流程并更新 1 份档案')
 
-    button(host, '确认建立 SOP 并更新 1 份档案').click()
+    button(host, '确认建立处理流程并更新 1 份档案').click()
     await settle()
     await settle()
 
@@ -433,7 +433,7 @@ describe('B-UI-R7 handoff workspaces', () => {
     const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({})
     const host = await mountHandoff(initial)
 
-    button(host, '确认建立 SOP').click()
+    button(host, '确认建立处理流程').click()
     await settle()
     expect(host.textContent).toContain('请先选择与实际情况相符')
     expect(update).not.toHaveBeenCalled()
@@ -444,7 +444,7 @@ describe('B-UI-R7 handoff workspaces', () => {
     template.value = 'baseline.student_injury'
     template.dispatchEvent(new Event('change', { bubbles: true }))
     await nextTick()
-    button(host, '确认建立 SOP').click()
+    button(host, '确认建立处理流程').click()
     await settle()
     await settle()
 
@@ -460,8 +460,8 @@ describe('B-UI-R7 handoff workspaces', () => {
       content: { summary: '两名合成参与人发生冲突', participant_refs: ['synthetic-a'] },
     }))
     expect(host.textContent).toContain('先确认即时安全')
-    expect(host.textContent).toContain('不先作欺凌认定')
-    expect(host.textContent).toContain('惩戒、认定和结案仍需教师')
+    expect(host.textContent).toContain('先确保现场安全')
+    expect(host.textContent).toContain('关键决定仍由教师作出')
   })
 
   it('creates a separate AI revision task without adopting the draft', async () => {

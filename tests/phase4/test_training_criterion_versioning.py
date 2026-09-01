@@ -258,6 +258,55 @@ def test_missing_actual_image_does_not_block_teacher_approval(tmp_path: Path) ->
     assert current["status"] == "approved"
 
 
+def test_duplicate_obligation_is_advisory_and_does_not_block_approval(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed(database)
+    module = TrainingCriterionModule(database)
+    question = _question(1)
+    duplicated = {
+        "target": "推导得到∠BAE=∠CAF",
+        "observable_evidence": "作答中写出∠BAE=∠CAF的推导过程",
+        "equivalent_rules": [],
+        "counterexamples": [],
+    }
+    proposed = module.propose(
+        question=question,
+        draft=_draft(
+            question,
+            points=[
+                {"point_id": "p-part2", **duplicated},
+                {"point_id": "p-part3", **duplicated},
+            ],
+        ),
+        source_kind="backfill",
+        source_reference="analysis:synthetic:dup",
+        actor_ref="synthetic-job",
+        reason="合成回填",
+    )
+    version = proposed["current_version"]
+    assert isinstance(version, dict)
+    assert "duplicate_obligation" in version["quality_codes"]
+    assert version["quality_status"] == "passed"
+    assert proposed["available"] is True
+
+    approved = module.review(
+        CriterionReviewCommand(
+            question_id=1,
+            version_id=version["version_id"],
+            expected_revision=proposed["revision"],
+            action="approve",
+            actor_ref="local_teacher",
+            reason="不同小问合理重复同一步骤",
+        ),
+        question=question,
+    )
+    current = approved["current_version"]
+    assert isinstance(current, dict)
+    assert current["status"] == "approved"
+
+
 def test_quality_passed_proposed_version_is_usable_without_approval(
     tmp_path: Path,
 ) -> None:

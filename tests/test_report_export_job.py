@@ -141,6 +141,60 @@ def test_report_export_handler_passes_frozen_excel_options_to_generator(
     }
 
 
+def test_report_export_handler_publishes_analysis_report(tmp_path) -> None:
+    from backend.jobs.default_handlers import register_default_job_handlers
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+
+    class FakeAnalysisExporter:
+        def __init__(
+            self,
+            db,
+            output_dir: Path,
+            *,
+            llm_client_factory=None,
+            narrative_cache_dir=None,
+            data_root=None,
+        ) -> None:
+            self.output_dir = output_dir
+            self.narrative_cache_dir = narrative_cache_dir
+
+        def export_session(
+            self, session_id: int, report_type: str, *, score_revision: str = ""
+        ) -> Path:
+            suffix = ".zip" if report_type == "personal_analysis_html" else ".html"
+            output_path = self.output_dir / f"单元测试_分析报告{suffix}"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"fake analysis report")
+            return output_path
+
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    register_default_job_handlers(
+        manager,
+        db_path=tmp_path / "grading.db",
+        reports_dir=tmp_path / "reports",
+        analysis_report_exporter_factory=FakeAnalysisExporter,
+        analysis_llm_client_factory=lambda: None,
+    )
+
+    job = manager.submit(
+        "report_export",
+        {
+            "session_id": 42,
+            "report_type": "personal_analysis_html",
+            "score_revision": "revision-9",
+        },
+    )
+    manager.wait(job.id, timeout=5)
+
+    loaded = manager.get(job.id)
+    assert loaded.status == "succeeded"
+    assert loaded.result["report_type"] == "personal_analysis_html"
+    assert loaded.result["score_revision"] == "revision-9"
+    assert loaded.result["filename"] == f"单元测试_分析报告_job-{job.id}.zip"
+    assert Path(loaded.result["file_path"]).is_file()
+
+
 def test_report_export_handler_rejects_unknown_report_type(tmp_path) -> None:
     from backend.jobs.default_handlers import register_default_job_handlers
     from backend.jobs.manager import JobManager

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -39,19 +39,63 @@ class ScoreExcelOptions(BaseModel):
 class ReportExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    report_type: Literal["score_excel", "annotated_original_pdf"] = "score_excel"
+    report_type: Literal[
+        "score_excel",
+        "annotated_original_pdf",
+        "personal_analysis_html",
+    ] = "score_excel"
     force_regenerate: bool = False
     excel_options: ScoreExcelOptions | None = None
 
     @model_validator(mode="after")
     def _validate_report_options(self) -> "ReportExportRequest":
-        if self.report_type == "annotated_original_pdf":
+        if self.report_type != "score_excel":
             if self.excel_options is not None:
                 raise ValueError("excel options are only valid for score_excel")
             return self
         if self.excel_options is None:
             self.excel_options = ScoreExcelOptions()
         return self
+
+
+class AnalysisPreflightResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    report_type: Literal["personal_analysis_html"]
+    configured: bool
+    service_name: str | None
+    model_name: str | None
+    call_count: int = Field(ge=0)
+    estimated_total_tokens: int = Field(ge=0)
+    cache_hits: int = Field(ge=0)
+
+
+class ClassAnalysisResponse(BaseModel):
+    """成绩中心「班级分析」内嵌页的读取契约（字段名与前端冻结，不得改名）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["no_data", "ready", "generating"]
+    auto_generate: bool
+    small_sample: bool
+    data: dict[str, Any] | None
+    narrative: dict[str, Any] | None
+    narrative_failed: bool
+    generated_at: str | None
+    stale: bool
+    active_job_id: int | None
+
+
+class ClassAnalysisSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    auto_generate: bool
+
+
+class ClassAnalysisSettingsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    auto_generate: bool
 
 
 class ReportExportHistoryItem(JobResponse):

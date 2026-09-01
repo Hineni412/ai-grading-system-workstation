@@ -207,7 +207,7 @@ onMounted(() => { void load() })
         </div>
         <div class="sop-workspace__actions">
           <AppButton variant="secondary" :loading="syncBusy" loading-label="AI 正在更新" :disabled="affair.state !== 'active'" @click="requestAiUpdate">让 AI 更新后续步骤</AppButton>
-          <AppButton v-if="affair.state === 'active'" variant="danger" @click="discardOpen = !discardOpen">弃用此 SOP</AppButton>
+          <AppButton v-if="affair.state === 'active'" variant="danger" @click="discardOpen = !discardOpen">弃用此处理流程</AppButton>
           <AppButton v-if="affair.state !== 'active'" variant="ghost" class="sop-workspace__delete" :disabled="deleteBusy" @click="deleteOpen = !deleteOpen">彻底删除</AppButton>
           <AppButton variant="secondary" @click="emit('back')">返回对话</AppButton>
         </div>
@@ -224,7 +224,7 @@ onMounted(() => { void load() })
       <FeedbackBanner
         v-if="affair.state === 'discarded'"
         tone="error"
-        title="此 SOP 已弃用"
+        title="此处理流程已弃用"
         :description="affair.discard_reason ? `弃用原因：${affair.discard_reason}` : '弃用不可恢复；如仍需要请回到对话重新生成。'"
       />
       <FeedbackBanner

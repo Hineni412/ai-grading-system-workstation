@@ -7,6 +7,7 @@ import {
   type TrainingCriterionVersion,
   type TrainingCriterionWorkspace,
 } from '../api/question-bank-criteria'
+import { ApiError } from '../api/errors'
 import { questionBankApi } from '../api/question-bank'
 import TrainingCriterionReview from '../components/question-bank/TrainingCriterionReview.vue'
 
@@ -141,7 +142,27 @@ describe('training criterion review', () => {
       .toBe('建立方程')
   })
 
-  it('shows why approval is blocked and saves edits as a new version', async () => {
+  it('accepts teacher manual versions whose criteria carry a null solution_evidence', () => {
+    const manual = {
+      ...version,
+      source_kind: 'teacher_manual',
+      criteria: {
+        ...version.criteria,
+        solution_evidence: null,
+      },
+    }
+    const payload = {
+      ...workspace(),
+      current_version: manual,
+      versions: [manual],
+    }
+
+    const decoded = decodeTrainingCriterionWorkspace(payload)
+    expect(decoded.current_version?.source_kind).toBe('teacher_manual')
+    expect(decoded.current_version?.criteria.solution_evidence).toBeUndefined()
+  })
+
+  it('saves edits and confirms them in one step', async () => {
     const blocked = {
       ...version,
       quality_status: 'failed' as const,
@@ -156,6 +177,9 @@ describe('training criterion review', () => {
     const save = vi.spyOn(questionBankCriteriaApi, 'saveDraft').mockResolvedValue(
       workspace(version),
     )
+    const confirm = vi.spyOn(questionBankCriteriaApi, 'review').mockResolvedValue(
+      workspace({ ...version, status: 'approved' as const }),
+    )
     const host = await mountReview()
 
     expect(host.querySelector('#criterion-review-title')?.textContent).toBe('判定点')
@@ -163,9 +187,10 @@ describe('training criterion review', () => {
     expect(host.textContent).toContain('判定点之间的依赖关系不完整')
     expect(host.textContent).not.toContain('TRAINING EVIDENCE')
     expect(host.textContent).not.toContain('解题证据')
-    const approve = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('批准用于以后训练'))
-    expect(approve?.disabled).toBe(true)
+    expect(
+      [...host.querySelectorAll('button')]
+        .some((button) => button.textContent?.includes('批准')),
+    ).toBe(false)
 
     const target = host.querySelector<HTMLInputElement>(
       'input[aria-label="第 1 个判定点目标"]',
@@ -175,12 +200,13 @@ describe('training criterion review', () => {
     target!.dispatchEvent(new Event('input'))
     await nextTick()
     const saveButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('保存为新版本'))
+      .find((button) => button.textContent?.trim() === '保存')
     saveButton?.click()
 
     await vi.waitFor(() => {
       expect(save).toHaveBeenCalledOnce()
-      expect(host.textContent).toContain('旧版本没有被覆盖')
+      expect(confirm).toHaveBeenCalledOnce()
+      expect(host.textContent).toContain('已保存并确认')
     })
     expect(save.mock.calls[0]?.[1]).toMatchObject({
       expected_revision: 1,
@@ -191,6 +217,56 @@ describe('training criterion review', () => {
         observable_evidence: '列出正确等量关系',
       }],
     })
+    expect(confirm.mock.calls[0]?.[1]).toMatchObject({
+      version_id: version.version_id,
+      action: 'approve',
+    })
+  })
+
+  it('keeps the saved version visible when quality checks block confirmation', async () => {
+    vi.spyOn(questionBankCriteriaApi, 'getWorkspace').mockResolvedValue(workspace())
+    const stillBlocked = {
+      ...version,
+      quality_status: 'failed' as const,
+      quality_codes: ['unknown_dependency'],
+    }
+    vi.spyOn(questionBankCriteriaApi, 'saveDraft').mockResolvedValue(
+      workspace(stillBlocked),
+    )
+    vi.spyOn(questionBankCriteriaApi, 'review').mockRejectedValue(new ApiError({
+      kind: 'validation',
+      status: 422,
+      code: 'criterion_quality_failed',
+      message: 'criterion quality checks failed',
+      details: {},
+      requestId: 'req-quality-1',
+      retryable: false,
+    }))
+    const host = await mountReview()
+
+    const saveButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '保存')
+    saveButton?.click()
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain('已保存，但质量检查未通过')
+    })
+    expect(host.textContent).toContain('判定点之间的依赖关系不完整')
+  })
+
+  it('shows duplicate obligations as advisory notes instead of blocking', async () => {
+    vi.spyOn(questionBankCriteriaApi, 'getWorkspace').mockResolvedValue(
+      workspace({
+        ...version,
+        quality_status: 'failed' as const,
+        quality_codes: ['duplicate_obligation'],
+      }),
+    )
+    const host = await mountReview()
+
+    expect(host.textContent).toContain('不同判定点重复要求了同一件事')
+    expect(host.textContent).toContain('等待教师确认')
+    expect(host.textContent).not.toContain('需要先修正')
   })
 
   it('lets quality-passed drafts enter training without an extra approval click', async () => {

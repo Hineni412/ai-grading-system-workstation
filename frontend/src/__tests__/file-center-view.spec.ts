@@ -13,6 +13,7 @@ import FileCenterView from '../views/FileCenterView.vue'
 const apiMock = vi.hoisted(() => ({
   getReportContext: vi.fn(),
   submitReport: vi.fn(),
+  getAnalysisPreflight: vi.fn(),
   listTrainingTasks: vi.fn(),
   getTrainingTask: vi.fn(),
   submitTrainingExport: vi.fn(),
@@ -248,6 +249,15 @@ beforeEach(() => {
     status: 'queued',
     result: {},
   }))
+  apiMock.getAnalysisPreflight.mockResolvedValue({
+    report_type: 'personal_analysis_html',
+    configured: true,
+    service_name: '默认内容服务',
+    model_name: 'qwen-plus',
+    call_count: 10,
+    estimated_total_tokens: 120000,
+    cache_hits: 3,
+  })
   apiMock.submitTrainingExport.mockResolvedValue(makeJob({
     id: 62,
     job_type: 'training_export',
@@ -576,5 +586,90 @@ describe('file center view', () => {
 
     expect(host.querySelector('[data-testid="download-report-41"]')).toBeNull()
     expect(host.querySelector('[data-testid="generate-score_excel"]')).not.toBeNull()
+  })
+
+  it('renders the personal AI analysis report entry without a class export', async () => {
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('学生个人分析报告'))
+
+    expect(
+      host.querySelector('[data-testid="generate-personal_analysis_html"]'),
+    ).not.toBeNull()
+    expect(host.textContent).not.toContain('班级分析报告')
+    expect(
+      host.querySelector('[data-testid="generate-class_analysis_html"]'),
+    ).toBeNull()
+  })
+
+  it('confirms preflight details before submitting an analysis report', async () => {
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('学生个人分析报告'))
+
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="generate-personal_analysis_html"]',
+    )!.click()
+    await vi.waitFor(() => expect(apiMock.getAnalysisPreflight).toHaveBeenCalledWith(
+      7,
+      'personal_analysis_html',
+    ))
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="analysis-confirm-dialog"]'),
+    ).not.toBeNull())
+
+    expect(
+      host.querySelector('[data-testid="analysis-service"]')?.textContent,
+    ).toContain('默认内容服务')
+    expect(
+      host.querySelector('[data-testid="analysis-model"]')?.textContent,
+    ).toContain('qwen-plus')
+    expect(
+      host.querySelector('[data-testid="analysis-call-count"]')?.textContent,
+    ).toContain('10')
+    expect(
+      host.querySelector('[data-testid="analysis-tokens"]')?.textContent,
+    ).toContain('120,000')
+    expect(host.textContent).toContain('粗略估算')
+    expect(host.textContent).toContain('其中 3 份复用已生成内容，不重复计费')
+    expect(host.textContent).toContain('实际费用取决于服务商定价')
+    expect(host.textContent).toContain('AI 分析内容仅供参考')
+    expect(apiMock.submitReport).not.toHaveBeenCalled()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="confirm-analysis"]')!.click()
+    await vi.waitFor(() => expect(apiMock.submitReport).toHaveBeenCalledWith(
+      7,
+      'personal_analysis_html',
+      false,
+    ))
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="analysis-confirm-dialog"]'),
+    ).toBeNull())
+  })
+
+  it('blocks confirmation when no content model is configured', async () => {
+    apiMock.getAnalysisPreflight.mockResolvedValue({
+      report_type: 'personal_analysis_html',
+      configured: false,
+      service_name: null,
+      model_name: null,
+      call_count: 1,
+      estimated_total_tokens: 50000,
+      cache_hits: 0,
+    })
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('学生个人分析报告'))
+
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="generate-personal_analysis_html"]',
+    )!.click()
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="analysis-not-configured"]'),
+    ).not.toBeNull())
+
+    expect(host.textContent).toContain('未配置内容生成模型，请前往 设置→模型配置 绑定后重试')
+    const confirm = host.querySelector<HTMLButtonElement>('[data-testid="confirm-analysis"]')
+    expect(confirm?.disabled).toBe(true)
+    confirm!.click()
+    await settle()
+    expect(apiMock.submitReport).not.toHaveBeenCalled()
   })
 })

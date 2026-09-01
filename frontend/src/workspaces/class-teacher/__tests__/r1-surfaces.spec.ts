@@ -55,7 +55,7 @@ describe('B UI R1 surfaces', () => {
 
     const host = await mount(ClassTeacherWorkbenchView, {})
 
-    await vi.waitFor(() => expect(host.textContent).toContain('先把事情说清楚，再决定怎么处理'))
+    await vi.waitFor(() => expect(host.querySelector('.composer textarea')).toBeTruthy())
     expect(host.textContent).not.toContain('PIN')
     expect(host.textContent).not.toContain('解锁')
   })
@@ -385,11 +385,11 @@ describe('B UI R1 surfaces', () => {
     await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
 
     expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ handoff_id:'handoff-profile' }), '1')
-    expect(host.textContent).toContain('本轮档案更新已自动并入当前档案')
+    expect(host.textContent).toContain('原始记录仍保留')
     expect(host.textContent).toContain('已自动并入当前档案')
     expect(host.textContent).toContain('在小组任务中开始主动分工')
 
-    clickByText(host, '撤回本轮更新')
+    clickByText(host, '撤回这次更新')
     await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
 
     expect(revert).toHaveBeenCalledExactlyOnceWith('handoff-profile')
@@ -677,8 +677,8 @@ describe('B UI R1 surfaces', () => {
       contract_version:'academic_analysis_v1', source_version:'a'.repeat(64), ruleset_version:'academic_ruleset_v1',
       sessions:[
         { session_id:'s-latest', title:'七上期末', occurred_on:'2026-01-10', grade:'七年级', term:'上学期', metadata_complete:true, evidence:[
-          { evidence_version_id:'c2', subject_name:'语文', measure_role:'subject_score', result_state:'normal', score:90, occurred_on:'2026-01-10', rank:20, max_score:maxScore },
-          { evidence_version_id:'m2', subject_name:'数学', measure_role:'subject_score', result_state:'normal', score:60, occurred_on:'2026-01-10', rank:100, max_score:null },
+          { evidence_version_id:'c2', subject_name:'语文', measure_role:'subject_score', result_state:'normal', score:90, occurred_on:'2026-01-10', rank:20, max_score:maxScore, relative_position:0.9 },
+          { evidence_version_id:'m2', subject_name:'数学', measure_role:'subject_score', result_state:'normal', score:60, occurred_on:'2026-01-10', rank:100, max_score:null, relative_position:0.5 },
           { evidence_version_id:'t2', subject_name:'总分', measure_role:'total_score', result_state:'normal', score:150, occurred_on:'2026-01-10', rank:40, max_score:null },
         ] },
       ],
@@ -726,17 +726,17 @@ describe('B UI R1 surfaces', () => {
       { name:'班级平均（Z=0）', value:[0, 0], lineStyle:{ type:'dashed' }, symbol:'none' },
     ])
     expect(host.textContent).toContain('学科标准分雷达')
-    // 偏离个人均线：均值 0.5，语文 +1.5（相对优势绿），数学 −1.5（相对劣势红）
+    // 偏离个人均线（校次口径）：百分位均值 0.7，语文 +20 个百分点（相对优势绿），数学 −20（相对劣势红）
     const deviation = chartOptions.find((option) => Array.isArray((option as { series?: unknown }).series)
       && ((option as { series: Array<{ name?: string }> }).series).some((item) => item.name === '偏离个人均线')) as DeviationOption | undefined
     expect(deviation).toBeTruthy()
     expect(deviation!.yAxis.data).toEqual(['语文', '数学'])
-    expect(deviation!.series[0]!.data.map((item) => item.value)).toEqual([1.5, -1.5])
+    expect(deviation!.series[0]!.data.map((item) => item.value)).toEqual([20, -20])
     expect(deviation!.series[0]!.data.map((item) => item.itemStyle.color)).toEqual(['#2e7d5b', '#b03a2e'])
-    expect(deviation!.series[0]!.data.map((item) => item.label.formatter)).toEqual(['+1.5', '-1.5'])
+    expect(deviation!.series[0]!.data.map((item) => item.label.formatter)).toEqual(['+20', '-20'])
     expect(deviation!.series[0]!.markLine?.data).toEqual([{ xAxis: 0 }])
     expect(host.textContent).toContain('偏离个人均线')
-    // 该合成数据的学科点没有相对位置，行内小折线按口径不渲染
+    // 该合成数据的学科卡小折线取 profile.subjects[].points，无相对位置的点按口径不渲染
     expect(host.querySelector('svg.spark')).toBeNull()
   })
 
@@ -760,9 +760,9 @@ describe('B UI R1 surfaces', () => {
     }
     expect(radar.radar.indicator).toEqual([{ name:'数学', min:-2, max:2 }])
     expect(host.textContent).toContain('部分科目因缺班级标准差未显示')
-    // 单科不出偏离图
+    // 偏离图改用年级名次百分位后不再依赖班级统计：两科照常渲染
     expect(chartOptions.some((option) => Array.isArray((option as { series?: unknown }).series)
-      && ((option as { series: Array<{ name?: string }> }).series).some((item) => item.name === '偏离个人均线'))).toBe(false)
+      && ((option as { series: Array<{ name?: string }> }).series).some((item) => item.name === '偏离个人均线'))).toBe(true)
   })
 
   it('degrades the radar to guidance when class results are unavailable', async () => {

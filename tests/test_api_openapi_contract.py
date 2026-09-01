@@ -42,6 +42,10 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/jobs/{job_id}"),
     ("POST", "/api/jobs/{job_id}/cancel"),
     ("POST", "/api/sessions/{session_id}/reports/export"),
+    ("GET", "/api/sessions/{session_id}/reports/analysis-preflight"),
+    ("GET", "/api/sessions/{session_id}/class-analysis"),
+    ("PUT", "/api/sessions/{session_id}/class-analysis/settings"),
+    ("POST", "/api/sessions/{session_id}/class-analysis/regenerate"),
     ("POST", "/api/sessions/{session_id}/scan/analyze"),
     ("POST", "/api/sessions/{session_id}/grading/run"),
     ("GET", "/api/sessions/{session_id}/review/questions"),
@@ -182,6 +186,7 @@ def test_binary_routes_publish_exact_200_media_types_and_binary_schemas() -> Non
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "application/pdf",
                 "application/zip",
+            "text/html",
             "text/markdown",
         },
         "/api/sessions/{session_id}/results/{result_id}/pages/{page}": {
@@ -406,7 +411,8 @@ def test_question_bank_job_openapi_declares_dedicated_safe_operations() -> None:
         request_body = operation.get("requestBody")
         if request_body is None:
             continue
-        request_ref = request_body["content"]["application/json"]["schema"]["$ref"]
+        request_schema_ref = request_body["content"]["application/json"]["schema"]
+        request_ref = request_schema_ref.get("$ref") or request_schema_ref["anyOf"][0]["$ref"]
         request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
         assert request_schema["additionalProperties"] is False
         assert not (forbidden & set(request_schema.get("properties", {})))
@@ -415,6 +421,14 @@ def test_question_bank_job_openapi_declares_dedicated_safe_operations() -> None:
         "/api/question-bank/import-requests/{request_id}/jobs"
     ]["post"]
     assert "409" not in import_submit["responses"]
+    import_body_ref = import_submit["requestBody"]["content"]["application/json"][
+        "schema"
+    ]["anyOf"][0]["$ref"]
+    import_body_schema = schema["components"]["schemas"][
+        import_body_ref.rsplit("/", 1)[-1]
+    ]
+    assert import_body_schema["additionalProperties"] is False
+    assert set(import_body_schema["properties"]) == {"curriculum_volume_id"}
 
 
 def test_training_openapi_declares_strict_safe_requests_and_stable_errors() -> None:

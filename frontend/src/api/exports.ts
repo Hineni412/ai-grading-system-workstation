@@ -11,6 +11,7 @@ import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
 export const REPORT_TYPES = [
   'score_excel',
   'annotated_original_pdf',
+  'personal_analysis_html',
 ] as const
 
 export type ReportType = (typeof REPORT_TYPES)[number]
@@ -19,6 +20,16 @@ export interface ScoreExcelOptions {
   hide_bottom_enabled: boolean
   hide_bottom_n: number
   manual_hidden_student_ids: number[]
+}
+
+export interface AnalysisPreflight {
+  report_type: string
+  configured: boolean
+  service_name: string | null
+  model_name: string | null
+  call_count: number
+  estimated_total_tokens: number
+  cache_hits: number
 }
 
 export const REPORT_FILE_STATUSES = [
@@ -136,6 +147,35 @@ function isTrainingStatus(
     || value === 'cancelled'
     || value === 'failed'
   )
+}
+
+export function decodeAnalysisPreflight(value: unknown): AnalysisPreflight {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || typeof value.report_type !== 'string'
+    || !value.report_type.trim()
+    || typeof value.configured !== 'boolean'
+    || !isNullableString(value.service_name)
+    || !isNullableString(value.model_name)
+    || !Number.isSafeInteger(value.call_count)
+    || Number(value.call_count) < 0
+    || !Number.isSafeInteger(value.estimated_total_tokens)
+    || Number(value.estimated_total_tokens) < 0
+    || !Number.isSafeInteger(value.cache_hits)
+    || Number(value.cache_hits) < 0
+  ) {
+    throw new Error('Invalid analysis preflight')
+  }
+  return {
+    report_type: value.report_type,
+    configured: value.configured,
+    service_name: value.service_name,
+    model_name: value.model_name,
+    call_count: Number(value.call_count),
+    estimated_total_tokens: Number(value.estimated_total_tokens),
+    cache_hits: Number(value.cache_hits),
+  }
 }
 
 function decodeReportHistoryJob(value: unknown): ReportHistoryJob {
@@ -412,6 +452,24 @@ export const exportsApi = {
       decode: decodeJobResponse,
       signal,
     })
+  },
+
+  async getAnalysisPreflight(
+    sessionId: number,
+    reportType: ReportType,
+    signal?: AbortSignal,
+  ): Promise<AnalysisPreflight> {
+    const id = requirePositiveInteger(sessionId, 'session id')
+    if (!REPORT_TYPES.some((type) => type === reportType)) {
+      throw new Error('Invalid report type')
+    }
+    return apiClient.request(
+      `/api/sessions/${id}/reports/analysis-preflight?report_type=${encodeURIComponent(reportType)}`,
+      {
+        decode: decodeAnalysisPreflight,
+        signal,
+      },
+    )
   },
 
   async listTrainingTasks(

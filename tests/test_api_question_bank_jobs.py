@@ -14,6 +14,7 @@ from backend.jobs.default_handlers import register_default_job_handlers
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 
 
 VOLUME_ID = "bnu24-math-g7-lower"
@@ -90,6 +91,46 @@ def test_question_import_route_submits_safe_queryable_job(tmp_path: Path) -> Non
     assert queried["result"]["successful_question_ids"] == [11, 12]
     assert "internal_path" not in queried["result"]
     assert str(tmp_path) not in json.dumps(queried)
+
+
+def test_question_import_submit_carries_curriculum_volume_defaults(
+    tmp_path: Path,
+) -> None:
+    client, manager, _service, request = _client(tmp_path)
+
+    response = client.post(
+        f"/api/question-bank/import-requests/{request.request_id}/jobs",
+        json={"curriculum_volume_id": VOLUME_ID},
+    )
+
+    assert response.status_code == 202
+    # 公开响应只投影白名单字段，完整 payload 以任务存储为准。
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    volume = curriculum_volume(volume_id=VOLUME_ID)
+    assert volume is not None
+    assert stored.payload == {
+        "request_id": request.request_id,
+        "paper_defaults": {
+            "grade": str(volume["grade"]),
+            "semester": str(volume["semester"]),
+            "textbook_version": str(volume["textbook_version"]),
+        },
+    }
+
+
+def test_question_import_submit_rejects_unknown_curriculum_volume(
+    tmp_path: Path,
+) -> None:
+    client, _manager, _service, request = _client(tmp_path)
+
+    response = client.post(
+        f"/api/question-bank/import-requests/{request.request_id}/jobs",
+        json={"curriculum_volume_id": "not-a-real-volume"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "curriculum_volume_invalid"
 
 
 def test_question_import_result_exposes_duplicate_reuse_fields(tmp_path: Path) -> None:
@@ -447,6 +488,36 @@ def test_question_import_retry_reuses_safe_request_id(tmp_path: Path) -> None:
     assert response.json()["payload"] == {
         "request_id": request.request_id,
         "retry_of_job_id": source.id,
+    }
+
+
+def test_question_import_retry_preserves_curriculum_volume_defaults(
+    tmp_path: Path,
+) -> None:
+    client, manager, _service, request = _client(tmp_path)
+    paper_defaults = {
+        "grade": "八年级",
+        "semester": "上学期",
+        "textbook_version": "北师大版（2024）",
+    }
+    source = manager.store.create_job(
+        "question_import",
+        {"request_id": request.request_id, "paper_defaults": paper_defaults},
+    )
+    assert manager.store.mark_running(source.id)
+    manager.store.finish(source.id, "failed", error="private failure")
+
+    response = client.post(
+        f"/api/question-bank/question-import-jobs/{source.id}/retry"
+    )
+
+    assert response.status_code == 202
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    assert stored.payload == {
+        "request_id": request.request_id,
+        "retry_of_job_id": source.id,
+        "paper_defaults": paper_defaults,
     }
 
 

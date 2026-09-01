@@ -20,9 +20,8 @@ const props = defineProps<{ questionId: number }>()
 
 const workspace = ref<TrainingCriterionWorkspace | null>(null)
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
-const writeState = ref<'idle' | 'saving' | 'reviewing' | 'generating'>('idle')
+const writeState = ref<'idle' | 'saving' | 'generating'>('idle')
 const message = ref('')
-const reviewNote = ref('')
 const rationale = ref('')
 const auxiliaryText = ref('')
 const editorPoints = ref<EditorPoint[]>([])
@@ -35,21 +34,17 @@ const currentSourceLabel = computed(() => ({
   teacher_manual: '教师修改',
   backfill: 'AI 回填',
 }[current.value?.source_kind ?? 'combined_model']))
-const canReview = computed(() => current.value?.status === 'proposed')
+const ADVISORY_CODES = new Set(['missing_actual_image', 'duplicate_obligation'])
 const blockingCodes = computed(() => (
-  (current.value?.quality_codes ?? []).filter((code) => code !== 'missing_actual_image')
+  (current.value?.quality_codes ?? []).filter((code) => !ADVISORY_CODES.has(code))
 ))
 const advisoryCodes = computed(() => (
-  (current.value?.quality_codes ?? []).filter((code) => code === 'missing_actual_image')
+  (current.value?.quality_codes ?? []).filter((code) => ADVISORY_CODES.has(code))
 ))
-const canApprove = computed(() => canReview.value && blockingCodes.value.length === 0)
 const replacingApproved = computed(() => Boolean(
   workspace.value?.approved_version
   && current.value
   && workspace.value.approved_version.version_id !== current.value.version_id
-))
-const showApproveButton = computed(() => canReview.value && (
-  !workspace.value?.available || replacingApproved.value
 ))
 const statusCopy = computed(() => {
   if (workspace.value?.available) {
@@ -57,7 +52,7 @@ const statusCopy = computed(() => {
       return {
         tone: 'available',
         label: '以后生成的训练卷可用',
-        detail: '已批准版本继续有效；当前新版仍需核对后才会替换。',
+        detail: '当前已确认版本继续有效；核对后保存，新版会自动替换。',
       }
     }
     if (current.value?.status === 'proposed') {
@@ -66,13 +61,13 @@ const statusCopy = computed(() => {
         label: '质量检查已通过，已可进入训练',
         detail: advisoryCodes.value.length > 0
           ? '题目配图当前不可用，只作提醒，不挡住进入训练。'
-          : '不必再点批准。如需修改，保存新版本后仍会自动可用。',
+          : '无需其他操作。如需修改，编辑后保存即可，保存后仍会自动可用。',
       }
     }
     return {
       tone: 'available',
       label: '以后生成的训练卷可用',
-      detail: '当前批准版已冻结，历史训练卷仍保留各自使用的旧版本。',
+      detail: '当前已确认版本已冻结，历史训练卷仍保留各自使用的旧版本。',
     }
   }
   const state = workspace.value?.state
@@ -80,12 +75,12 @@ const statusCopy = computed(() => {
     const blocked = blockingCodes.value.length > 0
     return {
       tone: blocked ? 'blocked' : 'review',
-      label: blocked ? '需要先修正' : '等待教师批准',
+      label: blocked ? '需要先修正' : '等待教师确认',
       detail: blocked
         ? '质量检查未通过，请先按下方列出的问题修正。'
         : advisoryCodes.value.length > 0
-          ? '判定点内容可用，可以批准。题目配图当前不可用，只作提醒，不拦截批准。'
-          : '批准后才会进入以后生成的训练卷。',
+          ? '判定点内容可用，保存即确认。题目配图当前不可用，只作提醒，不拦截确认。'
+          : '确认内容无误后点下方"保存"，该版本才会进入以后生成的训练卷。',
     }
   }
   if (state === 'stale') {
@@ -99,7 +94,7 @@ const statusCopy = computed(() => {
     return {
       tone: 'blocked',
       label: '当前版本已退回',
-      detail: '可在下方修改后保存为新版本，或重新生成。',
+      detail: '可在下方修改后保存，或重新生成。',
     }
   }
   return {
@@ -169,7 +164,7 @@ function userMessage(error: unknown): string {
     return '这道题的判定点刚被更新，请刷新后再操作。'
   }
   if (error.code === 'criterion_quality_failed') {
-    return '当前版本没有通过质量检查，修正并保存新版本后才能批准。'
+    return '当前版本没有通过质量检查，修正后再保存一次即可确认。'
   }
   if (error.code === 'criterion_backfill_unavailable') {
     return '重新生成功能暂时不可用，手动编辑仍可继续。'
@@ -223,8 +218,9 @@ async function saveDraft(): Promise<void> {
   }
   writeState.value = 'saving'
   message.value = ''
+  let saved: TrainingCriterionWorkspace
   try {
-    const result = await questionBankCriteriaApi.saveDraft(props.questionId, {
+    saved = await questionBankCriteriaApi.saveDraft(props.questionId, {
       expected_revision: workspace.value.revision,
       parent_version_id: current.value?.version_id ?? null,
       request_token: token(),
@@ -241,36 +237,33 @@ async function saveDraft(): Promise<void> {
       rationale: rationale.value.trim(),
       confidence: 1,
     })
-    workspace.value = result
-    syncEditor(result.current_version)
-    message.value = '已保存为新版本，旧版本没有被覆盖。'
+    workspace.value = saved
+    syncEditor(saved.current_version)
   } catch (error) {
     message.value = userMessage(error)
-  } finally {
     writeState.value = 'idle'
+    return
   }
-}
-
-async function review(action: 'approve' | 'reject'): Promise<void> {
-  if (!workspace.value || !current.value) return
-  writeState.value = 'reviewing'
-  message.value = ''
+  const savedVersion = saved.current_version
+  if (!savedVersion) {
+    message.value = '已保存为新版本，旧版本没有被覆盖。'
+    writeState.value = 'idle'
+    return
+  }
   try {
-    const result = await questionBankCriteriaApi.review(props.questionId, {
-      version_id: current.value.version_id,
-      expected_revision: workspace.value.revision,
-      action,
-      reason: reviewNote.value.trim() || (
-        action === 'approve' ? '教师核对通过' : '教师退回修改'
-      ),
+    const confirmed = await questionBankCriteriaApi.review(props.questionId, {
+      version_id: savedVersion.version_id,
+      expected_revision: saved.revision,
+      action: 'approve',
+      reason: '教师核对通过',
     })
-    workspace.value = result
-    syncEditor(result.current_version)
-    message.value = action === 'approve'
-      ? '已批准。该版本可用于以后生成的训练卷。'
-      : '已退回。可继续修改并保存为新版本。'
+    workspace.value = confirmed
+    syncEditor(confirmed.current_version)
+    message.value = '已保存并确认，该版本可用于以后生成的训练卷。'
   } catch (error) {
-    message.value = userMessage(error)
+    message.value = error instanceof ApiError && error.code === 'criterion_quality_failed'
+      ? '已保存，但质量检查未通过：请按上方列出的问题修正后再保存一次。'
+      : `已保存，但确认没有完成：${userMessage(error)}`
   } finally {
     writeState.value = 'idle'
   }
@@ -430,11 +423,11 @@ onBeforeUnmount(() => loadController?.abort())
 
       <div class="criterion-actions">
         <AppButton
-          variant="secondary"
+          variant="primary"
           :disabled="writeState !== 'idle' || !validDraft()"
           @click="saveDraft"
         >
-          {{ writeState === 'saving' ? '正在保存…' : '保存为新版本' }}
+          {{ writeState === 'saving' ? '正在保存…' : '保存' }}
         </AppButton>
         <button
           type="button"
@@ -444,30 +437,6 @@ onBeforeUnmount(() => loadController?.abort())
         >
           {{ writeState === 'generating' ? '正在启动…' : '重新生成' }}
         </button>
-      </div>
-
-      <div v-if="canReview" class="criterion-decision">
-        <label>
-          <span>审核说明（可选）</span>
-          <input v-model="reviewNote" maxlength="500" placeholder="例如：已与标准答案逐项核对">
-        </label>
-        <div>
-          <AppButton
-            variant="danger"
-            :disabled="writeState !== 'idle'"
-            @click="review('reject')"
-          >
-            退回修改
-          </AppButton>
-          <AppButton
-            v-if="showApproveButton"
-            variant="primary"
-            :disabled="writeState !== 'idle' || !canApprove"
-            @click="review('approve')"
-          >
-            批准用于以后训练
-          </AppButton>
-        </div>
       </div>
 
       <p

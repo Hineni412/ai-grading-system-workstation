@@ -90,9 +90,15 @@ const subjectRows = computed(() => {
   return rows
 })
 
+// 「最新一场」按学期链（年级→学期→期中/期末）取末位；occurred_on 是登记日期，
+// 批量导入时多场同日，仅按日期排序会把最早的期中误当最新。
 const latestSession = computed(() => {
   const sessions = [...(analysis.value?.sessions ?? [])]
-  sessions.sort((a, b) => a.occurred_on.localeCompare(b.occurred_on))
+  sessions.sort((a, b) => {
+    const chainA = (gradeOrder[a.grade ?? ''] ?? 99) * 100 + (termOrder[a.term ?? ''] ?? 99) * 10 + phaseOrder(a)
+    const chainB = (gradeOrder[b.grade ?? ''] ?? 99) * 100 + (termOrder[b.term ?? ''] ?? 99) * 10 + phaseOrder(b)
+    return chainA - chainB || a.occurred_on.localeCompare(b.occurred_on) || a.session_id.localeCompare(b.session_id)
+  })
   return sessions[sessions.length - 1] ?? null
 })
 
@@ -138,14 +144,22 @@ async function prepareRadar(): Promise<void> {
   subjectZScores.value = dimensions
 }
 
-// 偏离个人均线：该科 Z − 学生各科 Z 的均值；右侧为相对优势。
+// 偏离个人均线：各科年级名次百分位 − 该生各科百分位均值；与学科卡、历次大考表同一校次口径，
+// 避免与名次互相矛盾（此前用班级 Z 分，强班学生名次靠前却显示劣势）。
 const deviations = computed(() => {
-  const items = subjectZScores.value
+  const session = latestSession.value
+  if (!session) return []
+  const items = session.evidence.filter((point) =>
+    (!point.measure_role || point.measure_role === 'subject_score')
+    && point.subject_name !== '总分'
+    && point.result_state === 'normal'
+    && point.relative_position != null)
   if (items.length < 2) return []
-  const mean = items.reduce((sum, item) => sum + item.z, 0) / items.length
+  const mean = items.reduce((sum, item) => sum + (item.relative_position ?? 0), 0) / items.length
   return items.map((item) => ({
     subject_name: item.subject_name,
-    dev: Math.round((item.z - mean) * 100) / 100,
+    // 以百分点表达：+13 = 比本人各科平均位置靠前 13 个百分点
+    dev: Math.round(((item.relative_position ?? 0) - mean) * 100),
   }))
 })
 
@@ -330,8 +344,8 @@ function render() {
   }
   if (deviations.value.length && deviationChart.value) {
     const devs = deviations.value
-    const maxAbs = Math.max(...devs.map((item) => Math.abs(item.dev)), 0.5)
-    const span = Math.ceil((maxAbs + 0.2) * 10) / 10
+    const maxAbs = Math.max(...devs.map((item) => Math.abs(item.dev)), 5)
+    const span = Math.ceil((maxAbs + 5) / 5) * 5
     const chart = init(deviationChart.value)
     chart.setOption({
       aria: { enabled: true },
@@ -342,7 +356,7 @@ function render() {
           const item = params[0]
           if (!item) return ''
           const value = item.value
-          return `${item.name}：${value > 0 ? '+' : ''}${value}（相对个人均线）`
+          return `${item.name}：${value > 0 ? '+' : ''}${value} 个百分点（相对本人各科平均位置）`
         },
       },
       grid: { left: 64, right: 44, top: 12, bottom: 24 },
@@ -424,7 +438,7 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resize); charts.for
             <p v-if="subjectZScores.length && radarSkipped" class="hint">部分科目因缺班级标准差未显示。</p>
           </figure>
           <figure v-if="deviations.length">
-            <figcaption><strong>偏离个人均线</strong><span>各科标准分 − 个人各科均值；右侧为相对优势</span></figcaption>
+            <figcaption><strong>偏离个人均线</strong><span>最新一场 · 各科年级名次位置 − 本人各科平均位置（百分点）；右侧为相对优势</span></figcaption>
             <div ref="deviationChart" class="chart chart--radar" role="img" aria-label="学科偏离条形图"></div>
           </figure>
         </div>

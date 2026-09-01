@@ -954,6 +954,12 @@
   margin-bottom: 7px;
 }
 
+.assembly-result-card__answer-loading {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  margin: 0;
+}
+
 .assembly-result-card > footer {
   align-items: center;
   background: var(--secondary);

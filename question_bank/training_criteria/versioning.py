@@ -29,7 +29,7 @@ CriterionSourceKind = Literal[
 ]
 CriterionReviewAction = Literal["approve", "reject"]
 _TOKEN = re.compile(r"^[0-9a-f]{32}$")
-ADVISORY_QUALITY_CODES = frozenset({"missing_actual_image"})
+ADVISORY_QUALITY_CODES = frozenset({"missing_actual_image", "duplicate_obligation"})
 class CriterionVersionNotFound(LookupError):
     pass
 

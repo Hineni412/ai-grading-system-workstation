@@ -10,6 +10,7 @@ import {
   type QuestionBankFacets,
   type QuestionBankFilters,
   type QuestionBankListItem,
+  type QuestionBankRichBlock,
   type QuestionBankSort,
   type SimilarQuestionItem,
 } from '../../api/question-bank'
@@ -84,6 +85,8 @@ const selectedHistoricalScope = ref('')
 const expandedChapterIds = ref(new Set<string>())
 const activeTagDimension = ref<TagArrayFilterKey>('knowledgePoints')
 const expandedAnswers = ref(new Set<number>())
+const answerBlocks = shallowRef(new Map<number, QuestionBankRichBlock[]>())
+const answerLoading = ref(new Set<number>())
 const similarSource = ref<QuestionBankListItem | null>(null)
 const similarItems = ref<SimilarQuestionItem[]>([])
 const similarState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -533,7 +536,13 @@ function chooseInitialVolume(): void {
     const changed = selectedVolumeId.value !== globalVolumeId || !volumeFilterActive.value
     selectedVolumeId.value = globalVolumeId
     volumeFilterActive.value = true
-    if (changed) void loadQuestions(true)
+    if (changed) {
+      void loadQuestions(true)
+    } else {
+      // 册别在目录加载前已生效：题目列表首发已带册别条件，但筛选计数被
+      // 全库 facets 覆盖，这里按当前条件补一次，避免混入其他册别的选项。
+      void loadFilteredFacets(queryFilters())
+    }
     return
   }
   if (selectedVolumeId.value) return
@@ -738,9 +747,40 @@ async function clearBasket(): Promise<void> {
 
 function toggleAnswer(questionId: number): void {
   const next = new Set(expandedAnswers.value)
-  if (next.has(questionId)) next.delete(questionId)
-  else next.add(questionId)
+  if (next.has(questionId)) {
+    next.delete(questionId)
+    expandedAnswers.value = next
+    return
+  }
+  next.add(questionId)
   expandedAnswers.value = next
+  // 列表走 compact 模式不携带答案块，展开时按需拉取完整详情。
+  if (!answerBlocks.value.has(questionId)) void loadAnswerBlocks(questionId)
+}
+
+async function loadAnswerBlocks(questionId: number): Promise<void> {
+  const loading = new Set(answerLoading.value)
+  loading.add(questionId)
+  answerLoading.value = loading
+  try {
+    const detail = await questionBankApi.getQuestion(questionId)
+    const next = new Map(answerBlocks.value)
+    next.set(questionId, detail.rich_content?.answer_blocks ?? [])
+    answerBlocks.value = next
+  } catch {
+    // 详情读取失败时回落到列表自带的答案纯文本。
+    const next = new Map(answerBlocks.value)
+    next.set(questionId, [])
+    answerBlocks.value = next
+  } finally {
+    const loading = new Set(answerLoading.value)
+    loading.delete(questionId)
+    answerLoading.value = loading
+  }
+}
+
+function answerBlocksFor(question: QuestionBankListItem): QuestionBankRichBlock[] | undefined {
+  return answerBlocks.value.get(question.id) ?? question.rich_content?.answer_blocks
 }
 
 async function openSimilar(question: QuestionBankListItem): Promise<void> {
@@ -1243,8 +1283,10 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
 
           <div v-if="expandedAnswers.has(question.id)" class="assembly-result-card__answer">
             <strong>答案与解析</strong>
+            <p v-if="answerLoading.has(question.id)" class="assembly-result-card__answer-loading" role="status">正在读取解析…</p>
             <QuestionContentRenderer
-              :blocks="question.rich_content?.answer_blocks"
+              v-else
+              :blocks="answerBlocksFor(question)"
               :fallback="question.answer_text"
               empty-label="暂未录入答案或解析"
               image-alt="答案配图"

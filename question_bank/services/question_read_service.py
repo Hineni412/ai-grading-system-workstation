@@ -40,6 +40,7 @@ from question_bank.services.asset_path_service import (
     AmbiguousQuestionBankAssetPathError,
     resolve_question_bank_asset_path,
 )
+from question_bank.services.preview_html import block_preview_html
 from question_bank.services.question_frequency_service import (
     calculate_question_similarity,
 )
@@ -3024,6 +3025,12 @@ def _rich_blocks(
             public_blocks.append(
                 {
                     "text": _strip_image_markers(text),
+                    "_xml": str(block.get("xml") or ""),
+                    "_rels": {
+                        str(rel_id): path.strip()
+                        for rel_id, path in block.get("image_relationships", {}).items()
+                        if path.strip()
+                    },
                     "_asset_paths": list(
                         dict.fromkeys([*marker_paths, *relationship_paths])
                     ),
@@ -3056,12 +3063,23 @@ def _public_rich_content(
                 if path in asset_indexes
             ]
             structured = _structured_rich_text(block["text"])
+            rel_urls = {
+                rel_id: f"/api/question-bank/questions/{question_id}/assets/{asset_indexes[path]}"
+                for rel_id, path in block["_rels"].items()
+                if path in asset_indexes
+            }
+            preview_html = block_preview_html(
+                str(block.get("_xml") or ""),
+                rel_urls,
+                expected_text=block["text"],
+            ) or ""
             projected_blocks.append(
                 {
                     "kind": structured["kind"],
                     "text": block["text"],
                     "segments": structured["segments"],
                     "rows": structured["rows"],
+                    "html": preview_html,
                     "asset_indexes": indexes,
                     "asset_urls": [
                         f"/api/question-bank/questions/{question_id}/assets/{index}"

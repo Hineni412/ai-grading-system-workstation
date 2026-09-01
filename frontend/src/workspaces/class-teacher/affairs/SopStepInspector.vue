@@ -36,7 +36,7 @@ const pendingRevision = computed(() => {
 
 const stateLabel: Record<string, string> = {
   blocked: '未解锁', ready: '待处理', in_progress: '进行中', waiting: '待处理',
-  completed: '已完成 ✓', waived: '已免除', superseded: '已剪枝',
+  completed: '已完成 ✓', waived: '已免除', superseded: '不再执行',
 }
 const stateTone = (state: string): 'success' | 'warning' | 'neutral' | 'info' => {
   if (state === 'completed' || state === 'waived') return 'success'
@@ -123,7 +123,7 @@ async function decideRevision(accept: boolean): Promise<void> {
       ? revision.items.filter((item) => revisionChecks.value[item.item_id] !== false).map((item) => item.item_id)
       : []
     const updated = await affairR1Api.decideFlowRevision(props.affair, revision.revision_id, accepted)
-    message.value = accept ? '已接受所选调整；安全必做步骤和教师分流决定不受影响。' : '已拒绝本次全部修订建议；流程保持原样。'
+    message.value = accept ? '已接受所选调整。' : '已拒绝本次全部修订建议；流程保持原样。'
     emit('changed', updated)
   } catch {
     error.value = '决定没有保存；请刷新后重试。'
@@ -145,7 +145,7 @@ async function decideRevision(accept: boolean): Promise<void> {
     <p v-if="step.details" class="inspector__details">{{ step.details }}</p>
     <p v-if="step.result" class="inspector__result">完成记录：{{ step.result }}</p>
     <p v-if="step.state === 'blocked'" class="muted">前置步骤未完成，暂不能处理。</p>
-    <p v-else-if="step.state === 'superseded'" class="muted">该步骤已在分流判断中被剪枝。</p>
+    <p v-else-if="step.state === 'superseded'" class="muted">该步骤不再执行。</p>
     <p v-if="message" class="status" role="status">{{ message }}</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
 
@@ -172,7 +172,7 @@ async function decideRevision(accept: boolean): Promise<void> {
             {{ option.label }}
           </AppButton>
         </div>
-        <textarea v-model="decisionSummary" rows="3" maxlength="8000" placeholder="记录教师或学校已经作出的决定；AI 建议不能驱动高影响分支。"></textarea>
+        <textarea v-model="decisionSummary" rows="3" maxlength="8000" placeholder="记录教师或学校已经作出的决定；AI 不能替你做这个决定。"></textarea>
         <AppButton variant="primary" :disabled="busy || !isCurrent || !decisionSummary.trim() || (!!step.decision_options?.length && !selectedOption)" @click="decide">保存教师决定</AppButton>
       </section>
     </template>
