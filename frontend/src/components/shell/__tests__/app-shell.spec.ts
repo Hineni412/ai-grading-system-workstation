@@ -121,6 +121,7 @@ describe('AppShell', () => {
       ['题库管理', '/question-bank'],
       ['组卷工作台', '/question-assembly'],
       ['知识与训练', '/knowledge-graph'],
+      ['日常管理', '/daily'],
       ['备课工作台', '/teaching-prep'],
       ['班主任工作台', '/class-teacher'],
     ])
@@ -135,6 +136,7 @@ describe('AppShell', () => {
       '题库管理',
       '组卷工作台',
       '知识与训练',
+      '日常管理',
       '备课工作台',
       '班主任工作台',
     ])
@@ -154,6 +156,7 @@ describe('AppShell', () => {
       '题库管理',
       '组卷工作台',
       '知识与训练',
+      '日常管理',
       '备课工作台',
       '班主任工作台',
       '学生管理',
