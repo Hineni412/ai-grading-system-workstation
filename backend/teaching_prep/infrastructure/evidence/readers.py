@@ -94,6 +94,8 @@ class ReadOnlyQuestionEvidenceReader:
                         answer_text,
                         difficulty,
                         needs_review,
+                        has_images,
+                        image_paths,
                         updated_at
                     FROM questions
                     WHERE id IN ({placeholders})
@@ -135,6 +137,9 @@ class ReadOnlyQuestionEvidenceReader:
                 ),
                 "knowledge_points": tags.get(int(row["id"]), []),
                 "needs_review": bool(row["needs_review"]),
+                "image_paths": (
+                    str(row["image_paths"]) if row["image_paths"] else None
+                ),
                 "source_revision": _digest(
                     {
                         "id": int(row["id"]),

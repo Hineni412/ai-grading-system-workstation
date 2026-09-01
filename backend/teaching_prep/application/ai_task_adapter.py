@@ -18,8 +18,6 @@ from backend.workspaces.ai_tasks.models import (
     StoredTask,
 )
 from backend.teaching_prep.domain.errors import (
-    TeachingPrepConflictError,
-    TeachingPrepRetryAvailableError,
     TeachingPrepValidationError,
 )
 
@@ -90,25 +88,7 @@ class TeachingPrepAITaskAdapter:
         *,
         model_gateway: WorkspaceAITaskModelGateway,
     ) -> AdapterResult:
-        if task.task_kind == "teaching_prep.semester_mapping":
-            material_ids = [ref.id for ref in task.context_refs if ref.kind == "material"]
-            try:
-                proposal, _created = self.service.generate_semester_mapping_proposal(
-                    task.source_ref.id,
-                    operation_id=task.operation_id,
-                    material_record_ids=material_ids,
-                    expected_source_state_sha256=task.source_ref.revision,
-                    task_model_gateway=model_gateway,
-                )
-            except TeachingPrepRetryAvailableError as exc:
-                raise SemesterMappingRetryAvailableFailure(
-                    str(exc),
-                    code=exc.error_code,
-                ) from exc
-            except TeachingPrepConflictError as exc:
-                raise SemesterMappingScopeStaleFailure(str(exc)) from exc
-            result = self._result(task, proposal.id, str(proposal.revision))
-        elif task.task_kind == "teaching_prep.lesson_plan":
+        if task.task_kind == "teaching_prep.lesson_plan":
             pack_ref = _require_context(task, "resource_pack")
             proposal, _created = self.service.generate_lesson_draft(
                 pack_ref.id,
@@ -118,21 +98,6 @@ class TeachingPrepAITaskAdapter:
                 task_model_gateway=model_gateway,
             )
             result = self._result(task, proposal.id, str(proposal.version_number))
-        elif task.task_kind == "teaching_prep.exercise_suggestions":
-            snapshot_ref = _require_context(task, "reference_snapshot")
-            run = self.service.start_exercise_suggestion_run(
-                snapshot_ref.id,
-                operation_id=task.operation_id,
-                confirmed=True,
-            )
-            self.service.process_exercise_suggestion_run(
-                run.id,
-                task_model_gateway=model_gateway,
-            )
-            completed, _suggestions = self.service.get_exercise_suggestion_run(run.id)
-            if completed.status != "succeeded":
-                raise RuntimeError("exercise suggestion proposal was not persisted")
-            result = self._result(task, completed.id, "1")
         elif task.task_kind == "teaching_prep.slide_change_proposal":
             draft_ref = _require_context(task, "lesson_draft")
             try:
@@ -173,16 +138,7 @@ class TeachingPrepAITaskAdapter:
         )
 
     def discard_result_unknown(self, task: StoredTask) -> None:
-        if task.task_kind != "teaching_prep.semester_mapping":
-            return
-        material_ids = [
-            ref.id for ref in task.context_refs if ref.kind == "material"
-        ]
-        self.service.discard_semester_mapping_result_unknown(
-            task.source_ref.id,
-            material_record_ids=material_ids,
-            expected_source_state_sha256=task.source_ref.revision,
-        )
+        return None
 
     def adopt(
         self,

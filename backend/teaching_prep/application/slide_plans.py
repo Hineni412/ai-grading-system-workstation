@@ -23,6 +23,7 @@ _AUTOMATIC_KINDS = {
     "delete_shape",
     "add_text_box",
     "add_slide",
+    "add_question_slide",
     "insert_static_image",
     "move_static_image",
     "scale_static_image",
@@ -612,35 +613,62 @@ def build_slide_plan_payload(
                 )
             insert_position += 1
         elif source_ref in question_map:
+            question = question_map[source_ref]
+            target_slide_ref = str(
+                recommendation.get("target_slide_ref") or ""
+            )
+            target_slide = slides_by_ref.get(target_slide_ref)
+            anchor_page = (
+                int(target_slide["original_index"])
+                if target_slide is not None
+                else int(len(slides))
+            )
             operations.append(
                 _operation(
                     draft.id,
-                    kind="manual_note",
-                    target_key=source_ref,
+                    kind="add_question_slide",
+                    target_key=f"{source_ref}:insert",
                     target={
-                        "target_kind": "manual",
+                        "target_kind": "new_slide",
                         "slide_signature": None,
-                        "generated_page_number": None,
+                        "generated_page_number": anchor_page,
                         "material_unit_id": None,
                         "wps_object_id": None,
-                        "object_type": None,
-                        "position": None,
+                        "object_type": "slide",
+                        "position": {"index": anchor_page + 1},
                         "content_summary": recommendation.get("title"),
-                        "match_strategy": "manual_only",
+                        "match_strategy": "question_insertion",
                     },
-                    reason=(
-                        "题库题没有冻结的课件裁图，先列入人工插入清单。"
+                    reason=str(
+                        recommendation.get("reason")
+                        or "按考频与方法差异从题库插入候选题。"
                     ),
-                    citations=[source_ref],
+                    citations=(
+                        _strings(recommendation.get("citations"), maximum=20)
+                        or [source_ref]
+                    ),
                     planned_minutes=_minutes(
                         recommendation.get("estimated_minutes"),
                         default=4,
                     ),
-                    risk="blocked",
-                    execution_mode="manual_only",
-                    support_note="不能从题目正文直接生成可执行 WPS 操作。",
+                    risk="low",
+                    execution_mode="automatic",
+                    support_note=(
+                        "由本机 python-pptx 在副本上插入题页；"
+                        "未触及页的动画保持原样。"
+                    ),
+                    details={
+                        "anchor_page": anchor_page,
+                        "question": {
+                            "question_id": question.get("question_id"),
+                            "title": str(
+                                recommendation.get("title") or "课堂练习"
+                            ),
+                        },
+                    },
                 )
             )
+            insert_position += 1
     source_state = _digest(
         [
             {

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from backend.teaching_prep.domain.errors import (
-    TeachingPrepConflictError,
     TeachingPrepNotFoundError,
     TeachingPrepStateError,
     TeachingPrepValidationError,

@@ -1,5 +1,4 @@
 from .catalog import TeachingCatalogRepository
-from .exercises import ExerciseCandidateRepository, ExerciseRegionDraft
 from .material_units import MaterialPreviewRecord, MaterialUnitRepository
 from .lesson_drafts import LessonDraftRepository
 from .preparations import LessonPreparationRepository
@@ -8,16 +7,13 @@ from .resource_packs import ResourcePackRepository
 from .semesters import SemesterWorkspaceRepository
 from .semester_mapping import SemesterMappingRepository
 from .slide_plans import SlidePlanRepository
-from .pptx_execution import PptxExecutionRepository
-from .teaching_delivery import TeachingDeliveryRepository
+from .pptx_outputs import PptxLocalOutputRepository
 from .workbench_iteration import WorkbenchIterationRepository
 from .workspace_ai_adoptions import WorkspaceAIAdoptionRepository
 from .slide_animations import SlideAnimationRepository
 from .adaptation_traces import AdaptationTraceRepository
 
 __all__ = [
-    "ExerciseCandidateRepository",
-    "ExerciseRegionDraft",
     "LessonPreparationRepository",
     "TeachingPreferencesRepository",
     "LessonDraftRepository",
@@ -27,8 +23,7 @@ __all__ = [
     "SemesterWorkspaceRepository",
     "SemesterMappingRepository",
     "SlidePlanRepository",
-    "PptxExecutionRepository",
-    "TeachingDeliveryRepository",
+    "PptxLocalOutputRepository",
     "WorkbenchIterationRepository",
     "TeachingCatalogRepository",
     "WorkspaceAIAdoptionRepository",

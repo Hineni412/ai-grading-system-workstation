@@ -949,12 +949,50 @@ class QuestionEvidenceChoiceListResponse(BaseModel):
     items: list[QuestionEvidenceChoiceResponse]
 
 
+class QuestionSelectionPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    volume_id: str = Field(min_length=1, max_length=64)
+    section_ids: list[str] = Field(default_factory=list, max_length=12)
+    difficulty_max: int = Field(default=5, ge=1, le=9)
+    stem_max_chars: int = Field(default=220, ge=1, le=400)
+    limit: int = Field(default=12, ge=1, le=30)
+    max_per_method: int = Field(default=2, ge=1, le=6)
+    exclude_question_ids: list[int] = Field(default_factory=list, max_length=100)
+
+
+class ExecuteLocalPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_token: str = Field(min_length=8, max_length=96)
+    confirmed: bool = False
+
+
+class QuestionSelectionItemPayload(BaseModel):
+    question_id: int
+    method: str | None = Field(default=None, max_length=40)
+    difficulty: int | None = None
+    frequency_score: float | None = None
+
+
+class QuestionSelectionPayload(BaseModel):
+    volume_id: str = Field(min_length=1, max_length=64)
+    section_ids: list[str] = Field(default_factory=list, max_length=12)
+    difficulty_max: int = Field(ge=1, le=9)
+    stem_max_chars: int = Field(ge=1, le=400)
+    limit: int = Field(ge=1, le=30)
+    max_per_method: int = Field(default=2, ge=1, le=6)
+    items: list[QuestionSelectionItemPayload] = Field(
+        default_factory=list, max_length=30
+    )
+
+
 class FreezeResourcePackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_token: str = Field(min_length=8, max_length=96)
     class_name: str | None = Field(default=None, max_length=120)
-    lesson_type: Literal["new_lesson"] = "new_lesson"
+    lesson_type: Literal["new_lesson", "review"] = "new_lesson"
     teacher_context: str | None = Field(default=None, max_length=2_000)
     reference_ppt_intents: dict[
         str,
@@ -974,6 +1012,7 @@ class FreezeResourcePackRequest(BaseModel):
     selected_exercise_candidate_ids: list[str] | None = Field(
         default=None, max_length=200
     )
+    question_selection: QuestionSelectionPayload | None = None
 
 
 class ResourcePackResponse(BaseModel):
