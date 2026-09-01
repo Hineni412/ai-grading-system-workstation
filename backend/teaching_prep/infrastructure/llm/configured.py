@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,8 +20,6 @@ from backend.workspaces.model_policy import WorkspaceModelGateway
 from backend.workspaces.ai_tasks.model_gateway import WorkspaceAITaskModelGateway
 
 from .lesson_model import WorkspaceLessonModelAdapter
-from .exercise_suggestions import WorkspaceExerciseSuggestionModelAdapter
-from .semester_mapping import WorkspaceSemesterMappingModelAdapter
 from .slide_animation import WorkspaceSlideAnimationModelAdapter
 
 
@@ -69,29 +67,6 @@ class _ActiveProfileRuntime:
             model=resolved.model,
         )
 
-    def semester_mapping_adapter(
-        self,
-        task_gateway: WorkspaceAITaskModelGateway | None = None,
-    ) -> WorkspaceSemesterMappingModelAdapter:
-        resolved = self._resolve()
-        gateway, client = self._gateway_and_client(resolved, task_gateway)
-        return WorkspaceSemesterMappingModelAdapter(
-            gateway=gateway,
-            client=client,
-            model=resolved.model,
-        )
-
-    def exercise_suggestion_adapter(
-        self,
-        task_gateway: WorkspaceAITaskModelGateway | None = None,
-    ) -> WorkspaceExerciseSuggestionModelAdapter:
-        resolved = self._resolve()
-        gateway, client = self._gateway_and_client(resolved, task_gateway)
-        return WorkspaceExerciseSuggestionModelAdapter(
-            gateway=gateway,
-            client=client,
-            model=resolved.model,
-        )
 
     def slide_animation_adapter(
         self,
@@ -201,64 +176,6 @@ class ActiveProfileLessonModelAdapter:
             resource_pack=resource_pack,
             page_loader=page_loader,  # type: ignore[arg-type]
             observer=observer,  # type: ignore[arg-type]
-        )
-
-
-class ActiveProfileSemesterMappingModelAdapter:
-    def __init__(
-        self,
-        *,
-        context: WorkspaceContext,
-        profile_store: ApiProfileStore,
-    ) -> None:
-        self._runtime = _ActiveProfileRuntime(
-            context=context,
-            profile_store=profile_store,
-        )
-
-    def is_available(self) -> bool:
-        return self._runtime.is_available()
-
-    def generate(
-        self,
-        *,
-        operation_id: str,
-        semester_snapshot: dict[str, Any],
-        dispatch_callback: Callable[[], None] | None = None,
-        task_model_gateway: WorkspaceAITaskModelGateway | None = None,
-    ) -> dict[str, Any]:
-        return self._runtime.semester_mapping_adapter(task_model_gateway).generate(
-            operation_id=operation_id,
-            semester_snapshot=semester_snapshot,
-            dispatch_callback=dispatch_callback,
-        )
-
-
-class ActiveProfileExerciseSuggestionModelAdapter:
-    def __init__(
-        self,
-        *,
-        context: WorkspaceContext,
-        profile_store: ApiProfileStore,
-    ) -> None:
-        self._runtime = _ActiveProfileRuntime(
-            context=context,
-            profile_store=profile_store,
-        )
-
-    def is_available(self) -> bool:
-        return self._runtime.is_available()
-
-    def generate(
-        self,
-        *,
-        operation_id: str,
-        reference_snapshot: dict[str, Any],
-        task_model_gateway: WorkspaceAITaskModelGateway | None = None,
-    ) -> dict[str, Any]:
-        return self._runtime.exercise_suggestion_adapter(task_model_gateway).generate(
-            operation_id=operation_id,
-            reference_snapshot=reference_snapshot,
         )
 
 

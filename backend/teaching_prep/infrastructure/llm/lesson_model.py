@@ -12,9 +12,6 @@ from PIL import Image
 from backend.llm.errors import classify_llm_error, is_retryable_error
 from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.usage import response_diagnostics
-from backend.teaching_prep.application.lesson_drafts import (
-    validate_review_findings_payload,
-)
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.workspaces.model_policy import (
     WorkspaceModelGateway,
@@ -23,10 +20,8 @@ from backend.workspaces.model_policy import (
 
 
 _MAX_OUTPUT_TOKENS = 16_000
-_MAX_MODEL_ROUNDS = 6
-_MAX_PAGES_PER_ROUND = 4
+_MAX_MODEL_ROUNDS = 2
 _MAX_ATTEMPTS_PER_ROUND = 2
-_MAX_FIRST_ROUND_FINDINGS_CALLS = 2
 _ROUND_TIMEOUT_SECONDS = 300
 _MAX_FIRST_ROUND_SLIDES = 40
 _THUMBNAIL_MAX_EDGE = 480
@@ -40,65 +35,43 @@ _PAGE_SOURCE_REF = re.compile(r"^material:([0-9a-f]{32}):unit:(\d+)$")
 _WINDOWS_PATH = re.compile(r"(?<![\w])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n\t<>|\"']+")
 _FILE_URL = re.compile(r"(?i)\bfile://[^\s<>\"']+")
 _HTTP_URL = re.compile(r"(?i)\bhttps?://[^\s<>\"']+")
-_GET_FROZEN_PAGE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "get_frozen_page",
-        "description": (
-            "Fetch one frozen local page image by an exact page_catalog "
-            "source_ref. At most 4 pages per round. Files stay on this computer."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "source_ref": {
-                    "type": "string",
-                    "description": "Exact page_catalog source_ref",
-                }
-            },
-            "required": ["source_ref"],
-        },
-    },
-}
-
 
 _SYSTEM_INSTRUCTION = """\
 你是初中数学备课草稿助手。只能依据用户提供的已冻结资源包。
-返回单个 json（JSON）对象，只能包含 knowledge_objectives、focus_points、
-anticipated_difficulties、lesson_flow、exercise_recommendations、
-slide_adaptations、review_findings、uncertainties。必须遵守资源包中的
-preparation_preferences：它是教师本次明确选择的倾向。
+一次调用返回单个 json（JSON）对象，只能包含 knowledge_objectives、
+focus_points、anticipated_difficulties、lesson_flow、
+exercise_recommendations、slide_adaptations、review_findings、
+uncertainties。必须遵守资源包中的 preparation_preferences：它是教师本次
+明确选择的倾向。
 
-本次任务分两步：先审课，再改动。
-第一步逐页审视主课件：内容是否合理、顺序是否得当、练习量是否合适、
-与教材和新课标是否对应，结论写入 review_findings。每条 review_finding
-包含 slide_refs（涉及的页，取 allowed_citation_refs 中的页引用，
-整体判断可为空数组）、
-finding、category（content、sequence、practice_load、alignment、other
-之一）、suggested_action、citations。review_findings 至少一条，且必须
-包含对整份课件的总体判断。
-第二步给出 slide_adaptations：只为有明确价值的页面提出改动，没有价值
-就 keep，允许整份课件零改动；零改动时 review_findings 必须说明这节课
-为什么不需要改。slide_adaptations 逐页给出 slide_ref、role、action、
-delete_object_refs、textbook_refs、target_position、suggested_text、
-reason、citations；action 可取 keep、delete、reorder、hide、add、
-modify_text：
-- reorder 表示调整该页次序，只给出目标位置 target_position（从 1 开始的
-  整数）；
-- hide 表示建议隐藏该页，需教师人工执行；
-- add 表示在该页之后复制其版式新增一页，suggested_text 简述新页内容，
+先审课，再改动，两部分都写进同一次返回：
+review_findings 逐页给出审课发现（至少一条总体判断），每条包含
+slide_refs、finding、category（content、sequence、practice_load、
+alignment、other 之一）、suggested_action、citations。
+slide_adaptations 逐页给出 slide_ref、role、action、delete_object_refs、
+textbook_refs、target_position、suggested_text、reason、citations；
+只为有明确价值的页面提出改动，没有价值就 keep，允许整份课件零改动；
+零改动时 review_findings 必须说明原因。action 可取 keep、delete、
+reorder、hide、add、modify_text：
+- reorder 只给目标位置 target_position（从 1 开始的整数），整课按由易到难排列；
+- hide 表示建议隐藏该页；
+- add 表示在该页之后新增一页，suggested_text 简述新页内容，
   只能引用资源包内素材，不得编造题目；
-- modify_text 表示建议修改本页文字，只给出建议新文本 suggested_text，
-  需教师人工修改。
+- modify_text 只给建议新文本 suggested_text，由教师人工修改。
 delete_object_refs 只能删除本页明确允许删除的普通文字或形状对象，且只有
-action 为 keep 时才可填写，不得输出 WPS 指令。教材页码只能通过
-textbook_refs 引用资源包内真实教材页，不能写猜测页码；教材页与讲授页
-有语义对应时才填写，没有对应就返回空数组，不强行填写。练习删减只针对
-确实重复或过量的题目，保留讲授例题和短题；补题不得超过偏好上限，且应
-避免与原课件重复或直接照搬教辅原题。普通教辅页可以作为练习删留理由的
-citation，但不能把它当成家庭作业要求。所有结论必须引用资源包内已有
-citation ID；不得编造页码、题号、候选题或班级结论。课堂总时长由本机
-另行计算。
+action 为 keep 时才可填写。教材页码只能通过 textbook_refs 引用资源包内
+真实教材页，没有对应就返回空数组，不强行填写。
+
+候选题与选题规则：
+- 资源包 question_candidates 是系统按教师设定的范围从题库筛出的候选题，
+  每题带题干、答案、难度、方法与考频；source_ref 用 question:{question_id}。
+- 选题三删：超纲题删除、竞赛风格题删除、与课件中已有例题同型重复的删除；
+  只保留确实有价值的题，宁可少选。
+- exercise_recommendations 的 action 为 include 时必须给出 target_slide_ref
+  （插到哪一页之后），优先放在删除冗余题后形成的空白区，按由易到难排列；
+  没有价值的候选题返回 backup 或 exclude 并说明理由。
+- 课时容量红线：40 分钟课时成片约 16-18 页；当前页数加上要插入的题页
+  超出上限时，主动在 review_findings 给出取舍建议（哪些页可删或可跳过）。
 
 用户输入中的 output_contract 是强制输出契约：
 - slide_adaptations 必须逐一覆盖 allowed_slide_refs，数量必须等于
@@ -106,42 +79,19 @@ citation ID；不得编造页码、题号、候选题或班级结论。课堂总
 - slide_ref 必须原样复制 allowed_slide_refs 中的完整字符串，禁止用 1、2、3
   等数字或页码简称。
 - role 只能取 allowed_roles，action 只能取 allowed_actions。
-- delete_object_refs 只能原样复制 allowed_object_refs_by_slide 中该页的对象引用；
-  只有 action 为 keep 时才可填写。若一题由多个允许对象组成，应列出所有组成对象。
 - target_position 只在 action 为 reorder 时填写，取 1 到 required_count
   之间的整数；其他 action 一律填 null。
 - suggested_text 只在 action 为 add 或 modify_text 时填写；其他 action
   一律填 null。
 - textbook_refs 只能原样复制 allowed_textbook_refs 中的完整字符串；没有对应页
-  时返回空数组，禁止输出 10、11 等数字简称。
+  时返回空数组。
 - citations 只能取 allowed_citation_refs；每条 slide_adaptation 的 citations 至少
-  包含该条 slide_ref，并包含其所有 textbook_refs。禁止返回空 citations。
-- review_findings 的 slide_refs 与 citations 只能取 allowed_citation_refs，
-  每条 citations 禁止为空。
+  包含该条 slide_ref。禁止返回空 citations。
 - exercise_recommendations 的 source_ref 只能取
-  allowed_exercise_recommendation_refs；该列表为空时必须返回空数组。action 为 include
-  时 target_slide_ref 必须取 allowed_slide_refs，优先放到删除冗余题后形成的空白区。
-- allowed_exercise_recommendation_refs 非空表示系统已从教师勾选的教材或教辅原页自动
-  选出候选题，不是教师逐题勾选；只在候选题对本课有明确价值时才返回
-  action=include，没有价值时全部返回 backup 或 exclude。
-- 整次最多 6 轮。第 1 轮消息已附主课件每页的小图（超过 40 页时只附前
-  40 页）；第 1 轮先只交初步审课发现：只返回 {"review_findings": [...]}
-  对象，每条字段与最终版相同，不能调用工具，不要给出改编方案。第 2 轮
-  起可取页细看：调用 get_frozen_page，source_ref 必须原样复制
-  page_catalog，细看取图每轮最多 4 页。最后一轮必须返回规定完整 json
-  对象，发现清单可相对初步版修正，不要再调用工具。不得引用目录和图中
-  都没有的页码或题号。
-- 检查后段练习页的 allowed_object_refs_by_slide；只在确认存在重复或过量题目、
-  且能安全识别完整边界时，才在 action=keep 的页面填写 delete_object_refs，
-  否则全部留空。不得为凑数量删除标题、答案说明、定理、讲授例题或无法确认
-  完整边界的对象。
-- delete_object_refs 只能填写在 role=practice 且 action=keep 的页；
-  禁止在 introduction、objective、exploration、example、summary、other 页删除对象。
-  当课件已有多张练习页时，优先从后段重复或过量练习中删除一整道题的所有组成
-  对象；若插入题的目标页已有可安全删除的完整题目，可在该页删出空位后插入。
-  已整页 action=delete 的广告或空白页不得再填写 delete_object_refs。
+  allowed_exercise_recommendation_refs；该列表为空时必须返回空数组。
 - 其他各节必须严格使用 output_contract.schemas 中规定的对象字段，不能返回
   字符串数组。lesson_flow 必须把 required_phases 每个阶段各返回一次。
+- 本次只有一次返回机会；不得引用目录和图中都没有的页码或题号。
 """
 
 
@@ -172,15 +122,10 @@ class WorkspaceLessonModelAdapter:
         catalog = compact_resource_pack_for_model(resource_pack)
         slide_images = _reference_slide_thumbnails(resource_pack, page_loader)
         if slide_images:
-            catalog["first_round_slide_images"] = {
-                "attached": len(slide_images),
-                "limit": _MAX_FIRST_ROUND_SLIDES,
-                "note": (
-                    "主课件每页的小图已随本条消息附上，按 unit_index 对应 "
-                    "page_catalog；超出上限或未附上的页从第 2 轮起用 "
-                    "get_frozen_page 取图。"
-                ),
-            }
+            catalog["slide_images_note"] = (
+                f"主课件每页的小图已随本条消息附上，共 {len(slide_images)} 张，"
+                "按 unit_index 对应 page_catalog。"
+            )
         messages: list[dict[str, object]] = [
             {"role": "system", "content": _SYSTEM_INSTRUCTION},
             {
@@ -198,10 +143,10 @@ class WorkspaceLessonModelAdapter:
                 "round": 1,
                 "phase": "started",
                 "summary": (
-                    f"已发送本课目录与 {len(slide_images)} 页课件小图，"
-                    "等待模型审课。"
+                    f"已发送本课目录、候选题与 {len(slide_images)} 页课件小图，"
+                    "等待模型出改编方案。"
                     if slide_images
-                    else "已发送本课目录，等待模型按页取图。"
+                    else "已发送本课目录与候选题，等待模型出改编方案。"
                 ),
                 "thinking_excerpt": None,
                 "tool": None,
@@ -210,28 +155,16 @@ class WorkspaceLessonModelAdapter:
                 "model_calls_max": _MAX_MODEL_ROUNDS,
             },
         )
-        self._initial_review_findings(
-            messages=messages,
-            operation_id=operation_id,
-            resource_pack=resource_pack,
-            observer=observer,
-        )
         last_error: TeachingPrepValidationError | None = None
-        for round_number in range(2, _MAX_MODEL_ROUNDS + 1):
-            final_round = round_number == _MAX_MODEL_ROUNDS
-            kwargs: dict[str, object] = {
-                "messages": messages,
-                "max_tokens": _MAX_OUTPUT_TOKENS,
-            }
-            if final_round:
-                kwargs["response_format"] = {"type": "json_object"}
-            else:
-                kwargs["tools"] = [_GET_FROZEN_PAGE_TOOL]
-                kwargs["tool_choice"] = "auto"
+        for round_number in range(1, _MAX_MODEL_ROUNDS + 1):
             response = self._call_round(
                 round_number=round_number,
                 operation_id=operation_id,
-                kwargs=kwargs,
+                kwargs={
+                    "messages": messages,
+                    "max_tokens": _MAX_OUTPUT_TOKENS,
+                    "response_format": {"type": "json_object"},
+                },
                 observer=observer,
             )
             thinking = _teacher_safe_excerpt(_response_thinking(response))
@@ -241,7 +174,7 @@ class WorkspaceLessonModelAdapter:
                     {
                         "round": round_number,
                         "phase": "thinking",
-                        "summary": "模型正在分析本课目录和已取原页。",
+                        "summary": "模型正在逐页审课并生成改编方案。",
                         "thinking_excerpt": thinking,
                         "tool": None,
                         "result": None,
@@ -249,90 +182,47 @@ class WorkspaceLessonModelAdapter:
                         "model_calls_max": _MAX_MODEL_ROUNDS,
                     },
                 )
-            tool_calls = _response_tool_calls(response)
-            if tool_calls and not final_round:
-                assistant = _assistant_message_for_history(response)
-                if assistant is not None:
-                    messages.append(assistant)
-                images: list[dict[str, object]] = []
-                for index, call in enumerate(tool_calls):
-                    accepted = index < _MAX_PAGES_PER_ROUND
-                    events, image, tool_message = _execute_page_tool(
-                        call,
-                        page_loader=page_loader,
-                        accepted=accepted,
-                    )
-                    for event in events:
-                        event["round"] = round_number
-                        event["model_calls_used"] = round_number
-                        event["model_calls_max"] = _MAX_MODEL_ROUNDS
-                        _emit(observer, event)
-                    messages.append(tool_message)
-                    if image is not None:
-                        images.append(image)
-                if images:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": vision_user_content(
-                                {
-                                    "returned_pages": [
-                                        str(item.get("label") or "")
-                                        for item in images
-                                    ]
-                                },
-                                images,
-                                max_images=_MAX_PAGES_PER_ROUND,
-                            ),
-                        }
-                    )
-                _emit(
-                    observer,
-                    {
-                        "round": round_number,
-                        "phase": "round_done",
-                        "summary": f"第 {round_number} 轮已取回 {len(images)} 页。",
-                        "thinking_excerpt": None,
-                        "tool": None,
-                        "result": None,
-                        "model_calls_used": round_number,
-                        "model_calls_max": _MAX_MODEL_ROUNDS,
-                    },
-                )
-                continue
             diagnostics = response_diagnostics(response)
-            if bool(diagnostics.get("output_truncated")):
-                last_error = TeachingPrepValidationError(
-                    "lesson model output was truncated"
-                )
-                if final_round:
-                    break
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "上一轮输出被截断。请返回完整规定 json 对象，或调用 get_frozen_page。",
-                    }
-                )
-                continue
             try:
+                if bool(diagnostics.get("output_truncated")):
+                    raise TeachingPrepValidationError(
+                        "lesson model output was truncated"
+                    )
                 payload = _parse_model_object(_response_text(response))
             except TeachingPrepValidationError as exc:
                 last_error = exc
-                if final_round:
-                    break
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "请返回规定 json 对象，或调用 get_frozen_page 查看原页。",
-                    }
-                )
-                continue
+                if round_number < _MAX_MODEL_ROUNDS:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "上一次返回没有通过本机校验（"
+                                f"{exc}）。请重新返回完整规定 json 对象，"
+                                "不要解释，不要省略任何字段。"
+                            ),
+                        }
+                    )
+                    _emit(
+                        observer,
+                        {
+                            "round": round_number,
+                            "phase": "repair_requested",
+                            "summary": "返回未通过校验，已请求模型修正一次。",
+                            "thinking_excerpt": None,
+                            "tool": None,
+                            "result": None,
+                            "model_calls_used": round_number,
+                            "model_calls_max": _MAX_MODEL_ROUNDS,
+                        },
+                    )
+                    continue
+                break
             _emit(
                 observer,
                 {
                     "round": round_number,
                     "phase": "final_accepted",
-                    "summary": "已收到改编清单。",
+                    "summary": "已收到改编方案。",
                     "thinking_excerpt": None,
                     "tool": None,
                     "result": None,
@@ -356,119 +246,6 @@ class WorkspaceLessonModelAdapter:
         )
         raise last_error or TeachingPrepValidationError(
             "lesson model did not return a valid JSON object"
-        )
-
-    def _initial_review_findings(
-        self,
-        *,
-        messages: list[dict[str, object]],
-        operation_id: str,
-        resource_pack: Mapping[str, object],
-        observer: Callable[[Mapping[str, object]], None] | None,
-    ) -> list[dict[str, object]]:
-        """Round 1: preliminary review findings only; page tools come later."""
-        last_error: TeachingPrepValidationError | None = None
-        for attempt in range(1, _MAX_FIRST_ROUND_FINDINGS_CALLS + 1):
-            response = self._call_round(
-                round_number=1,
-                operation_id=operation_id,
-                kwargs={
-                    "messages": messages,
-                    "max_tokens": _MAX_OUTPUT_TOKENS,
-                    "response_format": {"type": "json_object"},
-                },
-                observer=observer,
-            )
-            thinking = _teacher_safe_excerpt(_response_thinking(response))
-            if thinking:
-                _emit(
-                    observer,
-                    {
-                        "round": 1,
-                        "phase": "thinking",
-                        "summary": "模型正在逐页审课。",
-                        "thinking_excerpt": thinking,
-                        "tool": None,
-                        "result": None,
-                        "model_calls_used": 1,
-                        "model_calls_max": _MAX_MODEL_ROUNDS,
-                    },
-                )
-            try:
-                diagnostics = response_diagnostics(response)
-                if bool(diagnostics.get("output_truncated")):
-                    raise TeachingPrepValidationError(
-                        "lesson model output was truncated"
-                    )
-                payload = _parse_model_object(_response_text(response))
-                findings = validate_review_findings_payload(
-                    payload.get("review_findings"),
-                    resource_pack,
-                )
-            except TeachingPrepValidationError as exc:
-                last_error = exc
-                if attempt < _MAX_FIRST_ROUND_FINDINGS_CALLS:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "第 1 轮只接受初步审课发现：请只返回 "
-                                '{"review_findings": [...]} 对象，每条包含 '
-                                "slide_refs、finding、category、"
-                                "suggested_action、citations；不要调用工具，"
-                                "不要给出改编方案。"
-                            ),
-                        }
-                    )
-                continue
-            assistant = _assistant_message_for_history(response)
-            if assistant is not None:
-                # Round 1 offers no tools; never echo dangling tool_calls.
-                assistant.pop("tool_calls", None)
-                messages.append(assistant)
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "已收到初步审课发现。从本轮起可调用 get_frozen_page "
-                        "细看原页（每轮最多 4 页）；最后一轮返回规定完整 "
-                        "json 对象，发现清单可相对初步版修正。"
-                    ),
-                }
-            )
-            _emit(
-                observer,
-                {
-                    "round": 1,
-                    "phase": "findings_ready",
-                    "summary": (
-                        f"已给出初步审课发现 {len(findings)} 条"
-                        "（细看后可能修正）"
-                    ),
-                    "thinking_excerpt": None,
-                    "tool": None,
-                    "result": None,
-                    "findings": _findings_trace_items(findings),
-                    "model_calls_used": 1,
-                    "model_calls_max": _MAX_MODEL_ROUNDS,
-                },
-            )
-            return findings
-        _emit(
-            observer,
-            {
-                "round": 1,
-                "phase": "failed",
-                "summary": "本次没有完成（未改原 PPT）。",
-                "thinking_excerpt": None,
-                "tool": None,
-                "result": None,
-                "model_calls_used": 1,
-                "model_calls_max": _MAX_MODEL_ROUNDS,
-            },
-        )
-        raise last_error or TeachingPrepValidationError(
-            "lesson model did not return valid review findings"
         )
 
     def _call_round(
@@ -883,7 +660,7 @@ def vision_user_content(
     payload: Mapping[str, object],
     raw_images: object,
     *,
-    max_images: int = _MAX_PAGES_PER_ROUND,
+    max_images: int = 40,
 ) -> object:
     payload_json = json.dumps(
         payload,
@@ -991,6 +768,38 @@ def compact_resource_pack_for_model(
                 "selection_status": item.get("selection_status"),
             }
         )
+    question_candidates = []
+    evidence = resource_pack.get("evidence")
+    question_evidence = (
+        evidence.get("question") if isinstance(evidence, Mapping) else None
+    )
+    selection_meta: dict[str, Any] = {}
+    raw_selection = resource_pack.get("question_selection")
+    if isinstance(raw_selection, Mapping):
+        selection_meta = {
+            str(item.get("question_id")): item
+            for item in _safe_list(raw_selection.get("items"))
+            if isinstance(item, Mapping) and item.get("question_id") is not None
+        }
+    for item in _safe_list(
+        question_evidence.get("items") if isinstance(question_evidence, Mapping) else None
+    ):
+        if not isinstance(item, Mapping):
+            continue
+        question_id = item.get("question_id")
+        meta = selection_meta.get(str(question_id), {})
+        question_candidates.append(
+            {
+                "source_ref": f"question:{question_id}",
+                "question_type": str(item.get("question_type") or ""),
+                "stem": _truncate_text(item.get("question_text"), 400),
+                "answer": _truncate_text(item.get("answer_text"), 200),
+                "difficulty": item.get("difficulty"),
+                "method": str(meta.get("method") or ""),
+                "frequency_score": meta.get("frequency_score"),
+                "answer_needs_review": bool(item.get("needs_review")),
+            }
+        )
     return {
         "lesson": (
             {
@@ -1012,13 +821,9 @@ def compact_resource_pack_for_model(
         "preparation_preferences": resource_pack.get("preparation_preferences"),
         "materials": materials,
         "exercises": exercises,
+        "question_candidates": question_candidates,
         "page_catalog": page_catalog,
         "output_contract": _model_output_contract(resource_pack),
-        "tool_limits": {
-            "tool": "get_frozen_page",
-            "max_pages_per_round": _MAX_PAGES_PER_ROUND,
-            "max_model_rounds": _MAX_MODEL_ROUNDS,
-        },
     }
 
 
@@ -1094,27 +899,6 @@ def _truncate_text(value: object, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
-def _findings_trace_items(
-    findings: list[Mapping[str, object]],
-) -> list[dict[str, object]]:
-    items: list[dict[str, object]] = []
-    for item in findings[:_FINDINGS_TRACE_LIMIT]:
-        pages: list[int] = []
-        for raw_ref in _safe_list(item.get("slide_refs")):
-            match = _PAGE_SOURCE_REF.fullmatch(str(raw_ref or "").strip())
-            if match is not None:
-                pages.append(int(match.group(2)))
-        items.append(
-            {
-                "finding": _truncate_text(
-                    item.get("finding"), _FINDING_TEXT_LIMIT
-                ),
-                "category": str(item.get("category") or ""),
-                "pages": pages,
-            }
-        )
-    return items
-
 
 def _parse_model_object(text: str) -> dict[str, Any]:
     try:
@@ -1132,112 +916,6 @@ def _parse_model_object(text: str) -> dict[str, Any]:
         )
     return payload
 
-
-def _execute_page_tool(
-    call: Mapping[str, object],
-    *,
-    page_loader: Callable[[str], Mapping[str, object]] | None,
-    accepted: bool,
-) -> tuple[
-    list[dict[str, object]],
-    dict[str, object] | None,
-    dict[str, object],
-]:
-    call_id = str(call.get("id") or "tool-call")
-    source_ref = str(call.get("source_ref") or "").strip()
-    safe_ref = source_ref if _PAGE_SOURCE_REF.fullmatch(source_ref) else ""
-    tool = {
-        "name": "get_frozen_page",
-        "purpose": None,
-        "page": None,
-        "source_ref": safe_ref,
-    }
-    if not accepted:
-        payload = {
-            "ok": False,
-            "error": "this round already used 4 pages",
-            "source_ref": source_ref,
-        }
-        event = {
-            "phase": "tool_result",
-            "summary": "本轮已达 4 页上限，其余取页已拒绝。",
-            "thinking_excerpt": None,
-            "tool": tool,
-            "result": {"ok": False, "label": "本轮超出 4 页", "preview_url": None},
-        }
-        return [event], None, _tool_message(call_id, payload)
-    if not safe_ref:
-        payload = {
-            "ok": False,
-            "error": "source_ref is not an allowed page_catalog value",
-            "source_ref": source_ref,
-        }
-        event = {
-            "phase": "tool_call",
-            "summary": "取页参数无效，已拒绝且未读盘。",
-            "thinking_excerpt": None,
-            "tool": tool,
-            "result": {"ok": False, "label": "无效页引用", "preview_url": None},
-        }
-        return [event], None, _tool_message(call_id, payload)
-    if page_loader is None:
-        payload = {"ok": False, "error": "page lookup is unavailable"}
-        event = {
-            "phase": "tool_result",
-            "summary": "本机取页不可用。",
-            "thinking_excerpt": None,
-            "tool": tool,
-            "result": {"ok": False, "label": "取页不可用", "preview_url": None},
-        }
-        return [event], None, _tool_message(call_id, payload)
-    loaded = dict(page_loader(source_ref))
-    purpose = loaded.get("purpose")
-    unit_index = loaded.get("unit_index")
-    label = str(loaded.get("label") or page_label(purpose, unit_index))
-    tool = {
-        "name": "get_frozen_page",
-        "purpose": str(purpose or "") or None,
-        "page": unit_index if isinstance(unit_index, int) else None,
-        "source_ref": safe_ref,
-    }
-    ok = loaded.get("ok") is True
-    preview_url = loaded.get("preview_url")
-    call_event = {
-        "phase": "tool_call",
-        "summary": f"取页 · {label}",
-        "thinking_excerpt": None,
-        "tool": tool,
-        "result": None,
-    }
-    result_event = {
-        "phase": "tool_result",
-        "summary": f"已返回{label}" if ok else f"未能返回{label}",
-        "thinking_excerpt": None,
-        "tool": tool,
-        "result": {
-            "ok": ok,
-            "label": label if ok else str(loaded.get("error") or label),
-            "preview_url": preview_url if isinstance(preview_url, str) else None,
-        },
-    }
-    image = None
-    content = loaded.get("content")
-    if ok and isinstance(content, (bytes, bytearray)) and content:
-        image = {
-            "purpose": purpose,
-            "material_unit_id": loaded.get("unit_id"),
-            "unit_index": unit_index,
-            "mime_type": loaded.get("mime_type") or "image/png",
-            "content": bytes(content),
-            "label": label,
-        }
-    tool_payload = {
-        "ok": ok,
-        "source_ref": source_ref,
-        "label": label,
-        "error": loaded.get("error"),
-    }
-    return [call_event, result_event], image, _tool_message(call_id, tool_payload)
 
 
 def _tool_message(call_id: str, payload: Mapping[str, object]) -> dict[str, object]:
@@ -1327,25 +1005,6 @@ def _response_thinking(response: object) -> str:
     return ""
 
 
-def _response_tool_calls(response: object) -> list[dict[str, object]]:
-    message = _response_message(response)
-    raw_calls = message.get("tool_calls")
-    calls: list[dict[str, object]] = []
-    if isinstance(raw_calls, list):
-        for index, raw in enumerate(raw_calls):
-            parsed = _parse_tool_call(raw, index)
-            if parsed is not None:
-                calls.append(parsed)
-    function_call = message.get("function_call")
-    if not calls and function_call is not None:
-        parsed = _parse_tool_call(
-            {"id": "call-0", "function": function_call},
-            0,
-        )
-        if parsed is not None:
-            calls.append(parsed)
-    return calls
-
 
 def _parse_tool_call(raw: object, index: int) -> dict[str, object] | None:
     if not isinstance(raw, Mapping):
@@ -1385,19 +1044,6 @@ def _parse_tool_call(raw: object, index: int) -> dict[str, object] | None:
         "raw": dict(raw),
     }
 
-
-def _assistant_message_for_history(response: object) -> dict[str, object] | None:
-    message = _response_message(response)
-    if not message:
-        return None
-    payload: dict[str, object] = {"role": "assistant"}
-    content = message.get("content")
-    if isinstance(content, str):
-        payload["content"] = content
-    tool_calls = message.get("tool_calls")
-    if isinstance(tool_calls, list) and tool_calls:
-        payload["tool_calls"] = tool_calls
-    return payload
 
 
 def _teacher_safe_excerpt(value: object, *, limit: int = _THINKING_EXCERPT_LIMIT) -> str | None:

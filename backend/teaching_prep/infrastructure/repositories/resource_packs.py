@@ -57,6 +57,7 @@ class ResourcePackRepository:
         preparation_preferences: dict[str, object],
         selected_material_link_ids: tuple[str, ...] | None = None,
         selected_exercise_candidate_ids: tuple[str, ...] | None = None,
+        question_selection: dict[str, object] | None = None,
     ) -> tuple[ResourcePackVersion, bool]:
         with self._database.connect(immediate=True) as connection:
             existing = connection.execute(
@@ -101,6 +102,7 @@ class ResourcePackRepository:
                     "assessment": assessment_evidence,
                 },
                 "preparation_preferences": preparation_preferences,
+                "question_selection": question_selection or {},
                 "selection": {
                     "material_link_ids": [
                         str(item["link_id"])

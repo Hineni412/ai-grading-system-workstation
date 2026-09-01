@@ -11,13 +11,8 @@ from backend.teaching_prep.infrastructure.evidence import (
     ReadOnlyQuestionEvidenceReader,
 )
 from backend.teaching_prep.infrastructure.llm import (
-    ActiveProfileExerciseSuggestionModelAdapter,
     ActiveProfileLessonModelAdapter,
-    ActiveProfileSemesterMappingModelAdapter,
     ActiveProfileSlideAnimationModelAdapter,
-)
-from backend.teaching_prep.infrastructure.wps_adapter import (
-    SubprocessWpsAdapter,
 )
 from backend.teaching_prep.jobs import register_jobs
 from backend.teaching_prep.application.ai_task_adapter import register_ai_tasks
@@ -63,33 +58,6 @@ def _migration_plan(context: WorkspaceContext) -> WorkspaceMigrationPlan:
 
 
 def _service(context: WorkspaceContext) -> TeachingPrepService:
-    project_root = Path(
-        getattr(
-            context.paths,
-            "migration_project_root",
-            context.paths.project_root,
-        )
-    )
-    real_wps_enabled = _boolean_env(
-        "AI_GRADING_TEACHING_PREP_WPS_ENABLED",
-        default=False,
-    )
-    preview_wps_enabled = real_wps_enabled or _boolean_env(
-        "AI_GRADING_TEACHING_PREP_WPS_PREVIEW",
-        default=True,
-    )
-    helper_script = (
-        project_root
-        / "backend"
-        / "teaching_prep"
-        / "infrastructure"
-        / "wps_helper.ps1"
-    )
-    helper = (
-        SubprocessWpsAdapter(helper_script=helper_script)
-        if helper_script.is_file()
-        else None
-    )
     profile_store = ApiProfileStore(
         Path(context.paths.api_profiles_path),
         legacy_paths=tuple(
@@ -106,6 +74,7 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
         question_evidence_reader=ReadOnlyQuestionEvidenceReader(
             Path(context.paths.qb_db_path)
         ),
+        question_bank_path=Path(context.paths.qb_db_path),
         assessment_evidence_reader=ReadOnlyAssessmentEvidenceReader(
             Path(context.paths.db_path),
             Path(context.paths.qb_db_path),
@@ -115,20 +84,6 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
             profile_store=profile_store,
         ),
         lesson_model_label="当前启用的模型配置",
-        semester_mapping_model_adapter=(
-            ActiveProfileSemesterMappingModelAdapter(
-                context=context,
-                profile_store=profile_store,
-            )
-        ),
-        semester_mapping_model_label="当前启用的模型配置",
-        exercise_suggestion_model_adapter=(
-            ActiveProfileExerciseSuggestionModelAdapter(
-                context=context,
-                profile_store=profile_store,
-            )
-        ),
-        exercise_suggestion_model_label="当前启用的模型配置",
         slide_animation_model_adapter=(
             ActiveProfileSlideAnimationModelAdapter(
                 context=context,
@@ -136,9 +91,6 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
             )
         ),
         slide_animation_model_label="当前启用的模型配置",
-        wps_adapter=helper if real_wps_enabled else None,
-        preview_wps_adapter=helper if preview_wps_enabled else None,
-        wps_adapter_is_real=real_wps_enabled,
     )
 
 

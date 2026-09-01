@@ -62,56 +62,6 @@ def register_jobs(
             "unit_count": len(units),
         }
 
-    def semester_mapping(context: JobContext) -> dict[str, object]:
-        semester_id = str(context.payload.get("semester_id") or "").strip()
-        material_record_id = str(
-            context.payload.get("material_record_id") or ""
-        ).strip()
-        operation_id = str(context.payload.get("operation_id") or "").strip()
-        source_state_sha256 = str(
-            context.payload.get("source_state_sha256") or ""
-        ).strip()
-        if len(semester_id) != 32 or len(material_record_id) != 32:
-            raise ValueError("semester mapping target is invalid")
-        if not 8 <= len(operation_id) <= 96:
-            raise ValueError("semester mapping operation_id is invalid")
-        if (
-            len(source_state_sha256) != 64
-            or any(character not in "0123456789abcdef" for character in source_state_sha256)
-        ):
-            raise ValueError("semester mapping source digest is invalid")
-
-        stage_progress = {
-            "checking": (0.05, "正在核对学期、资料和模型配置"),
-            "snapshotting": (0.12, "正在固定本次发送范围"),
-            "claiming_operation": (0.20, "正在取得防重复调用权"),
-            "calling_model": (0.35, "模型请求已开始，正在等待返回"),
-            "validating_response": (0.75, "正在校验模型返回的目录和页码"),
-            "persisting_proposal": (0.90, "正在保存待确认建议"),
-            "recovered": (1.0, "已恢复此前保存的待确认建议"),
-            "completed": (1.0, "待确认建议已保存"),
-        }
-
-        def report(stage: str) -> None:
-            progress, detail = stage_progress[stage]
-            context.report(progress, stage, detail)
-
-        proposal, created = service.generate_semester_mapping_proposal(
-            semester_id,
-            operation_id=operation_id,
-            material_record_ids=[material_record_id],
-            expected_source_state_sha256=source_state_sha256,
-            progress_callback=report,
-            cancel_check=context.raise_if_cancelled,
-        )
-        return {
-            "semester_id": semester_id,
-            "operation_id": proposal.operation_id,
-            "source_state_sha256": proposal.source_state_sha256,
-            "proposal_id": proposal.id,
-            "recovered_existing": not created,
-        }
 
     registrar.register("reconcile", reconcile)
     registrar.register("material_parse", material_parse)
-    registrar.register("semester_mapping", semester_mapping)
