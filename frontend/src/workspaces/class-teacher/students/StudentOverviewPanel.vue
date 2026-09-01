@@ -64,13 +64,6 @@ const proposedProfile = computed<CurrentStudentProfile | null>(() => {
 })
 const hasProfile = computed(() => Boolean(profile.value.summary || profile.value.dimensions.length))
 const roundChanges = computed(() => profile.value.latest_round?.changed ?? null)
-const hasRoundChanges = computed(() => Boolean(
-  roundChanges.value
-  && (roundChanges.value.summary_changed
-    || Object.keys(roundChanges.value.dimensions).length
-    || roundChanges.value.open_questions.length
-    || roundChanges.value.support_focus.length),
-))
 
 function isRoundNewItem(dimensionKey: string, item: string): boolean {
   return Boolean(roundChanges.value?.dimensions[dimensionKey]?.includes(item))
@@ -288,7 +281,7 @@ async function settleProposal(next: IntakeConversation): Promise<void> {
     conversation.value = refreshed
     await load()
     await loadProposal(refreshed)
-    notice.value = '本轮档案更新已自动并入当前档案；如不合适可一键撤回。'
+    notice.value = ''
     return
   }
   if (outcome === 'conflict') {
@@ -311,7 +304,7 @@ async function bindHomeConversation(id: string): Promise<void> {
     notice.value = proposal.value
       ? 'AI 已把这轮信息合并成当前档案草稿；自动并入未完成，请核对后手动应用。'
       : adoptedHandoff.value
-        ? '本轮档案更新已自动并入当前档案；如不合适可一键撤回。'
+        ? ''
         : revertedHandoff.value
           ? '本轮档案更新已撤回，档案回到更新前。'
           : '本轮没有形成可应用的档案更新。'
@@ -543,7 +536,7 @@ onBeforeUnmount(() => {
 
       <main v-else class="dossier__scroll">
         <section v-show="activeTab === 'overview'" class="tab-panel overview-panel" aria-label="当前概览">
-          <blockquote v-if="profile.summary" class="profile-summary"><span v-if="roundChanges?.summary_changed" class="round-badge">本轮</span>{{ profile.summary }}</blockquote>
+          <blockquote v-if="profile.summary" class="profile-summary"><span v-if="roundChanges?.summary_changed" class="round-badge">新</span>{{ profile.summary }}</blockquote>
           <div v-else class="empty-profile">
             <strong>{{ profileNotCreated ? '档案尚未建立' : '这份档案还没有开始生长' }}</strong>
             <p v-if="profileNotCreated">核对下方待并入的草稿，确认保存后会自动创建档案。</p>
@@ -559,11 +552,10 @@ onBeforeUnmount(() => {
           <header class="section-heading">
             <div><small>此刻对这名学生的认识</small><h2>当前结构化档案</h2></div>
           </header>
-          <p v-if="hasRoundChanges" class="round-legend">带「本轮」标记的内容是最近一轮对话并入的更新。</p>
           <div v-if="hasProfile" class="dimension-grid">
             <article v-for="dimension in profile.dimensions" :key="dimension.key" class="dimension">
               <h3>{{ dimension.label }}</h3>
-              <ul><li v-for="item in dimension.items" :key="item"><span v-if="isRoundNewItem(dimension.key, item)" class="round-badge">本轮</span>{{ item }}</li></ul>
+              <ul><li v-for="item in dimension.items" :key="item"><span v-if="isRoundNewItem(dimension.key, item)" class="round-badge">新</span>{{ item }}</li></ul>
             </article>
           </div>
           <div v-if="profile.support_focus.length" class="support-preview">
@@ -579,8 +571,8 @@ onBeforeUnmount(() => {
           <p v-if="homeBound && notice" class="notice home-notice" role="status">{{ notice }}</p>
           <p v-if="homeBound && error" class="error home-error" role="alert">{{ error }}</p>
           <section v-if="homeBound && adoptedHandoff" class="proposal" aria-labelledby="home-adopted-title">
-            <header><div><small>本轮档案更新</small><h2 id="home-adopted-title">已自动并入当前档案</h2></div><AppButton variant="secondary" :disabled="busy" @click="revertProposal">撤回本轮更新</AppButton></header>
-            <footer><span>撤回后档案回到本轮更新前；本轮原始记录仍保留。</span></footer>
+            <header><div><small>本轮档案更新</small><h2 id="home-adopted-title">已自动并入当前档案</h2></div><AppButton variant="secondary" :disabled="busy" @click="revertProposal">撤回这次更新</AppButton></header>
+            <footer><span>原始记录仍保留。</span></footer>
           </section>
           <section v-if="homeBound && proposal && proposedProfile" class="proposal" aria-labelledby="home-proposal-title">
             <header><div><small>本轮拟更新</small><h2 id="home-proposal-title">把新认识并入当前档案</h2></div><AppButton variant="primary" :disabled="busy" @click="applyProposal">应用到当前档案</AppButton></header>
@@ -621,8 +613,8 @@ onBeforeUnmount(() => {
           </section>
 
           <section v-if="adoptedHandoff" class="proposal" aria-labelledby="adopted-title">
-            <header><div><small>本轮档案更新</small><h2 id="adopted-title">已自动并入当前档案</h2></div><AppButton variant="secondary" :disabled="busy" @click="revertProposal">撤回本轮更新</AppButton></header>
-            <footer><span>撤回后档案回到本轮更新前；本轮原始记录仍保留。</span></footer>
+            <header><div><small>本轮档案更新</small><h2 id="adopted-title">已自动并入当前档案</h2></div><AppButton variant="secondary" :disabled="busy" @click="revertProposal">撤回这次更新</AppButton></header>
+            <footer><span>原始记录仍保留。</span></footer>
           </section>
 
           <section v-if="proposal && proposedProfile" class="proposal" aria-labelledby="proposal-title">
@@ -636,7 +628,7 @@ onBeforeUnmount(() => {
             <section class="support-section">
               <header><small>与个人档案直接相连</small><h2>当前学生支持</h2></header>
               <article v-for="focus in profile.support_focus" :key="focus.key">
-                <h3><span v-if="isRoundNewFocus(focus.key)" class="round-badge">本轮</span>{{ focus.title }}</h3><p>{{ focus.need }}</p>
+                <h3><span v-if="isRoundNewFocus(focus.key)" class="round-badge">新</span>{{ focus.title }}</h3><p>{{ focus.need }}</p>
                 <template v-if="focus.effective_methods.length"><strong>已经有效</strong><ul><li v-for="item in focus.effective_methods" :key="item">{{ item }}</li></ul></template>
                 <template v-if="focus.next_actions.length"><strong>接下来尝试</strong><ul><li v-for="item in focus.next_actions" :key="item">{{ item }}</li></ul></template>
               </article>
@@ -644,8 +636,7 @@ onBeforeUnmount(() => {
             </section>
             <section class="support-section questions">
               <header><small>后续谈话可以留意</small><h2>仍需了解</h2></header>
-              <ol v-if="profile.open_questions.length"><li v-for="item in profile.open_questions" :key="item"><span v-if="isRoundNewQuestion(item)" class="round-badge">本轮</span>{{ item }}</li></ol>
-              <p v-if="hasRoundChanges" class="round-legend questions-legend">带「本轮」标记的内容是最近一轮对话并入的更新。</p>
+              <ol v-if="profile.open_questions.length"><li v-for="item in profile.open_questions" :key="item"><span v-if="isRoundNewQuestion(item)" class="round-badge">新</span>{{ item }}</li></ol>
               <p v-if="!profile.open_questions.length" class="compact-empty">当前没有尚待了解的问题。</p>
             </section>
             <section v-if="supportPlans.length" class="support-section active-plans">

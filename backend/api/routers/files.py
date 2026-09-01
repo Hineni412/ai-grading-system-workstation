@@ -21,6 +21,7 @@ NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 MARKDOWN_MEDIA_TYPE = "text/markdown"
+HTML_MEDIA_TYPE = "text/html"
 ZIP_MEDIA_TYPE = "application/zip"
 PDF_MEDIA_TYPE = "application/pdf"
 BINARY_SCHEMA = {"type": "string", "format": "binary"}
@@ -35,6 +36,7 @@ BINARY_SCHEMA = {"type": "string", "format": "binary"}
                 XLSX_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
                 DOCX_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
                 MARKDOWN_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
+                HTML_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
                 ZIP_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
                 PDF_MEDIA_TYPE: {"schema": BINARY_SCHEMA},
             }

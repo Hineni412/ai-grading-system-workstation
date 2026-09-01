@@ -106,7 +106,7 @@ describe('ConversationDesk 学生档案自动并入与撤回', () => {
     expect(adopt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ handoff_id: 'handoff-auto-a' }), '3')
     expect(host.textContent).toContain('已自动并入档案，可一键撤回')
     expect(host.textContent).toContain('学生档案更新已自动并入当前档案')
-    expect([...host.querySelectorAll('button')].some((item) => item.textContent?.includes('撤回本轮更新'))).toBe(true)
+    expect([...host.querySelectorAll('button')].some((item) => item.textContent?.includes('撤回这次更新'))).toBe(true)
   })
 
   it('falls back to the manual card with an explicit notice on a 409 conflict', async () => {
@@ -125,7 +125,7 @@ describe('ConversationDesk 学生档案自动并入与撤回', () => {
     expect(adopt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ handoff_id: 'handoff-auto-b' }), '3')
     expect(host.textContent).toContain('自动并入未完成')
     expect(host.textContent).toContain('打开学生档案核对后手动应用')
-    expect([...host.querySelectorAll('button')].some((item) => item.textContent?.includes('撤回本轮更新'))).toBe(false)
+    expect([...host.querySelectorAll('button')].some((item) => item.textContent?.includes('撤回这次更新'))).toBe(false)
   })
 
   it('reverts an adopted profile merge from the desk card', async () => {
@@ -140,13 +140,13 @@ describe('ConversationDesk 学生档案自动并入与撤回', () => {
       ...adopted, revision: 4, handoffs: [profileHandoff('handoff-auto-c', 'reverted')],
     })
 
-    const button = [...host.querySelectorAll('button')].find((item) => item.textContent?.includes('撤回本轮更新'))
+    const button = [...host.querySelectorAll('button')].find((item) => item.textContent?.includes('撤回这次更新'))
     expect(button).toBeTruthy()
     button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await settle()
 
     expect(revert).toHaveBeenCalledExactlyOnceWith('handoff-auto-c')
-    expect(host.textContent).toContain('已撤回，档案回到本轮更新前')
+    expect(host.textContent).toContain('已撤回，档案已恢复')
   })
 
   it('shows only the latest profile card per student', async () => {
@@ -163,7 +163,7 @@ describe('ConversationDesk 学生档案自动并入与撤回', () => {
     expect(host.querySelector('[data-work-item="work-handoff-auto-new"]')).not.toBeNull()
     expect(host.querySelector('[data-work-item="work-handoff-auto-other"]')).not.toBeNull()
     const revertButtons = [...host.querySelectorAll('button')]
-      .filter((item) => item.textContent?.includes('撤回本轮更新'))
+      .filter((item) => item.textContent?.includes('撤回这次更新'))
     expect(revertButtons).toHaveLength(1)
   })
 

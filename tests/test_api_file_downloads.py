@@ -478,7 +478,30 @@ def test_job_download_rejects_relative_path_traversal(file_client, tmp_path: Pat
     assert response.headers["cache-control"] == "no-store"
 
 
-@pytest.mark.parametrize("suffix", [".exe", ".html", ".svg"])
+@pytest.mark.parametrize(
+    ("suffix", "media_type"),
+    [(".html", "text/html"), (".zip", "application/zip")],
+)
+def test_job_download_allows_analysis_report_files(
+    file_client, suffix: str, media_type: str
+) -> None:
+    client, store, reports_dir = file_client
+    report = reports_dir / f"report{suffix}"
+    report.write_bytes(b"payload")
+    job = _finish_job(
+        store,
+        "report_export",
+        result={"file_path": str(report)},
+    )
+
+    response = client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(media_type)
+    assert response.content == b"payload"
+
+
+@pytest.mark.parametrize("suffix", [".exe", ".svg"])
 def test_job_download_rejects_disallowed_extension(file_client, suffix: str) -> None:
     client, store, reports_dir = file_client
     unsafe = reports_dir / f"report{suffix}"

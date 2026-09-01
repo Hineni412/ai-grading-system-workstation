@@ -197,7 +197,7 @@ function stateClass(step: AffairStep): string {
 
 <template>
   <div class="sop-flow">
-    <svg v-if="layout.nodes.length" :viewBox="layout.viewBox" class="sop-flow__svg" role="img" aria-label="SOP 流程图">
+    <svg v-if="layout.nodes.length" :viewBox="layout.viewBox" class="sop-flow__svg" role="img" aria-label="处理流程图">
       <defs>
         <marker id="sop-flow-arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
           <path d="M0,0 L9,4.5 L0,9 z" class="arrowhead" />

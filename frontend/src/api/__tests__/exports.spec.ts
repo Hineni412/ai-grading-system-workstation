@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../errors'
 import {
+  decodeAnalysisPreflight,
   decodeJobSummaryList,
   decodeReportContext,
   decodeTrainingTaskDetail,
@@ -112,6 +113,79 @@ describe('file center API contract', () => {
         }),
       }),
     )
+  })
+
+  it.each(['personal_analysis_html'] as const)(
+    'submits the analysis report type %s without Excel options',
+    async (reportType) => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify(job), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+
+      await exportsApi.submitReport(7, reportType, false)
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/sessions/7/reports/export',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            report_type: reportType,
+            force_regenerate: false,
+          }),
+        }),
+      )
+    },
+  )
+
+  it('requests the analysis preflight with the report type query', async () => {
+    const preflight = {
+      report_type: 'personal_analysis_html',
+      configured: true,
+      service_name: '默认内容服务',
+      model_name: 'qwen-plus',
+      call_count: 10,
+      estimated_total_tokens: 120000,
+      cache_hits: 3,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(preflight), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+
+    const result = await exportsApi.getAnalysisPreflight(7, 'personal_analysis_html')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/sessions/7/reports/analysis-preflight?report_type=personal_analysis_html',
+      expect.anything(),
+    )
+    expect(result).toEqual(preflight)
+  })
+
+  it('rejects malformed or path-leaking analysis preflight payloads', () => {
+    const preflight = {
+      report_type: 'personal_analysis_html',
+      configured: false,
+      service_name: null,
+      model_name: null,
+      call_count: 1,
+      estimated_total_tokens: 50000,
+      cache_hits: 0,
+    }
+
+    expect(decodeAnalysisPreflight(preflight)).toEqual(preflight)
+    expect(() => decodeAnalysisPreflight({
+      ...preflight,
+      call_count: -1,
+    })).toThrow()
+    expect(() => decodeAnalysisPreflight({
+      ...preflight,
+      cache_dir: 'C:/private/cache',
+    })).toThrow()
   })
 
   it('normalizes visible Excel name-list options in the export request', async () => {

@@ -94,7 +94,7 @@ const sopTemplates = [
   ['baseline.school_activity', '学校活动'],
 ] as const
 
-const modeTitle = computed(() => ({ record: '登记草稿', plan_calendar: '计划／日历草稿', sop: 'SOP 处理草稿' }[draft.value?.handling_mode ?? 'record']))
+const modeTitle = computed(() => ({ record: '登记草稿', plan_calendar: '计划／日历草稿', sop: '处理流程草稿' }[draft.value?.handling_mode ?? 'record']))
 const isStudentRecord = computed(() => draft.value?.destination_key === 'class_teacher.student.record')
 const summary = computed({ get: () => String(content.value.summary ?? content.value.content ?? ''), set: (value) => { content.value.summary = value } })
 const scene = computed({ get: () => String(content.value.scene ?? ''), set: (value) => { content.value.scene = value } })
@@ -352,7 +352,7 @@ function pollRevision(requestId: string): void {
       revisionTimer = null
       if (snapshot.task_state === 'response_persisted') {
         await load()
-        message.value = 'AI 调整已形成新的草稿版本，仍需你核对和确认。'
+        message.value = '已生成新草稿，请核对。'
       } else if (snapshot.task_state === 'result_unknown') {
         message.value = ''
         error.value = '调整请求可能已经发出，但本机没有可靠结果；系统不会自动重发。'
@@ -414,7 +414,7 @@ async function save(): Promise<HandoffDraft | null> {
     draft.value = updated
     content.value = cloneContent(updated.content)
     if (updated.handling_mode === 'plan_calendar') hydratePlanActions()
-    message.value = '草稿已保存，尚未进入正式记录。'
+    message.value = '草稿已保存。'
     return draft.value
   } catch { error.value = '草稿没有保存；可能已在其他页面更新，请刷新后核对。'; return null }
   finally { busy.value = false }
@@ -472,7 +472,7 @@ async function adopt(): Promise<void> {
   try {
     const targetRevision = isStudentRecord.value ? selectedSubjectRevision.value : 'new'
     await intakeApi.adopt(current, targetRevision)
-    message.value = '已按教师确认保存为正式内容。'
+    message.value = '已保存为正式记录。'
     let affairId: string | null = null
     if (current.handling_mode === 'sop') {
       const refreshed = await intakeApi.handoff(current.handoff_id).catch(() => null)
@@ -538,21 +538,21 @@ onMounted(() => { void load() })
 <template>
   <section v-if="draft" class="handoff-page" :data-mode="draft.handling_mode">
     <header class="handoff-page__header">
-      <div><p>{{ draft.domain }} · {{ draft.intent }}</p><h1>{{ modeTitle }}</h1><span>AI 建议，待教师判断；打开和修改都不会自动正式保存。</span></div>
+      <div><p>{{ draft.domain }} · {{ draft.intent }}</p><h1>{{ modeTitle }}</h1><span>AI 草稿，确认后才生效。</span></div>
       <AppButton variant="secondary" @click="emit('back', draft.conversation_id, draft.work_item_id)">返回这次对话</AppButton>
     </header>
     <p v-if="draft.adoption_state === 'stale'" class="error" role="alert">目标资料已在交接后变化。草稿仍保留；请重新选择学生并核对最新资料后再保存。</p><p v-if="message" class="status" role="status">{{ message }}</p><p v-if="error" class="error" role="alert">{{ error }}</p>
 
     <div v-if="draft.handling_mode === 'record'" class="record-layout">
       <aside><h2>对象与来源</h2><label v-if="isStudentRecord"><span>学生</span><select v-model="selectedSubjectId" @change="chooseSubject"><option value="">请选择学生</option><option v-for="student in students" :key="student.roster_ref" :value="student.roster_ref">{{ student.display_name }} · {{ formatClassLabel(student.class_label) }}</option></select></label><p v-else>这是一项一般事务登记，不会写入学生档案。</p><label><span>记录性质</span><select v-model="recordKind"><option value="">请由教师选择</option><option value="fact">可核对事实</option><option value="student_statement">学生陈述</option><option value="reported_statement">转述信息</option><option value="teacher_observation">教师观察</option><option value="provisional_judgment">阶段性判断</option><option value="professional_conclusion">有依据的专业结论</option></select></label><label v-if="recordKind === 'professional_conclusion'"><span>结论日期</span><input v-model="professionalObservedDate" type="date"></label><label v-else><span>发生时间</span><input v-model="observedAt" type="datetime-local"></label><label><span>场景</span><input v-model="scene" maxlength="200"></label><label><span>来源</span><input v-model="source" maxlength="200" placeholder="例如：教师观察、家长转述、医院书面材料"></label><template v-if="recordKind === 'professional_conclusion'"><label><span>专业依据</span><textarea v-model="basis" rows="3" maxlength="1000" placeholder="例如：材料名称、出具机构；采用前由教师核对"></textarea></label><label><span>当前在校支持</span><textarea v-model="currentSchoolSupport" rows="3" maxlength="1500" placeholder="如暂无，请明确填写“当前暂无”"></textarea></label><label><span>专业建议（如有）</span><textarea v-model="professionalRecommendations" rows="3" maxlength="1500"></textarea></label><label><span>需要避免的做法（如有）</span><textarea v-model="avoidances" rows="3" maxlength="1500"></textarea></label></template><template v-if="expiringRecord"><label><span>复查时间</span><input v-model="reviewAt" type="datetime-local"></label><label><span>失效时间</span><input v-model="expiresAt" type="datetime-local"></label></template></aside>
-      <main><h2>事实、转述与判断</h2><label><span>直接观察或可核事实</span><textarea v-model="factText" rows="5" maxlength="6000"></textarea></label><label><span>他人转述（如有）</span><textarea v-model="reportedText" rows="4" maxlength="4000"></textarea></label><label><span>教师当前判断（可留空）</span><textarea v-model="judgmentText" rows="3" maxlength="3000"></textarea></label><section v-if="isStudentRecord && (recordKind === 'professional_conclusion' || Object.keys(recordProfileUpdate).length)" class="record-profile-update"><h3>拟更新的学生当前档案</h3><p>这里记录当前支持需要，不把诊断当作性格、能力或纪律标签。</p><label><span>合并后的档案摘要</span><textarea v-model="recordProfileSummary" rows="4" maxlength="4000"></textarea></label><label><span>仍需了解（每行一个）</span><textarea v-model="recordProfileQuestions" rows="3" maxlength="2000" placeholder="例如：当前在校支持是否有效"></textarea></label></section><p>三类内容会分段保存；系统不会把线索升级为诊断、欺凌认定或惩戒结论。</p></main>
-      <aside class="review"><h2>保存前核对</h2><ul><li v-for="item in draft.missing_fields" :key="item">{{ item }}</li><li>正式保存由你点击确认</li><li>需要复查时另建计划</li></ul></aside>
+      <main><h2>事实、转述与判断</h2><label><span>直接观察或可核事实</span><textarea v-model="factText" rows="5" maxlength="6000"></textarea></label><label><span>他人转述（如有）</span><textarea v-model="reportedText" rows="4" maxlength="4000"></textarea></label><label><span>教师当前判断（可留空）</span><textarea v-model="judgmentText" rows="3" maxlength="3000"></textarea></label><section v-if="isStudentRecord && (recordKind === 'professional_conclusion' || Object.keys(recordProfileUpdate).length)" class="record-profile-update"><h3>拟更新的学生当前档案</h3><p>这里记录当前支持需要，不把诊断当作性格、能力或纪律标签。</p><label><span>合并后的档案摘要</span><textarea v-model="recordProfileSummary" rows="4" maxlength="4000"></textarea></label><label><span>仍需了解（每行一个）</span><textarea v-model="recordProfileQuestions" rows="3" maxlength="2000" placeholder="例如：当前在校支持是否有效"></textarea></label></section><p>系统不会把记录升级为诊断或欺凌认定。</p></main>
+      <aside class="review"><h2>保存前核对</h2><ul><li v-for="item in draft.missing_fields" :key="item">{{ item }}</li></ul></aside>
     </div>
 
     <div v-else-if="draft.handling_mode === 'plan_calendar'" class="plan-layout">
       <aside><h2>事务简报</h2><label><span>目标</span><input v-model="planTitle" maxlength="240"></label><label><span>最终截止</span><input v-model="deadline" type="datetime-local"></label><p>{{ summary }}</p></aside>
-      <main><section v-if="planCandidates.length" class="plan-candidates"><div class="plan-candidates__heading"><div><h2>候选事项</h2><p>AI 按这类事务的常见准备列出；勾选后让 AI 按你的选择重新拆解行动，也可以只作备忘参考。</p></div><AppButton variant="secondary" :disabled="busy" @click="requestCandidateBreakdown">按勾选重新拆解</AppButton></div><label v-for="candidate in planCandidates" :key="candidate.label" class="plan-candidate"><input v-model="candidate.checked" type="checkbox"><span><strong>{{ candidate.label }}</strong><small>{{ candidate.reason }}</small></span></label><div class="plan-candidate-add"><input v-model="customCandidate" maxlength="120" placeholder="补充一个 AI 没想到的事项" @keyup.enter="addCustomCandidate"><AppButton variant="secondary" @click="addCustomCandidate">加入清单</AppButton></div></section><div class="plan-actions__heading"><div><h2>行动与日期</h2><p>逐项核对说明、日期和前置依赖；空日期不会自动套用总截止。</p></div><AppButton variant="secondary" @click="addPlanAction">增加行动</AppButton></div><div class="plan-actions"><article v-for="(action, index) in planActions" :key="action.draft_action_id" class="plan-action"><header><strong>行动 {{ index + 1 }}</strong><AppButton variant="ghost" @click="removePlanAction(action.draft_action_id)">移除</AppButton></header><label><span>行动名称</span><input v-model="action.title" maxlength="240"></label><label><span>截止时间</span><input v-model="action.due_at" type="datetime-local"></label><label><span>行动说明</span><textarea v-model="action.details" rows="3" maxlength="2000"></textarea></label><fieldset><legend>需要先完成</legend><label v-for="candidate in planActions.filter((item) => item.draft_action_id !== action.draft_action_id)" :key="candidate.draft_action_id" class="dependency"><input v-model="action.depends_on_draft_action_ids" type="checkbox" :value="candidate.draft_action_id"><span>{{ candidate.title || '未命名行动' }}</span></label><small v-if="planActions.length < 2">当前没有其他行动可作为前置依赖。</small></fieldset></article><p v-if="!planActions.length" class="empty-plan">还没有行动。请先增加至少一项，再加入正式计划。</p></div></main>
-      <aside class="review"><h2>当前决定</h2><p>日期可修改，依赖也由你逐项确认；系统不会把并行行动静默改成串行，也不会用总截止填补空日期。所有行动正式加入同一计划，不在首页复制另一份。</p></aside>
+      <main><section v-if="planCandidates.length" class="plan-candidates"><div class="plan-candidates__heading"><div><h2>候选事项</h2><p>AI 列出的常见准备，勾选后重新拆解。</p></div><AppButton variant="secondary" :disabled="busy" @click="requestCandidateBreakdown">按勾选重新拆解</AppButton></div><label v-for="candidate in planCandidates" :key="candidate.label" class="plan-candidate"><input v-model="candidate.checked" type="checkbox"><span><strong>{{ candidate.label }}</strong><small>{{ candidate.reason }}</small></span></label><div class="plan-candidate-add"><input v-model="customCandidate" maxlength="120" placeholder="补充一个 AI 没想到的事项" @keyup.enter="addCustomCandidate"><AppButton variant="secondary" @click="addCustomCandidate">加入清单</AppButton></div></section><div class="plan-actions__heading"><div><h2>行动与日期</h2><p>逐项核对说明、日期和前置依赖。</p></div><AppButton variant="secondary" @click="addPlanAction">增加行动</AppButton></div><div class="plan-actions"><article v-for="(action, index) in planActions" :key="action.draft_action_id" class="plan-action"><header><strong>行动 {{ index + 1 }}</strong><AppButton variant="ghost" @click="removePlanAction(action.draft_action_id)">移除</AppButton></header><label><span>行动名称</span><input v-model="action.title" maxlength="240"></label><label><span>截止时间</span><input v-model="action.due_at" type="datetime-local"></label><label><span>行动说明</span><textarea v-model="action.details" rows="3" maxlength="2000"></textarea></label><fieldset><legend>需要先完成</legend><label v-for="candidate in planActions.filter((item) => item.draft_action_id !== action.draft_action_id)" :key="candidate.draft_action_id" class="dependency"><input v-model="action.depends_on_draft_action_ids" type="checkbox" :value="candidate.draft_action_id"><span>{{ candidate.title || '未命名行动' }}</span></label><small v-if="planActions.length < 2">当前没有其他行动可作为前置依赖。</small></fieldset></article><p v-if="!planActions.length" class="empty-plan">还没有行动。请先增加至少一项，再加入正式计划。</p></div></main>
+      <aside class="review"><h2>当前决定</h2><p>日期和前置由你逐项确认。</p></aside>
     </div>
 
     <div v-else class="sop-layout">
@@ -560,7 +560,7 @@ onMounted(() => { void load() })
       <aside>
         <h2>对象、档案与待核对项</h2>
         <label><span>学校流程模板</span><select v-model="sopTemplateKey"><option value="">请根据实际情况选择</option><option v-for="item in sopTemplates" :key="item[0]" :value="item[0]">{{ item[1] }}</option></select></label>
-        <p v-if="!sopTemplateKey">模型不可用时系统不会替你猜测冲突、受伤或疑似欺凌；请由教师选择。</p>
+        <p v-if="!sopTemplateKey">请根据实际情况选择模板。</p>
         <label><span>参与人（每行一个）</span><textarea v-model="participantRefs" rows="4"></textarea></label>
         <p>{{ summary }}</p>
         <section v-if="sopStudentProfiles.length" class="student-profiles">
@@ -570,7 +570,7 @@ onMounted(() => { void load() })
         </section>
         <section v-if="sopProfileUpdates.length" class="profile-updates">
           <h3>拟写入学生档案</h3>
-          <p class="section-note">确认 SOP 时，只保存已勾选学生的事件记录和当前档案更新；不会预设责任方。</p>
+          <p class="section-note">只保存勾选学生的内容；不预设责任方。</p>
           <article v-for="update in sopProfileUpdates" :key="update.subject_ref.id" :class="{ excluded: !update.include }">
             <label class="include-update"><input v-model="update.include" type="checkbox"><span>同步更新 {{ update.display_name }} 的档案</span></label>
             <template v-if="update.include">
@@ -585,14 +585,14 @@ onMounted(() => { void load() })
             </template>
           </article>
         </section>
-        <section v-if="sopQuestions.length" class="verify-list"><h3>本轮需要补充</h3><ul><li v-for="question in sopQuestions" :key="question">{{ question }}</li></ul></section>
+        <section v-if="sopQuestions.length" class="verify-list"><h3>需要补充</h3><ul><li v-for="question in sopQuestions" :key="question">{{ question }}</li></ul></section>
       </aside>
-      <main><h2>流程草稿</h2><ol v-if="sopSteps.length"><li v-for="(step, index) in sopSteps" :key="step.key"><small>步骤 {{ index + 1 }}<template v-if="step.safety_required"> · 安全必做</template></small><strong>{{ step.title }}</strong><span>{{ step.details || '采用前请结合本校流程补充具体做法。' }}</span></li></ol><ol v-else><li><strong>确保现场安全</strong><span>安全必做步骤不能由模型自动删除</span></li><li><strong>分别记录直接事实与转述</strong><span>不先作欺凌认定</span></li><li><strong>由教师选择学校交接</strong><span>AI 不作惩戒、诊断或结案决定</span></li></ol></main>
-      <aside class="review"><h2>教师决定</h2><p>确认后只建立待处理 SOP。每一步完成、对外沟通、惩戒、认定和结案仍需教师或有权人员决定。</p></aside>
+      <main><h2>流程草稿</h2><ol v-if="sopSteps.length"><li v-for="(step, index) in sopSteps" :key="step.key"><small>步骤 {{ index + 1 }}<template v-if="step.safety_required"> · 安全必做</template></small><strong>{{ step.title }}</strong><span>{{ step.details || '采用前请结合本校流程补充具体做法。' }}</span></li></ol><ol v-else><li><strong>先确保现场安全</strong></li></ol></main>
+      <aside class="review"><h2>教师决定</h2><p>确认后建立流程；关键决定仍由教师作出。</p></aside>
     </div>
 
-    <section class="ai-revision" aria-labelledby="ai-revision-title"><div><h2 id="ai-revision-title">让 AI 调整这份草稿</h2><p>这会建立一次新的、最多发送一次的模型任务；只更新草稿，不会正式保存。</p></div><textarea v-model="revisionInstruction" rows="2" maxlength="2000" placeholder="例如：把行动拆得更细，但保留原截止时间"></textarea><AppButton variant="secondary" :disabled="busy || !revisionInstruction.trim()" @click="requestRevision">提交调整</AppButton></section>
-    <footer><AppButton variant="ghost" :disabled="busy" @click="discard">丢弃草稿</AppButton><span>草稿版本 {{ draft.draft_revision }}</span><AppButton variant="secondary" :disabled="busy" @click="save">保存草稿</AppButton><AppButton variant="primary" :disabled="busy" @click="adopt">{{ draft.handling_mode === 'record' ? '确认保存记录' : draft.handling_mode === 'plan_calendar' ? '确认加入计划／日历' : selectedSopProfileUpdates.length ? `确认建立 SOP 并更新 ${selectedSopProfileUpdates.length} 份档案` : '确认建立 SOP' }}</AppButton></footer>
+    <section class="ai-revision" aria-labelledby="ai-revision-title"><div><h2 id="ai-revision-title">让 AI 调整这份草稿</h2><p>AI 只修改草稿，不会正式保存。</p></div><textarea v-model="revisionInstruction" rows="2" maxlength="2000" placeholder="例如：把行动拆得更细，但保留原截止时间"></textarea><AppButton variant="secondary" :disabled="busy || !revisionInstruction.trim()" @click="requestRevision">提交调整</AppButton></section>
+    <footer><AppButton variant="ghost" :disabled="busy" @click="discard">丢弃草稿</AppButton><AppButton variant="secondary" :disabled="busy" @click="save">保存草稿</AppButton><AppButton variant="primary" :disabled="busy" @click="adopt">{{ draft.handling_mode === 'record' ? '确认保存记录' : draft.handling_mode === 'plan_calendar' ? '确认加入计划／日历' : selectedSopProfileUpdates.length ? `确认建立处理流程并更新 ${selectedSopProfileUpdates.length} 份档案` : '确认建立处理流程' }}</AppButton></footer>
   </section>
   <section v-else-if="error" class="loading error" role="alert">{{ error }}</section>
   <section v-else class="loading" aria-live="polite">正在打开草稿…</section>

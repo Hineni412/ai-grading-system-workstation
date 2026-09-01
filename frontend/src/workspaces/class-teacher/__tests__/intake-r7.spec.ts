@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/api/errors'
 import { decodeHandoffDraft, intakeApi, type IntakeConversation, type IntakeConversationSummary } from '../api/intake'
-import { workApi, type WorkNode } from '../api/work'
+import { workApi, type WorkNode, type WorkSnapshot } from '../api/work'
 import ConversationDesk from '../intake/ConversationDesk.vue'
 import * as browserVoice from '../intake/browserVoiceRecorder'
 
@@ -27,6 +27,7 @@ async function mountDesk(
   cloudConfigured = true,
   listeners: Record<string, unknown> = {},
   recentItems: IntakeConversationSummary[] = [],
+  workEdges: WorkSnapshot['edges'] = [],
 ) {
   vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({
     homeroom_class: '一班', revision: 1, classes: ['一班', '二班'], source_revision: 'a'.repeat(64),
@@ -48,7 +49,7 @@ async function mountDesk(
   })
   vi.spyOn(workApi, 'read').mockResolvedValue({
     as_of: '2026-08-05T00:00:00Z', start_date: '2026-08-04', end_date: '2026-08-10',
-    nodes: workNodes, edges: [], today: workNodes, overdue: [], waiting: [], review_due: [],
+    nodes: workNodes, edges: workEdges, today: workNodes, overdue: [], waiting: [], review_due: [],
     summary: { today: workNodes.length, overdue: 0, waiting: 0, review_due: 0 },
     view: 'week', cursor: null, source_version: 'synthetic',
   })
@@ -352,7 +353,7 @@ describe('B-UI-R7 conversation desk', () => {
     const buttons = host.querySelectorAll('.recent-open')
 
     expect(host.querySelector('.recent header')?.textContent).toContain('新对话')
-    expect(host.querySelector('.desk__tools')?.textContent).not.toContain('新对话')
+    expect(host.querySelector('.desk__masthead')?.textContent).not.toContain('新对话')
     expect(buttons).toHaveLength(5)
     expect(host.textContent).not.toContain('尚未发送内容')
     expect(host.textContent).not.toContain('合成事项5')
@@ -616,13 +617,14 @@ describe('B-UI-R7 conversation desk', () => {
     }
     const host = await mountDesk(conversation(), [item, undated])
 
-    expect(host.textContent).toContain('本周应做的事')
+    expect(host.textContent).toContain('本周事务')
+    expect(host.textContent).toContain('按时间看')
     expect(host.textContent).toContain('合成近期检查任务')
     expect(host.textContent).toContain('合成无日期班务')
     expect(workApi.read).toHaveBeenCalledWith('week')
   })
 
-  it('caps the near-work list and links to the calendar for the rest', async () => {
+  it('caps the time panel later section and links to the calendar for the rest', async () => {
     const many: WorkNode[] = Array.from({ length: 7 }, (_, index) => ({
       node_id: `node-near-${String(index + 1).padStart(3, '0')}`, kind: 'task', classification: 'ordinary',
       title: `合成事项${index + 1}`, details: null, status: 'pending',
@@ -631,10 +633,11 @@ describe('B-UI-R7 conversation desk', () => {
     }))
     const host = await mountDesk(conversation(), many)
 
-    const buttons = [...host.querySelectorAll('.near-work button')]
+    const panelRows = [...host.querySelectorAll('.time-panel .time-sec button')]
       .map((node) => node.textContent ?? '')
-    expect(buttons.filter((label) => label.includes('合成事项')).length).toBe(5)
-    expect(host.textContent).toContain('查看全部 7 项')
+    expect(panelRows.filter((label) => label.includes('合成事项')).length).toBe(3)
+    expect(host.textContent).toContain('本周还有 4 项')
+    expect(host.textContent).toContain('查看全部')
   })
 
   it('rejects an arbitrary destination before navigation', () => {
@@ -647,5 +650,77 @@ describe('B-UI-R7 conversation desk', () => {
       adoption_id: 'adoption-1234', adoption_state: 'pending', content: {}, subject_refs: [],
       missing_fields: [], return_context: { destination_key: 'class_teacher.home', focus_ref: 'work-item-1234' },
     })).toThrow('无法识别')
+  })
+
+  function nearTask(id: string, title: string, extra: Partial<WorkNode> = {}): WorkNode {
+    return {
+      node_id: id, kind: 'task', classification: 'ordinary',
+      title, details: null, status: 'pending',
+      due_date: '2026-08-06T16:00:00+08:00', revision: 1,
+      created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z', ...extra,
+    }
+  }
+  function rowOf(host: HTMLElement, title: string): HTMLElement {
+    const row = [...host.querySelectorAll<HTMLElement>('.week-strip .rowline')]
+      .find((item) => item.textContent?.includes(title))
+    if (!row) throw new Error(`row not found: ${title}`)
+    return row
+  }
+
+  it('completes a card from the week strip and reloads the work list', async () => {
+    const item = nearTask('node-qa-001', '合成可完成事项')
+    const command = vi.spyOn(workApi, 'command').mockResolvedValue({})
+    const host = await mountDesk(conversation(), [item])
+
+    const done = rowOf(host, '合成可完成事项').querySelector<HTMLButtonElement>('.qa__done')
+    expect(done).toBeTruthy()
+    done!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+
+    expect(command).toHaveBeenCalledWith(item, 'update_status', { status: 'completed' })
+    expect(workApi.read).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('已完成并归档')
+  })
+
+  it('deletes a card only after the irreversible-loss confirmation', async () => {
+    const item = nearTask('node-qa-002', '合成待删除事项')
+    const command = vi.spyOn(workApi, 'command').mockResolvedValue({})
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const host = await mountDesk(conversation(), [item])
+
+    rowOf(host, '合成待删除事项').querySelector<HTMLButtonElement>('.qa__del')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    expect(command).not.toHaveBeenCalled()
+
+    confirmSpy.mockReturnValue(true)
+    rowOf(host, '合成待删除事项').querySelector<HTMLButtonElement>('.qa__del')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    expect(command).toHaveBeenCalledWith(item, 'delete')
+    expect(host.textContent).toContain('已彻底删除')
+  })
+
+  it('withholds the complete button from blocked cards and all quick actions from restricted ones', async () => {
+    const blocker = nearTask('node-qa-003', '合成前置任务')
+    const blocked = nearTask('node-qa-004', '合成等前置事项')
+    const restricted = nearTask('node-qa-005', '学生支持待跟进', {
+      kind: 'sop', classification: 'restricted_projection', projection_type: 'student_support',
+    })
+    const host = await mountDesk(conversation(), [blocker, blocked, restricted], true, {}, [], [
+      { source_node_id: 'node-qa-003', target_node_id: 'node-qa-004', relation: 'depends_on' },
+    ])
+
+    const blockedRow = rowOf(host, '合成等前置事项')
+    expect(blockedRow.querySelector('.qa__done')).toBeNull()
+    expect(blockedRow.querySelector('.qa__del')).toBeTruthy()
+
+    const restrictedRow = rowOf(host, '学生支持待跟进')
+    expect(restrictedRow.querySelector('.qa')).toBeNull()
+
+    // 普通未阻塞卡片两个按钮都在
+    const normalRow = rowOf(host, '合成前置任务')
+    expect(normalRow.querySelector('.qa__done')).toBeTruthy()
+    expect(normalRow.querySelector('.qa__del')).toBeTruthy()
   })
 })

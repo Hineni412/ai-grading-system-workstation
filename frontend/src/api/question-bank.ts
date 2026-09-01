@@ -311,6 +311,14 @@ export interface QuestionBankRichBlock {
   kind?: 'paragraph' | 'table'
   text: string
   segments?: QuestionBankRichInlineSegment[]
+  /**
+   * Controlled HTML projected from the frozen Word XML: text runs keep their
+   * styling, images stay inline in document order, formulas are
+   * KaTeX-hydratable `.qm[data-latex]` spans. Empty for blocks whose XML is
+   * unavailable or drifted from the stored text — renderers must then fall
+   * back to `segments`/`rows`.
+   */
+  html?: string
   rows?: QuestionBankRichTableRow[]
   asset_indexes: number[]
   asset_urls: string[]
@@ -693,6 +701,7 @@ function isRichBlock(value: unknown): value is QuestionBankRichBlock {
       'text',
       'segments',
       'rows',
+      'html',
       'asset_indexes',
       'asset_urls',
     ]) &&
@@ -702,6 +711,7 @@ function isRichBlock(value: unknown): value is QuestionBankRichBlock {
     value.segments.every(isRichInlineSegment) &&
     Array.isArray(value.rows) &&
     value.rows.every(isRichTableRow) &&
+    typeof value.html === 'string' &&
     Array.isArray(value.asset_indexes) &&
     value.asset_indexes.every(isNonnegativeInteger) &&
     Array.isArray(value.asset_urls) &&
@@ -1940,13 +1950,16 @@ export const questionBankApi = {
 
   submitImportJob(
     requestId: string,
+    curriculumVolumeId?: string,
     signal?: AbortSignal,
   ): Promise<JobResponse> {
     if (!isHex(requestId, 32)) throw new Error('Invalid question import request id')
+    const volumeId = curriculumVolumeId?.trim()
     return apiClient.request(
       `/api/question-bank/import-requests/${requestId}/jobs`,
       {
         method: 'POST',
+        body: volumeId ? { curriculum_volume_id: volumeId } : {},
         decode: decodeJobResponse,
         signal,
       },

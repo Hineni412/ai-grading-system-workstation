@@ -11,6 +11,7 @@ MEDIA_TYPES = {
     ".png": "image/png",
     ".webp": "image/webp",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".html": "text/html",
     ".md": "text/markdown",
     ".pdf": "application/pdf",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

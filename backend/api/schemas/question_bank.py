@@ -268,6 +268,7 @@ class QuestionRichTextBlock(_QuestionBankModel):
     text: str
     segments: list[QuestionRichInlineSegment]
     rows: list[QuestionRichTableRow]
+    html: str = ""
     asset_indexes: list[int]
     asset_urls: list[str]
 
@@ -416,6 +417,10 @@ class QuestionImportUploadResponse(_QuestionBankModel):
 
 class QuestionImportRequestCreate(_QuestionBankModel):
     upload_id: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class QuestionImportJobSubmitRequest(_QuestionBankModel):
+    curriculum_volume_id: str | None = Field(default=None, max_length=80)
 
 
 class QuestionImportRequestResponse(_QuestionBankModel):

@@ -15,7 +15,16 @@ _submit_lock = threading.RLock()
 _REPORT_RENDITION_VERSIONS = {
     "score_excel": "score_excel_print_v5",
     "annotated_original_pdf": "annotated_original_pdf_score_boxes_v3",
+    "personal_analysis_html": "personal_analysis_html_v1",
 }
+
+# 考试分析报告（AI 叙述）导出类型：提交时不带 excel_options。
+# 班级分析已改为系统内嵌页面（backend/class_analysis.py），不再是导出类型。
+ANALYSIS_REPORT_TYPES = frozenset({"personal_analysis_html"})
+
+
+def report_rendition_version(report_type: str) -> str:
+    return _REPORT_RENDITION_VERSIONS.get(str(report_type), "unknown")
 
 
 def score_revision(db: GradingRepositoryAccess, session_id: int) -> str:

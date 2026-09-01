@@ -140,6 +140,13 @@ describe('question assembly view', () => {
       ([input]) => String(input).startsWith('/api/question-bank/questions?'),
     )).toHaveLength(1)
     expect(host.textContent).toContain('已按学期读取的题目')
+    // 册别已生效时，筛选计数也要按册别重新拉取，不能停留在全库口径。
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/facets?')
+        && String(input).includes('curriculum_volume_ids=volume-1')
+      ),
+    )).toBe(true))
   })
 
   it('loads the initial question facets once while opening the workspace', async () => {
@@ -779,6 +786,69 @@ describe('question assembly view', () => {
         sections: [expect.objectContaining({ title: '第一部分', question_ids: [] })],
       }),
     ))
+  })
+
+  it('fetches the full answer blocks when expanding an answer from the compact list', async () => {
+    const listItem = bankQuestion(17, '需要展开解析的题目')
+    const detail = {
+      ...listItem,
+      page_range: null,
+      assets: [],
+      previews: [],
+      rich_content: {
+        available: true,
+        question_block_count: 0,
+        answer_block_count: 1,
+        question_blocks: [],
+        answer_blocks: [{
+          kind: 'paragraph',
+          text: '解析：完整富文本答案',
+          segments: [],
+          rows: [],
+          html: '',
+          asset_indexes: [],
+          asset_urls: [],
+        }],
+      },
+    }
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
+        return json(draft())
+      }
+      if (url === '/api/question-assembly/records?limit=100') {
+        return json({ items: [], total: 0 })
+      }
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') {
+        return json(curriculumCatalog())
+      }
+      if (url.startsWith('/api/question-bank/facets?')) return json(questionFacets())
+      if (url === '/api/question-bank/questions/17') return json(detail)
+      if (url.startsWith('/api/question-bank/questions?')) {
+        return json(questionPage(listItem))
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.textContent).toContain('需要展开解析的题目'))
+    expect(host.textContent).not.toContain('解析：完整富文本答案')
+
+    const toggle = [...host.querySelectorAll('button')]
+      .find((button) => button.textContent?.trim() === '查看解析')
+    expect(toggle).toBeTruthy()
+    toggle!.click()
+
+    await vi.waitFor(() => expect(host.textContent).toContain('解析：完整富文本答案'))
+    expect(fetchSpy.mock.calls.some(
+      ([input]) => String(input) === '/api/question-bank/questions/17',
+    )).toBe(true)
   })
 })
 

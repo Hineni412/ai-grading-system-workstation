@@ -3,6 +3,7 @@ import { computed, nextTick, ref } from 'vue'
 
 import type { QuestionBankRichBlock } from '../../api/question-bank'
 import QuestionInlineSegment from './QuestionInlineSegment.vue'
+import QuestionHtmlBlock from './QuestionHtmlBlock.vue'
 
 const props = withDefaults(defineProps<{
   blocks?: QuestionBankRichBlock[]
@@ -57,6 +58,17 @@ const renderGroups = computed<RenderGroup[]>(() => {
   const groups: RenderGroup[] = []
   let index = 0
   while (index < blocks.length) {
+    // Blocks with backend-projected HTML render their frozen Word content
+    // verbatim — no option-grid / media layout heuristics apply to them.
+    if (blocks[index]!.html) {
+      groups.push({
+        key: `html:${index}`,
+        kind: 'full',
+        blocks: [blocks[index]!],
+      })
+      index += 1
+      continue
+    }
     const optionGrid = consumeOptionGrid(blocks, index)
     if (optionGrid !== null) {
       groups.push(optionGrid.group)
@@ -201,6 +213,7 @@ function applyCompactMedia(groups: RenderGroup[]): RenderGroup[] {
       && previous
       && previous.kind === 'full'
       && previousBlock !== undefined
+      && !previousBlock.html
       && isTextOnlyBlock(previousBlock)
     ) {
       paired[paired.length - 1] = {
@@ -320,37 +333,45 @@ function handleViewerKey(event: KeyboardEvent): void {
               group.kind === 'option-grid' && block.asset_urls.length === 0
             ),
             'question-content__block--inline-media-paired':
-              isInlineMediaBlock(block) && compactMediaWithText === true,
+              !block.html && isInlineMediaBlock(block) && compactMediaWithText === true,
             'question-content__block--inline-media-right':
-              isInlineMediaBlock(block) && compactMediaWithText === false,
+              !block.html && isInlineMediaBlock(block) && compactMediaWithText === false,
           }"
         >
-          <div v-if="block.kind === 'table' && block.rows?.length" class="question-content__table-wrap">
-            <table>
-              <tbody>
-                <tr v-for="(row, rowIndex) in (block.rows ?? [])" :key="rowIndex">
-                  <td v-for="(cell, cellIndex) in row.cells" :key="cellIndex">
-                    <QuestionInlineSegment
-                      v-for="(segment, segmentIndex) in cell.segments"
-                      :key="segmentIndex"
-                      :segment="segment"
-                    />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p v-else-if="block.segments?.length" class="question-content__text">
-            <QuestionInlineSegment
-              v-for="(segment, segmentIndex) in (block.segments ?? [])"
-              :key="segmentIndex"
-              :segment="segment"
-            />
-          </p>
-          <p v-else-if="block.text" class="question-content__text">{{ block.text }}</p>
+          <QuestionHtmlBlock
+            v-if="block.html"
+            :html="block.html"
+            :image-alt="imageAlt"
+            @open-image="(url) => openImage(url, imageAlt)"
+          />
+          <template v-else>
+            <div v-if="block.kind === 'table' && block.rows?.length" class="question-content__table-wrap">
+              <table>
+                <tbody>
+                  <tr v-for="(row, rowIndex) in (block.rows ?? [])" :key="rowIndex">
+                    <td v-for="(cell, cellIndex) in row.cells" :key="cellIndex">
+                      <QuestionInlineSegment
+                        v-for="(segment, segmentIndex) in cell.segments"
+                        :key="segmentIndex"
+                        :segment="segment"
+                      />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else-if="block.segments?.length" class="question-content__text">
+              <QuestionInlineSegment
+                v-for="(segment, segmentIndex) in (block.segments ?? [])"
+                :key="segmentIndex"
+                :segment="segment"
+              />
+            </p>
+            <p v-else-if="block.text" class="question-content__text">{{ block.text }}</p>
+          </template>
 
           <div
-            v-if="block.asset_urls.length"
+            v-if="!block.html && block.asset_urls.length"
             class="question-content__media"
             :class="{
               'question-content__media--options': (

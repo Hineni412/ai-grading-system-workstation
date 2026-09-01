@@ -28,7 +28,7 @@ class JobFileRule:
 JOB_FILE_RULES = {
     "report_export": JobFileRule(
         result_field="file_path",
-        allowed_suffixes=frozenset({".pdf", ".xlsx"}),
+        allowed_suffixes=frozenset({".pdf", ".xlsx", ".html", ".zip"}),
         root_name="reports_dir",
         data_root_depth=1,
         consume_after_download=True,

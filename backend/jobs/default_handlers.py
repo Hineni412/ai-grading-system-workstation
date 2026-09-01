@@ -5,7 +5,16 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from analysis_report_exporter import (
+    ANALYSIS_REPORT_TYPES,
+    AnalysisReportGenerator,
+    resolve_content_generation_settings,
+)
 from api_profiles import get_api_profile_store, resolve_profile_for_task
+from backend.class_analysis import (
+    build_class_analysis_auto_trigger,
+    run_class_analysis_generate,
+)
 from backend.llm.policy import policy_overrides_from_profile
 from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.compat import open_grading_repositories
@@ -48,6 +57,27 @@ class OriginalPaperExporterFactory(Protocol):
         ...
 
 
+class AnalysisReportExporterFactory(Protocol):
+    def __call__(
+        self,
+        db: GradingRepositoryAccess,
+        output_dir: Path,
+        *,
+        llm_client_factory: Callable[[], Any] | None = None,
+        narrative_cache_dir: Path | None = None,
+        data_root: Path | None = None,
+    ) -> AnalysisReportGenerator:
+        ...
+
+
+def _content_generation_llm_client() -> LLMClient | None:
+    """设置页「内容生成」任务绑定的模型；未配置时返回 None（报告降级，不换模型）。"""
+    settings = resolve_content_generation_settings()
+    if settings is None:
+        return None
+    return LLMClient(settings)
+
+
 def register_default_job_handlers(
     manager: JobManager,
     *,
@@ -61,6 +91,8 @@ def register_default_job_handlers(
     training_output_root: Path | None = None,
     report_generator_factory: ReportGeneratorFactory = ReportGenerator,
     original_paper_exporter_factory: OriginalPaperExporterFactory = OriginalPaperExporter,
+    analysis_report_exporter_factory: AnalysisReportExporterFactory = AnalysisReportGenerator,
+    analysis_llm_client_factory: Callable[[], Any] | None = None,
     scan_runner: Callable[..., dict[str, object]] = run_scan_analysis,
     grading_runner: Callable[..., dict[str, object]] = run_grading_job,
     config_generation_runner: Callable[..., dict[str, object]] = run_config_generation_job,
@@ -114,6 +146,22 @@ def register_default_job_handlers(
             reports_dir=Path(reports_dir),
             report_generator_factory=report_generator_factory,
             original_paper_exporter_factory=original_paper_exporter_factory,
+            analysis_report_exporter_factory=analysis_report_exporter_factory,
+            analysis_llm_client_factory=(
+                analysis_llm_client_factory or _content_generation_llm_client
+            ),
+            data_root=base_data_root,
+        ),
+    )
+    manager.register(
+        "class_analysis_generate",
+        _build_class_analysis_generate_handler(
+            db_path=Path(db_path),
+            reports_dir=Path(reports_dir),
+            data_root=base_data_root,
+            llm_client_factory=(
+                analysis_llm_client_factory or _content_generation_llm_client
+            ),
         ),
     )
     manager.register(
@@ -137,6 +185,11 @@ def register_default_job_handlers(
             question_bank_db_path=resolved_question_bank_db,
             grading_runner=grading_runner,
             llm_client_factory=scan_llm_client_factory,
+            class_analysis_completed_trigger=build_class_analysis_auto_trigger(
+                manager=manager,
+                db_path=Path(db_path),
+                reports_dir=Path(reports_dir),
+            ),
         ),
     )
     manager.register(
@@ -419,6 +472,9 @@ def _build_report_export_handler(
     reports_dir: Path,
     report_generator_factory: ReportGeneratorFactory,
     original_paper_exporter_factory: OriginalPaperExporterFactory,
+    analysis_report_exporter_factory: AnalysisReportExporterFactory = AnalysisReportGenerator,
+    analysis_llm_client_factory: Callable[[], Any] | None = None,
+    data_root: Path | None = None,
 ):
     def handler(context: JobContext) -> dict[str, object]:
         raw_session_id = context.payload.get("session_id")
@@ -432,7 +488,11 @@ def _build_report_export_handler(
         report_type = str(
             context.payload.get("report_type") or "score_excel"
         ).strip()
-        if report_type not in {"score_excel", "annotated_original_pdf"}:
+        if report_type not in {
+            "score_excel",
+            "annotated_original_pdf",
+            *ANALYSIS_REPORT_TYPES,
+        }:
             raise ValueError("report_type is not supported")
         score_revision = str(context.payload.get("score_revision") or "").strip()
         reports_dir.mkdir(parents=True, exist_ok=True)
@@ -459,6 +519,23 @@ def _build_report_export_handler(
                             if isinstance(raw_excel_options, dict)
                             else {}
                         ),
+                    )
+                )
+            elif report_type in ANALYSIS_REPORT_TYPES:
+                # AI 叙述缓存放在受控 reports 目录下，跨 job 命中不重复调用模型。
+                staged_output = Path(
+                    analysis_report_exporter_factory(
+                        open_grading_repositories(db_path),
+                        staging_dir,
+                        llm_client_factory=analysis_llm_client_factory,
+                        narrative_cache_dir=(
+                            reports_dir / ".analysis_narrative_cache"
+                        ),
+                        data_root=data_root,
+                    ).export_session(
+                        session_id,
+                        report_type,
+                        score_revision=score_revision,
                     )
                 )
             else:
@@ -494,6 +571,25 @@ def _build_report_export_handler(
     return handler
 
 
+def _build_class_analysis_generate_handler(
+    *,
+    db_path: Path,
+    reports_dir: Path,
+    data_root: Path | None,
+    llm_client_factory: Callable[[], Any] | None,
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        return run_class_analysis_generate(
+            context,
+            db_path=Path(db_path),
+            reports_dir=Path(reports_dir),
+            data_root=data_root,
+            llm_client_factory=llm_client_factory,
+        )
+
+    return handler
+
+
 def _build_grading_run_handler(
     *,
     db_path: Path,
@@ -503,6 +599,7 @@ def _build_grading_run_handler(
     question_bank_db_path: Path,
     grading_runner: Callable[..., dict[str, object]],
     llm_client_factory: Callable[[], Any],
+    class_analysis_completed_trigger: Callable[[int], None] | None = None,
 ):
     def handler(context: JobContext) -> dict[str, object]:
         session_id = _required_int(context.payload, "session_id")
@@ -544,6 +641,17 @@ def _build_grading_run_handler(
         detail = "grading run complete"
         if isinstance(summary, dict):
             detail = f"graded={summary.get('graded', 0)} failed={summary.get('failed', 0)}"
+        # 阅卷完成（session_completed）是班级分析自动生成的挂钩点；
+        # 触发失败不影响批改任务本身的结果。
+        if (
+            isinstance(result, dict)
+            and result.get("state") == "completed"
+            and class_analysis_completed_trigger is not None
+        ):
+            try:
+                class_analysis_completed_trigger(session_id)
+            except Exception:
+                pass
         context.report(0.98, "grading_run", detail)
         return result
 

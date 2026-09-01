@@ -233,7 +233,8 @@
 .qb-tag-add select,
 .qb-tag-row input,
 .qb-tag-row select,
-.qb-section-picker select {
+.qb-section-picker select,
+.qb-volume-picker select {
   background: var(--card);
   border: 1px solid var(--color-border-strong);
   border-radius: 8px;
@@ -250,7 +251,8 @@
 .qb-tag-add select:focus,
 .qb-tag-row input:focus,
 .qb-tag-row select:focus,
-.qb-section-picker select:focus {
+.qb-section-picker select:focus,
+.qb-volume-picker select:focus {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent);
   outline: none;
@@ -1287,8 +1289,7 @@
 }
 
 .criterion-point__body label,
-.criterion-meta label,
-.criterion-decision > label {
+.criterion-meta label {
   color: var(--color-text-secondary);
   display: grid;
   font-size: 10px;
@@ -1298,8 +1299,7 @@
 
 .criterion-point input,
 .criterion-point textarea,
-.criterion-meta textarea,
-.criterion-decision input {
+.criterion-meta textarea {
   background: var(--card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
@@ -1315,8 +1315,7 @@
 
 .criterion-point input:focus,
 .criterion-point textarea:focus,
-.criterion-meta textarea:focus,
-.criterion-decision input:focus {
+.criterion-meta textarea:focus {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent);
   outline: none;
@@ -1377,27 +1376,11 @@
   margin-top: 12px;
 }
 
-.criterion-actions,
-.criterion-decision > div {
+.criterion-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.criterion-actions {
   margin-top: 12px;
-}
-
-.criterion-decision {
-  align-items: end;
-  background: var(--color-accent-subtle);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 16%, var(--card));
-  border-radius: var(--radius-control);
-  display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(180px, 1fr) auto;
-  margin-top: 12px;
-  padding: 11px;
 }
 
 .criterion-history {
@@ -1484,6 +1467,25 @@
 }
 
 .qb-jobs__heading-actions > span {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.qb-volume-picker {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.qb-volume-picker > span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.qb-volume-picker small {
   color: var(--color-text-muted);
   font-size: 11px;
 }
@@ -2317,13 +2319,8 @@
   }
 
   .criterion-point__rules > div,
-  .criterion-meta,
-  .criterion-decision {
+  .criterion-meta {
     grid-template-columns: 1fr;
-  }
-
-  .criterion-decision > div {
-    justify-content: flex-start;
   }
 
   .qb-difficulty-filter {

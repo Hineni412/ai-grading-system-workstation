@@ -102,7 +102,7 @@ describe('学生支持待跟进提醒', () => {
     expect(host.textContent).toContain('延后没有完成')
   })
 
-  it('opens the student support page directly from the home near-work card', async () => {
+  it('opens the student support page directly from the home week strip', async () => {
     window.history.replaceState({}, '', '/class-teacher?surface=home')
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:null, revision:0, classes:[], source_revision:'r'.repeat(64) })
     vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
@@ -129,9 +129,9 @@ describe('学生支持待跟进提醒', () => {
     } as never)
 
     const host = await mount(ClassTeacherWorkbenchView, {})
-    await vi.waitFor(() => expect(host.textContent).toContain('本周应做的事'))
+    await vi.waitFor(() => expect(host.textContent).toContain('本周事务'))
     await vi.waitFor(() => expect(
-      [...host.querySelectorAll('.near-work button')].some((item) => item.textContent?.includes('学生支持待跟进')),
+      [...host.querySelectorAll('.week-strip button')].some((item) => item.textContent?.includes('学生支持待跟进')),
     ).toBe(true))
 
     clickByText(host, '学生支持待跟进')
@@ -162,7 +162,7 @@ describe('学生支持待跟进提醒', () => {
 
     const host = await mount(ClassTeacherWorkbenchView, {})
     await vi.waitFor(() => expect(
-      [...host.querySelectorAll('.near-work button')].some((item) => item.textContent?.includes('学生支持待跟进')),
+      [...host.querySelectorAll('.week-strip button')].some((item) => item.textContent?.includes('学生支持待跟进')),
     ).toBe(true))
 
     clickByText(host, '学生支持待跟进')
