@@ -87,6 +87,11 @@ withDefaults(defineProps<{
       <path d="M3.5 20v-1.5A4.5 4.5 0 0 1 8 14h2a4.5 4.5 0 0 1 4.5 4.5V20" />
       <path d="M16 4v7M12.5 7.5h7" />
     </g>
+    <g v-else-if="name === 'daily'">
+      <rect x="3.5" y="4.5" width="17" height="16" rx="2" />
+      <path d="M3.5 9.5h17M8 2.5v4M16 2.5v4" />
+      <path d="M7 13h3M7 16.5h3M14 13h3M14 16.5h3" />
+    </g>
     <g v-else-if="name === 'model'">
       <rect x="6" y="6" width="12" height="12" rx="2" />
       <path d="M9.5 10.5h5v3h-5zM9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3" />

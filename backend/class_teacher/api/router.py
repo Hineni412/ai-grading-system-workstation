@@ -132,11 +132,15 @@ def create_router() -> APIRouter:
     from .support_router import create_support_router
     from .work_router import create_work_router
     from .intake_router import create_intake_router
+    from .daily_router import create_daily_router
+    from .daily_table_router import create_daily_table_router
 
     router.include_router(create_sop_router())
     router.include_router(create_support_router())
     router.include_router(create_intake_router())
     router.include_router(create_work_router())
+    router.include_router(create_daily_router())
+    router.include_router(create_daily_table_router())
     return router
 
 

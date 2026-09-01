@@ -59,6 +59,9 @@ class VaultService:
             self._key_provider,
             model_gateway,
         )
+        from .daily_timetable_service import DailyTimetableService
+
+        self.daily_timetable = DailyTimetableService(self.ordinary_database)
         from .sensitive_work_projection import SensitiveWorkProjection
 
         self.projections = SensitiveWorkProjection(
@@ -104,6 +107,13 @@ class VaultService:
             self.repository,
             self._key_provider,
             self.support,
+            roster_source,
+        )
+        from .daily_table_service import DailyTableService
+
+        self.daily_tables = DailyTableService(
+            self.database,
+            self._key_provider,
             roster_source,
         )
         self.student_cards = StudentCardService(

@@ -81,6 +81,7 @@ manifest 声明模块 ID、路由前缀、API 前缀、数据分类、服务工�
 `/model-profiles` 重定向到设置中的模型配置。
 `/teaching-prep` 是备课工作台。
 `/class-teacher` 是班主任工作台。
+`/daily` 是日常管理页，提供课表（含当周临时调换）与班级表格记录。
 `/design-system` 展示项目设计系统组件，不承载业务数据流程。
 
 ## 6. 当前 API 分区
