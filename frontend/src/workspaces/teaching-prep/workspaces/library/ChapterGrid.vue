@@ -20,10 +20,6 @@ const folder = computed<LibraryChapterFolder | null>(() => (
   catalog.libraryChapterFolders.find(item => item.key === props.folderKey) ?? null
 ))
 
-const valueHint = computed(() => (
-  folder.value ? catalog.chapterValueHints.get(folder.value.name) ?? null : null
-))
-
 const folderStatus = computed(() => {
   const files = folder.value?.files ?? []
   if (!folder.value?.collectionActive) return { tone: 'neutral' as const, label: '已停用' }
@@ -41,22 +37,7 @@ function fileStatusLabel(file: LibraryChapterFolder['files'][number]): string {
 const valueHintText = computed(() => {
   const current = folder.value
   if (!current) return ''
-  const hint = valueHint.value
-  const parts: string[] = []
-  if (hint?.lessonCount) {
-    parts.push(`本章 ${current.files.length} 份课件已对应 ${hint.lessonCount} 个课时`)
-  } else {
-    parts.push(`本章共 ${current.files.length} 份课件`)
-  }
-  const ranges: string[] = []
-  if (hint?.textbookRange) ranges.push(`教材 ${hint.textbookRange}`)
-  if (hint?.exerciseRange) ranges.push(`教辅练习 ${hint.exerciseRange}`)
-  if (ranges.length) {
-    parts.push(`${ranges.join('、')}已关联——备课时打开本章任一课时，这些资料都在那儿等着。`)
-  } else {
-    parts.push('确认课时树并对应教材/教辅后，备课时打开本章课时即可直接取用这些资料。')
-  }
-  return parts.join('，')
+  return `本章共 ${current.files.length} 份课件。备课时打开本章任一课时，系统会自动载入该课时绑定的课件。`
 })
 
 async function setCollectionActive(isActive: boolean): Promise<void> {

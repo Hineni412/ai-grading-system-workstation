@@ -317,7 +317,7 @@ export function useMaterialImportQueue() {
       message.value = failed > 0
         ? `已完成 ${completed} 份，${failed} 份未完成；其余资料已保留，可单独重试失败项。`
         : createdFolder
-          ? '课件文件夹已完整收录，并生成无需模型的课时树建议，请在下方核对。'
+          ? '课件文件夹已完整收录，课件页已完成本机解析，可在备课页直接取用。'
           : `已完成 ${completed} 份资料的受控复制、角色登记和页级解析。`
     } finally {
       importBatchRunning.value = false
@@ -382,8 +382,8 @@ export function useMaterialImportQueue() {
         batch.state = 'done'
         await catalog.load()
         message.value = (
-          `“${batch.displayName}”已收录为课件文件夹，并生成本地课时树建议；`
-          + '没有调用大模型，请在下方核对后确认。'
+          `“${batch.displayName}”已收录为课件文件夹；`
+          + '没有调用大模型，课件页已完成本机解析。'
         )
       } catch (error) {
         batch.state = 'failed'

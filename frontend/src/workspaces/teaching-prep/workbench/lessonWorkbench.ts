@@ -2,37 +2,28 @@ import {
   computed,
   onBeforeUnmount,
   ref,
-  shallowRef,
   watch,
 } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
-import {
-  teachingPrepWorkbenchApi,
-  type ReferenceSelectionPreflight,
-  type TrustedPptxVersion,
-} from '../api/workbench'
 import { useLessonStatusFeed } from './lessonStatus'
 import { useTeachingPrepRouteStateContext } from './routeContext'
 
 /**
- * 课时页的课时级工作上下文：准备状态、资料预检、PPTX 版本与未保存守护。
- * 由 LessonPage 创建并 provide 给三个步骤组件；替代旧六维导航机的数据面。
+ * 课时页的课时级工作上下文：准备状态与未保存守护。
+ * 由 LessonPage 创建并 provide 给两个步骤组件（课件与选题、对照与导出）。
  */
 export function useTeachingPrepLessonWorkbench() {
   const routeState = useTeachingPrepRouteStateContext()
   const router = useRouter()
   const catalog = useTeachingPrepCatalogStore()
   const statusFeed = useLessonStatusFeed()
-  const referencePreflight = shallowRef<ReferenceSelectionPreflight | null>(null)
-  const pptxVersions = ref<TrustedPptxVersion[]>([])
+  const worksheetRequested = ref(false)
   const dirtyReason = ref<string | null>(null)
   const workbenchError = ref('')
   const loading = ref(false)
-  let contextGeneration = 0
   let disposed = false
-  let executionTimer: ReturnType<typeof setTimeout> | null = null
 
   const lessonStatuses = statusFeed.lessonStatuses
 
@@ -67,46 +58,12 @@ export function useTeachingPrepLessonWorkbench() {
   }
 
   async function refresh(): Promise<void> {
-    const generation = ++contextGeneration
     workbenchError.value = ''
     try {
       await statusFeed.reload()
-      const lessonId = routeState.currentLessonId.value
-      if (!lessonId) {
-        referencePreflight.value = null
-        pptxVersions.value = []
-        return
-      }
-      const step = routeState.currentStep.value
-      if (step === 1) {
-        const next = await teachingPrepWorkbenchApi.referencePreflight(lessonId)
-        if (generation === contextGeneration) referencePreflight.value = next
-      }
-      if (step === 3) {
-        const next = await teachingPrepWorkbenchApi.pptxVersions(lessonId)
-        if (generation === contextGeneration) pptxVersions.value = next
-        scheduleExecutionRefresh()
-      }
     } catch {
-      if (generation === contextGeneration) {
-        workbenchError.value = '当前工作面状态暂时无法刷新，已保留已保存内容。'
-      }
+      workbenchError.value = '当前工作面状态暂时无法刷新，已保留已保存内容。'
     }
-  }
-
-  function scheduleExecutionRefresh(): void {
-    if (executionTimer) clearTimeout(executionTimer)
-    const running = catalog.pptxExecutions.some(
-      item => ['running', 'verifying', 'publishing'].includes(item.status),
-    )
-    if (!running || !catalog.selectedSlidePlanId) return
-    executionTimer = setTimeout(async () => {
-      const plan = catalog.slidePlans.find(
-        item => item.id === catalog.selectedSlidePlanId,
-      )
-      if (plan) await catalog.selectSlidePlan(plan)
-      await refresh()
-    }, 1200)
   }
 
   function setDirty(reason: string | null): void {
@@ -135,13 +92,15 @@ export function useTeachingPrepLessonWorkbench() {
 
   watch(
     () => [routeState.currentLessonId.value, routeState.currentStep.value] as const,
-    () => { void load() },
+    (next, prev) => {
+      if (next[0] !== prev?.[0]) worksheetRequested.value = false
+      void load()
+    },
   )
 
   onBeforeUnmount(() => {
     disposed = true
     globalThis.removeEventListener('beforeunload', beforeUnload)
-    if (executionTimer) clearTimeout(executionTimer)
     removeNavigationGuard()
   })
 
@@ -151,8 +110,7 @@ export function useTeachingPrepLessonWorkbench() {
     lessonStatuses,
     selectedLesson,
     selectedStatus,
-    referencePreflight,
-    pptxVersions,
+    worksheetRequested,
     dirtyReason,
     workbenchError,
     loading,

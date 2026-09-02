@@ -12,7 +12,7 @@ import threading
 import time
 from copy import deepcopy
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
 from uuid import uuid4
@@ -79,9 +79,6 @@ from backend.teaching_prep.domain.models import (
     SemesterLessonProgress,
     SemesterMaterialRecord,
     SlidePlanVersion,
-    PptxExecutionRun,
-    PptxVersion,
-    UpClassPackage,
     TeachingPreferences,
     TeachingSemester,
     TeachingPrepAIAdoption,
@@ -287,6 +284,11 @@ class TeachingPrepService:
         self._material_parse_lock = threading.Lock()
         self._active_material_parses: set[str] = set()
         self._pptx_preview_lock = threading.RLock()
+        self._pptx_preview_worker_lock = threading.Lock()
+        self._pptx_preview_wanted: str | None = None
+        self._pptx_preview_worker: threading.Thread | None = None
+        self._pptx_prerender_lock = threading.Lock()
+        self._pptx_prerender_threads: dict[str, threading.Thread] = {}
         self.question_evidence_reader = question_evidence_reader
         self.assessment_evidence_reader = assessment_evidence_reader
         self.question_bank_path = (
@@ -438,15 +440,6 @@ class TeachingPrepService:
         command_kind = str(command.get("kind") or "")
         request_token = f"ai-adopt-{adoption_id}"
         if (
-            task_kind == "teaching_prep.semester_mapping"
-            and command_kind == "apply_semester_mapping"
-        ):
-            applied = self.apply_semester_mapping_proposal(
-                proposal_ref_id,
-                expected_revision=int(command["proposal_revision"]),
-            )
-            return applied.id
-        if (
             task_kind == "teaching_prep.lesson_plan"
             and command_kind == "confirm_lesson_draft"
         ):
@@ -457,22 +450,6 @@ class TeachingPrepService:
                 confirmed=True,
             )
             return revised.id
-        if (
-            task_kind == "teaching_prep.exercise_suggestions"
-            and command_kind == "finalize_exercise_suggestions"
-        ):
-            run, suggestions = self.get_exercise_suggestion_run(
-                proposal_ref_id
-            )
-            if run.status != "succeeded" or not suggestions:
-                raise TeachingPrepConflictError(
-                    "exercise suggestions are unavailable for confirmation"
-                )
-            if any(item.decision == "pending" for item in suggestions):
-                raise TeachingPrepConflictError(
-                    "decide every exercise suggestion before confirmation"
-                )
-            return proposal_ref_id
         if (
             task_kind == "teaching_prep.slide_change_proposal"
             and command_kind == "review_slide_plan"
@@ -1669,7 +1646,6 @@ class TeachingPrepService:
         request_hash: str,
         operation_already_started: bool = False,
     ) -> dict[str, object]:
-        self.close_preview_runtime()
         impact = self.catalog.material_deletion_impact(
             source_id,
             expected_revision=expected_revision,
@@ -2346,6 +2322,14 @@ class TeachingPrepService:
             except Exception:
                 LOGGER.exception("PPT preview render worker failed")
 
+
+    def _pptx_preview_adapter(self) -> None:
+        """WPS preview rendering was retired; no render adapter exists.
+
+        Returning ``None`` makes every render path skip safely and fall
+        back to structural previews.
+        """
+        return None
 
     def _should_render_pptx_preview(self, summary: Mapping[str, object]) -> bool:
         status = str(summary.get("preview_render_status") or "")
@@ -3547,9 +3531,9 @@ class TeachingPrepService:
         plan = self._effective_slide_plan(
             self.slide_plans.get(clean_plan_id)
         )
-        if plan.status != "ready":
+        if plan.status != "approved":
             raise TeachingPrepConflictError(
-                "slide plan is not ready for execution"
+                "slide plan requires teacher approval before local execution"
             )
         draft = self.lesson_drafts.get(plan.lesson_draft_id)
         if draft.status != "confirmed":
@@ -3632,107 +3616,34 @@ class TeachingPrepService:
         )
         return replace(item, status="invalidated") if changed else item
 
-    def execute_slide_plan(
+    def _pptx_execution_staging_for_deletion_source(
         self,
-        plan_id: str,
-        *,
-        operation_id: str,
-        confirmed: bool,
-        publish: bool = True,
-    ) -> tuple[PptxExecutionRun, PptxVersion | None, bool]:
-        return self._execute_slide_plan_sync(
-            plan_id,
-            operation_id=operation_id,
-            confirmed=confirmed,
-            continue_existing=False,
-            publish=publish,
-        )
-
-
-    def _require_generation_budget(self, run_id: str) -> None:
-        self._remaining_generation_budget_ms(run_id)
-
-
-    def _generation_publish_deadline(self, run_id: str) -> str:
-        """Persist the remaining hard deadline alongside a reserved version.
-
-        The in-process monotonic clock protects live validation.  A restart
-        needs an equivalent durable wall-clock deadline so recovery cannot
-        turn a timed-out publication into a downloadable file.
-        """
-        remaining = self._remaining_generation_budget_ms(run_id)
-        return (
-            datetime.now(UTC)
-            + timedelta(milliseconds=remaining)
-        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-    def _controlled_export(self, relative: str) -> Path:
-        target = (self.root / relative).resolve(strict=False)
-        root = self.paths["exports"].resolve(strict=False)
+        source: Path,
+    ) -> Path | None:
+        resolved = source.resolve(strict=False)
+        staging_root = self.paths["staging"].resolve(strict=False)
         try:
-            target.relative_to(root)
-        except ValueError as exc:
-            raise RuntimeError("up-class package output path is invalid") from exc
-        return target
-
-    def _package_with_storage(
-        self,
-        package: UpClassPackage,
-    ) -> UpClassPackage:
-        retained = self._package_staging(package.id).is_dir()
-        actions: tuple[str, ...] = ()
-        if package.status == "interrupted":
-            actions = (
-                ("resume_publish", "discard_staging")
-                if package.manifest is not None
-                else ("discard_staging",)
-            )
-        elif package.status in {"failed", "complete"} and retained:
-            actions = ("discard_staging",)
-        return replace(
-            package,
-            staging_retained=retained,
-            recovery_actions=actions,
-        )
-
-
-    def _controlled_output(self, relative: str) -> Path:
-        target = (self.root / relative).resolve(strict=False)
-        root = self.paths["outputs"].resolve(strict=False)
-        try:
-            target.relative_to(root)
-        except ValueError as exc:
-            raise RuntimeError("PPTX output path is invalid") from exc
-        return target
-
-    def _execution_with_storage(
-        self,
-        run: PptxExecutionRun,
-    ) -> PptxExecutionRun:
-        retained = self._execution_staging(run.id).is_dir()
-        actions: tuple[str, ...] = ()
-        if run.status == "interrupted":
-            actions = (
-                ("resume_publication", "discard_staging")
-                if (
-                    run.published_version_id is not None
-                    and _generation_deadline_is_open(
-                        _generation_deadline_from_verification(
-                            run.verification_report
-                        )
-                    )
-                )
-                else ("discard_staging",)
-            )
-        elif run.status in {"failed", "cancelled", "published"} and retained:
-            actions = ("discard_staging",)
-        return replace(
-            run,
-            staging_retained=retained,
-            recovery_actions=actions,
-        )
-
+            relative = resolved.relative_to(staging_root)
+        except ValueError:
+            return None
+        if (
+            len(relative.parts) < 2
+            or re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]) is None
+        ):
+            return None
+        staging_name = relative.parts[0]
+        with self.database.connect() as connection:
+            exists = connection.execute(
+                """
+                SELECT 1
+                FROM pptx_execution_runs
+                WHERE staging_name = ?
+                """,
+                (staging_name,),
+            ).fetchone()
+        if exists is None:
+            return None
+        return staging_root / staging_name
 
     def _recover_material_deletion_files(self) -> int:
         recovered = 0
@@ -3959,82 +3870,6 @@ def _select_model_page_images(
             total_bytes += size
             result.append(item)
     return result
-
-
-def _preview_ready(run: PptxExecutionRun) -> bool:
-    return (
-        run.status == "verifying"
-        and run.published_version_id is None
-        and isinstance(run.verification_report, Mapping)
-        and bool(run.verification_report)
-    )
-
-
-def _execution_error_code(exc: Exception) -> str:
-    if isinstance(exc, TimeoutError):
-        if "generation budget" in str(exc):
-            return "generation_budget_exceeded"
-        return "wps_helper_timeout"
-    if isinstance(exc, PermissionError):
-        return "source_or_output_locked"
-    if isinstance(exc, TeachingPrepConflictError):
-        return "execution_state_conflict"
-    if isinstance(exc, TeachingPrepValidationError):
-        return "verification_failed"
-    return "wps_execution_failed"
-
-
-def _generation_deadline_from_verification(
-    verification: Mapping[str, object] | None,
-) -> str | None:
-    if not isinstance(verification, Mapping):
-        return None
-    value = verification.get("generation_deadline_at")
-    return value if isinstance(value, str) else None
-
-
-def _generation_deadline_is_open(deadline_at: str | None) -> bool:
-    if not deadline_at:
-        return False
-    try:
-        parsed = datetime.fromisoformat(deadline_at.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if parsed.tzinfo is None:
-        return False
-    return datetime.now(UTC) < parsed.astimezone(UTC)
-
-
-def _require_generation_deadline(deadline_at: str) -> None:
-    if not _generation_deadline_is_open(deadline_at):
-        raise TimeoutError("lesson generation budget exceeded")
-
-
-def _restore_candidate_from_output(
-    *,
-    candidate: Path,
-    output: Path | None,
-) -> None:
-    """Return a failed publication to its isolated staging area when able."""
-    if output is None:
-        return
-    try:
-        if output.is_file() and not candidate.exists():
-            os.rename(output, candidate)
-    except OSError:
-        # The database version has already been made unavailable.  A locked
-        # file cannot be safely moved here and is never exposed for download.
-        return
-
-
-def _package_error_code(exc: Exception) -> str:
-    if isinstance(exc, PermissionError):
-        return "package_output_locked"
-    if isinstance(exc, TeachingPrepConflictError):
-        return "package_state_conflict"
-    if isinstance(exc, TeachingPrepValidationError):
-        return "package_preflight_failed"
-    return "package_build_failed"
 
 
 def _clean_entity_id(value: str) -> str:

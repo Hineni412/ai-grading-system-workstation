@@ -4,12 +4,14 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.teaching_prep.api import create_router
+from backend.teaching_prep.application import TeachingPrepService
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
     TeachingPrepValidationError,
@@ -24,13 +26,151 @@ from backend.teaching_prep.infrastructure.fakes import (
 )
 
 from .test_a01_foundation import _migrated_service
-from .test_a03_material_units import _pptx, _register
-from .test_a04_exercise_candidates import (
-    _create_candidate,
-    _exercise_setup,
-    _region,
-    _update_payload,
-)
+from .test_a02_catalog import _lesson_tree
+from .test_a03_material_units import _pdf, _pptx, _register
+
+
+def _exercise_setup(
+    service: TeachingPrepService,
+    tmp_path: Path,
+):
+    _curriculum_id, _chapter_id, _section_id, lesson_ids = _lesson_tree(
+        service
+    )
+    lesson_id = lesson_ids[0]
+    exercise_version = _register(
+        service,
+        _pdf(
+            tmp_path / "synthetic-double-column.pdf",
+            [
+                "Question 1 left column    Question 2 right column",
+                "Question 3 continues with diagram",
+            ],
+        ),
+        token="a04-exercise-material",
+        name="合成双栏教辅",
+    )
+    answer_version = _register(
+        service,
+        _pdf(tmp_path / "synthetic-answers.pdf", ["Answers 1 2 3"]),
+        token="a04-answer-material",
+        name="合成答案册",
+    )
+    exercise_units = service.parse_material_version(exercise_version.id)
+    answer_units = service.parse_material_version(answer_version.id)
+    service.create_material_link(
+        request_token="a04-exercise-link",
+        lesson_node_id=lesson_id,
+        material_version_id=exercise_version.id,
+        start_unit=1,
+        end_unit=2,
+        crop=None,
+        purpose="exercise",
+        teacher_note=None,
+        confirmation_status="confirmed",
+    )
+    service.create_material_link(
+        request_token="a04-answer-link",
+        lesson_node_id=lesson_id,
+        material_version_id=answer_version.id,
+        start_unit=1,
+        end_unit=1,
+        crop=None,
+        purpose="answer",
+        teacher_note=None,
+        confirmation_status="confirmed",
+    )
+    return lesson_id, exercise_version, exercise_units, answer_units
+
+
+def _seed_verified_candidate(
+    service: TeachingPrepService,
+    *,
+    token: str,
+    lesson_id: str,
+    question_unit_id: str,
+    answer_unit_id: str,
+):
+    """Seed a teacher-verified exercise candidate directly in the database.
+
+    The exercise-candidate application layer was retired; the resource
+    pack still snapshots candidate rows, so tests seed them via SQL.
+    """
+    candidate_id = hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
+    with service.database.connect(immediate=True) as connection:
+        connection.execute(
+            """
+            INSERT INTO exercise_candidates (
+                id, request_token, request_hash, lesson_node_id,
+                question_number, content_label, difficulty, classroom_use,
+                estimated_minutes, teaching_focus, selection_status,
+                answer_status
+            )
+            VALUES (?, ?, ?, ?, '1', '资源包合成题', 'medium',
+                    'guided_practice', 5, '合成教学重点',
+                    'classroom_candidate', 'teacher_verified')
+            """,
+            (
+                candidate_id,
+                token,
+                hashlib.sha256(token.encode()).hexdigest(),
+                lesson_id,
+            ),
+        )
+        for role, unit_id, sequence in (
+            ("question", question_unit_id, 1),
+            ("answer", answer_unit_id, 1),
+        ):
+            unit = connection.execute(
+                """
+                SELECT source_version_sha256
+                FROM material_units
+                WHERE id = ?
+                """,
+                (unit_id,),
+            ).fetchone()
+            region_id = hashlib.sha256(
+                f"{token}-{role}".encode("utf-8")
+            ).hexdigest()[:32]
+            connection.execute(
+                """
+                INSERT INTO exercise_regions (
+                    id, exercise_candidate_id, region_role,
+                    material_unit_id, sequence, crop_json,
+                    source_version_sha256
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    region_id,
+                    candidate_id,
+                    role,
+                    unit_id,
+                    sequence,
+                    json.dumps(
+                        {"x0": 0.05, "y0": 0.05, "x1": 0.95, "y1": 0.45}
+                    ),
+                    str(unit["source_version_sha256"]),
+                ),
+            )
+    return SimpleNamespace(
+        id=candidate_id,
+        revision=1,
+        question_regions=[SimpleNamespace(material_unit_id=question_unit_id)],
+    )
+
+
+def _bump_candidate_revision(service: TeachingPrepService, candidate_id: str) -> None:
+    with service.database.connect(immediate=True) as connection:
+        connection.execute(
+            """
+            UPDATE exercise_candidates
+            SET revision = revision + 1,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE id = ?
+            """,
+            (candidate_id,),
+        )
 
 
 def _sha256(path: Path) -> str:
@@ -118,19 +258,12 @@ def _freeze_ready_setup(service, tmp_path: Path):
         teacher_note=None,
         confirmation_status="confirmed",
     )
-    candidate, _created = _create_candidate(
+    candidate = _seed_verified_candidate(
         service,
         token="a05-verified-exercise",
         lesson_id=lesson_id,
-        question_number="1",
-        content_label="资源包合成题",
-        question_regions=[
-            _region(exercise_units[0].id, 0.05, 0.05, 0.95, 0.45)
-        ],
-        answer_regions=[
-            _region(answer_units[0].id, 0.05, 0.05, 0.95, 0.35)
-        ],
-        answer_status="teacher_verified",
+        question_unit_id=exercise_units[0].id,
+        answer_unit_id=answer_units[0].id,
     )
     return lesson_id, reference_link, candidate
 
@@ -235,14 +368,7 @@ def test_freeze_is_complete_idempotent_and_old_version_is_immutable(
         "local_sources_changed"
     ] is False
 
-    changed = service.update_exercise_candidate(
-        candidate.id,
-        **_update_payload(
-            candidate,
-            content_label="资源包合成题（教师已修正）",
-        ),
-    )
-    assert changed.revision > candidate.revision
+    _bump_candidate_revision(service, candidate.id)
     status = service.resource_pack_status(lesson_id)
     assert status["local_sources_changed"] is True
 
@@ -400,6 +526,8 @@ def test_live_evidence_readers_are_read_only_aggregate_and_remove_pii(
                 answer_text TEXT,
                 difficulty TEXT,
                 needs_review INTEGER,
+                has_images INTEGER,
+                image_paths TEXT,
                 is_deleted INTEGER,
                 updated_at TEXT
             );
@@ -418,7 +546,7 @@ def test_live_evidence_readers_are_read_only_aggregate_and_remove_pii(
             );
             INSERT INTO questions VALUES (
                 101, '1', '计算题', 'x+1=2', 'x=1',
-                'easy', 0, 0, '2026-07-02'
+                'easy', 0, 0, NULL, 0, '2026-07-02'
             );
             INSERT INTO question_tags VALUES (
                 1, 101, 'knowledge_point', '一元一次方程'

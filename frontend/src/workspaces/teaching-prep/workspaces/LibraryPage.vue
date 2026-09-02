@@ -14,10 +14,9 @@ import ImportPanel from './library/ImportPanel.vue'
 import ShelfRail from './library/ShelfRail.vue'
 import ProgressStrip from './library/ProgressStrip.vue'
 import ChapterGrid from './library/ChapterGrid.vue'
-import LessonTreeConfirm from './library/LessonTreeConfirm.vue'
-import MaterialCorrespondence from './library/MaterialCorrespondence.vue'
+import LessonTreeView from './library/LessonTreeView.vue'
 import MaterialDetail from './library/MaterialDetail.vue'
-import { isBookRole, type LibrarySelection } from './library/libraryShared'
+import { type LibrarySelection } from './library/libraryShared'
 import { useMaterialImportQueue } from './library/importQueue'
 
 const catalog = useTeachingPrepCatalogStore()
@@ -50,14 +49,9 @@ function selectFromRail(next: LibrarySelection): void {
 }
 
 function defaultSelection(): LibrarySelection {
-  if (catalog.selectedSemester && catalog.lessonTreeStatus.state === 'pending') {
-    return { kind: 'tree' }
-  }
   const firstFolder = catalog.libraryChapterFolders[0]
   if (firstFolder) return { kind: 'chapter', folderKey: firstFolder.key }
-  const firstBook = catalog.libraryMaterialRecords.find(item => (
-    item.is_active && isBookRole(item.material_role)
-  ))
+  const firstBook = catalog.libraryMaterialRecords.find(item => item.is_active)
   if (firstBook) {
     return { kind: 'material', materialId: firstBook.current_material_version_id }
   }
@@ -95,14 +89,6 @@ watch(
   () => { void catalog.refreshReferencePptCollections() },
 )
 
-const selectedMaterialIsBook = computed(() => {
-  if (!catalog.selectedSemester || selection.value.kind !== 'material') return false
-  const record = catalog.semesterMaterials.find(item => (
-    item.current_material_version_id === (selection.value as { materialId: string }).materialId
-  ))
-  return record ? isBookRole(record.material_role) : false
-})
-
 async function createPrepSemester(): Promise<void> {
   creatingSemester.value = true
   createMessage.value = ''
@@ -126,7 +112,7 @@ async function createPrepSemester(): Promise<void> {
     <header class="tp-page-head">
       <div>
         <h1 data-workbench-title tabindex="-1">资料库</h1>
-        <p>左边选资料，右边看内容和下一步：课件确定课时树，教材教辅对应页码。</p>
+        <p>左边选资料，右边看内容和下一步：课件按章归档，课时树在备课首页生效。</p>
       </div>
     </header>
 
@@ -196,17 +182,7 @@ async function createPrepSemester(): Promise<void> {
             @select="selectFromRail"
             @notice="showNotice"
           />
-          <LessonTreeConfirm
-            v-else-if="selection.kind === 'tree'"
-            @select="selectFromRail"
-            @notice="showNotice"
-          />
-          <MaterialCorrespondence
-            v-else-if="selection.kind === 'material' && selectedMaterialIsBook"
-            :material-id="selection.materialId"
-            @notice="showNotice"
-            @open-import="selectFromRail({ kind: 'import' })"
-          />
+          <LessonTreeView v-else-if="selection.kind === 'tree'" />
           <MaterialDetail
             v-else-if="selection.kind === 'material'"
             :material-id="selection.materialId"

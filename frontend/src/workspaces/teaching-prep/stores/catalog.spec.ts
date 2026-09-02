@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../../../api/errors'
 import { jobApi, type JobResponse } from '../../../api/jobs'
-import { useJobStore } from '../../../stores/jobs'
 import {
   teachingPrepCatalogApi,
   type CurriculumEdition,
@@ -14,8 +13,6 @@ import {
   type MaterialVersion,
   type ResourcePack,
   type SemesterMaterialRecord,
-  type SemesterMappingPreflight,
-  type SemesterMappingProposal,
   type TeachingSemester,
   type TeachingPreferencesPayload,
 } from '../api/catalog'
@@ -209,93 +206,6 @@ function semesterMaterial(
   }
 }
 
-function configureMappingSelection(
-  store: ReturnType<typeof useTeachingPrepCatalogStore>,
-  curriculumItem: CurriculumEdition,
-  semesterItem: TeachingSemester,
-  materialItem: MaterialVersion,
-  record: SemesterMaterialRecord,
-): void {
-  store.curricula = [curriculumItem]
-  store.semesters = [semesterItem]
-  store.selectedCurriculumId = curriculumItem.id
-  store.materials = [materialItem]
-  store.semesterMaterials = [record]
-  store.selectedMaterialId = materialItem.id
-}
-
-function mappingPreflight(semesterId: string): SemesterMappingPreflight {
-  return {
-    semester_id: semesterId,
-    source_state_sha256: 'a'.repeat(64),
-    will_call_model: true,
-    model_available: true,
-    model_label: '合成模型',
-    model_destination_fingerprint: 'f'.repeat(64),
-    material_count: 1,
-    unit_count: 3,
-    existing_lesson_count: 1,
-    creates_initial_tree: false,
-    automatic_retry: false,
-    evidence_strategy: 'toc_calibrated',
-    evidence_confidence: 'high',
-    scanned_unit_count: 3,
-    directory_page_image_count: 0,
-    directory_page_images_sent: false,
-    toc_entry_count: 1,
-    anchor_count: 1,
-    estimated_input_characters: 120,
-    full_page_text_sent: false,
-    evidence_issues: [],
-  }
-}
-
-function mappingProposal(semesterId: string): SemesterMappingProposal {
-  return {
-    id: 'p'.repeat(32),
-    semester_id: semesterId,
-    operation_id: 'stored-operation',
-    source_state_sha256: 'a'.repeat(64),
-    status: 'proposed',
-    payload: {
-      tree: [],
-      mappings: [],
-      uncertainties: [],
-      source_material_record_ids: ['m'.repeat(32)],
-    },
-    revision: 1,
-    created_at: '2026-07-31T00:00:00Z',
-    updated_at: '2026-07-31T00:00:00Z',
-    applied_at: null,
-  }
-}
-
-function mappingJob(
-  semesterId: string,
-  materialRecordId = 'm'.repeat(32),
-): JobResponse {
-  return {
-    id: 92,
-    job_type: 'teaching_prep.semester_mapping',
-    payload: {
-      semester_id: semesterId,
-      material_record_id: materialRecordId,
-      operation_id: 'semester-mapping-1234567890abcdef1234567890abcdef',
-      source_state_sha256: 'a'.repeat(64),
-    },
-    result: {},
-    status: 'queued',
-    progress: 0,
-    stage: 'queued',
-    detail: '等待生成课时目录建议',
-    error: null,
-    cancel_requested: false,
-    created_at: '2026-08-03T00:00:00Z',
-    started_at: null,
-    updated_at: '2026-08-03T00:00:00Z',
-    finished_at: null,
-  }
-}
 
 beforeEach(() => {
   vi.restoreAllMocks()
@@ -333,8 +243,6 @@ describe('semester workflow idempotency', () => {
       .mockResolvedValue([])
     vi.spyOn(teachingPrepCatalogApi, 'listSemesterMaterials')
       .mockResolvedValue([])
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockResolvedValue([])
     const store = useTeachingPrepCatalogStore()
     const input = {
       curriculum: {
@@ -368,518 +276,6 @@ describe('semester workflow idempotency', () => {
     expect(store.lessonNodes).toEqual(lessons)
   })
 
-  it('submits the checked source fingerprint and tracks the returned Job', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const job = mappingJob(semesterItem.id, record.id)
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    const submit = vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValue(job)
-    const listProposals = vi.spyOn(
-      teachingPrepCatalogApi,
-      'listSemesterMappingProposals',
-    )
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-
-    expect(submit).toHaveBeenCalledExactlyOnceWith(
-      semesterItem.id,
-      expect.objectContaining({
-        material_record_id: record.id,
-        expected_source_state_sha256: 'a'.repeat(64),
-        operation_id: expect.stringMatching(/^semester-mapping-[0-9a-f]{32}$/),
-      }),
-    )
-    expect(useJobStore().jobs[job.id]).toEqual(job)
-    expect(store.currentSemesterMappingJob?.id).toBe(job.id)
-    expect(listProposals).not.toHaveBeenCalled()
-    expect(localStorage.getItem('ai-grading:teaching-prep:semester-mapping-pending-command:v1')).toBeNull()
-  })
-
-  it('does not POST again while the same source Job is active', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const job = mappingJob(semesterItem.id, record.id)
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    const submit = vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValue(job)
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-
-    expect(submit).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not let an old successful source block a changed source Job', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const oldJob = {
-      ...mappingJob(semesterItem.id, record.id),
-      status: 'succeeded' as const,
-      progress: 1,
-      stage: 'completed',
-      result: { source_state_sha256: 'a'.repeat(64) },
-      finished_at: '2026-08-03T00:00:01Z',
-    }
-    const nextJob = {
-      ...mappingJob(semesterItem.id, record.id),
-      id: 93,
-      payload: {
-        ...mappingJob(semesterItem.id, record.id).payload,
-        source_state_sha256: 'b'.repeat(64),
-      },
-    }
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValueOnce(mappingPreflight(semesterItem.id))
-      .mockResolvedValueOnce({
-        ...mappingPreflight(semesterItem.id),
-        source_state_sha256: 'b'.repeat(64),
-      })
-    const submit = vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValueOnce(oldJob)
-      .mockResolvedValueOnce(nextJob)
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-    expect(store.currentSemesterMappingJob?.id).toBe(oldJob.id)
-    await store.prepareSemesterMapping([record.id])
-    expect(store.currentSemesterMappingJob).toBeNull()
-    await store.generateSemesterMapping([record.id])
-
-    expect(submit).toHaveBeenNthCalledWith(
-      2,
-      semesterItem.id,
-      expect.objectContaining({ expected_source_state_sha256: 'b'.repeat(64) }),
-    )
-    expect(store.currentSemesterMappingJob?.id).toBe(nextJob.id)
-  })
-
-  it('recovers a lost POST response with GET and never repeats the POST', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const job = mappingJob(semesterItem.id, record.id)
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    const submit = vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockRejectedValue(new Error('synthetic lost response'))
-    const recover = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposalJobs')
-      .mockResolvedValue([job])
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-
-    expect(submit).toHaveBeenCalledTimes(1)
-    expect(recover).toHaveBeenCalledTimes(1)
-    expect(store.currentSemesterMappingJobRecovered).toBe(true)
-  })
-
-  it('refreshes and locates the proposal after the tracked Job succeeds', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const queued = mappingJob(semesterItem.id, record.id)
-    const proposal = mappingProposal(semesterItem.id)
-    proposal.payload.source_material_record_ids = [record.id]
-    proposal.operation_id = String(queued.payload.operation_id)
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValue(queued)
-    const listProposals = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockResolvedValue([proposal])
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-    useJobStore().track({
-      ...queued,
-      status: 'succeeded',
-      progress: 1,
-      stage: 'completed',
-      result: {
-        semester_id: semesterItem.id,
-        operation_id: proposal.operation_id,
-        source_state_sha256: proposal.source_state_sha256,
-        proposal_id: proposal.id,
-        recovered_existing: false,
-      },
-      updated_at: '2026-08-03T00:00:10Z',
-      finished_at: '2026-08-03T00:00:10Z',
-    })
-    await vi.waitFor(() => expect(listProposals).toHaveBeenCalledTimes(1))
-
-    expect(store.currentSemesterMappingProposal?.id).toBe(proposal.id)
-  })
-
-  it('recovers a durable proposal when the first terminal Job refresh is stale', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const queued = mappingJob(semesterItem.id, record.id)
-    const proposal = mappingProposal(semesterItem.id)
-    proposal.payload.source_material_record_ids = [record.id]
-    proposal.operation_id = String(queued.payload.operation_id)
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValue(queued)
-    const listProposals = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([proposal])
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-    useJobStore().track({
-      ...queued,
-      status: 'succeeded',
-      progress: 1,
-      stage: 'completed',
-      result: {
-        semester_id: semesterItem.id,
-        operation_id: proposal.operation_id,
-        source_state_sha256: proposal.source_state_sha256,
-        proposal_id: proposal.id,
-        recovered_existing: false,
-      },
-      updated_at: '2026-08-03T00:00:10Z',
-      finished_at: '2026-08-03T00:00:10Z',
-    })
-    await vi.waitFor(() => expect(listProposals).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect(store.currentSemesterMappingProposal?.id).toBe(proposal.id))
-  })
-
-  it('does not expose another operation proposal while recovering the current Job', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const queued = mappingJob(semesterItem.id, record.id)
-    const old = mappingProposal(semesterItem.id)
-    old.payload.source_material_record_ids = [record.id]
-    old.operation_id = 'semester-mapping-old-operation'
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValue(queued)
-    const listProposals = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockResolvedValue([old])
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-    useJobStore().track({
-      ...queued,
-      status: 'succeeded',
-      progress: 1,
-      stage: 'completed',
-      result: {
-        semester_id: semesterItem.id,
-        operation_id: String(queued.payload.operation_id),
-        source_state_sha256: String(queued.payload.source_state_sha256),
-        proposal_id: 'z'.repeat(32),
-        recovered_existing: false,
-      },
-      updated_at: '2026-08-03T00:00:10Z',
-      finished_at: '2026-08-03T00:00:10Z',
-    })
-    await vi.waitFor(() => expect(listProposals).toHaveBeenCalledTimes(2))
-
-    expect(store.currentSemesterMappingProposal).toBeNull()
-  })
-
-  it('falls back to the local PPT proposal when the current Job has no exact match', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const queued = mappingJob(semesterItem.id, record.id)
-    const localProposal = mappingProposal(semesterItem.id)
-    localProposal.payload.source_material_record_ids = [record.id]
-    localProposal.payload.generation_source = 'local_reference_ppt_names'
-    localProposal.operation_id = 'local-ppt-operation'
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValue(queued)
-    const listProposals = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockResolvedValue([localProposal])
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-    // 页面加载时已读到本地 PPT 建议；job 恢复只写回精确匹配的建议，不会覆盖它
-    store.semesterMappingProposals = [localProposal]
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-    useJobStore().track({
-      ...queued,
-      status: 'succeeded',
-      progress: 1,
-      stage: 'completed',
-      result: {
-        semester_id: semesterItem.id,
-        operation_id: String(queued.payload.operation_id),
-        source_state_sha256: String(queued.payload.source_state_sha256),
-        proposal_id: 'z'.repeat(32),
-        recovered_existing: false,
-      },
-      updated_at: '2026-08-03T00:00:10Z',
-      finished_at: '2026-08-03T00:00:10Z',
-    })
-    await vi.waitFor(() => expect(listProposals).toHaveBeenCalledTimes(2))
-
-    // 本地 PPT 课时树建议不依赖 job 匹配，始终可达
-    expect(store.currentSemesterMappingProposal?.id).toBe(localProposal.id)
-  })
-
-  it('deduplicates concurrent recovery for the same terminal Job', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const queued = mappingJob(semesterItem.id, record.id)
-    const proposal = mappingProposal(semesterItem.id)
-    proposal.payload.source_material_record_ids = [record.id]
-    proposal.operation_id = String(queued.payload.operation_id)
-    let releaseFirst!: (items: SemesterMappingProposal[]) => void
-    const firstResponse = new Promise<SemesterMappingProposal[]>(resolve => {
-      releaseFirst = resolve
-    })
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValue(queued)
-    const listProposals = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockReturnValueOnce(firstResponse)
-      .mockResolvedValueOnce([proposal])
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-    useJobStore().track({
-      ...queued,
-      status: 'succeeded',
-      progress: 1,
-      stage: 'completed',
-      result: {
-        semester_id: semesterItem.id,
-        operation_id: proposal.operation_id,
-        source_state_sha256: proposal.source_state_sha256,
-        proposal_id: proposal.id,
-        recovered_existing: false,
-      },
-      updated_at: '2026-08-03T00:00:10Z',
-      finished_at: '2026-08-03T00:00:10Z',
-    })
-    await vi.waitFor(() => expect(listProposals).toHaveBeenCalledTimes(1))
-    const concurrentPrepare = store.prepareSemesterMapping([record.id])
-    await Promise.resolve()
-    expect(listProposals).toHaveBeenCalledTimes(1)
-
-    releaseFirst([])
-    await concurrentPrepare
-    await vi.waitFor(() => expect(store.currentSemesterMappingProposal?.id).toBe(proposal.id))
-    expect(listProposals).toHaveBeenCalledTimes(2)
-  })
-
-  it('recovers the durable proposal even when the Job completion record fails', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const queued = mappingJob(semesterItem.id, record.id)
-    const durable = mappingProposal(semesterItem.id)
-    durable.payload.source_material_record_ids = [record.id]
-    durable.operation_id = String(queued.payload.operation_id)
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValue(queued)
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockResolvedValue([durable])
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await store.prepareSemesterMapping([record.id])
-    await store.generateSemesterMapping([record.id])
-    useJobStore().track({
-      ...queued,
-      status: 'failed',
-      stage: 'persisting_proposal',
-      error: '任务完成记录没有写入',
-      updated_at: '2026-08-03T00:00:10Z',
-      finished_at: '2026-08-03T00:00:10Z',
-    })
-    await vi.waitFor(() => expect(store.currentSemesterMappingProposal?.id).toBe(durable.id))
-  })
-
-  it('restores the server-listed Job when switching semesters without POSTing', async () => {
-    const oldCurriculum = curriculum('o'.repeat(32))
-    const nextCurriculum = curriculum('n'.repeat(32))
-    const semesterItem = semester(nextCurriculum.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const job = mappingJob(semesterItem.id, record.id)
-    vi.spyOn(teachingPrepCatalogApi, 'listLessons').mockResolvedValue([])
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterLessonProgress').mockResolvedValue([])
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMaterials').mockResolvedValue([record])
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals').mockResolvedValue([])
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposalJobs').mockResolvedValue([job])
-    const submit = vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-    const store = useTeachingPrepCatalogStore()
-    store.curricula = [oldCurriculum, nextCurriculum]
-    store.semesters = [semesterItem]
-    store.selectedCurriculumId = oldCurriculum.id
-    store.materials = [materialItem]
-
-    await store.selectCurriculum(nextCurriculum.id)
-    store.selectedMaterialId = materialItem.id
-
-    expect(store.currentSemesterMappingJob?.id).toBe(job.id)
-    expect(store.currentSemesterMappingJobRecovered).toBe(true)
-    expect(useJobStore().jobs[job.id]).toEqual(job)
-    expect(submit).not.toHaveBeenCalled()
-  })
-
-  it('requires an exact current-material preflight before creating a Job', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const submit = vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-
-    await expect(store.generateSemesterMapping([record.id])).rejects.toThrow(
-      '发送范围已失效',
-    )
-    expect(submit).not.toHaveBeenCalled()
-  })
-
-  it('does not expose an old proposal until the current source is preflighted', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialItem = material('v'.repeat(32))
-    const record = semesterMaterial(semesterItem.id, materialItem)
-    const old = mappingProposal(semesterItem.id)
-    old.payload.source_material_record_ids = [record.id]
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
-    store.semesterMappingProposals = [old]
-
-    expect(store.currentSemesterMappingProposal).toBeNull()
-  })
-
-  it('ignores a terminal Job proposal refresh after the material changes', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialA = material('a'.repeat(32))
-    const materialB = material('b'.repeat(32))
-    const recordA = semesterMaterial(semesterItem.id, materialA, 'm'.repeat(32))
-    const recordB = semesterMaterial(semesterItem.id, materialB, 'n'.repeat(32))
-    const jobA = {
-      ...mappingJob(semesterItem.id, recordA.id),
-      id: 101,
-      status: 'succeeded' as const,
-      progress: 1,
-      stage: 'completed',
-      result: { proposal_id: 'q'.repeat(32) },
-      finished_at: '2026-08-03T00:00:01Z',
-    }
-    const jobB = {
-      ...mappingJob(semesterItem.id, recordB.id),
-      id: 102,
-      payload: {
-        ...mappingJob(semesterItem.id, recordB.id).payload,
-        source_state_sha256: 'b'.repeat(64),
-      },
-      status: 'succeeded' as const,
-      progress: 1,
-      stage: 'completed',
-      result: { proposal_id: 'r'.repeat(32) },
-      finished_at: '2026-08-03T00:00:02Z',
-    }
-    const proposalA = {
-      ...mappingProposal(semesterItem.id),
-      id: 'q'.repeat(32),
-      payload: {
-        ...mappingProposal(semesterItem.id).payload,
-        source_material_record_ids: [recordA.id],
-      },
-    }
-    const proposalB = {
-      ...mappingProposal(semesterItem.id),
-      id: 'r'.repeat(32),
-      operation_id: 'semester-mapping-1234567890abcdef1234567890abcdef',
-      source_state_sha256: 'b'.repeat(64),
-      payload: {
-        ...mappingProposal(semesterItem.id).payload,
-        source_material_record_ids: [recordB.id],
-      },
-    }
-    let releaseA!: (items: SemesterMappingProposal[]) => void
-    let releaseB!: (items: SemesterMappingProposal[]) => void
-    const responseA = new Promise<SemesterMappingProposal[]>(resolve => { releaseA = resolve })
-    const responseB = new Promise<SemesterMappingProposal[]>(resolve => { releaseB = resolve })
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValueOnce(mappingPreflight(semesterItem.id))
-      .mockResolvedValueOnce({
-        ...mappingPreflight(semesterItem.id),
-        source_state_sha256: 'b'.repeat(64),
-      })
-    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
-      .mockResolvedValueOnce(jobA)
-      .mockResolvedValueOnce(jobB)
-    const list = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockReturnValueOnce(responseA)
-      .mockReturnValueOnce(responseB)
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialA, recordA)
-    store.materials = [materialA, materialB]
-    store.semesterMaterials = [recordA, recordB]
-
-    await store.prepareSemesterMapping([recordA.id])
-    await store.generateSemesterMapping([recordA.id])
-    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1))
-    store.selectedMaterialId = materialB.id
-    await store.prepareSemesterMapping([recordB.id])
-    await store.generateSemesterMapping([recordB.id])
-    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2))
-
-    releaseB([proposalB])
-    await vi.waitFor(() => expect(store.currentSemesterMappingProposal?.id).toBe(proposalB.id))
-    releaseA([proposalA])
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(store.currentSemesterMappingProposal?.id).toBe(proposalB.id)
-  })
 })
 
 describe('teaching preparation selection consistency', () => {
@@ -888,18 +284,11 @@ describe('teaching preparation selection consistency', () => {
     const semesterItem = semester(curriculumItem.id)
     const materialItem = material('a'.repeat(32))
     const record = semesterMaterial(semesterItem.id, materialItem)
-    const proposal = mappingProposal(semesterItem.id)
     vi.spyOn(teachingPrepCatalogApi, 'listMaterials').mockResolvedValue([materialItem])
     vi.spyOn(teachingPrepCatalogApi, 'listMaterialParseJobs').mockResolvedValue([])
     vi.spyOn(teachingPrepCatalogApi, 'listSemesterMaterials')
-      .mockResolvedValueOnce([record])
       .mockRejectedValueOnce(new Error('semester materials temporarily unavailable'))
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockResolvedValueOnce([proposal])
-      .mockRejectedValueOnce(new Error('mapping proposals temporarily unavailable'))
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposalJobs')
-      .mockRejectedValueOnce(new Error('mapping jobs temporarily unavailable'))
-      .mockResolvedValueOnce([])
+      .mockResolvedValue([record])
     const store = useTeachingPrepCatalogStore()
     store.curricula = [curriculumItem]
     store.semesters = [semesterItem]
@@ -907,14 +296,13 @@ describe('teaching preparation selection consistency', () => {
     store.selectedSemesterId = semesterItem.id
 
     await store.ensureMaterialData()
-    expect(store.semesterMaterials).toEqual([record])
-    expect(store.semesterMappingProposals).toEqual([proposal])
+    expect(store.semesterMaterials).toEqual([])
+    expect(store.errorMessage).toContain('学期资料')
 
     await store.ensureMaterialData()
 
     expect(store.semesterMaterials).toEqual([record])
-    expect(store.semesterMappingProposals).toEqual([proposal])
-    expect(store.errorMessage).toContain('学期资料、目录建议')
+    expect(store.errorMessage).toBe('')
   })
 
   it('reuses global material data when switching to another semester', async () => {
@@ -936,10 +324,6 @@ describe('teaching preparation selection consistency', () => {
     ).mockImplementation(async semesterId => (
       semesterId === firstSemester.id ? [firstRecord] : [secondRecord]
     ))
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
-      .mockImplementation(async semesterId => [mappingProposal(semesterId)])
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposalJobs')
-      .mockResolvedValue([])
     const store = useTeachingPrepCatalogStore()
     store.curricula = [curriculumItem]
     store.semesters = [firstSemester, secondSemester]
@@ -1011,6 +395,7 @@ describe('teaching preparation selection consistency', () => {
       real_model_enabled: false,
       semester_mapping_model_available: false,
       exercise_suggestion_model_available: false,
+      slide_animation_model_available: false,
       real_wps_enabled: false,
       wps_execution_available: false,
     })
@@ -1228,8 +613,6 @@ describe('teaching preparation selection consistency', () => {
       .mockImplementation((lessonId) => (
         lessonId === lessonA.id ? lessonAResponse : Promise.resolve([linkB])
       ))
-    vi.spyOn(teachingPrepCatalogApi, 'listExerciseCandidates')
-      .mockResolvedValue([])
     vi.spyOn(teachingPrepCatalogApi, 'listResourcePacks')
       .mockResolvedValue([])
     vi.spyOn(teachingPrepCatalogApi, 'getResourcePackStatus')
@@ -1240,12 +623,6 @@ describe('teaching preparation selection consistency', () => {
         latest_pack_id: null,
         local_sources_changed: false,
       }))
-    vi.spyOn(teachingPrepCatalogApi, 'listClassVariants')
-      .mockResolvedValue([])
-    vi.spyOn(teachingPrepCatalogApi, 'listUpClassPackages')
-      .mockResolvedValue([])
-    vi.spyOn(teachingPrepCatalogApi, 'listPostLessonReviews')
-      .mockResolvedValue([])
     const store = useTeachingPrepCatalogStore()
 
     const selectA = store.selectLesson(lessonA)
@@ -1362,105 +739,7 @@ describe('teaching preparation selection consistency', () => {
     expect(store.loadState).toBe('error')
   })
 
-  it('discards a stale mapping preflight after the material changes', async () => {
-    const curriculumItem = curriculum()
-    const semesterItem = semester(curriculumItem.id)
-    const materialA = material('a'.repeat(32))
-    const materialB = material('b'.repeat(32))
-    let releasePreflight!: (item: SemesterMappingPreflight) => void
-    const oldPreflight = new Promise<SemesterMappingPreflight>((resolve) => {
-      releasePreflight = resolve
-    })
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockReturnValue(oldPreflight)
-    vi.spyOn(teachingPrepCatalogApi, 'listMaterialUnits').mockResolvedValue([])
-    const recordA = semesterMaterial(semesterItem.id, materialA, 'r'.repeat(32))
-    vi.spyOn(teachingPrepCatalogApi, 'listMaterials')
-      .mockResolvedValue([materialA, materialB])
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMaterials')
-      .mockResolvedValue([recordA])
-    vi.spyOn(teachingPrepCatalogApi, 'listSemesters')
-      .mockResolvedValue([semesterItem])
-    const store = useTeachingPrepCatalogStore()
-    configureMappingSelection(store, curriculumItem, semesterItem, materialA, recordA)
 
-    const prepare = store.prepareSemesterMapping([recordA.id])
-    await Promise.resolve()
-    await store.openMaterial(materialB)
-    releasePreflight(mappingPreflight(semesterItem.id))
-    await prepare
-
-    expect(store.selectedMaterialId).toBe(materialB.id)
-    expect(store.semesterMappingPreflight).toBeNull()
-    expect(store.errorMessage).toBe('')
-  })
-
-  it('shows only a proposal that belongs to the current material', async () => {
-    const semesterItem = semester()
-    const curriculumItem = curriculum()
-    const materialA = material('a'.repeat(32))
-    const materialB = material('b'.repeat(32))
-    const proposalA = mappingProposal(semesterItem.id)
-    proposalA.id = '1'.repeat(32)
-    proposalA.payload.source_material_record_ids = ['r'.repeat(32)]
-    const proposalB = mappingProposal(semesterItem.id)
-    proposalB.id = '2'.repeat(32)
-    proposalB.payload.source_material_record_ids = ['t'.repeat(32)]
-    const store = useTeachingPrepCatalogStore()
-    store.curricula = [curriculumItem]
-    store.semesters = [semesterItem]
-    store.selectedCurriculumId = curriculumItem.id
-    store.materials = [materialA, materialB]
-    store.semesterMaterials = [
-      {
-        id: 'r'.repeat(32),
-        semester_id: semesterItem.id,
-        material_source_id: materialA.source_id,
-        display_name: materialA.display_name,
-        material_role: 'textbook',
-        parse_status: 'parsed',
-        mapping_status: 'proposed',
-        current_material_version_id: materialA.id,
-        safe_filename: materialA.safe_filename,
-        current_inspection_status: 'ready',
-        current_unit_count: 1,
-        last_parsed_version_id: materialA.id,
-        has_unparsed_update: false,
-        parsed_at: '2026-07-31T00:00:00Z',
-        is_active: true,
-        revision: 1,
-        created_at: '2026-07-31T00:00:00Z',
-        updated_at: '2026-07-31T00:00:00Z',
-      },
-      {
-        id: 't'.repeat(32),
-        semester_id: semesterItem.id,
-        material_source_id: materialB.source_id,
-        display_name: materialB.display_name,
-        material_role: 'supplement',
-        parse_status: 'parsed',
-        mapping_status: 'proposed',
-        current_material_version_id: materialB.id,
-        safe_filename: materialB.safe_filename,
-        current_inspection_status: 'ready',
-        current_unit_count: 1,
-        last_parsed_version_id: materialB.id,
-        has_unparsed_update: false,
-        parsed_at: '2026-07-31T00:00:00Z',
-        is_active: true,
-        revision: 1,
-        created_at: '2026-07-31T00:00:00Z',
-        updated_at: '2026-07-31T00:00:00Z',
-      },
-    ]
-    store.semesterMappingProposals = [proposalA, proposalB]
-    store.selectedMaterialId = materialB.id
-    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
-      .mockResolvedValue(mappingPreflight(semesterItem.id))
-    await store.prepareSemesterMapping(['t'.repeat(32)])
-
-    expect(store.currentSemesterMappingProposal?.id).toBe(proposalB.id)
-  })
 
   it('keeps the current resource-pack preflight when an old one returns later', async () => {
     const packA = resourcePack('a'.repeat(32))

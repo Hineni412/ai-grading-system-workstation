@@ -110,6 +110,8 @@ def test_plan_is_idempotent_stable_and_does_not_touch_source_ppt(
             "source_fingerprint_and_slide_signature",
             "new_object",
             "manual_only",
+            "question_insertion",
+            "exact_wps_name_and_source_fingerprint",
         }
         for operation in first.payload["operations"]
     )
@@ -131,7 +133,7 @@ def test_plan_is_idempotent_stable_and_does_not_touch_source_ppt(
     assert before == _sha256(source)
 
 
-def test_plan_requires_confirmed_draft_and_protected_suggestions_stay_manual(
+def test_plan_requires_confirmed_draft_and_marks_unsupported_objects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -176,26 +178,6 @@ def test_plan_requires_confirmed_draft_and_protected_suggestions_stay_manual(
         item["object_type"] == "complex_math_text"
         for item in plan.payload["unsupported_objects"]
     )
-    manual = next(
-        item
-        for item in plan.payload["operations"]
-        if item["execution_mode"] == "manual_only"
-    )
-    review = {
-        "operation_id": manual["operation_id"],
-        "decision": "approved",
-        "reason": manual["reason"],
-        "planned_minutes": manual["planned_minutes"],
-        "teacher_note": None,
-    }
-    with pytest.raises(TeachingPrepValidationError):
-        service.revise_slide_plan(
-            plan.id,
-            request_token="a07-illegal-approval",
-            operation_reviews=[review],
-            approve_low_risk_deletions=False,
-            review_note=None,
-        )
 
 
 def test_batch_delete_approval_and_individual_undo_create_history_versions(

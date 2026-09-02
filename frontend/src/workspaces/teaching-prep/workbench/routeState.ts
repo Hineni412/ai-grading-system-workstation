@@ -2,7 +2,7 @@ import { computed, type ComputedRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 export type TeachingPrepView = 'overview' | 'library' | 'lesson'
-export type TeachingPrepLessonStep = 1 | 2 | 3
+export type TeachingPrepLessonStep = 1 | 2
 
 export interface TeachingPrepRouteState {
   currentView: ComputedRef<TeachingPrepView>
@@ -19,8 +19,7 @@ function normalizeView(value: unknown): TeachingPrepView {
 }
 
 function normalizeStep(value: unknown): TeachingPrepLessonStep {
-  const step = Number(value)
-  return step === 2 || step === 3 ? step : 1
+  return Number(value) === 2 ? 2 : 1
 }
 
 /**
