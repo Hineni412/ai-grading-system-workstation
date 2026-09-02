@@ -391,3 +391,18 @@ def test_legacy_anonymous_preview_and_student_card_routes_are_retired(
     assert cards.status_code == 404
     assert selected_card.status_code == 200
     assert selected_card.json()["subject"]["subject_id"] == subject_id
+
+
+def test_get_card_exposes_read_only_academic_summary(tmp_path: Path) -> None:
+    service, token, subject_id = _ready(tmp_path, _proposal())
+
+    card = service.student_cards.get_card(token=token, subject_id=subject_id)
+    # 没有已确认成绩时摘要为 None，但字段始终存在，前端不需要猜。
+    assert "academic_summary" in card
+    assert card["academic_summary"] is None
+
+    # 有摘要产出时原样透传；用替身代替完整成绩管线，只验证接线。
+    sentinel = {"contract_version": "academic_ai_summary_v1", "trend": "improving"}
+    service.student_cards.academic_summarizer = lambda *, token, subject_id: sentinel
+    card = service.student_cards.get_card(token=token, subject_id=subject_id)
+    assert card["academic_summary"] == sentinel

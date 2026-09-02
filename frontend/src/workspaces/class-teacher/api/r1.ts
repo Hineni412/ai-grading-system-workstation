@@ -195,6 +195,28 @@ export interface CurrentStudentProfile {
   latest_round?: ProfileLatestRound | null
 }
 
+// 学业摘要卡：后端 student_academic_analysis.ai_summary 的只读透传，
+// 无已确认成绩时为 null。口径标签（trend/stability/skew）沿用学业证据页的映射。
+export interface AcademicSummarySubject {
+  name: string
+  latest_rank: number | null
+  participant_count: number | null
+  rank_delta: number | null
+  attention: boolean
+}
+
+export interface AcademicSummary {
+  contract_version: string
+  latest_exam: { title: string; occurred_on: string; term_label: string } | null
+  total: { score: number | null; rank: number | null; participant_count: number | null; top_ratio: number | null } | null
+  rank_change_vs_previous: { previous_title: string; previous_rank: number | null; delta: number | null } | null
+  trend: string
+  stability: string
+  skew: { label: string; strongest: string[]; weakest: string[] }
+  subjects: AcademicSummarySubject[]
+  notes: string[]
+}
+
 export interface StudentCard {
   subject: DirectorySubject
   entries: StudentCardEntry[]
@@ -202,6 +224,7 @@ export interface StudentCard {
   existing_records: JsonRecord[]
   support_plans: JsonRecord[]
   profile_state?: 'created' | 'not_created'
+  academic_summary?: AcademicSummary | null
 }
 
 export interface AcademicAnalysis {
