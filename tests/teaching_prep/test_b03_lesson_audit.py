@@ -91,17 +91,13 @@ def test_long_subscript_run_is_flagged_and_short_marker_is_not(
 
 
 def test_page_budget_red_line() -> None:
-    review_ok = audit_page_budget(18, lesson_kind="review")
-    assert review_ok["over_limit"] is False
-    assert review_ok["limit"] == 18
+    within = audit_page_budget(18)
+    assert within["over_limit"] is False
+    assert within["limit"] == 18
 
-    review_over = audit_page_budget(19, lesson_kind="review")
-    assert review_over["over_limit"] is True
-    assert "19 页" in review_over["suggestion"]
-
-    new_lesson = audit_page_budget(15, lesson_kind="new")
-    assert new_lesson["limit"] == 14
-    assert new_lesson["over_limit"] is True
+    over = audit_page_budget(19)
+    assert over["over_limit"] is True
+    assert "19 页" in over["suggestion"]
 
 
 def test_question_page_cross_check_detects_out_of_range_and_conflict() -> None:
@@ -144,7 +140,6 @@ def test_run_full_audit_combines_all_three_checks(tmp_path: Path) -> None:
     report = run_full_audit(
         clean,
         inserted_question_pages=[{"question_id": 7, "final_position": 2}],
-        lesson_kind="review",
     )
     assert report["passed"] is True
     assert report["page_budget"]["final_page_count"] == 3
@@ -160,7 +155,6 @@ def test_run_full_audit_combines_all_three_checks(tmp_path: Path) -> None:
     report = run_full_audit(
         dirty,
         inserted_question_pages=[{"question_id": 7, "final_position": 99}],
-        lesson_kind="review",
     )
     assert report["passed"] is False
     assert report["superscript_subscript"]["finding_count"] == 1

@@ -48,7 +48,6 @@ class SelectionRequest:
     limit: int = 12
     max_per_method: int = 2
     exclude_question_ids: tuple[int, ...] = ()
-    frequency_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
     def __post_init__(self) -> None:
         if not self.volume_id:
@@ -65,8 +64,6 @@ class SelectionRequest:
             raise QuestionSelectionError("选题数量无效。")
         if not 1 <= self.max_per_method <= 6:
             raise QuestionSelectionError("同一方法的保留题数无效。")
-        if any(weight < 0 for weight in self.frequency_weights):
-            raise QuestionSelectionError("考频权重不能为负。")
 
 
 def _connect_read_only(database_path: str | Path) -> sqlite3.Connection:
@@ -170,13 +167,10 @@ def fetch_question_content(
     return result
 
 
-def _frequency_score(
-    row: sqlite3.Row, weights: tuple[float, float, float]
-) -> float:
+def _frequency_score(row: sqlite3.Row) -> float:
     total = 0.0
-    for index, field_name in enumerate(_FREQUENCY_FIELDS):
-        value = row[field_name]
-        total += float(value or 0.0) * weights[index]
+    for field_name in _FREQUENCY_FIELDS:
+        total += float(row[field_name] or 0.0)
     return round(total, 6)
 
 
@@ -188,11 +182,10 @@ def select_questions(
     section_ids = list(dict.fromkeys(request.section_ids))
     placeholders = ",".join("?" * len(section_ids))
     excluded = set(request.exclude_question_ids)
-    weights = request.frequency_weights
 
     candidates_sql = f"""
-        SELECT q.id, q.question_type, q.question_text, q.answer_text,
-               q.difficulty, q.has_images, q.image_paths, q.source_file,
+        SELECT q.id, q.question_type, q.question_text,
+               q.difficulty, q.has_images, q.image_paths,
                q.needs_review,
                f.score_midterm, f.score_final, f.score_zhongkao
         FROM questions q
@@ -251,6 +244,7 @@ def select_questions(
 
     stats = {
         "candidate_total": len(rows),
+        "dropped_needs_review": 0,
         "dropped_stem_length": 0,
         "dropped_excluded": 0,
         "dropped_duplicate": 0,
@@ -263,7 +257,7 @@ def select_questions(
 
     scored: list[tuple[float, int, sqlite3.Row]] = []
     for row in rows:
-        scored.append((_frequency_score(row, weights), int(row["difficulty"] or 0), row))
+        scored.append((_frequency_score(row), int(row["difficulty"] or 0), row))
     scored.sort(key=lambda entry: (-entry[0], entry[1], entry[2]["id"]))
 
     for score, _difficulty, row in scored:
@@ -271,6 +265,10 @@ def select_questions(
             break
         question_id = int(row["id"])
         stem = str(row["question_text"] or "")
+        if row["needs_review"]:
+            # 答案待复核的题不进候选组
+            stats["dropped_needs_review"] += 1
+            continue
         if len(stem) > request.stem_max_chars:
             stats["dropped_stem_length"] += 1
             continue
@@ -302,7 +300,6 @@ def select_questions(
                 "question_id": question_id,
                 "question_type": str(row["question_type"] or ""),
                 "stem": stem,
-                "answer_text": str(row["answer_text"] or ""),
                 "difficulty": int(row["difficulty"] or 0),
                 "frequency_score": score,
                 "frequency": {
@@ -313,9 +310,6 @@ def select_questions(
                 "method": method,
                 "knowledge_points": knowledge_by_question.get(question_id, [])[:3],
                 "has_images": bool(image_paths),
-                "image_paths": image_paths,
-                "source_file": str(row["source_file"] or ""),
-                "answer_needs_review": bool(row["needs_review"]),
                 "selection_reason": {
                     "frequency": f"综合考频 {score:.3f}",
                     "difficulty": f"难度 {int(row['difficulty'] or 0)}",

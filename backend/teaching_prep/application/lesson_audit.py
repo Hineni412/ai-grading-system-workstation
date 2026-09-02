@@ -87,12 +87,10 @@ def audit_superscript_subscript(pptx_path: str | Path) -> dict[str, Any]:
 
 def audit_page_budget(
     final_page_count: int,
-    *,
-    lesson_kind: str = "review",
 ) -> dict[str, Any]:
     """页数红线：40 分钟课时约 16–18 页，超出时给出提示。"""
 
-    limit = _REVIEW_PAGE_LIMIT if lesson_kind != "new" else 14
+    limit = _REVIEW_PAGE_LIMIT
     return {
         "final_page_count": final_page_count,
         "limit": limit,
@@ -143,14 +141,13 @@ def run_full_audit(
     pptx_path: str | Path,
     *,
     inserted_question_pages: list[dict[str, Any]] | None = None,
-    lesson_kind: str = "review",
 ) -> dict[str, Any]:
     """对成片副本执行全部机械审计，返回统一报告。"""
 
     superscript = audit_superscript_subscript(pptx_path)
     presentation = Presentation(str(pptx_path))
     final_page_count = len(presentation.slides._sldIdLst)  # noqa: SLF001
-    page_budget = audit_page_budget(final_page_count, lesson_kind=lesson_kind)
+    page_budget = audit_page_budget(final_page_count)
     question_pages = cross_check_question_pages(
         inserted_question_pages or [],
         final_page_count=final_page_count,
