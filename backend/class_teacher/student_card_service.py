@@ -110,11 +110,8 @@ class StudentCardService:
 
         card = self.get_card(token=token, subject_id=subject_id)
         profile = dict(card["current_profile"])
-        academic_summary = (
-            self.academic_summarizer(token=token, subject_id=subject_id)
-            if self.academic_summarizer is not None
-            else None
-        )
+        # get_card 已附带学业摘要卡（无成绩时为 None），此处直接复用，不重复计算。
+        academic_summary = card["academic_summary"]
         return {
             "subject_ref": {
                 "kind": "student",
