@@ -151,7 +151,7 @@ function measureSummaryOverflow(): void {
   summaryOverflows.value = Boolean(el && !summaryExpanded.value && el.scrollHeight > el.clientHeight + 2)
 }
 
-/* —— 本轮更新聚合条：替代散落在各条目里的小「新」徽章导航 —— */
+/* —— 本轮更新聚合条：把本轮变化的入口聚合到顶部；条目与维度上的「新」徽章仍标注具体位置 —— */
 const dimensionLabelOf = computed(() => {
   const map = new Map<string, string>()
   for (const dimension of profile.value.dimensions) map.set(dimension.key, dimension.label)
@@ -751,7 +751,7 @@ onBeforeUnmount(() => {
               <span class="aca-strip__k">学业定位</span>
               <b>{{ academicStrip.termLabel }} · 第 {{ academicStrip.rank }} 名</b>
               <span v-if="academicStrip.count">/ {{ academicStrip.count }} 人<template v-if="academicStrip.topRatio"> · 前 {{ academicStrip.topRatio }}</template></span>
-              <span v-if="academicStrip.delta" :class="academicStrip.delta > 0 ? 'aca-strip__up' : 'aca-strip__down'">{{ academicStrip.delta > 0 ? `↑${academicStrip.delta}` : `↓${-academicStrip.delta}` }}</span>
+              <span v-if="academicStrip.delta != null" :class="academicStrip.delta > 0 ? 'aca-strip__up' : academicStrip.delta < 0 ? 'aca-strip__down' : 'aca-strip__flat'">{{ academicStrip.delta > 0 ? `↑${academicStrip.delta}` : academicStrip.delta < 0 ? `↓${-academicStrip.delta}` : '持平' }}</span>
               <span v-if="academicStrip.attentionName" class="aca-strip__warn">{{ academicStrip.attentionName }}需关注</span>
               <span class="aca-strip__go">学业证据 →</span>
             </button>
@@ -952,7 +952,7 @@ onBeforeUnmount(() => {
               <div class="snap__metrics">
                 <div v-if="snapshot.score != null" class="snap__metric"><strong>{{ snapshot.score }}</strong><span>总分</span></div>
                 <div class="snap__metric"><strong>第 {{ snapshot.rank }} 名</strong><span>校次 · 共 {{ snapshot.count }} 人<template v-if="snapshot.topRatio"> · 前 {{ snapshot.topRatio }}</template></span></div>
-                <div v-if="snapshot.delta" class="snap__metric"><strong :class="rankDeltaClass(snapshot.delta)">{{ rankDeltaText(snapshot.delta) }}</strong><span>较 {{ snapshot.previousTitle }}<template v-if="snapshot.previousRank != null">（第 {{ snapshot.previousRank }} 名）</template></span></div>
+                <div v-if="snapshot.delta != null" class="snap__metric"><strong :class="rankDeltaClass(snapshot.delta)">{{ rankDeltaText(snapshot.delta) }}</strong><span>较 {{ snapshot.previousTitle }}<template v-if="snapshot.previousRank != null">（第 {{ snapshot.previousRank }} 名）</template></span></div>
               </div>
               <div class="snap__tags">
                 <span class="tag">趋势：{{ snapshot.trend }}</span>
@@ -1036,6 +1036,7 @@ onBeforeUnmount(() => {
 .aca-strip b{color:var(--foreground)}
 .aca-strip__up{color:var(--color-success);font-weight:700}
 .aca-strip__down{color:var(--color-danger);font-weight:700}
+.aca-strip__flat{color:var(--muted-foreground);font-weight:600}
 .aca-strip__warn{color:var(--color-warning);font-weight:600}
 .aca-strip__go{margin-left:auto;color:var(--color-info);font-size:12px;font-weight:600}
 .priority-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
