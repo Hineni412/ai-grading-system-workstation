@@ -249,6 +249,8 @@ def apply_plan(
 
     source = Path(source_path)
     output = Path(output_path)
+    if not source.is_file():
+        raise PptxEditorError("源课件文件不存在。")
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, output)
 

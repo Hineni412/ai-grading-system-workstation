@@ -8,9 +8,8 @@ import { lessonProgressLabel } from '../progressLabels'
 import { teachingPrepLessonWorkbenchKey } from '../workbench/routeContext'
 import { useTeachingPrepLessonWorkbench } from '../workbench/lessonWorkbench'
 import type { TeachingPrepLessonStep } from '../workbench/routeState'
-import ConfirmMaterialsStep from './lesson/ConfirmMaterialsStep.vue'
-import ReviewSlidesStep from './lesson/ReviewSlidesStep.vue'
-import CopiesStep from './lesson/CopiesStep.vue'
+import PrepareAdaptationStep from './lesson/PrepareAdaptationStep.vue'
+import CompareExportStep from './lesson/CompareExportStep.vue'
 
 interface StepHandle {
   primaryLabel: string
@@ -26,9 +25,8 @@ const routeState = workbench.routeState
 const stepRef = ref<StepHandle | null>(null)
 
 const STEPS: Array<{ id: TeachingPrepLessonStep; title: string; desc: string; hint: string }> = [
-  { id: 1, title: '① 确认资料', desc: '挑选本课资料', hint: '确认本课要用的主课件和参考资料，然后一次发给 AI 改编。' },
-  { id: 2, title: '② 对照改编', desc: '看改前改后', hint: '左右对照本地渲染的改前、改后页。满意就确认导出；某一页不满意就写一句意见再发给 AI。' },
-  { id: 3, title: '③ 上课包', desc: '打包上课文件', hint: '确认导出后的副本可在这里生成上课包。原课件不会被覆盖。' },
+  { id: 1, title: '① 课件与选题', desc: '看课件、定题目', hint: '已自动载入本课绑定的参考课件并跑出候选题组；增删个别题后，点一次「发给 AI 改编」。' },
+  { id: 2, title: '② 对照与导出', desc: '对照后下载', hint: '改前/改后逐页对照，确认导出后自动审计并下载改编 PPTX（勾选学案时同时有 DOCX）。' },
 ]
 
 const currentStepMeta = computed(() => STEPS.find(item => item.id === routeState.currentStep.value) ?? STEPS[0]!)
@@ -38,8 +36,7 @@ function stepDone(step: TeachingPrepLessonStep): boolean {
   const status = workbench.selectedStatus.value
   if (!status) return false
   if (step === 1) return status.cells.materials.status === 'ready'
-  if (step === 2) return status.cells.slides.status === 'ready'
-  return Boolean(status.latest.pptx_version_id)
+  return status.cells.slides.status === 'ready'
 }
 
 onMounted(() => { void workbench.load() })
@@ -59,7 +56,7 @@ onMounted(() => { void workbench.load() })
       v-if="workbench.loading.value"
       kind="loading"
       title="正在载入课时"
-      description="正在整理本课资料与版本……"
+      description="正在整理本课课件与版本……"
     />
     <div v-else class="tp-lesson-frame">
       <aside class="tp-rail" aria-label="备课步骤">
@@ -84,9 +81,8 @@ onMounted(() => { void workbench.load() })
       </aside>
 
       <section class="tp-lesson-canvas" aria-label="当前步骤工作面">
-        <ConfirmMaterialsStep v-if="routeState.currentStep.value === 1" ref="stepRef" />
-        <ReviewSlidesStep v-else-if="routeState.currentStep.value === 2" ref="stepRef" />
-        <CopiesStep v-else ref="stepRef" />
+        <PrepareAdaptationStep v-if="routeState.currentStep.value === 1" ref="stepRef" />
+        <CompareExportStep v-else ref="stepRef" />
       </section>
 
       <aside class="tp-inspector" aria-label="本步说明">

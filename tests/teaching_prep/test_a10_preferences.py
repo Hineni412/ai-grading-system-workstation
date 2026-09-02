@@ -26,9 +26,6 @@ from backend.teaching_prep.application.preferences import (
     DEFAULT_TEACHING_PREFERENCES,
     normalize_teaching_preferences,
 )
-from backend.teaching_prep.application.pptx_execution import (
-    build_executor_request,
-)
 from backend.teaching_prep.application.preparation_service import (
     TeachingPrepService,
 )
@@ -91,20 +88,7 @@ def test_lesson_model_repairs_wrapped_json_and_requests_enough_output() -> None:
                         {
                             "finish_reason": "stop",
                             "message": {
-                                "content": json.dumps(
-                                    {
-                                        "review_findings": [
-                                            {
-                                                "slide_refs": [],
-                                                "finding": "整体合理",
-                                                "category": "other",
-                                                "suggested_action": "保持",
-                                                "citations": ["lesson:lesson-1"],
-                                            }
-                                        ]
-                                    },
-                                    ensure_ascii=False,
-                                )
+                                "content": "{\"uncertainties\": ["
                             },
                         }
                     ]
@@ -639,26 +623,6 @@ def test_slide_plan_turns_reviewed_tendencies_into_safe_operations(
     with pytest.raises(TeachingPrepValidationError):
         validate_operation(invalid_marker)
 
-    executable = deepcopy(offset_plan)
-    for operation in executable["operations"]:
-        operation["decision"] = (
-            "approved"
-            if operation["operation_id"] == offset_marker["operation_id"]
-            else "rejected"
-        )
-    request = build_executor_request(
-        executable,
-        source_sha256="a" * 64,
-        source_copy=tmp_path / "source-copy.pptx",
-        candidate=tmp_path / "candidate.pptx",
-        preview_dir=tmp_path / "previews",
-        resolve_asset=lambda _ref, _operation_id: tmp_path / "asset.png",
-    )
-    assert request["operations"][0]["details"]["font_size"] == 28
-    assert request["operations"][0]["details"]["semantic_role"] == (
-        "textbook_page_label"
-    )
-
 
 def test_slide_plan_model_proposal_uses_frozen_support_materials(
     tmp_path: Path,
@@ -871,32 +835,6 @@ def test_slide_plan_targets_question_objects_existing_slide_and_textbook_label(
         "height": 0.68,
     }
     assert marker["details"]["text"] == "教材 P9"
-
-    executable = deepcopy(plan)
-    approved_ids = {
-        deletion["operation_id"],
-        insertion["operation_id"],
-        marker["operation_id"],
-    }
-    for operation in executable["operations"]:
-        operation["decision"] = (
-            "approved"
-            if operation["operation_id"] in approved_ids
-            else "rejected"
-        )
-    request = build_executor_request(
-        executable,
-        source_sha256="b" * 64,
-        source_copy=tmp_path / "source-copy.pptx",
-        candidate=tmp_path / "candidate.pptx",
-        preview_dir=tmp_path / "previews",
-        resolve_asset=lambda _ref, _operation_id: tmp_path / "question.png",
-    )
-    request_insertion = next(
-        item for item in request["operations"] if item["kind"] == "insert_static_image"
-    )
-    assert request_insertion["target"]["target_kind"] == "existing_slide"
-    assert request_insertion["target"]["generated_page_number"] == 1
 
 
 def test_teacher_can_move_insert_and_correct_textbook_label(

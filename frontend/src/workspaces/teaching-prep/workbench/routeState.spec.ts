@@ -59,10 +59,10 @@ describe('teaching-prep route state', () => {
     expect(first.state.currentLessonId.value).toBeNull()
     first.app.unmount()
 
-    const second = await mountAt({ view: 'lesson', lesson: 'lesson-1', step: '3' })
+    const second = await mountAt({ view: 'lesson', lesson: 'lesson-1', step: '2' })
     expect(second.state.currentView.value).toBe('lesson')
     expect(second.state.currentLessonId.value).toBe('lesson-1')
-    expect(second.state.currentStep.value).toBe(3)
+    expect(second.state.currentStep.value).toBe(2)
     second.app.unmount()
   })
 
@@ -81,7 +81,7 @@ describe('teaching-prep route state', () => {
     const { app, router, state } = await mountAt({
       view: 'lesson',
       lesson: 'lesson-1',
-      step: '3',
+      step: '2',
     })
     await state.openLibrary()
     expect(router.currentRoute.value.query).toEqual({ view: 'library' })
@@ -92,7 +92,7 @@ describe('teaching-prep route state', () => {
 
   it('setStep only applies in lesson view', async () => {
     const { app, router, state } = await mountAt({ view: 'library' })
-    await state.setStep(3)
+    await state.setStep(2)
     expect(router.currentRoute.value.query).toEqual({ view: 'library' })
 
     await state.openLesson('lesson-1', 1)

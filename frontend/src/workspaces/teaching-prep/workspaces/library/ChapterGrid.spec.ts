@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   MaterialVersion,
   ReferencePptCollection,
-  SemesterMappingProposal,
   SemesterMaterialRecord,
 } from '../../api/catalog'
 import { teachingPrepCatalogApi } from '../../api/catalog'
@@ -37,54 +36,6 @@ function record(id: string, item: MaterialVersion): SemesterMaterialRecord {
   }
 }
 
-function treeProposal(recordIds: string[]): SemesterMappingProposal {
-  return {
-    id: 'p'.repeat(32), semester_id: semesterId, operation_id: 'operation-tree',
-    source_state_sha256: 'f'.repeat(64), status: 'proposed',
-    payload: {
-      tree: [{
-        key: 'ppt-chapter-1', title: '第一章 勾股定理',
-        sections: [{
-          key: 'ppt-section-1-1', title: '1.1',
-          lessons: [
-            { key: 'ppt-lesson-1-1-1', title: '1.1 第1课时 认识勾股定理', duration_minutes: 45 },
-            { key: 'ppt-lesson-1-1-2', title: '1.1 第2课时 验证勾股定理', duration_minutes: 45 },
-          ],
-        }],
-      }],
-      mappings: [], uncertainties: [], source_material_record_ids: recordIds,
-      generation_source: 'local_reference_ppt_names',
-    },
-    revision: 1, created_at: '2026-08-03T00:00:00Z',
-    updated_at: '2026-08-03T00:00:00Z', applied_at: null,
-  }
-}
-
-function textbookProposal(recordId: string): SemesterMappingProposal {
-  return {
-    id: 'q'.repeat(32), semester_id: semesterId, operation_id: 'operation-book',
-    source_state_sha256: 'e'.repeat(64), status: 'proposed',
-    payload: {
-      tree: [{
-        key: 't-chapter-1', title: '第一章 勾股定理',
-        sections: [{
-          key: 't-section-1-1', title: '1.1',
-          lessons: [{ key: 't-lesson-1-1-1', title: '1.1 探索勾股定理', duration_minutes: 45 }],
-        }],
-      }],
-      mappings: [{
-        mapping_id: 'mapping-t1', material_record_id: recordId,
-        lesson_ref: 'proposal:t-lesson-1-1-1', start_unit: 2, end_unit: 9,
-        purpose: 'textbook', decision: 'accepted',
-        teacher_revision: null, decision_reason: null,
-      }],
-      uncertainties: [], source_material_record_ids: [recordId],
-    },
-    revision: 1, created_at: '2026-08-03T00:00:00Z',
-    updated_at: '2026-08-03T00:00:00Z', applied_at: null,
-  }
-}
-
 const ppt1 = material('a'.repeat(32), '1.1 认识勾股定理.pptx', 26)
 const ppt2 = material('b'.repeat(32), '1.2 直角三角形.pptx', 27)
 const record1 = record('r'.repeat(32), ppt1)
@@ -107,15 +58,11 @@ function folderCollection(): ReferencePptCollection {
   }
 }
 
-async function mountGrid(options: { withValueHint?: boolean } = {}) {
+async function mountGrid() {
   const catalog = useTeachingPrepCatalogStore()
   catalog.materials = [ppt1, ppt2]
   catalog.semesterMaterials = [record1, record2]
   catalog.referencePptCollections = [folderCollection()]
-  catalog.semesterMappingProposals = [
-    treeProposal([record1.id, record2.id]),
-    ...(options.withValueHint ? [textbookProposal('x'.repeat(32))] : []),
-  ]
   vi.spyOn(teachingPrepCatalogApi, 'listReferencePptCollections').mockResolvedValue([])
 
   const selections: unknown[] = []
@@ -153,12 +100,11 @@ describe('ChapterGrid', () => {
     app.unmount()
   })
 
-  it('shows the chapter value hint with lesson count and textbook range', async () => {
-    const { app, host } = await mountGrid({ withValueHint: true })
+  it('shows the chapter hint for the bound courseware', async () => {
+    const { app, host } = await mountGrid()
 
     const hint = host.querySelector('.tp-value-hint')
-    expect(hint?.textContent).toContain('已对应 2 个课时')
-    expect(hint?.textContent).toContain('教材 P2–9')
+    expect(hint?.textContent).toContain('本章共 2 份课件')
     app.unmount()
   })
 

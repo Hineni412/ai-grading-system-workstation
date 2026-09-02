@@ -300,7 +300,7 @@ def test_collection_persists_virtual_path_and_reuses_mapping_review(
     assert collection.ignored_file_count == 2
     assert collection.members[0].relative_path.startswith("全部课件/")
     assert collection.members[0].confidence == "high"
-    proposals = service.list_semester_mapping_proposals(semester.id)
+    proposals = service.semester_mapping.list(semester.id)
     assert proposals[0].id == collection.mapping_proposal_id
     assert proposals[0].payload["generation_source"] == (
         "local_reference_ppt_names"
@@ -312,7 +312,7 @@ def test_collection_persists_virtual_path_and_reuses_mapping_review(
         expected_revision=proposals[0].revision,
     )
     assert reviewed.payload["mappings"][0]["decision"] == "accepted"
-    applied = service.apply_semester_mapping_proposal(
+    applied = service.semester_mapping.apply(
         reviewed.id,
         expected_revision=reviewed.revision,
     )
@@ -384,7 +384,7 @@ def test_semester_metadata_change_keeps_pending_proposal_reviewable(
     service, semester, collection = _create_collection(tmp_path, monkeypatch)
     proposal = next(
         item
-        for item in service.list_semester_mapping_proposals(semester.id)
+        for item in service.semester_mapping.list(semester.id)
         if item.id == collection.mapping_proposal_id
     )
     assert proposal.payload["generation_source"] == (
@@ -410,7 +410,7 @@ def test_semester_metadata_change_keeps_pending_proposal_reviewable(
         expected_revision=proposal.revision,
     )
     assert reviewed.payload["mappings"][0]["decision"] == "accepted"
-    applied = service.apply_semester_mapping_proposal(
+    applied = service.semester_mapping.apply(
         reviewed.id,
         expected_revision=reviewed.revision,
     )

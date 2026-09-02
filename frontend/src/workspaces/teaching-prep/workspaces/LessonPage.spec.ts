@@ -1,5 +1,5 @@
 import { createPinia } from 'pinia'
-import { createApp, defineComponent, h, nextTick, provide } from 'vue'
+import { createApp, defineComponent, h, provide } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -21,26 +21,20 @@ const lessonNode: LessonNode = {
 
 function mockApis(): void {
   vi.spyOn(teachingPrepCatalogApi, 'listMaterialLinks').mockResolvedValue([])
-  vi.spyOn(teachingPrepCatalogApi, 'listExerciseCandidates').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listResourcePacks').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'getResourcePackStatus').mockResolvedValue({} as never)
-  vi.spyOn(teachingPrepCatalogApi, 'listClassVariants').mockResolvedValue([])
-  vi.spyOn(teachingPrepCatalogApi, 'listUpClassPackages').mockResolvedValue([])
-  vi.spyOn(teachingPrepCatalogApi, 'listPostLessonReviews').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listMaterials').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listMaterialParseJobs').mockResolvedValue([])
   vi.spyOn(teachingPrepWorkbenchApi, 'lessonStatuses').mockResolvedValue([])
-  vi.spyOn(teachingPrepWorkbenchApi, 'referencePreflight').mockResolvedValue({
+  vi.spyOn(teachingPrepWorkbenchApi, 'questionBankSections').mockResolvedValue([])
+  vi.spyOn(teachingPrepWorkbenchApi, 'listSlideAnimationRuns').mockResolvedValue({
     lesson_node_id: lessonId,
-    source_state_sha256: 'a'.repeat(64),
-    catalog: { lesson: {}, material_links: [] },
-    draft: null,
-    model_available: false,
-    model_label: null,
-    model_destination_fingerprint: 'f'.repeat(64),
-    will_call_model: false,
+    items: [],
+    billed_count: 0,
+    billed_limit: 3,
+    page_limit: 4,
   })
-  vi.spyOn(teachingPrepWorkbenchApi, 'pptxVersions').mockResolvedValue([])
+  vi.spyOn(teachingPrepWorkbenchApi, 'listPptxOutputs').mockResolvedValue([])
 }
 
 const Shell = defineComponent({
@@ -68,10 +62,10 @@ async function mountPage(query: Record<string, string>) {
   catalog.lessonNodes = [lessonNode]
   app.mount(host)
   await vi.waitFor(() => {
-    expect(teachingPrepWorkbenchApi.referencePreflight).toHaveBeenCalledWith(lessonId)
+    expect(teachingPrepCatalogApi.listMaterialLinks).toHaveBeenCalledWith(lessonId)
   })
   await vi.waitFor(() => {
-    expect(host.querySelector('[aria-label="备课步骤"]')).toBeTruthy()
+    expect(host.querySelectorAll('[aria-label="备课步骤"] .tp-rail__step')).toHaveLength(2)
   })
   return { app, host, router, catalog }
 }
@@ -82,20 +76,16 @@ afterEach(() => {
 })
 
 describe('LessonPage', () => {
-  it('renders the three-step rail and the inspector', async () => {
+  it('renders the two-step rail and the inspector', async () => {
     mockApis()
     const { app, host } = await mountPage({ view: 'lesson', lesson: lessonId, step: '1' })
 
     const rail = host.querySelector('[aria-label="备课步骤"]')
-    expect(rail?.querySelectorAll('.tp-rail__step')).toHaveLength(3)
-    expect(host.textContent).toContain('① 确认资料')
-    expect(host.textContent).toContain('② 对照改编')
-    expect(host.textContent).toContain('③ 上课包')
+    expect(rail?.querySelectorAll('.tp-rail__step')).toHaveLength(2)
+    expect(host.textContent).toContain('① 课件与选题')
+    expect(host.textContent).toContain('② 对照与导出')
     expect(host.querySelector('[aria-label="本步说明"]')).toBeTruthy()
     expect(host.textContent).toContain('第一课时')
-    await vi.waitFor(() => {
-      expect(teachingPrepWorkbenchApi.referencePreflight).toHaveBeenCalledWith(lessonId)
-    })
     app.unmount()
   })
 

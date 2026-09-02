@@ -385,7 +385,7 @@ async function restoreLesson(lesson: LessonNode): Promise<void> {
         v-else
         kind="empty"
         title="本学期还没有课时"
-        description="点击右上角「新建课时」手工建立，或到资料库导入教材后让 AI 提出课时树建议。"
+        description="点击右上角「新建课时」手工建立；课时建立后进入备课即可自动载入绑定的课件。"
       />
     </template>
   </section>

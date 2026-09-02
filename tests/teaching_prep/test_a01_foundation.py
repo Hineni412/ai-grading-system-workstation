@@ -19,10 +19,6 @@ from backend.teaching_prep.domain.errors import (
 )
 from backend.teaching_prep.domain.states import LessonPreparationState
 from backend.teaching_prep.feature import create_workspace_feature
-from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
-from backend.teaching_prep.infrastructure.repositories.pptx_execution import (
-    PptxExecutionRepository,
-)
 from backend.workspaces.registry import WorkspaceRegistry
 from path_manager import PathManager
 from update_tools.migrate_db import run_migrations
@@ -210,7 +206,7 @@ def test_existing_pptx_run_migrates_to_path_free_source_snapshot(
     )
 
     assert report.error is None
-    assert report.results[-1].name == "022_adaptation_traces"
+    assert report.results[-1].name == "023_pptx_local_outputs"
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         columns = {
@@ -283,11 +279,18 @@ def test_existing_pptx_run_migrates_to_path_free_source_snapshot(
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
-    restored = PptxExecutionRepository(
-        TeachingPrepDatabase(database_path)
-    ).get(ids["run"])
-    assert restored.source_material_version_id == ids["material_version"]
-    assert restored.source_sha256 == "4" * 64
+    # The pptx execution repository was retired with the WPS execution
+    # chain; verify the surviving row directly instead.
+    with sqlite3.connect(database_path) as connection:
+        restored = connection.execute(
+            """
+            SELECT source_material_version_id, source_sha256
+            FROM pptx_execution_runs
+            WHERE id = ?
+            """,
+            (ids["run"],),
+        ).fetchone()
+    assert restored == (ids["material_version"], "4" * 64)
 
 
 def test_disabled_feature_has_no_route_or_filesystem_side_effect(
@@ -360,7 +363,7 @@ def test_active_model_profile_is_resolved_without_making_a_model_call(
 
     assert isinstance(service, TeachingPrepService)
     assert service.status()["real_model_enabled"] is True
-    assert service.status()["semester_mapping_model_available"] is True
+    assert service.status()["slide_animation_model_available"] is True
     assert not (
         paths.workspace_dir("teaching-prep") / ".model-operations"
     ).exists()

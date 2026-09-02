@@ -47,17 +47,13 @@ const unattachedLabel = computed(() => (
 const treeStatus = computed(() => catalog.lessonTreeStatus)
 const treeBadge = computed(() => {
   if (treeStatus.value.state === 'active') return { tone: 'success' as const, label: '已生效' }
-  if (treeStatus.value.state === 'pending') return { tone: 'warning' as const, label: '待确认' }
   return { tone: 'neutral' as const, label: '未开始' }
 })
 const treeSubLabel = computed(() => {
   if (treeStatus.value.state === 'active') {
     return `${treeStatus.value.activeLessonCount} 个课时已生效`
   }
-  if (treeStatus.value.state === 'pending') {
-    return `${treeStatus.value.proposalChapterCount} 章 ${treeStatus.value.proposalLessonCount} 课时 · 来自课件文件夹与命名`
-  }
-  return '导入课件文件夹后自动生成建议'
+  return '还没有课时，可回备课首页新建'
 })
 
 function isActive(selection: LibrarySelection): boolean {

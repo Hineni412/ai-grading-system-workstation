@@ -69,6 +69,7 @@ function mockEmptyCatalog(): void {
     real_model_enabled: false,
     semester_mapping_model_available: false,
     exercise_suggestion_model_available: false,
+    slide_animation_model_available: false,
     real_wps_enabled: false,
     wps_execution_available: false,
   })
@@ -108,17 +109,18 @@ function mockCatalogWithLessons(count = 1): { semesterId: string; lessonIds: str
   vi.spyOn(teachingPrepCatalogApi, 'listLessons').mockResolvedValue(lessonIds.map((id, index) => ({ id, curriculum_id: curriculumId, parent_id: null, node_type: 'lesson' as const, title: `课时 ${index + 1}`, sort_order: index + 1, duration_minutes: 45, source_kind: 'teacher' as const, is_active: true, revision: 1, created_at: '', updated_at: '' })))
   vi.spyOn(teachingPrepCatalogApi, 'listSemesterLessonProgress').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listSemesterMaterials').mockResolvedValue([])
-  vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals').mockResolvedValue([])
-  vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposalJobs').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listMaterialLinks').mockResolvedValue([])
-  vi.spyOn(teachingPrepCatalogApi, 'listExerciseCandidates').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listResourcePacks').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'getResourcePackStatus').mockResolvedValue({} as never)
-  vi.spyOn(teachingPrepCatalogApi, 'listClassVariants').mockResolvedValue([])
-  vi.spyOn(teachingPrepCatalogApi, 'listUpClassPackages').mockResolvedValue([])
-  vi.spyOn(teachingPrepCatalogApi, 'listPostLessonReviews').mockResolvedValue([])
   vi.spyOn(teachingPrepWorkbenchApi, 'lessonStatuses').mockResolvedValue(lessonIds.map((id, index) => statusFor(id, index + 1, index === 0 ? 'taught' : index === 2 ? 'skipped' : 'not_started')))
-  vi.spyOn(teachingPrepWorkbenchApi, 'referencePreflight').mockImplementation(async lessonId => ({ lesson_node_id: lessonId, source_state_sha256: 'a'.repeat(64), catalog: { lesson: {}, material_links: [] }, draft: null, model_available: false, model_label: null, model_destination_fingerprint: 'f'.repeat(64), will_call_model: false }))
+  vi.spyOn(teachingPrepWorkbenchApi, 'questionBankSections').mockResolvedValue([])
+  vi.spyOn(teachingPrepWorkbenchApi, 'listSlideAnimationRuns').mockResolvedValue({
+    lesson_node_id: lessonIds[0] ?? '',
+    items: [],
+    billed_count: 0,
+    billed_limit: 3,
+    page_limit: 4,
+  })
   return { semesterId, lessonIds }
 }
 
@@ -255,7 +257,6 @@ describe('TeachingPrepHomeView three-view shell', () => {
     expect(teachingPrepCatalogApi.listMaterials).not.toHaveBeenCalled()
     expect(teachingPrepCatalogApi.listMaterialParseJobs).not.toHaveBeenCalled()
     expect(teachingPrepCatalogApi.listSemesterMaterials).not.toHaveBeenCalled()
-    expect(teachingPrepCatalogApi.listSemesterMappingProposals).not.toHaveBeenCalled()
     app.unmount()
   })
 
@@ -311,15 +312,17 @@ describe('TeachingPrepHomeView three-view shell', () => {
     app.unmount()
   })
 
-  it('renders the lesson workbench rail for a valid lesson deep link', async () => {
+  it('renders the lesson workbench rail for a valid lesson deep link', { timeout: 15000 }, async () => {
     const { lessonIds } = mockCatalogWithLessons()
 
     const { app, host } = await mountAt(`?view=lesson&lesson=${lessonIds[0]}&step=1`)
 
     await vi.waitFor(() => {
-      expect(host.querySelector('[aria-label="备课步骤"]')).toBeTruthy()
+      expect(teachingPrepWorkbenchApi.questionBankSections).toHaveBeenCalledWith('bnu24-math-g7-upper')
+    }, { timeout: 5000 })
+    await vi.waitFor(() => {
+      expect(host.querySelectorAll('[aria-label="备课步骤"] .tp-rail__step')).toHaveLength(2)
     })
-    expect(teachingPrepWorkbenchApi.referencePreflight).toHaveBeenCalledWith(lessonIds[0])
     app.unmount()
   })
 

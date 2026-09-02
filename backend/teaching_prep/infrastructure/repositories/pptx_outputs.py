@@ -32,7 +32,6 @@ class PptxLocalOutputRepository:
             "slide_plan_id",
             "draft_id",
             "resource_pack_id",
-            "version_number",
             "output_relpath",
             "output_filename",
             "output_sha256",

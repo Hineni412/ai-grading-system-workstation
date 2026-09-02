@@ -51,7 +51,7 @@ README 负责帮助用户启动和理解系统，不覆盖安全红线或代码�
 
 ### `docs/product/TEACHING_PREP.md`
 
-学期、单元、课时、资料证据、课件改编和 WPS 副本输出的当前产品边界。
+学期、单元、课时、资料证据、课件改编和本机副本输出的当前产品边界。
 
 ### `docs/product/CLASS_TEACHER.md`
 

@@ -16,11 +16,7 @@ from backend.jobs.store import JobStore
 from backend.teaching_prep.domain.errors import (
     TeachingPrepNotFoundError,
     TeachingPrepConflictError,
-    TeachingPrepRetryAvailableError,
     TeachingPrepValidationError,
-)
-from backend.teaching_prep.infrastructure.fakes import (
-    FakeExerciseSuggestionModelAdapter,
 )
 from backend.teaching_prep.application.ai_task_adapter import (
     SlideProposalRetryAvailableFailure,
@@ -32,7 +28,6 @@ from backend.workspaces.ai_tasks.models import (
     AdoptionResult,
     AdapterResult,
     HandoffSnapshot,
-    KnownAdapterFailure,
     OpaqueRef,
     PrepareRequest,
     RevisionConflictError,
@@ -43,15 +38,7 @@ from backend.workspaces.ai_tasks.store import WorkspaceAITaskStore
 
 from .test_a01_foundation import _migrated_service
 from .test_a02_catalog import _api_client
-from .test_a03_material_units import _pdf
-from .test_a05_resource_packs import _freeze_ready_setup
 from .test_a07_slide_plans import _confirmed_draft
-from .test_a11_semester_workspace import (
-    _FakeSemesterMappingModel,
-    _accept_all_mappings,
-    _semester,
-)
-from .test_a12_workbench_iteration import _selection, _suggestion
 
 
 def _task() -> StoredTask:
@@ -811,80 +798,6 @@ def test_rejected_slide_command_can_be_corrected_on_same_handoff(
     ) is not None
 
 
-def test_mapping_adoption_applies_reviewed_proposal_before_receipt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _paths, service = _migrated_service(tmp_path, monkeypatch)
-    semester, lesson_ids = _semester(service)
-    version, _created = service.register_material_file(
-        request_token="r7-mapping-file",
-        path=_pdf(tmp_path / "r7-mapping.pdf", ["L1", "L2"]),
-        display_name="R7 合成教辅",
-    )
-    record, _created = service.attach_semester_material(
-        semester.id,
-        request_token="r7-mapping-attach",
-        material_version_id=version.id,
-        material_role="exercise_workbook",
-    )
-    service.parse_material_version(version.id)
-    _snapshot, target_revision = service.semester_mapping.snapshot(
-        semester.id,
-        [record.id],
-    )
-    service.semester_mapping_model_adapter = _FakeSemesterMappingModel({
-        "tree": [],
-        "mappings": [{
-            "material_record_id": record.id,
-            "lesson_ref": lesson_ids[0],
-            "start_unit": 1,
-            "end_unit": 2,
-        }],
-        "uncertainties": [],
-    })
-    proposal, _created = service.generate_semester_mapping_proposal(
-        semester.id,
-        operation_id="r7-mapping-proposal",
-        material_record_ids=[record.id],
-        expected_source_state_sha256=target_revision,
-    )
-    task = replace(
-        _task(),
-        task_id="task-r7-mapping",
-        operation_id="r7-mapping-proposal",
-        task_kind="teaching_prep.semester_mapping",
-        source_ref=OpaqueRef("semester", semester.id, target_revision),
-        context_refs=(OpaqueRef("material", record.id, str(record.revision)),),
-        return_target="teaching_prep.library",
-    )
-    adapter = TeachingPrepAITaskAdapter(service)
-    result, handoff = _persist_proposal_handoff(
-        adapter,
-        task,
-        proposal_id=proposal.id,
-        proposal_revision=str(proposal.revision),
-        target_revision=target_revision,
-        adoption_id="adoption-r7-mapping",
-    )
-    reviewed = _accept_all_mappings(service, proposal)
-
-    with bind_adoption_command({
-        "kind": "apply_semester_mapping",
-        "proposal_revision": reviewed.revision,
-    }):
-        adopted = adapter.adopt(
-            handoff,
-            adoption_id="adoption-r7-mapping",
-            draft_revision=result.proposal_revision,
-            target_revision=target_revision,
-        )
-
-    assert service.list_semester_mapping_proposals(semester.id)[0].status == "applied"
-    assert adopted.object_ref.endswith(reviewed.id)
-    assert service.list_semester_materials(semester.id)[0].mapping_status == "confirmed"
-
-
 def test_lesson_adoption_creates_one_confirmed_teacher_version_on_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -949,96 +862,6 @@ def test_lesson_adoption_creates_one_confirmed_teacher_version_on_replay(
             ("ai-adopt-adoption-r7-lesson",),
         ).fetchall()
     assert [str(item["id"]) for item in versions] == [formal_id]
-
-
-def test_exercise_adoption_waits_for_every_teacher_decision(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _paths, service = _migrated_service(tmp_path, monkeypatch)
-    lesson_id, _reference_link, _candidate = _freeze_ready_setup(
-        service,
-        tmp_path,
-    )
-    preflight = service.reference_selection_preflight(lesson_id)
-    selected = preflight["catalog"]["material_links"][0]
-    draft = service.save_reference_selection_draft(
-        lesson_id,
-        expected_revision=None,
-        source_state_sha256=preflight["source_state_sha256"],
-        selection=_selection(preflight, selected),
-    )
-    snapshot, _created = service.freeze_reference_selection_snapshot(
-        lesson_id,
-        request_token="r7-exercise-snapshot",
-        expected_draft_revision=draft.revision,
-    )
-    service.exercise_suggestion_model_adapter = FakeExerciseSuggestionModelAdapter({
-        "suggestions": [_suggestion(selected)],
-    })
-    run, _created = service.start_exercise_suggestion_run(
-        snapshot.id,
-        operation_id="r7-exercise-run",
-        confirmed=True,
-    )
-    service.process_exercise_suggestion_run(run.id)
-    run, suggestions = service.get_exercise_suggestion_run(run.id)
-    with service.database.connect() as connection:
-        target_revision = str(connection.execute(
-            "SELECT revision FROM lesson_nodes WHERE id = ?",
-            (lesson_id,),
-        ).fetchone()[0])
-    task = replace(
-        _task(),
-        task_id="task-r7-exercise",
-        operation_id="r7-exercise-run",
-        task_kind="teaching_prep.exercise_suggestions",
-        source_ref=OpaqueRef("lesson", lesson_id, target_revision),
-        context_refs=(OpaqueRef(
-            "reference_snapshot",
-            snapshot.id,
-            snapshot.source_state_sha256,
-        ),),
-        return_target="teaching_prep.lesson.exercises",
-    )
-    adapter = TeachingPrepAITaskAdapter(service)
-    result, handoff = _persist_proposal_handoff(
-        adapter,
-        task,
-        proposal_id=run.id,
-        proposal_revision="1",
-        target_revision=target_revision,
-        adoption_id="adoption-r7-exercise",
-    )
-    command = {"kind": "finalize_exercise_suggestions"}
-
-    with pytest.raises(RevisionConflictError):
-        with bind_adoption_command(command):
-            adapter.adopt(
-                handoff,
-                adoption_id="adoption-r7-exercise",
-                draft_revision=result.proposal_revision,
-                target_revision=target_revision,
-            )
-    assert service.find_workspace_ai_adoption("adoption-r7-exercise") is None
-
-    service.review_exercise_suggestion(
-        suggestions[0].id,
-        expected_revision=suggestions[0].revision,
-        decision="accepted",
-        teacher_payload=None,
-        rejection_reason=None,
-    )
-    with bind_adoption_command(command):
-        adopted = adapter.adopt(
-            handoff,
-            adoption_id="adoption-r7-exercise",
-            draft_revision=result.proposal_revision,
-            target_revision=target_revision,
-        )
-
-    assert adopted.object_ref.endswith(run.id)
-    assert service.find_workspace_ai_adoption("adoption-r7-exercise") is not None
 
 
 @pytest.mark.parametrize(
@@ -1106,7 +929,7 @@ def test_recover_rebuilds_each_handoff_from_domain_proposal_without_execute(
     assert adapter.recover(task) == recovered
 
 
-def test_all_four_task_kinds_use_the_shared_gateway_and_create_domain_handoffs(
+def test_live_task_kinds_use_the_shared_gateway_and_create_domain_handoffs(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "teaching_prep.db"
@@ -1121,22 +944,9 @@ def test_all_four_task_kinds_use_the_shared_gateway_and_create_domain_handoffs(
             self.database_path = database_path
             self.gateways: list[object] = []
 
-        def generate_semester_mapping_proposal(self, *_args, **kwargs):
-            self.gateways.append(kwargs["task_model_gateway"])
-            return SimpleNamespace(id="semester-result", revision=2), True
-
         def generate_lesson_draft(self, *_args, **kwargs):
             self.gateways.append(kwargs["task_model_gateway"])
             return SimpleNamespace(id="lesson-result", version_number=3), True
-
-        def start_exercise_suggestion_run(self, *_args, **_kwargs):
-            return SimpleNamespace(id="exercise-result")
-
-        def process_exercise_suggestion_run(self, *_args, **kwargs):
-            self.gateways.append(kwargs["task_model_gateway"])
-
-        def get_exercise_suggestion_run(self, *_args):
-            return SimpleNamespace(id="exercise-result", status="succeeded"), ()
 
         def create_slide_plan(self, *_args, **_kwargs):
             return SimpleNamespace(id="slide-result", version_number=4), True
@@ -1145,23 +955,10 @@ def test_all_four_task_kinds_use_the_shared_gateway_and_create_domain_handoffs(
     adapter = TeachingPrepAITaskAdapter(service)  # type: ignore[arg-type]
     tasks = [
         replace(
-            _task(), task_id="task-semester", operation_id="operation-semester",
-            task_kind="teaching_prep.semester_mapping",
-            source_ref=OpaqueRef("semester", "s" * 32, "a" * 64),
-            context_refs=(OpaqueRef("material", "m" * 32, "1"),),
-            return_target="teaching_prep.library",
-        ),
-        replace(
             _task(), task_id="task-lesson", operation_id="operation-lesson",
             task_kind="teaching_prep.lesson_plan",
             context_refs=(OpaqueRef("resource_pack", "p" * 32, "b" * 64),),
             return_target="teaching_prep.lesson.plan",
-        ),
-        replace(
-            _task(), task_id="task-exercise", operation_id="operation-exercise",
-            task_kind="teaching_prep.exercise_suggestions",
-            context_refs=(OpaqueRef("reference_snapshot", "r" * 32, "c" * 64),),
-            return_target="teaching_prep.lesson.exercises",
         ),
         replace(
             _task(), task_id="task-slide", operation_id="operation-slide",
@@ -1174,124 +971,9 @@ def test_all_four_task_kinds_use_the_shared_gateway_and_create_domain_handoffs(
     results = [adapter.execute(task, model_gateway=gateway) for task in tasks]
 
     assert [result.proposal_ref_id for result in results] == [
-        "semester-result", "lesson-result", "exercise-result", "slide-result",
+        "lesson-result", "slide-result",
     ]
-    assert service.gateways == [gateway, gateway, gateway]
+    assert service.gateways == [gateway]
     assert [result.handoffs[0].destination_key for result in results] == [
-        "teaching_prep.library", "teaching_prep.lesson.plan",
-        "teaching_prep.lesson.exercises", "teaching_prep.lesson.slides",
+        "teaching_prep.lesson.plan", "teaching_prep.lesson.slides",
     ]
-
-
-def test_semester_mapping_retryable_failure_stays_safe_to_retry(tmp_path: Path) -> None:
-    class RetryableService:
-        database_path = tmp_path / "teaching_prep.db"
-
-        def generate_semester_mapping_proposal(self, *_args, **_kwargs):
-            raise TeachingPrepRetryAvailableError("model response could not be validated")
-
-    task = replace(
-        _task(),
-        task_kind="teaching_prep.semester_mapping",
-        source_ref=OpaqueRef("semester", "s" * 32, "a" * 64),
-        context_refs=(OpaqueRef("material", "m" * 32, "1"),),
-        return_target="teaching_prep.library",
-    )
-    adapter = TeachingPrepAITaskAdapter(RetryableService())  # type: ignore[arg-type]
-
-    with pytest.raises(KnownAdapterFailure) as exc_info:
-        adapter.execute(task, model_gateway=WorkspaceAITaskModelGateway())
-
-    assert exc_info.value.code == "semester_mapping_retry_available"
-
-
-def test_semester_mapping_failure_keeps_specific_code_and_teacher_detail(
-    tmp_path: Path,
-) -> None:
-    class RetryableService:
-        database_path = tmp_path / "teaching_prep.db"
-
-        def generate_semester_mapping_proposal(self, *_args, **_kwargs):
-            raise TeachingPrepRetryAvailableError(
-                "semester mapping model omitted uncertainty for unmapped pages",
-                error_code="semester_mapping_unexplained_coverage_gap",
-            )
-
-    adapter = TeachingPrepAITaskAdapter(RetryableService())  # type: ignore[arg-type]
-    job_store = JobStore(tmp_path / "workspace_ai.db")
-    manager = JobManager(job_store, max_workers=1, cleanup_interrupted=False)
-    coordinator = WorkspaceAITaskService(
-        store=WorkspaceAITaskStore(job_store.db_path),
-        manager=manager,
-        adapters=(("teaching_prep.semester_mapping", adapter),),
-    )
-    try:
-        prepared = coordinator.prepare(
-            "operation-r7-mapping-failure",
-            PrepareRequest(
-                module="teaching_prep",
-                task_kind="teaching_prep.semester_mapping",
-                source_ref=OpaqueRef("semester", "s" * 32, "a" * 64),
-                context_refs=(OpaqueRef("material", "m" * 32, "1"),),
-                prompt_contract_version="teaching-prep-semester-mapping-v1",
-                model_destination_fingerprint="b" * 64,
-                return_target="teaching_prep.library",
-            ),
-        )
-        outcome = coordinator.run_task(prepared.task_id)
-        snapshot = coordinator.get(task_id=prepared.task_id)
-    finally:
-        manager.shutdown()
-
-    assert outcome["status"] == "failed"
-    assert snapshot.error_code == "semester_mapping_unexplained_coverage_gap"
-    assert snapshot.error_detail == (
-        "资料中有页面既没有对应到课时，模型也没有说明原因，"
-        "本次整理没有产出结果。"
-    )
-
-
-def test_semester_mapping_scope_stale_fails_before_dispatch(
-    tmp_path: Path,
-) -> None:
-    class StaleService:
-        database_path = tmp_path / "teaching_prep.db"
-
-        def generate_semester_mapping_proposal(self, *_args, **_kwargs):
-            raise TeachingPrepConflictError(
-                "semester lessons or materials changed; "
-                "check the send scope again"
-            )
-
-    adapter = TeachingPrepAITaskAdapter(StaleService())  # type: ignore[arg-type]
-    job_store = JobStore(tmp_path / "workspace_ai.db")
-    manager = JobManager(job_store, max_workers=1, cleanup_interrupted=False)
-    coordinator = WorkspaceAITaskService(
-        store=WorkspaceAITaskStore(job_store.db_path),
-        manager=manager,
-        adapters=(("teaching_prep.semester_mapping", adapter),),
-    )
-    try:
-        prepared = coordinator.prepare(
-            "operation-r7-mapping-scope-stale",
-            PrepareRequest(
-                module="teaching_prep",
-                task_kind="teaching_prep.semester_mapping",
-                source_ref=OpaqueRef("semester", "s" * 32, "a" * 64),
-                context_refs=(OpaqueRef("material", "m" * 32, "1"),),
-                prompt_contract_version="teaching-prep-semester-mapping-v1",
-                model_destination_fingerprint="b" * 64,
-                return_target="teaching_prep.library",
-            ),
-        )
-        outcome = coordinator.run_task(prepared.task_id)
-        snapshot = coordinator.get(task_id=prepared.task_id)
-    finally:
-        manager.shutdown()
-
-    assert outcome["status"] == "failed_before_dispatch"
-    assert snapshot.error_code == "semester_mapping_scope_stale"
-    assert snapshot.error_detail == (
-        "课时树或资料在准备后已变化，本次没有发送模型请求；"
-        "重新检查发送范围后可以再次发送。"
-    )

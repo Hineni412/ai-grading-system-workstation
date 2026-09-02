@@ -1,10 +1,6 @@
 import type {
-  MaterialLinkPurpose,
-  MaterialVersion,
-  SemesterMaterialRecord,
   SemesterMaterialRole,
 } from '../../api/catalog'
-import { useTeachingPrepCatalogStore } from '../../stores/catalog'
 
 export const MATERIAL_ROLES: Array<{ value: SemesterMaterialRole; label: string }> = [
   { value: 'textbook', label: '教材' },
@@ -15,27 +11,8 @@ export const MATERIAL_ROLES: Array<{ value: SemesterMaterialRole; label: string 
   { value: 'supplement', label: '补充资料' },
 ]
 
-export const LINK_PURPOSES: Array<{ value: MaterialLinkPurpose; label: string }> = [
-  { value: 'textbook', label: '教材依据' },
-  { value: 'reference_ppt', label: '参考课件' },
-  { value: 'exercise', label: '课堂练习' },
-  { value: 'answer', label: '答案 / 解析' },
-  { value: 'supplement', label: '补充资料' },
-]
-
 export function roleLabel(role: SemesterMaterialRole): string {
   return MATERIAL_ROLES.find(item => item.value === role)?.label ?? role
-}
-
-export function rolePurpose(role: SemesterMaterialRole): MaterialLinkPurpose {
-  return {
-    textbook: 'textbook',
-    reference_ppt: 'reference_ppt',
-    exercise_workbook: 'exercise',
-    homework_workbook: 'exercise',
-    answer_book: 'answer',
-    supplement: 'supplement',
-  }[role] as MaterialLinkPurpose
 }
 
 export function suggestedRole(name: string): SemesterMaterialRole {
@@ -68,17 +45,7 @@ export const BOOK_ROLES: SemesterMaterialRole[] = [
   'answer_book',
 ]
 
-/** 教材/教辅类角色：在资料柜中归入「书」，选中后打开“对应到课时树”面板。 */
+/** 教材/教辅类角色：在资料柜中归入「书」，选中后打开资料详情面板。 */
 export function isBookRole(role: SemesterMaterialRole): boolean {
   return BOOK_ROLES.includes(role)
-}
-
-/** 资料版本对应的本学期记录（旧逻辑平移：按当前版本 id 匹配）。 */
-export function useSemesterRecordLookup() {
-  const catalog = useTeachingPrepCatalogStore()
-  return function semesterRecordFor(material: MaterialVersion): SemesterMaterialRecord | null {
-    return catalog.semesterMaterials.find(item => (
-      item.current_material_version_id === material.id
-    )) ?? null
-  }
 }

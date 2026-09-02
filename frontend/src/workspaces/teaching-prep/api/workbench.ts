@@ -1,13 +1,6 @@
 import { apiClient } from '../../../api/client'
 import { assertNoPathLikeKeys, isRecord } from '../../../api/validation'
-import { decodeSemesterMappingProposal } from './catalog'
-import type {
-  LessonDraftPayload,
-  PptxExecution,
-  PptxVersion,
-  SemesterMappingProposal,
-  TeachingPreferencesPayload,
-} from './catalog'
+import type { LessonDraftPayload } from './catalog'
 
 export type TeachingPrepStage =
   | 'select'
@@ -15,11 +8,6 @@ export type TeachingPrepStage =
   | 'plan'
   | 'slides'
   | 'package'
-export type TeachingPrepWorkspace =
-  | 'lesson-tree'
-  | 'materials'
-  | 'lesson-prep'
-  | 'versions'
 
 export interface LessonPreparationStatus {
   lesson_node_id: string
@@ -54,81 +42,124 @@ export interface LessonPreparationStatus {
   }
 }
 
-export interface ReferenceMaterialUnit {
-  unit_id: string
-  unit_index: number
-  unit_kind: string
-  title: string | null
-  preview_url: string
-  text_status: string
-  formula_review_required: boolean
-  object_summary?: Record<string, unknown>
+/* ===== 题库自动选题 ===== */
+
+export interface QuestionBankSection {
+  section_id: string
+  section_name: string
+  chapter_id: string
+  chapter_name: string
+  question_count: number
 }
 
-export interface ReferenceMaterialLink {
-  link_id: string
-  link_revision: number
-  purpose: string
-  material_version_id: string
-  material_name: string
-  material_type: string
-  content_sha256: string
-  start_unit: number
-  end_unit: number
-  units: ReferenceMaterialUnit[]
+export interface QuestionSelectionPreviewInput {
+  volume_id: string
+  section_ids: string[]
+  difficulty_max?: number
+  stem_max_chars?: number
+  limit?: number
+  max_per_method?: number
+  exclude_question_ids?: number[]
 }
 
-export interface ReferenceSelectionPayload {
-  material_selections: Array<{
-    link_id: string
-    start_unit: number
-    end_unit: number
-    ppt_intent?: 'keep' | 'candidate_delete'
-  }>
-  exercise_candidate_ids: string[]
-  question_ids: number[]
-  assessment_ids: number[]
-  knowledge_scope: string[]
-  preparation_preferences: TeachingPreferencesPayload
-  class_name: string | null
-  teacher_context: string | null
-}
-
-export interface ReferenceSelectionDraft {
-  lesson_node_id: string
-  payload: ReferenceSelectionPayload
-  source_state_sha256: string
-  revision: number
-  created_at: string
-  updated_at: string
-}
-
-export interface ReferenceSelectionPreflight {
-  lesson_node_id: string
-  source_state_sha256: string
-  catalog: {
-    lesson: Record<string, unknown>
-    material_links: ReferenceMaterialLink[]
+export interface QuestionSelectionItem {
+  question_id: number
+  question_type: string
+  stem: string
+  answer_text: string
+  difficulty: number
+  frequency_score: number
+  frequency: { midterm: number; final: number; zhongkao: number }
+  method: string
+  knowledge_points: string[]
+  has_images: boolean
+  answer_needs_review: boolean
+  selection_reason: {
+    frequency: string
+    difficulty: string
+    method: string
   }
-  draft: ReferenceSelectionDraft | null
-  model_available: boolean
-  model_label: string | null
-  model_destination_fingerprint: string
-  will_call_model: false
 }
 
-export interface ReferenceSelectionSnapshot {
+export interface QuestionSelectionPreview {
+  request: {
+    volume_id: string
+    section_ids: string[]
+    difficulty_max: number
+    stem_max_chars: number
+    limit: number
+    max_per_method: number
+    exclude_question_ids: number[]
+  }
+  stats: {
+    candidate_total: number
+    dropped_stem_length: number
+    dropped_excluded: number
+    dropped_duplicate: number
+    dropped_method_balance: number
+    selected: number
+  }
+  items: QuestionSelectionItem[]
+  method_distribution: Record<string, number>
+}
+
+/* ===== 本机改编产物与审计 ===== */
+
+export interface SuperscriptFinding {
+  page: number
+  baseline: number
+  kind: 'superscript' | 'subscript' | string
+  text: string
+}
+
+export interface PptxOutputAudit {
+  superscript_subscript: {
+    scanned_runs: number
+    finding_count: number
+    findings: SuperscriptFinding[]
+    passed: boolean
+  }
+  page_budget: {
+    final_page_count: number
+    limit: number
+    over_limit: boolean
+    suggestion: string
+  }
+  question_pages: {
+    checked: number
+    pages: Record<string, number>
+    problem_count: number
+    problems: string[]
+    passed: boolean
+  }
+  passed: boolean
+}
+
+export interface InsertedQuestionPage {
+  question_id: number | null
+  final_position: number | null
+}
+
+export interface PptxLocalOutput {
   id: string
   lesson_node_id: string
-  source_state_sha256: string
-  payload: Record<string, unknown>
+  version_number: number
+  status: string
+  output_filename: string
+  source_file_name: string
+  source_page_count: number
+  final_page_count: number
+  lesson_kind: string
+  audit: PptxOutputAudit
+  inserted_question_pages: InsertedQuestionPage[]
+  worksheet_filename: string | null
   created_at: string
 }
 
+/* ===== AI 改编任务采纳 ===== */
+
 export type TeachingPrepAdoptionCommand =
-  | { kind: 'apply_semester_mapping'; proposal_revision: number }
   | { kind: 'confirm_lesson_draft'; payload: LessonDraftPayload }
-  | { kind: 'finalize_exercise_suggestions' }
   | {
       kind: 'review_slide_plan'
       operation_reviews: Array<{
@@ -160,53 +191,7 @@ export interface TeachingPrepAIAdoption {
   adopted_at: string
 }
 
-export interface ExerciseSuggestionRegion {
-  material_unit_id: string
-  sequence: number
-  crop: { x0: number; y0: number; x1: number; y1: number }
-}
-
-export interface ExerciseSuggestionPayload {
-  material_version_id: string
-  question_number: string | null
-  content_label: string | null
-  difficulty: 'unrated' | 'easy' | 'medium' | 'hard'
-  classroom_use: string
-  estimated_minutes: number | null
-  teaching_focus: string | null
-  reason: string
-  uncertainties: string[]
-  question_regions: ExerciseSuggestionRegion[]
-  answer_regions: ExerciseSuggestionRegion[]
-}
-
-export interface ExerciseSuggestion {
-  id: string
-  run_id: string
-  lesson_node_id: string
-  source_state_sha256: string
-  decision: 'pending' | 'accepted' | 'modified' | 'rejected'
-  original_payload: ExerciseSuggestionPayload
-  teacher_payload: ExerciseSuggestionPayload | null
-  rejection_reason: string | null
-  exercise_candidate_id: string | null
-  revision: number
-  created_at: string
-  updated_at: string
-}
-
-export interface ExerciseSuggestionRun {
-  id: string
-  snapshot_id: string
-  operation_id: string
-  status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'result_unknown'
-  error_code: string | null
-  model_call_count: number
-  created_at: string
-  updated_at: string
-  finished_at: string | null
-  suggestions: ExerciseSuggestion[]
-}
+/* ===== 课堂动画 ===== */
 
 export interface SlideAnimationScene {
   title: string
@@ -256,12 +241,7 @@ export interface SlideAnimationRunList {
   page_limit: number
 }
 
-export interface TrustedPptxVersion extends PptxVersion {
-  is_current: boolean
-  current_revision: number | null
-  preview_url: string
-  file_verified: boolean
-}
+/* ===== 改编过程观察 ===== */
 
 export interface AdaptationTraceTool {
   name: string
@@ -333,98 +313,78 @@ export const teachingPrepWorkbenchApi = {
     )
   },
 
-  reviewMapping(
-    proposalId: string,
-    mappingId: string,
-    input: {
-      expected_revision: number
-      decision: 'accepted' | 'modified' | 'rejected'
-      lesson_ref?: string
-      start_unit?: number
-      end_unit?: number
-      reason?: string | null
-    },
-  ): Promise<SemesterMappingProposal> {
+  questionBankSections(volumeId: string, signal?: AbortSignal): Promise<QuestionBankSection[]> {
+    const query = new URLSearchParams({ volume_id: volumeId })
     return apiClient.request(
-      `/api/teaching-prep/semester-mapping-proposals/${encodeURIComponent(proposalId)}/mappings/${encodeURIComponent(mappingId)}`,
-      { method: 'PATCH', body: input, decode: decodeSemesterMappingProposal },
-    )
-  },
-
-  referencePreflight(lessonId: string, signal?: AbortSignal): Promise<ReferenceSelectionPreflight> {
-    return apiClient.request(
-      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/reference-selection-preflight`,
-      { method: 'POST', signal, decode: referencePreflight },
-    )
-  },
-
-  saveReferenceDraft(
-    lessonId: string,
-    input: {
-      expected_revision: number | null
-      source_state_sha256: string
-      selection: ReferenceSelectionPayload
-    },
-  ): Promise<ReferenceSelectionDraft> {
-    return apiClient.request(
-      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/reference-selection-draft`,
-      { method: 'PUT', body: input, decode: referenceDraft },
-    )
-  },
-
-  freezeReferenceSnapshot(
-    lessonId: string,
-    requestToken: string,
-    expectedDraftRevision: number,
-  ): Promise<ReferenceSelectionSnapshot> {
-    return apiClient.request(
-      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/reference-selection-snapshots`,
+      `/api/teaching-prep/question-bank-sections?${query}`,
       {
-        method: 'POST',
-        body: {
-          request_token: requestToken,
-          expected_draft_revision: expectedDraftRevision,
-        },
-        decode: referenceSnapshot,
+        signal,
+        decode: payload => itemList(payload, questionBankSection),
       },
     )
   },
 
-  startExerciseSuggestions(
-    snapshotId: string,
-    operationId: string,
-  ): Promise<ExerciseSuggestionRun> {
-    return apiClient.request(
-      `/api/teaching-prep/reference-selection-snapshots/${encodeURIComponent(snapshotId)}/exercise-suggestion-runs`,
-      {
-        method: 'POST',
-        body: { operation_id: operationId, confirmed: true },
-        decode: exerciseSuggestionRun,
-      },
-    )
-  },
-
-  latestExerciseSuggestionRun(
-    lessonId: string,
+  questionSelectionPreview(
+    input: QuestionSelectionPreviewInput,
     signal?: AbortSignal,
-  ): Promise<ExerciseSuggestionRun> {
+  ): Promise<QuestionSelectionPreview> {
     return apiClient.request(
-      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/latest-exercise-suggestion-run`,
-      { signal, decode: exerciseSuggestionRun },
+      '/api/teaching-prep/question-selection/preview',
+      {
+        method: 'POST',
+        body: input,
+        signal,
+        decode: questionSelectionPreview,
+      },
     )
   },
 
-  exerciseSuggestionRun(runId: string, signal?: AbortSignal): Promise<ExerciseSuggestionRun> {
+  executeSlidePlanLocal(planId: string, requestToken: string): Promise<PptxLocalOutput> {
     return apiClient.request(
-      `/api/teaching-prep/exercise-suggestion-runs/${encodeURIComponent(runId)}`,
-      { signal, decode: exerciseSuggestionRun },
+      `/api/teaching-prep/slide-plans/${encodeURIComponent(planId)}/execute-local`,
+      {
+        method: 'POST',
+        body: { request_token: requestToken, confirmed: true },
+        decode: pptxLocalOutput,
+      },
     )
   },
 
-  cancelExerciseSuggestions(runId: string): Promise<ExerciseSuggestionRun> {
+  listPptxOutputs(lessonId: string, signal?: AbortSignal): Promise<PptxLocalOutput[]> {
     return apiClient.request(
-      `/api/teaching-prep/exercise-suggestion-runs/${encodeURIComponent(runId)}/cancel`,
-      { method: 'POST', decode: exerciseSuggestionRun },
+      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/pptx-outputs`,
+      {
+        signal,
+        decode: (payload) => {
+          if (!isRecord(payload) || !Array.isArray(payload.items)) {
+            throw new Error('Invalid pptx local output list')
+          }
+          return payload.items.map(pptxLocalOutput)
+        },
+      },
+    )
+  },
+
+  createWorksheet(outputId: string, requestToken: string): Promise<PptxLocalOutput> {
+    return apiClient.request(
+      `/api/teaching-prep/pptx-outputs/${encodeURIComponent(outputId)}/worksheet`,
+      {
+        method: 'POST',
+        body: { request_token: requestToken, confirmed: true },
+        decode: pptxLocalOutput,
+      },
+    )
+  },
+
+  downloadPptxOutput(outputId: string): Promise<{ blob: Blob; contentDisposition: string | null }> {
+    return apiClient.download(
+      `/api/teaching-prep/pptx-outputs/${encodeURIComponent(outputId)}/download`,
+    )
+  },
+
+  downloadWorksheet(outputId: string): Promise<{ blob: Blob; contentDisposition: string | null }> {
+    return apiClient.download(
+      `/api/teaching-prep/pptx-outputs/${encodeURIComponent(outputId)}/worksheet/download`,
     )
   },
 
@@ -500,21 +460,6 @@ export const teachingPrepWorkbenchApi = {
     )
   },
 
-  reviewExerciseSuggestion(
-    suggestionId: string,
-    input: {
-      expected_revision: number
-      decision: 'accepted' | 'modified' | 'rejected'
-      teacher_payload?: ExerciseSuggestionPayload | null
-      rejection_reason?: string | null
-    },
-  ): Promise<ExerciseSuggestion> {
-    return apiClient.request(
-      `/api/teaching-prep/exercise-suggestions/${encodeURIComponent(suggestionId)}`,
-      { method: 'PATCH', body: input, decode: exerciseSuggestion },
-    )
-  },
-
   resourcePackPreflight(
     lessonId: string,
     input: {
@@ -526,37 +471,6 @@ export const teachingPrepWorkbenchApi = {
     return apiClient.request(
       `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/resource-pack-preflight`,
       { method: 'POST', body: input, decode: recordPayload },
-    )
-  },
-
-  capacityPreview(draftId: string, payload: LessonDraftPayload): Promise<Record<string, unknown>> {
-    return apiClient.request(
-      `/api/teaching-prep/lesson-drafts/${encodeURIComponent(draftId)}/capacity-preview`,
-      { method: 'POST', body: { payload }, decode: recordPayload },
-    )
-  },
-
-  pptxVersions(lessonId: string, signal?: AbortSignal): Promise<TrustedPptxVersion[]> {
-    return apiClient.request(
-      `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/pptx-versions`,
-      { signal, decode: trustedPptxVersionList },
-    )
-  },
-
-  activatePptxVersion(
-    versionId: string,
-    expectedRevision: number | null,
-  ): Promise<{ version: PptxVersion; current_revision: number; changed: boolean }> {
-    return apiClient.request(
-      `/api/teaching-prep/pptx-versions/${encodeURIComponent(versionId)}/activate`,
-      { method: 'POST', body: { expected_revision: expectedRevision }, decode: activateResult },
-    )
-  },
-
-  pptxExecution(executionId: string, signal?: AbortSignal): Promise<PptxExecution> {
-    return apiClient.request(
-      `/api/teaching-prep/pptx-executions/${encodeURIComponent(executionId)}`,
-      { signal, decode: pptxExecution },
     )
   },
 
@@ -593,24 +507,217 @@ function lessonPreparationStatus(payload: unknown): LessonPreparationStatus {
   return recordPayload(payload) as unknown as LessonPreparationStatus
 }
 
-function referencePreflight(payload: unknown): ReferenceSelectionPreflight {
-  return recordPayload(payload) as unknown as ReferenceSelectionPreflight
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
 }
 
-function referenceDraft(payload: unknown): ReferenceSelectionDraft {
-  return recordPayload(payload) as unknown as ReferenceSelectionDraft
+function questionBankSection(payload: unknown): QuestionBankSection {
+  if (
+    !isRecord(payload)
+    || typeof payload.section_id !== 'string' || !payload.section_id
+    || typeof payload.section_name !== 'string'
+    || typeof payload.chapter_id !== 'string'
+    || typeof payload.chapter_name !== 'string'
+    || !Number.isSafeInteger(payload.question_count)
+  ) throw new Error('Invalid question bank section')
+  return {
+    section_id: payload.section_id,
+    section_name: payload.section_name,
+    chapter_id: payload.chapter_id,
+    chapter_name: payload.chapter_name,
+    question_count: Number(payload.question_count),
+  }
 }
 
-function referenceSnapshot(payload: unknown): ReferenceSelectionSnapshot {
-  return recordPayload(payload) as unknown as ReferenceSelectionSnapshot
+function questionSelectionItem(payload: unknown): QuestionSelectionItem {
+  if (
+    !isRecord(payload)
+    || !Number.isSafeInteger(payload.question_id)
+    || typeof payload.question_type !== 'string'
+    || typeof payload.stem !== 'string'
+    || typeof payload.answer_text !== 'string'
+    || !Number.isSafeInteger(payload.difficulty)
+    || !finiteNumber(payload.frequency_score)
+    || !isRecord(payload.frequency)
+    || !finiteNumber(payload.frequency.midterm)
+    || !finiteNumber(payload.frequency.final)
+    || !finiteNumber(payload.frequency.zhongkao)
+    || typeof payload.method !== 'string'
+    || !Array.isArray(payload.knowledge_points)
+    || !payload.knowledge_points.every(item => typeof item === 'string')
+    || typeof payload.has_images !== 'boolean'
+    || typeof payload.answer_needs_review !== 'boolean'
+    || !isRecord(payload.selection_reason)
+    || typeof payload.selection_reason.frequency !== 'string'
+    || typeof payload.selection_reason.difficulty !== 'string'
+    || typeof payload.selection_reason.method !== 'string'
+  ) throw new Error('Invalid question selection item')
+  return {
+    question_id: Number(payload.question_id),
+    question_type: payload.question_type,
+    stem: payload.stem,
+    answer_text: payload.answer_text,
+    difficulty: Number(payload.difficulty),
+    frequency_score: payload.frequency_score,
+    frequency: {
+      midterm: payload.frequency.midterm,
+      final: payload.frequency.final,
+      zhongkao: payload.frequency.zhongkao,
+    },
+    method: payload.method,
+    knowledge_points: payload.knowledge_points,
+    has_images: payload.has_images,
+    answer_needs_review: payload.answer_needs_review,
+    selection_reason: {
+      frequency: payload.selection_reason.frequency,
+      difficulty: payload.selection_reason.difficulty,
+      method: payload.selection_reason.method,
+    },
+  }
 }
 
-function exerciseSuggestion(payload: unknown): ExerciseSuggestion {
-  return recordPayload(payload) as unknown as ExerciseSuggestion
+function questionSelectionPreview(payload: unknown): QuestionSelectionPreview {
+  if (
+    !isRecord(payload)
+    || !isRecord(payload.request)
+    || typeof payload.request.volume_id !== 'string'
+    || !Array.isArray(payload.request.section_ids)
+    || !isRecord(payload.stats)
+    || !Array.isArray(payload.items)
+    || !isRecord(payload.method_distribution)
+  ) throw new Error('Invalid question selection preview')
+  const stats = payload.stats
+  if (
+    !Number.isSafeInteger(stats.candidate_total)
+    || !Number.isSafeInteger(stats.dropped_stem_length)
+    || !Number.isSafeInteger(stats.dropped_excluded)
+    || !Number.isSafeInteger(stats.dropped_duplicate)
+    || !Number.isSafeInteger(stats.dropped_method_balance)
+    || !Number.isSafeInteger(stats.selected)
+  ) throw new Error('Invalid question selection preview')
+  return {
+    request: {
+      volume_id: payload.request.volume_id,
+      section_ids: payload.request.section_ids.map(String),
+      difficulty_max: Number(payload.request.difficulty_max),
+      stem_max_chars: Number(payload.request.stem_max_chars),
+      limit: Number(payload.request.limit),
+      max_per_method: Number(payload.request.max_per_method),
+      exclude_question_ids: Array.isArray(payload.request.exclude_question_ids)
+        ? payload.request.exclude_question_ids.map(Number)
+        : [],
+    },
+    stats: {
+      candidate_total: Number(stats.candidate_total),
+      dropped_stem_length: Number(stats.dropped_stem_length),
+      dropped_excluded: Number(stats.dropped_excluded),
+      dropped_duplicate: Number(stats.dropped_duplicate),
+      dropped_method_balance: Number(stats.dropped_method_balance),
+      selected: Number(stats.selected),
+    },
+    items: payload.items.map(questionSelectionItem),
+    method_distribution: Object.fromEntries(
+      Object.entries(payload.method_distribution).map(([key, value]) => [key, Number(value)]),
+    ),
+  }
 }
 
-function exerciseSuggestionRun(payload: unknown): ExerciseSuggestionRun {
-  return recordPayload(payload) as unknown as ExerciseSuggestionRun
+function superscriptFinding(payload: unknown): SuperscriptFinding {
+  if (
+    !isRecord(payload)
+    || !Number.isSafeInteger(payload.page)
+    || !Number.isSafeInteger(payload.baseline)
+    || typeof payload.kind !== 'string'
+    || typeof payload.text !== 'string'
+  ) throw new Error('Invalid superscript finding')
+  return {
+    page: Number(payload.page),
+    baseline: Number(payload.baseline),
+    kind: payload.kind,
+    text: payload.text,
+  }
+}
+
+function pptxOutputAudit(payload: unknown): PptxOutputAudit {
+  if (!isRecord(payload)) throw new Error('Invalid pptx output audit')
+  const superscript = isRecord(payload.superscript_subscript) ? payload.superscript_subscript : {}
+  const budget = isRecord(payload.page_budget) ? payload.page_budget : {}
+  const questionPages = isRecord(payload.question_pages) ? payload.question_pages : {}
+  return {
+    superscript_subscript: {
+      scanned_runs: Number(superscript.scanned_runs ?? 0),
+      finding_count: Number(superscript.finding_count ?? 0),
+      findings: Array.isArray(superscript.findings)
+        ? superscript.findings.map(superscriptFinding)
+        : [],
+      passed: superscript.passed !== false,
+    },
+    page_budget: {
+      final_page_count: Number(budget.final_page_count ?? 0),
+      limit: Number(budget.limit ?? 0),
+      over_limit: budget.over_limit === true,
+      suggestion: typeof budget.suggestion === 'string' ? budget.suggestion : '',
+    },
+    question_pages: {
+      checked: Number(questionPages.checked ?? 0),
+      pages: isRecord(questionPages.pages)
+        ? Object.fromEntries(
+            Object.entries(questionPages.pages).map(([key, value]) => [key, Number(value)]),
+          )
+        : {},
+      problem_count: Number(questionPages.problem_count ?? 0),
+      problems: Array.isArray(questionPages.problems)
+        ? questionPages.problems.map(String)
+        : [],
+      passed: questionPages.passed !== false,
+    },
+    passed: payload.passed !== false,
+  }
+}
+
+function insertedQuestionPage(payload: unknown): InsertedQuestionPage {
+  if (!isRecord(payload)) throw new Error('Invalid inserted question page')
+  return {
+    question_id: Number.isSafeInteger(payload.question_id) ? Number(payload.question_id) : null,
+    final_position: Number.isSafeInteger(payload.final_position) ? Number(payload.final_position) : null,
+  }
+}
+
+function pptxLocalOutput(payload: unknown): PptxLocalOutput {
+  if (
+    !isRecord(payload)
+    || typeof payload.id !== 'string' || !payload.id
+    || typeof payload.lesson_node_id !== 'string'
+    || !Number.isSafeInteger(payload.version_number)
+    || typeof payload.status !== 'string'
+    || typeof payload.output_filename !== 'string'
+    || typeof payload.source_file_name !== 'string'
+    || !Number.isSafeInteger(payload.source_page_count)
+    || !Number.isSafeInteger(payload.final_page_count)
+    || typeof payload.lesson_kind !== 'string'
+    || typeof payload.created_at !== 'string'
+    || !(payload.worksheet_filename === null || typeof payload.worksheet_filename === 'string')
+  ) throw new Error('Invalid pptx local output')
+  // source_file_name 是后端脱敏后的展示名；键名含 file 令牌，先摘出再做路径键扫描。
+  const { source_file_name: sourceFileName, ...rest } = payload
+  assertNoPathLikeKeys(rest)
+  return {
+    id: payload.id,
+    lesson_node_id: payload.lesson_node_id,
+    version_number: Number(payload.version_number),
+    status: payload.status,
+    output_filename: payload.output_filename,
+    source_file_name: sourceFileName,
+    source_page_count: Number(payload.source_page_count),
+    final_page_count: Number(payload.final_page_count),
+    lesson_kind: payload.lesson_kind,
+    audit: pptxOutputAudit(payload.audit ?? {}),
+    inserted_question_pages: Array.isArray(payload.inserted_question_pages)
+      ? payload.inserted_question_pages.map(insertedQuestionPage)
+      : [],
+    worksheet_filename: payload.worksheet_filename ?? null,
+    created_at: payload.created_at,
+  }
 }
 
 function slideAnimationRun(payload: unknown): SlideAnimationRun {
@@ -629,39 +736,6 @@ function slideAnimationRunList(payload: unknown): SlideAnimationRunList {
     billed_limit: Number(record.billed_limit ?? 3),
     page_limit: Number(record.page_limit ?? 4),
   }
-}
-
-function trustedPptxVersion(payload: unknown): TrustedPptxVersion {
-  if (!isRecord(payload) || typeof payload.file_verified !== 'boolean') {
-    throw new Error('Invalid trusted PPTX version')
-  }
-  const safePayload = { ...payload }
-  delete safePayload.file_verified
-  assertNoPathLikeKeys(safePayload)
-  return payload as unknown as TrustedPptxVersion
-}
-
-function trustedPptxVersionList(payload: unknown): TrustedPptxVersion[] {
-  if (!isRecord(payload) || !Array.isArray(payload.items)) {
-    throw new Error('Invalid trusted PPTX version list')
-  }
-  const { items, ...safeEnvelope } = payload
-  assertNoPathLikeKeys(safeEnvelope)
-  return items.map(trustedPptxVersion)
-}
-
-function activateResult(
-  payload: unknown,
-): { version: PptxVersion; current_revision: number; changed: boolean } {
-  return recordPayload(payload) as unknown as {
-    version: PptxVersion
-    current_revision: number
-    changed: boolean
-  }
-}
-
-function pptxExecution(payload: unknown): PptxExecution {
-  return recordPayload(payload) as unknown as PptxExecution
 }
 
 function adaptationTrace(payload: unknown): AdaptationTrace {
