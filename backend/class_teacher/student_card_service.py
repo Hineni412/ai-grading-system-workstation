@@ -95,7 +95,15 @@ class StudentCardService:
         """Read one selected student's sensitive card without loading the class."""
         vmk = self._key_provider(token)
         subject = self.support.get_subject(token=token, subject_id=subject_id)
-        return self._card_for_subject(token=token, vmk=vmk, subject=subject)
+        card = self._card_for_subject(token=token, vmk=vmk, subject=subject)
+        # 学业摘要卡由学业证据服务预计算（无成绩时为 None）；只在单人档案读取时附带，
+        # 班级列表不逐个计算。与 model_context 使用同一个 summarizer，口径一致。
+        card["academic_summary"] = (
+            self.academic_summarizer(token=token, subject_id=subject_id)
+            if self.academic_summarizer is not None
+            else None
+        )
+        return card
 
     def model_context(self, *, token: str, subject_id: str) -> dict[str, object]:
         """Return the one current profile used by every class-teacher AI flow."""
