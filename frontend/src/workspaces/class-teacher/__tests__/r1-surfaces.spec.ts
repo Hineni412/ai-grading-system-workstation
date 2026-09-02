@@ -221,11 +221,67 @@ describe('B UI R1 surfaces', () => {
 
     clickByText(host, '学业证据')
     await nextTick()
-    clickByText(host, '打开完整学业证据')
+    // 夹具不带学业摘要：学业证据页签显示空态，主按钮同样深链到完整学业页
+    clickByText(host, '打开成绩管理导入成绩')
     expect(open).toHaveBeenCalledWith('academic')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape' }))
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('renders the academic snapshot card and pins support dimensions on the overview tab', async () => {
+    const subject = { subject_id:'subject-1234', student_ref:'subject-1234', display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'applied', attention_pending_count:1, last_confirmed_at:'2026-08-01' }
+    vi.spyOn(studentR1Api, 'studentCard').mockResolvedValue({
+      subject,
+      entries:[], existing_records:[], support_plans:[],
+      current_profile:{
+        entry_id:'entry-1', revision:2, summary:'做事认真，数学步骤完整。', updated_at:'2026-08-01',
+        dimensions:[
+          { key:'learning_ability', label:'学习与能力', items:['能按计划完成任务'] },
+          { key:'support_needs', label:'当前需要支持', items:['需要拆分长任务'] },
+          { key:'effective_methods', label:'已验证有效的方法', items:['书面步骤卡'] },
+        ],
+        open_questions:['近期状态是否稳定'],
+        support_focus:[{ key:'math_support', title:'计算准确性支持', need:'巩固计算准确性', effective_methods:[], next_actions:['每周核对一次错题'] }],
+      },
+      academic_summary:{
+        contract_version:'academic_ai_summary_v1',
+        latest_exam:{ title:'八年级上学期期中考试', occurred_on:'2026-04-28', term_label:'八上期中' },
+        total:{ score:532, rank:41, participant_count:480, top_ratio:0.085 },
+        rank_change_vs_previous:{ previous_title:'七年级下学期期末考试', previous_rank:57, delta:16 },
+        trend:'improving', stability:'moderate',
+        skew:{ label:'skewed', strongest:['语文'], weakest:['数学'] },
+        subjects:[
+          { name:'语文', latest_rank:30, participant_count:480, rank_delta:8, attention:false },
+          { name:'数学', latest_rank:52, participant_count:480, rank_delta:16, attention:true },
+        ],
+        notes:['仅比较同学期链内同年级、同口径（校次）的场次'],
+      },
+    })
+
+    const open = vi.fn()
+    const host = await mount(StudentOverviewPanel, { subject, onOpen:open })
+
+    // 概览页：学业定位微条；置顶维度默认展开且排在前面，其余维度折叠
+    expect(host.textContent).toContain('学业定位')
+    expect(host.textContent).toContain('八上期中 · 第 41 名')
+    expect(host.textContent).toContain('数学需关注')
+    expect(host.querySelector('[data-dim-key="support_needs"]')?.classList.contains('open')).toBe(true)
+    expect(host.querySelector('[data-dim-key="effective_methods"]')?.classList.contains('open')).toBe(true)
+    expect(host.querySelector('[data-dim-key="learning_ability"]')?.classList.contains('open')).toBe(false)
+    const keys = [...host.querySelectorAll('[data-dim-key]')].map((node) => node.getAttribute('data-dim-key'))
+    expect(keys.indexOf('support_needs')).toBeLessThan(keys.indexOf('learning_ability'))
+
+    // 学业证据页签：快照卡 + 待处理关注项提示 + 深链
+    clickByText(host, '学业证据')
+    await nextTick()
+    expect(host.textContent).toContain('八年级上学期期中考试')
+    expect(host.textContent).toContain('第 41 名')
+    expect(host.textContent).toContain('持续进步')
+    expect(host.textContent).toContain('需要关注')
+    expect(host.textContent).toContain('待处理关注项')
+    clickByText(host, '打开完整学业证据')
+    expect(open).toHaveBeenCalledWith('academic')
   })
 
   it('offers an AI entry on the overview tab that jumps to the support desk', async () => {
