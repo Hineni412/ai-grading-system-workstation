@@ -332,14 +332,21 @@ class ResourcePackRepository:
                 """,
                 (lesson_node_id,),
             ).fetchone()
-            _local, current_source_state = _capture_local_payload(
-                connection,
-                lesson_node_id=lesson_node_id,
-                reference_ppt_intents=_reference_intents_from_pack(latest),
-                require_reference_intents=False,
-                selected_material_link_ids=_selected_link_ids(latest),
-                selected_exercise_candidate_ids=_selected_exercise_ids(latest),
-            )
+            try:
+                _local, current_source_state = _capture_local_payload(
+                    connection,
+                    lesson_node_id=lesson_node_id,
+                    reference_ppt_intents=_reference_intents_from_pack(latest),
+                    require_reference_intents=False,
+                    selected_material_link_ids=_selected_link_ids(latest),
+                    selected_exercise_candidate_ids=_selected_exercise_ids(latest),
+                )
+            except (
+                TeachingPrepNotFoundError,
+                TeachingPrepValidationError,
+            ):
+                # 旧快照可能引用已删除的资料或候选题；状态查询只读，按“来源已变化”处理
+                current_source_state = None
             material_versions_changed = bool(
                 latest is not None
                 and _material_source_change_flags(

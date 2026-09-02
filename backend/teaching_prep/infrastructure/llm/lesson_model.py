@@ -22,7 +22,7 @@ from backend.workspaces.model_policy import (
 _MAX_OUTPUT_TOKENS = 16_000
 _MAX_MODEL_ROUNDS = 2
 _MAX_ATTEMPTS_PER_ROUND = 2
-_ROUND_TIMEOUT_SECONDS = 300
+_ROUND_TIMEOUT_SECONDS = 900
 _MAX_FIRST_ROUND_SLIDES = 40
 _THUMBNAIL_MAX_EDGE = 480
 _THUMBNAIL_JPEG_QUALITY = 70
@@ -118,6 +118,7 @@ class WorkspaceLessonModelAdapter:
         resource_pack: dict[str, Any],
         page_loader: Callable[[str], Mapping[str, object]] | None = None,
         observer: Callable[[Mapping[str, object]], None] | None = None,
+        validator: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         catalog = compact_resource_pack_for_model(resource_pack)
         slide_images = _reference_slide_thumbnails(resource_pack, page_loader)
@@ -189,6 +190,8 @@ class WorkspaceLessonModelAdapter:
                         "lesson model output was truncated"
                     )
                 payload = _parse_model_object(_response_text(response))
+                if validator is not None:
+                    validator(payload)
             except TeachingPrepValidationError as exc:
                 last_error = exc
                 if round_number < _MAX_MODEL_ROUNDS:
