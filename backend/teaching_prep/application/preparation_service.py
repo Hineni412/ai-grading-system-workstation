@@ -3009,25 +3009,7 @@ class TeachingPrepService:
                 }
                 if task_model_gateway is not None:
                     model_kwargs["task_model_gateway"] = task_model_gateway
-
-                def _validate_model_payload(
-                    candidate: dict[str, Any],
-                ) -> None:
-                    try:
-                        validated = validate_draft_payload(
-                            normalize_model_draft_payload(candidate, pack),
-                            pack,
-                        )
-                    except TeachingPrepValidationError as exc:
-                        raise TeachingPrepValidationError(
-                            f"{exc}（结构定位：{_pinpoint_draft_shape(candidate)}）"
-                        ) from exc
-                    if not validated.get("slide_adaptations"):
-                        raise TeachingPrepValidationError(
-                            "lesson model must classify every frozen reference slide"
-                        )
-
-                model_kwargs["validator"] = _validate_model_payload
+                model_kwargs["validator"] = _model_payload_validator(pack)
                 raw = normalize_model_draft_payload(
                     adapter.generate(**model_kwargs),
                     pack,
@@ -3192,23 +3174,7 @@ class TeachingPrepService:
             }
             if task_model_gateway is not None:
                 model_kwargs["task_model_gateway"] = task_model_gateway
-
-            def _validate_model_payload(candidate: dict[str, Any]) -> None:
-                try:
-                    validated = validate_draft_payload(
-                        normalize_model_draft_payload(candidate, pack),
-                        pack,
-                    )
-                except TeachingPrepValidationError as exc:
-                    raise TeachingPrepValidationError(
-                        f"{exc}（结构定位：{_pinpoint_draft_shape(candidate)}）"
-                    ) from exc
-                if not validated.get("slide_adaptations"):
-                    raise TeachingPrepValidationError(
-                        "lesson model must classify every frozen reference slide"
-                    )
-
-            model_kwargs["validator"] = _validate_model_payload
+            model_kwargs["validator"] = _model_payload_validator(pack)
             try:
                 raw = normalize_model_draft_payload(
                     adapter.generate(**model_kwargs),
@@ -3615,8 +3581,10 @@ class TeachingPrepService:
         filename = str(row.get("output_filename") or "output.pptx")
         base = self.root.resolve()
         candidate = (base / relpath).resolve()
-        if not str(candidate).startswith(str(base)):
-            raise TeachingPrepValidationError("output path is invalid")
+        try:
+            candidate.relative_to(base)
+        except ValueError:
+            raise TeachingPrepValidationError("output path is invalid") from None
         if not candidate.is_file():
             raise TeachingPrepNotFoundError("output file is missing")
         return candidate, filename
@@ -3628,7 +3596,6 @@ class TeachingPrepService:
         if self.question_bank_path is None:
             raise TeachingPrepValidationError("question bank is unavailable")
         return generate_worksheet(
-            database=self.database,
             outputs_root=self.paths["outputs"],
             outputs_repo=self.pptx_outputs,
             output_id=_clean_entity_id(output_id),
@@ -3914,6 +3881,29 @@ def _clean_entity_id(value: str) -> str:
     if not _ENTITY_ID.fullmatch(clean):
         raise TeachingPrepValidationError("preparation ID is invalid")
     return clean
+
+
+def _model_payload_validator(
+    pack: Any,
+) -> Callable[[dict[str, Any]], None]:
+    """模型返回的草稿负载校验器：失败时抛 TeachingPrepValidationError 触发修复轮。"""
+
+    def _validate(candidate: dict[str, Any]) -> None:
+        try:
+            validated = validate_draft_payload(
+                normalize_model_draft_payload(candidate, pack),
+                pack,
+            )
+        except TeachingPrepValidationError as exc:
+            raise TeachingPrepValidationError(
+                f"{exc}（结构定位：{_pinpoint_draft_shape(candidate)}）"
+            ) from exc
+        if not validated.get("slide_adaptations"):
+            raise TeachingPrepValidationError(
+                "lesson model must classify every frozen reference slide"
+            )
+
+    return _validate
 
 
 def _pinpoint_draft_shape(candidate: object) -> str:

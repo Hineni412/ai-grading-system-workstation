@@ -77,6 +77,7 @@ describe('teaching preparation workbench API', () => {
       },
       stats: {
         candidate_total: 40,
+        dropped_needs_review: 1,
         dropped_stem_length: 3,
         dropped_excluded: 1,
         dropped_duplicate: 2,
@@ -87,16 +88,12 @@ describe('teaching preparation workbench API', () => {
         question_id: 101,
         question_type: '解答题',
         stem: '某水库水位……',
-        answer_text: '答：……',
         difficulty: 4,
         frequency_score: 0.873,
         frequency: { midterm: 0.5, final: 0.3, zhongkao: 0.073 },
         method: '函数建模',
         knowledge_points: ['一次函数的应用'],
         has_images: true,
-        image_paths: ['C:\\private\\q101.png'],
-        source_file: 'C:\\private\\bank.docx',
-        answer_needs_review: false,
         selection_reason: {
           frequency: '综合考频 0.873',
           difficulty: '难度 4',
@@ -120,6 +117,7 @@ describe('teaching preparation workbench API', () => {
     expect(result.items).toHaveLength(1)
     expect(result.items[0]).not.toHaveProperty('image_paths')
     expect(result.items[0]).not.toHaveProperty('source_file')
+    expect(result.items[0]).not.toHaveProperty('answer_text')
     expect(result.items[0]?.selection_reason.frequency).toBe('综合考频 0.873')
   })
 

@@ -59,23 +59,39 @@ export function matchSectionForLesson(
   return best.length === 1 ? best[0]!.section : null
 }
 
-export const QUESTION_PREVIEW_DEFAULTS = {
-  difficulty_max: 5,
-  stem_max_chars: 220,
-  limit: 12,
-  max_per_method: 2,
-} as const
+export type LessonKind = 'new_lesson' | 'review'
+
+/** 课型默认值：新授课难度上限 5、约 8 题；复习课难度上限 7、约 12 题。 */
+export function previewDefaultsForKind(kind: LessonKind): {
+  difficulty_max: number
+  stem_max_chars: number
+  limit: number
+  max_per_method: number
+} {
+  return {
+    difficulty_max: kind === 'review' ? 7 : 5,
+    stem_max_chars: 220,
+    limit: kind === 'review' ? 12 : 8,
+    max_per_method: 2,
+  }
+}
+
+/** 从课时标题推断课型：含“复习/小结”按复习课处理。 */
+export function inferLessonKind(lessonTitle: string): LessonKind {
+  return /复习|小结/.test(lessonTitle) ? 'review' : 'new_lesson'
+}
 
 /** 组装选题预览请求：移除过的题进入 exclude，重跑时会补进替代题。 */
 export function buildPreviewRequest(
   volumeId: string,
   sectionIds: string[],
   excludeQuestionIds: readonly number[],
+  kind: LessonKind = 'new_lesson',
 ): QuestionSelectionPreviewInput {
   return {
     volume_id: volumeId,
     section_ids: [...new Set(sectionIds)],
-    ...QUESTION_PREVIEW_DEFAULTS,
+    ...previewDefaultsForKind(kind),
     exclude_question_ids: [...new Set(excludeQuestionIds)],
   }
 }

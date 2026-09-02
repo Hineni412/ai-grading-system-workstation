@@ -353,7 +353,7 @@ export interface QuestionSelectionInput {
 export interface FreezeResourcePackInput {
   request_token: string
   class_name: string | null
-  lesson_type: 'new_lesson'
+  lesson_type: 'new_lesson' | 'review'
   teacher_context: string | null
   reference_ppt_intents: Record<string, 'keep' | 'candidate_delete'>
   question_ids: number[]

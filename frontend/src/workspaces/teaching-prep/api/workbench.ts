@@ -66,14 +66,12 @@ export interface QuestionSelectionItem {
   question_id: number
   question_type: string
   stem: string
-  answer_text: string
   difficulty: number
   frequency_score: number
   frequency: { midterm: number; final: number; zhongkao: number }
   method: string
   knowledge_points: string[]
   has_images: boolean
-  answer_needs_review: boolean
   selection_reason: {
     frequency: string
     difficulty: string
@@ -535,7 +533,6 @@ function questionSelectionItem(payload: unknown): QuestionSelectionItem {
     || !Number.isSafeInteger(payload.question_id)
     || typeof payload.question_type !== 'string'
     || typeof payload.stem !== 'string'
-    || typeof payload.answer_text !== 'string'
     || !Number.isSafeInteger(payload.difficulty)
     || !finiteNumber(payload.frequency_score)
     || !isRecord(payload.frequency)
@@ -546,7 +543,6 @@ function questionSelectionItem(payload: unknown): QuestionSelectionItem {
     || !Array.isArray(payload.knowledge_points)
     || !payload.knowledge_points.every(item => typeof item === 'string')
     || typeof payload.has_images !== 'boolean'
-    || typeof payload.answer_needs_review !== 'boolean'
     || !isRecord(payload.selection_reason)
     || typeof payload.selection_reason.frequency !== 'string'
     || typeof payload.selection_reason.difficulty !== 'string'
@@ -556,7 +552,6 @@ function questionSelectionItem(payload: unknown): QuestionSelectionItem {
     question_id: Number(payload.question_id),
     question_type: payload.question_type,
     stem: payload.stem,
-    answer_text: payload.answer_text,
     difficulty: Number(payload.difficulty),
     frequency_score: payload.frequency_score,
     frequency: {
@@ -567,7 +562,6 @@ function questionSelectionItem(payload: unknown): QuestionSelectionItem {
     method: payload.method,
     knowledge_points: payload.knowledge_points,
     has_images: payload.has_images,
-    answer_needs_review: payload.answer_needs_review,
     selection_reason: {
       frequency: payload.selection_reason.frequency,
       difficulty: payload.selection_reason.difficulty,

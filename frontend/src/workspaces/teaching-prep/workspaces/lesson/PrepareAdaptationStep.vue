@@ -24,10 +24,12 @@ import PptAnimationPagePicker, {
 } from './PptAnimationPagePicker.vue'
 import {
   buildPreviewRequest,
+  inferLessonKind,
   matchSectionForLesson,
   questionBankVolumeId,
   sectionShortName,
   selectionPayloadForFreeze,
+  type LessonKind,
 } from './questionSelection'
 
 const LOCAL_SLIDE_CONTRACT_FINGERPRINT = '34b984e97a114fea15394bfdb1c73e8f667b340918e72c21bc15a21934a20a1b'
@@ -69,6 +71,7 @@ function changePrimaryPpt(): void {
 
 /* ===== 题库自动选题 ===== */
 
+const lessonKind = ref<LessonKind>('new_lesson')
 const volumeId = computed(() => questionBankVolumeId(catalog.selectedCurriculum))
 const sections = ref<QuestionBankSection[]>([])
 const sectionsLoading = ref(false)
@@ -126,7 +129,7 @@ async function runPreview(): Promise<void> {
   previewError.value = ''
   try {
     const result = await teachingPrepWorkbenchApi.questionSelectionPreview(
-      buildPreviewRequest(volume, [sectionId], excludedQuestionIds.value),
+      buildPreviewRequest(volume, [sectionId], excludedQuestionIds.value, lessonKind.value),
     )
     if (requestId !== previewRequest) return
     preview.value = result
@@ -158,13 +161,21 @@ watch(
     volumeId.value,
     workbench.selectedLesson.value?.id ?? '',
   ] as const,
-  () => { void loadSections() },
+  () => {
+    const title = workbench.selectedLesson.value?.title ?? ''
+    lessonKind.value = inferLessonKind(title)
+    void loadSections()
+  },
   { immediate: true },
 )
 
 watch(selectedSectionId, () => {
   excludedQuestionIds.value = []
   removedItems.value = []
+  void runPreview()
+})
+
+watch(lessonKind, () => {
   void runPreview()
 })
 
@@ -508,7 +519,7 @@ async function confirmAndSend(): Promise<void> {
     const items = previewItems.value
     await catalog.freezeResourcePack({
       class_name: null,
-      lesson_type: 'new_lesson',
+      lesson_type: lessonKind.value,
       teacher_context: null,
       reference_ppt_intents: referencePptIntents,
       question_ids: items.map(item => item.question_id),
@@ -632,6 +643,16 @@ defineExpose({
         <span class="tp-panel__hint">按考频、难度和方法差异自动选出候选题组，可增删个别题</span>
       </div>
       <div class="tp-panel__body">
+        <div class="tp-form-line" data-testid="lesson-kind-picker">
+          <label class="tp-field--check">
+            <input v-model="lessonKind" type="radio" value="new_lesson" data-testid="kind-new">
+            新授课（难度≤5，约 8 题）
+          </label>
+          <label class="tp-field--check">
+            <input v-model="lessonKind" type="radio" value="review" data-testid="kind-review">
+            复习课（难度≤7，约 12 题）
+          </label>
+        </div>
         <p v-if="!volumeId" class="tp-muted">当前册别暂未接入题库，本次只按课件改编。</p>
         <p v-else-if="sectionsLoading" class="tp-muted">正在载入题库小节……</p>
         <p v-else-if="sectionsError" class="tp-error-text">{{ sectionsError }}</p>
@@ -661,7 +682,6 @@ defineExpose({
                     <StatusBadge tone="info" :label="item.selection_reason.frequency" />
                     <StatusBadge tone="neutral" :label="item.selection_reason.difficulty" />
                     <StatusBadge tone="ai" :label="item.selection_reason.method" />
-                    <StatusBadge v-if="item.answer_needs_review" tone="warning" label="答案待复核" />
                   </span>
                 </div>
                 <AppButton

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { QuestionBankSection, QuestionSelectionItem } from '../../api/workbench'
 import {
   buildPreviewRequest,
+  inferLessonKind,
   matchSectionForLesson,
   questionBankVolumeId,
   sectionShortName,
@@ -67,10 +68,20 @@ describe('questionSelection helpers', () => {
       section_ids: ['s2'],
       difficulty_max: 5,
       stem_max_chars: 220,
-      limit: 12,
+      limit: 8,
       max_per_method: 2,
       exclude_question_ids: [7, 9],
     })
+    expect(buildPreviewRequest('bnu24-math-g8-upper', ['s2'], [], 'review')).toMatchObject({
+      difficulty_max: 7,
+      limit: 12,
+    })
+  })
+
+  it('infers the lesson kind from the lesson title', () => {
+    expect(inferLessonKind('第1课时 认识勾股定理')).toBe('new_lesson')
+    expect(inferLessonKind('第一章 小结与复习')).toBe('review')
+    expect(inferLessonKind('期中复习课')).toBe('review')
   })
 
   it('carries the final picked questions into the freeze payload', () => {
@@ -79,28 +90,24 @@ describe('questionSelection helpers', () => {
         question_id: 101,
         question_type: '解答题',
         stem: '题干',
-        answer_text: '答案',
         difficulty: 4,
         frequency_score: 0.873,
         frequency: { midterm: 0.5, final: 0.3, zhongkao: 0.073 },
         method: '函数建模',
         knowledge_points: [],
         has_images: false,
-        answer_needs_review: false,
         selection_reason: { frequency: '综合考频 0.873', difficulty: '难度 4', method: '函数建模' },
       },
       {
         question_id: 102,
         question_type: '填空题',
         stem: '题干 2',
-        answer_text: '',
         difficulty: 2,
         frequency_score: 0.5,
         frequency: { midterm: 0.5, final: 0, zhongkao: 0 },
         method: '',
         knowledge_points: [],
         has_images: false,
-        answer_needs_review: true,
         selection_reason: { frequency: '综合考频 0.500', difficulty: '难度 2', method: '未标注方法' },
       },
     ] satisfies QuestionSelectionItem[]

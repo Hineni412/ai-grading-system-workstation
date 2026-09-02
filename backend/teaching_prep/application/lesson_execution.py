@@ -180,7 +180,6 @@ def execute_confirmed_plan(
     audit = run_full_audit(
         output_path,
         inserted_question_pages=report.get("inserted_question_pages", []),
-        lesson_kind=lesson_kind,
     )
 
     import json
@@ -251,7 +250,6 @@ def _docx_runs_from_html(paragraph: Any, raw: str) -> None:
 
 def generate_worksheet(
     *,
-    database: Any,
     outputs_root: Path,
     outputs_repo: Any,
     output_id: str,
@@ -339,7 +337,6 @@ def generate_worksheet(
         worksheet_relpath=f"outputs/{worksheet_path.name}",
         worksheet_filename=f"worksheet-{output_id}.docx",
     )
-    _ = database
     return updated
 
 
@@ -352,8 +349,10 @@ def worksheet_file(
         raise TeachingPrepNotFoundError("worksheet was not generated")
     base = outputs_root.parent.resolve()
     candidate = (base / relpath).resolve()
-    if not str(candidate).startswith(str(base)):
-        raise TeachingPrepValidationError("worksheet path is invalid")
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        raise TeachingPrepValidationError("worksheet path is invalid") from None
     if not candidate.is_file():
         raise TeachingPrepNotFoundError("worksheet file is missing")
     return candidate, str(row.get("worksheet_filename") or "worksheet.docx")

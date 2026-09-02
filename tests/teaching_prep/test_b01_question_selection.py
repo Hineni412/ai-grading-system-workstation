@@ -143,8 +143,6 @@ def test_request_validation_rejects_out_of_range_input() -> None:
         _request(limit=31)
     with pytest.raises(QuestionSelectionError):
         _request(max_per_method=7)
-    with pytest.raises(QuestionSelectionError):
-        _request(frequency_weights=(1.0, -0.5, 1.0))
 
 
 def test_hard_filters_scope_difficulty_deleted_stem_and_exclusion(
@@ -186,20 +184,15 @@ def test_frequency_desc_then_difficulty_asc_then_id_order(
     assert result["items"][0]["frequency_score"] == 2.0
 
 
-def test_frequency_weights_change_the_ranking(tmp_path: Path) -> None:
+def test_needs_review_questions_are_dropped(tmp_path: Path) -> None:
     bank = _bank(tmp_path / "questions.db")
-    _add_question(bank, 1, frequency=(5.0, 0.0, 0.0))
-    _add_question(bank, 2, frequency=(0.0, 0.0, 3.0))
+    _add_question(bank, 1, frequency=(5.0, 0.0, 0.0), needs_review=1)
+    _add_question(bank, 2, frequency=(2.0, 0.0, 0.0))
 
-    default = select_questions(bank, _request())
-    zhongkao_only = select_questions(
-        bank,
-        _request(frequency_weights=(0.0, 0.0, 1.0)),
-    )
+    result = select_questions(bank, _request())
 
-    assert [item["question_id"] for item in default["items"]] == [1, 2]
-    assert [item["question_id"] for item in zhongkao_only["items"]] == [2, 1]
-    assert zhongkao_only["items"][0]["frequency"]["zhongkao"] == 3.0
+    assert [item["question_id"] for item in result["items"]] == [2]
+    assert result["stats"]["dropped_needs_review"] == 1
 
 
 def test_duplicate_partner_is_dropped_after_one_is_selected(
@@ -252,7 +245,6 @@ def test_item_payload_carries_reason_method_and_knowledge(
         1,
         method="配方法",
         frequency=(1.5, 0.5, 0.0),
-        needs_review=1,
     )
     with sqlite3.connect(bank) as connection:
         connection.execute(
@@ -265,12 +257,14 @@ def test_item_payload_carries_reason_method_and_knowledge(
     item = select_questions(bank, _request())["items"][0]
 
     assert item["stem"] == "合成题干 1"
-    assert item["answer_text"] == "合成答案"
     assert item["method"] == "配方法"
     assert item["knowledge_points"] == ["一元二次方程"]
-    assert item["answer_needs_review"] is True
     assert item["selection_reason"]["method"] == "配方法"
     assert item["frequency_score"] == 2.0
+    # 预览负载不携带答案正文、图片绝对路径与来源文件，防止路径与答案泄露
+    assert "answer_text" not in item
+    assert "image_paths" not in item
+    assert "source_file" not in item
 
 
 def test_fetch_question_content_reads_current_rows_only(
