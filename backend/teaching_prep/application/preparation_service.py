@@ -15,6 +15,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 from uuid import uuid4
 
 from PIL import Image
@@ -3008,6 +3009,25 @@ class TeachingPrepService:
                 }
                 if task_model_gateway is not None:
                     model_kwargs["task_model_gateway"] = task_model_gateway
+
+                def _validate_model_payload(
+                    candidate: dict[str, Any],
+                ) -> None:
+                    try:
+                        validated = validate_draft_payload(
+                            normalize_model_draft_payload(candidate, pack),
+                            pack,
+                        )
+                    except TeachingPrepValidationError as exc:
+                        raise TeachingPrepValidationError(
+                            f"{exc}（结构定位：{_pinpoint_draft_shape(candidate)}）"
+                        ) from exc
+                    if not validated.get("slide_adaptations"):
+                        raise TeachingPrepValidationError(
+                            "lesson model must classify every frozen reference slide"
+                        )
+
+                model_kwargs["validator"] = _validate_model_payload
                 raw = normalize_model_draft_payload(
                     adapter.generate(**model_kwargs),
                     pack,
@@ -3172,6 +3192,23 @@ class TeachingPrepService:
             }
             if task_model_gateway is not None:
                 model_kwargs["task_model_gateway"] = task_model_gateway
+
+            def _validate_model_payload(candidate: dict[str, Any]) -> None:
+                try:
+                    validated = validate_draft_payload(
+                        normalize_model_draft_payload(candidate, pack),
+                        pack,
+                    )
+                except TeachingPrepValidationError as exc:
+                    raise TeachingPrepValidationError(
+                        f"{exc}（结构定位：{_pinpoint_draft_shape(candidate)}）"
+                    ) from exc
+                if not validated.get("slide_adaptations"):
+                    raise TeachingPrepValidationError(
+                        "lesson model must classify every frozen reference slide"
+                    )
+
+            model_kwargs["validator"] = _validate_model_payload
             try:
                 raw = normalize_model_draft_payload(
                     adapter.generate(**model_kwargs),
@@ -3877,6 +3914,37 @@ def _clean_entity_id(value: str) -> str:
     if not _ENTITY_ID.fullmatch(clean):
         raise TeachingPrepValidationError("preparation ID is invalid")
     return clean
+
+
+def _pinpoint_draft_shape(candidate: object) -> str:
+    """只报告结构（键名/类型/长度），不含正文，用于校验失败定位。"""
+    if not isinstance(candidate, Mapping):
+        return f"top-level={type(candidate).__name__}"
+    nested_list_fields = ("citations", "slide_refs", "delete_object_refs", "textbook_refs")
+    problems: list[str] = []
+    for key, value in candidate.items():
+        if not isinstance(value, list):
+            problems.append(f"{key}:type={type(value).__name__}")
+            continue
+        if len(value) > 40:
+            problems.append(f"{key}:len={len(value)}")
+            continue
+        for index, item in enumerate(value[:50]):
+            if not isinstance(item, Mapping):
+                continue
+            for field in nested_list_fields:
+                field_value = item.get(field)
+                if field_value is None:
+                    continue
+                if not isinstance(field_value, list):
+                    problems.append(
+                        f"{key}[{index}].{field}:type={type(field_value).__name__}"
+                    )
+                elif len(field_value) > 20:
+                    problems.append(f"{key}[{index}].{field}:len={len(field_value)}")
+        if len(problems) >= 6:
+            break
+    return ", ".join(problems[:6]) if problems else "top-level shape ok"
 
 
 def _clean_revision(value: int) -> int:

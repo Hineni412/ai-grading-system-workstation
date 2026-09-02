@@ -1028,6 +1028,23 @@ def _recommendations(
             )
         if action == "include":
             included += 1
+            title = _text(item.get("title"), maximum=300)
+            minutes = _bounded_int(
+                item.get("estimated_minutes"),
+                minimum=1,
+                maximum=60,
+            )
+        else:
+            # 备选/排除题不进课堂，标题与分钟数允许缺省
+            title = str(item.get("title") or "").strip()[:300]
+            raw_minutes = item.get("estimated_minutes")
+            minutes = (
+                raw_minutes
+                if isinstance(raw_minutes, int)
+                and not isinstance(raw_minutes, bool)
+                and 0 <= raw_minutes <= 60
+                else 0
+            )
         raw_target = item.get("target_slide_ref")
         target_slide_ref = (
             str(raw_target).strip() if raw_target is not None else None
@@ -1045,13 +1062,9 @@ def _recommendations(
                 "target_slide_ref": (
                     target_slide_ref if action == "include" else None
                 ),
-                "title": _text(item.get("title"), maximum=300),
+                "title": title,
                 "reason": _text(item.get("reason"), maximum=1_000),
-                "estimated_minutes": _bounded_int(
-                    item.get("estimated_minutes"),
-                    minimum=1,
-                    maximum=60,
-                ),
+                "estimated_minutes": minutes,
                 "citations": _citations(
                     item.get("citations"),
                     allowed_refs,

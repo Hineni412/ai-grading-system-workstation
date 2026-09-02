@@ -50,12 +50,8 @@ const current = computed(() => (
 const canCreate = computed(() => props.tasks.length < props.remaining)
 const previewNotice = computed(() => {
   const kind = current.value?.object_summary?.preview_kind
-  if (kind === 'rendered') return '当前是放映软件实拍，公式和版式更接近上课画面；不改课件原文件。'
-  const status = String(current.value?.object_summary?.preview_render_status ?? '')
-  if (status === 'queued' || status === 'running') {
-    return '先显示本机拼出的页；停住后会换成放映软件实拍。不改课件原文件。'
-  }
-  return '先显示本机拼出的页，用来认页和切页；停住后会换成放映软件实拍。不改课件原文件，也不因此打开第③步改编。'
+  if (kind === 'rendered') return '当前页由本机渲染，公式和版式接近上课画面；最终以 PowerPoint/WPS 打开为准，不改课件原文件。'
+  return '页面由本机渲染，用来认页和切页；最终以 PowerPoint/WPS 打开为准，不改课件原文件。'
 })
 
 function goTo(page: number): void {

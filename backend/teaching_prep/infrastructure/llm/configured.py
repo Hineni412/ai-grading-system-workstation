@@ -170,12 +170,14 @@ class ActiveProfileLessonModelAdapter:
         task_model_gateway: WorkspaceAITaskModelGateway | None = None,
         page_loader: object | None = None,
         observer: object | None = None,
+        validator: object | None = None,
     ) -> dict[str, Any]:
         return self._runtime.lesson_adapter(task_model_gateway).generate(
             operation_id=operation_id,
             resource_pack=resource_pack,
             page_loader=page_loader,  # type: ignore[arg-type]
             observer=observer,  # type: ignore[arg-type]
+            validator=validator,  # type: ignore[arg-type]
         )
 
 

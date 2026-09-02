@@ -34,8 +34,9 @@ class LessonModelAdapter(Protocol):
         task_model_gateway: object | None = None,
         page_loader: Callable[[str], Mapping[str, object]] | None = None,
         observer: Callable[[Mapping[str, object]], None] | None = None,
+        validator: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        """Generate one structured draft without automatic retry."""
+        """Generate one structured draft; validator failures trigger the single repair round."""
 
 
 class SemesterMappingModelAdapter(Protocol):

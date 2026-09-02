@@ -42,6 +42,15 @@ export function useTeachingPrepLessonWorkbench() {
     loading.value = true
     workbenchError.value = ''
     try {
+      // 刷新/深链进入时目录可能还在载入，等目标课时出现或目录加载结束再判断是否存在。
+      if (!catalog.lessonNodes.some(item => item.id === lessonId)) {
+        const deadline = Date.now() + 15000
+        while (Date.now() < deadline) {
+          if (catalog.lessonNodes.some(item => item.id === lessonId)) break
+          if (catalog.loadState === 'ready' || catalog.loadState === 'error') break
+          await new Promise(resolve => globalThis.setTimeout(resolve, 100))
+        }
+      }
       const lesson = catalog.lessonNodes.find(item => item.id === lessonId && item.is_active)
       if (!lesson) {
         workbenchError.value = '原链接中的课时已不存在或已停用，已保留在备课首页；没有改选其他课时。'
