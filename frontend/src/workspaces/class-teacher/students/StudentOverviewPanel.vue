@@ -748,7 +748,7 @@ onBeforeUnmount(() => {
               <span class="aca-strip__k">学业定位</span>
               <b>{{ academicStrip.termLabel }} · 第 {{ academicStrip.rank }} 名</b>
               <span v-if="academicStrip.count">/ {{ academicStrip.count }} 人<template v-if="academicStrip.topRatio"> · 前 {{ academicStrip.topRatio }}</template></span>
-              <span v-if="academicStrip.delta" class="aca-strip__up">{{ academicStrip.delta > 0 ? `↑${academicStrip.delta}` : `↓${-academicStrip.delta}` }}</span>
+              <span v-if="academicStrip.delta" :class="academicStrip.delta > 0 ? 'aca-strip__up' : 'aca-strip__down'">{{ academicStrip.delta > 0 ? `↑${academicStrip.delta}` : `↓${-academicStrip.delta}` }}</span>
               <span v-if="academicStrip.attentionName" class="aca-strip__warn">{{ academicStrip.attentionName }}需关注</span>
               <span class="aca-strip__go">学业证据 →</span>
             </button>
@@ -1032,6 +1032,7 @@ onBeforeUnmount(() => {
 .aca-strip__k{color:var(--color-info);font-size:11px;font-weight:700;letter-spacing:.06em}
 .aca-strip b{color:var(--foreground)}
 .aca-strip__up{color:var(--color-success);font-weight:700}
+.aca-strip__down{color:var(--color-danger);font-weight:700}
 .aca-strip__warn{color:var(--color-warning);font-weight:600}
 .aca-strip__go{margin-left:auto;color:var(--color-info);font-size:12px;font-weight:600}
 .priority-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
