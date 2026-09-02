@@ -395,6 +395,9 @@ async function addObservation(): Promise<void> {
 
 function selectTab(tab: DrawerTab): void {
   activeTab.value = tab
+  // 三个页签内容高度差异大，切换时回到顶部，避免落在另一页签的滚动位置上。
+  const scroller = dialog.value?.querySelector('.dossier__scroll')
+  if (scroller) scroller.scrollTop = 0
 }
 
 async function continueProfile(): Promise<void> {
