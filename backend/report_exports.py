@@ -15,7 +15,7 @@ _submit_lock = threading.RLock()
 _REPORT_RENDITION_VERSIONS = {
     "score_excel": "score_excel_print_v5",
     "annotated_original_pdf": "annotated_original_pdf_score_boxes_v3",
-    "personal_analysis_html": "personal_analysis_html_v1",
+    "personal_analysis_html": "personal_analysis_html_v2",
 }
 
 # 考试分析报告（AI 叙述）导出类型：提交时不带 excel_options。

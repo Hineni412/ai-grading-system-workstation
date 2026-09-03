@@ -6,6 +6,7 @@ import {
   type DownloadedJobFile,
   type JobSummaryList,
   type ReportContext,
+  type ReportFileDeleteResult,
   type ReportType,
   type ScoreExcelOptions,
   type TrainingExportRequest,
@@ -59,6 +60,11 @@ export interface FileCenterApi {
   ): Promise<JobSummaryList>
   getJob(id: number, signal?: AbortSignal): Promise<JobResponse>
   downloadJobFile(id: number): Promise<DownloadedJobFile>
+  deleteReportFile(
+    sessionId: number,
+    jobId: number,
+    signal?: AbortSignal,
+  ): Promise<ReportFileDeleteResult>
 }
 
 function safeErrorMessage(): string {
@@ -265,6 +271,17 @@ export const useFileCenterStore = defineStore('file-center', () => {
     return api.downloadJobFile(jobId)
   }
 
+  async function deleteReport(
+    jobId: number,
+    api: FileCenterApi = exportsApi,
+  ): Promise<ReportFileDeleteResult> {
+    const currentSessionId = sessionId.value
+    if (currentSessionId === null) throw new Error('No session selected')
+    const result = await api.deleteReportFile(currentSessionId, jobId)
+    await load(currentSessionId)
+    return result
+  }
+
   async function cancelTrackedJob(
     jobId: number,
     canceller: (id: number) => Promise<void> = (id) => useJobStore().cancel(id),
@@ -308,6 +325,7 @@ export const useFileCenterStore = defineStore('file-center', () => {
     submitTraining,
     retryTrainingExport,
     download,
+    deleteReport,
     cancelTrackedJob,
     reset,
   }

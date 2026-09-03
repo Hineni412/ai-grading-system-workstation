@@ -32,7 +32,7 @@ from backend.repositories.compat import open_grading_repositories
 
 CLASS_ANALYSIS_JOB_TYPE = "class_analysis_generate"
 CLASS_ANALYSIS_STATE_DIRNAME = ".class_analysis"
-CLASS_ANALYSIS_RENDITION_VERSION = "class_analysis_page_v1"
+CLASS_ANALYSIS_RENDITION_VERSION = "class_analysis_page_v2"
 CLASS_ANALYSIS_REPORT_KEY = "class:session"
 NARRATIVE_CACHE_DIRNAME = ".analysis_narrative_cache"
 

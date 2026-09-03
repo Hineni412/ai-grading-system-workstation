@@ -33,6 +33,7 @@ def test_request_and_protocol_values_are_stable():
         "tagging",
         "tagging_batch",
         "workspace",
+        "assembly",
     ]
     assert [protocol.value for protocol in LLMProtocol] == [
         "chat_completions",

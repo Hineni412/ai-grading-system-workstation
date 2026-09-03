@@ -549,3 +549,104 @@ def test_job_download_rejects_resolved_escape_deterministically(
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "job_file_forbidden"
+
+
+# ---------------------------------------------------------------------------
+# 个人学情报告留存：下载不删除、手动删除释放空间
+# ---------------------------------------------------------------------------
+
+
+def _finish_typed_report_job(store, report_type: str, file_path: Path):
+    job = store.create_job(
+        "report_export",
+        {"session_id": 1, "report_type": report_type, "score_revision": "rev-1"},
+    )
+    assert store.mark_running(job.id) is True
+    store.finish(
+        job.id,
+        "succeeded",
+        result={
+            "session_id": 1,
+            "file_path": str(file_path),
+            "filename": file_path.name,
+        },
+    )
+    loaded = store.get_job(job.id)
+    assert loaded is not None
+    return loaded
+
+
+def test_personal_analysis_report_download_is_retained(file_client) -> None:
+    """个人学情报告 zip 下载后留存在本机，可重复下载。"""
+    client, store, reports_dir = file_client
+    report = reports_dir / "personal.zip"
+    report.write_bytes(b"zip-content")
+    job = _finish_typed_report_job(store, "personal_analysis_html", report)
+
+    first = client.get(f"/api/jobs/{job.id}/download")
+    assert first.status_code == 200
+    assert report.exists()
+    loaded = store.get_job(job.id)
+    assert loaded is not None
+    assert str(loaded.result.get("file_path") or "").strip()
+
+    second = client.get(f"/api/jobs/{job.id}/download")
+    assert second.status_code == 200
+    assert report.exists()
+
+
+def test_score_excel_download_is_still_consumed(file_client) -> None:
+    """成绩 Excel 等非留存类型维持下载后即删。"""
+    client, store, reports_dir = file_client
+    report = reports_dir / "scores.xlsx"
+    report.write_bytes(b"xlsx-content")
+    job = _finish_typed_report_job(store, "score_excel", report)
+
+    response = client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    assert not report.exists()
+    loaded = store.get_job(job.id)
+    assert loaded is not None
+    assert not str(loaded.result.get("file_path") or "").strip()
+    second = client.get(f"/api/jobs/{job.id}/download")
+    assert second.status_code == 410
+
+
+def test_delete_retained_file_removes_and_is_idempotent(tmp_path: Path) -> None:
+    from backend.files.service import JobFileService
+    from backend.jobs.store import JobStore
+
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    report = reports_dir / "personal.zip"
+    report.write_bytes(b"zip-content")
+    store = JobStore(tmp_path / "jobs.db")
+    job = _finish_typed_report_job(store, "personal_analysis_html", report)
+    service = JobFileService(reports_dir)
+
+    freed = service.delete_retained_file(job, store)
+
+    assert freed == len(b"zip-content")
+    assert not report.exists()
+    loaded = store.get_job(job.id)
+    assert loaded is not None
+    assert not str(loaded.result.get("file_path") or "").strip()
+    # 幂等：已删除再删返回 None。
+    assert service.delete_retained_file(loaded, store) is None
+
+
+def test_delete_retained_file_rejects_non_retained_types(tmp_path: Path) -> None:
+    from backend.files.service import JobFileNotFound, JobFileService
+    from backend.jobs.store import JobStore
+
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    report = reports_dir / "scores.xlsx"
+    report.write_bytes(b"xlsx-content")
+    store = JobStore(tmp_path / "jobs.db")
+    job = _finish_typed_report_job(store, "score_excel", report)
+
+    with pytest.raises(JobFileNotFound):
+        JobFileService(reports_dir).delete_retained_file(job, store)
+    assert report.exists()

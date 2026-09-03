@@ -2,17 +2,22 @@ import { describe, expect, it } from 'vitest'
 
 import type { TimetableCell, TimetableSlot } from '../api/daily'
 import {
+  buildClassPalette,
   buildDragOps,
   buildGridRows,
+  classColorFor,
   distinctClassLabels,
+  isCollapsibleRow,
   isoAddDays,
   mondayOf,
+  NEUTRAL_CLASS_COLOR,
   pickDefaultCompareClasses,
   slotLabelFor,
   slotLabelMap,
-  todaySummary,
+  todayEntries,
   weekTitle,
 } from '../views/daily/timetable/timetableModel'
+import type { TimetableGridRow } from '../views/daily/timetable/timetableModel'
 
 function lessonSlot(lessonNo: number): TimetableSlot {
   return {
@@ -47,6 +52,8 @@ function cell(partial: Partial<TimetableCell> & Pick<TimetableCell, 'day_of_week
     source: 'empty',
     override_id: null,
     note: null,
+    has_note: false,
+    has_homework: false,
     ...partial,
   }
 }
@@ -110,8 +117,8 @@ describe('daily timetable grid model', () => {
     expect(rows[2]?.cells.every((entry) => entry.source === 'empty')).toBe(true)
   })
 
-  it('summarizes today cells with slot labels and class labels', () => {
-    const summary = todaySummary({
+  it('builds structured today entries with slot time and note flags', () => {
+    const entries = todayEntries({
       week_start: '2026-08-31',
       week_no: 1,
       days: [1, 2, 3, 4, 5].map((day) => ({ day_of_week: day, date: `2026-08-3${day}` })),
@@ -123,6 +130,8 @@ describe('daily timetable grid model', () => {
           course_text: '数学',
           class_label: '七（2）班',
           source: 'regular',
+          has_note: true,
+          has_homework: true,
         }),
         cell({
           day_of_week: 2,
@@ -135,11 +144,30 @@ describe('daily timetable grid model', () => {
       today: { date: '2026-09-01', day_of_week: 2, in_week: true },
     })
 
-    expect(summary).toEqual(['第1节 数学（七（2）班）', '午练 午练'])
+    expect(entries).toEqual([
+      {
+        slot_key: 'lesson:1',
+        slot_label: '第1节',
+        time: '',
+        course: '数学',
+        class_label: '七（2）班',
+        has_note: true,
+        has_homework: true,
+      },
+      {
+        slot_key: `custom:${'a'.repeat(32)}`,
+        slot_label: '午练',
+        time: '12:30–13:10',
+        course: '午练',
+        class_label: '',
+        has_note: false,
+        has_homework: false,
+      },
+    ])
   })
 
-  it('returns no today summary outside the viewed week', () => {
-    const summary = todaySummary({
+  it('returns no today entries outside the viewed week', () => {
+    const entries = todayEntries({
       week_start: '2026-08-31',
       week_no: null,
       days: [],
@@ -147,7 +175,35 @@ describe('daily timetable grid model', () => {
       cells: [cell({ day_of_week: 2, slot_key: 'lesson:1', course_text: '数学', source: 'regular' })],
       today: { date: '2026-09-08', day_of_week: 2, in_week: false },
     })
-    expect(summary).toEqual([])
+    expect(entries).toEqual([])
+  })
+
+  it('assigns class palette colors by first-seen order with a neutral fallback', () => {
+    const palette = buildClassPalette(['9班', '10班'])
+    expect(palette.get('9班')).toEqual({ fg: '#2f7a6b', bg: '#e3f1ef' })
+    expect(palette.get('10班')).toEqual({ fg: '#5e628d', bg: '#eceef8' })
+    expect(classColorFor(palette, '')).toEqual(NEUTRAL_CLASS_COLOR)
+    expect(classColorFor(palette, '未标注班')).toEqual(NEUTRAL_CLASS_COLOR)
+  })
+
+  it('marks a row collapsible only when all five cells are plain empty', () => {
+    const rowOf = (cells: TimetableCell[]): TimetableGridRow => ({ slot: lessonSlot(3), cells })
+    const allEmpty = [1, 2, 3, 4, 5].map((day) => cell({ day_of_week: day, slot_key: 'lesson:3' }))
+    expect(isCollapsibleRow(rowOf(allEmpty))).toBe(true)
+
+    const withClearedOverride = allEmpty.map((entry, index) =>
+      index === 0
+        ? cell({ day_of_week: 1, slot_key: 'lesson:3', source: 'override', override_id: 'ov-1' })
+        : entry,
+    )
+    expect(isCollapsibleRow(rowOf(withClearedOverride))).toBe(false)
+
+    const withCourse = allEmpty.map((entry, index) =>
+      index === 4
+        ? cell({ day_of_week: 5, slot_key: 'lesson:3', course_text: '数学', source: 'regular' })
+        : entry,
+    )
+    expect(isCollapsibleRow(rowOf(withCourse))).toBe(false)
   })
 })
 

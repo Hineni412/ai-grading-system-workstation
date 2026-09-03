@@ -10,10 +10,13 @@ import '../styles/question-assembly.css'
 const AssemblyEditorWorkspace = defineAsyncComponent(
   () => import('../components/question-bank/AssemblyEditorWorkspace.vue'),
 )
+const AiAssemblyPanel = defineAsyncComponent(
+  () => import('../components/question-assembly/AiAssemblyPanel.vue'),
+)
 
 const assembly = useAssemblyStore()
 const jobs = useJobStore()
-const mode = ref<'browse' | 'edit'>('browse')
+const mode = ref<'browse' | 'ai' | 'edit'>('browse')
 
 function showEditor(): void {
   void jobs.initialize()
@@ -23,6 +26,11 @@ function showEditor(): void {
 
 function showBrowser(): void {
   mode.value = 'browse'
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+function showAi(): void {
+  mode.value = 'ai'
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 </script>
@@ -48,6 +56,12 @@ function showBrowser(): void {
         <small>章节、标签与相似题</small>
       </button>
       <i aria-hidden="true" />
+      <button type="button" :class="{ 'is-active': mode === 'ai' }" @click="showAi">
+        <span>AI</span>
+        <strong>AI 组卷</strong>
+        <small>需求生成细目表，题库选题</small>
+      </button>
+      <i aria-hidden="true" />
       <button
         type="button"
         :class="{ 'is-active': mode === 'edit' }"
@@ -61,6 +75,7 @@ function showBrowser(): void {
     </nav>
 
     <AssemblyQuestionBrowser v-if="mode === 'browse'" @edit="showEditor" />
+    <AiAssemblyPanel v-else-if="mode === 'ai'" @settled="showEditor" />
     <AssemblyEditorWorkspace v-else @browse="showBrowser" />
   </section>
 </template>

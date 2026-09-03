@@ -24,6 +24,7 @@ class LLMRequestKind(str, Enum):
     TAGGING = "tagging"
     TAGGING_BATCH = "tagging_batch"
     WORKSPACE = "workspace"
+    ASSEMBLY = "assembly"
 
 
 class LLMProtocol(str, Enum):
@@ -65,6 +66,10 @@ DEFAULT_POLICIES: Mapping[LLMRequestKind, LLMRequestPolicy] = MappingProxyType(
         ),
         LLMRequestKind.WORKSPACE: LLMRequestPolicy(
             120.0, 0, 1000, ()
+        ),
+        # AI 组卷细目表为单次交互请求：失败不自动重发（用户确认后才再调）。
+        LLMRequestKind.ASSEMBLY: LLMRequestPolicy(
+            300.0, 0, 1000, ()
         ),
     }
 )

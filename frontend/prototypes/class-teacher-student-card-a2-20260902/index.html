@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<!--
+  原型（一次性，验证后即弃）：班主任工作台 · 学生右侧「当前档案」抽屉 · 方案A+ 独立调整版
+  在方案A（分点折叠卡，见 class-teacher-student-card-a-20260902）基础上的独立调整：
+    1. 概览页新增「学业定位」一行微条（Canvas 学生上下文卡模式：少量关键事实 + 深链）；
+    2. 维度区把「当前需要支持」「已验证有效的方法」置顶并默认展开——渐进披露是给复杂度排序，
+       不是把重要信息藏起来（NN/g 原则的限定），这两类信息是班主任最该一眼看到的；
+    3. 单维度超过 5 条时默认只显示前 5 条 +「展开其余」（数据契约允许每维度 30 条，需兜底）；
+    4. 「学业证据」页签从空壳改为学业快照卡：最近考试、总分、校次/前百分比、进退步、
+       趋势/稳定性/偏科标签、各科最近校次；假数据形状与后端 academic_ai_summary_v1
+       完全一致（student_academic_analysis.py:537，后端已算好，目前只注入 AI 上下文、未给前端）；
+    5. 学业空态分级：无成绩 → 引导导入；有成绩无校次 → 说明缺什么。
+  对照：左下角切换「方案A（原）」与「方案A+（调整）」，两者使用同一份假数据。
+  数据为假数据，仅形状与后端 student_card_service / academic_ai_summary_v1 契约一致。
+  URL 参数：?v=a|a2（默认 a2）· &tab=overview|support|academic · &academic=full|thin|none
+           · &dense=1（把「学习与能力」加长成 7 条，演示维度内折叠）· &expand=all|none
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 · 学生当前档案改版（方案A+ 调整版）</title>
+<style>
+:root{
+  --bg:#f4f5f6; --surface:#fff; --subtle:#f7f8f8; --selected:#e8f1f1;
+  --overlay:rgba(28,39,51,.42);
+  --border-subtle:#eceeef; --border:#e2e4e7; --border-strong:#c6cbd0;
+  --text:#1c2733; --text-2:#5c6672; --text-3:#87909b;
+  --accent:#135e6b; --accent-subtle:#e8f2f2;
+  --success:#2f7a55; --success-subtle:#eaf5ef;
+  --warning:#9a6718; --warning-subtle:#fff4da;
+  --danger:#b04444; --danger-subtle:#faecec;
+  --info:#496579; --info-subtle:#edf3f7;
+  --ai:#5e628d; --ai-subtle:#efeff7;
+  --radius:8px; --radius-panel:12px;
+  --shadow-overlay:0 10px 28px rgba(28,39,51,.14);
+  --sans:Inter,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);font-family:var(--sans);color:var(--text);font-size:14px}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:0;padding:0;text-align:left}
+
+/* ===== 背景页（学生目录示意，仅营造抽屉场景） ===== */
+.fake-topbar{height:64px;background:var(--surface);border-bottom:1px solid var(--border-subtle);display:flex;align-items:center;padding:0 22px;font-weight:700;font-size:16px}
+.fake-body{padding:16px 22px}
+.fake-subnav{display:inline-flex;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:8px}
+.fake-subnav span{padding:6px 14px;border-radius:var(--radius);color:var(--text-2)}
+.fake-subnav span.on{background:var(--accent-subtle);color:var(--accent);font-weight:600}
+.fake-grid{display:grid;grid-template-columns:280px 1fr;gap:12px;margin-top:12px}
+.fake-list{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-panel);overflow:hidden}
+.fake-list header{padding:12px 14px;border-bottom:1px solid var(--border-subtle);font-weight:600;color:var(--text-2);font-size:13px}
+.fake-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border-subtle)}
+.fake-row .dot{width:28px;height:28px;border-radius:6px;background:var(--subtle);color:var(--text-2);display:grid;place-items:center;font-size:13px}
+.fake-row span{color:var(--text-2)}
+.fake-row.on{background:var(--selected)}
+.fake-row.on span{color:var(--text);font-weight:600}
+.fake-empty{display:grid;place-content:center;background:var(--surface);border:1px dashed var(--border);border-radius:var(--radius-panel);color:var(--text-3)}
+
+/* ===== 对照切换器 ===== */
+.switcher{position:fixed;left:18px;bottom:18px;z-index:90;background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-panel);box-shadow:var(--shadow-overlay);padding:10px 12px;display:grid;gap:8px}
+.switcher small{color:var(--text-3);font-size:11px}
+.switcher .btns{display:flex;gap:6px}
+.switcher button{padding:7px 12px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);font-size:13px;font-weight:600;color:var(--text-2)}
+.switcher button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+
+/* ===== 抽屉公共层 ===== */
+.dossier-layer{position:fixed;z-index:65;inset:0}
+.dossier-backdrop{position:absolute;inset:0;background:rgba(28,39,51,.42);cursor:default}
+.dossier{position:absolute;inset-block:0;right:0;display:grid;width:min(620px,100vw);grid-template-rows:auto auto auto minmax(0,1fr) auto;border:0;border-left:1px solid var(--border);outline:0;background:var(--surface);box-shadow:var(--shadow-overlay)}
+.folder-tab{position:absolute;top:78px;left:-42px;width:42px;padding:11px 9px;border-radius:var(--radius) 0 0 var(--radius);background:var(--accent);color:#fff;font-size:12px;font-weight:700;letter-spacing:.12em;text-align:center;writing-mode:vertical-rl}
+.masthead{display:flex;align-items:center;gap:13px;padding:14px 20px;border-bottom:1px solid var(--border)}
+.masthead .seal{display:grid;width:44px;height:44px;place-items:center;flex:0 0 auto;border-radius:var(--radius);background:var(--accent);color:#fff;font-size:22px;font-weight:700}
+.masthead h1{margin:0;font-size:21px}
+.masthead p{margin:2px 0 0;color:var(--text-3);font-size:13px}
+.masthead .close{margin-left:auto;width:38px;height:38px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);font-size:22px;line-height:1}
+.masthead .close:hover{background:var(--subtle)}
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:8px 14px;border-bottom:1px solid var(--border);background:var(--subtle)}
+.tabs button{min-height:34px;border:0;border-radius:var(--radius);background:transparent;color:var(--text-2);font:inherit;text-align:center}
+.tabs button[aria-selected=true]{background:var(--surface);color:var(--accent);font-weight:700}
+.scroll{overflow:auto;padding:14px 20px 22px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-content:start}
+.scroll>section{min-width:0}
+.actions{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 16px;border-top:1px solid var(--border);background:var(--surface)}
+.actions .l{display:flex;gap:8px}.actions .r{display:flex;gap:8px}
+.btn{min-height:34px;padding:0 14px;border-radius:var(--radius);font-weight:600;font-size:13px;display:inline-flex;align-items:center;gap:6px;text-align:center;justify-content:center}
+.btn.primary{background:var(--accent);color:#fff}
+.btn.primary:hover{background:#0e4a54}
+.btn.ghost{color:var(--accent)}
+.btn.ghost:hover{background:var(--accent-subtle)}
+.btn.line{border:1px solid var(--border);background:var(--surface);color:var(--accent)}
+.btn.line:hover{background:var(--accent-subtle)}
+.smallcaps{color:var(--accent);font-size:11px;font-weight:700;letter-spacing:.1em}
+.badge-new{display:inline-block;flex:0 0 auto;margin-right:6px;padding:0 6px;border:1px solid var(--ai);border-radius:999px;color:var(--ai);font-size:11px;font-weight:700;line-height:18px}
+.page-state{display:grid;place-content:center;justify-items:center;gap:8px;padding:40px;text-align:center;color:var(--text-2)}
+
+/* ===== 本轮更新条（方案A 沿用） ===== */
+.round-strip{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:9px 12px;border:1px solid #d9daee;background:var(--ai-subtle);border-radius:var(--radius);font-size:12px;color:var(--ai)}
+.round-strip .t{font-weight:700}
+.round-strip .chip{padding:2px 8px;border-radius:999px;background:#fff;border:1px solid #d9daee;color:var(--ai);font-weight:600}
+.round-strip .chip:hover{border-color:var(--ai)}
+.round-strip .revert{margin-left:auto;color:var(--text-3);font-size:12px}
+.round-strip .revert:hover{color:var(--danger)}
+
+/* ===== 摘要卡（方案A 沿用） ===== */
+.summary-card{border:1px solid var(--border);border-radius:var(--radius-panel);padding:12px 14px;background:var(--surface)}
+.summary-card .head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.summary-card .head small{color:var(--text-3);font-size:12px;margin-left:auto}
+.summary-text{margin:0;font-size:15px;line-height:1.7;color:var(--text)}
+.summary-text.clamp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.summary-toggle{margin-top:4px;color:var(--accent);font-size:13px;font-weight:600}
+.stat-line{display:flex;align-items:center;gap:14px;color:var(--text-3);font-size:12px;padding:0 2px}
+.stat-line b{color:var(--text-2);font-weight:600}
+
+/* ===== 优先预览区（方案A 沿用） ===== */
+.priority-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.priority{border-radius:var(--radius-panel);padding:11px 13px;display:grid;gap:5px;align-content:start}
+.priority.warn{background:var(--warning-subtle)}
+.priority.info{background:var(--info-subtle)}
+.priority small{font-size:11px;font-weight:700;letter-spacing:.06em}
+.priority.warn small{color:var(--warning)}
+.priority.info small{color:var(--info)}
+.priority strong{font-size:13.5px;color:var(--text)}
+.priority p{margin:0;font-size:12.5px;line-height:1.55;color:var(--text-2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.priority .go{color:var(--text-2);font-size:12px;font-weight:600}
+.priority .go:hover{color:var(--accent)}
+
+/* ===== 维度分组行（方案A 沿用 + A2 置顶/维度内折叠） ===== */
+.dim-head{display:flex;align-items:baseline;gap:10px;border-bottom:1px solid var(--border-subtle);padding-bottom:6px}
+.dim-head h2{margin:0;font-size:16px}
+.dim-head .hint{color:var(--text-3);font-size:12px}
+.dim-head .fold{margin-left:auto;color:var(--accent);font-size:12px;font-weight:600}
+.dim-list{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
+.dim{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+.dim.open{border-color:var(--border-strong);box-shadow:0 1px 3px rgba(28,39,51,.06)}
+.dim-row{display:flex;align-items:center;gap:9px;width:100%;padding:10px 12px;min-height:46px}
+.dim-row .name{flex:0 0 auto;font-weight:600;font-size:13.5px}
+.dim-row .count{flex:0 0 auto;padding:0 7px;border-radius:999px;background:var(--subtle);border:1px solid var(--border-subtle);color:var(--text-2);font-size:11px;font-weight:700;line-height:18px}
+.dim-row .pin{flex:0 0 auto;padding:0 6px;border-radius:999px;background:var(--accent-subtle);color:var(--accent);font-size:11px;font-weight:700;line-height:18px}
+.dim-row .prev{flex:1;min-width:0;color:var(--text-3);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dim.open .dim-row .prev{display:none}
+.dim-row .chev{flex:0 0 auto;color:var(--text-3);font-size:11px;transition:transform .15s}
+.dim.open .chev{transform:rotate(90deg)}
+.dim-body{display:none;padding:2px 12px 12px;border-top:1px dashed var(--border-subtle)}
+.dim.open .dim-body{display:block}
+.dim-items{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:9px}
+.dim-items li{display:flex;gap:8px;align-items:flex-start}
+.dim-items .dot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-top:8px;opacity:.65}
+.dim-items .it{flex:1;min-width:0;font-size:13.5px;line-height:1.65;color:var(--text)}
+.dim-items .it .it-text{display:block;min-width:0}
+.dim-items .it .clampbox{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:100%}
+.dim-items .it .clampbox.opened{display:block;-webkit-line-clamp:unset}
+.it-more{color:var(--accent);font-size:12px;font-weight:600;margin-left:6px}
+.dim:not(.show-all) .dim-items li.over{display:none}
+.dim-more{margin:2px 0 0;color:var(--accent);font-size:12.5px;font-weight:600}
+
+/* ===== A2：学业定位微条（概览页） ===== */
+.aca-strip{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--info-subtle);font-size:12.5px;color:var(--text-2)}
+.aca-strip .k{color:var(--info);font-weight:700;font-size:11px;letter-spacing:.06em}
+.aca-strip b{color:var(--text)}
+.aca-strip .up{color:var(--success);font-weight:700}
+.aca-strip .warn-inline{color:var(--warning);font-weight:600}
+.aca-strip .go{margin-left:auto;color:var(--info);font-weight:600;font-size:12px}
+.aca-strip .go:hover{color:var(--accent)}
+
+/* ===== A2：学业快照卡（学业证据页签） ===== */
+.snap{border:1px solid var(--border);border-radius:var(--radius-panel);background:var(--surface);overflow:hidden}
+.snap-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border-subtle)}
+.snap-head .term{flex:0 0 auto;padding:1px 8px;border-radius:var(--radius);background:var(--accent);color:#fff;font-size:11px;font-weight:700}
+.snap-head strong{font-size:15px}
+.snap-head time{margin-left:auto;color:var(--text-3);font-size:12px}
+.snap-metrics{display:flex;flex-wrap:wrap;gap:18px;padding:12px 14px 6px}
+.snap-metrics .m{display:grid;gap:2px}
+.snap-metrics .m strong{font-size:20px;color:var(--accent)}
+.snap-metrics .m strong.up{color:var(--success)}
+.snap-metrics .m span{color:var(--text-3);font-size:12px}
+.snap-tags{display:flex;flex-wrap:wrap;gap:6px;padding:6px 14px 12px;border-bottom:1px dashed var(--border-subtle)}
+.snap-tags .tag{padding:3px 10px;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-size:12px;color:var(--text-2)}
+.snap-subj{padding:6px 14px 8px}
+.snap-subj h3{margin:6px 0 4px;font-size:13px;color:var(--text-2)}
+.snap-subj table{width:100%;border-collapse:collapse;font-size:12.5px}
+.snap-subj th{color:var(--text-3);font-weight:600;font-size:11.5px;text-align:left}
+.snap-subj td,.snap-subj th{padding:5px 4px;border-bottom:1px solid var(--border-subtle)}
+.snap-subj tr:last-child td{border-bottom:0}
+.delta-up{color:var(--success);font-weight:700}
+.delta-down{color:var(--danger);font-weight:700}
+.delta-flat{color:var(--text-3)}
+.attn{padding:0 6px;border-radius:999px;background:rgba(155,106,43,.16);color:#9b6a2b;font-size:11px;font-weight:700;white-space:nowrap}
+.snap-notes{margin:0;padding:2px 14px 10px;color:var(--text-3);font-size:11.5px}
+.snap-foot{padding:0 14px 14px}
+.snap-foot .btn{width:100%}
+
+/* ===== A2：学业空态（分级） ===== */
+.aca-empty{display:grid;gap:8px;justify-items:start;padding:18px;border:1px dashed var(--border-strong);border-radius:var(--radius-panel);background:var(--subtle)}
+.aca-empty strong{font-size:15px}
+.aca-empty p{margin:0;color:var(--text-2);line-height:1.6;font-size:13px}
+
+/* ===== 现行学业证据页签（忠实还原现状，对照用） ===== */
+.cur-aca-intro{padding:20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+.cur-aca-intro small{color:var(--accent);font-size:12px;font-weight:700;letter-spacing:.1em}
+.cur-aca-intro h2{margin:2px 0 12px;font-size:18px}
+.cur-aca-intro p{margin:0;color:var(--text-2);line-height:1.7}
+.quick-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.quick-stats>div{padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+.quick-stats strong{display:block;color:var(--accent);font-size:20px}
+.quick-stats span{color:var(--text-3);font-size:12px}
+
+/* ===== 现行版概览（对照用，忠实还原现状） ===== */
+.cur-summary{margin:0;padding:14px 16px;border-left:3px solid var(--warning);border-radius:0 var(--radius) var(--radius) 0;background:var(--warning-subtle);font-size:16px;line-height:1.65}
+.cur-heading{padding-top:2px;border-bottom:1px solid var(--border)}
+.cur-heading small{color:var(--accent);font-size:12px;font-weight:700;letter-spacing:.1em}
+.cur-heading h2{margin:2px 0 12px;font-size:18px}
+.dimension-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.dimension{padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+.dimension h3{margin:0 0 8px;font-size:15px}
+.dimension ul{margin:0;padding-left:19px;color:var(--text-2);line-height:1.65}
+.cur-support{display:grid;gap:5px;justify-items:start;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--warning-subtle)}
+.cur-support small{color:var(--warning);font-weight:700;font-size:12px}
+.cur-support p{margin:0;color:var(--text-2);line-height:1.55}
+.cur-entry{display:grid;gap:10px;justify-items:start;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--accent-subtle)}
+.cur-entry p{margin:0;color:var(--text-2);line-height:1.55}
+</style>
+</head>
+<body>
+
+<!-- 背景页：学生目录示意 -->
+<div class="fake-topbar">AI 阅卷系统 · 班主任工作台</div>
+<div class="fake-body">
+  <div class="fake-subnav"><span>首页</span><span class="on">学生</span><span>事务</span><span>日历</span><span>日常管理</span></div>
+  <div class="fake-grid">
+    <div class="fake-list">
+      <header>初二（3）班 · 学生目录</header>
+      <div id="fakeRows"></div>
+    </div>
+    <div class="fake-empty" style="min-height:420px">选择学生后可进入这名学生的当前档案</div>
+  </div>
+</div>
+
+<!-- 对照切换器 -->
+<div class="switcher">
+  <div class="btns">
+    <button id="btnA">方案 A（原）</button>
+    <button id="btnA2" class="on">方案 A+（调整）</button>
+  </div>
+  <small>同一份假数据 · ← → 键切换 · 点「学业证据」页签看快照卡 · ?academic=none 看空态 · ?dense=1 看长维度</small>
+</div>
+
+<!-- 抽屉 -->
+<div class="dossier-layer" id="layer">
+  <div class="dossier-backdrop" id="backdrop"></div>
+  <aside class="dossier">
+    <span class="folder-tab" aria-hidden="true">学生当前档案</span>
+    <header class="masthead">
+      <span class="seal" aria-hidden="true">陈</span>
+      <div>
+        <h1>陈雨桐</h1>
+        <p>学号 20260312 · 初二（3）班</p>
+      </div>
+      <button class="close" aria-label="关闭学生档案" id="btnClose">×</button>
+    </header>
+    <div id="roundSlot" style="padding:12px 20px 0"></div>
+    <nav class="tabs" aria-label="学生档案分区">
+      <button aria-selected="true" data-tab="overview">当前概览</button>
+      <button aria-selected="false" data-tab="support">成长与支持</button>
+      <button aria-selected="false" data-tab="academic">学业证据</button>
+    </nav>
+    <main class="scroll">
+      <section id="tab-overview"></section>
+      <section id="tab-academic"></section>
+      <section id="tab-other" hidden>
+        <div class="page-state">
+          <strong>本原型聚焦「当前概览」与「学业证据」两页</strong>
+          <p>「成长与支持」页签保持现状，不在本原型范围内。</p>
+          <button class="btn line" id="btnBackOverview">返回当前概览</button>
+        </div>
+      </section>
+    </main>
+    <footer class="actions">
+      <div class="l"><button class="btn ghost">查看 26 条原始记录</button></div>
+      <div class="r">
+        <button class="btn line">支持工作区</button>
+        <button class="btn primary">继续完善档案</button>
+      </div>
+    </footer>
+  </aside>
+</div>
+
+<div class="page-state" id="reopen" hidden style="position:fixed;inset:0;z-index:80;background:var(--bg)">
+  <strong>抽屉已关闭（演示）</strong>
+  <p>真实交互里关闭后回到学生页；这里提供一个重新打开的入口。</p>
+  <button class="btn primary" id="btnReopen">重新打开学生当前档案</button>
+</div>
+
+<script>
+/* ================= 假数据：档案（与 student_card_service 契约形状一致） ================= */
+const DATA = {
+  updatedLabel: "08-31 20:14",
+  confirmedCount: 26,
+  attentionPending: 0,
+  summary: "陈雨桐目前的整体状态平稳偏积极：学业上语文、英语稳定，数学波动明显；同伴关系融洽，在小组活动中愿意承担组织角色；家庭对学习关注度高但方式偏督促，需要注意沟通方式对她的情绪影响。近期开学适应良好，暑假绘画获奖后自信心有提升。",
+  round: {
+    label: "08-31 20:14 AI 并入 1 轮更新",
+    dims: ["learning_ability", "peer_relationships"],
+    openQuestions: true,
+  },
+  dimensions: [
+    { key: "learning_ability", label: "学习与能力", items: [
+      { t: "数学成绩近三场波动明显（校次 45 → 68 → 52），薄弱点集中在几何证明与压轴题审题，不是计算问题。", isNew: true },
+      { t: "语文阅读理解和作文表达是稳定优势，作文常被语文老师当作范文朗读。" },
+      { t: "新知识接受快，但需要消化时间，短期内连续接受新概念时容易混淆。" },
+    ]},
+    { key: "interests_strengths", label: "兴趣与优势", items: [
+      { t: "擅长组织协调，班级活动常自发担任分工，运动会报名表是她牵头填的。" },
+      { t: "喜欢画画和手账，黑板报连续三期由她主笔；暑假获区绘画比赛二等奖。" },
+      { t: "对生物感兴趣，说过长大想学医。" },
+    ]},
+    { key: "personality_behavior", label: "性格与行为特点", items: [
+      { t: "要强、在意别人评价，被指出错误时会脸红但不反驳，事后容易独自反复想。" },
+      { t: "做事有条理，书包、笔记、错题本都整理得很清楚。" },
+    ]},
+    { key: "peer_relationships", label: "同伴与人际关系", items: [
+      { t: "与同桌王小雅关系最好，两人经常一起讨论数学题。" },
+      { t: "小组讨论中愿意表达，但意见被否定时会沉默一段时间，需要老师适时接话。", isNew: true },
+      { t: "在女生小圈子里人缘好，偶尔会因「讲义气」替朋友隐瞒小错误，比如替没交作业的同学打掩护、把小测卷藏起来；不是原则问题，但若不加引导，到初中后期容易发展成回避规则的习惯，建议在下一次一对一时自然带出，不要当众点破。" },
+    ]},
+    { key: "family_communication", label: "家庭与家校沟通", items: [
+      { t: "母亲关注学习但方式偏督促，每天检查作业并额外加练习卷，孩子感到有压力，母女曾为此冷战两天。" },
+      { t: "父亲工作忙，主要周末陪伴，孩子更愿意和父亲聊学校里的事。" },
+    ]},
+    { key: "physical_emotional", label: "身心与情绪状态", items: [
+      { t: "体测各项达标；视力左 4.8、右 4.6，写作业坐姿偏前倾。" },
+      { t: "考试前夜常失眠，自我调节办法有限，目前主要靠听音乐。" },
+    ]},
+    { key: "experiences_changes", label: "重要经历与近期变化", items: [
+      { t: "初一下学期曾因数学连续失利情绪低落约两周，后来靠错题本逐步恢复。" },
+      { t: "暑假参加区绘画比赛获二等奖，开学后明显更自信、更愿意举手。" },
+    ]},
+    { key: "support_needs", label: "当前需要支持", items: [
+      { t: "需要数学几何专项的低压力练习安排，避免一次性大量刷题。" },
+      { t: "需要被批评后有人及时跟进情绪，而不是只讲道理。" },
+    ]},
+    { key: "effective_methods", label: "已验证有效的方法", items: [
+      { t: "错题本 + 每周日自己复盘 20 分钟，是她自己摸索出来并坚持了一学期的办法。" },
+      { t: "任务拆成小步骤写进计划本，完成一项划掉一项，焦虑明显缓解。" },
+      { t: "在小组中给她「组织者」角色，课堂参与度显著提高。" },
+    ]},
+  ],
+  openQuestions: [
+    "数学压轴题失分是审题问题还是几何辅助线方法没掌握？需要看她近两次考试的解题过程。",
+    "「讲义气替朋友隐瞒」她自己怎么看边界？适合在下次一对一时聊。",
+    "母亲每天加卷的做法，还没有从她本人的角度确认过感受。",
+  ],
+  supportFocus: [
+    { title: "数学几何短板的低压力补强",
+      need: "几何证明与压轴题审题波动大，直接刷题会加重考前失眠，需要低压力、可坚持的节奏。",
+      methods: 1, actions: 2 },
+  ],
+}
+
+/* ============ 假数据：学业摘要卡（与 academic_ai_summary_v1 形状完全一致） ============ */
+const ACADEMIC = {
+  contract_version: "academic_ai_summary_v1",
+  latest_exam: { title: "八年级上学期期中考试", occurred_on: "2026-04-28", term_label: "八上期中" },
+  total: { score: 532, rank: 41, participant_count: 480, top_ratio: 0.085 },
+  rank_change_vs_previous: { previous_title: "七年级下学期期末考试", previous_rank: 57, delta: 16 },
+  trend: "improving",
+  stability: "moderate",
+  skew: { label: "skewed", strongest: ["生物", "语文"], weakest: ["数学", "物理"] },
+  subjects: [
+    { name: "语文", latest_rank: 30, participant_count: 480, rank_delta: 8, attention: false },
+    { name: "数学", latest_rank: 52, participant_count: 480, rank_delta: 16, attention: true },
+    { name: "英语", latest_rank: 44, participant_count: 480, rank_delta: -3, attention: false },
+    { name: "物理", latest_rank: 61, participant_count: 480, rank_delta: -9, attention: false },
+    { name: "生物", latest_rank: 18, participant_count: 480, rank_delta: 5, attention: false },
+    { name: "历史", latest_rank: 37, participant_count: 480, rank_delta: 0, attention: false },
+  ],
+  notes: ["仅比较同学期链内同年级、同口径（校次）的场次", "缺考不参与计算，也不按 0 分处理"],
+}
+const trendLabels = { improving: "持续进步", declining: "持续退步", fluctuating: "起伏", flat: "持平", insufficient: "场次不足" }
+const stabilityLabels = { stable: "稳定", moderate: "有波动", volatile: "波动大", insufficient: "场次不足" }
+const skewLabels = { balanced: "总体均衡", skewed: "明显偏科", insufficient: "场次不足" }
+
+/* ================= 工具 ================= */
+const $ = (sel) => document.querySelector(sel)
+const el = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild }
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;")
+const params = new URLSearchParams(location.search)
+
+/* dense 演示：把「学习与能力」加长成 7 条，演示维度内「展开其余」 */
+if (params.get("dense") === "1") {
+  DATA.dimensions.find(d => d.key === "learning_ability").items.push(
+    { t: "英语单词拼写错误率下降，但听力部分抓关键词的能力仍弱。" },
+    { t: "物理刚开课，对实验现象的描述很准确，公式运用还不熟练。" },
+    { t: "课堂笔记记得快，但课后很少回看，笔记利用率低。" },
+    { t: "上次月考后会主动找老师分析试卷，这个习惯是这学期新出现的。" },
+  )
+}
+
+/* ================= 背景学生列表 ================= */
+const classmates = ["陈雨桐", "王小雅", "李昊然", "周子墨", "林晓彤", "郑一鸣"]
+$("#fakeRows").innerHTML = classmates.map((n, i) =>
+  `<div class="fake-row${i === 0 ? " on" : ""}"><span class="dot">${n[0]}</span><span>${n}</span></div>`).join("")
+
+/* ================= 共用：摘要卡 / 统计行 / 优先预览区 ================= */
+function renderSummaryCard(root) {
+  root.appendChild(el(`
+    <div class="summary-card">
+      <div class="head"><span class="smallcaps">当前小结</span><small>${DATA.summary.length} 字</small></div>
+      <p class="summary-text clamp" id="sumText">${esc(DATA.summary)}</p>
+      <button class="summary-toggle" id="sumToggle">展开全文</button>
+    </div>`))
+  $("#sumToggle").onclick = () => {
+    const t = $("#sumText"); const clamped = t.classList.toggle("clamp")
+    $("#sumToggle").textContent = clamped ? "展开全文" : "收起"
+  }
+  root.appendChild(el(`<div class="stat-line">
+    <span><b>${DATA.dimensions.length}</b> 个有效维度</span><span>·</span>
+    <span><b>${DATA.confirmedCount}</b> 条已确认记录</span><span>·</span>
+    <span>最近完善 <b>${DATA.updatedLabel}</b></span>
+  </div>`))
+}
+function renderPriority(root) {
+  const pri = el(`<div class="priority-grid">
+    <div class="priority warn">
+      <small>当前支持重点</small>
+      <strong>${esc(DATA.supportFocus[0].title)}</strong>
+      <p>${esc(DATA.supportFocus[0].need)}</p>
+      <button class="go">${DATA.supportFocus[0].methods} 个已验证方法 · ${DATA.supportFocus[0].actions} 个下一步 →</button>
+    </div>
+    <div class="priority info">
+      <small>仍需了解 · ${DATA.openQuestions.length} 个</small>
+      <p>${esc(DATA.openQuestions[0])}</p>
+      <button class="go">其余 ${DATA.openQuestions.length - 1} 条 →</button>
+    </div>
+  </div>`)
+  pri.querySelectorAll(".go").forEach(b => b.onclick = () => switchTab("support"))
+  root.appendChild(pri)
+}
+/* 维度条目（分点 + 超 2 行截断 + 单条展开），A 与 A2 共用 */
+function fillDimItems(ul, items) {
+  items.forEach((item, idx) => {
+    const li = el(`<li class="${idx >= 5 ? "over" : ""}">
+      <span class="dot"></span>
+      <span class="it">
+        ${item.isNew ? '<span class="badge-new">新</span>' : ""}
+        <span class="it-text"><span class="clampbox">${esc(item.t)}</span></span>
+      </span>
+    </li>`)
+    ul.appendChild(li)
+  })
+}
+function bindClampButtons(root) {
+  requestAnimationFrame(() => {
+    root.querySelectorAll(".clampbox").forEach(box => {
+      if (box.scrollHeight > box.clientHeight + 2 && !box.nextElementSibling?.classList?.contains("it-more")) {
+        const more = el(`<button class="it-more">展开</button>`)
+        more.onclick = () => {
+          const opened = box.classList.toggle("opened")
+          more.textContent = opened ? "收起" : "展开"
+        }
+        box.after(more)
+      }
+    })
+  })
+}
+
+/* ================= 方案A（原）：概览 —— 复刻上一版 ================= */
+function renderA(root) {
+  renderSummaryCard(root)
+  renderPriority(root)
+  const head = el(`<div class="dim-head">
+    <h2>当前结构化档案</h2><span class="hint">点维度名展开分点</span>
+    <button class="fold" id="foldAll">全部展开</button>
+  </div>`)
+  root.appendChild(head)
+  const list = el(`<div class="dim-list"></div>`)
+  DATA.dimensions.forEach((d, idx) => {
+    const hasNew = d.items.some(i => i.isNew)
+    const firstNew = d.items.find(i => i.isNew)
+    const row = el(`<div class="dim${idx < 2 ? " open" : ""}" data-key="${d.key}">
+      <button class="dim-row" aria-expanded="${idx < 2}">
+        <span class="name">${d.label}</span>
+        <span class="count">${d.items.length} 条</span>
+        ${hasNew ? '<span class="badge-new">新</span>' : ""}
+        <span class="prev">${esc((firstNew || d.items[0]).t)}</span>
+        <span class="chev">▶</span>
+      </button>
+      <div class="dim-body"><ul class="dim-items"></ul></div>
+    </div>`)
+    fillDimItems(row.querySelector(".dim-items"), d.items)
+    row.querySelector(".dim-row").onclick = () => {
+      const open = row.classList.toggle("open")
+      row.querySelector(".dim-row").setAttribute("aria-expanded", open)
+    }
+    list.appendChild(row)
+  })
+  root.appendChild(list)
+  bindClampButtons(root)
+  head.querySelector("#foldAll").onclick = () => foldAllToggle(list, head)
+}
+
+/* ================= 方案A+（调整）：概览 ================= */
+const PINNED_DIMS = ["support_needs", "effective_methods"]
+const DIM_CAP = 5
+function renderA2(root) {
+  renderSummaryCard(root)
+
+  /* 调整 1：学业定位微条（glanceable fact + 深链，Canvas 上下文卡模式） */
+  const a = ACADEMIC
+  const strip = el(`<div class="aca-strip">
+    <span class="k">学业定位</span>
+    <b>${esc(a.latest_exam.term_label)} · 第 ${a.total.rank} 名</b>
+    <span>/ ${a.total.participant_count} 人 · 前 ${(a.total.top_ratio * 100).toFixed(1)}%</span>
+    <span class="up">↑${a.rank_change_vs_previous.delta}</span>
+    <span class="warn-inline">数学需关注</span>
+    <button class="go">学业证据 →</button>
+  </div>`)
+  strip.querySelector(".go").onclick = () => switchTab("academic")
+  root.appendChild(strip)
+
+  renderPriority(root)
+
+  /* 调整 2：重要维度置顶 + 默认展开；其余折叠（点行展开） */
+  const head = el(`<div class="dim-head">
+    <h2>当前结构化档案</h2><span class="hint">「需要支持 · 有效方法」已置顶展开</span>
+    <button class="fold" id="foldAll">全部展开</button>
+  </div>`)
+  root.appendChild(head)
+  const ordered = [...DATA.dimensions].sort((x, y) => {
+    const px = PINNED_DIMS.indexOf(x.key), py = PINNED_DIMS.indexOf(y.key)
+    return (px === -1 ? 99 : px) - (py === -1 ? 99 : py)
+  })
+  const list = el(`<div class="dim-list"></div>`)
+  ordered.forEach((d) => {
+    const pinned = PINNED_DIMS.includes(d.key)
+    const hasNew = d.items.some(i => i.isNew)
+    const firstNew = d.items.find(i => i.isNew)
+    const row = el(`<div class="dim${pinned ? " open" : ""}" data-key="${d.key}">
+      <button class="dim-row" aria-expanded="${pinned}">
+        <span class="name">${d.label}</span>
+        <span class="count">${d.items.length} 条</span>
+        ${pinned ? '<span class="pin">置顶</span>' : ""}
+        ${hasNew ? '<span class="badge-new">新</span>' : ""}
+        <span class="prev">${esc((firstNew || d.items[0]).t)}</span>
+        <span class="chev">▶</span>
+      </button>
+      <div class="dim-body"><ul class="dim-items"></ul></div>
+    </div>`)
+    fillDimItems(row.querySelector(".dim-items"), d.items)
+    /* 调整 3：单维度超过 DIM_CAP 条时默认收起其余 */
+    if (d.items.length > DIM_CAP) {
+      const more = el(`<button class="dim-more">展开其余 ${d.items.length - DIM_CAP} 条</button>`)
+      more.onclick = () => {
+        const showAll = row.classList.toggle("show-all")
+        more.textContent = showAll ? "收起多出的条目" : `展开其余 ${d.items.length - DIM_CAP} 条`
+      }
+      row.querySelector(".dim-body").appendChild(more)
+    }
+    row.querySelector(".dim-row").onclick = () => {
+      const open = row.classList.toggle("open")
+      row.querySelector(".dim-row").setAttribute("aria-expanded", open)
+    }
+    list.appendChild(row)
+  })
+  root.appendChild(list)
+  bindClampButtons(root)
+  head.querySelector("#foldAll").onclick = () => foldAllToggle(list, head)
+}
+function foldAllToggle(list, head) {
+  const anyClosed = [...list.querySelectorAll(".dim")].some(d => !d.classList.contains("open"))
+  list.querySelectorAll(".dim").forEach(d => {
+    d.classList.toggle("open", anyClosed)
+    d.querySelector(".dim-row").setAttribute("aria-expanded", anyClosed)
+  })
+  head.querySelector("#foldAll").textContent = anyClosed ? "全部收起" : "全部展开"
+}
+
+/* ================= 学业证据页签：现行空壳（对照，忠实还原现状文案） ================= */
+function renderAcademicCurrent(root) {
+  root.appendChild(el(`<div class="cur-aca-intro"><small>保持名单上下文</small><h2>需要时再进入完整学业证据</h2><p>当前抽屉不重复堆放成绩与图表。完整页面会沿用这名学生，并展示现有考试证据、可比较变化和教师待处理事项。</p></div>`))
+  root.appendChild(el(`<div class="quick-stats">
+    <div><strong>${DATA.confirmedCount}</strong><span>已确认档案记录</span></div>
+    <div><strong>${DATA.attentionPending}</strong><span>待处理关注项</span></div>
+    <div><strong>${DATA.updatedLabel}</strong><span>最近确认记录</span></div>
+  </div>`))
+  root.appendChild(el(`<button class="btn primary" style="width:100%">打开完整学业证据</button>`))
+}
+
+/* ================= 学业证据页签：A2 学业快照卡（含分级空态） ================= */
+function deltaCell(delta) {
+  if (delta == null) return `<span class="delta-flat">—</span>`
+  if (delta > 0) return `<span class="delta-up">↑${delta}</span>`
+  if (delta < 0) return `<span class="delta-down">↓${-delta}</span>`
+  return `<span class="delta-flat">持平</span>`
+}
+function renderAcademicA2(root) {
+  const mode = params.get("academic") || "full"
+  if (mode === "none") {
+    root.appendChild(el(`<div class="aca-empty">
+      <strong>还没有大考成绩</strong>
+      <p>导入成绩表后，这里会自动生成这名学生的学业快照（定位、趋势、偏科、各科校次），不需要手工填写。</p>
+      <button class="btn primary">打开成绩管理导入成绩</button>
+    </div>`))
+    return
+  }
+  if (mode === "thin") {
+    root.appendChild(el(`<div class="aca-empty">
+      <strong>已有 3 场成绩，还缺校次数据</strong>
+      <p>学业快照的定位、趋势和偏科都基于「校次（年级名次）」计算；已导入的成绩表缺少这一列。补齐校次后快照自动更新，不需要重新导入。</p>
+      <button class="btn line">查看已导入的 3 场成绩</button>
+    </div>`))
+    return
+  }
+  const a = ACADEMIC
+  const skew = a.skew
+  const skewText = skew.label === "skewed"
+    ? `明显偏科（强 ${skew.strongest.join("、")} / 弱 ${skew.weakest.join("、")}）`
+    : (skewLabels[skew.label] ?? skew.label)
+  const snap = el(`<div class="snap">
+    <div class="snap-head">
+      <span class="term">${esc(a.latest_exam.term_label)}</span>
+      <strong>${esc(a.latest_exam.title)}</strong>
+      <time>${esc(a.latest_exam.occurred_on)}</time>
+    </div>
+    <div class="snap-metrics">
+      <div class="m"><strong>${a.total.score}</strong><span>总分</span></div>
+      <div class="m"><strong>第 ${a.total.rank} 名</strong><span>校次 · 共 ${a.total.participant_count} 人 · 前 ${(a.total.top_ratio * 100).toFixed(1)}%</span></div>
+      <div class="m"><strong class="up">↑${a.rank_change_vs_previous.delta} 名</strong><span>较 ${esc(a.rank_change_vs_previous.previous_title)}（第 ${a.rank_change_vs_previous.previous_rank} 名）</span></div>
+    </div>
+    <div class="snap-tags">
+      <span class="tag">趋势：${trendLabels[a.trend] ?? a.trend}</span>
+      <span class="tag">稳定性：${stabilityLabels[a.stability] ?? a.stability}</span>
+      <span class="tag">偏科：${esc(skewText)}</span>
+    </div>
+    <div class="snap-subj">
+      <h3>各科最近校次</h3>
+      <table>
+        <thead><tr><th>科目</th><th>校次</th><th>较上一场</th><th></th></tr></thead>
+        <tbody>${a.subjects.map(s => `<tr>
+          <td>${esc(s.name)}</td>
+          <td>第 ${s.latest_rank} 名 <span style="color:var(--text-3)">/ ${s.participant_count}</span></td>
+          <td>${deltaCell(s.rank_delta)}</td>
+          <td>${s.attention ? '<span class="attn">需要关注</span>' : ""}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>
+    <p class="snap-notes">${a.notes.map(esc).join(" · ")}</p>
+    <div class="snap-foot"><button class="btn primary">打开完整学业证据（走势 · 雷达 · 历次热力表）</button></div>
+  </div>`)
+  root.appendChild(el(`<div class="stat-line" style="padding:0 2px"><span>学业快照由已确认成绩自动计算，口径与完整学业证据页一致</span></div>`))
+  root.appendChild(snap)
+}
+
+/* ================= 本轮更新条（两版共用） ================= */
+function renderRoundStrip() {
+  const slot = $("#roundSlot")
+  const chipNames = DATA.round.dims.map(k => DATA.dimensions.find(d => d.key === k).label)
+  if (DATA.round.openQuestions) chipNames.push("仍需了解")
+  slot.innerHTML = ""
+  const strip = el(`<div class="round-strip">
+    <span class="t">${DATA.round.label}</span>
+    ${chipNames.map(n => `<button class="chip">${n} +1</button>`).join("")}
+    <button class="revert">撤回这次更新</button>
+  </div>`)
+  strip.querySelectorAll(".chip").forEach((chip, i) => {
+    chip.onclick = () => {
+      if (i < DATA.round.dims.length) {
+        switchTab("overview")
+        const row = document.querySelector(`.dim[data-key="${DATA.round.dims[i]}"]`)
+        if (row && !row.classList.contains("open")) row.querySelector(".dim-row").click()
+        row?.scrollIntoView({ behavior: "smooth", block: "center" })
+      } else switchTab("support")
+    }
+  })
+  slot.appendChild(strip)
+}
+
+/* ================= 状态与切换 ================= */
+const state = {
+  variant: params.get("v") === "a" ? "a" : "a2",
+  tab: "overview",
+}
+function render() {
+  const ov = $("#tab-overview")
+  const ac = $("#tab-academic")
+  ov.innerHTML = ""
+  ac.innerHTML = ""
+  $("#btnA").classList.toggle("on", state.variant === "a")
+  $("#btnA2").classList.toggle("on", state.variant === "a2")
+  if (state.variant === "a") { renderA(ov); renderAcademicCurrent(ac) }
+  else { renderA2(ov); renderAcademicA2(ac) }
+  renderRoundStrip()
+  switchTab(state.tab)
+  applyExpandParam()
+}
+function switchTab(tab) {
+  state.tab = tab
+  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.tab === tab))
+  $("#tab-overview").hidden = tab !== "overview"
+  $("#tab-academic").hidden = tab !== "academic"
+  $("#tab-other").hidden = tab !== "support"
+  document.querySelector(".scroll").scrollTop = 0
+}
+function applyExpandParam() {
+  if (state.variant !== "a2" && state.variant !== "a") return
+  if (params.get("expand") === "all") {
+    document.querySelectorAll("#tab-overview .dim:not(.open)").forEach(d => d.querySelector(".dim-row").click())
+    const fold = document.querySelector("#foldAll"); if (fold) fold.textContent = "全部收起"
+  }
+  if (params.get("expand") === "none") document.querySelectorAll("#tab-overview .dim.open").forEach(d => d.querySelector(".dim-row").click())
+}
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => switchTab(b.dataset.tab))
+$("#btnBackOverview").onclick = () => switchTab("overview")
+$("#btnA").onclick = () => { state.variant = "a"; render() }
+$("#btnA2").onclick = () => { state.variant = "a2"; render() }
+addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    state.variant = state.variant === "a" ? "a2" : "a"; render()
+  }
+  if (e.key === "Escape") closeDrawer()
+})
+function closeDrawer() { $("#layer").hidden = true; $("#reopen").hidden = false }
+$("#btnClose").onclick = closeDrawer
+$("#backdrop").onclick = closeDrawer
+$("#btnReopen").onclick = () => { $("#reopen").hidden = true; $("#layer").hidden = false }
+
+/* 初始页签 */
+if (params.get("tab") === "academic") state.tab = "academic"
+if (params.get("tab") === "support") state.tab = "support"
+render()
+</script>
+</body>
+</html>

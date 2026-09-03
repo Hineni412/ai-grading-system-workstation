@@ -227,6 +227,69 @@ describe('question bank API contracts', () => {
     expect(requested).toContain('criteria_needs_review=true')
   })
 
+  it('serializes duplicate collapsing into list and facet queries', async () => {
+    const { questionBankApi } = await import('../api/question-bank')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({
+        items: [question],
+        total: 1,
+        page: 1,
+        page_size: 20,
+        total_pages: 1,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await questionBankApi.listQuestions({ collapseDuplicates: true })
+
+    const requested = String(fetchSpy.mock.calls[0]?.[0])
+    expect(requested).toContain('collapse_duplicates=true')
+
+    fetchSpy.mockResolvedValue(new Response(
+      JSON.stringify({
+        question_types: [],
+        knowledge_points: [],
+        abilities: [],
+        methods: [],
+        thoughts: [],
+        models: [],
+        special_types: [],
+        error_types: [],
+        student_levels: [],
+        teaching_stages: [],
+        sub_skills: [],
+        years: [],
+        exam_types: [],
+        grades: [],
+        curriculum_chapters: [],
+        curriculum_sections: [],
+        exam_scopes: [],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await questionBankApi.listFacets({ collapseDuplicates: true })
+
+    const facetRequest = String(fetchSpy.mock.calls[1]?.[0])
+    expect(facetRequest).toContain('/api/question-bank/facets?')
+    expect(facetRequest).toContain('collapse_duplicates=true')
+
+    fetchSpy.mockResolvedValue(new Response(
+      JSON.stringify({
+        items: [question],
+        total: 1,
+        page: 1,
+        page_size: 20,
+        total_pages: 1,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await questionBankApi.listQuestions({})
+
+    expect(String(fetchSpy.mock.calls[2]?.[0])).not.toContain('collapse_duplicates=')
+  })
+
   it('accepts only the safe paper summary fields', async () => {
     const { decodeQuestionPaperListResponse } = await import('../api/question-bank')
     const paper = {

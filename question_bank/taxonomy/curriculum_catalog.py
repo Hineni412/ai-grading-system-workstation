@@ -540,6 +540,43 @@ def teaching_progress_allowed_prefixes(chapter_id: object) -> tuple[str, ...] | 
     return None
 
 
+def teaching_progress_allowed_exam_scope_values(
+    chapter_id: object,
+) -> tuple[str, ...] | None:
+    """返回该章作为教学进度上限时，已学范围允许的 exam_scope 值集合。
+
+    已学范围 = 目录中册序更小的所有册（整册）+ 本册章序不超过该章的所有章；
+    返回这些章的 exam_scope_values 的并集。
+    章节 ID 无法解析时返回 None（调用方失败关闭，不加过滤）。"""
+
+    clean_id = str(chapter_id or "").strip()
+    if not clean_id:
+        return None
+    for volume in load_curriculum_catalog()["volumes"]:
+        chapter = next(
+            (item for item in volume["chapters"] if item["id"] == clean_id),
+            None,
+        )
+        if chapter is None:
+            continue
+        volume_order = int(volume["order"])
+        chapter_order = int(chapter["order"])
+        values: list[str] = []
+        for item in load_curriculum_catalog()["volumes"]:
+            if int(item["order"]) >= volume_order:
+                continue
+            for earlier_chapter in item["chapters"]:
+                values.extend(earlier_chapter["exam_scope_values"])
+        values.extend(
+            scope_value
+            for item in volume["chapters"]
+            if int(item["order"]) <= chapter_order
+            for scope_value in item["exam_scope_values"]
+        )
+        return tuple(dict.fromkeys(values))
+    return None
+
+
 def infer_curriculum_volume_from_text(value: object) -> dict[str, Any] | None:
     """Infer only when one grade and one semester marker are unambiguous."""
 
@@ -575,5 +612,6 @@ __all__ = [
     "eligible_curriculum_knowledge_nodes",
     "infer_curriculum_volume_from_text",
     "load_curriculum_catalog",
+    "teaching_progress_allowed_exam_scope_values",
     "teaching_progress_allowed_prefixes",
 ]

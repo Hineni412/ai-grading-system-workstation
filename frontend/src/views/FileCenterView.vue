@@ -462,11 +462,15 @@ async function retryTraining(jobId: number): Promise<void> {
   }
 }
 
-async function download(jobId: number): Promise<void> {
+function isRetainedReport(job: JobResponse): boolean {
+  return job.payload.report_type === 'personal_analysis_html'
+}
+
+async function download(job: JobResponse): Promise<void> {
   actionError.value = ''
   actionMessage.value = ''
   try {
-    const downloaded = await fileCenter.download(jobId)
+    const downloaded = await fileCenter.download(job.id)
     const url = URL.createObjectURL(downloaded.blob)
     const anchor = document.createElement('a')
     anchor.href = url
@@ -475,7 +479,9 @@ async function download(jobId: number): Promise<void> {
     anchor.click()
     anchor.remove()
     URL.revokeObjectURL(url)
-    actionMessage.value = `已开始下载：${downloaded.filename}。本机副本随后删除，需要时请重新生成。`
+    actionMessage.value = isRetainedReport(job)
+      ? `已开始下载：${downloaded.filename}。这份报告已留存在本机，之后可随时再次下载，不会重新产生费用。`
+      : `已开始下载：${downloaded.filename}。本机副本随后删除，需要时请重新生成。`
     const sessionId = sessionStore.selectedSessionId
     if (sessionId !== null) {
       try {
@@ -486,6 +492,23 @@ async function download(jobId: number): Promise<void> {
     }
   } catch {
     actionError.value = '文件已失效或暂时无法下载，可以重新生成后再试。'
+  }
+}
+
+async function deleteReport(job: ReportHistoryJob): Promise<void> {
+  const confirmed = window.confirm(
+    `删除「${reportFilename(job)}」后，本机不再保留这份报告；之后如需这份报告，要重新生成并再次产生模型调用费用。确认删除吗？`,
+  )
+  if (!confirmed) return
+  actionError.value = ''
+  actionMessage.value = ''
+  try {
+    const result = await fileCenter.deleteReport(job.id)
+    actionMessage.value = result.deleted
+      ? `已删除：${reportFilename(job)}，释放约 ${(result.freed_bytes / 1024 / 1024).toFixed(1)} MB。`
+      : '这份报告此前已删除。'
+  } catch {
+    actionError.value = '这份报告暂时无法删除，请刷新登记簿后再试。'
   }
 }
 
@@ -599,7 +622,7 @@ function isTrainingDownloadable(job: JobResponse): boolean {
                 type="button"
                 class="file-button file-button--primary"
                 :data-testid="`download-report-${latestReport(definition.type)!.id}`"
-                @click="download(latestReport(definition.type)!.id)"
+                @click="download(latestReport(definition.type)!)"
               >
                 下载
               </button>
@@ -921,9 +944,18 @@ function isTrainingDownloadable(job: JobResponse): boolean {
                 v-if="reportDisplayStatus(job) === 'available'"
                 type="button"
                 class="file-link-button"
-                @click="download(job.id)"
+                @click="download(job)"
               >
                 下载
+              </button>
+              <button
+                v-if="reportDisplayStatus(job) === 'available' && isRetainedReport(job)"
+                type="button"
+                class="file-link-button"
+                :data-testid="`delete-report-${job.id}`"
+                @click="deleteReport(job)"
+              >
+                删除
               </button>
               <button
                 v-else-if="
@@ -1065,7 +1097,7 @@ function isTrainingDownloadable(job: JobResponse): boolean {
                 type="button"
                 class="file-link-button"
                 :data-testid="`download-training-${job.id}`"
-                @click="download(job.id)"
+                @click="download(job)"
               >
                 下载
               </button>

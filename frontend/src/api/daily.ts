@@ -28,6 +28,10 @@ export interface TimetableCell {
   source: TimetableCellSource
   override_id: string | null
   note: string | null
+  /** 本格（按日期+时段+班级）已有「记一笔」记录。 */
+  has_note: boolean
+  /** 已有记录且填写了作业。 */
+  has_homework: boolean
 }
 
 export interface TimetableToday {
@@ -233,6 +237,8 @@ function decodeCell(value: unknown): TimetableCell {
     source,
     override_id: nullableText(item.override_id),
     note: nullableText(item.note),
+    has_note: item.has_note === true,
+    has_homework: item.has_homework === true,
   }
 }
 

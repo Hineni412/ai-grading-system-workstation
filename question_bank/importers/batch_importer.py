@@ -38,6 +38,9 @@ _DUPLICATE_NORMALIZE = re.compile(r"[\s\u3000，。！？；：、,.!?;:（）()
 # New noise patterns
 _PAGE_NUMBER_NOISE = re.compile(r"^[（(]\s*\d+\s*[）)]$|^第\s*\d+\s*页$|^共\s*\d+\s*页$")
 _COPYRIGHT_META_NOISE = re.compile(r"声明\s*：\s*试题解析著作权属|著作权属|菁优网|发布日期\s*：|声明\s*:\s*试题解析著作权属")
+# Teacher-edition answer blocks carry explicit labels; used as anchors when
+# validating numbered boundaries inside the answer section.
+_ANSWER_BLOCK_LABEL = re.compile(r"【(?:答案|分析|解答|点评|解析)】")
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,8 @@ class _NumberedBlock:
     number: str
     text: str
     image_paths: list[str] = field(default_factory=list)
+    # 切分时被并入本块的倒序/重复编号个数（>0 说明原文编号异常，需人工复核）。
+    merged_marker_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,7 @@ class ParsedPaperText:
     questions: list[ParsedQuestion]
     answer_match_count: int
     review_count: int
+    review_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -226,18 +232,22 @@ def parse_paper_text(
     # question now uses only the images extracted for that numbered block.
     _ = (has_images, image_paths)
     question_text, answer_text = _split_answer_text(text)
-    answers = _answer_map(answer_text, source_file=source_file)
+    doc_title = _document_title_hint(str(text or "").splitlines())
+    answers = _answer_map(answer_text, source_file=source_file, doc_title=doc_title)
     range_filter = _parse_numeric_range(question_range)
     questions: list[ParsedQuestion] = []
     answer_match_count = 0
+    all_block_numbers: list[str] = []
+    merged_anomaly_count = 0
 
-    for block in _split_numbered_blocks(question_text, source_file=source_file):
+    for block in _split_numbered_blocks(question_text, source_file=source_file, doc_title=doc_title):
+        all_block_numbers.append(block.number)
         if not _is_in_range(block.number, range_filter):
             continue
         # 对于小于6个字符的题目，自动排除不入库（忽略HTML标签和图片标记）
         # 单元测试文件除外，防止测试用例被错误拦截
         is_test_file = source_file and ("sample" in str(source_file).lower() or "temp" in str(source_file).lower() or "tmp" in str(source_file).lower() or "renamed" in str(source_file).lower())
-        
+
         clean_content = re.sub(r"<[^>]+>", "", block.text)
         clean_content = _IMAGE_MARKER.sub("", clean_content)
         if not is_test_file and len(clean_content.strip()) < 6:
@@ -255,6 +265,10 @@ def parse_paper_text(
         # local heuristic when the session sync supplied them.
         q_type = (type_overrides or {}).get(block.number) or detect_question_type(block.text)
         question_has_images = bool(question_image_paths)
+        # 题干里出现【答案】/【分析】等标签，说明答案区漏切进了题干，需复核。
+        stem_has_answer_label = bool(_ANSWER_BLOCK_LABEL.search(block.text))
+        if block.merged_marker_count:
+            merged_anomaly_count += 1
         questions.append(
             ParsedQuestion(
                 question_number=block.number,
@@ -265,17 +279,25 @@ def parse_paper_text(
                 question_type=q_type,
                 needs_review=not bool(answer) or (
                     needs_image_review and question_has_images
-                ),
+                ) or block.merged_marker_count > 0 or stem_has_answer_label,
                 has_images=question_has_images,
                 needs_image_review=needs_image_review and question_has_images,
                 image_paths=question_image_paths,
             )
         )
 
+    review_reasons = _paper_review_reasons(
+        all_block_numbers,
+        [question.question_number for question in questions],
+        answers,
+        range_filter=range_filter,
+        merged_anomaly_count=merged_anomaly_count,
+    )
     return ParsedPaperText(
         questions=questions,
         answer_match_count=answer_match_count,
-        review_count=sum(1 for item in questions if item.needs_review),
+        review_count=sum(1 for item in questions if item.needs_review) + len(review_reasons),
+        review_reasons=tuple(review_reasons),
     )
 
 
@@ -641,6 +663,7 @@ def _import_scanned_paper(
         exact_duplicate_count=len(pending_analysis_reuse),
         analysis_reused_count=analysis_reused_count,
         near_duplicate_hints=tuple(near_hints),
+        message="；".join(parsed.review_reasons) or None,
     )
 
 
@@ -790,12 +813,19 @@ def _split_answer_text(text: str) -> tuple[str, str]:
     return cleaned[: heading.start()].strip(), cleaned[heading.end() :].strip()
 
 
-def _answer_map(answer_text: str, source_file: str | None = None) -> dict[str, str]:
-    return {
-        block.number: block.text
-        for block in _split_numbered_blocks(answer_text, keep_image_markers=True, source_file=source_file)
-        if block.text
-    }
+def _answer_map(answer_text: str, source_file: str | None = None, doc_title: str | None = None) -> dict[str, str]:
+    answers: dict[str, str] = {}
+    for block in _split_numbered_blocks(
+        answer_text,
+        keep_image_markers=True,
+        source_file=source_file,
+        anchor_answer_labels=True,
+        doc_title=doc_title,
+    ):
+        if block.text:
+            # 同一编号只保留第一次出现，避免后面的同号解析块顶掉正确答案。
+            answers.setdefault(block.number, block.text)
+    return answers
 
 
 def map_rich_content_by_number(
@@ -804,16 +834,18 @@ def map_rich_content_by_number(
     source_file: str | None = None,
 ) -> dict[str, dict[str, list[dict[str, object]]]]:
     content: dict[str, dict[str, list[dict[str, object]]]] = {"question": {}, "answer": {}}
-    
+
     clean_title = ""
     if source_file:
         raw_title = Path(source_file).stem
         clean_title = re.sub(r'_[0-9a-f]{12,64}$', '', raw_title, flags=re.IGNORECASE)
         clean_title = re.sub(r'_\d{8}_\d{6}$', '', clean_title).strip()
-        
+
+    doc_title = _document_title_hint([str(item.get("text") or "") for item in rich_paragraphs])
     sectioned_paragraphs = _section_rich_paragraphs(
         _move_image_only_paragraphs_to_following_question(rich_paragraphs),
         clean_title=clean_title,
+        doc_title=doc_title,
     )
     use_main_markers = {
         "question": any(_MAIN_QUESTION_MARKER.match(text) for section, text, _ in sectioned_paragraphs if section == "question"),
@@ -826,11 +858,18 @@ def map_rich_content_by_number(
     current_numbers: dict[str, str | None] = {"question": None, "answer": None}
 
     for section, text, paragraph in sectioned_paragraphs:
-        marker = _MAIN_QUESTION_MARKER.match(text)
-        if marker is None and use_paren_markers[section]:
-            marker = _PAREN_QUESTION_MARKER.match(text)
+        marker = None
+        # 子层级自动编号（Word 列表 ilvl>0）的段落不当成题目分界。
+        if paragraph.get("numbering_level") in (None, 0):
+            marker = _MAIN_QUESTION_MARKER.match(text)
+            if marker is None and use_paren_markers[section]:
+                marker = _PAREN_QUESTION_MARKER.match(text)
         if marker is not None:
-            current_numbers[section] = _normalized_number(marker)
+            number = _normalized_number(marker)
+            last_number = current_numbers[section]
+            # 只接受递增编号；倒序/重复的编号段并入当前题，避免污染已有内容。
+            if last_number is None or int(number) > int(last_number):
+                current_numbers[section] = number
 
         current_number = current_numbers[section]
         if current_number:
@@ -1065,6 +1104,7 @@ def _section_rich_paragraphs(
     rich_paragraphs: list[dict[str, object]],
     *,
     clean_title: str = "",
+    doc_title: str | None = None,
 ) -> list[tuple[str, str, dict[str, object]]]:
     sectioned: list[tuple[str, str, dict[str, object]]] = []
     section = "question"
@@ -1076,13 +1116,13 @@ def _section_rich_paragraphs(
         if _ANSWER_HEADING.search(text):
             section = "answer"
             continue
-        if _is_rich_noise_paragraph(text, clean_title=clean_title):
+        if _is_rich_noise_paragraph(text, clean_title=clean_title, doc_title=doc_title):
             continue
         sectioned.append((section, text, paragraph))
     return sectioned
 
 
-def _is_rich_noise_paragraph(text: str, *, clean_title: str = "") -> bool:
+def _is_rich_noise_paragraph(text: str, *, clean_title: str = "", doc_title: str | None = None) -> bool:
     stripped = str(text or "").strip()
     if not stripped:
         return True
@@ -1095,6 +1135,8 @@ def _is_rich_noise_paragraph(text: str, *, clean_title: str = "") -> bool:
     visible_text = _IMAGE_MARKER.sub("", stripped)
     if clean_title and clean_title in visible_text:
         return True
+    if doc_title and len(doc_title) >= 4 and doc_title in visible_text:
+        return True
     if _PAGE_NUMBER_NOISE.match(stripped):
         return True
     if _COPYRIGHT_META_NOISE.search(stripped):
@@ -1102,15 +1144,114 @@ def _is_rich_noise_paragraph(text: str, *, clean_title: str = "") -> bool:
     return False
 
 
+def _document_title_hint(lines: list[str]) -> str | None:
+    """从文档第一个有效行推断标题，用于过滤正文中重复出现的标题行。
+
+    源文件归档后会被改名（source_xxx.docx），靠文件名过滤标题会失效，
+    因此以文档首行作为兜底标题。首行像题目或太短/太长时放弃推断。
+    """
+    for raw in lines:
+        line = _IMAGE_MARKER.sub("", str(raw or "")).strip()
+        if not line:
+            continue
+        if len(line) < 4 or len(line) > 60:
+            return None
+        if _MAIN_QUESTION_MARKER.match(line) or _PAREN_QUESTION_MARKER.match(line):
+            return None
+        if _SECTION_HEADING.match(line):
+            return None
+        return line
+    return None
+
+
+def _forward_only_matches(
+    matches: list[re.Match[str]],
+    cleaned: str,
+    *,
+    anchor_answer_labels: bool = False,
+) -> tuple[list[re.Match[str]], list[int]]:
+    """只保留编号递增的分界；倒序/重复的编号并入前一块。
+
+    大题内部的小步骤也常写作行首“1．”“2．”（例如探究题），若一律当成
+    新题号会把一道题切碎并顶掉同号答案，因此编号必须严格递增才开新块。
+
+    anchor_answer_labels=True（答案区）且全文确为教师版标签格式时，候选
+    分界到下一候选之间还必须含【答案】/【分析】等标签，否则视为题内
+    小步骤并入前一块——标签是第一优先级，行首编号只作兜底。
+
+    返回 (保留的分界, 每个保留块各自并入的被丢弃分界数)。
+    """
+    use_labels = anchor_answer_labels and len(_ANSWER_BLOCK_LABEL.findall(cleaned)) >= 2
+    accepted: list[re.Match[str]] = []
+    merged_counts: list[int] = []
+    last_number: int | None = None
+    for index, match in enumerate(matches):
+        number = int(match.group("number"))
+        if last_number is not None and number <= last_number:
+            merged_counts[-1] += 1
+            continue
+        if use_labels and accepted:
+            body_end = matches[index + 1].start() if index + 1 < len(matches) else len(cleaned)
+            if not _ANSWER_BLOCK_LABEL.search(cleaned[match.end():body_end]):
+                merged_counts[-1] += 1
+                continue
+        accepted.append(match)
+        merged_counts.append(0)
+        last_number = number
+    return accepted, merged_counts
+
+
+def _paper_review_reasons(
+    all_block_numbers: list[str],
+    question_numbers: list[str],
+    answers: dict[str, str],
+    *,
+    range_filter: tuple[int, int] | None,
+    merged_anomaly_count: int,
+) -> list[str]:
+    """入库前体检：结构异常只标记不拦截，由教师复核决定。"""
+    reasons: list[str] = []
+    if merged_anomaly_count:
+        reasons.append(f"{merged_anomaly_count} 处倒序/重复编号已并入上一题，请人工复核")
+    numeric = sorted({int(number) for number in all_block_numbers if str(number).isdigit()})
+    if range_filter is None and numeric:
+        if numeric[0] != 1:
+            reasons.append(f"题号从 {numeric[0]} 开始，未从 1 开始")
+        present = set(numeric)
+        missing = [number for number in range(numeric[0], numeric[-1] + 1) if number not in present]
+        if missing:
+            shown = "、".join(str(number) for number in missing[:5])
+            suffix = " 等" if len(missing) > 5 else ""
+            reasons.append(f"题号不连续，缺 {shown}{suffix}")
+    unmatched = sorted(
+        {number for number in answers if number not in set(question_numbers)},
+        key=lambda value: (len(value), value),
+    )
+    if unmatched:
+        shown = "、".join(unmatched[:5])
+        suffix = " 等" if len(unmatched) > 5 else ""
+        reasons.append(f"答案区编号 {shown}{suffix} 无对应题目")
+    return reasons
+
+
 def _split_numbered_blocks(
     text: str,
     *,
     keep_image_markers: bool = False,
     source_file: str | None = None,
+    anchor_answer_labels: bool = False,
+    doc_title: str | None = None,
 ) -> list[_NumberedBlock]:
     cleaned = textwrap.dedent(str(text or ""))
+    merged_counts: list[int] = []
     matches = list(_MAIN_QUESTION_MARKER.finditer(cleaned))
-    if not matches:
+    if matches:
+        matches, merged_counts = _forward_only_matches(
+            matches,
+            cleaned,
+            anchor_answer_labels=anchor_answer_labels,
+        )
+    else:
         paren_matches = list(_PAREN_QUESTION_MARKER.finditer(cleaned))
         valid_matches = []
         expected = 1
@@ -1121,14 +1262,25 @@ def _split_numbered_blocks(
                 expected += 1
         if valid_matches:
             matches = valid_matches
+            merged_counts = [0] * len(matches)
 
     blocks: list[_NumberedBlock] = []
     for index, match in enumerate(matches):
         body_start = match.end()
         body_end = matches[index + 1].start() if index + 1 < len(matches) else None
-        body, image_paths = _clean_block(cleaned[body_start:body_end], keep_image_markers=keep_image_markers, source_file=source_file)
+        body, image_paths = _clean_block(
+            cleaned[body_start:body_end],
+            keep_image_markers=keep_image_markers,
+            source_file=source_file,
+            doc_title=doc_title,
+        )
         if body:
-            blocks.append(_NumberedBlock(number=_normalized_number(match), text=body, image_paths=image_paths))
+            blocks.append(_NumberedBlock(
+                number=_normalized_number(match),
+                text=body,
+                image_paths=image_paths,
+                merged_marker_count=merged_counts[index] if merged_counts else 0,
+            ))
     return blocks
 
 
@@ -1137,12 +1289,13 @@ def _clean_block(
     *,
     keep_image_markers: bool = False,
     source_file: str | None = None,
+    doc_title: str | None = None,
 ) -> tuple[str, list[str]]:
     image_paths = [match.group("path").strip() for match in _IMAGE_MARKER.finditer(str(text or ""))]
     text_without_images = _IMAGE_MARKER.sub("", str(text or ""))
     lines = [line.strip() for line in str(text or "").strip().splitlines() if line.strip()]
     cleaned_lines = []
-    
+
     clean_title = ""
     if source_file:
         raw_title = Path(source_file).name
@@ -1153,7 +1306,7 @@ def _clean_block(
             flags=re.IGNORECASE,
         )
         clean_title = re.sub(r'_\d{8}_\d{6}$', '', clean_title).strip()
-        
+
     for line in lines:
         line_clean = _IMAGE_MARKER.sub("", line).strip()
         if _SECTION_HEADING.match(line_clean):
@@ -1164,12 +1317,14 @@ def _clean_block(
             continue
         if clean_title and clean_title in line_clean:
             continue
+        if doc_title and len(doc_title) >= 4 and doc_title in line_clean:
+            continue
         if _PAGE_NUMBER_NOISE.match(line_clean):
             continue
         if _COPYRIGHT_META_NOISE.search(line_clean):
             continue
         cleaned_lines.append((line if keep_image_markers else _IMAGE_MARKER.sub("", line)).strip())
-        
+
     cleaned_text = "\n".join(line for line in cleaned_lines if line)
     if not cleaned_text and image_paths:
         cleaned_text = "（图片题，需人工查看图像）"
@@ -1205,7 +1360,8 @@ def _without_existing_duplicate_questions(db_path: Path, parsed: ParsedPaperText
     return ParsedPaperText(
         questions=questions,
         answer_match_count=answer_match_count,
-        review_count=sum(1 for item in questions if item.needs_review),
+        review_count=sum(1 for item in questions if item.needs_review) + len(parsed.review_reasons),
+        review_reasons=parsed.review_reasons,
     )
 
 

@@ -43,6 +43,7 @@ EXPECTED_OPERATIONS = {
     ("POST", "/api/jobs/{job_id}/cancel"),
     ("POST", "/api/sessions/{session_id}/reports/export"),
     ("GET", "/api/sessions/{session_id}/reports/analysis-preflight"),
+    ("DELETE", "/api/sessions/{session_id}/reports/{job_id}/file"),
     ("GET", "/api/sessions/{session_id}/class-analysis"),
     ("PUT", "/api/sessions/{session_id}/class-analysis/settings"),
     ("POST", "/api/sessions/{session_id}/class-analysis/regenerate"),

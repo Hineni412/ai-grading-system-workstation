@@ -26,23 +26,29 @@ ALLOWED_TAG_TYPES = {
 
 CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope")
 
+# 与 question_bank/services/similarity_service.py 的 IMAGE_MARKER_PATTERN 保持一致；
+# models 层不 import services 层，故在此单独定义，修改时必须两处同步。
+_IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:.+?\]\]")
+
 
 def duplicate_question_key(question: Mapping[str, object]) -> str:
     """Canonical identity key for "exactly the same question" detection.
 
-    Whitespace-insensitive question text plus answer text; empty when the
-    question text itself is empty.  Used by import-time duplicate linking and
-    by the tag-analysis reuse lookup, so the two must never drift apart.
+    ``[[IMAGE:...]]`` image markers are stripped first (their embedded paths
+    are per-import and never stable), then the remaining question text plus
+    answer text is compared whitespace-insensitively; empty when the question
+    text itself is empty.  Used by import-time duplicate linking and by the
+    tag-analysis reuse lookup, so the two must never drift apart.
     """
     question_text = re.sub(
         r"\s+",
         "",
-        str(question.get("question_text") or ""),
+        _IMAGE_MARKER_PATTERN.sub("", str(question.get("question_text") or "")),
     ).strip()
     answer_text = re.sub(
         r"\s+",
         "",
-        str(question.get("answer_text") or ""),
+        _IMAGE_MARKER_PATTERN.sub("", str(question.get("answer_text") or "")),
     ).strip()
     return f"{question_text}\n{answer_text}" if question_text else ""
 

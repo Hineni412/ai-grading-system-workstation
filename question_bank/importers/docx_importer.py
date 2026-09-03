@@ -18,6 +18,8 @@ from question_bank.importers.types import ExtractedDocument
 _IMAGE_REL_ATTR = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:.+?\]\]")
 _NUMBERED_PARAGRAPH = re.compile(r"^[ \t]*(?:\d{1,3}[ \t]*[.．、]|[（(][ \t]*\d{1,3}[ \t]*[）)])")
+_NUMPR_NUMID = re.compile(r'<w:numId w:val="(\d+)"\s*/>')
+_NUMPR_ILVL = re.compile(r'<w:ilvl w:val="(\d+)"\s*/>')
 
 
 def import_docx(
@@ -42,7 +44,7 @@ def import_docx(
         else _image_output_dir(path, asset_root=asset_root)
     )
     saved_images: dict[str, str] = {}
-    state = {"auto_num": 1}
+    state: dict[str, dict[str, int]] = {"counters": {}}
     rich_paragraphs = [
         record
         for record in _iter_document_records(
@@ -78,7 +80,7 @@ def _paragraph_record(
     document,
     image_dir: Path,
     saved_images: dict[str, str],
-    state: dict[str, int] | None = None,
+    state: dict[str, dict[str, int]] | None = None,
     *,
     register_created_file: Callable[[Path], None] | None = None,
     write_created_file: Callable[[Path, bytes], None] | None = None,
@@ -88,14 +90,22 @@ def _paragraph_record(
         text = _get_paragraph_rich_text(paragraph).strip()
     except Exception:
         text = paragraph.text.strip()
-        
+
     xml = paragraph._element.xml
-    if text and "<w:numPr>" in xml and '<w:ilvl w:val="0"/>' in xml:
-        if not _NUMBERED_PARAGRAPH.match(text):
-            num = state["auto_num"] if state else 1
+    numbering_level: int | None = None
+    if text and "<w:numPr>" in xml:
+        ilvl_match = _NUMPR_ILVL.search(xml)
+        # Word 缺省层级即 0；只有主层级自动编号才补题号前缀。
+        numbering_level = int(ilvl_match.group(1)) if ilvl_match else 0
+        if numbering_level == 0 and not _NUMBERED_PARAGRAPH.match(text):
+            numid_match = _NUMPR_NUMID.search(xml)
+            # 每个编号列表（numId）独立计数，答案区另起列表时从 1 重新开始。
+            list_key = numid_match.group(1) if numid_match else "default"
+            counters = state.setdefault("counters", {}) if state is not None else None
+            num = counters.get(list_key, 1) if counters is not None else 1
             text = f"{num}. {text}"
-            if state:
-                state["auto_num"] += 1
+            if counters is not None:
+                counters[list_key] = num + 1
 
     if text:
         parts.append(text)
@@ -116,6 +126,7 @@ def _paragraph_record(
         "text": "\n".join(parts).strip(),
         "xml": paragraph._element.xml,  # noqa: SLF001 - needed to preserve Word math and inline drawings.
         "image_relationships": image_relationships,
+        "numbering_level": numbering_level,
     }
 
 
@@ -124,7 +135,7 @@ def _table_record(
     document,
     image_dir: Path,
     saved_images: dict[str, str],
-    state: dict[str, int] | None = None,
+    state: dict[str, dict[str, int]] | None = None,
     *,
     register_created_file: Callable[[Path], None] | None = None,
     write_created_file: Callable[[Path, bytes], None] | None = None,
@@ -331,7 +342,7 @@ def _iter_document_records(
     document,
     image_dir: Path,
     saved_images: dict[str, str],
-    state: dict[str, int] | None = None,
+    state: dict[str, dict[str, int]] | None = None,
     *,
     register_created_file: Callable[[Path], None] | None = None,
     write_created_file: Callable[[Path, bytes], None] | None = None,

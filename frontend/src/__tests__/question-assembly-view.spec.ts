@@ -600,6 +600,39 @@ describe('question assembly view', () => {
     )).toBe(true))
   })
 
+  it('collapses duplicate question groups in the assembly browser queries', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') return json(draft())
+      if (url === '/api/question-assembly/records?limit=100') return json({ items: [], total: 0 })
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') return json(curriculumCatalog())
+      if (url.startsWith('/api/question-bank/facets?')) return json(questionFacets())
+      if (url.startsWith('/api/question-bank/questions?')) return json(questionPage(bankQuestion(17, '折叠题目')))
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/questions?')
+        && String(input).includes('collapse_duplicates=true')
+      ),
+    )).toBe(true))
+    // 章节树计数的 facets 请求同样折叠，保证与列表一致。
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/facets?')
+        && String(input).includes('collapse_duplicates=true')
+      ),
+    )).toBe(true))
+  })
+
   it('adds selected question-bank rows to the paper basket and submits an export job', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -648,6 +681,7 @@ describe('question assembly view', () => {
             question_count: 1,
             question_type_summary: { 选择题: 1 },
             download_url: '/api/question-assembly/records/record-1/download',
+            source: null,
           }],
           total: 1,
         })

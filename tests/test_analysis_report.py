@@ -571,3 +571,218 @@ def test_analysis_submit_rejects_removed_class_report_type(analysis_api_client) 
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+
+# ---------------------------------------------------------------------------
+# 报告内容口径：题型中译、批改记录清洗、标准答案收敛、学生作答回填
+# ---------------------------------------------------------------------------
+
+
+def test_question_type_label_never_renders_raw_english() -> None:
+    from analysis_report_exporter import _question_type_label
+
+    assert _question_type_label("comprehensive") == "解答"
+    assert _question_type_label("proof") == "证明"
+    assert _question_type_label("judgement") == "判断"
+    assert _question_type_label("unknown_new_type") == ""
+    assert _question_type_label("") == ""
+    assert _question_type_label("综合题") == "综合题"  # 已是中文的兼容输入照常显示
+
+
+def test_sanitize_grading_text_translates_internal_codes() -> None:
+    from analysis_report_exporter import _sanitize_grading_text
+
+    assert (
+        _sanitize_grading_text("objective_answer=65")
+        == "作答识别为「65」，与参考答案不符"
+    )
+    assert _sanitize_grading_text("low_confidence") == "作答辨识度较低，需要教师复核"
+    assert _sanitize_grading_text("前缀 low_confidence 后缀") == "作答辨识度较低，需要教师复核"
+    assert _sanitize_grading_text("缺关键步骤") == "缺关键步骤"
+    # 无中文信息的英文原文不展示给家长。
+    assert _sanitize_grading_text("No valid answer or proof provided") == ""
+    assert _sanitize_grading_text("") == ""
+
+
+def test_format_secondary_error_dict_to_text() -> None:
+    from analysis_report_exporter import _format_secondary_error
+
+    assert (
+        _format_secondary_error(
+            {"category": "其他", "summary": "推导关系颠倒", "evidence": "x:y=2:1"}
+        )
+        == "推导关系颠倒（x:y=2:1）"
+    )
+    assert _format_secondary_error({"category": "未作答"}) == "未作答"
+    assert _format_secondary_error("推导关系颠倒") == "推导关系颠倒"
+
+
+def test_display_answer_text_dedupes_and_caps_variants() -> None:
+    from analysis_report_exporter import _display_answer_text
+
+    # 标点/全半角/度数写法差异的重复变体收敛为一个代表形式。
+    proof_a = "∠1与∠3相等，理由是：由AB=BC，BE平分∠ABC可得BE⊥AC，故∠BEA=90°。"
+    proof_b = "∠1与∠3相等，理由是:由AB＝BC，BE平分∠ABC可得BE⊥AC，故∠BEA＝90度。"
+    assert _display_answer_text([proof_a, proof_b]) == proof_a
+    # 短答案保留多解并列，精确重复去掉。
+    assert _display_answer_text(["65°", "65° ", "50°", "80°"]) == "65° 或 50° 或 80°"
+    assert _display_answer_text([]) == ""
+
+
+def test_student_answer_map_from_raw_json() -> None:
+    from analysis_report_exporter import _student_answer_map
+
+    raw = {
+        "grading_details": [
+            {"question_id": "Q9", "observed_answer": "65°"},
+            {"question_id": "Q12(P2)", "observed_answer": ""},
+            {"question_id": "Q12(P3)"},
+        ]
+    }
+    assert _student_answer_map(raw) == {"Q9": "65°"}
+    # 兼容未解析的 JSON 字符串与坏输入。
+    assert _student_answer_map(json.dumps(raw, ensure_ascii=False)) == {"Q9": "65°"}
+    assert _student_answer_map("not json") == {}
+    assert _student_answer_map(None) == {}
+
+
+def test_personal_payload_and_record_sanitized(analysis_db) -> None:
+    from analysis_report_exporter import (
+        assemble_session_analysis,
+        build_personal_payload,
+    )
+
+    db, session_id, root = analysis_db
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    lisi = next(s for s in data.students if s.student_name == "李四")
+    q1 = next(r for r in lisi.records if r.question_id == "Q1")
+    # 客观题调试串被翻译，作答值回填到 student_answer。
+    assert q1.deduction_reason == "作答识别为「C」，与参考答案不符"
+    assert q1.student_answer == "C"
+
+    payload = build_personal_payload(data, lisi)
+    q1_payload = next(q for q in payload["questions"] if q["question_id"] == "Q1")
+    assert q1_payload["student_answer"] == "C"
+    assert (
+        q1_payload["grading_record"]["deduction_reason"]
+        == "作答识别为「C」，与参考答案不符"
+    )
+
+
+def test_personal_report_html_sanitized_and_typed(analysis_db, tmp_path: Path) -> None:
+    db, session_id, root = analysis_db
+    # 把 Q2 改成配置生成对解答大题的真实类型码。
+    rubric_path = root / "config" / "uploaded" / "rubric.json"
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["questions"][1]["question_type"] = "comprehensive"
+    rubric_path.write_text(json.dumps(rubric, ensure_ascii=False), encoding="utf-8")
+
+    generator = _make_generator(db, tmp_path / "out", tmp_path / "cache", FakeLLMClient())
+    zip_path = Path(
+        generator.export_session(
+            session_id, "personal_analysis_html", score_revision="rev-1"
+        )
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        zhangsan_html = archive.read("001_张三_个人报告.html").decode("utf-8")
+        lisi_html = archive.read("002_李四_个人报告.html").decode("utf-8")
+
+    # 英文类型码不得出现在报告里，大题行显示中文题型。
+    assert "comprehensive" not in zhangsan_html
+    assert "第2题 解答" in zhangsan_html
+    # 客观题内部调试串被翻译，且学生作答单独成行。
+    assert "objective_answer" not in lisi_html
+    assert "作答识别为「C」，与参考答案不符" in lisi_html
+    assert "<dt>学生作答</dt><dd>C</dd>" in lisi_html
+
+
+# ---------------------------------------------------------------------------
+# 个人学情报告留存：删除接口与重复提交复用
+# ---------------------------------------------------------------------------
+
+
+def _submit_personal_report(client, manager, session_id: int) -> dict:
+    response = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={"report_type": "personal_analysis_html"},
+    )
+    assert response.status_code == 202
+    job = response.json()
+    manager.wait(job["id"], timeout=5)
+    return job
+
+
+def test_delete_retained_report_file_via_api(analysis_api_client) -> None:
+    client, _db, session_id, reports_dir, manager, monkeypatch = analysis_api_client
+    _patch_configured(monkeypatch, True)
+    job = _submit_personal_report(client, manager, session_id)
+    report_path = reports_dir / "report.zip"
+    assert report_path.is_file()
+
+    deleted = client.delete(f"/api/sessions/{session_id}/reports/{job['id']}/file")
+
+    assert deleted.status_code == 200
+    payload = deleted.json()
+    assert payload == {
+        "job_id": job["id"],
+        "deleted": True,
+        "freed_bytes": len(b"fake"),
+    }
+    assert not report_path.is_file()
+    # 幂等：重复删除不再报错，deleted=false。
+    again = client.delete(f"/api/sessions/{session_id}/reports/{job['id']}/file")
+    assert again.status_code == 200
+    assert again.json()["deleted"] is False
+    assert again.json()["freed_bytes"] == 0
+    # 登记簿中该文件回到「已过期，可重新生成」。
+    context = client.get(f"/api/sessions/{session_id}/reports/context").json()
+    entry = next(item for item in context["jobs"] if item["id"] == job["id"])
+    assert entry["file_status"] == "expired"
+
+
+def test_delete_retained_report_file_rejects_other_types(analysis_api_client) -> None:
+    client, _db, session_id, reports_dir, manager, _m = analysis_api_client
+    response = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={"report_type": "score_excel"},
+    )
+    assert response.status_code == 202
+    job = response.json()
+    manager.wait(job["id"], timeout=5)
+    assert (reports_dir / "report.xlsx").is_file()
+
+    deleted = client.delete(f"/api/sessions/{session_id}/reports/{job['id']}/file")
+
+    assert deleted.status_code == 422
+    assert deleted.json()["error"]["code"] == "report_file_not_retained"
+    assert (reports_dir / "report.xlsx").is_file()
+
+
+def test_delete_retained_report_file_rejects_cross_session(analysis_api_client) -> None:
+    client, db, session_id, _reports_dir, manager, monkeypatch = analysis_api_client
+    _patch_configured(monkeypatch, True)
+    job = _submit_personal_report(client, manager, session_id)
+    other_session = db.create_grading_session("另一场", "rubric.json", "answer.json")
+
+    deleted = client.delete(f"/api/sessions/{other_session}/reports/{job['id']}/file")
+
+    assert deleted.status_code == 404
+
+
+def test_retained_report_resubmit_after_download_reuses_job(analysis_api_client) -> None:
+    """留存文件下载后仍可 resolve：同 revision 再提交直接复用旧 job，不重新生成。"""
+    client, _db, session_id, reports_dir, manager, monkeypatch = analysis_api_client
+    _patch_configured(monkeypatch, True)
+    job = _submit_personal_report(client, manager, session_id)
+    download = client.get(f"/api/jobs/{job['id']}/download")
+    assert download.status_code == 200
+    assert (reports_dir / "report.zip").is_file()
+
+    resubmitted = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={"report_type": "personal_analysis_html"},
+    )
+
+    assert resubmitted.status_code == 202
+    assert resubmitted.json()["id"] == job["id"]

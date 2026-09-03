@@ -116,6 +116,7 @@ class DailyTimetableService:
         custom_rows: list[sqlite3.Row] = []
         regular_rows: list[sqlite3.Row] = []
         override_rows: list[sqlite3.Row] = []
+        note_rows: list[sqlite3.Row] = []
         if self.database.exists:
             with closing(self.database.connect()) as connection:
                 anchor_row = connection.execute(
@@ -153,6 +154,16 @@ class DailyTimetableService:
                     """,
                     (monday.isoformat(),),
                 ).fetchall()
+                # 记一笔标记（格子圆点/作业角标的只读数据源），只取本周 5 天。
+                note_rows = connection.execute(
+                    """
+                    SELECT note_date, slot_key, class_label, homework_text
+                    FROM daily_lesson_notes
+                    WHERE note_date >= ? AND note_date <= ?
+                    ORDER BY rowid
+                    """,
+                    (monday.isoformat(), (monday + timedelta(days=_DAY_COUNT - 1)).isoformat()),
+                ).fetchall()
         slots = self._slot_views(custom_rows)
         week_no: int | None = None
         if anchor is not None:
@@ -185,7 +196,15 @@ class DailyTimetableService:
                 "note": row["note"],
             }
         cells: list[dict[str, object]] = []
+        note_flags: dict[tuple[str, str, str], list[bool]] = {}
+        for row in note_rows:
+            key = (str(row["note_date"]), str(row["slot_key"]), str(row["class_label"]))
+            flags = note_flags.setdefault(key, [False, False])
+            flags[0] = True
+            if row["homework_text"]:
+                flags[1] = True
         for day in range(1, _DAY_COUNT + 1):
+            day_iso = (monday + timedelta(days=day - 1)).isoformat()
             for slot in slots:
                 cell = merged.get((day, str(slot["slot_key"])))
                 if cell is None:
@@ -198,6 +217,9 @@ class DailyTimetableService:
                         "override_id": None,
                         "note": None,
                     }
+                flags = note_flags.get((day_iso, str(slot["slot_key"]), str(cell["class_label"])))
+                cell["has_note"] = bool(flags and flags[0])
+                cell["has_homework"] = bool(flags and flags[1])
                 cells.append(cell)
         return {
             "week_start": monday.isoformat(),

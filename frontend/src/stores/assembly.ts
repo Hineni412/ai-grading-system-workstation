@@ -89,6 +89,8 @@ export const useAssemblyStore = defineStore('assembly', () => {
   const message = ref('')
   const exportJobId = ref<number | null>(null)
   const submitting = ref(false)
+  // 本次导出标记：AI 组卷落卷后由 ai-assembly store 置为 'ai'，导出成功后清除。
+  const exportSource = ref<'ai' | null>(null)
   let dependencies = defaultDependencies
   let questionGeneration = 0
 
@@ -340,13 +342,22 @@ export const useAssemblyStore = defineStore('assembly', () => {
     return save({ ...draft.value, sections, layout_mode: 'sections' })
   }
 
+  function markExportSource(source: 'ai' | null): void {
+    exportSource.value = source
+  }
+
   async function submitExport(format: AssemblyExportSubmitFormat): Promise<JobResponse | null> {
     if (!canExport.value || submitting.value) return null
     submitting.value = true
     message.value = ''
     try {
-      const job = await dependencies.api.submitExport(draft.value.revision, format)
+      const job = await dependencies.api.submitExport(
+        draft.value.revision,
+        format,
+        exportSource.value ?? undefined,
+      )
       exportJobId.value = job.id
+      exportSource.value = null
       useJobStore().track(job)
       return job
     } catch (error) {
@@ -414,6 +425,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
     message,
     exportJobId,
     submitting,
+    exportSource,
     questionMap,
     orderedQuestions,
     totalScore,
@@ -431,6 +443,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
     moveQuestionToSlot,
     updateSettings,
     replaceSections,
+    markExportSource,
     submitExport,
     retryExport,
     deleteRecord,

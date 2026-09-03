@@ -126,16 +126,33 @@ def test_get_class_analysis_ready_maps_narrative_aliases_to_real_names(
     data = payload["data"]
     assert data["exam"]["title"] == "单元测试"
     assert data["score_distribution"]["avg"] == 70
+    # 与前端解码器（frontend/src/api/class-analysis.ts）冻结对齐的结构：
+    # present / roster_absent（姓名数组）在 data 顶层，bands 为 {分数段: 人数} 字典。
+    assert data["present"] == 2
+    assert data["roster_absent"] == ["王五"]
+    bands = data["score_distribution"]["bands"]
+    assert isinstance(bands, dict)
+    assert all(isinstance(key, str) for key in bands)
+    assert all(isinstance(count, int) and count >= 0 for count in bands.values())
     names = {student["student_name"] for student in data["students"]}
     assert names == {"张三", "李四"}  # 教师本人页面出参不脱敏
     zhangsan = next(s for s in data["students"] if s["student_name"] == "张三")
     assert zhangsan["rank"] == 1
+    # lost 条目形状：{question_id, lost_points, record}。
     assert zhangsan["lost"] and zhangsan["lost"][0]["question_id"] == "Q2"
+    lost_entry = zhangsan["lost"][0]
+    assert set(lost_entry) == {"question_id", "lost_points", "record"}
+    assert lost_entry["lost_points"] == 10
+    assert isinstance(lost_entry["record"], dict)
+    assert lost_entry["record"]["deduction_reason"] == "缺关键步骤"
     lisi = next(s for s in data["students"] if s["student_name"] == "李四")
     assert lisi["needs_review"] is True
     q2 = next(q for q in data["questions"] if q["question_id"] == "Q2")
     assert q2["max_score"] == 40
+    # class_rate 恒为数字，不得为 null。
     assert q2["class_rate"] == 0.625
+    for question in data["questions"]:
+        assert isinstance(question["class_rate"], (int, float))
     assert q2["stem_summary"] == "证明线段数量关系"
     assert q2["canonical_answer"] == "AB=BD+DH"
     assert {r["student_name"] for r in q2["records"]} == {"张三", "李四"}

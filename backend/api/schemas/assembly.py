@@ -43,6 +43,7 @@ class AssemblyDraftWriteRequest(_AssemblyModel):
 class AssemblyExportSubmitRequest(_AssemblyModel):
     draft_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
     format: Literal["docx"] = "docx"
+    source: Literal["ai"] | None = None
 
 
 class AssemblyRecordRestoreRequest(_AssemblyModel):
@@ -81,6 +82,7 @@ class AssemblyRecordResponse(_AssemblyModel):
     created_at: str
     question_count: int
     question_type_summary: dict[str, int]
+    source: Literal["ai"] | None = None
     download_url: str
 
 

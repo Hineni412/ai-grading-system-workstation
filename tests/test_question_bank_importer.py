@@ -606,3 +606,201 @@ def test_apply_asset_overrides_skips_unknown_sha256(tmp_path: Path) -> None:
 
     assert result.text == extracted.text
     assert result.image_paths == extracted.image_paths
+
+
+def _paragraph_record_for_test(text: str, num_id: int, ilvl: int):
+    """构造带 Word 自动编号（numPr）的段落。"""
+    document = Document()
+    paragraph = document.add_paragraph(text)
+    p_pr = paragraph._p.get_or_add_pPr()  # noqa: SLF001 - build the exact numbering structure.
+    p_pr.append(
+        parse_xml(
+            f'<w:numPr {nsdecls("w")}>'
+            f'<w:ilvl w:val="{ilvl}"/><w:numId w:val="{num_id}"/>'
+            f"</w:numPr>"
+        )
+    )
+    return document, paragraph
+
+
+def test_parse_paper_text_merges_backward_numbering_and_keeps_first_answer() -> None:
+    # 深圳高级中学卷事故场景：第 3 题内部小步骤“1．”“2．”曾被当成新题，
+    # 答案区同号解析块顶掉了第 1、2 题的答案。
+    text = (
+        "1．第一题题干内容足够长\n"
+        "2．第二题题干内容足够长\n"
+        "3．这是一道探究题的题干内容足够长\n"
+        "【初步理解】\n"
+        "1．（1）这是第三题内部的小步骤一\n"
+        "【深入探究】\n"
+        "2．这是第三题内部的小步骤二\n"
+        "参考答案\n"
+        "1．【答案】D\n"
+        "2．【答案】B\n"
+        "3．【答案】见解析\n"
+        "【分析】第三题的分析\n"
+        "【解答】\n"
+        "1．（1）小步骤一的解析\n"
+        "2．小步骤二的解析\n"
+        "【点评】第三题的点评"
+    )
+    parsed = parse_paper_text(text, source_file="regular_paper.docx", page_range="document")
+
+    by_number = {question.question_number: question for question in parsed.questions}
+    assert [question.question_number for question in parsed.questions] == ["1", "2", "3"]
+    # 答案不再被后面的同号解析块顶掉
+    assert by_number["1"].answer_text == "【答案】D"
+    assert by_number["2"].answer_text == "【答案】B"
+    # 小步骤并回第 3 题的题干和答案
+    assert "小步骤一" in by_number["3"].question_text
+    assert "小步骤二" in by_number["3"].question_text
+    assert "小步骤一的解析" in (by_number["3"].answer_text or "")
+    assert "【点评】第三题的点评" in (by_number["3"].answer_text or "")
+    # 合并过异常编号的题目标记为需复核
+    assert by_number["3"].needs_review is True
+    assert by_number["1"].needs_review is False
+    assert parsed.review_count >= 1
+    assert any("倒序" in reason or "重复" in reason for reason in parsed.review_reasons)
+
+
+def test_parse_paper_text_flags_numbering_gaps_without_merging() -> None:
+    parsed = parse_paper_text(
+        "1．题目一内容足够长\n2．题目二内容足够长\n5．题目五内容足够长",
+        source_file="regular_paper.docx",
+        page_range="document",
+    )
+
+    # 前向跳号仍然正常切分，但体检给出断号提示
+    assert [question.question_number for question in parsed.questions] == ["1", "2", "5"]
+    assert any("不连续" in reason for reason in parsed.review_reasons)
+    assert parsed.review_count >= 1
+
+
+def test_parse_paper_text_skips_continuity_check_for_range_import() -> None:
+    parsed = parse_paper_text(
+        "3．题目三内容足够长\n4．题目四内容足够长",
+        source_file="regular_paper.docx",
+        page_range="document",
+        question_range="3-4",
+    )
+
+    assert [question.question_number for question in parsed.questions] == ["3", "4"]
+    assert parsed.review_reasons == ()
+
+
+def test_parse_paper_text_flags_unmatched_answer_numbers() -> None:
+    parsed = parse_paper_text(
+        "1．题目一内容足够长\n2．题目二内容足够长\n答案\n1．A\n2．B\n3．C",
+        source_file="regular_paper.docx",
+        page_range="document",
+    )
+
+    assert any("无对应题目" in reason for reason in parsed.review_reasons)
+    assert parsed.review_count >= 1
+
+
+def test_parse_paper_text_flags_answer_label_inside_question_stem() -> None:
+    parsed = parse_paper_text(
+        "1．题目一内容足够长【答案】D\n2．题目二内容足够长",
+        source_file="regular_paper.docx",
+        page_range="document",
+    )
+
+    by_number = {question.question_number: question for question in parsed.questions}
+    assert by_number["1"].needs_review is True
+
+
+def test_document_title_line_filtered_without_filename_match() -> None:
+    # 源文件归档改名后文件名过滤失效（0526学情小结事故），文档首行兜底过滤
+    text = (
+        "0526学情小结\n"
+        "1．第一题题干内容足够长\n"
+        "2．第二题题干内容足够长\n"
+        "0526学情小结\n"
+        "参考答案\n"
+        "1．A\n"
+        "2．B"
+    )
+    parsed = parse_paper_text(text, source_file="source_e51f1eb781da.docx", page_range="document")
+
+    by_number = {question.question_number: question for question in parsed.questions}
+    assert "0526学情小结" not in by_number["2"].question_text
+
+
+def test_map_rich_content_merges_backward_numbering_into_current_question() -> None:
+    mapped = batch_importer.map_rich_content_by_number(
+        [
+            {"text": "1．第一题", "image_relationships": {}},
+            {"text": "2．第二题", "image_relationships": {}},
+            {"text": "1．内部小步骤", "image_relationships": {}},
+        ],
+        source_file="regular_paper.docx",
+    )
+
+    assert [block["text"] for block in mapped["question"]["1"]] == ["1．第一题"]
+    assert [block["text"] for block in mapped["question"]["2"]] == [
+        "2．第二题",
+        "1．内部小步骤",
+    ]
+
+
+def test_map_rich_content_ignores_sublevel_numbering_marker() -> None:
+    mapped = batch_importer.map_rich_content_by_number(
+        [
+            {"text": "1．第一题", "image_relationships": {}, "numbering_level": 0},
+            {"text": "1．子层级列表项", "image_relationships": {}, "numbering_level": 1},
+        ],
+        source_file="regular_paper.docx",
+    )
+
+    assert [block["text"] for block in mapped["question"]["1"]] == [
+        "1．第一题",
+        "1．子层级列表项",
+    ]
+
+
+def test_map_rich_content_filters_repeated_doc_title_line() -> None:
+    mapped = batch_importer.map_rich_content_by_number(
+        [
+            {"text": "0526学情小结", "image_relationships": {}},
+            {"text": "1．第一题", "image_relationships": {}},
+            {"text": "2．第二题", "image_relationships": {}},
+            {"text": "0526学情小结", "image_relationships": {}},
+            {"text": "参考答案", "image_relationships": {}},
+            {"text": "1．A", "image_relationships": {}},
+        ],
+        source_file="source_e51f1eb781da.docx",
+    )
+
+    assert [block["text"] for block in mapped["question"]["2"]] == ["2．第二题"]
+
+
+def test_docx_importer_restarts_auto_number_per_word_list(tmp_path: Path) -> None:
+    from question_bank.importers.docx_importer import _paragraph_record
+
+    document, first = _paragraph_record_for_test("第一题题干", num_id=5, ilvl=0)
+    _, second = _paragraph_record_for_test("第二题题干", num_id=5, ilvl=0)
+    _, answer_first = _paragraph_record_for_test("第一题答案", num_id=6, ilvl=0)
+
+    state: dict = {"counters": {}}
+    record_first = _paragraph_record(first, document, tmp_path, {}, state)
+    record_second = _paragraph_record(second, document, tmp_path, {}, state)
+    record_answer = _paragraph_record(answer_first, document, tmp_path, {}, state)
+
+    assert record_first["text"].startswith("1. ")
+    assert record_second["text"].startswith("2. ")
+    # 答案区另起编号列表时重新从 1 开始，而不是接着题目继续数
+    assert record_answer["text"].startswith("1. ")
+    assert record_first["numbering_level"] == 0
+
+
+def test_docx_importer_marks_sublevel_numbering_without_auto_prefix(tmp_path: Path) -> None:
+    from question_bank.importers.docx_importer import _paragraph_record
+
+    document, paragraph = _paragraph_record_for_test("1．手敲编号的子步骤", num_id=5, ilvl=1)
+
+    record = _paragraph_record(paragraph, document, tmp_path, {}, {"counters": {}})
+
+    # 子层级段落不追加自动编号，并携带层级信息供下游识别
+    assert record["text"] == "1．手敲编号的子步骤"
+    assert record["numbering_level"] == 1

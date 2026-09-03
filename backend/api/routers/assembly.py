@@ -111,16 +111,16 @@ def submit_assembly_export(
             "assembly_draft_empty",
             "Assembly draft has no questions",
         )
+    payload: dict[str, object] = {
+        "draft_revision": draft.revision,
+        "draft": draft.to_payload(),
+        "format": body.format,
+        "question_count": len(draft.order_ids),
+    }
+    if body.source is not None:
+        payload["source"] = body.source
     try:
-        job = manager.submit(
-            "assembly_export",
-            {
-                "draft_revision": draft.revision,
-                "draft": draft.to_payload(),
-                "format": body.format,
-                "question_count": len(draft.order_ids),
-            },
-        )
+        job = manager.submit("assembly_export", payload)
     except UnsupportedJobTypeError as exc:
         raise ApiError(
             404,

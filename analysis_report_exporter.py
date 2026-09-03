@@ -21,6 +21,7 @@ import html
 import io
 import json
 import math
+import re
 import statistics
 import zipfile
 from dataclasses import dataclass, field
@@ -86,7 +87,44 @@ _QUESTION_TYPE_LABELS = {
     "proof": "证明",
     "answer": "解答",
     "subjective": "解答",
+    "comprehensive": "解答",
+    "constructed_response": "解答",
+    "judgement": "判断",
+    "true_false": "判断",
+    "direct_answer": "作答",
 }
+
+# 客观题批改记录里的内部调试码 → 家长可读文本；
+# 口径与前端 frontend/src/utils/grading-reasons.ts 保持一致。
+_OBJECTIVE_ANSWER_PREFIX = "objective_answer="
+_REASON_CODE_LABELS = {
+    "objective_api_disabled": "客观题识别未启用，已转教师复核",
+    "objective_api_not_configured": "客观题识别模型配置不完整，已转教师复核",
+    "objective_paper_model_failed": "客观题识别请求失败，已转教师复核",
+    "objective_paper_region_failed": "无法读取选填题作答区域",
+    "objective_region_not_found": "未找到此题的有效作答区域",
+    "missing_question_result": "AI 未返回此题的识别结果",
+    "duplicate_question_result": "AI 返回了重复的识别结果",
+    "paper_key_mismatch": "识别结果与当前答卷不一致",
+    "low_confidence": "作答辨识度较低，需要教师复核",
+    "needs_review": "AI 建议教师复核",
+    "objective_needs_review": "客观题识别结果需要教师复核",
+    "objective_score_uncertain": "答案识别存在不确定性",
+    "prompt_injection_or_score_bait": "作答区出现与答题无关的批改指令",
+    "discarded_answer_only": "只识别到已经涂抹或作废的答案",
+    "assignment_changed": "批改期间答卷匹配发生变化",
+    "missing_detail_question_ids": "AI 未完整返回所有小问的评分结果",
+    "duplicate_detail_question_id": "AI 重复返回了同一小问",
+    "unexpected_detail_question_id": "AI 返回了不属于本题的小问",
+    "no_numeric_value": "未能可靠识别填写的数值，需要教师确认",
+    "multiple options selected": "识别到选择了多个选项",
+}
+
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+
+
+def _has_cjk(text: str) -> bool:
+    return bool(_CJK_RE.search(text))
 
 # 分数段按满分等比缩放（满分 100 时即方案 §3 的固定分段）。
 _BAND_CUTOFFS = (85, 70, 60, 40, 0)
@@ -226,6 +264,7 @@ class _StudentQuestionRecord:
     error_category: str
     error_summary: str
     secondary_errors: list[str] = field(default_factory=list)
+    student_answer: str = ""
 
     @property
     def lost(self) -> bool:
@@ -385,6 +424,7 @@ def assemble_session_analysis(
                     result_id,
                     details_by_result.get(result_id, []),
                     score_map,
+                    student_answers=_student_answer_map(result.get("raw_json")),
                 ),
             )
         )
@@ -520,6 +560,55 @@ def _stem_summary_map(rubric: dict[str, Any]) -> dict[str, str]:
     return stems
 
 
+# 标准答案展示收敛参数：判分用的等价变体常含标点/单位差异的重复全文，
+# 报告展示前做规范化去重、限量、限长。
+_ANSWER_FORM_MAX_LEN = 120
+_ANSWER_DISPLAY_MAX_FORMS = 3
+_ANSWER_DISPLAY_MAX_CHARS = 400
+
+_ANSWER_NORMALIZE_PAIRS = (
+    ("：", ":"),
+    ("，", ","),
+    ("。", "."),
+    ("（", "("),
+    ("）", ")"),
+    ("＝", "="),
+    ("；", ";"),
+    ("°", "度"),
+)
+
+
+def _normalize_answer_form(text: str) -> str:
+    normalized = re.sub(r"\s+", "", str(text))
+    for full, half in _ANSWER_NORMALIZE_PAIRS:
+        normalized = normalized.replace(full, half)
+    return normalized.lower()
+
+
+def _display_answer_text(forms: list[str]) -> str:
+    """把判分用的全部等价变体收敛为家长可读的标准答案文本。"""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for form in forms:
+        text = str(form or "").strip()
+        key = _normalize_answer_form(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(text)
+    if not unique:
+        return ""
+    # 长文本（证明过程等）只保留代表形式；短答案最多并列 3 个。
+    if any(len(text) > _ANSWER_FORM_MAX_LEN for text in unique):
+        unique = unique[:1]
+    else:
+        unique = unique[:_ANSWER_DISPLAY_MAX_FORMS]
+    display = " 或 ".join(unique)
+    if len(display) > _ANSWER_DISPLAY_MAX_CHARS:
+        display = display[:_ANSWER_DISPLAY_MAX_CHARS].rstrip() + " ……"
+    return display
+
+
 def _canonical_answer_map(
     session_row: dict[str, Any],
     data_root: Path | None,
@@ -533,9 +622,9 @@ def _canonical_answer_map(
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
     return {
-        qid: " 或 ".join(forms)
+        qid: display
         for qid, forms in answer_forms_map(answer_key).items()
-        if forms
+        if (display := _display_answer_text(forms))
     }
 
 
@@ -605,11 +694,83 @@ def _score_distribution(scores: list[float], full_score: float) -> dict[str, Any
     }
 
 
+def _sanitize_grading_text(value: object) -> str:
+    """批改记录文本转家长可读口径：内部调试码翻译，无中文的文本丢弃。
+
+    阅卷模型偶发用英文写扣分原因；报告面向家长，没有中文信息的文本
+    不如不显示（其余中文字段仍可说明情况）。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith(_OBJECTIVE_ANSWER_PREFIX):
+        answer = text[len(_OBJECTIVE_ANSWER_PREFIX):].strip()
+        return f"作答识别为「{answer}」，与参考答案不符" if answer else ""
+    direct = _REASON_CODE_LABELS.get(lowered)
+    if direct is not None:
+        return direct
+    for code, label in _REASON_CODE_LABELS.items():
+        if code in lowered:
+            return label
+    return text if _has_cjk(text) else ""
+
+
+def _format_secondary_error(item: object) -> str:
+    """次要错因可能是 dict（category/summary/evidence），格式化为可读文本。"""
+    if isinstance(item, dict):
+        summary = _sanitize_grading_text(item.get("summary"))
+        category = _sanitize_grading_text(item.get("category"))
+        evidence = str(item.get("evidence") or "").strip()
+        text = summary or category
+        if evidence and evidence not in text:
+            text = f"{text}（{evidence}）" if text else evidence
+        return text
+    return _sanitize_grading_text(item)
+
+
+# 学生作答识别文本在 raw_json grading_details 里的兼容键（与 ai_grader 一致）。
+_STUDENT_ANSWER_KEYS = ("observed_answer", "student_answer", "answer_observed")
+_STUDENT_ANSWER_MAX_LEN = 200
+
+
+def _student_answer_map(raw_json: Any) -> dict[str, str]:
+    """从批改原始 JSON 提取每题学生作答识别文本，供报告展示与 AI 分析输入。"""
+    parsed = raw_json
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(parsed, dict):
+        return {}
+    details = parsed.get("grading_details")
+    if not isinstance(details, list):
+        return {}
+    answers: dict[str, str] = {}
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        qid = str(item.get("question_id") or "").strip()
+        if not qid or qid in answers:
+            continue
+        text = ""
+        for key in _STUDENT_ANSWER_KEYS:
+            value = item.get(key)
+            if value:
+                text = str(value).strip()
+                break
+        if text:
+            answers[qid] = text[:_STUDENT_ANSWER_MAX_LEN]
+    return answers
+
+
 def _merge_student_records(
     repositories: GradingRepositoryAccess,
     result_id: int,
     details: list[dict[str, Any]],
     score_map: dict[str, float],
+    student_answers: dict[str, str] | None = None,
 ) -> list[_StudentQuestionRecord]:
     """把同一学生同一题的多条明细合并为一条（兼容小问拆行存储）。"""
     secondary_map: dict[str, list[str]] = {}
@@ -621,7 +782,7 @@ def _merge_student_records(
             if canonical and isinstance(errors, list):
                 merged = secondary_map.setdefault(canonical, [])
                 for item in errors:
-                    text = str(item or "").strip()
+                    text = _format_secondary_error(item)
                     if text and text not in merged:
                         merged.append(text)
     except Exception:
@@ -640,6 +801,7 @@ def _merge_student_records(
                 "deduction_reasons": [],
                 "error_categories": [],
                 "error_summaries": [],
+                "objective_observed": "",
             }
             order.append(qid)
         bucket = merged[qid]
@@ -649,10 +811,19 @@ def _merge_student_records(
             ("error_category", "error_categories"),
             ("error_summary", "error_summaries"),
         ):
-            text = str(detail.get(field_name) or "").strip()
+            raw_text = str(detail.get(field_name) or "").strip()
+            # 客观题的作答识别结果只存在于调试串里，先取出再清洗。
+            if (
+                field_name == "deduction_reason"
+                and raw_text.lower().startswith(_OBJECTIVE_ANSWER_PREFIX)
+                and not bucket["objective_observed"]
+            ):
+                bucket["objective_observed"] = raw_text.split("=", 1)[1].strip()
+            text = _sanitize_grading_text(raw_text)
             if text and text not in bucket[bucket_key]:
                 bucket[bucket_key].append(text)
 
+    answers = student_answers or {}
     records: list[_StudentQuestionRecord] = []
     for qid in order:
         bucket = merged[qid]
@@ -667,6 +838,9 @@ def _merge_student_records(
                 error_category="；".join(bucket["error_categories"]),
                 error_summary="；".join(bucket["error_summaries"]),
                 secondary_errors=secondary_map.get(qid, []),
+                student_answer=(
+                    answers.get(qid) or bucket["objective_observed"] or ""
+                ),
             )
         )
     order_index = {
@@ -699,7 +873,11 @@ def _question_type_label(question_type: str) -> str:
     text = str(question_type or "").strip()
     if not text:
         return ""
-    return _QUESTION_TYPE_LABELS.get(text, text)
+    label = _QUESTION_TYPE_LABELS.get(text)
+    if label is not None:
+        return label
+    # 未收录的英文类型码不原样渲染给家长；已是中文的兼容输入照常显示。
+    return text if _has_cjk(text) else ""
 
 
 def _question_display_label(question_id: str) -> str:
@@ -746,6 +924,7 @@ def build_personal_payload(
             item["canonical_answer"] = (
                 info.canonical_answer if info is not None else ""
             )
+            item["student_answer"] = record.student_answer or None
             item["grading_record"] = {
                 "deduction_reason": record.deduction_reason or None,
                 "error_category": record.error_category or None,
@@ -876,7 +1055,23 @@ def _record_brief_text(record: _StudentQuestionRecord) -> str:
 
 
 def build_class_page_data(data: _SessionAnalysisData) -> dict[str, Any]:
-    """把班级版装配数据序列化为页面 JSON：考试信息、分数分布、逐题与逐生明细。"""
+    """把班级版装配数据序列化为页面 JSON：考试信息、分数分布、逐题与逐生明细。
+
+    出参形状与前端解码器 frontend/src/api/class-analysis.ts 冻结对齐：
+    - present / roster_absent（姓名数组）在 data 顶层；
+    - score_distribution.bands 为 {分数段: 人数} 字典；
+    - students[].lost[] 为 {question_id, lost_points, record}；
+    - questions[].class_rate 恒为数字（无作答记录时 0）。
+    """
+    bands = {
+        str(band["label"]): int(band["count"]) for band in data.stats["bands"]
+    }
+    absent_names = [
+        name
+        for item in data.skipped
+        if str(item.get("reason") or "") in {"缺考", "扫描异常"}
+        and (name := str(item.get("student_name") or "").strip())
+    ]
     questions: list[dict[str, Any]] = []
     for info in data.questions:
         records: list[dict[str, Any]] = []
@@ -903,7 +1098,7 @@ def build_class_page_data(data: _SessionAnalysisData) -> dict[str, Any]:
                 "question_type": info.question_type,
                 "max_score": info.max_score,
                 "class_rate": (
-                    round(info.class_rate, 4) if info.class_rate is not None else None
+                    round(info.class_rate, 4) if info.class_rate is not None else 0
                 ),
                 "class_avg": (
                     round(info.class_avg, 2) if info.class_avg is not None else None
@@ -915,6 +1110,24 @@ def build_class_page_data(data: _SessionAnalysisData) -> dict[str, Any]:
         )
     students: list[dict[str, Any]] = []
     for student in data.students:
+        lost_items: list[dict[str, Any]] = []
+        for record in student.records:
+            if not record.lost:
+                continue
+            record_payload = {
+                "deduction_reason": record.deduction_reason or None,
+                "error_category": record.error_category or None,
+                "error_summary": record.error_summary or None,
+            }
+            if not any(record_payload.values()):
+                record_payload = None
+            lost_items.append(
+                {
+                    "question_id": record.question_id,
+                    "lost_points": round(record.lost_points, 2),
+                    "record": record_payload,
+                }
+            )
         students.append(
             {
                 "student_id": student.student_id,
@@ -925,21 +1138,10 @@ def build_class_page_data(data: _SessionAnalysisData) -> dict[str, Any]:
                 "rank": student.rank,
                 "needs_review": student.needs_review,
                 "lost_points_total": round(student.lost_points_total, 2),
-                "lost": [
-                    {
-                        "question_id": record.question_id,
-                        "score": record.score,
-                        "max_score": record.max_score,
-                        "lost_points": round(record.lost_points, 2),
-                        "deduction_reason": record.deduction_reason or None,
-                        "error_category": record.error_category or None,
-                        "error_summary": record.error_summary or None,
-                    }
-                    for record in student.records
-                    if record.lost
-                ],
+                "lost": lost_items,
             }
         )
+    stats = data.stats
     return {
         "exam": {
             "session_id": data.session_id,
@@ -947,10 +1149,17 @@ def build_class_page_data(data: _SessionAnalysisData) -> dict[str, Any]:
             "subject": data.subject,
             "full_score": data.full_score,
             "graded_at": data.graded_at,
-            "present": data.present,
-            "roster_absent": data.roster_absent,
         },
-        "score_distribution": data.stats,
+        "present": data.present,
+        "roster_absent": absent_names,
+        "score_distribution": {
+            "avg": stats["avg"],
+            "median": stats["median"],
+            "max": stats["max"],
+            "min": stats["min"],
+            "pass_rate": stats["pass_rate"],
+            "bands": bands,
+        },
         "questions": questions,
         "students": students,
         "skipped": data.skipped,
@@ -1225,7 +1434,7 @@ _PERSONAL_CSS = """
   .stat .lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
   /* 得分对比条 */
-  .qrow { display: grid; grid-template-columns: 74px 1fr 92px; align-items: center; gap: 10px; padding: 4px 0; }
+  .qrow { display: grid; grid-template-columns: max-content 1fr max-content; align-items: center; gap: 10px; padding: 4px 0; }
   .qrow .qid { font-size: 12.5px; color: var(--ink); white-space: nowrap; }
   .bars { display: flex; flex-direction: column; gap: 3px; }
   .bar { height: 8px; border-radius: 4px; background: #f1f5f9; position: relative; overflow: hidden; }
@@ -1382,14 +1591,20 @@ def _render_personal_html(
         )
         class_rate = info.class_rate if info is not None else None
         class_avg = info.class_avg if info is not None else None
-        type_label = _question_type_label(
-            info.question_type if info is not None else ""
+        # 题型标签只标在大题行；小问行题号已含层级信息（对齐已确认原型）。
+        coordinates = question_id_coordinates(record.question_id)
+        is_part_row = coordinates is not None and coordinates[1] is not None
+        type_label = (
+            ""
+            if is_part_row
+            else _question_type_label(info.question_type if info is not None else "")
         )
         row_class = "qrow lost" if record.lost else "qrow"
         avg_text = f"（班均 {_fmt_num(round(class_avg, 1))}）" if class_avg is not None else ""
+        type_suffix = f" {_esc(type_label)}" if type_label else ""
         compare_rows.append(
             f'<div class="{row_class}"><span class="qid">'
-            f'{_esc(_question_display_label(record.question_id))} {_esc(type_label)}</span>'
+            f'{_esc(_question_display_label(record.question_id))}{type_suffix}</span>'
             f'<div class="bars"><div class="bar me"><i style="width:{my_rate * 100:.0f}%"></i></div>'
             f'<div class="bar cls"><i style="width:{(class_rate or 0) * 100:.0f}%"></i></div></div>'
             f'<span class="val">{_fmt_num(record.score)} / {_fmt_num(record.max_score)}{_esc(avg_text)}</span></div>'
@@ -1437,6 +1652,15 @@ def _render_personal_html(
             if text
         )
         kv_rows = []
+        student_answer_text = "；".join(
+            dict.fromkeys(
+                record.student_answer
+                for record in group_records
+                if record.student_answer
+            )
+        )
+        if student_answer_text:
+            kv_rows.append(f"<dt>学生作答</dt><dd>{_esc(student_answer_text)}</dd>")
         if answer:
             kv_rows.append(
                 f'<dt>标准答案</dt><dd><b class="ans">{_esc(answer)}</b></dd>'

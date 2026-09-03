@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import TableListPanel from './tables/TableListPanel.vue'
@@ -11,6 +11,7 @@ const route = useRoute()
 const router = useRouter()
 
 const activeTab = computed<DailyTab>(() => (route.query.tab === 'tables' ? 'tables' : 'timetable'))
+const customSlotsOpen = ref(false)
 
 function selectTab(tab: DailyTab): void {
   if (tab === activeTab.value) return
@@ -23,36 +24,41 @@ function selectTab(tab: DailyTab): void {
 
 <template>
   <section class="daily-management">
-    <header class="daily-management__hero">
-      <div>
-        <p class="daily-eyebrow">Daily management</p>
-        <h1 tabindex="-1">日常管理</h1>
-        <p>课表调课、教学进度与班级临时表格记录。</p>
+    <header class="daily-pagebar">
+      <h1 tabindex="-1">日常管理</h1>
+      <div class="daily-tabs" role="tablist" aria-label="日常管理功能">
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="activeTab === 'timetable'"
+          :class="{ 'is-active': activeTab === 'timetable' }"
+          @click="selectTab('timetable')"
+        >
+          课表
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="activeTab === 'tables'"
+          :class="{ 'is-active': activeTab === 'tables' }"
+          @click="selectTab('tables')"
+        >
+          表格
+        </button>
       </div>
+      <span class="daily-pagebar__spacer"></span>
+      <button
+        v-if="activeTab === 'timetable'"
+        type="button"
+        class="daily-pagebar__toggle"
+        :aria-expanded="customSlotsOpen"
+        @click="customSlotsOpen = !customSlotsOpen"
+      >
+        {{ customSlotsOpen ? '收起自定义时段' : '自定义时段' }}
+      </button>
     </header>
 
-    <div class="daily-tabs" role="tablist" aria-label="日常管理功能">
-      <button
-        type="button"
-        role="tab"
-        :aria-selected="activeTab === 'timetable'"
-        :class="{ 'is-active': activeTab === 'timetable' }"
-        @click="selectTab('timetable')"
-      >
-        课表
-      </button>
-      <button
-        type="button"
-        role="tab"
-        :aria-selected="activeTab === 'tables'"
-        :class="{ 'is-active': activeTab === 'tables' }"
-        @click="selectTab('tables')"
-      >
-        表格
-      </button>
-    </div>
-
-    <TimetablePanel v-if="activeTab === 'timetable'" />
+    <TimetablePanel v-if="activeTab === 'timetable'" :custom-open="customSlotsOpen" />
     <TableListPanel v-else />
   </section>
 </template>
@@ -68,29 +74,38 @@ function selectTab(tab: DailyTab): void {
   padding: 12px 16px;
 }
 
-.daily-management__hero {
+/* 页头一行化：标题、页签与自定义时段开关共用一行。 */
+.daily-pagebar {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding-bottom: var(--space-3);
-  border-bottom: var(--border-width) solid var(--color-border-default);
+  align-items: center;
+  gap: var(--space-3);
 }
 
-.daily-management__hero h1 {
-  margin: var(--space-1) 0 0;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-display);
-}
-
-.daily-management__hero p:not(.daily-eyebrow) {
-  margin: var(--space-2) 0 0;
-  color: var(--color-text-secondary);
-}
-
-.daily-eyebrow {
+.daily-pagebar h1 {
   margin: 0;
-  color: var(--color-text-muted);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-h3);
+}
+
+.daily-pagebar__spacer {
+  flex: 1;
+}
+
+.daily-pagebar__toggle {
+  min-height: var(--control-height-small);
+  padding: 0 12px;
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.daily-pagebar__toggle[aria-expanded='true'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-text-primary);
 }
 
 .daily-tabs {
@@ -99,7 +114,7 @@ function selectTab(tab: DailyTab): void {
 }
 
 .daily-tabs button {
-  min-height: var(--control-height-default);
+  min-height: var(--control-height-small);
   padding: 0 16px;
   border: var(--border-width) solid var(--color-border-default);
   border-radius: var(--radius-control);

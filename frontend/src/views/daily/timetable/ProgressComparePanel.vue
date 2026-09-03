@@ -4,6 +4,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ApiError } from '../../../api/errors'
 import { dailyApi, type LessonNote, type TimetableSlot } from '../../../api/daily'
 import {
+  buildClassPalette,
+  classColorFor,
   formatMonthDay,
   pickDefaultCompareClasses,
   slotLabelFor,
@@ -26,6 +28,9 @@ const loading = ref(false)
 const errorMessage = ref('')
 
 const labels = computed(() => slotLabelMap(props.slots))
+
+/** 与课表格子一致的班级配色（按候选顺序取色）。 */
+const palette = computed(() => buildClassPalette(props.candidates))
 
 /** 候选班级 ∪ 已有记录班级（保持课表顺序在前）。 */
 const classOptions = computed(() => {
@@ -118,13 +123,20 @@ onMounted(refresh)
         >
           <label>
             班级
-            <select
-              :value="side.selected"
-              @change="selectClass(side.key, $event)"
-            >
-              <option value="" disabled>选择班级</option>
-              <option v-for="option in classOptions" :key="option" :value="option">{{ option }}</option>
-            </select>
+            <span class="progress-compare__class-select">
+              <i
+                class="progress-compare__class-dot"
+                :style="{
+                  background: classColorFor(palette, side.selected).fg,
+                  opacity: side.selected ? 1 : 0.3,
+                }"
+                aria-hidden="true"
+              ></i>
+              <select :value="side.selected" @change="selectClass(side.key, $event)">
+                <option value="" disabled>选择班级</option>
+                <option v-for="option in classOptions" :key="option" :value="option">{{ option }}</option>
+              </select>
+            </span>
           </label>
           <p v-if="loading && !side.notes.length" class="progress-compare__empty">正在读取…</p>
           <p v-else-if="side.selected && !side.notes.length" class="progress-compare__empty">
@@ -199,9 +211,26 @@ onMounted(refresh)
   color: var(--color-text-secondary);
 }
 
+.progress-compare__class-select {
+  position: relative;
+  display: block;
+}
+
+.progress-compare__class-dot {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  z-index: 1;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+}
+
 .progress-compare__column select {
   min-height: var(--control-height-default);
-  padding: 0 10px;
+  /* 左侧留出班级色点位置（色点绝对定位在下拉框上）。 */
+  padding: 0 10px 0 26px;
   border: var(--border-width) solid var(--color-border-default);
   border-radius: var(--radius-control);
   background: var(--color-bg-surface);

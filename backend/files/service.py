@@ -25,6 +25,11 @@ class JobFileRule:
     consume_after_download: bool = False
 
 
+# 个人学情报告按场次留存在本机：下载后不删除，用户可在报表记录里手动删除。
+# 其余 report_export 类型（成绩 Excel、批注原卷 PDF）维持下载后即删。
+RETAINED_REPORT_TYPES = frozenset({"personal_analysis_html"})
+
+
 JOB_FILE_RULES = {
     "report_export": JobFileRule(
         result_field="file_path",
@@ -105,7 +110,40 @@ class JobFileService:
 
     def should_consume(self, job: JobRecord) -> bool:
         rule = JOB_FILE_RULES.get(job.job_type)
-        return bool(rule and rule.consume_after_download)
+        if not (rule and rule.consume_after_download):
+            return False
+        if (
+            job.job_type == "report_export"
+            and str(job.payload.get("report_type") or "") in RETAINED_REPORT_TYPES
+        ):
+            return False
+        return True
+
+    def is_retained_report(self, job: JobRecord) -> bool:
+        return (
+            job.job_type == "report_export"
+            and str(job.payload.get("report_type") or "") in RETAINED_REPORT_TYPES
+        )
+
+    def delete_retained_file(self, job: JobRecord, store: JobStore) -> int | None:
+        """删除一份留存的报告文件并清掉 job 的下载引用，返回释放字节数。
+
+        已清空/已过期（文件引用不在）时幂等返回 None。顺序固定为先删文件再清
+        记录：清记录失败时 resolve 会因文件缺失按过期处理，不留孤儿文件。
+        """
+        if not self.is_retained_report(job):
+            raise JobFileNotFound("Job does not publish a retained report file.")
+        try:
+            resolved = self.resolve(job)
+        except ControlledFileExpired:
+            return None
+        try:
+            freed = resolved.path.stat().st_size
+        except OSError:
+            freed = 0
+        self._unlink_quietly(resolved.path)
+        store.clear_downloadable_file(job.id)
+        return freed
 
     def consume_after_send(
         self,

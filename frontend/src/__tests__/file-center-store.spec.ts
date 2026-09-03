@@ -99,6 +99,7 @@ function makeApi(overrides: Record<string, unknown> = {}) {
     listTrainingExportJobs: vi.fn(async () => noJobs),
     getJob: vi.fn(),
     downloadJobFile: vi.fn(),
+    deleteReportFile: vi.fn(),
     ...overrides,
   }
 }

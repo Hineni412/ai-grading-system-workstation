@@ -613,6 +613,124 @@ def test_teaching_progress_filter_fails_closed_on_unknown_chapter(
     assert response.json()["items"] == []
 
 
+def _teaching_progress_scope_client(tmp_path: Path) -> TestClient:
+    """题目把章节事实只记录在 prerequisite / exam_scope 标签里的场景。"""
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO papers (id, title, import_status) "
+            "VALUES (1, 'Scope paper', 'success')"
+        )
+        conn.executemany(
+            """
+            INSERT INTO questions (
+                id, paper_id, question_number, question_type, question_text
+            ) VALUES (?, 1, ?, '选择题', ?)
+            """,
+            [
+                (1, "1", "prerequisite 涉及第三章"),
+                (2, "2", "exam_scope 涉及第三章"),
+                (3, "3", "exam_scope 只涉及第一章"),
+                (4, "4", "无任何标签"),
+                (5, "5", "prerequisite 只涉及第一章"),
+                (6, "6", "空 exam_scope 标签"),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (?, ?, ?)
+            """,
+            [
+                (1, "prerequisite", "八年级上册｜第三章 位置与坐标｜1 确定位置｜用坐标确定位置"),
+                (2, "exam_scope", "八年级上册 第三章 位置与坐标"),
+                (3, "exam_scope", "八年级上册 第一章 勾股定理"),
+                (5, "prerequisite", "八年级上册｜第一章 勾股定理｜1 探索勾股定理｜勾股定理"),
+                (6, "exam_scope", ""),
+            ],
+        )
+        conn.commit()
+    return _question_bank_client(QuestionBankReadService(db_path))
+
+
+def test_teaching_progress_filter_covers_prerequisite_and_exam_scope(
+    tmp_path: Path,
+) -> None:
+    client = _teaching_progress_scope_client(tmp_path)
+
+    first_chapter = client.get(
+        "/api/question-bank/questions",
+        params={"teaching_progress_chapter": "bnu24-math-g8-upper-c01"},
+    )
+    third_chapter = client.get(
+        "/api/question-bank/questions",
+        params={"teaching_progress_chapter": "bnu24-math-g8-upper-c03"},
+    )
+
+    assert first_chapter.status_code == 200
+    # 进度在第一章时：涉及第三章的 prerequisite/exam_scope 题排除；
+    # 第一章题、无标签题、空标签题保留。
+    assert sorted(item["id"] for item in first_chapter.json()["items"]) == [3, 4, 5, 6]
+    # 进度到第三章后全部保留。
+    assert sorted(item["id"] for item in third_chapter.json()["items"]) == [1, 2, 3, 4, 5, 6]
+
+
+def test_collapse_duplicates_hides_linked_duplicate_questions(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO papers (id, title, import_status) "
+            "VALUES (1, 'Collapse paper', 'success')"
+        )
+        conn.executemany(
+            """
+            INSERT INTO questions (
+                id, paper_id, question_number, question_type, question_text
+            ) VALUES (?, 1, ?, '选择题', ?)
+            """,
+            [
+                (1, "1", "重复组源题"),
+                (2, "2", "重复题（已关联到 1）"),
+                (3, "3", "独立题"),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO question_duplicate_links (
+                question_id, duplicate_of_question_id, match_kind, signature
+            ) VALUES (2, 1, 'exact', 'sig')
+            """
+        )
+        conn.commit()
+    client = _question_bank_client(QuestionBankReadService(db_path))
+
+    default_page = client.get("/api/question-bank/questions")
+    collapsed_page = client.get(
+        "/api/question-bank/questions",
+        params={"collapse_duplicates": "true"},
+    )
+    collapsed_facets = client.get(
+        "/api/question-bank/facets",
+        params={"collapse_duplicates": "true"},
+    )
+
+    assert default_page.status_code == 200
+    assert sorted(item["id"] for item in default_page.json()["items"]) == [1, 2, 3]
+    assert collapsed_page.status_code == 200
+    # 每组只保留 duplicate_of 源题。
+    assert sorted(item["id"] for item in collapsed_page.json()["items"]) == [1, 3]
+    # facets 计数与折叠后的列表一致。
+    assert collapsed_facets.json()["question_types"] == [
+        {"value": "选择题", "count": 2}
+    ]
+
+
 def test_legacy_knowledge_value_filters_and_facets_as_current_canonical_term(
     question_bank_fixture,
 ) -> None:
