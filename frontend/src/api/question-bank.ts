@@ -508,6 +508,7 @@ export interface QuestionBankFilters {
   sort?: QuestionBankSort
   criteriaNeedsReview?: boolean
   teachingProgressChapter?: string
+  collapseDuplicates?: boolean
 }
 
 const QUESTION_LIST_KEYS = [
@@ -1588,6 +1589,9 @@ function questionListPath(filters: QuestionBankFilters): string {
   parameters.set('sort', filters.sort ?? 'newest')
   if (filters.criteriaNeedsReview === true) {
     parameters.set('criteria_needs_review', 'true')
+  }
+  if (filters.collapseDuplicates === true) {
+    parameters.set('collapse_duplicates', 'true')
   }
   const teachingProgressChapter = filters.teachingProgressChapter?.trim()
   if (teachingProgressChapter) {

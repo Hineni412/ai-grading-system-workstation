@@ -42,6 +42,8 @@ function weekPayload() {
         source: 'regular',
         override_id: null,
         note: null,
+        has_note: true,
+        has_homework: true,
       },
     ],
     today: { date: '2026-09-01', day_of_week: 2, in_week: true },
@@ -63,7 +65,12 @@ describe('daily API contract', () => {
     )
     expect(week.week_no).toBe(3)
     expect(week.days).toHaveLength(5)
-    expect(week.cells[0]).toMatchObject({ course_text: '数学', source: 'regular' })
+    expect(week.cells[0]).toMatchObject({
+      course_text: '数学',
+      source: 'regular',
+      has_note: true,
+      has_homework: true,
+    })
     expect(week.today).toMatchObject({ in_week: true, day_of_week: 2 })
   })
 
@@ -113,6 +120,8 @@ describe('daily API contract', () => {
         source: 'regular' as const,
         override_id: null,
         note: null,
+        has_note: false,
+        has_homework: false,
       },
       {
         day_of_week: 4,
@@ -122,6 +131,8 @@ describe('daily API contract', () => {
         source: 'regular' as const,
         override_id: null,
         note: null,
+        has_note: false,
+        has_homework: false,
       },
     ]
     const ops = buildDragOps(

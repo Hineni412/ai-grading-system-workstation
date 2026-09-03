@@ -13,7 +13,7 @@ from backend.api.dependencies import (
     get_job_manager,
     get_reports_dir,
 )
-from backend.api.routers.jobs import _job_response
+from backend.api.routers.jobs import _job_response, _require_job
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.reports import (
@@ -24,6 +24,7 @@ from backend.api.schemas.reports import (
     ReportExportContextResponse,
     ReportExportHistoryItem,
     ReportExportRequest,
+    ReportFileDeleteResponse,
 )
 from backend.class_analysis import (
     CLASS_ANALYSIS_JOB_TYPE,
@@ -310,3 +311,61 @@ def regenerate_class_analysis(
         force=True,
     )
     return _job_response(job)
+
+
+@router.delete(
+    "/sessions/{session_id}/reports/{job_id}/file",
+    response_model=ReportFileDeleteResponse,
+)
+def delete_retained_report_file(
+    session_id: int,
+    job_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+    file_service: JobFileService = Depends(get_job_file_service),
+) -> ReportFileDeleteResponse:
+    """删除一份留存在本机的个人学情报告文件；幂等，重复删除返回 deleted=false。"""
+    _require_session(db, session_id)
+    job = _require_job(manager, job_id)
+    if int(job.payload.get("session_id") or 0) != int(session_id):
+        raise ApiError(
+            404,
+            "job_not_found",
+            "Job not found",
+            {"job_id": int(job_id)},
+        )
+    if not file_service.is_retained_report(job):
+        raise ApiError(
+            422,
+            "report_file_not_retained",
+            "Only retained personal analysis reports can be deleted",
+            {"job_id": int(job_id)},
+        )
+    try:
+        freed = file_service.delete_retained_file(job, manager.store)
+    except JobFileUnavailable as exc:
+        raise ApiError(
+            409,
+            "job_file_unavailable",
+            "Job file is not available",
+            {"job_id": int(job_id)},
+        ) from exc
+    except ControlledFileForbidden as exc:
+        raise ApiError(
+            403,
+            "job_file_forbidden",
+            "Job file is outside the allowed storage boundary",
+            {"job_id": int(job_id)},
+        ) from exc
+    except ControlledFileTypeError as exc:
+        raise ApiError(
+            415,
+            "job_file_type_not_supported",
+            "Job file type is not supported",
+            {"job_id": int(job_id)},
+        ) from exc
+    return ReportFileDeleteResponse(
+        job_id=int(job_id),
+        deleted=freed is not None,
+        freed_bytes=freed or 0,
+    )

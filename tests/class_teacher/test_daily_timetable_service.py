@@ -375,6 +375,32 @@ def test_custom_slots_interleave_and_cascade_delete(tmp_path: Path) -> None:
 # 进度笔记
 
 
+def test_week_cells_carry_note_and_homework_flags(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.set_regular_cell(day_of_week=2, slot_key="lesson:4", course_text="数学", class_label="10班")
+    service.set_regular_cell(day_of_week=2, slot_key="lesson:6", course_text="数学", class_label="9班")
+    service.add_note(
+        note_date="2026-09-01", slot_key="lesson:4",
+        class_label="10班", content_text="讲评例题", homework_text="P14 习题 1-3",
+    )
+    service.add_note(
+        note_date="2026-09-01", slot_key="lesson:6",
+        class_label="9班", content_text="周末卷讲评",
+    )
+
+    week = service.get_week(MONDAY)
+
+    marked = _cell(week, 2, "lesson:4")
+    assert marked["has_note"] is True
+    assert marked["has_homework"] is True
+    no_homework = _cell(week, 2, "lesson:6")
+    assert no_homework["has_note"] is True
+    assert no_homework["has_homework"] is False
+    untouched = _cell(week, 3, "lesson:4")
+    assert untouched["has_note"] is False
+    assert untouched["has_homework"] is False
+
+
 def test_recent_notes_grouped_by_class_and_sorted(tmp_path: Path) -> None:
     service = _service(tmp_path)
     service.add_note(

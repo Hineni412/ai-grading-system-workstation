@@ -98,6 +98,16 @@ class ClassAnalysisSettingsResponse(BaseModel):
     auto_generate: bool
 
 
+class ReportFileDeleteResponse(BaseModel):
+    """删除一份留存的本机报告文件的结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: int
+    deleted: bool
+    freed_bytes: int = Field(ge=0)
+
+
 class ReportExportHistoryItem(JobResponse):
     is_current_revision: bool
     file_status: Literal[

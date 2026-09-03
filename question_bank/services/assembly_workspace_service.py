@@ -93,6 +93,8 @@ class AssemblyRecord:
     created_at: str
     question_count: int
     question_type_summary: dict[str, int]
+    # 组卷来源：None=人工组卷，"ai"=AI 组卷；旧记录缺字段按 None 处理。
+    source: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -108,6 +110,7 @@ class AssemblyRecord:
             "created_at": self.created_at,
             "question_count": self.question_count,
             "question_type_summary": dict(self.question_type_summary),
+            "source": self.source,
         }
 
     def to_public_payload(self) -> dict[str, object]:
@@ -123,6 +126,7 @@ class AssemblyRecord:
             "created_at": self.created_at,
             "question_count": self.question_count,
             "question_type_summary": dict(self.question_type_summary),
+            "source": self.source,
         }
 
 
@@ -134,6 +138,7 @@ class AssemblyRecordCreate:
     export_format: str
     question_type_summary: Mapping[str, int] | None = None
     created_at: str | None = None
+    source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +239,7 @@ class AssemblyWorkspaceService:
             ),
             question_count=len(create.draft.order_ids),
             question_type_summary=_clean_summary(create.question_type_summary),
+            source=_clean_source(create.source),
         )
         self.records_root.mkdir(parents=True, exist_ok=True)
         with _exclusive_file_lock(self.lock_path):
@@ -361,6 +367,7 @@ class AssemblyWorkspaceService:
                 if isinstance(payload.get("question_type_summary"), Mapping)
                 else None
             ),
+            source=_clean_source(payload.get("source")),
         )
 
 
@@ -479,6 +486,13 @@ def _clean_section_id(
 
 def _clean_text(value: object, *, limit: int) -> str:
     return str(value or "").replace("\x00", "").strip()[:limit]
+
+
+def _clean_source(value: object) -> str | None:
+    """来源标记只接受已定义取值；旧记录缺字段或未知取值按 None 处理。"""
+
+    text = str(value or "").strip().casefold()
+    return text if text in {"ai"} else None
 
 
 def _clean_summary(value: Mapping[str, int] | None) -> dict[str, int]:

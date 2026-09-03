@@ -476,6 +476,7 @@ async function deleteRecord(recordId: string): Promise<void> {
             <li v-for="record in assembly.records" :key="record.id">
               <div>
                 <strong>{{ record.title }}</strong>
+                <span v-if="record.source === 'ai'" class="assembly-record-source">AI 组卷</span>
                 <span>{{ record.question_count }} 题 · {{ record.export_format }}</span>
                 <small>{{ record.filename }}</small>
               </div>

@@ -12,6 +12,7 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.importers import batch_importer
 from question_bank.importers.batch_importer import ScannedPaper
 from question_bank.importers.types import ExtractedDocument
+from question_bank.models.question import duplicate_question_key
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.solution_evidence.repository import SolutionEvidenceRepository
 from question_bank.training_criteria.adapters import QuestionAnalysisInputLoader
@@ -173,6 +174,76 @@ def bank(tmp_path: Path) -> dict[str, Path]:
     db_path = data_root / "databases" / "question_bank.db"
     initialize_database(db_path)
     return {"db": db_path, "data_root": data_root}
+
+
+def test_duplicate_key_ignores_image_markers() -> None:
+    base = duplicate_question_key(
+        {"question_text": "求阴影部分面积", "answer_text": "面积为 12"}
+    )
+    with_images = duplicate_question_key(
+        {
+            "question_text": (
+                "求阴影部分面积"
+                "[[IMAGE:question_bank/extracted_images/paper-a/q1.png]]"
+            ),
+            "answer_text": (
+                "[[IMAGE:question_bank/extracted_images/paper-a/a1.png]]"
+                "面积为 12"
+            ),
+        }
+    )
+    other_source_images = duplicate_question_key(
+        {
+            "question_text": (
+                "求阴影部分面积"
+                "[[IMAGE:question_bank/extracted_images/paper-b/q1.png]]"
+            ),
+            "answer_text": (
+                "面积为 12"
+                "[[IMAGE:question_bank/extracted_images/paper-b/a1.png]]"
+            ),
+        }
+    )
+
+    assert base
+    assert with_images == base
+    assert other_source_images == base
+
+
+def test_image_markers_do_not_defeat_exact_duplicate_linking(
+    bank: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    first_text = (
+        f"1. {QUESTION_TEXT}"
+        "[[IMAGE:question_bank/extracted_images/a/q1.png]]\n"
+        f"答案：\n1. {ANSWER_TEXT}"
+    )
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(first_text))
+    _import_paper(tmp_path, bank["db"], bank["data_root"], name="a.docx", text=first_text)
+    source_id = _single_question_id(bank["db"], "a")
+
+    # 同题跨卷再次导入，图片路径按 source 变化，判重键必须不受影响。
+    second_text = (
+        f"1. {QUESTION_TEXT}"
+        "[[IMAGE:question_bank/extracted_images/b/q1.png]]\n"
+        f"答案：\n1. {ANSWER_TEXT}"
+        "[[IMAGE:question_bank/extracted_images/b/a1.png]]"
+    )
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(second_text))
+    second = _import_paper(tmp_path, bank["db"], bank["data_root"], name="b.docx", text=second_text)
+
+    assert second.question_count == 1
+    assert second.exact_duplicate_count == 1
+    target_id = _single_question_id(bank["db"], "b")
+    with connect(bank["db"]) as conn:
+        link = conn.execute(
+            "SELECT duplicate_of_question_id FROM question_duplicate_links WHERE question_id = ?",
+            (target_id,),
+        ).fetchone()
+    assert link is not None
+    assert int(link["duplicate_of_question_id"]) == source_id
 
 
 def test_exact_duplicate_links_and_reuses_analysis(

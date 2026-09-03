@@ -79,6 +79,8 @@ function emptyCell(dayOfWeek: number, slotKey: string): TimetableCell {
     source: 'empty',
     override_id: null,
     note: null,
+    has_note: false,
+    has_homework: false,
   }
 }
 
@@ -155,18 +157,70 @@ export function slotLabelFor(labels: Map<string, string>, slotKey: string): stri
   return labels.get(slotKey) ?? '已删除时段'
 }
 
-/** 今日提示条：当前查看周包含今天时，列出今天有内容的时段。 */
-export function todaySummary(week: TimetableWeek): string[] {
+/** 今日侧栏条目：一节课一行，带时段时间与笔记/作业标记。 */
+export interface TimetableTodayEntry {
+  slot_key: string
+  slot_label: string
+  time: string
+  course: string
+  class_label: string
+  has_note: boolean
+  has_homework: boolean
+}
+
+export function todayEntries(week: TimetableWeek): TimetableTodayEntry[] {
   if (!week.today.in_week || week.today.day_of_week < 1 || week.today.day_of_week > 5) return []
   const labels = slotLabelMap(week.slots)
+  const times = new Map(week.slots.map((slot) => [slot.slot_key, slotTime(slot)]))
   return week.cells
     .filter((cell) => cell.day_of_week === week.today.day_of_week && cell.course_text)
-    .map((cell) => {
-      const course = cell.class_label
-        ? `${cell.course_text}（${cell.class_label}）`
-        : cell.course_text
-      return `${slotLabelFor(labels, cell.slot_key)} ${course}`
-    })
+    .map((cell) => ({
+      slot_key: cell.slot_key,
+      slot_label: slotLabelFor(labels, cell.slot_key),
+      time: times.get(cell.slot_key) ?? '',
+      course: cell.course_text,
+      class_label: cell.class_label,
+      has_note: cell.has_note,
+      has_homework: cell.has_homework,
+    }))
+}
+
+/** 班级配色：按课表中首次出现顺序取色，格子底色与右侧栏圆点共用。 */
+export interface ClassColor {
+  fg: string
+  bg: string
+}
+
+const CLASS_PALETTE: ClassColor[] = [
+  { fg: '#2f7a6b', bg: '#e3f1ef' },
+  { fg: '#5e628d', bg: '#eceef8' },
+  { fg: '#496579', bg: '#edf3f7' },
+  { fg: '#b25b21', bg: '#faeee2' },
+  { fg: '#2f7a55', bg: '#e6f2ec' },
+]
+
+/** 未标注班级的课程（如班会）使用的中性色。 */
+export const NEUTRAL_CLASS_COLOR: ClassColor = { fg: '#64748b', bg: '#eef1f4' }
+
+export function classColorFor(
+  palette: Map<string, ClassColor>,
+  classLabel: string,
+): ClassColor {
+  return palette.get(classLabel) ?? NEUTRAL_CLASS_COLOR
+}
+
+export function buildClassPalette(classLabels: string[]): Map<string, ClassColor> {
+  return new Map(
+    classLabels.map((label, index) => [
+      label,
+      CLASS_PALETTE[index % CLASS_PALETTE.length] as ClassColor,
+    ]),
+  )
+}
+
+/** 整行 5 格都没有任何课程与覆盖（含留空）时，可折叠为一条「暂无课程」。 */
+export function isCollapsibleRow(row: TimetableGridRow): boolean {
+  return row.cells.every((cell) => cell.source === 'empty')
 }
 
 /** 课表中出现过的班级（去空、去重、保持首次出现顺序）。 */

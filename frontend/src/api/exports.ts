@@ -43,6 +43,12 @@ export const REPORT_FILE_STATUSES = [
 
 export type ReportFileStatus = (typeof REPORT_FILE_STATUSES)[number]
 
+export interface ReportFileDeleteResult {
+  job_id: number
+  deleted: boolean
+  freed_bytes: number
+}
+
 export interface ReportHistoryJob extends JobResponse {
   is_current_revision: boolean
   file_status: ReportFileStatus
@@ -147,6 +153,25 @@ function isTrainingStatus(
     || value === 'cancelled'
     || value === 'failed'
   )
+}
+
+export function decodeReportFileDelete(value: unknown): ReportFileDeleteResult {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !Number.isSafeInteger(value.job_id)
+    || Number(value.job_id) <= 0
+    || typeof value.deleted !== 'boolean'
+    || !Number.isSafeInteger(value.freed_bytes)
+    || Number(value.freed_bytes) < 0
+  ) {
+    throw new Error('Invalid report file delete result')
+  }
+  return {
+    job_id: Number(value.job_id),
+    deleted: value.deleted,
+    freed_bytes: Number(value.freed_bytes),
+  }
 }
 
 export function decodeAnalysisPreflight(value: unknown): AnalysisPreflight {
@@ -452,6 +477,23 @@ export const exportsApi = {
       decode: decodeJobResponse,
       signal,
     })
+  },
+
+  async deleteReportFile(
+    sessionId: number,
+    jobId: number,
+    signal?: AbortSignal,
+  ): Promise<ReportFileDeleteResult> {
+    const id = requirePositiveInteger(sessionId, 'session id')
+    const reportJobId = requirePositiveInteger(jobId, 'job id')
+    return apiClient.request(
+      `/api/sessions/${id}/reports/${reportJobId}/file`,
+      {
+        method: 'DELETE',
+        decode: decodeReportFileDelete,
+        signal,
+      },
+    )
   },
 
   async getAnalysisPreflight(

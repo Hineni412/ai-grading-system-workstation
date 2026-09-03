@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<!--
+  原型（一次性，验证后即弃）：班主任工作台首页 ——「本周事务提示」卡片重设计 + 布局重排
+  三个结构不同的变体，通过 ?variant=A|B|C 切换，底部浮动条或 ← → 键切换。
+  数据为假数据，日期以 2026-08-31（周一）为「今天」。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 · 班主任工作台首页本周事务卡片</title>
+<style>
+:root{
+  --bg:#f4f5f6; --surface:#fff; --subtle:#f7f8f8; --selected:#e8f1f1;
+  --border-subtle:#eceeef; --border:#e2e4e7; --border-strong:#c6cbd0;
+  --text:#1c2733; --text-2:#5c6672; --text-3:#87909b;
+  --accent:#135e6b; --accent-subtle:#e8f2f2;
+  --success:#2f7a55; --warning:#9a6718; --warning-subtle:#fff4da;
+  --danger:#b04444; --danger-subtle:#faecec;
+  --info:#496579; --info-subtle:#edf3f7;
+  --ai:#5e628d; --ai-subtle:#efeff7; --teacher:#255f49; --teacher-subtle:#e9f3ee;
+  --radius:8px; --radius-panel:12px;
+  --shadow-hover:0 2px 4px rgba(28,39,51,.06),0 12px 28px -10px rgba(28,39,51,.14);
+  --sans:Inter,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);font-family:var(--sans);color:var(--text);font-size:14px}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:0;padding:0;text-align:left}
+
+/* ===== 应用外壳（模拟真实首页环境，所有变体共用） ===== */
+.shell{display:grid;grid-template-columns:56px minmax(0,1fr);min-height:100vh}
+.rail{background:var(--surface);border-right:1px solid var(--border-subtle);display:flex;flex-direction:column;align-items:center;gap:18px;padding:14px 0}
+.rail .logo{width:30px;height:30px;border-radius:8px;background:var(--text);color:#fff;display:grid;place-items:center;font-size:13px}
+.rail .ic{width:22px;height:22px;border-radius:6px;border:1.5px solid var(--border-strong)}
+.rail .ic.on{background:var(--accent-subtle);border-color:var(--accent)}
+.main{display:flex;flex-direction:column;min-width:0}
+.topbar{height:68px;background:var(--surface);border-bottom:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;padding:0 20px}
+.topbar h1{font-size:19px;margin:0;font-weight:700}
+.topbar p{margin:2px 0 0;font-size:12px;color:var(--text-2)}
+.topbar .task-center{background:var(--accent);color:#fff;border-radius:999px;padding:7px 16px;font-size:13px;font-weight:600}
+.tabs{background:var(--surface);border-bottom:1px solid var(--border-subtle);display:flex;gap:26px;padding:0 20px}
+.tabs span{padding:12px 2px;font-size:14px;color:var(--text-2)}
+.tabs span.on{color:var(--accent);font-weight:600;border-bottom:2px solid var(--accent)}
+.content{padding:18px 24px 90px;display:flex;flex-direction:column;gap:14px}
+
+/* ===== 案头（共用） ===== */
+.masthead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:14px 18px;border:1px solid var(--border);border-radius:var(--radius-panel);background:var(--surface)}
+.masthead .kicker{margin:0 0 2px;color:var(--accent);font-size:11px;font-weight:700;letter-spacing:.12em}
+.masthead h2{margin:0;font-size:22px;font-weight:700;letter-spacing:-.02em}
+.masthead .homeroom{font-size:12px;font-weight:600;color:var(--text-2);white-space:nowrap}
+.masthead .homeroom strong{font-size:16px;color:var(--text);margin-left:8px}
+
+/* ===== 会话区（共用，装饰性） ===== */
+.desk-grid{display:grid;gap:14px;align-items:start}
+.conversation{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-panel);padding:16px 18px;min-width:0;display:flex;flex-direction:column;gap:12px}
+.opening{min-height:96px;display:grid;place-items:center;text-align:center;border-bottom:1px dashed var(--border-subtle);padding-bottom:12px}
+.opening p{max-width:36em;margin:0;font-size:14px;font-weight:600;line-height:1.6}
+.msg-you{width:fit-content;max-width:76%;margin-left:auto;padding:7px 12px;border-radius:8px 8px 2px 8px;background:var(--accent-subtle);font-size:13px;line-height:1.5}
+.msg-ai{width:fit-content;max-width:82%;padding:7px 12px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;font-size:13px;line-height:1.5}
+.msg-ai b{color:var(--accent);font-size:11px;letter-spacing:.04em;margin-right:6px}
+.composer{border-top:1px solid var(--border-subtle);padding-top:12px;display:flex;flex-direction:column;gap:8px}
+.composer label{font-size:12px;font-weight:600;color:var(--text-2)}
+.composer .fake-input{border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--text-3);font-size:13px;background:var(--subtle)}
+.composer .row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.composer small{color:var(--text-3);font-size:12px}
+.btn{display:inline-flex;align-items:center;gap:6px;border-radius:var(--radius);padding:7px 14px;font-size:13px;font-weight:600;border:1px solid var(--border);background:var(--surface)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+
+/* ===== 侧栏小节（共用骨架） ===== */
+.side{display:flex;flex-direction:column;gap:12px;min-width:0}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-panel);padding:12px 14px}
+.card>header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.card>header .t{font-size:13px;font-weight:700}
+.count{min-width:22px;height:22px;padding:0 7px;border-radius:999px;background:var(--accent-subtle);color:var(--accent);font-size:12px;font-weight:700;display:inline-grid;place-items:center}
+.count.warn{background:var(--warning-subtle);color:var(--warning)}
+.chip{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;line-height:1.6;white-space:nowrap}
+.chip.d-ops{background:var(--accent-subtle);color:var(--accent)}
+.chip.d-act{background:var(--info-subtle);color:var(--info)}
+.chip.d-sch{background:var(--ai-subtle);color:var(--ai)}
+.chip.d-sup{background:var(--teacher-subtle);color:var(--teacher)}
+.due-over{color:var(--danger);font-weight:700}
+.due-today{color:var(--accent);font-weight:700}
+.due-soon{color:var(--text-2)}
+
+/* ===== 变体 A：时间轴分组（侧栏保留，本周事务改为按时间分组的时间轴） ===== */
+.vA .desk-grid{grid-template-columns:minmax(0,1.7fr) 330px}
+.timeline{position:relative;display:flex;flex-direction:column;gap:0}
+.tl-group{padding:2px 0 8px}
+.tl-group>h4{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-size:12px;font-weight:700;color:var(--text-2)}
+.tl-group>h4 .n{font-weight:600;color:var(--text-3);font-size:11px}
+.tl-group.over>h4{color:var(--danger)}
+.tl-group.today>h4{color:var(--accent)}
+.tl-items{position:relative;margin-left:5px;padding-left:16px;border-left:2px solid var(--border-subtle);display:flex;flex-direction:column}
+.tl-items .it{position:relative;display:flex;align-items:center;gap:8px;padding:7px 4px;border-radius:6px}
+.tl-items .it:hover{background:var(--subtle)}
+.tl-items .it::before{content:"";position:absolute;left:-21px;top:50%;transform:translateY(-50%);width:8px;height:8px;border-radius:50%;background:#fff;border:2px solid var(--border-strong)}
+.tl-group.over .it::before{border-color:var(--danger)}
+.tl-group.today .it::before{border-color:var(--accent);background:var(--accent-subtle)}
+.tl-items .it .ti{flex:1;min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-items .it .dt{font-size:11px;white-space:nowrap}
+.vA .more-link{display:block;text-align:center;padding:8px;color:var(--accent);font-size:12px;font-weight:600;border-top:1px solid var(--border-subtle);margin-top:4px}
+/* 待核对：视觉上与本周事务明显区分 */
+.card.review{background:var(--warning-subtle);border-color:#edd9a8}
+.card.review p{margin:0;font-size:12px;line-height:1.55;color:var(--text-2)}
+/* 最近会话：低调列表 */
+.card.recent{background:var(--subtle)}
+.recent-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 2px;border-bottom:1px solid var(--border-subtle);font-size:13px}
+.recent-row:last-child{border-bottom:0}
+.recent-row .rm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.recent-row small{color:var(--text-3);font-size:11px;white-space:nowrap}
+
+/* ===== 变体 B：顶部横向日程带（本周事务移出侧栏，横贯案头下方） ===== */
+.week-strip{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-panel);padding:12px 14px}
+.week-strip>header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px}
+.week-strip>header .t{font-size:13px;font-weight:700}
+.week-strip>header .t b{color:var(--accent);margin:0 2px}
+.week-strip>header a{font-size:12px;color:var(--accent);font-weight:600}
+.days{display:grid;grid-auto-flow:column;grid-auto-columns:196px;gap:10px;overflow-x:auto;padding-bottom:4px}
+.day{border:1px solid var(--border-subtle);border-radius:var(--radius);background:var(--subtle);padding:9px 11px;display:flex;flex-direction:column;gap:6px;min-height:118px}
+.day.today{background:var(--accent-subtle);border-color:#bcd8da}
+.day.over{background:var(--danger-subtle);border-color:#eccaca}
+.day .dh{display:flex;align-items:baseline;justify-content:space-between}
+.day .dh b{font-size:13px}
+.day .dh span{font-size:11px;color:var(--text-3)}
+.day .di{display:flex;gap:6px;align-items:baseline;font-size:12px;line-height:1.4}
+.day .di i{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:var(--border-strong);transform:translateY(-1px)}
+.day.today .di i{background:var(--accent)}
+.day.over .di i{background:var(--danger)}
+.day .di span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.day .dn{font-size:11px;color:var(--text-3);margin-top:auto}
+.vB .desk-grid{grid-template-columns:minmax(0,1.9fr) 300px}
+
+/* ===== 变体 C：焦点卡 + 分类分组（先告诉你最急的一件，再按事务领域分组） ===== */
+.vC .desk-grid{grid-template-columns:minmax(0,1.7fr) 340px}
+.hero{background:linear-gradient(135deg,var(--accent) 0%,#0e4a54 100%);color:#fff;border-radius:var(--radius-panel);padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.hero .hk{font-size:11px;font-weight:700;letter-spacing:.1em;opacity:.85}
+.hero h3{margin:0;font-size:16px;font-weight:700;line-height:1.4}
+.hero .hm{display:flex;align-items:center;gap:8px;font-size:12px;opacity:.92}
+.hero .hb{align-self:flex-start;margin-top:2px;background:#fff;color:var(--accent);border-radius:var(--radius);padding:6px 14px;font-size:12px;font-weight:700}
+.grp{border-left:3px solid var(--border-strong);padding:2px 0 2px 10px;margin-bottom:10px}
+.grp:last-child{margin-bottom:0}
+.grp.g-ops{border-color:var(--accent)}
+.grp.g-act{border-color:var(--info)}
+.grp.g-sch{border-color:var(--ai)}
+.grp.g-sup{border-color:var(--teacher)}
+.grp>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px}
+.grp>header b{font-size:12px}
+.grp>header span{font-size:11px;color:var(--text-3)}
+.grp .gi{display:flex;align-items:center;gap:8px;padding:5px 2px;border-radius:6px;font-size:13px}
+.grp .gi:hover{background:var(--subtle)}
+.grp .gi .ti{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grp .gi .dt{font-size:11px;white-space:nowrap}
+.grp .gi.over .ti{color:var(--danger)}
+.vC .collapse{margin-top:2px;font-size:12px;color:var(--accent);font-weight:600;text-align:center;display:block;padding:6px;border-top:1px solid var(--border-subtle)}
+
+/* ===== 变体 D：日程带（B 布局）+ 任务属性与关系 ===== */
+.legend{display:flex;align-items:center;gap:14px;font-size:11px;color:var(--text-2)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.legend .hard i{background:var(--accent)}
+.legend .soft i{background:#fff;border:2px solid var(--border-strong)}
+.vD .day{min-height:150px}
+.vD .day .di{align-items:flex-start;gap:7px}
+.vD .day .di .dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;margin-top:5px;background:var(--accent)}
+.vD .day .di.is-soft .dot{background:#fff;border:2px solid var(--border-strong)}
+.vD .day.over .di .dot{background:var(--danger)}
+.vD .day.today .di .dot{background:var(--accent)}
+.vD .day .di.is-soft .dot{background:#fff!important;border:2px solid var(--border-strong)}
+.ibox{min-width:0;display:flex;flex-direction:column;gap:2px}
+.ibox .ti{font-size:12px;font-weight:600;line-height:1.4}
+.ibox .is-blocked .ti,.di.is-blocked .ti{color:var(--text-3)}
+.meta{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.ptag{display:inline-block;padding:0 6px;border-radius:4px;font-size:10px;font-weight:700;line-height:1.7;white-space:nowrap}
+.ptag.c-accent{background:var(--accent-subtle);color:var(--accent)}
+.ptag.c-ai{background:var(--ai-subtle);color:var(--ai)}
+.softtag{display:inline-block;padding:0 6px;border-radius:4px;font-size:10px;font-weight:600;line-height:1.7;background:var(--subtle);border:1px dashed var(--border-strong);color:var(--text-2);white-space:nowrap}
+.lock{display:inline-block;font-size:10px;font-weight:600;color:var(--warning);white-space:nowrap}
+.di.is-blocked{opacity:.75}
+
+/* ===== 变体 E：项目泳道带（按「大任务」分卡，依赖链按步骤呈现） ===== */
+.lanes{display:grid;grid-auto-flow:column;grid-auto-columns:236px;gap:10px;overflow-x:auto;padding-bottom:4px}
+.lane{border:1px solid var(--border-subtle);border-radius:var(--radius);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
+.lane .lh{padding:8px 11px;color:#fff;display:flex;align-items:baseline;justify-content:space-between;gap:6px}
+.lane .lh b{font-size:13px}
+.lane .lh span{font-size:11px;opacity:.85;white-space:nowrap}
+.lane.c-accent .lh{background:var(--accent)}
+.lane.c-ai .lh{background:var(--ai)}
+.lane.c-plain .lh{background:var(--text)}
+.lane.c-soft .lh{background:var(--teacher)}
+.lane.c-warn .lh{background:var(--warning)}
+.lane.wide{min-width:292px}
+.frow{display:flex;flex-direction:column;gap:2px;padding:6px 0;border-bottom:1px dashed var(--border-subtle)}
+.frow:last-child{border-bottom:0}
+.frow .ft{font-size:12px;font-weight:600;line-height:1.4}
+.frow.is-blocked .ft{color:var(--text-3)}
+.lane .lb2{padding:8px 11px;display:flex;flex-direction:column;gap:2px}
+.step{display:flex;gap:8px;padding:5px 0;border-bottom:1px dashed var(--border-subtle)}
+.step:last-child{border-bottom:0}
+.step .no{flex:0 0 auto;width:17px;height:17px;border-radius:50%;background:var(--subtle);border:1px solid var(--border-strong);color:var(--text-2);font-size:10px;font-weight:700;display:grid;place-items:center;margin-top:1px}
+.step.now .no{background:var(--warning-subtle);border-color:var(--warning);color:var(--warning)}
+.step .sb{min-width:0;flex:1}
+.step .st{font-size:12px;font-weight:600;line-height:1.4}
+.step .sd{font-size:10px;color:var(--text-3);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.step.is-blocked .st{color:var(--text-3)}
+.lone{display:flex;align-items:center;gap:7px;padding:6px 0;border-bottom:1px dashed var(--border-subtle);font-size:12px}
+.lone:last-child{border-bottom:0}
+.lone .ti{flex:1;min-width:0;font-weight:600}
+.lone .dt{font-size:10px;white-space:nowrap}
+
+/* ===== 变体 G：左侧深色时间面板 + 右侧浅色事务卡（两种卡片语言强区分） ===== */
+.gstrip{display:flex;gap:12px;align-items:stretch}
+.tpanel{flex:0 0 300px;background:linear-gradient(165deg,#26374a 0%,#1c2733 100%);color:#e9eef4;border-radius:var(--radius-panel);padding:12px 16px;display:flex;flex-direction:column;gap:8px;box-shadow:0 4px 14px rgba(28,39,51,.18)}
+.tpanel .th .k{font-size:11px;letter-spacing:.16em;opacity:.65;font-weight:700}
+.tpanel .th .d{font-size:20px;font-weight:700;margin-top:2px}
+.tpanel .th .d small{font-size:12px;font-weight:500;opacity:.7;margin-left:8px}
+.tp-sec h5{margin:0 0 2px;font-size:11px;font-weight:700;letter-spacing:.06em;display:flex;justify-content:space-between;align-items:baseline}
+.tp-sec h5 span{font-weight:500;opacity:.75}
+.tp-sec.over h5{color:#f2acac}
+.tp-sec.tod h5{color:#9fd4d8}
+.tp-sec.later h5{color:#93a1b1}
+.tp-row{display:flex;gap:9px;align-items:baseline;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.08)}
+.tp-row:last-child{border-bottom:0}
+.tp-row .td{flex:0 0 46px;font-size:11px;font-weight:700;font-family:ui-monospace,"Cascadia Code",monospace}
+.tp-sec.over .tp-row .td{color:#f2acac}
+.tp-sec.tod .tp-row .td{color:#9fd4d8}
+.tp-sec.later .tp-row .td{color:#93a1b1}
+.tp-row .tt{flex:1;min-width:0;font-size:12px;font-weight:600;line-height:1.45}
+.tp-row.is-blocked .tt{color:#8d99a8;font-weight:500}
+.tp-row .lk{font-size:10px;color:#d9b36c;white-space:nowrap}
+.tpanel .tf{margin-top:auto;font-size:11px;opacity:.7;border-top:1px solid rgba(255,255,255,.14);padding-top:9px}
+.glance{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+.glance .gk{font-size:11px;font-weight:700;letter-spacing:.14em;color:var(--text-3);padding-left:2px}
+.ubadge{display:inline-block;padding:0 7px;border-radius:999px;font-size:10px;font-weight:700;line-height:1.8;background:rgba(255,255,255,.22);color:#fff;white-space:nowrap}
+
+/* ===== 浮动变体切换条（原型专用，不属于设计本身） ===== */
+.switcher{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:99;display:flex;align-items:center;gap:12px;background:var(--text);color:#fff;border-radius:999px;padding:8px 14px;box-shadow:0 8px 24px rgba(0,0,0,.28);font-size:13px}
+.switcher button{color:#fff;font-size:16px;padding:2px 10px;border-radius:999px}
+.switcher button:hover{background:rgba(255,255,255,.15)}
+.switcher .lb{font-weight:600;white-space:nowrap}
+.switcher .lb small{opacity:.65;font-weight:400;margin-left:6px}
+.proto-tag{position:fixed;right:14px;bottom:20px;z-index:99;font-size:11px;color:var(--text-3);background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:4px 10px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="rail" aria-hidden="true">
+    <div class="logo">阅</div>
+    <div class="ic"></div><div class="ic"></div><div class="ic"></div><div class="ic"></div>
+    <div class="ic on"></div><div class="ic"></div><div class="ic"></div>
+  </nav>
+  <div class="main">
+    <header class="topbar">
+      <div><h1>班主任工作台</h1><p>持续对话整理班级事务，正式保存始终由教师确认</p></div>
+      <span class="task-center">任务中心</span>
+    </header>
+    <nav class="tabs"><span class="on">首页</span><span>日历</span><span>事务</span><span>学生</span></nav>
+    <main class="content" id="content"></main>
+  </div>
+</div>
+
+<div class="switcher" role="group" aria-label="变体切换">
+  <button id="prev" title="上一个变体（←）">‹</button>
+  <span class="lb" id="label"></span>
+  <button id="next" title="下一个变体（→）">›</button>
+</div>
+<span class="proto-tag">原型 · 假数据 · 用 ← → 切换方案</span>
+
+<script>
+/* ===== 假数据：今天 = 2026-08-31（周一），共 13 件本周未完成事务 =====
+   对应真实数据契约：WorkNode(kind/due_date/status) + WorkSnapshot.edges
+   （contains=大任务包含子项，depends_on=前置依赖）；soft=软性持续推进（沟通/关怀类）。 */
+const TODAY = '2026-08-31';
+const DOMAIN_CHIP = { '班级日常':'d-ops', '活动文化':'d-act', '学校协同':'d-sch', '学生支持':'d-sup' };
+const DOMAIN_GRP  = { '班级日常':'g-ops', '活动文化':'g-act', '学校协同':'g-sch', '学生支持':'g-sup' };
+const PARENT_COLOR = { '开学第一周筹备':'c-accent', '班会与班级公约':'c-ai' };
+const PARENT_DUE = { '开学第一周筹备':'2026-09-06', '班会与班级公约':'2026-09-04' };
+const TASKS = [
+  { id:'t1',  title:'完成教室清洁布置',     due:'2026-08-30', domain:'班级日常', parent:'开学第一周筹备' },
+  { id:'t2',  title:'筹备教学物资',         due:'2026-08-30', domain:'活动文化' },
+  { id:'t3',  title:'制定并确定班会流程',   due:'2026-08-30', domain:'活动文化', parent:'班会与班级公约' },
+  { id:'t4',  title:'拟定班级公约',         due:'2026-08-31', domain:'班级日常', parent:'班会与班级公约', blockedBy:'t3' },
+  { id:'t5',  title:'统计学生返校情况',     due:'2026-08-31', domain:'学校协同' },
+  { id:'t6',  title:'确认开学第一周值日表', due:'2026-09-01', domain:'班级日常', parent:'开学第一周筹备' },
+  { id:'t7',  title:'家访名单初步沟通',     due:'2026-09-02', domain:'学生支持', soft:true },
+  { id:'t8',  title:'更新班级图书角',       due:'2026-09-03', domain:'活动文化', soft:true },
+  { id:'t9',  title:'提交月度安全自查表',   due:'2026-09-04', domain:'学校协同' },
+  { id:'t10', title:'起草家长会通知',       due:'2026-09-04', domain:'学校协同', parent:'班会与班级公约', blockedBy:'t4' },
+  { id:'t11', title:'跟进两名学生出勤波动', due:'2026-09-05', domain:'学生支持', soft:true },
+  { id:'t12', title:'班级文化墙素材收集',   due:'2026-09-05', domain:'活动文化', soft:true },
+  { id:'t13', title:'整理开学第一周小结',   due:'2026-09-06', domain:'班级日常', parent:'开学第一周筹备', blockedBy:'t6' },
+];
+const BY_ID = Object.fromEntries(TASKS.map(t => [t.id, t]));
+const WD = ['周日','周一','周二','周三','周四','周五','周六'];
+function wd(dateStr){ return WD[new Date(dateStr + 'T00:00:00').getDay()]; }
+function md(dateStr){ return dateStr.slice(5).replace('-', '/'); }
+function bucket(t){
+  if (t.due < TODAY) return 'over';
+  if (t.due === TODAY) return 'today';
+  if (t.due <= '2026-09-01') return 'tomorrow';
+  return 'week';
+}
+const GROUPS = { over:[], today:[], tomorrow:[], week:[] };
+TASKS.forEach(t => GROUPS[bucket(t)].push(t));
+function dueCls(t){ const b = bucket(t); return b === 'over' ? 'due-over' : b === 'today' ? 'due-today' : 'due-soon'; }
+function dueTxt(t){
+  const b = bucket(t);
+  if (b === 'over') return '已逾期 · ' + md(t.due);
+  if (b === 'today') return '今天';
+  if (b === 'tomorrow') return '明天';
+  return wd(t.due) + ' ' + md(t.due);
+}
+function chip(t){ return `<span class="chip ${DOMAIN_CHIP[t.domain]}">${t.domain}</span>`; }
+
+/* ===== 共用片段 ===== */
+function masthead(){ return `
+  <div class="masthead">
+    <div><p class="kicker">班主任案头</p><h2>先把事情说清楚，再决定怎么处理</h2></div>
+    <p class="homeroom">我的班主任班级<strong>九年级 2 班</strong></p>
+  </div>`; }
+function conversation(){ return `
+  <article class="conversation">
+    <div class="opening"><p>直接输入今天需要处理的班务即可，不必先选分类。学生档案更新会自动并入、可一键撤回；其余正式记录与处置仍由你确认。</p></div>
+    <div class="msg-you">周五放学前提醒我收齐安全回执，顺便记一下李明最近两次迟到。</div>
+    <div class="msg-ai"><b>AI 整理</b>已拆成两件事：① 日历提醒「收齐安全回执」定在今天 15:30 前；② 李明的迟到情况已生成学生档案草稿，待你核对后并入。</div>
+    <div class="composer">
+      <label>继续说明或补充</label>
+      <div class="fake-input">例如：月底提醒我复查；已确认双方目前都安全</div>
+      <div class="row">
+        <small>回车直接发送，Shift+回车换行</small>
+        <div style="display:flex;gap:8px">
+          <span class="btn">🎤 语音输入</span>
+          <span class="btn primary">发送并整理</span>
+        </div>
+      </div>
+    </div>
+  </article>`; }
+function reviewCard(){ return `
+  <section class="card review">
+    <header><span class="t">待核对</span><span class="count warn">2</span></header>
+    <p>学生档案草稿会自动并入、可一键撤回；其余草稿在你确认后才会成为正式记录。</p>
+  </section>`; }
+function recentCard(){ return `
+  <section class="card recent">
+    <header><span class="t">最近会话</span><span class="btn" style="padding:3px 10px;font-size:12px">新对话</span></header>
+    <div class="recent-row"><span class="rm">周五放学前提醒我收齐安全回执…</span><small>2 项待处理</small></div>
+    <div class="recent-row"><span class="rm">运动会报名名单怎么安排</span><small>暂无待处理</small></div>
+    <div class="recent-row"><span class="rm">和王雨家长沟通后续</span><small>1 项待处理</small></div>
+  </section>`; }
+
+/* ===== 变体 A：侧栏时间轴分组 ===== */
+function tlGroup(key, label){
+  const items = GROUPS[key];
+  if (!items.length) return '';
+  return `<div class="tl-group ${key}">
+    <h4>${label}<span class="n">${items.length} 项</span></h4>
+    <div class="tl-items">${items.map(t => `
+      <button class="it"><span class="ti">${t.title}</span>${chip(t)}<span class="dt ${dueCls(t)}">${dueTxt(t)}</span></button>`).join('')}
+    </div>
+  </div>`;
+}
+function renderA(){ return `
+  ${masthead()}
+  <div class="desk-grid">
+    ${conversation()}
+    <aside class="side">
+      <section class="card">
+        <header><span class="t">本周应做的事</span><span class="count">${TASKS.length}</span></header>
+        <div class="timeline">
+          ${tlGroup('over','已逾期')}
+          ${tlGroup('today','今天')}
+          ${tlGroup('tomorrow','明天')}
+          ${tlGroup('week','本周稍后')}
+        </div>
+        <span class="more-link">查看全部 ${TASKS.length} 项（日历页）</span>
+      </section>
+      ${reviewCard()}
+      ${recentCard()}
+    </aside>
+  </div>`; }
+
+/* ===== 变体 B：顶部横向日程带 ===== */
+function dayCard(dateStr, label, cls){
+  const items = TASKS.filter(t => cls === 'over' ? t.due < TODAY : t.due === dateStr);
+  if (!items.length) return '';
+  const shown = items.slice(0, 3);
+  return `<div class="day ${cls}">
+    <div class="dh"><b>${label}</b><span>${items.length} 项</span></div>
+    ${shown.map(t => `<div class="di"><i></i><span>${t.title}</span></div>`).join('')}
+    ${items.length > 3 ? `<span class="dn">还有 ${items.length - 3} 项 …</span>` : '<span class="dn"></span>'}
+  </div>`;
+}
+function renderB(){
+  const laterDays = [...new Set(TASKS.filter(t => t.due > '2026-09-01').map(t => t.due))].sort();
+  return `
+  ${masthead()}
+  <section class="week-strip">
+    <header><span class="t">本周事务 · 未完成 <b>${TASKS.length}</b> 项</span><a>在日历中查看全部 ›</a></header>
+    <div class="days">
+      ${dayCard(null, '已逾期', 'over')}
+      ${dayCard(TODAY, '今天 · 周一', 'today')}
+      ${dayCard('2026-09-01', '明天 · 周二', '')}
+      ${laterDays.map(d => dayCard(d, wd(d) + ' · ' + md(d), '')).join('')}
+    </div>
+  </section>
+  <div class="desk-grid">
+    ${conversation()}
+    <aside class="side">${reviewCard()}${recentCard()}</aside>
+  </div>`; }
+
+/* ===== 变体 C：焦点卡 + 分类分组 ===== */
+function renderC(){
+  const urgent = GROUPS.over[0] ? GROUPS.over[0] : GROUPS.today[0];
+  const urgentLabel = bucket(urgent) === 'over' ? '已逾期 1 天' : '今天截止';
+  const byDomain = {};
+  TASKS.forEach(t => { (byDomain[t.domain] = byDomain[t.domain] || []).push(t); });
+  return `
+  ${masthead()}
+  <div class="desk-grid">
+    ${conversation()}
+    <aside class="side">
+      <section class="hero">
+        <span class="hk">现在最值得先处理</span>
+        <h3>${urgent.title}</h3>
+        <div class="hm"><span class="chip" style="background:rgba(255,255,255,.18);color:#fff">${urgent.domain}</span><span>${urgentLabel}</span></div>
+        <span class="hb">打开处理 ›</span>
+      </section>
+      <section class="card">
+        <header><span class="t">本周其余事务</span><span class="count">${TASKS.length - 1}</span></header>
+        ${Object.entries(byDomain).map(([d, items]) => `
+          <div class="grp ${DOMAIN_GRP[d]}">
+            <header><b>${d}</b><span>${items.length} 项</span></header>
+            ${items.filter(t => t !== urgent).slice(0, 3).map(t => `
+              <button class="gi ${bucket(t) === 'over' ? 'over' : ''}"><span class="ti">${t.title}</span><span class="dt ${dueCls(t)}">${dueTxt(t)}</span></button>`).join('')}
+            ${items.filter(t => t !== urgent).length > 3 ? `<span class="collapse" style="text-align:left;padding:2px">还有 ${items.filter(t => t !== urgent).length - 3} 项 …</span>` : ''}
+          </div>`).join('')}
+        <span class="collapse">查看全部 ${TASKS.length} 项（日历页）</span>
+      </section>
+      ${reviewCard()}
+      ${recentCard()}
+    </aside>
+  </div>`; }
+
+/* ===== 变体 D：日程带（沿用 B 布局）+ 属性与关系标注 ===== */
+function legendHtml(){ return `
+  <span class="legend">
+    <span class="hard"><i></i>硬性截止</span>
+    <span class="soft"><i></i>软性 · 持续推进</span>
+    <span>🔒 = 有前置任务，完成后才开始</span>
+  </span>`; }
+function taskRowD(t){
+  const blocked = t.blockedBy && BY_ID[t.blockedBy];
+  return `<div class="di ${t.soft ? 'is-soft' : ''} ${blocked ? 'is-blocked' : ''}">
+    <i class="dot"></i>
+    <div class="ibox">
+      <span class="ti">${t.title}</span>
+      <span class="meta">
+        ${t.parent ? `<span class="ptag ${PARENT_COLOR[t.parent]}">${t.parent}</span>` : ''}
+        ${t.soft ? `<span class="softtag">软性 · 晚几天没关系</span>` : ''}
+        ${blocked ? `<span class="lock">🔒 等「${blocked.title}」</span>` : ''}
+      </span>
+    </div>
+  </div>`;
+}
+function dayCardD(dateStr, label, cls){
+  const items = TASKS.filter(t => cls === 'over' ? t.due < TODAY : t.due === dateStr);
+  if (!items.length) return '';
+  const shown = items.slice(0, 3);
+  return `<div class="day ${cls}">
+    <div class="dh"><b>${label}</b><span>${items.length} 项</span></div>
+    ${shown.map(taskRowD).join('')}
+    ${items.length > 3 ? `<span class="dn">还有 ${items.length - 3} 项 …</span>` : '<span class="dn"></span>'}
+  </div>`;
+}
+function renderD(){
+  const laterDays = [...new Set(TASKS.filter(t => t.due > '2026-09-01').map(t => t.due))].sort();
+  return `
+  ${masthead()}
+  <section class="week-strip">
+    <header><span class="t">本周事务 · 未完成 <b>${TASKS.length}</b> 项</span>${legendHtml()}<a>在日历中查看全部 ›</a></header>
+    <div class="days">
+      ${dayCardD(null, '已逾期', 'over')}
+      ${dayCardD(TODAY, '今天 · 周一', 'today')}
+      ${dayCardD('2026-09-01', '明天 · 周二', '')}
+      ${laterDays.map(d => dayCardD(d, wd(d) + ' · ' + md(d), '')).join('')}
+    </div>
+  </section>
+  <div class="desk-grid" style="grid-template-columns:minmax(0,1.9fr) 300px">
+    ${conversation()}
+    <aside class="side">${reviewCard()}${recentCard()}</aside>
+  </div>`; }
+
+/* ===== 变体 E：项目泳道带（按「大任务」分卡，依赖链按步骤顺序呈现） ===== */
+function projectLane(name){
+  const items = TASKS.filter(t => t.parent === name).sort((a, b) => a.due.localeCompare(b.due));
+  const color = PARENT_COLOR[name];
+  const firstOpen = items.find(t => !t.blockedBy);
+  return `<div class="lane ${color}">
+    <div class="lh"><b>${name}</b><span>${items.length} 项 · 截止 ${md(PARENT_DUE[name])}</span></div>
+    <div class="lb2">${items.map((t, i) => {
+      const blocked = t.blockedBy && BY_ID[t.blockedBy];
+      return `<div class="step ${t === firstOpen ? 'now' : ''} ${blocked ? 'is-blocked' : ''}">
+        <span class="no">${i + 1}</span>
+        <div class="sb">
+          <div class="st">${t.title}</div>
+          <div class="sd">
+            <span class="${dueCls(t)}">${dueTxt(t)}</span>
+            ${blocked ? `<span class="lock">🔒 等第 ${items.indexOf(blocked) + 1} 步</span>` : (t === firstOpen ? '<span style="color:var(--warning);font-weight:700">← 现在做</span>' : '')}
+          </div>
+        </div>
+      </div>`;
+    }).join('')}</div>
+  </div>`;
+}
+function renderE(){
+  const projects = Object.keys(PARENT_COLOR);
+  const standalone = TASKS.filter(t => !t.parent && !t.soft);
+  const soft = TASKS.filter(t => t.soft);
+  return `
+  ${masthead()}
+  <section class="week-strip">
+    <header><span class="t">本周事务 · 未完成 <b>${TASKS.length}</b> 项</span>${legendHtml()}<a>在日历中查看全部 ›</a></header>
+    <div class="lanes">
+      ${projects.map(projectLane).join('')}
+      <div class="lane c-plain">
+        <div class="lh"><b>独立事项</b><span>${standalone.length} 项</span></div>
+        <div class="lb2">${standalone.map(t => `
+          <div class="lone"><span class="ti">${t.title}</span>${chip(t)}<span class="dt ${dueCls(t)}">${dueTxt(t)}</span></div>`).join('')}
+        </div>
+      </div>
+      <div class="lane c-soft">
+        <div class="lh"><b>软性 · 持续推进</b><span>${soft.length} 项</span></div>
+        <div class="lb2">${soft.map(t => `
+          <div class="lone"><span class="ti">${t.title}</span>${chip(t)}<span class="dt due-soon">建议 ${md(t.due)} 前</span></div>`).join('')}
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="desk-grid" style="grid-template-columns:minmax(0,1.9fr) 300px">
+    ${conversation()}
+    <aside class="side">${reviewCard()}${recentCard()}</aside>
+  </div>`; }
+
+/* ===== 变体 F：E 的项目卡 + 时间顺序（左起「现在该做」焦点列，项目卡按最近截止排序） ===== */
+function renderF(){
+  const projects = Object.keys(PARENT_COLOR)
+    .map(name => ({ name, earliest: Math.min(...TASKS.filter(t => t.parent === name).map(t => Date.parse(t.due))) }))
+    .sort((a, b) => a.earliest - b.earliest)
+    .map(p => p.name);
+  const focus = TASKS.filter(t => t.due <= TODAY).sort((a, b) => a.due.localeCompare(b.due));
+  const standalone = TASKS.filter(t => !t.parent && !t.soft && t.due > TODAY);
+  const soft = TASKS.filter(t => t.soft);
+  return `
+  ${masthead()}
+  <section class="week-strip">
+    <header><span class="t">本周事务 · 未完成 <b>${TASKS.length}</b> 项</span>${legendHtml()}<a>在日历中查看全部 ›</a></header>
+    <div class="lanes">
+      <div class="lane c-warn wide">
+        <div class="lh"><b>现在该做</b><span>逾期 ${focus.filter(t => t.due < TODAY).length} · 今天 ${focus.filter(t => t.due === TODAY).length}</span></div>
+        <div class="lb2">${focus.map(t => {
+          const blocked = t.blockedBy && BY_ID[t.blockedBy];
+          return `<div class="frow ${blocked ? 'is-blocked' : ''}">
+            <span class="ft">${t.title}</span>
+            <span class="meta">
+              ${t.parent ? `<span class="ptag ${PARENT_COLOR[t.parent]}">${t.parent}</span>` : chip(t)}
+              ${blocked ? `<span class="lock">🔒 等「${blocked.title}」</span>` : `<span class="dt ${dueCls(t)}" style="font-size:10px">${dueTxt(t)}</span>`}
+            </span>
+          </div>`;
+        }).join('')}</div>
+      </div>
+      ${projects.map(projectLane).join('')}
+      <div class="lane c-plain">
+        <div class="lh"><b>独立事项</b><span>${standalone.length} 项</span></div>
+        <div class="lb2">${standalone.map(t => `
+          <div class="lone"><span class="ti">${t.title}</span>${chip(t)}<span class="dt ${dueCls(t)}">${dueTxt(t)}</span></div>`).join('')}
+        </div>
+      </div>
+      <div class="lane c-soft">
+        <div class="lh"><b>软性 · 持续推进</b><span>${soft.length} 项</span></div>
+        <div class="lb2">${soft.map(t => `
+          <div class="lone"><span class="ti">${t.title}</span>${chip(t)}<span class="dt due-soon">建议 ${md(t.due)} 前</span></div>`).join('')}
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="desk-grid" style="grid-template-columns:minmax(0,1.9fr) 300px">
+    ${conversation()}
+    <aside class="side">${reviewCard()}${recentCard()}</aside>
+  </div>`; }
+
+/* ===== 变体 G：左「按时间看」深色面板 + 右「按事务看」浅色泳道卡 ===== */
+function urgencyOf(items){
+  if (items.some(t => t.due < TODAY)) return '有逾期';
+  if (items.some(t => t.due === TODAY)) return '今天到期';
+  return '本周内';
+}
+function projectLaneG(name){
+  const items = TASKS.filter(t => t.parent === name).sort((a, b) => a.due.localeCompare(b.due));
+  const color = PARENT_COLOR[name];
+  const firstOpen = items.find(t => !t.blockedBy);
+  return `<div class="lane ${color}">
+    <div class="lh"><b>${name}</b><span class="ubadge">${urgencyOf(items)} · ${items.length} 项</span></div>
+    <div class="lb2">${items.map((t, i) => {
+      const blocked = t.blockedBy && BY_ID[t.blockedBy];
+      return `<div class="step ${t === firstOpen ? 'now' : ''} ${blocked ? 'is-blocked' : ''}">
+        <span class="no">${i + 1}</span>
+        <div class="sb">
+          <div class="st">${t.title}</div>
+          <div class="sd">
+            <span class="${dueCls(t)}">${dueTxt(t)}</span>
+            ${blocked ? `<span class="lock">🔒 等第 ${items.indexOf(blocked) + 1} 步</span>` : (t === firstOpen ? '<span style="color:var(--warning);font-weight:700">← 现在做</span>' : '')}
+          </div>
+        </div>
+      </div>`;
+    }).join('')}</div>
+  </div>`;
+}
+function tpSec(cls, label, items){
+  if (!items.length) return '';
+  return `<div class="tp-sec ${cls}">
+    <h5>${label}<span>${items.length} 项</span></h5>
+    ${items.map(t => {
+      const blocked = t.blockedBy && BY_ID[t.blockedBy];
+      const dateLabel = cls === 'over' ? md(t.due) : cls === 'tod' ? '今天' : md(t.due);
+      return `<div class="tp-row ${blocked ? 'is-blocked' : ''}">
+        <span class="td">${dateLabel}</span>
+        <span class="tt">${t.title}</span>
+        ${blocked ? `<span class="lk">🔒 等前置</span>` : ''}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+function renderG(){
+  const projects = Object.keys(PARENT_COLOR)
+    .map(name => ({ name, earliest: Math.min(...TASKS.filter(t => t.parent === name).map(t => Date.parse(t.due))) }))
+    .sort((a, b) => a.earliest - b.earliest)
+    .map(p => p.name);
+  const over = TASKS.filter(t => t.due < TODAY).sort((a, b) => a.due.localeCompare(b.due));
+  const tod = TASKS.filter(t => t.due === TODAY);
+  const later = TASKS.filter(t => t.due > TODAY).sort((a, b) => a.due.localeCompare(b.due));
+  const laterShown = later.slice(0, 3);
+  const standalone = TASKS.filter(t => !t.parent && !t.soft && t.due > TODAY);
+  const soft = TASKS.filter(t => t.soft);
+  return `
+  ${masthead()}
+  <section class="week-strip">
+    <header><span class="t">本周事务 · 未完成 <b>${TASKS.length}</b> 项</span>${legendHtml()}<a>在日历中查看全部 ›</a></header>
+    <div class="gstrip">
+      <aside class="tpanel">
+        <div class="th"><span class="k">按时间看</span><span class="d">今天 · 周一<small>08 / 31</small></span></div>
+        ${tpSec('over', '已逾期', over)}
+        ${tpSec('tod', '今天到期', tod)}
+        ${tpSec('later', '本周稍后', laterShown)}
+        <div class="tf">${later.length > laterShown.length ? `本周还有 ${later.length - laterShown.length} 项 · ` : ''}点日期进入日历页 ›</div>
+      </aside>
+      <div class="glance">
+        <span class="gk">按事务看 · 大任务与依赖关系</span>
+        <div class="lanes">
+          ${projects.map(projectLaneG).join('')}
+          <div class="lane c-plain">
+            <div class="lh"><b>独立事项</b><span class="ubadge">${urgencyOf(standalone)} · ${standalone.length} 项</span></div>
+            <div class="lb2">${standalone.map(t => `
+              <div class="lone"><span class="ti">${t.title}</span>${chip(t)}<span class="dt ${dueCls(t)}">${dueTxt(t)}</span></div>`).join('') || '<div class="lone"><span class="ti" style="color:var(--text-3)">今天之前的独立事项见左侧面板</span></div>'}
+            </div>
+          </div>
+          <div class="lane c-soft">
+            <div class="lh"><b>软性 · 持续推进</b><span class="ubadge">不紧急 · ${soft.length} 项</span></div>
+            <div class="lb2">${soft.map(t => `
+              <div class="lone"><span class="ti">${t.title}</span>${chip(t)}<span class="dt due-soon">建议 ${md(t.due)} 前</span></div>`).join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="desk-grid" style="grid-template-columns:minmax(0,1.9fr) 300px">
+    ${conversation()}
+    <aside class="side">${reviewCard()}${recentCard()}</aside>
+  </div>`; }
+
+/* ===== 切换器 ===== */
+const VARIANTS = {
+  G: { name:'G — 左时间面板 + 右事务卡（推荐）', desc:'左侧深色面板纯按时间列紧急任务；右侧浅色卡按大任务展示关系与紧急程度', render:renderG },
+  F: { name:'F — 时间焦点 + 项目步骤链', desc:'左列按时间列出现在该做的，右侧大任务卡按截止排序、内部步骤链', render:renderF },
+  D: { name:'D — 日程带 + 属性关系（B 增强）', desc:'按天分组；标注硬性/软性、所属大任务、前置依赖 🔒', render:renderD },
+  E: { name:'E — 项目泳道带', desc:'按「大任务」分卡，子任务排成步骤链，软性事务单独一列', render:renderE },
+  A: { name:'A — 时间轴分组', desc:'侧栏保留，本周事务按「已逾期 / 今天 / 明天 / 本周稍后」分组', render:renderA },
+  B: { name:'B — 顶部日程带', desc:'本周事务移到案头下方横向日程带，侧栏只留待核对与会话', render:renderB },
+  C: { name:'C — 焦点卡 + 分类分组', desc:'最急的一件单独放大，其余按事务领域分组着色', render:renderC },
+};
+const KEYS = Object.keys(VARIANTS);
+function current(){
+  const v = new URLSearchParams(location.search).get('variant');
+  return KEYS.includes(v) ? v : 'G';
+}
+function apply(v){
+  document.getElementById('content').innerHTML = `<div class="v${v}">${VARIANTS[v].render()}</div>`;
+  document.getElementById('label').innerHTML = VARIANTS[v].name + `<small>${VARIANTS[v].desc}</small>`;
+  const url = new URL(location.href); url.searchParams.set('variant', v);
+  history.replaceState(null, '', url);
+}
+function step(dir){
+  const i = KEYS.indexOf(current());
+  apply(KEYS[(i + dir + KEYS.length) % KEYS.length]);
+}
+document.getElementById('prev').onclick = () => step(-1);
+document.getElementById('next').onclick = () => step(1);
+document.addEventListener('keydown', e => {
+  if (/INPUT|TEXTAREA/.test(document.activeElement?.tagName || '')) return;
+  if (e.key === 'ArrowLeft') step(-1);
+  if (e.key === 'ArrowRight') step(1);
+});
+apply(current());
+</script>
+</body>
+</html>

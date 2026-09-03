@@ -1648,6 +1648,16 @@
   gap: 3px;
 }
 
+.assembly-record-source {
+  background: var(--color-accent-subtle);
+  border-radius: 999px;
+  color: var(--color-accent);
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  width: fit-content;
+}
+
 .assembly-feedback {
   background: var(--color-accent-subtle);
   border: 1px solid color-mix(in srgb, var(--color-accent) 16%, transparent);

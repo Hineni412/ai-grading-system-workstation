@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, useSlots, watch } from 'vue'
 
 import { weekTitle } from './timetableModel'
+
+const slots = useSlots()
 
 const props = withDefaults(defineProps<{
   weekStart: string
@@ -65,6 +67,9 @@ function submitAnchor(): void {
       >
         校正周次
       </button>
+      <div v-if="slots.end" class="week-navigator__end">
+        <slot name="end" />
+      </div>
     </div>
 
     <div v-if="correcting" class="week-navigator__anchor">
@@ -146,6 +151,16 @@ function submitAnchor(): void {
   margin: 0;
   color: var(--color-text-primary);
   font-size: var(--font-size-h3);
+}
+
+/* 同一行右侧扩展槽：模式切换等高频控件，避免再占一整行。 */
+.week-navigator__end {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .week-navigator__anchor {

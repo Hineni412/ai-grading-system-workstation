@@ -40,6 +40,12 @@ def run_assembly_export_job(
     export_format = str(context.payload.get("format") or "").strip().casefold()
     if export_format not in {"docx", "markdown"}:
         raise ValueError("assembly export format is not supported")
+    raw_source = context.payload.get("source")
+    source = (
+        str(raw_source).strip().casefold()
+        if raw_source is not None
+        else None
+    )
 
     question_rows = QuestionBankReadService(Path(question_bank_db_path)).get_questions(
         draft.order_ids
@@ -103,6 +109,7 @@ def run_assembly_export_job(
                     output_path=published,
                     export_format=export_format,
                     question_type_summary=_question_type_summary(question_rows),
+                    source=source,
                 )
             )
         except BaseException:

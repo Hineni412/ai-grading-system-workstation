@@ -146,10 +146,15 @@ def test_first_party_sdk_calls_stay_inside_the_llm_gateway():
     project_root = Path(__file__).resolve().parents[1]
     excluded_parts = {
         ".git",
+        ".cindy-worktrees",
         ".p35t",
+        ".portable_runtime_cache",
         ".pytest_cache",
         ".test-runs",
         ".worktrees",
+        ".zcode-worktrees",
+        # 打包输出与本机运行时缓存（gitignore）：不参与源码扫描。
+        "dist",
         "node_modules",
         "runtime",
         # 本机草稿与审计目录（gitignore）：不受源码治理规则约束。

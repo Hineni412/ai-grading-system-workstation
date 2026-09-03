@@ -67,6 +67,7 @@ export interface AssemblyRecord {
   question_count: number
   question_type_summary: Record<string, number>
   download_url: string
+  source: 'ai' | null
 }
 
 export interface AssemblyRecordList {
@@ -223,6 +224,7 @@ function isRecordItem(value: unknown): value is AssemblyRecord {
       'question_count',
       'question_type_summary',
       'download_url',
+      'source',
     ]) &&
     typeof value.id === 'string' &&
     typeof value.title === 'string' &&
@@ -239,7 +241,8 @@ function isRecordItem(value: unknown): value is AssemblyRecord {
     Number(value.question_count) >= 0 &&
     isRecord(value.question_type_summary) &&
     typeof value.download_url === 'string' &&
-    value.download_url.startsWith('/api/question-assembly/records/')
+    value.download_url.startsWith('/api/question-assembly/records/') &&
+    (value.source === null || value.source === 'ai')
   )
 }
 
@@ -361,6 +364,7 @@ export const assemblyApi = {
   submitExport(
     draftRevision: string,
     format: AssemblyExportSubmitFormat,
+    source?: 'ai',
     signal?: AbortSignal,
   ): Promise<JobResponse> {
     if (!isRevision(draftRevision) || !isExportFormat(format)) {
@@ -368,7 +372,9 @@ export const assemblyApi = {
     }
     return apiClient.request('/api/question-assembly/export', {
       method: 'POST',
-      body: { draft_revision: draftRevision, format },
+      body: source === 'ai'
+        ? { draft_revision: draftRevision, format, source }
+        : { draft_revision: draftRevision, format },
       decode: decodeJobResponse,
       signal,
     })

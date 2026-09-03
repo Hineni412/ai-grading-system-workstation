@@ -14,6 +14,7 @@ const apiMock = vi.hoisted(() => ({
   getReportContext: vi.fn(),
   submitReport: vi.fn(),
   getAnalysisPreflight: vi.fn(),
+  deleteReportFile: vi.fn(),
   listTrainingTasks: vi.fn(),
   getTrainingTask: vi.fn(),
   submitTrainingExport: vi.fn(),
@@ -671,5 +672,79 @@ describe('file center view', () => {
     confirm!.click()
     await settle()
     expect(apiMock.submitReport).not.toHaveBeenCalled()
+  })
+
+  function mockRetainedReportContext() {
+    apiMock.getReportContext.mockResolvedValue({
+      score_revision: 'a'.repeat(64),
+      has_results: true,
+      jobs: [
+        {
+          ...makeJob({
+            id: 71,
+            payload: {
+              session_id: 7,
+              report_type: 'personal_analysis_html',
+              score_revision: 'a'.repeat(64),
+            },
+            result: {
+              session_id: 7,
+              report_type: 'personal_analysis_html',
+              score_revision: 'a'.repeat(64),
+              filename: '个人报告.zip',
+              download_url: '/api/jobs/71/download',
+            },
+          }),
+          is_current_revision: true,
+          file_status: 'available' as const,
+        },
+        { ...makeJob(), is_current_revision: true, file_status: 'available' as const },
+      ],
+      total: 2,
+      page: 1,
+      page_size: 100,
+      total_pages: 1,
+    })
+  }
+
+  it('keeps retained personal reports downloadable and offers deletion only for them', async () => {
+    mockRetainedReportContext()
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('个人报告.zip'))
+
+    // 删除入口只对个人学情报告显示。
+    expect(host.querySelector('[data-testid="delete-report-71"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="delete-report-41"]')).toBeNull()
+
+    // 留存报告下载后的提示说明留存在本机、不再产生费用。
+    apiMock.downloadJobFile.mockResolvedValue({
+      blob: new Blob(['zip']),
+      filename: '个人报告.zip',
+    })
+    host.querySelector<HTMLButtonElement>('[data-testid="download-report-71"]')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('留存在本机'))
+    expect(host.textContent).not.toContain('本机副本随后删除')
+  })
+
+  it('deletes a retained report after confirmation and reports freed space', async () => {
+    mockRetainedReportContext()
+    apiMock.deleteReportFile.mockResolvedValue({
+      job_id: 71,
+      deleted: true,
+      freed_bytes: 2 * 1024 * 1024,
+    })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('个人报告.zip'))
+
+    host.querySelector<HTMLButtonElement>('[data-testid="delete-report-71"]')!.click()
+    await vi.waitFor(() => expect(apiMock.deleteReportFile).toHaveBeenCalledWith(7, 71))
+    await vi.waitFor(() => expect(host.textContent).toContain('释放约 2.0 MB'))
+
+    // 取消确认则不发起删除。
+    confirmSpy.mockReturnValue(false)
+    host.querySelector<HTMLButtonElement>('[data-testid="delete-report-71"]')!.click()
+    await settle()
+    expect(apiMock.deleteReportFile).toHaveBeenCalledTimes(1)
   })
 })

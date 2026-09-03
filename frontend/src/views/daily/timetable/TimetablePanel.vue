@@ -10,6 +10,7 @@ import ProgressComparePanel from './ProgressComparePanel.vue'
 import RegularEditPanel from './RegularEditPanel.vue'
 import TimetableCellPopover from './TimetableCellPopover.vue'
 import TimetableGrid from './TimetableGrid.vue'
+import TodayPanel from './TodayPanel.vue'
 import WeekNavigator from './WeekNavigator.vue'
 import {
   buildDragOps,
@@ -19,11 +20,16 @@ import {
   mondayOf,
   slotLabelFor,
   slotLabelMap,
+  todayEntries,
   todayIso,
-  todaySummary,
   type TimetableCellRef,
   type TimetableMode,
 } from './timetableModel'
+
+defineProps<{
+  /** 自定义时段面板开关（开关按钮在页头一行，状态由父组件持有）。 */
+  customOpen: boolean
+}>()
 
 const weekStart = ref(mondayOf(todayIso()))
 const week = ref<TimetableWeek | null>(null)
@@ -35,7 +41,6 @@ const noticeMessage = ref('')
 const popoverCell = ref<TimetableCell | null>(null)
 const popoverInitialSection = ref<'menu' | 'adjust'>('menu')
 const regularEditCell = ref<TimetableCell | null>(null)
-const showCustomSlots = ref(false)
 
 const modeOptions: Array<{ id: TimetableMode; label: string }> = [
   { id: 'view', label: '查看' },
@@ -44,16 +49,15 @@ const modeOptions: Array<{ id: TimetableMode; label: string }> = [
 ]
 
 const modeHints: Record<TimetableMode, string> = {
-  view: '查看模式：点击课格可以记一笔、发起临时调整或清除临时调换。',
-  adjust: '临时调整模式：拖拽课格移动或交换，点击课格新增/修改临时课程；调整只对当前查看的这一周生效，下周自动恢复常规。',
-  regular: '编辑常规课表：点击课格修改固定课表；本周已被临时调整的格子仍显示临时内容，保存常规课表不会改动它们。',
+  view: '点击课格可以记一笔、发起临时调整或清除临时调换。',
+  adjust: '临时调整模式：拖拽课格移动或交换，点击空白格新增临时课程；只对本周生效。',
+  regular: '编辑常规课表：点击课格修改固定课表；本周已被临时调整的格子仍显示临时内容。',
 }
 
 const slotLabels = computed(() => slotLabelMap(week.value?.slots ?? []))
 const customSlots = computed(() => (week.value?.slots ?? []).filter((slot) => slot.kind === 'custom'))
 const candidateClassLabels = computed(() => distinctClassLabels(week.value?.cells ?? []))
-const todayItems = computed(() => (week.value ? todaySummary(week.value) : []))
-const isCurrentWeek = computed(() => week.value?.today.in_week === true)
+const todayItems = computed(() => (week.value ? todayEntries(week.value) : []))
 
 const popoverContext = computed(() => {
   const cell = popoverCell.value
@@ -303,64 +307,50 @@ onMounted(loadWeek)
         :busy="busy"
         @navigate="navigate"
         @anchor="applyAnchor"
-      />
+      >
+        <template #end>
+          <div class="timetable-panel__modes" role="group" aria-label="课表模式">
+            <button
+              v-for="option in modeOptions"
+              :key="option.id"
+              type="button"
+              :class="{ 'is-active': mode === option.id }"
+              :aria-pressed="mode === option.id"
+              @click="selectMode(option.id)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <p class="timetable-panel__mode-hint">{{ modeHints[mode] }}</p>
+        </template>
+      </WeekNavigator>
 
-      <FeedbackBanner
-        v-if="isCurrentWeek && todayItems.length"
-        tone="info"
-        title="今天的安排"
-        :description="todayItems.join(' · ')"
-      />
+      <div class="timetable-panel__cols">
+        <div class="timetable-panel__main">
+          <CustomSlotManager v-if="customOpen" :slots="customSlots" :busy="busy" @create="createCustomSlot" @remove="removeCustomSlot" />
 
-      <div class="timetable-panel__toolbar">
-        <div class="timetable-panel__modes" role="group" aria-label="课表模式">
-          <button
-            v-for="option in modeOptions"
-            :key="option.id"
-            type="button"
-            :class="{ 'is-active': mode === option.id }"
-            :aria-pressed="mode === option.id"
-            @click="selectMode(option.id)"
-          >
-            {{ option.label }}
-          </button>
+          <TimetableGrid
+            :week="week"
+            :mode="mode"
+            @cell-click="onCellClick"
+            @cell-drop="onCellDrop"
+          />
+
+          <RegularEditPanel
+            v-if="mode === 'regular'"
+            :context="regularEditContext"
+            :busy="busy"
+            @save="saveRegularCell"
+            @clear="clearRegularCell"
+            @close="regularEditCell = null"
+          />
         </div>
-        <button
-          type="button"
-          class="timetable-panel__slots-toggle"
-          :aria-expanded="showCustomSlots"
-          @click="showCustomSlots = !showCustomSlots"
-        >
-          {{ showCustomSlots ? '收起自定义时段' : '自定义时段' }}
-        </button>
+
+        <aside class="timetable-panel__side">
+          <TodayPanel :week="week" :entries="todayItems" />
+          <ProgressComparePanel :candidates="candidateClassLabels" :slots="week.slots" />
+        </aside>
       </div>
-      <p class="timetable-panel__mode-hint">{{ modeHints[mode] }}</p>
-
-      <CustomSlotManager
-        v-if="showCustomSlots"
-        :slots="customSlots"
-        :busy="busy"
-        @create="createCustomSlot"
-        @remove="removeCustomSlot"
-      />
-
-      <TimetableGrid
-        :week="week"
-        :mode="mode"
-        @cell-click="onCellClick"
-        @cell-drop="onCellDrop"
-      />
-
-      <RegularEditPanel
-        v-if="mode === 'regular'"
-        :context="regularEditContext"
-        :busy="busy"
-        @save="saveRegularCell"
-        @clear="clearRegularCell"
-        @close="regularEditCell = null"
-      />
-
-      <ProgressComparePanel :candidates="candidateClassLabels" :slots="week.slots" />
 
       <TimetableCellPopover
         v-if="popoverContext"
@@ -383,12 +373,38 @@ onMounted(loadWeek)
   gap: var(--space-3);
 }
 
-.timetable-panel__toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+/* 宽屏双栏：课表在左，「今天的安排 + 双班进度对照」常驻右栏。 */
+.timetable-panel__cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 336px;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.timetable-panel__main {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.timetable-panel__side {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+@media (max-width: 1280px) {
+  .timetable-panel__cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .timetable-panel__side {
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+
+  .timetable-panel__mode-hint {
+    display: none;
+  }
 }
 
 .timetable-panel__modes {
@@ -396,9 +412,8 @@ onMounted(loadWeek)
   gap: var(--space-2);
 }
 
-.timetable-panel__modes button,
-.timetable-panel__slots-toggle {
-  min-height: var(--control-height-default);
+.timetable-panel__modes button {
+  min-height: var(--control-height-small);
   padding: 0 14px;
   border: var(--border-width) solid var(--color-border-default);
   border-radius: var(--radius-control);
@@ -416,8 +431,13 @@ onMounted(loadWeek)
 }
 
 .timetable-panel__mode-hint {
+  display: block;
+  max-width: 420px;
   margin: 0;
+  overflow: hidden;
   color: var(--color-text-muted);
   font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

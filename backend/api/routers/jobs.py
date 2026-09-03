@@ -382,6 +382,12 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.result[key] for key in allowed if key in job.result}
         )
+    if job.job_type == "ai_assembly_spec":
+        # 只暴露细目表与模型名；prompt 与题库概况原文不进 result。
+        allowed = ("spec", "model_name")
+        return sanitize_public_mapping(
+            {key: job.result[key] for key in allowed if key in job.result}
+        )
     return sanitize_public_mapping(job.result)
 
 
@@ -439,10 +445,40 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
     if job.job_type == "assembly_export":
-        allowed = ("draft_revision", "format", "question_count", "retry_of_job_id")
+        allowed = (
+            "draft_revision",
+            "format",
+            "question_count",
+            "source",
+            "retry_of_job_id",
+        )
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
+    if job.job_type == "ai_assembly_spec":
+        # 脱敏红线：不暴露 prompt、题库概况、口语与新指令原文。
+        raw_request = job.payload.get("request")
+        request = raw_request if isinstance(raw_request, dict) else {}
+        raw_type_counts = request.get("type_counts")
+        locked_ids = request.get("locked_question_ids")
+        template_paper_id = request.get("template_paper_id")
+        public: dict[str, Any] = {
+            "type_counts": (
+                {
+                    str(key): value
+                    for key, value in raw_type_counts.items()
+                }
+                if isinstance(raw_type_counts, dict)
+                else {}
+            ),
+            "has_free_text": bool(str(request.get("free_text") or "").strip()),
+            "locked_count": (
+                len(locked_ids) if isinstance(locked_ids, (list, tuple)) else 0
+            ),
+        }
+        if template_paper_id is not None:
+            public["template_paper_id"] = template_paper_id
+        return sanitize_public_mapping(public)
     if job.job_type.startswith("ops_"):
         allowed = ("operation_id", "operation")
         return sanitize_public_mapping(
@@ -607,6 +643,7 @@ def submit_job(
         "taxonomy_suggestion",
         "training_export",
         "assembly_export",
+        "ai_assembly_spec",
         "ops_backup",
         "ops_restore_prepare",
         "ops_migration_prepare",

@@ -420,4 +420,46 @@ describe('file center API contract', () => {
       expect(fetchMock).not.toHaveBeenCalled()
     },
   )
+
+  it('deletes a retained report file through the dedicated endpoint', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ job_id: 81, deleted: true, freed_bytes: 2048 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+
+    const result = await exportsApi.deleteReportFile(7, 81)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/sessions/7/reports/81/file',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(result).toEqual({ job_id: 81, deleted: true, freed_bytes: 2048 })
+  })
+
+  it('rejects malformed delete results and path-like keys', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ job_id: 81, deleted: 'yes', freed_bytes: -1 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    await expect(exportsApi.deleteReportFile(7, 81)).rejects.toThrow()
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ job_id: 81, deleted: false, freed_bytes: 0, file_path: 'C:/x' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    await expect(exportsApi.deleteReportFile(7, 81)).rejects.toThrow()
+  })
+
+  it.each([0, -1])('rejects unsafe delete identifiers before fetch: %s', async (id) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    await expect(exportsApi.deleteReportFile(id, 81)).rejects.toThrow()
+    await expect(exportsApi.deleteReportFile(7, id)).rejects.toThrow()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })

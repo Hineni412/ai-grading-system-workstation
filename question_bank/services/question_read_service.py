@@ -50,6 +50,7 @@ from question_bank.services.similarity_service import text_similarity
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_chapter_exam_scope_values,
     curriculum_volume,
+    teaching_progress_allowed_exam_scope_values,
     teaching_progress_allowed_prefixes,
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
@@ -493,6 +494,7 @@ class QuestionReadFilters:
     sort: str = "newest"
     criteria_needs_review: bool = False
     teaching_progress_chapter: str = ""
+    collapse_duplicates: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -2336,27 +2338,43 @@ def _question_filter_parts(
         params.extend(CORE_ANALYSIS_TAG_TYPES)
     if filters.criteria_needs_review:
         where.append(_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id"))
+    if filters.collapse_duplicates:
+        # 每组排重只保留 duplicate_of 源题，隐藏已关联的重复题（opt-in）。
+        where.append(
+            "q.id NOT IN (SELECT question_id FROM question_duplicate_links)"
+        )
     if filters.teaching_progress_chapter.strip():
         allowed_prefixes = teaching_progress_allowed_prefixes(
             filters.teaching_progress_chapter
         )
-        if allowed_prefixes is None:
+        allowed_scope_values = teaching_progress_allowed_exam_scope_values(
+            filters.teaching_progress_chapter
+        )
+        if allowed_prefixes is None or allowed_scope_values is None:
             # 无法解析进度上限时失败关闭，不静默放行。
             where.append("1 = 0")
         else:
             prefix_clauses = " OR ".join(
                 "tp.tag_value LIKE ?" for _ in allowed_prefixes
             )
+            scope_placeholders = ", ".join("?" for _ in allowed_scope_values)
+            # knowledge_point 与 prerequisite 均为层级路径，须落在已学前缀内；
+            # exam_scope 为空格分隔值，须整体落在已学 exam_scope 值集合内。
             where.append(
                 "NOT EXISTS ("
                 "SELECT 1 FROM question_tags tp "
                 "WHERE tp.question_id = q.id "
-                "AND tp.tag_type = 'knowledge_point' "
                 "AND COALESCE(tp.tag_value, '') <> '' "
-                f"AND NOT ({prefix_clauses})"
+                "AND ("
+                "(tp.tag_type IN ('knowledge_point', 'prerequisite') "
+                f"AND NOT ({prefix_clauses})) "
+                "OR (tp.tag_type = 'exam_scope' "
+                f"AND tp.tag_value NOT IN ({scope_placeholders}))"
+                ")"
                 ")"
             )
             params.extend(f"{prefix}%" for prefix in allowed_prefixes)
+            params.extend(allowed_scope_values)
     return joins, where, params
 
 

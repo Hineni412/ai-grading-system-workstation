@@ -430,6 +430,8 @@ function queryFilters(): QuestionBankFilters {
     tagStatus: filters.tagStatus,
     sort: filters.sort,
     teachingProgressChapter: strictProgressChapterId.value || undefined,
+    // 组卷工作台按重复组折叠：每组只显示被保留的源题。
+    collapseDuplicates: true,
   }
 }
 
@@ -512,7 +514,7 @@ async function loadFacets(): Promise<void> {
   baseFacetsState.value = 'loading'
   facetsState.value = 'loading'
   try {
-    const loaded = await questionBankApi.listFacets({ tagStatus: 'all' })
+    const loaded = await questionBankApi.listFacets({ tagStatus: 'all', collapseDuplicates: true })
     baseFacets.value = loaded
     facets.value = loaded
     hasFacetData.value = true
