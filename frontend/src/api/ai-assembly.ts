@@ -16,7 +16,11 @@ export interface AiAssemblySpecRow {
   knowledge_points: string[]
   difficulty: number | null
   score: number | null
+  essay_subtype?: AiAssemblyEssaySubtype | null
 }
+
+// 解答题子类的封闭取值，与后端 EssaySubtype 一致。
+export type AiAssemblyEssaySubtype = '画图' | '计算' | '证明'
 
 export interface AiAssemblySpec {
   title: string
@@ -32,6 +36,7 @@ export interface AiAssemblySpecRequest {
   exam_types: string[]
   years: number[]
   free_text: string
+  essay_subtype?: AiAssemblyEssaySubtype
   current_spec?: AiAssemblySpec
   locked_question_ids: number[]
   new_instruction: string
@@ -67,6 +72,8 @@ export interface AiAssemblyTemplateEntry {
   question_type: string
   difficulty: number | null
   score: number | null
+  // 同题型同难度的连续行合并数；模板摘要必须按它汇总题数，不能逐 entry 计数。
+  count: number
 }
 
 export interface AiAssemblyTemplateStructure {
@@ -79,6 +86,34 @@ export interface AiAssemblySelectOptions {
   dedupe_enabled?: boolean
   exclude_ids?: number[]
 }
+
+export interface AiAssemblySessionParams {
+  template_paper_id: number | null
+  scope_keys: string[]
+  difficulty_ratio: { easy: number | null; medium: number | null; hard: number | null }
+  type_counts: Record<string, number>
+  exam_types: string[]
+  years: number[]
+  free_text: string
+  essay_subtype: AiAssemblyEssaySubtype | null
+}
+
+export interface AiAssemblySession {
+  params: AiAssemblySessionParams
+  spec: AiAssemblySpec | null
+  spec_model_name: string
+  selections: Record<number, number[]>
+  locked_question_ids: number[]
+  locked_row_by_id: Record<number, number>
+  gaps: AiAssemblyGap[]
+  dedupe_enabled: boolean
+  title: string
+  spec_job_id: number | null
+  updated_at: string
+  revision: string
+}
+
+export type AiAssemblySessionWrite = Omit<AiAssemblySession, 'updated_at' | 'revision'>
 
 function isNullableString(value: unknown): value is string | null {
   return typeof value === 'string' || value === null
@@ -103,6 +138,9 @@ function isIdList(value: unknown): value is number[] {
 function isSpecRow(value: unknown): value is AiAssemblySpecRow {
   return (
     isRecord(value) &&
+    (value.essay_subtype === undefined || value.essay_subtype === null || (
+      value.question_type === '解答题' && isEssaySubtype(value.essay_subtype)
+    )) &&
     typeof value.question_type === 'string' &&
     value.question_type.length > 0 &&
     value.question_type.length <= 40 &&
@@ -179,6 +217,21 @@ function isRelaxation(value: unknown): value is AiAssemblyRelaxation {
   )
 }
 
+function isGap(value: unknown): value is AiAssemblyGap {
+  return (
+    isRecord(value) &&
+    Number.isSafeInteger(value.row_index) &&
+    Number.isSafeInteger(value.missing) &&
+    Number(value.missing) > 0 &&
+    Number.isSafeInteger(value.candidates) &&
+    Number(value.candidates) >= 0 &&
+    Number.isSafeInteger(value.excluded_by_dedupe) &&
+    Number(value.excluded_by_dedupe) >= 0 &&
+    Array.isArray(value.suggestions) &&
+    value.suggestions.every(isRelaxation)
+  )
+}
+
 function decodeSelectResult(value: unknown): AiAssemblySelectResult {
   if (
     !isRecord(value) ||
@@ -190,18 +243,7 @@ function decodeSelectResult(value: unknown): AiAssemblySelectResult {
       isIdList(row.question_ids)
     )) ||
     !Array.isArray(value.gaps) ||
-    !value.gaps.every((gap) => (
-      isRecord(gap) &&
-      Number.isSafeInteger(gap.row_index) &&
-      Number.isSafeInteger(gap.missing) &&
-      Number(gap.missing) > 0 &&
-      Number.isSafeInteger(gap.candidates) &&
-      Number(gap.candidates) >= 0 &&
-      Number.isSafeInteger(gap.excluded_by_dedupe) &&
-      Number(gap.excluded_by_dedupe) >= 0 &&
-      Array.isArray(gap.suggestions) &&
-      gap.suggestions.every(isRelaxation)
-    ))
+    !value.gaps.every(isGap)
   ) {
     throw new Error('Invalid AI assembly select result')
   }
@@ -220,12 +262,121 @@ function decodeTemplateStructure(value: unknown): AiAssemblyTemplateStructure {
       typeof entry.question_number === 'string' &&
       typeof entry.question_type === 'string' &&
       (entry.difficulty === null || Number.isSafeInteger(entry.difficulty)) &&
-      (entry.score === null || typeof entry.score === 'number')
+      (entry.score === null || typeof entry.score === 'number') &&
+      Number.isSafeInteger(entry.count) &&
+      Number(entry.count) >= 1
     ))
   ) {
     throw new Error('Invalid AI assembly template structure')
   }
   return value as unknown as AiAssemblyTemplateStructure
+}
+
+const SESSION_REVISION = /^[0-9a-f]{64}$/
+const ESSAY_SUBTYPES: readonly AiAssemblyEssaySubtype[] = ['画图', '计算', '证明']
+
+function isEssaySubtype(value: unknown): value is AiAssemblyEssaySubtype {
+  return typeof value === 'string' && (ESSAY_SUBTYPES as readonly string[]).includes(value)
+}
+
+function isDifficultyRatio(
+  value: unknown,
+): value is { easy: number | null; medium: number | null; hard: number | null } {
+  if (!isRecord(value)) return false
+  return (['easy', 'medium', 'hard'] as const).every((key) => {
+    const entry = value[key]
+    return entry === null || (
+      Number.isSafeInteger(entry) && Number(entry) >= 0 && Number(entry) <= 100
+    )
+  })
+}
+
+function isTypeCounts(value: unknown): value is Record<string, number> {
+  return (
+    isRecord(value) &&
+    Object.entries(value).length <= 40 &&
+    Object.entries(value).every(([key, count]) => (
+      key.trim().length > 0 &&
+      key.length <= 40 &&
+      Number.isSafeInteger(count) &&
+      Number(count) > 0
+    ))
+  )
+}
+
+function isRowKey(key: string): boolean {
+  return /^\d{1,4}$/.test(key)
+}
+
+function isSessionSelections(value: unknown): value is Record<number, number[]> {
+  return (
+    isRecord(value) &&
+    Object.entries(value).every(([key, ids]) => isRowKey(key) && isIdList(ids))
+  )
+}
+
+function isLockedRowById(value: unknown): value is Record<number, number> {
+  return (
+    isRecord(value) &&
+    Object.entries(value).every(([key, row]) => (
+      /^\d{1,10}$/.test(key) &&
+      Number(key) > 0 &&
+      Number.isSafeInteger(row) &&
+      Number(row) >= 0
+    ))
+  )
+}
+
+function isSessionParams(value: unknown): value is AiAssemblySessionParams {
+  return (
+    isRecord(value) &&
+    (value.template_paper_id === null || (
+      Number.isSafeInteger(value.template_paper_id) &&
+      Number(value.template_paper_id) > 0
+    )) &&
+    isStringList(value.scope_keys, 200) &&
+    isDifficultyRatio(value.difficulty_ratio) &&
+    isTypeCounts(value.type_counts) &&
+    isStringList(value.exam_types, 20) &&
+    Array.isArray(value.years) &&
+    value.years.length <= 50 &&
+    value.years.every((year) => (
+      Number.isSafeInteger(year) && Number(year) >= 1990 && Number(year) <= 2100
+    )) &&
+    typeof value.free_text === 'string' &&
+    value.free_text.length <= 2000 &&
+    (value.essay_subtype === null || isEssaySubtype(value.essay_subtype))
+  )
+}
+
+function decodeAiAssemblySession(value: unknown): AiAssemblySession {
+  if (
+    !isRecord(value) ||
+    !isSessionParams(value.params) ||
+    !(value.spec === null || isRecord(value.spec)) ||
+    typeof value.spec_model_name !== 'string' ||
+    value.spec_model_name.length > 200 ||
+    !isSessionSelections(value.selections) ||
+    !isIdList(value.locked_question_ids) ||
+    !isLockedRowById(value.locked_row_by_id) ||
+    !Array.isArray(value.gaps) ||
+    !value.gaps.every(isGap) ||
+    typeof value.dedupe_enabled !== 'boolean' ||
+    typeof value.title !== 'string' ||
+    value.title.length > 120 ||
+    !(value.spec_job_id === null || (
+      Number.isSafeInteger(value.spec_job_id) && Number(value.spec_job_id) > 0
+    )) ||
+    typeof value.updated_at !== 'string' ||
+    typeof value.revision !== 'string' ||
+    !SESSION_REVISION.test(value.revision)
+  ) {
+    throw new Error('Invalid AI assembly session')
+  }
+  return {
+    ...(value as unknown as AiAssemblySession),
+    spec: value.spec === null ? null : decodeAiAssemblySpec(value.spec),
+  }
 }
 
 function cleanSpecRequest(request: AiAssemblySpecRequest): Record<string, unknown> {
@@ -255,6 +406,12 @@ function cleanSpecRequest(request: AiAssemblySpecRequest): Record<string, unknow
       throw new Error('Invalid AI assembly template paper id')
     }
     body.template_paper_id = request.template_paper_id
+  }
+  if (request.essay_subtype !== undefined) {
+    if (!isEssaySubtype(request.essay_subtype)) {
+      throw new Error('Invalid AI assembly essay subtype')
+    }
+    body.essay_subtype = request.essay_subtype
   }
   if (request.current_spec !== undefined) body.current_spec = request.current_spec
   return body
@@ -296,6 +453,8 @@ export const aiAssemblyApi = {
         exclude_ids: excludeIds,
       },
       decode: decodeSelectResult,
+      // 选题要在真实库上算全库频度，服务端可能需要几十秒，放宽等待上限。
+      timeoutMs: 600_000,
       signal,
     })
   },
@@ -309,6 +468,37 @@ export const aiAssemblyApi = {
     }
     return apiClient.request(`/api/question-assembly/ai/template-structure/${paperId}`, {
       decode: decodeTemplateStructure,
+      signal,
+    })
+  },
+
+  getSession(signal?: AbortSignal): Promise<AiAssemblySession> {
+    return apiClient.request('/api/question-assembly/ai/session', {
+      decode: decodeAiAssemblySession,
+      signal,
+    })
+  },
+
+  saveSession(
+    expectedRevision: string,
+    session: AiAssemblySessionWrite,
+    signal?: AbortSignal,
+  ): Promise<AiAssemblySession> {
+    if (!SESSION_REVISION.test(expectedRevision)) {
+      throw new Error('Invalid AI assembly session revision')
+    }
+    return apiClient.request('/api/question-assembly/ai/session', {
+      method: 'PUT',
+      body: { expected_revision: expectedRevision, session },
+      decode: decodeAiAssemblySession,
+      signal,
+    })
+  },
+
+  clearSession(signal?: AbortSignal): Promise<AiAssemblySession> {
+    return apiClient.request('/api/question-assembly/ai/session', {
+      method: 'DELETE',
+      decode: decodeAiAssemblySession,
       signal,
     })
   },

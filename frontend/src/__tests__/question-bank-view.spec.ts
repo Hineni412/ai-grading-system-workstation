@@ -1273,6 +1273,29 @@ describe('question bank workspace', () => {
     expect(host.textContent).toContain('已提交 1 道题')
   })
 
+  it('jumps to AI assembly with the paper as template from the card menu', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/question-bank')
+    await router.isReady()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    app.use(router)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+
+    await openCardMenu(host, '匿名期末试卷')
+    cardMenuItem('用作 AI 组卷模板').click()
+
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('question-assembly'))
+    expect(router.currentRoute.value.query).toEqual({ mode: 'ai', template: '4' })
+  })
+
   it('submits the whole paper so the server can check current-version gaps', async () => {
     const host = document.createElement('div')
     document.body.append(host)

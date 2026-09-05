@@ -26,7 +26,7 @@ export interface WorkspaceAIHandoff {
   contract_version: 'teacher_workspace_handoff.v1'
   handoff_id: string
   work_item_id: string
-  module: 'teaching_prep' | 'class_teacher'
+  module: 'class_teacher'
   intent: string
   handling_mode: string
   destination_key: string
@@ -48,7 +48,7 @@ export interface WorkspaceAITask {
   contract_version: 'teacher_workspace_ai_task.v1'
   task_id: string
   operation_id: string
-  module: 'teaching_prep' | 'class_teacher'
+  module: 'class_teacher'
   task_kind: string
   source_ref: OpaqueRef
   context_refs: OpaqueRef[]
@@ -99,7 +99,7 @@ export function decodeWorkspaceAITask(value: unknown): WorkspaceAITask {
     || typeof value.task_id !== 'string'
     || !value.task_id
     || typeof value.operation_id !== 'string'
-    || !['teaching_prep', 'class_teacher'].includes(String(value.module))
+    || value.module !== 'class_teacher'
     || !Array.isArray(value.context_refs)
     || !WORKSPACE_AI_TASK_STATUSES.includes(value.status as WorkspaceAITaskStatus)
     || typeof value.progress !== 'number'

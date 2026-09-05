@@ -133,6 +133,23 @@ _APPROVED_TABLE_DROPS = {
             "skill_migration_runs",
         }
     ),
+    "010_drop_daily_timetable": frozenset(
+        {
+            "daily_lesson_notes",
+            "daily_overrides",
+            "daily_regular_entries",
+            "daily_custom_slots",
+            "daily_week_anchor",
+        }
+    ),
+    "032_drop_daily_tables": frozenset(
+        {
+            "daily_table_cells",
+            "daily_table_rows",
+            "daily_table_columns",
+            "daily_tables",
+        }
+    ),
 }
 
 # "duplicate column" 错误消息模式
@@ -276,13 +293,6 @@ def _get_targets() -> dict[str, dict[str, Any]]:
                 "db_path": pm.qb_db_path,
                 "migrations_dir": _PROJECT_ROOT / "migrations" / "question_bank",
             },
-            "teaching_prep": {
-                "db_path": pm.data_root
-                / "workspaces"
-                / "teaching-prep"
-                / "teaching_prep.db",
-                "migrations_dir": _PROJECT_ROOT / "migrations" / "teaching_prep",
-            },
             "student_affairs": {
                 "db_path": pm.data_root
                 / "workspaces"
@@ -309,14 +319,6 @@ def _get_targets() -> dict[str, dict[str, Any]]:
             "question_bank": {
                 "db_path": _PROJECT_ROOT / "user_data" / "databases" / "question_bank.db",
                 "migrations_dir": _PROJECT_ROOT / "migrations" / "question_bank",
-            },
-            "teaching_prep": {
-                "db_path": _PROJECT_ROOT
-                / "user_data"
-                / "workspaces"
-                / "teaching-prep"
-                / "teaching_prep.db",
-                "migrations_dir": _PROJECT_ROOT / "migrations" / "teaching_prep",
             },
             "student_affairs": {
                 "db_path": _PROJECT_ROOT
@@ -931,7 +933,6 @@ def main() -> int:
         choices=[
             "grading",
             "question_bank",
-            "teaching_prep",
             "student_affairs",
             "class_teacher_work",
         ],

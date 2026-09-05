@@ -19,7 +19,11 @@ from question_bank.models.question import duplicate_question_key
 from question_bank.services.similarity_service import text_similarity
 from question_bank.services.source_paper_archive_service import archive_source_paper
 from question_bank.services.rich_content_service import save_question_rich_content
-from question_bank.parsers.type_detector import detect_question_type
+from question_bank.parsers.type_detector import (
+    detect_essay_subtype,
+    detect_question_type,
+    split_legacy_question_type,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -51,6 +55,8 @@ class ParsedQuestion:
     page_range: str
     answer_text: str | None = None
     question_type: str | None = None
+    # 解答题子类标签值（画图/计算/证明）；None 表示未标注。
+    essay_subtype: str | None = None
     needs_review: bool = False
     has_images: bool = False
     needs_image_review: bool = False
@@ -263,7 +269,14 @@ def parse_paper_text(
         question_image_paths = block.image_paths
         # Teacher/LLM-governed types from the grading rubric win over the
         # local heuristic when the session sync supplied them.
-        q_type = (type_overrides or {}).get(block.number) or detect_question_type(block.text)
+        # 兼容输入：旧任务负载里的六值子类题型拆成归一大类 + 子类标签。
+        override_type, override_subtype = split_legacy_question_type(
+            (type_overrides or {}).get(block.number)
+        )
+        q_type = override_type or detect_question_type(block.text)
+        essay_subtype = override_subtype
+        if q_type == "解答题" and essay_subtype is None:
+            essay_subtype = detect_essay_subtype(block.text)
         question_has_images = bool(question_image_paths)
         # 题干里出现【答案】/【分析】等标签，说明答案区漏切进了题干，需复核。
         stem_has_answer_label = bool(_ANSWER_BLOCK_LABEL.search(block.text))
@@ -277,6 +290,7 @@ def parse_paper_text(
                 source_file=source_file,
                 page_range=page_range,
                 question_type=q_type,
+                essay_subtype=essay_subtype,
                 needs_review=not bool(answer) or (
                     needs_image_review and question_has_images
                 ) or block.merged_marker_count > 0 or stem_has_answer_label,
@@ -598,6 +612,17 @@ def _import_scanned_paper(
                 ),
             )
             question_id = int(question_cursor.lastrowid)
+            if item.essay_subtype:
+                # 解答题子类标签与题目同事务写入；confidence 0.8 表示规则
+                # 猜测、低于人工确认，source 标注来自题型检测器。
+                conn.execute(
+                    """
+                    INSERT INTO question_tags (
+                        question_id, tag_type, tag_value, confidence, source, model_name
+                    ) VALUES (?, 'special_type', ?, 0.8, 'type_detector', NULL)
+                    """,
+                    (question_id, item.essay_subtype),
+                )
             inserted_questions.append((question_id, item))
             exact_source = exact_sources.get(item.question_number)
             if exact_source is not None:

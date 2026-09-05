@@ -25,7 +25,6 @@
 | `/grading` | 执行整班批改并人工评分或复核结果 |
 | `/model-profiles` | 保留查询参数，重定向到 `/settings?section=models` |
 | `/settings` | 管理模型使用方式、备份和本机维护 |
-| `/teaching-prep` | 备课工作台 |
 | `/class-teacher` | 班主任工作台 |
 | `/design-system` | 开发用组件与状态展示 |
 
@@ -37,7 +36,6 @@
 
 当前模块：
 
-- `teaching-prep`：路由 `/teaching-prep`，默认启用；只有 `VITE_TEACHING_PREP_ENABLED=0` 时关闭，子导航包含备课首页和资料库。
 - `class-teacher`：路由 `/class-teacher`，当前启用。
 
 新增工作台前先复用现有 Manifest 契约和注册表，不在路由文件中再维护一份重复模块清单。

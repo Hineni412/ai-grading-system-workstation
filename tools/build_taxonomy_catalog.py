@@ -177,6 +177,10 @@ SPECIAL_TYPE_SPECS = (
     ("格点作图题", ()),
     ("无刻度直尺作图题", ("无刻度直尺作图",)),
     ("立体模型制作实践题", ()),
+    # 解答题子类标签（题型归一后的一等子类词）。
+    ("画图", ("作图",)),
+    ("计算", ()),
+    ("证明", ("求证",)),
 )
 
 CORE_KNOWLEDGE_ROOTS = {
@@ -681,7 +685,7 @@ def build() -> dict[str, Any]:
     counts = {dimension: 0 for dimension in DIMENSIONS}
     for term in terms:
         counts[term["dimension"]] += 1
-    if counts["curriculum"] != 25 or counts["ability"] != 10 or counts["special_type"] != 11:
+    if counts["curriculum"] != 25 or counts["ability"] != 10 or counts["special_type"] != 14:
         raise ValueError(f"Protected dimensions changed unexpectedly: {counts}")
     if not 250 <= counts["knowledge"] <= 450:
         raise ValueError(f"Knowledge governance produced an unsafe count: {counts}")

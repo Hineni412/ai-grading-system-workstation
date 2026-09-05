@@ -15,7 +15,7 @@ const curriculumScope = useCurriculumScopeStore()
 const workbenchStore = useWorkbenchStore()
 
 interface WorkbenchFocusItem {
-  id: 'exam' | 'preparation' | 'class-work'
+  id: 'exam' | 'class-work'
   context: string
   title: string
   detail: string
@@ -100,14 +100,6 @@ const workbenchFocusItems = computed<WorkbenchFocusItem[]>(() => {
   return [
     examItem,
     {
-      id: 'preparation',
-      context: `备课工作台 · ${currentTermLabel.value}`,
-      title: '继续准备下一节课',
-      detail: '从教材课时树、题库资料和已确认的班级证据继续备课。',
-      action: '进入备课',
-      path: '/teaching-prep',
-    },
-    {
       id: 'class-work',
       context: '班主任工作台 · 今日',
       title: '查看今天需要跟进的班务',
@@ -136,10 +128,6 @@ const workflowSteps = computed(() => [{
   label: '训练',
   status: curriculumScope.selectedVolumeId ? '按本学期筛选' : '显示全部',
   path: '/question-assembly',
-}, {
-  label: '备课',
-  status: curriculumScope.selectedVolumeId ? '已同步学期' : '待选择学期',
-  path: '/teaching-prep',
 }])
 
 const anomalyCount = computed(() => {
@@ -179,11 +167,11 @@ function retryOverview(): void {
     <header class="workbench-home-hero">
       <div class="workbench-home-hero__copy">
         <p class="workbench-home-kicker">{{ todayLabel }}</p>
-        <h1 id="workbench-title" tabindex="-1">{{ greeting }}，今天先完成这三件事</h1>
+        <h1 id="workbench-title" tabindex="-1">{{ greeting }}，今天先完成这两件事</h1>
         <p>{{ currentTermLabel }}{{ curriculumScope.selectedVolumeId ? '已作为当前教学学期' : ' · 当前显示全部学期内容' }}</p>
       </div>
       <div class="workbench-home-hero__summary" aria-label="今日工作概况">
-        <strong>3</strong>
+        <strong>2</strong>
         <span>项优先工作</span>
         <small>按教学影响排序</small>
       </div>
@@ -194,7 +182,7 @@ function retryOverview(): void {
       <button type="button" class="workbench-link-button" @click="retryOverview">重新加载考试概况</button>
     </div>
     <div v-else-if="workbenchStore.overviewState === 'error'" class="workbench-inline-error" role="alert">
-      <p>考试概况暂时无法读取；备课和班务入口仍可使用。</p>
+      <p>考试概况暂时无法读取；班务入口仍可使用。</p>
       <button type="button" class="workbench-secondary-button" @click="retryOverview">重新加载考试概况</button>
     </div>
 

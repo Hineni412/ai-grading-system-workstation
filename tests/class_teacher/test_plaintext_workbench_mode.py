@@ -173,11 +173,11 @@ def test_feature_service_creation_blocks_pending_ordinary_database_migration(
     assert blocked.value.code == "class_teacher_work_initialization_failed"
     assert database.read_bytes() == before
     with sqlite3.connect(database) as connection:
-        daily_anchor_schema = connection.execute(
-            "SELECT sql FROM sqlite_master "
+        pending_drop_ran = connection.execute(
+            "SELECT name FROM sqlite_master "
             "WHERE type = 'table' AND name = 'daily_week_anchor'"
         ).fetchone()
-    assert daily_anchor_schema is None
+    assert pending_drop_ran is not None
 
 
 def test_plaintext_mode_still_requires_anonymous_preview_confirmation_before_model_send(

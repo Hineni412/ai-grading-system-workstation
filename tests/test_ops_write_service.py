@@ -188,7 +188,7 @@ def test_preview_backup_excludes_api_profiles_without_creating_output(tmp_path: 
     (paths.config_dir / "api_profiles.json").write_text('{"api_key":"secret"}', encoding="utf-8")
     (paths.config_dir / "safe.json").write_text('{"ok":true}', encoding="utf-8")
     workspace_file = (
-        paths.data_root / "workspaces" / "teaching-prep" / "private.db"
+        paths.data_root / "workspaces" / "other-workspace" / "private.db"
     )
     workspace_file.parent.mkdir(parents=True)
     workspace_file.write_text("private", encoding="utf-8")
@@ -225,24 +225,19 @@ def test_preview_backup_includes_class_teacher_workspace_in_debug_mode(tmp_path:
     assert "user_data/workspaces/class-teacher/student_affairs.db" in preview["files"]
 
 
-def test_preview_backup_can_select_the_three_teacher_facing_data_groups(
+def test_preview_backup_can_select_the_teacher_facing_data_groups(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    teaching_file = paths.data_root / "workspaces" / "teaching-prep" / "notes.json"
     class_file = paths.data_root / "workspaces" / "class-teacher" / "notes.json"
-    teaching_file.parent.mkdir(parents=True)
     class_file.parent.mkdir(parents=True)
-    teaching_file.write_text("teaching", encoding="utf-8")
     class_file.write_text("class", encoding="utf-8")
 
-    teaching_only = preview_backup(
-        path_manager=paths,
-        scopes=["teaching_prep"],
-    )
-    assert teaching_only["files"] == [
-        "user_data/workspaces/teaching-prep/notes.json"
-    ]
+    with pytest.raises(ValueError, match="invalid backup scopes"):
+        preview_backup(
+            path_manager=paths,
+            scopes=["retired_scope"],
+        )
 
     class_only = preview_backup(
         path_manager=paths,

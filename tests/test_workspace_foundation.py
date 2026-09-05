@@ -52,9 +52,9 @@ def _context(paths: PathManager, module_id: str) -> WorkspaceContext:
 
 def _feature(
     *,
-    module_id: str = "teaching-prep",
-    api_prefix: str = "/api/teaching-prep",
-    job_prefix: str = "teaching_prep",
+    module_id: str = "other-workspace",
+    api_prefix: str = "/api/other-workspace",
+    job_prefix: str = "other_workspace",
     enabled: bool = True,
     **changes,
 ) -> WorkspaceFeature:
@@ -69,9 +69,7 @@ def _feature(
 
 def test_activated_class_teacher_shell_has_no_filesystem_side_effects(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AI_GRADING_TEACHING_PREP_ENABLED", "0")
     paths = _paths(tmp_path)
 
     registry = load_default_workspace_registry(paths)
@@ -173,7 +171,7 @@ def test_existing_main_class_teacher_vault_accepts_new_tail_migration(
         (
             _feature(
                 module_id="class-teacher",
-                api_prefix="/api/teaching-prep",
+                api_prefix="/api/other-workspace",
                 job_prefix="class_teacher",
             ),
             "duplicate workspace API prefix",
@@ -182,7 +180,7 @@ def test_existing_main_class_teacher_vault_accepts_new_tail_migration(
             _feature(
                 module_id="class-teacher",
                 api_prefix="/api/class-teacher",
-                job_prefix="teaching_prep",
+                job_prefix="other_workspace",
             ),
             "duplicate workspace Job prefix",
         ),
@@ -201,9 +199,9 @@ def test_registry_uses_stable_module_id_order(tmp_path: Path) -> None:
     registry = WorkspaceRegistry(
         [
             _feature(
-                module_id="teaching-prep",
-                api_prefix="/api/teaching-prep",
-                job_prefix="teaching_prep",
+                module_id="other-workspace",
+                api_prefix="/api/other-workspace",
+                job_prefix="other_workspace",
             ),
             _feature(
                 module_id="class-teacher",
@@ -216,7 +214,7 @@ def test_registry_uses_stable_module_id_order(tmp_path: Path) -> None:
 
     assert [feature.module_id for feature in registry.features] == [
         "class-teacher",
-        "teaching-prep",
+        "other-workspace",
     ]
 
 
@@ -236,7 +234,7 @@ def test_enabled_router_is_registered_below_reserved_prefix(
     api = FastAPI()
     registry.include_routers(api)
 
-    assert TestClient(api).get("/api/teaching-prep/status").json() == {
+    assert TestClient(api).get("/api/other-workspace/status").json() == {
         "ok": True
     }
 
@@ -284,10 +282,10 @@ def test_workspace_job_registrar_prefixes_types_and_rejects_duplicates(
     manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
     try:
         registry.register_jobs(manager, {})
-        assert "teaching_prep.export" in manager._handlers
+        assert "other_workspace.export" in manager._handlers
         with pytest.raises(
             WorkspaceRegistrationError,
-            match="teaching-prep Job registration failed",
+            match="other-workspace Job registration failed",
         ):
             registry.register_jobs(manager, {})
     finally:
@@ -310,7 +308,7 @@ def test_module_migrations_are_idempotent_and_gate_before_path_creation(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    migrations = paths.project_root / "migrations" / "teaching_prep"
+    migrations = paths.project_root / "migrations" / "other_workspace"
     migrations.mkdir(parents=True)
     (migrations / "000_baseline.sql").write_text(
         "CREATE TABLE lessons (id INTEGER PRIMARY KEY);",
@@ -323,8 +321,8 @@ def test_module_migrations_are_idempotent_and_gate_before_path_creation(
             preflight_calls.append(context.root.exists())
 
         return WorkspaceMigrationPlan(
-            target="teaching_prep",
-            database_path=context.root / "teaching_prep.db",
+            target="other_workspace",
+            database_path=context.root / "other_workspace.db",
             migrations_dir=migrations,
             backup_dir=context.root / "backups",
             preflight=preflight,
@@ -337,7 +335,7 @@ def test_module_migrations_are_idempotent_and_gate_before_path_creation(
     registry.run_migrations()
     registry.run_migrations()
 
-    database = paths.workspace_dir("teaching-prep") / "teaching_prep.db"
+    database = paths.workspace_dir("other-workspace") / "other_workspace.db"
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE name='lessons'"
@@ -349,7 +347,7 @@ def test_existing_workspace_pending_migration_requires_protected_maintenance(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    migrations = paths.project_root / "migrations" / "teaching_prep"
+    migrations = paths.project_root / "migrations" / "other_workspace"
     migrations.mkdir(parents=True)
     (migrations / "000_baseline.sql").write_text(
         "CREATE TABLE lessons (id INTEGER PRIMARY KEY);",
@@ -358,8 +356,8 @@ def test_existing_workspace_pending_migration_requires_protected_maintenance(
 
     def migration_provider(context):
         return WorkspaceMigrationPlan(
-            target="teaching_prep",
-            database_path=context.root / "teaching_prep.db",
+            target="other_workspace",
+            database_path=context.root / "other_workspace.db",
             migrations_dir=migrations,
             backup_dir=context.root / "backups",
             preflight=lambda: None,
@@ -370,7 +368,7 @@ def test_existing_workspace_pending_migration_requires_protected_maintenance(
         paths=paths,
     )
     registry.run_migrations()
-    database = paths.workspace_dir("teaching-prep") / "teaching_prep.db"
+    database = paths.workspace_dir("other-workspace") / "other_workspace.db"
     before = database.read_bytes()
     (migrations / "001_pending.sql").write_text(
         "CREATE TABLE must_wait_for_maintenance (id INTEGER PRIMARY KEY);",
@@ -395,7 +393,7 @@ def test_failed_module_migration_rolls_back_and_blocks_startup(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    migrations = paths.project_root / "migrations" / "teaching_prep"
+    migrations = paths.project_root / "migrations" / "other_workspace"
     migrations.mkdir(parents=True)
     (migrations / "000_broken.sql").write_text(
         (
@@ -408,8 +406,8 @@ def test_failed_module_migration_rolls_back_and_blocks_startup(
 
     def migration_provider(context):
         return WorkspaceMigrationPlan(
-            target="teaching_prep",
-            database_path=context.root / "teaching_prep.db",
+            target="other_workspace",
+            database_path=context.root / "other_workspace.db",
             migrations_dir=migrations,
             backup_dir=context.root / "backups",
             preflight=lambda: None,
@@ -427,11 +425,11 @@ def test_failed_module_migration_rolls_back_and_blocks_startup(
 
     with pytest.raises(
         WorkspaceRegistrationError,
-        match="teaching-prep migration failed",
+        match="other-workspace migration failed",
     ):
         registry.run_migrations()
 
-    database = paths.workspace_dir("teaching-prep") / "teaching_prep.db"
+    database = paths.workspace_dir("other-workspace") / "other_workspace.db"
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE name='should_rollback'"
@@ -443,7 +441,7 @@ def test_module_migration_requires_an_explicit_preflight_gate(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    migrations = paths.project_root / "migrations" / "teaching_prep"
+    migrations = paths.project_root / "migrations" / "other_workspace"
     migrations.mkdir(parents=True)
     (migrations / "000_baseline.sql").write_text(
         "CREATE TABLE lessons (id INTEGER PRIMARY KEY);",
@@ -452,8 +450,8 @@ def test_module_migration_requires_an_explicit_preflight_gate(
 
     def migration_provider(context):
         return WorkspaceMigrationPlan(
-            target="teaching_prep",
-            database_path=context.root / "teaching_prep.db",
+            target="other_workspace",
+            database_path=context.root / "other_workspace.db",
             migrations_dir=migrations,
             backup_dir=context.root / "backups",
             preflight=None,  # type: ignore[arg-type]
@@ -474,7 +472,7 @@ def test_module_migration_requires_an_explicit_preflight_gate(
 
 @pytest.mark.parametrize(
     "workspace_id",
-    ["", "../escape", "Teaching-Prep", "class_teacher", "a/b"],
+    ["", "../escape", "Other-Workspace", "class_teacher", "a/b"],
 )
 def test_workspace_path_rejects_invalid_ids(
     tmp_path: Path,
@@ -502,7 +500,7 @@ def test_workspace_path_is_lazy_and_stays_under_data_root(
 
 def test_legacy_restore_skips_workspace_data(tmp_path: Path) -> None:
     assert _safe_restore_destination(
-        "user_data/workspaces/teaching-prep/private.db",
+        "user_data/workspaces/other-workspace/private.db",
         project_root=tmp_path / "project",
         data_root=tmp_path / "user_data",
         logs_root=tmp_path / "logs",
@@ -556,7 +554,7 @@ def test_workspace_model_policy_requires_metadata_and_allows_one_request(
     gateway = _FakeGateway()
     audit = _AuditSink()
     policy = WorkspaceModelGateway(
-        context=_context(paths, "teaching-prep"),
+        context=_context(paths, "other-workspace"),
         gateway=gateway,
         audit_sink=audit,
     )
@@ -629,7 +627,7 @@ def test_workspace_model_policy_allows_repeated_lesson_draft_calls_on_same_gatew
     paths = _paths(tmp_path)
     gateway = _FakeGateway()
     policy = WorkspaceModelGateway(
-        context=_context(paths, "teaching-prep"),
+        context=_context(paths, "other-workspace"),
         gateway=gateway,
         audit_sink=_AuditSink(),
     )
@@ -662,7 +660,7 @@ def test_workspace_model_policy_rejects_multiple_calls_for_other_purposes(
 ) -> None:
     paths = _paths(tmp_path)
     policy = WorkspaceModelGateway(
-        context=_context(paths, "teaching-prep"),
+        context=_context(paths, "other-workspace"),
         gateway=_FakeGateway(),
     )
     with pytest.raises(WorkspaceModelPolicyError, match="lesson_draft"):
@@ -690,7 +688,7 @@ def test_workspace_model_lesson_draft_claim_still_blocks_restarted_gateway(
         max_physical_calls=6,
     )
     first = WorkspaceModelGateway(
-        context=_context(paths, "teaching-prep"),
+        context=_context(paths, "other-workspace"),
         gateway=_FakeGateway(),
     )
     first.chat_completions(
@@ -700,7 +698,7 @@ def test_workspace_model_lesson_draft_claim_still_blocks_restarted_gateway(
         kwargs={},
     )
     restarted = WorkspaceModelGateway(
-        context=_context(paths, "teaching-prep"),
+        context=_context(paths, "other-workspace"),
         gateway=_FakeGateway(),
     )
     with pytest.raises(WorkspaceModelPolicyError, match="already used"):
@@ -744,7 +742,7 @@ def test_workspace_model_gateway_tags_diagnostic_sink_for_workspace_calls(
 
     gateway = _TaggingGateway()
     policy = WorkspaceModelGateway(
-        context=_context(paths, "teaching-prep"),
+        context=_context(paths, "other-workspace"),
         gateway=gateway,
         metadata_only=False,
         claim_operations=False,
@@ -761,7 +759,7 @@ def test_workspace_model_gateway_tags_diagnostic_sink_for_workspace_calls(
     )
 
     assert len(gateway.journal.binds) == 1
-    assert gateway.journal.binds[0].workspace_module == "teaching-prep"
+    assert gateway.journal.binds[0].workspace_module == "other-workspace"
     assert gateway.journal.binds[0].workspace_task_kind == "exercise_suggestions"
     assert gateway.seen_sinks == [gateway.journal.binds[0]]
     assert gateway.diagnostic_sink is gateway.journal
@@ -778,7 +776,7 @@ def test_workspace_model_operation_claim_survives_new_gateway_instance(
     )
     first_gateway = _FakeGateway()
     first_policy = WorkspaceModelGateway(
-        context=_context(paths, "teaching-prep"),
+        context=_context(paths, "other-workspace"),
         gateway=first_gateway,
     )
     first_policy.chat_completions(
@@ -790,7 +788,7 @@ def test_workspace_model_operation_claim_survives_new_gateway_instance(
 
     second_gateway = _FakeGateway()
     restarted_policy = WorkspaceModelGateway(
-        context=_context(paths, "teaching-prep"),
+        context=_context(paths, "other-workspace"),
         gateway=second_gateway,
     )
     with pytest.raises(WorkspaceModelPolicyError, match="already used"):

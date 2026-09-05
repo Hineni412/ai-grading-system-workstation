@@ -120,8 +120,8 @@ def test_phase_gate_upgrades_every_supported_historical_version(
         ("grading", 15, "013_dual_track_ai_scores"),
         (
             "question_bank",
-            34,
-            "032_allow_judgment_points_v1",
+            36,
+            "034_unify_essay_types",
         ),
     ):
         item = by_target[target]

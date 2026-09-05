@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import sqlite3
 import threading
+from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -19,13 +20,20 @@ from typing import Any
 from analysis_report_exporter import resolve_content_generation_settings
 from backend.llm.policy import LLMRequestKind
 from llm_client import LLMClient
+from question_bank.parsers.type_detector import (
+    ESSAY_SUBTYPES,
+    split_legacy_question_type,
+)
 from question_bank.services.ai_assembly_prompts import (
     SPEC_MAX_TOKENS,
     build_spec_prompt,
 )
 
 from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
-from question_bank.services.question_frequency_service import QuestionFrequencyService
+from question_bank.services.question_frequency_service import (
+    QuestionFrequencyService,
+    normalize_exam_type,
+)
 from question_bank.services.question_read_service import (
     QuestionBankReadService,
     QuestionReadFilters,
@@ -44,6 +52,10 @@ _WEIGHT_KNOWLEDGE = 3.0
 _WEIGHT_DIFFICULTY = 2.0
 _WEIGHT_FREQUENCY = 1.0
 _DIFFICULTY_SCORE_SPAN = float(MAX_DIFFICULTY - MIN_DIFFICULTY)
+
+# 兼容输入：迁移 034 执行前真实库题型仍是旧六值，解答题的三种旧写法
+# 在选题与统计时归并到"解答题"，子类经 special_type 标签或旧题型串识别。
+_LEGACY_ESSAY_TYPES = tuple(f"解答题（{subtype}）" for subtype in ESSAY_SUBTYPES)
 
 _ACTIVE_QUESTION_WHERE = (
     "COALESCE(q.is_deleted, 0) = 0 "
@@ -68,7 +80,10 @@ class SectionProfile:
     question_count: int
     difficulty_distribution: dict[str, int]
     question_type_distribution: dict[str, int]
+    # 解答题的子类分布（画图/计算/证明/未标注），无解答题的小节为空 dict。
+    essay_subtype_distribution: dict[str, int]
     knowledge_points: tuple[str, ...]
+    knowledge_inventory: tuple[dict[str, Any], ...] = ()
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -92,6 +107,8 @@ class TemplateEntry:
     question_type: str
     difficulty: int | None
     score: float | None = None
+    # 同题型同难度的连续题目合并为一行，count 记录合并的题数。
+    count: int = 1
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -114,6 +131,8 @@ class SpecRow:
     knowledge_points: tuple[str, ...] = ()
     difficulty: int | None = None
     score: float | None = None
+    # 解答题子类（画图/计算/证明），仅 question_type == "解答题" 时有意义。
+    essay_subtype: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -122,6 +141,8 @@ class SpecRow:
     def from_payload(payload: Mapping[str, Any]) -> "SpecRow":
         difficulty = payload.get("difficulty")
         score = payload.get("score")
+        # 兼容输入：旧 payload 没有 essay_subtype 字段，按 None 读取。
+        essay_subtype = str(payload.get("essay_subtype") or "").strip() or None
         return SpecRow(
             question_type=str(payload.get("question_type") or "").strip(),
             count=int(payload.get("count") or 0),
@@ -132,6 +153,7 @@ class SpecRow:
             ),
             difficulty=int(difficulty) if difficulty is not None else None,
             score=float(score) if score is not None else None,
+            essay_subtype=essay_subtype,
         )
 
 
@@ -139,7 +161,7 @@ class SpecRow:
 class AssemblySpec:
     title: str
     rows: tuple[SpecRow, ...]
-    # 全卷考察范围硬边界（自由组卷模式用）；行内知识点与范围同时存在时取交集。
+    # 全卷范围为硬边界；行内知识点是范围内的优先选题目标。
     scope_knowledge_points: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, Any]:
@@ -260,8 +282,9 @@ def build_bank_profile(
 ) -> BankProfile:
     """按 curriculum 章节聚合题量、难度分布、题型分布与知识点名列表。
 
-    只输出统计与名录，绝不包含题目正文。进程内缓存以 questions 表最大
-    updated_at 作为失效依据。
+    题型分布按归一后四类统计（旧六值归并到"解答题"），解答题另附子类
+    分布（画图/计算/证明/未标注）供模型决策。只输出统计与名录，绝不包含
+    题目正文。进程内缓存以 questions 表最大 updated_at 作为失效依据。
     """
 
     db_path = Path(read_service.db_path).resolve(strict=False)
@@ -300,7 +323,7 @@ def _build_bank_profile(
     section_index = _catalog_section_index(catalog)
     rows = connection.execute(
         f"""
-        SELECT q.id, q.difficulty, q.question_type, t.tag_value
+        SELECT q.id, q.paper_id, q.difficulty, q.question_type, p.exam_type, t.tag_value
         FROM questions q
         LEFT JOIN papers p ON p.id = q.paper_id
         JOIN question_tags t
@@ -309,6 +332,46 @@ def _build_bank_profile(
           AND COALESCE(t.tag_value, '') <> ''
         """
     ).fetchall()
+    # 解答题子类标签（迁移 034 后写入）；旧库无标签时回退旧题型串识别。
+    special_rows = connection.execute(
+        f"""
+        SELECT q.id, t.tag_value
+        FROM questions q
+        LEFT JOIN papers p ON p.id = q.paper_id
+        JOIN question_tags t
+          ON t.question_id = q.id AND t.tag_type = 'special_type'
+        WHERE {_ACTIVE_QUESTION_WHERE}
+          AND COALESCE(t.tag_value, '') <> ''
+        """
+    ).fetchall()
+    special_by_question: dict[int, set[str]] = {}
+    for row in special_rows:
+        tag_value = str(row["tag_value"]).strip()
+        if tag_value in ESSAY_SUBTYPES:
+            special_by_question.setdefault(int(row["id"]), set()).add(tag_value)
+
+    duplicate_ids = {
+        int(row[0])
+        for row in connection.execute("SELECT question_id FROM question_duplicate_links")
+    }
+    inventory: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row["tag_value"])
+        if name not in section_index:
+            continue
+        point = inventory.setdefault(name, {"ids": set(), "papers": set(), "formal_papers": set(), "cells": {}})
+        if row["paper_id"]:
+            point["papers"].add(int(row["paper_id"]))
+            if normalize_exam_type(row["exam_type"]):
+                point["formal_papers"].add(int(row["paper_id"]))
+        question_id = int(row["id"])
+        if question_id in duplicate_ids or question_id in point["ids"]:
+            continue
+        point["ids"].add(question_id)
+        base_type, legacy_subtype = split_legacy_question_type(row["question_type"])
+        subtypes = tuple(sorted(special_by_question.get(question_id, set()) or ({legacy_subtype} if legacy_subtype else set())))
+        key = (base_type or "未标注", _parse_difficulty(row["difficulty"]), subtypes)
+        point["cells"][key] = point["cells"].get(key, 0) + 1
 
     # section_id -> 聚合状态；一题多知识点时在每个所属小节各计一次。
     per_section: dict[str, dict[str, Any]] = {}
@@ -316,6 +379,8 @@ def _build_bank_profile(
     question_ids: set[int] = set()
     for row in rows:
         question_id = int(row["id"])
+        if question_id in duplicate_ids:
+            continue
         question_ids.add(question_id)
         knowledge_name = str(row["tag_value"])
         location = section_index.get(knowledge_name)
@@ -332,20 +397,35 @@ def _build_bank_profile(
                 "question_ids": set(),
                 "difficulty": {},
                 "question_type": {},
+                "essay_subtype": {},
                 "knowledge_points": [],
             },
         )
+        if knowledge_name not in bucket["knowledge_points"]:
+            bucket["knowledge_points"].append(knowledge_name)
         if question_id in bucket["question_ids"]:
             continue
         bucket["question_ids"].add(question_id)
         band = _difficulty_band(row["difficulty"])
         bucket["difficulty"][band] = bucket["difficulty"].get(band, 0) + 1
-        question_type = str(row["question_type"] or "未标注")
+        # 兼容输入：旧六值题型归并到四类，子类从旧题型串带回。
+        base_type, legacy_subtype = split_legacy_question_type(
+            row["question_type"]
+        )
+        question_type = base_type or "未标注"
         bucket["question_type"][question_type] = (
             bucket["question_type"].get(question_type, 0) + 1
         )
-        if knowledge_name not in bucket["knowledge_points"]:
-            bucket["knowledge_points"].append(knowledge_name)
+        if question_type == "解答题":
+            tagged = special_by_question.get(question_id, set())
+            subtype = next(
+                (value for value in ESSAY_SUBTYPES if value in tagged),
+                None,
+            )
+            subtype = subtype or legacy_subtype or "未标注"
+            bucket["essay_subtype"][subtype] = (
+                bucket["essay_subtype"].get(subtype, 0) + 1
+            )
 
     total = connection.execute(
         f"SELECT COUNT(*) FROM questions q "
@@ -364,7 +444,25 @@ def _build_bank_profile(
             question_type_distribution=dict(
                 sorted(state["question_type"].items())
             ),
+            essay_subtype_distribution={
+                key: state["essay_subtype"][key]
+                for key in (*ESSAY_SUBTYPES, "未标注")
+                if state["essay_subtype"].get(key)
+            },
             knowledge_points=tuple(state["knowledge_points"]),
+            knowledge_inventory=tuple(
+                {
+                    "knowledge_point": name,
+                    "question_count": len(inventory[name]["ids"]),
+                    "paper_count": len(inventory[name]["papers"]),
+                    "formal_paper_count": len(inventory[name]["formal_papers"]),
+                    "combinations": [
+                        {"question_type": key[0], "difficulty": key[1], "essay_subtypes": list(key[2]), "count": count}
+                        for key, count in sorted(inventory[name]["cells"].items(), key=lambda pair: repr(pair[0]))
+                    ],
+                }
+                for name in state["knowledge_points"]
+            ),
         )
         for section_id, state in sorted(per_section.items())
     )
@@ -384,11 +482,16 @@ def extract_template_structure(
     read_service: QuestionBankReadService,
     paper_id: int,
 ) -> TemplateStructure:
-    """按 question_number 顺序提取真卷模板的 [{题型, 难度档}]，分值留空。"""
+    """按 question_number 顺序提取真卷模板的 [{题型, 难度档}]，分值留空。
+
+    题型归一为四类（兼容输入：旧六值"解答题（子类）"并入"解答题"）；
+    同题型同难度的连续行合并为一个模板行，count 记录题数，保持原有排序。
+    """
 
     entries: list[TemplateEntry] = []
     paper_title = ""
     page = 1
+    fetched = 0
     while True:
         result = read_service.list_questions(
             QuestionReadFilters(
@@ -398,19 +501,43 @@ def extract_template_structure(
                 sort="paper_order",
             )
         )
+        fetched += len(result.items)
         for item in result.items:
             paper_title = paper_title or str(item.get("paper_title") or "")
             raw_difficulty = _parse_difficulty(item.get("difficulty"))
-            entries.append(
-                TemplateEntry(
-                    question_number=str(item.get("question_number") or ""),
-                    question_type=str(item.get("question_type") or ""),
-                    difficulty=(
-                        int(raw_difficulty) if raw_difficulty is not None else None
-                    ),
-                )
+            difficulty = (
+                int(raw_difficulty) if raw_difficulty is not None else None
             )
-        if len(entries) >= result.total or not result.items:
+            base_type, _legacy_subtype = split_legacy_question_type(
+                item.get("question_type")
+            )
+            question_type = base_type or str(item.get("question_type") or "")
+            number = str(item.get("question_number") or "")
+            previous = entries[-1] if entries else None
+            if (
+                previous is not None
+                and previous.question_type == question_type
+                and previous.difficulty == difficulty
+            ):
+                first_number = previous.question_number.split("-", 1)[0]
+                entries[-1] = replace(
+                    previous,
+                    question_number=(
+                        f"{first_number}-{number}"
+                        if number and number != first_number
+                        else previous.question_number
+                    ),
+                    count=previous.count + 1,
+                )
+            else:
+                entries.append(
+                    TemplateEntry(
+                        question_number=number,
+                        question_type=question_type,
+                        difficulty=difficulty,
+                    )
+                )
+        if fetched >= result.total or not result.items:
             break
         page += 1
     return TemplateStructure(
@@ -446,6 +573,45 @@ def validate_spec(spec: AssemblySpec) -> None:
             raise AssemblySpecError(f"{label}：分值必须大于 0。")
         if any(not str(value).strip() for value in row.knowledge_points):
             raise AssemblySpecError(f"{label}：知识点名称不能为空。")
+        if row.essay_subtype is not None:
+            if row.essay_subtype not in ESSAY_SUBTYPES:
+                raise AssemblySpecError(
+                    f"{label}：解答题子类只支持 "
+                    f"{'/'.join(ESSAY_SUBTYPES)}。"
+                )
+            if row.question_type != "解答题":
+                raise AssemblySpecError(
+                    f"{label}：只有解答题可以指定子类。"
+                )
+
+
+def _align_template_rows(spec: AssemblySpec, template: TemplateStructure) -> AssemblySpec:
+    """沿模板题型区段排布，保留模型在同题型内部的配置顺序。"""
+    expected: list[str] = [entry.question_type for entry in template.entries for _ in range(entry.count)]
+    actual = [row.question_type for row in spec.rows for _ in range(row.count)]
+    if sorted(expected) != sorted(actual):
+        raise AssemblySpecError("细目表题型或题量与模板不一致，原结果已保留。请调整要求后重试。")
+    if expected == actual:
+        return spec
+    queues: dict[str, deque[SpecRow]] = {}
+    for row in spec.rows:
+        queues.setdefault(row.question_type, deque()).append(row)
+    blocks: list[tuple[str, int]] = []
+    for question_type in expected:
+        if blocks and blocks[-1][0] == question_type:
+            blocks[-1] = (question_type, blocks[-1][1] + 1)
+        else:
+            blocks.append((question_type, 1))
+    rows: list[SpecRow] = []
+    for question_type, remaining in blocks:
+        while remaining:
+            row = queues[question_type].popleft()
+            count = min(row.count, remaining)
+            rows.append(replace(row, count=count))
+            if row.count > count:
+                queues[question_type].appendleft(replace(row, count=row.count - count))
+            remaining -= count
+    return replace(spec, rows=tuple(rows))
 
 
 # ---------------------------------------------------------------------------
@@ -492,16 +658,53 @@ def _row_scope_knowledge_points(
     row: SpecRow,
     scope_knowledge_points: tuple[str, ...],
 ) -> tuple[str, ...]:
-    """行内知识点与全卷范围同时存在时取交集，保证不溢出硬边界。"""
+    """教师考察范围是硬边界；有全卷范围时，行内知识点仅用于优先排序。"""
 
-    if row.knowledge_points and scope_knowledge_points:
-        scope = set(scope_knowledge_points)
-        return tuple(
-            value for value in row.knowledge_points if value in scope
+    return scope_knowledge_points or row.knowledge_points
+
+
+def _normalized_row_type(row: SpecRow) -> tuple[str, str | None]:
+    """行题型归一为四类，返回（题型, 解答题子类）。
+
+    兼容输入：旧草稿行的"解答题（子类）"拆成大类 + 子类，与显式
+    essay_subtype 走同一条子类过滤路径。
+    """
+
+    base_type, legacy_subtype = split_legacy_question_type(row.question_type)
+    question_type = base_type or str(row.question_type or "").strip()
+    subtype = row.essay_subtype or legacy_subtype
+    if question_type != "解答题":
+        subtype = None
+    return question_type, subtype
+
+
+def _paged_candidates(
+    read_service: QuestionBankReadService,
+    *,
+    question_types: tuple[str, ...],
+    special_types: tuple[str, ...] = (),
+    difficulty_min: int | None,
+    difficulty_max: int | None,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        result = read_service.list_questions(
+            QuestionReadFilters(
+                page=page,
+                page_size=_CANDIDATE_PAGE_SIZE,
+                question_types=question_types,
+                special_types=special_types,
+                difficulty_min=difficulty_min,
+                difficulty_max=difficulty_max,
+                collapse_duplicates=True,
+            )
         )
-    if row.knowledge_points:
-        return row.knowledge_points
-    return scope_knowledge_points
+        items.extend(result.items)
+        if len(items) >= result.total or not result.items:
+            break
+        page += 1
+    return items
 
 
 def _list_row_candidates(
@@ -513,24 +716,33 @@ def _list_row_candidates(
     if row.difficulty is not None:
         difficulty_min = max(MIN_DIFFICULTY, row.difficulty - DIFFICULTY_TOLERANCE)
         difficulty_max = min(MAX_DIFFICULTY, row.difficulty + DIFFICULTY_TOLERANCE)
-    items: list[dict[str, Any]] = []
-    page = 1
-    while True:
-        result = read_service.list_questions(
-            QuestionReadFilters(
-                page=page,
-                page_size=_CANDIDATE_PAGE_SIZE,
-                question_types=(row.question_type,),
-                difficulty_min=difficulty_min,
-                difficulty_max=difficulty_max,
-                collapse_duplicates=True,
-            )
-        )
-        items.extend(result.items)
-        if len(items) >= result.total or not result.items:
-            break
-        page += 1
-    return items
+    question_type, subtype = _normalized_row_type(row)
+    question_types = (question_type,)
+    if question_type == "解答题":
+        # 兼容输入：旧库三种"解答题（子类）"写法一并纳入候选。
+        question_types = ("解答题", *_LEGACY_ESSAY_TYPES)
+    items = _paged_candidates(
+        read_service,
+        question_types=question_types,
+        difficulty_min=difficulty_min,
+        difficulty_max=difficulty_max,
+    )
+    if subtype is None:
+        return items
+    candidates = []
+    for item in items:
+        _, legacy_subtype = split_legacy_question_type(item.get("question_type"))
+        known = {
+            str(tag.get("tag_value"))
+            for tag in item.get("tags", [])
+            if tag.get("tag_type") == "special_type" and tag.get("tag_value") in ESSAY_SUBTYPES
+        }
+        if not known and legacy_subtype:
+            known.add(legacy_subtype)
+        # 未标注子类的综合解答题始终进入候选；已明确标注其他子类的题不冒充匹配。
+        if not known or subtype in known:
+            candidates.append({**item, "_assembly_subtype_match": subtype in known})
+    return candidates
 
 
 def _score_candidate(
@@ -571,7 +783,7 @@ def select_questions(
     dedupe_recent_records: int = 3,
     exclude_ids: Iterable[int] = (),
 ) -> SelectResult:
-    """逐行确定性选题：硬过滤 -> 打分 -> 多样性限制 -> 取前 count。
+    """范围/题型/难度过滤 -> 优先知识点与子类 -> 多样性优先 -> 整卷补位。
 
     去重排除集取最近 ``dedupe_recent_records`` 条组卷记录的 question_ids，
     可通过 ``dedupe_enabled=False`` 关闭。选不满的行产出缺口与放宽建议。
@@ -585,11 +797,16 @@ def select_questions(
             dedupe_recent_records,
         )
     chosen: set[int] = {int(value) for value in exclude_ids}
+    reserved_ids = set(chosen)
 
     selections: list[RowSelection] = []
     gaps: list[SelectionGap] = []
     with _connect_readonly(Path(read_service.db_path)) as connection:
-        for row_index, row in enumerate(spec.rows):
+        # 第一遍只收集各行候选：频度指标整卷只批量计算一次，
+        # 逐行调用会重复加载全库活跃题，造成选题整体耗时成倍放大。
+        row_contexts: list[dict[str, Any]] = []
+        all_candidate_ids: list[int] = []
+        for row in spec.rows:
             scope = _row_scope_knowledge_points(
                 row,
                 spec.scope_knowledge_points,
@@ -599,7 +816,7 @@ def select_questions(
                 connection,
                 [int(item["id"]) for item in items],
             )
-            # 考察范围硬过滤：行知识点与全卷范围均为硬边界，不溢出。
+            # 全卷考察范围是硬边界；兼容未设置全卷范围的草稿使用行知识点。
             if scope:
                 items = [
                     item
@@ -619,25 +836,42 @@ def select_questions(
                 if question_id in chosen:
                     continue
                 available.append(item)
-
-            frequencies: dict[int, float] = {}
-            if frequency_service is not None and available:
-                metrics = frequency_service.metrics_for_questions(
-                    [int(item["id"]) for item in available]
-                )
-                frequencies = {
-                    question_id: (
-                        metric.weighted_frequency if metric.available else 0.0
-                    )
-                    for question_id, metric in metrics.items()
+            row_contexts.append(
+                {
+                    "scope": scope,
+                    "knowledge_tags": knowledge_tags,
+                    "candidates": candidates,
+                    "excluded_by_dedupe": excluded_by_dedupe,
+                    "available": available,
                 }
+            )
+            all_candidate_ids.extend(int(item["id"]) for item in available)
 
+        frequencies: dict[int, float] = {}
+        if frequency_service is not None and all_candidate_ids:
+            metrics = frequency_service.metrics_for_questions(all_candidate_ids)
+            frequencies = {
+                question_id: (
+                    metric.weighted_frequency if metric.available else 0.0
+                )
+                for question_id, metric in metrics.items()
+            }
+
+        ranked_by_row: list[list[int]] = []
+        picked_by_row: list[list[int]] = []
+        for row_index, row in enumerate(spec.rows):
+            context = row_contexts[row_index]
+            scope = context["scope"]
+            knowledge_tags = context["knowledge_tags"]
+            # 前序行已选题目在本行不可用（chosen 随选题推进增长）。
             scored = sorted(
-                available,
+                context["available"],
                 key=lambda item: (
+                    not bool(knowledge_tags.get(int(item["id"]), set()).intersection(row.knowledge_points)) if row.knowledge_points else False,
+                    not item.get("_assembly_subtype_match", True),
                     -_score_candidate(
                         knowledge_tags.get(int(item["id"]), set()),
-                        scope,
+                        row.knowledge_points,
                         item.get("difficulty"),
                         row.difficulty,
                         frequencies.get(int(item["id"]), 0.0),
@@ -645,6 +879,7 @@ def select_questions(
                     int(item["id"]),
                 ),
             )
+            ranked_by_row.append([int(item["id"]) for item in scored])
 
             # 知识点多样性：同知识点题数上限按行均摊。
             per_knowledge_cap = 0
@@ -659,8 +894,10 @@ def select_questions(
                 if len(picked) >= row.count:
                     break
                 question_id = int(item["id"])
+                if question_id in chosen:
+                    continue
                 matched = sorted(
-                    knowledge_tags.get(question_id, set()).intersection(scope)
+                    knowledge_tags.get(question_id, set()).intersection(row.knowledge_points or scope)
                 )
                 if per_knowledge_cap and matched:
                     if all(
@@ -671,7 +908,49 @@ def select_questions(
                     for name in matched:
                         knowledge_used[name] = knowledge_used.get(name, 0) + 1
                 picked.append(question_id)
+            # 多样性只影响优先顺序；不能让已符合教师范围、题型和难度的题被闲置。
+            for question_id in ranked_by_row[-1]:
+                if len(picked) >= row.count:
+                    break
+                if question_id not in chosen and question_id not in picked:
+                    picked.append(question_id)
             chosen.update(picked)
+            picked_by_row.append(picked)
+
+        # 只在缺口时重排已选题：沿候选链挪出位置，避免宽泛行占走稀缺行的唯一题。
+        owners = {qid: index for index, picked in enumerate(picked_by_row) for qid in picked}
+        for root, row in enumerate(spec.rows):
+            while len(picked_by_row[root]) < row.count:
+                queue = deque([root])
+                parents: dict[int, tuple[int, int]] = {}
+                visited = {root}
+                free: tuple[int, int] | None = None
+                while queue and free is None:
+                    current = queue.popleft()
+                    for qid in ranked_by_row[current]:
+                        owner = owners.get(qid)
+                        if owner is None:
+                            free = (current, qid)
+                            break
+                        if owner not in visited:
+                            visited.add(owner)
+                            parents[owner] = (current, qid)
+                            queue.append(owner)
+                if free is None:
+                    break
+                current, qid = free
+                picked_by_row[current].append(qid)
+                owners[qid] = current
+                while current != root:
+                    previous, moved = parents[current]
+                    picked_by_row[current].remove(moved)
+                    picked_by_row[previous].append(moved)
+                    owners[moved] = previous
+                    current = previous
+
+        for row_index, row in enumerate(spec.rows):
+            context = row_contexts[row_index]
+            picked = picked_by_row[row_index]
             selections.append(
                 RowSelection(row_index=row_index, question_ids=tuple(picked))
             )
@@ -682,14 +961,16 @@ def select_questions(
                     SelectionGap(
                         row_index=row_index,
                         missing=missing,
-                        candidates=candidates,
-                        excluded_by_dedupe=excluded_by_dedupe,
+                        candidates=context["candidates"],
+                        excluded_by_dedupe=context["excluded_by_dedupe"],
                         suggestions=suggest_relaxations(
                             row,
                             scope_knowledge_points=spec.scope_knowledge_points,
                             dedupe_enabled=dedupe_enabled,
-                            excluded_by_dedupe=excluded_by_dedupe,
+                            excluded_by_dedupe=context["excluded_by_dedupe"],
                             read_service=read_service,
+                            exclude_ids=reserved_ids | set(owners),
+                            recent_ids=dedupe_excluded,
                         ),
                     )
                 )
@@ -801,12 +1082,28 @@ def suggest_relaxations(
     excluded_by_dedupe: int = 0,
     read_service: QuestionBankReadService | None = None,
     catalog: Mapping[str, Any] | None = None,
+    exclude_ids: Iterable[int] = (),
+    recent_ids: Iterable[int] = (),
 ) -> tuple[RelaxationSuggestion, ...]:
-    """按固定阶梯产出放宽建议：关去重 -> 放宽难度 -> 同章近邻知识点 ->
-    放开范围边界。每步带中文"牺牲说明"。"""
+    """只建议能增加未占用候选的调整；扩大范围由教师明确追加章节。"""
+    if read_service is None or (row.difficulty is None and not (dedupe_enabled and excluded_by_dedupe)):
+        return ()
+    scope = _row_scope_knowledge_points(row, tuple(scope_knowledge_points))
+    blocked = set(exclude_ids)
+    recent = set(recent_ids) if dedupe_enabled else set()
 
+    def eligible_ids(candidate_row: SpecRow) -> set[int]:
+        items = _list_row_candidates(read_service, candidate_row)
+        ids = [int(item["id"]) for item in items]
+        if not scope:
+            return set(ids) - blocked
+        with _connect_readonly(Path(read_service.db_path)) as connection:
+            tags = _knowledge_tags_for(connection, ids)
+        return {qid for qid in ids if tags.get(qid, set()).intersection(scope)} - blocked
+
+    original = eligible_ids(row)
     suggestions: list[RelaxationSuggestion] = []
-    if dedupe_enabled and excluded_by_dedupe > 0:
+    if dedupe_enabled and original.intersection(recent):
         suggestions.append(
             RelaxationSuggestion(
                 step="disable_dedupe",
@@ -814,7 +1111,7 @@ def suggest_relaxations(
                 sacrifice="最近组卷已用过的题目可能再次出现。",
             )
         )
-    if row.difficulty is not None:
+    if row.difficulty is not None and (eligible_ids(replace(row, difficulty=None)) - original - recent):
         suggestions.append(
             RelaxationSuggestion(
                 step="relax_difficulty",
@@ -822,29 +1119,6 @@ def suggest_relaxations(
                 sacrifice=(
                     f"题目难度可能偏离目标 {row.difficulty} 档 ±1 以上。"
                 ),
-            )
-        )
-    if row.knowledge_points and read_service is not None:
-        neighbors = neighbor_knowledge_points(
-            read_service,
-            row.knowledge_points,
-            catalog=catalog,
-        )
-        if neighbors:
-            suggestions.append(
-                RelaxationSuggestion(
-                    step="neighbor_knowledge",
-                    title="扩展到同章近邻知识点",
-                    sacrifice="考察点会超出本行原定知识点。",
-                    knowledge_points=neighbors,
-                )
-            )
-    if tuple(scope_knowledge_points):
-        suggestions.append(
-            RelaxationSuggestion(
-                step="relax_scope",
-                title="放开考察范围边界",
-                sacrifice="选题可能超出本次设定的考察范围。",
             )
         )
     return tuple(suggestions)
@@ -869,6 +1143,8 @@ class SpecGenerationRequest:
     exam_types: tuple[str, ...] = ()
     years: tuple[int, ...] = ()
     free_text: str = ""
+    # 自由组卷时用户选定的解答题子类（画图/计算/证明），作为模型硬约束。
+    essay_subtype: str | None = None
     template_paper_id: int | None = None
     current_spec: AssemblySpec | None = None
     locked_question_ids: tuple[int, ...] = ()
@@ -882,6 +1158,7 @@ class SpecGenerationRequest:
             "exam_types": list(self.exam_types),
             "years": list(self.years),
             "free_text": self.free_text,
+            "essay_subtype": self.essay_subtype,
             "template_paper_id": self.template_paper_id,
             "current_spec": (
                 self.current_spec.to_payload() if self.current_spec else None
@@ -905,6 +1182,10 @@ class SpecGenerationRequest:
                 if str(value or "").strip().isdigit()
             ),
             free_text=str(payload.get("free_text") or "").strip(),
+            # 兼容输入：旧 payload 没有 essay_subtype 字段，按 None 读取。
+            essay_subtype=(
+                str(payload.get("essay_subtype") or "").strip() or None
+            ),
             template_paper_id=(
                 int(template_paper_id) if template_paper_id is not None else None
             ),
@@ -1043,6 +1324,21 @@ def generate_spec(
         request.scope_keys,
         catalog=catalog,
     )
+    if scope_knowledge_points:
+        scope_set = set(scope_knowledge_points)
+        profile = replace(
+            profile,
+            sections=tuple(
+                replace(
+                    section,
+                    knowledge_points=tuple(point for point in section.knowledge_points if point in scope_set),
+                    knowledge_inventory=tuple(item for item in section.knowledge_inventory if item["knowledge_point"] in scope_set),
+                )
+                for section in profile.sections
+                if scope_set.intersection(section.knowledge_points)
+            ),
+            uncatalogued_knowledge_points=tuple(point for point in profile.uncatalogued_knowledge_points if point in scope_set),
+        )
     prompt = build_spec_prompt(
         {
             "bank_profile": profile.to_payload(),
@@ -1056,6 +1352,7 @@ def generate_spec(
                 "exam_types": list(request.exam_types),
                 "years": list(request.years),
                 "free_text": request.free_text,
+                "essay_subtype": request.essay_subtype,
             },
             "current_spec": (
                 request.current_spec.to_payload()
@@ -1101,6 +1398,8 @@ def generate_spec(
     spec = AssemblySpec.from_payload(payload)
     spec = replace(spec, scope_knowledge_points=scope_knowledge_points)
     validate_spec(spec)
+    if template is not None:
+        spec = _align_template_rows(spec, template)
     _report(0.95, "校验", "细目表校验通过")
     return GeneratedSpec(spec=spec, model_name=model_name)
 

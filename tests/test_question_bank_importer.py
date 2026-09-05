@@ -139,13 +139,28 @@ def test_parse_paper_text_type_overrides_win_over_heuristic() -> None:
         text,
         source_file="regular_paper.docx",
         page_range="document",
-        type_overrides={"1": "解答题（证明）"},
+        type_overrides={"1": "解答题"},
     )
 
     by_number = {question.question_number: question for question in parsed.questions}
-    assert by_number["1"].question_type == "解答题（证明）"
+    assert by_number["1"].question_type == "解答题"
     # No override: the local heuristic still applies.
     assert by_number["2"].question_type == "填空题"
+
+
+def test_parse_paper_text_legacy_subtype_override_splits_into_subtype_tag() -> None:
+    # 兼容输入：旧任务负载里的六值题型拆成归一大类 + 子类标签值。
+    text = "1．如图，在△ABC中，填写表格：y＝______，并说明理由。\n"
+    parsed = parse_paper_text(
+        text,
+        source_file="regular_paper.docx",
+        page_range="document",
+        type_overrides={"1": "解答题（证明）"},
+    )
+
+    (question,) = parsed.questions
+    assert question.question_type == "解答题"
+    assert question.essay_subtype == "证明"
 
 
 def test_parse_paper_text_does_not_broadcast_document_level_images() -> None:
@@ -414,6 +429,72 @@ def test_exact_fingerprint_in_active_bank_reuses_existing_paper_identity(
 
     assert result.status == "duplicate"
     assert result.paper_id == paper_id
+
+
+def test_import_writes_essay_subtype_tags_in_the_same_transaction(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    archived = tmp_path / "paper.docx"
+    archived.write_bytes(b"paper-content")
+    monkeypatch.setattr(
+        batch_importer,
+        "_extract_paper",
+        lambda path, **_kwargs: ExtractedDocument(
+            source_file=str(path),
+            page_range="document",
+            text=(
+                "1．（8分）用尺规作图作出∠ABC的平分线，并证明你的结论。\n"
+                "2．（5分）计算：|-1|+(-2)^3 的值。\n"
+                "3．（6分）阅读材料，回答下列问题：材料中的规律是什么？\n"
+                "4．若AD∥BC，则∠ABD＝______°。\n"
+            ),
+            needs_ocr=False,
+        ),
+    )
+
+    result = batch_importer._import_scanned_paper(
+        archived,
+        db_path,
+        stored_source_file="question_bank/raw_papers/paper.docx",
+        source_title="subtype paper",
+        metadata=PaperMetadata(),
+        question_range=None,
+    )
+
+    assert result.question_count == 4
+    with connect(db_path) as conn:
+        questions = {
+            str(row["question_number"]): (int(row["id"]), str(row["question_type"]))
+            for row in conn.execute(
+                "SELECT id, question_number, question_type FROM questions"
+            )
+        }
+        tags = {
+            (int(row["question_id"]), str(row["tag_value"])): (
+                float(row["confidence"]),
+                str(row["source"]),
+            )
+            for row in conn.execute(
+                "SELECT question_id, tag_value, confidence, source "
+                "FROM question_tags WHERE tag_type = 'special_type'"
+            )
+        }
+    # 画图优先于证明：带尺规作图的证明题标"画图"。
+    assert questions["1"][1] == "解答题"
+    assert tags[(questions["1"][0], "画图")] == (0.8, "type_detector")
+    # 开头指令式计算题标"计算"。
+    assert questions["2"][1] == "解答题"
+    assert tags[(questions["2"][0], "计算")] == (0.8, "type_detector")
+    # 无强信号的解答题不猜子类，保持未标注。
+    assert questions["3"][1] == "解答题"
+    assert not any(qid == questions["3"][0] for qid, _value in tags)
+    # 填空题不参与子类标注。
+    assert questions["4"][1] == "填空题"
+    assert not any(qid == questions["4"][0] for qid, _value in tags)
+    assert len(tags) == 2
 
 
 def test_same_title_with_different_fingerprint_imports_as_a_new_paper(

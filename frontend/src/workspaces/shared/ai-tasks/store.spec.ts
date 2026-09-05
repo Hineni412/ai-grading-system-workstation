@@ -15,11 +15,11 @@ function task(overrides: Partial<WorkspaceAITask> = {}): WorkspaceAITask {
     contract_version: 'teacher_workspace_ai_task.v1',
     task_id: 'task-001',
     operation_id: 'operation-001',
-    module: 'teaching_prep',
-    task_kind: 'teaching_prep.lesson_plan',
-    source_ref: { kind: 'lesson', id: 'lesson-001', revision: '2' },
+    module: 'class_teacher',
+    task_kind: 'class_teacher.intake_triage',
+    source_ref: { kind: 'student', id: 'student-001', revision: '2' },
     context_refs: [],
-    return_target: 'teaching_prep.lesson.plan',
+    return_target: 'class_teacher.home',
     status: 'running',
     phase: 'claimed',
     progress: 0.2,
@@ -32,8 +32,8 @@ function task(overrides: Partial<WorkspaceAITask> = {}): WorkspaceAITask {
     error_code: null,
     error_detail: null,
     revision: 2,
-    safe_title: '备课 · 形成课堂方案',
-    safe_source: '备课',
+    safe_title: '班主任 · 事项整理',
+    safe_source: '班主任',
     teacher_message: '任务正在准备，尚未发送。',
     next_action: '等待或取消',
     handoffs: [],
@@ -111,17 +111,17 @@ describe('workspace AI task store', () => {
     localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify([
       { id: 41, jobType: 'workspace_ai.run', trackedAt: 'now' },
       { id: 42, jobType: 'grading_run', trackedAt: 'now' },
-      { id: 43, jobType: 'teaching_prep.parse_material', trackedAt: 'now' },
+      { id: 43, jobType: 'question_import', trackedAt: 'now' },
     ]))
     const store = useWorkspaceAITaskStore()
     const api = dependencies()
     await store.initialize(api)
 
-    expect(store.tasks['task-001']?.safe_title).toBe('备课 · 形成课堂方案')
+    expect(store.tasks['task-001']?.safe_title).toBe('班主任 · 事项整理')
     expect(api.legacyJobApi.getJob).toHaveBeenCalledExactlyOnceWith(41)
     expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toEqual([
       { id: 42, jobType: 'grading_run', trackedAt: 'now' },
-      { id: 43, jobType: 'teaching_prep.parse_material', trackedAt: 'now' },
+      { id: 43, jobType: 'question_import', trackedAt: 'now' },
     ])
     expect(JSON.parse(localStorage.getItem(WORKSPACE_AI_TASK_STORAGE_KEY)!)).toEqual([
       {
@@ -147,10 +147,10 @@ describe('workspace AI task store', () => {
         contract_version: 'teacher_workspace_handoff.v1',
         handoff_id: 'handoff-001',
         work_item_id: 'work-001',
-        module: 'teaching_prep',
+        module: 'class_teacher',
         intent: 'review',
         handling_mode: 'record',
-        destination_key: 'teaching_prep.lesson.plan',
+        destination_key: 'class_teacher.home',
         subject_refs: [],
         draft_ref: { kind: 'draft', id: 'draft-001', revision: '1' },
         adoption_state: 'pending',
@@ -158,7 +158,7 @@ describe('workspace AI task store', () => {
         missing_fields: [],
         source_task_id: 'task-001',
         source_turn_id: null,
-        return_destination_key: 'teaching_prep.overview',
+        return_destination_key: 'class_teacher.student.record',
         return_focus_ref: null,
         expires_on_source_change: true,
         adoption_id: null,
@@ -186,7 +186,7 @@ describe('workspace AI task store', () => {
     await store.initialize(api)
 
     expect(api.api.get).toHaveBeenCalledTimes(1)
-    expect(api.api.list).toHaveBeenCalledTimes(2)
+    expect(api.api.list).toHaveBeenCalledTimes(1)
     expect(api.schedule).toHaveBeenCalledTimes(1)
   })
 
@@ -205,30 +205,21 @@ describe('workspace AI task store', () => {
     expect(api.api.get).toHaveBeenCalledTimes(1)
   })
 
-  it('restores every actionable historical task from two module lists without detail requests', async () => {
+  it('restores every actionable historical task from the module list without detail requests', async () => {
     const statuses = [
       'needs_input',
       'proposal_ready',
       'failed_before_dispatch',
       'result_unknown',
     ] as const
-    const teachingTasks = Array.from({ length: 13 }, (_value, index) => task({
-      task_id: `teaching-${String(index + 1).padStart(2, '0')}`,
-      operation_id: `teaching-operation-${index + 1}`,
-      module: 'teaching_prep',
-      status: statuses[index % statuses.length],
-      revision: index + 1,
-    }))
     const classTasks = Array.from({ length: 13 }, (_value, index) => task({
       task_id: `class-${String(index + 1).padStart(2, '0')}`,
       operation_id: `class-operation-${index + 1}`,
-      module: 'class_teacher',
       status: statuses[index % statuses.length],
       revision: index + 1,
     }))
-    const allTasks = [...teachingTasks, ...classTasks]
     localStorage.setItem(WORKSPACE_AI_TASK_STORAGE_KEY, JSON.stringify(
-      allTasks.map(item => ({
+      classTasks.map(item => ({
         taskId: item.task_id,
         operationId: item.operation_id,
         trackedAt: '2026-08-05T00:00:00Z',
@@ -236,44 +227,37 @@ describe('workspace AI task store', () => {
       })),
     ))
     const get = vi.fn(async () => { throw new Error('detail request should not run') })
-    const list = vi.fn(async (module: WorkspaceAITask['module']) => (
-      module === 'teaching_prep' ? teachingTasks : classTasks
-    ))
+    const list = vi.fn(async () => classTasks)
     const api = dependencies(get, list)
     const store = useWorkspaceAITaskStore()
 
     await store.initialize(api)
 
-    expect(list).toHaveBeenNthCalledWith(1, 'teaching_prep')
-    expect(list).toHaveBeenNthCalledWith(2, 'class_teacher')
+    expect(list).toHaveBeenCalledExactlyOnceWith('class_teacher')
     expect(get).not.toHaveBeenCalled()
     expect(store.orderedTasks.map(item => item.task_id).sort())
-      .toEqual(allTasks.map(item => item.task_id).sort())
+      .toEqual(classTasks.map(item => item.task_id).sort())
     const stored = localStorage.getItem(WORKSPACE_AI_TASK_STORAGE_KEY)!
-    expect(JSON.parse(stored)).toHaveLength(26)
+    expect(JSON.parse(stored)).toHaveLength(13)
     expect(stored).not.toContain('terminal')
   })
 
-  it('falls back only for list omissions and a failed module list', async () => {
+  it('falls back to detail requests for list omissions', async () => {
     const references = [
-      { taskId: 'teaching-found', operationId: 'operation-found', trackedAt: 'now' },
-      { taskId: 'teaching-missing', operationId: 'operation-missing', trackedAt: 'now' },
+      { taskId: 'class-found', operationId: 'operation-found', trackedAt: 'now' },
+      { taskId: 'class-missing', operationId: 'operation-missing', trackedAt: 'now' },
       { taskId: 'class-fallback', operationId: 'operation-class', trackedAt: 'now' },
     ]
     localStorage.setItem(WORKSPACE_AI_TASK_STORAGE_KEY, JSON.stringify(references))
     const found = task({
-      task_id: 'teaching-found',
+      task_id: 'class-found',
       operation_id: 'operation-found',
       status: 'proposal_ready',
     })
-    const list = vi.fn(async (module: WorkspaceAITask['module']) => {
-      if (module === 'class_teacher') throw new Error('class list unavailable')
-      return [found]
-    })
+    const list = vi.fn(async () => [found])
     const get = vi.fn(async (taskId: string) => task({
       task_id: taskId,
-      operation_id: taskId === 'teaching-missing' ? 'operation-missing' : 'operation-class',
-      module: taskId === 'class-fallback' ? 'class_teacher' : 'teaching_prep',
+      operation_id: taskId === 'class-missing' ? 'operation-missing' : 'operation-class',
       status: 'needs_input',
     }))
     const api = dependencies(get, list)
@@ -281,9 +265,9 @@ describe('workspace AI task store', () => {
 
     await store.initialize(api)
 
-    expect(list).toHaveBeenCalledTimes(2)
+    expect(list).toHaveBeenCalledTimes(1)
     expect(get.mock.calls.map(([taskId]) => taskId).sort())
-      .toEqual(['class-fallback', 'teaching-missing'])
+      .toEqual(['class-fallback', 'class-missing'])
     expect(store.orderedTasks.map(item => item.task_id).sort())
       .toEqual(references.map(reference => reference.taskId).sort())
     expect(JSON.parse(localStorage.getItem(WORKSPACE_AI_TASK_STORAGE_KEY)!)).toEqual(
@@ -291,7 +275,7 @@ describe('workspace AI task store', () => {
     )
   })
 
-  it('keeps references when both lists fail and a detail fallback is temporarily unavailable', async () => {
+  it('keeps references when the list fails and a detail fallback is temporarily unavailable', async () => {
     const references = [
       { taskId: 'task-restored', operationId: 'operation-restored', trackedAt: 'now' },
       { taskId: 'task-offline', operationId: 'operation-offline', trackedAt: 'now' },
@@ -311,7 +295,7 @@ describe('workspace AI task store', () => {
 
     await store.initialize(api)
 
-    expect(list).toHaveBeenCalledTimes(2)
+    expect(list).toHaveBeenCalledTimes(1)
     expect(get).toHaveBeenCalledTimes(2)
     expect(store.tasks['task-restored']?.status).toBe('proposal_ready')
     expect(store.tasks['task-offline']).toBeUndefined()
@@ -333,12 +317,12 @@ describe('workspace AI task store', () => {
     expect(store.taskNoticeRevision).toBe(0)
 
     const prepared = await store.prepare({
-      operation_id: 'operation-new', module: 'teaching_prep',
-      task_kind: 'teaching_prep.lesson_plan',
-      source_ref: { kind: 'lesson', id: 'lesson-001', revision: '2' },
+      operation_id: 'operation-new', module: 'class_teacher',
+      task_kind: 'class_teacher.intake_triage',
+      source_ref: { kind: 'student', id: 'student-001', revision: '2' },
       context_refs: [], prompt_contract_version: 'v1',
       model_destination_fingerprint: 'fingerprint',
-      return_target: 'teaching_prep.lesson.plan',
+      return_target: 'class_teacher.home',
     })
     await store.dispatch(prepared)
 

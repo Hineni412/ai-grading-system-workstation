@@ -76,8 +76,6 @@ def test_page_specific_color_exceptions_are_confined_to_p3_5_question_work() -> 
         "frontend/src/workspaces/class-teacher/prototype/VariantA.vue",
         "frontend/src/workspaces/class-teacher/prototype/VariantB.vue",
         "frontend/src/workspaces/class-teacher/prototype/VariantC.vue",
-        "frontend/src/workspaces/teaching-prep/styles/teaching-prep.css",
-        "frontend/src/workspaces/teaching-prep/workspaces/lesson/ReviewSlidesStep.vue",
     }
 
 

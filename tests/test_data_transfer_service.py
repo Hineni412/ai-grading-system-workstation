@@ -65,7 +65,7 @@ def test_full_export_keeps_user_data_but_still_skips_runtime_cache(tmp_path: Pat
     _write(data_root / "config" / "api_profiles.json")
     _write(data_root / "__pycache__" / "module.pyc")
     _write(data_root / "cache" / "review_crops" / "derived.jpg")
-    _write(data_root / "workspaces" / "teaching-prep" / "private.db")
+    _write(data_root / "workspaces" / "class-teacher" / "private.db")
 
     entries = build_export_manifest(default_export_sources(project_root, data_root), scope="full")
     arc_names = _arc_names(entries)
@@ -74,7 +74,7 @@ def test_full_export_keeps_user_data_but_still_skips_runtime_cache(tmp_path: Pat
     assert "user_data/config/api_profiles.json" not in arc_names
     assert "user_data/__pycache__/module.pyc" not in arc_names
     assert "user_data/cache/review_crops/derived.jpg" not in arc_names
-    assert "user_data/workspaces/teaching-prep/private.db" not in arc_names
+    assert "user_data/workspaces/class-teacher/private.db" not in arc_names
 
 
 def test_export_skips_case_variant_sensitive_filename(tmp_path: Path) -> None:

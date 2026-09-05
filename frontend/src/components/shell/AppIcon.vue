@@ -77,20 +77,10 @@ withDefaults(defineProps<{
       <path d="M3.5 20v-1.5A4.5 4.5 0 0 1 8 14h2a4.5 4.5 0 0 1 4.5 4.5V20" />
       <path d="M15.5 5.5a3 3 0 0 1 0 5.5M16.5 14a4 4 0 0 1 4 4v2" />
     </g>
-    <g v-else-if="name === 'teaching-prep'">
-      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5z" />
-      <path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z" />
-      <path d="m8 9 1.2 1.2L11 8.4" />
-    </g>
     <g v-else-if="name === 'class-teacher'">
       <circle cx="9" cy="8" r="3" />
       <path d="M3.5 20v-1.5A4.5 4.5 0 0 1 8 14h2a4.5 4.5 0 0 1 4.5 4.5V20" />
       <path d="M16 4v7M12.5 7.5h7" />
-    </g>
-    <g v-else-if="name === 'daily'">
-      <rect x="3.5" y="4.5" width="17" height="16" rx="2" />
-      <path d="M3.5 9.5h17M8 2.5v4M16 2.5v4" />
-      <path d="M7 13h3M7 16.5h3M14 13h3M14 16.5h3" />
     </g>
     <g v-else-if="name === 'model'">
       <rect x="6" y="6" width="12" height="12" rx="2" />

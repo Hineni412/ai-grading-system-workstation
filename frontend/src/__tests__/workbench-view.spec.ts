@@ -165,14 +165,14 @@ describe('workbench view', () => {
     const heading = host.querySelector('h1')
     expect(view?.tagName).toBe('SECTION')
     expect(view?.getAttribute('aria-labelledby')).toBe('workbench-title')
-    expect(heading?.textContent).toContain('今天先完成这三件事')
+    expect(heading?.textContent).toContain('今天先完成这两件事')
     expect(heading?.id).toBe('workbench-title')
     expect(heading?.getAttribute('tabindex')).toBe('-1')
     expect(host.querySelector('.workbench-focus-board')).not.toBeNull()
     expect(host.querySelector('.workbench-pulse')).not.toBeNull()
     expect(host.querySelector('.workbench-workflow')).not.toBeNull()
-    expect(host.querySelectorAll('.workbench-focus-list > li')).toHaveLength(3)
-    expect(host.querySelectorAll('.workbench-workflow__steps > li')).toHaveLength(5)
+    expect(host.querySelectorAll('.workbench-focus-list > li')).toHaveLength(2)
+    expect(host.querySelectorAll('.workbench-workflow__steps > li')).toHaveLength(4)
     expect(host.textContent).toContain('从一次考试，走到下一堂课')
     expect(host.textContent).not.toContain('当前考试详情')
     expect(host.textContent).not.toContain('班级题目分析')
@@ -185,13 +185,10 @@ describe('workbench view', () => {
 
   it('routes focus, pulse and workflow actions to the existing destinations', async () => {
     const { host, router } = await mountView()
-    expect(host.querySelectorAll('.workbench-workflow__steps > li')).toHaveLength(5)
+    expect(host.querySelectorAll('.workbench-workflow__steps > li')).toHaveLength(4)
 
     clickButton(host, '继续批改')
     await expectPath(router, '/sessions/7/grading-run')
-
-    clickButton(host, '进入备课')
-    await expectPath(router, '/teaching-prep')
 
     clickButton(host, '查看班务')
     await expectPath(router, '/class-teacher')
@@ -244,7 +241,7 @@ describe('workbench view', () => {
 
   it('shows a retryable error when the overview cannot be read', async () => {
     const failed = await mountView({ overviewState: 'error', overviewValue: null })
-    expect(failed.host.textContent).toContain('考试概况暂时无法读取；备课和班务入口仍可使用')
+    expect(failed.host.textContent).toContain('考试概况暂时无法读取；班务入口仍可使用')
     clickButton(failed.host, '重新加载考试概况')
     expect(failed.loadOverview).toHaveBeenCalledTimes(2)
   })

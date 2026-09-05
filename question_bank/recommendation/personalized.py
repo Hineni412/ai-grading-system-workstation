@@ -827,7 +827,7 @@ class PersonalizedRecommendationModule:
                                 candidate["stable_keys"],
                                 stage_targets[stage],
                             ),
-                            str(candidate["question_type"]),
+                            _dedup_type_key(candidate),
                         ))
                         elapsed += int(candidate["estimated_minutes"])
                         _register_selection(candidate)
@@ -867,7 +867,7 @@ class PersonalizedRecommendationModule:
                                 candidate["stable_keys"],
                                 stage_targets[stage],
                             ),
-                            str(candidate["question_type"]),
+                            _dedup_type_key(candidate),
                         )
                         if key_type in used_key_types:
                             continue
@@ -956,7 +956,7 @@ class PersonalizedRecommendationModule:
                                 continue
                             key_type = (
                                 matched,
-                                str(candidate["question_type"]),
+                                _dedup_type_key(candidate),
                             )
                             if key_type in used_key_types:
                                 continue
@@ -988,7 +988,7 @@ class PersonalizedRecommendationModule:
                             )
                             key_type = (
                                 matched,
-                                str(candidate["question_type"]),
+                                _dedup_type_key(candidate),
                             )
                             if key_type in used_key_types:
                                 continue
@@ -1272,7 +1272,7 @@ class PersonalizedRecommendationModule:
                 """
                 SELECT qt.question_id, qt.tag_type, qt.tag_value
                 FROM question_tags qt
-                WHERE qt.tag_type IN ('method', 'model')
+                WHERE qt.tag_type IN ('method', 'model', 'special_type')
                   AND TRIM(COALESCE(qt.tag_value, '')) <> ''
                 ORDER BY qt.question_id, qt.id
                 """
@@ -1334,6 +1334,7 @@ class PersonalizedRecommendationModule:
                         row["question_number"] or question_id
                     ),
                     "question_type": str(row["question_type"] or ""),
+                    "special_types": list(skill_tags.get("special_type", [])),
                     "question_text": str(row["question_text"] or ""),
                     "source_paper": str(row["paper_title"] or ""),
                     "paper_level_rank": _paper_level_rank(
@@ -2463,6 +2464,20 @@ def _matched_key(
         key=lambda value: (positions[value], value),
     )
     return matched[0] if matched else str(stable_keys[0])
+
+
+def _dedup_type_key(candidate: Mapping[str, Any]) -> str:
+    """去重键的题型维度：解答题有子类标签按标签区分（计算≠证明），
+    未标注的解答题留在裸"解答题"独立桶，不与任何子类互去重。"""
+
+    special = {
+        str(value or "").strip()
+        for value in (candidate.get("special_types") or ())
+    }
+    for subtype in ("画图", "计算", "证明"):
+        if subtype in special:
+            return f"解答题·{subtype}"
+    return str(candidate.get("question_type") or "")
 
 
 def _relation_evidence(value: Mapping[str, Any]) -> dict[str, Any]:

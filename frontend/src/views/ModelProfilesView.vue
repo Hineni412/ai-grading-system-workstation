@@ -35,7 +35,6 @@ interface ModelProfileDraft {
   configApiKey: string
   hasConfigApiKey: boolean
   configModel: string
-  teachingPrepModel: string
   classTeacherModel: string
   requestSpeedMode: RequestSpeedMode
   maxConcurrentRequests: number
@@ -57,13 +56,11 @@ const executionStatusError = ref('')
 const taskBindingsDraft = ref<ModelTaskBindings>({
   content_generation: { profile_name: null, model: '' },
   grading: { profile_name: null, model: '' },
-  teaching_prep: { profile_name: null, model: '' },
   class_teacher: { profile_name: null, model: '' },
 })
 const taskRows = [
   { key: 'content_generation', title: '题库与评分标准生成', detail: '题库打标、评分标准生成、AI 组卷等内容生成' },
   { key: 'grading', title: '识别姓名与批改试卷', detail: '姓名识别和批改共用同一个模型与站点' },
-  { key: 'teaching_prep', title: '备课工作台', detail: '备课对话、资料整理与生成' },
   { key: 'class_teacher', title: '班主任工作台', detail: '班主任对话与草稿整理' },
 ] as const
 let executionStatusController: AbortController | null = null
@@ -80,7 +77,6 @@ const draft = reactive<ModelProfileDraft>({
   configApiKey: '',
   hasConfigApiKey: false,
   configModel: '',
-  teachingPrepModel: '',
   classTeacherModel: '',
   requestSpeedMode: 'automatic',
   maxConcurrentRequests: 20,
@@ -101,9 +97,8 @@ function draftSnapshot(): string {
     gradingModel: draft.gradingModel,
     configBaseUrl: draft.configBaseUrl,
     configApiKey: draft.configApiKey,
-    configModel: draft.configModel,
-    teachingPrepModel: draft.teachingPrepModel,
-    classTeacherModel: draft.classTeacherModel,
+  configModel: draft.configModel,
+  classTeacherModel: draft.classTeacherModel,
     requestSpeedMode: draft.requestSpeedMode,
     maxConcurrentRequests: draft.maxConcurrentRequests,
     requestsPerMinute: draft.requestsPerMinute,
@@ -213,7 +208,6 @@ function applyProfile(profile: ModelProfile): void {
     configApiKey: '',
     hasConfigApiKey: profile.has_config_api_key,
     configModel: profile.config_model,
-    teachingPrepModel: profile.teaching_prep_model,
     classTeacherModel: profile.class_teacher_model,
     requestSpeedMode: profile.request_speed_mode,
     maxConcurrentRequests: profile.max_concurrent_requests,
@@ -240,7 +234,6 @@ function applyBlankProfile(): void {
     configApiKey: '',
     hasConfigApiKey: false,
     configModel: '',
-    teachingPrepModel: '',
     classTeacherModel: '',
     requestSpeedMode: 'automatic',
     maxConcurrentRequests: 20,
@@ -307,7 +300,6 @@ function toUpsertInput(): ModelProfileUpsertInput {
     config_base_url: draft.configBaseUrl,
     config_api_key: draft.configApiKey,
     config_model: draft.configModel,
-    teaching_prep_model: draft.teachingPrepModel,
     class_teacher_model: draft.classTeacherModel,
     request_speed_mode: draft.requestSpeedMode,
     max_concurrent_requests: draft.maxConcurrentRequests,

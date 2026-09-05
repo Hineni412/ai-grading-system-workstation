@@ -5,6 +5,7 @@ import {
   knowledgeLeafLabel,
   QUESTION_BANK_TAG_TYPES,
   questionBankApi,
+  questionTypeWithSubtype,
   type CurriculumCatalog,
   type QuestionBankTag,
 } from '../../api/question-bank'
@@ -347,7 +348,7 @@ async function removeCurrent(): Promise<void> {
           <TrainingCriterionReview :question-id="store.detail.id" />
 
           <dl class="qb-facts">
-            <div><dt>题型</dt><dd>{{ store.detail.question_type || '未分类' }}</dd></div>
+            <div><dt>题型</dt><dd>{{ questionTypeWithSubtype(store.detail.question_type, store.detail.tags) }}</dd></div>
             <div><dt>难度</dt><dd>{{ store.detail.difficulty || '待定' }}</dd></div>
             <div><dt>页码</dt><dd>{{ store.detail.page_range || '未记录' }}</dd></div>
             <div><dt>图片</dt><dd>{{ store.detail.has_images ? '包含' : '无' }}</dd></div>

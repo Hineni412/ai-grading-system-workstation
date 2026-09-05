@@ -6,7 +6,7 @@ import type {
   WorkspaceTopbarContext,
 } from './contracts'
 
-const MODULE_IDS = new Set<WorkspaceModuleId>(['teaching-prep', 'class-teacher'])
+const MODULE_IDS = new Set<WorkspaceModuleId>(['class-teacher'])
 const FEATURE_FLAG = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 const DATA_CLASSIFICATIONS = new Set([
   'public',
@@ -19,13 +19,6 @@ const TOPBAR_CONTEXTS = new Set<WorkspaceTopbarContext>([
   'workspace',
 ])
 const DESTINATION_KEYS = new Set([
-  'teaching_prep.overview',
-  'teaching_prep.library',
-  'teaching_prep.lesson.materials',
-  'teaching_prep.lesson.plan',
-  'teaching_prep.lesson.exercises',
-  'teaching_prep.lesson.slides',
-  'teaching_prep.lesson.package',
   'class_teacher.home',
   'class_teacher.student.record',
   'class_teacher.affair.record',
@@ -251,9 +244,7 @@ function validateSubNavigation(label: string, manifest: WorkspaceManifest): void
   }
   const seenDestinations = new Set<string>()
   const seenOrders = new Set<number>()
-  const prefix = manifest.moduleId === 'teaching-prep'
-    ? 'teaching_prep.'
-    : 'class_teacher.'
+  const prefix = 'class_teacher.'
   for (const item of manifest.subNavigation) {
     if (
       !item

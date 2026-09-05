@@ -21,7 +21,6 @@ const emptyModelState = {
   task_bindings: {
     content_generation: { profile_name: null, model: '' },
     grading: { profile_name: null, model: '' },
-    teaching_prep: { profile_name: null, model: '' },
     class_teacher: { profile_name: null, model: '' },
   },
 }

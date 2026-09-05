@@ -39,7 +39,7 @@ const defaults: WorkspaceAITaskStoreDependencies = {
   maxBackoffMs: 30_000,
 }
 
-const WORKSPACE_AI_TASK_MODULES = ['teaching_prep', 'class_teacher'] as const
+const WORKSPACE_AI_TASK_MODULES = ['class_teacher'] as const
 
 function isReference(value: unknown): value is PersistedTaskReference {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false

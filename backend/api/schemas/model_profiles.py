@@ -19,7 +19,6 @@ class ModelProfileUpdateRequest(_ModelProfileModel):
     config_base_url: str | None = Field(default=None, max_length=2048)
     config_api_key: str | None = Field(default=None, max_length=8192)
     config_model: str | None = Field(default=None, max_length=200)
-    teaching_prep_model: str | None = Field(default=None, max_length=200)
     class_teacher_model: str | None = Field(default=None, max_length=200)
     request_speed_mode: Literal[
         "automatic",
@@ -49,7 +48,6 @@ class ModelProfileResponse(_ModelProfileModel):
     config_base_url: str
     has_config_api_key: bool
     config_model: str
-    teaching_prep_model: str
     class_teacher_model: str
     request_speed_mode: Literal["automatic", "conservative", "custom"]
     max_concurrent_requests: int
@@ -74,7 +72,6 @@ class ModelTaskBinding(_ModelProfileModel):
 class ModelTaskBindingsUpdateRequest(_ModelProfileModel):
     content_generation: ModelTaskBinding
     grading: ModelTaskBinding
-    teaching_prep: ModelTaskBinding
     class_teacher: ModelTaskBinding
 
 
@@ -86,7 +83,6 @@ class ModelProfileStateResponse(_ModelProfileModel):
         Literal[
             "content_generation",
             "grading",
-            "teaching_prep",
             "class_teacher",
         ],
         ModelTaskBinding,

@@ -50,14 +50,10 @@ const diagnosticKinds = [
 ] as const
 const workspaceModules = [
   { value: '', label: '全部工作台' },
-  { value: 'teaching_prep', label: '备课工作台' },
   { value: 'class_teacher', label: '班主任工作台' },
 ] as const
 const workspaceTaskKinds = [
   { value: '', module: '', label: '全部功能' },
-  { value: 'semester_mapping', module: 'teaching_prep', label: '学期资料整理' },
-  { value: 'lesson_draft', module: 'teaching_prep', label: '课时备课方案' },
-  { value: 'exercise_suggestions', module: 'teaching_prep', label: '教辅识题' },
   { value: 'class_teacher_intake', module: 'class_teacher', label: '事项整理' },
   { value: 'class_teacher_draft_revision', module: 'class_teacher', label: '草稿修订' },
   { value: 'class_operations', module: 'class_teacher', label: '班务规划' },
@@ -104,7 +100,7 @@ function diagnosticKindLabel(value: string): string {
 }
 
 function workspaceModuleLabel(module: WorkspaceAITask['module']): string {
-  return module === 'teaching_prep' ? '备课' : '班主任'
+  return module === 'class_teacher' ? '班主任' : String(module)
 }
 
 function workspaceTaskKindLabel(taskKind: string): string {
@@ -336,12 +332,9 @@ async function loadWorkspaceTaskRecords(): Promise<void> {
   const controller = new AbortController()
   workspaceTaskRecordsController = controller
   try {
-    const [teachingPrep, classTeacher] = await Promise.all([
-      workspaceAITaskApi.list('teaching_prep', controller.signal),
-      workspaceAITaskApi.list('class_teacher', controller.signal),
-    ])
+    const classTeacherTasks = await workspaceAITaskApi.list('class_teacher', controller.signal)
     if (controller.signal.aborted) return
-    workspaceTaskRecords.value = [...teachingPrep, ...classTeacher]
+    workspaceTaskRecords.value = [...classTeacherTasks]
       .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
     clearHiddenDiagnosticSelection()
   } catch {

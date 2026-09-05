@@ -118,6 +118,19 @@ def _stored_question_type(database: Path, question_id: int) -> str:
     return str(row["question_type"] or "")
 
 
+def _stored_special_types(database: Path, question_id: int) -> list[str]:
+    with connect(database) as connection:
+        rows = connection.execute(
+            """
+            SELECT tag_value FROM question_tags
+            WHERE question_id = ? AND tag_type = 'special_type'
+            ORDER BY id
+            """,
+            (int(question_id),),
+        ).fetchall()
+    return [str(row["tag_value"]) for row in rows]
+
+
 def _question(
     question_id: int,
     *,
@@ -270,9 +283,12 @@ def test_response_schema_requires_closed_enum_suggestion() -> None:
         "多选题",
         "填空题",
         "解答题",
-        "解答题（计算）",
-        "解答题（证明）",
-        "解答题（画图）",
+    ]
+    assert suggestion["properties"]["essay_subtype"]["enum"] == [
+        "画图",
+        "计算",
+        "证明",
+        None,
     ]
 
 
@@ -345,8 +361,9 @@ def test_conflicting_suggestion_relaxes_shape_and_corrects_type(
             _combined_payload(
                 1,
                 suggestion={
-                    "question_type": "解答题（计算）",
+                    "question_type": "解答题",
                     "reason": "需要完整求解过程，本地填空是误判。",
+                    "essay_subtype": "计算",
                 },
             )
         ]
@@ -371,8 +388,11 @@ def test_conflicting_suggestion_relaxes_shape_and_corrects_type(
     audit = criteria["question_type_suggestion"]
     assert audit["action"] == "applied"
     assert audit["local_type"] == "填空题"
-    assert audit["suggested_type"] == "解答题（计算）"
-    assert _stored_question_type(database, 1) == "解答题（计算）"
+    assert audit["suggested_type"] == "解答题"
+    assert audit["suggested_subtype"] == "计算"
+    assert audit["subtype_action"] == "applied"
+    assert _stored_question_type(database, 1) == "解答题"
+    assert _stored_special_types(database, 1) == ["计算"]
     latest = SolutionEvidenceRepository(database).latest(1)
     assert latest is not None
     parts = latest["evidence"]["parts"]
@@ -436,8 +456,9 @@ def test_confirmed_type_conflict_is_recorded_without_changes(
             _combined_payload(
                 1,
                 suggestion={
-                    "question_type": "解答题（计算）",
+                    "question_type": "解答题",
                     "reason": "模型认为应看过程。",
+                    "essay_subtype": "计算",
                 },
             )
         ]
@@ -460,8 +481,10 @@ def test_confirmed_type_conflict_is_recorded_without_changes(
     ]
     audit = criteria["question_type_suggestion"]
     assert audit["action"] == "conflict_only"
-    assert audit["suggested_type"] == "解答题（计算）"
+    assert audit["suggested_type"] == "解答题"
     assert _stored_question_type(database, 1) == "填空题"
+    # 教师确认的题型冲突只登记，子类标签也不写。
+    assert _stored_special_types(database, 1) == []
 
 
 def test_suggestion_dict_validation_rejects_unknown_enum() -> None:
@@ -469,7 +492,25 @@ def test_suggestion_dict_validation_rejects_unknown_enum() -> None:
         QuestionTypeSuggestion.from_dict(
             {"question_type": "论述题", "reason": "不在枚举内"}
         )
+    # 归一前的旧六值题型不再是合法建议值。
+    with pytest.raises(ProjectionValidationError):
+        QuestionTypeSuggestion.from_dict(
+            {"question_type": "解答题（证明）", "reason": "需要证明过程"}
+        )
+    # 子类建议只接受封闭子类值，且只能挂在解答题上。
+    with pytest.raises(ProjectionValidationError):
+        QuestionTypeSuggestion.from_dict(
+            {"question_type": "解答题", "essay_subtype": "探究"}
+        )
+    with pytest.raises(ProjectionValidationError):
+        QuestionTypeSuggestion.from_dict(
+            {"question_type": "填空题", "essay_subtype": "证明"}
+        )
     suggestion = QuestionTypeSuggestion.from_dict(
-        {"question_type": "解答题（证明）", "reason": "需要证明过程"}
+        {
+            "question_type": "解答题",
+            "reason": "需要证明过程",
+            "essay_subtype": "证明",
+        }
     )
     assert suggestion.question_type_group == "proof"

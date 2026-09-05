@@ -25,7 +25,6 @@ EXPECTED_AUTHORITY_DOCUMENTS = (
     "docs/README.md",
     "docs/product/GRADING.md",
     "docs/product/KNOWLEDGE_AND_TRAINING.md",
-    "docs/product/TEACHING_PREP.md",
     "docs/product/CLASS_TEACHER.md",
     "docs/security/SECURITY.md",
     "docs/maintenance/storage-policy.md",

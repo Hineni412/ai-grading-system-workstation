@@ -14,6 +14,7 @@ from analysis_report_exporter import (
 )
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
+    get_ai_assembly_session_service,
     get_assembly_workspace_service,
     get_job_manager,
     get_question_bank_read_service,
@@ -22,6 +23,8 @@ from backend.api.schemas.ai_assembly import (
     AiAssemblyPreflightResponse,
     AiAssemblySelectRequest,
     AiAssemblySelectResponse,
+    AiAssemblySessionResponse,
+    AiAssemblySessionWriteRequest,
     AiAssemblySpecJobSubmitRequest,
     AiAssemblyTemplateStructureResponse,
 )
@@ -40,6 +43,9 @@ from question_bank.services.ai_assembly_service import (
     select_questions,
 )
 from question_bank.services.assembly_workspace_service import (
+    AiAssemblySession,
+    AiAssemblySessionConflict,
+    AiAssemblySessionService,
     AssemblyWorkspaceService,
 )
 from question_bank.services.question_frequency_service import (
@@ -49,6 +55,63 @@ from question_bank.services.question_read_service import QuestionBankReadService
 
 
 router = APIRouter(prefix="/api/question-assembly/ai", tags=["question-assembly"])
+
+
+@router.get("/session", response_model=AiAssemblySessionResponse)
+def get_ai_assembly_session(
+    service: AiAssemblySessionService = Depends(get_ai_assembly_session_service),
+) -> AiAssemblySessionResponse:
+    """读取 AI 组卷会话；文件不存在时返回空会话（含空内容版本号）。"""
+
+    return AiAssemblySessionResponse(**_session_payload(service.load_session()))
+
+
+@router.put(
+    "/session",
+    response_model=AiAssemblySessionResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "AI assembly session changed"},
+        422: {"model": ErrorResponse, "description": "AI assembly session is invalid"},
+    },
+)
+def save_ai_assembly_session(
+    body: AiAssemblySessionWriteRequest,
+    service: AiAssemblySessionService = Depends(get_ai_assembly_session_service),
+) -> AiAssemblySessionResponse:
+    try:
+        saved = service.save_session(
+            expected_revision=body.expected_revision,
+            session=body.session.model_dump(),
+        )
+    except AiAssemblySessionConflict as exc:
+        raise ApiError(
+            409,
+            "ai_assembly_session_conflict",
+            "AI assembly session has changed",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "ai_assembly_session_invalid",
+            "AI assembly session is invalid",
+        ) from exc
+    return AiAssemblySessionResponse(**_session_payload(saved))
+
+
+@router.delete("/session", response_model=AiAssemblySessionResponse)
+def clear_ai_assembly_session(
+    service: AiAssemblySessionService = Depends(get_ai_assembly_session_service),
+) -> AiAssemblySessionResponse:
+    """复位为空会话（"重新开始"）；返回空会话与其版本号。"""
+
+    return AiAssemblySessionResponse(**_session_payload(service.clear_session()))
+
+
+def _session_payload(session: AiAssemblySession) -> dict[str, object]:
+    payload = dict(session.payload)
+    payload.pop("schema_version", None)
+    return {**payload, "revision": session.revision}
 
 
 @router.get("/preflight", response_model=AiAssemblyPreflightResponse)

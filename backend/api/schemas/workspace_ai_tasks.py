@@ -17,7 +17,7 @@ class PrepareWorkspaceAITaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     operation_id: str = Field(min_length=8, max_length=160)
-    module: Literal["teaching_prep", "class_teacher"]
+    module: Literal["class_teacher"]
     task_kind: str = Field(min_length=1, max_length=160)
     source_ref: OpaqueRefPayload
     context_refs: list[OpaqueRefPayload] = Field(default_factory=list, max_length=100)

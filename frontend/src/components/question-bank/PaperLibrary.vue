@@ -7,6 +7,7 @@ import {
   ref,
   watch,
 } from 'vue'
+import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
 import type {
@@ -53,6 +54,8 @@ const emit = defineEmits<{
 const store = useQuestionBankStore()
 const jobStore = useJobStore()
 const curriculumScope = useCurriculumScopeStore()
+// 部分既有单测在无 router 的环境直接挂载本组件；此时"用作 AI 组卷模板"点击不跳转。
+const router = useRouter() as ReturnType<typeof useRouter> | undefined
 const keyword = ref('')
 // 搜索输入防抖：逐键全量筛选 + 分组重算在试卷多时明显卡顿。
 const debouncedKeyword = ref('')
@@ -313,6 +316,16 @@ function togglePaperMenu(paperId: number): void {
 
 function closePaperMenu(): void {
   openMenuPaperId.value = null
+}
+
+// 试卷卡"用作 AI 组卷模板"：跳到组卷工作台 AI 模式并带上模板卷 id，
+// AI 组卷面板挂载时读取 template query 套用模板。
+function useAsAiAssemblyTemplate(paper: QuestionBankPaper): void {
+  if (!router) return
+  void router.push({
+    name: 'question-assembly',
+    query: { mode: 'ai', template: String(paper.id) },
+  })
 }
 
 onMounted(() => document.addEventListener('click', closePaperMenu))
@@ -1295,6 +1308,11 @@ async function confirmPermanentDelete(): Promise<void> {
                     ? '准备中…'
                     : '重新打标签'
                 }}</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  @click="closePaperMenu(); useAsAiAssemblyTemplate(paper)"
+                >用作 AI 组卷模板</button>
                 <button
                   type="button"
                   role="menuitem"

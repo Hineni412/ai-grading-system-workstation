@@ -14,15 +14,71 @@ _SUBQ_MARK_RE = re.compile(
 _FULL_SOLUTION_SCORE_THRESHOLD = 6
 
 # 题型封闭枚举：本检测器的全部合法输出，也是联合分析题型建议的唯一合法取值。
+# 解答题的"画图/计算/证明"子类不再是题型枚举，由 detect_essay_subtype
+# 产出并写入 special_type 标签。
 QUESTION_TYPES = (
     "选择题",
     "多选题",
     "填空题",
     "解答题",
-    "解答题（计算）",
-    "解答题（证明）",
-    "解答题（画图）",
 )
+
+# 解答题子类标签的封闭取值（special_type 标签维度）。
+ESSAY_SUBTYPES = ("画图", "计算", "证明")
+
+# 兼容输入：归一前的旧六值子类题型 → （归一大类，子类标签值）。
+_ESSAY_SUBTYPE_BY_LEGACY_TYPE = {
+    "解答题（画图）": "画图",
+    "解答题（计算）": "计算",
+    "解答题（证明）": "证明",
+}
+
+# 子类识别规则（宁缺毋滥、猜就猜准）：
+# 画图=强作图信号，优先级最高（带尺规作图的证明也算画图）；
+# 证明=强说理信号；计算=开头直接计算指令；均不命中则不标注。
+_DRAW_SUBTYPE_RE = re.compile(r"作图|画出|尺规|网格作图|绘制图形|在图中标出")
+_PROOF_SUBTYPE_RE = re.compile(
+    r"证明|求证|试说明|说明理由|理由如下|判定[^。；！？?\n]{0,24}是否"
+)
+# 计算只认开头指令式（允许题号、分值、小问标记等排版前缀），
+# 题面中段的“计算/求解”等叙述不算信号，避免误伤。
+_CALC_SUBTYPE_RE = re.compile(
+    r"^\s*(?:\d+\s*[.．、]\s*)?"
+    r"(?:[（(]\s*\d+\s*分\s*[)）]\s*)?"
+    r"(?:[（(]\d+[)）]\s*)*"
+    r"(?:计算|化简|求值|解方程|解不等式|解下列)"
+)
+
+
+def split_legacy_question_type(value: object) -> tuple[str | None, str | None]:
+    """兼容输入：旧六值题型拆成归一后的四类题型与子类标签值。
+
+    非旧子类值原样返回（子类为 None）；空输入返回 (None, None)。
+    """
+
+    text = str(value or "").strip()
+    subtype = _ESSAY_SUBTYPE_BY_LEGACY_TYPE.get(text)
+    if subtype is not None:
+        return "解答题", subtype
+    return (text or None), None
+
+
+def detect_essay_subtype(question_text: object) -> str | None:
+    """识别解答题子类：'画图' | '计算' | '证明' | None（未标注）。
+
+    宁缺毋滥：只有强信号才打标，拿不准一律 None，留待人工或 AI 打标订正。
+    """
+
+    text = str(question_text or "")
+    if not text.strip():
+        return None
+    if _DRAW_SUBTYPE_RE.search(text):
+        return "画图"
+    if _PROOF_SUBTYPE_RE.search(text):
+        return "证明"
+    if _CALC_SUBTYPE_RE.search(text):
+        return "计算"
+    return None
 
 
 def _looks_like_full_solution(text: str) -> bool:
@@ -41,19 +97,19 @@ def _looks_like_full_solution(text: str) -> bool:
 def detect_question_type(question_text: str, current_type: str | None = None) -> str:
     """
     Robust junior high school math question type detector.
-    Classifies a question into:
+    Classifies a question into exactly one of:
       - 选择题 (Choice Questions)
       - 多选题 (Multi-Choice Questions)
       - 填空题 (Fill in the Blank)
-      - 解答题（计算）(Calculation solution)
-      - 解答题（证明）(Proof solution)
-      - 解答题（画图）(Drawing solution)
-      - 解答题 (Generic solution)
+      - 解答题 (Solution; 子类"画图/计算/证明"见 detect_essay_subtype)
     """
     # 0. If current type is already specified and is highly granular, keep it!
     val = str(current_type or "").strip()
-    if val and val not in ("未知", "解答题", ""):
+    if val in QUESTION_TYPES and val != "解答题":
         return val
+    # 兼容输入：归一前的旧子类题型按大类"解答题"保留，子类由标签表达。
+    if val in _ESSAY_SUBTYPE_BY_LEGACY_TYPE:
+        return "解答题"
 
     text = str(question_text or "")
 
@@ -102,34 +158,19 @@ def detect_question_type(question_text: str, current_type: str | None = None) ->
         else:
             return "填空题"
 
-    # 3. Check subjective subcategories (解答题 - 计算、证明、画图)
-    # Drawing check:
-    draw_keywords = ("画", "作图", "画出", "尺规作图", "平移", "旋转", "投影", "对称", "网格", "绘制", "直角坐标系")
-    if any(x in text for x in draw_keywords):
-        return "解答题（画图）"
-
-    # Proof check:
-    proof_keywords = ("证明", "求证", "说明理由", "是否全等", "判定理由", "理由如下", "垂直", "平行", "判定")
-    if any(x in text for x in proof_keywords):
-        return "解答题（证明）"
-
-    # Calculation check:
-    calc_keywords = ("计算", "化简", "求值", "解方程", "解不等式", "求下列各值", "代数式", "计算题", "求得", "求解")
-    if any(x in text for x in calc_keywords):
-        return "解答题（计算）"
-
-    # Default fallback
+    # 3. 其余一律归"解答题"；画图/计算/证明子类由 detect_essay_subtype 打标签。
     return "解答题"
 
 
 # Grading-rubric (LLM) question types mapped onto the question-bank enum.
-# The rubric enum has no drawing/multi-choice granularity, so comprehensive
-# falls back to the generic 解答题.
+# The rubric enum has no drawing/multi-choice granularity, so calculation,
+# proof and comprehensive all fall back to the generic 解答题；解答题子类
+# 由导入链路的 detect_essay_subtype 依据题干另行打标。
 _RUBRIC_QUESTION_TYPE_MAP = {
     "choice": "选择题",
     "fill_blank": "填空题",
-    "calculation": "解答题（计算）",
-    "proof": "解答题（证明）",
+    "calculation": "解答题",
+    "proof": "解答题",
     "comprehensive": "解答题",
 }
 

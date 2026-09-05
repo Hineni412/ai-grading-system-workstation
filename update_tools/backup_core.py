@@ -55,7 +55,7 @@ def _get_logger() -> logging.Logger:
 # ── 常量 ──────────────────────────────────────────────
 
 VALID_REASONS = ("before_exam", "before_update", "before_import", "before_restore", "manual", "after_exam")
-VALID_BACKUP_SCOPES = ("grading", "teaching_prep", "class_teacher")
+VALID_BACKUP_SCOPES = ("grading", "class_teacher")
 DEFAULT_BACKUP_SCOPES = ("grading", "class_teacher")
 
 # 不备份的模式
@@ -114,7 +114,7 @@ def _should_skip(rel_path: Path) -> bool:
     if (
         len(folded) >= 5
         and folded[:2] == ("user_data", "workspaces")
-        and folded[2] in {"class-teacher", "teaching-prep"}
+        and folded[2] in {"class-teacher"}
         and any(
             part in _WORKSPACE_DERIVED_DATABASE_DIRS
             for part in folded[3:-1]
@@ -167,11 +167,6 @@ def preview_backup(
             (pm.data_root / "snapshots", "user_data/snapshots"),
             (pm.project_root / "config", "config"),
         ])
-    if "teaching_prep" in selected:
-        backup_sources.append((
-            pm.data_root / "workspaces" / "teaching-prep",
-            "user_data/workspaces/teaching-prep",
-        ))
     if "class_teacher" in selected:
         backup_sources.append((
             pm.data_root / "workspaces" / "class-teacher",
@@ -330,8 +325,6 @@ def create_backup(
             (pm.data_root / "snapshots", "user_data/snapshots"),
             (pm.project_root / "config", "config"),
         ])
-    if "teaching_prep" in selected:
-        backup_sources.append((pm.data_root / "workspaces" / "teaching-prep", "user_data/workspaces/teaching-prep"))
     if "class_teacher" in selected:
         backup_sources.append((pm.data_root / "workspaces" / "class-teacher", "user_data/workspaces/class-teacher"))
     if include_logs:

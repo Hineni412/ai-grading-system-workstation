@@ -26,7 +26,6 @@ _LOCK_TIMEOUT_SECONDS = 10.0
 MODEL_TASK_KEYS = (
     "content_generation",
     "grading",
-    "teaching_prep",
     "class_teacher",
 )
 _TASK_BINDING_REQUIRED_KEYS = frozenset({"profile_name", "model"})
@@ -193,6 +192,15 @@ def _validated_task_bindings(data: Any) -> dict[str, dict[str, str]]:
     return normalized
 
 
+def _normalized_persisted_task_bindings(data: Any) -> dict[str, dict[str, str]]:
+    """Load persisted bindings; drop task names retired from this build."""
+    if not isinstance(data, dict):
+        raise ValueError("Model task bindings are invalid")
+    return _validated_task_bindings(
+        {key: value for key, value in data.items() if key in MODEL_TASK_KEYS}
+    )
+
+
 class ApiProfileStore:
     """Single persistence boundary for machine-local API profiles."""
 
@@ -211,7 +219,7 @@ class ApiProfileStore:
                 return {}
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                return _validated_task_bindings(data)
+                return _normalized_persisted_task_bindings(data)
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 raise ApiProfileStorageError(
                     f"Unable to read model task bindings from {path}"
@@ -269,13 +277,6 @@ class ApiProfileStore:
             result.update({
                 "ocr_model": model,
                 "grading_model": model,
-            })
-        elif task == "teaching_prep":
-            result.update({
-                "config_base_url": result.get("base_url"),
-                "config_api_key": result.get("api_key"),
-                "teaching_prep_model": model,
-                "config_model": model,
             })
         elif task == "class_teacher":
             result.update({

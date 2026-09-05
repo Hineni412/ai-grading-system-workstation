@@ -18,7 +18,6 @@ function profile(overrides: Record<string, unknown> = {}) {
     config_base_url: '',
     has_config_api_key: false,
     config_model: '',
-    teaching_prep_model: '',
     class_teacher_model: '',
     request_speed_mode: 'automatic',
     max_concurrent_requests: 20,
@@ -37,7 +36,6 @@ function taskBindings() {
   return {
     content_generation: { profile_name: '校内模型', model: 'content-model' },
     grading: { profile_name: '校内模型', model: 'grading-model' },
-    teaching_prep: { profile_name: '校内模型', model: 'prep-model' },
     class_teacher: { profile_name: '校内模型', model: 'teacher-model' },
   }
 }
