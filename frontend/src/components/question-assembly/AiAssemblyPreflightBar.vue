@@ -6,6 +6,7 @@ defineProps<{
   preflight: AiAssemblyPreflight | null
   loading?: boolean
   confirming?: boolean
+  confirmLabel?: string
 }>()
 
 const emit = defineEmits<{
@@ -24,7 +25,7 @@ const emit = defineEmits<{
           预计消耗约 {{ preflight.estimated_total_tokens }} tokens。
         </p>
         <AppButton variant="primary" :disabled="confirming" @click="emit('confirm')">
-          {{ confirming ? '正在提交…' : '确认并生成细目表' }}
+          {{ confirming ? '正在提交…' : (confirmLabel ?? '确认并生成细目表') }}
         </AppButton>
       </template>
       <p v-else class="ai-assembly-preflight__warning">
@@ -59,6 +60,6 @@ const emit = defineEmits<{
 }
 
 .ai-assembly-preflight__warning {
-  color: var(--color-warning, #b45309) !important;
+  color: var(--color-warning) !important;
 }
 </style>

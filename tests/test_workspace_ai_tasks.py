@@ -37,72 +37,52 @@ from backend.llm.trace import NullCallTraceSink
 from backend.llm.usage import NullUsageSink
 
 
-def _request(module: str = "teaching_prep") -> PrepareRequest:
+def _request(module: str = "class_teacher") -> PrepareRequest:
     return PrepareRequest(
         module=module,
-        task_kind=(
-            "teaching_prep.lesson_plan"
-            if module == "teaching_prep"
-            else "class_teacher.intake_triage"
-        ),
+        task_kind="class_teacher.intake_triage",
         source_ref=OpaqueRef(
-            kind="lesson" if module == "teaching_prep" else "conversation",
+            kind="conversation",
             id="synthetic-source-001",
             revision="7",
         ),
         context_refs=(OpaqueRef(kind="snapshot", id="snapshot-001", revision="3"),),
         prompt_contract_version="synthetic-v1",
         model_destination_fingerprint="a" * 64,
-        return_target=(
-            "teaching_prep.lesson.plan"
-            if module == "teaching_prep"
-            else "class_teacher.home"
-        ),
+        return_target="class_teacher.home",
     )
 
 
-def _result(module: str = "teaching_prep") -> AdapterResult:
-    destination = (
-        "teaching_prep.lesson.plan"
-        if module == "teaching_prep"
-        else "class_teacher.affair.record"
-    )
+def _result(module: str = "class_teacher") -> AdapterResult:
+    destination = "class_teacher.affair.record"
     return AdapterResult(
         proposal_ref_id="proposal-001",
         proposal_revision="1",
         handoffs=(
             HandoffDraft(
                 work_item_id="work-item-001",
-                intent="review" if module == "teaching_prep" else "create",
+                intent="create",
                 handling_mode="record",
                 destination_key=destination,
                 subject_refs=(OpaqueRef(kind="lesson", id="lesson-001", revision="2"),),
                 draft_ref=OpaqueRef(kind="draft", id="draft-001", revision="1"),
                 prefill_keys=("summary",),
-                return_destination_key=(
-                    "teaching_prep.overview"
-                    if module == "teaching_prep"
-                    else "class_teacher.home"
-                ),
+                return_destination_key="class_teacher.home",
             ),
             HandoffDraft(
                 work_item_id="work-item-002",
-                intent="review" if module == "teaching_prep" else "plan",
+                intent="plan",
                 handling_mode="plan_calendar",
                 destination_key=destination,
                 subject_refs=(),
                 draft_ref=OpaqueRef(kind="draft", id="draft-002", revision="1"),
-                return_destination_key=(
-                    "teaching_prep.overview"
-                    if module == "teaching_prep"
-                    else "class_teacher.home"
-                ),
+                return_destination_key="class_teacher.home",
             ),
         ),
     )
 
 
-def _service(tmp_path: Path, module: str = "teaching_prep"):
+def _service(tmp_path: Path, module: str = "class_teacher"):
     job_store = JobStore(tmp_path / "grading.db")
     manager = JobManager(job_store, max_workers=2, cleanup_interrupted=False)
     adapter = FakeWorkspaceAITaskAdapter(module=module, result=_result(module))
@@ -115,11 +95,10 @@ def _service(tmp_path: Path, module: str = "teaching_prep"):
     return service, manager, adapter
 
 
-@pytest.mark.parametrize("module", ["teaching_prep", "class_teacher"])
 def test_fake_adapters_share_prepare_dispatch_and_handoff_contract(
     tmp_path: Path,
-    module: str,
 ) -> None:
+    module = "class_teacher"
     service, manager, adapter = _service(tmp_path, module)
     try:
         prepared = service.prepare(f"operation-{module}-001", _request(module))
@@ -214,8 +193,8 @@ def test_actionable_module_tasks_exclude_finished_history_and_closed_proposals(
                 (failed.task_id,),
             )
 
-        actionable = service.list_actionable_module_tasks("teaching_prep")
-        complete = service.list_module_tasks("teaching_prep")
+        actionable = service.list_actionable_module_tasks("class_teacher")
+        complete = service.list_module_tasks("class_teacher")
 
         assert {task.task_id for task in actionable} == {
             prepared.task_id,
@@ -289,13 +268,13 @@ def test_adoption_receipt_converges_after_response_loss(tmp_path: Path) -> None:
         with pytest.raises(RuntimeError, match="response loss"):
             service.adopt(
                 handoff.handoff_id,
-                module="teaching_prep",
+                module="class_teacher",
                 draft_revision="1",
                 target_revision="9",
             )
         result = service.adopt(
             handoff.handoff_id,
-            module="teaching_prep",
+            module="class_teacher",
             draft_revision="1",
             target_revision="9",
         )
@@ -307,7 +286,7 @@ def test_adoption_receipt_converges_after_response_loss(tmp_path: Path) -> None:
         with pytest.raises(Exception):
             service.adopt(
                 handoff.handoff_id,
-                module="teaching_prep",
+                module="class_teacher",
                 draft_revision="1",
                 target_revision="10",
             )
@@ -353,21 +332,21 @@ def test_startup_registers_domain_adapters_before_local_recovery(tmp_path: Path)
                 return tmp_path / module_id
 
         def register_ai_tasks(registrar, _domain_service) -> None:
-            registrar.register_adapter("teaching_prep.lesson_plan", adapter)
+            registrar.register_adapter("class_teacher.intake_triage", adapter)
 
         registry = WorkspaceRegistry(
             [
                 WorkspaceFeature(
-                    module_id="teaching-prep",
-                    api_prefix="/api/teaching-prep",
-                    job_prefix="teaching_prep",
+                    module_id="class-teacher",
+                    api_prefix="/api/class-teacher",
+                    job_prefix="class_teacher",
                     enabled=True,
                     register_ai_tasks=register_ai_tasks,
                 )
             ],
             paths=Paths(),
         )
-        registry.register_ai_tasks(restarted, {"teaching-prep": object()})
+        registry.register_ai_tasks(restarted, {"class-teacher": object()})
         restarted.recover_interrupted()
 
         assert restarted.get(task_id=prepared.task_id).status == "proposal_ready"
@@ -380,8 +359,8 @@ def test_startup_registers_domain_adapters_before_local_recovery(tmp_path: Path)
     ("module_id", "purpose", "response_text", "parse_status"),
     [
         (
-            "teaching-prep",
-            "lesson_plan",
+            "other-workspace",
+            "synthetic_plan",
             '{"synthetic":"model-return"}',
             "parsed",
         ),
@@ -472,7 +451,7 @@ def test_task_gateway_records_complete_local_diagnostics_and_zero_retry(
     assert module_calls["returned"] == 1
     assert journal.list_calls(
         limit=10,
-        workspace_module="class_teacher" if expected_module != "class_teacher" else "teaching_prep",
+        workspace_module="class_teacher" if expected_module != "class_teacher" else "other_workspace",
     )["returned"] == 0
     assert call["operation_id"] == request.operation_id
     assert call["outcome"] == "success"
@@ -515,8 +494,8 @@ def test_task_gateway_allows_six_lesson_draft_calls(tmp_path: Path) -> None:
     journal = JsonlDiagnosticJournal(tmp_path / "llm_diagnostics.jsonl")
     completions = Completions()
     context = WorkspaceContext(
-        module_id="teaching-prep",
-        root=tmp_path / "teaching-prep",
+        module_id="other-workspace",
+        root=tmp_path / "other-workspace",
         paths=Paths(),
     )
     gateway = WorkspaceModelGateway(
@@ -575,8 +554,8 @@ def test_task_gateway_records_transport_failure_without_retry(
     journal = JsonlDiagnosticJournal(tmp_path / "llm_diagnostics.jsonl")
     completions = FailingCompletions()
     context = WorkspaceContext(
-        module_id="teaching-prep",
-        root=tmp_path / "teaching-prep",
+        module_id="other-workspace",
+        root=tmp_path / "other-workspace",
         paths=Paths(),
     )
     gateway = WorkspaceModelGateway(
@@ -591,9 +570,9 @@ def test_task_gateway_records_transport_failure_without_retry(
         WorkspaceAITaskModelGateway(diagnostic_sink=journal).chat_completions(
             gateway=gateway,
             request=WorkspaceModelRequest(
-                purpose="semester_mapping",
+                purpose="synthetic_failure",
                 data_classification="confidential",
-                operation_id="operation-teaching-prep-failure",
+                operation_id="operation-other-workspace-failure",
             ),
             client=SimpleNamespace(
                 chat=SimpleNamespace(completions=completions),
@@ -617,13 +596,13 @@ def test_task_gateway_records_transport_failure_without_retry(
 def test_constructor_adapter_path_uses_registration_validation(tmp_path: Path) -> None:
     job_store = JobStore(tmp_path / "grading.db")
     manager = JobManager(job_store, max_workers=1, cleanup_interrupted=False)
-    adapter = FakeWorkspaceAITaskAdapter(module="teaching_prep", result=_result())
+    adapter = FakeWorkspaceAITaskAdapter(module="class_teacher", result=_result())
     try:
         with pytest.raises(ValueError, match="not registered"):
             WorkspaceAITaskService(
                 store=WorkspaceAITaskStore(job_store.db_path),
                 manager=manager,
-                adapters=(("teaching_prep.not_registered", adapter),),
+                adapters=(("class_teacher.not_registered", adapter),),
             )
     finally:
         manager.shutdown()
@@ -699,15 +678,15 @@ def test_safe_api_is_idempotent_and_workspace_job_projection_is_allowlisted(
     client = TestClient(app)
     payload = {
         "operation_id": "operation-api-001",
-        "module": "teaching_prep",
-        "task_kind": "teaching_prep.lesson_plan",
-        "source_ref": {"kind": "lesson", "id": "lesson-api-001", "revision": "1"},
+        "module": "class_teacher",
+        "task_kind": "class_teacher.intake_triage",
+        "source_ref": {"kind": "conversation", "id": "source-api-001", "revision": "1"},
         "context_refs": [
             {"kind": "semester", "id": "semester-api-001", "revision": "4"}
         ],
         "prompt_contract_version": "synthetic-v1",
         "model_destination_fingerprint": "a" * 64,
-        "return_target": "teaching_prep.lesson.plan",
+        "return_target": "class_teacher.home",
     }
     try:
         first = client.post("/api/workspace-ai-tasks/prepare", json=payload)
@@ -715,12 +694,12 @@ def test_safe_api_is_idempotent_and_workspace_job_projection_is_allowlisted(
         assert first.status_code == replay.status_code == 201
         assert first.json()["task_id"] == replay.json()["task_id"]
         assert first.json()["context_refs"] == payload["context_refs"]
-        assert [item.task_id for item in service.list_module_tasks("teaching_prep")] == [
+        assert [item.task_id for item in service.list_module_tasks("class_teacher")] == [
             first.json()["task_id"]
         ]
         listed = client.get(
             "/api/workspace-ai-tasks",
-            params={"module": "teaching_prep"},
+            params={"module": "class_teacher"},
         )
         assert listed.status_code == 200
         assert [item["task_id"] for item in listed.json()] == [first.json()["task_id"]]

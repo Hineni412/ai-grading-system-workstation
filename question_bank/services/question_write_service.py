@@ -25,7 +25,7 @@ from question_bank.models.question import (
     TagCreate,
 )
 from question_bank.models.tag_schema import MAX_TAG_LENGTH, TagAnalysis
-from question_bank.parsers.type_detector import QUESTION_TYPES
+from question_bank.parsers.type_detector import ESSAY_SUBTYPES, QUESTION_TYPES
 from question_bank.services.question_revision import question_revision
 
 if TYPE_CHECKING:
@@ -562,13 +562,23 @@ class QuestionBankWriteService:
         reason: str,
         model_name: str | None,
         operation_id: str,
+        suggested_subtype: str | None = None,
     ) -> dict[str, Any]:
-        """应用联合分析的题型建议；教师确认的题型只登记冲突不改数据。"""
+        """应用联合分析的题型建议；教师确认的题型只登记冲突不改数据。
+
+        子类建议（画图/计算/证明）只写 special_type 标签，题型枚举保持四类；
+        已存在任一子类标签时不覆盖既有标注。
+        """
 
         question_id = int(question_id)
         suggested = str(suggested_type or "").strip()
         if suggested not in QUESTION_TYPES:
             raise ValueError("suggested question type is not a supported type")
+        subtype = str(suggested_subtype or "").strip() or None
+        if subtype is not None and (
+            subtype not in ESSAY_SUBTYPES or suggested != "解答题"
+        ):
+            raise ValueError("suggested essay subtype is not a supported subtype")
         initialize_database(self.db_path)
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -583,25 +593,53 @@ class QuestionBankWriteService:
             audit: dict[str, Any] = {
                 "local_type": local_type,
                 "suggested_type": suggested,
+                "suggested_subtype": subtype,
                 "reason": str(reason or "").strip(),
                 "model_name": str(model_name or "").strip(),
                 "operation_id": str(operation_id or "").strip(),
             }
             if question_type_confirmed:
                 audit["action"] = "conflict_only"
-            elif local_type == suggested:
-                audit["action"] = "unchanged"
             else:
-                conn.execute(
-                    """
-                    UPDATE questions
-                    SET question_type = ?,
-                        updated_at = datetime('now','localtime')
-                    WHERE id = ? AND is_deleted = 0
-                    """,
-                    (suggested, question_id),
-                )
-                audit["action"] = "applied"
+                if local_type == suggested:
+                    audit["action"] = "unchanged"
+                else:
+                    conn.execute(
+                        """
+                        UPDATE questions
+                        SET question_type = ?,
+                            updated_at = datetime('now','localtime')
+                        WHERE id = ? AND is_deleted = 0
+                        """,
+                        (suggested, question_id),
+                    )
+                    audit["action"] = "applied"
+                if subtype is not None:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO question_tags (
+                            question_id, tag_type, tag_value,
+                            confidence, source, model_name
+                        )
+                        SELECT ?, 'special_type', ?, 0.8,
+                               'question_type_suggestion', ?
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM question_tags
+                            WHERE question_id = ?
+                              AND tag_type = 'special_type'
+                              AND tag_value IN ('画图', '计算', '证明')
+                        )
+                        """,
+                        (
+                            question_id,
+                            subtype,
+                            str(model_name or "").strip() or None,
+                            question_id,
+                        ),
+                    )
+                    audit["subtype_action"] = (
+                        "applied" if cursor.rowcount else "existing_kept"
+                    )
         return audit
 
     def save_question_preview(

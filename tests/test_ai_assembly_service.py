@@ -57,6 +57,7 @@ def _add_question(
     knowledge_points: tuple[str, ...] = (),
     text: str = "匿名题干",
     paper_id: int | None = None,
+    special_types: tuple[str, ...] = (),
 ) -> int:
     return store.add_question(
         QuestionCreate(
@@ -67,8 +68,14 @@ def _add_question(
             difficulty=difficulty,
             paper_id=paper_id,
             tags=[
-                TagCreate(tag_type="knowledge_point", tag_value=name)
-                for name in knowledge_points
+                *(
+                    TagCreate(tag_type="knowledge_point", tag_value=name)
+                    for name in knowledge_points
+                ),
+                *(
+                    TagCreate(tag_type="special_type", tag_value=value)
+                    for value in special_types
+                ),
             ],
         )
     )
@@ -515,6 +522,52 @@ def test_select_questions_diversity_limit_per_knowledge_point(
     assert len(set(picked).intersection(crowded)) == 1
 
 
+def test_select_questions_loads_frequency_metrics_once_per_select(
+    tmp_path: Path,
+) -> None:
+    store = _make_store(tmp_path)
+    first = _add_question(store, number="1", knowledge_points=(_KP_A1,))
+    second = _add_question(
+        store, number="2", question_type="填空题", knowledge_points=(_KP_A2,)
+    )
+
+    class _CountingFrequencyService(_StubFrequencyService):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.calls: list[list[int]] = []
+
+        def metrics_for_questions(self, question_ids):
+            self.calls.append([int(value) for value in question_ids])
+            return super().metrics_for_questions(question_ids)
+
+    stub = _CountingFrequencyService()
+    spec = AssemblySpec(
+        title="批量频度",
+        rows=(
+            SpecRow(
+                question_type="选择题",
+                count=1,
+                knowledge_points=(_KP_A1,),
+                difficulty=5,
+            ),
+            SpecRow(
+                question_type="填空题",
+                count=1,
+                knowledge_points=(_KP_A2,),
+                difficulty=5,
+            ),
+        ),
+    )
+
+    result = select_questions(spec, store.reader, frequency_service=stub)
+
+    # 多行选题只批量取一次频度指标，避免逐行重复加载全库活跃题。
+    assert len(stub.calls) == 1
+    assert sorted(stub.calls[0]) == sorted([first, second])
+    assert result.rows[0].question_ids == (first,)
+    assert result.rows[1].question_ids == (second,)
+
+
 def test_select_questions_dedupe_excludes_recent_records(
     tmp_path: Path,
 ) -> None:
@@ -576,14 +629,8 @@ def test_gap_suggestions_follow_relaxation_ladder(tmp_path: Path) -> None:
     assert gap.excluded_by_dedupe == 1
     assert [suggestion.step for suggestion in gap.suggestions] == [
         "disable_dedupe",
-        "relax_difficulty",
-        "neighbor_knowledge",
-        "relax_scope",
     ]
     assert all(suggestion.sacrifice for suggestion in gap.suggestions)
-    # 无 knowledge_relations 数据时退化为同 curriculum_section 知识点。
-    neighbor = gap.suggestions[2]
-    assert set(neighbor.knowledge_points) == set(_SECTION_KPS) - {_KP_A1}
 
 
 def test_suggest_relaxations_skips_inapplicable_steps(tmp_path: Path) -> None:
@@ -596,3 +643,373 @@ def test_suggest_relaxations_skips_inapplicable_steps(tmp_path: Path) -> None:
         read_service=store.reader,
     )
     assert suggestions == ()
+
+
+
+# ---------------------------------------------------------------------------
+# 解答题子类（W4）
+# ---------------------------------------------------------------------------
+
+
+def test_build_bank_profile_normalizes_legacy_types_and_counts_subtypes(
+    tmp_path: Path,
+) -> None:
+    clear_bank_profile_cache()
+    store = _make_store(tmp_path)
+    # 旧六值存储（迁移前）：题型串自带子类。
+    _add_question(
+        store,
+        number="1",
+        question_type="解答题（证明）",
+        knowledge_points=(_KP_A1,),
+    )
+    # 迁移后存储：大类题型 + special_type 标签。
+    _add_question(
+        store,
+        number="2",
+        question_type="解答题",
+        knowledge_points=(_KP_A1,),
+        special_types=("画图",),
+    )
+    _add_question(
+        store,
+        number="3",
+        question_type="解答题",
+        knowledge_points=(_KP_A1,),
+    )
+    _add_question(
+        store,
+        number="4",
+        question_type="选择题",
+        knowledge_points=(_KP_A2,),
+    )
+
+    profile = build_bank_profile(store.reader)
+
+    section = profile.sections[0]
+    assert section.question_type_distribution == {"解答题": 3, "选择题": 1}
+    assert section.essay_subtype_distribution == {
+        "画图": 1,
+        "证明": 1,
+        "未标注": 1,
+    }
+
+
+def test_extract_template_structure_merges_legacy_types(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    _insert_paper(store, 1, "旧真卷")
+    _add_question(
+        store, number="1", question_type="选择题", difficulty="3", paper_id=1
+    )
+    _add_question(
+        store, number="2", question_type="选择题", difficulty="3", paper_id=1
+    )
+    _add_question(
+        store, number="3", question_type="填空题", difficulty="4", paper_id=1
+    )
+    _add_question(
+        store,
+        number="4",
+        question_type="解答题（证明）",
+        difficulty="7",
+        paper_id=1,
+    )
+    _add_question(
+        store,
+        number="5",
+        question_type="解答题（计算）",
+        difficulty="7",
+        paper_id=1,
+    )
+
+    structure = extract_template_structure(store.reader, 1)
+
+    # 旧六值归并为四类；同题型同难度的连续行合并为一个模板行，保持题序。
+    assert [
+        (entry.question_number, entry.question_type, entry.difficulty, entry.count)
+        for entry in structure.entries
+    ] == [
+        ("1-2", "选择题", 3, 2),
+        ("3", "填空题", 4, 1),
+        ("4-5", "解答题", 7, 2),
+    ]
+
+
+def test_validate_spec_essay_subtype_rules() -> None:
+    for subtype in ("画图", "计算", "证明"):
+        validate_spec(
+            AssemblySpec(
+                title="x",
+                rows=(
+                    SpecRow(
+                        question_type="解答题",
+                        count=1,
+                        essay_subtype=subtype,
+                    ),
+                ),
+            )
+        )
+    with pytest.raises(AssemblySpecError, match="只有解答题"):
+        validate_spec(
+            AssemblySpec(
+                title="x",
+                rows=(
+                    SpecRow(
+                        question_type="选择题",
+                        count=1,
+                        essay_subtype="证明",
+                    ),
+                ),
+            )
+        )
+    with pytest.raises(AssemblySpecError, match="子类只支持"):
+        validate_spec(
+            AssemblySpec(
+                title="x",
+                rows=(
+                    SpecRow(
+                        question_type="解答题",
+                        count=1,
+                        essay_subtype="推理",
+                    ),
+                ),
+            )
+        )
+
+
+def test_spec_payload_roundtrip_with_essay_subtype() -> None:
+    spec = AssemblySpec(
+        title="周测",
+        rows=(
+            SpecRow(
+                question_type="解答题",
+                count=2,
+                knowledge_points=(_KP_A1,),
+                difficulty=6,
+                score=8.0,
+                essay_subtype="证明",
+            ),
+        ),
+    )
+    assert AssemblySpec.from_payload(spec.to_payload()) == spec
+
+    # 兼容输入：旧 payload 没有 essay_subtype 字段，按 None 读取。
+    legacy = AssemblySpec.from_payload(
+        {
+            "title": "旧表",
+            "rows": [{"question_type": "解答题", "count": 1}],
+        }
+    )
+    assert legacy.rows[0].essay_subtype is None
+
+
+def test_select_questions_essay_subtype_filters_by_tag(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    proof = {
+        _add_question(
+            store,
+            number=str(index),
+            question_type="解答题",
+            knowledge_points=(_KP_A1,),
+            special_types=("证明",),
+        )
+        for index in range(1, 3)
+    }
+    untagged = _add_question(
+        store,
+        number="3",
+        question_type="解答题",
+        knowledge_points=(_KP_A1,),
+    )
+    drawing = _add_question(
+        store,
+        number="4",
+        question_type="解答题",
+        knowledge_points=(_KP_A1,),
+        special_types=("画图",),
+    )
+
+    spec = AssemblySpec(
+        title="子类过滤",
+        rows=(
+            SpecRow(
+                question_type="解答题",
+                count=3,
+                knowledge_points=(_KP_A1,),
+                essay_subtype="证明",
+            ),
+        ),
+    )
+    result = select_questions(spec, store.reader)
+
+    assert set(result.rows[0].question_ids) == proof | {untagged}
+    assert set(result.rows[0].question_ids[:2]) == proof
+    assert drawing not in result.rows[0].question_ids
+    assert not result.gaps
+
+    # 未标注子类的行行为不变：所有解答题都是候选。
+    plain = AssemblySpec(
+        title="无子类",
+        rows=(
+            SpecRow(
+                question_type="解答题",
+                count=4,
+                knowledge_points=(_KP_A1,),
+            ),
+        ),
+    )
+    plain_result = select_questions(plain, store.reader)
+    assert set(plain_result.rows[0].question_ids) == proof | {untagged, drawing}
+
+
+def test_select_questions_essay_subtype_matches_legacy_storage(
+    tmp_path: Path,
+) -> None:
+    """迁移前旧库：题型仍是旧六值、无 special_type 标签时也要能选。"""
+    store = _make_store(tmp_path)
+    legacy_proof = _add_question(
+        store,
+        number="1",
+        question_type="解答题（证明）",
+        knowledge_points=(_KP_A1,),
+    )
+    legacy_draw = _add_question(
+        store,
+        number="2",
+        question_type="解答题（画图）",
+        knowledge_points=(_KP_A1,),
+    )
+
+    spec = AssemblySpec(
+        title="旧库子类",
+        rows=(
+            SpecRow(
+                question_type="解答题",
+                count=2,
+                knowledge_points=(_KP_A1,),
+                essay_subtype="证明",
+            ),
+        ),
+    )
+    result = select_questions(spec, store.reader)
+    assert result.rows[0].question_ids == (legacy_proof,)
+
+    # 无子类行在旧库下纳入全部旧写法解答题。
+    plain = AssemblySpec(
+        title="旧库",
+        rows=(
+            SpecRow(
+                question_type="解答题",
+                count=5,
+                knowledge_points=(_KP_A1,),
+            ),
+        ),
+    )
+    plain_result = select_questions(plain, store.reader)
+    assert set(plain_result.rows[0].question_ids) == {legacy_proof, legacy_draw}
+
+    # 旧草稿行的题型串"解答题（证明）"按 解答题+证明 兼容读取。
+    legacy_row = AssemblySpec(
+        title="旧草稿行",
+        rows=(
+            SpecRow(
+                question_type="解答题（证明）",
+                count=2,
+                knowledge_points=(_KP_A1,),
+            ),
+        ),
+    )
+    legacy_result = select_questions(legacy_row, store.reader)
+    assert legacy_result.rows[0].question_ids == (legacy_proof,)
+
+
+def test_diversity_does_not_leave_available_questions_unused(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    ids = {
+        _add_question(store, number=str(i), knowledge_points=(_KP_A1, _KP_A2))
+        for i in range(3)
+    }
+    spec = AssemblySpec(
+        title="综合题多标签不阻止补满",
+        rows=(SpecRow(question_type="选择题", count=3, knowledge_points=(_KP_A1, _KP_A2, _OTHER_SECTION_KP)),),
+        scope_knowledge_points=(_KP_A1, _KP_A2, _OTHER_SECTION_KP),
+    )
+    result = select_questions(spec, store.reader)
+    assert set(result.rows[0].question_ids) == ids
+    assert not result.gaps
+
+
+def test_preferred_points_fill_only_within_teacher_scope(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    preferred = _add_question(store, number="1", knowledge_points=(_KP_A1,))
+    backup = _add_question(store, number="2", knowledge_points=(_KP_A2,))
+    outside = _add_question(store, number="3", knowledge_points=(_OTHER_SECTION_KP,))
+    spec = AssemblySpec(
+        title="范围内补位",
+        rows=(SpecRow(question_type="选择题", count=3, knowledge_points=(_KP_A1,)),),
+        scope_knowledge_points=(_KP_A1, _KP_A2),
+    )
+    result = select_questions(spec, store.reader)
+    assert result.rows[0].question_ids == (preferred, backup)
+    assert outside not in result.rows[0].question_ids
+    assert result.gaps[0].missing == 1
+
+
+def test_allocation_reassigns_a_broad_row_to_fill_a_scarce_row(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    scarce = _add_question(store, number="1", difficulty="5", knowledge_points=(_KP_A1,))
+    alternative = _add_question(store, number="2", difficulty="3", knowledge_points=(_KP_A1,))
+    spec = AssemblySpec(title="整卷分配", rows=(
+        SpecRow(question_type="选择题", count=1, difficulty=4),
+        SpecRow(question_type="选择题", count=1, difficulty=6),
+    ), scope_knowledge_points=(_KP_A1,))
+    result = select_questions(spec, store.reader)
+    assert result.rows[0].question_ids == (alternative,)
+    assert result.rows[1].question_ids == (scarce,)
+    assert not result.gaps
+
+
+def test_inventory_keeps_all_tags_and_counts_papers_separately(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    _insert_paper(store, 1, "合成试卷")
+    for i in range(2):
+        _add_question(store, number=str(i), paper_id=1, question_type="解答题", difficulty="5", knowledge_points=(_KP_A1, _KP_A2))
+    clear_bank_profile_cache()
+    profile = build_bank_profile(store.reader)
+    section = next(item for item in profile.sections if item.section_id == _SECTION["id"])
+    assert set(section.knowledge_points) == {_KP_A1, _KP_A2}
+    assert section.question_count == 2
+    assert len(section.knowledge_inventory) == 2
+    for point in section.knowledge_inventory:
+        assert point["question_count"] == 2
+        assert point["paper_count"] == 1
+        assert point["combinations"] == [{"question_type": "解答题", "difficulty": 5.0, "essay_subtypes": [], "count": 2}]
+
+
+def test_difficulty_suggestion_requires_an_unused_in_scope_candidate(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    current = _add_question(store, number="1", difficulty="5", knowledge_points=(_KP_A1,))
+    harder = _add_question(store, number="2", difficulty="8", knowledge_points=(_KP_A2,))
+    _add_question(store, number="3", difficulty="8", knowledge_points=(_OTHER_SECTION_KP,))
+    row = SpecRow(question_type="选择题", count=2, difficulty=5, knowledge_points=(_KP_A1,))
+    spec = AssemblySpec(title="有效建议", rows=(row,), scope_knowledge_points=(_KP_A1, _KP_A2))
+    result = select_questions(spec, store.reader)
+    assert result.rows[0].question_ids == (current,)
+    assert [s.step for s in result.gaps[0].suggestions] == ["relax_difficulty"]
+    blocked = select_questions(spec, store.reader, exclude_ids=[harder])
+    assert blocked.gaps[0].suggestions == ()
+
+
+def test_overlapping_tags_can_fill_and_reserved_questions_are_not_moved(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    points = (_KP_A1, _KP_A2, _OTHER_SECTION_KP)
+    reserved = _add_question(store, number="0", knowledge_points=points)
+    ids = {
+        _add_question(store, number="1", knowledge_points=points),
+        _add_question(store, number="2", knowledge_points=points[:2]),
+        _add_question(store, number="3", knowledge_points=points[1:]),
+    }
+    spec = AssemblySpec(title="重合标签补齐", rows=(SpecRow(question_type="选择题", count=3, knowledge_points=points),), scope_knowledge_points=points)
+    result = select_questions(spec, store.reader, exclude_ids=(qid for qid in [reserved]))
+    assert set(result.rows[0].question_ids) == ids
+    assert not result.gaps

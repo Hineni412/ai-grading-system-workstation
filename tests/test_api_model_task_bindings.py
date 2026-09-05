@@ -35,7 +35,6 @@ def test_task_bindings_route_persists_multiple_api_sites_without_exposing_keys(
             "model": "content-model",
         },
         "grading": {"profile_name": "备用站点", "model": "grading-model"},
-        "teaching_prep": {"profile_name": "校内站点", "model": "prep-model"},
         "class_teacher": {
             "profile_name": "备用站点",
             "model": "class-teacher-model",
@@ -93,7 +92,7 @@ def test_legacy_batch_model_binding_is_ignored_on_load(tmp_path) -> None:
                     "model": "grading-model",
                     "batch_model": "ep-bi-old",
                 },
-                "teaching_prep": {
+                "retired_task": {
                     "profile_name": "校内站点",
                     "model": "prep-model",
                 },
@@ -119,3 +118,4 @@ def test_legacy_batch_model_binding_is_ignored_on_load(tmp_path) -> None:
     }
     assert "batch_model" not in loaded["content_generation"]
     assert "batch_model" not in loaded["grading"]
+    assert "retired_task" not in loaded

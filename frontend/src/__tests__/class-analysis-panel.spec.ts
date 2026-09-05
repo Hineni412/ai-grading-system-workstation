@@ -193,7 +193,6 @@ beforeEach(() => {
     task_bindings: {
       content_generation: { profile_name: '默认内容服务', model: 'qwen-plus' },
       grading: { profile_name: '默认内容服务', model: 'qwen-plus' },
-      teaching_prep: { profile_name: '默认内容服务', model: 'qwen-plus' },
       class_teacher: { profile_name: '默认内容服务', model: 'qwen-plus' },
     },
   })
@@ -348,7 +347,6 @@ describe('class analysis panel', () => {
       task_bindings: {
         content_generation: { profile_name: null, model: '' },
         grading: { profile_name: '默认内容服务', model: 'qwen-plus' },
-        teaching_prep: { profile_name: '默认内容服务', model: 'qwen-plus' },
         class_teacher: { profile_name: '默认内容服务', model: 'qwen-plus' },
       },
     })

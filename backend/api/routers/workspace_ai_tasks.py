@@ -105,7 +105,7 @@ def dispatch_task(
 
 @router.get("", response_model=list[WorkspaceAITaskResponse])
 def list_tasks(
-    module: Literal["teaching_prep", "class_teacher"] = Query(),
+    module: Literal["class_teacher"] = Query(),
     service: WorkspaceAITaskService = Depends(get_workspace_ai_task_service),
 ) -> list[WorkspaceAITaskResponse]:
     try:

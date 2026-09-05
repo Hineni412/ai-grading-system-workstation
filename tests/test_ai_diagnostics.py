@@ -67,13 +67,13 @@ def test_clear_class_teacher_diagnostics_preserves_other_workspace_calls(
         request_text="合成班主任请求正文",
         response_text='{"draft":"合成班主任响应正文"}',
     )
-    teaching_prep_call_id = _record_workspace_call(
+    other_call_id = _record_workspace_call(
         journal,
-        operation_id="synthetic-teaching-prep-call",
-        module="teaching_prep",
-        task_kind="lesson_plan",
-        request_text="合成备课请求正文",
-        response_text='{"plan":"合成备课响应正文"}',
+        operation_id="synthetic-other-workspace-call",
+        module="other_workspace",
+        task_kind="other_task",
+        request_text="合成其他工作区请求正文",
+        response_text='{"plan":"合成其他工作区响应正文"}',
     )
 
     result = journal.clear_workspace("class_teacher")
@@ -90,12 +90,12 @@ def test_clear_class_teacher_diagnostics_preserves_other_workspace_calls(
     )["returned"] == 0
     assert journal.list_calls(
         limit=10,
-        workspace_module="teaching_prep",
+        workspace_module="other_workspace",
     )["returned"] == 1
-    retained = journal.get_call(teaching_prep_call_id)
+    retained = journal.get_call(other_call_id)
     assert retained is not None
-    assert "合成备课请求正文" in str(retained["request"])
-    assert retained["raw_response"] == '{"plan":"合成备课响应正文"}'
+    assert "合成其他工作区请求正文" in str(retained["request"])
+    assert retained["raw_response"] == '{"plan":"合成其他工作区响应正文"}'
 
 
 def test_diagnostic_event_is_bounded_and_excludes_secrets_binary_and_local_paths(
@@ -248,7 +248,7 @@ def test_rotation_stays_at_three_files_and_targeted_clear_rewrites_all_of_them(
     )
     journal = JsonlDiagnosticJournal(tmp_path / "logs" / "llm_diagnostics.jsonl")
     for index in range(12):
-        module = "class_teacher" if index % 2 == 0 else "teaching_prep"
+        module = "class_teacher" if index % 2 == 0 else "other_workspace"
         _record_workspace_call(
             journal,
             operation_id=f"synthetic-rotation-call-{index:02d}",
@@ -256,7 +256,7 @@ def test_rotation_stays_at_three_files_and_targeted_clear_rewrites_all_of_them(
             task_kind=(
                 "class_teacher_intake"
                 if module == "class_teacher"
-                else "lesson_draft"
+                else "other_task"
             ),
             request_text=f"合成轮转请求 {index} " + "甲" * 240,
             response_text=f"合成轮转响应 {index} " + "乙" * 240,
@@ -280,7 +280,7 @@ def test_rotation_stays_at_three_files_and_targeted_clear_rewrites_all_of_them(
     assert cleared["retained_event_count"] > 0
     assert retained_events
     assert {event["workspace_module"] for event in retained_events} == {
-        "teaching_prep"
+        "other_workspace"
     }
 
 
@@ -305,11 +305,11 @@ def test_ai_diagnostics_api_filters_and_clears_only_class_teacher_calls(
     )
     _record_workspace_call(
         journal,
-        operation_id="api-teaching-prep-call",
-        module="teaching_prep",
-        task_kind="lesson_plan",
-        request_text="合成备课 API 筛选正文",
-        response_text='{"plan":"合成备课 API 响应"}',
+        operation_id="api-other-workspace-call",
+        module="other_workspace",
+        task_kind="other_task",
+        request_text="合成其他工作区 API 筛选正文",
+        response_text='{"plan":"合成其他工作区 API 响应"}',
     )
     monkeypatch.setattr(diagnostics_router, "_JOURNAL", journal)
     app = FastAPI()
@@ -351,7 +351,7 @@ def test_ai_diagnostics_api_filters_and_clears_only_class_teacher_calls(
     ).json()["matching"] == 0
     assert client.get(
         "/api/ai-diagnostics",
-        params={"workspace_module": "teaching_prep"},
+        params={"workspace_module": "other_workspace"},
     ).json()["matching"] == 1
 
 
@@ -363,17 +363,17 @@ def test_diagnostic_list_omits_request_bodies_while_detail_keeps_them(
     call_id = _record_workspace_call(
         journal,
         operation_id="synthetic-large-diagnostic",
-        module="teaching_prep",
-        task_kind="lesson_plan",
+        module="other_workspace",
+        task_kind="other_task",
         request_text=huge_text,
-        response_text='{"plan":"合成备课响应正文"}',
+        response_text='{"plan":"合成其他工作区响应正文"}',
     )
 
-    listed = journal.list_calls(limit=10, workspace_module="teaching_prep")
+    listed = journal.list_calls(limit=10, workspace_module="other_workspace")
     assert listed["returned"] == 1
     assert "request" not in listed["items"][0]
     assert "raw_response" not in listed["items"][0]
     detail = journal.get_call(call_id)
     assert detail is not None
     assert huge_text in str(detail["request"])
-    assert detail["raw_response"] == '{"plan":"合成备课响应正文"}'
+    assert detail["raw_response"] == '{"plan":"合成其他工作区响应正文"}'

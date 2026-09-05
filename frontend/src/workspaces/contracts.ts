@@ -1,6 +1,6 @@
 import type { Component } from 'vue'
 
-export type WorkspaceModuleId = 'teaching-prep' | 'class-teacher'
+export type WorkspaceModuleId = 'class-teacher'
 export type WorkspaceModuleIcon = WorkspaceModuleId
 export type WorkspaceTopbarContext = 'current-exam' | 'workspace'
 export type WorkspaceDataClassification =

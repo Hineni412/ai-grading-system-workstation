@@ -299,7 +299,7 @@ test('shows a retryable alert when the overview cannot be read', async ({ page }
   await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
   await page.goto('/workbench')
 
-  await expect(page.locator('.workbench-inline-error')).toContainText('考试概况暂时无法读取；备课和班务入口仍可使用')
+  await expect(page.locator('.workbench-inline-error')).toContainText('考试概况暂时无法读取；班务入口仍可使用')
   await expect(page.locator('.workbench-workflow')).toBeVisible()
   await page.getByRole('button', { name: '重新加载考试概况' }).click()
   await expect(page.locator('.workbench-inline-error')).toContainText('考试概况暂时无法读取')

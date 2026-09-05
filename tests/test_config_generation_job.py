@@ -3644,7 +3644,7 @@ def test_deferred_intake_carries_teacher_asset_and_type_decisions(
     assert intake_calls[0]["asset_overrides"] == [
         _expected_image_asset_override("1")
     ]
-    assert intake_calls[0]["type_overrides"] == {"1": "解答题（证明）"}
+    assert intake_calls[0]["type_overrides"] == {"1": "解答题"}
 
 
 def test_deferred_intake_blocks_when_asset_decisions_go_stale(
@@ -3944,5 +3944,5 @@ def test_interrupted_resume_intake_carries_teacher_asset_and_type_decisions(
     assert intake_calls[0]["asset_overrides"] == [
         _expected_image_asset_override("1")
     ]
-    assert intake_calls[0]["type_overrides"] == {"1": "解答题（证明）"}
+    assert intake_calls[0]["type_overrides"] == {"1": "解答题"}
     assert resumed["question_bank_sync_state"] == "ready_for_config_link"

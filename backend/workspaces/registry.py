@@ -40,10 +40,6 @@ class WorkspaceFeatureSource:
 
 DEFAULT_FEATURE_SOURCES = (
     WorkspaceFeatureSource(
-        "teaching-prep",
-        "backend.teaching_prep.feature:create_workspace_feature",
-    ),
-    WorkspaceFeatureSource(
         "class-teacher",
         "backend.class_teacher.feature:create_workspace_feature",
     ),

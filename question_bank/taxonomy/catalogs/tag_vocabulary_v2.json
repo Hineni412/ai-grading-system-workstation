@@ -10447,6 +10447,17 @@
       ]
     },
     {
+      "id": "special_type-8ecb440e9860f01c",
+      "dimension": "special_type",
+      "name": "画图",
+      "aliases": [
+        "作图"
+      ],
+      "status": "approved",
+      "origin": "teacher_governed_2026_08",
+      "source_paths": []
+    },
+    {
       "id": "special_type-9bee89235f532c59",
       "dimension": "special_type",
       "name": "立体模型制作实践题",
@@ -10460,6 +10471,26 @@
       "dimension": "special_type",
       "name": "线段和差证明题",
       "aliases": [],
+      "status": "approved",
+      "origin": "teacher_governed_2026_08",
+      "source_paths": []
+    },
+    {
+      "id": "special_type-e44976409a5d2b75",
+      "dimension": "special_type",
+      "name": "计算",
+      "aliases": [],
+      "status": "approved",
+      "origin": "teacher_governed_2026_08",
+      "source_paths": []
+    },
+    {
+      "id": "special_type-90b793146f059076",
+      "dimension": "special_type",
+      "name": "证明",
+      "aliases": [
+        "求证"
+      ],
       "status": "approved",
       "origin": "teacher_governed_2026_08",
       "source_paths": []

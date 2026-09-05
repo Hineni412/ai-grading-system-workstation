@@ -252,7 +252,7 @@ def test_open_running_preview_reuses_the_current_healthy_service(
         port=8035,
         browser_open=lambda url: opened.append(url) or True,
     ) is True
-    assert opened == ["http://127.0.0.1:8035/teaching-prep?preview=84c2e183"]
+    assert opened == ["http://127.0.0.1:8035/?preview=84c2e183"]
 
 
 def test_open_running_preview_distinguishes_stopped_and_wrong_services(

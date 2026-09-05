@@ -18,7 +18,6 @@ DATABASE_MEMBERS = {
     "user_data/databases/question_bank.db": "question_bank",
     "user_data/workspaces/class-teacher/student_affairs.db": "student_affairs",
     "user_data/workspaces/class-teacher/class_teacher_work.db": "class_teacher_work",
-    "user_data/workspaces/teaching-prep/teaching_prep.db": "teaching_prep",
 }
 
 REQUIRED_SAFETY_DATABASE_MEMBERS = frozenset(
@@ -36,9 +35,6 @@ REQUIRED_TABLES = {
     ),
     "class_teacher_work": frozenset(
         {"schema_migrations", "work_nodes", "work_edges", "work_operations"}
-    ),
-    "teaching_prep": frozenset(
-        {"schema_migrations", "teaching_prep_operations", "lesson_preparations"}
     ),
 }
 
@@ -189,7 +185,6 @@ def _looks_like_database_candidate(normalized: str) -> bool:
         return True
     workspace_prefixes = (
         "user_data/workspaces/class-teacher/",
-        "user_data/workspaces/teaching-prep/",
     )
     if not clean.startswith(workspace_prefixes):
         return False

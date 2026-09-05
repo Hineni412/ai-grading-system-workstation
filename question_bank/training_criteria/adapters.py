@@ -252,6 +252,7 @@ class BankQuestionTypeSuggestionWriter:
         return self.write_service.apply_question_type_suggestion(
             question.question_id,
             suggested_type=suggestion.question_type,
+            suggested_subtype=suggestion.essay_subtype,
             question_type_confirmed=question.question_type_confirmed,
             reason=suggestion.reason,
             model_name=model_name,
@@ -422,6 +423,24 @@ class QuestionAnalysisInputLoader:
                 """,
                 ids,
             ).fetchall()
+            # 解答题子类标签随题一并加载，供题组划分（证明/画图单题成批）；
+            # 只进 TaggingContext，不进入任何模型提示词。
+            special_type_rows = connection.execute(
+                f"""
+                SELECT question_id, tag_value
+                FROM question_tags
+                WHERE tag_type = 'special_type'
+                  AND question_id IN ({placeholders})
+                ORDER BY question_id, id
+                """,
+                ids,
+            ).fetchall()
+        special_types_by_id: dict[int, list[str]] = {}
+        for tag_row in special_type_rows:
+            bucket = special_types_by_id.setdefault(int(tag_row["question_id"]), [])
+            tag_value = str(tag_row["tag_value"] or "").strip()
+            if tag_value and tag_value not in bucket:
+                bucket.append(tag_value)
         by_id = {int(row["id"]): row for row in rows}
         result: list[QuestionAnalysisInput] = []
         for question_id in ids:
@@ -497,6 +516,11 @@ class QuestionAnalysisInputLoader:
                         exam_type=str(row["exam_type"] or ""),
                         district=str(row["district"] or ""),
                         has_images=has_images,
+                        existing_tags_by_dimension=(
+                            {"special_type": special_types_by_id[question_id]}
+                            if question_id in special_types_by_id
+                            else {}
+                        ),
                     ),
                     rich_question_blocks=tuple(
                         _public_block(item) for item in question_blocks
@@ -761,10 +785,11 @@ def _combined_prompt(
         "不要从标点、等式、角符号或连接词推断证据点个数。"
         "question_type_confirmed=false 的本地题型只是预览提示，不是评分事实。"
         "每题必须返回 question_type_suggestion（question_type 与 reason）："
-        "question_type 只能取 选择题、多选题、填空题、解答题、解答题（计算）、"
-        "解答题（证明）、解答题（画图）；认可本地题型时原样返回对应值，认为本地"
-        "题型有误时返回真实题型并在 reason 写一句依据。question_type_confirmed=true "
-        "的题型是教师确认事实，question_type_suggestion 必须与之一致。"
+        "question_type 只能取 选择题、多选题、填空题、解答题；认可本地题型时"
+        "原样返回对应值，认为本地题型有误时返回真实题型并在 reason 写一句依据。"
+        "question_type_confirmed=true 的题型是教师确认事实，question_type_suggestion "
+        "必须与之一致。题型为解答题时可附 essay_subtype（只能取 画图、计算、证明"
+        "或 null），只在能从题干确定子类时给出，拿不准返回 null。"
         "每个 part 的 response_mode 必须根据题目、完整答案和解析单独判定。"
         "第(1)问的一个填空位不得把后续过程问压成整题填空。出现 expected_part_count 时，"
         "必须按给定顺序返回恰好那么多 part。"

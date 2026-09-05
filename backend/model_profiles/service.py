@@ -27,7 +27,6 @@ _EDITABLE_FIELDS = frozenset(
         "config_base_url",
         "config_api_key",
         "config_model",
-        "teaching_prep_model",
         "class_teacher_model",
         "request_speed_mode",
         "max_concurrent_requests",
@@ -46,7 +45,6 @@ _MODEL_FIELDS = frozenset(
         "ocr_model",
         "grading_model",
         "config_model",
-        "teaching_prep_model",
         "class_teacher_model",
         "batch_model",
     }
@@ -58,7 +56,6 @@ _MAX_SECRET_LENGTH = 8192
 _TASK_KEYS = (
     "content_generation",
     "grading",
-    "teaching_prep",
     "class_teacher",
 )
 
@@ -139,11 +136,6 @@ class ModelProfileService:
             ),
             "grading": _clean_existing_text(
                 active.get("grading_model") or active.get("ocr_model")
-            ),
-            "teaching_prep": _clean_existing_text(
-                active.get("teaching_prep_model")
-                or active.get("config_model")
-                or active.get("grading_model")
             ),
             "class_teacher": _clean_existing_text(
                 active.get("class_teacher_model")
@@ -381,9 +373,6 @@ def _public_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
         "config_base_url": _public_endpoint(profile.get("config_base_url")),
         "has_config_api_key": _has_nonempty_value(profile.get("config_api_key")),
         "config_model": _clean_existing_text(profile.get("config_model")),
-        "teaching_prep_model": _clean_existing_text(
-            profile.get("teaching_prep_model")
-        ),
         "class_teacher_model": _clean_existing_text(
             profile.get("class_teacher_model")
         ),

@@ -33,13 +33,13 @@ README 负责帮助用户启动和理解系统，不覆盖安全红线或代码�
 
 ### `CONTEXT.md`
 
-当前统一词汇，定义阅卷、知识训练、备课、班主任工作对象以及可靠性术语。
+当前统一词汇，定义阅卷、知识训练、班主任工作对象以及可靠性术语。
 
 ### `CLAUDE.md`
 
 兼容工具入口，只指向 `AGENTS.md` 和上述当前权威文档，不重复规则。
 
-## 四个产品入口
+## 三个产品入口
 
 ### `docs/product/GRADING.md`
 
@@ -48,10 +48,6 @@ README 负责帮助用户启动和理解系统，不覆盖安全红线或代码�
 ### `docs/product/KNOWLEDGE_AND_TRAINING.md`
 
 题库、当前知识标准、知识关系、唯一当前掌握度、个性化训练与训练证据的当前产品边界。
-
-### `docs/product/TEACHING_PREP.md`
-
-学期、单元、课时、资料证据、课件改编和本机副本输出的当前产品边界。
 
 ### `docs/product/CLASS_TEACHER.md`
 

@@ -1818,7 +1818,7 @@
   margin: 12px auto 0;
   display: block;
   padding: 8px 18px;
-  border: 1px solid var(--color-border, #d4d4d8);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   background: transparent;
   color: var(--color-text-secondary);

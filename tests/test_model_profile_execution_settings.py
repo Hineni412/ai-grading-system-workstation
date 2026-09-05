@@ -58,7 +58,6 @@ def test_model_profile_saves_custom_request_speed_settings(tmp_path) -> None:
         "config_base_url": "",
         "has_config_api_key": False,
         "config_model": "",
-        "teaching_prep_model": "",
         "class_teacher_model": "",
         "request_speed_mode": "custom",
         "max_concurrent_requests": 37,
@@ -72,7 +71,7 @@ def test_model_profile_saves_custom_request_speed_settings(tmp_path) -> None:
     }
 
 
-def test_four_work_types_can_use_different_saved_api_sites(tmp_path) -> None:
+def test_work_types_can_use_different_saved_api_sites(tmp_path) -> None:
     store = ApiProfileStore(tmp_path / "profiles.json")
     service = ModelProfileService(store)
     service.upsert("站点甲", {
@@ -87,7 +86,6 @@ def test_four_work_types_can_use_different_saved_api_sites(tmp_path) -> None:
     state = service.update_task_bindings({
         "content_generation": {"profile_name": "站点甲", "model": "content-a"},
         "grading": {"profile_name": "站点乙", "model": "grading-b"},
-        "teaching_prep": {"profile_name": "站点甲", "model": "prep-a"},
         "class_teacher": {"profile_name": "站点乙", "model": "teacher-b"},
     })
 
@@ -118,7 +116,6 @@ def test_delete_profile_removes_its_saved_task_bindings(tmp_path) -> None:
     service.update_task_bindings({
         "content_generation": {"profile_name": "站点甲", "model": "content-a"},
         "grading": {"profile_name": "站点乙", "model": "grading-b"},
-        "teaching_prep": {"profile_name": "站点甲", "model": "prep-a"},
         "class_teacher": {"profile_name": "站点乙", "model": "teacher-b"},
     })
 
@@ -126,11 +123,6 @@ def test_delete_profile_removes_its_saved_task_bindings(tmp_path) -> None:
 
     assert [profile["name"] for profile in state["profiles"]] == ["站点乙"]
     assert state["task_bindings"]["grading"]["model"] == "grading-b"
-    assert state["task_bindings"]["teaching_prep"] == {
-        "profile_name": "站点乙",
-        "model": "model-b",
-    }
-    assert "teaching_prep" not in store.load_task_bindings()
     with pytest.raises(ModelProfileNotFound):
         service.delete("站点甲")
 

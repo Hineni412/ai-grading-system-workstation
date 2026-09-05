@@ -43,19 +43,6 @@ beforeEach(() => {
 })
 
 describe('App', () => {
-  it('keeps the teaching-prep overview eager and defers the library and lesson pages', () => {
-    const source = readFileSync(
-      resolve(process.cwd(), 'src/workspaces/teaching-prep/views/TeachingPrepHomeView.vue'),
-      'utf-8',
-    )
-
-    expect(source).toContain("import OverviewPage from '../workspaces/OverviewPage.vue'")
-    expect(source).not.toContain("import LibraryPage from '../workspaces/LibraryPage.vue'")
-    expect(source).not.toContain("import LessonPage from '../workspaces/LessonPage.vue'")
-    expect(source).toContain("() => import('../workspaces/LibraryPage.vue')")
-    expect(source).toContain("() => import('../workspaces/LessonPage.vue')")
-  })
-
   it('keeps route-only review styles out of startup and preserves their page order', () => {
     const mainSource = readFileSync(resolve(process.cwd(), 'src/main.ts'), 'utf-8')
     const reviewPageSource = readFileSync(
@@ -248,7 +235,7 @@ describe('App', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
     await settleUi()
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这三件事')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这两件事')
     expect(host.textContent).not.toContain('private route factory detail')
     app.unmount()
   })
@@ -322,7 +309,7 @@ describe('App', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
     await settleUi()
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这三件事')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这两件事')
     app.unmount()
   })
 
@@ -344,7 +331,7 @@ describe('App', () => {
     returnButton.click()
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这三件事')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这两件事')
     app.unmount()
   })
 

@@ -40,21 +40,6 @@ def _create_class_teacher_database(
         connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
 
 
-def _create_teaching_prep_database(
-    path: Path,
-    value: str,
-    *,
-    migrations_dir: Path,
-) -> None:
-    ensure_schema_current(
-        "teaching_prep",
-        path,
-        migrations_dir=migrations_dir,
-    )
-    with sqlite3.connect(path) as connection:
-        connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
-
-
 def _paths(tmp_path: Path) -> SimpleNamespace:
     project_root = tmp_path / "project"
     data_root = project_root / "user_data"
@@ -101,11 +86,6 @@ def _paths(tmp_path: Path) -> SimpleNamespace:
             "CREATE TABLE work_nodes (id INTEGER PRIMARY KEY);\n"
             "CREATE TABLE work_edges (id INTEGER PRIMARY KEY);\n"
             "CREATE TABLE work_operations (id INTEGER PRIMARY KEY);\n"
-        ),
-        "teaching_prep": (
-            "CREATE TABLE sample (value TEXT);\n"
-            "CREATE TABLE teaching_prep_operations (id INTEGER PRIMARY KEY);\n"
-            "CREATE TABLE lesson_preparations (id INTEGER PRIMARY KEY);\n"
         ),
     }
     for target, sql in baseline_sql.items():
@@ -423,7 +403,7 @@ def test_apply_refuses_to_start_when_latest_backup_misses_an_existing_member(
     assert public["result_code"] == "apply_failed_rolled_back"
 
 
-def test_restore_failure_after_teaching_prep_replacement_restores_original_database(
+def test_restore_failure_after_workspace_database_replacement_restores_original_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -431,28 +411,30 @@ def test_restore_failure_after_teaching_prep_replacement_restores_original_datab
     target = (
         paths.data_root
         / "workspaces"
-        / "teaching-prep"
-        / "teaching_prep.db"
+        / "class-teacher"
+        / "student_affairs.db"
     )
-    restored = tmp_path / "restored-teaching-prep.db"
-    migrations = paths.project_root / "migrations" / "teaching_prep"
-    _create_teaching_prep_database(
+    restored = tmp_path / "restored-student-affairs.db"
+    migrations = paths.project_root / "migrations" / "student_affairs"
+    _create_class_teacher_database(
         target,
         "before",
+        kind="student_affairs",
         migrations_dir=migrations,
     )
-    _create_teaching_prep_database(
+    _create_class_teacher_database(
         restored,
         "restored",
+        kind="student_affairs",
         migrations_dir=migrations,
     )
     journal = _prepare_restore(
         paths,
         {
-            "user_data/workspaces/teaching-prep/teaching_prep.db": (
+            "user_data/workspaces/class-teacher/student_affairs.db": (
                 restored.read_bytes()
             ),
-            "user_data/workspaces/teaching-prep/zz-after-database.txt": b"later",
+            "user_data/workspaces/class-teacher/zz-after-database.txt": b"later",
         },
     )
     from backend.ops import offline
@@ -475,33 +457,35 @@ def test_restore_failure_after_teaching_prep_replacement_restores_original_datab
     assert public["result_code"] == "apply_failed_rolled_back"
 
 
-def test_post_apply_validation_includes_replaced_teaching_prep_database(
+def test_post_apply_validation_includes_replaced_workspace_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = _paths(tmp_path)
-    migrations = paths.project_root / "migrations" / "teaching_prep"
+    migrations = paths.project_root / "migrations" / "student_affairs"
     target = (
         paths.data_root
         / "workspaces"
-        / "teaching-prep"
-        / "teaching_prep.db"
+        / "class-teacher"
+        / "student_affairs.db"
     )
-    restored = tmp_path / "restored-teaching-prep.db"
-    _create_teaching_prep_database(
+    restored = tmp_path / "restored-student-affairs.db"
+    _create_class_teacher_database(
         target,
         "before",
+        kind="student_affairs",
         migrations_dir=migrations,
     )
-    _create_teaching_prep_database(
+    _create_class_teacher_database(
         restored,
         "restored",
+        kind="student_affairs",
         migrations_dir=migrations,
     )
     journal = _prepare_restore(
         paths,
         {
-            "user_data/workspaces/teaching-prep/teaching_prep.db": (
+            "user_data/workspaces/class-teacher/student_affairs.db": (
                 restored.read_bytes()
             )
         },

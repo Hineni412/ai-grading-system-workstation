@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import {
   knowledgeLeafLabel,
   questionBankApi,
+  questionTypeWithSubtype,
   type QuestionBankListItem,
   type SimilarQuestionItem,
 } from '../../api/question-bank'
@@ -180,7 +181,7 @@ function closeSimilar(): void {
         </div>
 
         <div class="qb-question-card__tags">
-          <span>{{ question.question_type || '未分类' }}</span>
+          <span>{{ questionTypeWithSubtype(question.question_type, question.tags) }}</span>
           <span>难度 {{ question.difficulty || '待定' }}</span>
           <span
             v-for="tag in tagsFor(question, 'knowledge_point').slice(0, 3)"

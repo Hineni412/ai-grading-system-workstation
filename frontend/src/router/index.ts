@@ -13,7 +13,6 @@ import {
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
-  dailyRouteDefinition,
   reviewRouteDefinition,
   workbenchRouteDefinition,
   modelProfilesRouteDefinition,
@@ -128,16 +127,6 @@ const routes: RouteRecordRaw[] = [
       title: knowledgeGraphRouteDefinition.title,
       description: knowledgeGraphRouteDefinition.description,
       breadcrumb: knowledgeGraphRouteDefinition.breadcrumb,
-    },
-  },
-  {
-    path: dailyRouteDefinition.path,
-    name: dailyRouteDefinition.id,
-    component: () => import('../views/daily/DailyManagementView.vue'),
-    meta: {
-      title: dailyRouteDefinition.title,
-      description: dailyRouteDefinition.description,
-      breadcrumb: dailyRouteDefinition.breadcrumb,
     },
   },
   {

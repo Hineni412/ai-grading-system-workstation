@@ -224,7 +224,7 @@ def test_catalog_build_is_deterministic_and_keeps_protected_dimensions() -> None
         "method": 23,
         "thought": 13,
         "model": 41,
-        "special_type": 11,
+        "special_type": 14,
     }
     assert sum(
         len(term.get("legacy_names", []))

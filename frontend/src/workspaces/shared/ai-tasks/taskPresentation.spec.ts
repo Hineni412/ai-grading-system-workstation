@@ -3,16 +3,16 @@ import { describe, expect, it } from 'vitest'
 import type { WorkspaceAITask } from './contracts'
 import { jobDetailLine, jobTitle, returnLocation } from './taskPresentation'
 
-function task(destination: string): WorkspaceAITask {
+function task(returnTarget: string): WorkspaceAITask {
   return {
     contract_version: 'teacher_workspace_ai_task.v1', task_id: 'task-1', operation_id: 'operation-1',
-    module: 'teaching_prep', task_kind: 'teaching_prep.exercise_suggestions',
-    source_ref: { kind: 'lesson', id: 'lesson-1', revision: '3' }, context_refs: [], return_target: destination,
+    module: 'class_teacher', task_kind: 'class_teacher.intake_triage',
+    source_ref: { kind: 'student', id: 'student-1', revision: '3' }, context_refs: [], return_target: returnTarget,
     status: 'proposal_ready', phase: 'handoff_ready', progress: 1, send_attempt_count: 1,
     dispatch_evidence: 'response_persisted', cancel_requested: false, job_id: 1,
     proposal_ref_id: 'proposal-1', proposal_revision: '1', error_code: null, revision: 4,
     error_detail: null,
-    safe_title: '候选练习', safe_source: '备课', teacher_message: '待审', next_action: '返回',
+    safe_title: '事项整理', safe_source: '班主任', teacher_message: '待审', next_action: '返回',
     handoffs: [], handoff_total: 0, adopted_count: 0, discarded_count: 0, stale_count: 0, pending_count: 0,
     created_at: '', updated_at: '', finished_at: '',
   }
@@ -27,7 +27,6 @@ describe('job presentation', () => {
     }
     expect(jobTitle({ ...base, job_type: 'question_bank_sync' })).toBe('题库同步')
     expect(jobTitle({ ...base, job_type: 'tagging_sync' })).toBe('题库分析')
-    expect(jobTitle({ ...base, job_type: 'teaching_prep.semester_mapping' })).toBe('整理学期资料')
     expect(jobTitle({ ...base, job_type: 'unknown_kind' })).toBe('后台任务')
     expect(jobDetailLine({
       ...base,
@@ -46,39 +45,33 @@ describe('job presentation', () => {
 })
 
 describe('AI task return location', () => {
-  it('returns a materials-step task to the lesson first step', () => {
-    expect(returnLocation(task('teaching_prep.lesson.exercises'))).toEqual({
-      path: '/teaching-prep',
-      query: { view: 'lesson', lesson: 'lesson-1', step: '1' },
+  it('returns the task to the class-teacher destination with its source context', () => {
+    expect(returnLocation(task('class_teacher.home'))).toEqual({
+      path: '/class-teacher',
+      query: {
+        destination: 'class_teacher.home',
+        source_task_id: 'task-1',
+        source_ref: 'student-1',
+      },
     })
   })
 
-  it('returns a slides task to the review step', () => {
-    expect(returnLocation(task('teaching_prep.lesson.slides'))).toEqual({
-      path: '/teaching-prep',
-      query: { view: 'lesson', lesson: 'lesson-1', step: '2' },
-    })
-  })
-
-  it('returns a package task to the copies step', () => {
-    expect(returnLocation(task('teaching_prep.lesson.package'))).toEqual({
-      path: '/teaching-prep',
-      query: { view: 'lesson', lesson: 'lesson-1', step: '3' },
-    })
-  })
-
-  it('uses only view/lesson/step even before a handoff exists', () => {
+  it('uses the destination mapping even before a handoff exists', () => {
     const queued = {
-      ...task('teaching_prep.lesson.plan'),
+      ...task('class_teacher.student.record'),
       status: 'queued' as const,
       proposal_ref_id: null,
       proposal_revision: null,
-      context_refs: [{ kind: 'semester', id: 'semester-2', revision: '4' }],
+      context_refs: [{ kind: 'class', id: 'class-2', revision: '4' }],
     }
 
     expect(returnLocation(queued)).toEqual({
-      path: '/teaching-prep',
-      query: { view: 'lesson', lesson: 'lesson-1', step: '1' },
+      path: '/class-teacher',
+      query: {
+        destination: 'class_teacher.student.record',
+        source_task_id: 'task-1',
+        source_ref: 'student-1',
+      },
     })
   })
 })

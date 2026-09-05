@@ -36,6 +36,22 @@ export function knowledgeLeafLabel(value: string): string {
   return parts[parts.length - 1] ?? value
 }
 
+// 解答题的"画图/计算/证明"子类是 special_type 标签，不是题型枚举；
+// 题型显示时把命中的子类标签并到题型后（如"解答题 · 证明"）。
+export const ESSAY_SUBTYPE_TAGS = ['画图', '计算', '证明'] as const
+
+export function questionTypeWithSubtype(
+  questionType: string | null | undefined,
+  tags: QuestionBankTag[],
+): string {
+  const base = (questionType ?? '').trim() || '未分类'
+  const subtype = tags.find((tag) => (
+    tag.tag_type === 'special_type'
+    && (ESSAY_SUBTYPE_TAGS as readonly string[]).includes(tag.tag_value)
+  ))?.tag_value
+  return subtype ? `${base} · ${subtype}` : base
+}
+
 export interface QuestionBankListItem {
   id: number
   revision: string

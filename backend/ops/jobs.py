@@ -390,10 +390,6 @@ def _backup_entries(
             Path(paths.data_root) / "workspaces" / "class-teacher" / "class_teacher_work.db",
             staging_root / "class_teacher_work.db",
         ),
-        "user_data/workspaces/teaching-prep/teaching_prep.db": (
-            Path(paths.data_root) / "workspaces" / "teaching-prep" / "teaching_prep.db",
-            staging_root / "teaching_prep.db",
-        ),
     }
     for arc_name in preview["files"]:
         name = str(arc_name)

@@ -52,7 +52,6 @@ describe('ModelProfilesView', () => {
       task_bindings: {
         content_generation: { profile_name: null, model: '' },
         grading: { profile_name: null, model: '' },
-        teaching_prep: { profile_name: null, model: '' },
         class_teacher: { profile_name: null, model: '' },
       },
     })
@@ -77,9 +76,9 @@ describe('ModelProfilesView', () => {
 
     expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe('AI 服务')
     expect(host.textContent).toContain('高级设置：API 站点、密钥与请求速度')
-    expect(host.querySelectorAll('.model-task-row')).toHaveLength(4)
-    expect(host.querySelectorAll('.model-task-row select:disabled')).toHaveLength(4)
-    expect(host.querySelectorAll('.model-task-row input:disabled')).toHaveLength(4)
+    expect(host.querySelectorAll('.model-task-row')).toHaveLength(3)
+    expect(host.querySelectorAll('.model-task-row select:disabled')).toHaveLength(3)
+    expect(host.querySelectorAll('.model-task-row input:disabled')).toHaveLength(3)
   })
 
   it('filters workbench call records by workbench and task category', async () => {
@@ -90,14 +89,13 @@ describe('ModelProfilesView', () => {
       task_bindings: {
         content_generation: { profile_name: null, model: '' },
         grading: { profile_name: null, model: '' },
-        teaching_prep: { profile_name: null, model: '' },
         class_teacher: { profile_name: null, model: '' },
       },
     })
     const diagnostic = (
       operationId: string,
       callId: string,
-      workspaceModule: '' | 'teaching_prep' | 'class_teacher',
+      workspaceModule: '' | 'class_teacher',
       workspaceTaskKind: string,
     ): AiDiagnosticSummary => ({
       call_id: callId,
@@ -158,12 +156,6 @@ describe('ModelProfilesView', () => {
     })
     const diagnostics = [
       diagnostic(
-        'operation-teaching-prep',
-        'a'.repeat(24),
-        'teaching_prep',
-        'lesson_draft',
-      ),
-      diagnostic(
         'operation-class-teacher',
         'b'.repeat(24),
         'class_teacher',
@@ -174,13 +166,11 @@ describe('ModelProfilesView', () => {
       items: diagnostics,
       returned: diagnostics.length,
       matching: diagnostics.length,
-      scanned_event_count: 4,
+      scanned_event_count: 2,
       truncated: false,
     })
-    vi.spyOn(workspaceAITaskApi, 'list').mockImplementation(async (module) => (
-      module === 'teaching_prep'
-        ? [task('teaching_prep', 'teaching_prep.lesson_plan', 'operation-teaching-prep')]
-        : [task('class_teacher', 'class_teacher.intake_triage', 'operation-class-teacher')]
+    vi.spyOn(workspaceAITaskApi, 'list').mockImplementation(async () => (
+      [task('class_teacher', 'class_teacher.intake_triage', 'operation-class-teacher')]
     ))
 
     const pinia = createPinia()
@@ -231,7 +221,6 @@ describe('ModelProfilesView', () => {
 
     const ledger = host.querySelector('.ai-diagnostics-ledger')
     expect(ledger?.textContent).toContain('班主任 · 事项整理')
-    expect(ledger?.textContent).not.toContain('备课 · 课时备课方案')
 
     const categorySelect = [...host.querySelectorAll<HTMLLabelElement>(
       '.ai-diagnostics__filters label',
@@ -279,7 +268,6 @@ describe('ModelProfilesView', () => {
       config_base_url: '',
       has_config_api_key: false,
       config_model: '',
-      teaching_prep_model: '',
       class_teacher_model: '',
       request_speed_mode: 'automatic' as const,
       max_concurrent_requests: 20,
@@ -294,7 +282,6 @@ describe('ModelProfilesView', () => {
     const taskBindings = {
       content_generation: { profile_name: '校内模型', model: 'content-model' },
       grading: { profile_name: '校内模型', model: 'grading-model' },
-      teaching_prep: { profile_name: '校内模型', model: 'prep-model' },
       class_teacher: { profile_name: '校内模型', model: 'teacher-model' },
     }
     vi.spyOn(modelProfilesApi, 'getState').mockResolvedValue({
@@ -367,7 +354,6 @@ describe('ModelProfilesView', () => {
       config_base_url: '',
       has_config_api_key: false,
       config_model: '',
-      teaching_prep_model: '',
       class_teacher_model: '',
       request_speed_mode: 'automatic' as const,
       max_concurrent_requests: 20,
@@ -382,7 +368,6 @@ describe('ModelProfilesView', () => {
     const taskBindings = {
       content_generation: { profile_name: '校内模型', model: 'content-model' },
       grading: { profile_name: '校内模型', model: 'grading-model' },
-      teaching_prep: { profile_name: '校内模型', model: 'prep-model' },
       class_teacher: { profile_name: '校内模型', model: 'teacher-model' },
     }
     vi.spyOn(modelProfilesApi, 'getState').mockResolvedValue({

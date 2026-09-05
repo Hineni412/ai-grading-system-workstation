@@ -190,13 +190,13 @@ def test_ops_backup_publishes_valid_zip_with_consistent_databases(tmp_path: Path
     assert result["file_path"] == str(published)
 
 
-def test_ops_backup_publishes_only_the_selected_teaching_prep_scope(
+def test_ops_backup_publishes_only_the_selected_class_teacher_scope(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    teaching_root = paths.data_root / "workspaces" / "teaching-prep"
-    teaching_root.mkdir(parents=True)
-    (teaching_root / "lesson-note.json").write_text(
+    class_teacher_root = paths.data_root / "workspaces" / "class-teacher"
+    class_teacher_root.mkdir(parents=True)
+    (class_teacher_root / "lesson-note.json").write_text(
         '{"title": "synthetic"}',
         encoding="utf-8",
     )
@@ -205,7 +205,7 @@ def test_ops_backup_publishes_only_the_selected_teaching_prep_scope(
             _service(paths),
             "backup",
             reason="manual",
-            scopes=["teaching_prep"],
+            scopes=["class_teacher"],
         )
     )
 
@@ -214,29 +214,18 @@ def test_ops_backup_publishes_only_the_selected_teaching_prep_scope(
     published = paths.backups_dir / str(result["filename"])
     with zipfile.ZipFile(published, "r") as archive:
         names = set(archive.namelist())
-    assert "user_data/workspaces/teaching-prep/lesson-note.json" in names
+    assert "user_data/workspaces/class-teacher/lesson-note.json" in names
     assert not any(name.startswith("user_data/databases/") for name in names)
-    assert not any(
-        name.startswith("user_data/workspaces/class-teacher/")
-        for name in names
-    )
 
 
 def test_ops_backup_keeps_workspace_databases_but_excludes_migration_copies(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    teaching_root = paths.data_root / "workspaces" / "teaching-prep"
     class_teacher_root = paths.data_root / "workspaces" / "class-teacher"
-    teaching_database = teaching_root / "teaching_prep.db"
     work_database = class_teacher_root / "class_teacher_work.db"
     affairs_database = class_teacher_root / "student_affairs.db"
     databases = {
-        teaching_database: (
-            "teaching_prep",
-            "CREATE TABLE teaching_prep_operations (id INTEGER PRIMARY KEY);\n"
-            "CREATE TABLE lesson_preparations (id INTEGER PRIMARY KEY);\n",
-        ),
         work_database: (
             "class_teacher_work",
             "CREATE TABLE work_nodes (id INTEGER PRIMARY KEY);\n"
@@ -266,11 +255,6 @@ def test_ops_backup_keeps_workspace_databases_but_excludes_migration_copies(
 
     nested_copies = {
         (
-            teaching_root
-            / "backups"
-            / "teaching_prep_before_migration_017_20260809_120000.db"
-        ): teaching_database,
-        (
             class_teacher_root
             / "work-backups"
             / "class_teacher_work_before_migration_007_20260809_120000.db"
@@ -285,7 +269,7 @@ def test_ops_backup_keeps_workspace_databases_but_excludes_migration_copies(
             _service(paths),
             "backup",
             reason="manual",
-            scopes=["teaching_prep", "class_teacher"],
+            scopes=["class_teacher"],
         )
     )
 
@@ -295,7 +279,6 @@ def test_ops_backup_keeps_workspace_databases_but_excludes_migration_copies(
     with zipfile.ZipFile(published, "r") as archive:
         names = set(archive.namelist())
     assert {
-        "user_data/workspaces/teaching-prep/teaching_prep.db",
         "user_data/workspaces/class-teacher/class_teacher_work.db",
         "user_data/workspaces/class-teacher/student_affairs.db",
     } <= names

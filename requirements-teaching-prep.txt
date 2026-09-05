@@ -1,2 +1,0 @@
-# Reserved for A-line-only Python dependencies.
-# F0 intentionally adds no WPS, presentation, or model dependency.

@@ -16,7 +16,7 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
 
 
-FINGERPRINT_VERSION = 5
+FINGERPRINT_VERSION = 6
 FORMAL_EXAM_TYPES = ("期中", "期末", "中考")
 PRACTICE_EXAM_MARKERS = (
     "同步练习",
@@ -303,7 +303,10 @@ def _question_ids_in_papers(conn, paper_ids: list[int]) -> list[int]:
 
 def build_question_fingerprint(question: dict[str, Any] | Mapping[str, Any]) -> str:
     grouped = _group_tags(question.get("tags", []))
-    question_type = _normalize_question_type(question.get("question_type"))
+    question_type = _normalize_question_type(
+        question.get("question_type"),
+        special_types=grouped.get("special_type"),
+    )
     # 知识点：取所有标签去重排序后拼接（消除标签顺序敏感），避免多知识点题漏配。
     knowledge_tags = _dedup_sorted(
         _filtered(grouped.get("current_knowledge_key"))
@@ -1201,8 +1204,12 @@ def _cache_fingerprint(conn, question_id: int, fingerprint: str, style_features:
 
 def _style_features(question: Mapping[str, Any]) -> dict[str, Any]:
     text = str(question.get("question_text") or "")
+    grouped = _group_tags(question.get("tags", []))
     return {
-        "question_type": _normalize_question_type(question.get("question_type")),
+        "question_type": _normalize_question_type(
+            question.get("question_type"),
+            special_types=grouped.get("special_type"),
+        ),
         "difficulty": _number(question.get("difficulty")),
         "question_number": str(question.get("question_number") or ""),
         "has_images": bool(question.get("has_images")),
@@ -1252,14 +1259,19 @@ def _group_tags(tags: object) -> dict[str, list[str]]:
     return grouped
 
 
-def _normalize_question_type(value: object) -> str:
+def _normalize_question_type(
+    value: object,
+    special_types: Iterable[str] | None = None,
+) -> str:
     text = str(value or "").strip()
     lowered = text.casefold()
     if "选择" in text or "choice" in lowered:
         return "选择题"
     if "填空" in text or "blank" in lowered or "fill" in lowered:
         return "填空题"
-    if "证明" in text or "proof" in lowered:
+    # 解答题子类标签决定"证明题"桶；无标签归"解答题"桶。
+    special = {str(item or "").strip() for item in (special_types or ())}
+    if "证明" in special or "证明" in text or "proof" in lowered:
         return "证明题"
     if "解答" in text or "solution" in lowered or "综合" in text:
         return "解答题"

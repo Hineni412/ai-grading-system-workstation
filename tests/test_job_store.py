@@ -123,26 +123,26 @@ def test_job_store_finds_latest_exact_payload_match_without_returning_history(
     db_path = tmp_path / "jobs.db"
     store = JobStore(db_path)
     first = store.create_job(
-        "teaching_prep.semester_mapping",
+        "grading_run",
         {
-            "semester_id": "semester-1",
-            "material_record_id": "a" * 32,
+            "scope_id": "semester-1",
+            "record_id": "a" * 32,
             "source_state_sha256": "1" * 64,
         },
     )
     store.create_job(
-        "teaching_prep.semester_mapping",
+        "grading_run",
         {
-            "semester_id": "semester-2",
-            "material_record_id": "a" * 32,
+            "scope_id": "semester-2",
+            "record_id": "a" * 32,
             "source_state_sha256": "1" * 64,
         },
     )
     latest = store.create_job(
-        "teaching_prep.semester_mapping",
+        "grading_run",
         {
-            "semester_id": "semester-1",
-            "material_record_id": "a" * 32,
+            "scope_id": "semester-1",
+            "record_id": "a" * 32,
             "source_state_sha256": "1" * 64,
         },
     )
@@ -150,14 +150,14 @@ def test_job_store_finds_latest_exact_payload_match_without_returning_history(
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             "INSERT INTO jobs (job_type, payload_json, status) VALUES (?, ?, ?)",
-            ("teaching_prep.semester_mapping", "{broken", "succeeded"),
+            ("grading_run", "{broken", "succeeded"),
         )
 
     active = store.find_latest_job_by_payload(
-        job_type="teaching_prep.semester_mapping",
+        job_type="grading_run",
         payload_equals={
-            "semester_id": "semester-1",
-            "material_record_id": "a" * 32,
+            "scope_id": "semester-1",
+            "record_id": "a" * 32,
             "source_state_sha256": "1" * 64,
         },
         statuses=("queued", "running", "paused", "succeeded"),
@@ -208,35 +208,35 @@ def test_job_store_lists_only_latest_job_for_each_payload_identity(
     db_path = tmp_path / "jobs.db"
     store = JobStore(db_path)
     old_a = store.create_job(
-        "teaching_prep.material_parse",
-        {"material_version_id": "a" * 32},
+        "grading_run",
+        {"record_id": "a" * 32},
     )
     latest_b = store.create_job(
-        "teaching_prep.material_parse",
-        {"material_version_id": "b" * 32},
+        "grading_run",
+        {"record_id": "b" * 32},
     )
     latest_a = store.create_job(
-        "teaching_prep.material_parse",
-        {"material_version_id": "a" * 32},
+        "grading_run",
+        {"record_id": "a" * 32},
     )
-    store.create_job("unrelated", {"material_version_id": "c" * 32})
+    store.create_job("unrelated", {"record_id": "c" * 32})
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             "INSERT INTO jobs (job_type, payload_json, status) VALUES (?, ?, ?)",
-            ("teaching_prep.material_parse", "{broken", "succeeded"),
+            ("grading_run", "{broken", "succeeded"),
         )
         connection.execute(
             "INSERT INTO jobs (job_type, payload_json, status) VALUES (?, ?, ?)",
             (
-                "teaching_prep.material_parse",
-                json.dumps({"material_version_id": " short "}),
+                "grading_run",
+                json.dumps({"record_id": " short "}),
                 "succeeded",
             ),
         )
 
     jobs = store.list_latest_jobs_by_payload_key(
-        job_type="teaching_prep.material_parse",
-        payload_key="material_version_id",
+        job_type="grading_run",
+        payload_key="record_id",
         identity_length=32,
     )
 

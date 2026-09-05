@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { defineAsyncComponent, ref } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import AssemblyQuestionBrowser from '../components/question-bank/AssemblyQuestionBrowser.vue'
 import { useAssemblyStore } from '../stores/assembly'
@@ -14,24 +15,46 @@ const AiAssemblyPanel = defineAsyncComponent(
   () => import('../components/question-assembly/AiAssemblyPanel.vue'),
 )
 
+const route = useRoute() as ReturnType<typeof useRoute> | undefined
+const router = useRouter() as ReturnType<typeof useRouter> | undefined
+
 const assembly = useAssemblyStore()
 const jobs = useJobStore()
-const mode = ref<'browse' | 'ai' | 'edit'>('browse')
+type AssemblyMode = 'browse' | 'ai' | 'edit'
+
+// 部分既有单测在无 router 的环境直接挂载本视图，此时回退到内存模式。
+const localMode = ref<AssemblyMode>('browse')
+// 模式与 URL 同步：?mode=ai|edit，browse 为默认（不带参数）；刷新后回到原模式。
+const mode = computed<AssemblyMode>(() => {
+  if (!route || !router) return localMode.value
+  const raw = route.query.mode
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return value === 'ai' || value === 'edit' ? value : 'browse'
+})
+
+function setMode(next: AssemblyMode): void {
+  if (route && router) {
+    const query = { ...route.query }
+    if (next === 'browse') delete query.mode
+    else query.mode = next
+    void router.replace({ query })
+  } else {
+    localMode.value = next
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
 
 function showEditor(): void {
   void jobs.initialize()
-  mode.value = 'edit'
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+  setMode('edit')
 }
 
 function showBrowser(): void {
-  mode.value = 'browse'
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+  setMode('browse')
 }
 
 function showAi(): void {
-  mode.value = 'ai'
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+  setMode('ai')
 }
 </script>
 

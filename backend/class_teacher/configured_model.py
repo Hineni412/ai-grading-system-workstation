@@ -30,8 +30,7 @@ from .model_approval import (
 )
 
 
-# Explicit output budget for workspace task calls; the teaching-prep module
-# already sends max_tokens=16_000 to the same ark (火山) endpoint family.
+# Explicit output budget for workspace task calls.
 _MAX_OUTPUT_TOKENS = 8192
 
 

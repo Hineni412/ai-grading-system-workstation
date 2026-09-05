@@ -116,7 +116,7 @@ function changeSort(sort: QuestionBankSort): void {
     </label>
     <label class="qb-field">
       <span>题型</span>
-      <input v-model="draft.questionType" placeholder="如：选择题">
+      <input v-model="draft.questionType" placeholder="如：解答题">
     </label>
     <label class="qb-field">
       <span>知识点</span>

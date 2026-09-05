@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
-from question_bank.parsers.type_detector import QUESTION_TYPES
+from question_bank.parsers.type_detector import ESSAY_SUBTYPES, QUESTION_TYPES
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
@@ -47,9 +47,12 @@ _QUESTION_TYPE_GROUPS = {
     "多选题": "single_choice",
     "填空题": "fill_blank",
     "解答题": "calculation",
-    "解答题（计算）": "calculation",
-    "解答题（证明）": "proof",
-    "解答题（画图）": "construction",
+}
+# 解答题子类标签值到本地题组的映射（证明/画图保持单题成批分析）。
+_ESSAY_SUBTYPE_GROUPS = {
+    "画图": "construction",
+    "计算": "calculation",
+    "证明": "proof",
 }
 _BANNED_SCORE_KEYS = frozenset(
     {
@@ -334,6 +337,15 @@ class QuestionAnalysisInput:
 
     @property
     def question_type_group(self) -> str:
+        # 子类标签优先：special_type 标签决定解答题题组（证明/画图保持
+        # 单题成批）；无标签时回退题型字符串与题干关键词兜底。
+        special_types = (
+            self.tagging_context.existing_tags_by_dimension.get("special_type")
+            or ()
+        )
+        for subtype in ESSAY_SUBTYPES:
+            if subtype in special_types:
+                return _ESSAY_SUBTYPE_GROUPS[subtype]
         value = str(self.tagging_context.question_type or "").casefold()
         text = str(self.tagging_context.question_text or "")
         if any(token in value for token in ("证明", "proof")):
@@ -382,10 +394,15 @@ class QuestionAnalysisInput:
 
 @dataclass(frozen=True, slots=True)
 class QuestionTypeSuggestion:
-    """联合分析返回的题型建议；只是候选，教师确认题型始终优先。"""
+    """联合分析返回的题型建议；只是候选，教师确认题型始终优先。
+
+    essay_subtype 是解答题子类（画图/计算/证明）建议，落库时写
+    special_type 标签而不是改动题型枚举。
+    """
 
     question_type: str
     reason: str = ""
+    essay_subtype: str | None = None
 
     @classmethod
     def from_dict(cls, payload: object) -> "QuestionTypeSuggestion":
@@ -396,17 +413,32 @@ class QuestionTypeSuggestion:
             raise ProjectionValidationError(
                 "question type suggestion is not a supported type"
             )
+        subtype = str(payload.get("essay_subtype") or "").strip() or None
+        if subtype is not None and (
+            subtype not in ESSAY_SUBTYPES or value != "解答题"
+        ):
+            raise ProjectionValidationError(
+                "essay subtype suggestion is not a supported subtype"
+            )
         return cls(
             question_type=value,
             reason=str(payload.get("reason") or "").strip(),
+            essay_subtype=subtype,
         )
 
     @property
     def question_type_group(self) -> str:
-        return _QUESTION_TYPE_GROUPS[self.question_type]
+        group = _QUESTION_TYPE_GROUPS[self.question_type]
+        if self.essay_subtype is not None:
+            return _ESSAY_SUBTYPE_GROUPS[self.essay_subtype]
+        return group
 
     def to_dict(self) -> dict[str, Any]:
-        return {"question_type": self.question_type, "reason": self.reason}
+        return {
+            "question_type": self.question_type,
+            "reason": self.reason,
+            "essay_subtype": self.essay_subtype,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1859,11 +1891,22 @@ class CombinedQuestionAnalysisModule:
         if suggestion is None:
             return None
         local_type = str(question.tagging_context.question_type or "").strip()
-        if suggestion.question_type == local_type:
+        local_subtypes = (
+            question.tagging_context.existing_tags_by_dimension.get("special_type")
+            or ()
+        )
+        if (
+            suggestion.question_type == local_type
+            and (
+                suggestion.essay_subtype is None
+                or suggestion.essay_subtype in local_subtypes
+            )
+        ):
             return None
         audit: dict[str, Any] = {
             "local_type": local_type,
             "suggested_type": suggestion.question_type,
+            "suggested_subtype": suggestion.essay_subtype,
             "reason": suggestion.reason,
             "model_name": str(model_name or ""),
             "action": "not_applied",
@@ -2811,6 +2854,10 @@ def combined_response_format(
                     "enum": list(QUESTION_TYPES),
                 },
                 "reason": {"type": "string"},
+                "essay_subtype": {
+                    "type": ["string", "null"],
+                    "enum": [*ESSAY_SUBTYPES, None],
+                },
             },
             "required": ["question_type", "reason"],
             "additionalProperties": False,

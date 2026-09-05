@@ -29,6 +29,18 @@ const assignedQuestionIds = computed(() => new Set(
   editableSections.value.flatMap((section) => section.question_ids),
 ))
 
+// 与 paper_docx_exporter._canonical_type_group 一致的三归并：
+// 选择（含多选）/填空/解答；解答题子类是标签，不再单独成组。
+function canonicalTypeGroup(questionType: string | null | undefined): string {
+  const value = (questionType ?? '').trim()
+  if (!value) return '未分类'
+  if (['choice', 'single_choice', 'multiple_choice', 'multi_choice', '选择题', '多选题'].includes(value)) {
+    return '选择题'
+  }
+  if (['fill_blank', 'blank', '填空题'].includes(value)) return '填空题'
+  return '解答题'
+}
+
 // 试卷篮预览一次最多渲染这么多题；更多内容用"加载更多"分块展开，
 // 避免大题篮（上限 500 题）一次性渲染全部富文本与配图。
 const PREVIEW_CHUNK_SIZE = 20
@@ -64,7 +76,7 @@ const previewSections = computed<Array<{ id: string; title: string; questions: A
   if (assembly.draft.layout_mode === 'grouped_by_type') {
     const groups = new Map<string, AssemblyQuestion[]>()
     for (const question of assembly.orderedQuestions) {
-      const type = question.question_type || '未分类'
+      const type = canonicalTypeGroup(question.question_type)
       groups.set(type, [...(groups.get(type) ?? []), question])
     }
     return [...groups.entries()].map(([title, questions], index) => ({

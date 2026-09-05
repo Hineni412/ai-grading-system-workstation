@@ -5,13 +5,6 @@ from dataclasses import dataclass
 
 DESTINATION_KEYS = frozenset(
     {
-        "teaching_prep.overview",
-        "teaching_prep.library",
-        "teaching_prep.lesson.materials",
-        "teaching_prep.lesson.plan",
-        "teaching_prep.lesson.exercises",
-        "teaching_prep.lesson.slides",
-        "teaching_prep.lesson.package",
         "class_teacher.home",
         "class_teacher.student.record",
         "class_teacher.affair.record",
@@ -30,18 +23,6 @@ class TaskPresentation:
 
 
 _PRESENTATIONS = {
-    ("teaching_prep", "teaching_prep.semester_mapping"): TaskPresentation(
-        "teaching_prep", "teaching_prep.semester_mapping", "备课 · 整理学期资料", "备课"
-    ),
-    ("teaching_prep", "teaching_prep.lesson_plan"): TaskPresentation(
-        "teaching_prep", "teaching_prep.lesson_plan", "备课 · 形成课堂方案", "备课"
-    ),
-    ("teaching_prep", "teaching_prep.exercise_suggestions"): TaskPresentation(
-        "teaching_prep", "teaching_prep.exercise_suggestions", "备课 · 整理候选练习", "备课"
-    ),
-    ("teaching_prep", "teaching_prep.slide_change_proposal"): TaskPresentation(
-        "teaching_prep", "teaching_prep.slide_change_proposal", "备课 · 检查课件修改方案", "备课"
-    ),
     ("class_teacher", "class_teacher.intake"): TaskPresentation(
         "class_teacher", "class_teacher.intake", "班主任 · 整理一项事务", "班主任"
     ),
@@ -86,60 +67,7 @@ _MESSAGES = {
 }
 
 
-_ERROR_DETAILS = {
-    "semester_mapping_retry_available": (
-        "本次整理没有产出结果；重新检查发送范围后可以再试一次。"
-    ),
-    "semester_mapping_scope_stale": (
-        "课时树或资料在准备后已变化，本次没有发送模型请求；"
-        "重新检查发送范围后可以再次发送。"
-    ),
-    "semester_mapping_response_failed_local_validation": (
-        "模型建议未通过本机校验，本次整理没有产出结果。"
-    ),
-    "semester_mapping_unexplained_coverage_gap": (
-        "资料中有页面既没有对应到课时，模型也没有说明原因，本次整理没有产出结果。"
-    ),
-    "semester_mapping_existing_tree_replaced": (
-        "模型试图改动已有的正式课时树，本次整理没有产出结果。"
-    ),
-    "semester_mapping_unavailable_lesson": (
-        "模型把页面关联到了不存在的课时，本次整理没有产出结果。"
-    ),
-    "semester_mapping_duplicate_lesson_decision": (
-        "模型对同一课时给出了重复结论，本次整理没有产出结果。"
-    ),
-    "semester_mapping_model_semantic_contract_violation": (
-        "模型返回的内容不符合整理要求，本次整理没有产出结果。"
-    ),
-    "semester_mapping_model_semantic_evidence_mismatch": (
-        "模型引用的目录线索与本机解析结果对不上，本次整理没有产出结果。"
-    ),
-    "semester_mapping_model_semantic_evidence_incomplete": (
-        "模型没有覆盖资料目录的全部条目，本次整理没有产出结果。"
-    ),
-    "semester_mapping_model_response_truncated": (
-        "模型返回的内容不完整，本次整理没有产出结果。"
-    ),
-    "semester_mapping_model_response_invalid_json": (
-        "模型返回的内容无法读取，本次整理没有产出结果。"
-    ),
-    "semester_mapping_model_response_invalid_type": (
-        "模型返回的内容无法读取，本次整理没有产出结果。"
-    ),
-    "semester_mapping_model_response_text_unavailable": (
-        "模型没有返回可用内容，本次整理没有产出结果。"
-    ),
-    "semester_mapping_model_response_invalid": (
-        "模型建议未通过本机校验，本次整理没有产出结果。"
-    ),
-    "semester_mapping_model_configuration_invalid": (
-        "模型配置不可用，本次没有调用模型。"
-    ),
-    "semester_mapping_model_parameter_incompatible": (
-        "当前模型不接受本次请求的参数，本次整理没有产出结果。"
-    ),
-}
+_ERROR_DETAILS = {}
 
 
 def error_detail_for(error_code: str | None) -> str | None:
@@ -178,7 +106,7 @@ def message_for(status: str, evidence: str) -> tuple[str, str]:
 def assert_destination(module: str, destination_key: str) -> None:
     if destination_key not in DESTINATION_KEYS:
         raise ValueError("workspace handoff destination is not allowed")
-    expected_prefix = "teaching_prep." if module == "teaching_prep" else "class_teacher."
+    expected_prefix = "class_teacher."
     if not destination_key.startswith(expected_prefix):
         raise ValueError("workspace handoff cannot cross modules")
 

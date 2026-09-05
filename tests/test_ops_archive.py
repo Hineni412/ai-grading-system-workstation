@@ -50,24 +50,6 @@ def test_inspect_zip_rejects_unknown_root(tmp_path: Path) -> None:
         )
 
 
-def test_inspect_zip_allows_teaching_prep_workspace_in_protected_packages(
-    tmp_path: Path,
-) -> None:
-    archive = _zip_with_member(
-        tmp_path / "workspace.zip",
-        "user_data/workspaces/teaching-prep/private.db",
-        b"private",
-    )
-
-    inspection = inspect_zip(
-        archive,
-        policy=OpsArchivePolicy(),
-        allowed_roots={"user_data", "config"},
-    )
-
-    assert inspection.file_count == 1
-
-
 def test_inspect_zip_allows_class_teacher_workspace_in_ordinary_packages(
     tmp_path: Path,
 ) -> None:

@@ -313,7 +313,7 @@ def open_running_preview(
 
     version = expected_head[:8]
     url = (
-        f"http://127.0.0.1:{selected_port}/teaching-prep"
+        f"http://127.0.0.1:{selected_port}/"
         f"?preview={version}"
     )
     if not browser_open(url):

@@ -13,9 +13,7 @@ export type WorkspaceRouteId =
   | 'grading'
   | 'model-profiles'
   | 'settings'
-  | 'teaching-prep'
   | 'class-teacher'
-  | 'daily'
 
 export type WorkspaceNavigationIcon =
   | 'workbench'
@@ -30,9 +28,7 @@ export type WorkspaceNavigationIcon =
   | 'students'
   | 'model'
   | 'settings'
-  | 'teaching-prep'
   | 'class-teacher'
-  | 'daily'
 
 export type AppIconName =
   | WorkspaceNavigationIcon
@@ -53,7 +49,7 @@ export interface WorkspaceRouteDefinition {
 }
 
 export interface WorkspaceNavigationGroup {
-  id: 'exam' | 'question-work' | 'analysis' | 'daily' | 'teacher-workspaces'
+  id: 'exam' | 'question-work' | 'analysis' | 'teacher-workspaces'
   label: string
   items: readonly WorkspaceRouteDefinition[]
 }
@@ -154,16 +150,6 @@ export const knowledgeGraphRouteDefinition = {
   icon: 'graph',
 } as const satisfies WorkspaceRouteDefinition
 
-export const dailyRouteDefinition = {
-  id: 'daily',
-  label: '日常管理',
-  path: '/daily',
-  title: '日常管理',
-  description: '课表调课、教学进度与班级临时表格记录',
-  breadcrumb: '日常管理',
-  icon: 'daily',
-} as const satisfies WorkspaceRouteDefinition
-
 export const filesRouteDefinition = {
   id: 'files',
   label: '文件中心',
@@ -213,7 +199,6 @@ workspaceRegistry.assertNoCoreConflicts([
   trainingRouteDefinition,
   reviewRouteDefinition,
   knowledgeGraphRouteDefinition,
-  dailyRouteDefinition,
   filesRouteDefinition,
   resultsRouteDefinition,
   modelProfilesRouteDefinition,
@@ -243,13 +228,6 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
     label: '教学分析',
     items: [
       knowledgeGraphRouteDefinition,
-    ],
-  },
-  {
-    id: 'daily',
-    label: '日常管理',
-    items: [
-      dailyRouteDefinition,
     ],
   },
   ...(workspaceRegistry.navigationItems.length
