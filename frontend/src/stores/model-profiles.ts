@@ -77,7 +77,6 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
   const taskBindings = ref<ModelTaskBindings>({
     content_generation: { profile_name: null, model: '' },
     grading: { profile_name: null, model: '' },
-    class_teacher: { profile_name: null, model: '' },
   })
 
   let loadGeneration = 0

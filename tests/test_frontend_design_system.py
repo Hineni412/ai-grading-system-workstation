@@ -65,17 +65,7 @@ def test_page_specific_color_exceptions_are_confined_to_p3_5_question_work() -> 
         "frontend/src/views/ResultsCenterView.vue",
         "frontend/src/views/StudentEvidenceView.vue",
         "frontend/src/components/training/PersonalizedRecommendationDraft.vue",
-        "frontend/src/workspaces/class-teacher/affairs/SopFlowDiagram.vue",
-        "frontend/src/workspaces/class-teacher/students/AcademicAnalysisPanel.vue",
-        "frontend/src/workspaces/class-teacher/students/AcademicOverviewPanel.vue",
-        "frontend/src/workspaces/class-teacher/students/EvidenceSessionsPanel.vue",
-        "frontend/src/workspaces/class-teacher/students/EvidenceUploadPanel.vue",
         # 班主任原型稿（VariantA/B/C 等设计对比稿）随正式面板一并登记。
-        "frontend/src/workspaces/class-teacher/prototype/PrototypeAside.vue",
-        "frontend/src/workspaces/class-teacher/prototype/SopWorkspacePrototype.vue",
-        "frontend/src/workspaces/class-teacher/prototype/VariantA.vue",
-        "frontend/src/workspaces/class-teacher/prototype/VariantB.vue",
-        "frontend/src/workspaces/class-teacher/prototype/VariantC.vue",
     }
 
 

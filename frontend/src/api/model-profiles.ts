@@ -16,7 +16,6 @@ export type RequestSpeedMode = 'automatic' | 'conservative' | 'custom'
 export type ModelTaskKey =
   | 'content_generation'
   | 'grading'
-  | 'class_teacher'
 
 export interface ModelTaskBinding {
   profile_name: string | null
@@ -31,7 +30,6 @@ export function copyModelTaskBindings(
   return {
     content_generation: { ...bindings.content_generation },
     grading: { ...bindings.grading },
-    class_teacher: { ...bindings.class_teacher },
   }
 }
 
@@ -305,7 +303,7 @@ export function decodeModelProfilesState(value: unknown): ModelProfilesState {
 
 function isModelTaskBindings(value: unknown): value is ModelTaskBindings {
   if (!isRecord(value) || !hasExactKeys(value, [
-    'content_generation', 'grading', 'class_teacher',
+    'content_generation', 'grading',
   ])) return false
   return Object.values(value).every((binding) => (
     isRecord(binding)

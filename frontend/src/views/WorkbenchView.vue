@@ -15,7 +15,7 @@ const curriculumScope = useCurriculumScopeStore()
 const workbenchStore = useWorkbenchStore()
 
 interface WorkbenchFocusItem {
-  id: 'exam' | 'class-work'
+  id: 'exam'
   context: string
   title: string
   detail: string
@@ -97,17 +97,7 @@ const workbenchFocusItems = computed<WorkbenchFocusItem[]>(() => {
     }
   }
 
-  return [
-    examItem,
-    {
-      id: 'class-work',
-      context: '班主任工作台 · 今日',
-      title: '查看今天需要跟进的班务',
-      detail: '继续处理事务、学生关注和家校沟通草稿，最终决定仍由教师作出。',
-      action: '查看班务',
-      path: '/class-teacher',
-    },
-  ]
+  return [examItem]
 })
 
 const workflowSteps = computed(() => [{

@@ -50,22 +50,13 @@ def test_inspect_zip_rejects_unknown_root(tmp_path: Path) -> None:
         )
 
 
-def test_inspect_zip_allows_class_teacher_workspace_in_ordinary_packages(
-    tmp_path: Path,
-) -> None:
-    archive = _zip_with_member(
-        tmp_path / "class-teacher-workspace.zip",
-        "user_data/workspaces/class-teacher/student_affairs.db",
-        b"synthetic",
-    )
+def test_inspect_zip_rejects_retired_workspace_in_ordinary_packages(tmp_path: Path) -> None:
+    archive_path = tmp_path / "retired.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("user_data/workspaces/class-teacher/student_affairs.db", b"synthetic")
+    with pytest.raises(OpsArchiveInvalid, match="workspace_data_not_allowed"):
+        inspect_zip(archive_path, allowed_roots={"user_data"}, policy=OpsArchivePolicy())
 
-    inspection = inspect_zip(
-        archive,
-        policy=OpsArchivePolicy(),
-        allowed_roots={"user_data", "config"},
-    )
-
-    assert inspection.file_count == 1
 
 
 def test_inspect_zip_rejects_symlink_member(tmp_path: Path) -> None:

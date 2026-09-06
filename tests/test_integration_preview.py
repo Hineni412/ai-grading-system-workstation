@@ -218,13 +218,13 @@ def test_workspace_label_check_requires_both_new_workspaces(
     assets.mkdir(parents=True)
     (dist / "index.html").write_text("<html></html>", encoding="utf-8")
     bundle = assets / "index.js"
-    bundle.write_text("备课工作台", encoding="utf-8")
+    bundle.write_text("考试与阅卷", encoding="utf-8")
     monkeypatch.setattr(preview, "DIST_DIR", dist)
 
-    with pytest.raises(preview.PreviewGuardError, match="班主任工作台"):
+    with pytest.raises(preview.PreviewGuardError, match="题库与组卷"):
         preview._assert_workspace_labels()
 
-    bundle.write_text("备课工作台 班主任工作台", encoding="utf-8")
+    bundle.write_text("考试与阅卷 题库与组卷", encoding="utf-8")
     preview._assert_workspace_labels()
 
 

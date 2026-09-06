@@ -7,7 +7,6 @@ import {
   type AiDiagnosticOutcome,
   type AiDiagnosticSummary,
 } from '../../api/ai-diagnostics'
-import { workspaceAITaskApi } from '../../workspaces/shared/ai-tasks/api'
 import type { WorkspaceAITask } from '../../workspaces/shared/ai-tasks/contracts'
 import '../../styles/model-profiles.css'
 
@@ -17,7 +16,6 @@ const diagnostics = ref<AiDiagnosticSummary[]>([])
 const diagnosticsState = ref<'idle' | 'loading' | 'error'>('idle')
 const diagnosticsError = ref('')
 const diagnosticsNotice = ref('')
-const diagnosticClearState = ref<'idle' | 'loading'>('idle')
 const workspaceTaskRecords = ref<WorkspaceAITask[]>([])
 const diagnosticOutcome = ref<'' | AiDiagnosticOutcome>('')
 const diagnosticKind = ref('')
@@ -50,16 +48,9 @@ const diagnosticKinds = [
 ] as const
 const workspaceModules = [
   { value: '', label: '全部工作台' },
-  { value: 'class_teacher', label: '班主任工作台' },
 ] as const
 const workspaceTaskKinds = [
   { value: '', module: '', label: '全部功能' },
-  { value: 'class_teacher_intake', module: 'class_teacher', label: '事项整理' },
-  { value: 'class_teacher_draft_revision', module: 'class_teacher', label: '草稿修订' },
-  { value: 'class_operations', module: 'class_teacher', label: '班务规划' },
-  { value: 'ordinary_work_plan', module: 'class_teacher', label: '日常班务计划' },
-  { value: 'home_sensitive_intake', module: 'class_teacher', label: '首页敏感事项整理' },
-  { value: 'support_record_review', module: 'class_teacher', label: '支持记录复核' },
 ] as const
 const availableWorkspaceTaskKinds = computed(() => workspaceTaskKinds.filter(
   ({ module }) => !module || !workspaceModuleFilter.value || module === workspaceModuleFilter.value,
@@ -100,7 +91,7 @@ function diagnosticKindLabel(value: string): string {
 }
 
 function workspaceModuleLabel(module: WorkspaceAITask['module']): string {
-  return module === 'class_teacher' ? '班主任' : String(module)
+  return String(module)
 }
 
 function workspaceTaskKindLabel(taskKind: string): string {
@@ -306,35 +297,15 @@ async function loadDiagnostics(): Promise<void> {
   }
 }
 
-async function clearClassTeacherDiagnostics(): Promise<void> {
-  if (!window.confirm(
-    '只清除带有“班主任工作台”标签的本机正文日志。未分类旧记录和其他工作台记录会保留。是否继续？',
-  )) return
-  diagnosticClearState.value = 'loading'
-  diagnosticsError.value = ''
-  diagnosticsNotice.value = ''
-  try {
-    const result = await aiDiagnosticsApi.clearClassTeacher()
-    diagnosticsNotice.value = `已清除 ${result.deleted_event_count} 条班主任正文日志；保留 ${result.retained_event_count} 条其他或未分类记录。`
-    clearSelectedDiagnostic()
-    await loadDiagnostics()
-  } catch (error) {
-    diagnosticsError.value = error instanceof Error
-      ? error.message
-      : '班主任正文日志没有清除成功。'
-  } finally {
-    diagnosticClearState.value = 'idle'
-  }
-}
 
 async function loadWorkspaceTaskRecords(): Promise<void> {
   workspaceTaskRecordsController?.abort()
   const controller = new AbortController()
   workspaceTaskRecordsController = controller
   try {
-    const classTeacherTasks = await workspaceAITaskApi.list('class_teacher', controller.signal)
+    const availableTasks: WorkspaceAITask[] = []
     if (controller.signal.aborted) return
-    workspaceTaskRecords.value = [...classTeacherTasks]
+    workspaceTaskRecords.value = availableTasks
       .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
     clearHiddenDiagnosticSelection()
   } catch {
@@ -403,15 +374,6 @@ onBeforeUnmount(() => {
         >
           {{ diagnosticsState === 'loading' ? '正在刷新…' : '刷新记录' }}
         </button>
-        <button
-          v-if="diagnosticKind === 'workspace' && workspaceModuleFilter === 'class_teacher'"
-          type="button"
-          class="model-profiles-button model-profiles-button--quiet"
-          :disabled="diagnosticClearState === 'loading'"
-          @click="clearClassTeacherDiagnostics"
-        >
-          {{ diagnosticClearState === 'loading' ? '正在清除…' : '清除班主任正文日志' }}
-        </button>
       </div>
     </header>
 
@@ -427,12 +389,11 @@ onBeforeUnmount(() => {
       <summary>了解日志范围</summary>
       <p class="ai-diagnostics__privacy">
         <strong>本机唯一正文日志。</strong>
-        班主任文本请求、文本响应与解析／校验原因只写入 <code>logs/llm_diagnostics.jsonl</code>；
+        文本请求、文本响应与解析／校验原因只写入 <code>logs/llm_diagnostics.jsonl</code>；
         不会复制到终端、访问日志、任务摘要或浏览器存储，也不会进入 Git 或普通备份。
         API 密钥、Authorization、Cookie、密码、访问／刷新令牌，以及附件、图片、音频、
         长 base64 和本机绝对路径不会保留正文。每条最多 1 MB；单个文件约 32 MB 时滚动，
-        保留当前文件和最近 3 个旧文件。按“班主任工作台”标签可以筛选和定向清除；
-        未分类旧记录不会被这次清除，也不会被误判为班主任记录。
+        保留当前文件和最近 3 个旧文件。
       </p>
     </details>
 

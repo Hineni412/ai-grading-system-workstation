@@ -16,8 +16,6 @@ from .archive import OpsArchiveInspection, OpsArchiveInvalid
 DATABASE_MEMBERS = {
     "user_data/databases/grading_system.db": "grading",
     "user_data/databases/question_bank.db": "question_bank",
-    "user_data/workspaces/class-teacher/student_affairs.db": "student_affairs",
-    "user_data/workspaces/class-teacher/class_teacher_work.db": "class_teacher_work",
 }
 
 REQUIRED_SAFETY_DATABASE_MEMBERS = frozenset(
@@ -30,12 +28,6 @@ REQUIRED_SAFETY_DATABASE_MEMBERS = frozenset(
 REQUIRED_TABLES = {
     "grading": frozenset({"students", "grading_sessions", "exam_papers"}),
     "question_bank": frozenset({"papers", "questions", "question_tags"}),
-    "student_affairs": frozenset(
-        {"schema_migrations", "vault_metadata", "encrypted_objects", "access_audit"}
-    ),
-    "class_teacher_work": frozenset(
-        {"schema_migrations", "work_nodes", "work_edges", "work_operations"}
-    ),
 }
 
 
@@ -183,18 +175,7 @@ def _looks_like_database_candidate(normalized: str) -> bool:
     clean = str(normalized).replace("\\", "/")
     if clean.startswith("user_data/databases/"):
         return True
-    workspace_prefixes = (
-        "user_data/workspaces/class-teacher/",
-    )
-    if not clean.startswith(workspace_prefixes):
-        return False
-    name = clean.rsplit("/", 1)[-1].casefold()
-    return (
-        name.endswith((".db", ".sqlite", ".sqlite3"))
-        or ".db-" in name
-        or ".sqlite-" in name
-        or ".sqlite3-" in name
-    )
+    return False
 
 
 def validate_live_databases(

@@ -226,7 +226,7 @@ class OpsWriteService:
         reason = str(getattr(request, "reason", "") or "")
         if reason not in VALID_REASONS:
             raise OpsRequestInvalid("invalid backup reason")
-        allowed_scopes = ("grading", "class_teacher")
+        allowed_scopes = ("grading",)
         requested_scopes = list(
             getattr(request, "scopes", ()) or allowed_scopes
         )

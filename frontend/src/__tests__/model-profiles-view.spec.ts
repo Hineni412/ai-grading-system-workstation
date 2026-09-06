@@ -37,7 +37,7 @@ describe('ModelProfilesView', () => {
       const keys = value !== null && typeof value === 'object'
         ? Object.keys(value)
         : []
-      if (keys.includes('content_generation') && keys.includes('class_teacher')) {
+      if (keys.includes('content_generation') && keys.includes('grading')) {
         taskBindingCloneCount += 1
       }
       if (taskBindingCloneCount === 2) {
@@ -52,7 +52,6 @@ describe('ModelProfilesView', () => {
       task_bindings: {
         content_generation: { profile_name: null, model: '' },
         grading: { profile_name: null, model: '' },
-        class_teacher: { profile_name: null, model: '' },
       },
     })
 
@@ -76,187 +75,12 @@ describe('ModelProfilesView', () => {
 
     expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe('AI 服务')
     expect(host.textContent).toContain('高级设置：API 站点、密钥与请求速度')
-    expect(host.querySelectorAll('.model-task-row')).toHaveLength(3)
-    expect(host.querySelectorAll('.model-task-row select:disabled')).toHaveLength(3)
-    expect(host.querySelectorAll('.model-task-row input:disabled')).toHaveLength(3)
+    expect(host.textContent).not.toContain('班主任工作台')
+    expect(host.querySelectorAll('.model-task-row')).toHaveLength(2)
+    expect(host.querySelectorAll('.model-task-row select:disabled')).toHaveLength(2)
+    expect(host.querySelectorAll('.model-task-row input:disabled')).toHaveLength(2)
   })
 
-  it('filters workbench call records by workbench and task category', async () => {
-    vi.spyOn(modelProfilesApi, 'getState').mockResolvedValue({
-      profiles: [],
-      active_profile_name: null,
-      active_profile: null,
-      task_bindings: {
-        content_generation: { profile_name: null, model: '' },
-        grading: { profile_name: null, model: '' },
-        class_teacher: { profile_name: null, model: '' },
-      },
-    })
-    const diagnostic = (
-      operationId: string,
-      callId: string,
-      workspaceModule: '' | 'class_teacher',
-      workspaceTaskKind: string,
-    ): AiDiagnosticSummary => ({
-      call_id: callId,
-      operation_id: operationId,
-      request_id: operationId,
-      attempt: 1,
-      request_kind: 'workspace',
-      workspace_module: workspaceModule,
-      workspace_task_kind: workspaceTaskKind,
-      protocol: 'chat_completions',
-      model: 'synthetic-model',
-      started_at_utc: '2026-08-07T12:00:00Z',
-      finished_at_utc: '2026-08-07T12:00:01Z',
-      outcome: 'success',
-      elapsed_ms: 1000,
-      image_count: 0,
-      response_chars: 20,
-      will_retry: false,
-    })
-    const task = (
-      module: WorkspaceAITask['module'],
-      taskKind: string,
-      operationId: string,
-    ): WorkspaceAITask => ({
-      contract_version: 'teacher_workspace_ai_task.v1',
-      task_id: `task-${operationId}`,
-      operation_id: operationId,
-      module,
-      task_kind: taskKind,
-      source_ref: { kind: 'synthetic', id: 'source-1', revision: '1' },
-      context_refs: [],
-      return_target: `${module}.home`,
-      status: 'proposal_ready',
-      phase: 'handoff_ready',
-      progress: 1,
-      send_attempt_count: 1,
-      dispatch_evidence: 'response_persisted',
-      cancel_requested: false,
-      job_id: 1,
-      proposal_ref_id: 'proposal-1',
-      proposal_revision: '1',
-      error_code: null,
-      error_detail: null,
-      revision: 1,
-      safe_title: '合成任务',
-      safe_source: '合成来源',
-      teacher_message: '',
-      next_action: '',
-      handoffs: [],
-      handoff_total: 0,
-      adopted_count: 0,
-      discarded_count: 0,
-      stale_count: 0,
-      pending_count: 0,
-      created_at: '2026-08-07T12:00:00Z',
-      updated_at: '2026-08-07T12:00:01Z',
-      finished_at: '2026-08-07T12:00:01Z',
-    })
-    const diagnostics = [
-      diagnostic(
-        'operation-class-teacher',
-        'b'.repeat(24),
-        'class_teacher',
-        'class_teacher_intake',
-      ),
-    ]
-    const listDiagnostics = vi.spyOn(aiDiagnosticsApi, 'list').mockResolvedValue({
-      items: diagnostics,
-      returned: diagnostics.length,
-      matching: diagnostics.length,
-      scanned_event_count: 2,
-      truncated: false,
-    })
-    vi.spyOn(workspaceAITaskApi, 'list').mockImplementation(async () => (
-      [task('class_teacher', 'class_teacher.intake_triage', 'operation-class-teacher')]
-    ))
-
-    const pinia = createPinia()
-    setActivePinia(pinia)
-    const router = createAppRouter(createMemoryHistory())
-    await router.push('/settings?section=ai-trace')
-    await router.isReady()
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(App)
-    app.use(pinia)
-    app.use(router)
-    app.mount(host)
-    mounted.push(app)
-    await vi.waitFor(() => {
-      expect(host.querySelector('.ai-diagnostics')).not.toBeNull()
-    })
-    await settle()
-
-    expect(host.querySelector('.ai-diagnostics-disclosure')).not.toBeNull()
-
-    const sourceSelect = host.querySelector<HTMLSelectElement>(
-      '.ai-diagnostics__filters label:first-child select',
-    )
-    expect(sourceSelect?.textContent).toContain('工作台')
-    sourceSelect!.value = 'workspace'
-    sourceSelect!.dispatchEvent(new Event('change', { bubbles: true }))
-    await vi.waitFor(() => {
-      expect(listDiagnostics).toHaveBeenLastCalledWith(
-        expect.objectContaining({ requestKind: 'workspace' }),
-      )
-    })
-    await settle()
-
-    const workbenchSelect = [...host.querySelectorAll<HTMLLabelElement>(
-      '.ai-diagnostics__filters label',
-    )].find((label) => label.querySelector('span')?.textContent === '工作台')
-      ?.querySelector<HTMLSelectElement>('select')
-    expect(workbenchSelect).toBeDefined()
-    workbenchSelect!.value = 'class_teacher'
-    workbenchSelect!.dispatchEvent(new Event('change', { bubbles: true }))
-    await vi.waitFor(() => {
-      expect(listDiagnostics).toHaveBeenLastCalledWith(
-        expect.objectContaining({ workspaceModule: 'class_teacher' }),
-      )
-    })
-    await settle()
-
-    const ledger = host.querySelector('.ai-diagnostics-ledger')
-    expect(ledger?.textContent).toContain('班主任 · 事项整理')
-
-    const categorySelect = [...host.querySelectorAll<HTMLLabelElement>(
-      '.ai-diagnostics__filters label',
-    )].find((label) => label.querySelector('span')?.textContent === '具体功能')
-      ?.querySelector<HTMLSelectElement>('select')
-    expect(categorySelect?.textContent).toContain('事项整理')
-    categorySelect!.value = 'class_teacher_intake'
-    categorySelect!.dispatchEvent(new Event('change', { bubbles: true }))
-    await vi.waitFor(() => {
-      expect(listDiagnostics).toHaveBeenLastCalledWith(expect.objectContaining({
-        workspaceModule: 'class_teacher',
-        workspaceTaskKind: 'class_teacher_intake',
-      }))
-    })
-
-    const clearClassTeacher = vi.spyOn(aiDiagnosticsApi, 'clearClassTeacher')
-      .mockResolvedValue({
-        workspace_module: 'class_teacher',
-        deleted_event_count: 4,
-        retained_event_count: 6,
-        unclassified_event_count: 2,
-      })
-    vi.stubGlobal('confirm', vi.fn(() => true))
-    const clearButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((item) => item.textContent?.includes('清除班主任正文日志'))
-    expect(clearButton).toBeDefined()
-    clearButton!.click()
-    await vi.waitFor(() => expect(clearClassTeacher).toHaveBeenCalledTimes(1))
-    await settle()
-
-    expect(host.textContent).toContain('已清除 4 条班主任正文日志')
-    expect(host.textContent).toContain('唯一正文日志')
-    expect(host.textContent).toContain('每条最多 1 MB')
-    expect(host.textContent).toContain('不会复制到终端、访问日志、任务摘要或浏览器存储')
-    expect(host.textContent).toContain('未分类旧记录不会被这次清除')
-  })
 
   it('renders the batch inference controls and saves them with the profile', async () => {
     const savedProfile = {
@@ -282,7 +106,6 @@ describe('ModelProfilesView', () => {
     const taskBindings = {
       content_generation: { profile_name: '校内模型', model: 'content-model' },
       grading: { profile_name: '校内模型', model: 'grading-model' },
-      class_teacher: { profile_name: '校内模型', model: 'teacher-model' },
     }
     vi.spyOn(modelProfilesApi, 'getState').mockResolvedValue({
       profiles: [savedProfile],
@@ -368,7 +191,6 @@ describe('ModelProfilesView', () => {
     const taskBindings = {
       content_generation: { profile_name: '校内模型', model: 'content-model' },
       grading: { profile_name: '校内模型', model: 'grading-model' },
-      class_teacher: { profile_name: '校内模型', model: 'teacher-model' },
     }
     vi.spyOn(modelProfilesApi, 'getState').mockResolvedValue({
       profiles: [savedProfile],

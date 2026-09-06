@@ -214,7 +214,7 @@ def test_preview_backup_excludes_case_variant_api_profiles(tmp_path: Path) -> No
     assert preview["skipped_sensitive"] == ["user_data/config/API_PROFILES.JSON"]
 
 
-def test_preview_backup_includes_class_teacher_workspace_in_debug_mode(tmp_path: Path) -> None:
+def test_preview_backup_excludes_retired_workspace(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     database = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
     database.parent.mkdir(parents=True)
@@ -222,7 +222,7 @@ def test_preview_backup_includes_class_teacher_workspace_in_debug_mode(tmp_path:
 
     preview = preview_backup(path_manager=paths)
 
-    assert "user_data/workspaces/class-teacher/student_affairs.db" in preview["files"]
+    assert "user_data/workspaces/class-teacher/student_affairs.db" not in preview["files"]
 
 
 def test_preview_backup_can_select_the_teacher_facing_data_groups(
@@ -239,13 +239,8 @@ def test_preview_backup_can_select_the_teacher_facing_data_groups(
             scopes=["retired_scope"],
         )
 
-    class_only = preview_backup(
-        path_manager=paths,
-        scopes=["class_teacher"],
-    )
-    assert class_only["files"] == [
-        "user_data/workspaces/class-teacher/notes.json"
-    ]
+    with pytest.raises(ValueError, match="invalid backup scopes"):
+        preview_backup(path_manager=paths, scopes=["class_teacher"])
 
     grading_only = preview_backup(path_manager=paths, scopes=["grading"])
     assert "user_data/databases/grading_system.db" in grading_only["files"]

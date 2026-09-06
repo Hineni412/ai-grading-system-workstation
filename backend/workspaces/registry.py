@@ -38,12 +38,7 @@ class WorkspaceFeatureSource:
     factory_path: str
 
 
-DEFAULT_FEATURE_SOURCES = (
-    WorkspaceFeatureSource(
-        "class-teacher",
-        "backend.class_teacher.feature:create_workspace_feature",
-    ),
-)
+DEFAULT_FEATURE_SOURCES: tuple[WorkspaceFeatureSource, ...] = ()
 
 
 class _PrefixedJobRegistrar:

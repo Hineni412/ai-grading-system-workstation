@@ -26,7 +26,6 @@ _LOCK_TIMEOUT_SECONDS = 10.0
 MODEL_TASK_KEYS = (
     "content_generation",
     "grading",
-    "class_teacher",
 )
 _TASK_BINDING_REQUIRED_KEYS = frozenset({"profile_name", "model"})
 _TASK_BINDING_IGNORED_KEYS = frozenset({"batch_model"})
@@ -277,13 +276,6 @@ class ApiProfileStore:
             result.update({
                 "ocr_model": model,
                 "grading_model": model,
-            })
-        elif task == "class_teacher":
-            result.update({
-                "config_base_url": result.get("base_url"),
-                "config_api_key": result.get("api_key"),
-                "class_teacher_model": model,
-                "config_model": model,
             })
         return result
 

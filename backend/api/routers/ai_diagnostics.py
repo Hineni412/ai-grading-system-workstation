@@ -6,7 +6,6 @@ from fastapi import APIRouter, Query, Response
 
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.schemas.ai_diagnostics import (
-    AiDiagnosticClearResponse,
     AiDiagnosticDetail,
     AiDiagnosticListResponse,
 )
@@ -66,29 +65,6 @@ def list_ai_diagnostics(
     return AiDiagnosticListResponse(**payload)
 
 
-@router.delete(
-    "/class-teacher",
-    response_model=AiDiagnosticClearResponse,
-    responses={
-        503: {
-            "model": ErrorResponse,
-            "description": "Diagnostic journal is unavailable",
-        }
-    },
-)
-def clear_class_teacher_diagnostics(
-    response: Response,
-) -> AiDiagnosticClearResponse:
-    response.headers["Cache-Control"] = _NO_STORE
-    try:
-        payload = _JOURNAL.clear_workspace("class_teacher")
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ApiError(
-            503,
-            "ai_diagnostics_clear_unavailable",
-            "班主任正文日志暂时无法清除。",
-        ) from exc
-    return AiDiagnosticClearResponse(**payload)
 
 
 @router.get(

@@ -86,7 +86,6 @@ def test_work_types_can_use_different_saved_api_sites(tmp_path) -> None:
     state = service.update_task_bindings({
         "content_generation": {"profile_name": "站点甲", "model": "content-a"},
         "grading": {"profile_name": "站点乙", "model": "grading-b"},
-        "class_teacher": {"profile_name": "站点乙", "model": "teacher-b"},
     })
 
     assert state["task_bindings"]["grading"] == {
@@ -116,7 +115,6 @@ def test_delete_profile_removes_its_saved_task_bindings(tmp_path) -> None:
     service.update_task_bindings({
         "content_generation": {"profile_name": "站点甲", "model": "content-a"},
         "grading": {"profile_name": "站点乙", "model": "grading-b"},
-        "class_teacher": {"profile_name": "站点乙", "model": "teacher-b"},
     })
 
     state = service.delete("站点甲")

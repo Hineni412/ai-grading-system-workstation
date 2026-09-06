@@ -22,8 +22,8 @@ const confirmationPhrase = ref('')
 const copied = ref(false)
 const selectedBackup = ref('')
 const backupReason = ref<'before_exam' | 'before_update' | 'before_import' | 'before_restore' | 'manual' | 'after_exam'>('manual')
-const backupScopes = ref<Array<'grading' | 'class_teacher'>>([
-  'grading', 'class_teacher',
+const backupScopes = ref<Array<'grading'>>([
+  'grading',
 ])
 let finalizedJobVersion = ''
 
@@ -59,7 +59,6 @@ const DATABASE_LABELS: Record<string, string> = {
 
 const BACKUP_SCOPE_LABELS = {
   grading: '阅卷系统数据（含题库）',
-  class_teacher: '班主任工作台数据',
 } as const
 
 const TOOL_LABELS: Record<string, string> = {

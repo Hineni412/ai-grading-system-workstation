@@ -22,21 +22,17 @@ EXPECTED_AUTHORITY_DOCUMENTS = (
     "ARCHITECTURE.md",
     "CLAUDE.md",
     "CONTEXT.md",
-    "docs/README.md",
     "docs/product/GRADING.md",
     "docs/product/KNOWLEDGE_AND_TRAINING.md",
     "docs/product/CLASS_TEACHER.md",
     "docs/security/SECURITY.md",
     "docs/maintenance/storage-policy.md",
+    "docs/maintenance/packaging.md",
     "docs/testing/README.md",
     "docs/ui/STYLE.md",
-    "frontend/README.md",
 )
 
-EXPECTED_RETAINED_NON_AUTHORITY_DOCUMENTS = (
-    "docs/architecture/2026-08-09-exam-frequency-training-recommendation-research.md",
-    "docs/product/class-teacher/B_LOCAL_SPEECH_INPUT_RESEARCH.md",
-)
+EXPECTED_RETAINED_NON_AUTHORITY_DOCUMENTS = ()
 
 
 def _write(path: Path, text: str = "# 当前说明\n") -> None:
@@ -108,18 +104,16 @@ def test_non_authority_markdown_is_rejected(tmp_path: Path) -> None:
     ]
 
 
-def test_exact_retained_non_authority_documents_are_allowed(
+def test_user_requested_plan_is_allowed_outside_current_facts(
     tmp_path: Path,
 ) -> None:
-    for relative_path in RETAINED_NON_AUTHORITY_DOCUMENT_PATHS:
-        _write(tmp_path / relative_path, "# 本机研究资料\n\nPhase 2\n")
+    _write(tmp_path / "docs/requests/next-steps.md", "# 用户要求的后续方案\n\nPhase 2\n")
 
     assert not check_historical_documents(tmp_path)
 
 
-def test_neighboring_third_markdown_is_still_rejected(tmp_path: Path) -> None:
-    for relative_path in RETAINED_NON_AUTHORITY_DOCUMENT_PATHS:
-        _write(tmp_path / relative_path)
+def test_unrequested_historical_directory_is_still_rejected(tmp_path: Path) -> None:
+    _write(tmp_path / "docs/requests/next-steps.md")
     _write(tmp_path / "docs" / "architecture" / "another-research.md")
 
     issues = check_historical_documents(tmp_path)
@@ -128,10 +122,11 @@ def test_neighboring_third_markdown_is_still_rejected(tmp_path: Path) -> None:
     ]
 
 
-def test_retained_documents_still_receive_link_and_skill_checks(
+def test_user_requested_documents_still_receive_link_and_skill_checks(
     tmp_path: Path,
 ) -> None:
-    link_path, skill_path = RETAINED_NON_AUTHORITY_DOCUMENT_PATHS
+    link_path = "docs/requests/plan.md"
+    skill_path = "docs/requests/investigation.md"
     _write(tmp_path / link_path, "[missing](missing.md)\n")
     _write(tmp_path / skill_path, "调用 superpowers:writing-plans。\n")
 
@@ -170,12 +165,12 @@ def test_historical_marker_in_authority_document_is_rejected(
 
 def test_unqualified_frontend_runtime_claim_is_rejected(tmp_path: Path) -> None:
     _write(
-        tmp_path / "frontend" / "README.md",
+        tmp_path / "README.md",
         "日常使用者不需要安装 Node.js。\n",
     )
     issues = check_current_document_facts(tmp_path)
     assert [(item.code, item.path) for item in issues] == [
-        ("DOC101", "frontend/README.md")
+        ("DOC101", "README.md")
     ]
 
 

@@ -56,12 +56,10 @@ const executionStatusError = ref('')
 const taskBindingsDraft = ref<ModelTaskBindings>({
   content_generation: { profile_name: null, model: '' },
   grading: { profile_name: null, model: '' },
-  class_teacher: { profile_name: null, model: '' },
 })
 const taskRows = [
   { key: 'content_generation', title: '题库与评分标准生成', detail: '题库打标、评分标准生成、AI 组卷等内容生成' },
   { key: 'grading', title: '识别姓名与批改试卷', detail: '姓名识别和批改共用同一个模型与站点' },
-  { key: 'class_teacher', title: '班主任工作台', detail: '班主任对话与草稿整理' },
 ] as const
 let executionStatusController: AbortController | null = null
 

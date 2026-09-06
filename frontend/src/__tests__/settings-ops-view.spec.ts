@@ -292,7 +292,7 @@ describe('settings and Ops view', () => {
     expect(host.textContent).toContain('创建备份')
     expect(host.textContent).toContain('恢复备份')
     expect(host.textContent).toContain('阅卷系统数据（含题库）')
-    expect(host.textContent).toContain('班主任工作台数据')
+    expect(host.textContent).not.toContain('班主任工作台数据')
     expect(host.textContent).not.toContain('更多维护工具（一般无需使用）')
     expect(host.textContent).not.toContain('数据库迁移')
     expect(host.textContent).not.toContain('导出数据包')

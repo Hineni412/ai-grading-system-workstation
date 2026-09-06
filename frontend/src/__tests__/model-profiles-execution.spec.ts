@@ -36,7 +36,6 @@ function taskBindings() {
   return {
     content_generation: { profile_name: '校内模型', model: 'content-model' },
     grading: { profile_name: '校内模型', model: 'grading-model' },
-    class_teacher: { profile_name: '校内模型', model: 'teacher-model' },
   }
 }
 

@@ -186,7 +186,7 @@ describe('workspace AI task store', () => {
     await store.initialize(api)
 
     expect(api.api.get).toHaveBeenCalledTimes(1)
-    expect(api.api.list).toHaveBeenCalledTimes(1)
+    expect(api.api.list).not.toHaveBeenCalled()
     expect(api.schedule).toHaveBeenCalledTimes(1)
   })
 
@@ -205,7 +205,7 @@ describe('workspace AI task store', () => {
     expect(api.api.get).toHaveBeenCalledTimes(1)
   })
 
-  it('restores every actionable historical task from the module list without detail requests', async () => {
+  it('resolves stored references without querying retired module lists', async () => {
     const statuses = [
       'needs_input',
       'proposal_ready',
@@ -226,15 +226,15 @@ describe('workspace AI task store', () => {
         terminal: true,
       })),
     ))
-    const get = vi.fn(async () => { throw new Error('detail request should not run') })
+    const get = vi.fn(async (id: string) => classTasks.find(item => item.task_id === id)!)
     const list = vi.fn(async () => classTasks)
     const api = dependencies(get, list)
     const store = useWorkspaceAITaskStore()
 
     await store.initialize(api)
 
-    expect(list).toHaveBeenCalledExactlyOnceWith('class_teacher')
-    expect(get).not.toHaveBeenCalled()
+    expect(list).not.toHaveBeenCalled()
+    expect(get).toHaveBeenCalledTimes(13)
     expect(store.orderedTasks.map(item => item.task_id).sort())
       .toEqual(classTasks.map(item => item.task_id).sort())
     const stored = localStorage.getItem(WORKSPACE_AI_TASK_STORAGE_KEY)!
@@ -242,7 +242,7 @@ describe('workspace AI task store', () => {
     expect(stored).not.toContain('terminal')
   })
 
-  it('falls back to detail requests for list omissions', async () => {
+  it('resolves each stored task directly', async () => {
     const references = [
       { taskId: 'class-found', operationId: 'operation-found', trackedAt: 'now' },
       { taskId: 'class-missing', operationId: 'operation-missing', trackedAt: 'now' },
@@ -265,9 +265,9 @@ describe('workspace AI task store', () => {
 
     await store.initialize(api)
 
-    expect(list).toHaveBeenCalledTimes(1)
+    expect(list).not.toHaveBeenCalled()
     expect(get.mock.calls.map(([taskId]) => taskId).sort())
-      .toEqual(['class-fallback', 'class-missing'])
+      .toEqual(['class-fallback', 'class-found', 'class-missing'])
     expect(store.orderedTasks.map(item => item.task_id).sort())
       .toEqual(references.map(reference => reference.taskId).sort())
     expect(JSON.parse(localStorage.getItem(WORKSPACE_AI_TASK_STORAGE_KEY)!)).toEqual(
@@ -295,7 +295,7 @@ describe('workspace AI task store', () => {
 
     await store.initialize(api)
 
-    expect(list).toHaveBeenCalledTimes(1)
+    expect(list).not.toHaveBeenCalled()
     expect(get).toHaveBeenCalledTimes(2)
     expect(store.tasks['task-restored']?.status).toBe('proposal_ready')
     expect(store.tasks['task-offline']).toBeUndefined()

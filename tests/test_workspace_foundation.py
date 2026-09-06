@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
-from backend.class_teacher.feature import create_workspace_feature
 from backend.schema_migrations import ensure_schema_current
 from backend.workspaces.contracts import (
     WorkspaceContext,
@@ -67,101 +66,10 @@ def _feature(
     )
 
 
-def test_activated_class_teacher_shell_has_no_filesystem_side_effects(
-    tmp_path: Path,
-) -> None:
-    paths = _paths(tmp_path)
-
-    registry = load_default_workspace_registry(paths)
-    api = FastAPI()
-    registry.include_routers(api)
-    registry.run_migrations()
-    services = registry.create_services()
-
-    assert [
-        feature.module_id for feature in registry.enabled_features
-    ] == ["class-teacher"]
-    assert set(services) == {"class-teacher"}
-    assert not (paths.data_root / "workspaces").exists()
 
 
-def test_existing_class_teacher_vault_requires_maintenance_before_service_creation(
-    tmp_path: Path,
-) -> None:
-    paths = _paths(tmp_path)
-    paths._project_root = PROJECT_ROOT
-    legacy_migrations = tmp_path / "legacy-student-affairs-migrations"
-    legacy_migrations.mkdir()
-    for migration in sorted(
-        (PROJECT_ROOT / "migrations" / "student_affairs").glob("*.sql")
-    ):
-        if int(migration.name.split("_", 1)[0]) <= 16:
-            shutil.copy2(migration, legacy_migrations / migration.name)
-    root = paths.workspace_dir("class-teacher")
-    ensure_schema_current(
-        "student_affairs",
-        root / "student_affairs.db",
-        migrations_dir=legacy_migrations,
-        backup_dir=root / "backups",
-        logger_override=logging.getLogger("test.class-teacher.migration"),
-    )
-
-    registry = WorkspaceRegistry(
-        [create_workspace_feature()],
-        paths=paths,
-    )
-    with pytest.raises(
-        WorkspaceRegistrationError,
-        match="pending.*protected maintenance",
-    ):
-        registry.run_migrations()
-
-    with sqlite3.connect(root / "student_affairs.db") as connection:
-        assert connection.execute(
-            """
-            SELECT name FROM sqlite_master
-            WHERE type = 'table'
-              AND name = 'initialization_recovery_receipts'
-            """
-        ).fetchone() is None
 
 
-def test_existing_main_class_teacher_vault_accepts_new_tail_migration(
-    tmp_path: Path,
-) -> None:
-    """A released 018 history must remain a prefix of the next manifest."""
-
-    migration_root = PROJECT_ROOT / "migrations" / "student_affairs"
-    released_manifest = tmp_path / "released-student-affairs-migrations"
-    released_manifest.mkdir()
-    for migration in sorted(migration_root.glob("*.sql")):
-        if int(migration.stem.split("_", 1)[0]) > 18:
-            continue
-        shutil.copy2(migration, released_manifest / migration.name)
-
-    database = tmp_path / "class-teacher" / "student_affairs.db"
-    ensure_schema_current(
-        "student_affairs",
-        database,
-        migrations_dir=released_manifest,
-        backup_dir=tmp_path / "released-backups",
-        logger_override=logging.getLogger("test.class-teacher.released-migration"),
-    )
-
-    result = ensure_schema_current(
-        "student_affairs",
-        database,
-        migrations_dir=migration_root,
-        backup_dir=tmp_path / "upgrade-backups",
-        logger_override=logging.getLogger("test.class-teacher.upgrade-migration"),
-    )
-
-    assert result.applied[-1] == "030_affair_discarded_state"
-    with sqlite3.connect(database) as connection:
-        assert connection.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'student_card_entries'"
-        ).fetchone() == ("student_card_entries",)
 
 
 @pytest.mark.parametrize(

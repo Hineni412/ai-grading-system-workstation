@@ -3,15 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-DESTINATION_KEYS = frozenset(
-    {
-        "class_teacher.home",
-        "class_teacher.student.record",
-        "class_teacher.affair.record",
-        "class_teacher.plan.calendar",
-        "class_teacher.affair.sop",
-    }
-)
+DESTINATION_KEYS: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,35 +14,9 @@ class TaskPresentation:
     safe_source: str
 
 
-_PRESENTATIONS = {
-    ("class_teacher", "class_teacher.intake"): TaskPresentation(
-        "class_teacher", "class_teacher.intake", "班主任 · 整理一项事务", "班主任"
-    ),
-    ("class_teacher", "class_teacher.intake_triage"): TaskPresentation(
-        "class_teacher",
-        "class_teacher.intake_triage",
-        "班主任 · 整理一项事务",
-        "班主任",
-    ),
-    ("class_teacher", "class_teacher.draft_revision"): TaskPresentation(
-        "class_teacher",
-        "class_teacher.draft_revision",
-        "班主任 · 调整一份事务草稿",
-        "班主任",
-    ),
-    ("class_teacher", "class_teacher.affair_flow_revision"): TaskPresentation(
-        "class_teacher",
-        "class_teacher.affair_flow_revision",
-        "班主任 · 调整事务流程",
-        "班主任",
-    ),
-}
+_PRESENTATIONS: dict[tuple[str, str], TaskPresentation] = {}
 
-_RECOVERY_ONLY_TASKS = frozenset(
-    {
-        ("class_teacher", "class_teacher.intake"),
-    }
-)
+_RECOVERY_ONLY_TASKS: frozenset[tuple[str, str]] = frozenset()
 
 _MESSAGES = {
     "prepared": ("任务已经准备好，尚未发送。", "返回来源页确认发送"),
@@ -106,7 +72,7 @@ def message_for(status: str, evidence: str) -> tuple[str, str]:
 def assert_destination(module: str, destination_key: str) -> None:
     if destination_key not in DESTINATION_KEYS:
         raise ValueError("workspace handoff destination is not allowed")
-    expected_prefix = "class_teacher."
+    expected_prefix = f"{module}."
     if not destination_key.startswith(expected_prefix):
         raise ValueError("workspace handoff cannot cross modules")
 

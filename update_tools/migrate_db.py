@@ -293,22 +293,6 @@ def _get_targets() -> dict[str, dict[str, Any]]:
                 "db_path": pm.qb_db_path,
                 "migrations_dir": _PROJECT_ROOT / "migrations" / "question_bank",
             },
-            "student_affairs": {
-                "db_path": pm.data_root
-                / "workspaces"
-                / "class-teacher"
-                / "student_affairs.db",
-                "migrations_dir": _PROJECT_ROOT / "migrations" / "student_affairs",
-            },
-            "class_teacher_work": {
-                "db_path": pm.data_root
-                / "workspaces"
-                / "class-teacher"
-                / "class_teacher_work.db",
-                "migrations_dir": _PROJECT_ROOT
-                / "migrations"
-                / "class_teacher_work",
-            },
         }
     except Exception:
         return {
@@ -319,24 +303,6 @@ def _get_targets() -> dict[str, dict[str, Any]]:
             "question_bank": {
                 "db_path": _PROJECT_ROOT / "user_data" / "databases" / "question_bank.db",
                 "migrations_dir": _PROJECT_ROOT / "migrations" / "question_bank",
-            },
-            "student_affairs": {
-                "db_path": _PROJECT_ROOT
-                / "user_data"
-                / "workspaces"
-                / "class-teacher"
-                / "student_affairs.db",
-                "migrations_dir": _PROJECT_ROOT / "migrations" / "student_affairs",
-            },
-            "class_teacher_work": {
-                "db_path": _PROJECT_ROOT
-                / "user_data"
-                / "workspaces"
-                / "class-teacher"
-                / "class_teacher_work.db",
-                "migrations_dir": _PROJECT_ROOT
-                / "migrations"
-                / "class_teacher_work",
             },
         }
 
@@ -933,8 +899,6 @@ def main() -> int:
         choices=[
             "grading",
             "question_bank",
-            "student_affairs",
-            "class_teacher_work",
         ],
         default=None,
         help="指定数据库目标（默认全部）",

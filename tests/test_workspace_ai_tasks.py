@@ -37,6 +37,21 @@ from backend.llm.trace import NullCallTraceSink
 from backend.llm.usage import NullUsageSink
 
 
+@pytest.fixture(autouse=True)
+def synthetic_task_registration(monkeypatch):
+    # Exercise the generic task engine with a test-only adapter. Production has no workbench registrations.
+    from backend.workspaces.ai_tasks import registry
+    monkeypatch.setattr(registry, "_PRESENTATIONS", {
+        ("class_teacher", "class_teacher.intake_triage"): registry.TaskPresentation(
+            "class_teacher", "class_teacher.intake_triage", "合成工作项", "合成测试"
+        ),
+    })
+    monkeypatch.setattr(registry, "DESTINATION_KEYS", frozenset({
+        "class_teacher.home", "class_teacher.affair.record", "class_teacher.student.record",
+        "class_teacher.plan.calendar", "class_teacher.affair.sop",
+    }))
+
+
 def _request(module: str = "class_teacher") -> PrepareRequest:
     return PrepareRequest(
         module=module,

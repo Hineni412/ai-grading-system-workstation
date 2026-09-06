@@ -44,35 +44,17 @@
 
 数据库、JSON、YAML、配置文件、最近修改的文件和跨磁盘文件不参与去重。硬链接会改变重复文件的底层存储关系，因此即使内容不变，也属于真实数据写入操作。
 
-## 逐次授权流程
+## 备份与维护入口
 
-存储工具会检查或修改真实业务文件。每次运行都必须针对本次精确目标重新获得用户明确授权；查看授权、预览授权、归档授权和去重授权互不替代。
+普通备份由 `update_tools/backup_core.py` 实现，范围为 grading（阅卷及题库），不包含已独立的班主任工作区；排除模型密钥、诊断日志及 SQLite 临时文件。完整安装包包含数据与密钥，不能当作普通备份分发，见 `docs/maintenance/packaging.md`。单条数据删除不会追溯删除已有备份副本。
 
-1. 先说明要检查的目录、输出报告位置、是否会写入文件以及失败影响。
-2. 获得本次审计授权后，才能运行：
+以下工具会读取真实数据，运行前按 `AGENTS.md` 明确授权目标、输出、备份与回退；预览不等于批准应用。
 
-   ```powershell
-   & .\runtime\python\python.exe tools\storage_audit.py --root .
-   ```
+| 工具与参数 | 作用 |
+|---|---|
+| `tools/storage_audit.py`，--root . | 审计并将报告写入 user_data/reports/storage_audit/ |
+| `tools/storage_maintenance.py`，--root . | 仅打印维护计划 |
+| 同上，加 --apply-hardlinks | 按候选执行硬链接去重 |
+| 同上，加 --apply-archives | 创建归档 ZIP，不删除原件 |
 
-   审计会读取真实数据并把报告写入 `user_data/reports/storage_audit/`，因此它不是“无需授权的纯读取”。
-
-3. 与用户核对报告中的精确路径、原因、大小和时间门槛。
-4. 获得本次维护预览授权后，才能运行：
-
-   ```powershell
-   & .\runtime\python\python.exe tools\storage_maintenance.py --root .
-   ```
-
-   不带应用参数时只打印计划，不执行硬链接或归档。
-
-5. 用户明确选择具体操作并再次授权后，才分别运行其中一个命令：
-
-   ```powershell
-   & .\runtime\python\python.exe tools\storage_maintenance.py --root . --apply-hardlinks
-   & .\runtime\python\python.exe tools\storage_maintenance.py --root . --apply-archives
-   ```
-
-6. 操作前确认精确目标仍存在、备份与回退方式可用；操作后只核对本次目标，不顺带处理其他候选。
-
-任何一次授权都不得推断为允许迁移、覆盖、永久删除、恢复覆盖或处理下一批真实数据。
+使用项目便携 Python 执行。应用前核对精确候选；删除原件属于另一个操作，不包含在归档内。

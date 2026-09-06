@@ -25,7 +25,7 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 STAMP_PATH = DIST_DIR / "integration-preview-build.json"
 EXPECTED_PREVIEW_INSTANCE_ID = "integration-preview"
-EXPECTED_LABELS = ("备课工作台", "班主任工作台")
+EXPECTED_LABELS = ("考试与阅卷", "题库与组卷")
 LOCAL_ARTIFACT_PATHS = (
     ".p35t/**",
     ".codex_artifacts/**",
