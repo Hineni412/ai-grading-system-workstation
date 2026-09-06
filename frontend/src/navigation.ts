@@ -13,7 +13,6 @@ export type WorkspaceRouteId =
   | 'grading'
   | 'model-profiles'
   | 'settings'
-  | 'class-teacher'
 
 export type WorkspaceNavigationIcon =
   | 'workbench'
@@ -28,7 +27,6 @@ export type WorkspaceNavigationIcon =
   | 'students'
   | 'model'
   | 'settings'
-  | 'class-teacher'
 
 export type AppIconName =
   | WorkspaceNavigationIcon

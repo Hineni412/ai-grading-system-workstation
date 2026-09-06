@@ -10,7 +10,7 @@
 
 ## 完整安装包
 
-- `package_v1.5.0.py` 生成完整安装包:复制代码、文档、`frontend/dist`、启动器、便携 Python 运行时,以及 `runtime/models`(班主任语音转写模型)与 `runtime/tectonic`(训练卷 PDF 排版引擎)。产物只有 `dist/` 下的文件夹和 `RELEASE_MANIFEST_<版本>.json`,不再生成 zip 压缩包。版本号取自 `VERSION`。
+- `package_v1.5.0.py` 生成完整安装包:复制代码、文档、`frontend/dist`、启动器、便携 Python 运行时,以及 `runtime/tectonic`(训练卷 PDF 排版引擎)。产物只有 `dist/` 下的文件夹和 `RELEASE_MANIFEST_<版本>.json`,不生成 zip 压缩包。版本号取自 `VERSION`。
 - 包内 `user_data` 是打包时刻的全量快照,包含工作区业务数据和 `user_data/config/api_profiles.json` 中的模型密钥。因此包等同于教师本机的整机数据快照:只允许本机私有保存,不得进入 Git、同步盘或对外分发;需要干净分发时,必须从不含真实数据的隔离骨架目录打包。
 - 复制 `user_data` 前必须先关闭系统(`关闭系统.bat`);服务运行中复制 SQLite 数据库可能得到不一致的快照。
 - 便携运行时首次构建需要联网下载 Python 3.12 嵌入包并安装 `requirements.txt`(配合 `constraints.txt` 锁定版本);之后使用 `.portable_runtime_cache` 缓存,重复打包不再重新下载。`frontend/dist` 不完整时打包直接失败,不产出半成品。
@@ -19,16 +19,16 @@
 ## 增量更新
 
 - 已部署机器的版本升级使用增量更新包,不用新完整包覆盖安装目录。
-- 开发机上用 `update_tools/make_update.py` 生成更新包:内容为 `update_manifest.json`、`app/`(代码、`frontend/dist`、`VERSION`、启动器、`runtime/models` 与 `runtime/tectonic`)、全量 `migrations/` 与全量 `update_tools/`。生成规则与完整安装包同源,只产出文件夹。更新包绝不包含 `user_data`。
+- 开发机上用 `update_tools/make_update.py` 生成更新包:内容为 `update_manifest.json`、`app/`(代码、`frontend/dist`、`VERSION`、启动器与 `runtime/tectonic`)、全量 `migrations/` 与全量 `update_tools/`。生成规则与完整安装包同源,只产出文件夹。更新包绝不包含 `user_data`。
 - 目标机上用 `update_tools/apply_update.py <更新包目录>` 应用更新:先备份 `user_data`(zip,不含 API 密钥)与将被覆盖的代码(`app_backup_v<旧版本>/`),再覆盖代码、`migrations/` 与 `update_tools/`,最后执行核心库迁移。支持 `--dry-run` 与 `--rollback`,过程写入 `logs/backup.log`。
-- 更新不写入 `user_data/databases/` 与 `user_data/exams/`,不删除任何用户数据;该保障依赖更新包内不含 `user_data` 内容。
-- `backup_data.py`、`backup_core.py`、`list_backups.py` 提供独立的数据备份与查询。
+- 代码覆盖阶段不携带或覆盖 user_data；随后核心库迁移会写入数据库。
+- `update_tools/backup_data.py`、`update_tools/backup_core.py`、`update_tools/list_backups.py` 提供独立的数据备份与查询。
 
 ## 数据库 schema 迁移
 
-- 迁移清单在 `migrations/<目标>/`,覆盖 grading、question_bank、class_teacher_work、student_affairs 四个库。已应用迁移记录在各库的 `schema_migrations` 表(含校验和与成功标记),不会重放;重复加列等幂等语句可安全跳过。
+- 迁移清单在 `migrations/<目标>/`,覆盖 grading、question_bank 两个库。已应用迁移记录在各库的 `schema_migrations` 表(含校验和与成功标记),不会重放;重复加列等幂等语句可安全跳过。
 - 核心库(grading、question_bank)启动时执行 schema 闸门:已有库存在待迁移时,普通启动拒绝修改数据并停止,要求通过受保护维护入口确认迁移;受保护操作经操作日志与锁,在下次启动由 `backend.ops.offline --apply-pending` 应用。空白库按当前 schema 直接初始化。
-- 工作区数据库在打开时自动应用待迁移,并在应用前自动备份数据库。
+- 工作区注册也使用 schema 闸门，明确设置 allow_existing_migrations=False；已有库存在待迁移时停止相关工作台注册，不在打开时自动迁移。维护迁移需通过明确授权的入口执行。
 
 ## 当前未覆盖范围
 

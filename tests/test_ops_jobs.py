@@ -190,102 +190,28 @@ def test_ops_backup_publishes_valid_zip_with_consistent_databases(tmp_path: Path
     assert result["file_path"] == str(published)
 
 
-def test_ops_backup_publishes_only_the_selected_class_teacher_scope(
-    tmp_path: Path,
-) -> None:
+def test_ops_backup_rejects_retired_class_teacher_scope(tmp_path: Path) -> None:
+    from backend.ops.write_service import OpsRequestInvalid
     paths = _paths(tmp_path)
-    class_teacher_root = paths.data_root / "workspaces" / "class-teacher"
-    class_teacher_root.mkdir(parents=True)
-    (class_teacher_root / "lesson-note.json").write_text(
-        '{"title": "synthetic"}',
-        encoding="utf-8",
-    )
-    context = _Context(
-        _payload(
-            _service(paths),
-            "backup",
-            reason="manual",
-            scopes=["class_teacher"],
-        )
-    )
-
-    result = run_ops_backup_job(context=context, paths=paths)
-
-    published = paths.backups_dir / str(result["filename"])
-    with zipfile.ZipFile(published, "r") as archive:
-        names = set(archive.namelist())
-    assert "user_data/workspaces/class-teacher/lesson-note.json" in names
-    assert not any(name.startswith("user_data/databases/") for name in names)
+    with pytest.raises(OpsRequestInvalid, match="invalid backup scopes"):
+        _payload(_service(paths), "backup", reason="manual", scopes=["class_teacher"])
 
 
-def test_ops_backup_keeps_workspace_databases_but_excludes_migration_copies(
-    tmp_path: Path,
-) -> None:
+
+def test_ops_backup_excludes_retired_workspace_databases_and_copies(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    class_teacher_root = paths.data_root / "workspaces" / "class-teacher"
-    work_database = class_teacher_root / "class_teacher_work.db"
-    affairs_database = class_teacher_root / "student_affairs.db"
-    databases = {
-        work_database: (
-            "class_teacher_work",
-            "CREATE TABLE work_nodes (id INTEGER PRIMARY KEY);\n"
-            "CREATE TABLE work_edges (id INTEGER PRIMARY KEY);\n"
-            "CREATE TABLE work_operations (id INTEGER PRIMARY KEY);\n",
-        ),
-        affairs_database: (
-            "student_affairs",
-            "CREATE TABLE vault_metadata (id INTEGER PRIMARY KEY);\n"
-            "CREATE TABLE encrypted_objects (id INTEGER PRIMARY KEY);\n"
-            "CREATE TABLE access_audit (id INTEGER PRIMARY KEY);\n",
-        ),
-    }
-    for database, (target, baseline) in databases.items():
-        migrations = paths.project_root / "migrations" / target
-        migrations.mkdir(parents=True)
-        (migrations / "000_baseline.sql").write_text(
-            baseline,
-            encoding="utf-8",
-        )
-        ensure_schema_current(
-            target,
-            database,
-            migrations_dir=migrations,
-            backup_dir=tmp_path / "fixture-backups" / target,
-        )
-
-    nested_copies = {
-        (
-            class_teacher_root
-            / "work-backups"
-            / "class_teacher_work_before_migration_007_20260809_120000.db"
-        ): work_database,
-    }
-    for copy_path, target in nested_copies.items():
-        copy_path.parent.mkdir(parents=True, exist_ok=True)
-        copy_path.write_bytes(target.read_bytes())
-
-    context = _Context(
-        _payload(
-            _service(paths),
-            "backup",
-            reason="manual",
-            scopes=["class_teacher"],
-        )
-    )
-
+    root = paths.data_root / "workspaces" / "class-teacher"
+    (root / "backups").mkdir(parents=True)
+    (root / "student_affairs.db").write_bytes(b"retired-workspace")
+    (root / "backups" / "old.db").write_bytes(b"retired-copy")
+    context = _Context(_payload(_service(paths), "backup", reason="manual", scopes=["grading"]))
     result = run_ops_backup_job(context=context, paths=paths)
-
-    published = paths.backups_dir / str(result["filename"])
-    with zipfile.ZipFile(published, "r") as archive:
+    with zipfile.ZipFile(paths.backups_dir / str(result["filename"])) as archive:
         names = set(archive.namelist())
-    assert {
-        "user_data/workspaces/class-teacher/class_teacher_work.db",
-        "user_data/workspaces/class-teacher/student_affairs.db",
-    } <= names
-    assert not {
-        path.relative_to(paths.project_root).as_posix()
-        for path in nested_copies
-    } & names
+    assert "user_data/databases/grading_system.db" in names
+    assert "user_data/databases/question_bank.db" in names
+    assert not any("workspaces/" in name for name in names)
+
 
 
 def test_ops_backup_cancel_before_publish_leaves_no_zip(tmp_path: Path) -> None:
@@ -499,7 +425,7 @@ def test_ops_transfer_export_allows_job_store_updates_inside_data_root(
         manager.shutdown()
 
 
-def test_ops_backup_allows_job_store_updates_and_includes_class_teacher_workspace(
+def test_ops_backup_allows_job_store_updates_and_excludes_retired_workspace(
     tmp_path: Path,
 ) -> None:
     from backend.jobs.manager import JobManager
@@ -508,12 +434,7 @@ def test_ops_backup_allows_job_store_updates_and_includes_class_teacher_workspac
     paths = _paths(tmp_path, migration_current=True)
     protected = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
     protected.parent.mkdir(parents=True)
-    ensure_schema_current(
-        "student_affairs",
-        protected,
-        migrations_dir=PROJECT_ROOT / "migrations" / "student_affairs",
-        backup_dir=tmp_path / "fixture-student-affairs-backups",
-    )
+    protected.write_bytes(b"retired-workspace")
     manager = JobManager(
         JobStore(paths.db_path),
         max_workers=1,
@@ -542,7 +463,7 @@ def test_ops_backup_allows_job_store_updates_and_includes_class_teacher_workspac
             names = set(archive.namelist())
         assert "user_data/databases/grading_system.db" in names
         assert "user_data/databases/question_bank.db" in names
-        assert "user_data/workspaces/class-teacher/student_affairs.db" in names
+        assert "user_data/workspaces/class-teacher/student_affairs.db" not in names
         assert not any(
             name.startswith("user_data/workspaces/")
             and not name.startswith("user_data/workspaces/class-teacher/")

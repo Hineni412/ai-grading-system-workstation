@@ -121,7 +121,6 @@ describe('AppShell', () => {
       ['题库管理', '/question-bank'],
       ['组卷工作台', '/question-assembly'],
       ['知识与训练', '/knowledge-graph'],
-      ['班主任工作台', '/class-teacher'],
     ])
     expect(
       [...host.querySelectorAll<HTMLAnchorElement>('[data-testid="app-navigation"] a')].map(
@@ -134,7 +133,6 @@ describe('AppShell', () => {
       '题库管理',
       '组卷工作台',
       '知识与训练',
-      '班主任工作台',
     ])
     expect(
       host.querySelector('[data-testid="app-navigation"] a[href="/grading"]')?.getAttribute(
@@ -152,7 +150,6 @@ describe('AppShell', () => {
       '题库管理',
       '组卷工作台',
       '知识与训练',
-      '班主任工作台',
       '学生管理',
       '设置',
     ])
@@ -162,22 +159,6 @@ describe('AppShell', () => {
     app.unmount()
   })
 
-  it('lets the workspace own its topbar context at /class-teacher', async () => {
-    const { app, host } = await mountShell({ path: '/class-teacher' })
-
-    const topbar = host.querySelector('[data-testid="app-topbar"]')
-    expect(topbar?.classList.contains('app-topbar--workspace-context')).toBe(true)
-    expect(topbar?.querySelector('.app-topbar__session')).toBeNull()
-    expect(topbar?.querySelector('label[for="current-session"]')).toBeNull()
-    expect(topbar?.querySelector('#current-session')).toBeNull()
-    expect(topbar?.textContent).not.toContain('当前考试')
-    expect(topbar?.querySelector('#workspace-topbar-tabs')).toBeNull()
-    expect(topbar?.querySelector('#current-curriculum-volume')).toBeNull()
-
-    app.unmount()
-  },
-  10_000,
-  )
 
   it('navigates between truthful destinations and updates the current page', async () => {
     const { app, host, router } = await mountShell()

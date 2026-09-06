@@ -74,10 +74,6 @@ vi.mock('../api/students', async (importOriginal) => ({
   studentRosterApi: apiMock,
 }))
 
-vi.mock('../workspaces/class-teacher/api/intake', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../workspaces/class-teacher/api/intake')>(),
-  intakeApi: homeroomMock,
-}))
 
 const mounted: App[] = []
 

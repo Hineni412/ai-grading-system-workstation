@@ -45,9 +45,9 @@ describe('job presentation', () => {
 })
 
 describe('AI task return location', () => {
-  it('returns the task to the class-teacher destination with its source context', () => {
+  it('returns a legacy task to the remaining workbench', () => {
     expect(returnLocation(task('class_teacher.home'))).toEqual({
-      path: '/class-teacher',
+      path: '/workbench',
       query: {
         destination: 'class_teacher.home',
         source_task_id: 'task-1',
@@ -66,7 +66,7 @@ describe('AI task return location', () => {
     }
 
     expect(returnLocation(queued)).toEqual({
-      path: '/class-teacher',
+      path: '/workbench',
       query: {
         destination: 'class_teacher.student.record',
         source_task_id: 'task-1',

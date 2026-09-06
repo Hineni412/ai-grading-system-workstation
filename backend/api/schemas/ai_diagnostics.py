@@ -51,11 +51,6 @@ class AiDiagnosticListResponse(_DiagnosticModel):
     truncated: bool
 
 
-class AiDiagnosticClearResponse(_DiagnosticModel):
-    workspace_module: Literal["class_teacher"]
-    deleted_event_count: int = Field(ge=0)
-    retained_event_count: int = Field(ge=0)
-    unclassified_event_count: int = Field(ge=0)
 
 
 class AiDiagnosticDetail(AiDiagnosticSummary):

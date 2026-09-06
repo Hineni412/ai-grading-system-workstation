@@ -56,7 +56,6 @@ _MAX_SECRET_LENGTH = 8192
 _TASK_KEYS = (
     "content_generation",
     "grading",
-    "class_teacher",
 )
 
 
@@ -136,11 +135,6 @@ class ModelProfileService:
             ),
             "grading": _clean_existing_text(
                 active.get("grading_model") or active.get("ocr_model")
-            ),
-            "class_teacher": _clean_existing_text(
-                active.get("class_teacher_model")
-                or active.get("config_model")
-                or active.get("grading_model")
             ),
         }
         return {

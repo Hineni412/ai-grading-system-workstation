@@ -171,7 +171,7 @@ describe('workbench view', () => {
     expect(host.querySelector('.workbench-focus-board')).not.toBeNull()
     expect(host.querySelector('.workbench-pulse')).not.toBeNull()
     expect(host.querySelector('.workbench-workflow')).not.toBeNull()
-    expect(host.querySelectorAll('.workbench-focus-list > li')).toHaveLength(2)
+    expect(host.querySelectorAll('.workbench-focus-list > li')).toHaveLength(1)
     expect(host.querySelectorAll('.workbench-workflow__steps > li')).toHaveLength(4)
     expect(host.textContent).toContain('从一次考试，走到下一堂课')
     expect(host.textContent).not.toContain('当前考试详情')
@@ -190,8 +190,7 @@ describe('workbench view', () => {
     clickButton(host, '继续批改')
     await expectPath(router, '/sessions/7/grading-run')
 
-    clickButton(host, '查看班务')
-    await expectPath(router, '/class-teacher')
+    expect(host.textContent).not.toContain('查看班务')
 
     clickButton(host, '查看完整学情证据')
     await expectPath(router, '/knowledge-graph')

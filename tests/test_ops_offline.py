@@ -28,16 +28,6 @@ def _create_database(
         connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
 
 
-def _create_class_teacher_database(
-    path: Path,
-    value: str,
-    *,
-    kind: str,
-    migrations_dir: Path,
-) -> None:
-    ensure_schema_current(kind, path, migrations_dir=migrations_dir)
-    with sqlite3.connect(path) as connection:
-        connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
 
 
 def _paths(tmp_path: Path) -> SimpleNamespace:
@@ -273,40 +263,6 @@ def test_restore_clears_preexisting_database_companions_and_rolls_back_safely(
     )
 
 
-def test_restore_validates_and_replaces_class_teacher_database_as_sqlite(
-    tmp_path: Path,
-) -> None:
-    paths = _paths(tmp_path)
-    target = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
-    source = tmp_path / "restored-student-affairs.db"
-    migrations = paths.project_root / "migrations" / "student_affairs"
-    _create_class_teacher_database(
-        target,
-        "before",
-        kind="student_affairs",
-        migrations_dir=migrations,
-    )
-    _create_class_teacher_database(
-        source,
-        "restored",
-        kind="student_affairs",
-        migrations_dir=migrations,
-    )
-    journal = _prepare_restore(
-        paths,
-        {"user_data/workspaces/class-teacher/student_affairs.db": source.read_bytes()},
-    )
-    Path(f"{target}-wal").write_bytes(b"stale-wal")
-    Path(f"{target}-shm").write_bytes(b"stale-shm")
-
-    assert apply_pending_operation(paths=paths) == 0
-
-    with sqlite3.connect(target) as connection:
-        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert connection.execute("SELECT value FROM sample").fetchone()[0] == "restored"
-    assert not Path(f"{target}-wal").exists()
-    assert not Path(f"{target}-shm").exists()
-    assert journal.load_public(OPERATION_ID)["status"] == "applied"
 
 
 def test_companion_cleanup_failure_already_has_main_database_rollback_record(
@@ -403,122 +359,8 @@ def test_apply_refuses_to_start_when_latest_backup_misses_an_existing_member(
     assert public["result_code"] == "apply_failed_rolled_back"
 
 
-def test_restore_failure_after_workspace_database_replacement_restores_original_database(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    paths = _paths(tmp_path)
-    target = (
-        paths.data_root
-        / "workspaces"
-        / "class-teacher"
-        / "student_affairs.db"
-    )
-    restored = tmp_path / "restored-student-affairs.db"
-    migrations = paths.project_root / "migrations" / "student_affairs"
-    _create_class_teacher_database(
-        target,
-        "before",
-        kind="student_affairs",
-        migrations_dir=migrations,
-    )
-    _create_class_teacher_database(
-        restored,
-        "restored",
-        kind="student_affairs",
-        migrations_dir=migrations,
-    )
-    journal = _prepare_restore(
-        paths,
-        {
-            "user_data/workspaces/class-teacher/student_affairs.db": (
-                restored.read_bytes()
-            ),
-            "user_data/workspaces/class-teacher/zz-after-database.txt": b"later",
-        },
-    )
-    from backend.ops import offline
-
-    monkeypatch.setattr(
-        offline,
-        "_replace_staged_file",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            OSError("later member failed")
-        ),
-    )
-
-    assert apply_pending_operation(paths=paths) == 0
-    with sqlite3.connect(target) as connection:
-        assert connection.execute("SELECT value FROM sample").fetchone() == (
-            "before",
-        )
-    public = journal.load_public(OPERATION_ID)
-    assert public["status"] == "rolled_back"
-    assert public["result_code"] == "apply_failed_rolled_back"
 
 
-def test_post_apply_validation_includes_replaced_workspace_database(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    paths = _paths(tmp_path)
-    migrations = paths.project_root / "migrations" / "student_affairs"
-    target = (
-        paths.data_root
-        / "workspaces"
-        / "class-teacher"
-        / "student_affairs.db"
-    )
-    restored = tmp_path / "restored-student-affairs.db"
-    _create_class_teacher_database(
-        target,
-        "before",
-        kind="student_affairs",
-        migrations_dir=migrations,
-    )
-    _create_class_teacher_database(
-        restored,
-        "restored",
-        kind="student_affairs",
-        migrations_dir=migrations,
-    )
-    journal = _prepare_restore(
-        paths,
-        {
-            "user_data/workspaces/class-teacher/student_affairs.db": (
-                restored.read_bytes()
-            )
-        },
-    )
-    from backend.ops import offline
-
-    real_replace = offline._replace_database_file
-
-    def replace_then_corrupt_schema(source: Path, destination: Path) -> None:
-        real_replace(source, destination)
-        if destination == target:
-            with sqlite3.connect(destination) as connection:
-                connection.execute(
-                    "ALTER TABLE sample ADD COLUMN unexpected TEXT"
-                )
-
-    monkeypatch.setattr(
-        offline,
-        "_replace_database_file",
-        replace_then_corrupt_schema,
-    )
-
-    assert apply_pending_operation(paths=paths) == 0
-    with sqlite3.connect(target) as connection:
-        columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(sample)")
-        }
-        assert columns == {"value"}
-        assert connection.execute("SELECT value FROM sample").fetchone() == (
-            "before",
-        )
-    assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
 
 
 def test_rollback_failure_stops_startup(

@@ -284,7 +284,7 @@ def test_rotation_stays_at_three_files_and_targeted_clear_rewrites_all_of_them(
     }
 
 
-def test_ai_diagnostics_api_filters_and_clears_only_class_teacher_calls(
+def test_ai_diagnostics_api_reads_legacy_labels_without_retired_clear_route(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -337,22 +337,9 @@ def test_ai_diagnostics_api_filters_and_clears_only_class_teacher_calls(
     ]
 
     cleared = client.delete("/api/ai-diagnostics/class-teacher")
-    assert cleared.status_code == 200
-    assert cleared.headers["cache-control"] == "no-store, max-age=0"
-    assert cleared.json() == {
-        "workspace_module": "class_teacher",
-        "deleted_event_count": 3,
-        "retained_event_count": 2,
-        "unclassified_event_count": 0,
-    }
-    assert client.get(
-        "/api/ai-diagnostics",
-        params={"workspace_module": "class_teacher"},
-    ).json()["matching"] == 0
-    assert client.get(
-        "/api/ai-diagnostics",
-        params={"workspace_module": "other_workspace"},
-    ).json()["matching"] == 1
+    assert cleared.status_code in (404, 405)
+    assert client.get("/api/ai-diagnostics", params={"workspace_module": "class_teacher"}).json()["matching"] == 1
+    assert client.get("/api/ai-diagnostics", params={"workspace_module": "other_workspace"}).json()["matching"] == 1
 
 
 def test_diagnostic_list_omits_request_bodies_while_detail_keeps_them(

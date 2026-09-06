@@ -110,7 +110,7 @@ export function returnLocation(task: WorkspaceAITask): {
   query: Record<string, string>
 } {
   return {
-    path: '/class-teacher',
+    path: '/workbench',
     query: {
       destination: task.return_target,
       source_task_id: task.task_id,

@@ -55,8 +55,8 @@ def _get_logger() -> logging.Logger:
 # ── 常量 ──────────────────────────────────────────────
 
 VALID_REASONS = ("before_exam", "before_update", "before_import", "before_restore", "manual", "after_exam")
-VALID_BACKUP_SCOPES = ("grading", "class_teacher")
-DEFAULT_BACKUP_SCOPES = ("grading", "class_teacher")
+VALID_BACKUP_SCOPES = ("grading",)
+DEFAULT_BACKUP_SCOPES = ("grading",)
 
 # 不备份的模式
 _SKIP_PATTERNS = {
@@ -167,11 +167,6 @@ def preview_backup(
             (pm.data_root / "snapshots", "user_data/snapshots"),
             (pm.project_root / "config", "config"),
         ])
-    if "class_teacher" in selected:
-        backup_sources.append((
-            pm.data_root / "workspaces" / "class-teacher",
-            "user_data/workspaces/class-teacher",
-        ))
     if include_logs:
         backup_sources.append((pm.logs_dir, "logs"))
 
@@ -325,8 +320,6 @@ def create_backup(
             (pm.data_root / "snapshots", "user_data/snapshots"),
             (pm.project_root / "config", "config"),
         ])
-    if "class_teacher" in selected:
-        backup_sources.append((pm.data_root / "workspaces" / "class-teacher", "user_data/workspaces/class-teacher"))
     if include_logs:
         backup_sources.append((pm.logs_dir, "logs"))
 

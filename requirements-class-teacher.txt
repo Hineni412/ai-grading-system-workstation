@@ -1,2 +1,0 @@
-# B-line-only dependencies. Keep this file separate from the shared runtime.
-sherpa-onnx==1.13.4

@@ -1,3 +1,3 @@
-# Claude Code 入口
+# 代理入口
 
-先读取根目录 `AGENTS.md`；系统现状、统一词汇和文档索引分别见 `ARCHITECTURE.md`、`CONTEXT.md`、`docs/README.md`。
+先读取 `AGENTS.md`，再按本次任务从 `README.md` 选择专项文档。

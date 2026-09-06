@@ -72,7 +72,6 @@ class ModelTaskBinding(_ModelProfileModel):
 class ModelTaskBindingsUpdateRequest(_ModelProfileModel):
     content_generation: ModelTaskBinding
     grading: ModelTaskBinding
-    class_teacher: ModelTaskBinding
 
 
 class ModelProfileStateResponse(_ModelProfileModel):
@@ -83,7 +82,6 @@ class ModelProfileStateResponse(_ModelProfileModel):
         Literal[
             "content_generation",
             "grading",
-            "class_teacher",
         ],
         ModelTaskBinding,
     ]

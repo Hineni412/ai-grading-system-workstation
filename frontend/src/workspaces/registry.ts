@@ -6,7 +6,7 @@ import type {
   WorkspaceTopbarContext,
 } from './contracts'
 
-const MODULE_IDS = new Set<WorkspaceModuleId>(['class-teacher'])
+const MODULE_IDS = new Set<WorkspaceModuleId>()
 const FEATURE_FLAG = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 const DATA_CLASSIFICATIONS = new Set([
   'public',
@@ -18,13 +18,7 @@ const TOPBAR_CONTEXTS = new Set<WorkspaceTopbarContext>([
   'current-exam',
   'workspace',
 ])
-const DESTINATION_KEYS = new Set([
-  'class_teacher.home',
-  'class_teacher.student.record',
-  'class_teacher.affair.record',
-  'class_teacher.plan.calendar',
-  'class_teacher.affair.sop',
-])
+const DESTINATION_KEYS = new Set<string>()
 const QUERY_KEY = /^[a-z][a-z0-9_]{0,63}$/
 const QUERY_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/
 
@@ -124,7 +118,7 @@ function createWorkspaceRegistryFromCandidates(
     .filter(({ source, manifest }) => resolveEnabled(source, manifest))
     .sort((left, right) => (
       left.manifest.navigationOrder - right.manifest.navigationOrder
-      || left.manifest.moduleId.localeCompare(right.manifest.moduleId)
+      || String(left.manifest.moduleId).localeCompare(String(right.manifest.moduleId))
     ))
     .map(({ manifest }) => ({
       manifest,
@@ -244,7 +238,7 @@ function validateSubNavigation(label: string, manifest: WorkspaceManifest): void
   }
   const seenDestinations = new Set<string>()
   const seenOrders = new Set<number>()
-  const prefix = 'class_teacher.'
+  const prefix = `${manifest.moduleId}.`
   for (const item of manifest.subNavigation) {
     if (
       !item

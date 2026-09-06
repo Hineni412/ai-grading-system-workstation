@@ -39,7 +39,6 @@ const defaults: WorkspaceAITaskStoreDependencies = {
   maxBackoffMs: 30_000,
 }
 
-const WORKSPACE_AI_TASK_MODULES = ['class_teacher'] as const
 
 function isReference(value: unknown): value is PersistedTaskReference {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -232,25 +231,8 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
   }
 
   async function restoreStoredReferences(stored: PersistedTaskReference[]): Promise<void> {
-    if (stored.length === 0) return
-    const storedIds = new Set(stored.map(reference => reference.taskId))
-    const restoredIds = new Set<string>()
-    const listed = await Promise.allSettled(
-      WORKSPACE_AI_TASK_MODULES.map(module => dependencies.api.list(module)),
-    )
-    for (const result of listed) {
-      if (result.status !== 'fulfilled') continue
-      for (const task of result.value) {
-        if (!storedIds.has(task.task_id)) continue
-        track(task)
-        restoredIds.add(task.task_id)
-      }
-    }
-    await Promise.all(
-      stored
-        .filter(reference => !restoredIds.has(reference.taskId))
-        .map(reference => refresh(reference.taskId)),
-    )
+    // Only resolve cached references; there are no active workspace modules to discover.
+    await Promise.all(stored.map(reference => refresh(reference.taskId)))
   }
 
   async function migrateLegacyMixedIndex(): Promise<void> {

@@ -77,8 +77,8 @@ class OpsBackupPreflightRequest(_OpsModel):
         "manual",
         "after_exam",
     ]
-    scopes: list[Literal["grading", "class_teacher"]] = Field(
-        default_factory=lambda: ["grading", "class_teacher"],
+    scopes: list[Literal["grading"]] = Field(
+        default_factory=lambda: ["grading"],
         min_length=1,
         max_length=2,
     )

@@ -19,21 +19,17 @@ AUTHORITY_DOCUMENT_PATHS = (
     "ARCHITECTURE.md",
     "CLAUDE.md",
     "CONTEXT.md",
-    "docs/README.md",
     "docs/product/GRADING.md",
     "docs/product/KNOWLEDGE_AND_TRAINING.md",
     "docs/product/CLASS_TEACHER.md",
     "docs/security/SECURITY.md",
     "docs/maintenance/storage-policy.md",
+    "docs/maintenance/packaging.md",
     "docs/testing/README.md",
     "docs/ui/STYLE.md",
-    "frontend/README.md",
 )
 
-RETAINED_NON_AUTHORITY_DOCUMENT_PATHS = (
-    "docs/architecture/2026-08-09-exam-frequency-training-recommendation-research.md",
-    "docs/product/class-teacher/B_LOCAL_SPEECH_INPUT_RESEARCH.md",
-)
+RETAINED_NON_AUTHORITY_DOCUMENT_PATHS: tuple[str, ...] = ()
 
 SCANNED_DOCUMENT_ROOTS = (
     "docs",
@@ -255,22 +251,10 @@ def check_current_document_facts(
     issues: list[DocumentationIssue] = []
     checks = (
         (
-            "frontend/README.md",
+            "README.md",
             "日常使用者不需要安装 Node.js",
             "DOC101",
             "Source checkouts require Node.js/npm; complete portable packages use frontend/dist.",
-        ),
-        (
-            "frontend/README.md",
-            "Vue 仍未切入生产",
-            "DOC102",
-            "Vue is the current production UI.",
-        ),
-        (
-            "frontend/README.md",
-            "占位工作区",
-            "DOC103",
-            "Do not describe implemented workspaces as placeholders.",
         ),
     )
     for relative_path, needle, code, message in checks:
@@ -327,6 +311,7 @@ def check_historical_documents(project_root: Path) -> list[DocumentationIssue]:
         if (
             relative_path in authority_paths
             or relative_path in retained_non_authority_paths
+            or relative_path.startswith("docs/requests/")
         ):
             continue
         parts = Path(relative_path).parts

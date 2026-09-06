@@ -22,12 +22,6 @@ export interface AiDiagnosticSummary {
   will_retry: boolean
 }
 
-export interface AiDiagnosticClearResult {
-  workspace_module: 'class_teacher'
-  deleted_event_count: number
-  retained_event_count: number
-  unclassified_event_count: number
-}
 
 export interface AiDiagnosticList {
   items: AiDiagnosticSummary[]
@@ -216,26 +210,6 @@ function assertSecretsAreRedacted(value: unknown): void {
   }
 }
 
-export function decodeAiDiagnosticClearResult(
-  value: unknown,
-): AiDiagnosticClearResult {
-  if (
-    !isRecord(value)
-    || !hasExactKeys(value, [
-      'workspace_module',
-      'deleted_event_count',
-      'retained_event_count',
-      'unclassified_event_count',
-    ])
-    || value.workspace_module !== 'class_teacher'
-    || !isNonnegativeInteger(value.deleted_event_count)
-    || !isNonnegativeInteger(value.retained_event_count)
-    || !isNonnegativeInteger(value.unclassified_event_count)
-  ) {
-    throw new Error('Invalid AI diagnostic clear result')
-  }
-  return value as unknown as AiDiagnosticClearResult
-}
 
 export function decodeAiDiagnosticList(value: unknown): AiDiagnosticList {
   assertSecretsAreRedacted(value)
@@ -331,11 +305,4 @@ export const aiDiagnosticsApi = {
     })
   },
 
-  clearClassTeacher(signal?: AbortSignal): Promise<AiDiagnosticClearResult> {
-    return apiClient.request('/api/ai-diagnostics/class-teacher', {
-      method: 'DELETE',
-      decode: decodeAiDiagnosticClearResult,
-      signal,
-    })
-  },
 }

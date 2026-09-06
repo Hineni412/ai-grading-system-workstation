@@ -113,3 +113,13 @@ def test_validation_error_does_not_reflect_invalid_request_values() -> None:
         assert len(errors) == 1
         assert set(errors[0]) <= {"loc", "type"}
         assert errors[0]["loc"] == ["body", "worker_count"]
+
+
+def test_retired_class_teacher_has_no_routes_or_services():
+    from backend.api.app import create_app
+    app = create_app()
+    assert app.state.workspace_registry.enabled_features == ()
+    assert not any(getattr(route, "path", "").startswith("/api/class-teacher") for route in app.routes)
+    assert not any(getattr(route, "path", "") == "/api/ai-diagnostics/class-teacher" for route in app.routes)
+    client = TestClient(app)
+    assert client.get("/api/class-teacher/status").status_code == 404
