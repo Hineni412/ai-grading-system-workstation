@@ -110,6 +110,9 @@ class ScanDecisionResponse(BaseModel):
     decisions: list[ScanDecisionItem]
     pending_issue_count: int = Field(ge=0)
     ready_to_grade: int = Field(ge=0)
+    summary: ScanPreflightSummaryResponse
+    absent_students: list[dict[str, Any]]
+    match_conflicts: list[dict[str, Any]]
 
 
 class ScanPreflightSummaryResponse(BaseModel):
@@ -118,6 +121,12 @@ class ScanPreflightSummaryResponse(BaseModel):
     issues: int = Field(ge=0)
     absent_candidates: int = Field(ge=0)
     total_pages: int = Field(ge=0)
+    scanned_papers: int = Field(default=0, ge=0)
+    matched_papers: int = Field(default=0, ge=0)
+    unique_students: int = Field(default=0, ge=0)
+    invalid_papers: int = Field(default=0, ge=0)
+    unresolved_papers: int = Field(default=0, ge=0)
+    conflicting_papers: int = Field(default=0, ge=0)
 
 
 class ScanPageAssignmentResponse(BaseModel):
@@ -135,6 +144,7 @@ class ScanPreflightResponse(BaseModel):
     warnings: list[str]
     decisions: list[ScanDecisionItem]
     pending_issue_count: int = Field(ge=0)
+    match_conflicts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ScanStudentMatchOptionResponse(BaseModel):

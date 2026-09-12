@@ -70,6 +70,9 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   ].join(':'))
 
   function safeMessage(error: unknown): string {
+    if (error instanceof ApiError && error.code === 'scan_decision_revision_conflict') {
+      return '匹配结果已在其他页面更新，本次选择尚未保存。已尝试刷新最新结果，请核对后再提交。'
+    }
     if (error instanceof ApiError && error.code === 'grading_preflight_stale') {
       return '评分依据或样卷题框已经更新，请重新运行扫描预检后再预览批改计划。'
     }
@@ -396,17 +399,33 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     },
   )
 
-  async function saveDecisions(decisions: ScanDecision[]): Promise<void> {
+  async function saveDecisions(decisions: ScanDecision[]): Promise<boolean> {
     const id = sessionId.value; const check = preflight.value; const current = generation
-    if (!id || !check) return
+    if (!id || !check) return false
+    let succeeded = false
     await runAction('decisions', id, current, async () => {
-      const saved = await saveScanDecisions(id, check.revision, decisions)
+      let saved
+      try {
+        saved = await saveScanDecisions(id, check.revision, decisions)
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'scan_decision_revision_conflict') {
+          try {
+            const latest = await fetchPreflight(id)
+            if (isCurrent(id, current)) preflight.value = latest
+          } catch { /* Keep the original conflict and the user's unsaved selections. */ }
+        }
+        throw error
+      }
       if (!isCurrent(id, current) || preflight.value !== check) return
       check.revision = saved.revision
       check.decisions = saved.decisions
       check.pending_issue_count = saved.pending_issue_count
-      check.summary.ready_to_grade = saved.ready_to_grade
+      check.summary = saved.summary ?? { ...check.summary, ready_to_grade: saved.ready_to_grade }
+      if (saved.absent_students) check.absent_students = saved.absent_students
+      if (saved.match_conflicts) check.match_conflicts = saved.match_conflicts
+      succeeded = true
     })
+    return succeeded
   }
 
   async function previewPlan(mode: GradingMode): Promise<void> {

@@ -32,6 +32,7 @@ interface KnowledgeRow {
   fullScore: number
   reason: string
   evidenceUrl: string
+  assessment: string
 }
 
 interface KnowledgeSessionGroup {
@@ -154,6 +155,13 @@ function toRow(item: GraphEvidenceItem): KnowledgeRow {
     fullScore: item.full_score,
     reason: item.deduction_reason ?? '',
     evidenceUrl: item.evidence_url ?? '',
+    assessment: item.assessment?.reason === 'blank_or_no_valid_work'
+      ? '空白或无有效作答：未据此判定具体知识失败'
+      : item.assessment?.reason === 'assessment_needs_review'
+        ? '作答待核查：暂不计入掌握度'
+      : item.assessment?.granularity === 'part'
+      ? `小问综合表现，内部归因有限 · 难度 ${item.assessment.part_difficulty ?? '尚未细分'}${item.assessment.part_difficulty == null ? '' : '/10（估计）'}`
+      : '整题标签关联，细点归属尚未整理',
   }
 }
 
@@ -443,7 +451,7 @@ onBeforeUnmount(() => {
             <li v-for="row in question.rows" :key="row.key">
               <span class="student-evidence__question-student"><b>{{ row.studentName }}</b><small>{{ row.studentCode }}</small></span>
               <span>{{ formatScore(row.scoreAwarded) }} / {{ formatScore(row.fullScore) }}</span>
-              <span class="student-evidence__question-reason">{{ row.reason || '—' }}</span>
+              <span class="student-evidence__question-reason">{{ row.reason || '—' }}<br><small>{{ row.assessment }}</small></span>
               <button
                 v-if="row.evidenceUrl"
                 type="button"
@@ -481,7 +489,7 @@ onBeforeUnmount(() => {
             <tr v-for="row in session.items" :key="row.key">
               <td>{{ row.questionId }}</td>
               <td>{{ formatScore(row.scoreAwarded) }} / {{ formatScore(row.fullScore) }}</td>
-              <td>{{ row.reason || '—' }}</td>
+              <td>{{ row.reason || '—' }}<br><small>{{ row.assessment }}</small></td>
               <td>
                 <button
                   v-if="row.evidenceUrl"

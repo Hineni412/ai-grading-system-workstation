@@ -35,7 +35,7 @@ const selectedCountLabel = computed(() => (
 
 const activeRootKey = ref('')
 const expandedSectionKeys = ref<string[]>([])
-const showEmptyPoints = ref(false)
+const showEmptyPoints = ref(true)
 
 const curriculumScope = useCurriculumScopeStore()
 onMounted(() => { void curriculumScope.initialize() })
@@ -88,7 +88,7 @@ const tree = computed(() => {
 
 const activeRoot = computed(() => tree.value.find((node) => node.key === activeRootKey.value) ?? tree.value[0] ?? null)
 
-// 默认只展示有证据的知识点，避免整页被无证据项占满；可用开关查看完整结构。
+// 默认保留完整目录；缺少自身证据的知识点显示证据不足。
 const displaySections = computed(() => {
   const root = activeRoot.value
   if (!root) return []
@@ -123,11 +123,11 @@ watch(activeRoot, (root) => {
 }, { immediate: true })
 
 function masteryText(node: KnowledgeNode): string {
-  return node.weak ? `${Math.round(node.weak.mastery * 100)}%` : '无证据'
+  return node.weak?.mastery != null ? `${Math.round(node.weak.mastery * 100)}%` : '证据不足'
 }
 
 function masteryClass(node: KnowledgeNode): string {
-  if (!node.weak) return 'is-empty'
+  if (node.weak?.mastery == null) return 'is-empty'
   if (node.weak.mastery < 0.6) return 'is-low'
   if (node.weak.mastery < 0.75) return 'is-mid'
   return 'is-good'
@@ -230,7 +230,7 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
               >
               <span class="structure-point-name">{{ knowledgeLeafLabel(point.label) }}</span>
               <span class="structure-track" aria-hidden="true">
-                <i v-if="point.weak" :style="{ width: `${Math.round(point.weak.mastery * 100)}%` }" />
+                <i v-if="point.weak?.mastery != null" :style="{ width: `${Math.round(point.weak.mastery * 100)}%` }" />
                 <b />
               </span>
               <strong>{{ masteryText(point) }}</strong>
@@ -254,7 +254,7 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
           >
           <span class="structure-point-name">{{ knowledgeLeafLabel(activeRoot.label) }}</span>
           <span class="structure-track" aria-hidden="true">
-            <i v-if="activeRoot.weak" :style="{ width: `${Math.round(activeRoot.weak.mastery * 100)}%` }" />
+            <i v-if="activeRoot.weak?.mastery != null" :style="{ width: `${Math.round(activeRoot.weak.mastery * 100)}%` }" />
             <b />
           </span>
           <strong>{{ masteryText(activeRoot) }}</strong>

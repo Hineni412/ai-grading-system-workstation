@@ -34,6 +34,15 @@ class FakeSubmissionModule:
             raise self.error
         return _batch()
 
+    def list_batches(self, paper_batch_id):
+        self.listed_paper_batch = paper_batch_id
+        return [{
+            **{key: _batch()[key] for key in (
+                "batch_id", "paper_batch_id", "status", "created_at", "updated_at",
+            )},
+            "submission_count": 1,
+        }]
+
     def ingest(self, batch_id, command, source):
         self.ingested = (batch_id, command, source.read())
         return _batch(revision=2)
@@ -127,6 +136,18 @@ def test_scan_batch_upload_resolution_cancel_and_preview_contract(
     )
     assert preview.status_code == 200
     assert preview.headers["cache-control"] == "no-store"
+
+
+def test_scan_batch_history_can_be_found_without_a_scan_batch_id(submission_client) -> None:
+    client, module = submission_client
+    response = client.get("/api/training/scan-batches", params={"paper_batch_id": "f" * 64})
+    assert response.status_code == 200
+    assert module.listed_paper_batch == "f" * 64
+    item = response.json()["items"][0]
+    assert item["batch_id"] == "b" * 64
+    assert item["submission_count"] == 1
+    assert "pages" not in item
+    assert client.get("/api/training/scan-batches").status_code == 422
 
 
 def test_scan_batch_revision_conflict_is_public_and_safe(

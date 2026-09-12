@@ -2,7 +2,7 @@
 
 产物形态与数据口径见已确认实施方案（.zcode/plans/考试分析报告_实施方案.md）：
 - personal_analysis_html：每名正常参考学生一份自包含 HTML，打包 zip，附未生成清单；
-- 班级分析（教师版）已改为系统内嵌页面：本模块只提供数据装配、提示词与
+- 班级分析（教师版）的内嵌页面与独立 HTML 共用分班数据装配、提示词与
   AI 叙述缓存，页面状态与生成 job 见 backend/class_analysis.py。
 
 与计划的三处已确认偏差：
@@ -24,7 +24,9 @@ import math
 import re
 import statistics
 import zipfile
-from dataclasses import dataclass, field
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from functools import lru_cache
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -33,9 +35,9 @@ from PIL import Image
 
 from analysis_report_prompts import (
     CLASS_ALIAS_PREFIX,
-    PERSONAL_MAX_TOKENS,
     PERSONAL_STUDENT_ALIAS,
     PERSONAL_SYSTEM_PROMPT,
+    personal_output_token_limit,
 )
 from answer_key_utils import answer_forms_map
 from answer_region_geometry import (
@@ -71,11 +73,11 @@ AI_DISCLAIMER = "AI 分析 · 仅供参考"
 AI_FAILED_NOTE = "AI 分析生成失败，可重新生成"
 SMALL_SAMPLE_LIMIT = 10
 
-# 方案 §4 截图裁剪参数；单报告 JPEG 字节预算约 225KB，base64 后约 300KB。
+# 题目截图同时用于图文分析与报告展示，保留手写公式的清晰度。
 _SHOT_PADDING = 12
-_SHOT_MAX_WIDTH = 900
+_SHOT_MAX_WIDTH = 1600
 _SHOT_JPEG_QUALITY = 85
-_SHOT_BUDGET_BYTES = 225 * 1024
+_SHOT_BUDGET_BYTES = 12 * 1024 * 1024
 
 _QUESTION_TYPE_LABELS = {
     "choice": "选择",
@@ -104,6 +106,7 @@ _REASON_CODE_LABELS = {
     "objective_paper_region_failed": "无法读取选填题作答区域",
     "objective_region_not_found": "未找到此题的有效作答区域",
     "missing_question_result": "AI 未返回此题的识别结果",
+    "missing_answer_field": "AI 未返回此题的作答内容",
     "duplicate_question_result": "AI 返回了重复的识别结果",
     "paper_key_mismatch": "识别结果与当前答卷不一致",
     "low_confidence": "作答辨识度较低，需要教师复核",
@@ -240,6 +243,10 @@ class _QuestionInfo:
     canonical_answer: str
     attempts: int = 0
     score_sum: float = 0.0
+    question_text: str = ""
+    question_markup: str = ""
+    reference_analysis: str = ""
+    reference_images: list[tuple[str, bytes]] = field(default_factory=list)
 
     @property
     def class_rate(self) -> float | None:
@@ -265,6 +272,10 @@ class _StudentQuestionRecord:
     error_summary: str
     secondary_errors: list[str] = field(default_factory=list)
     student_answer: str = ""
+    evidence_steps: list[str] = field(default_factory=list)
+    missing_steps: list[str] = field(default_factory=list)
+    teacher_confirmed: bool = False
+    teacher_comment: str = ""
 
     @property
     def lost(self) -> bool:
@@ -287,6 +298,7 @@ class _StudentReportData:
     graded_at: str
     rank: int = 0
     records: list[_StudentQuestionRecord] = field(default_factory=list)
+    material_notes: list[str] = field(default_factory=list)
 
     @property
     def lost_points_total(self) -> float:
@@ -308,6 +320,10 @@ class _SessionAnalysisData:
     skipped: list[dict[str, str]]
     stats: dict[str, Any]
     knowledge_backfill: dict[str, list[dict[str, str]]]
+    attendance_by_class: dict[str, dict[str, int]] = field(default_factory=dict)
+    class_name: str | None = None
+    rubric: dict[str, Any] = field(default_factory=dict)
+    question_assessments: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def assemble_session_analysis(
@@ -315,13 +331,15 @@ def assemble_session_analysis(
     session_id: int,
     *,
     data_root: Path | None = None,
+    page_only: bool = False,
+    include_answer_evidence: bool = False,
 ) -> _SessionAnalysisData:
-    """按方案 §3 的字段映射装配一次报告所需的全部数据。"""
+    """页面跳过报告回填；错因整理可选读已有作答文字，不重新识别原卷。"""
     repositories = as_grading_repositories(db)
     resolved_data_root = data_root or _infer_data_root(repositories.db_path)
     snapshot = repositories.reports.get_session_report_snapshot(
         int(session_id),
-        question_bank_path=_question_bank_db_path(repositories.db_path),
+        question_bank_path=None if page_only else _question_bank_db_path(repositories.db_path),
     )
     session_row = repositories.sessions.get_grading_session(int(session_id)) or {}
     rubric = _load_rubric(session_row, resolved_data_root)
@@ -424,10 +442,42 @@ def assemble_session_analysis(
                     result_id,
                     details_by_result.get(result_id, []),
                     score_map,
-                    student_answers=_student_answer_map(result.get("raw_json")),
+                    student_answers=_student_answer_map(result.get("raw_json")) if not page_only or include_answer_evidence else None,
+                    grading_evidence=_grading_detail_map(result.get("raw_json")) if not page_only or include_answer_evidence else None,
+                    include_secondary_errors=not page_only,
                 ),
             )
         )
+    locks_by_student_question = {
+        (
+            int(lock["student_id"]),
+            resolve_known_question_id(str(lock["question_id"]), score_map)
+            or str(lock["question_id"]),
+        ): lock
+        for lock in snapshot.locks
+    }
+    for student in students:
+        for record in student.records:
+            lock = locks_by_student_question.get((student.student_id, record.question_id))
+            if lock is not None:
+                record.teacher_confirmed = True
+                record.teacher_comment = _sanitize_grading_text(lock.get("deduction_reason"))
+        # Match the review queue's per-item rules; the original whole-paper AI
+        # flag remains historical after a teacher confirms a flagged answer.
+        from backend.review.service import _is_substantive_review_reason
+        pending_review = False
+        for detail in details_by_result.get(student.result_id, []):
+            qid = resolve_known_question_id(str(detail.get("question_id") or ""), score_map) or str(detail.get("question_id") or "")
+            lock = locks_by_student_question.get((student.student_id, qid))
+            if lock is not None:
+                pending_review |= abs(float(lock.get("max_score") or 0) - float(score_map.get(qid) or 0)) > 1e-6
+            else:
+                pending_review |= _is_substantive_review_reason(
+                    str(detail.get("deduction_reason") or ""),
+                    str(detail.get("error_category") or ""),
+                    detail.get("confidence_score"),
+                )
+        student.needs_review = pending_review
     # 名册中缺考且无结果的学生也要进入未生成清单。
     attendance_labels = {"absent": "缺考", "scan_issue": "扫描异常"}
     for row in snapshot.attendance:
@@ -480,6 +530,25 @@ def assemble_session_analysis(
             info.attempts += 1
             info.score_sum += min(record.score, record.max_score or record.score)
 
+    # 大题满分与实际评分的小问同时存在时，只展示真正参与评分的行。
+    scored_parents = {
+        _parent_question_id(info.question_id)
+        for info in questions
+        if info.attempts and _parent_question_id(info.question_id) != info.question_id
+    }
+    questions = [
+        info for info in questions
+        if info.attempts or info.question_id not in scored_parents
+    ]
+    attendance_by_class: dict[str, dict[str, int]] = {}
+    for row in snapshot.attendance:
+        counts = attendance_by_class.setdefault(
+            str(row.get("class_name") or "未分班"), {"present": 0, "absent": 0},
+        )
+        status = str(row.get("attendance_status") or "").strip()
+        counts["present"] += int(status == "present")
+        counts["absent"] += int(status in {"absent", "scan_issue"})
+
     scores = [student.student_score for student in students]
     stats = _score_distribution(scores, _full_score(rubric, score_map, snapshot))
     session_name = (
@@ -500,7 +569,55 @@ def assemble_session_analysis(
         skipped=skipped,
         stats=stats,
         knowledge_backfill=snapshot.knowledge_backfill,
+        question_assessments=snapshot.question_assessments,
+        attendance_by_class=attendance_by_class,
+        rubric=rubric,
     )
+
+
+def split_session_analysis_by_class(
+    data: _SessionAnalysisData,
+) -> dict[str, _SessionAnalysisData]:
+    """个人报告、班级页面与班级导出共用的本班统计和同分名次。"""
+    names = {student.class_name for student in data.students}
+    names.update(item["class_name"] for item in data.skipped)
+    names.update(data.attendance_by_class)
+    groups: dict[str, _SessionAnalysisData] = {}
+    for name in sorted(names, key=lambda value: [
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in re.split(r"(\d+)", value)
+    ]):
+        students = sorted(
+            (replace(student, material_notes=list(student.material_notes))
+             for student in data.students if student.class_name == name),
+            key=lambda student: (-student.student_score, student.student_code, student.student_name),
+        )
+        previous_score = None
+        rank = 0
+        for index, student in enumerate(students, 1):
+            if previous_score is None or student.student_score < previous_score - 1e-9:
+                rank, previous_score = index, student.student_score
+            student.rank = rank
+        questions = []
+        for question in data.questions:
+            records = [record for student in students for record in student.records
+                       if record.question_id == question.question_id]
+            questions.append(replace(
+                question, attempts=len(records),
+                score_sum=sum(min(record.score, record.max_score or record.score) for record in records),
+            ))
+        skipped = [item for item in data.skipped if item["class_name"] == name]
+        counts = data.attendance_by_class.get(name)
+        present = counts["present"] if counts else len(students)
+        absent = counts["absent"] if counts else sum(item["reason"] in {"缺考", "扫描异常"} for item in skipped)
+        groups[name] = replace(
+            data, class_name=name, students=students, questions=questions, skipped=skipped,
+            present=present, roster_absent=absent, small_sample=present < SMALL_SAMPLE_LIMIT,
+            stats=_score_distribution([student.student_score for student in students], data.full_score),
+            graded_at=max((student.graded_at for student in students), default=""),
+            attendance_by_class={name: counts} if counts else {},
+        )
+    return groups
 
 
 def _infer_data_root(db_path: Path) -> Path | None:
@@ -671,11 +788,12 @@ def _score_distribution(scores: list[float], full_score: float) -> dict[str, Any
         lower = cutoff * scale
         upper = full_score if index == 0 else _BAND_CUTOFFS[index - 1] * scale
         members = [
-            score for score in scores if lower <= score < upper + 1e-9
+            score for score in scores
+            if lower <= score and (score <= upper if index == 0 else score < upper)
         ]
         bands.append(
             {
-                "label": f"{_fmt_num(lower)} – {_fmt_num(upper)} 分",
+                "label": f"{_fmt_num(lower)} – {'不足' if index else ''}{_fmt_num(upper)} 分",
                 "count": len(members),
                 "ratio": len(members) / len(scores),
             }
@@ -730,12 +848,12 @@ def _format_secondary_error(item: object) -> str:
 
 
 # 学生作答识别文本在 raw_json grading_details 里的兼容键（与 ai_grader 一致）。
-_STUDENT_ANSWER_KEYS = ("observed_answer", "student_answer", "answer_observed")
-_STUDENT_ANSWER_MAX_LEN = 200
+_STUDENT_ANSWER_KEYS = ("observed_answer", "student_answer", "answer_observed", "raw_answer", "recognized_answer")
+_STUDENT_ANSWER_MAX_LEN = 2000
 
 
-def _student_answer_map(raw_json: Any) -> dict[str, str]:
-    """从批改原始 JSON 提取每题学生作答识别文本，供报告展示与 AI 分析输入。"""
+def _grading_detail_map(raw_json: Any) -> dict[str, dict[str, Any]]:
+    """兼容整卷与混合批改保留的作答证据，不根据分数推断空白。"""
     parsed = raw_json
     if isinstance(parsed, str):
         try:
@@ -744,16 +862,23 @@ def _student_answer_map(raw_json: Any) -> dict[str, str]:
             return {}
     if not isinstance(parsed, dict):
         return {}
+    result: dict[str, dict[str, Any]] = {}
+    metadata = parsed.get("detail_metadata")
+    if isinstance(metadata, dict):
+        for qid, item in metadata.items():
+            if isinstance(item, dict):
+                result[str(qid)] = dict(item)
     details = parsed.get("grading_details")
-    if not isinstance(details, list):
-        return {}
+    for item in details if isinstance(details, list) else []:
+        if isinstance(item, dict) and (qid := str(item.get("question_id") or "").strip()):
+            result.setdefault(qid, {}).update(item)
+    return result
+
+
+def _student_answer_map(raw_json: Any) -> dict[str, str]:
+    """从批改结果提取作答文字；图文报告同时使用原卷核对识别结果。"""
     answers: dict[str, str] = {}
-    for item in details:
-        if not isinstance(item, dict):
-            continue
-        qid = str(item.get("question_id") or "").strip()
-        if not qid or qid in answers:
-            continue
+    for qid, item in _grading_detail_map(raw_json).items():
         text = ""
         for key in _STUDENT_ANSWER_KEYS:
             value = item.get(key)
@@ -761,6 +886,12 @@ def _student_answer_map(raw_json: Any) -> dict[str, str]:
                 text = str(value).strip()
                 break
         if text:
+            # 兼容旧批改记录把同一段 observed_answer / evidence_steps 拼接两次。
+            for evidence in _evidence_texts(item.get("evidence_steps")):
+                doubled = f"{evidence} {evidence}"
+                if text == doubled:
+                    text = evidence
+                    break
             answers[qid] = text[:_STUDENT_ANSWER_MAX_LEN]
     return answers
 
@@ -771,11 +902,13 @@ def _merge_student_records(
     details: list[dict[str, Any]],
     score_map: dict[str, float],
     student_answers: dict[str, str] | None = None,
+    grading_evidence: dict[str, dict[str, Any]] | None = None,
+    include_secondary_errors: bool = True,
 ) -> list[_StudentQuestionRecord]:
     """把同一学生同一题的多条明细合并为一条（兼容小问拆行存储）。"""
     secondary_map: dict[str, list[str]] = {}
     try:
-        for row in repositories.results.get_result_details(result_id):
+        for row in repositories.results.get_result_details(result_id) if include_secondary_errors else []:
             qid = str(row.get("question_id") or "").strip()
             canonical = resolve_known_question_id(qid, score_map) or qid
             errors = row.get("secondary_errors")
@@ -823,12 +956,20 @@ def _merge_student_records(
             if text and text not in bucket[bucket_key]:
                 bucket[bucket_key].append(text)
 
-    answers = student_answers or {}
+    answers = {
+        resolve_known_question_id(qid, score_map) or qid: text
+        for qid, text in (student_answers or {}).items()
+    }
+    evidence_by_qid = {
+        resolve_known_question_id(qid, score_map) or qid: item
+        for qid, item in (grading_evidence or {}).items()
+    }
     records: list[_StudentQuestionRecord] = []
     for qid in order:
         bucket = merged[qid]
         max_score = float(score_map.get(qid) or 0)
         score = min(bucket["score"], max_score) if max_score > 0 else bucket["score"]
+        evidence = evidence_by_qid.get(qid, {})
         records.append(
             _StudentQuestionRecord(
                 question_id=qid,
@@ -841,6 +982,8 @@ def _merge_student_records(
                 student_answer=(
                     answers.get(qid) or bucket["objective_observed"] or ""
                 ),
+                evidence_steps=_evidence_texts(evidence.get("evidence_steps")),
+                missing_steps=_evidence_texts(evidence.get("missing_steps")),
             )
         )
     order_index = {
@@ -850,6 +993,160 @@ def _merge_student_records(
         key=lambda record: order_index.get(record.question_id, len(order_index))
     )
     return records
+
+
+def _docx_question_figures(source: Any) -> dict[str, list[bytes]]:
+    """兼容原题重复出现在解析页的 Word：只取题干之后、解析开始之前的图。"""
+    if getattr(source, "suffix", None) != ".docx":
+        return {}
+    from docx import Document
+    from backend.document_parsing.question_blocks import (
+        _extract_question_marker_number, _looks_like_answer_section_heading,
+    )
+    document = Document(io.BytesIO(source.private_source_bytes))
+    stems = {
+        str(item.get("question_id")): re.sub(r"\s+", "", str(item.get("question_text") or item.get("text") or ""))[:18]
+        for item in source.private_blocks if isinstance(item, dict)
+    }
+    images: dict[str, list[bytes]] = {}
+    current = None
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        number = _extract_question_marker_number(text)
+        if number is not None:
+            qid = f"Q{number}"
+            stem = stems.get(qid)
+            # 已从前面的题干取得图时，不再重复补入解析页中的题干副本。
+            current = qid if qid not in images and stem and stem in re.sub(r"\s+", "", text) else None
+        elif _looks_like_answer_section_heading(text) or re.match(
+            r"^(?:【|\[)?(?:分析|解答|解析|答案|点评|解：|证明：)", text,
+        ):
+            current = None
+        if current is None:
+            continue
+        for blip in paragraph._p.xpath(".//a:blip"):
+            relationship = blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
+            part = document.part.related_parts.get(relationship)
+            if part is None:
+                continue
+            blob = part.blob
+            try:
+                with Image.open(io.BytesIO(blob)) as figure:
+                    figure.verify()
+            except (OSError, ValueError):
+                continue
+            bucket = images.setdefault(current, [])
+            if blob not in bucket:
+                bucket.append(blob)
+    return images
+
+
+def _enrich_personal_questions(
+    repositories: GradingRepositoryAccess,
+    data: _SessionAnalysisData,
+    data_root: Path | None,
+    *,
+    include_images: bool = True,
+) -> None:
+    """读取本场评分依据和已绑定原题；考试错因整理仅复用文字投影。"""
+    from backend.config_workspace.sources import ConfigSourceService
+    from backend.document_parsing.question_blocks import rich_text_for_model
+
+    session = repositories.sessions.get_grading_session(data.session_id) or {}
+    root = data_root or _infer_data_root(repositories.db_path)
+    rubric = _load_rubric(session, root)
+    try:
+        answer_key = json.loads(resolve_stored_file_path(
+            session.get("answer_key_path"), data_root=root,
+        ).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        answer_key = {}
+
+    def question_map(document: Any) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for item in document.get("questions", []) if isinstance(document, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            qid = str(item.get("question_id") or "")
+            result[qid] = item
+            for part in item.get("parts", []) if isinstance(item.get("parts"), list) else []:
+                if isinstance(part, dict):
+                    raw_id = str(part.get("part_id") or part.get("question_id") or "")
+                    canonical = resolve_known_question_id(raw_id, known_ids) or raw_id
+                    result[canonical] = {**item, **part} if canonical == qid else part
+        return result
+
+    known_ids = {info.question_id: info.max_score for info in data.questions}
+    rubric_items = question_map(rubric)
+    answer_items = question_map(answer_key)
+    source = None
+    # Active uploads may be uncommitted candidates.  Only use the source whose
+    # existing publication identity matches this exam's bound original paper.
+    bound_source = str(session.get("source_paper_sha256") or "").strip()
+    if bound_source and root is not None:
+        try:
+            candidate = ConfigSourceService(root / "config" / "uploaded").load_active_record(
+                session_id=data.session_id,
+            )
+            if candidate.sha256 == bound_source:
+                source = candidate
+        except (OSError, ValueError, RuntimeError):
+            pass
+    source_items = {
+        str(item.get("question_id") or ""): item
+        for item in (source.private_blocks if source is not None else [])
+        if isinstance(item, dict)
+    }
+    source_figures = _docx_question_figures(source) if source is not None and include_images else {}
+
+    def texts(item: dict[str, Any], fields: tuple[str, ...]) -> str:
+        return "\n".join(dict.fromkeys(
+            text for key in fields
+            if (text := rich_text_for_model(item.get(key) or ""))
+        ))
+
+    for info in data.questions:
+        parent = _parent_question_id(info.question_id)
+        original = source_items.get(parent, {})
+        rubric_item = rubric_items.get(info.question_id, rubric_items.get(parent, {}))
+        answer_item = answer_items.get(info.question_id, answer_items.get(parent, {}))
+        # These fields are alternative representations of the same stem.
+        stem = next((value for key in ("question_html", "question_text", "text")
+                     if (value := texts(original, (key,)))), "")
+        if not stem:
+            stem = texts(rubric_items.get(parent, {}), ("question_text", "text", "stem", "question_html"))
+        options = rubric_items.get(parent, {}).get("options")
+        if options:
+            option_text = json.dumps(options, ensure_ascii=False) if isinstance(options, (dict, list)) else str(options)
+            stem = "\n".join(filter(None, (stem, rich_text_for_model(option_text))))
+        part_text = texts(rubric_item, ("question_text", "text", "stem_summary"))
+        if parent != info.question_id and part_text and part_text not in stem:
+            stem = "\n".join(filter(None, (stem, f"本小问：{part_text}")))
+        info.question_text = stem
+        info.question_markup = str(original.get("question_html") or "")
+        info.reference_analysis = texts(answer_item, ("analysis", "full_answer", "explanation"))
+        if not info.reference_analysis:
+            info.reference_analysis = texts(original, ("analysis_html", "analysis", "answer_html", "answer_text"))
+        if source is not None and include_images:
+            assets = source.private_question_images.get(parent, {})
+            for role in ("question", "answer"):
+                encoded = assets.get(role)
+                values = [encoded] if isinstance(encoded, str) else encoded if isinstance(encoded, list) else []
+                for value in values:
+                    try:
+                        blob = base64.b64decode(value, validate=True)
+                        if blob:
+                            info.reference_images.append((role, blob))
+                    except (ValueError, TypeError):
+                        continue
+            if not any(role == "question" for role, _blob in info.reference_images):
+                info.reference_images.extend(("question", blob) for blob in source_figures.get(parent, []))
+
+
+def _evidence_texts(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 def _parent_question_id(question_id: str) -> str:
@@ -911,11 +1208,14 @@ def build_personal_payload(
         class_rate = info.class_rate if info is not None else None
         item: dict[str, Any] = {
             "question_id": record.question_id,
+            "display_label": _question_display_label(record.question_id),
             "type": record_type_label(record, info),
             "max_score": record.max_score,
             "score": record.score,
             "class_rate": round(class_rate, 4) if class_rate is not None else None,
             "lost": record.lost,
+            "direct_knowledge": data.knowledge_backfill.get(record.question_id, data.knowledge_backfill.get(_parent_question_id(record.question_id), [])),
+            "part_assessment": data.question_assessments.get(record.question_id),
         }
         if record.lost:
             item["stem_summary"] = (
@@ -925,16 +1225,23 @@ def build_personal_payload(
                 info.canonical_answer if info is not None else ""
             )
             item["student_answer"] = record.student_answer or None
+            item["question_text"] = info.question_text if info is not None else ""
+            item["reference_analysis"] = info.reference_analysis if info is not None else ""
             item["grading_record"] = {
                 "deduction_reason": record.deduction_reason or None,
                 "error_category": record.error_category or None,
                 "error_summary": record.error_summary or None,
                 "secondary_errors": record.secondary_errors,
+                "evidence_steps": record.evidence_steps,
+                "missing_steps": record.missing_steps,
+                "teacher_confirmed": record.teacher_confirmed,
+                "teacher_comment": record.teacher_comment or None,
             }
         questions.append(item)
     return {
         "exam": {
             "title": data.session_name,
+            "class_name": data.class_name,
             "subject": data.subject,
             "full_score": data.full_score,
             "graded_at": student.graded_at,
@@ -953,6 +1260,7 @@ def build_personal_payload(
             "small_sample": data.small_sample,
         },
         "questions": questions,
+        "knowledge_statistics_note": "知识点按可匹配的小问直接考查范围统计；小问难度是题目预估，得分率是本次考试表现，均不能直接当作当前掌握度。综合小问的失分不能推断为其中每个知识点或步骤都不会。",
     }
 
 
@@ -1020,6 +1328,7 @@ def build_class_payload(data: _SessionAnalysisData) -> dict[str, Any]:
             "title": data.session_name,
             "subject": data.subject,
             "full_score": data.full_score,
+            "class_name": data.class_name,
             "present": data.present,
             "roster_absent": data.roster_absent,
         },
@@ -1054,14 +1363,15 @@ def _record_brief_text(record: _StudentQuestionRecord) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_class_page_data(data: _SessionAnalysisData) -> dict[str, Any]:
-    """把班级版装配数据序列化为页面 JSON：考试信息、分数分布、逐题与逐生明细。
+def build_class_page_data(data: _SessionAnalysisData, *, compact: bool = False) -> dict[str, Any]:
+    """把班级版装配数据序列化为页面 JSON。
 
     出参形状与前端解码器 frontend/src/api/class-analysis.ts 冻结对齐：
     - present / roster_absent（姓名数组）在 data 顶层；
     - score_distribution.bands 为 {分数段: 人数} 字典；
     - students[].lost[] 为 {question_id, lost_points, record}；
     - questions[].class_rate 恒为数字（无作答记录时 0）。
+    - compact 模式只返回逐题失分名单与归并错因，省略逐人清单和重复错因正文。
     """
     bands = {
         str(band["label"]): int(band["count"]) for band in data.stats["bands"]
@@ -1072,26 +1382,52 @@ def build_class_page_data(data: _SessionAnalysisData) -> dict[str, Any]:
         if str(item.get("reason") or "") in {"缺考", "扫描异常"}
         and (name := str(item.get("student_name") or "").strip())
     ]
+    records_by_question: dict[str, list[tuple[_StudentReportData, _StudentQuestionRecord]]] = {}
+    for student in data.students:
+        for record in student.records:
+            if record.lost:
+                records_by_question.setdefault(record.question_id, []).append((student, record))
     questions: list[dict[str, Any]] = []
     for info in data.questions:
         records: list[dict[str, Any]] = []
-        for student in data.students:
-            for record in student.records:
-                if record.question_id != info.question_id or not record.lost:
-                    continue
-                records.append(
-                    {
-                        "student_id": student.student_id,
-                        "student_code": student.student_code,
-                        "student_name": student.student_name,
-                        "score": record.score,
-                        "max_score": record.max_score,
-                        "lost_points": round(record.lost_points, 2),
-                        "deduction_reason": record.deduction_reason or None,
-                        "error_category": record.error_category or None,
-                        "error_summary": record.error_summary or None,
-                    }
-                )
+        causes: dict[str, dict[str, Any]] = {}
+        for student, record in records_by_question.get(info.question_id, []):
+            if compact:
+                records.append({
+                    "student_id": student.student_id,
+                    "student_code": student.student_code,
+                    "student_name": student.student_name,
+                    "class_name": student.class_name,
+                    "score": record.score,
+                })
+                reason = record.error_summary or record.deduction_reason or record.error_category or "未记录具体错因"
+                # 仅归并已有记录中的相同错因，不把不同表述推断为同一知识错误。
+                seen = set()
+                for text in re.split(r"[；;\n]+", reason):
+                    text = text.strip().rstrip("。.")
+                    if not text:
+                        continue
+                    key = re.sub(r"\s+", "", text).replace("，", ",").replace("：", ":")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    bucket = causes.setdefault(key, {"reason": text, "count": 0})
+                    bucket["count"] += 1
+                if not seen:
+                    bucket = causes.setdefault("未记录具体错因", {"reason": "未记录具体错因", "count": 0})
+                    bucket["count"] += 1
+            else:
+                records.append({
+                    "student_id": student.student_id,
+                    "student_code": student.student_code,
+                    "student_name": student.student_name,
+                    "score": record.score,
+                    "max_score": record.max_score,
+                    "lost_points": round(record.lost_points, 2),
+                    "deduction_reason": record.deduction_reason or None,
+                    "error_category": record.error_category or None,
+                    "error_summary": record.error_summary or None,
+                })
         questions.append(
             {
                 "question_id": info.question_id,
@@ -1106,10 +1442,11 @@ def build_class_page_data(data: _SessionAnalysisData) -> dict[str, Any]:
                 "stem_summary": info.stem_summary,
                 "canonical_answer": info.canonical_answer,
                 "records": records,
+                **({"causes": sorted(causes.values(), key=lambda item: -item["count"])} if compact else {}),
             }
         )
     students: list[dict[str, Any]] = []
-    for student in data.students:
+    for student in ([] if compact else data.students):
         lost_items: list[dict[str, Any]] = []
         for record in student.records:
             if not record.lost:
@@ -1170,14 +1507,29 @@ def class_narrative_with_student_names(
     narrative: dict[str, Any],
     students: list[_StudentReportData],
 ) -> dict[str, Any]:
-    """把班级叙述 student_notes 里的 S1/S2… 代号在服务端映射回真实姓名与学号。"""
+    """保留结构中的 alias 键，把正文里的学生代号映射回本班姓名。"""
     alias_to_student = {
         f"{CLASS_ALIAS_PREFIX}{index}": student
         for index, student in enumerate(students, start=1)
     }
-    mapped = dict(narrative)
+    # 中文紧邻 S1 时也应识别代号；Unicode 的 \b 会把中文和数字都视为单词字符。
+    alias_pattern = re.compile(r"(?<![A-Za-z0-9_])S\d+(?![A-Za-z0-9_])")
+
+    def map_text(value: Any) -> Any:
+        if isinstance(value, str):
+            return alias_pattern.sub(
+                lambda match: alias_to_student[match[0]].student_name
+                if match[0] in alias_to_student else match[0], value,
+            )
+        if isinstance(value, list):
+            return [map_text(item) for item in value]
+        if isinstance(value, dict):
+            return {key: item if key == "alias" else map_text(item) for key, item in value.items()}
+        return value
+
+    mapped = map_text(narrative)
     notes: list[dict[str, Any]] = []
-    for item in _narrative_items(narrative, "student_notes"):
+    for item in _narrative_items(mapped, "student_notes"):
         if not isinstance(item, dict):
             continue
         entry = dict(item)
@@ -1206,60 +1558,23 @@ def build_report_prompt(
 # ---------------------------------------------------------------------------
 
 
-def _find_question_region(
+def _find_question_regions(
     regions: list[dict[str, Any]],
-    question_id: str,
-) -> dict[str, Any] | None:
-    """按题号找作答区域：精确坐标优先，小问回退父题，父题取唯一子区域。"""
-    target = question_id_coordinates(question_id)
-
-    def region_coordinates(region: dict[str, Any]) -> tuple[int, int | None] | None:
-        return question_id_coordinates(
-            str(
-                region.get("mapped_question_id")
-                or region.get("detected_question_id")
-                or ""
-            ).strip()
-        )
-
-    if target is not None:
-        for region in regions:
-            if region_coordinates(region) == target:
-                return region
-        target_parent, target_part = target
-        if target_part is not None:
-            for region in regions:
-                if region_coordinates(region) == (target_parent, None):
-                    return region
-        else:
-            children = [
-                region
-                for region in regions
-                if (identity := region_coordinates(region)) is not None
-                and identity[0] == target_parent
-                and identity[1] is not None
-            ]
-            if len(children) == 1:
-                return children[0]
-        return None
-    normalized = str(question_id or "").strip()
-    if not normalized:
-        return None
-    exact_values = {
-        normalized,
-        normalized[1:] if normalized.upper().startswith("Q") else f"Q{normalized}",
-    }
+    parent_question_id: str,
+) -> list[dict[str, Any]]:
+    """保留父题的全部作答区域；未标整题区域时使用其全部小问区域。"""
+    parent_regions: list[dict[str, Any]] = []
+    child_regions: list[dict[str, Any]] = []
     for region in regions:
-        if (
-            str(
-                region.get("mapped_question_id")
-                or region.get("detected_question_id")
-                or ""
-            ).strip()
-            in exact_values
-        ):
-            return region
-    return None
+        region_id = str(region.get("mapped_question_id") or region.get("detected_question_id") or "").strip()
+        if _parent_question_id(region_id) != parent_question_id:
+            continue
+        coordinates = question_id_coordinates(region_id)
+        if coordinates is None or coordinates[1] is None:
+            parent_regions.append(region)
+        else:
+            child_regions.append(region)
+    return parent_regions or child_regions
 
 
 def _region_page(region: dict[str, Any]) -> str:
@@ -1270,21 +1585,25 @@ def _region_page(region: dict[str, Any]) -> str:
     )
 
 
-def _crop_region_data_uri(image_path: Path, region: dict[str, Any]) -> str | None:
+def _crop_region_data_uri(
+    image_path: Path,
+    region: dict[str, Any] | None,
+    *,
+    max_width: int = _SHOT_MAX_WIDTH,
+) -> str | None:
     try:
         with Image.open(image_path) as image:
             image.load()
-            bbox = scaled_region_bbox(
-                region,
-                int(image.width),
-                int(image.height),
-                padding=_SHOT_PADDING,
+            bbox = (
+                scaled_region_bbox(region, image.width, image.height, padding=_SHOT_PADDING)
+                if region is not None else (0, 0, image.width, image.height)
             )
             cropped = image.crop(bbox)
-            if cropped.width > _SHOT_MAX_WIDTH:
-                ratio = _SHOT_MAX_WIDTH / cropped.width
+            if cropped.width > max_width:
+                ratio = max_width / cropped.width
                 cropped = cropped.resize(
-                    (_SHOT_MAX_WIDTH, max(1, round(cropped.height * ratio)))
+                    (max_width, max(1, round(cropped.height * ratio))),
+                    Image.Resampling.LANCZOS,
                 )
             buffer = io.BytesIO()
             cropped.convert("RGB").save(
@@ -1298,6 +1617,30 @@ def _crop_region_data_uri(image_path: Path, region: dict[str, Any]) -> str | Non
     return f"data:image/jpeg;base64,{encoded}"
 
 
+def _student_paper_context(
+    repositories: GradingRepositoryAccess,
+    data: _SessionAnalysisData,
+    student: _StudentReportData,
+) -> dict[str, Any] | None:
+    if student.result_id > 0:
+        context = repositories.results.get_result_context(student.result_id)
+        if (
+            isinstance(context, dict)
+            and int(context.get("session_id") or 0) == data.session_id
+            and int(context.get("student_id") or 0) == student.student_id
+        ):
+            return context
+        return None
+    # Manual scores have no session_results row.  The current exam-paper
+    # assignment is authoritative; do not guess among duplicate assignments.
+    candidates = [
+        row for row in repositories.papers.get_session_paper_identities(data.session_id)
+        if int(row.get("student_id") or 0) == student.student_id
+        and str(row.get("match_status") or "") == "matched"
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def capture_lost_question_shots(
     repositories: GradingRepositoryAccess,
     data: _SessionAnalysisData,
@@ -1305,24 +1648,17 @@ def capture_lost_question_shots(
     *,
     regions: list[dict[str, Any]] | None,
     data_root: Path | None,
+    paper_context: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, str]]:
-    """为丢分大题生成截图，key 为父题号；任何缺失都降级为无图，不中断。"""
+    """为丢分大题生成全部截图；同题多图以序号区分，缺图不阻断报告。"""
     if not regions:
         return {}
     lost_records = [record for record in student.records if record.lost]
     if not lost_records:
         return {}
 
-    annotated = None
-    try:
-        annotated = repositories.reviews.get_annotated_result(student.result_id)
-    except Exception:
-        annotated = None
-    paper_context = None
-    try:
-        paper_context = repositories.results.get_result_context(student.result_id)
-    except Exception:
-        paper_context = None
+    if paper_context is None:
+        paper_context = _student_paper_context(repositories, data, student)
 
     # 区域粒度是整道大题：同一大题多小问丢分只嵌一次，按丢分从大到小排序。
     lost_by_parent: dict[str, float] = {}
@@ -1337,34 +1673,109 @@ def capture_lost_question_shots(
     shots: dict[str, dict[str, str]] = {}
     used_bytes = 0
     for parent in ordered_parents:
-        region = _find_question_region(regions, parent)
-        if region is None:
-            continue
-        page = _region_page(region)
-        source_label = "批注截图"
-        raw_path = (
-            str(annotated.get(f"annotated_{page}_path") or "")
-            if isinstance(annotated, dict)
-            else ""
+        matching = _find_question_regions(regions, parent)
+        for index, region in enumerate(matching):
+            page = _region_page(region)
+            raw_path = str((paper_context or {}).get(f"{page}_image") or "")
+            if not raw_path:
+                continue
+            image_path = resolve_stored_file_path(raw_path, data_root=data_root)
+            data_uri = _crop_region_data_uri(image_path, region)
+            if data_uri is None:
+                continue
+            encoded_size = len(data_uri) * 3 // 4
+            if used_bytes + encoded_size > _SHOT_BUDGET_BYTES:
+                continue
+            used_bytes += encoded_size
+            region_id = str(region.get("mapped_question_id") or region.get("detected_question_id") or parent)
+            shots[parent if index == 0 else f"{parent}:{index}"] = {
+                "data_uri": data_uri,
+                "parent_question_id": parent,
+                "region_question_id": region_id,
+                "caption": f"{_question_display_label(region_id)}作答区截图（原卷截图）",
+            }
+    return shots
+
+
+def _personal_image_inputs(
+    data: _SessionAnalysisData,
+    student: _StudentReportData,
+    shots: dict[str, dict[str, str]],
+    paper_context: dict[str, Any] | None,
+    data_root: Path | None,
+) -> tuple[list[bytes], list[dict[str, Any]]]:
+    """有序组织原卷、题图和作答概览；序号与同一次图文请求严格对应。"""
+    images: list[bytes] = []
+    image_map: list[dict[str, Any]] = []
+    total_bytes = 0
+    student.material_notes = []
+
+    def append(blob: bytes, *, kind: str, label: str, question_ids: list[str]) -> None:
+        nonlocal total_bytes
+        for index, existing in enumerate(images):
+            if blob == existing and image_map[index]["kind"] == kind:
+                image_map[index]["question_ids"] = list(dict.fromkeys(
+                    [*image_map[index]["question_ids"], *question_ids]
+                ))
+                return
+        if len(images) >= 48 or total_bytes + len(blob) > _SHOT_BUDGET_BYTES:
+            student.material_notes.append(f"{label}未纳入图片分析，不能推断图中细节。")
+            return
+        images.append(blob)
+        total_bytes += len(blob)
+        image_map.append({
+            "image_number": len(images), "kind": kind,
+            "label": label, "question_ids": question_ids,
+        })
+
+    lost = [record for record in student.records if record.lost]
+    for key, shot in shots.items():
+        parent = shot.get("parent_question_id") or key
+        region_id = shot.get("region_question_id") or parent
+        region_coordinates = question_id_coordinates(region_id)
+        question_ids = [
+            record.question_id for record in student.records
+            if record.question_id == region_id or (
+                region_coordinates is not None and (
+                    question_id_coordinates(record.question_id) == region_coordinates
+                    or (region_coordinates[1] is None and _parent_question_id(record.question_id) == parent)
+                )
+            )
+        ]
+        append(
+            base64.b64decode(shot["data_uri"].split(",", 1)[1]),
+            kind="student_work", label=f"{_question_display_label(region_id)}学生作答原图",
+            question_ids=question_ids,
         )
-        if not raw_path and isinstance(paper_context, dict):
-            raw_path = str(paper_context.get(f"{page}_image") or "")
-            source_label = "原卷截图"
+    info_by_qid = {info.question_id: info for info in data.questions}
+    for record in lost:
+        info = info_by_qid.get(record.question_id)
+        if info is None:
+            continue
+        for role, blob in info.reference_images:
+            append(
+                blob, kind=f"reference_{role}",
+                label=f"{_question_display_label(_parent_question_id(record.question_id))}{'原题及题图' if role == 'question' else '参考答案解析'}",
+                question_ids=[record.question_id],
+            )
+    # The overview supplies distribution context, not a record of working time.
+    for page, label in (("front", "正面"), ("back", "反面")):
+        raw_path = str((paper_context or {}).get(f"{page}_image") or "")
         if not raw_path:
             continue
-        image_path = resolve_stored_file_path(raw_path, data_root=data_root)
-        data_uri = _crop_region_data_uri(image_path, region)
-        if data_uri is None:
-            continue
-        encoded_size = len(data_uri) * 3 // 4
-        if used_bytes + encoded_size > _SHOT_BUDGET_BYTES:
-            break
-        used_bytes += encoded_size
-        shots[parent] = {
-            "data_uri": data_uri,
-            "caption": f"{_question_display_label(parent)}作答区截图（{source_label}）",
-        }
-    return shots
+        uri = _crop_region_data_uri(
+            resolve_stored_file_path(raw_path, data_root=data_root), None,
+            max_width=1200,
+        )
+        if uri is not None:
+            append(
+                base64.b64decode(uri.split(",", 1)[1]), kind="student_overview",
+                label=f"学生答卷{label}概览，仅用于观察全卷作答分布",
+                question_ids=[record.question_id for record in student.records],
+            )
+    if not any(item["kind"].startswith("student_") for item in image_map):
+        student.material_notes.append("未取得该生可读取的答卷图片；缺少作答文字不代表空白，不能推断未作答原因。")
+    return images, image_map
 
 
 def load_session_regions(
@@ -1434,18 +1845,24 @@ _PERSONAL_CSS = """
   .stat .lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
   /* 得分对比条 */
-  .qrow { display: grid; grid-template-columns: max-content 1fr max-content; align-items: center; gap: 10px; padding: 4px 0; }
+  .qrow { display: grid; grid-template-columns: 96px minmax(0, 1fr) 136px; align-items: center; gap: 12px; padding: 6px 0; }
   .qrow .qid { font-size: 12.5px; color: var(--ink); white-space: nowrap; }
   .bars { display: flex; flex-direction: column; gap: 3px; }
+  .qrow .bars { position: relative; padding: 2px 0; }
+  .qrow .bar { height: 16px; border-radius: 8px; background: #edf2f8; }
+  .qrow .bar i { border-radius: 8px; }
+  .qrow .bar.me i { background: linear-gradient(90deg, #6c98ef, #487bdf); }
+  .class-marker { position: absolute; top: 50%; width: 3px; height: 10px; border-radius: 2px; background: #526580; transform: translate(-50%, -50%); box-shadow: 0 0 0 2px white; }
   .bar { height: 8px; border-radius: 4px; background: #f1f5f9; position: relative; overflow: hidden; }
   .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
   .bar.me i { background: var(--bar-me); }
   .bar.cls i { background: var(--bar-class); }
   .qrow .val { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
-  .qrow.lost .qid { color: var(--bad); font-weight: 600; }
-  .qrow.lost .bar.me i { background: var(--bad); }
+  .qrow.lost .qid { color: #b54b59; font-weight: 600; }
+  .qrow.lost .bar.me i { background: linear-gradient(90deg, #eb8b96, #d96676); }
   .legend { display: flex; gap: 18px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
   .legend i { display: inline-block; width: 18px; height: 8px; border-radius: 4px; vertical-align: middle; margin-right: 5px; }
+  .legend i.legend-marker { width: 3px; height: 10px; border-radius: 2px; background: #526580; }
 
   /* 丢分题卡片 */
   .qcard { border: 1px solid var(--line); border-left: 4px solid var(--bad); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
@@ -1456,8 +1873,16 @@ _PERSONAL_CSS = """
   .kv { display: grid; grid-template-columns: 88px 1fr; gap: 4px 10px; font-size: 13px; }
   .kv dt { color: var(--muted); }
   .kv dd b.ans { color: var(--good); }
+  .kv dd { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .qpart + .qpart { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 14px; }
+  .qpart h3 { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 8px; }
+  .qpart h3 span { color: var(--muted); font-weight: normal; }
   .aidraft { margin-top: 10px; background: var(--warn-soft); border: 1px dashed #f5d08c; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
   .aidraft .cap { font-size: 11.5px; color: var(--warn); font-weight: 700; margin-bottom: 4px; }
+  .aidraft p + p { margin-top: 6px; }
+  .aidraft .kv { grid-template-columns: 78px minmax(0, 1fr); }
+  .material-note { margin: 0 0 12px; }
+  .stem { white-space: pre-wrap; overflow-wrap: anywhere; }
 
   /* 答卷截图 */
   .shot { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 10px 0 2px; background: #fcfcfd; }
@@ -1487,10 +1912,33 @@ _PERSONAL_CSS = """
   footer { padding: 18px 32px 26px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
   .sign { display: flex; justify-content: space-between; margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
 
+  @media screen and (max-width: 560px) {
+    .page { padding: 10px 8px 24px; }
+    .hero, section, footer { padding: 18px 16px; }
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .qrow { grid-template-columns: 1fr auto; }
+    .qrow .bars { grid-column: 1 / -1; grid-row: 2; margin-bottom: 6px; }
+    .legend { flex-wrap: wrap; gap: 6px 12px; }
+    .qcard { padding: 12px; }
+    .kv, .aidraft .kv { grid-template-columns: 66px minmax(0, 1fr); gap: 4px 8px; }
+    .krow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 48px; }
+    .sign { flex-wrap: wrap; gap: 10px; }
+  }
+  @page { size: A4; margin: 13mm 14mm; }
   @media print {
-    body { background: #fff; }
+    body { background: #fff; font-size: 10pt; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
     .page { padding: 0; max-width: none; }
-    .sheet { box-shadow: none; border-radius: 0; }
+    .sheet { box-shadow: none; border-radius: 0; overflow: visible; }
+    .hero, section, footer { padding: 14px 16px; }
+    section { padding-top: 10px; padding-bottom: 10px; }
+    h2 { margin-bottom: 10px; }
+    .hero, .stats, .qrow, .shot, .qpart, .qintro, .plist > li, footer { break-inside: avoid; }
+    h2, h3, .qintro, .material-note { break-after: avoid; }
+    .qcard { break-inside: auto; border-radius: 0; }
+    .shot img { max-height: 95mm; width: auto; object-fit: contain; }
+    footer { padding: 8px 16px; font-size: 8pt; line-height: 1.45; }
+    .sign { margin-top: 5px; padding-top: 0; border-top: none; }
+    p, dd, li { orphans: 3; widows: 3; }
   }
 """
 
@@ -1549,8 +1997,132 @@ def _ai_block(text: str, *, failed: bool) -> str:
     note = AI_FAILED_NOTE if failed else text
     return (
         '<div class="aidraft">'
-        f'<div class="cap">{_esc(AI_DISCLAIMER)}</div>{_esc(note)}</div>'
+        f'<div class="cap">{_esc(AI_DISCLAIMER)}</div>{_report_paragraphs(note)}</div>'
     )
+
+
+def _report_paragraphs(value: object) -> str:
+    text = _report_display_text(value)
+    return "".join(f"<p>{_report_inline_math(line.strip())}</p>" for line in text.splitlines() if line.strip())
+
+
+def _report_inline_math(text: str) -> str:
+    # Explicit TeX is never inferred or rewritten; ordinary prose stays text.
+    parts = re.split(r'(\\\(.+?\\\))', text)
+    result = []
+    for part in parts:
+        if part.startswith('\\(') and part.endswith('\\)'):
+            result.append(f'<span class="qm" data-latex="{_esc(part[2:-2])}">{_esc(part[2:-2])}</span>')
+        else:
+            def linear(match):
+                value = match.group(0)
+                if not re.search(r'[∠△°=＝÷×⊥∥²³]', value):
+                    return _esc(value)
+                tex = value.translate(str.maketrans({'＝': '=', '＋': '+', '－': '-', '−': '-', '（': '(', '）': ')', '：': ':'}))
+                # Only unambiguous single-token denominators. Keep a/bc linear;
+                # authored/source LaTeX handles more complex expressions exactly.
+                tex = re.sub(r'(\([^()]+\)|[A-Za-z]+°?)/(\d+(?:\.\d+)?|[A-Za-z])(?![A-Za-z0-9.])',
+                             lambda m: r'\frac{' + (m[1][1:-1] if m[1].startswith('(') else m[1]) + '}{' + m[2] + '}', tex)
+                for old, new in [('∠', r'\angle '), ('△', r'\triangle '), ('°', r'^{\circ}'),
+                                 ('÷', r'\div '), ('×', r'\times '), ('⊥', r'\perp '), ('∥', r'\parallel '),
+                                 ('²', '^{2}'), ('³', '^{3}')]:
+                    tex = tex.replace(old, new)
+                return f'<span class="qm" data-latex="{_esc(tex)}">{_esc(value)}</span>'
+            tokens = re.split(r'([A-Za-z0-9∠△°(（][A-Za-z0-9∠△°²³=＝＋+−－÷×*/:：.()（）^_≤≥≠⊥∥-]*)', part)
+            result.append(''.join(linear(re.match(r'.+', token)) if index % 2 else _esc(token)
+                                  for index, token in enumerate(tokens)))
+    return "".join(result)
+
+
+def _report_display_text(value: object) -> str:
+    return re.sub(
+        r"\bQ\d+(?:\s*\(P?\d+\))?",
+        lambda match: _question_display_label(match.group(0)),
+        str(value or ""), flags=re.IGNORECASE,
+    )
+
+
+def _question_analysis_html(item: dict[str, Any] | None) -> str:
+    if not item:
+        return _ai_block("", failed=True)
+    feedback = _narrative_text(item.get("feedback")) or "\n".join(dict.fromkeys(
+        text for key in ("observation", "possible_cause", "analysis")
+        if (text := _narrative_text(item.get(key)))
+    ))
+    review = _narrative_text(item.get("review_note"))
+    body = f'<div class="feedback"><b>本题反馈</b>{_report_paragraphs(feedback)}</div>' if feedback else ""
+    if review:
+        body += f'<div class="review-note"><b>报告分析提示 · 建议核对</b>{_report_paragraphs(review)}</div>'
+    steps = _narrative_items(item, "solution_steps")
+    if steps:
+        label = "参考解法" if item.get("solution_source") == "reference" else "AI 参考解法"
+        body += f'<div class="solution"><b>{label}</b><ol>' + "".join(
+            f'<li>{_report_paragraphs(step)}</li>' for step in steps if isinstance(step, str) and step.strip()
+        ) + '</ol></div>'
+        detail = _narrative_text(item.get("full_solution"))
+        if detail:
+            body += '<details class="solution-detail"><summary>查看完整解法</summary>' + _report_paragraphs(detail) + '</details>'
+    # Compatibility for previously generated narratives; keep supporting evidence
+    # available without restoring five repetitive rows to the main report.
+    if "feedback" not in item:
+        details = "\n".join(_narrative_text(item.get(key)) for key in ("evidence", "verification"))
+        if details.strip():
+            body += '<details><summary>查看分析依据</summary>' + _report_paragraphs(details) + '</details>'
+    if not body:
+        return _ai_block("", failed=True)
+    return (
+        '<div class="compact-analysis">' + body + '</div>'
+    )
+
+
+def _report_stem_html(info: _QuestionInfo | None, fallback: str) -> str:
+    """Render source table cells as cells, instead of model-input pipe text."""
+    if info is None or not info.question_markup:
+        return _report_paragraphs(fallback.replace("[图片]", ""))
+    from html.parser import HTMLParser
+    from backend.document_parsing.question_blocks import _INLINE_IMAGE_MARKER
+
+    class StemMarkup(HTMLParser):
+        tags = {"p", "div", "br", "table", "thead", "tbody", "tr", "td", "th", "sup", "sub", "b", "strong", "em", "span"}
+
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag in self.tags:
+                spans = "".join(f' {key}="{value}"' for key, value in attrs
+                                if tag in {"td", "th"} and key in {"colspan", "rowspan"}
+                                and value and value.isdigit())
+                latex = dict(attrs).get("data-latex")
+                if tag == "span" and latex:
+                    spans += f' class="qm" data-latex="{_esc(latex)}"'
+                self.parts.append(f"<{tag}{spans}>")
+
+        def handle_endtag(self, tag):
+            if tag in self.tags and tag != "br":
+                self.parts.append(f"</{tag}>")
+
+        def handle_data(self, value):
+            if value.strip():
+                self.parts.append(_report_inline_math(value.replace("[图片]", "")))
+
+    parser = StemMarkup()
+    parser.feed(_INLINE_IMAGE_MARKER.sub("", info.question_markup))
+    return "".join(parser.parts)
+
+
+@lru_cache(maxsize=1)
+def _report_math_assets() -> str:
+    """Embed the same KaTeX engine as the question bank, including offline fonts."""
+    root = Path(__file__).resolve().parent / "backend" / "report_assets" / "katex"
+    css = (root / "katex.min.css").read_text(encoding="utf-8")
+    def font_source(match):
+        font = root / match.group(1)
+        return 'src:url(data:font/woff2;base64,' + base64.b64encode(font.read_bytes()).decode() + ') format("woff2")'
+    css = re.sub(r'src:url\((fonts/[^)]+\.woff2)\)[^;}]*(?=[;}])', font_source, css)
+    js = (root / "katex.min.js").read_text(encoding="utf-8")
+    return '<style>' + css + '</style><script>' + js.replace('</script', '<\\/script') + '</script>'
 
 
 def _render_personal_html(
@@ -1563,7 +2135,8 @@ def _render_personal_html(
     info_by_qid = {info.question_id: info for info in data.questions}
     ai_failed = narrative is None
     analysis_by_qid = {
-        _narrative_text(item.get("question_id")): _narrative_text(item.get("analysis"))
+        resolve_known_question_id(_narrative_text(item.get("question_id")), info_by_qid)
+        or _narrative_text(item.get("question_id")): item
         for item in _narrative_items(narrative, "question_analyses")
         if isinstance(item, dict)
     }
@@ -1602,11 +2175,16 @@ def _render_personal_html(
         row_class = "qrow lost" if record.lost else "qrow"
         avg_text = f"（班均 {_fmt_num(round(class_avg, 1))}）" if class_avg is not None else ""
         type_suffix = f" {_esc(type_label)}" if type_label else ""
+        marker = (
+            f'<span class="class-marker" style="left:{min(100.0, max(0.0, class_rate * 100)):.2f}%" '
+            f'title="班级平均得分率 {class_rate * 100:.1f}%"></span>'
+            if class_rate is not None else ""
+        )
         compare_rows.append(
             f'<div class="{row_class}"><span class="qid">'
             f'{_esc(_question_display_label(record.question_id))}{type_suffix}</span>'
             f'<div class="bars"><div class="bar me"><i style="width:{my_rate * 100:.0f}%"></i></div>'
-            f'<div class="bar cls"><i style="width:{(class_rate or 0) * 100:.0f}%"></i></div></div>'
+            f'{marker}</div>'
             f'<span class="val">{_fmt_num(record.score)} / {_fmt_num(record.max_score)}{_esc(avg_text)}</span></div>'
         )
 
@@ -1616,82 +2194,78 @@ def _render_personal_html(
         lost_groups.setdefault(_parent_question_id(record.question_id), []).append(record)
     ordered_groups = sorted(
         lost_groups.items(),
-        key=lambda item: (
-            -sum(record.lost_points for record in item[1]),
-            _question_display_label(item[0]),
-        ),
+        key=lambda item: question_id_coordinates(item[0]) or (10**9, 0),
     )
     question_cards: list[str] = []
     for parent, group_records in ordered_groups:
         first = group_records[0]
         info = info_by_qid.get(first.question_id)
-        group_score = sum(record.score for record in group_records)
-        group_max = sum(record.max_score for record in group_records)
-        group_avg = None
-        if info is not None and info.class_avg is not None and len(group_records) == 1:
-            group_avg = info.class_avg
-        if len(group_records) > 1:
-            part_labels = "、".join(
-                str((question_id_coordinates(record.question_id) or (0, 0))[1] or "")
-                for record in group_records
-            )
-            title = f"第{(question_id_coordinates(parent) or (0,))[0]}题（第 {part_labels} 问）"
-        else:
-            title = _question_display_label(first.question_id)
+        parent_records = [r for r in student.records if _parent_question_id(r.question_id) == parent]
+        group_score = sum(record.score for record in parent_records)
+        group_max = sum(record.max_score for record in parent_records)
+        title = _question_display_label(parent)
         type_label = _question_type_label(info.question_type if info is not None else "")
-        stem = (info.stem_summary if info is not None else "") or title
-        answer = info.canonical_answer if info is not None else ""
-        record_text = "；".join(
-            text
-            for text in (
-                first.deduction_reason,
-                first.error_category,
-                first.error_summary,
-                *first.secondary_errors,
+        stem = ((info.question_text or info.stem_summary) if info is not None else "") or title
+        stem_html = f'<div class="stem">{_report_stem_html(info, stem)}</div>'
+        if info is not None:
+            figures = "".join(
+                f'<img src="data:image/png;base64,{base64.b64encode(blob).decode()}" alt="{_esc(title)}题图">'
+                for role, blob in info.reference_images if role == "question"
             )
-            if text
+            if figures:
+                stem_html += f'<div class="reference-figures">{figures}</div>'
+        shot_html = "".join(
+                '<details class="shot"><summary>'
+                f'<img class="thumbnail" src="{shot["data_uri"]}" alt="{_esc(title)}作答截图">'
+                '<span class="cap">学生作答（原卷截图）· 点击放大 / 收起</span></summary></details>'
+            for key, shot in shots.items()
+            if (shot.get("parent_question_id") or key) == parent
         )
-        kv_rows = []
-        student_answer_text = "；".join(
-            dict.fromkeys(
-                record.student_answer
-                for record in group_records
-                if record.student_answer
+        part_html: list[str] = []
+        for record in sorted(group_records, key=lambda r: question_id_coordinates(r.question_id) or (10**9, 0)):
+            part_info = info_by_qid.get(record.question_id)
+            answer = part_info.canonical_answer if part_info is not None else ""
+            analysis = analysis_by_qid.get(record.question_id)
+            if analysis and analysis.get("solution_source") == "reference" and not (part_info and part_info.reference_analysis):
+                analysis = {**analysis, "solution_source": "ai"}
+            kv_rows = []
+            if record.student_answer:
+                kv_rows.append(f"<dt>学生作答</dt><dd>{_esc(record.student_answer)}</dd>")
+            if answer and not (analysis and analysis.get("solution_steps")):
+                kv_rows.append(f'<dt>标准答案</dt><dd><b class="ans">{_esc(answer)}</b></dd>')
+            if record.teacher_comment:
+                kv_rows.append(f"<dt>教师批语</dt><dd>{_esc(record.teacher_comment)}</dd>")
+            assessment = data.question_assessments.get(record.question_id)
+            if assessment:
+                knowledge = data.knowledge_backfill.get(record.question_id, [])
+                if knowledge:
+                    kv_rows.append(f'<dt>直接考查</dt><dd>{_esc("、".join(entry["label"] for entry in knowledge))}</dd>')
+                difficulty = assessment.get("part_difficulty")
+                if difficulty is not None:
+                    kv_rows.append(f'<dt>小问预估难度</dt><dd>{_fmt_num(difficulty)} / 10（题目难度）</dd>')
+                elif not knowledge:
+                    kv_rows.append('<dt>知识点依据</dt><dd>历史小问与当前题库依据未能可靠匹配，暂不细分归因。</dd>')
+            part_heading = (
+                f'<h3>{_esc(_question_display_label(record.question_id))}'
+                f'<span>得 {_fmt_num(record.score)} / {_fmt_num(record.max_score)} 分</span></h3>'
+                if len(parent_records) > 1 else ""
             )
-        )
-        if student_answer_text:
-            kv_rows.append(f"<dt>学生作答</dt><dd>{_esc(student_answer_text)}</dd>")
-        if answer:
-            kv_rows.append(
-                f'<dt>标准答案</dt><dd><b class="ans">{_esc(answer)}</b></dd>'
+            part_html.append(
+                f'<div class="qpart">{part_heading}'
+                + (f'<dl class="kv">{"".join(kv_rows)}</dl>' if kv_rows else "")
+                + _question_analysis_html(analysis)
+                + '</div>'
             )
-        if record_text:
-            kv_rows.append(f"<dt>批改记录</dt><dd>{_esc(record_text)}</dd>")
-        avg_suffix = (
-            f"（班均 {_fmt_num(round(group_avg, 1))}）" if group_avg is not None else ""
-        )
-        shot = shots.get(parent)
-        shot_html = ""
-        if shot is not None:
-            shot_html = (
-                '<div class="shot">'
-                f'<img src="{shot["data_uri"]}" alt="{_esc(title)}作答截图">'
-                f'<div class="cap">{_esc(shot["caption"])}</div></div>'
-            )
-        analysis_texts = [
-            text
-            for record in group_records
-            if (text := analysis_by_qid.get(record.question_id))
-        ]
         question_cards.append(
             '<div class="qcard">'
+            '<div class="qintro">'
             f'<div class="head"><b>{_esc(title)}'
             f'{(" · " + _esc(type_label)) if type_label else ""}</b>'
-            f'<span class="score">得 {_fmt_num(group_score)} 分 / 满分 {_fmt_num(group_max)} 分{_esc(avg_suffix)}</span></div>'
-            f'<div class="stem">{_esc(stem)}</div>'
-            + (f'<dl class="kv">{"".join(kv_rows)}</dl>' if kv_rows else "")
+            f'<span class="score">得 {_fmt_num(group_score)} 分 / 满分 {_fmt_num(group_max)} 分</span></div>'
+            + stem_html +
+            '</div>'
             + shot_html
-            + _ai_block("；".join(analysis_texts), failed=ai_failed or not analysis_texts)
+            + "".join(part_html)
             + "</div>"
         )
 
@@ -1703,7 +2277,7 @@ def _render_personal_html(
     if strengths:
         strengths_html = (
             '<div class="goodbox"><ul>'
-            + "".join(f"<li>{_esc(item)}</li>" for item in strengths)
+            + "".join(f"<li>{_report_paragraphs(item)}</li>" for item in strengths)
             + "</ul></div>"
         )
     else:
@@ -1713,12 +2287,14 @@ def _render_personal_html(
         _narrative_items(narrative, "problems"),
         failed=ai_failed,
     )
+    if not ai_failed and not lost_questions and not _narrative_items(narrative, "problems"):
+        problems_html = '<div class="goodbox">本卷未发现失分。</div>'
     suggestions_items = []
     for item in _narrative_items(narrative, "suggestions"):
         if not isinstance(item, dict):
             continue
         timeframe = _narrative_text(item.get("timeframe"))
-        title = _narrative_text(item.get("title"))
+        title = _report_display_text(_narrative_text(item.get("title")))
         detail = _narrative_text(item.get("detail"))
         label = f"{title}（{timeframe}）" if timeframe else title
         suggestions_items.append({"title": label, "detail": detail})
@@ -1746,6 +2322,7 @@ def _render_personal_html(
             )
         knowledge_html = (
             "<section><h2>知识板块得分小结</h2>"
+            '<p class="cap">以下为本次考试得分率；已细化题目按小问直接考查范围统计。当前掌握度还结合题目难度、时间和训练证据，请在知识热力图查看。综合小问失分不能直接定位到每个知识点。</p>'
             + "".join(rows_html)
             + "</section>"
         )
@@ -1756,7 +2333,33 @@ def _render_personal_html(
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>个人考试分析报告 · {_esc(student.student_name)} · {_esc(data.session_name)}</title>
-<style>{_PERSONAL_CSS}</style>
+<style>{_PERSONAL_CSS}
+.stem table {{border-collapse:collapse; width:100%; margin:8px 0;}}
+.stem td,.stem th {{border:1px solid #cbd5e1; padding:5px 8px; text-align:center;}}
+.reference-figures {{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0;}}
+.reference-figures img {{max-width:100%;max-height:180px;object-fit:contain;}}
+.stem {{white-space:normal;}}
+.shot summary {{list-style:none;cursor:zoom-in;text-align:center;}}
+.shot summary::-webkit-details-marker {{display:none;}}
+.shot .thumbnail {{max-height:220px;max-width:100%;width:auto;object-fit:contain;}}
+.shot[open] summary {{cursor:zoom-out;}}
+.shot[open] .thumbnail {{max-height:none;}}
+.katex {{font-size:1.04em;}}
+.qm {{display:inline-block;max-width:100%;vertical-align:baseline;}}
+@media print {{.shot .thumbnail {{display:block!important;max-height:55mm;}} .shot .original,.shot .cap {{display:none!important;}}}}
+.compact-analysis {{font-size:13.5px;line-height:1.75;}}
+.compact-analysis p {{margin:3px 0;}}
+.compact-analysis b {{color:#334155;}}
+.feedback,.solution,.revision {{margin:10px 0;}}
+.solution {{border-left:3px solid #b8cde9;padding:2px 12px;}}
+.solution ol {{margin:4px 0;padding-left:22px;}}
+.review-note {{background:#fff7e8;border-left:3px solid #e9972d;padding:8px 12px;margin:10px 0;}}
+.review-note b {{color:#a45b00;}}
+.compact-analysis details {{margin:8px 0;color:#475569;}}
+.compact-analysis summary {{cursor:pointer;color:#2563eb;}}
+@media print {{.compact-analysis details:not([open]) > :not(summary) {{display:none;}}}}
+</style>
+{_report_math_assets()}
 </head>
 <body>
 <div class="page">
@@ -1780,14 +2383,14 @@ def _render_personal_html(
         <div class="stat"><div class="num">{_fmt_num(student.lost_points_total)}<small> 分</small></div><div class="lbl">总丢分（集中在 {len(ordered_groups)} 处）</div></div>
       </div>
       {small_sample_note}
-      <p style="margin-top:12px; font-size:13.5px;">{_esc(overall_comment) if overall_comment else _esc(AI_FAILED_NOTE)}</p>
+      <div style="margin-top:12px; font-size:13.5px;">{_report_paragraphs(overall_comment or AI_FAILED_NOTE)}</div>
     </section>
 
     <section>
       <h2>逐题得分对比</h2>
       <div class="legend">
         <span><i style="background:var(--bar-me)"></i>{_esc(student.student_name)}得分率</span>
-        <span><i style="background:var(--bar-class)"></i>班级平均得分率</span>
+        <span><i class="legend-marker"></i>班级平均得分率</span>
         <span style="color:var(--bad)">红色 = 本次丢分题</span>
       </div>
       {''.join(compare_rows)}
@@ -1795,6 +2398,7 @@ def _render_personal_html(
 
     <section>
       <h2>丢分题逐题分析</h2>
+      {''.join(f'<p class="note material-note">{_esc(note)}</p>' for note in student.material_notes)}
       {''.join(question_cards) if question_cards else '<p class="note">本次考试没有丢分题。</p>'}
     </section>
 
@@ -1826,6 +2430,11 @@ def _render_personal_html(
 
   </div>
 </div>
+<script>
+document.querySelectorAll('.qm[data-latex]').forEach(el => {{
+  try {{ katex.render(el.dataset.latex, el, {{throwOnError:true, output:'htmlAndMathml'}}); }} catch (_) {{}}
+}});
+</script>
 </body>
 </html>
 """
@@ -1836,12 +2445,12 @@ def _render_titled_items(items: list[Any], *, failed: bool) -> str:
     for item in items:
         if not isinstance(item, dict):
             continue
-        title = _narrative_text(item.get("title"))
+        title = _report_display_text(_narrative_text(item.get("title")))
         detail = _narrative_text(item.get("detail"))
         if not title and not detail:
             continue
         entries.append(
-            f'<li><b class="t">{_esc(title)}</b><span class="why">{_esc(detail)}</span></li>'
+            f'<li><b class="t">{_esc(title)}</b><div class="why">{_report_paragraphs(detail)}</div></li>'
         )
     if not entries:
         return f'<ol class="plist"><li><b class="t">{_esc(AI_FAILED_NOTE)}</b></li></ol>'
@@ -1851,6 +2460,33 @@ def _render_titled_items(items: list[Any], *, failed: bool) -> str:
 # ---------------------------------------------------------------------------
 # 生成器与 preflight
 # ---------------------------------------------------------------------------
+
+
+def _render_class_html(data: _SessionAnalysisData, narrative: dict[str, Any] | None) -> str:
+    page = build_class_page_data(data)
+    class_name = data.class_name or "未分班"
+    class_label = class_name if class_name.endswith("班") else f"{class_name}班"
+    failed = narrative is None
+    narrative = class_narrative_with_student_names(narrative, data.students) if narrative is not None else {}
+    analyzed = len(data.students)
+    esc = lambda x: html.escape(str(x), quote=True)
+    fmt = lambda x: _fmt_num(x) if x is not None else '—'
+    math_text = lambda x: _report_inline_math(str(x))
+    aliases = {f'S{i}': s['student_name'] for i,s in enumerate(page['students'],1)}
+    stats = page['score_distribution']
+    metrics = [('参考人数',page['present']),('平均分',fmt(stats['avg'])),('中位数',fmt(stats['median'])),('最高 / 最低',fmt(stats['max'])+' / '+fmt(stats['min'])),('及格率',f"{stats['pass_rate']*100:.1f}%")]
+    metric_html = ''.join(f'<div><small>{esc(k)}</small><strong>{esc(v)}</strong></div>' for k,v in metrics)
+    findings = ''.join(f'<article><h3>{esc(i["title"])}</h3><p>{math_text(i["detail"])}</p></article>' for i in narrative.get('key_findings', []))
+    if failed:
+        findings = f'<p>{_esc(AI_FAILED_NOTE)}</p>'
+    issues = ''.join(f'<article><h3>{esc(i["title"])}</h3><p>{math_text(i["evidence"])}</p><p class="action">{math_text(i["teaching_action"])}</p></article>' for i in narrative.get('common_issues', []))
+    bands = ''.join(f'<div class="band"><span>{esc(label)}</span><div class="track"><i style="width:{count/max(1,analyzed)*100:.2f}%"></i></div><b>{count}人</b></div>' for label,count in stats['bands'].items())
+    questions = ''.join(f'<tr><td>{_question_display_label(q["question_id"])}</td><td>{fmt(q["max_score"])}</td><td>{fmt(q["class_avg"] or 0)}</td><td><div class="rate"><i style="width:{q["class_rate"]*100:.2f}%"></i><span>{q["class_rate"]*100:.1f}%</span></div></td><td>{len(q["records"])}人</td></tr>' for q in page['questions'] if q['class_avg'] is not None)
+    roster = ''.join(f'<tr><td>{s["rank"]}</td><td>{esc(s["student_name"])}</td><td>{fmt(s["total_score"])}</td><td>{esc("、".join(_question_display_label(r["question_id"]) for r in s["lost"]) or "无" )}</td></tr>' for s in page['students'])
+    notes = ''.join(f'<article><h3>{esc(aliases.get(i["alias"],i["alias"]))}</h3><p>{math_text(i["note"])}</p><p class="action">{math_text(i["suggestion"])}</p></article>' for i in narrative.get('student_notes',[]))
+    return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+f'<title>{esc(class_label)} · 班级报告</title>'+_report_math_assets()+'''<style>
+    *{box-sizing:border-box}body{margin:0;background:#f2f5f9;color:#24354b;font:15px/1.8 "Microsoft YaHei",sans-serif}main{max-width:1080px;margin:auto;padding:40px 28px}header{border-bottom:3px solid #527eb0;padding-bottom:22px}h1{font-size:28px;line-height:1.45;margin:8px 0}h2{font-size:20px;margin:0 0 18px}h3{font-size:16px;margin:0 0 6px}p{margin:5px 0 12px}small,.muted{color:#63758a}section{background:white;border:1px solid #e1e7ef;border-radius:14px;padding:26px;margin:24px 0}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:24px}.metrics div{background:#fff;border-radius:10px;padding:14px}.metrics small{display:block}.metrics strong{display:block;font-size:24px}.band{display:grid;grid-template-columns:135px 1fr 50px;align-items:center;gap:12px;margin:10px 0}.track,.rate{height:20px;border-radius:5px;background:#edf2f8;overflow:hidden}.track i,.rate i{display:block;height:100%;background:#6f94c5}.rate{position:relative;min-width:100px;height:26px}.rate span{position:absolute;inset:0;text-align:center;color:#173153;font-size:13px;line-height:26px}.rate i{background:#c0d3ea}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{border-bottom:1px solid #e4eaf0;text-align:left;padding:10px}th{background:#f5f8fb;color:#52677f}article{border-left:3px solid #8aabc9;padding:0 0 0 16px;margin:20px 0}.action{color:#395e86;background:#f4f8fc;padding:10px 14px;border-radius:7px}summary{cursor:pointer;font-size:19px;font-weight:bold}.roster td:last-child{font-size:12px;color:#617188}.katex{font-size:1.05em}footer{color:#69788a;font-size:12px}@media(max-width:600px){main{padding:22px 14px}section{padding:18px 14px}.metrics{grid-template-columns:repeat(2,1fr)}h1{font-size:23px}.band{grid-template-columns:116px 1fr 36px;font-size:12px;gap:5px}th,td{padding:8px 6px;font-size:12px}}@media print{body{background:white}main{padding:0}section{break-inside:avoid}details:not([open])>*:not(summary){display:block}footer{margin-top:20px}}
+    </style></head><body><main>'''+f'<header><small>讲评课参考 · 教师版</small><h1>{esc(page["exam"]["title"])}<br>{esc(class_label)}班级报告</h1><p class="muted">按本班当前成绩统计，教师复核分优先 · 满分{fmt(page["exam"]["full_score"])}分</p></header><div class="metrics">{metric_html}</div><section><h2>本次最值得关注的结果</h2>{findings}</section><section><h2>分数分布</h2>{bands}<p class="muted">各分数段互不重叠，参与统计{analyzed}人。</p></section><section><h2>逐题得分</h2><div class="table-wrap"><table><thead><tr><th>题目</th><th>满分</th><th>均分</th><th>得分率</th><th>未得满分</th></tr></thead><tbody>{questions}</tbody></table></div></section><section><h2>下一节讲评课</h2>{issues}<h3>分层安排</h3><p>{math_text(narrative.get("grouping_advice", ""))}</p></section><section><h2>个别跟进</h2>{notes}</section><section><details><summary>全班成绩与失分题目（{analyzed}人）</summary><div class="table-wrap"><table class="roster"><thead><tr><th>名次</th><th>姓名</th><th>成绩</th><th>失分题目</th></tr></thead><tbody>{roster}</tbody></table></div></details></section><footer>AI 分析 · 仅供参考。统计使用本班当前成绩，教师复核分优先；错因依据现有作答证据与批改记录，不据分数推断学生态度或作答时间。</footer></main><script>document.querySelectorAll(".qm[data-latex]").forEach(el=>{{try{{katex.render(el.dataset.latex,el,{{throwOnError:true,output:"htmlAndMathml"}})}}catch(e){{}}}})</script></body></html>'
 
 
 class AnalysisReportGenerator:
@@ -1888,6 +2524,7 @@ class AnalysisReportGenerator:
         report_type: str,
         *,
         score_revision: str = "",
+        student_ids: set[int] | None = None,
     ) -> Path:
         if report_type not in ANALYSIS_REPORT_TYPES:
             raise ValueError(f"不支持的分析报告类型: {report_type}")
@@ -1901,7 +2538,36 @@ class AnalysisReportGenerator:
             int(session_id),
             data_root=self.data_root,
         )
-        return self._export_personal(data, revision)
+        return self._export_personal(data, revision, student_ids=student_ids)
+
+    def export_classes(
+        self,
+        session_id: int,
+        *,
+        class_names: set[str] | None = None,
+        score_revision: str = "",
+    ) -> list[Path]:
+        """以班级页面相同的数据、提示词和缓存规则批量导出自包含 HTML。"""
+        from backend.class_analysis import _class_narrative
+        from analysis_report_prompts import CLASS_SYSTEM_PROMPT
+
+        data = assemble_session_analysis(self.repositories, session_id, data_root=self.data_root)
+        revision = score_revision or _compute_score_revision(self.repositories, session_id)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        cache = self.cache or AnalysisNarrativeCache(self.output_dir / ".analysis_narrative_cache")
+        client = self._client()
+        files = []
+        for name, group in split_session_analysis_by_class(data).items():
+            if not group.students or (class_names is not None and name not in class_names):
+                continue
+            narrative = _class_narrative(
+                client=client, cache=cache, session_id=session_id, revision=revision,
+                class_name=name, prompt=build_report_prompt(CLASS_SYSTEM_PROMPT, build_class_payload(group)),
+            )
+            target = self.output_dir / f"{safe_filename_fragment(name, '未分班')}_班级报告.html"
+            target.write_text(_render_class_html(group, narrative), encoding="utf-8")
+            files.append(target)
+        return files
 
     def _client(self) -> Any:
         # 未配置内容生成模型时返回 None，全部报告降级为无 AI 叙述版，
@@ -1924,6 +2590,7 @@ class AnalysisReportGenerator:
         report_key: str,
         prompt: str,
         max_tokens: int,
+        image_blobs: list[bytes] | None = None,
     ) -> dict[str, Any] | None:
         from backend.report_exports import report_rendition_version
 
@@ -1941,10 +2608,15 @@ class AnalysisReportGenerator:
         if client is None:
             return None
         try:
-            narrative = client.json_from_text(
-                prompt,
-                extra_kwargs={"temperature": 0.3, "max_tokens": max_tokens},
-            )
+            options = {"temperature": 0.3, "max_tokens": max_tokens}
+            if image_blobs:
+                narrative = client.json_from_images_once(
+                    prompt, image_blobs,
+                    use_config_client=True,
+                    extra_kwargs=options,
+                )
+            else:
+                narrative = client.json_from_text(prompt, extra_kwargs=options)
         except Exception:
             # 模型超时/解析失败：本地修复仍失败则降级，不暗中重发（已确认偏差）。
             return None
@@ -1958,9 +2630,12 @@ class AnalysisReportGenerator:
         self,
         data: _SessionAnalysisData,
         revision: str,
+        *,
+        student_ids: set[int] | None = None,
     ) -> Path:
         if not data.students:
             raise ValueError("该场次没有可生成个人报告的学生。")
+        _enrich_personal_questions(self.repositories, data, self.data_root)
         regions = load_session_regions(
             self.repositories,
             data.session_id,
@@ -1971,24 +2646,51 @@ class AnalysisReportGenerator:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         used_names: set[str] = set()
         report_files: list[Path] = []
-        for student in data.students:
+        scoped_students = [
+            (group, student)
+            for group in split_session_analysis_by_class(data).values()
+            for student in group.students
+            if student_ids is None or student.student_id in student_ids
+        ]
+        if not scoped_students:
+            raise ValueError("所选学生没有可生成个人报告的成绩。")
+        session_data = data
+        # Resolve once on the caller thread. Only model/cache work runs in workers;
+        # repository access, image preparation and rendering stay on this thread.
+        from backend.report_exports import report_rendition_version
+        rendition = report_rendition_version(PERSONAL_ANALYSIS_REPORT_TYPE)
+        all_cached = self.cache is not None and all(
+            self.cache.load(AnalysisNarrativeCache.cache_key(
+                session_id=data.session_id, score_revision=revision,
+                rendition_version=rendition, report_key=f"personal:{student.student_id}",
+            )) is not None for data, student in scoped_students
+        )
+        client = None if all_cached else self._client()
+        execution = getattr(getattr(client, "config_gateway", None), "execution_snapshot", None)
+        parallel_limit = min(3, max(1, int(getattr(execution, "max_in_flight", 3))))
+
+        def prepare(executor, data, student):
+            paper_context = _student_paper_context(self.repositories, data, student)
+            shots = capture_lost_question_shots(
+                self.repositories, data, student, regions=regions,
+                data_root=self.data_root, paper_context=paper_context,
+            )
+            images, image_map = _personal_image_inputs(
+                data, student, shots, paper_context, self.data_root,
+            )
             payload = build_personal_payload(data, student)
-            narrative = self._narrative(
+            payload["image_map"] = image_map
+            payload["material_notes"] = student.material_notes
+            future = executor.submit(
+                self._narrative,
                 session_id=data.session_id,
                 revision=revision,
                 report_type=PERSONAL_ANALYSIS_REPORT_TYPE,
                 report_key=f"personal:{student.student_id}",
                 prompt=build_report_prompt(PERSONAL_SYSTEM_PROMPT, payload),
-                max_tokens=PERSONAL_MAX_TOKENS,
+                max_tokens=personal_output_token_limit(sum(record.lost for record in student.records)),
+                image_blobs=images,
             )
-            shots = capture_lost_question_shots(
-                self.repositories,
-                data,
-                student,
-                regions=regions,
-                data_root=self.data_root,
-            )
-            html_text = _render_personal_html(data, student, narrative, shots)
             filename = (
                 f"{safe_filename_fragment(student.student_code, '未知学号')}"
                 f"_{safe_filename_fragment(student.student_name, '未知姓名')}"
@@ -1998,8 +2700,31 @@ class AnalysisReportGenerator:
                 filename = filename.replace(".html", f"_{student.student_id}.html")
             used_names.add(filename)
             report_path = staging_subdir / filename
-            report_path.write_text(html_text, encoding="utf-8")
             report_files.append(report_path)
+            return future, (data, student, shots, report_path)
+
+        students = iter(scoped_students)
+        with ThreadPoolExecutor(
+            max_workers=parallel_limit, thread_name_prefix="personal-report"
+        ) as executor:
+            pending = {}
+            while True:
+                # Bound prepared images as well as in-flight model requests.
+                while len(pending) < parallel_limit:
+                    entry = next(students, None)
+                    if entry is None:
+                        break
+                    future, context = prepare(executor, *entry)
+                    pending[future] = context
+                if not pending:
+                    break
+                completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    data, student, shots, report_path = pending.pop(future)
+                    html_text = _render_personal_html(data, student, future.result(), shots)
+                    report_path.write_text(html_text, encoding="utf-8")
+
+        data = session_data
 
         checklist_lines = [
             "未生成个人报告的学生清单",
@@ -2052,6 +2777,7 @@ def build_analysis_preflight(
 
     repositories = as_grading_repositories(db)
     data = assemble_session_analysis(repositories, int(session_id))
+    _enrich_personal_questions(repositories, data, None)
     cache = AnalysisNarrativeCache(cache_dir)
     rendition = report_rendition_version(report_type)
     entries = [
@@ -2061,8 +2787,9 @@ def build_analysis_preflight(
                 PERSONAL_SYSTEM_PROMPT,
                 build_personal_payload(data, student),
             ),
-            PERSONAL_MAX_TOKENS,
+            personal_output_token_limit(sum(record.lost for record in student.records)),
         )
+        for data in split_session_analysis_by_class(data).values()
         for student in data.students
     ]
 
@@ -2078,7 +2805,7 @@ def build_analysis_preflight(
         if cache.load(key) is not None:
             cache_hits += 1
             continue
-        # 粗估 = 输入 token（字符数/1.5）+ 输出上限。
+        # 文本粗估 = 输入 token（字符数/1.5）+ 输出上限；图片计费由模型决定。
         estimated_tokens += estimate_prompt_tokens(prompt) + max_tokens
 
     configured = resolve_content_generation_settings() is not None

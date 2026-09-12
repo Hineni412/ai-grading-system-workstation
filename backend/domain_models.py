@@ -71,3 +71,4 @@ class ExamPaperGroup:
     enhanced_back_image: Path | None = None
     match_method: str = "exact"
     match_score: float = 1.0
+    detected_class_name: str | None = None

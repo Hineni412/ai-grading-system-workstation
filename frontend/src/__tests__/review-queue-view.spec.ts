@@ -16,6 +16,7 @@ import { createAppRouter } from '../router'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import { useReviewQueueStore } from '../stores/review-queue'
 import { useSessionStore } from '../stores/session'
+import { useResultsCenterStore } from '../stores/results-center'
 import ReviewQueueView from '../views/ReviewQueueView.vue'
 
 vi.mock('../api/review', async (importOriginal) => ({
@@ -806,6 +807,23 @@ describe('source-recalibrated review view', () => {
     expect(host.textContent).toContain('请先选择考试')
     expect(loadQuestionsSpy).not.toHaveBeenCalled()
     expect(loadItemsSpy).not.toHaveBeenCalled()
+  })
+
+  it('returns to the originating results page without confirming a viewed answer', async () => {
+    const { host, router, pinia } = await mountView({
+      initialUrl: '/grading?session=7&entry=results&question=Q2&detail=22',
+    })
+    const fullPath = '/results?tab=details&filter=needs_review&session=7'
+    useResultsCenterStore(pinia).viewState = {
+      sessionId: 7, fullPath, searchQuery: '学生', selectedClass: '七年级一班',
+      matrixSort: { key: 'total', direction: 'descending', questionId: null },
+      scrollTop: 160, scrollLeft: 0, matrixScrollTop: 220, matrixScrollLeft: 300,
+    }
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="back-to-batch"]')?.textContent).toContain('返回成绩明细'))
+    host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')!.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe(fullPath))
+    expect(confirmReviewItem).not.toHaveBeenCalled()
+    expect(useResultsCenterStore(pinia).viewState?.matrixScrollLeft).toBe(300)
   })
 
   it('restores a valid question and pending detail from the URL', async () => {

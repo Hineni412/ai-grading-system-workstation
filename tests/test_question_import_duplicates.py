@@ -176,7 +176,7 @@ def bank(tmp_path: Path) -> dict[str, Path]:
     return {"db": db_path, "data_root": data_root}
 
 
-def test_duplicate_key_ignores_image_markers() -> None:
+def test_duplicate_key_rejects_unresolved_image_markers() -> None:
     base = duplicate_question_key(
         {"question_text": "求阴影部分面积", "answer_text": "面积为 12"}
     )
@@ -206,8 +206,8 @@ def test_duplicate_key_ignores_image_markers() -> None:
     )
 
     assert base
-    assert with_images == base
-    assert other_source_images == base
+    assert not with_images
+    assert not other_source_images
 
 
 def test_image_markers_do_not_defeat_exact_duplicate_linking(
@@ -215,6 +215,11 @@ def test_image_markers_do_not_defeat_exact_duplicate_linking(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    from PIL import Image
+    for name in ("a/q1.png", "b/q1.png", "b/a1.png"):
+        path = bank["data_root"] / "question_bank" / "extracted_images" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (12, 12), "red").save(path)
     first_text = (
         f"1. {QUESTION_TEXT}"
         "[[IMAGE:question_bank/extracted_images/a/q1.png]]\n"
@@ -309,7 +314,7 @@ def test_exact_duplicate_links_and_reuses_analysis(
     assert gaps[target_id] == {"evidence_ready": True, "criteria_ready": True}
 
 
-def test_same_text_with_different_answer_is_only_a_near_hint(
+def test_identical_question_reuses_labels_and_retains_each_answer(
     bank: dict[str, Path],
     tmp_path: Path,
     monkeypatch,
@@ -324,7 +329,7 @@ def test_same_text_with_different_answer_is_only_a_near_hint(
     second = _import_paper(tmp_path, bank["db"], bank["data_root"], name="b.docx", text=changed)
 
     assert second.question_count == 1
-    assert second.exact_duplicate_count == 0
+    assert second.exact_duplicate_count == 1
     target_id = _single_question_id(bank["db"], "b")
     with connect(bank["db"]) as conn:
         links = conn.execute(
@@ -335,12 +340,11 @@ def test_same_text_with_different_answer_is_only_a_near_hint(
             "SELECT COUNT(*) AS n FROM question_tags WHERE question_id = ?",
             (target_id,),
         ).fetchone()
-    assert int(links["n"]) == 0
-    assert int(tags["n"]) == 0
-    assert len(second.near_duplicate_hints) == 1
-    hint = second.near_duplicate_hints[0]
-    assert hint["matched_question_id"] == source_id
-    assert hint["high"] is True
+    assert int(links["n"]) == 1
+    assert int(tags["n"]) == 3
+    with connect(bank["db"]) as conn:
+        assert conn.execute("SELECT answer_text FROM questions WHERE id=?", (source_id,)).fetchone()[0] == "42"
+        assert conn.execute("SELECT answer_text FROM questions WHERE id=?", (target_id,)).fetchone()[0] == "43"
 
 
 def test_near_variant_imports_normally_with_hint_only(
@@ -420,3 +424,62 @@ def test_later_file_in_same_batch_matches_earlier_file(
         ).fetchone()
     assert link is not None
     assert int(link["duplicate_of_question_id"]) == first_id
+
+
+
+def test_exact_identity_checks_pixels_and_preserves_figure_positions(tmp_path):
+    from PIL import Image
+    from question_bank.services.duplicate_analysis_copy_service import exact_question_key
+    root = tmp_path / "data"
+    for name, color in (("a.png","red"),("b.png","red"),("c.png","blue")):
+        path = root / "question_bank" / "extracted_images" / name
+        path.parent.mkdir(parents=True,exist_ok=True)
+        Image.new("RGB",(20,20),color).save(path)
+    def key(name, prefix="求线段长度"):
+        return exact_question_key({"question_text": prefix+f"[[IMAGE:question_bank/extracted_images/{name}]]", "has_images": True},data_root=root)
+    assert key("a.png") and key("a.png") == key("b.png")
+    assert key("a.png") != key("c.png")
+    assert not key("missing.png")
+    first = {"question_text":"图甲[[IMAGE:question_bank/extracted_images/a.png]]图乙[[IMAGE:question_bank/extracted_images/c.png]]"}
+    swapped = {"question_text":"图甲[[IMAGE:question_bank/extracted_images/c.png]]图乙[[IMAGE:question_bank/extracted_images/a.png]]"}
+    assert exact_question_key(first,data_root=root) != exact_question_key(swapped,data_root=root)
+
+
+def test_exact_identity_keeps_numbers_options_and_formula_content(tmp_path):
+    from question_bank.services.duplicate_analysis_copy_service import exact_question_key
+    root = tmp_path / "data"
+    def key(stem, number="1", **extra):
+        return exact_question_key(dict(question_text=stem,question_number=number,**extra),data_root=root)
+    assert key("1. 求3的平方") == key("27. 求3的平方", "27")
+    assert key("求3的平方") != key("求4的平方")
+    assert key("3.5的平方", "3") != key("5的平方", "3")
+    assert key("选择结果",options=["A.3","B.4"]) != key("选择结果",options=["A.4","B.3"])
+    def formula(latex):
+        return exact_question_key({"question_text":"求下式的值"},data_root=root,
+            rich_content={"math_expressions":[{"restricted_latex":latex}]})
+    assert formula("x^2+1") != formula("x^2-1")
+    assert formula("x^2+1") == formula("x^2+1")
+
+
+def test_manual_add_reuses_existing_labels_without_changing_source_occurrence(bank):
+    from question_bank.models.question import QuestionCreate, TagCreate
+    from question_bank.services.question_write_service import QuestionBankWriteService
+    service = QuestionBankWriteService(bank["db"], data_root=bank["data_root"])
+    source = service.add_question(QuestionCreate(question_number="1",question_text="解方程3x+5=11",answer_text="x=2",difficulty="5",
+        tags=[TagCreate("knowledge_point","一元一次方程"),TagCreate("method","等式变形")]))
+    target = service.add_question(QuestionCreate(question_number="19",question_text="解方程3x+5=11",answer_text="移项得3x=6，故x=2"))
+    with connect(bank["db"]) as conn:
+        assert conn.execute("SELECT duplicate_of_question_id FROM question_duplicate_links WHERE question_id=?",(target,)).fetchone()[0] == source
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE question_id=?",(target,)).fetchone()[0] == 2
+        row=conn.execute("SELECT question_number,difficulty,answer_text FROM questions WHERE id=?",(target,)).fetchone()
+        assert tuple(row) == ("19","5","移项得3x=6，故x=2")
+
+
+def test_current_filter_keeps_its_duplicate_occurrence_when_source_is_outside(bank):
+    from question_bank.services.question_read_service import QuestionBankReadService, QuestionReadFilters
+    with connect(bank["db"]) as conn:
+        conn.execute("INSERT INTO papers(id,title,import_status) VALUES (1,'原卷','ready'),(2,'第二卷','ready')")
+        conn.execute("INSERT INTO questions(id,paper_id,question_number,question_text) VALUES(1,1,'1','求3的平方'),(2,2,'9','求3的平方')")
+    service=QuestionBankReadService(bank["db"],data_root=bank["data_root"])
+    page=service.list_questions(QuestionReadFilters(paper_ids=(2,),collapse_duplicates=True))
+    assert [item["id"] for item in page.items] == [2]

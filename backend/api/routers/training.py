@@ -37,6 +37,7 @@ from backend.api.schemas.training import (
     PersonalizedPaperInstanceListResponse,
     PersonalizedPaperInstanceResponse,
     TrainingScanBatchCreateRequest,
+    TrainingScanBatchListResponse,
     TrainingScanBatchResponse,
     TrainingScanPageResolveRequest,
     TrainingSubmissionCancelRequest,
@@ -132,6 +133,10 @@ PERSONALIZED_PAPER_UPLOAD_LIMIT = 50 * 1024 * 1024
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 
 
+def _grouping_module(body: TrainingDiagnosisRequest) -> PersonalizedRecommendationModule | None:
+    return get_personalized_recommendation_module() if body.grouping else None
+
+
 @router.post(
     "/diagnosis",
     response_model=TrainingDiagnosisResponse,
@@ -143,12 +148,30 @@ def build_training_diagnosis(
     service: DiagnosisProfileService = Depends(
         get_request_diagnosis_profile_service
     ),
+    grouping_module: PersonalizedRecommendationModule | None = Depends(_grouping_module),
 ) -> TrainingDiagnosisResponse:
     try:
         diagnosis = service.build_profiles(
             scope=body.scope.model_dump(exclude_none=True),
             exam_scope=body.exam_scope.model_dump(exclude_none=True),
         )
+        if body.grouping is not None:
+            grouping = body.grouping
+            assert grouping_module is not None
+            diagnosis["grouping"] = grouping_module.chapter_groups(
+                diagnosis=diagnosis,
+                config=PersonalizedRecommendationConfig(
+                    paper_mode="shared", scope_keys=tuple(grouping.scope_keys),
+                    group_scope_keys=tuple(grouping.scope_keys), question_count=grouping.question_count,
+                    expected_minutes=grouping.expected_minutes, difficulty_min=grouping.difficulty_min,
+                    difficulty_max=grouping.difficulty_max, direct_ratio=grouping.direct_ratio,
+                    prerequisite_ratio=grouping.prerequisite_ratio, transfer_ratio=grouping.transfer_ratio,
+                    exclude_current_exam_originals=grouping.exclude_current_exam_originals,
+                    curriculum_volume_id=grouping.curriculum_volume_id,
+                    training_intent=grouping.training_intent,
+                    teaching_progress_chapter_id=grouping.teaching_progress_chapter_id,
+                ), member_ids=grouping.member_ids, target_keys=grouping.target_keys,
+            )
     except ValueError as exc:
         raise ApiError(
             422,
@@ -262,9 +285,16 @@ def create_personalized_recommendation_draft(
                     body.exclude_current_exam_originals
                 ),
                 curriculum_volume_id=body.curriculum_volume_id or "",
+                group_scope_keys=tuple(body.group_scope_keys),
+                group_source_version=body.group_source_version,
+                training_intent=body.training_intent,
+                teaching_progress_chapter_id=body.teaching_progress_chapter_id,
             ),
             actor_ref="local_teacher",
         )
+    except RecommendationSourceChanged as exc:
+        raise ApiError(409, "personalized_recommendation_source_changed",
+                       "Group evidence or question sources changed; refresh the group") from exc
     except RecommendationRequestConflict as exc:
         raise ApiError(
             409,
@@ -812,6 +842,22 @@ def download_personalized_paper_batch(
         media_type=media_type,
         headers=NO_STORE_HEADERS,
     )
+
+
+@router.get(
+    "/scan-batches",
+    response_model=TrainingScanBatchListResponse,
+    responses=TRAINING_DATABASE_RESPONSES,
+)
+def list_training_scan_batches(
+    paper_batch_id: str = Query(pattern=r"^[0-9a-fA-F]{64}$"),
+    module: TrainingSubmissionModule = Depends(get_training_submission_module),
+) -> TrainingScanBatchListResponse:
+    try:
+        items = module.list_batches(paper_batch_id)
+    except (TrainingSubmissionError, OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        _raise_submission_api_error(exc)
+    return TrainingScanBatchListResponse.model_validate({"items": items})
 
 
 @router.post(

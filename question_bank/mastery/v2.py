@@ -129,8 +129,11 @@ class ExamEvidence:
     evidence_weight: float = 1.0
     teacher_correction: float | None = None
     teacher_correction_reason: str | None = None
+    part_difficulty: float | None = None
 
     def __post_init__(self) -> None:
+        if self.part_difficulty is not None:
+            object.__setattr__(self, "part_difficulty", _bounded(self.part_difficulty, "part_difficulty", minimum=1.0, maximum=10.0))
         object.__setattr__(
             self,
             "evidence_id",
@@ -197,8 +200,11 @@ class TrainingEvidence:
     evidence_weight: float = 1.0
     teacher_correction: float | None = None
     teacher_correction_reason: str | None = None
+    part_difficulty: float | None = None
 
     def __post_init__(self) -> None:
+        if self.part_difficulty is not None:
+            object.__setattr__(self, "part_difficulty", _bounded(self.part_difficulty, "part_difficulty", minimum=1.0, maximum=10.0))
         object.__setattr__(
             self,
             "evidence_id",
@@ -314,7 +320,7 @@ class MasteryV2Parameters:
     schema_version: Literal["mastery-v2-parameters-v1"] = (
         "mastery-v2-parameters-v1"
     )
-    formula_version: Literal["mastery-v2-formula-v1"] = (
+    formula_version: Literal["mastery-v2-formula-v1", "mastery-v2-formula-v2"] = (
         "mastery-v2-formula-v1"
     )
     prior_mean: float = 0.65
@@ -329,7 +335,7 @@ class MasteryV2Parameters:
     def __post_init__(self) -> None:
         if self.schema_version != "mastery-v2-parameters-v1":
             raise ValueError("unsupported parameter schema")
-        if self.formula_version != "mastery-v2-formula-v1":
+        if self.formula_version not in {"mastery-v2-formula-v1", "mastery-v2-formula-v2"}:
             raise ValueError("unsupported formula version")
         object.__setattr__(
             self,
@@ -561,6 +567,16 @@ def _contribution(
         * evidence.evidence_weight
         * decay
     )
+    weighted_value = effective_value * effective_weight
+    if parameters.formula_version == "mastery-v2-formula-v2" and evidence.part_difficulty is not None:
+        # Outcome-specific contributions: difficult failure is weaker negative
+        # evidence. Do not also multiply the legacy symmetric difficulty/5.
+        base_weight = source_weight * evidence.evidence_weight * decay
+        offset = (evidence.part_difficulty - 5.5) / 4.5
+        positive = base_weight * effective_value * (1.0 + 0.25 * offset)
+        negative = base_weight * (1.0 - effective_value) * (1.0 - 0.25 * offset)
+        effective_weight = positive + negative
+        weighted_value = positive
     precision = parameters.output_precision + 4
     return MasteryEvidenceContribution(
         evidence_id=evidence.evidence_id,
@@ -578,7 +594,7 @@ def _contribution(
         time_decay=round(decay, precision),
         effective_weight=round(effective_weight, precision),
         weighted_value=round(
-            effective_value * effective_weight,
+            weighted_value,
             precision,
         ),
     )

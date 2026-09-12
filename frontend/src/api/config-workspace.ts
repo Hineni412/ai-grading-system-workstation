@@ -237,7 +237,7 @@ function isRichBlock(value: unknown): boolean {
       && cell.segments.every(isRichSegment)))
 }
 
-function isRichContent(value: unknown): value is QuestionBankRichContent {
+export function isConfigRichContent(value: unknown): value is QuestionBankRichContent {
   return isRecord(value) && hasExactKeys(value, [
     'available', 'question_block_count', 'answer_block_count', 'question_blocks', 'answer_blocks',
   ]) && typeof value.available === 'boolean'
@@ -275,7 +275,7 @@ function isQuestionPreview(value: unknown): value is ConfigQuestionPreview {
     && (value.question_type_basis === undefined
       || typeof value.question_type_basis === 'string')
     && typeof value.has_question_asset === 'boolean' && typeof value.has_answer_asset === 'boolean'
-    && (value.rich_content === undefined || isRichContent(value.rich_content))
+    && (value.rich_content === undefined || isConfigRichContent(value.rich_content))
 }
 
 function isSafeBasename(value: unknown): value is string {

@@ -35,7 +35,7 @@ GENERIC_ERROR_REASONS = {
 _TAG_PROFILE_CACHE_LOCK = threading.RLock()
 _TAG_PROFILE_CACHE_LIMIT = 12
 _TAG_PROFILE_CACHE: dict[
-    tuple[str, str, str, str],
+    tuple[str, ...],
     tuple[dict[str, Any], dict[str, Any]],
 ] = {}
 
@@ -49,6 +49,7 @@ class DiagnosisProfileService:
         grading_db: GradingRepositoryAccess | None = None,
         question_bank_connection: sqlite3.Connection | None = None,
         cache_identity: tuple[str, ...] | None = None,
+        data_root: Path | None = None,
     ) -> None:
         self.grading_db_path = Path(grading_db_path)
         self.db = (
@@ -58,6 +59,7 @@ class DiagnosisProfileService:
         )
         self.question_bank_db_path = Path(question_bank_db_path)
         self.question_bank_connection = question_bank_connection
+        self.data_root = Path(data_root) if data_root is not None else self.question_bank_db_path.parent.parent
         self.cache_identity = cache_identity
         self.latest_aggregated_mastery: dict[str, Any] = {}
 
@@ -81,7 +83,8 @@ class DiagnosisProfileService:
         )
         cache_key = (
             "\u0000".join(source_identity),
-            "tag-profile-v1",
+            "tag-profile-part-v4-source-root",
+            str(self.data_root),
             json.dumps(scope, ensure_ascii=False, sort_keys=True, default=str),
             json.dumps(exam_scope, ensure_ascii=False, sort_keys=True, default=str),
         )
@@ -163,6 +166,11 @@ class DiagnosisProfileService:
                     "bank_question_id": int(row.get("bank_question_id") or 0),
                     "score_awarded": awarded,
                     "full_score": full_score,
+                    "assessment": dict(row.get("assessment") or {}),
+                    "deduction_reason": str(row.get("deduction_reason") or "").strip(),
+                    "error_summary": str(row.get("error_summary") or "").strip(),
+                    "secondary_errors": [dict(error) for error in row.get("secondary_errors") or []
+                                         if isinstance(error, Mapping)],
                     "score_rate": round(awarded / full_score, 4) if full_score > 0 else None,
                     "source_kind": (
                         "current_exam"
@@ -291,6 +299,7 @@ class DiagnosisProfileService:
             per_student_mastery = CurrentMasteryCalculator(
                 self.question_bank_db_path,
                 resolver,
+                data_root=self.data_root,
             ).calculate(
                 mastery_profile,
                 allowed_student_ids=frozenset(student_ids),
@@ -408,8 +417,11 @@ class DiagnosisProfileService:
                 str(item["knowledge_key"]): item
                 for item in student.get("weak_points") or []
             }
+            for point in points.values():
+                point.update(mastery=None, evidence_count=0, effective_weight=0.0,
+                             direct_evidence_count=0, child_evidence_count=0)
             for (candidate_student_id, stable_key), current in mastery.items():
-                if candidate_student_id != student_id or current.value is None:
+                if candidate_student_id != student_id:
                     continue
                 node = node_by_key.get(stable_key)
                 if node is None:
@@ -436,7 +448,7 @@ class DiagnosisProfileService:
                     student["weak_points"].append(point)
                     points[stable_key] = point
                 point.update({
-                    "mastery": float(current.value),
+                    "mastery": float(current.value) if current.value is not None else None,
                     "evidence_count": int(current.evidence_count),
                     "effective_weight": float(current.effective_weight),
                     "hierarchy_kind": (
@@ -445,6 +457,7 @@ class DiagnosisProfileService:
                     ),
                     "child_knowledge_keys": sorted(children_by_parent.get(stable_key, [])),
                     "direct_evidence_count": int(current.direct_evidence_count),
+                    "precise_training_evidence_count": int(current.precise_training_evidence_count),
                     "child_evidence_count": max(
                         int(current.evidence_count) - int(current.direct_evidence_count),
                         0,
@@ -657,6 +670,7 @@ class DiagnosisProfileService:
         service = QuestionTagProjectionService(
             self.question_bank_db_path,
             external_connection=self.question_bank_connection,
+            data_root=self.data_root,
         )
         projections: dict[int, QuestionTagProjection] = {}
         for session_id in session_ids:
@@ -694,6 +708,12 @@ class DiagnosisProfileService:
                 continue
             enriched = dict(row)
             enriched["bank_question_id"] = projected.bank_question_id
+            from question_bank.solution_evidence.part_assessments import exam_assessment_state
+            enriched["assessment"] = exam_assessment_state(projected.assessment, row.get("assessment_state") or {},
+                teacher_final=row.get("teacher_final_revision") is not None,
+                teacher_score=float(row["score_awarded"]) if row.get("teacher_final_revision") is not None else None)
+            if row.get("teacher_final_max_score") is not None:
+                enriched["full_score"] = row["teacher_final_max_score"]
             enriched["question_tags"] = {
                 tag_type: list(values)
                 for tag_type, values in projected.tags.items()

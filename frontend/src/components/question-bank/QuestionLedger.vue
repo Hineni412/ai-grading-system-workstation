@@ -169,6 +169,10 @@ function closeSimilar(): void {
           </div>
         </header>
 
+        <p v-if="question.duplicate_of_question_id" class="qb-feedback">
+          与题库 <button type="button" class="qb-link" @click="store.selectQuestion(question.duplicate_of_question_id)">#{{ question.duplicate_of_question_id }}</button> 相同，{{ question.duplicate_labels_reused ? '已复用标签' : '已关联，标签待补齐' }}
+        </p>
+
         <div class="qb-question-card__content">
           <QuestionContentRenderer
             :blocks="question.rich_content?.question_blocks"

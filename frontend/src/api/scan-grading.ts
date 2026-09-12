@@ -102,6 +102,24 @@ export interface ScanPreflight {
   warnings: string[]
   decisions: ScanDecision[]
   pending_issue_count: number
+  match_conflicts?: ScanMatchConflict[]
+}
+
+export interface ScanMatchConflict {
+  code: string
+  message: string
+  student_id: number
+  targets: { target_type: 'group' | 'issue'; target_id: string }[]
+}
+
+export interface ScanDecisionSaveResult {
+  revision: number
+  decisions: ScanDecision[]
+  pending_issue_count: number
+  ready_to_grade: number
+  summary?: Record<string, number>
+  absent_students?: Record<string, unknown>[]
+  match_conflicts?: ScanMatchConflict[]
 }
 
 export interface ScanStudentMatchOption {
@@ -434,12 +452,7 @@ export function fetchGradingPlan(sessionId: number, mode: GradingMode, signal?: 
   })
 }
 
-export function saveScanDecisions(sessionId: number, revision: number, decisions: ScanDecision[]): Promise<{
-  revision: number
-  decisions: ScanDecision[]
-  pending_issue_count: number
-  ready_to_grade: number
-}> {
+export function saveScanDecisions(sessionId: number, revision: number, decisions: ScanDecision[]): Promise<ScanDecisionSaveResult> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan/preflight/decisions`, {
     method: 'PUT', body: { expected_revision: revision, decisions },
     decode(value) {
@@ -448,12 +461,7 @@ export function saveScanDecisions(sessionId: number, revision: number, decisions
         || !finiteInteger(value.pending_issue_count) || !finiteInteger(value.ready_to_grade)) {
         throw new Error('Invalid scan decisions')
       }
-      return value as unknown as {
-        revision: number
-        decisions: ScanDecision[]
-        pending_issue_count: number
-        ready_to_grade: number
-      }
+      return value as unknown as ScanDecisionSaveResult
     },
   })
 }

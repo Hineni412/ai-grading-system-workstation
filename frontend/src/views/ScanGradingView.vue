@@ -106,6 +106,8 @@ const stage = computed(() => {
   return 1
 })
 const pendingCount = computed(() => store.preflight?.pending_issue_count ?? 0)
+const matchConflicts = computed(() => store.preflight?.match_conflicts ?? [])
+const decisionNotice = ref('')
 const canPreviewPlan = computed(() => Boolean(store.preflight)
   && !store.gradingRun && !gradingStarting.value && !gradingCompletedWithoutRun.value
   && !store.busyAction && store.planState !== 'loading')
@@ -114,12 +116,13 @@ const canConfirmPlan = computed(() => Boolean(
   && store.gradingPlan.mode === store.selectedMode
   && store.gradingPlan.status === 'ready'
   && store.planState === 'ready'
+  && matchConflicts.value.length === 0
   && (pendingCount.value === 0 || confirmPending.value)
   && !store.busyAction
   && !gradingStarting.value,
 ))
 const invalidCount = computed(() => store.preflight?.decisions
-  .filter((item) => item.target_type === 'issue' && item.action === 'invalid').length ?? 0)
+  .filter((item) => item.action === 'invalid').length ?? 0)
 const missingBackCount = computed(() => store.preflight?.issues
   .filter((item) => item.issue_type === 'missing_back' || item.issue_type === 'orphan_page').length ?? 0)
 const preflightPageAssignment = computed(() => (
@@ -128,7 +131,24 @@ const preflightPageAssignment = computed(() => (
 ))
 const lowConfidenceGroups = computed(() => store.preflight?.groups.filter((item) => (
   item.match_method !== 'exact' || Number(item.match_score ?? 0) < 1
+  || matchConflicts.value.some((conflict) => conflict.targets.some((target) => target.target_type === 'group' && target.target_id === String(item.id)))
+  || store.preflight?.decisions.some((decision) => decision.target_type === 'group' && decision.target_id === String(item.id))
 )) ?? [])
+const selectedMatches = computed<ScanDecision[]>(() => {
+  const selected: ScanDecision[] = []
+  for (const [targetType, items] of [
+    ['group', lowConfidenceGroups.value], ['issue', store.preflight?.issues ?? []],
+  ] as const) {
+    for (const item of items) {
+      const targetId = String(item.id)
+      const studentId = selectedStudents.value[targetId]
+      const saved = decisionFor(targetType, targetId)
+      if (!studentId || !item.back_media_url || (saved?.action === 'match' && saved.student_id === studentId)) continue
+      selected.push({ target_type: targetType, target_id: targetId, action: 'match', student_id: studentId })
+    }
+  }
+  return selected
+})
 const confirmedDecisions = computed(() => store.preflight?.decisions
   .filter((item) => item.action !== 'pending') ?? [])
 const runProcessed = computed(() => {
@@ -374,7 +394,7 @@ function decisionStatus(decision: ScanDecision | undefined): string {
   if (decision.action === 'invalid') return '已保存：标记无效'
   if (decision.action === 'pending') return '已保存：稍后处理'
   const student = store.students.find((item) => item.id === decision.student_id)
-  return `已保存：匹配至 ${student?.name ?? '已选学生'}`
+  return `已保存：匹配至 ${student ? [student.name, student.student_code, student.class_name].filter(Boolean).join(' · ') : '已选学生'}`
 }
 function decisionTargetLabel(decision: ScanDecision): string {
   const items = decision.target_type === 'group'
@@ -388,12 +408,33 @@ function decisionTargetLabel(decision: ScanDecision): string {
     || (decision.target_type === 'group' ? '自动匹配答卷' : '异常答卷'),
   )
 }
+async function submitDecisions(changes: ScanDecision[]): Promise<void> {
+  if (!changes.length || store.busyAction) return
+  decisionNotice.value = ''
+  const decisions = (store.preflight?.decisions ?? []).filter((item) => !changes.some(
+    (change) => change.target_type === item.target_type && change.target_id === item.target_id,
+  ))
+  const succeeded = await store.saveDecisions([...decisions, ...changes])
+  if (!succeeded) return
+  for (const change of changes) {
+    if (selectedStudents.value[change.target_id] === change.student_id) delete selectedStudents.value[change.target_id]
+  }
+  decisionNotice.value = `已保存 ${changes.length} 项；仍有 ${pendingCount.value} 份待处理。`
+}
 function saveDecision(targetType: 'group' | 'issue', targetId: string, action: 'match' | 'invalid' | 'pending'): void {
-  const decisions: ScanDecision[] = [...(store.preflight?.decisions ?? [])
-    .filter((item) => !(item.target_type === targetType && item.target_id === targetId))]
-  decisions.push({ target_type: targetType, target_id: targetId, action,
-    ...(action === 'match' ? { student_id: selectedStudents.value[targetId] } : {}) })
-  void store.saveDecisions(decisions)
+  void submitDecisions([{ target_type: targetType, target_id: targetId, action,
+    ...(action === 'match' ? { student_id: selectedStudents.value[targetId] } : {}) }])
+}
+function conflictMessages(targetType: 'group' | 'issue', targetId: string): string {
+  return matchConflicts.value.filter((c) => c.targets.some((t) => t.target_type === targetType && t.target_id === targetId))
+    .map((c) => c.message).join(' ')
+}
+function classEvidence(item: Record<string, unknown>, targetType: 'group' | 'issue'): string {
+  if (!item.detected_class_name) return ''
+  const saved = decisionFor(targetType, String(item.id))
+  const student = store.students.find((s) => s.id === (selectedStudents.value[String(item.id)]
+    ?? (saved?.action === 'match' ? saved.student_id : item.student_id)))
+  return `卷面班级：${item.detected_class_name}；所选学生班级：${student?.class_name || '尚未选择'}。请看卷核对。`
 }
 function openViewer(
   targetType: 'group' | 'issue',
@@ -490,6 +531,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onWindowKeydown)
 })
 watch(sessionId, () => {
+  selectedStudents.value = {}
+  decisionNotice.value = ''
   gradingSubmissionPending.value = false
   closeViewer()
   void loadRoute()
@@ -618,7 +661,20 @@ watch(
             <strong>PDF 第 1 页为{{ preflightPageAssignment.first_page_role === 'front' ? '正面' : '反面' }}</strong>
             （正面位于{{ preflightPageAssignment.front_page_parity === 'odd' ? '奇数页' : '偶数页' }}）。
           </p>
-          <p v-if="pendingCount" class="scan-warning"><strong>仍有 {{ pendingCount }} 份异常答卷待处理</strong>。它们可以暂时跳过，不会阻塞其余学生批改。</p>
+          <p class="scan-start-summary" data-scan-reconciliation>
+            扫描 {{ store.preflight.summary.scanned_papers ?? 0 }} 份 · 已匹配 {{ store.preflight.summary.matched_papers ?? 0 }} 份 ·
+            对应 {{ store.preflight.summary.unique_students ?? 0 }} 名学生 · 有效可批改 {{ store.preflight.summary.ready_to_grade ?? 0 }} 份 ·
+            未决 {{ pendingCount }} 份 · 无效 {{ invalidCount }} 份
+          </p>
+          <p v-if="matchConflicts.length" class="scan-warning" role="alert">存在答卷归属冲突，请处理下方标出的答卷后再开始批改。可以更正归属，或将重复扫描标为无效。</p>
+          <p v-else-if="pendingCount" class="scan-warning"><strong>仍有 {{ pendingCount }} 份异常答卷待处理</strong>。确认跳过后，可以先批改其余学生。</p>
+          <div class="scan-stage__actions scan-match-actions">
+            <button type="button" class="secondary" data-match-selected :disabled="!selectedMatches.length || Boolean(store.busyAction)" @click="submitDecisions(selectedMatches)">
+              {{ store.busyAction === 'decisions' ? '正在保存…' : `一键匹配（${selectedMatches.length} 项）` }}
+            </button>
+            <span>只提交已选好学生的完整答卷；未选择的项目继续保留。</span>
+          </div>
+          <p v-if="decisionNotice" class="scan-decision-state" role="status">{{ decisionNotice }}</p>
           <div v-if="lowConfidenceGroups.length" class="scan-issue-list" aria-label="低可信自动匹配">
             <div v-for="group in lowConfidenceGroups" :key="String(group.id)" class="scan-issue-row">
               <div class="scan-evidence" :aria-label="`${group.source_label || '答卷'}正反面证据`">
@@ -640,18 +696,27 @@ watch(
               <span class="scan-item-copy">
                 <strong>{{ group.student_name || group.detected_name || '待核对姓名' }}</strong>
                 <small>{{ group.source_label }} · {{ group.match_method }}</small>
+                <small v-if="group.detected_name">识别姓名：{{ group.detected_name }}</small>
+                <small v-if="classEvidence(group, 'group')">{{ classEvidence(group, 'group') }}</small>
+                <small v-if="conflictMessages('group', String(group.id))" class="scan-match-conflict">{{ conflictMessages('group', String(group.id)) }}</small>
                 <small v-if="decisionFor('group', String(group.id))"
                   :data-saved-decision="`group:${String(group.id)}`" class="scan-decision-state">
                   {{ decisionStatus(decisionFor('group', String(group.id))) }}
                 </small>
               </span>
+              <div class="scan-issue-controls">
               <StudentMatchSelect
                 v-model="selectedStudents[String(group.id)]"
                 :students="store.students"
                 placeholder="姓名、学号或拼音"
                 aria-label="重新选择学生"
               />
-              <button type="button" class="secondary" :disabled="!selectedStudents[String(group.id)]" @click="saveDecision('group', String(group.id), 'match')">确认改绑</button>
+              <div class="scan-issue-controls__actions">
+              <button type="button" class="secondary" :disabled="!selectedStudents[String(group.id)] || !group.back_media_url || Boolean(store.busyAction)" @click="saveDecision('group', String(group.id), 'match')">确认归属</button>
+              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision('group', String(group.id), 'invalid')">标记无效</button>
+              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision('group', String(group.id), 'pending')">稍后处理</button>
+              </div>
+              </div>
             </div>
           </div>
           <div v-if="store.preflight.issues.length" class="scan-issue-list">
@@ -676,20 +741,27 @@ watch(
               <span class="scan-item-copy">
                 <strong>{{ issue.detected_name || '未识别姓名' }}</strong>
                 <small>{{ issue.source_label || '异常答卷' }}</small>
+                <small v-if="issue.issue_type === 'ambiguous_name'">名单中有重名，请按学号和班级选择。</small>
+                <small v-if="classEvidence(issue, 'issue')">{{ classEvidence(issue, 'issue') }}</small>
+                <small v-if="conflictMessages('issue', String(issue.id))" class="scan-match-conflict">{{ conflictMessages('issue', String(issue.id)) }}</small>
                 <small v-if="decisionFor('issue', String(issue.id))"
                   :data-saved-decision="`issue:${String(issue.id)}`" class="scan-decision-state">
                   {{ decisionStatus(decisionFor('issue', String(issue.id))) }}
                 </small>
               </span>
+              <div class="scan-issue-controls">
               <StudentMatchSelect
                 v-model="selectedStudents[String(issue.id)]"
                 :students="store.students"
                 placeholder="姓名、学号或拼音"
                 aria-label="选择学生"
               />
-              <button type="button" class="secondary" :disabled="!selectedStudents[String(issue.id)]" @click="saveDecision('issue', String(issue.id), 'match')">匹配</button>
-              <button type="button" class="text-button" @click="saveDecision('issue', String(issue.id), 'invalid')">标记无效</button>
-              <button type="button" class="text-button" @click="saveDecision('issue', String(issue.id), 'pending')">稍后处理</button>
+              <div class="scan-issue-controls__actions">
+              <button type="button" class="secondary" :disabled="!selectedStudents[String(issue.id)] || !issue.back_media_url || Boolean(store.busyAction)" @click="saveDecision('issue', String(issue.id), 'match')">匹配</button>
+              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision('issue', String(issue.id), 'invalid')">标记无效</button>
+              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision('issue', String(issue.id), 'pending')">稍后处理</button>
+              </div>
+              </div>
             </div>
           </div>
           <details v-if="confirmedDecisions.length" class="scan-confirmed-decisions">
@@ -997,15 +1069,13 @@ watch(
             />
             <button
               type="button"
-              :disabled="!selectedStudents[activeViewerTarget.targetId]"
+              :disabled="!selectedStudents[activeViewerTarget.targetId] || !activeViewerTarget.backUrl || Boolean(store.busyAction)"
               @click="saveDecision(activeViewerTarget.targetType, activeViewerTarget.targetId, 'match')"
             >
-              {{ activeViewerTarget.targetType === 'group' ? '确认改绑' : '匹配为该学生' }}
+              {{ activeViewerTarget.targetType === 'group' ? '确认归属' : '匹配为该学生' }}
             </button>
-            <template v-if="activeViewerTarget.targetType === 'issue'">
-              <button type="button" class="secondary" @click="saveDecision('issue', activeViewerTarget.targetId, 'invalid')">标记无效</button>
-              <button type="button" class="text-button" @click="saveDecision('issue', activeViewerTarget.targetId, 'pending')">稍后处理</button>
-            </template>
+            <button type="button" class="secondary" :disabled="Boolean(store.busyAction)" @click="saveDecision(activeViewerTarget.targetType, activeViewerTarget.targetId, 'invalid')">标记无效</button>
+            <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision(activeViewerTarget.targetType, activeViewerTarget.targetId, 'pending')">稍后处理</button>
             <p v-if="decisionFor(activeViewerTarget.targetType, activeViewerTarget.targetId)" class="scan-decision-state">
               {{ decisionStatus(decisionFor(activeViewerTarget.targetType, activeViewerTarget.targetId)) }}
             </p>

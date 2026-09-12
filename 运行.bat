@@ -12,16 +12,8 @@ if not exist "%PROJECT_RUNNER%" goto missing_runner
 
 set "FRONTEND_DIR=%~dp0frontend"
 if not exist "%FRONTEND_DIR%\package.json" goto frontend_ready
-where npm.cmd >nul 2>nul
-if errorlevel 1 goto missing_frontend_runtime
-
-echo Building the latest frontend...
-pushd "%FRONTEND_DIR%"
-call npm.cmd run build
-set "FRONTEND_BUILD_EXIT=%ERRORLEVEL%"
-popd
-if not "%FRONTEND_BUILD_EXIT%"=="0" goto frontend_build_error
-echo Frontend build completed.
+"%PYTHON_EXE%" "%PROJECT_RUNNER%" tools.ensure_frontend
+if errorlevel 1 goto frontend_build_error
 
 :frontend_ready
 if "%API_PORT%"=="" set "API_PORT=8035"
@@ -62,11 +54,6 @@ goto failed
 :missing_runner
 echo The project launcher was not found.
 echo Missing file: %PROJECT_RUNNER%
-goto failed
-
-:missing_frontend_runtime
-echo Node.js and npm were not found.
-echo Install the required Node.js version, then run this file again.
 goto failed
 
 :frontend_build_error

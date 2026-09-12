@@ -73,9 +73,27 @@ class TrainingExamScopeRequest(_TrainingModel):
         return result
 
 
+class TrainingGroupingRequest(_TrainingModel):
+    scope_keys: list[str] = Field(min_length=1, max_length=50)
+    member_ids: list[str] = Field(default_factory=list, max_length=500)
+    target_keys: list[str] = Field(default_factory=list, max_length=50)
+    question_count: int = Field(default=10, ge=8, le=12)
+    expected_minutes: int = 40  # 兼容输入，不参与推荐
+    difficulty_min: int = Field(default=2, ge=1, le=10)
+    difficulty_max: int = Field(default=7, ge=1, le=10)
+    exclude_current_exam_originals: bool = True
+    curriculum_volume_id: str = ""
+    training_intent: Literal["remediation", "challenge"] = "remediation"
+    teaching_progress_chapter_id: str = Field(default="", max_length=100)
+    direct_ratio: float = Field(default=.6, ge=0, le=1)
+    prerequisite_ratio: float = Field(default=.3, ge=0, le=1)
+    transfer_ratio: float = Field(default=.1, ge=0, le=1)
+
+
 class TrainingDiagnosisRequest(_TrainingModel):
     scope: TrainingScopeRequest
     exam_scope: TrainingExamScopeRequest
+    grouping: TrainingGroupingRequest | None = None
 
 
 class TrainingStageRatios(_TrainingModel):
@@ -135,9 +153,9 @@ class TrainingTaskConfirmRequest(TrainingPlanRequest):
 class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
     request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     question_count: int = Field(default=10, ge=8, le=12)
-    expected_minutes: int = Field(default=45, ge=10, le=180)
+    expected_minutes: int = 45  # 兼容输入，不参与推荐
     difficulty_min: int = Field(default=1, ge=1, le=10)
-    difficulty_max: int = Field(default=10, ge=1, le=10)
+    difficulty_max: int = Field(default=7, ge=1, le=10)
     stage_ratios: TrainingStageRatios = Field(
         default_factory=TrainingStageRatios
     )
@@ -147,6 +165,10 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
     target_names: list[str] = Field(default_factory=list, max_length=50)
     exclude_current_exam_originals: bool = True
     curriculum_volume_id: str | None = None
+    group_scope_keys: list[str] = Field(default_factory=list, max_length=50)
+    group_source_version: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
+    training_intent: Literal["remediation", "challenge"] = "remediation"
+    teaching_progress_chapter_id: str = Field(default="", max_length=100)
 
     @field_validator("curriculum_volume_id")
     @classmethod
@@ -186,8 +208,6 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
     def difficulty_range_is_ordered(
         self,
     ) -> "PersonalizedRecommendationCreateRequest":
-        if self.difficulty_min > self.difficulty_max:
-            raise ValueError("difficulty range is invalid")
         if self.target_keys and self.target_names:
             raise ValueError(
                 "target_keys and target_names cannot both be provided"
@@ -219,6 +239,7 @@ class PersonalizedRecommendationDraftResponse(_TrainingModel):
     engine_version: str
     source_version: str = Field(pattern=r"^[0-9a-f]{64}$")
     config: dict[str, Any]
+    group_basis: dict[str, Any] | None = None
     students: list[dict[str, Any]]
     warnings: list[str]
     history: list[dict[str, Any]]
@@ -318,6 +339,19 @@ class TrainingScanBatchCreateRequest(_TrainingModel):
         if len(set(item.casefold() for item in value)) != len(value):
             raise ValueError("paper instance ids must be unique")
         return value
+
+
+class TrainingScanBatchSummary(_TrainingModel):
+    batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    paper_batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["manual_review", "ready", "cancelled"]
+    submission_count: int = Field(ge=0)
+    created_at: str
+    updated_at: str
+
+
+class TrainingScanBatchListResponse(_TrainingModel):
+    items: list[TrainingScanBatchSummary]
 
 
 class TrainingScanPageResolveRequest(_TrainingModel):
@@ -501,12 +535,16 @@ class TrainingEvidenceReference(_TrainingModel):
     full_score: float
     score_rate: float | None = None
     source_kind: Literal["current_exam", "historical_exam"] = "current_exam"
+    assessment: dict[str, Any] = Field(default_factory=dict)
+    deduction_reason: str = ""
+    error_summary: str = ""
+    secondary_errors: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TrainingWeakPoint(_TrainingModel):
     knowledge_key: str
     knowledge_point: str
-    mastery: float
+    mastery: float | None
     score_sum: float
     full_score_sum: float
     deduction_count: int
@@ -523,6 +561,7 @@ class TrainingWeakPoint(_TrainingModel):
     child_knowledge_keys: list[str] = Field(default_factory=list)
     direct_evidence_count: int = Field(default=0, ge=0)
     child_evidence_count: int = Field(default=0, ge=0)
+    precise_training_evidence_count: int = Field(default=0, ge=0)
 
 
 class TrainingStudentProfile(_TrainingModel):
@@ -581,6 +620,7 @@ class TrainingDiagnosisResponse(_TrainingModel):
     unmapped_terms: list[str]
     warnings: list[str]
     diagnosis_identity: Literal["question_tag"]
+    grouping: dict[str, Any] | None = None
 
 
 __all__ = [

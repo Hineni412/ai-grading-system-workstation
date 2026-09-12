@@ -99,6 +99,11 @@ def _system(tmp_path, *, config_fingerprint_resolver=None):
 
 
 def _prepare_ready_scan_batch(client, db, tmp_path, session_id: int) -> dict:
+    from db_manager import StudentRecord
+
+    if not db.list_students():
+        db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
+    student = db.list_students()[0]
     binding = _configure_preflight_binding(db, tmp_path, session_id)
     content = b"\xff\xd8\xffready scan"
     uploaded = client.post(
@@ -132,7 +137,10 @@ def _prepare_ready_scan_batch(client, db, tmp_path, session_id: int) -> dict:
                         "source_label": "001",
                         "front_image": str(scan_file),
                         "back_image": None,
-                        "student_id": 1,
+                        "student_id": int(student["id"]),
+                        "student_name": student["name"],
+                        "match_method": "exact",
+                        "match_score": 1.0,
                     }
                 ],
                 "issues": [],
@@ -460,7 +468,10 @@ def test_student_can_be_deleted_after_grading_cancel_is_confirmed(tmp_path) -> N
 
 
 def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None:
+    from db_manager import StudentRecord
+
     client, db, manager = _system(tmp_path)
+    db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
     session_id = db.create_grading_session("并发启动测试", "rubric.json", "answer.json")
     binding = _configure_preflight_binding(db, tmp_path, session_id)
     content = b"\xff\xd8\xfffront"
@@ -494,6 +505,8 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
                         "front_image": str(scan_file),
                         "back_image": None,
                         "student_id": 1,
+                        "match_method": "exact",
+                        "match_score": 1.0,
                     }
                 ],
                 "issues": [],
@@ -613,7 +626,10 @@ def test_new_batch_rejects_retry_from_the_previous_batch(tmp_path) -> None:
 
 
 def test_restart_can_submit_when_manifest_has_orphaned_reservation(tmp_path) -> None:
+    from db_manager import StudentRecord
+
     client, db, manager = _system(tmp_path)
+    db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
     session_id = db.create_grading_session("启动中断恢复", "rubric.json", "answer.json")
     binding = _configure_preflight_binding(db, tmp_path, session_id)
     content = b"\xff\xd8\xfffront"
@@ -643,6 +659,8 @@ def test_restart_can_submit_when_manifest_has_orphaned_reservation(tmp_path) -> 
                         "front_image": str(scan_file),
                         "back_image": None,
                         "student_id": 1,
+                        "match_method": "exact",
+                        "match_score": 1.0,
                     }
                 ],
                 "issues": [],

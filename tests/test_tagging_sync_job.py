@@ -377,8 +377,10 @@ def test_tagging_sync_proposal_persistence_keeps_the_planned_contract() -> None:
     ]
 
 
+@pytest.mark.parametrize("duplicate", [False, True])
 def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     tmp_path: Path,
+    duplicate: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "qb.db"
@@ -392,7 +394,13 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
         )
     )
     install_current_knowledge(db_path)
-    context, _store = _context(tmp_path, {"question_ids": [question_id]})
+    requested_ids = [question_id]
+    if duplicate:
+        duplicate_id = QuestionBankTestStore(db_path).add_question(QuestionCreate(
+            question_number="27", question_text="计算整式运算并化简。",
+            answer_text="合并同类项后写出化简结果。", question_type="解答题"))
+        requested_ids.append(duplicate_id)
+    context, _store = _context(tmp_path, {"question_ids": requested_ids})
     gateway_calls: list[tuple[str, tuple[int, ...]]] = []
     initialize_calls: list[Path] = []
     refresh_calls: list[tuple[int, ...]] = []
@@ -541,7 +549,9 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     assert refresh_calls == [(question_id,)]
     assert result["outcome"] == "complete"
     assert result["analysis_contract"] == "combined-v3"
-    assert result["evidence_succeeded_question_ids"] == [question_id]
+    assert result["evidence_succeeded_question_ids"] == requested_ids
+    assert result["successful_question_ids"] == requested_ids
+    assert result["criteria_succeeded_question_ids"] == requested_ids
     assert QuestionBankTestStore(db_path).get_question(question_id)["tags"]
     stored = SolutionEvidenceRepository(db_path).latest(question_id)
     assert stored is not None
@@ -559,6 +569,18 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     assert stored["evidence"]["whole_question_classification"][
         "resolved_core_node_ids"
     ] == ["kp_alg_polynomial"]
+
+    if duplicate:
+        duplicate_evidence = SolutionEvidenceRepository(db_path).latest(duplicate_id)
+        assert duplicate_evidence is not None
+        assert duplicate_evidence["evidence"]["question_id"] == duplicate_id
+        assert duplicate_evidence["evidence"]["parts"] == stored["evidence"]["parts"]
+        second_context, _ = _context(tmp_path, {"question_ids": requested_ids})
+        def no_factory(): raise AssertionError("complete duplicate must not request a model")
+        second = run_tagging_sync_job(context=second_context,question_bank_db_path=db_path,data_root=data_root,
+            ai_service_factory=no_factory,taxonomy_governance=governance)
+        assert second["outcome"] == "complete"
+        assert second["successful_question_ids"] == requested_ids
 
 
 def test_fill_twelve_questions_only_analyzes_five_missing_and_refreshes_counts(
@@ -586,7 +608,7 @@ def test_fill_twelve_questions_only_analyzes_five_missing_and_refreshes_counts(
             """
             UPDATE questions
             SET paper_id = ?,
-                question_text = '用 AAS 证明三角形全等',
+                question_text = '用 AAS 证明三角形全等，已知角为' || (30 + id) || '度',
                 answer_text = '写出 AAS 全等证明过程'
             """,
             (paper_id,),

@@ -64,11 +64,19 @@ CLASS_NARRATIVE = {
 class FakeLLMClient:
     def __init__(self, narrative: dict | None = None, error: Exception | None = None):
         self.calls = 0
+        self.requests: list[dict] = []
         self._narrative = dict(narrative or PERSONAL_NARRATIVE)
         self._error = error
 
     def json_from_text(self, prompt, extra_kwargs=None, **_kwargs):
+        return self._respond(prompt, [], extra_kwargs, _kwargs)
+
+    def json_from_images_once(self, prompt, image_blobs, extra_kwargs=None, **kwargs):
+        return self._respond(prompt, image_blobs, extra_kwargs, kwargs)
+
+    def _respond(self, prompt, images, extra_kwargs, kwargs):
         self.calls += 1
+        self.requests.append({"prompt": prompt, "images": images, "options": extra_kwargs, **kwargs})
         if self._error is not None:
             raise self._error
         return dict(self._narrative)
@@ -162,6 +170,8 @@ def _seed_analysis_session(db, root: Path) -> int:
                     None,
                 ),
             )
+            if review:
+                conn.execute("UPDATE session_details SET confidence_score=70 WHERE result_id=? AND question_id='Q1'", (result_id,))
             conn.execute(
                 """
                 INSERT INTO session_details (
@@ -691,10 +701,485 @@ def test_personal_report_html_sanitized_and_typed(analysis_db, tmp_path: Path) -
     # 英文类型码不得出现在报告里，大题行显示中文题型。
     assert "comprehensive" not in zhangsan_html
     assert "第2题 解答" in zhangsan_html
-    # 客观题内部调试串被翻译，且学生作答单独成行。
+    # 原始批改记录不再展示，学生作答仍单独成行。
     assert "objective_answer" not in lisi_html
-    assert "作答识别为「C」，与参考答案不符" in lisi_html
+    assert "作答识别为「C」，与参考答案不符" not in lisi_html
+    assert "<dt>批改记录</dt>" not in lisi_html
     assert "<dt>学生作答</dt><dd>C</dd>" in lisi_html
+
+
+def test_report_displays_part_knowledge_difficulty_and_keeps_exam_rate(analysis_db) -> None:
+    from analysis_report_exporter import assemble_session_analysis, build_personal_payload, _render_personal_html, _knowledge_rows
+    db, session_id, root = analysis_db
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    student = data.students[0]
+    record = next(r for r in student.records if r.lost)
+    before = (student.student_score, record.score, record.max_score, student.rank)
+    data.knowledge_backfill = {record.question_id: [{'path':'几何｜三角形全等','label':'三角形全等','stable_key':'kp_geo_triangle_congruence'}]}
+    data.question_assessments = {record.question_id: {'granularity':'part','part_difficulty':8,'reason':'part_composite_attribution_limited'}}
+    payload = build_personal_payload(data,student)
+    question = next(q for q in payload['questions'] if q['question_id'] == record.question_id)
+    assert question['part_assessment']['part_difficulty'] == 8
+    assert question['direct_knowledge'][0]['stable_key'] == 'kp_geo_triangle_congruence'
+    assert _knowledge_rows(data.knowledge_backfill,student.records)[0]['rate'] == record.score / record.max_score
+    html = _render_personal_html(data,student,PERSONAL_NARRATIVE,{})
+    assert '<dt>直接考查</dt><dd>三角形全等</dd>' in html
+    assert '8 / 10（题目难度）' in html and '本次考试得分率' in html
+    assert before == (student.student_score, record.score, record.max_score, student.rank)
+
+
+def test_compact_report_preserves_review_solution_and_missing_stem(analysis_db) -> None:
+    from analysis_report_exporter import assemble_session_analysis, _render_personal_html
+
+    db, session_id, root = analysis_db
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    student = data.students[0]
+    record = next(r for r in student.records if r.lost)
+    info = next(q for q in data.questions if q.question_id == record.question_id)
+    info.question_markup = '<p>完整原题表格</p><table><tr><td>x</td><td>20</td></tr><tr><td>y</td><td>___</td></tr></table>[[IMAGE:synthetic/source.png]]'
+    record.deduction_reason = "必须隐藏的旧批改记录"
+    record.teacher_comment = "教师批语应当保留"
+    item = {"question_id": record.question_id, "feedback": "已写正确关系，需补依据。",
+            "stem_in_scan": True, "review_note": "原卷与扣分理由冲突。",
+            "solution_steps": ["由两底角相等得出关系。", "代入直角得到结论。"],
+            "solution_source": "reference", "full_solution": "完整证明细节。",
+            "revision_task": "补写两步。"}
+    narrative = {**PERSONAL_NARRATIVE, "question_analyses": [item]}
+    without_scan = _render_personal_html(data, student, narrative, {})
+    assert "<table><tr><td>x</td><td>20</td>" in without_scan
+    assert "[[IMAGE:" not in without_scan and "synthetic/source.png" not in without_scan
+    assert "教师批语应当保留" in without_scan
+    assert "必须隐藏的旧批改记录" not in without_scan
+    assert "报告分析提示 · 建议核对" in without_scan and "原卷与扣分理由冲突。" in without_scan
+    assert "AI 参考解法" in without_scan  # no supplied reference analysis
+    assert "<summary>查看完整解法</summary>" in without_scan
+    assert "作答表现" not in without_scan and "针对补练" not in without_scan
+    shots = {record.question_id: {"data_uri": "data:image/png;base64,eA==", "caption": "完整作答截图"}}
+    with_scan = _render_personal_html(data, student, narrative, shots)
+    assert "完整原题表格" in with_scan
+    assert '<details class="shot">' in with_scan and "点击放大" in with_scan
+    assert "订正任务" not in with_scan and "补写两步。" not in with_scan
+    item["stem_in_scan"] = False
+    assert "完整原题表格" in _render_personal_html(data, student, narrative, shots)
+
+
+def test_report_math_is_offline_and_preserves_explicit_tex() -> None:
+    from analysis_report_exporter import _report_inline_math, _report_math_assets, _QuestionInfo, _report_stem_html
+    inline = _report_inline_math(r"求y＝x/2与\(\frac{a+b}{c}\)，保留0/6分")
+    assert r'data-latex="y=\frac{x}{2}"' in inline
+    assert r'data-latex="\frac{a+b}{c}"' in inline
+    assert "保留0/6分" in inline
+    assert r'\frac{180^{\circ}-x^{\circ}}{2}' in _report_inline_math("两底角均为(180°－x°)/2。")
+    assert r'\frac{x^{\circ}}{2}' in _report_inline_math("角为x°/2。")
+    assert r'\frac{1}{2x}' not in _report_inline_math("y=1/2x")
+    info = _QuestionInfo("Q1", "proof", 5, "", "", question_markup='<span class="qm" data-latex="x^{2}">x²</span>')
+    assert 'data-latex="x^{2}"' in _report_stem_html(info, "")
+    assets = _report_math_assets()
+    assert 'data:font/woff2;base64,' in assets
+    assert 'url(fonts/' not in assets
+
+
+def test_report_lost_questions_follow_numeric_order(analysis_db) -> None:
+    from dataclasses import replace
+    from analysis_report_exporter import assemble_session_analysis, _render_personal_html
+    db, session_id, root = analysis_db
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    student = data.students[0]
+    base = next(r for r in student.records if r.lost)
+    info = next(q for q in data.questions if q.question_id == base.question_id)
+    student.records = [replace(base, question_id=qid, score=0) for qid in ("Q10", "Q2", "Q1")]
+    data.questions = [replace(info, question_id=qid) for qid in ("Q10", "Q2", "Q1")]
+    rendered = _render_personal_html(data, student, PERSONAL_NARRATIVE, {})
+    import re
+    assert re.findall(r'<div class="head"><b>第(\d+)题', rendered) == ["1", "2", "10"]
+
+
+def test_report_uses_one_student_bar_and_class_mean_marker(analysis_db) -> None:
+    from analysis_report_exporter import assemble_session_analysis, _render_personal_html
+    db, session_id, root = analysis_db
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    student = data.students[0]
+    rendered = _render_personal_html(data, student, PERSONAL_NARRATIVE, {})
+    assert rendered.count('class="bar me"') == len(student.records)
+    assert 'class="bar cls"' not in rendered
+    assert rendered.count('class="class-marker"') == len(student.records)
+    assert 'class="class-marker" style="left:75.00%"' in rendered
+    data.questions[0].attempts = 0
+    unknown_mean = _render_personal_html(data, student, PERSONAL_NARRATIVE, {})
+    assert unknown_mean.count('class="class-marker"') == len(student.records) - 1
+
+
+def test_report_review_status_follows_teacher_confirmation(analysis_db) -> None:
+    from analysis_report_exporter import assemble_session_analysis, _render_personal_html
+    db, session_id, root = analysis_db
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    student = next(s for s in data.students if s.student_name == "李四")
+    assert student.needs_review  # low confidence even without a category marker
+    with sqlite3.connect(db.db_path) as conn:
+        paper_id = conn.execute("SELECT paper_id FROM session_results WHERE id=?", (student.result_id,)).fetchone()[0]
+        conn.execute("""INSERT INTO teacher_score_locks (
+            session_id,scan_batch_id,student_id,question_id,score_awarded,max_score,
+            source_target_type,source_target_id
+        ) VALUES (?, 'synthetic-batch', ?, 'Q1', 30, 60, 'exam_paper', ?)""", (session_id, student.student_id, paper_id))
+    before = _score_state(db.db_path)
+    updated = assemble_session_analysis(db, session_id, data_root=root)
+    confirmed = next(s for s in updated.students if s.student_id == student.student_id)
+    assert not confirmed.needs_review
+    assert confirmed.student_score == student.student_score
+    rendered = _render_personal_html(updated, confirmed, {**PERSONAL_NARRATIVE,
+        "question_analyses": [{"question_id": "Q2", "feedback": "需要补充依据。", "review_note": "本次报告发现的独立疑点。"}]}, {})
+    assert "本卷有待复核题目" not in rendered
+    assert "报告分析提示" in rendered and "本次报告发现的独立疑点。" in rendered
+    assert _score_state(db.db_path) == before
+    with sqlite3.connect(db.db_path) as conn:
+        assert conn.execute("SELECT needs_human_review FROM session_results WHERE id=?", (student.result_id,)).fetchone()[0] == 1
+        conn.execute("UPDATE session_details SET confidence_score=60 WHERE result_id=? AND question_id='Q2'", (student.result_id,))
+    still_pending = assemble_session_analysis(db, session_id, data_root=root)
+    assert next(s for s in still_pending.students if s.student_id == student.student_id).needs_review
+
+
+def _add_personal_report_scans(db, session_id: int, root: Path) -> list[dict]:
+    from PIL import Image
+
+    with sqlite3.connect(db.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        papers = [dict(row) for row in conn.execute(
+            "SELECT id, student_id FROM exam_papers WHERE session_id=? ORDER BY id", (session_id,),
+        )]
+        for index, paper in enumerate(papers):
+            path = root / f"synthetic-paper-{paper['id']}.png"
+            Image.new("RGB", (400, 300), (220, 30, 30) if index == 0 else (30, 30, 220)).save(path)
+            conn.execute("UPDATE exam_papers SET front_image=? WHERE id=?", (str(path), paper["id"]))
+        template_id = conn.execute(
+            "INSERT INTO session_templates (session_id, front_template_path, back_template_path) VALUES (?, ?, '')",
+            (session_id, str(root / f"synthetic-paper-{papers[0]['id']}.png")),
+        ).lastrowid
+        for index, qid in enumerate(("Q1", "Q2")):
+            conn.execute(
+                """INSERT INTO answer_regions (
+                    region_uuid, session_id, template_id, page, region_order,
+                    x, y, w, h, mapped_question_id
+                ) VALUES (?, ?, ?, 'front', ?, 10, ?, 300, 100, ?)""",
+                (f"report-{qid}", session_id, template_id, index, 10 + index * 110, qid),
+            )
+    return papers
+
+
+def _score_state(db_path: Path) -> list[list[tuple]]:
+    with sqlite3.connect(db_path) as conn:
+        return [conn.execute(sql).fetchall() for sql in (
+            "SELECT * FROM session_results ORDER BY id",
+            "SELECT * FROM session_details ORDER BY id",
+            "SELECT * FROM teacher_score_locks ORDER BY id",
+        )]
+
+
+@pytest.mark.parametrize("manual_only", [True, False])
+def test_visual_reports_include_manual_students_and_keep_final_scores(
+    analysis_db, tmp_path: Path, manual_only: bool,
+) -> None:
+    import io
+    from PIL import Image
+    from analysis_report_exporter import assemble_session_analysis
+
+    db, session_id, root = analysis_db
+    papers = _add_personal_report_scans(db, session_id, root)
+    selected = papers if manual_only else papers[1:]
+    with sqlite3.connect(db.db_path) as conn:
+        for paper in selected:
+            student_id = paper["student_id"]
+            conn.execute("DELETE FROM session_details WHERE result_id IN (SELECT id FROM session_results WHERE student_id=?)", (student_id,))
+            conn.execute("DELETE FROM session_results WHERE student_id=?", (student_id,))
+            for qid, score, maximum in (("Q1", 40, 60), ("Q2", 15, 40)):
+                conn.execute(
+                    """INSERT INTO teacher_score_locks (
+                        session_id, scan_batch_id, student_id, question_id,
+                        score_awarded, max_score, deduction_reason,
+                        source_target_type, source_target_id
+                    ) VALUES (?, 'synthetic-batch', ?, ?, ?, ?, '教师确认的过程分', 'exam_paper', ?)""",
+                    (session_id, student_id, qid, score, maximum, paper["id"]),
+                )
+    before = _score_state(db.db_path)
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    assert len(data.students) == 2
+    assert sum(student.result_id < 0 for student in data.students) == len(selected)
+    client = FakeLLMClient()
+    generator = _make_generator(db, tmp_path / "out", tmp_path / "cache", client)
+    output = generator.export_session(session_id, "personal_analysis_html", score_revision="manual-v1")
+    assert _score_state(db.db_path) == before
+    assert client.calls == 2
+    with zipfile.ZipFile(output) as archive:
+        for student, request in zip(data.students, client.requests, strict=True):
+            payload = json.loads(request["prompt"].split("输入 JSON：\n", 1)[1])
+            assert payload["student"]["total_score"] == student.student_score
+            assert request["use_config_client"] is True
+            assert len(request["images"]) == len(payload["image_map"]) >= 2
+            assert [item["image_number"] for item in payload["image_map"]] == list(range(1, len(request["images"]) + 1))
+            assert any(item["kind"] == "student_overview" for item in payload["image_map"])
+            # Different solid colours ensure the report receives its own student's image.
+            with Image.open(io.BytesIO(request["images"][0])) as image:
+                red, _, blue = image.convert("RGB").getpixel((0, 0))
+            assert (red > blue) == (student.student_id == papers[0]["student_id"])
+            if student.result_id < 0:
+                assert student.student_score == 55
+                assert all(q["grading_record"]["teacher_confirmed"] for q in payload["questions"] if q["lost"])
+            text = archive.read(f"{student.student_code}_{student.student_name}_个人报告.html").decode("utf-8")
+            assert "原卷截图" in text
+            assert "未取得该生可读取的答卷图片" not in text
+    # Re-entering export reuses the existing narrative; it does not regrade or call twice.
+    generator.export_session(session_id, "personal_analysis_html", score_revision="manual-v1")
+    assert client.calls == 2
+    assert _score_state(db.db_path) == before
+
+
+def test_visual_report_failure_keeps_scores_and_does_not_retry_as_text(analysis_db, tmp_path: Path) -> None:
+    db, session_id, root = analysis_db
+    _add_personal_report_scans(db, session_id, root)
+    before = _score_state(db.db_path)
+    client = FakeLLMClient(error=TimeoutError("uncertain visual response"))
+    output = _make_generator(db, tmp_path / "out", tmp_path / "cache", client).export_session(
+        session_id, "personal_analysis_html", score_revision="visual-timeout",
+    )
+    assert client.calls == 2
+    assert all(request["images"] for request in client.requests)
+    assert _score_state(db.db_path) == before
+    with zipfile.ZipFile(output) as archive:
+        text = archive.read("001_张三_个人报告.html").decode("utf-8")
+    assert "AI 分析生成失败" in text
+    assert "原卷截图" in text
+
+
+def test_report_uses_saved_hybrid_steps_without_treating_absent_text_as_blank(analysis_db) -> None:
+    from analysis_report_exporter import assemble_session_analysis, build_personal_payload
+
+    db, session_id, root = analysis_db
+    answer = "已写出的推导过程" * 50
+    raw = {"grading_completeness": {"status": "complete"}, "detail_metadata": {
+        "Q2": {"observed_answer": answer, "evidence_steps": ["AB=AC"], "missing_steps": ["未说明两角相等的依据"]},
+    }}
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_results SET raw_json=? WHERE session_id=?", (json.dumps(raw, ensure_ascii=False), session_id))
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    payload = build_personal_payload(data, data.students[0])
+    question = next(item for item in payload["questions"] if item["question_id"] == "Q2")
+    assert question["student_answer"] == answer
+    assert question["grading_record"]["evidence_steps"] == ["AB=AC"]
+    assert question["grading_record"]["missing_steps"] == ["未说明两角相等的依据"]
+
+
+def test_personal_reference_context_only_uses_the_bound_source(analysis_db, monkeypatch) -> None:
+    import base64
+    from types import SimpleNamespace
+    from analysis_report_exporter import assemble_session_analysis, _enrich_personal_questions
+    from backend.config_workspace.sources import ConfigSourceService
+    from backend.repositories.access import as_grading_repositories
+
+    db, session_id, root = analysis_db
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE grading_sessions SET source_paper_sha256=? WHERE id=?", ("a" * 64, session_id))
+    source = SimpleNamespace(
+        sha256="a" * 64,
+        private_blocks=({"question_id": "Q1", "question_html": "<p>计算(-3)^2。A.-9 B.9 C.6 D.-6</p><img src='example.png'>", "text": "计算(-3)^2。A.-9 B.9 C.6 D.-6", "analysis": "括号内的负数整体平方。"},),
+        private_question_images={"Q1": {"question": base64.b64encode(b"synthetic-question-image").decode()}},
+    )
+    monkeypatch.setattr(ConfigSourceService, "__init__", lambda *a, **k: None)
+    monkeypatch.setattr(ConfigSourceService, "load_active_record", lambda *a, **k: source)
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    _enrich_personal_questions(as_grading_repositories(db), data, root)
+    q1 = next(info for info in data.questions if info.question_id == "Q1")
+    assert "A.-9 B.9" in q1.question_text
+    assert q1.question_text.count("计算(-3)^2") == 1
+    assert q1.reference_analysis == "括号内的负数整体平方。"
+    assert q1.reference_images == [("question", b"synthetic-question-image")]
+    source.sha256 = "b" * 64
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    _enrich_personal_questions(as_grading_repositories(db), data, root)
+    assert not data.questions[0].question_text
+    assert not data.questions[0].reference_images
+
+
+def test_class_scope_is_shared_by_personal_and_class_batch_exports(analysis_db) -> None:
+    from analysis_report_exporter import assemble_session_analysis, split_session_analysis_by_class
+    db, session_id, root = analysis_db
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE students SET class_name='2 班' WHERE name='李四'")
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    groups = split_session_analysis_by_class(data)
+    assert [(name, group.present, group.roster_absent, group.stats["avg"])
+            for name, group in groups.items()] == [("1 班", 1, 1, 90), ("2 班", 1, 0, 50)]
+    assert [s.rank for group in groups.values() for s in group.students] == [1, 1]
+    assert groups["1 班"].questions[0].class_avg == 60
+    assert groups["2 班"].questions[0].class_avg == 30
+    assert [s.rank for s in data.students] == [1, 2]  # 分班不污染原场次对象。
+    student = groups["2 班"].students[0]
+    fake = FakeLLMClient()
+    generator = _make_generator(db, root / "scoped", root / "cache", fake)
+    archive = generator.export_session(session_id, "personal_analysis_html", student_ids={student.student_id})
+    with zipfile.ZipFile(archive) as package:
+        reports = [name for name in package.namelist() if name.endswith(".html")]
+        assert len(reports) == 1
+        assert "李四" in reports[0]
+    payload = json.loads(fake.requests[0]["prompt"].split("输入 JSON：\n", 1)[1])
+    assert payload["student"]["class_stats"]["avg"] == 50
+    assert payload["student"]["class_stats"]["rank"] == 1
+    fake._narrative = CLASS_NARRATIVE
+    files = generator.export_classes(session_id)
+    assert len(files) == 2
+    prompts = [json.loads(request["prompt"].split("输入 JSON：\n", 1)[1]) for request in fake.requests[1:]]
+    assert [(p["exam"]["class_name"], p["score_distribution"]["avg"], len(p["students"]))
+            for p in prompts] == [("1 班", 90, 1), ("2 班", 50, 1)]
+    assert "李四" not in files[0].read_text(encoding="utf-8")
+    assert "张三" not in files[1].read_text(encoding="utf-8")
+    generator.export_classes(session_id)
+    assert fake.calls == 3  # 个人一次、两个班各一次；再次导出使用相同分班缓存。
+
+
+@pytest.mark.parametrize("full_score", [100, 150])
+def test_score_bands_are_disjoint_at_every_boundary(full_score) -> None:
+    from analysis_report_exporter import _score_distribution
+    stats = _score_distribution([value * full_score / 100 for value in (0, 40, 60, 70, 85, 100)], full_score)
+    assert [band["count"] for band in stats["bands"]] == [2, 1, 1, 1, 1]
+    assert sum(band["count"] for band in stats["bands"]) == 6
+
+
+def test_scored_subparts_do_not_leave_unscored_parent_rows(analysis_db) -> None:
+    from analysis_report_exporter import assemble_session_analysis, build_class_page_data
+    db, session_id, root = analysis_db
+    rubric_path = root / "config" / "uploaded" / "rubric.json"
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["questions"][1]["parts"] = [
+        {"part_id": "Q2(P1)", "part_score": 20}, {"part_id": "Q2(P2)", "part_score": 20},
+    ]
+    rubric_path.write_text(json.dumps(rubric, ensure_ascii=False), encoding="utf-8")
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_details SET question_id='Q2(P1)', score_awarded=score_awarded/2 WHERE question_id='Q2'")
+        conn.execute("INSERT INTO session_details (result_id, question_id, score_awarded, knowledge_ids) SELECT result_id, 'Q2(P2)', score_awarded, knowledge_ids FROM session_details WHERE question_id='Q2(P1)'")
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    page = build_class_page_data(data)
+    assert [q["question_id"] for q in page["questions"]] == ["Q1", "Q2(P1)", "Q2(P2)"]
+    assert sum(q["max_score"] for q in page["questions"]) == 100
+    assert all(q["class_avg"] is not None for q in page["questions"])
+
+
+def test_report_reads_objective_answer_and_deduplicates_legacy_evidence() -> None:
+    from analysis_report_exporter import _student_answer_map
+    assert _student_answer_map({"detail_metadata": {
+        "Q1": {"recognized_answer": "B"},
+        "Q2": {"raw_answer": "1.3"},
+        "Q3(P1)": {"observed_answer": "AB=AC AB=AC", "evidence_steps": ["AB=AC"]},
+    }}) == {"Q1": "B", "Q2": "1.3", "Q3(P1)": "AB=AC"}
+
+
+def test_class_narrative_maps_aliases_adjacent_to_chinese_without_changing_ids(analysis_db) -> None:
+    from analysis_report_exporter import assemble_session_analysis, class_narrative_with_student_names
+    db, session_id, root = analysis_db
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    narrative = {"common_issues": [{"evidence": "S1、S2等学生在计算中失分；S1只写出结论。"}],
+                 "student_notes": [{"alias": "S2", "note": "可与S1讨论。"}],
+                 "grouping_advice": "让S1与S2分别展示。"}
+    mapped = class_narrative_with_student_names(narrative, data.students)
+    assert mapped["common_issues"][0]["evidence"] == "张三、李四等学生在计算中失分；张三只写出结论。"
+    assert mapped["student_notes"][0]["alias"] == "S2"
+    assert mapped["student_notes"][0]["note"] == "可与张三讨论。"
+    assert mapped["grouping_advice"] == "让张三与李四分别展示。"
+    assert narrative["grouping_advice"] == "让S1与S2分别展示。"
+
+
+@pytest.mark.parametrize("original_has_figure", [False, True])
+def test_docx_figure_recovery_excludes_solution_figures(original_has_figure) -> None:
+    import io
+    from types import SimpleNamespace
+    from docx import Document
+    from PIL import Image
+    from analysis_report_exporter import _docx_question_figures
+    pictures = []
+    for color in ("blue", "red"):
+        stream = io.BytesIO()
+        Image.new("RGB", (50, 50), color).save(stream, format="PNG")
+        pictures.append(stream.getvalue())
+    stem = "如图，在三角形ABC中，AB等于AC，求边长。"
+    document = Document()
+    document.add_paragraph("12．" + stem)
+    if original_has_figure:
+        document.add_picture(io.BytesIO(pictures[0]))
+    document.add_paragraph("参考答案与试题解析")
+    document.add_paragraph("12．" + stem)
+    document.add_picture(io.BytesIO(pictures[1] if original_has_figure else pictures[0]))
+    document.add_paragraph("【分析】添加辅助线。")
+    document.add_picture(io.BytesIO(pictures[1]))
+    output = io.BytesIO()
+    document.save(output)
+    source = SimpleNamespace(suffix=".docx", private_source_bytes=output.getvalue(),
+                             private_blocks=[{"question_id": "Q12", "question_text": stem}])
+    assert _docx_question_figures(source) == {"Q12": [pictures[0]]}
+
+
+@pytest.mark.parametrize("region_ids", [("Q2(1)", "2(2)"), ("Q2", "2")])
+def test_each_lost_part_has_its_own_answer_analysis_and_image(analysis_db, region_ids) -> None:
+    from dataclasses import replace
+    from analysis_report_exporter import (
+        assemble_session_analysis, _render_personal_html,
+        capture_lost_question_shots, _personal_image_inputs, _student_paper_context,
+    )
+    from backend.repositories.access import as_grading_repositories
+
+    db, session_id, root = analysis_db
+    _add_personal_report_scans(db, session_id, root)
+    from PIL import Image
+    with sqlite3.connect(db.db_path) as conn:
+        image_path = conn.execute("SELECT front_image FROM exam_papers WHERE session_id=? ORDER BY id", (session_id,)).fetchone()[0]
+    scan = Image.new("RGB", (400, 300), "white")
+    scan.paste("red", (0, 0, 400, 150))
+    scan.paste("blue", (0, 150, 400, 300))
+    scan.save(image_path)
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    student = data.students[0]
+    base_record = next(r for r in student.records if r.question_id == "Q2")
+    base_info = next(q for q in data.questions if q.question_id == "Q2")
+    parts = [
+        replace(base_record, question_id=f"Q2(P{i})", score=score, max_score=maximum, student_answer=f"第{i}问的作答")
+        for i, score, maximum in ((1, 5, 10), (2, 3, 10), (3, 20, 20))
+    ]
+    student.records = [student.records[0], *parts]
+    student.student_score = 88
+    data.questions = [data.questions[0], *[
+        replace(base_info, question_id=r.question_id, max_score=r.max_score, canonical_answer=f"第{i}问的标准答案")
+        for i, r in enumerate(parts, 1)
+    ]]
+    narrative = {**PERSONAL_NARRATIVE, "question_analyses": [
+        {"question_id": f"Q2(P{i})", "observation": f"第{i}问的证据", "possible_cause": f"Q2(P{i})的原因待确认", "evidence": "第一行缺少条件\n第二行有计算", "verification": "口述关键一步", "practice": "重做1道题", "evidence_level": "inferred"}
+        for i in (1, 2)
+    ]}
+    repositories = as_grading_repositories(db)
+    paper_context = _student_paper_context(repositories, data, student)
+    regions = [
+        {"mapped_question_id": region_id, "page": "front", "x": 0, "y": i * 150, "w": 400, "h": 150}
+        for i, region_id in enumerate(region_ids)
+    ]
+    shots = capture_lost_question_shots(
+        repositories, data, student, regions=regions, data_root=root,
+        paper_context=paper_context,
+    )
+    assert {shot["region_question_id"] for shot in shots.values()} == set(region_ids)
+    images, image_map = _personal_image_inputs(data, student, shots, paper_context, root)
+    assert len(images) == 3
+    if region_ids[0] == "Q2":
+        assert image_map[0]["question_ids"] == ["Q2(P1)", "Q2(P2)", "Q2(P3)"]
+        assert image_map[1]["question_ids"] == image_map[0]["question_ids"]
+    else:
+        assert image_map[0]["question_ids"] == ["Q2(P1)"]
+        assert image_map[1]["question_ids"] == ["Q2(P2)"]
+    rendered = _render_personal_html(data, student, narrative, shots)
+    assert rendered.count('class="shot"') == 2
+    assert rendered.count('class="qpart"') == 2
+    assert rendered.count("第1问的标准答案") == 1
+    assert rendered.count("第2问的标准答案") == 1
+    assert "第3问的标准答案" not in rendered
+    assert "第2(1)题的原因待确认" in rendered
+    assert "第2(2)题的原因待确认" in rendered
+    assert "Q2(P" not in rendered
+    assert "得 28 分 / 满分 40 分" in rendered
+    assert "<p>第一行缺少条件</p><p>第二行有计算</p>" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -786,3 +1271,91 @@ def test_retained_report_resubmit_after_download_reuses_job(analysis_api_client)
 
     assert resubmitted.status_code == 202
     assert resubmitted.json()["id"] == job["id"]
+
+
+def test_personal_concurrency_keeps_out_of_order_images_results_and_cache_separate(
+    analysis_db, tmp_path, monkeypatch,
+):
+    import threading
+    import time
+    from dataclasses import replace
+    from types import SimpleNamespace
+    import analysis_report_exporter as exporter
+
+    db, session_id, root = analysis_db
+    data = exporter.assemble_session_analysis(db, session_id, data_root=root)
+    data.students = [replace(data.students[0], student_id=i, student_code=f"T{i}", student_name=f"合成{i}") for i in range(1, 7)]
+    monkeypatch.setattr(exporter, "_enrich_personal_questions", lambda *_: None)
+    monkeypatch.setattr(exporter, "load_session_regions", lambda *_, **__: [])
+    monkeypatch.setattr(exporter, "_student_paper_context", lambda *_: {})
+    monkeypatch.setattr(exporter, "capture_lost_question_shots", lambda *_, **__: {})
+    monkeypatch.setattr(exporter, "_personal_image_inputs", lambda _data, student, *_: ([str(student.student_id).encode()], []))
+    # Keep file output deterministic while measuring only the changed scheduling.
+    monkeypatch.setattr(exporter, "_render_personal_html", lambda _data, student, narrative, _shots: json.dumps({"student": student.student_id, "narrative": narrative}))
+
+    class DelayedClient:
+        def __init__(self, limit, fail=None):
+            self.config_gateway = SimpleNamespace(execution_snapshot=SimpleNamespace(max_in_flight=limit))
+            self.lock = threading.Lock()
+            self.active = self.peak = 0
+            self.calls = []
+            self.completed = []
+            self.fail = fail
+
+        def json_from_images_once(self, prompt, images, **kwargs):
+            assert kwargs["use_config_client"] is True
+            sid = int(images[0])
+            with self.lock:
+                self.calls.append(sid)
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            time.sleep({1: .24, 2: .06, 3: .12, 4: .18, 5: .06, 6: .12}[sid])
+            with self.lock:
+                self.active -= 1
+                self.completed.append(sid)
+            if sid == self.fail:
+                raise TimeoutError("synthetic failure")
+            return {"overall_comment": f"分析-{sid}"}
+
+    def export(client, name, revision="same-input"):
+        out = tmp_path / name
+        out.mkdir(exist_ok=True)
+        generator = _make_generator(db, out, tmp_path / f"cache-{name}", client)
+        started = time.perf_counter()
+        path = generator._export_personal(data, revision)
+        elapsed = time.perf_counter() - started
+        with zipfile.ZipFile(path) as archive:
+            for sid in range(1, 7):
+                report = json.loads(archive.read(f"T{sid}_合成{sid}_个人报告.html"))
+                assert report["student"] == sid
+                expected = None if sid == client.fail else {"overall_comment": f"分析-{sid}"}
+                assert report["narrative"] == expected
+        return elapsed
+
+    export(DelayedClient(1), "warmup")  # load shared runtime code before either timed run
+    serial = DelayedClient(1)
+    serial_seconds = export(serial, "serial")
+    concurrent = DelayedClient(20)
+    concurrent_seconds = export(concurrent, "concurrent")
+    assert serial.peak == 1 and concurrent.peak == 3
+    assert concurrent.completed != concurrent.calls
+    assert sorted(concurrent.calls) == list(range(1, 7))
+    assert concurrent_seconds < serial_seconds * .7
+    print(f"REPORT_TIMING six identical synthetic inputs: serial={serial_seconds:.3f}s concurrent={concurrent_seconds:.3f}s")
+    export(concurrent, "concurrent")
+    assert len(concurrent.calls) == 6  # all cache hits on re-entry
+
+    partial = DelayedClient(2, fail=2)
+    export(partial, "partial")
+    assert partial.peak == 2 and len(partial.calls) == 6
+    export(partial, "partial")
+    assert partial.calls.count(2) == 2 and len(partial.calls) == 7
+    assert len(list((tmp_path / "cache-partial").glob("*.json"))) == 5
+    assert not list((tmp_path / "cache-partial").glob("*.tmp"))
+
+    def unavailable_factory():
+        raise AssertionError("cached reports must not initialize a model client")
+
+    cached = exporter.AnalysisReportGenerator(db, tmp_path / "concurrent", narrative_cache_dir=tmp_path / "cache-concurrent",
+                                              llm_client_factory=unavailable_factory, data_root=root)
+    assert cached._export_personal(data, "same-input").is_file()

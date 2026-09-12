@@ -29,7 +29,7 @@ const props = defineProps<{
   scope: TrainingStudentScopeRequest
   examScope: TrainingExamScopeRequest
   questionCount: number
-  stageRatios: TrainingStageRatios
+  stageRatios?: TrainingStageRatios
   excludeCurrentExamOriginals: boolean
   paperMode?: 'individual' | 'shared'
   targetKeys?: string[]
@@ -40,6 +40,10 @@ const props = defineProps<{
   difficultyMin?: number
   difficultyMax?: number
   curriculumVolumeId?: string | null
+  groupScopeKeys?: string[]
+  groupSourceVersion?: string
+  trainingIntent?: 'remediation' | 'challenge'
+  teachingProgressChapterId?: string
 }>()
 const emit = defineEmits<{
   stageChange: [stage: 'diagnosis' | 'draft' | 'wps' | 'scan']
@@ -48,9 +52,7 @@ const emit = defineEmits<{
 
 type RequestState = 'idle' | 'loading' | 'ready' | 'error' | 'editing'
 
-const expectedMinutes = ref(props.expectedMinutes ?? 45)
-const difficultyMin = ref(props.difficultyMin ?? 1)
-const difficultyMax = ref(props.difficultyMax ?? 10)
+const difficultyMax = ref(props.difficultyMax ?? 7)
 const selectedTargets = ref<string[]>([])
 const editReason = ref('教师根据课堂安排调整推荐草稿')
 const state = ref<RequestState>('idle')
@@ -94,11 +96,10 @@ const canGenerate = computed(() => (
   && !props.disabled
   && state.value !== 'loading'
   && state.value !== 'editing'
-  && expectedMinutes.value >= 10
-  && expectedMinutes.value <= 180
-  && difficultyMin.value >= 1
+  && props.questionCount >= 8
+  && props.questionCount <= 12
+  && difficultyMax.value >= 1
   && difficultyMax.value <= 10
-  && difficultyMin.value <= difficultyMax.value
   && (
     (props.scopeKeys?.length ?? 0) > 0
     || !targetOptions.value.length
@@ -122,19 +123,18 @@ const canDiscardDraft = computed(() => (
 // 出卷设置指纹：设置一致时才恢复上次草稿，设置变了必须重新生成。
 // rulesVersion 随选题规则升级递增，避免恢复规则升级前的旧草稿。
 const settingsFingerprint = computed(() => JSON.stringify({
-  rulesVersion: 2,
+  rulesVersion: 6,
   scope: props.scope,
   examScope: props.examScope,
   questionCount: props.questionCount,
-  expectedMinutes: expectedMinutes.value,
-  difficultyMin: difficultyMin.value,
   difficultyMax: difficultyMax.value,
-  stageRatios: props.stageRatios,
   paperMode: props.paperMode ?? 'individual',
   targetKeys: [...(props.targetKeys ?? [])].sort(),
   scopeKeys: [...(props.scopeKeys ?? [])].sort(),
   excludeCurrentExamOriginals: props.excludeCurrentExamOriginals,
   curriculumVolumeId: props.curriculumVolumeId ?? null,
+  groupScopeKeys: props.groupScopeKeys ?? [],
+  teachingProgressChapterId: props.teachingProgressChapterId ?? '',
 }))
 
 function rememberDraft(draftId: string): void {
@@ -148,7 +148,20 @@ let restoring = false
 async function restoreDraft(): Promise<void> {
   if (restoring || draft.value || state.value !== 'idle' || !props.diagnosis) return
   const stored = loadPaperDraftSession()
-  if (!stored || stored.fingerprint !== settingsFingerprint.value) return
+  if (!stored) return
+  let previousRules = false
+  if (stored.fingerprint !== settingsFingerprint.value) {
+    try {
+      const previous = JSON.parse(stored.fingerprint)
+      previousRules = Number(previous.rulesVersion) < 6
+      if (!previousRules) return
+      previous.rulesVersion = 6
+      for (const key of ['trainingIntent', 'expectedMinutes', 'difficultyMin', 'stageRatios']) delete previous[key]
+      previous.teachingProgressChapterId ??= ''
+      previous.difficultyMax = difficultyMax.value
+      if (JSON.stringify(previous) !== settingsFingerprint.value) return
+    } catch { return }
+  }
   restoring = true
   state.value = 'loading'
   try {
@@ -162,7 +175,9 @@ async function restoreDraft(): Promise<void> {
     paperBatch.value = batches[0] ?? null
     selectedDraftStudentId.value = restored.students[0]?.student_id ?? ''
     state.value = 'ready'
-    actionMessage.value = '已恢复上次生成的草稿，可继续审核。'
+    actionMessage.value = previousRules
+      ? '已恢复原草稿供查看；选题规则已更新，未冻结的草稿需按新规则重新生成，已生成训练卷仍可查看。'
+      : '已恢复上次生成的草稿，可继续审核。'
   } catch {
     clearPaperDraftSession()
     state.value = 'idle'
@@ -189,12 +204,6 @@ function discardDraft(): void {
 
 watch(workflowStage, (stage) => emit('stageChange', stage), { immediate: true })
 watch(state, (nextState) => emit('stateChange', nextState), { immediate: true })
-watch(() => props.expectedMinutes, (value) => {
-  if (value !== undefined) expectedMinutes.value = value
-})
-watch(() => props.difficultyMin, (value) => {
-  if (value !== undefined) difficultyMin.value = value
-})
 watch(() => props.difficultyMax, (value) => {
   if (value !== undefined) difficultyMax.value = value
 })
@@ -249,6 +258,17 @@ function stageLabel(stage: TrainingStage): string {
   }[stage]
 }
 
+function itemLabel(item: PersonalizedRecommendationItem): string {
+  return item.selection_kind === 'supplement' ? '补充练习' : stageLabel(item.stage)
+}
+
+function difficultySummary(items: PersonalizedRecommendationItem[]): string {
+  const basic = items.filter(item => item.difficulty <= 5).length
+  const six = items.filter(item => item.difficulty === 6).length
+  const challenge = items.filter(item => item.difficulty >= 7).length
+  return `1–5级 ${basic}题 · 6级 ${six}题 · 7级及以上 ${challenge}题 · 最高 ${Math.max(0, ...items.map(item => item.difficulty))}级`
+}
+
 function shortageStage(shortage: Record<string, unknown>): TrainingStage {
   const stage = String(shortage.stage ?? '')
   return stage === 'prerequisite' || stage === 'transfer' ? stage : 'direct'
@@ -258,6 +278,7 @@ function evidenceRefsFor(
   studentId: string,
   item: PersonalizedRecommendationItem,
 ): TrainingEvidenceReference[] {
+  if (item.selection_kind === 'supplement') return []
   const stableKey = typeof item.target?.stable_key === 'string'
     ? item.target.stable_key
     : ''
@@ -392,16 +413,15 @@ async function generate(): Promise<void> {
       scope: props.scope,
       exam_scope: props.examScope,
       question_count: props.questionCount,
-      expected_minutes: expectedMinutes.value,
-      difficulty_min: difficultyMin.value,
       difficulty_max: difficultyMax.value,
-      stage_ratios: props.stageRatios,
       paper_mode: props.paperMode ?? 'individual',
       target_keys: selectedTargetsAreGoverned.value ? selectedTargets.value : [],
       scope_keys: (props.scopeKeys ?? []).filter((key) => key.startsWith('kp_') || key.startsWith('ki_')),
       target_names: selectedTargetsAreGoverned.value ? [] : selectedTargetLabels.value,
       exclude_current_exam_originals: props.excludeCurrentExamOriginals,
       curriculum_volume_id: props.curriculumVolumeId ?? null,
+      teaching_progress_chapter_id: props.teachingProgressChapterId ?? '',
+      ...(props.groupScopeKeys?.length ? { group_scope_keys: props.groupScopeKeys, group_source_version: props.groupSourceVersion } : {}),
     })
     paperInstances.value = []
     selectedDraftStudentId.value = draft.value.students[0]?.student_id ?? ''
@@ -661,18 +681,10 @@ async function editItem(
       <section>
     <div class="personalized-controls">
       <label>
-        预计时长
-        <input v-model.number="expectedMinutes" type="number" min="10" max="180">
-        <span>分钟</span>
-      </label>
-      <label>
-        最低难度
-        <input v-model.number="difficultyMin" type="number" min="1" max="10">
-      </label>
-      <label>
-        最高难度
+        难度上限
         <input v-model.number="difficultyMax" type="number" min="1" max="10">
       </label>
+      <p>从实际错题难度起步，下浮 0–1 级；默认上限 7 级，按题量控制规模。</p>
     </div>
 
     <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets">
@@ -755,7 +767,7 @@ async function editItem(
       </ul>
 
       <div class="personalized-workbench">
-      <nav class="personalized-student-list" aria-label="一人一卷学生列表">
+      <nav class="personalized-student-list" :aria-label="paperMode === 'shared' ? '同卷学生列表' : '一人一卷学生列表'">
         <strong>学生与状态</strong>
         <button
           v-for="student in draft.students"
@@ -765,6 +777,7 @@ async function editItem(
           @click="selectedDraftStudentId = student.student_id"
         >
           <span>{{ student.student_name || student.student_code || student.student_id }}</span>
+          <small v-if="paperMode === 'shared'">{{ student.class_id }} · {{ student.student_code || student.student_id }}</small>
           <small>
             {{ instancesForStudent(student.student_id)[0]?.status === 'frozen'
               ? '已冻结'
@@ -778,9 +791,11 @@ async function editItem(
         <header>
           <div>
             <strong>{{ student.student_name || student.student_code || student.student_id }}</strong>
+            <span v-if="paperMode === 'shared'">{{ student.class_id }} · {{ student.student_code || student.student_id }}</span>
             <span>
-              {{ student.items.length }} 题 · 约 {{ student.estimated_minutes }} 分钟
+              {{ student.items.length }} 题
             </span>
+            <span v-if="student.items.length">{{ difficultySummary(student.items) }}</span>
           </div>
           <small>
             {{ student.selection_mode === 'maintenance_fallback' ? '保守复习' : '按掌握证据推荐' }}
@@ -794,7 +809,7 @@ async function editItem(
           <ol class="personalized-match-list">
             <li v-for="item in student.items" :key="item.item_id" class="personalized-match">
               <div class="personalized-match__evidence">
-                <strong>错题依据</strong>
+                <strong>{{ item.selection_kind === 'supplement' ? '补充依据' : '错题依据' }}</strong>
                 <template v-if="evidenceDisplayFor(student.student_id, item).representative">
                   <span title="本次考试失分最重的同细点错题">
                     {{ evidenceRefLabel(evidenceDisplayFor(student.student_id, item).representative!) }}
@@ -828,12 +843,14 @@ async function editItem(
                     </span>
                   </details>
                 </template>
+                <small v-else-if="item.selection_kind === 'supplement'">直接练习不足，按选定范围和相近难度补足题量。</small>
                 <small v-else>该细点在当前范围内暂无逐题失分记录</small>
               </div>
               <span class="personalized-match__arrow" aria-hidden="true">→</span>
               <div class="personalized-match__card">
                 <div class="personalized-match__head">
-                  <span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ stageLabel(item.stage) }}</span>
+                  <span class="personalized-match__order">第 {{ item.item_order }} 题</span>
+                  <span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ itemLabel(item) }}</span>
                   <strong :title="item.matched_name">{{ knowledgeLeafLabel(item.matched_name) }}</strong>
                   <small v-if="knowledgeLeafLabel(item.matched_name) !== item.matched_name">{{ item.matched_name }}</small>
                 </div>
@@ -845,14 +862,17 @@ async function editItem(
                   {{ item.question_text || '旧草稿未包含题干，重新生成后可见' }}
                 </p>
                 <small class="personalized-match__meta">
-                  题 {{ item.question_number }} · 难度 {{ item.difficulty }} · 约 {{ item.estimated_minutes }} 分钟 ·
+                  原卷第 {{ item.question_number }} 题 · {{ item.part_assessment ? '最难小问' : '整题难度' }} {{ item.difficulty }} ·
                   {{ item.criterion_point_count }} 个判定点 · 来源：{{ item.source_paper }}
+                </small>
+                <small v-if="item.part_assessment" class="personalized-match__meta">
+                  小问预估难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。
                 </small>
                 <small v-if="item.relation">
                   已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：
                   {{ item.relation.rationale }}
                 </small>
-                <small v-if="item.stage !== 'direct'" class="personalized-match__reason">
+                <small class="personalized-match__reason">
                   {{ item.reason }}
                 </small>
                 <div v-if="paperMode !== 'shared'" class="personalized-item-actions">
@@ -909,12 +929,16 @@ async function editItem(
         <ol v-else>
           <li v-for="item in student.items" :key="item.item_id">
             <div class="personalized-item-main">
-              <span>{{ stageLabel(item.stage) }} · 题 {{ item.question_number }}</span>
+              <span>第 {{ item.item_order }} 题 · {{ itemLabel(item) }}</span>
               <strong>{{ item.matched_name }}</strong>
               <p>{{ item.reason }}</p>
               <small>
-                难度 {{ item.difficulty }} · 约 {{ item.estimated_minutes }} 分钟 ·
+                原卷第 {{ item.question_number }} 题 ·
+                {{ item.part_assessment ? '最难小问' : '整题难度' }} {{ item.difficulty }} ·
                 {{ item.criterion_point_count }} 个判定点
+              </small>
+              <small v-if="item.part_assessment">
+                小问预估难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。
               </small>
               <small v-if="item.relation">
                 已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：

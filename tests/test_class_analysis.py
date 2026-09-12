@@ -45,6 +45,7 @@ def class_analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         get_grading_db,
         get_job_manager,
         get_reports_dir,
+        get_upload_config_dir,
     )
     from backend.jobs.default_handlers import _build_class_analysis_generate_handler
     from backend.jobs.manager import JobManager
@@ -72,6 +73,7 @@ def class_analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
     app.dependency_overrides[get_reports_dir] = lambda: reports_dir
+    app.dependency_overrides[get_upload_config_dir] = lambda: tmp_path / "config" / "uploaded"
     with TestClient(app) as client:
         try:
             yield client, db, session_id, reports_dir, manager, llm_holder, monkeypatch
@@ -83,6 +85,277 @@ def _generate_via_api(client, session_id: int) -> dict:
     response = client.post(f"/api/sessions/{session_id}/class-analysis/regenerate")
     assert response.status_code == 202
     return response.json()
+
+
+def test_cause_groups_persist_count_students_per_class_and_update_only_changed_questions(class_analysis_api_client):
+    from backend.class_analysis import ClassAnalysisStateStore
+    client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
+    _patch_configured(monkeypatch, True)
+
+    class CauseClient:
+        def __init__(self):
+            self.calls = []
+
+        def json_from_text(self, prompt, **kwargs):
+            source = json.loads(prompt.rsplit("\n", 1)[1])
+            self.calls.append(source)
+            return {"groups": [{"kind": "process", "reason": "缺少直角依据", "manifestation": "未写明直角条件就使用勾股定理", "evidence_ids":
+                                [item["id"] for item in source["evidence"]]}]}
+
+    fake = CauseClient()
+    holder["client"] = fake
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE students SET class_name='2 班' WHERE name='李四'")
+    job = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job["id"], timeout=5)
+    assert manager.get(job["id"]).status == "succeeded"
+    assert len(fake.calls) == 2
+    assert all("student_name" not in json.dumps(source) for source in fake.calls)
+    assert all(source["rubric"] for source in fake.calls)
+    merged = client.get(f"/api/sessions/{sid}/class-analysis?view=summary&class_name=").json()
+    assert merged["cause_analysis"]["status"] == "ready"
+    q2 = next(q for q in merged["data"]["questions"] if q["question_id"] == "Q2")
+    assert q2["causes"][0]["count"] == 2
+    assert len({sid for item in q2["causes"][0]["evidence"] for sid in item["student_ids"]}) == 2
+    for name in ("1 班", "2 班"):
+        payload = client.get(f"/api/sessions/{sid}/class-analysis", params={"view": "summary", "class_name": name}).json()
+        scoped = next(q for q in payload["data"]["questions"] if q["question_id"] == "Q2")
+        assert scoped["causes"][0]["reason"] == q2["causes"][0]["reason"]
+        assert scoped["causes"][0]["count"] == 1
+    assert ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"]["questions"]["Q2"]["result"]
+    assert ClassAnalysisStateStore(reports_dir).load(sid)["narrative"] is None
+    # 普通读取、切班、再次点击整理都复用；改批语只重整受影响题目。
+    job = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job["id"], timeout=5)
+    assert len(fake.calls) == 2
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_details SET deduction_reason='复核后：计算错误' WHERE question_id='Q2'")
+    changed = client.get(f"/api/sessions/{sid}/class-analysis?view=summary&class_name=").json()
+    assert changed["cause_analysis"]["stale"] is True
+    assert changed["cause_analysis"]["pending_questions"] == 1
+    assert not next(q for q in changed["data"]["questions"] if q["question_id"] == "Q2").get("causes_grouped")
+    job = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job["id"], timeout=5)
+    assert len(fake.calls) == 3
+    # 图像编码不进入文本归并请求；实际评分要求变化会使该题归并过期。
+    rubric_path = Path(db.get_grading_session(sid)["rubric_path"])
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["questions"][1]["question_image_base64"] = "synthetic-image-payload"
+    rubric["questions"][1]["proof_obligations"] = ["必须说明直角条件"]
+    rubric_path.write_text(json.dumps(rubric, ensure_ascii=False), encoding="utf-8")
+    changed = client.get(f"/api/sessions/{sid}/class-analysis?view=summary").json()
+    assert changed["cause_analysis"]["pending_questions"] == 1
+    job = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job["id"], timeout=5)
+    assert len(fake.calls) == 4
+    assert "synthetic-image-payload" not in json.dumps(fake.calls[-1])
+
+
+def test_cause_classification_preserves_positive_uncertain_and_multiple_errors(tmp_path):
+    from copy import deepcopy
+    from analysis_report_exporter import assemble_session_analysis, build_class_page_data
+    from backend.class_analysis import build_cause_inputs, save_cause_result, ClassAnalysisStateStore, apply_cause_results
+    from db_manager import DBManager
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    sid = _seed_analysis_session(db, tmp_path)
+    data = assemble_session_analysis(db, sid, data_root=tmp_path, page_only=True)
+    first = next(r for r in data.students[0].records if r.question_id == "Q2")
+    second = next(r for r in data.students[1].records if r.question_id == "Q2")
+    first.deduction_reason, first.error_summary, first.error_category = "未写直角；计算错误", "", ""
+    second.deduction_reason, second.error_summary, second.error_category = "方程及求解正确", "", ""
+    sources = build_cause_inputs(data)
+    source = next(s for s in sources if s["question_id"] == "Q2")
+    positive = next(e["id"] for e in source["evidence"] if "正确" in e["text"])
+    negative = next(e["id"] for e in source["evidence"] if "未写" in e["text"])
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    save_cause_result(store, sid, source, {"groups": [
+        {"kind": "process", "reason": "缺少直角依据", "manifestation": "未写直角", "evidence_ids": [negative, negative]},
+        {"kind": "error", "reason": "计算错误", "manifestation": "列式后计算错误", "evidence_ids": [negative]},
+    ], "positive_ids": [positive]}, origin="assistant")
+    page = build_class_page_data(data, compact=True)
+    apply_cause_results(page, data, sources, store.load(sid))
+    q2 = next(q for q in page["questions"] if q["question_id"] == "Q2")
+    assert [c["count"] for c in q2["causes"]] == [1, 1]
+    assert "正确" in q2["cause_review"]["positive"][0]["text"]
+    assert q2["cause_review"]["uncertain"] == []
+    # 未覆盖的批语不会消失，也不自动被当作错误。
+    save_cause_result(store, sid, source, {"groups": [], "positive_ids": [positive]})
+    page = build_class_page_data(data, compact=True)
+    apply_cause_results(page, data, sources, store.load(sid))
+    assert len(next(q for q in page["questions"] if q["question_id"] == "Q2")["cause_review"]["uncertain"]) == 1
+    invalid = deepcopy(source)
+    with pytest.raises(ValueError, match="reference"):
+        save_cause_result(store, sid, invalid, {"groups": [{"kind": "error", "reason": "虚构", "manifestation": "虚构", "evidence_ids": ["E999"]}]})
+
+
+def test_cause_model_failure_does_not_retry_or_replace_original_reasons(class_analysis_api_client):
+    client, _db, sid, _reports, manager, holder, monkeypatch = class_analysis_api_client
+    _patch_configured(monkeypatch, True)
+    fake = FakeLLMClient(error=TimeoutError("synthetic timeout"))
+    holder["client"] = fake
+    job = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job["id"], timeout=5)
+    assert fake.calls == 2  # 两题各一次，失败不重发。
+    payload = client.get(f"/api/sessions/{sid}/class-analysis?view=summary").json()
+    assert payload["cause_analysis"]["failed_questions"] == 2
+    assert payload["cause_analysis"]["pending_questions"] == 2
+    assert payload["data"]["questions"][0]["causes"]
+
+
+def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_change(class_analysis_api_client):
+    from backend.class_analysis import ClassAnalysisStateStore
+    client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
+    _patch_configured(monkeypatch, True)
+    with sqlite3.connect(db.db_path) as conn:
+        result_ids = [row[0] for row in conn.execute("SELECT id FROM session_results WHERE session_id=? ORDER BY id", (sid,))]
+        for result_id, answer in zip(result_ids, ("设边长x，化到12x=28，未继续", "设边长x，算得x=2")):
+            raw = {"grading_completeness": {"status": "complete"}, "detail_metadata": {
+                "Q2": {"observed_answer": answer, "evidence_steps": ["已列方程"], "missing_steps": []}}}
+            conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(raw, ensure_ascii=False), result_id))
+        conn.execute("UPDATE session_details SET deduction_reason='求解有误', error_summary='', error_category='' WHERE question_id='Q2'")
+    session = db.get_grading_session(sid)
+    answer_path = Path(session["answer_key_path"])
+    answer_key = json.loads(answer_path.read_text(encoding="utf-8"))
+    answer_key["questions"][1]["analysis"] = "列出12x=28，解得x=7/3。"
+    answer_path.write_text(json.dumps(answer_key, ensure_ascii=False), encoding="utf-8")
+    rubric_path = Path(session["rubric_path"])
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["questions"][1].update({"question_text": "合成题：求线段长度。", "parts": [{"part_id": "Q2", "part_score": 40,
+        "steps": [{"step_id": "S1", "step_score": 40, "core_goal": "列式求解", "required_elements": ["12x=28"],
+                   "question_image_base64": "not-for-text-request"}]}]})
+    rubric_path.write_text(json.dumps(rubric, ensure_ascii=False), encoding="utf-8")
+
+    class CauseClient:
+        calls = []
+
+        def json_from_text(self, prompt, **kwargs):
+            source = json.loads(prompt.rsplit("\n", 1)[1])
+            self.calls.append(source)
+            groups = []
+            for item in source["evidence"]:
+                unfinished = "未继续" in item["student_answer"]
+                groups.append({"kind": "process" if unfinished else "error",
+                               "reason": "未完成求解" if unfinished else "计算错误",
+                               "manifestation": "停在方程" if unfinished else "求值错误", "evidence_ids": [item["id"]]})
+            return {"groups": groups}
+
+    fake = CauseClient()
+    holder["client"] = fake
+    def generate():
+        job = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+        manager.wait(job["id"], timeout=5)
+        assert manager.get(job["id"]).status == "succeeded"
+
+    generate()
+    source = next(s for s in fake.calls if s["question_id"] == "Q2")
+    assert len(source["evidence"]) == 2  # 相同批语、不同作答，不提前合并。
+    assert source["reference_analysis"] == "列出12x=28，解得x=7/3。"
+    assert "合成题" in source["question_text"]
+    assert source["rubric"]["parts"][0]["steps"][0]["required_elements"] == ["12x=28"]
+    assert "not-for-text-request" not in json.dumps(source)
+    first = client.get(f"/api/sessions/{sid}/class-analysis?view=summary&class_name=").json()
+    q2 = next(q for q in first["data"]["questions"] if q["question_id"] == "Q2")
+    assert {(c["kind"], c["count"]) for c in q2["causes"]} == {("process", 1), ("error", 1)}
+    again = client.get(f"/api/sessions/{sid}/class-analysis?view=summary&class_name=").json()
+    assert again == first
+    reopened = ClassAnalysisStateStore(reports_dir).load(sid)
+    assert reopened["cause_analysis"]["questions"]["Q2"]["input"] == source
+    assert len(fake.calls) == 2
+    # 只改作答，不改批语，也必须更新；失败不丢失上次成功结果。
+    with sqlite3.connect(db.db_path) as conn:
+        raw = {"grading_completeness": {"status": "complete"}, "grading_details": [{"question_id": "Q2", "observed_answer": "已算出x=7/3"}]}
+        conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(raw), result_ids[0]))
+    changed = client.get(f"/api/sessions/{sid}/class-analysis?view=summary").json()
+    assert changed["cause_analysis"]["pending_questions"] == 1
+    holder["client"] = FakeLLMClient(error=TimeoutError("test"))
+    generate()
+    assert ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"]["questions"]["Q2"]["input"] == source
+    holder["client"] = fake
+    generate()
+    current = ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"]["questions"]["Q2"]
+    assert current["history"][0]["input"] == source
+    assert current["input"] != source
+    # 参考解答改变也需要重新核对。
+    answer_key["questions"][1]["analysis"] = "可接受等价分数，过程需完整。"
+    answer_path.write_text(json.dumps(answer_key, ensure_ascii=False), encoding="utf-8")
+    assert client.get(f"/api/sessions/{sid}/class-analysis?view=summary").json()["cause_analysis"]["pending_questions"] == 1
+
+
+def test_cause_multiple_aspects_previous_part_and_legacy_preservation(tmp_path):
+    import backend.jobs  # 与应用入口保持相同的现有 jobs 初始化顺序。
+    from copy import deepcopy
+    from analysis_report_exporter import assemble_session_analysis, build_class_page_data, split_session_analysis_by_class
+    from backend.class_analysis import build_cause_inputs, save_cause_result, ClassAnalysisStateStore, apply_cause_results
+    from db_manager import DBManager
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    sid = _seed_analysis_session(db, tmp_path)
+    data = assemble_session_analysis(db, sid, data_root=tmp_path, page_only=True)
+    for info in data.questions:
+        info.question_id = "Q2(P1)" if info.question_id == "Q1" else "Q2(P2)"
+    for index, student in enumerate(data.students):
+        student.class_name = f"{index + 1} 班"
+        for record in student.records:
+            record.question_id = "Q2(P1)" if record.question_id == "Q1" else "Q2(P2)"
+            record.deduction_reason = record.error_summary = "相同概括批语"
+            if record.question_id == "Q2(P1)":
+                record.student_answer = "绳长16" if index == 0 else "绳长24"
+            else:
+                record.student_answer = "sqrt161-6" if index == 0 else "17²-7²=240"
+    data.attendance_by_class = {"1 班": {"present": 1, "absent": 0}, "2 班": {"present": 1, "absent": 0}}
+    sources = build_cause_inputs(data)
+    source = next(s for s in sources if s["question_id"] == "Q2(P2)")
+    a = next(e["id"] for e in source["evidence"] if e["student_answer"] == "sqrt161-6")
+    b = next(e["id"] for e in source["evidence"] if e["student_answer"] == "17²-7²=240")
+    assert all(e["previous_answers"][0]["question_id"] == "Q2(P1)" for e in source["evidence"])
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    old_source = {key: deepcopy(source[key]) for key in ("question_id", "max_score", "stem_summary", "canonical_answer", "rubric")}
+    old_source["evidence"] = [{"id": "E1", "text": source["evidence"][0]["text"]}]
+    old = {"version": "class_error_causes_v1", "input": old_source,
+           "result": {"groups": [{"reason": "旧归并", "evidence_ids": ["E1"]}], "positive_ids": [], "uncertain_ids": []},
+           "origin": "assistant", "generated_at": "2026-01-01T00:00:00"}
+    store.save(sid, cause_analysis={"questions": {"Q2(P2)": old}})
+    page = build_class_page_data(data, compact=True)
+    status = apply_cause_results(page, data, sources, store.load(sid))
+    assert status["legacy_questions"] == 1
+    assert status["pending_questions"] == len(sources)
+    old_page = next(q for q in page["questions"] if q["question_id"] == "Q2(P2)")
+    assert old_page["causes_legacy"] is True and old_page["causes"][0]["count"] == 2
+    payload = {"groups": [
+        {"kind": "carry_forward", "reason": "前问错误结果延续", "manifestation": "沿用绳长16继续计算", "source_question_id": "Q2(P1)", "evidence_ids": [a]},
+        {"kind": "process", "reason": "依据未明确写出", "manifestation": "未写依据", "evidence_ids": [a]},
+        {"kind": "error", "reason": "数量对应错误", "manifestation": "把7用作固定高度", "evidence_ids": [b, b]},
+        {"kind": "error", "reason": "数量对应错误", "manifestation": "把7用作剩余竖段", "evidence_ids": [b]},
+        {"kind": "review", "reason": "文字不足以明确", "manifestation": "最后结果依据待核", "evidence_ids": [b]},
+    ]}
+    save_cause_result(store, sid, source, payload, origin="assistant")
+    saved = ClassAnalysisStateStore(tmp_path / "reports").load(sid)
+    assert saved["cause_analysis"]["questions"]["Q2(P2)"]["history"] == [old]
+    page = build_class_page_data(data, compact=True)
+    apply_cause_results(page, data, sources, saved)
+    question = next(q for q in page["questions"] if q["question_id"] == "Q2(P2)")
+    assert len(question["causes"]) == 4
+    error = next(c for c in question["causes"] if c["kind"] == "error")
+    assert error["count"] == 1 and len(error["manifestations"]) == 2
+    for name, scoped in split_session_analysis_by_class(data).items():
+        scoped_page = build_class_page_data(scoped, compact=True)
+        apply_cause_results(scoped_page, scoped, sources, saved)
+        causes = next(q for q in scoped_page["questions"] if q["question_id"] == "Q2(P2)")["causes"]
+        assert {c["kind"] for c in causes} == ({"carry_forward", "process"} if name == "1 班" else {"error", "review"})
+        assert all(c["count"] == 1 for c in causes)
+    invalid = deepcopy(payload)
+    invalid["groups"][0]["source_question_id"] = "Q99"
+    with pytest.raises(ValueError, match="previous question"):
+        save_cause_result(store, sid, source, invalid)
+    with pytest.raises(ValueError, match="conflicting"):
+        save_cause_result(store, sid, source, {**payload, "positive_ids": [b]})
+    data.students[0].records[0].student_answer = "绳长18，已订正"
+    updated = build_cause_inputs(data)
+    assert next(s for s in updated if s["question_id"] == "Q2(P2)") != source
+    updated_page = build_class_page_data(data, compact=True)
+    apply_cause_results(updated_page, data, updated, saved)
+    assert not next(q for q in updated_page["questions"] if q["question_id"] == "Q2(P2)").get("causes_grouped")
 
 
 def test_get_class_analysis_no_data_without_results(
@@ -203,6 +476,121 @@ def test_get_class_analysis_stale_after_score_change(
 
     payload = client.get(f"/api/sessions/{session_id}/class-analysis").json()
     assert payload["stale"] is True
+    assert payload["narrative"] is None
+
+
+def test_class_analysis_switches_classes_and_persists_separate_narratives(class_analysis_api_client) -> None:
+    client, db, session_id, reports_dir, manager, llm, monkeypatch = class_analysis_api_client
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE students SET class_name='2 班' WHERE name='李四'")
+    _patch_configured(monkeypatch, True)
+    job = _generate_via_api(client, session_id)
+    manager.wait(job["id"], timeout=5)
+    assert llm["client"].calls == 2
+    for name, score, student in (("1 班", 90, "张三"), ("2 班", 50, "李四")):
+        page = client.get(f"/api/sessions/{session_id}/class-analysis", params={"class_name": name}).json()
+        assert page["class_names"] == ["1 班", "2 班"]
+        assert page["selected_class"] == name
+        assert page["data"]["score_distribution"]["avg"] == score
+        assert len(page["data"]["students"]) == 1
+        assert page["data"]["students"][0]["rank"] == 1
+        assert page["narrative"]["student_notes"][0]["student_name"] == student
+    state = json.loads((reports_dir / ".class_analysis" / f"{session_id}.json").read_text(encoding="utf-8"))
+    assert set(state["class_reports"]) == {"1 班", "2 班"}
+    assert state["narrative"] is None
+
+
+def test_summary_merges_classes_and_counts_only_students_who_lost_points(class_analysis_api_client) -> None:
+    client, db, session_id, _reports_dir, _manager, llm, monkeypatch = class_analysis_api_client
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE students SET class_name='2 班' WHERE name='李四'")
+        conn.execute("UPDATE session_details SET error_summary='缺 BE⊥AC 步骤；计算错误；计算错误' WHERE question_id='Q2' AND result_id=(SELECT id FROM session_results WHERE student_score=50)")
+    monkeypatch.setattr("backend.api.routers.reports.score_revision", lambda *a: pytest.fail("统计页面不应读取 AI 版本明细"))
+    payload = client.get(f"/api/sessions/{session_id}/class-analysis", params={"class_name": "", "view": "summary"}).json()
+    data = payload["data"]
+    assert payload["selected_class"] is None
+    assert payload["class_names"] == ["1 班", "2 班"]
+    assert data["present"] == 2
+    assert data["score_distribution"]["avg"] == 70
+    assert data["students"] == []
+    q1, q2 = data["questions"]
+    assert [(item["student_name"], item["score"]) for item in q1["records"]] == [("李四", 30)]
+    assert q2["causes"] == [{"reason": "缺 BE⊥AC 步骤", "count": 2}, {"reason": "计算错误", "count": 1}]
+    assert all("error_summary" not in item for item in q2["records"])
+    for class_name, expected in (("1 班", 90), ("2 班", 50)):
+        selected = client.get(f"/api/sessions/{session_id}/class-analysis", params={"class_name": class_name, "view": "summary"}).json()
+        assert selected["data"]["score_distribution"]["avg"] == expected
+        assert all(item["class_name"] == class_name for q in selected["data"]["questions"] for item in q["records"])
+    assert llm["client"].calls == 0
+
+
+def test_page_assembly_keeps_scores_without_per_student_report_queries(class_analysis_api_client) -> None:
+    from analysis_report_exporter import assemble_session_analysis, build_class_page_data
+    from backend.repositories.results import ResultRepositoryGateway
+
+    _client, db, session_id, _reports, _manager, _llm, monkeypatch = class_analysis_api_client
+    full = assemble_session_analysis(db, session_id)
+    monkeypatch.setattr(ResultRepositoryGateway, "get_result_details", lambda *a: pytest.fail("逐人附加报告信息不应在页面读取"))
+    page = assemble_session_analysis(db, session_id, page_only=True)
+    assert build_class_page_data(page, compact=True) == build_class_page_data(full, compact=True)
+
+
+def test_question_preview_uses_bound_source_and_marks_summary_fallback(class_analysis_api_client, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from backend.config_workspace.sources import ConfigSourceService, _project_config_rich_blocks
+
+    client, db, session_id, _reports, _manager, llm, monkeypatch = class_analysis_api_client
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE grading_sessions SET source_paper_sha256=? WHERE id=?", ("a" * 64, session_id))
+    blocks = _project_config_rich_blocks('<p>已知直角三角形，两直角边为3和4，求斜边。</p>')
+    source = SimpleNamespace(sha256="a" * 64, public_snapshot=lambda: {"questions": [{
+        "question_id": "Q1", "question_preview": "完整合成题干", "rich_content": {
+            "available": True, "question_blocks": blocks, "question_block_count": len(blocks),
+            "answer_blocks": blocks, "answer_block_count": len(blocks),
+        },
+    }]})
+    # 文件系统锚定由配置源套件验证；这里隔离验证绑定与图文出参。
+    monkeypatch.setattr(ConfigSourceService, "__init__", lambda *a, **k: None)
+    monkeypatch.setattr(ConfigSourceService, "load_active_record", lambda *a, **k: source)
+    endpoint = f"/api/sessions/{session_id}/class-analysis/questions/Q1(1)/preview"
+    preview = client.get(endpoint).json()
+    assert preview["parent_question_id"] == "Q1"
+    assert preview["rich_content"]["question_blocks"] == blocks
+    assert preview["rich_content"]["answer_blocks"] == []
+    assert preview["notice"] == ""
+    source.sha256 = "b" * 64
+    fallback = client.get(endpoint).json()
+    assert fallback["text"] == "识别轴对称图形"
+    assert "仅为已保存的题干摘要" in fallback["notice"]
+    assert llm["client"].calls == 0
+
+
+def test_question_preview_preserves_uploaded_formula_and_image(class_analysis_api_client) -> None:
+    import hashlib
+    from tests.test_api_config_sources import _docx_with_inline_question_media_bytes
+
+    client, db, session_id, _reports, _manager, llm, _monkeypatch = class_analysis_api_client
+    source_bytes = _docx_with_inline_question_media_bytes()
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources", content=source_bytes,
+        headers={"content-type": "application/octet-stream", "x-upload-filename": "synthetic.docx"},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE grading_sessions SET source_paper_sha256=? WHERE id=?", (hashlib.sha256(source_bytes).hexdigest(), session_id))
+    response = client.get(f"/api/sessions/{session_id}/class-analysis/questions/Q11/preview")
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["notice"] == ""
+    assert "Eleventh question x" in preview["text"]
+    blocks = preview["rich_content"]["question_blocks"]
+    assert any(segment["superscript"] and segment["text"] == "2" for block in blocks for segment in block["segments"])
+    images = [url for block in blocks for url in block["asset_urls"]]
+    assert images
+    image = client.get(images[0])
+    assert image.status_code == 200
+    assert image.headers["content-type"].startswith("image/")
+    assert llm["client"].calls == 0
 
 
 def test_get_class_analysis_narrative_failed_state(

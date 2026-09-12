@@ -382,12 +382,36 @@ afterEach(() => {
 })
 
 describe('training recommendations view', () => {
+  it('sends the student score floor in diagnosis and restores it after leaving and returning', async () => {
+    const first = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledOnce())
+    const floor = first.host.querySelector<HTMLInputElement>('input[aria-label="最低得分率"]')!
+    expect(floor).toBeTruthy()
+    floor.value = '20'; floor.dispatchEvent(new Event('input', { bubbles: true }))
+    first.host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
+    expect(trainingApiMock.diagnose.mock.calls[1]?.[0].scope.score_rate_min).toBe(.2)
+    mounted.splice(mounted.indexOf(first.app), 1); first.app.unmount(); first.host.remove()
+    const second = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(3))
+    expect(second.host.querySelector<HTMLInputElement>('input[aria-label="最低得分率"]')!.value).toBe('20')
+    expect(trainingApiMock.diagnose.mock.calls[2]?.[0].scope.score_rate_min).toBe(.2)
+  })
+  it('does not diagnose the same scope again when returning from student mode', async () => {
+    const { router } = await mountView('/training?mode=chapter')
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledOnce())
+    await router.push('/training?mode=student')
+    await nextTick()
+    await router.push('/training?mode=chapter')
+    await nextTick()
+    expect(trainingApiMock.diagnose).toHaveBeenCalledOnce()
+  })
   it('keeps the scope explicit and presents the chapter heat matrix', async () => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(fetchStudentsMock).toHaveBeenCalled())
 
     expect(host.querySelector('h1')?.textContent).toBe('按章节训练')
-    expect(host.textContent).toContain('章节学生热力图')
+    expect(host.textContent).toContain('推荐共同训练小组')
     expect(host.textContent).toContain('学生 × 知识点')
     expect(host.textContent).toContain('三角形全等')
     expect(host.textContent).toContain('当前证据范围')
@@ -446,7 +470,7 @@ describe('training recommendations view', () => {
       }],
     })
     const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('章节学生热力图'))
+    await vi.waitFor(() => expect(host.textContent).toContain('推荐共同训练小组'))
 
     expect(host.textContent).toContain('当前范围所有学生都没有证据')
   })
@@ -791,6 +815,8 @@ describe('training recommendations view', () => {
     trainingApiMock.getPersonalizedDraft.mockResolvedValue(paperDraft)
     const first = await mountView('/training?mode=chapter')
     await vi.waitFor(() => expect(first.host.textContent).toContain('学生 × 知识点'))
+    expect(first.host.querySelector('[aria-label="训练强度"]')).toBeNull()
+    expect(first.host.textContent).not.toContain('预计用时')
     first.host.querySelector<HTMLInputElement>('.chapter-training thead input[type="checkbox"]')!.click()
     await nextTick()
     first.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
@@ -808,6 +834,8 @@ describe('training recommendations view', () => {
     await vi.waitFor(() => expect(second.host.textContent).toContain('04 · 草稿审核与匹配预览'))
     expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(paperDraft.draft_id)
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledTimes(1)
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({ difficulty_max: 7 }))
+    expect(second.host.querySelector('[aria-label="训练强度"]')).toBeNull()
     expect(second.host.querySelector('.personalized-draft-toolbar')?.textContent)
       .toContain('草稿已自动暂存')
   })

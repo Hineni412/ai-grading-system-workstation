@@ -1,22 +1,27 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 
 import type { GraphQueryInput } from '../api/graph'
 import { fetchStudents, type StudentSummary } from '../api/students'
-import type {
-  TrainingExamScopeRequest,
-  TrainingStudentScopeRequest,
+import {
+  trainingApi,
+  type TrainingDiagnosis,
+  type TrainingGroup,
+  type TrainingGroupingRequest,
+  type TrainingExamScopeRequest,
+  type TrainingStudentScopeRequest,
 } from '../api/training'
 import EvidenceScopeFilters from '../components/evidence/EvidenceScopeFilters.vue'
 import ChapterTrainingMatrix from '../components/knowledge-training/ChapterTrainingMatrix.vue'
+import TrainingGroupRecommendations from '../components/knowledge-training/TrainingGroupRecommendations.vue'
 import KnowledgeTrainingTabs from '../components/knowledge-training/KnowledgeTrainingTabs.vue'
 import PaperSettingsPanel from '../components/knowledge-training/PaperSettingsPanel.vue'
 import TrainingKnowledgeStructure from '../components/knowledge-training/TrainingKnowledgeStructure.vue'
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import { loadEvidenceScope, saveEvidenceScope } from '../features/evidence-scope/session'
-import { loadPaperSelectionSession, savePaperSelectionSession } from '../features/training/paper-selection-session'
+import { loadPaperSelectionSession, savePaperSelectionSession, type AdoptedChapterGroup, type ChapterGroupEditor, type ChapterGroupSort } from '../features/training/paper-selection-session'
 import { useSessionStore } from '../stores/session'
 import '../styles/training-recommendations.css'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
@@ -39,14 +44,26 @@ const referenceState = ref<ReferenceState>('loading')
 const selectedTargetKeys = ref<string[]>(savedPaperSelection?.targetKeys ?? [])
 const selectedRangeKeys = ref<string[]>(savedPaperSelection?.rangeKeys ?? [])
 const questionCount = ref(savedPaperSelection?.questionCount ?? 10)
-const expectedMinutes = ref(savedPaperSelection?.expectedMinutes ?? 40)
-const difficultyMin = ref(savedPaperSelection?.difficultyMin ?? 2)
-const difficultyMax = ref(savedPaperSelection?.difficultyMax ?? 8)
+const teachingProgressChapterId = ref(savedPaperSelection?.teachingProgressChapterId ?? '')
+const difficultyMax = ref(savedPaperSelection?.difficultyMax ?? 7)
+const progressChapters = computed(() => (curriculumScope.selectedVolume ? [curriculumScope.selectedVolume] : curriculumScope.volumes)
+  .flatMap(volume => volume.chapters.map(chapter => ({ id: chapter.id, label: `${volume.label} · ${chapter.label}` }))))
+watch(progressChapters, (chapters) => {
+  if (curriculumScope.loadState === 'ready' && teachingProgressChapterId.value
+    && !chapters.some(chapter => chapter.id === teachingProgressChapterId.value)) teachingProgressChapterId.value = ''
+})
 const excludeCurrentOriginals = ref(savedPaperSelection?.excludeCurrentOriginals ?? true)
-const directRatio = ref(savedPaperSelection?.directRatio ?? 60)
-const prerequisiteRatio = ref(savedPaperSelection?.prerequisiteRatio ?? 30)
-const transferRatio = ref(savedPaperSelection?.transferRatio ?? 10)
 const paperMode = ref<'individual' | 'shared'>(savedPaperSelection?.paperMode ?? 'individual')
+const chapterKey = ref(savedPaperSelection?.chapterKey ?? '')
+const sectionKey = ref(savedPaperSelection?.sectionKey ?? '')
+const chapterScope = ref<GraphQueryInput | undefined>(savedPaperSelection?.chapterScope)
+const groupSort = ref<ChapterGroupSort>(savedPaperSelection?.groupSort ?? 'size')
+const groupEditor = ref<ChapterGroupEditor | null>(savedPaperSelection?.groupEditor ?? null)
+const adoptedGroup = ref<AdoptedChapterGroup | null>(savedPaperSelection?.adoptedGroup ?? null)
+const arrangements = ref<AdoptedChapterGroup[]>(savedPaperSelection?.arrangements ?? [])
+const groupMessage = ref('')
+const groupChecking = ref(false)
+const latestGroupDiagnosis = ref<TrainingDiagnosis | null>(null)
 const workflowStage = ref<'diagnosis' | 'draft' | 'wps' | 'scan'>('diagnosis')
 const draftRequestState = ref<'idle' | 'loading' | 'ready' | 'error' | 'editing'>('idle')
 const scopeFilters = ref<InstanceType<typeof EvidenceScopeFilters> | null>(null)
@@ -61,7 +78,7 @@ const trainingMode = computed<TrainingMode>(() => {
 const pageCopy = computed(() => ({
   chapter: {
     title: '按章节训练',
-    description: '先选章与小节，在学生 × 知识点热力图中核对差异，再把需要训练的知识点加入清单。',
+    description: '选择多个班和章／小节，查看需求互补、整体水平接近的小组；核对名单后采用同卷训练。',
   },
   student: {
     title: '按学生训练',
@@ -86,6 +103,17 @@ const scoreProfiles = computed(() => {
 })
 
 const selectedStudentCount = computed(() => training.diagnosis?.students.length ?? 0)
+const groupingAvailable = computed(() => training.diagnosis?.knowledge_catalog?.some(node => !node.parent_knowledge_key && /^(kp_|ki_)/.test(node.knowledge_key)) ?? false)
+const sharedStudentCount = computed(() => adoptedGroup.value?.memberIds.length ?? selectedStudentCount.value)
+const paperStudentCount = computed(() => paperMode.value === 'shared' ? sharedStudentCount.value : selectedStudentCount.value)
+const paperDiagnosis = computed<TrainingDiagnosis | null>(() => {
+  if (paperMode.value !== 'shared' || !adoptedGroup.value) return training.diagnosis
+  const diagnosis = latestGroupDiagnosis.value ?? training.diagnosis
+  if (!diagnosis) return null
+  const ids = adoptedGroup.value.memberIds
+  return { ...diagnosis, scope: { mode: 'selected', student_ids: [...ids] },
+    students: diagnosis.students.filter(student => ids.includes(student.student_id)) }
+})
 const scoreSourceSummary = computed(() => {
   const profiles = training.diagnosis?.students ?? []
   const current = profiles.filter((student) => student.score_rate_source === 'current_exam').length
@@ -93,7 +121,6 @@ const scoreSourceSummary = computed(() => {
   const none = profiles.length - current - historical
   return `所选 ${profiles.length} 人 · 本次成绩 ${current} 人 · 历史参考 ${historical} 人 · 无成绩 ${none} 人`
 })
-const stageRatioTotal = computed(() => directRatio.value + prerequisiteRatio.value + transferRatio.value)
 const groupScopeLabel = computed(() => {
   if (training.studentScope.mode === 'selected') return `当前筛选 · ${selectedStudentCount.value} 人`
   if (training.studentScope.classIds.length === 1) return `${training.studentScope.classIds[0]} · ${selectedStudentCount.value} 人`
@@ -102,21 +129,18 @@ const groupScopeLabel = computed(() => {
   return `全部班级 · ${selectedStudentCount.value} 人`
 })
 const paperNumericSettingsValid = computed(() => (
-  stageRatioTotal.value === 100
-  && questionCount.value >= 8
+  questionCount.value >= 8
   && questionCount.value <= 12
-  && expectedMinutes.value >= 10
-  && expectedMinutes.value <= 180
-  && difficultyMin.value >= 1
+  && difficultyMax.value >= 1
   && difficultyMax.value <= 10
-  && difficultyMin.value <= difficultyMax.value
 ))
-// 多人同一套卷用共同细点出题；一人一卷用章/节范围出题。
+// 多人同一套卷用成员需求并集出题；一人一卷用章/节范围出题。
 // 出卷页按最后编辑页记录的模式（paperMode）取对应的校验。
 const sharedSettingsValid = computed(() => (
   Boolean(training.diagnosis)
   && selectedTargetKeys.value.length > 0
   && paperNumericSettingsValid.value
+  && (!adoptedGroup.value || adoptedGroup.value.memberIds.length >= 2)
 ))
 const individualSettingsValid = computed(() => (
   Boolean(training.diagnosis)
@@ -128,9 +152,9 @@ const paperSettingsValid = computed(() => (
     ? sharedSettingsValid.value
     : individualSettingsValid.value
 ))
-const expectedPaperCount = computed(() => selectedStudentCount.value)
+const expectedPaperCount = computed(() => paperStudentCount.value)
 
-const personalizedScope = computed<TrainingStudentScopeRequest>(() => ({
+const sourceStudentScope = computed<TrainingStudentScopeRequest>(() => ({
   mode: training.studentScope.mode,
   student_ids: [...training.studentScope.studentIds],
   ...(training.studentScope.classId ? { class_id: training.studentScope.classId } : {}),
@@ -141,9 +165,19 @@ const personalizedScope = computed<TrainingStudentScopeRequest>(() => ({
   exclude_student_ids: [...training.studentScope.excludeStudentIds],
   use_historical_fallback: training.studentScope.useHistoricalFallback,
 }))
+const personalizedScope = computed<TrainingStudentScopeRequest>(() => paperMode.value === 'shared' && adoptedGroup.value
+  ? { mode: 'selected', student_ids: [...adoptedGroup.value.memberIds], use_historical_fallback: training.studentScope.useHistoricalFallback }
+  : sourceStudentScope.value)
 const personalizedExamScope = computed<TrainingExamScopeRequest>(() => ({
   mode: training.examScope.mode,
   session_ids: [...training.examScope.sessionIds],
+}))
+const groupingSettings = computed<TrainingGroupingRequest>(() => ({
+  scope_keys: sectionKey.value || chapterKey.value ? [sectionKey.value || chapterKey.value] : [],
+  question_count: questionCount.value,
+  difficulty_max: difficultyMax.value,
+  exclude_current_exam_originals: excludeCurrentOriginals.value, curriculum_volume_id: curriculumScope.selectedVolumeId ?? '',
+  teaching_progress_chapter_id: teachingProgressChapterId.value,
 }))
 const activeEvidenceQuery = computed<GraphQueryInput | null>(() => {
   const sessionIds = training.examScope.sessionIds
@@ -176,7 +210,8 @@ async function analyze(): Promise<void> {
   }
 }
 
-async function applyEvidenceScope(query: GraphQueryInput): Promise<void> {
+async function applyEvidenceScope(query: GraphQueryInput, reuseCurrent = false): Promise<void> {
+  if (trainingMode.value === 'chapter') chapterScope.value = query
   saveEvidenceScope(query)
   training.setStudentScope({
     mode: query.scope.mode,
@@ -195,7 +230,7 @@ async function applyEvidenceScope(query: GraphQueryInput): Promise<void> {
       ? availableSessions.value.map((item) => item.id)
       : [...query.exam_scope.session_ids],
   })
-  await analyze()
+  if (!reuseCurrent || !training.hasCurrentDiagnosis) await analyze()
 }
 
 function openScopeFilters(): void {
@@ -205,14 +240,58 @@ function openScopeFilters(): void {
   ;(filters.$el as HTMLElement | undefined)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
 }
 
-function generatePaperDraft(): void {
-  void paperDraft.value?.generate()
+async function generatePaperDraft(): Promise<void> {
+  if (groupChecking.value) return
+  groupMessage.value = ''
+  if (paperMode.value === 'shared' && adoptedGroup.value) {
+    groupChecking.value = true
+    try {
+      const response = await trainingApi.diagnose({ scope: sourceStudentScope.value, exam_scope: personalizedExamScope.value,
+        grouping: { ...groupingSettings.value, scope_keys: adoptedGroup.value.scopeKeys,
+          member_ids: adoptedGroup.value.memberIds, target_keys: adoptedGroup.value.targetKeys } })
+      const checked = response.grouping?.selection
+      if (!checked?.ready) {
+        groupMessage.value = checked?.issues.join('；') || '当前小组需要重新核对，请回到按章节训练调整。'
+        return
+      }
+      adoptedGroup.value = { ...adoptedGroup.value, sourceVersion: checked.source_version }
+      latestGroupDiagnosis.value = response
+      await nextTick()
+    } catch {
+      groupMessage.value = '小组依据暂时无法核对，已保留成员与出卷设置，请重试。'
+      return
+    } finally { groupChecking.value = false }
+  }
+  await paperDraft.value?.generate()
+}
+
+function adoptGroup(group: TrainingGroup, diagnosis: TrainingDiagnosis): void {
+  selectedTargetKeys.value = group.targets.map(target => target.knowledge_key)
+  adoptedGroup.value = { groupId: group.group_id, memberIds: group.members.map(member => member.student_id),
+    targetKeys: [...selectedTargetKeys.value], scopeKeys: [...groupingSettings.value.scope_keys], sourceVersion: group.source_version }
+  latestGroupDiagnosis.value = diagnosis
+  paperMode.value = 'shared'
+  groupMessage.value = `已采用 ${group.members.length} 人的小组。请在下方核对出卷设置；原跨班推荐范围保留。`
+  void nextTick(() => document.querySelector('.paper-settings-panel')?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }))
+}
+
+function useManualSelection(): void {
+  adoptedGroup.value = null
+  groupEditor.value = null
+  latestGroupDiagnosis.value = null
+  groupMessage.value = '已返回手动同卷：出卷使用顶部范围内的学生，请在学生明细中核对目标。'
+}
+
+function selectChapterScope(scope: { chapterKey: string; sectionKey: string }): void {
+  chapterKey.value = scope.chapterKey
+  sectionKey.value = scope.sectionKey
 }
 
 // 上游页（按章节/按学生训练）完成设置后跳转到出卷页：
 // 以最后编辑的页为准记录出卷模式。
 function goPaper(mode: 'individual' | 'shared'): void {
   paperMode.value = mode
+  groupMessage.value = ''
   void router.push({ name: 'training', query: { mode: 'paper' } })
 }
 
@@ -227,6 +306,9 @@ const paperBackLabel = computed(() => (
 
 function onPaperStageChange(stage: 'diagnosis' | 'draft' | 'wps' | 'scan'): void {
   workflowStage.value = stage
+  if (stage !== 'diagnosis' && adoptedGroup.value && !arrangements.value.some(group => group.groupId === adoptedGroup.value?.groupId)) {
+    arrangements.value = [...arrangements.value, { ...adoptedGroup.value }]
+  }
 }
 
 async function loadStudents(): Promise<void> {
@@ -238,7 +320,10 @@ async function loadStudents(): Promise<void> {
     students.value = await fetchStudents(controller.signal)
     referenceState.value = 'ready'
     if (sessionStore.selectedSessionId && training.analysisState === 'idle') {
-      const savedQuery = loadEvidenceScope()
+      const generalQuery = loadEvidenceScope()
+      const savedQuery = trainingMode.value === 'chapter' || (trainingMode.value === 'paper' && paperMode.value === 'shared')
+        ? chapterScope.value ?? (generalQuery ? { ...generalQuery, scope: { ...generalQuery.scope, score_rate_min: null, score_rate_max: null } } : null)
+        : generalQuery
       const knownSessionIds = new Set(availableSessions.value.map((item) => item.id))
       const compatibleSavedQuery = savedQuery?.exam_scope.mode === 'cross_exam'
         || savedQuery?.exam_scope.session_ids.every((id) => knownSessionIds.has(id))
@@ -252,7 +337,7 @@ async function loadStudents(): Promise<void> {
           use_historical_fallback: true,
         },
         exam_scope: { mode: 'current', session_ids: [sessionStore.selectedSessionId] },
-      })
+      }, true)
     }
   } catch {
     if (controller.signal.aborted) return
@@ -285,36 +370,45 @@ watch(() => training.diagnosis, (diagnosis) => {
   }
 }, { immediate: true })
 
+watch(selectedTargetKeys, keys => {
+  if (adoptedGroup.value && JSON.stringify([...keys].sort()) !== JSON.stringify([...adoptedGroup.value.targetKeys].sort())) {
+    useManualSelection()
+  }
+})
+
 watch(
   [
     selectedTargetKeys,
     selectedRangeKeys,
     questionCount,
-    expectedMinutes,
-    difficultyMin,
     difficultyMax,
+    teachingProgressChapterId,
     excludeCurrentOriginals,
-    directRatio,
-    prerequisiteRatio,
-    transferRatio,
     paperMode,
+    chapterKey, sectionKey, chapterScope, groupSort, groupEditor, adoptedGroup, arrangements,
   ],
   () => {
     savePaperSelectionSession({
       targetKeys: [...selectedTargetKeys.value],
       rangeKeys: [...selectedRangeKeys.value],
       questionCount: questionCount.value,
-      expectedMinutes: expectedMinutes.value,
-      difficultyMin: difficultyMin.value,
       difficultyMax: difficultyMax.value,
+      teachingProgressChapterId: teachingProgressChapterId.value,
       excludeCurrentOriginals: excludeCurrentOriginals.value,
-      directRatio: directRatio.value,
-      prerequisiteRatio: prerequisiteRatio.value,
-      transferRatio: transferRatio.value,
       paperMode: paperMode.value,
+      chapterKey: chapterKey.value, sectionKey: sectionKey.value, chapterScope: chapterScope.value,
+      groupSort: groupSort.value,
+      groupEditor: groupEditor.value, adoptedGroup: adoptedGroup.value, arrangements: arrangements.value,
     })
   },
 )
+
+watch(trainingMode, (mode, previous) => {
+  if (mode !== 'chapter' || previous !== 'student') return
+  const active = activeEvidenceQuery.value
+  const query = chapterScope.value ?? (active ? { ...active, scope: { ...active.scope, score_rate_min: null, score_rate_max: null } } : null)
+  if (query) void applyEvidenceScope(query, true)
+})
 
 watch(() => sessionStore.selectedSessionId, (sessionId) => {
   const active = activeEvidenceQuery.value
@@ -343,7 +437,8 @@ onBeforeUnmount(() => studentsController?.abort())
         <p>{{ pageCopy.description }}</p>
       </div>
       <div v-if="training.diagnosis" class="training-basis">
-        <strong>{{ selectedStudentCount }} 名学生</strong>
+        <strong>{{ trainingMode === 'paper' ? paperStudentCount : selectedStudentCount }} 名{{ trainingMode === 'paper' ? '出卷' : '' }}学生</strong>
+        <span v-if="trainingMode === 'paper' && adoptedGroup && paperMode === 'shared'">推荐来源 {{ selectedStudentCount }} 人</span>
         <span>{{ training.diagnosis.knowledge_catalog?.length ?? 0 }} 个结构节点</span>
         <span>{{ selectedRangeKeys.length }} 个范围 · {{ selectedTargetKeys.length }} 项细点</span>
       </div>
@@ -363,6 +458,8 @@ onBeforeUnmount(() => studentsController?.abort())
       :applying="training.analysisState === 'loading'"
       :score-profiles="scoreProfiles"
       :evidence-from="trainingMode === 'student' ? 'student' : 'chapter'"
+      :compact-roster="trainingMode === 'chapter' && groupingAvailable"
+      show-score-floor
       @apply="applyEvidenceScope"
     />
 
@@ -370,12 +467,13 @@ onBeforeUnmount(() => studentsController?.abort())
       学生名单暂时无法读取。请检查服务后重试；当前筛选没有被清空。
     </p>
     <p v-if="training.errorMessage" class="status-card error">{{ training.errorMessage }}</p>
+    <p v-if="groupMessage" class="status-card" role="status">{{ groupMessage }}</p>
 
     <section v-if="trainingMode !== 'paper'" class="training-mode-panel">
       <header class="training-mode-panel__heading">
         <div>
           <p class="training-eyebrow">{{ trainingMode === 'chapter' ? '01 · 章节视角' : '02 · 学生视角' }}</p>
-          <h2>{{ trainingMode === 'chapter' ? '章节学生热力图' : '群体知识结构' }}</h2>
+          <h2>{{ trainingMode === 'chapter' ? '推荐共同训练小组' : '群体知识结构' }}</h2>
         </div>
         <span>{{ scoreSourceSummary }}</span>
       </header>
@@ -396,8 +494,27 @@ onBeforeUnmount(() => studentsController?.abort())
           v-model="selectedTargetKeys"
           :diagnosis="training.diagnosis"
           :group-scope-label="groupScopeLabel"
+          :initial-chapter-key="chapterKey"
+          :initial-section-key="sectionKey"
           @adjust-scope="openScopeFilters"
-        />
+          @scope-change="selectChapterScope"
+        >
+          <template v-if="groupingAvailable" #recommendations="{ scopeKey }">
+            <TrainingGroupRecommendations
+              v-model:sort-mode="groupSort"
+              :diagnosis="training.diagnosis"
+              :scope="sourceStudentScope"
+              :exam-scope="personalizedExamScope"
+              :settings="{ ...groupingSettings, scope_keys: scopeKey ? [scopeKey] : [] }"
+              :editor="groupEditor"
+              :adopted="adoptedGroup"
+              :arrangements="arrangements"
+              :disabled="training.analysisState === 'loading' || !paperNumericSettingsValid"
+              @edit="groupEditor = $event"
+              @adopt="adoptGroup"
+            />
+          </template>
+        </ChapterTrainingMatrix>
 
         <TrainingKnowledgeStructure
           v-else-if="trainingMode !== 'chapter' && training.analysisState !== 'empty'"
@@ -420,34 +537,32 @@ onBeforeUnmount(() => studentsController?.abort())
         <PaperSettingsPanel
           v-if="trainingMode === 'chapter' && training.analysisState !== 'empty'"
           mode="shared"
-          :student-count="selectedStudentCount"
+          :student-count="sharedStudentCount"
           :selection-text="`${selectedTargetKeys.length} 项细点`"
           :valid="sharedSettingsValid"
           :generating="draftRequestState === 'loading'"
           v-model:question-count="questionCount"
-          v-model:expected-minutes="expectedMinutes"
-          v-model:difficulty-min="difficultyMin"
           v-model:difficulty-max="difficultyMax"
-          v-model:direct-ratio="directRatio"
-          v-model:prerequisite-ratio="prerequisiteRatio"
-          v-model:transfer-ratio="transferRatio"
+          v-model:teaching-progress-chapter-id="teachingProgressChapterId"
+          :progress-chapters="progressChapters"
           v-model:exclude-current-originals="excludeCurrentOriginals"
           @go-paper="goPaper('shared')"
         />
+        <div v-if="trainingMode === 'chapter' && adoptedGroup" class="training-adopted-group">
+          <span>已采用 {{ sharedStudentCount }} 人、{{ adoptedGroup.targetKeys.length }} 个共同目标；顶部仍保留 {{ selectedStudentCount }} 人的推荐范围。</span>
+          <AppButton @click="useManualSelection">返回手动同卷</AppButton>
+        </div>
         <PaperSettingsPanel
-          v-else-if="trainingMode === 'student' && training.analysisState !== 'empty'"
+          v-if="trainingMode === 'student' && training.analysisState !== 'empty'"
           mode="individual"
           :student-count="selectedStudentCount"
           :selection-text="`${selectedRangeKeys.length} 个范围`"
           :valid="individualSettingsValid"
           :generating="draftRequestState === 'loading'"
           v-model:question-count="questionCount"
-          v-model:expected-minutes="expectedMinutes"
-          v-model:difficulty-min="difficultyMin"
           v-model:difficulty-max="difficultyMax"
-          v-model:direct-ratio="directRatio"
-          v-model:prerequisite-ratio="prerequisiteRatio"
-          v-model:transfer-ratio="transferRatio"
+          v-model:teaching-progress-chapter-id="teachingProgressChapterId"
+          :progress-chapters="progressChapters"
           v-model:exclude-current-originals="excludeCurrentOriginals"
           @go-paper="goPaper('individual')"
         />
@@ -467,7 +582,7 @@ onBeforeUnmount(() => studentsController?.abort())
           <p>设置已锁定；回到“按学生训练”或“按章节训练”调整后会重新生成草稿。</p>
         </div>
         <div class="paper-workspace__scope">
-          <strong>{{ selectedStudentCount }} 人</strong>
+          <strong>{{ paperStudentCount }} 人</strong>
           <span>{{ selectedRangeKeys.length }} 个范围 · {{ selectedTargetKeys.length }} 个细点</span>
         </div>
       </header>
@@ -480,23 +595,22 @@ onBeforeUnmount(() => studentsController?.abort())
           <div class="paper-console__main">
             <div class="paper-review-bar">
               <span><b>{{ paperMode === 'individual' ? '一人一卷' : '多人同一套卷' }}</b></span>
-              <span><b>{{ selectedStudentCount }}</b> 名学生</span>
+              <span><b>{{ paperStudentCount }}</b> 名学生</span>
               <span v-if="paperMode === 'shared'"><b>{{ selectedTargetKeys.length }}</b> 项细点</span>
               <span v-else><b>{{ selectedRangeKeys.length }}</b> 个范围</span>
               <span>每卷 <b>{{ questionCount }}</b> 题</span>
-              <span>约 <b>{{ expectedMinutes }}</b> 分钟</span>
-              <span>难度 <b>{{ difficultyMin }}–{{ difficultyMax }}</b></span>
-              <span>针对 <b>{{ directRatio }}</b>% · 基础 <b>{{ prerequisiteRatio }}</b>% · 提升 <b>{{ transferRatio }}</b>%</span>
+              <span>难度上限 <b>{{ difficultyMax }}</b> 级</span>
+              <span>已学到 {{ progressChapters.find(chapter => chapter.id === teachingProgressChapterId)?.label ?? '所选目标最晚章节' }}</span>
               <span v-if="excludeCurrentOriginals">排除本次考试原题</span>
               <RouterLink class="paper-review-bar__back" :to="paperBackTarget">{{ paperBackLabel }}</RouterLink>
               <AppButton
                 v-if="workflowStage === 'diagnosis'"
                 variant="primary"
                 data-testid="generate-paper-draft"
-                :disabled="!paperSettingsValid || draftRequestState === 'loading'"
+                :disabled="!paperSettingsValid || draftRequestState === 'loading' || groupChecking"
                 @click="generatePaperDraft"
               >
-                {{ draftRequestState === 'loading' ? '正在生成…' : `生成 ${expectedPaperCount} 份草稿` }}
+                {{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成…' : `生成 ${expectedPaperCount} 份草稿` }}
               </AppButton>
             </div>
             <p v-if="workflowStage === 'diagnosis' && !paperSettingsValid" class="paper-review-hint">
@@ -508,22 +622,19 @@ onBeforeUnmount(() => studentsController?.abort())
             <PersonalizedRecommendationDraft
               ref="paperDraft"
               external-setup
-              :diagnosis="training.diagnosis"
+              :diagnosis="paperDiagnosis"
               :scope="personalizedScope"
               :exam-scope="personalizedExamScope"
               :question-count="questionCount"
-              :expected-minutes="expectedMinutes"
-              :difficulty-min="difficultyMin"
               :difficulty-max="difficultyMax"
-              :stage-ratios="{
-                direct: directRatio / 100,
-                prerequisite: prerequisiteRatio / 100,
-                transfer: transferRatio / 100,
-              }"
+              :teaching-progress-chapter-id="teachingProgressChapterId"
+
               :exclude-current-exam-originals="excludeCurrentOriginals"
               :paper-mode="paperMode"
               :target-keys="selectedTargetKeys"
-              :scope-keys="selectedRangeKeys"
+              :scope-keys="paperMode === 'shared' ? [] : selectedRangeKeys"
+              :group-scope-keys="paperMode === 'shared' ? adoptedGroup?.scopeKeys : undefined"
+              :group-source-version="paperMode === 'shared' ? adoptedGroup?.sourceVersion : undefined"
               :curriculum-volume-id="curriculumScope.selectedVolumeId"
               :disabled="!paperSettingsValid"
               @stage-change="onPaperStageChange"
@@ -537,6 +648,8 @@ onBeforeUnmount(() => studentsController?.abort())
 </template>
 
 <style scoped>
+.training-workspace { grid-template-columns:minmax(0,1fr);min-width:0 }
+.training-adopted-group { display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.8rem 0;font-size:.85rem;color:var(--color-text-secondary) }
 .training-heading--compact { align-items: end; min-height: 96px; }
 .training-scope-filters { margin-top: var(--space-2); }
 .training-mode-panel,
@@ -559,4 +672,5 @@ onBeforeUnmount(() => studentsController?.abort())
 .paper-review-bar__back + button { margin-left: 0; }
 .paper-review-hint { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-dense); }
 .paper-console__main { display: grid; min-width: 0; gap: var(--space-4); align-content: start; }
+@media(max-width:760px){.training-mode-panel__heading,.paper-workspace__heading,.training-adopted-group{align-items:flex-start;flex-direction:column}.paper-console{padding:var(--space-3)}.paper-workspace__scope{text-align:left}}
 </style>

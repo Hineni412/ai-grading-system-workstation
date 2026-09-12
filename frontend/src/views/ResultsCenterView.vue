@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 
 import type {
   ResultsCenterItem,
@@ -12,7 +12,7 @@ import type {
 import ClassAnalysisPanel from '../components/results-center/ClassAnalysisPanel.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import { Input } from '../components/ui/input'
-import { useResultsCenterStore } from '../stores/results-center'
+import { useResultsCenterStore, type ResultsViewState } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
 import { translateGradingReason } from '../utils/grading-reasons'
 import FileCenterView from './FileCenterView.vue'
@@ -27,6 +27,10 @@ const router = useRouter()
 const sessionStore = useSessionStore()
 const resultsStore = useResultsCenterStore()
 const searchQuery = ref('')
+const selectedClass = ref<string | null>(null)
+const resultsPage = ref<HTMLElement | null>(null)
+const matrixScroller = ref<HTMLElement | null>(null)
+let pendingRestoration: ResultsViewState | null = null
 const selectedStudent = ref<ResultsCenterStudent | null>(null)
 const matrixSort = ref<{
   key: MatrixSortKey
@@ -84,7 +88,9 @@ const activeFilter = computed<DetailFilter>(() => {
 })
 
 const results = computed(() => resultsStore.results)
-const summary = computed(() => results.value?.summary ?? null)
+const classOptions = computed(() => [...new Set(
+  (results.value?.students ?? []).map((student) => student.class_name ?? ''),
+)].sort((left, right) => left.localeCompare(right, 'zh-CN', { numeric: true })))
 const studentItemIndex = computed(() => new Map(
   (results.value?.students ?? []).map((student) => [
     student.student_id,
@@ -92,9 +98,13 @@ const studentItemIndex = computed(() => new Map(
   ]),
 ))
 
+const studentsInClass = computed(() => (results.value?.students ?? []).filter(
+  (student) => selectedClass.value === null || (student.class_name ?? '') === selectedClass.value,
+))
+
 const visibleStudents = computed(() => {
   const query = searchQuery.value.trim().toLocaleLowerCase()
-  return (results.value?.students ?? []).filter((student) => {
+  return studentsInClass.value.filter((student) => {
     if (!matchesFilter(student, activeFilter.value)) return false
     if (!query) return true
     return [
@@ -105,17 +115,40 @@ const visibleStudents = computed(() => {
   })
 })
 
-const overviewStudents = computed(() => [...visibleStudents.value].sort(
-  (left, right) => (
-    studentRiskRank(left) - studentRiskRank(right)
-    || left.student_name.localeCompare(right.student_name, 'zh-CN')
-    || left.student_id - right.student_id
-  ),
-))
+const summary = computed(() => {
+  const original = results.value?.summary
+  if (!original || activeTab.value !== 'details') return original ?? null
+  const students = visibleStudents.value
+  const complete = students.filter((student) => matchesFilter(student, 'complete'))
+  const scores = complete.map((student) => student.current_score)
+  const items = students.flatMap((student) => student.items)
+  return {
+    ...original,
+    student_count: students.length,
+    complete_student_count: complete.length,
+    average_sample_count: complete.length,
+    average_score: scores.length ? scores.reduce((total, score) => total + score, 0) / scores.length : null,
+    highest_score: scores.length ? Math.max(...scores) : null,
+    lowest_score: scores.length ? Math.min(...scores) : null,
+    ungraded_item_count: items.filter((item) => item.score_status === 'ungraded').length,
+    failed_item_count: items.filter((item) => item.score_status === 'failed').length,
+    needs_review_item_count: items.filter((item) => item.score_status === 'ai_review').length,
+    ai_ready_item_count: items.filter((item) => item.score_status === 'ai_ready').length,
+    teacher_final_item_count: items.filter((item) => item.score_status === 'teacher_final').length,
+  }
+})
 
 const matrixStudents = computed(() => [...visibleStudents.value].sort(
   (left, right) => compareMatrixStudents(left, right),
 ))
+
+const matrixQuestions = computed(() => (results.value?.questions ?? []).map((question) => {
+  const scores = visibleStudents.value
+    .map((student) => itemFor(student, question.question_id))
+    .filter((item) => item !== null && item.score_awarded !== null && !['ungraded', 'failed'].includes(item.score_status))
+    .map((item) => item!.score_awarded!)
+  return { ...question, average_score: scores.length ? scores.reduce((total, score) => total + score, 0) / scores.length : null }
+}))
 
 const scoreBands = computed(() => {
   const bands = [
@@ -189,7 +222,13 @@ watch(
   () => sessionStore.selectedSessionId,
   (sessionId) => {
     closeStudentDrawer(false)
-    searchQuery.value = ''
+    const saved = resultsStore.viewState
+    pendingRestoration = saved?.sessionId === sessionId && saved.fullPath === route.fullPath ? saved : null
+    searchQuery.value = pendingRestoration?.searchQuery ?? ''
+    selectedClass.value = pendingRestoration?.selectedClass ?? null
+    matrixSort.value = pendingRestoration
+      ? { ...pendingRestoration.matrixSort }
+      : { key: 'student', direction: 'ascending', questionId: null }
     if (sessionId === null) {
       resultsStore.reset()
       return
@@ -198,6 +237,47 @@ watch(
   },
   { immediate: true },
 )
+
+function rememberView(): void {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId === null || !['overview', 'details'].includes(activeTab.value)) return
+  const scroller = resultsPage.value?.parentElement
+  resultsStore.viewState = {
+    sessionId,
+    fullPath: route.fullPath,
+    searchQuery: searchQuery.value,
+    selectedClass: selectedClass.value,
+    matrixSort: { ...matrixSort.value },
+    scrollTop: scroller?.scrollTop ?? 0,
+    scrollLeft: scroller?.scrollLeft ?? 0,
+    matrixScrollTop: matrixScroller.value?.scrollTop ?? 0,
+    matrixScrollLeft: matrixScroller.value?.scrollLeft ?? 0,
+  }
+}
+
+async function restoreViewPosition(): Promise<void> {
+  const saved = pendingRestoration
+  if (!saved || !results.value) return
+  await nextTick()
+  // 页面标题的路由聚焦完成后，再恢复外层页面和表格的滚动位置。
+  requestAnimationFrame(() => {
+    if (!resultsPage.value || pendingRestoration !== saved) return
+    const scroller = resultsPage.value.parentElement
+    if (scroller) {
+      scroller.scrollTop = saved.scrollTop
+      scroller.scrollLeft = saved.scrollLeft
+    }
+    if (matrixScroller.value) {
+      matrixScroller.value.scrollTop = saved.matrixScrollTop
+      matrixScroller.value.scrollLeft = saved.matrixScrollLeft
+    }
+    pendingRestoration = null
+  })
+}
+
+onBeforeRouteLeave(rememberView)
+onMounted(() => { void restoreViewPosition() })
+watch(results, () => { void restoreViewPosition() }, { flush: 'post' })
 
 function matchesFilter(
   student: ResultsCenterStudent,
@@ -270,28 +350,12 @@ function shortScoreStatusLabel(status: ResultsScoreStatus): string {
   }[status]
 }
 
-function studentStatusLabel(status: ResultsStudentStatus): string {
-  return {
-    complete: '成绩完整',
-    needs_review: '含待复核项',
-    incomplete: '尚有未评分',
-    failed: '存在处理失败',
-  }[status]
-}
-
 function studentIssueText(student: ResultsCenterStudent): string {
   const issues: string[] = []
   if (student.failed_count > 0) issues.push(`失败 ${student.failed_count} 题`)
   if (student.ungraded_count > 0) issues.push(`未评分 ${student.ungraded_count} 题`)
   if (student.needs_review_count > 0) issues.push(`待复核 ${student.needs_review_count} 题`)
   return issues.length > 0 ? issues.join(' · ') : '全部题目已有成绩'
-}
-
-function studentRiskRank(student: ResultsCenterStudent): number {
-  if (student.failed_count > 0) return 0
-  if (student.ungraded_count > 0) return 1
-  if (student.needs_review_count > 0) return 2
-  return 3
 }
 
 function questionRiskCount(question: ResultsCenterQuestion): number {
@@ -508,7 +572,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <section class="results-center" aria-labelledby="results-center-title">
+  <section ref="resultsPage" class="results-center" aria-labelledby="results-center-title">
     <header class="results-center__hero">
       <div>
         <p class="results-center__eyebrow">当前考试 · 成绩与出件</p>
@@ -588,7 +652,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
         <section class="results-conclusion" aria-labelledby="results-conclusion-title">
           <div class="results-conclusion__heading">
             <div>
-              <p class="results-center__eyebrow">阅卷结论</p>
+              <p class="results-center__eyebrow">阅卷结论<template v-if="activeTab === 'details'"> · {{ selectedClass === null ? '全部班级' : selectedClass || '未填写班级' }} · 当前筛选</template></p>
               <h2 id="results-conclusion-title">{{ results.session_name }}</h2>
             </div>
             <span>点击任一数字查看对应学生</span>
@@ -696,75 +760,6 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             </section>
           </div>
 
-          <section
-            class="results-panel"
-            aria-labelledby="overview-students-title"
-          >
-            <div class="results-panel__heading">
-              <div>
-                <p class="results-center__eyebrow">学生清单</p>
-                <h2 id="overview-students-title">逐人查看</h2>
-                <p>需要处理的学生排在前面。</p>
-              </div>
-              <label class="results-search">
-                <span>搜索学生</span>
-                <Input
-                  v-model="searchQuery"
-                  type="search"
-                  placeholder="姓名、学号或班级"
-                />
-              </label>
-            </div>
-            <div class="results-table-wrap">
-              <table class="results-overview-table">
-                <thead>
-                  <tr>
-                    <th scope="col">学生</th>
-                    <th scope="col">班级</th>
-                    <th scope="col">当前总分</th>
-                    <th scope="col">成绩状态</th>
-                    <th scope="col">需要处理</th>
-                    <th scope="col"><span class="visually-hidden">操作</span></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="student in overviewStudents" :key="student.student_id">
-                    <th scope="row">
-                      <button type="button" @click="openStudentDrawer(student, $event)">
-                        <strong>{{ student.student_name }}</strong>
-                        <span>{{ student.student_code || '未填写学号' }}</span>
-                      </button>
-                    </th>
-                    <td>{{ student.class_name || '未填写班级' }}</td>
-                    <td>
-                      <strong>
-                        {{ currentTotalPrefix(student) }}{{ formatScore(student.current_score) }}
-                        <small>/ {{ formatScore(student.max_score) }}</small>
-                      </strong>
-                    </td>
-                    <td>
-                      <span class="results-status" :data-status="student.status">
-                        {{ studentStatusLabel(student.status) }}
-                      </span>
-                    </td>
-                    <td>{{ studentIssueText(student) }}</td>
-                    <td>
-                      <button
-                        type="button"
-                        class="results-link-button"
-                        @click="openStudentDrawer(student, $event)"
-                      >
-                        查看逐题
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p v-if="overviewStudents.length === 0" class="results-table-empty">
-              没有符合当前搜索条件的学生。
-            </p>
-          </section>
         </template>
 
         <section
@@ -776,16 +771,21 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             <div>
               <p class="results-center__eyebrow">逐题明细</p>
               <h2 id="score-matrix-title">学生 × 题号</h2>
-              <p>未评分以“—”显示，不按零分计算；点击任一分数可进入人工干预。</p>
+              <p>未评分以“—”显示，不按零分计算；点击任一分数查看学生作答。</p>
             </div>
-            <label class="results-search">
-              <span>搜索学生</span>
-              <Input
-                v-model="searchQuery"
-                type="search"
-                placeholder="姓名、学号或班级"
-              />
-            </label>
+            <div class="results-detail-filters">
+              <label class="results-class-filter">
+                <span>班级</span>
+                <select v-model="selectedClass" aria-label="成绩明细班级">
+                  <option :value="null">全部班级</option>
+                  <option v-for="className in classOptions" :key="className" :value="className">{{ className || '未填写班级' }}</option>
+                </select>
+              </label>
+              <label class="results-search">
+                <span>搜索学生</span>
+                <Input v-model="searchQuery" type="search" placeholder="姓名、学号或班级" />
+              </label>
+            </div>
           </div>
 
           <div class="results-filter-bar" aria-label="学生成绩筛选">
@@ -799,10 +799,10 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             >
               {{ filter.label }}
             </button>
-            <span>显示 {{ visibleStudents.length }} / {{ results.students.length }} 人</span>
+            <span>显示 {{ visibleStudents.length }} / {{ studentsInClass.length }} 人</span>
           </div>
 
-          <div class="results-matrix-wrap" tabindex="0" aria-label="逐题成绩表，可横向滚动">
+          <div ref="matrixScroller" class="results-matrix-wrap" tabindex="0" aria-label="逐题成绩表，可横向滚动">
             <table class="results-matrix">
               <thead>
                 <tr>
@@ -825,7 +825,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                     </button>
                   </th>
                   <th
-                    v-for="question in results.questions"
+                    v-for="question in matrixQuestions"
                     :key="question.question_id"
                     scope="col"
                     :aria-sort="matrixAriaSort('question', question.question_id)"
@@ -867,7 +867,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                     <span>{{ studentIssueText(student) }}</span>
                   </td>
                   <td
-                    v-for="question in results.questions"
+                    v-for="question in matrixQuestions"
                     :key="question.question_id"
                     class="results-matrix__score"
                     :style="questionHeatStyle(student, question.question_id)"
@@ -876,7 +876,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                       v-if="itemFor(student, question.question_id)"
                       type="button"
                       :data-status="itemFor(student, question.question_id)!.score_status"
-                      :aria-label="`${student.student_name}，${question.question_id}，${scoreStatusLabel(itemFor(student, question.question_id)!.score_status)}，得分 ${formatScore(itemFor(student, question.question_id)!.score_awarded)}，进入人工干预`"
+                      :aria-label="`${student.student_name}，${question.question_id}，${scoreStatusLabel(itemFor(student, question.question_id)!.score_status)}，得分 ${formatScore(itemFor(student, question.question_id)!.score_awarded)}，查看作答`"
                       @click="navigateToReview(itemFor(student, question.question_id)!)"
                     >
                       <strong>{{ formatScore(itemFor(student, question.question_id)!.score_awarded) }}</strong>

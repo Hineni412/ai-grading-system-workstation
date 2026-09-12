@@ -219,6 +219,9 @@ async function removeCurrent(): Promise<void> {
             </div>
             <button type="button" class="qb-drawer-close" aria-label="关闭题目详情" @click="store.selectQuestion(null)">×</button>
           </header>
+          <p v-if="store.detail.duplicate_of_question_id" class="qb-feedback">
+            与题库 <button type="button" class="qb-link" @click="store.selectQuestion(store.detail.duplicate_of_question_id)">#{{ store.detail.duplicate_of_question_id }}</button> 相同，{{ store.detail.duplicate_labels_reused ? '已复用标签' : '已关联，标签待补齐' }}。
+          </p>
           <p
             v-if="store.detail.criteria_needs_review"
             class="qb-feedback is-warning"

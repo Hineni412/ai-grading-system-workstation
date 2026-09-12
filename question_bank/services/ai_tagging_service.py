@@ -24,7 +24,7 @@ from llm_client import (
     LLMSettings,
     normalize_openai_base_url,
 )
-from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, TagAnalysis, TaggingContext
+from question_bank.models.tag_schema import DIFFICULTY_SCALE_GUIDANCE, ERROR_PRONE_CATEGORIES, TagAnalysis, TaggingContext
 from question_bank.services.taxonomy_review_suggestions import (
     TaxonomySuggestionModelResponseError,
 )
@@ -765,6 +765,7 @@ def _system_prompt(
     Error-prone points must be broad, reusable categories for statistics, not question-specific step descriptions. Prefer the provided error_prone_options such as 条件识别不完整, 图形关系识别错误, 辅助线思路缺失, 公式/定理误用, 运算化简错误, 书写依据不完整. Do not write labels like “第一问证明某三角形全等时漏找某条件”.
     Choose the smallest accurate approved knowledge point.
     Difficulty must be an integer from 1 to 10.
+    {DIFFICULTY_SCALE_GUIDANCE}
     input.has_images is metadata only: it tells you the stored question contains images, but no image body is included in this tagging request.
     Historical saved tags are intentionally absent from the input and must not
     be inferred or preserved. Judge this question from its current content and

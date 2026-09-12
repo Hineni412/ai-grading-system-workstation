@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import BinaryIO, Any, Callable
 from uuid import uuid4
 
+from backend.grading_workflow import preflight_match_status
+
 
 class ScanGradingWorkspaceError(RuntimeError):
     """扫描批改工作区拒绝当前操作。"""
@@ -35,6 +37,10 @@ class ScanUploadTooLargeError(ScanGradingWorkspaceError):
 
 class PendingScanIssuesError(ScanGradingWorkspaceError):
     """仍有异常卷，启动前尚未得到明确确认。"""
+
+
+class ScanMatchConflictError(ScanGradingWorkspaceError):
+    """答卷归属冲突必须先在扫描预检中解决。"""
 
 
 class GradingConfigChangedError(ScanGradingWorkspaceError):
@@ -499,7 +505,7 @@ class ScanGradingWorkspace:
             raise ScanGradingWorkspaceError("scan upload batch is not frozen")
         if self._active_scan_analysis_job(session_id, str(manifest["batch_id"])) is not None:
             raise ScanGradingWorkspaceError("scan preflight is still active")
-        self.get_preflight(session_id)
+        self.require_resolved_matches(self.get_preflight(session_id))
         payload = {
             "session_id": int(session_id),
             "grading_mode": run.grading_mode,
@@ -573,6 +579,7 @@ class ScanGradingWorkspace:
             )
             if int(decision_revision) != int(preflight["revision"]):
                 raise UploadBatchRevisionError("preflight decision revision changed")
+            self.require_resolved_matches(preflight)
             if int(preflight["pending_issue_count"]) > 0 and not confirm_pending_issues:
                 raise PendingScanIssuesError("pending scan issues require confirmation")
             if self.grading_db_path is None:
@@ -1273,15 +1280,10 @@ class ScanGradingWorkspace:
                 first_page_role = (
                     "front" if front_page_parity == "odd" else "back"
                 )
-            return {
+            payload = {
                 "revision": int(state["revision"]),
                 "summary": {
                     "auto_matched": len(groups),
-                    "ready_to_grade": self._ready_to_grade_count(
-                        analysis_groups,
-                        analysis_issues,
-                        state,
-                    ),
                     "issues": len(issues),
                     "absent_candidates": len(absent),
                     "total_pages": int(analysis.get("total_pages") or 0),
@@ -1298,8 +1300,27 @@ class ScanGradingWorkspace:
                     for _ in analysis.get("warnings", [])
                 ],
                 "decisions": list(state.get("public_decisions", [])),
-                "pending_issue_count": self._pending_issue_count(issues, state),
             }
+            students = analysis.get("students")
+            if self.grading_db_path is not None:
+                from backend.repositories.compat import open_grading_repositories
+                students = open_grading_repositories(self.grading_db_path).list_students()
+            status = preflight_match_status(payload, students)
+            payload["summary"].update(status["summary"])
+            payload["match_conflicts"] = status["conflicts"]
+            payload["pending_issue_count"] = status["pending_issue_count"]
+            if students is not None:
+                payload["absent_students"] = [
+                    {key: student.get(key) for key in ("id", "name", "student_code", "class_name")}
+                    for student in status["absent_students"]
+                ]
+                payload["summary"]["absent_candidates"] = len(payload["absent_students"])
+            return payload
+
+    @staticmethod
+    def require_resolved_matches(preflight: dict[str, Any]) -> None:
+        if preflight.get("match_conflicts"):
+            raise ScanMatchConflictError("答卷归属存在冲突，请返回扫描预检处理后再批改。")
 
     def save_decisions(
         self,
@@ -1346,12 +1367,14 @@ class ScanGradingWorkspace:
                 elif student_id is not None:
                     raise ScanGradingWorkspaceError("non-matching decision cannot include a student")
 
-                if target_type == "group" and target_id in group_by_id and action == "match":
+                if target_type == "group" and target_id in group_by_id and action in {"match", "invalid", "pending"}:
                     internal = {
                         "group_source_label": str(group_by_id[target_id].get("source_label") or ""),
-                        "action": "match",
-                        "student_id": student_id,
+                        "group_front_image": str(group_by_id[target_id].get("front_image") or ""),
+                        "action": action,
                     }
+                    if action == "match":
+                        internal["student_id"] = student_id
                 elif target_type == "issue" and target_id in issue_ids and action in {"pending", "invalid", "match"}:
                     internal = {"issue_id": target_id, "action": action}
                     if action == "match":
@@ -1368,6 +1391,24 @@ class ScanGradingWorkspace:
                 public_decisions.append(public)
                 internal_decisions.append(internal)
 
+            # The request is the complete decision set. Validate it together with
+            # existing automatic assignments before either decision file is saved.
+            snapshot = {
+                "groups": [self._public_group(session_id, g) for g in group_by_id.values()],
+                "issues": [self._public_issue(session_id, i) for i in analysis.get("issues", [])],
+                "decisions": state.get("public_decisions", []),
+            }
+            old_conflicts = {
+                c["student_id"]: {(t["target_type"], t["target_id"]) for t in c["targets"]}
+                for c in preflight_match_status(snapshot)["conflicts"]
+                if c["code"] == "scan_student_multiple_papers"
+            }
+            snapshot["decisions"] = public_decisions
+            for conflict in preflight_match_status(snapshot)["conflicts"]:
+                targets = {(t["target_type"], t["target_id"]) for t in conflict["targets"]}
+                if not targets <= old_conflicts.get(conflict["student_id"], set()):
+                    raise ScanMatchConflictError("同一学生被分配了多份答卷，本次匹配未保存。请核对已选学生；重复扫描可标为无效。")
+
             next_state = {
                 "analysis_identity": identity,
                 "revision": int(state["revision"]) + 1,
@@ -1380,29 +1421,15 @@ class ScanGradingWorkspace:
                 self._session_dir(session_id) / "scan_manual_decisions_latest.json",
                 internal_decisions,
             )
-            issue_count = len(issue_ids)
-            decided_issue_ids = {
-                item["target_id"]
-                for item in public_decisions
-                if item["target_type"] == "issue" and item["action"] != "pending"
-            }
+            preflight = self.get_preflight(session_id)
             return {
                 "revision": next_state["revision"],
                 "decisions": public_decisions,
-                "pending_issue_count": issue_count - len(decided_issue_ids),
-                "ready_to_grade": self._ready_to_grade_count(
-                    [
-                        item
-                        for item in analysis.get("groups", [])
-                        if isinstance(item, dict)
-                    ],
-                    [
-                        item
-                        for item in analysis.get("issues", [])
-                        if isinstance(item, dict)
-                    ],
-                    next_state,
-                ),
+                "pending_issue_count": preflight["pending_issue_count"],
+                "ready_to_grade": preflight["summary"]["ready_to_grade"],
+                "summary": preflight["summary"],
+                "absent_students": preflight["absent_students"],
+                "match_conflicts": preflight["match_conflicts"],
             }
 
     def resolve_preflight_media(self, session_id: int, media_ref: str) -> Path:
@@ -1702,6 +1729,7 @@ class ScanGradingWorkspace:
             "id": group_id,
             "source_label": str(group.get("source_label") or ""),
             "detected_name": str(group.get("detected_name") or ""),
+            "detected_class_name": str(group.get("detected_class_name") or ""),
             "student_id": group.get("student_id"),
             "student_name": str(group.get("student_name") or ""),
             "match_method": str(group.get("match_method") or ""),
@@ -1718,6 +1746,7 @@ class ScanGradingWorkspace:
             "message": "扫描文件需要人工处理",
             "source_label": str(issue.get("source_label") or ""),
             "detected_name": str(issue.get("detected_name") or ""),
+            "detected_class_name": str(issue.get("detected_class_name") or ""),
             "suggested_student_id": issue.get("suggested_student_id"),
             "suggested_student_name": str(issue.get("suggested_student_name") or ""),
             "suggested_match_score": issue.get("suggested_match_score"),
@@ -1731,33 +1760,6 @@ class ScanGradingWorkspace:
     @staticmethod
     def _media_url(session_id: int, target_type: str, target_id: str, side: str) -> str:
         return f"/api/sessions/{int(session_id)}/scan/preflight/media/{target_type}:{target_id}:{side}"
-
-    @staticmethod
-    def _pending_issue_count(issues: list[dict[str, Any]], state: dict[str, Any]) -> int:
-        decided = {
-            str(item.get("target_id") or "")
-            for item in state.get("public_decisions", [])
-            if item.get("target_type") == "issue" and item.get("action") != "pending"
-        }
-        return sum(1 for item in issues if item["id"] not in decided)
-
-    @staticmethod
-    def _ready_to_grade_count(
-        groups: list[dict[str, Any]],
-        issues: list[dict[str, Any]],
-        state: dict[str, Any],
-    ) -> int:
-        gradable_issue_ids = {
-            str(item.get("issue_id") or "")
-            for item in issues
-            if item.get("back_image")
-        }
-        matched_issue_ids = {
-            str(item.get("target_id") or "")
-            for item in state.get("public_decisions", [])
-            if item.get("target_type") == "issue" and item.get("action") == "match"
-        }
-        return len(groups) + len(gradable_issue_ids & matched_issue_ids)
 
     def _lock(self, session_id: int) -> threading.RLock:
         key = f"{self.templates_root.resolve()}:{int(session_id)}"

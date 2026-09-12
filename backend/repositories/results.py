@@ -438,7 +438,10 @@ class ResultRepository:
                 sd.id AS detail_id,
                 sd.question_id,
                 sd.knowledge_ids,
-                sd.score_awarded,
+                COALESCE(tsl.score_awarded, sd.score_awarded) AS score_awarded,
+                tsl.max_score AS teacher_final_max_score,
+                tsl.revision AS teacher_final_revision,
+                sr.raw_json AS assessment_raw_json,
                 sd.deduction_reason,
                 sd.error_category,
                 sd.error_summary,
@@ -449,6 +452,9 @@ class ResultRepository:
             JOIN grading_sessions gs ON gs.id = sr.session_id
             JOIN students s ON s.id = sr.student_id
             JOIN exam_papers ep ON ep.id = sr.paper_id
+            LEFT JOIN teacher_score_locks tsl
+                ON tsl.session_id = sr.session_id AND tsl.student_id = sr.student_id
+                AND tsl.question_id = sd.question_id
             WHERE COALESCE(gs.is_deleted, 0) = 0
         """
         params: list[Any] = []
@@ -462,10 +468,26 @@ class ResultRepository:
             params.extend(int(value) for value in session_ids)
         query += " ORDER BY sr.session_id, sr.student_id, sd.id"
         rows = self.session.connection.execute(query, params).fetchall()
-        return [
-            _detail_row_with_secondary_errors(dict(row))
-            for row in rows
-        ]
+        result = []
+        metadata_by_result = {}
+        for raw_row in rows:
+            row = dict(raw_row)
+            raw = row.pop("assessment_raw_json", None)
+            if row["result_id"] not in metadata_by_result:
+                try:
+                    payload = json.loads(raw or "{}")
+                    metadata = payload.get("detail_metadata", {})
+                    metadata_by_result[row["result_id"]] = metadata if isinstance(metadata, dict) else {}
+                except (TypeError, ValueError, AttributeError):
+                    metadata_by_result[row["result_id"]] = {}
+            detail = metadata_by_result[row["result_id"]].get(row["question_id"], {})
+            row["assessment_state"] = {
+                key: detail.get(key) for key in (
+                    "need_review", "answer_is_blank_or_no_valid_work", "answer_discarded_by_smudge",
+                ) if key in detail
+            } if isinstance(detail, dict) else {}
+            result.append(_detail_row_with_secondary_errors(row))
+        return result
 
     def get_active_error_point_rows(
         self,

@@ -386,6 +386,12 @@ def test_preflight_projection_hides_paths_and_saves_revisioned_decisions(tmp_pat
         "issues": 1,
         "absent_candidates": 1,
         "total_pages": 4,
+        "scanned_papers": 2,
+        "matched_papers": 1,
+        "unique_students": 1,
+        "invalid_papers": 0,
+        "unresolved_papers": 1,
+        "conflicting_papers": 0,
     }
     assert preflight["revision"] == 0
     assert preflight["groups"][0]["front_media_url"].startswith("/api/")

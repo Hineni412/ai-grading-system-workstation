@@ -30,7 +30,6 @@ interface EnrichedNode {
 interface SectionGroup {
   name: string
   items: EnrichedNode[]
-  mastery: number | null
   evidenceCount: number
 }
 
@@ -40,7 +39,6 @@ interface ChapterGroup {
   name: string
   items: EnrichedNode[]
   sections: SectionGroup[]
-  mastery: number | null
 }
 
 const activeChapterKey = ref('')
@@ -78,18 +76,23 @@ function pathOf(node: GraphNode): NodePath {
   }
 }
 
-function weightedMastery(nodes: GraphNode[]): number | null {
-  const available = nodes.filter((node) => node.mastery.status === 'available' && node.mastery.value !== null)
-  if (!available.length) return null
-  const weight = available.reduce((total, node) => total + Math.max(node.mastery.evidence_count, 1), 0)
-  return available.reduce((total, node) => (
-    total + (node.mastery.value ?? 0) * Math.max(node.mastery.evidence_count, 1)
-  ), 0) / weight
+function ownMastery(node: GraphNode): number | null {
+  return node.mastery.status === 'available' && node.mastery.evidence_count > 0
+    ? node.mastery.value : null
+}
+function observedCount(items: EnrichedNode[]): number {
+  return items.filter(item => ownMastery(item.node) !== null).length
 }
 
 const chapters = computed<ChapterGroup[]>(() => {
   const chapterMap = new Map<string, { volume: string; name: string; items: EnrichedNode[] }>()
-  for (const node of props.nodes) {
+  const parents = new Set(props.edges.filter(edge => edge.relation_type === 'parent').map(edge => edge.target_key))
+  const paths = props.nodes.map(node => ({ key: node.stable_key, parts: splitPath(node.display_name) }))
+  for (const path of paths) {
+    if (path.parts.length > 1 && paths.some(other => other.parts.length > path.parts.length
+      && path.parts.every((part, index) => part === other.parts[index]))) parents.add(path.key)
+  }
+  for (const node of [...props.nodes].filter(node => !parents.has(node.stable_key)).sort((a, b) => a.stable_key.localeCompare(b.stable_key, 'zh-CN', { numeric: true }))) {
     const item: EnrichedNode = { node, path: pathOf(node) }
     const key = `${item.path.volume}｜${item.path.chapter}`
     const chapter = chapterMap.get(key) ?? { volume: item.path.volume, name: item.path.chapter, items: [] }
@@ -105,7 +108,6 @@ const chapters = computed<ChapterGroup[]>(() => {
     const sections = [...sectionMap].map(([name, items]) => ({
       name,
       items,
-      mastery: weightedMastery(items.map((item) => item.node)),
       evidenceCount: items.reduce((total, item) => total + item.node.mastery.evidence_count, 0),
     }))
     return {
@@ -114,7 +116,6 @@ const chapters = computed<ChapterGroup[]>(() => {
       name: chapter.name,
       items: chapter.items,
       sections,
-      mastery: weightedMastery(chapter.items.map((item) => item.node)),
     }
   })
 })
@@ -136,22 +137,11 @@ const visibleItems = computed<EnrichedNode[]>(() => {
   return activeChapter.value?.items ?? []
 })
 
-const selectedNode = computed(() => props.nodes.find((node) => node.stable_key === props.selectedKey)
+const selectedNode = computed(() => visibleItems.value.find((item) => item.node.stable_key === props.selectedKey)?.node
   ?? visibleItems.value[0]?.node
   ?? null)
 
-const selectedRelations = computed(() => {
-  if (!selectedNode.value) return []
-  return props.edges.filter((edge) => (
-    edge.source_key === selectedNode.value?.stable_key || edge.target_key === selectedNode.value?.stable_key
-  )).map((edge) => {
-    const otherKey = edge.source_key === selectedNode.value?.stable_key ? edge.target_key : edge.source_key
-    return {
-      ...edge,
-      other: props.nodes.find((node) => node.stable_key === otherKey)?.display_name ?? otherKey,
-    }
-  })
-})
+const visibleSections = computed(() => activeSection.value ? [activeSection.value] : activeChapter.value?.sections ?? [])
 
 watch(chapters, (items) => {
   if (!items.some((item) => item.key === activeChapterKey.value)) {
@@ -174,6 +164,7 @@ watch(() => props.selectedKey, (key) => {
     .flatMap((chapter) => chapter.sections.map((section) => ({ chapter, section })))
     .find(({ section }) => section.items.some((item) => item.node.stable_key === key))
   if (!target) return
+  if (activeChapterKey.value === target.chapter.key && (!activeSectionName.value || activeSectionName.value === target.section.name)) return
   activeChapterKey.value = target.chapter.key
   activeSectionName.value = target.section.name
   if (!expandedChapterKeys.value.includes(target.chapter.key)) {
@@ -182,7 +173,7 @@ watch(() => props.selectedKey, (key) => {
 })
 
 function percentage(value: number | null): string {
-  return value === null ? '无证据' : `${Math.round(value * 100)}%`
+  return value === null ? '证据不足' : `${Math.round(value * 100)}%`
 }
 
 function masteryClass(value: number | null): string {
@@ -215,7 +206,7 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
 <template>
   <section class="structure-browser" aria-label="教材知识结构">
     <aside class="structure-browser__chapters">
-      <header><strong>{{ volumeLabel }}</strong><span>{{ nodes.length }} 个知识点</span></header>
+      <header><strong>{{ volumeLabel }}</strong><span>{{ chapters.reduce((sum, chapter) => sum + chapter.items.length, 0) }} 个知识点</span></header>
       <nav class="structure-browser__chapter-tree" aria-label="章节导航">
         <div v-for="chapter in chapters" :key="chapter.key" class="structure-browser__chapter-node">
           <div class="structure-browser__chapter-row">
@@ -234,7 +225,7 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
               :class="{ 'is-active': chapter.key === activeChapter?.key && !activeSection }"
               @click="chooseChapter(chapter)"
             >
-              <span>{{ chapter.name }}</span><b>{{ percentage(chapter.mastery) }}</b>
+              <span>{{ chapter.name }}</span><b>{{ observedCount(chapter.items) }}/{{ chapter.items.length }}</b>
             </button>
           </div>
           <ul v-if="expandedChapterKeys.includes(chapter.key)" class="structure-browser__section-list">
@@ -244,7 +235,7 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
                 :class="{ 'is-active': chapter.key === activeChapter?.key && section.name === activeSectionName && activeSectionName }"
                 @click="chooseSection(chapter, section.name)"
               >
-                <span>{{ section.name }}</span><b>{{ percentage(section.mastery) }}</b>
+                <span>{{ section.name }}</span><b>{{ observedCount(section.items) }}/{{ section.items.length }}</b>
               </button>
             </li>
           </ul>
@@ -262,7 +253,7 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
         <strong v-else>{{ activeChapter.sections.length }} 小节 · {{ activeChapter.items.length }} 知识点</strong>
       </header>
       <div class="structure-browser__legend">
-        <span class="is-low">待补强</span><span class="is-mid">需巩固</span><span class="is-good">较稳定</span><span class="is-empty">无证据</span>
+        <span class="is-low">待补强</span><span class="is-mid">需巩固</span><span class="is-good">较稳定</span><span class="is-empty">证据不足</span>
       </div>
       <button
         v-if="activeSection && activeChapter"
@@ -273,44 +264,28 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
         ← 返回{{ activeChapter.name }}的小节列表
       </button>
 
-      <template v-if="!activeSection && activeChapter">
-        <button
-          v-for="section in activeChapter.sections"
-          :key="section.name"
-          type="button"
-          :class="['structure-browser__section-card', masteryClass(section.mastery)]"
-          @click="chooseSection(activeChapter, section.name)"
-        >
-          <span>{{ section.name }}</span>
-          <i><b :style="{ width: section.mastery === null ? '0%' : `${Math.round(section.mastery * 100)}%` }" /></i>
-          <strong>{{ percentage(section.mastery) }}</strong>
-          <small>{{ section.items.length }} 知识点 · {{ section.evidenceCount }} 条证据</small>
-        </button>
-      </template>
-
-      <div v-else class="structure-browser__points">
-        <button
-          v-for="item in visibleItems"
-          :key="item.node.stable_key"
-          type="button"
-          :class="['structure-browser__point', masteryClass(item.node.mastery.value), { 'is-selected': selectedNode?.stable_key === item.node.stable_key }]"
-          :title="item.node.display_name"
-          @click="emit('select', item.node.stable_key)"
-        >
-          <span>{{ item.path.label }}</span>
-          <i><b :style="{ width: item.node.mastery.value === null ? '0%' : `${Math.round(item.node.mastery.value * 100)}%` }" /></i>
-          <strong>{{ percentage(item.node.mastery.value) }}</strong>
-          <small>{{ item.node.mastery.evidence_count }} 条证据</small>
-        </button>
-      </div>
+      <p class="structure-browser__evidence-note">每格只显示该知识点自身证据；目录数字表示有证据的知识点数 / 总数。相邻或相关知识点互不推断。</p>
+      <section v-for="section in visibleSections" :key="section.name" class="structure-browser__heatmap-section">
+        <h3>{{ section.name }} <small>{{ observedCount(section.items) }}/{{ section.items.length }} 项有证据</small></h3>
+        <div class="structure-browser__points">
+          <button v-for="item in section.items" :key="item.node.stable_key" type="button"
+            :class="['structure-browser__point', masteryClass(ownMastery(item.node)), { 'is-selected': selectedNode?.stable_key === item.node.stable_key }]"
+            :title="item.node.display_name" @click="emit('select', item.node.stable_key)">
+            <span>{{ item.path.label }}</span>
+            <i><b :style="{ width: `${Math.round((ownMastery(item.node) ?? 0) * 100)}%` }" /></i>
+            <strong>{{ percentage(ownMastery(item.node)) }}</strong>
+            <small>{{ item.node.mastery.evidence_count }} 条自身证据</small>
+          </button>
+        </div>
+      </section>
     </main>
 
     <aside class="structure-browser__detail">
       <template v-if="selectedNode">
         <span>当前知识点</span>
         <h2>{{ selectedNode.display_name }}</h2>
-        <div :class="['structure-browser__score', masteryClass(selectedNode.mastery.value)]">
-          <strong>{{ percentage(selectedNode.mastery.value) }}</strong><span>群体掌握度</span>
+        <div :class="['structure-browser__score', masteryClass(ownMastery(selectedNode))]">
+          <strong>{{ percentage(ownMastery(selectedNode)) }}</strong><span>本知识点掌握状况</span>
         </div>
         <dl>
           <div><dt>证据</dt><dd>{{ selectedNode.mastery.evidence_count }} 条</dd></div>
@@ -318,14 +293,8 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
           <div><dt>扣分</dt><dd>{{ selectedNode.evidence.deduction_count }} 次</dd></div>
         </dl>
         <p>{{ selectedNode.definition }}</p>
-        <section>
-          <strong>局部知识联系</strong>
-          <p v-if="!selectedRelations.length">当前没有已确认的直接关系。</p>
-          <button v-for="relation in selectedRelations" :key="relation.relation_key" type="button" @click="emit('select', relation.source_key === selectedNode.stable_key ? relation.target_key : relation.source_key)">
-            <span>{{ relation.relation_type === 'prerequisite' ? '先修' : relation.relation_type === 'parent' ? '上下位' : '相关' }}</span>
-            <strong>{{ relation.other }}</strong>
-          </button>
-        </section>
+        <p v-if="ownMastery(selectedNode) === null">本知识点证据不足，不依据先修、相关关系或相邻章节推断掌握情况。</p>
+        <p v-else>仅根据本知识点已有作答与训练证据显示；安排练习时还会核对实际错题、解题要求与难度。</p>
         <RouterLink :to="{ name: 'training', query: { mode: 'chapter' } }">用本章安排训练</RouterLink>
       </template>
     </aside>
@@ -333,6 +302,10 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
 </template>
 
 <style scoped>
+.structure-browser__evidence-note { color: var(--color-text-secondary); font-size: .8rem; }
+.structure-browser__heatmap-section h3 { display: flex; justify-content: space-between; gap: var(--space-2); font-size: .95rem; }
+.structure-browser__heatmap-section h3 small { color: var(--color-text-secondary); font-weight: normal; }
+
 .structure-browser { display: grid; grid-template-columns: 240px minmax(460px, 1fr) 280px; min-height: 620px; overflow: hidden; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
 .structure-browser__chapters { padding: .85rem; border-right: 1px solid var(--color-border-default); background: var(--color-bg-subtle); }
 .structure-browser__chapters header { display: grid; gap: .15rem; padding: .35rem .45rem .8rem; }
@@ -362,11 +335,23 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
 .structure-browser__section-card.is-mid > i b { background: var(--color-warning); }.structure-browser__section-card.is-low > i b { background: var(--color-danger); }
 .structure-browser__points { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-border-default); }
 .structure-browser__point { display: grid; grid-template-columns: minmax(0, 1fr) 4rem auto; gap: .35rem .55rem; align-items: center; padding: .65rem; border: 0; background: var(--color-bg-surface); color: var(--color-text-primary); text-align: left; cursor: pointer; }
-.structure-browser__point.is-selected { background: var(--color-accent-subtle); box-shadow: inset 3px 0 0 var(--color-accent); }
+.structure-browser__point.is-low { background: var(--color-danger-subtle); }
+.structure-browser__point.is-mid { background: var(--color-warning-subtle); }
+.structure-browser__point.is-good { background: var(--color-success-subtle); }
+.structure-browser__point.is-empty { background: var(--color-bg-subtle); }
+.structure-browser__point.is-selected { outline: 1px solid var(--color-accent); outline-offset: -1px; box-shadow: inset 3px 0 0 var(--color-accent); }
 .structure-browser__point > span { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }.structure-browser__point small { grid-column: 1 / -1; color: var(--color-text-secondary); }
 .structure-browser__point > i { height: .42rem; overflow: hidden; border-radius: 999px; background: var(--color-bg-selected); }.structure-browser__point > i b { display: block; height: 100%; background: var(--color-success); }.structure-browser__point.is-mid > i b { background: var(--color-warning); }.structure-browser__point.is-low > i b { background: var(--color-danger); }
-.structure-browser__detail { padding: 1rem; border-left: 1px solid var(--color-border-default); background: var(--color-bg-subtle); }.structure-browser__score { display: grid; gap: .15rem; margin: 1rem 0; padding: .85rem; border-left: 4px solid var(--color-success); background: var(--color-success-subtle); }.structure-browser__score.is-mid { border-color: var(--color-warning); background: var(--color-warning-subtle); }.structure-browser__score.is-low { border-color: var(--color-danger); background: var(--color-danger-subtle); }.structure-browser__score strong { font-size: 1.65rem; }
+.structure-browser__detail { padding: 1rem; border-left: 1px solid var(--color-border-default); background: var(--color-bg-subtle); }.structure-browser__score { display: grid; gap: .15rem; margin: 1rem 0; padding: .85rem; border-left: 4px solid var(--color-success); background: var(--color-success-subtle); }.structure-browser__score.is-mid { border-color: var(--color-warning); background: var(--color-warning-subtle); }.structure-browser__score.is-low { border-color: var(--color-danger); background: var(--color-danger-subtle); }.structure-browser__score.is-empty { border-color: var(--color-border-default); background: var(--color-bg-subtle); }.structure-browser__score strong { font-size: 1.65rem; }
 .structure-browser__detail dl { display: grid; gap: .35rem; margin: 0; }.structure-browser__detail dl div { display: flex; justify-content: space-between; padding: .45rem 0; border-bottom: 1px solid var(--color-border-default); }.structure-browser__detail p { color: var(--color-text-secondary); line-height: 1.65; }
 .structure-browser__detail section { display: grid; gap: .4rem; margin: 1rem 0; }.structure-browser__detail section button { display: grid; gap: .1rem; padding: .55rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-primary); text-align: left; cursor: pointer; }.structure-browser__detail section button span { color: var(--color-text-secondary); font-size: .72rem; }.structure-browser__detail > a { display: flex; justify-content: center; padding: .65rem; border-radius: var(--radius-control); background: var(--color-accent); color: var(--primary-foreground); text-decoration: none; }
 @media (max-width: 1100px) { .structure-browser { grid-template-columns: 200px 1fr; }.structure-browser__detail { grid-column: 1 / -1; border-top: 1px solid var(--color-border-default); border-left: 0; }.structure-browser__points { grid-template-columns: 1fr; } }
+@media (max-width: 700px) {
+  .structure-browser { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .structure-browser__chapters { border-right: 0; border-bottom: 1px solid var(--color-border-default); }
+  .structure-browser__chapter-tree { max-height: 230px; overflow-y: auto; }
+  .structure-browser__tree > header { align-items: start; flex-wrap: wrap; gap: .35rem; }
+  .structure-browser__legend { flex-wrap: wrap; }
+  .structure-browser__heatmap-section h3 { flex-wrap: wrap; }
+}
 </style>

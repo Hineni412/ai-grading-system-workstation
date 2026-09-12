@@ -240,12 +240,25 @@ def test_shuffled_pages_group_by_signed_identity_and_survive_restart(
     assert all(page["state"] == "assigned" for page in batch["pages"])
     assert any(page["rotation_degrees"] != 0 for page in batch["pages"])
     restarted = TrainingSubmissionModule(db_path=db_path, data_root=data_root)
+    history = restarted.list_batches(str(batch["paper_batch_id"]))
+    assert [item["batch_id"] for item in history] == [batch["batch_id"]]
+    assert history[0]["submission_count"] == 1
+    assert history[0]["status"] == "ready"
+    assert restarted.list_batches("0" * 64) == []
     assert restarted.get_batch(str(batch["batch_id"])) == batch
     finalized = restarted.finalize_submission(
         str(batch["submissions"][0]["submission_id"])
     )
     assert finalized["submission_revision"] == 1
     assert [page["page_number"] for page in finalized["pages"]] == [1, 2]
+    another = restarted.create_batch(CreateScanBatchCommand(
+        operation_token="f" * 32,
+        paper_instance_ids=(str(instance["paper_instance_id"]),),
+        actor_ref="teacher-1",
+    ))
+    assert [item["batch_id"] for item in restarted.list_batches(str(batch["paper_batch_id"]))] == [
+        another["batch_id"], batch["batch_id"],
+    ]
 
 
 def test_duplicate_conflict_external_and_manual_replacement_are_explicit(

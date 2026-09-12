@@ -20,6 +20,22 @@ export type ResultsCenterLoader = (
   signal: AbortSignal,
 ) => Promise<ResultsCenterResponse>
 
+export interface ResultsViewState {
+  sessionId: number
+  fullPath: string
+  searchQuery: string
+  selectedClass: string | null
+  matrixSort: {
+    key: 'student' | 'total' | 'question'
+    direction: 'ascending' | 'descending'
+    questionId: string | null
+  }
+  scrollTop: number
+  scrollLeft: number
+  matrixScrollTop: number
+  matrixScrollLeft: number
+}
+
 function isCancelled(error: unknown): boolean {
   return (
     (typeof error === 'object'
@@ -36,6 +52,7 @@ export const useResultsCenterStore = defineStore('results-center', () => {
   const state = ref<ResultsCenterState>('idle')
   const errorMessage = ref('')
   const updatedAt = ref<string | null>(null)
+  const viewState = ref<ResultsViewState | null>(null)
 
   let controller: AbortController | null = null
   let generation = 0
@@ -49,6 +66,7 @@ export const useResultsCenterStore = defineStore('results-center', () => {
     state.value = 'idle'
     errorMessage.value = ''
     updatedAt.value = null
+    viewState.value = null
   }
 
   async function load(
@@ -109,6 +127,7 @@ export const useResultsCenterStore = defineStore('results-center', () => {
     state,
     errorMessage,
     updatedAt,
+    viewState,
     load,
     reset,
   }

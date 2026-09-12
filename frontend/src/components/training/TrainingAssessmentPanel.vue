@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import {
   trainingApi,
@@ -9,7 +9,7 @@ import {
   type TrainingPointState,
   type TrainingSubmission,
 } from '../../api/training'
-import { ApiError } from '../../api/errors'
+import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import StatusBadge from '../design-system/StatusBadge.vue'
 
 const props = defineProps<{
@@ -32,6 +32,57 @@ const edits = ref<Record<string, PointEdit>>({})
 const busy = ref('')
 const message = ref('')
 const errorMessage = ref('')
+const waitingForResult = ref(false)
+const queryPaused = ref(false)
+let pollTimer: ReturnType<typeof setTimeout> | undefined
+let queryFailures = 0
+let viewVersion = 0
+
+function stopPolling(): void {
+  clearTimeout(pollTimer)
+  pollTimer = undefined
+}
+
+function scheduleResultQuery(): void {
+  stopPolling()
+  pollTimer = setTimeout(() => { void queryResult() }, 3000)
+}
+
+async function queryResult(): Promise<void> {
+  const version = viewVersion
+  queryPaused.value = false
+  try {
+    const result = await trainingApi.getTrainingAssessment(
+      props.submission.submission_id,
+      props.submission.revision,
+    )
+    if (version !== viewVersion) return
+    assessment.value = result
+    queryFailures = 0
+    errorMessage.value = ''
+    followAssessment()
+    if (!waitingForResult.value) await loadFeedback(version)
+  } catch {
+    if (version !== viewVersion) return
+    queryFailures += 1
+    if (queryFailures < 3) scheduleResultQuery()
+    else {
+      queryPaused.value = true
+      errorMessage.value = '暂时无法确认后台结果，请重新查询；不会自动追加模型请求。'
+    }
+  }
+}
+
+function followAssessment(): void {
+  waitingForResult.value = assessment.value?.status === 'running'
+  if (waitingForResult.value) {
+    message.value = '后台正在判定，页面会自动查询最终结果。'
+    scheduleResultQuery()
+  } else {
+    stopPolling()
+    message.value = assessment.value?.action_message || ''
+  }
+}
 
 const canPublish = computed(() => (
   assessment.value
@@ -141,42 +192,75 @@ function safeError(error: unknown): string {
 }
 
 async function restore(): Promise<void> {
+  const version = ++viewVersion
+  stopPolling()
+  assessment.value = null
+  feedback.value = null
+  edits.value = {}
+  waitingForResult.value = false
+  queryPaused.value = false
+  queryFailures = 0
+  busy.value = 'restore'
   try {
-    assessment.value = await trainingApi.getTrainingAssessment(
+    const result = await trainingApi.getTrainingAssessment(
       props.submission.submission_id,
       props.submission.revision,
     )
+    if (version !== viewVersion) return
+    assessment.value = result
+    followAssessment()
   } catch (error) {
+    if (version !== viewVersion) return
     const text = safeError(error)
-    if (text) errorMessage.value = text
+    if (text) {
+      errorMessage.value = text
+      waitingForResult.value = true
+      queryPaused.value = true
+    }
     return
+  } finally {
+    if (version === viewVersion) busy.value = ''
   }
+  if (!waitingForResult.value) await loadFeedback(version)
+}
+
+async function loadFeedback(version = viewVersion): Promise<void> {
   try {
-    feedback.value = await trainingApi.getTrainingFeedback(
+    const result = await trainingApi.getTrainingFeedback(
       props.submission.submission_id,
       props.submission.revision,
     )
+    if (version === viewVersion) feedback.value = result
   } catch (error) {
+    if (version !== viewVersion) return
     const text = safeError(error)
     if (text) errorMessage.value = text
   }
 }
 
 async function startAssessment(): Promise<void> {
-  if (busy.value) return
+  if (busy.value || waitingForResult.value) return
+  const version = viewVersion
   busy.value = 'assess'
   errorMessage.value = ''
   message.value = ''
   try {
-    assessment.value = await trainingApi.startTrainingAssessment(
+    const result = await trainingApi.startTrainingAssessment(
       props.submission.submission_id,
       props.submission.revision,
     )
-    message.value = assessment.value.action_message
+    if (version !== viewVersion) return
+    assessment.value = result
+    followAssessment()
   } catch (error) {
-    errorMessage.value = safeError(error)
+    if (version !== viewVersion) return
+    if (isAmbiguousWriteError(error)) {
+      waitingForResult.value = true
+      message.value = '请求等待较久，正在查询后台结果；不会重新发送判定请求。'
+      await queryResult()
+    } else errorMessage.value = safeError(error)
   } finally {
-    busy.value = ''
+    if (version === viewVersion) busy.value = ''
   }
 }
 
@@ -218,10 +302,12 @@ async function assessmentAction(
   action: 'recover' | 'retry',
 ): Promise<void> {
   if (!assessment.value || busy.value) return
+  const version = viewVersion
+  stopPolling()
   busy.value = action
   errorMessage.value = ''
   try {
-    assessment.value = await trainingApi.controlTrainingAssessment(
+    const result = await trainingApi.controlTrainingAssessment(
       assessment.value,
       {
         operation_token: requestToken(),
@@ -231,11 +317,20 @@ async function assessmentAction(
           : '教师确认接管中断的判定运行',
       },
     )
-    message.value = assessment.value.action_message
+    if (version !== viewVersion) return
+    assessment.value = result
+    followAssessment()
   } catch (error) {
-    errorMessage.value = safeError(error)
+    if (version !== viewVersion) return
+    if (isAmbiguousWriteError(error)) {
+      waitingForResult.value = true
+      await queryResult()
+    } else {
+      errorMessage.value = safeError(error)
+      if (waitingForResult.value) scheduleResultQuery()
+    }
   } finally {
-    busy.value = ''
+    if (version === viewVersion) busy.value = ''
   }
 }
 
@@ -297,7 +392,11 @@ function masteryValue(
   return `${Math.round(snapshot.value * 100)}%`
 }
 
-onMounted(restore)
+watch(() => [props.submission.submission_id, props.submission.revision], restore, { immediate: true })
+onBeforeUnmount(() => {
+  viewVersion += 1
+  stopPolling()
+})
 </script>
 
 <template>
@@ -323,14 +422,16 @@ onMounted(restore)
       <button
         type="button"
         class="training-button"
-        :disabled="Boolean(busy)"
+        :disabled="Boolean(busy) || waitingForResult"
         @click="startAssessment"
       >
-        {{ busy === 'assess' ? '正在判定…' : '开始整卷判定（1 次请求）' }}
+        {{ busy === 'restore' ? '正在读取判定…' : waitingForResult ? '正在等待后台结果…' : busy === 'assess' ? '正在判定…' : '开始整卷判定（1 次请求）' }}
       </button>
     </div>
 
-    <template v-else>
+    <button v-if="queryPaused" type="button" class="training-link" :disabled="Boolean(busy)" @click="queryResult">重新查询结果</button>
+
+    <template v-if="assessment">
       <div class="ledger-summary">
         <span>{{ assessment.expected_question_count }} 题</span>
         <span>{{ assessment.expected_point_count }} 个判定点</span>

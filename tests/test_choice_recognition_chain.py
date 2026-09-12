@@ -29,6 +29,15 @@ def test_score_choice_by_program_matches_any_accepted_form() -> None:
     assert result["need_review"] is False
 
 
+def test_explicit_empty_choice_is_blank_but_missing_or_unclear_answer_needs_review() -> None:
+    for answer in ("", "blank", "   "):
+        result = score_choice_by_program(answer, "A", 5, 1.0)
+        assert result["score"] == 0
+        assert result["need_review"] is False
+    for answer in (None, "unclear", "multiple"):
+        assert score_choice_by_program(answer, "A", 5, 1.0)["need_review"] is True
+
+
 def test_choice_recognition_routes_existing_request_through_recognition_gateway(
     monkeypatch,
     tmp_path,

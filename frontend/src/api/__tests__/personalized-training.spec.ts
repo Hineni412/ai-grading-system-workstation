@@ -180,6 +180,21 @@ describe('personalized training API', () => {
     })).toThrow('Path-like response key')
   })
 
+  it('loads scan history for the current paper batch', async () => {
+    const summary = {
+      batch_id: 'b'.repeat(64), paper_batch_id: 'f'.repeat(64), status: 'manual_review',
+      submission_count: 2, created_at: '2026-07-30T08:00:00Z', updated_at: '2026-07-30T08:10:00Z',
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ items: [summary] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }),
+    )
+    expect(await trainingApi.listTrainingScanBatches(summary.paper_batch_id)).toEqual([summary])
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/training/scan-batches?paper_batch_id=${summary.paper_batch_id}`)
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe('GET')
+  })
+
   it('posts create and teacher edit commands to isolated draft endpoints', async () => {
     const updated = {
       ...draftPayload,

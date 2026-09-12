@@ -15,6 +15,50 @@ from question_bank.personalized_papers.latex_render import (
 )
 
 
+@pytest.mark.parametrize("inside_word_run", [False, True])
+@pytest.mark.parametrize(("math_xml", "expected"), [
+    ('<m:rad><m:deg/><m:e><m:r><m:t>18</m:t></m:r></m:e></m:rad>', r'\sqrt{18}'),
+    ('<m:f><m:num><m:r><m:t>1</m:t></m:r></m:num><m:den><m:rad><m:deg><m:r><m:t>3</m:t></m:r></m:deg><m:e><m:r><m:t>x</m:t></m:r></m:e></m:rad></m:den></m:f>', r'\frac{1}{\sqrt[3]{x}}'),
+    ('<m:sSubSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sub><m:r><m:t>1</m:t></m:r></m:sub><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSubSup>', r'{x}_{1}^{2}'),
+])
+def test_word_math_keeps_structure(tmp_path: Path, math_xml: str, expected: str, inside_word_run: bool) -> None:
+    content = f'<m:oMath>{math_xml}</m:oMath>'
+    if inside_word_run:
+        content = f'<w:r><w:t>公式：</w:t>{content}<w:t>。</w:t></w:r>'
+    xml = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+           f'{content}</w:p>')
+    tex = render_training_tex(_snapshot([{"text": "合成公式", "xml": xml}]), data_root=tmp_path)
+    assert f'\\({expected}\\)' in tex
+
+
+def test_unknown_word_math_uses_existing_export_fallback(tmp_path: Path) -> None:
+    xml = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+           '<m:oMath><m:unknownStructure><m:r><m:t>x</m:t></m:r></m:unknownStructure></m:oMath></w:p>')
+    with pytest.raises(LatexRenderError, match="math"):
+        render_training_tex(_snapshot([{"text": "合成公式", "xml": xml}]), data_root=tmp_path)
+
+
+def test_unknown_math_property_does_not_silently_change_the_equation(tmp_path: Path) -> None:
+    xml = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:oMath>'
+           '<m:rad><m:radPr><m:unknownEffect/></m:radPr><m:deg/><m:e><m:r><m:t>x</m:t></m:r></m:e></m:rad>'
+           '</m:oMath></w:p>')
+    with pytest.raises(LatexRenderError, match="math property"):
+        render_training_tex(_snapshot([{"text": "合成公式", "xml": xml}]), data_root=tmp_path)
+
+
+@pytest.mark.parametrize("alphabet", ["double-struck", "script", "fraktur"])
+def test_unsupported_math_alphabet_keeps_existing_fallback(tmp_path: Path, alphabet: str) -> None:
+    xml = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:oMath>'
+           f'<m:r><m:rPr><m:scr m:val="{alphabet}"/></m:rPr><m:t>R</m:t></m:r>'
+           '</m:oMath></w:p>')
+    with pytest.raises(LatexRenderError, match="math alphabet"):
+        render_training_tex(_snapshot([{"text": "合成符号", "xml": xml}]), data_root=tmp_path)
+
+
 def _asset(tmp_path: Path, name: str = "pic.png") -> Path:
     target = tmp_path / "question_bank" / "personalized_papers" / "inst" / "assets" / name
     target.parent.mkdir(parents=True, exist_ok=True)

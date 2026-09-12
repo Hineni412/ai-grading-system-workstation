@@ -168,15 +168,14 @@ onBeforeUnmount(() => {
   <section class="knowledge-graph-view" aria-labelledby="knowledge-graph-title">
     <header class="knowledge-graph-page-heading">
       <div>
-        <p>已确认关系 · 可追溯证据</p>
+        <p>知识点热力图 · 自身证据</p>
         <h1 id="knowledge-graph-title" tabindex="-1">知识结构</h1>
-        <p>按教材结构定位知识点；选中后才查看必要的父子、先修和相关关系。</p>
+        <p>按教材章、节、知识点查看掌握状况；每个知识点独立计算，无证据显示证据不足。</p>
       </div>
       <div class="knowledge-graph-heading-scope">
         <dl v-if="graphStore.graph" class="knowledge-graph-summary" aria-label="知识图谱汇总">
           <div><dt>知识点</dt><dd>{{ summary.total }}</dd></div>
-          <div><dt>已确认关系</dt><dd>{{ summary.relationTotal }}</dd></div>
-          <div><dt>当前无证据</dt><dd>{{ summary.missing }}</dd></div>
+          <div><dt>证据不足</dt><dd>{{ summary.missing }}</dd></div>
           <div><dt>重点薄弱</dt><dd>{{ summary.weak }}</dd></div>
           <div><dt>需要讲评</dt><dd>{{ summary.review }}</dd></div>
         </dl>
@@ -241,7 +240,7 @@ onBeforeUnmount(() => {
         </ul>
       </details>
       <p v-if="graphStore.graph.nodes.length === 0" class="knowledge-graph-scope-notice">
-        当前范围没有可显示的已治理知识点。可调整考试或学生范围；未治理标签不会被伪装成关系节点。
+        当前范围没有可显示的已治理知识点。可调整考试或学生范围；未治理标签不用于推断掌握情况。
       </p>
       <template v-if="graphStore.graph.nodes.length > 0">
         <KnowledgeStructureBrowser

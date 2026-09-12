@@ -5,6 +5,7 @@ import os
 import queue
 import re
 import time
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,7 +20,7 @@ from backend.domain_models import (
 )
 from backend.llm.execution import execution_snapshot_from_profile
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
-from backend.grading_workflow import rubric_scoring_item_scores
+from backend.grading_workflow import preflight_match_status, rubric_scoring_item_scores
 from evidence_atlas import EvidenceAtlasBuilder
 from grading_limits import (
     FULL_PAPER_WORKERS_MAX,
@@ -1665,15 +1666,22 @@ def apply_scan_manual_decisions(
 ) -> list[ExamPaperGroup]:
     student_by_id = {int(student["id"]): student for student in students}
     issue_by_id = {issue.issue_id: issue for issue in analysis.issues}
-    group_by_source = {group.source_label: group for group in analysis.groups}
     decided_issue_ids: set[str] = set()
-    result = list(analysis.groups)
+    result = [replace(group) for group in analysis.groups]
 
     for decision in manual_decisions:
         group_source_label = str(decision.get("group_source_label") or "")
-        if group_source_label:
-            group = group_by_source.get(group_source_label)
-            if group is None or str(decision.get("action") or "") != "match":
+        if group_source_label or decision.get("group_front_image"):
+            candidates = [g for g in result if g.source_label == group_source_label and (
+                not decision.get("group_front_image") or str(g.front_image) == str(decision["group_front_image"])
+            )]
+            if len(candidates) != 1:
+                raise ValueError("答卷匹配目标不唯一或已变化，请重新检查扫描归属。")
+            group = candidates[0]
+            if decision.get("action") in {"invalid", "pending"}:
+                result.remove(group)
+                continue
+            if str(decision.get("action") or "") != "match":
                 continue
             try:
                 student_id = int(decision.get("student_id"))
@@ -1715,9 +1723,34 @@ def apply_scan_manual_decisions(
                 source_label=issue.source_label,
                 enhanced_front_image=issue.enhanced_front_image,
                 enhanced_back_image=issue.enhanced_back_image,
+                detected_class_name=issue.detected_class_name,
+                match_method="manual",
+                match_score=1.0,
             )
         )
 
+    # Compatible scan snapshots may store only a name. Resolve it once, before
+    # duplicate checks and attendance, and never choose among homonyms.
+    for group in result:
+        if group.student_id is None:
+            candidates = [s for s in students if str(s.get("name") or "").strip() == group.student_name.strip()]
+            if len(candidates) != 1:
+                raise ValueError("答卷归属存在冲突，请返回扫描预检按学号和班级确认学生。")
+            group.student_id = int(candidates[0]["id"])
+
+    final = preflight_match_status({"groups": [
+        {
+            "id": str(index), "student_id": group.student_id,
+            "student_name": group.student_name, "detected_name": group.detected_name,
+            "detected_class_name": group.detected_class_name, "match_method": group.match_method,
+            "match_score": group.match_score,
+            "front_media_url": str(group.front_image), "back_media_url": str(group.back_image),
+        }
+        for index, group in enumerate(result)
+    ]}, students)
+    if final["conflicts"]:
+        # Before attendance, paper registration, score writes or model requests.
+        raise ValueError("答卷归属存在冲突，请返回扫描预检处理后再批改。")
     analysis.issues = [issue for issue in analysis.issues if issue.issue_id not in decided_issue_ids]
     return result
 

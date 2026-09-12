@@ -24,6 +24,7 @@ class SessionReportSnapshot:
     knowledge_backfill: dict[str, list[dict[str, str]]] = field(
         default_factory=dict
     )
+    question_assessments: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class ReportRepository:
@@ -102,7 +103,8 @@ class ReportRepository:
                 sd.deduction_reason,
                 sd.knowledge_ids,
                 sd.error_category,
-                sd.error_summary
+                sd.error_summary,
+                sd.confidence_score
             FROM session_details sd
             JOIN session_results sr ON sr.id = sd.result_id
             JOIN students s ON s.id = sr.student_id
@@ -135,11 +137,17 @@ class ReportRepository:
         results = [dict(row) for row in result_rows]
         details = [_detail_with_knowledge_ids(row) for row in detail_rows]
         locks = [dict(row) for row in lock_rows]
-        if not results and locks:
-            # Pure-manual session: no AI run ever persisted results, but
-            # teacher locks already carry final scores.  Synthesize one
-            # result per locked student so exports keep working.
-            results, details = _synthesize_manual_results(locks)
+        result_student_ids = {int(row["student_id"]) for row in results}
+        manual_locks = [
+            lock for lock in locks
+            if int(lock["student_id"]) not in result_student_ids
+        ]
+        if manual_locks:
+            # Students graded entirely by the teacher have no AI result row,
+            # including in sessions where other students used AI grading.
+            manual_results, manual_details = _synthesize_manual_results(manual_locks)
+            results.extend(manual_results)
+            details.extend(manual_details)
         return SessionReportSnapshot(
             session=dict(session_row) if session_row is not None else None,
             results=results,
@@ -232,11 +240,26 @@ class ReportRepositoryGateway:
                     session_id
                 )
         backfill: dict[str, list[dict[str, str]]] = {}
+        assessments: dict[str, dict[str, Any]] = {}
         if question_bank_path is not None:
             backfill = load_question_bank_knowledge_backfill(
                 Path(question_bank_path),
                 int(session_id),
             )
+            from path_manager import resolve_stored_file_path
+            from question_id_contract import canonicalize_question_document
+            try:
+                rubric_path = resolve_stored_file_path(
+                    (snapshot.session or {}).get("rubric_path"),
+                    data_root=Path(question_bank_path).parent.parent,
+                )
+                rubric = canonicalize_question_document(json.loads(rubric_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                rubric = {}
+            overrides, assessments = load_question_bank_part_context(
+                Path(question_bank_path), int(session_id), rubric,
+            )
+            backfill.update(overrides)
         if not backfill:
             return snapshot
         return SessionReportSnapshot(
@@ -246,6 +269,7 @@ class ReportRepositoryGateway:
             details=snapshot.details,
             locks=snapshot.locks,
             knowledge_backfill=backfill,
+            question_assessments=assessments,
         )
 
     def get_session_rubric_path(self, session_id: int) -> str | None:
@@ -337,6 +361,51 @@ def _knowledge_leaf_label(tag_path: str) -> str:
         if segment:
             return segment
     return ""
+
+
+def load_question_bank_part_context(
+    question_bank_path: Path, session_id: int, rubric: dict[str, Any],
+) -> tuple[dict[str, list[dict[str, str]]], dict[str, dict[str, Any]]]:
+    """Use the same exact part/source matching as the knowledge heatmap."""
+    from integration.question_tag_projection_service import QuestionTagProjectionService
+    from question_bank.solution_evidence.part_assessments import reading
+    if not question_bank_path.is_file():
+        return {}, {}
+    try:
+        with reading(question_bank_path) as connection:
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='question_part_assessment_profiles'").fetchone() is None:
+                return {}, {}
+            overrides = {
+                str(row[0]): [] for row in connection.execute(
+                    """SELECT link.source_question_id FROM grading_question_links link
+                       JOIN question_part_assessment_profiles p ON p.question_id=link.bank_question_id AND p.status='active'
+                       WHERE link.status='confirmed' AND CAST(link.grading_session_id AS INTEGER)=?""", (session_id,),
+                )
+            }
+            # Missing rubric/parts cannot justify falling back to parent tags.
+            if not rubric:
+                return overrides, {}
+            projection = QuestionTagProjectionService(
+                question_bank_path, external_connection=connection,
+            ).project_session(grading_session_id=session_id, rubric=rubric)
+            names = {
+                str(row["stable_key"]): str(row["display_name"])
+                for row in connection.execute("SELECT stable_key,display_name FROM knowledge_tag_identities")
+            }
+        assessments = {}
+        for item in projection.items:
+            if item.assessment.get("granularity") != "part":
+                continue
+            # An explicit empty list prevents old parent/rubric tags from being
+            # spread across parts whose historical source cannot be matched.
+            overrides[item.item_ref] = [
+                {"path": names.get(key, key), "label": _knowledge_leaf_label(names.get(key, key)), "stable_key": key}
+                for key in item.tags.get("knowledge_point", ())
+            ]
+            assessments[item.item_ref] = dict(item.assessment)
+        return overrides, assessments
+    except (sqlite3.Error, OSError, ValueError, KeyError):
+        return {}, {}
 
 
 __all__ = [

@@ -37,6 +37,7 @@ _IMAGE_MAX_EDGE_PX = 1000
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_M = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 
 _LATEX_SPECIAL = {
     "\\": r"\textbackslash{}",
@@ -77,6 +78,114 @@ def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+def _math_latex(node: ET.Element) -> str:
+    """Translate supported Word equation structures, never flatten unknown ones."""
+    name = _local_name(node.tag)
+
+    def part(key: str) -> str:
+        element = node.find(f"{{{_M}}}{key}")
+        if element is None:
+            raise LatexRenderError(f"Word math {name} is missing {key}")
+        return _math_latex(element)
+
+    def prop(key: str, default: str) -> str:
+        element = node.find(f"{{{_M}}}{name}Pr/{{{_M}}}{key}")
+        return default if element is None else str(element.get(f"{{{_M}}}val", default))
+
+    properties = {
+        "radPr": {"degHide", "ctrlPr"}, "fPr": {"type", "ctrlPr"},
+        "sSupPr": {"ctrlPr"}, "sSubPr": {"ctrlPr"}, "sSubSupPr": {"alnScr", "ctrlPr"},
+        "sPrePr": {"ctrlPr"}, "dPr": {"begChr", "endChr", "sepChr", "grow", "shp", "ctrlPr"},
+        "barPr": {"pos", "ctrlPr"}, "accPr": {"chr", "ctrlPr"}, "funcPr": {"ctrlPr"},
+        "mPr": {"baseJc", "mcs", "plcHide", "rSp", "rSpRule", "cGp", "cGpRule", "cSp", "ctrlPr"},
+        "eqArrPr": {"baseJc", "maxDist", "objDist", "rSp", "rSpRule", "ctrlPr"},
+        "oMathParaPr": {"jc"}, "argPr": {"argSz"}, "ctrlPr": {"rPr"},
+        "rPr": {"sty", "nor", "lit", "brk", "scr", "aln", "rFonts", "b", "bCs", "i", "iCs", "color", "sz", "szCs", "lang"},
+    }
+    if name in properties:
+        if any(_local_name(child.tag) not in properties[name] for child in node):
+            raise LatexRenderError(f"unsupported Word math property in {name}")
+        if name == "rPr" and any(
+            _local_name(child.tag) == "scr" and child.get(f"{{{_M}}}val", "roman") != "roman"
+            for child in node
+        ):
+            raise LatexRenderError("unsupported Word math alphabet")
+        return ""
+    for child in node:
+        if _local_name(child.tag).endswith("Pr"):
+            _math_latex(child)
+    if name == "t":
+        symbols = {
+            "−": "-", "×": r"\times ", "÷": r"\div ", "±": r"\pm ",
+            "≤": r"\le ", "≥": r"\ge ", "≠": r"\ne ", "≈": r"\approx ",
+            "∞": r"\infty ", "∈": r"\in ", "∠": r"\angle ", "°": r"{}^{\circ}",
+            "π": r"\pi ", "α": r"\alpha ", "β": r"\beta ", "γ": r"\gamma ",
+            "θ": r"\theta ", "Δ": r"\Delta ", "·": r"\cdot ", "…": r"\ldots ",
+            "△": r"\triangle ", "∥": r"\parallel ", "⊥": r"\perp ", "∴": r"\therefore ", "∵": r"\because ",
+            "′": "'", "＝": "=", "﹣": "-", "（": "(", "）": ")", "＞": ">", "＜": "<",
+            "²": r"{}^{2}", "³": r"{}^{3}", "⋅": r"\cdot ",
+            " ": r"\,", "{": r"\{", "}": r"\}", "_": r"\_", "^": r"\wedge ",
+        }
+        chunks = re.split(r"([\u3400-\u9fff]+)", node.text or "")
+        if any(ord(char) > 127 and char not in symbols and not re.fullmatch(r"[\u3400-\u9fff]", char)
+               for char in node.text or ""):
+            raise LatexRenderError("unsupported Word math character")
+        return "".join(
+            r"\text{" + _escape_latex(chunk) + "}" if re.fullmatch(r"[\u3400-\u9fff]+", chunk)
+            else "".join(symbols.get(char, _escape_latex(char)) for char in chunk)
+            for chunk in chunks
+        )
+    if name in {"oMath", "oMathPara", "r", "e", "num", "den", "deg", "sub", "sup", "fName", "lim"}:
+        return "".join(_math_latex(child) for child in node)
+    if name == "rad":
+        degree = node.find(f"{{{_M}}}deg")
+        index = _math_latex(degree) if degree is not None else ""
+        if prop("degHide", "0") in {"1", "true", "on"}:
+            index = ""
+        return r"\sqrt" + (f"[{index}]" if index else "") + "{" + part("e") + "}"
+    if name == "f":
+        style = prop("type", "bar")
+        numerator, denominator = part("num"), part("den")
+        if style == "bar":
+            return rf"\frac{{{numerator}}}{{{denominator}}}"
+        if style == "noBar":
+            return rf"\genfrac{{}}{{}}{{0pt}}{{}}{{{numerator}}}{{{denominator}}}"
+        if style == "lin":
+            return rf"{{{numerator}}}/{{{denominator}}}"
+        raise LatexRenderError(f"unsupported Word math fraction: {style}")
+    if name in {"sSup", "sSub", "sSubSup", "sPre"}:
+        base = "{" + part("e") + "}"
+        sub = "_{" + part("sub") + "}" if name != "sSup" else ""
+        sup = "^{" + part("sup") + "}" if name != "sSub" else ""
+        return "{}" + sub + sup + base if name == "sPre" else base + sub + sup
+    if name == "d":
+        delimiters = {"(": "(", ")": ")", "[": "[", "]": "]", "{": r"\{", "}": r"\}", "|": "|", "": "."}
+        left, right, separator = prop("begChr", "("), prop("endChr", ")"), prop("sepChr", "|")
+        if left not in delimiters or right not in delimiters or separator not in delimiters:
+            raise LatexRenderError("unsupported Word math delimiter")
+        expressions = [_math_latex(child) for child in node if _local_name(child.tag) == "e"]
+        return r"\left" + delimiters[left] + delimiters[separator].join(expressions) + r"\right" + delimiters[right]
+    if name == "bar":
+        command = r"\underline" if prop("pos", "top") == "bot" else r"\overline"
+        return command + "{" + part("e") + "}"
+    if name == "acc":
+        command = {"̂": r"\hat", "̅": r"\overline", "⃗": r"\vec", "→": r"\vec"}.get(prop("chr", "̂"))
+        if command is not None:
+            return command + "{" + part("e") + "}"
+    if name == "func":
+        return part("fName") + r"\," + part("e")
+    if name in {"eqArr", "m"}:
+        if name == "eqArr":
+            rows = [_math_latex(child) for child in node if _local_name(child.tag) == "e"]
+            environment = "gathered"
+        else:
+            rows = [" & ".join(_math_latex(cell) for cell in row if _local_name(cell.tag) == "e")
+                    for row in node if _local_name(row.tag) == "mr"]
+            environment = "matrix"
+        return rf"\begin{{{environment}}}" + r" \\ ".join(rows) + rf"\end{{{environment}}}"
+    raise LatexRenderError(f"unsupported Word math structure: {name}")
+
+
 def _run_content(
     run: ET.Element,
     relationships: Mapping[str, str],
@@ -85,8 +194,14 @@ def _run_content(
     inline_max_height_mm: float = _IMAGE_INLINE_MAX_HEIGHT_MM,
 ) -> str:
     parts: list[str] = []
-    for node in run.iter():
+
+    def visit(node: ET.Element) -> None:
         name = _local_name(node.tag)
+        if name in {"oMath", "oMathPara"}:
+            math_text = _math_latex(node)
+            if math_text.strip():
+                parts.append(r"\(" + math_text + r"\)")
+            return
         if name == "t" and node.text:
             parts.append(_escape_latex(node.text))
         elif name == "br":
@@ -100,6 +215,12 @@ def _run_content(
                 data_root=data_root,
                 max_height_mm=inline_max_height_mm,
             ))
+            return
+        else:
+            for child in node:
+                visit(child)
+
+    visit(run)
     return "".join(parts)
 
 
@@ -143,13 +264,9 @@ def _run_latex_segments(
                         content = f"\\underline{{{content}}}"
                 parts.append(content)
         elif name in ("oMath", "oMathPara"):
-            math_text = "".join(
-                node.text or ""
-                for node in child.iter()
-                if _local_name(node.tag) == "t"
-            )
+            math_text = _math_latex(child)
             if math_text.strip():
-                parts.append(_escape_latex(math_text))
+                parts.append(r"\(" + math_text + r"\)")
     return "".join(parts)
 
 
@@ -575,6 +692,7 @@ _HEADER = r"""\documentclass[11pt]{article}
 \usepackage{geometry}
 \usepackage{fancyhdr}
 \usepackage{amssymb}
+\usepackage{amsmath}
 \geometry{a4paper,top=20mm,bottom=28mm,left=18mm,right=18mm}
 \setCJKmainfont[AutoFakeBold=2.5]{SimSun}
 \setmainfont{SimSun}

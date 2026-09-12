@@ -867,7 +867,7 @@ function isTrainingDownloadable(job: JobResponse): boolean {
                   </strong>
                 </div>
                 <div>
-                  <span>预计 token 量（粗略估算）</span>
+                  <span>文本 token 量（粗略估算）</span>
                   <strong data-testid="analysis-tokens">
                     {{ formatTokenCount(analysisPreflight.estimated_total_tokens) }}
                   </strong>
@@ -883,7 +883,8 @@ function isTrainingDownloadable(job: JobResponse): boolean {
               </p>
 
               <p class="excel-settings-dialog__explanation">
-                实际费用取决于服务商定价。AI 分析内容仅供参考，建议抽查后再使用。
+                将向上述服务发送题目资料和学生答卷图片，请使用支持图片的内容生成模型。
+                图片用量另计，实际费用取决于服务商定价。AI 分析内容仅供参考，最终成绩保持教师确认结果。
               </p>
             </template>
 

@@ -8,6 +8,8 @@ import type {
 import TrainingScanBatchPanel from '../components/training/TrainingScanBatchPanel.vue'
 
 const trainingApiMock = vi.hoisted(() => ({
+  listTrainingScanBatches: vi.fn(),
+  getTrainingScanBatch: vi.fn(),
   createTrainingScanBatch: vi.fn(),
   uploadTrainingScan: vi.fn(),
   resolveTrainingScanPage: vi.fn(),
@@ -115,13 +117,16 @@ const anomalyBatch = {
 const mounted: App[] = []
 
 async function settle(): Promise<void> {
-  await nextTick()
-  await Promise.resolve()
-  await nextTick()
+  for (let index = 0; index < 5; index += 1) {
+    await nextTick()
+    await Promise.resolve()
+  }
 }
 
 beforeEach(() => {
-  vi.clearAllMocks()
+  vi.resetAllMocks()
+  trainingApiMock.listTrainingScanBatches.mockResolvedValue([])
+  trainingApiMock.getTrainingScanBatch.mockResolvedValue(anomalyBatch)
   trainingApiMock.createTrainingScanBatch.mockResolvedValue(emptyBatch)
   trainingApiMock.uploadTrainingScan.mockResolvedValue(anomalyBatch)
 })
@@ -132,6 +137,66 @@ afterEach(() => {
 })
 
 describe('training scan batch panel', () => {
+  it('finds history across all paper batches belonging to the current draft', async () => {
+    const another = { ...paper, paper_batch_id: '1'.repeat(64), paper_instance_id: '2'.repeat(64) }
+    const recent = { ...emptyBatch, batch_id: '3'.repeat(64), paper_batch_id: another.paper_batch_id, created_at: '2026-08-01T08:00:00Z' }
+    trainingApiMock.listTrainingScanBatches.mockImplementation(async (id: string) => (
+      [{ ...(id === another.paper_batch_id ? recent : emptyBatch), submission_count: 1 }]
+    ))
+    trainingApiMock.getTrainingScanBatch.mockResolvedValue(recent)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TrainingScanBatchPanel, { instances: [paper, another] })
+    mounted.push(app)
+    app.mount(host)
+    await settle()
+    expect(trainingApiMock.listTrainingScanBatches).toHaveBeenCalledTimes(2)
+    expect(trainingApiMock.getTrainingScanBatch).toHaveBeenCalledWith(recent.batch_id)
+    expect(host.querySelectorAll('.scan-history option')).toHaveLength(2)
+  })
+
+  it('restores the saved batch on reentry and can return from a new-batch form', async () => {
+    trainingApiMock.listTrainingScanBatches.mockResolvedValue([{
+      ...emptyBatch, submission_count: 1,
+    }])
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TrainingScanBatchPanel, { instances: [paper] })
+    mounted.push(app)
+    app.mount(host)
+    await settle()
+    expect(trainingApiMock.listTrainingScanBatches).toHaveBeenCalledWith(paper.paper_batch_id)
+    expect(trainingApiMock.getTrainingScanBatch).toHaveBeenCalledWith(emptyBatch.batch_id)
+    expect(host.textContent).toContain('页面身份无法读取')
+    expect(host.textContent).toContain('已恢复最近一次扫描批次')
+    expect(trainingApiMock.createTrainingScanBatch).not.toHaveBeenCalled()
+
+    ;[...host.querySelectorAll('button')].find((b) => b.textContent?.includes('建立另一批次'))?.click()
+    await settle()
+    expect(host.querySelector('input[type="checkbox"]')).not.toBeNull()
+    const select = host.querySelector<HTMLSelectElement>('.scan-history select')!
+    select.value = emptyBatch.batch_id
+    select.dispatchEvent(new Event('change'))
+    await settle()
+    expect(host.textContent).toContain('页面身份无法读取')
+    expect(trainingApiMock.createTrainingScanBatch).not.toHaveBeenCalled()
+  })
+
+  it('offers a read retry when batch history is temporarily unavailable', async () => {
+    trainingApiMock.listTrainingScanBatches.mockRejectedValueOnce(new Error('offline'))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TrainingScanBatchPanel, { instances: [paper] })
+    mounted.push(app)
+    app.mount(host)
+    await settle()
+    expect(host.textContent).toContain('重新读取批次')
+    expect(host.querySelector('input[type="checkbox"]')).toBeNull()
+    ;[...host.querySelectorAll('button')].find((b) => b.textContent?.includes('重新读取批次'))?.click()
+    await settle()
+    expect(host.querySelector('input[type="checkbox"]')).not.toBeNull()
+  })
+
   it('creates an explicit expected set and shows full-page manual recovery', async () => {
     const host = document.createElement('div')
     document.body.append(host)

@@ -193,6 +193,25 @@ class TrainingSubmissionModule:
             clock=self.clock,
         )
 
+    def list_batches(self, paper_batch_id: str) -> list[dict[str, Any]]:
+        clean_id = _identifier(paper_batch_id)
+        initialize_database(self.db_path)
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT b.batch_id, b.paper_batch_id, b.status,
+                       b.created_at, b.updated_at,
+                       COUNT(s.submission_id) AS submission_count
+                FROM training_scan_batches b
+                LEFT JOIN training_submissions s ON s.batch_id = b.batch_id
+                WHERE b.paper_batch_id = ?
+                GROUP BY b.batch_id
+                ORDER BY b.created_at DESC, b.rowid DESC
+                """,
+                (clean_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def create_batch(self, command: CreateScanBatchCommand) -> dict[str, Any]:
         initialize_database(self.db_path)
         fingerprint = _payload_hash(asdict(command))

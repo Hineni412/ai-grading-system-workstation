@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from pathlib import Path
+import sqlite3
 
 from backend.file_access import ControlledFileError
 from backend.files.service import JobFileService
@@ -13,9 +15,9 @@ from backend.repositories.access import GradingRepositoryAccess
 
 _submit_lock = threading.RLock()
 _REPORT_RENDITION_VERSIONS = {
-    "score_excel": "score_excel_print_v5",
+    "score_excel": "score_excel_print_v6_parts",
     "annotated_original_pdf": "annotated_original_pdf_score_boxes_v3",
-    "personal_analysis_html": "personal_analysis_html_v2",
+    "personal_analysis_html": "personal_analysis_html_v8_parts",
 }
 
 # 考试分析报告（AI 叙述）导出类型：提交时不带 excel_options。
@@ -27,7 +29,7 @@ def report_rendition_version(report_type: str) -> str:
     return _REPORT_RENDITION_VERSIONS.get(str(report_type), "unknown")
 
 
-def score_revision(db: GradingRepositoryAccess, session_id: int) -> str:
+def score_revision(db: GradingRepositoryAccess, session_id: int, *, include_question_bank: bool = True) -> str:
     rows: list[dict[str, object]] = []
     for result in db.get_session_results(int(session_id)):
         result_id = int(result["result_id"])
@@ -49,6 +51,10 @@ def score_revision(db: GradingRepositoryAccess, session_id: int) -> str:
             )
         ],
     }
+    if include_question_bank:
+        source = _question_bank_report_source(Path(db.db_path), int(session_id))
+        if source:
+            payload["question_bank_source"] = source
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
@@ -57,6 +63,42 @@ def score_revision(db: GradingRepositoryAccess, session_id: int) -> str:
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
+
+
+def _question_bank_report_source(grading_path: Path, session_id: int) -> dict[str, object]:
+    """Include linked knowledge/part revisions in the existing report cache key."""
+    from question_bank.solution_evidence.part_assessments import reading
+    root = grading_path.parent.parent if grading_path.parent.name == "databases" else grading_path.parent
+    path = root / "databases" / "question_bank.db"
+    if not path.is_file():
+        return {}
+    try:
+        with reading(path) as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "grading_question_links" not in tables:
+                return {}
+            links = [dict(row) for row in connection.execute(
+                "SELECT * FROM grading_question_links WHERE CAST(grading_session_id AS INTEGER)=? ORDER BY source_question_id", (session_id,),
+            )]
+            ids = sorted({int(row["bank_question_id"]) for row in links if row.get("bank_question_id")})
+            if not ids:
+                return {}
+            marks = ','.join('?' for _ in ids)
+            source: dict[str, object] = {"links": links}
+            for table, order in (("questions", "id"), ("question_tags", "id"),
+                                 ("question_part_assessment_profiles", "profile_id")):
+                if table in tables:
+                    key = "id" if table == "questions" else "question_id"
+                    source[table] = [dict(row) for row in connection.execute(
+                        f"SELECT * FROM {table} WHERE {key} IN ({marks}) ORDER BY {order}", ids,
+                    )]
+            if "question_solution_evidence_versions" in tables:
+                source["evidence"] = [dict(row) for row in connection.execute(
+                    f"SELECT evidence_version_id,status,content_hash FROM question_solution_evidence_versions WHERE question_id IN ({marks}) ORDER BY evidence_version_id", ids,
+                )]
+            return source
+    except (OSError, sqlite3.Error):
+        return {}
 
 
 def submit_report_export(

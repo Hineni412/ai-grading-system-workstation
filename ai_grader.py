@@ -386,7 +386,7 @@ class AIGrader:
             "硬性要求：\n"
             f"{SHARED_GRADING_RULES}\n"
             "0) 当前考试总分固定为 100 分。total_score 必须输出 100；student_score 应为所有 grading_details.score_awarded 之和。\n"
-            "1) 评分必须遵循 rubric 中的题目-小题-步骤分值，不得跳步打分。\n"
+            "1) 评分必须遵循 rubric 中的题目-小题-步骤分值，逐项核验数学义务；允许等价表达或合并书写完成相同评分点，不因书写行数或算术展开形式不同扣分。\n"
             "2) 对填空题，若学生答案与 accepted_forms 等价，应判为正确或给足对应分；accepted_forms 中可能包含本地自动扩展的分数/小数/百分数/几何关系等价写法。\n"
             "2.1) 对 choice/fill_blank/judgement/true_false/direct_answer 评分单元，执行全对全错：只有学生答案与 canonical_answer 或 accepted_forms 等价时才给满分；不符合答案及等价答案时该题/该空必须给 0 分，不要给一半分、印象分或过程分。\n"
             "3) 必须逐小问读取 response_mode；不得把父题的证明/过程要求无条件继承给直接作答或作图小问。\n"

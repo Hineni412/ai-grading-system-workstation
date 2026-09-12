@@ -13,6 +13,7 @@ from hybrid_batch_grading_service import (
 )
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
+from scoring_prompt_rules import SHARED_GRADING_RULES
 
 
 class _FakeLLMClient:
@@ -91,6 +92,8 @@ def test_full_paper_prompt_uses_question_tags_without_requesting_knowledge_ids(t
     assert "secondary_errors" in prompt
     assert "knowledge_id" not in prompt
     assert "knowledge_ids" not in prompt
+    assert SHARED_GRADING_RULES in prompt
+    assert "不得跳步打分" not in prompt
 
 
 def test_error_validation_keeps_one_primary_and_at_most_two_secondary_errors(tmp_path: Path) -> None:
@@ -198,6 +201,8 @@ def test_hybrid_prompt_uses_tag_context_and_omits_knowledge_output_fields() -> N
     assert "knowledge_id" not in prompt
     assert "knowledge_ids" not in prompt
     assert "LEGACY_KNOWLEDGE" not in prompt
+    assert SHARED_GRADING_RULES in prompt
+    assert "不得跳步打分" not in prompt
 
 
 def test_hybrid_validation_uses_the_same_secondary_error_rules() -> None:
@@ -227,6 +232,7 @@ def test_hybrid_validation_uses_the_same_secondary_error_rules() -> None:
                         "confidence_score": 95,
                         "error_category": "逻辑断裂",
                         "error_summary": "辅助线思路缺失",
+                        "observed_answer": "连接BD，因为AB=AC，所以两个角相等。",
                         "secondary_errors": [
                             {"category": "计算错误", "summary": "符号抄错", "evidence": "第二行"}
                         ],
@@ -247,6 +253,8 @@ def test_hybrid_validation_uses_the_same_secondary_error_rules() -> None:
     detail = accepted[0]["details"][0]
     assert detail.knowledge_id == "UNKNOWN"
     assert detail.knowledge_ids == []
+    assert detail.score_awarded == 2
+    assert accepted[0]["metadata"][0]["observed_answer"] == "连接BD，因为AB=AC，所以两个角相等。"
     assert [(item.category, item.summary) for item in detail.secondary_errors] == [
         ("其他", "符号抄错")
     ]

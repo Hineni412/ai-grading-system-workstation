@@ -887,6 +887,7 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
         "question_type_suggestion",
         "tag_analysis",
         "solution_evidence",
+        "part_assessments",
     }
     assert "score" not in json.dumps(schema)
     proposal = item["properties"]["tag_analysis"]["properties"][
@@ -1493,6 +1494,9 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     assert "part-1-step-1" in rules
     assert "独立可评分的数学台阶" in rules
     assert "one evidence point" in rules or "一个 evidence point" in rules
+    assert "answer_anchor 仅定位参考解答" in rules
+    assert "allow_alternative_methods=false 不禁止同一方法的等价表达" in rules
+    assert "只抄边长后下结论、平方关系不成立或循环论证" in rules
     examples = prompt["evidence_examples"]
     assert len(examples["q11_process_positive"]["evidence_points"]) == 3
     assert len(examples["q11_process_negative"]["evidence_points"]) == 1

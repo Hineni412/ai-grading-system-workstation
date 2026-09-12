@@ -34,6 +34,7 @@ from backend.scan_grading.workspace import (
     InvalidScanUploadError,
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
+    ScanMatchConflictError,
     ScanReplacementCleanupIncompleteError,
     ScanUploadTooLargeError,
     UploadBatchRevisionError,
@@ -408,6 +409,8 @@ def save_session_scan_decisions(
         )
     except UploadBatchRevisionError as exc:
         raise ApiError(409, "scan_decision_revision_conflict", "Scan decisions changed") from exc
+    except ScanMatchConflictError as exc:
+        raise ApiError(422, "scan_match_conflict", str(exc)) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(422, "scan_decision_invalid", "Scan decision is invalid") from exc
     return ScanDecisionResponse.model_validate(result)

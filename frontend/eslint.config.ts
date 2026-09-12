@@ -15,6 +15,7 @@ export default defineConfigWithVueTs(
     '**/node_modules/**',
     '**/playwright-report/**',
     '**/test-results/**',
+    '**/.playwright-cli/**',
     // 仓库根目录的历史一次性脚本（CommonJS），不参与前端源码规则校验
     '.aihot-study.tmp.cjs',
     'proto-screenshot.cjs',

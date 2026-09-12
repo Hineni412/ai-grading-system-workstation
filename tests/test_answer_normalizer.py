@@ -5,6 +5,19 @@ import pytest
 from answer_normalizer import match_fill_blank_answer
 
 
+@pytest.mark.parametrize("answer,matched", [("4", True), ("4cm^2", True), ("4cm^{2}", True), ("6", False), ("48", False)])
+def test_area_unit_exponent_does_not_make_numeric_answers_uncertain(answer, matched) -> None:
+    result = match_fill_blank_answer(answer, ["4cm²", "4cm^(2)", "4", "4平方厘米"])
+    assert result["matched"] is matched
+
+
+def test_numeric_extraction_preserves_mathematical_powers() -> None:
+    from answer_normalizer import _extract_numeric_values
+    assert _extract_numeric_values("4cm^(2)") == ["4"]
+    assert _extract_numeric_values("4^2") == ["4", "2"]
+    assert _extract_numeric_values("x^2=4") == ["2", "4"]
+
+
 @pytest.mark.parametrize("student_answer", ["72°、54°", "54°，72°", "72度、54度"])
 def test_complete_answer_set_accepts_all_values_in_any_order(student_answer: str) -> None:
     result = match_fill_blank_answer(student_answer, "72°或54°")

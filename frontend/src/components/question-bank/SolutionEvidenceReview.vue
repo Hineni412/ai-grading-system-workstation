@@ -29,6 +29,7 @@ let controller: AbortController | null = null
 
 const evidence = computed(() => response.value?.evidence ?? null)
 const classification = computed(() => evidence.value?.whole_question_classification ?? null)
+const assessments = computed(() => Object.fromEntries((response.value?.part_assessments ?? []).map(part => [part.part_id, part])))
 
 function resolutionCopy(link: SolutionEvidenceFineTermLink): string {
   const resolution = link.core_resolution
@@ -128,8 +129,15 @@ onBeforeUnmount(() => controller?.abort())
           <header>
             <span>小问 {{ partIndex + 1 }}</span>
             <strong>{{ part.label || part.part_id }}</strong>
-            <small>{{ part.response_mode }}</small>
+            <small>{{ ({ exact_objective: '核对答案', short_answer_points: '按要点判定', process_required: '需展示过程', visual_construction: '需作图' })[part.response_mode] }}</small>
           </header>
+          <p v-if="assessments[part.part_id]" class="solution-evidence__help">
+            小问难度：{{ assessments[part.part_id]?.difficulty == null ? '尚未细分' : `${assessments[part.part_id]?.difficulty} / 10` }}
+            · {{ assessments[part.part_id]?.source === 'whole_question' ? '单问复用整题估计' : assessments[part.part_id]?.source === 'teacher' ? '教师估计' : 'AI 估计，非实测难度' }}
+            <br>{{ assessments[part.part_id]?.rationale }}
+            <template v-if="assessments[part.part_id]?.review_note"><br>{{ assessments[part.part_id]?.review_note }}</template>
+          </p>
+          <p v-else class="solution-evidence__help">小问难度尚未细分，当前计算使用中性系数。</p>
           <div class="solution-evidence__points">
             <section v-for="(point, pointIndex) in part.evidence_points" :key="point.evidence_point_id" class="solution-evidence__point">
               <div class="solution-evidence__point-title">
@@ -210,6 +218,7 @@ onBeforeUnmount(() => controller?.abort())
 .solution-evidence__help { margin: 0; color: var(--color-text-secondary); }
 .solution-evidence__empty { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-control); background: var(--secondary); }
 .solution-evidence__parts { display: grid; gap: var(--space-3); }
+.solution-evidence__part > .solution-evidence__help { padding: var(--space-3); line-height: var(--line-height-relaxed); }
 .solution-evidence__part { border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); overflow: hidden; }
 .solution-evidence__part > header { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--secondary); }
 .solution-evidence__part > header span,

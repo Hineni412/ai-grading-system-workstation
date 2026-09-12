@@ -866,7 +866,7 @@ def build_hybrid_major_prompt(
         "同一切片中可能存在纵向、横向或连续书写的多个答案。\n"
         "每个目标题只能评分一次，不得在不同小问之间重复使用同一份作答证据。\n"
         "若小问边界不清，必须返回所有可能受影响的目标题，降低 confidence_score，并设置 needs_human_review=true。\n"
-        "1) 评分必须遵循 rubric 中的题目-小题-步骤分值，不得跳步打分。\n"
+        "1) 评分必须遵循 rubric 中的题目-小题-步骤分值，逐项核验数学义务；允许等价表达或合并书写完成相同评分点，不因书写行数或算术展开形式不同扣分。\n"
         "2) 若学生使用标准答案之外但数学上成立的方法，也应给相应过程分，不得因解题路径不同而扣分。\n"
         "3) 若存在关键逻辑跳跃、循环论证、条件未说明、定理使用前提缺失、由结论反推原因等问题，应按 deduction_policy 或 presentation_rules 扣分。\n"
         "4) 对解答题或证明题，deduction_reason 必须说明“已完成哪些证明义务、缺失或断裂在哪里、扣几分”。\n"
@@ -1343,7 +1343,13 @@ def _detail_from_ai_item(
 
 
 def _subjective_detail_metadata(detail: dict[str, Any], qid: str) -> dict[str, Any]:
-    metadata: dict[str, Any] = {"question_id": qid}
+    observed = next((str(detail[key]).strip()
+                     for key in ("observed_answer", "student_answer", "answer_observed")
+                     if detail.get(key)), "")
+    metadata: dict[str, Any] = {
+        "question_id": qid,
+        "observed_answer": observed or extract_observed_text(detail),
+    }
     for key in (
         "evidence_steps",
         "missing_steps",

@@ -380,7 +380,9 @@ class QuestionBankWriteService:
 
         _validate_question_create(question)
         initialize_database(self.db_path)
+        from question_bank.services.duplicate_analysis_copy_service import link_new_question_duplicate, copy_duplicate_analysis
         with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
                 """
                 INSERT INTO questions (
@@ -405,7 +407,13 @@ class QuestionBankWriteService:
                 ),
             )
             question_id = int(cursor.lastrowid)
-            _insert_imported_tags(conn, question_id, question.tags)
+            source_id = link_new_question_duplicate(conn, question_id=question_id, data_root=self.data_root)
+            reused_types = {str(row["tag_type"]) for row in conn.execute(
+                "SELECT DISTINCT tag_type FROM question_tags WHERE question_id=?", (question_id,)).fetchall()}
+            _insert_imported_tags(conn, question_id, [tag for tag in question.tags if tag.tag_type not in reused_types])
+        if source_id is not None:
+            copy_duplicate_analysis(self.db_path, source_question_id=source_id,
+                                    target_question_id=question_id, data_root=self.data_root)
         return question_id
 
     def save_tag_analysis(

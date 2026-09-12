@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -20,7 +21,7 @@ from question_bank.mastery.v2 import (
 
 
 _CHINA_TIMEZONE = timezone(timedelta(hours=8))
-CURRENT_MASTERY_PARAMETERS = MasteryV2Parameters()
+CURRENT_MASTERY_PARAMETERS = MasteryV2Parameters(formula_version="mastery-v2-formula-v2")
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +39,7 @@ class CurrentMastery:
     training_evidence_count: int = 0
     evidence_contributions: tuple[tuple[str, float, float], ...] = ()
     direct_evidence_count: int = 0
+    precise_training_evidence_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -63,8 +65,10 @@ class CurrentMasteryCalculator:
         *,
         parameters: MasteryV2Parameters | None = CURRENT_MASTERY_PARAMETERS,
         clock: Callable[[], datetime] | None = None,
+        data_root: Path | None = None,
     ) -> None:
         self.db_path = Path(db_path)
+        self.data_root = Path(data_root) if data_root is not None else self.db_path.parent.parent
         self.resolver = resolver
         self.parameters = parameters
         self.clock = clock or (lambda: datetime.now(UTC))
@@ -138,6 +142,13 @@ class CurrentMasteryCalculator:
                     if item.included
                 ),
                 direct_evidence_count=calculated.direct_evidence_count,
+                precise_training_evidence_count=len({
+                    item.evidence_id.split(":target:")[0]
+                    for item in calculated.contributions
+                    if item.included and item.evidence_id.startswith("training:")
+                    and ":target:" in item.evidence_id
+                    and item.weighted_value < item.effective_weight
+                }),
             )
         return self._with_parent_rollups(result)
 
@@ -188,15 +199,15 @@ class CurrentMasteryCalculator:
                 display_name=node.display_name,
                 status="available",
                 value=round(min(1.0, max(0.0, numerator / denominator)), 6),
-                evidence_count=len(evidence),
+                evidence_count=len({key.split(":target:")[0] for key in evidence}),
                 effective_weight=round(effective_weight, 6),
                 parameter_version=self.parameters.version,
                 exam_evidence_count=sum(
-                    1 for evidence_id in evidence
+                    1 for evidence_id in {key.split(":target:")[0] for key in evidence}
                     if evidence_id.startswith("exam:")
                 ),
                 training_evidence_count=sum(
-                    1 for evidence_id in evidence
+                    1 for evidence_id in {key.split(":target:")[0] for key in evidence}
                     if not evidence_id.startswith("exam:")
                 ),
                 evidence_contributions=tuple(
@@ -205,6 +216,10 @@ class CurrentMasteryCalculator:
                 ),
                 direct_evidence_count=(
                     direct.get((student_id, stable_key)).evidence_count
+                    if (student_id, stable_key) in direct else 0
+                ),
+                precise_training_evidence_count=(
+                    direct[(student_id, stable_key)].precise_training_evidence_count
                     if (student_id, stable_key) in direct else 0
                 ),
             )
@@ -272,14 +287,23 @@ class CurrentMasteryCalculator:
         try:
             rows = connection.execute(
                 """
-                SELECT evidence_id, student_id, stable_key, occurred_at,
-                       achieved_points, total_points, difficulty_weight,
-                       evidence_weight
+                SELECT *
                 FROM training_evidence_records
                 WHERE status = 'active'
                 ORDER BY student_id, stable_key, occurred_at, evidence_id
                 """
             ).fetchall()
+            from question_bank.solution_evidence.part_assessments import load_profiles, training_part_observations
+            source_by_id = {str(row["evidence_id"]): json.loads(row["source_json"]) for row in rows
+                            if "source_json" in row.keys()}
+            profiles = load_profiles(self.db_path, sorted({int(source["bank_question_id"]) for source in source_by_id.values() if source.get("bank_question_id")}), connection=connection, data_root=self.data_root)
+            refined = {}
+            for row in rows:
+                profile = profiles.get(int(source_by_id.get(str(row["evidence_id"]), {}).get("bank_question_id") or 0))
+                if profile is None:
+                    continue
+                criterion = connection.execute("SELECT criteria_json,criteria_hash FROM training_criterion_versions WHERE version_id=? AND question_id=?", (row["criterion_version_id"], profile["question_id"])).fetchone()
+                refined[str(row["evidence_id"])] = training_part_observations(profile, json.loads(criterion["criteria_json"]), json.loads(row["final_points_json"])) if criterion and criterion["criteria_hash"] == row["criterion_hash"] else []
         finally:
             connection.close()
         result: dict[tuple[str, str], list[TrainingEvidence]] = defaultdict(list)
@@ -289,6 +313,22 @@ class CurrentMasteryCalculator:
                 continue
             student_id = str(row["student_id"])
             if allowed_student_ids is not None and student_id not in allowed_student_ids:
+                continue
+            if str(row["evidence_id"]) in refined:
+                for observation in refined[str(row["evidence_id"])] or []:
+                    for target in self.resolver.resolve(observation["stable_key"]):
+                        observation_id = f"training:{row['submission_id']}:{row['submission_revision']}:{row['task_item_code']}:{observation['part_id']}"
+                        atom_id = f"{observation_id}:target:{observation['point_id']}:{target.stable_key}"
+                        identity = (student_id, target.stable_key, atom_id)
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        result[(student_id, target.stable_key)].append(TrainingEvidence(
+                            evidence_id=atom_id, stable_key=target.stable_key,
+                            occurred_at=datetime.fromisoformat(str(row["occurred_at"])),
+                            achieved_points=observation["achieved"], total_points=1,
+                            part_difficulty=observation["difficulty"], evidence_weight=observation["weight"],
+                        ))
                 continue
             for target in self.resolver.resolve(row["stable_key"]):
                 identity = (student_id, target.stable_key, str(row["evidence_id"]))
@@ -379,12 +419,14 @@ def _exam_evidence(
     full_score = _optional_number(reference.get("full_score"))
     score_awarded = _optional_number(reference.get("score_awarded"))
     occurred_at = session_times.get(session_id)
+    assessment = reference.get("assessment") or {}
     status = (
         EvidenceStatus.COMPLETED
         if occurred_at is not None
         and full_score is not None
         and full_score > 0.0
         and score_awarded is not None
+        and assessment.get("eligible") is not False
         else EvidenceStatus.MISSING
     )
     if status is EvidenceStatus.COMPLETED:
@@ -397,12 +439,15 @@ def _exam_evidence(
             f"exam:{session_id}:{student_id}:"
             f"{reference.get('question_id') or ''}:"
             f"{reference.get('bank_question_id') or 0}"
+            + (f":target:{stable_key}" if assessment.get("granularity") in {"part", "step"} else "")
         ),
         stable_key=stable_key,
         occurred_at=occurred_at,
         score_awarded=score_awarded,
         full_score=full_score,
         status=status,
+        part_difficulty=_optional_number(assessment.get("part_difficulty")),
+        evidence_weight=float(assessment.get("evidence_weight", 1.0)),
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import sqlite3
 import threading
 from pathlib import Path
 from time import perf_counter
@@ -11,7 +12,7 @@ from typing import Any, Mapping, Sequence
 from backend.llm import LLMRequestKind, usage_fields
 from backend.llm.policy import policy_from_profile
 from question_bank.database.schema import connect
-from question_bank.models.tag_schema import TagAnalysis, TaggingContext
+from question_bank.models.tag_schema import DIFFICULTY_SCALE_GUIDANCE, TagAnalysis, TaggingContext
 from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
 from question_bank.services.ai_tagging_service import (
     AITaggingResult,
@@ -394,9 +395,11 @@ class OpenAICombinedAnalysisGateway:
 class QuestionAnalysisInputLoader:
     """Load controlled rich text and actual image bodies for the module."""
 
-    def __init__(self, *, db_path: Path, data_root: Path) -> None:
+    def __init__(self, *, db_path: Path, data_root: Path,
+                 external_connection: sqlite3.Connection | None = None) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
+        self.external_connection = external_connection
 
     def load(
         self,
@@ -409,7 +412,7 @@ class QuestionAnalysisInputLoader:
         if not ids or any(value <= 0 for value in ids):
             raise ValueError("question_ids must contain positive integers")
         placeholders = ",".join("?" for _ in ids)
-        with connect(self.db_path) as connection:
+        with connect(self.db_path, external_connection=self.external_connection) as connection:
             rows = connection.execute(
                 f"""
                 SELECT q.id, q.question_text, q.answer_text,
@@ -767,6 +770,15 @@ def _combined_prompt(
         "evidence point 内重复。不要推断或返回核心图谱映射。"
         "每个 part 还要返回 response_mode、canonical_answer、full_answer、accepted_forms、"
         "证明与作图义务、非空 deduction_policy，以及是否允许其他解法。"
+        "评分证据描述必须区分数学义务与参考答案的展开形式：answer_anchor 仅定位参考解答，"
+        "不是要求学生逐字复现的答案模板。target 和 observable_evidence 应写需要成立的"
+        "条件、关系和结论，不把可以核实的简单算术展开或重复代入另设为必写义务。"
+        "在 equivalent_rules 中说明同一方法下可接受的符号关系、数值关系、等价变形或"
+        "合并书写；allow_alternative_methods=false 不禁止同一方法的等价表达。"
+        "例如给出对应边长且写明成立的平方关系并据逆定理得出结论，可以完成相关证明"
+        "义务；只抄边长后下结论、平方关系不成立或循环论证不能作为该等价正例。"
+        "扣分规则针对缺失的数学依据；只有题干或教师明确要求特定计算过程或方法时，"
+        "才要求对应书写形式，不从参考解答的详略自行增加限制。"
         "target 与 observable_evidence 不得为空。exact_objective 时 canonical_answer "
         "不得为空；其他 response_mode 时 full_answer 不得为空。类型专用列表即使为空"
         "也要保留键。解题证据不得含分值字段。"
@@ -790,6 +802,10 @@ def _combined_prompt(
         "question_type_confirmed=true 的题型是教师确认事实，question_type_suggestion "
         "必须与之一致。题型为解答题时可附 essay_subtype（只能取 画图、计算、证明"
         "或 null），只在能从题干确定子类时给出，拿不准返回 null。"
+        "在 solution_evidence 同级返回 part_assessments 数组，逐小问提供相同 part_id、"
+        "difficulty（1—10）和 rationale（一句基于该问推理要求的理由）。多小问难度必须"
+        "分别估计，不复制整题难度，不按步骤数量或题号推断，也不含考试分值。"
+        f"{DIFFICULTY_SCALE_GUIDANCE}"
         "每个 part 的 response_mode 必须根据题目、完整答案和解析单独判定。"
         "第(1)问的一个填空位不得把后续过程问压成整题填空。出现 expected_part_count 时，"
         "必须按给定顺序返回恰好那么多 part。"

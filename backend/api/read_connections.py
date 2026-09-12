@@ -79,7 +79,7 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
         question_bank_candidate = _main_candidate_path(question_bank_connection)
 
         grading_db = open_grading_repositories(
-            grading_candidate,
+            Path(paths.db_path),
             external_connection=grading_connection,
         )
         diagnosis_service = DiagnosisProfileService(
@@ -87,6 +87,9 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
             question_bank_candidate,
             grading_db=grading_db,
             question_bank_connection=question_bank_connection,
+            # SQL reads use the captured database; referenced images and config
+            # receipts still belong to the original data directory.
+            data_root=Path(paths.qb_db_path).parent.parent,
             cache_identity=(
                 *_database_generation(Path(paths.db_path)),
                 *_database_generation(Path(paths.qb_db_path)),

@@ -95,7 +95,8 @@ def test_personalized_draft_create_and_get_have_public_contract(
     assert response_item["question_text"] == "解方程 3x + 1 = 7。"
     assert module.created["actor_ref"] == "local_teacher"
     assert module.created["config"].expected_minutes == 50
-    assert module.created["config"].difficulty_min == 3
+    assert module.created["config"].difficulty_min == 1
+    assert "expected_minutes" not in module.created["config"].to_dict()
     assert module.created["config"].target_keys == (
         "kp_alg_linear_equation",
     )
@@ -174,12 +175,17 @@ def test_personalized_draft_accepts_curriculum_volume_bound(
         json={
             **_create_body(),
             "curriculum_volume_id": "bnu24-math-g7-lower",
+            "training_intent": "challenge",
+            "teaching_progress_chapter_id": "bnu24-math-g7-lower-c04",
         },
     )
     assert response.status_code == 200
     assert module.created["config"].curriculum_volume_id == (
         "bnu24-math-g7-lower"
     )
+
+    assert module.created["config"].training_intent == "challenge"
+    assert module.created["config"].teaching_progress_chapter_id == "bnu24-math-g7-lower-c04"
 
     unknown = client.post(
         "/api/training/personalized-drafts",
