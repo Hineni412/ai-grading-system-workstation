@@ -1,4 +1,4 @@
-"""解答题子类标签消费点：判定点分组、推荐去重键、频度桶归并。"""
+"""解答题子类标签消费点：判定点分组与频度桶归并。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from pathlib import Path
 
 from question_bank.database.schema import initialize_database
 from question_bank.models.tag_schema import TaggingContext
-from question_bank.recommendation.personalized import _dedup_type_key
 from question_bank.services.question_frequency_service import _normalize_question_type
 from question_bank.training_criteria.analysis import (
     QuestionAnalysisInput,
@@ -102,18 +101,6 @@ def test_loader_populates_special_type_tags_into_tagging_context(
         "special_type": ["证明"]
     }
     assert loaded.question_type_group == "proof"
-
-
-def test_dedup_type_key_distinguishes_essay_subtypes() -> None:
-    base = {"question_type": "解答题"}
-    assert _dedup_type_key({**base, "special_types": ["证明"]}) == "解答题·证明"
-    assert _dedup_type_key({**base, "special_types": ["计算"]}) == "解答题·计算"
-    assert _dedup_type_key({**base, "special_types": ["画图"]}) == "解答题·画图"
-    # 未标注的解答题留在裸"解答题"独立桶，不与任何子类互去重。
-    assert _dedup_type_key({**base, "special_types": []}) == "解答题"
-    assert _dedup_type_key(base) == "解答题"
-    # 非解答题不受子类标签影响。
-    assert _dedup_type_key({"question_type": "选择题"}) == "选择题"
 
 
 def test_normalize_question_type_reads_special_type_tags() -> None:

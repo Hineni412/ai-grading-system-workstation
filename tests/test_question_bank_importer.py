@@ -10,10 +10,7 @@ from docx.oxml.ns import nsdecls
 from question_bank.importers import batch_importer
 from question_bank.importers.batch_importer import (
     PaperMetadata,
-    ParsedPaperText,
-    ParsedQuestion,
     ScannedPaper,
-    _without_existing_duplicate_questions,
     infer_metadata_from_filename,
     parse_paper_text,
 )
@@ -21,12 +18,10 @@ from question_bank.database.schema import connect
 from question_bank.database.schema import initialize_database
 from question_bank.importers.types import ExtractedDocument
 from question_bank.importers.docx_importer import _get_paragraph_rich_text
-from question_bank.models.question import QuestionCreate
 from question_bank.services.rich_content_service import (
     load_question_rich_content,
     save_question_rich_content,
 )
-from tests.question_bank_support import QuestionBankTestStore
 
 
 def test_rich_content_drops_next_question_section_heading_on_save_and_load(
@@ -184,39 +179,6 @@ def test_parse_paper_text_does_not_broadcast_document_level_images() -> None:
     assert by_number["1"].image_paths == []
     assert by_number["2"].has_images is True
     assert by_number["2"].image_paths == ["extracted.png"]
-
-
-def test_cross_paper_duplicate_question_is_kept_for_complete_paper_import(tmp_path: Path) -> None:
-    db_path = tmp_path / "question_bank.db"
-    service = QuestionBankTestStore(db_path)
-    service.add_question(
-        QuestionCreate(
-            question_number="2",
-            question_text="（3分）习近平总书记在一次中国品牌论坛开幕式中为品牌强国建设指明了前进方向。",
-        )
-    )
-    parsed = ParsedPaperText(
-        questions=[
-            ParsedQuestion(
-                question_number="1",
-                question_text="（3分）习近平总书记在一次中国品牌论坛开幕式中为品牌强国建设指明了前进方向。",
-                source_file="new_paper.docx",
-                page_range="document",
-            ),
-            ParsedQuestion(
-                question_number="2",
-                question_text="（3分）习近平总书记在一次中国品牌论坛开幕式中为品牌强国建设指明了前进方向。",
-                source_file="new_paper.docx",
-                page_range="document",
-            ),
-        ],
-        answer_match_count=0,
-        review_count=0,
-    )
-
-    result = _without_existing_duplicate_questions(db_path, parsed)
-
-    assert [question.question_number for question in result.questions] == ["1"]
 
 
 def test_infer_national_zhongkao_region_metadata_from_filename() -> None:

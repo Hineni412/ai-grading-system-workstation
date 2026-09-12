@@ -7,6 +7,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 
+from db_manager import DBManager
 from report import ReportGenerator
 
 
@@ -56,69 +57,8 @@ def _seed_print_report(tmp_path: Path) -> Path:
     db_path = databases_dir / "grading.db"
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(json.dumps(RUBRIC, ensure_ascii=False), encoding="utf-8")
+    DBManager(db_path).initialize()
     with sqlite3.connect(db_path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE grading_sessions (
-                id INTEGER PRIMARY KEY,
-                session_name TEXT,
-                rubric_path TEXT,
-                answer_key_path TEXT
-            );
-            CREATE TABLE students (
-                id INTEGER PRIMARY KEY,
-                student_code TEXT,
-                name TEXT,
-                class_name TEXT
-            );
-            CREATE TABLE session_results (
-                id INTEGER PRIMARY KEY,
-                session_id INTEGER,
-                student_id INTEGER,
-                paper_id INTEGER,
-                total_score REAL,
-                student_score REAL,
-                ai_student_score REAL,
-                needs_human_review INTEGER,
-                raw_json TEXT,
-                graded_at TEXT
-            );
-            CREATE TABLE session_details (
-                id INTEGER PRIMARY KEY,
-                result_id INTEGER,
-                question_id TEXT,
-                score_awarded REAL,
-                ai_score_awarded REAL,
-                deduction_reason TEXT,
-                knowledge_ids TEXT,
-                error_category TEXT,
-                error_summary TEXT
-            );
-            CREATE TABLE teacher_score_locks (
-                id INTEGER PRIMARY KEY,
-                session_id INTEGER,
-                scan_batch_id TEXT,
-                student_id INTEGER,
-                question_id TEXT,
-                score_awarded REAL,
-                max_score REAL,
-                deduction_reason TEXT,
-                source_target_type TEXT,
-                source_target_id INTEGER,
-                revision INTEGER,
-                created_at TEXT,
-                updated_at TEXT
-            );
-            CREATE TABLE session_attendance (
-                id INTEGER PRIMARY KEY,
-                session_id INTEGER,
-                student_id INTEGER,
-                attendance_status TEXT,
-                source_reason TEXT,
-                created_at TEXT
-            );
-            """
-        )
         conn.execute(
             """
             INSERT INTO grading_sessions (
@@ -140,6 +80,15 @@ def _seed_print_report(tmp_path: Path) -> Path:
                 ),
             )
             is_complete = student_id <= 10
+            conn.execute(
+                """
+                INSERT INTO exam_papers (
+                    id, session_id, student_id, front_image, back_image,
+                    match_status, processing_status
+                ) VALUES (?, 1, ?, 'front.png', 'back.png', 'matched', 'graded')
+                """,
+                (student_id, student_id),
+            )
             total_score = float(22 - student_id) if is_complete else 7.0
             raw_json = _complete_payload() if is_complete else "{}"
             conn.execute(
@@ -309,26 +258,10 @@ def test_score_excel_uses_full_cell_borders_and_requested_sorting(
             for cell in row:
                 if isinstance(cell, MergedCell):
                     continue
-                assert cell.border.left.style == "thin", (
-                    sheet.title,
-                    cell.coordinate,
-                    "left",
-                )
-                assert cell.border.right.style == "thin", (
-                    sheet.title,
-                    cell.coordinate,
-                    "right",
-                )
-                assert cell.border.top.style == "thin", (
-                    sheet.title,
-                    cell.coordinate,
-                    "top",
-                )
-                assert cell.border.bottom.style == "thin", (
-                    sheet.title,
-                    cell.coordinate,
-                    "bottom",
-                )
+                for side in ("left", "right", "top", "bottom"):
+                    assert getattr(cell.border, side).style == "thin", (
+                        sheet.title, cell.coordinate, side,
+                    )
         for merged in sheet.merged_cells.ranges:
             for column in range(merged.min_col, merged.max_col + 1):
                 assert sheet.cell(merged.min_row, column).border.top.style == "thin"

@@ -246,12 +246,12 @@ describe('training knowledge structure hierarchy', () => {
     expect(roots.map((node) => node.textContent)).toEqual(['七年级下册｜第一章 整式的乘除'])
   })
 
-  it('hides no-evidence points by default and reveals them via the toggle', async () => {
+  it('shows the complete structure by default and can hide no-evidence points', async () => {
     const { host } = mountStructure()
-    expect(host.textContent).not.toContain('幂的乘方运算')
+    expect(host.textContent).toContain('幂的乘方运算')
     await toggleShowEmpty(host, '.structure-toggle')
-    const names = [...host.querySelectorAll('.structure-point-name')]
-    expect(names.map((node) => node.textContent)).toContain('幂的乘方运算')
+    expect(host.textContent).not.toContain('幂的乘方运算')
+    expect(host.querySelector('.structure-point-name')?.textContent).toBe('同底数幂相乘')
   })
 
   it('links evidence leaves to the grouped question view and skips parent summaries', async () => {

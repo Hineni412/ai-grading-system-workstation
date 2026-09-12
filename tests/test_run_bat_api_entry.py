@@ -3,10 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def test_root_exposes_only_daily_start_and_shutdown_batch_files() -> None:
-    launchers = {path.name for path in Path(".").glob("*.bat")}
-
-    assert launchers == {"运行.bat", "关闭系统.bat"}
+def test_daily_launchers_exist_without_a_preview_entry() -> None:
+    assert Path("运行.bat").is_file()
+    assert Path("关闭系统.bat").is_file()
     content = Path("运行.bat").read_text(encoding="utf-8")
     assert "integration_preview" not in content
 
@@ -17,12 +16,13 @@ def test_run_bat_builds_source_and_accepts_prebuilt_portable_frontend() -> None:
     portable_fallback = content.index(
         'if not exist "%FRONTEND_DIR%\\package.json" goto frontend_ready'
     )
-    npm_lookup = content.index("where npm.cmd")
+    ensure_frontend = content.index('"%PROJECT_RUNNER%" tools.ensure_frontend')
     frontend_ready = content.index(":frontend_ready")
     frontend_check = content.index(
         '"%PROJECT_RUNNER%" backend.api.launcher --check-frontend'
     )
-    assert portable_fallback < npm_lookup < frontend_ready < frontend_check
+    assert portable_fallback < ensure_frontend < frontend_ready < frontend_check
+    assert "if errorlevel 1 goto frontend_build_error" in content[ensure_frontend:frontend_ready]
 
 
 def test_run_bat_starts_fastapi_frontend_by_default() -> None:

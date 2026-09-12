@@ -3,9 +3,12 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tools import run_test_suite
 from tools.test_suite_manifest import (
     PROCESS_ISOLATED_TEST_PATHS,
+    QUICK_FRONTEND_TEST_PATHS,
     QUICK_TEST_PATHS,
     RELEASE_AUDIT_TEST_PATHS,
     SERIAL_TEST_PATHS,
@@ -16,6 +19,7 @@ from tools.test_suite_manifest import (
 def test_manifests_reference_existing_unique_tests() -> None:
     for paths in (
         QUICK_TEST_PATHS,
+        QUICK_FRONTEND_TEST_PATHS,
         RELEASE_AUDIT_TEST_PATHS,
         SERIAL_TEST_PATHS,
         PROCESS_ISOLATED_TEST_PATHS,
@@ -23,6 +27,8 @@ def test_manifests_reference_existing_unique_tests() -> None:
         assert len(paths) == len(set(paths))
         assert all((run_test_suite.PROJECT_ROOT / path).is_file() for path in paths)
     assert set(PROCESS_ISOLATED_TEST_PATHS) < set(SERIAL_TEST_PATHS)
+    assert QUICK_FRONTEND_TEST_PATHS
+    assert all(path.is_relative_to("frontend") for path in QUICK_FRONTEND_TEST_PATHS)
 
 
 def test_quick_manifest_reuses_product_tests_and_marks_serial_overlap() -> None:
@@ -42,6 +48,40 @@ def test_default_worker_count_is_bounded() -> None:
     assert run_test_suite.default_worker_count(4) == 2
     assert run_test_suite.default_worker_count(8) == 4
     assert run_test_suite.default_worker_count(64) == 6
+
+
+@pytest.mark.parametrize("full, frontend_exit", [(False, 0), (False, 1), (True, 0)])
+def test_suite_dispatch_selects_frontend_specs_and_preserves_full_verification(
+    monkeypatch, full: bool, frontend_exit: int,
+) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def fake_run(label, command, **kwargs):
+        commands.append(tuple(command))
+        return run_test_suite.CommandResult(
+            label=label, command=tuple(command), return_code=frontend_exit,
+            elapsed_seconds=0.1, output="synthetic frontend result",
+        )
+
+    monkeypatch.setattr(run_test_suite, "_run_command", fake_run)
+    monkeypatch.setattr(run_test_suite, "_npm_command", lambda *args: ["npm", *args])
+    monkeypatch.setattr(run_test_suite, "_run_backend_pair", lambda **kwargs: [])
+
+    results = run_test_suite._run_current_suite(
+        mode="full" if full else "quick", workers=1, durations=0,
+        skip_frontend=False, environment={},
+    )
+
+    if full:
+        assert commands == [("npm", "run", "verify")]
+    else:
+        assert commands[0] == (
+            "npm", "run", "test", "--",
+            *(path.relative_to("frontend").as_posix() for path in QUICK_FRONTEND_TEST_PATHS),
+        )
+        assert commands[1:] == ([] if frontend_exit else [("npm", "run", "test:editor")])
+    assert len(results) == len(commands)
+    assert all(result.return_code == frontend_exit for result in results)
 
 
 def test_pytest_command_uses_file_distribution_and_disjoint_ignores() -> None:

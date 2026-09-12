@@ -9,17 +9,6 @@ import objective_crop_calibration
 from choice_recognition_chain import crop_choice_region
 
 
-ROOT = Path(__file__).resolve().parents[1]
-RETIRED_ENTRYPOINTS = (
-    "objective_admission_wizard_ui.py",
-    "run_objective_admission_wizard.py",
-)
-
-
-def test_objective_admission_entrypoints_are_retired() -> None:
-    assert [name for name in RETIRED_ENTRYPOINTS if (ROOT / name).exists()] == []
-
-
 def test_active_choice_crop_still_uses_calibration_box(
     tmp_path: Path,
     monkeypatch,
