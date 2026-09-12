@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../api/scan-grading'
+import { ApiError } from '../api/errors'
 import { fetchStudents } from '../api/students'
 import type { JobResponse } from '../api/jobs'
 import { useJobStore } from '../stores/jobs'
@@ -258,5 +259,23 @@ describe('scan grading store isolation and recovery', () => {
 
     expect(store.preflightJobId).toBe(81)
     expect(useJobStore().jobs[81]?.status).toBe('running')
+  })
+
+  it('refreshes a changed decision revision without retrying or claiming an unsaved match', async () => {
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(workspace(1, 'frozen'))
+    const initial: api.ScanPreflight = { revision: 2, summary: {}, groups: [], issues: [],
+      absent_students: [], warnings: [], decisions: [], pending_issue_count: 1 }
+    vi.mocked(api.fetchPreflight).mockResolvedValueOnce(initial).mockResolvedValue({ ...initial, revision: 3,
+      decisions: [{ target_type: 'issue', target_id: 'i1', action: 'invalid' }], pending_issue_count: 0 })
+    vi.mocked(api.saveScanDecisions).mockRejectedValue(new ApiError({ kind: 'conflict', status: 409,
+      code: 'scan_decision_revision_conflict', message: 'changed', details: {}, requestId: 'test', retryable: false }))
+    const store = useScanGradingStore()
+    await store.load(1)
+    const saved = await store.saveDecisions([{ target_type: 'issue', target_id: 'i1', action: 'match', student_id: 11 }])
+    expect(saved).toBe(false)
+    expect(api.saveScanDecisions).toHaveBeenCalledTimes(1)
+    expect(store.preflight?.revision).toBe(3)
+    expect(store.preflight?.decisions[0]?.action).toBe('invalid')
+    expect(store.errorMessage).toContain('本次选择尚未保存')
   })
 })

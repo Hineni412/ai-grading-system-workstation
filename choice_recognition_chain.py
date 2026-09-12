@@ -76,6 +76,7 @@ def score_choice_by_program(
     confidence: float,
     threshold: float = 0.85,
 ) -> dict:
+    missing_answer = selected is None
     selected = str(selected or "").strip().upper()
     
     result = {
@@ -90,7 +91,7 @@ def score_choice_by_program(
         result["review_reason"] = "max_score_missing_or_invalid"
         return result
         
-    if selected == "BLANK":
+    if not missing_answer and selected in {"", "BLANK"}:
         result["is_correct"] = False
         result["score"] = 0.0
         result["auto_scored"] = True

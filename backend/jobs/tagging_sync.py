@@ -117,7 +117,85 @@ def run_tagging_sync_job(
         )
 
 
-def _run_tagging_sync_job_locked(
+
+def _run_tagging_sync_job_locked(**kwargs: Any) -> dict[str, object]:
+    """Analyze each full-content identity once within the requested batch."""
+    from question_bank.services.duplicate_analysis_copy_service import (
+        exact_identity_map, link_exact_duplicate, copy_duplicate_analysis,
+    )
+    question_ids = kwargs["question_ids"]
+    root = kwargs["data_root"]
+    # Relation replay is a separate operation on each saved observation.
+    if root is None or kwargs["retry_relation_question_ids"] or len(question_ids) < 2:
+        return _run_distinct_tagging_sync_job_locked(**kwargs)
+    database = kwargs["question_bank_db_path"]
+    with connect(database) as conn:
+        identities = exact_identity_map(conn, data_root=root)
+    groups: dict[str, list[int]] = {}
+    for qid in question_ids:
+        groups.setdefault(identities.get(qid) or f"unresolved:{qid}", []).append(qid)
+    if all(len(group) == 1 for group in groups.values()):
+        return _run_distinct_tagging_sync_job_locked(**kwargs)
+    gaps = _load_analysis_gaps(database, question_ids, data_root=root,
+                               curriculum_volume_id=kwargs["curriculum_volume_id"])
+    _, complete_ids, _ = _load_tagging_candidates(database, question_ids,
+        curriculum_volume_id=kwargs["curriculum_volume_id"])
+    complete = set(complete_ids)
+    representatives: list[int] = []
+    copies: dict[int, int] = {}
+    for group in groups.values():
+        representative = min(group, key=lambda qid: (
+            -(int(qid in complete) + sum(gaps.get(qid, {}).values())), qid))
+        representatives.append(representative)
+        copies.update({qid: representative for qid in group if qid != representative})
+    distinct = dict(kwargs, question_ids=representatives)
+    for field in ("retry_evidence_question_ids", "force_retag_question_ids"):
+        requested = set(kwargs[field])
+        distinct[field] = list(dict.fromkeys(copies.get(qid, qid) for qid in question_ids if qid in requested))
+    result = _run_distinct_tagging_sync_job_locked(**distinct)
+    successful = set(result.get("successful_question_ids", []))
+    for target, source in copies.items():
+        kwargs["context"].raise_if_cancelled()
+        if source in successful:
+            with connect(database) as conn:
+                link_exact_duplicate(conn, question_id=target, source_id=source, signature=identities[source], copy_tags=target not in complete)
+            copy_duplicate_analysis(database, source_question_id=source,
+                                    target_question_id=target, data_root=root)
+    # Verify persisted products; a failed reuse stays a visible gap without an
+    # extra paid request being silently appended to this batch.
+    _, tagged_ids, _ = _load_tagging_candidates(database, list(copies),
+        curriculum_volume_id=kwargs["curriculum_volume_id"])
+    saved = _load_analysis_gaps(database, list(copies), data_root=root,
+                                curriculum_volume_id=kwargs["curriculum_volume_id"])
+    for target, source in copies.items():
+        if source in successful and target in tagged_ids:
+            result.setdefault("successful_question_ids", []).append(target)
+        else:
+            result.setdefault("failed_question_ids", []).append(target)
+            source_failure = next((entry for entry in result.get("failures", []) if entry["question_id"] == source), None)
+            result.setdefault("failures", []).append(dict(source_failure, question_id=target) if source_failure else
+                _failure(target, "save", detail="相同题分析尚未完成，可补齐未完成题目。"))
+        for product, flag in (("evidence", "evidence_ready"), ("criteria", "criteria_ready")):
+            status = "succeeded" if saved.get(target, {}).get(flag) else "failed"
+            result.setdefault(f"{product}_{status}_question_ids", []).append(target)
+    for field in ("successful_question_ids", "failed_question_ids", "evidence_succeeded_question_ids",
+                  "evidence_failed_question_ids", "criteria_succeeded_question_ids", "criteria_failed_question_ids"):
+        members = set(result.get(field, []))
+        result[field] = [qid for qid in question_ids if qid in members]
+    result["tagged_count"] = int(result.get("tagged_count", 0)) + sum(target in result["successful_question_ids"] and target not in complete for target in copies)
+    result["skipped_complete_count"] = int(result.get("skipped_complete_count", 0)) + sum(target in complete and all(gaps.get(target, {}).values()) for target in copies)
+    result.update(requested_count=len(question_ids),
+                  complete_tagged_count=len(result["successful_question_ids"]),
+                  failed_count=len(result["failed_question_ids"]),
+                  evidence_count=len(result["evidence_succeeded_question_ids"]),
+                  criteria_count=len(result["criteria_succeeded_question_ids"]))
+    if result["failed_question_ids"] or result["evidence_failed_question_ids"] or result["criteria_failed_question_ids"]:
+        result["outcome"] = "partial" if result["successful_question_ids"] else "failed"
+        result["retryable"] = True
+    return result
+
+
+def _run_distinct_tagging_sync_job_locked(
     *,
     context: JobContext,
     question_bank_db_path: Path,

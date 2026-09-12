@@ -163,6 +163,24 @@ describe('class analysis API contract', () => {
     })).toThrow()
   })
 
+  it('decodes classified manifestations and their answer evidence without losing legacy compatibility', () => {
+    const evidence = [{ text: '原批语', student_ids: [1], student_answer: '保留的算式', evidence_steps: ['已有步骤'],
+      missing_steps: [], previous_answers: [{ question_id: 'Q12(P1)', student_answer: '前问算式', text: '前问批语', evidence_steps: [] }] }]
+    const cause = { kind: 'carry_forward', reason: '前问错误延续', count: 1, evidence,
+      manifestations: [{ description: '沿用前问结果', source_question_id: 'Q12(P1)', evidence }] }
+    const payload = { ...analysisPayload, data: { ...analysisPayload.data, questions: [{
+      ...analysisPayload.data.questions[0], causes: [cause], causes_grouped: true, causes_legacy: false,
+    }] } }
+    const parsed = decodeClassAnalysisResponse(payload)
+    expect(parsed.data!.questions[0]!.causes).toEqual([cause])
+    expect(() => decodeClassAnalysisResponse({ ...payload, data: { ...payload.data, questions: [{
+      ...payload.data.questions[0], causes: [{ ...cause, kind: '猜测学生态度' }],
+    }] } })).toThrow('Invalid class cause')
+    expect(() => decodeClassAnalysisResponse({ ...payload, data: { ...payload.data, questions: [{
+      ...payload.data.questions[0], causes: [{ ...cause, manifestations: [{ description: '缺少证据映射' }] }],
+    }] } })).toThrow()
+  })
+
   it('requests the class analysis through the dedicated endpoint', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify(analysisPayload), {
@@ -178,6 +196,42 @@ describe('class analysis API contract', () => {
       expect.anything(),
     )
     expect(result.status).toBe('ready')
+  })
+
+  it('requests and decodes the selected class', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ...analysisPayload, class_names: ['9', '10'], selected_class: '10' }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const result = await classAnalysisApi.getClassAnalysis(7, undefined, '10')
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/7/class-analysis?class_name=10', expect.anything())
+    expect(result.selected_class).toBe('10')
+    expect(result.class_names).toEqual(['9', '10'])
+    expect(() => decodeClassAnalysisResponse({ ...analysisPayload, class_names: [9] })).toThrow()
+  })
+
+  it('uses compact combined statistics and accepts the existing config image contract for previews', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      ...analysisPayload, selected_class: null,
+      data: { ...analysisPayload.data, students: [], questions: [{
+        ...analysisPayload.data.questions[0],
+        records: [{ student_name: '同学甲', student_id: 1, student_code: '001', class_name: '1 班', score: 0 }],
+        causes: [{ reason: '未作答', count: 1 }],
+      }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const compact = await classAnalysisApi.getClassAnalysis(7, undefined, '', 'summary')
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/sessions/7/class-analysis?class_name=&view=summary', expect.anything())
+    expect(compact.data?.questions[0]?.causes).toEqual([{ reason: '未作答', count: 1 }])
+    const preview = {
+      question_id: 'Q1(1)', parent_question_id: 'Q1', text: '合成原题', notice: '',
+      rich_content: { available: true, question_block_count: 1, answer_block_count: 0, answer_blocks: [], question_blocks: [{
+        kind: 'paragraph', text: '直角三角形', segments: [], rows: [], asset_indexes: [],
+        asset_urls: ['/api/sessions/7/config/sources/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/questions/Q1/assets/question'],
+      }] },
+    }
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200, headers: { 'content-type': 'application/json' } }))
+    expect(await classAnalysisApi.getQuestionPreview(7, 'Q1(1)')).toEqual(preview)
   })
 
   it('writes the auto-generate setting with the frozen body shape', async () => {

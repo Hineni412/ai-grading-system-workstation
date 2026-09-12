@@ -16,11 +16,15 @@ const props = withDefaults(defineProps<{
   scoreProfiles?: Record<string, Record<string, unknown>>
   curriculumVolumeId?: string | null
   evidenceFrom?: 'chapter' | 'student'
+  compactRoster?: boolean
+  showScoreFloor?: boolean
 }>(), {
   applyLabel: '立即更新',
   scoreProfiles: () => ({}),
   curriculumVolumeId: null,
   evidenceFrom: 'chapter',
+  compactRoster: false,
+  showScoreFloor: false,
 })
 
 const emit = defineEmits<{
@@ -33,7 +37,7 @@ const classIds = ref<string[]>([])
 const scoreMin = ref<string>('')
 const scoreMax = ref<string>('')
 const useHistory = ref(true)
-// 勾选即入队；队列是唯一统计候选，换筛选条件不影响队列内容。
+// 勾选即入队；训练页的得分率条件会进一步筛选队列，但不删除勾选记录。
 const queueIds = ref<string[]>([])
 const search = ref('')
 const moreOpen = ref(false)
@@ -41,6 +45,7 @@ const validationMessage = ref('')
 const lastAppliedFingerprint = ref('')
 let synchronizing = false
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
+const scoreFloorEnabled = computed(() => props.showScoreFloor || props.compactRoster)
 
 const classes = computed(() => [...new Set(
   props.students.flatMap((student) => student.class_name ? [student.class_name] : []),
@@ -90,6 +95,10 @@ watch(
       // 队列模式只回同步队列本身；用户输入的班级、得分率区间与考试条件保持原样，
       // 避免 selected 查询回包把本地筛选输入重置。
       queueIds.value = [...(query.scope.student_ids ?? [])]
+      if (scoreFloorEnabled.value) {
+        scoreMin.value = query.scope.score_rate_min == null ? '' : String(Math.round(query.scope.score_rate_min * 1000) / 10)
+        scoreMax.value = query.scope.score_rate_max == null ? '' : String(Math.round(query.scope.score_rate_max * 1000) / 10)
+      }
     } else {
       examMode.value = query.exam_scope.mode
       manualSessionIds.value = query.exam_scope.mode === 'manual'
@@ -115,6 +124,10 @@ function rate(value: string): number | undefined {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return Number.NaN
   return parsed / 100
+}
+
+function classLabel(value: string): string {
+  return /^\d+$/.test(value.trim()) ? `${value.trim()}班` : value
 }
 
 function toggleStudent(studentId: string): void {
@@ -180,7 +193,7 @@ const rosterEmptyText = computed(() => (
     : '输入姓名、学号，或设定班级、得分率后显示匹配学生。'
 ))
 
-const rosterVisible = computed(() => Boolean(classIds.value.length || moreOpen.value))
+const rosterVisible = computed(() => Boolean(moreOpen.value || (!props.compactRoster && classIds.value.length)))
 
 // 队列 chips 按队列顺序解析学生；勾选只改卡片勾选态，不再把卡片移到单独的分组。
 const queuedStudents = computed(() => {
@@ -243,6 +256,8 @@ function buildApplyPayload(): GraphQueryInput | null {
       ? {
           mode: 'selected',
           student_ids: [...queueIds.value],
+          ...(scoreFloorEnabled.value && minimum !== undefined ? { score_rate_min: minimum } : {}),
+          ...(scoreFloorEnabled.value && maximum !== undefined ? { score_rate_max: maximum } : {}),
           include_student_ids: [],
           exclude_student_ids: [],
           use_historical_fallback: useHistory.value,
@@ -300,10 +315,14 @@ defineExpose({ openMoreFilters })
         <div>
           <label v-for="name in classes" :key="name">
             <input type="checkbox" :checked="classIds.includes(name)" @change="toggleClass(name)">
-            <span>{{ name }}</span>
+            <span>{{ compactRoster ? classLabel(name) : name }}</span>
           </label>
         </div>
       </details>
+      <label v-if="scoreFloorEnabled" class="evidence-scope__quick-rate">
+        <span>最低考试得分率</span>
+        <div><input v-model="scoreMin" inputmode="decimal" placeholder="不限" aria-label="最低得分率" @change="apply"><span>%</span></div>
+      </label>
       <button type="button" class="primary-button" data-testid="apply-evidence-scope" @click="apply">
         {{ applying ? '正在更新' : applyLabel }}
       </button>
@@ -317,7 +336,9 @@ defineExpose({ openMoreFilters })
       </button>
     </div>
 
-    <div class="evidence-scope__queue" aria-label="队列">
+    <p v-if="scoreFloorEnabled" class="evidence-scope__group-hint">填写下限可排除本次不准备安排训练的学生；留空则不限制。<span v-if="scoreMin || scoreMax">已设得分率条件，低于下限或无可用成绩的学生不进入推荐，已勾选学生也适用。</span></p>
+
+    <div v-if="queueIds.length || !compactRoster" class="evidence-scope__queue" aria-label="队列">
       <template v-if="queueIds.length">
         <span class="evidence-scope__queue-label">队列 {{ queueIds.length }} 人：</span>
         <ul>
@@ -353,7 +374,7 @@ defineExpose({ openMoreFilters })
       <div class="evidence-scope__more-row">
         <fieldset class="evidence-scope__range">
           <legend>得分率区间</legend>
-          <label><span>最低</span><input v-model="scoreMin" inputmode="decimal" placeholder="0" aria-label="最低得分率"><i>%</i></label>
+          <label><span>最低</span><input v-model="scoreMin" inputmode="decimal" placeholder="0" :aria-label="scoreFloorEnabled ? '最低得分率（更多筛选）' : '最低得分率'"><i>%</i></label>
           <b>—</b>
           <label><span>最高</span><input v-model="scoreMax" inputmode="decimal" placeholder="100" aria-label="最高得分率"><i>%</i></label>
         </fieldset>
@@ -366,7 +387,7 @@ defineExpose({ openMoreFilters })
 
     <div v-if="rosterVisible" class="evidence-scope__roster">
       <header>
-        <div><strong>指定学生</strong><p>输入姓名、学号，或设定班级、得分率后勾选加入队列；换筛选条件不影响已入队学生。队列为空时按上方条件自动圈定。</p></div>
+        <div><strong>指定学生</strong><p>输入姓名、学号，或设定班级、得分率后勾选加入队列；{{ scoreFloorEnabled ? '得分率条件会进一步筛选已入队学生，勾选记录保留' : '换筛选条件不影响已入队学生' }}。队列为空时按上方条件自动圈定。</p></div>
         <div class="evidence-scope__roster-tools">
           <input v-model="search" type="search" placeholder="搜索姓名或学号" aria-label="搜索学生">
           <button
@@ -409,6 +430,9 @@ defineExpose({ openMoreFilters })
 </template>
 
 <style scoped>
+.evidence-scope__quick-rate > div{display:flex;align-items:center;gap:.35rem}
+.evidence-scope__quick-rate input{width:86px}
+.evidence-scope__group-hint{margin:0;padding:0 16px 12px;font-size:.78rem;color:var(--color-text-secondary);line-height:1.6}
 .evidence-scope { border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
 .evidence-scope > :last-child { border-end-start-radius: var(--radius-control); border-end-end-radius: var(--radius-control); }
 .evidence-scope__quickbar { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; padding: 12px 16px; }

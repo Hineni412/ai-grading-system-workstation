@@ -1781,6 +1781,7 @@ class CombinedQuestionAnalysisModule:
                     model_name=model_name,
                     operation_id=operation_id,
                     objective_response_shape=effective_shape,
+                    **({"part_assessments": raw["part_assessments"]} if "part_assessments" in raw else {}),
                 )
                 draft = training_criteria_from_solution_evidence(
                     evidence,
@@ -2866,6 +2867,14 @@ def combined_response_format(
     if "tag" in selected:
         item_properties["tag_analysis"] = _tag_schema(ids, defs=defs)
     if "training_criteria" in selected:
+        item_properties["part_assessments"] = {
+            "type": "array",
+            "items": {"type": "object", "additionalProperties": False,
+                      "properties": {"part_id": {"type": "string"},
+                                     "difficulty": {"type": "number", "minimum": 1, "maximum": 10},
+                                     "rationale": {"type": "string"}},
+                      "required": ["part_id", "difficulty", "rationale"]},
+        }
         item_properties["solution_evidence"] = _solution_evidence_schema(
             knowledge_ids=ids.get("knowledge") or (),
             defs=defs,

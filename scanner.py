@@ -58,6 +58,7 @@ class ScanIssue:
     suggested_student_id: int | None = None
     suggested_student_name: str | None = None
     suggested_match_score: float | None = None
+    detected_class_name: str | None = None
 
 
 @dataclass
@@ -313,6 +314,7 @@ class Scanner:
         self.enhanced_dir = self.exams_dir / "_enhanced"
         import threading
         self._ocr_lock = threading.Lock()
+        self._detected_classes: dict[str, str] = {}
 
     def scan(self) -> List[ExamPaperGroup]:
         return self.analyze().groups
@@ -436,6 +438,14 @@ class Scanner:
 
         progress.finalizing()
         refine_scan_analysis_matches(analysis, students or [])
+
+        # Reuse text already obtained from the name area; never add a model call
+        # or infer a class from a student's name or from an upload filename.
+        for item in [*analysis.groups, *analysis.issues]:
+            item.detected_class_name = self._detected_classes.get(str(item.front_image)) or self._detected_classes.get(str(item.enhanced_front_image))
+            if isinstance(item, ScanIssue) and student_lookup.get(_normalize_name(item.detected_name or ""), {}).get("_ambiguous_name"):
+                item.issue_type = "ambiguous_name"
+                item.message = "名单中有重名学生，请按学号和班级确认归属。"
 
         for group in analysis.groups:
             if group.student_id is not None:
@@ -817,15 +827,17 @@ class Scanner:
             crop = rgb_image.crop(
                 _student_name_crop_box(self.name_region, *rgb_image.size)
             )
-            local_text = _clean_student_name_text(self._do_local_ocr(crop))
+            raw_local_text = self._do_local_ocr(crop)
+            self._remember_detected_class(image_path, raw_local_text)
+            local_text = _clean_student_name_text(raw_local_text)
             buffer = io.BytesIO()
             crop.save(buffer, format="JPEG", quality=82)
         local_score = 0.0
         exact_name: str | None = None
         if local_text and student_lookup:
             match = _match_student(local_text, student_lookup)
-            if match and match.student:
-                exact_name = str(match.student.get("name") or "") or None
+            if match and (match.student or match.method == "ambiguous"):
+                exact_name = local_text  # preserve OCR evidence, including fuzzy matches
             elif match:
                 local_score = match.suggested_score or 0.0
         return buffer.getvalue(), local_text, local_score, exact_name
@@ -928,23 +940,21 @@ class Scanner:
             top_region = rgb_image.crop(crop_box)
             
             local_text = self._do_local_ocr(top_region)
+            self._remember_detected_class(front_image, local_text)
             local_match_score = 0.0
             best_local_text = None
             
             if local_text:
-                cleaned = local_text.strip().replace("\n", "")
-                for prefix in ["姓名", "学生", "考生", ":", "：", " "]:
-                    cleaned = cleaned.replace(prefix, "")
-                cleaned = cleaned.strip("`\"' ：:，,。 ")
+                cleaned = _clean_student_name_text(local_text) or ""
                 
                 best_local_text = cleaned
                 if student_lookup:
                     match = _match_student(cleaned, student_lookup)
                     if match:
-                        if match.student:
+                        if match.student or match.method == "ambiguous":
                             if report:
-                                report(None, "识别姓名", f"[{front_image.name}] ✔️ 本地完美匹配到: {match.student.get('name')}")
-                            return str(match.student.get("name"))
+                                report(None, "识别姓名", f"[{front_image.name}] 本地识别到: {cleaned}")
+                            return cleaned
                         else:
                             local_match_score = match.suggested_score or 0.0
                 else:
@@ -1023,8 +1033,17 @@ class Scanner:
             return image_path
 
 
+    def _remember_detected_class(self, image_path: Path, text: object) -> None:
+        match = _CLASS_TEXT.search(str(text or ""))
+        if match:
+            self._detected_classes[str(image_path)] = match.group(1).strip()
+
+
+_CLASS_TEXT = re.compile(r"(?:班级|班别)\s*[:：]?\s*([^\r\n,:：，]{1,30}?班)(?=\s|姓名|学号|考号|$)")
+
+
 def _clean_student_name_text(value: object) -> str | None:
-    cleaned = str(value or "").strip().replace("\n", "")
+    cleaned = _CLASS_TEXT.sub("", str(value or "")).strip().replace("\n", "")
     for prefix in ["姓名", "学生", "考生", ":", "：", " "]:
         cleaned = cleaned.replace(prefix, "")
     cleaned = cleaned.strip("`\"' ：:，,。 ")
@@ -1103,7 +1122,11 @@ def _build_student_lookup(students: list[dict[str, Any]]) -> dict[str, dict[str,
     for student in students:
         name = str(student.get("name") or "").strip()
         if name:
-            lookup[_normalize_name(name)] = student
+            key = _normalize_name(name)
+            if key in lookup and lookup[key].get("id") != student.get("id"):
+                lookup[key] = {"name": name, "_ambiguous_name": True}
+            else:
+                lookup[key] = student
     return lookup
 
 
@@ -1130,12 +1153,16 @@ def refine_scan_analysis_matches(analysis: ScanAnalysis, students: list[dict[str
 
     reduced_students = [student for student in students if int(student.get("id") or 0) not in perfect_student_ids]
     reduced_lookup = _build_student_lookup(reduced_students)
+    full_lookup = _build_student_lookup(students)
     if not reduced_lookup:
         return analysis
 
     next_groups: list[ExamPaperGroup] = []
     demoted_issues: list[ScanIssue] = []
     for index, group in enumerate(analysis.groups, start=1):
+        if group.match_method == "manual" or full_lookup.get(_normalize_name(group.detected_name or ""), {}).get("_ambiguous_name"):
+            next_groups.append(group)
+            continue
         should_retry = (
             float(group.match_score or 0) < 0.999
             or str(group.match_method or "") == "fuzzy"
@@ -1170,6 +1197,7 @@ def refine_scan_analysis_matches(analysis: ScanAnalysis, students: list[dict[str
                     suggested_student_id=reduced_match.suggested_student_id if reduced_match else None,
                     suggested_student_name=reduced_match.suggested_student_name if reduced_match else None,
                     suggested_match_score=reduced_match.suggested_score if reduced_match else None,
+                    detected_class_name=group.detected_class_name,
                 )
             )
         else:
@@ -1180,6 +1208,8 @@ def refine_scan_analysis_matches(analysis: ScanAnalysis, students: list[dict[str
 
     for issue in analysis.issues:
         if not issue.detected_name:
+            continue
+        if full_lookup.get(_normalize_name(issue.detected_name), {}).get("_ambiguous_name"):
             continue
         reduced_match = _match_student(issue.detected_name, reduced_lookup)
         if not reduced_match:
@@ -1221,6 +1251,8 @@ def _match_student(name: str | None, student_lookup: dict[str, dict[str, Any]]) 
     normalized = _normalize_name(name)
     exact = student_lookup.get(normalized)
     if exact:
+        if exact.get("_ambiguous_name"):
+            return _StudentMatch(method="ambiguous", score=1.0)
         return _StudentMatch(student=exact, method="exact", score=1.0)
 
     ranked: list[tuple[float, str, dict[str, Any]]] = []
@@ -1233,6 +1265,8 @@ def _match_student(name: str | None, student_lookup: dict[str, dict[str, Any]]) 
 
     ranked.sort(key=lambda item: item[0], reverse=True)
     best_score, best_name, best_student = ranked[0]
+    if best_student.get("_ambiguous_name"):
+        return _StudentMatch(method="ambiguous", score=round(best_score, 3))
     second_score = ranked[1][0] if len(ranked) > 1 else 0.0
     edit_distance = _levenshtein_distance(normalized, best_name)
     same_first_char = bool(normalized and best_name and normalized[0] == best_name[0])
@@ -1580,6 +1614,7 @@ def _group_from_dict(data: dict[str, Any]) -> ExamPaperGroup:
         enhanced_back_image=Path(str(data["enhanced_back_image"])) if data.get("enhanced_back_image") else None,
         match_method=str(data.get("match_method") or "exact"),
         match_score=float(data.get("match_score") or 1.0),
+        detected_class_name=data.get("detected_class_name"),
     )
 
 
@@ -1598,4 +1633,5 @@ def _issue_from_dict(data: dict[str, Any]) -> ScanIssue:
         suggested_student_id=int(data["suggested_student_id"]) if data.get("suggested_student_id") is not None else None,
         suggested_student_name=data.get("suggested_student_name"),
         suggested_match_score=float(data["suggested_match_score"]) if data.get("suggested_match_score") is not None else None,
+        detected_class_name=data.get("detected_class_name"),
     )

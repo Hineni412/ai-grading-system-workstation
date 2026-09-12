@@ -58,6 +58,7 @@ class QuestionBankPublicationAdapter:
         self._assert_schema_available()
         existing = self._existing_receipt(snapshot)
         if existing is not None:
+            self._reuse_duplicate_analysis(existing)
             return existing
 
         manifest_sha = canonical_hash(
@@ -289,6 +290,11 @@ class QuestionBankPublicationAdapter:
                 moved = self._publish_staged_files(staged_files)
                 moved_sidecars = [item for item in moved if item in owned_sidecars]
                 moved_assets = [item for item in moved if item not in owned_sidecars]
+                from question_bank.services.duplicate_analysis_copy_service import exact_identity_map, link_new_question_duplicate
+                identities = exact_identity_map(conn, data_root=self.data_root)
+                for published_question in published:
+                    link_new_question_duplicate(conn, question_id=published_question.bank_question_id,
+                                                data_root=self.data_root, identities=identities)
                 conn.commit()
             except BaseException:
                 conn.rollback()
@@ -325,7 +331,18 @@ class QuestionBankPublicationAdapter:
         ):
             # The committed receipt remains authoritative; reconcile repairs this marker.
             pass
+        self._reuse_duplicate_analysis(receipt)
         return receipt
+
+    def _reuse_duplicate_analysis(self, receipt: PublishReceipt) -> None:
+        from question_bank.services.duplicate_analysis_copy_service import copy_duplicate_analysis
+        with connect(self.db_path) as conn:
+            links = [conn.execute("SELECT duplicate_of_question_id FROM question_duplicate_links WHERE question_id=?",
+                                  (item.bank_question_id,)).fetchone() for item in receipt.questions]
+        for item, link in zip(receipt.questions, links):
+            if link is not None:
+                copy_duplicate_analysis(self.db_path, source_question_id=int(link[0]),
+                                        target_question_id=item.bank_question_id, data_root=self.data_root)
 
     def reconcile(self, operation_id: str) -> str:
         """Reconcile one explicitly named publication; never scans unrelated files."""
@@ -584,6 +601,20 @@ class QuestionBankPublicationAdapter:
         bank_question_id: int,
         page_assets: list[str],
     ) -> dict[str, object]:
+        # Use explicitly recognised illustration/table regions when available.
+        # Unclassified source pages retain the complete question crop so a
+        # missing figure classification can never cause a text-only merge.
+        identity_regions = []
+        for region in question.source_regions:
+            page = next((item for item in snapshot.pages if item.page_number == region.page_number), None)
+            if page is None or not page.blocks:
+                identity_regions.append(asdict(region))
+                continue
+            x1, y1, x2, y2 = region.bbox
+            for block in page.blocks:
+                bx1, by1, bx2, by2 = block.region.bbox
+                if str(block.kind.value) in {"figure", "table"} and max(x1, bx1) < min(x2, bx2) and max(y1, by1) < min(y2, by2):
+                    identity_regions.append(asdict(block.region))
         return {
             "version": 3,
             "question_id": bank_question_id,
@@ -591,6 +622,7 @@ class QuestionBankPublicationAdapter:
             "source_revision": snapshot.source_revision,
             "content_revision": question.content_revision,
             "source_regions": [asdict(item) for item in question.source_regions],
+            "identity_regions": identity_regions,
             "source_page_assets": page_assets,
             "math_expressions": [asdict(item) for item in question.math_expressions],
             "question_blocks": [],

@@ -92,6 +92,11 @@ def _answer_value_key(answer: str, tolerance: float) -> tuple[str, object]:
 
 
 def _extract_numeric_values(answer: str) -> list[str]:
+    # 面积、体积单位的指数不是第二个答案值；保留 x^2、4^2 等数学幂。
+    answer = re.sub(
+        r"(?<![A-Za-z])((?:mm|cm|dm|km|m))\^(?:\([23]\)|\{[23]\}|[23])",
+        r"\1", answer, flags=re.IGNORECASE,
+    )
     if "/" in answer:
         return re.findall(r"-?\d+\.?\d*(?:/-?\d+\.?\d*)?", answer)
     return re.findall(r"-?\d+\.?\d*", answer)

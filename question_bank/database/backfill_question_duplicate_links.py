@@ -1,7 +1,6 @@
 """One-off backfill: link historically imported exact-duplicate questions.
 
-Groups every active question by ``duplicate_question_key`` (image markers
-stripped), keeps the smallest id as each group's representative, and inserts
+Groups every active question by full text, formulas, options and actual image content, keeps the smallest id as each group's representative, and inserts
 ``question_duplicate_links`` rows for the remaining members.  Existing links
 are never overwritten (``question_id`` is the primary key and ``INSERT OR
 IGNORE`` keeps the original target).  Tags are not copied by this script.
@@ -20,7 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from question_bank.database.schema import connect
-from question_bank.models.question import duplicate_question_key
+from question_bank.services.duplicate_analysis_copy_service import exact_identity_map
 
 _DEFAULT_DB_PATH = Path("user_data") / "databases" / "question_bank.db"
 
@@ -28,24 +27,11 @@ _DEFAULT_DB_PATH = Path("user_data") / "databases" / "question_bank.db"
 def backfill_duplicate_links(db_path: Path) -> dict[str, int]:
     """Backfill exact-duplicate links; returns run statistics."""
     with connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT id, question_text, answer_text
-            FROM questions
-            WHERE COALESCE(is_deleted, 0) = 0
-            ORDER BY id
-            """
-        ).fetchall()
+        identities = exact_identity_map(conn, data_root=db_path.parent.parent)
         groups: dict[str, list[int]] = defaultdict(list)
-        for row in rows:
-            key = duplicate_question_key(
-                {
-                    "question_text": row["question_text"],
-                    "answer_text": row["answer_text"],
-                }
-            )
+        for question_id, key in identities.items():
             if key:
-                groups[key].append(int(row["id"]))
+                groups[key].append(question_id)
         duplicate_groups = {
             key: ids for key, ids in groups.items() if len(ids) > 1
         }

@@ -2182,6 +2182,15 @@ def get_question_solution_evidence(
         question_id,
         current_source_content_hash=current_source_hash,
     )
+    from question_bank.solution_evidence.part_assessments import load_profiles
+    profile = load_profiles(question_bank_db_path, [question_id]).get(question_id)
+    if profile and profile["available"]:
+        return QuestionSolutionEvidenceResponse(
+            question_id=int(question_id), available=True,
+            evidence_version_id=profile["evidence_version_id"],
+            status=profile["evidence_status"], evidence=profile["evidence"],
+            part_assessments=profile["parts"], assessment_revision=profile["revision"],
+        )
     if latest is None:
         return QuestionSolutionEvidenceResponse(
             question_id=int(question_id),

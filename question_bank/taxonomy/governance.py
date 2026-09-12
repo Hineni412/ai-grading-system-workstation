@@ -1601,10 +1601,16 @@ class TaxonomyGovernance:
 
     def snapshot_and_identity_lookup(
         self,
+        *,
+        taxonomy_revision: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
         """Return the public taxonomy and stored-tag lookup from one read."""
 
-        catalog = self._prompt_catalog()
+        catalog = (
+            self._catalog_for_revision(taxonomy_revision)
+            if taxonomy_revision is not None and not self._catalog_is_explicit
+            else self._prompt_catalog()
+        )
         state = self._read_state(catalog=catalog)
         terms, alias_index, legacy_index = self._combined_terms(
             state,

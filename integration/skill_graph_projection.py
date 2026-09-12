@@ -190,6 +190,7 @@ def build_question_tag_graph_evidence(
                         "score_awarded": _number(reference.get("score_awarded")),
                         "full_score": _number(reference.get("full_score")),
                         "score_rate": _optional_number(reference.get("score_rate")),
+                        **_public_assessment(reference),
                         "source_kind": str(
                             reference.get("source_kind") or "current_exam"
                         ),
@@ -255,7 +256,18 @@ def _public_source_reference(value: Mapping[str, Any]) -> dict[str, Any]:
         "full_score": _number(value.get("full_score")),
         "score_rate": _optional_number(value.get("score_rate")),
         "source_kind": str(value.get("source_kind") or "current_exam"),
+        **_public_assessment(value),
     }
+
+
+def _public_assessment(reference: Mapping[str, Any]) -> dict[str, Any]:
+    value = reference.get("assessment")
+    if not isinstance(value, Mapping) or not value:
+        return {}
+    return {"assessment": {key: value[key] for key in (
+        "granularity", "part_id", "profile_id", "revision", "part_difficulty",
+        "difficulty_source", "evidence_weight", "reason",
+    ) if key in value}}
 
 
 def _normalized_tag_context(value: object) -> dict[str, list[str]]:

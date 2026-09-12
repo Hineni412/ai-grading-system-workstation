@@ -16,6 +16,7 @@ const props = defineProps<{
   item: ReviewItemLike
   previousItem: ReviewItemLike | null
   nextItem: ReviewItemLike | null
+  backLabel?: string
   registerAnnotationRetry: (entry: {
     input: ReviewConfirmInput
     item: ReviewItemLike
@@ -74,10 +75,10 @@ const emit = defineEmits<{
   >
     <header class="review-deep-workspace__header">
       <button type="button" data-testid="back-to-batch" @click="emit('back')">
-        返回 {{ item.question_id }} 批量复核
+        {{ backLabel || `返回 ${item.question_id} 批量复核` }}
       </button>
       <div class="review-deep-workspace__identity">
-        <p>单份深查 · 返回后保留批次、筛选和未确认草稿</p>
+        <p>{{ backLabel ? '查看学生作答 · 返回后保留成绩页筛选和滚动位置' : '单份深查 · 返回后保留批次、筛选和未确认草稿' }}</p>
         <h2 id="review-deep-title">{{ item.student_name }}</h2>
         <span>{{ item.student_code || '学号未提供' }} · {{ item.class_name || '班级未提供' }}</span>
       </div>

@@ -9,6 +9,61 @@ from hybrid_batch_grading_service import (
 )
 
 
+def test_subjective_metadata_keeps_observed_answer_separate_from_evidence() -> None:
+    from hybrid_batch_grading_service import _subjective_detail_metadata
+    detail = {"observed_answer": "AB=AC", "evidence_steps": ["AB=AC", "∠B=∠C"]}
+    metadata = _subjective_detail_metadata(detail, "Q12(P1)")
+    assert metadata["observed_answer"] == "AB=AC"
+    assert metadata["evidence_steps"] == ["AB=AC", "∠B=∠C"]
+
+
+def test_symbolic_and_expanded_proofs_preserve_the_model_score_without_literal_answer_matching() -> None:
+    spec = MajorQuestionSpec(
+        question_id="Q1",
+        detail_question_ids=["Q1(P1)"],
+        rubric={
+            "question_id": "Q1", "question_type": "proof", "max_score": 6,
+            "parts": [{
+                "part_id": "Q1(P1)", "part_score": 6,
+                "response_mode": "process_required", "allow_alternative_methods": False,
+                "answer_only_max_score": 0,
+                "steps": [
+                    {"step_id": "S1", "step_score": 3, "core_goal": "核验三边平方关系"},
+                    {"step_id": "S2", "step_score": 3, "core_goal": "据逆定理得到直角结论"},
+                ],
+            }],
+        },
+        answer_key={"canonical_answer": "5²+12²=13²，三角形为直角三角形"},
+        max_score=6,
+    )
+    manifest = {"items": [{
+        "paper_key": "synthetic_proof", "student_id": 1,
+        "target_detail_question_ids": ["Q1(P1)"],
+    }]}
+    # The model owns mathematical evaluation; this validates score/evidence
+    # transport, including a rejected answer, without asserting LLM accuracy.
+    for observed, score in (
+        ("AB=5、AC=12、BC=13；5²+12²=13²，故△ABC是直角三角形。", 6),
+        ("AB=5、AC=12、BC=13；AB²+AC²=BC²，故△ABC是直角三角形。", 6),
+        ("AB=5、AC=12、BC=13；BC²=AC²+AB²，故∠A=90°。", 6),
+        ("AB=5、AC=12、BC=14；AB²+AC²=BC²，故△ABC是直角三角形。", 0),
+    ):
+        detail = {
+            "question_id": "Q1(P1)", "score_awarded": score,
+            "observed_answer": observed, "evidence_steps": [observed],
+            "confidence_score": 95, "needs_human_review": False,
+            "answer_is_blank_or_no_valid_work": False,
+        }
+        response = {"question_id": "Q1", "items": [{
+            "paper_key": "synthetic_proof", "student_id": 1,
+            "grading_details": [detail],
+        }]}
+        accepted, failed = validate_hybrid_major_response(response, manifest, spec)
+        assert failed == []
+        assert accepted[0]["details"][0].score_awarded == score
+        assert accepted[0]["metadata"][0]["observed_answer"] == observed
+
+
 SPEC = MajorQuestionSpec(
     question_id="Q12",
     detail_question_ids=["Q12(P1)", "Q12(P2)", "Q12(P3)"],

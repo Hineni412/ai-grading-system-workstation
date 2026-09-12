@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.grading_workflow import effective_preflight_papers
+from backend.grading_workflow import preflight_match_status
 from backend.scan_grading.workspace import (
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
@@ -32,5 +32,5 @@ def current_manual_context(
         return None
     return {
         "scan_batch_id": str(upload_batch["batch_id"]),
-        "papers": effective_preflight_papers(preflight),
+        "papers": preflight_match_status(preflight)["papers"],
     }

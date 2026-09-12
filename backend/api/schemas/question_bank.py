@@ -283,6 +283,8 @@ class QuestionRichContentMetadata(_QuestionBankModel):
 
 class QuestionListItem(_QuestionBankModel):
     id: int
+    duplicate_of_question_id: int | None = None
+    duplicate_labels_reused: bool = False
     revision: str
     paper_id: int | None = None
     question_number: str
@@ -349,6 +351,8 @@ class QuestionSolutionEvidenceResponse(_QuestionBankModel):
     )
     status: Literal["proposed", "approved", "rejected", "superseded", "stale"] | None = None
     evidence: dict[str, Any] | None = None
+    part_assessments: list[dict[str, Any]] = Field(default_factory=list)
+    assessment_revision: int | None = None
 
 
 class QuestionFacetItem(_QuestionBankModel):

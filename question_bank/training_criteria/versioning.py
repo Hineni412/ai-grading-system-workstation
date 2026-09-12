@@ -176,13 +176,15 @@ def usable_training_criterion(
     def _matches(version: object) -> Mapping[str, Any] | None:
         if not isinstance(version, Mapping):
             return None
-        if str(version.get("source_content_hash") or "") != source_hash:
+        if str(version.get("source_content_hash") or "") not in {source_hash, *workspace.get("compatible_source_hashes", ())}:
             return None
         return version
 
     approved = _matches(workspace.get("approved_version"))
     if approved is not None and str(approved.get("status") or "") == "approved":
         return dict(approved)
+    if workspace.get("part_evidence_changed"):
+        return None
     current = _matches(workspace.get("current_version"))
     if (
         current is not None
@@ -196,8 +198,9 @@ def usable_training_criterion(
 class TrainingCriterionModule:
     """Deep module for immutable criterion versions and teacher decisions."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, data_root: Path | None = None) -> None:
         self.db_path = Path(db_path)
+        self.data_root = Path(data_root) if data_root is not None else self.db_path.parent.parent
 
     def read(self, question: QuestionAnalysisInput) -> dict[str, Any]:
         """Read-only workspace view; never writes or marks versions stale.
@@ -208,12 +211,67 @@ class TrainingCriterionModule:
         criteria. The stale marking itself still happens only in
         propose()/review().
         """
-        workspace = self._workspace(question.question_id)
+        return self._with_current_source(self._workspace(question.question_id), question)
+
+    def read_many(
+        self, questions: Sequence[QuestionAnalysisInput],
+    ) -> dict[int, dict[str, Any]]:
+        """Read candidate workspaces together, preserving the live-content check."""
+        by_id = {question.question_id: question for question in questions}
+        ids = list(by_id)
+        result: dict[int, dict[str, Any]] = {}
+        with connect(self.db_path) as connection:
+            from question_bank.solution_evidence.part_assessments import load_profiles
+            profiles = load_profiles(self.db_path, ids, connection=connection,
+                                     data_root=self.data_root, question_inputs=by_id)
+            for start in range(0, len(ids), 200):
+                batch = ids[start:start + 200]
+                placeholders = ", ".join("?" for _ in batch)
+                heads = {
+                    int(row["question_id"]): row
+                    for row in connection.execute(
+                        f"SELECT * FROM training_criterion_heads WHERE question_id IN ({placeholders})",
+                        batch,
+                    ).fetchall()
+                }
+                versions: dict[int, list[Any]] = {}
+                for row in connection.execute(
+                    f"""
+                    SELECT * FROM training_criterion_versions
+                    WHERE question_id IN ({placeholders})
+                    ORDER BY question_id, version_number DESC
+                    """, batch,
+                ).fetchall():
+                    versions.setdefault(int(row["question_id"]), []).append(row)
+                for question_id in batch:
+                    workspace = self._workspace_view(
+                        question_id, heads.get(question_id), versions.get(question_id, []),
+                    )
+                    result[question_id] = self._with_current_source(workspace, by_id[question_id], profile=profiles.get(question_id), profile_loaded=True)
+        return result
+
+    def _with_current_source(
+        self, workspace: dict[str, Any], question: QuestionAnalysisInput, *,
+        profile: Mapping[str, Any] | None = None, profile_loaded: bool = False,
+    ) -> dict[str, Any]:
         source_hash = str(question.criterion_source_content_hash or "")
-        if str(workspace.get("current_source_hash") or "") == source_hash:
-            return workspace
         adjusted = dict(workspace, current_source_hash=source_hash)
+        if not profile_loaded:
+            from question_bank.solution_evidence.part_assessments import load_profiles
+            profile = load_profiles(self.db_path, [question.question_id], data_root=self.data_root).get(question.question_id)
+        alias = str(profile.get("source_type_alias") or "") if profile and profile.get("available") else ""
+        if alias:
+            from dataclasses import replace
+            compatible_question = replace(question, tagging_context=replace(question.tagging_context, question_type=alias))
+            adjusted["compatible_source_hashes"] = [compatible_question.criterion_source_content_hash]
         usable = usable_training_criterion(adjusted)
+        if profile and profile.get("available") and usable and usable.get("status") != "approved":
+            saved_evidence = usable.get("criteria", {}).get("solution_evidence", {})
+            if saved_evidence.get("parts") != profile["evidence"].get("parts"):
+                adjusted["part_evidence_changed"] = True
+                adjusted["available"] = False
+                adjusted["state"] = "part_evidence_changed"
+                return adjusted
         current = adjusted.get("current_version")
         adjusted["available"] = usable is not None
         adjusted["state"] = (
@@ -224,6 +282,51 @@ class TrainingCriterionModule:
             else "missing"
         )
         return adjusted
+
+    def prepare_part_refinement(
+        self, question: QuestionAnalysisInput, profile: Mapping[str, Any],
+    ) -> None:
+        """Publish current reviewed evidence on an explicit new-training write path.
+
+        Read paths remain read-only; teacher decisions and frozen versions remain
+        authoritative. This projects existing evidence without a model request.
+        """
+        if not profile.get("available"):
+            return
+        workspace = self.read(question)
+        if usable_training_criterion(workspace) is not None:
+            return
+        if (workspace.get("current_version") or {}).get("status") == "rejected":
+            return
+        from question_bank.solution_evidence.contracts import CoreResolution, QuestionSolutionEvidence
+        from question_bank.solution_evidence.repository import _model_evidence_payload
+        from question_bank.training_criteria.analysis import (
+            solution_evidence_source_content_hash, training_criteria_from_solution_evidence,
+        )
+        resolutions = {
+            link["fine_term_id"]: CoreResolution(**link["core_resolution"])
+            for part in profile["evidence"]["parts"]
+            for point in part["evidence_points"]
+            for link in point.get("fine_term_links", [])
+        }
+
+        class StoredResolver:
+            def resolve(self, key: str) -> CoreResolution:
+                return resolutions[key]
+
+        payload = _model_evidence_payload(profile["evidence"])
+        evidence = QuestionSolutionEvidence.from_model_dict(
+            {key: payload[key] for key in ("schema_version", "question_id", "parts", "auxiliary_rules", "rationale", "confidence")},
+            question_id=question.question_id,
+            source_content_hash=solution_evidence_source_content_hash(question),
+            resolver=StoredResolver(),
+        )
+        self.propose(
+            question=question, draft=training_criteria_from_solution_evidence(evidence, question=question),
+            source_kind="backfill",
+            source_reference=f"part-refinement:{profile['evidence_version_id']}:{question.criterion_source_content_hash}",
+            actor_ref="part_refinement", reason="依据当前小问解答依据更新后续训练判定点。",
+        )
 
     def propose(
         self,
@@ -615,10 +718,6 @@ class TrainingCriterionModule:
         for question in questions:
             workspace = self.read(question)
             usable = usable_training_criterion(workspace)
-            if usable is not None and str(
-                usable.get("source_content_hash") or ""
-            ) != str(question.criterion_source_content_hash or ""):
-                usable = None
             if usable is None:
                 missing.append(question.question_id)
             else:
@@ -1031,6 +1130,10 @@ class TrainingCriterionModule:
             """,
             (int(question_id),),
         ).fetchall()
+        return TrainingCriterionModule._workspace_view(question_id, head, rows)
+
+    @staticmethod
+    def _workspace_view(question_id: int, head, rows) -> dict[str, Any]:
         versions = [_public_version(row) for row in rows]
         by_id = {item["version_id"]: item for item in versions}
         current = (

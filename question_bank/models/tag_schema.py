@@ -8,6 +8,21 @@ from typing import Any
 from question_bank.taxonomy.registry import canonicalize_error_type
 
 
+DIFFICULTY_SCALE_VERSION = "junior-remediation-2026-09-v1"
+DIFFICULTY_SCALE_GUIDANCE = (
+    "难度使用统一教学标尺 junior-remediation-2026-09-v1：1—2为识别概念、直接代入或单步基本运算；"
+    "3为熟悉情境下独立完成基本关系与计算；4—5为常规应用、若干相连步骤或一次常见转化；"
+    "6已经偏难，需要不直接给出的关键条件、辅助构造或较强综合推理；"
+    "7—8只属于少数学生的专题挑战，需要连续关键转化、非常规构造或较复杂分类讨论。"
+    "9—10为超出常规训练的极高挑战，不作为普通补弱题。"
+    "锚点示例：已知两直角边直接求斜边通常2—3；熟悉的折断或高差模型列式求解通常3—5；"
+    "需自行作辅助线并串联多个几何关系才求出未知量可评6；"
+    "旋转、折叠、剪拼中多种情况与连续构造结合可评7—8。例子仅作锚点，须以实际推理要求说明理由。"
+    "不按考试分值、学生得分率、小问数量、题干长短或是否含根式直接定级；多小问题逐问估计，"
+    "整题按最难小问检查，不取平均，也不把一问难度复制给其余问。"
+)
+
+
 LIST_FIELDS = (
     "knowledge_points",
     "method_tags",

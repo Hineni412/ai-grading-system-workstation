@@ -1,4 +1,4 @@
-import { createApp, h, nextTick } from 'vue'
+import { createApp, h, nextTick, ref } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -56,13 +56,14 @@ function mountBrowser(selectedKey = '') {
     routes: [{ path: '/', name: 'training', component: { template: '<div />' } }],
   })
   const selected: string[] = []
+  const activeKey = ref(selectedKey)
   const app = createApp({
     setup() {
       return () => h(KnowledgeStructureBrowser, {
         nodes: NODES,
         edges: [],
-        selectedKey,
-        onSelect: (key: string) => selected.push(key),
+        selectedKey: activeKey.value,
+        onSelect: (key: string) => { selected.push(key); activeKey.value = key },
       })
     },
   })
@@ -83,63 +84,44 @@ afterEach(() => {
 })
 
 describe('knowledge structure browser', () => {
-  it('groups nodes into an expandable chapter-section tree on the left', () => {
+  it('uses chapter and section as navigation while only leaf evidence colors the heatmap', async () => {
     const { host } = mountBrowser()
     const chapterButtons = [...host.querySelectorAll('.structure-browser__chapter-button')]
-    expect(chapterButtons.map((node) => node.querySelector('span')?.textContent))
-      .toEqual(['第二章 相交线与平行线', '第一章 整式的乘除'])
-    // 首章默认展开，显示小节；次章未展开，不显示其小节。
-    const sectionButtons = [...host.querySelectorAll('.structure-browser__section-list button')]
-    expect(sectionButtons.map((node) => node.querySelector('span')?.textContent))
-      .toEqual(['章级知识点', '1 两条直线的位置关系', '3 平行线的性质'])
-    expect(host.textContent).not.toContain('同底数幂相乘')
-  })
-
-  it('expands a collapsed chapter from its toggle', async () => {
-    const { host } = mountBrowser()
-    const toggles = [...host.querySelectorAll('.structure-browser__chapter-toggle')]
-    expect(toggles).toHaveLength(2)
-    await click(toggles[1]!)
-    const sectionButtons = [...host.querySelectorAll('.structure-browser__section-list button')]
-    expect(sectionButtons.map((node) => node.querySelector('span')?.textContent))
-      .toContain('1 同底数幂的乘法')
-  })
-
-  it('shows section mastery cards for the active chapter and drills into knowledge points', async () => {
-    const { host } = mountBrowser()
-    const cards = [...host.querySelectorAll('.structure-browser__section-card')]
-    expect(cards).toHaveLength(3)
-    expect(cards[0]!.textContent).toContain('章级知识点')
-    expect(cards[0]!.textContent).toContain('51%')
-    expect(cards[1]!.textContent).toContain('1 两条直线的位置关系')
-    expect(cards[1]!.textContent).toContain('46%')
-    expect(cards[2]!.textContent).toContain('68%')
-
-    await click(cards[1]!)
-    expect(host.querySelector('.structure-browser__back')?.textContent).toContain('返回')
+    expect(chapterButtons.map(node => node.querySelector('span')?.textContent))
+      .toEqual(['第一章 整式的乘除', '第二章 相交线与平行线'])
+    expect(host.querySelector('.structure-browser__point')?.textContent).toContain('证据不足')
+    expect(host.querySelector('.structure-browser__point')?.classList.contains('is-empty')).toBe(true)
+    await click(chapterButtons[1]!)
     const points = [...host.querySelectorAll('.structure-browser__point')]
-    expect(points.map((node) => node.querySelector('span')?.textContent))
-      .toEqual(['1 两条直线的位置关系', '对顶角相等'])
+    expect(points.map(node => node.querySelector('span')?.textContent)).toEqual(['对顶角相等', '两直线平行同旁内角互补'])
+    expect(host.querySelectorAll('.structure-browser__heatmap-section')).toHaveLength(2)
+    expect(host.textContent).not.toContain('51%')
+    expect(points[0]!.textContent).toContain('46%')
+    expect(points[1]!.textContent).toContain('68%')
   })
 
-  it('selects a section from the left tree and emits select for a clicked point', async () => {
+  it('selects a point without hiding the other sections and updates details when switching chapter', async () => {
     const { host, selected } = mountBrowser()
-    const sectionButtons = [...host.querySelectorAll('.structure-browser__section-list button')]
-    await click(sectionButtons[2]!)
-    const points = [...host.querySelectorAll('.structure-browser__point')]
-    expect(points.map((node) => node.querySelector('span')?.textContent))
-      .toEqual(['两直线平行同旁内角互补'])
-
-    await click(points[0]!)
-    expect(selected).toEqual(['kp_leaf2_3a'])
+    const chapters = [...host.querySelectorAll('.structure-browser__chapter-button')]
+    await click(chapters[1]!)
+    await click(host.querySelector('.structure-browser__point')!)
+    expect(selected).toEqual(['kp_leaf2_1a'])
+    expect(host.querySelectorAll('.structure-browser__point')).toHaveLength(2)
+    await click(chapters[0]!)
+    expect(host.querySelector('.structure-browser__detail h2')?.textContent).toContain('同底数幂相乘')
+    expect(host.querySelector('.structure-browser__score')?.textContent).toContain('证据不足')
+    expect(host.querySelector('.structure-browser__score')?.classList.contains('is-empty')).toBe(true)
   })
 
-  it('keeps the back action returning to the chapter section list', async () => {
+  it('drills into a section and returns to the whole chapter', async () => {
     const { host } = mountBrowser()
-    const sectionButtons = [...host.querySelectorAll('.structure-browser__section-list button')]
-    await click(sectionButtons[1]!)
-    expect(host.querySelectorAll('.structure-browser__point')).toHaveLength(2)
+    await click([...host.querySelectorAll('.structure-browser__chapter-button')][1]!)
+    const section = [...host.querySelectorAll('.structure-browser__section-list button')]
+      .find(item => item.textContent?.includes('3 平行线的性质'))!
+    await click(section)
+    expect(host.querySelectorAll('.structure-browser__point')).toHaveLength(1)
+    expect(host.querySelector('.structure-browser__point')?.textContent).toContain('两直线平行同旁内角互补')
     await click(host.querySelector('.structure-browser__back')!)
-    expect(host.querySelectorAll('.structure-browser__section-card')).toHaveLength(3)
+    expect(host.querySelectorAll('.structure-browser__point')).toHaveLength(2)
   })
 })

@@ -1594,8 +1594,10 @@ class PersonalizedPaperModule:
             if (
                 approved is None
                 or str(approved["version_id"]) != expected_version
-                or str(version["source_content_hash"])
-                != question.criterion_source_content_hash
+                or str(version["source_content_hash"]) not in {
+                    question.criterion_source_content_hash,
+                    *workspace.get("compatible_source_hashes", ()),
+                }
             ):
                 raise PaperSourceChanged(
                     "a recommended criterion version changed"
@@ -1807,9 +1809,6 @@ class PersonalizedPaperModule:
                 "config": dict(draft.get("config") or {}),
             },
             "selection_mode": student.get("selection_mode"),
-            "estimated_minutes": int(
-                student.get("estimated_minutes") or 0
-            ),
             "warnings": list(student.get("warnings") or []),
             "shortages": list(student.get("shortages") or []),
             "budget": dict(budget),

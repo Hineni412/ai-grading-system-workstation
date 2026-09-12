@@ -30,6 +30,56 @@ export interface TrainingExamScopeRequest {
 export interface TrainingDiagnosisRequest {
   scope: TrainingStudentScopeRequest
   exam_scope: TrainingExamScopeRequest
+  grouping?: TrainingGroupingRequest
+}
+
+export interface TrainingGroupingRequest {
+  scope_keys: string[]
+  member_ids?: string[]
+  target_keys?: string[]
+  question_count: number
+  expected_minutes?: number
+  difficulty_min?: number
+  difficulty_max: number
+  direct_ratio?: number
+  prerequisite_ratio?: number
+  transfer_ratio?: number
+  exclude_current_exam_originals: boolean
+  curriculum_volume_id: string
+  training_intent?: 'remediation' | 'challenge'
+  teaching_progress_chapter_id?: string
+}
+
+export interface TrainingGroup {
+  group_id: string
+  source_version: string
+  members: Array<{
+    student_id: string; student_name: string; student_code: string; class_id: string; evidence_count: number
+    targets: Array<{ knowledge_key: string; knowledge_point: string; mastery: number; evidence_count: number; source_question_refs: TrainingEvidenceReference[] }>
+  }>
+  targets: Array<{
+    knowledge_key: string; knowledge_point: string; min_mastery: number; max_mastery: number
+    median_mastery: number; evidence_count: number; sparse_member_count: number
+    target_difficulty: number | null; affected_student_count?: number; eligible_member_ids?: string[]; available_question_count: number; difficulty_unknown: boolean
+  }>
+  ready: boolean
+  issues: string[]
+  warnings: string[]
+  reason: string
+  compatibility: number
+  available_question_count: number
+  recent_excluded_count: number
+}
+
+export interface TrainingGrouping {
+  version: string
+  scope_keys: string[]
+  source_scope_revision?: string
+  mastery_parameter_version?: string
+  groups: TrainingGroup[]
+  selection: TrainingGroup | null
+  unassigned: Array<{ student_id: string; student_name: string; class_id: string; reason: string }>
+  warnings: string[]
 }
 
 export interface TrainingStageRatios {
@@ -55,16 +105,20 @@ export interface PersonalizedRecommendationCreateRequest
   extends TrainingDiagnosisRequest {
   request_token: string
   question_count: number
-  expected_minutes: number
-  difficulty_min: number
+  expected_minutes?: number
+  difficulty_min?: number
   difficulty_max: number
-  stage_ratios: TrainingStageRatios
+  stage_ratios?: TrainingStageRatios
   paper_mode?: 'individual' | 'shared'
   target_keys?: string[]
   scope_keys?: string[]
   target_names: string[]
   exclude_current_exam_originals: boolean
   curriculum_volume_id?: string | null
+  group_scope_keys?: string[]
+  group_source_version?: string
+  training_intent?: 'remediation' | 'challenge'
+  teaching_progress_chapter_id?: string
 }
 
 export interface PersonalizedRecommendationEditRequest {
@@ -95,6 +149,7 @@ export interface PersonalizedRecommendationItem {
   // 旧草稿没有题干；新建/替换的草稿项才带 question_text。
   question_text?: string
   stage: TrainingStage
+  selection_kind?: 'direct' | 'supplement'
   target: Record<string, unknown>
   matched_key: string
   matched_name: string
@@ -102,8 +157,17 @@ export interface PersonalizedRecommendationItem {
   criterion_version_id: string
   criterion_point_count: number
   difficulty: number
-  estimated_minutes: number
+  part_assessment?: {
+    profile_revision: number
+    evidence_version_id: string
+    selection_basis: 'hardest_part'
+    parts: Array<{ part_id: string; label?: string; difficulty: number; source: string; rationale: string; direct_keys: string[] }>
+  } | null
+  estimated_minutes?: number
   source_paper: string
+  practice_tasks?: Array<{ code: string; label: string; source_refs: Array<Record<string, unknown>> }>
+  beneficiary_student_ids?: string[]
+  response_modes?: string[]
   reason: string
   locked: boolean
   replacement_history: Array<Record<string, unknown>>
@@ -119,7 +183,7 @@ export interface PersonalizedRecommendationStudent {
   items: PersonalizedRecommendationItem[]
   shortages: Array<Record<string, unknown>>
   warnings: string[]
-  estimated_minutes: number
+  estimated_minutes?: number
 }
 
 export interface PersonalizedRecommendationDraft {
@@ -130,6 +194,7 @@ export interface PersonalizedRecommendationDraft {
   engine_version: string
   source_version: string
   config: Record<string, unknown>
+  group_basis?: Record<string, unknown> | null
   students: PersonalizedRecommendationStudent[]
   warnings: string[]
   history: Array<Record<string, unknown>>
@@ -253,6 +318,15 @@ export interface TrainingScanCandidate {
   total_pages: number
 }
 
+export interface TrainingScanBatchSummary {
+  batch_id: string
+  paper_batch_id: string
+  status: 'manual_review' | 'ready' | 'cancelled'
+  submission_count: number
+  created_at: string
+  updated_at: string
+}
+
 export interface TrainingScanBatch {
   batch_id: string
   paper_batch_id: string
@@ -357,6 +431,10 @@ export interface TrainingFeedback {
 }
 
 export interface TrainingEvidenceReference {
+  assessment?: Record<string, unknown>
+  deduction_reason?: string
+  error_summary?: string
+  secondary_errors?: Array<Record<string, unknown>>
   session_id: number
   session_name: string
   question_id: string
@@ -370,7 +448,7 @@ export interface TrainingEvidenceReference {
 export interface TrainingWeakPoint {
   knowledge_key: string
   knowledge_point: string
-  mastery: number
+  mastery: number | null
   score_sum: number
   full_score_sum: number
   deduction_count: number
@@ -387,6 +465,7 @@ export interface TrainingWeakPoint {
   child_knowledge_keys?: string[]
   direct_evidence_count?: number
   child_evidence_count?: number
+  precise_training_evidence_count?: number
 }
 
 export interface TrainingStudentProfile {
@@ -402,6 +481,7 @@ export interface TrainingStudentProfile {
 }
 
 export interface TrainingDiagnosis {
+  grouping?: TrainingGrouping | null
   scope: {
     mode: TrainingStudentScopeMode
     student_ids: string[]
@@ -592,7 +672,7 @@ function isWeakPoint(value: unknown): value is TrainingWeakPoint {
     isRecord(value)
     && isNonEmptyString(value.knowledge_key)
     && isNonEmptyString(value.knowledge_point)
-    && isRate(value.mastery)
+    && (value.mastery === null || isRate(value.mastery))
     && isFiniteNumber(value.score_sum)
     && isFiniteNumber(value.full_score_sum)
     && value.full_score_sum >= 0
@@ -852,6 +932,7 @@ function isRecommendationItem(
     && typeof value.question_number === 'string'
     && (value.question_text === undefined || typeof value.question_text === 'string')
     && isStage(value.stage)
+    && (value.selection_kind === undefined || value.selection_kind === 'direct' || value.selection_kind === 'supplement')
     && isRecord(value.target)
     && isNonEmptyString(value.matched_key)
     && typeof value.matched_name === 'string'
@@ -864,7 +945,22 @@ function isRecommendationItem(
     && isInteger(value.criterion_point_count, 1)
     && isInteger(value.difficulty, 1)
     && value.difficulty <= 10
-    && isInteger(value.estimated_minutes, 1)
+    && (
+      value.part_assessment === undefined || value.part_assessment === null
+      || (isRecord(value.part_assessment)
+        && isInteger(value.part_assessment.profile_revision, 1)
+        && isNonEmptyString(value.part_assessment.evidence_version_id)
+        && value.part_assessment.selection_basis === 'hardest_part'
+        && Array.isArray(value.part_assessment.parts)
+        && value.part_assessment.parts.length > 0
+        && value.part_assessment.parts.every(part => isRecord(part)
+          && isNonEmptyString(part.part_id) && typeof part.difficulty === 'number'
+          && (part.label === undefined || typeof part.label === 'string')
+          && part.difficulty >= 1 && part.difficulty <= 10
+          && typeof part.source === 'string' && typeof part.rationale === 'string'
+          && isStringArray(part.direct_keys)))
+    )
+    && (value.estimated_minutes === undefined || isInteger(value.estimated_minutes, 1))
     && typeof value.source_paper === 'string'
     && isNonEmptyString(value.reason)
     && typeof value.locked === 'boolean'
@@ -893,7 +989,7 @@ function isRecommendationStudent(
     && Array.isArray(value.shortages)
     && value.shortages.every(isRecord)
     && isStringArray(value.warnings)
-    && isInteger(value.estimated_minutes)
+    && (value.estimated_minutes === undefined || isInteger(value.estimated_minutes))
   )
 }
 
@@ -1036,6 +1132,24 @@ function decodePersonalizedPaperBatchList(
     throw new Error('Invalid personalized paper batch list')
   }
   return { items: value.items.map(decodePersonalizedPaperBatch) }
+}
+
+function decodeTrainingScanBatchList(value: unknown): { items: TrainingScanBatchSummary[] } {
+  if (!isRecord(value) || !Array.isArray(value.items)) {
+    throw new Error('Invalid training scan batch list')
+  }
+  return { items: value.items.map((item: unknown) => {
+    if (
+      !isRecord(item)
+      || !/^[0-9a-f]{64}$/.test(String(item.batch_id || ''))
+      || !/^[0-9a-f]{64}$/.test(String(item.paper_batch_id || ''))
+      || !['manual_review', 'ready', 'cancelled'].includes(String(item.status))
+      || !isInteger(item.submission_count, 0)
+      || !isNonEmptyString(item.created_at)
+      || !isNonEmptyString(item.updated_at)
+    ) throw new Error('Invalid training scan batch summary')
+    return item as unknown as TrainingScanBatchSummary
+  }) }
 }
 
 function decodeTrainingScanBatch(value: unknown): TrainingScanBatch {
@@ -1494,6 +1608,14 @@ export const trainingApi = {
 
   downloadPaperArtifact(path: string) {
     return apiClient.download(path, { timeoutMs: 60_000 })
+  },
+
+  async listTrainingScanBatches(paperBatchId: string): Promise<TrainingScanBatchSummary[]> {
+    const result = await apiClient.request(
+      `/api/training/scan-batches?paper_batch_id=${encodeURIComponent(paperBatchId)}`,
+      { decode: decodeTrainingScanBatchList, timeoutMs: 30_000 },
+    )
+    return result.items
   },
 
   createTrainingScanBatch(

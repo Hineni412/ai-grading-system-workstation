@@ -1070,6 +1070,10 @@ class TrainingEvidencePublisher:
                         "prerequisite_ratio",
                         "transfer_ratio",
                         "target_keys",
+                        "scope_keys",
+                        "curriculum_volume_id",
+                        "training_intent",
+                        "teaching_progress_chapter_id",
                         "exclude_current_exam_originals",
                     )
                     if field in config_payload
@@ -1157,7 +1161,7 @@ class TrainingEvidencePublisher:
             "draft_id": str(draft["draft_id"]),
             "revision": int(draft["revision"]),
             "result_version": str(draft["result_version"]),
-            "message": "下一轮仅生成推荐草稿，需教师确认后才能形成正式训练卷。",
+            "message": "已沿用原训练范围和册别限制，为该学生生成个性化补练草稿；教师确认后才能形成正式训练卷。",
             "changes": changes,
             "student": student,
         }

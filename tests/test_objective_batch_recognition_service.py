@@ -378,8 +378,9 @@ def test_choice_objective_batch_scores_against_any_unified_accepted_form(tmp_pat
     assert result.review_items == []
 
 
-def test_low_confidence_blank_choice_auto_scores_zero_without_review(tmp_path: Path) -> None:
-    client = FakeBatchClient(confidence=0.2, need_review=False, answer="blank")
+@pytest.mark.parametrize("answer", ["blank", ""])
+def test_low_confidence_blank_choice_auto_scores_zero_without_review(tmp_path: Path, answer: str) -> None:
+    client = FakeBatchClient(confidence=0.2, need_review=False, answer=answer)
 
     result = run_objective_batch_recognition(
         session_id=13,
@@ -396,10 +397,27 @@ def test_low_confidence_blank_choice_auto_scores_zero_without_review(tmp_path: P
     detail = next(iter(result.details_by_paper_key.values()))[0]
     metadata = next(iter(result.metadata_by_paper_key.values()))[0]
     assert detail.score_awarded == 0
-    assert metadata["recognized_answer"] == "blank"
+    assert metadata["recognized_answer"] == answer
     assert metadata["auto_scored"] is True
     assert metadata["need_review"] is False
     assert result.review_items == []
+
+
+@pytest.mark.parametrize("item", [
+    {"confidence": 1, "need_review": False},
+    {"recognized_answer": None, "confidence": 1, "need_review": False},
+    {"recognized_answer": "", "confidence": 1, "need_review": True},
+    {"recognized_answer": "", "confidence": 1, "need_review": False, "review_reason": "unclear"},
+])
+def test_missing_or_explicitly_unclear_choice_remains_in_review(item) -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec, validate_objective_paper_response
+    accepted, review = validate_objective_paper_response(
+        response={"paper_key": "test", "answers": [{"question_id": "Q1", **item}]},
+        manifest={"paper_key": "test", "student_id": 1, "target_question_ids": ["Q1"]},
+        specs=[ObjectiveQuestionSpec("Q1", "choice", "A", 5, {})], min_confidence=0.85,
+    )
+    assert not accepted
+    assert len(review) == 1
 
 
 def test_low_confidence_blank_fill_blank_auto_scores_zero_without_review(tmp_path: Path) -> None:

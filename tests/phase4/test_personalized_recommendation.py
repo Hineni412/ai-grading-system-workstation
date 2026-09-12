@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,8 +27,8 @@ from question_bank.recommendation.personalized import (
     RecommendationRevisionConflict,
     RecommendationSourceChanged,
     _allowed_keys_for_volume,
-    _stage_targets_with_fallback,
-    _textbook_leaf_index,
+    _group_needs,
+    _chapter_group_members,
 )
 from question_bank.training_criteria import QuestionAnalysisInputLoader
 from tests.current_knowledge_support import install_current_knowledge
@@ -45,6 +47,111 @@ BNU_OTHER_CHAPTER = "kp_bnu24_math_g7_lower_5_1_1"
 BNU_FIRST_LEAF = "kp_bnu24_math_g7_upper_1_1_1"
 BNU_G8_LEAF = "kp_bnu24_math_g8_upper_1_1_1"
 BNU_G8_QUESTION = 17
+
+
+def test_direct_targets_do_not_depend_on_difficulty_profile(bnu24_difficulty_module):
+    module = bnu24_difficulty_module
+    with connect(module.db_path) as connection:
+        row = connection.execute("SELECT question_id, version_id, criteria_json FROM training_criterion_versions ORDER BY question_id LIMIT 1").fetchone()
+        question_id = row["question_id"]
+        criteria = json.loads(row["criteria_json"])
+        criteria["solution_evidence"] = {"parts": [{"part_id": "p1", "response_mode": "process_required",
+            "evidence_points": [{"fine_term_links": [{"role": "direct", "core_resolution": {
+                "status": "resolved", "stable_keys": [BNU_OTHER_CHAPTER]}}]}]}]}
+        connection.execute("UPDATE training_criterion_versions SET criteria_json = ? WHERE version_id = ?",
+                           (json.dumps(criteria), row["version_id"]))
+    scoped, _, _ = module._source_snapshot(knowledge_keys=(BNU_OTHER_CHAPTER,))
+    candidate = next(item for item in scoped if item["question_id"] == question_id)
+    assert candidate["stable_keys"] == [BNU_OTHER_CHAPTER]
+    assert candidate["required_keys"] == [BNU_OTHER_CHAPTER]
+    assert candidate["response_modes_by_key"][BNU_OTHER_CHAPTER] == ["process_required"]
+
+
+def _set_practice_parts(module, question_id, parts):
+    with connect(module.db_path) as connection:
+        row = connection.execute("SELECT version_id, criteria_json FROM training_criterion_versions WHERE question_id = ?", (question_id,)).fetchone()
+        criteria = json.loads(row["criteria_json"])
+        criteria["solution_evidence"] = {"parts": parts}
+        connection.execute("UPDATE training_criterion_versions SET criteria_json = ? WHERE version_id = ?",
+                           (json.dumps(criteria), row["version_id"]))
+
+
+def _practice_part(key, mode, observable, part_id="part1", supporting=()):
+    return {"part_id": part_id, "response_mode": mode, "evidence_points": [{"target": observable,
+        "observable_evidence": observable, "fine_term_links": [
+            {"role": role, "fine_term_id": target, "core_resolution": {"status": "resolved", "stable_keys": [target]}}
+            for role, target in [("direct", key), *(("supporting_prerequisite", target) for target in supporting)]]}]}
+
+
+def test_blank_or_ineligible_evidence_does_not_invent_an_error():
+    from question_bank.recommendation.personalized import _training_tasks
+    source = {"full_score": 5, "score_awarded": 0, "source_kind": "current_exam",
+              "deduction_reason": "未作答，空白", "assessment": {"granularity": "part", "eligible": True}}
+    point = {"source_question_refs": [source], "actionable_reasons": ["计算错误"]}
+    assert [task["code"] for task in _training_tasks(point)] == ["diagnostic_check"]
+    for reason in ("未作答，未见计算过程", "本问空白，未提供推理依据", "未答，无法体现数量关系"):
+        source["deduction_reason"] = reason
+        assert [task["code"] for task in _training_tasks(point)] == ["diagnostic_check"]
+    source["deduction_reason"] = "已写出正确计算过程，但没有写出依据"
+    assert [task["code"] for task in _training_tasks(point)] == ["written_reasoning"]
+    source["deduction_reason"] = "数量关系正确，推理依据完整，但计算错误"
+    assert [task["code"] for task in _training_tasks(point)] == ["calculation_check"]
+    source.update(score_awarded=2, deduction_reason="第一步移项错误，后续步骤空白")
+    assert [task["code"] for task in _training_tasks(point)] == ["calculation_check"]
+    source["score_awarded"] = 0
+    assert [task["code"] for task in _training_tasks(point)] == ["calculation_check"]
+    source["assessment"]["eligible"] = False
+    assert _training_tasks(point) == []
+    source["assessment"]["eligible"] = True
+    source["deduction_reason"] = ""
+    assert _training_tasks(point) == []
+    source.update(source_kind="historical_exam", deduction_reason="计算错误")
+    point["source_question_refs"].append({**source, "source_kind": "current_exam", "score_awarded": 5})
+    assert _training_tasks(point) == []
+
+
+def test_progress_checks_later_small_parts_support_and_unknowns(bnu24_difficulty_module):
+    from question_bank.recommendation.personalized import _allowed_keys_for_config, _question_evidence_metadata
+    module = bnu24_difficulty_module
+    candidates, _, _ = module._source_snapshot()
+    base = next(item for item in candidates if BNU_TARGET in item["stable_keys"])
+    parts = [_practice_part(BNU_TARGET, "process_required", "写出理由", supporting=(BNU_PREREQ_NEAR,)),
+             _practice_part(BNU_OTHER_CHAPTER, "process_required", "写出理由", "part2")]
+    item = {**base, **_question_evidence_metadata({"parts": parts}, module.current_knowledge)}
+    def choose(config):
+        return module._eligible_candidates([item], stage="direct", target_keys=(BNU_TARGET,), maintenance=False,
+            used=set(), recent=set(), excluded=set(), config=config, allowed_keys=_allowed_keys_for_config(config))
+    config = PersonalizedRecommendationConfig(target_keys=(BNU_TARGET,))
+    assert not choose(config)  # 推导进度只到第4章，第2问第5章还不能放入。
+    assert choose(replace(config, teaching_progress_chapter_id="bnu24-math-g7-lower-c05"))
+    parts[1]["evidence_points"][0]["fine_term_links"][0]["core_resolution"] = {"status": "unresolved", "stable_keys": []}
+    item.update(_question_evidence_metadata({"parts": parts}, module.current_knowledge))
+    assert not choose(replace(config, teaching_progress_chapter_id="bnu24-math-g7-lower-c05"))
+    with pytest.raises(ValueError, match="teaching_progress"):
+        replace(config, teaching_progress_chapter_id="unknown-chapter")
+
+
+def _grouping_diagnosis() -> dict:
+    def point(key, mastery, *, difficulty=3, coarse=False):
+        return {"knowledge_key": key, "knowledge_point": key, "mastery": mastery,
+                "evidence_count": 1, "effective_weight": 1, "direct_evidence_count": 1,
+                "source_question_refs": [{"session_id": 1, "session_name": "合成考试", "question_id": key,
+                    "bank_question_id": 10000, "score_awarded": 0, "full_score": 5,
+                    "assessment": {"granularity": "whole_question" if coarse else "part",
+                        "eligible": True, "part_difficulty": difficulty, "evidence_weight": 1}}]}
+    values = [
+        ("A", "一班", .5, [point(BNU_TARGET, .42)]),
+        ("B", "二班", .9, [point(BNU_TARGET, .46)]),
+        ("C", "一班", .5, [point(BNU_PREREQ_NEAR, .43)]),
+        ("D", "三班", .7, [point(BNU_PREREQ_NEAR, .47)]),
+        ("E", "二班", None, []),
+        ("F", "一班", .5, [point(BNU_TARGET, .45, coarse=True)]),
+        ("G", "二班", .8, [point(BNU_TARGET, .46, difficulty=9)]),
+    ]
+    return {"students": [{"student_id": sid, "student_name": "同名学生" if sid in {"A", "B"} else f"合成{sid}",
+                         "student_code": f"S{sid}", "class_id": cls, "score_rate": score,
+                         "weak_points": points} for sid, cls, score, points in values],
+            "exam_scope": {"mode": "current", "session_ids": [1]}}
 
 
 @pytest.fixture()
@@ -109,985 +216,6 @@ def bnu24_expansion_module(
     )
 
 
-def test_five_synthetic_students_receive_explainable_different_drafts(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    assert recommendation_module.resolve_target_names(
-        ("一元一次方程", "尺规作图")
-    ) == ("kp_alg_linear_equation", "kp_geo_construction")
-    with pytest.raises(ValueError):
-        recommendation_module.resolve_target_names(("未治理目标",))
-
-    config = PersonalizedRecommendationConfig(
-        question_count=8,
-        expected_minutes=120,
-        direct_ratio=0.5,
-        prerequisite_ratio=0.25,
-        transfer_ratio=0.25,
-    )
-    first = recommendation_module.create(
-        request_token="1" * 32,
-        diagnosis=_diagnosis(),
-        config=config,
-        actor_ref="teacher-1",
-    )
-    repeated = recommendation_module.create(
-        request_token="1" * 32,
-        diagnosis=_diagnosis(),
-        config=config,
-        actor_ref="teacher-1",
-    )
-    same_input_new_request = recommendation_module.create(
-        request_token="2" * 32,
-        diagnosis=_diagnosis(),
-        config=config,
-        actor_ref="teacher-1",
-    )
-
-    assert repeated == first
-    assert same_input_new_request["draft_id"] != first["draft_id"]
-    assert same_input_new_request["result_version"] == first["result_version"]
-
-    by_student = {
-        item["student_id"]: item for item in first["students"]
-    }
-    for student_id in ("SYN-S01", "SYN-S02", "SYN-S03", "SYN-S04"):
-        selected = {
-            item["question_id"]
-            for item in by_student[student_id]["items"]
-        }
-        assert all(
-            item["criterion_version_id"]
-            and item["criterion_point_count"] == 1
-            and item["reason"]
-            and item["question_text"]
-            for item in by_student[student_id]["items"]
-        )
-    assert sum(bool(item["items"]) for item in by_student.values()) >= 3
-
-    fallback = by_student["SYN-S05"]
-    assert fallback["selection_mode"] == "maintenance_fallback"
-    assert fallback["items"]
-    assert "不代表系统判断出新的薄弱点" in fallback["warnings"][0]
-    serialized = json.dumps(first, ensure_ascii=False)
-    assert LOCAL_ONE not in serialized and LOCAL_TWO not in serialized
-
-
-def test_shared_mode_keeps_questions_and_order_identical_per_student(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    draft = recommendation_module.create(
-        request_token="9" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S01", "SYN-S02", "SYN-S03")),
-        config=PersonalizedRecommendationConfig(
-            paper_mode="shared",
-            question_count=8,
-            expected_minutes=120,
-            direct_ratio=0.5,
-            prerequisite_ratio=0.25,
-            transfer_ratio=0.25,
-            target_keys=("kp_alg_linear_equation",),
-        ),
-        actor_ref="teacher-1",
-    )
-
-    question_sequences = [
-        [item["question_id"] for item in student["items"]]
-        for student in draft["students"]
-    ]
-    assert question_sequences[0]
-    assert all(sequence == question_sequences[0] for sequence in question_sequences)
-    assert draft["config"]["paper_mode"] == "shared"
-    with pytest.raises(RecommendationEditInvalid):
-        recommendation_module.edit(
-            draft["draft_id"],
-            RecommendationEditCommand(
-                request_token="8" * 32,
-                expected_revision=1,
-                action="lock",
-                student_id=draft["students"][0]["student_id"],
-                item_id=draft["students"][0]["items"][0]["item_id"],
-                actor_ref="teacher-1",
-                reason="同题模式不能只修改一人",
-            ),
-        )
-
-
-def test_quality_passed_unapproved_criterion_can_be_recommended(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    with connect(recommendation_module.db_path) as connection:
-        connection.execute(
-            "UPDATE training_criterion_versions SET status = 'proposed'"
-        )
-        connection.execute(
-            "UPDATE training_criterion_heads SET approved_version_id = NULL"
-        )
-    draft = recommendation_module.create(
-        request_token="a" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-            target_keys=("kp_alg_linear_equation",),
-        ),
-        actor_ref="teacher-1",
-    )
-    student = draft["students"][0]
-    assert student["items"]
-    assert all(item["criterion_version_id"] for item in student["items"])
-
-
-def test_individual_scope_assigns_per_student_leaf_targets(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    diagnosis = _diagnosis(student_ids=("SYN-S01", "SYN-S02"))
-    diagnosis["knowledge_catalog"] = [
-        {
-            "knowledge_key": "kp_chapter_scope",
-            "knowledge_point": "合成章",
-            "parent_knowledge_key": None,
-        },
-        {
-            "knowledge_key": "kp_alg_linear_equation",
-            "knowledge_point": "一元一次方程",
-            "parent_knowledge_key": "kp_chapter_scope",
-        },
-        {
-            "knowledge_key": "kp_geo_triangle_congruence",
-            "knowledge_point": "三角形全等",
-            "parent_knowledge_key": "kp_chapter_scope",
-        },
-    ]
-    draft = recommendation_module.create(
-        request_token="b" * 32,
-        diagnosis=diagnosis,
-        config=PersonalizedRecommendationConfig(
-            paper_mode="individual",
-            question_count=8,
-            expected_minutes=120,
-            scope_keys=("kp_chapter_scope",),
-        ),
-        actor_ref="teacher-1",
-    )
-    by_student = {item["student_id"]: item for item in draft["students"]}
-    first_keys = {
-        str(item["stable_key"]) for item in by_student["SYN-S01"]["targets"]
-    }
-    second_keys = {
-        str(item["stable_key"]) for item in by_student["SYN-S02"]["targets"]
-    }
-    assert "kp_alg_linear_equation" in first_keys
-    assert "kp_geo_triangle_congruence" in second_keys
-    assert first_keys != second_keys
-    assert by_student["SYN-S01"]["items"]
-    assert by_student["SYN-S02"]["items"]
-
-
-def test_scope_without_evidence_does_not_invent_weakness(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    diagnosis = _diagnosis(student_ids=("SYN-S05",))
-    diagnosis["knowledge_catalog"] = [
-        {
-            "knowledge_key": "kp_chapter_scope",
-            "knowledge_point": "合成章",
-            "parent_knowledge_key": None,
-        },
-        {
-            "knowledge_key": "kp_alg_linear_equation",
-            "knowledge_point": "一元一次方程",
-            "parent_knowledge_key": "kp_chapter_scope",
-        },
-    ]
-    draft = recommendation_module.create(
-        request_token="c" * 32,
-        diagnosis=diagnosis,
-        config=PersonalizedRecommendationConfig(
-            paper_mode="individual",
-            question_count=8,
-            expected_minutes=120,
-            scope_keys=("kp_chapter_scope",),
-        ),
-        actor_ref="teacher-1",
-    )
-    student = draft["students"][0]
-    assert student["items"] == []
-    assert student["selection_mode"] == "maintenance_fallback"
-    assert any("未编造薄弱点" in warning for warning in student["warnings"])
-    assert all("可练判定点" not in warning for warning in student["warnings"])
-    assert all("请勾选纳入" not in warning for warning in student["warnings"])
-
-
-def test_individual_scope_uses_diagnosis_mastery_without_session_times(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    diagnosis = {
-        "students": [
-            {
-                "student_id": "SYN-S01",
-                "student_code": "S01",
-                "student_name": "合成学生1",
-                "class_id": "SYN-C01",
-                "weak_points": [
-                    {
-                        "knowledge_key": "kp_alg_linear_equation",
-                        "knowledge_point": "一元一次方程",
-                        "mastery": 0.31,
-                        "evidence_count": 2,
-                        "source_question_refs": [],
-                    }
-                ],
-            }
-        ],
-        "exam_scope": {"mode": "current", "session_ids": [1]},
-        "knowledge_catalog": [
-            {
-                "knowledge_key": "kp_chapter_scope",
-                "knowledge_point": "合成章",
-                "parent_knowledge_key": None,
-            },
-            {
-                "knowledge_key": "kp_alg_linear_equation",
-                "knowledge_point": "一元一次方程",
-                "parent_knowledge_key": "kp_chapter_scope",
-            },
-        ],
-    }
-    draft = recommendation_module.create(
-        request_token="d" * 32,
-        diagnosis=diagnosis,
-        config=PersonalizedRecommendationConfig(
-            paper_mode="individual",
-            question_count=8,
-            expected_minutes=120,
-            scope_keys=("kp_chapter_scope",),
-        ),
-        actor_ref="teacher-1",
-    )
-    student = draft["students"][0]
-    assert student["selection_mode"] == "mastery_targeted"
-    assert any(
-        str(item["stable_key"]) == "kp_alg_linear_equation"
-        for item in student["targets"]
-    )
-    assert student["items"]
-
-
-def test_shortage_unknown_difficulty_and_recent_use_fail_closed(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    _mark_question_recent(
-        recommendation_module.db_path,
-        student_id="SYN-S01",
-        question_id=3,
-    )
-    with connect(recommendation_module.db_path) as connection:
-        connection.execute(
-            "UPDATE questions SET difficulty = NULL WHERE id = 6"
-        )
-    draft = recommendation_module.create(
-        request_token="3" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=30,
-        ),
-        actor_ref="teacher-1",
-    )
-    student = draft["students"][0]
-    selected = {item["question_id"] for item in student["items"]}
-
-    assert 3 not in selected
-    assert 6 not in selected
-    assert student["shortages"]
-    assert all(
-        shortage["reason_code"]
-        in {
-            "approved_candidate_shortage",
-            "time_limit_reached",
-            "stage_targets_empty",
-        }
-        for shortage in student["shortages"]
-    )
-
-
-def test_empty_stage_targets_report_honest_shortage_reason(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    # 合成关系里一元一次方程只有先修关系，没有已确认的相关关系。
-    draft = recommendation_module.create(
-        request_token="7" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
-        config=PersonalizedRecommendationConfig(),
-        actor_ref="teacher-1",
-    )
-    student = draft["students"][0]
-    by_stage = {item["stage"]: item for item in student["shortages"]}
-
-    assert by_stage["transfer"]["reason_code"] == "stage_targets_empty"
-    assert by_stage["transfer"]["missing_count"] == 1
-    assert any(
-        "当前知识标准中没有这些细点已确认的相关关系，"
-        "且同章内没有并列的可练内容" in warning
-        for warning in student["warnings"]
-    )
-
-    # LOCAL_ONE 没有任何已确认的先修或相关关系，两个阶段都为空目标。
-    isolated = recommendation_module.create(
-        request_token="6" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
-        config=PersonalizedRecommendationConfig(
-            target_keys=(LOCAL_ONE,),
-        ),
-        actor_ref="teacher-1",
-    )["students"][0]
-    isolated_by_stage = {
-        item["stage"]: item for item in isolated["shortages"]
-    }
-    assert (
-        isolated_by_stage["prerequisite"]["reason_code"]
-        == "stage_targets_empty"
-    )
-    assert (
-        isolated_by_stage["transfer"]["reason_code"]
-        == "stage_targets_empty"
-    )
-    assert any(
-        "当前知识标准中没有这些细点已确认的先修关系，"
-        "且同章内没有更早的可练内容" in warning
-        for warning in isolated["warnings"]
-    )
-
-
-def test_textbook_order_fallback_fills_relation_gaps_within_chapter(
-    bnu24_recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    # 发布版没有这些细点的已确认先修/相关关系，按教材顺序在同章兜底。
-    draft = bnu24_recommendation_module.create(
-        request_token="b" * 32,
-        diagnosis=_bnu24_diagnosis(),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-            direct_ratio=0.5,
-            prerequisite_ratio=0.25,
-            transfer_ratio=0.25,
-            target_keys=(BNU_TARGET,),
-        ),
-        actor_ref="teacher-1",
-    )
-    student = draft["students"][0]
-    by_stage: dict[str, list[dict[str, object]]] = {
-        "direct": [],
-        "prerequisite": [],
-        "transfer": [],
-    }
-    for item in student["items"]:
-        by_stage[str(item["stage"])].append(item)
-
-    assert [item["matched_key"] for item in by_stage["direct"]] == [
-        BNU_TARGET
-    ]
-    assert {item["matched_key"] for item in by_stage["prerequisite"]} == {
-        BNU_PREREQ_NEAR,
-        BNU_PREREQ_EARLIER,
-    }
-    assert {item["matched_key"] for item in by_stage["transfer"]} == {
-        BNU_TRANSFER_SIBLING,
-        BNU_TRANSFER_OTHER,
-    }
-
-    # 兜底题沿用来源薄弱细点的 target 证据，不伪造关系，理由如实标注。
-    for item in (*by_stage["prerequisite"], *by_stage["transfer"]):
-        assert item["target"]["stable_key"] == BNU_TARGET
-        assert item["relation"] is None
-        assert "未经逐条教研确认" in str(item["reason"])
-    assert all(
-        str(item["reason"]).startswith("按教材编排顺序补强同章先学内容")
-        for item in by_stage["prerequisite"]
-    )
-    assert all(
-        str(item["reason"]).startswith("练习同章并列相关内容")
-        for item in by_stage["transfer"]
-    )
-    assert "未经逐条教研确认" not in str(by_stage["direct"][0]["reason"])
-
-    selected_ids = {int(item["question_id"]) for item in student["items"]}
-    assert 16 not in selected_ids  # 跨章内容不进入兜底
-    shortage_stages = {item["stage"] for item in student["shortages"]}
-    assert "prerequisite" not in shortage_stages
-    assert "transfer" not in shortage_stages
-
-
-def test_confirmed_relations_always_beat_textbook_fallback() -> None:
-    target_with_relations = f"{BNU_CHAPTER4}_2_2"
-    target_without_relations = f"{BNU_CHAPTER4}_3_2"
-    confirmed_prerequisite = f"{BNU_CHAPTER4}_1_1"
-    confirmed_related = f"{BNU_CHAPTER4}_3_3"
-    relations = {
-        target_with_relations: (
-            {
-                "relation_type": "prerequisite",
-                "source_key": target_with_relations,
-                "target_key": confirmed_prerequisite,
-            },
-            {
-                "relation_type": "related",
-                "source_key": target_with_relations,
-                "target_key": confirmed_related,
-            },
-        ),
-    }
-    textbook_index = _textbook_leaf_index(
-        [
-            confirmed_prerequisite,
-            f"{BNU_CHAPTER4}_1_2",
-            f"{BNU_CHAPTER4}_2_1",
-            target_with_relations,
-            f"{BNU_CHAPTER4}_2_3",
-            f"{BNU_CHAPTER4}_3_1",
-            target_without_relations,
-            confirmed_related,
-            f"{BNU_CHAPTER4}_4_1",
-            BNU_OTHER_CHAPTER,
-        ]
-    )
-
-    stage_targets, match_info = _stage_targets_with_fallback(
-        [{"stable_key": target_with_relations}, {"stable_key": target_without_relations}],
-        relations,
-        textbook_index,
-    )
-
-    # 已确认关系推导的目标排在兜底之前。
-    assert stage_targets["prerequisite"][0] == confirmed_prerequisite
-    assert stage_targets["transfer"][0] == confirmed_related
-    # 关系推导的 key 也记录 origin 与触发关系，且不是兜底。
-    assert match_info[confirmed_prerequisite] == {
-        "origin": target_with_relations,
-        "relation": relations[target_with_relations][0],
-        "fallback": False,
-    }
-    assert match_info[confirmed_related]["origin"] == target_with_relations
-    assert match_info[confirmed_related]["fallback"] is False
-    # 有已确认关系的目标不再加兜底，兜底只属于无关系的目标。
-    fallbacks = {
-        key: info for key, info in match_info.items() if info["fallback"]
-    }
-    assert {info["origin"] for info in fallbacks.values()} == {
-        target_without_relations
-    }
-    # 同阶段已被已确认关系占位的 key 不会被兜底重复占用。
-    assert confirmed_related not in fallbacks
-    # 兜底不跨章。
-    assert not any(
-        key.startswith("kp_bnu24_math_g7_lower_5")
-        for stage in ("prerequisite", "transfer")
-        for key in stage_targets[stage]
-    )
-    assert not any(
-        key.startswith("kp_bnu24_math_g7_lower_5") for key in match_info
-    )
-
-
-def test_ancestor_relation_expansion_orders_caps_and_gates_fallback() -> None:
-    section = f"{BNU_CHAPTER4}_2"
-    leaf = f"{section}_2"
-    end_section = "kp_bnu24_math_g7_lower_1_1"
-    parent_to_section = {
-        "relation_type": "parent",
-        "source_key": leaf,
-        "target_key": section,
-    }
-    parent_to_chapter = {
-        "relation_type": "parent",
-        "source_key": section,
-        "target_key": BNU_CHAPTER4,
-    }
-    section_prerequisite = {
-        "relation_type": "prerequisite",
-        "source_key": section,
-        "target_key": end_section,
-    }
-    relations = {
-        leaf: (parent_to_section,),
-        section: (parent_to_chapter, section_prerequisite),
-    }
-    end_leaves = [f"{end_section}_{index}" for index in range(1, 9)]
-    textbook_index = _textbook_leaf_index(
-        [f"{section}_1", leaf, *end_leaves]
-    )
-
-    stage_targets, match_info = _stage_targets_with_fallback(
-        [{"stable_key": leaf}],
-        relations,
-        textbook_index,
-    )
-
-    # 节级 confirmed 先修关系展开为端点节的后代细点：教材顺序升序、每关系封顶 6。
-    assert stage_targets["prerequisite"] == tuple(end_leaves[:6])
-    # 展开命中记录 origin 与触发关系，不是兜底。
-    for key in end_leaves[:6]:
-        assert match_info[key]["origin"] == leaf
-        assert match_info[key]["relation"] is section_prerequisite
-        assert match_info[key]["fallback"] is False
-    # 有 confirmed 来源的阶段不再产生教材兜底（同章更早细点不进入）。
-    assert f"{section}_1" not in stage_targets["prerequisite"]
-    # 没有 confirmed related 的阶段仍走教材兜底。
-    assert stage_targets["transfer"] == (f"{section}_1",)
-    assert match_info[f"{section}_1"]["fallback"] is True
-
-
-def test_stage_targets_empty_only_when_relations_and_fallback_both_empty(
-    bnu24_recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    # 教材第一章第一叶子没有更早的同章内容，先修补强目标为空；
-    # 同节兄弟可以兜底迁移目标，但题库没有对应题目，只报候选不足。
-    draft = bnu24_recommendation_module.create(
-        request_token="c" * 32,
-        diagnosis=_bnu24_diagnosis(),
-        config=PersonalizedRecommendationConfig(
-            target_keys=(BNU_FIRST_LEAF,),
-        ),
-        actor_ref="teacher-1",
-    )
-    student = draft["students"][0]
-    by_stage = {item["stage"]: item for item in student["shortages"]}
-
-    assert by_stage["prerequisite"]["reason_code"] == "stage_targets_empty"
-    assert any(
-        "当前知识标准中没有这些细点已确认的先修关系，"
-        "且同章内没有更早的可练内容" in warning
-        for warning in student["warnings"]
-    )
-    assert (
-        by_stage["transfer"]["reason_code"] == "approved_candidate_shortage"
-    )
-    assert by_stage["direct"]["reason_code"] == "approved_candidate_shortage"
-    assert [int(item["question_id"]) for item in student["items"]] == [21]
-
-
-def test_difficulty_aim_follows_student_mastery(
-    bnu24_difficulty_module: PersonalizedRecommendationModule,
-) -> None:
-    # 同一细点三个难度候选：目标难度 = 下界 + 带宽 × 掌握度。
-    draft = bnu24_difficulty_module.create(
-        request_token="d" * 32,
-        diagnosis=_bnu24_mastery_diagnosis(
-            (("SYN-D01", 0.2), ("SYN-D02", 0.9), ("SYN-D03", None))
-        ),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-            direct_ratio=1.0,
-            prerequisite_ratio=0.0,
-            transfer_ratio=0.0,
-            target_keys=(BNU_TARGET,),
-        ),
-        actor_ref="teacher-1",
-    )
-    first_direct = {
-        student["student_id"]: student["items"][0]
-        for student in draft["students"]
-    }
-
-    # 掌握度 0.2 → 目标难度 2.8，偏好难度 2；0.9 → 9.1，偏好难度 8。
-    assert int(first_direct["SYN-D01"]["difficulty"]) == 2
-    assert int(first_direct["SYN-D02"]["difficulty"]) == 8
-    # 掌握度缺失 → 难度带中点 5.5，偏好难度 5。
-    assert int(first_direct["SYN-D03"]["difficulty"]) == 5
-
-
-def test_stage_offsets_rank_prerequisite_easier_and_transfer_harder(
-    bnu24_difficulty_module: PersonalizedRecommendationModule,
-) -> None:
-    # 掌握度 0.5 → 基准难度 5.5；先修补强 −1.5，迁移应用 +1.0。
-    draft = bnu24_difficulty_module.create(
-        request_token="e" * 32,
-        diagnosis=_bnu24_mastery_diagnosis((("SYN-D11", 0.5),)),
-        config=PersonalizedRecommendationConfig(
-            question_count=10,
-            expected_minutes=120,
-            direct_ratio=0.6,
-            prerequisite_ratio=0.3,
-            transfer_ratio=0.1,
-            target_keys=(BNU_TARGET,),
-        ),
-        actor_ref="teacher-1",
-    )
-    first_by_stage: dict[str, dict[str, object]] = {}
-    for item in draft["students"][0]["items"]:
-        first_by_stage.setdefault(str(item["stage"]), item)
-
-    # 先修补强（目标 4.0）选中难度 3，直接巩固（5.5）选中 5，
-    # 迁移应用（6.5）选中 6：偏移方向体现在选题难度上。
-    assert int(first_by_stage["prerequisite"]["difficulty"]) == 3
-    assert int(first_by_stage["direct"]["difficulty"]) == 5
-    assert int(first_by_stage["transfer"]["difficulty"]) == 6
-
-
-def test_replace_keeps_the_same_stage_difficulty_aim(
-    bnu24_difficulty_module: PersonalizedRecommendationModule,
-) -> None:
-    draft = bnu24_difficulty_module.create(
-        request_token="f" * 32,
-        diagnosis=_bnu24_mastery_diagnosis((("SYN-D21", 0.5),)),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-            direct_ratio=0.5,
-            prerequisite_ratio=0.25,
-            transfer_ratio=0.25,
-            target_keys=(BNU_TARGET,),
-        ),
-        actor_ref="teacher-1",
-    )
-    student = draft["students"][0]
-    # 天花板：迁移瞄准 6.5，上限 8.5，只有难度 9 的题 46 不会入选；
-    # 直接巩固瞄准 5.5，上限 7.5，难度 8 的题 33 不入选。
-    selected = {int(item["question_id"]) for item in student["items"]}
-    assert 46 not in selected and 33 not in selected
-    # 迁移阶段 4_2_3 细点的首选是难度 6 的题 43（先修阶段已消耗 51/52）。
-    transfer_item = next(
-        item for item in student["items"] if int(item["question_id"]) == 43
-    )
-
-    replaced = bnu24_difficulty_module.edit(
-        draft["draft_id"],
-        RecommendationEditCommand(
-            request_token="0123456789abcdef" * 2,
-            expected_revision=1,
-            action="replace",
-            student_id="SYN-D21",
-            item_id=transfer_item["item_id"],
-            actor_ref="teacher-1",
-            reason="换一道同目标题",
-        ),
-    )
-    replacement = next(
-        value
-        for value in replaced["students"][0]["items"]
-        if value["item_id"] == transfer_item["item_id"]
-    )
-
-    # 迁移阶段目标难度 6.5：44 已被补位占用，剩余候选中距瞄准最近的是
-    # 难度 5 的题 42（与难度 8 的 45 同距，题号小者优先）。
-    assert int(replacement["question_id"]) == 42
-    assert replacement["reason"] == transfer_item["reason"]
-
-
-def test_ancestor_level_confirmed_relations_expand_to_leaf_targets(
-    bnu24_expansion_module: PersonalizedRecommendationModule,
-) -> None:
-    # 节级 confirmed 先修关系、章级 confirmed 相关关系都展开成细点目标。
-    draft = bnu24_expansion_module.create(
-        request_token="8" * 32,
-        diagnosis=_bnu24_diagnosis(),
-        config=PersonalizedRecommendationConfig(
-            expected_minutes=120,
-            target_keys=(BNU_TARGET,),
-        ),
-        actor_ref="teacher-1",
-    )
-    student = draft["students"][0]
-    by_stage: dict[str, list[dict[str, object]]] = {
-        "direct": [],
-        "prerequisite": [],
-        "transfer": [],
-    }
-    for item in student["items"]:
-        by_stage[str(item["stage"])].append(item)
-
-    # 节级先修关系展开为端点节的后代细点，按教材顺序选题。
-    assert [item["matched_key"] for item in by_stage["prerequisite"]] == [
-        "kp_bnu24_math_g7_lower_1_1_1",
-        "kp_bnu24_math_g7_lower_1_1_2",
-    ]
-    # 章级相关关系展开为端点章的后代细点。
-    assert [item["matched_key"] for item in by_stage["transfer"]] == [
-        BNU_OTHER_CHAPTER
-    ]
-    # 展开命中属于已确认关系：沿用来源细点 target、附关系证据、
-    # 使用 confirmed 文案而非兜底文案。
-    for item in (*by_stage["prerequisite"], *by_stage["transfer"]):
-        assert item["target"]["stable_key"] == BNU_TARGET
-        assert item["relation"] is not None
-        assert "未经逐条教研确认" not in str(item["reason"])
-    prerequisite_relation = by_stage["prerequisite"][0]["relation"]
-    assert prerequisite_relation["relation_type"] == "prerequisite"
-    assert prerequisite_relation["rationale"] == "合成节级先修关系"
-    assert str(by_stage["prerequisite"][0]["reason"]).startswith(
-        "补强已确认的先修知识"
-    )
-    transfer_relation = by_stage["transfer"][0]["relation"]
-    assert transfer_relation["relation_type"] == "related"
-    assert transfer_relation["rationale"] == "合成章级相关关系"
-    assert str(by_stage["transfer"][0]["reason"]).startswith(
-        "练习与目标已确认相关的迁移知识"
-    )
-    # 有 confirmed 来源的阶段不再产生兜底：同章更早/并列细点不进入。
-    assert all(
-        not str(item["matched_key"]).startswith(BNU_CHAPTER4)
-        for item in (*by_stage["prerequisite"], *by_stage["transfer"])
-    )
-
-
-def test_teacher_lock_replace_and_exclude_keep_history_and_revision(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    draft = recommendation_module.create(
-        request_token="4" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-            direct_ratio=0.25,
-            prerequisite_ratio=0.75,
-            transfer_ratio=0.0,
-        ),
-        actor_ref="teacher-1",
-    )
-    item = next(
-        value
-        for value in draft["students"][0]["items"]
-        if value["question_id"] == 8
-    )
-    locked = recommendation_module.edit(
-        draft["draft_id"],
-        RecommendationEditCommand(
-            request_token="5" * 32,
-            expected_revision=1,
-            action="lock",
-            student_id="SYN-S01",
-            item_id=item["item_id"],
-            actor_ref="teacher-1",
-            reason="这道题与课堂讲解一致",
-        ),
-    )
-    repeated = recommendation_module.edit(
-        draft["draft_id"],
-        RecommendationEditCommand(
-            request_token="5" * 32,
-            expected_revision=1,
-            action="lock",
-            student_id="SYN-S01",
-            item_id=item["item_id"],
-            actor_ref="teacher-1",
-            reason="这道题与课堂讲解一致",
-        ),
-    )
-    assert repeated == locked
-    assert locked["revision"] == 2
-    assert next(
-        value
-        for value in locked["students"][0]["items"]
-        if value["item_id"] == item["item_id"]
-    )["locked"]
-
-    with pytest.raises(RecommendationEditInvalid):
-        recommendation_module.edit(
-            draft["draft_id"],
-            RecommendationEditCommand(
-                request_token="6" * 32,
-                expected_revision=2,
-                action="exclude",
-                student_id="SYN-S01",
-                item_id=item["item_id"],
-                actor_ref="teacher-1",
-                reason="教师决定排除",
-            ),
-        )
-
-    unlocked = recommendation_module.edit(
-        draft["draft_id"],
-        RecommendationEditCommand(
-            request_token="7" * 32,
-            expected_revision=2,
-            action="unlock",
-            student_id="SYN-S01",
-            item_id=item["item_id"],
-            actor_ref="teacher-1",
-            reason="准备替换",
-        ),
-    )
-    replaced = recommendation_module.edit(
-        draft["draft_id"],
-        RecommendationEditCommand(
-            request_token="8" * 32,
-            expected_revision=3,
-            action="replace",
-            student_id="SYN-S01",
-            item_id=item["item_id"],
-            actor_ref="teacher-1",
-            reason="换成更熟悉的题面",
-            replacement_question_id=3,
-        ),
-    )
-    replacement = next(
-        value
-        for value in replaced["students"][0]["items"]
-        if value["item_id"] == item["item_id"]
-    )
-    assert unlocked["revision"] == 3
-    assert replaced["revision"] == 4
-    assert replacement["question_id"] == 3
-    assert replacement["question_text"] == "解一元一次方程"
-    assert replacement["replacement_history"] == [
-        {
-            "question_id": 8,
-            "reason": "换成更熟悉的题面",
-            "actor_ref": "teacher-1",
-            "revision": 4,
-        }
-    ]
-    assert replaced["history"][-1]["before_question_id"] == 8
-    assert replaced["history"][-1]["after_question_id"] == 3
-
-    with pytest.raises(RecommendationRevisionConflict):
-        recommendation_module.edit(
-            draft["draft_id"],
-            RecommendationEditCommand(
-                request_token="9" * 32,
-                expected_revision=3,
-                action="lock",
-                student_id="SYN-S01",
-                item_id=item["item_id"],
-                actor_ref="teacher-1",
-                reason="过期页面",
-            ),
-        )
-
-
-def test_request_conflict_and_source_change_are_explicit(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    draft = recommendation_module.create(
-        request_token="a" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
-        config=PersonalizedRecommendationConfig(),
-        actor_ref="teacher-1",
-    )
-    with pytest.raises(RecommendationRequestConflict):
-        recommendation_module.create(
-            request_token="a" * 32,
-            diagnosis=_diagnosis(student_ids=("SYN-S02",)),
-            config=PersonalizedRecommendationConfig(),
-            actor_ref="teacher-1",
-        )
-
-    item = draft["students"][0]["items"][0]
-    command = RecommendationEditCommand(
-        request_token="b" * 32,
-        expected_revision=1,
-        action="lock",
-        student_id="SYN-S01",
-        item_id=item["item_id"],
-        actor_ref="teacher-1",
-        reason="锁定后安全重试",
-    )
-    locked = recommendation_module.edit(draft["draft_id"], command)
-
-    with connect(recommendation_module.db_path) as connection:
-        connection.execute(
-            """
-            UPDATE question_tags
-            SET tag_value = '等式的性质'
-            WHERE question_id = 1 AND tag_type = 'knowledge_point'
-            """
-        )
-    assert recommendation_module.edit(draft["draft_id"], command) == locked
-    with pytest.raises(RecommendationSourceChanged):
-        recommendation_module.edit(
-            draft["draft_id"],
-            RecommendationEditCommand(
-                request_token="c" * 32,
-                expected_revision=2,
-                action="lock",
-                student_id="SYN-S01",
-                item_id=item["item_id"],
-                actor_ref="teacher-1",
-                reason="来源已经变化",
-            ),
-        )
-
-
-def test_concurrent_teacher_edits_allow_only_one_revision(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    draft = recommendation_module.create(
-        request_token="d" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
-        config=PersonalizedRecommendationConfig(),
-        actor_ref="teacher-1",
-    )
-    item = draft["students"][0]["items"][0]
-
-    def edit(token: str) -> str:
-        try:
-            recommendation_module.edit(
-                draft["draft_id"],
-                RecommendationEditCommand(
-                    request_token=token,
-                    expected_revision=1,
-                    action="lock",
-                    student_id="SYN-S01",
-                    item_id=item["item_id"],
-                    actor_ref="teacher-1",
-                    reason="并发锁定",
-                ),
-            )
-            return "applied"
-        except RecommendationRevisionConflict:
-            return "conflict"
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = tuple(
-            executor.map(edit, ("e" * 32, "f" * 32))
-        )
-
-    assert sorted(results) == ["applied", "conflict"]
-    assert recommendation_module.get(draft["draft_id"])["revision"] == 2
-
-
-def test_isolated_and_cyclic_relation_data_stop_at_safe_one_hop(
-    recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    isolated = recommendation_module.create(
-        request_token="0" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S01",)),
-        config=PersonalizedRecommendationConfig(
-            target_keys=(LOCAL_ONE,),
-        ),
-        actor_ref="teacher-1",
-    )["students"][0]
-    assert isolated["targets"][0]["status"] == "missing"
-    assert isolated["items"] == []
-    assert isolated["shortages"]
-
-    with connect(recommendation_module.db_path) as connection:
-        _insert_relation(
-            connection,
-            "rel-synthetic-cycle",
-            LOCAL_TWO,
-            "kp_fun_linear",
-            "prerequisite",
-        )
-    cyclic = recommendation_module.create(
-        request_token="9" * 32,
-        diagnosis=_diagnosis(student_ids=("SYN-S04",)),
-        config=PersonalizedRecommendationConfig(),
-        actor_ref="teacher-1",
-    )["students"][0]
-    question_ids = [item["question_id"] for item in cyclic["items"]]
-    assert len(question_ids) == len(set(question_ids))
-    assert all(
-        item["relation"] is None
-        or item["relation"]["relation_type"] in {"prerequisite", "related"}
-        for item in cyclic["items"]
-    )
-
-
 def test_allowed_keys_for_volume_covers_current_and_earlier_volumes_only() -> (
     None
 ):
@@ -1110,322 +238,6 @@ def test_config_rejects_unknown_curriculum_volume() -> None:
         PersonalizedRecommendationConfig(
             curriculum_volume_id="bnu24-math-g6-lower"
         )
-
-
-def test_curriculum_volume_bound_excludes_later_volume_candidates(
-    bnu24_recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    module = bnu24_recommendation_module
-    _seed_bnu24_g8_question(module.db_path, module.data_root)
-
-    unbounded = module.create(
-        request_token="e" * 32,
-        diagnosis=_bnu24_diagnosis(),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-            target_keys=(BNU_G8_LEAF,),
-        ),
-        actor_ref="teacher-1",
-    )
-    assert any(
-        int(item["question_id"]) == BNU_G8_QUESTION
-        for item in unbounded["students"][0]["items"]
-    )
-
-    bounded = module.create(
-        request_token="f" * 32,
-        diagnosis=_bnu24_diagnosis(),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-            target_keys=(BNU_G8_LEAF,),
-            curriculum_volume_id="bnu24-math-g7-lower",
-        ),
-        actor_ref="teacher-1",
-    )
-    student = bounded["students"][0]
-    assert all(
-        int(item["question_id"]) != BNU_G8_QUESTION
-        for item in student["items"]
-    )
-    # 关系展开或教材兜底带入的册外目标一并移除，不会配出八上题。
-    assert all(
-        not str(item["matched_key"]).startswith("kp_bnu24_math_g8_")
-        for item in student["items"]
-    )
-    direct_shortages = [
-        item for item in student["shortages"] if item["stage"] == "direct"
-    ]
-    assert direct_shortages
-    assert direct_shortages[0]["reason_code"] == "stage_targets_empty"
-
-
-def test_curriculum_volume_bound_limits_maintenance_fallback(
-    bnu24_recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    module = bnu24_recommendation_module
-    _seed_bnu24_g8_question(module.db_path, module.data_root)
-    config_kwargs: dict[str, object] = {
-        "question_count": 8,
-        "expected_minutes": 180,
-        "direct_ratio": 1.0,
-        "prerequisite_ratio": 0.0,
-        "transfer_ratio": 0.0,
-    }
-
-    unbounded = module.create(
-        request_token="0" * 32,
-        diagnosis=_bnu24_diagnosis(),
-        config=PersonalizedRecommendationConfig(**config_kwargs),
-        actor_ref="teacher-1",
-    )
-    assert any(
-        int(item["question_id"]) == BNU_G8_QUESTION
-        for item in unbounded["students"][0]["items"]
-    )
-
-    bounded = module.create(
-        request_token="9" * 32,
-        diagnosis=_bnu24_diagnosis(),
-        config=PersonalizedRecommendationConfig(
-            **config_kwargs,
-            curriculum_volume_id="bnu24-math-g7-lower",
-        ),
-        actor_ref="teacher-1",
-    )
-    student = bounded["students"][0]
-    assert student["selection_mode"] == "maintenance_fallback"
-    assert student["items"]
-    assert all(
-        int(item["question_id"]) != BNU_G8_QUESTION
-        for item in student["items"]
-    )
-
-
-def test_direct_stage_interleaves_targets_and_caps_difficulty(
-    bnu24_difficulty_module: PersonalizedRecommendationModule,
-) -> None:
-    config_kwargs: dict[str, object] = {
-        "question_count": 8,
-        "expected_minutes": 120,
-        "direct_ratio": 1.0,
-        "prerequisite_ratio": 0.0,
-        "transfer_ratio": 0.0,
-        "target_keys": (BNU_TARGET, BNU_TRANSFER_SIBLING),
-    }
-    draft = bnu24_difficulty_module.create(
-        request_token="9" * 32,
-        diagnosis=_bnu24_mastery_diagnosis((("SYN-D31", 0.5),)),
-        config=PersonalizedRecommendationConfig(**config_kwargs),
-        actor_ref="teacher-1",
-    )
-    items = draft["students"][0]["items"]
-    matched = {str(item["matched_key"]) for item in items}
-    # 分摊：两个细点轮流取题，不再被排名第一的细点独占。
-    assert BNU_TARGET in matched and BNU_TRANSFER_SIBLING in matched
-    # 天花板：瞄准 5.5，上限 7.5，难度 8 及以上的题（33/45/46）不入选。
-    assert all(int(item["difficulty"]) <= 7 for item in items)
-
-    weak_diagnosis = _bnu24_mastery_diagnosis((("SYN-D32", 0.2),))
-    # 两个显式细点都带 0.2 掌握度证据。
-    weak_diagnosis["students"][0]["weak_points"].append(
-        {
-            "knowledge_point": BNU_TRANSFER_SIBLING,
-            "mastery": 0.2,
-            "evidence_count": 2,
-            "source_question_refs": [],
-        }
-    )
-    weak = bnu24_difficulty_module.create(
-        request_token="a" * 32,
-        diagnosis=weak_diagnosis,
-        config=PersonalizedRecommendationConfig(**config_kwargs),
-        actor_ref="teacher-1",
-    )
-    weak_items = weak["students"][0]["items"]
-    # 掌握度 0.2 → 瞄准 2.8，天花板 4.8：难度 2 的题 31 与难度 4 的题 41 合格，
-    # 难度 5 及以上（32/42/43/44…）不入选；不够就如实报缺口。
-    assert [int(item["question_id"]) for item in weak_items] == [31, 41]
-    assert any(
-        shortage["reason_code"] == "approved_candidate_shortage"
-        for shortage in weak["students"][0]["shortages"]
-    )
-
-
-def test_same_leaf_same_question_type_prefers_diversity_then_fills(
-    bnu24_difficulty_module: PersonalizedRecommendationModule,
-) -> None:
-    # BNU_TARGET 的三道候选全是填空题：先去重拿最接近瞄准值的一道，
-    # 仍有缺口时允许同型补位，但补位排在其他细点候选之后。
-    draft = bnu24_difficulty_module.create(
-        request_token="6" * 32,
-        diagnosis=_bnu24_mastery_diagnosis((("SYN-D41", 0.5),)),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-            direct_ratio=1.0,
-            prerequisite_ratio=0.0,
-            transfer_ratio=0.0,
-            target_keys=(BNU_TARGET, BNU_TRANSFER_SIBLING),
-        ),
-        actor_ref="teacher-1",
-    )
-    items = draft["students"][0]["items"]
-    target_items = [
-        int(item["question_id"])
-        for item in items
-        if item["matched_key"] == BNU_TARGET
-    ]
-    sibling_items = [
-        int(item["question_id"])
-        for item in items
-        if item["matched_key"] == BNU_TRANSFER_SIBLING
-    ]
-    # 首选各细点最接近瞄准值的题（BNU_TARGET→32；TRANSFER_SIBLING 的
-    # 42/43 与瞄准值同距，题号小者优先 → 42）。
-    assert target_items[0] == 32
-    assert sibling_items[0] == 42
-    # 补位才出现同细点第二道同型题。
-    assert target_items[1:] == [31]
-
-
-def test_near_duplicate_questions_are_not_selected_twice(
-    bnu24_difficulty_module: PersonalizedRecommendationModule,
-) -> None:
-    module = bnu24_difficulty_module
-    # 71 与 32 题干逐字相同（跨试卷引用同一题）；72 知识点与方法标签都和
-    # 32 重合（近重复）；73 只同知识点、方法不同（真正的另一道题）。
-    _insert_bnu24_questions_with_skill_tags(
-        module.db_path,
-        (
-            (71, "71", "填空题", "32. 全等三角形性质中档填空", "5", BNU_TARGET, ()),
-            (72, "72", "填空题", "全等三角形性质中档变式填空", "5", BNU_TARGET, ("倍长中线法",)),
-            (73, "73", "填空题", "全等三角形性质截长补短填空", "5", BNU_TARGET, ("截长补短法",)),
-        ),
-    )
-    # 32 也标上方法标签，保证 72 与它在方法维上完全重合。
-    with connect(module.db_path) as connection:
-        connection.execute(
-            "INSERT INTO question_tags (question_id, tag_type, tag_value, source)"
-            " VALUES (32, 'method', '倍长中线法', 'synthetic')"
-        )
-    _approve_synthetic_criteria(module.db_path, module.data_root, (71, 72, 73))
-
-    draft = module.create(
-        request_token="b" * 32,
-        diagnosis=_bnu24_mastery_diagnosis((("SYN-D51", 0.5),)),
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-            direct_ratio=1.0,
-            prerequisite_ratio=0.0,
-            transfer_ratio=0.0,
-            target_keys=(BNU_TARGET,),
-        ),
-        actor_ref="teacher-1",
-    )
-
-    ids = [int(item["question_id"]) for item in draft["students"][0]["items"]]
-    # 同一题一卷只出一次：71（逐字重复）与 72（知识+方法近重复）都被拦下；
-    # 73 是同细点的另一道题，正常补位。
-    assert ids[0] == 32
-    assert 71 not in ids
-    assert 72 not in ids
-    assert 73 in ids
-
-
-def test_high_mastery_shortfall_fills_harder_nearby_questions(
-    bnu24_difficulty_module: PersonalizedRecommendationModule,
-) -> None:
-    config_kwargs: dict[str, object] = {
-        "question_count": 8,
-        "expected_minutes": 120,
-        "direct_ratio": 1.0,
-        "prerequisite_ratio": 0.0,
-        "transfer_ratio": 0.0,
-        "target_keys": (BNU_TARGET,),
-    }
-    strong = bnu24_difficulty_module.create(
-        request_token="c" * 32,
-        diagnosis=_bnu24_mastery_diagnosis((("SYN-D52", 0.8),)),
-        config=PersonalizedRecommendationConfig(**config_kwargs),
-        actor_ref="teacher-1",
-    )
-    student = strong["students"][0]
-    ids = [int(item["question_id"]) for item in student["items"]]
-    # 严格+软化先拿下本细点的 33/32/31；培优退路从同章近旁细点补到难度
-    # 更高的 46（d9），同细点同题型的 45（d8）仍受去重约束，低于该生
-    # 舒适难度的 41-44/51/52 不拿来凑数。
-    assert ids[:3] == [33, 32, 31]
-    assert 46 in ids
-    assert 45 not in ids
-    assert all(qid not in ids for qid in (41, 42, 43, 44, 51, 52))
-    enrichment_item = next(
-        item for item in student["items"] if int(item["question_id"]) == 46
-    )
-    assert enrichment_item["matched_key"] == BNU_TRANSFER_SIBLING
-    assert "培优提升" in str(enrichment_item["reason"])
-    # 仍配不满的部分如实报缺口：高分学生允许少于设定题量。
-    shortage = next(
-        item for item in student["shortages"] if item["stage"] == "direct"
-    )
-    assert shortage["reason_code"] == "approved_candidate_shortage"
-    assert int(shortage["missing_count"]) == 8 - len(ids)
-
-    # 低掌握度学生不触发培优：天花板保持严格，难题不硬塞。
-    weak = bnu24_difficulty_module.create(
-        request_token="d" * 32,
-        diagnosis=_bnu24_mastery_diagnosis((("SYN-D53", 0.2),)),
-        config=PersonalizedRecommendationConfig(**config_kwargs),
-        actor_ref="teacher-1",
-    )
-    weak_items = weak["students"][0]["items"]
-    assert [int(item["question_id"]) for item in weak_items] == [31]
-    assert all("培优提升" not in str(item["reason"]) for item in weak_items)
-
-
-def test_source_paper_level_bound_excludes_later_grade_papers(
-    bnu24_recommendation_module: PersonalizedRecommendationModule,
-) -> None:
-    module = bnu24_recommendation_module
-    _seed_g8_paper_with_g7_question(module.db_path, module.data_root)
-    config_kwargs: dict[str, object] = {
-        "question_count": 8,
-        "expected_minutes": 120,
-        "direct_ratio": 1.0,
-        "prerequisite_ratio": 0.0,
-        "transfer_ratio": 0.0,
-        "target_keys": (BNU_TARGET,),
-    }
-
-    unbounded = module.create(
-        request_token="7" * 32,
-        diagnosis=_bnu24_diagnosis(),
-        config=PersonalizedRecommendationConfig(**config_kwargs),
-        actor_ref="teacher-1",
-    )
-    assert any(
-        int(item["question_id"]) == 18
-        for item in unbounded["students"][0]["items"]
-    )
-
-    bounded = module.create(
-        request_token="5" * 32,
-        diagnosis=_bnu24_diagnosis(),
-        config=PersonalizedRecommendationConfig(
-            **config_kwargs,
-            curriculum_volume_id="bnu24-math-g7-lower",
-        ),
-        actor_ref="teacher-1",
-    )
-    bounded_ids = {
-        int(item["question_id"]) for item in bounded["students"][0]["items"]
-    }
-    # 题 18 的知识点合规（七下全等），但来源卷是八年级上学期，被排除；
-    # 没有年级信息的合成题源（paper 1）不受影响。
-    assert 18 not in bounded_ids
-    assert 11 in bounded_ids
 
 
 def _seed_recommendation_sources(db_path: Path, data_root: Path) -> None:
@@ -1556,7 +368,7 @@ def _insert_bnu24_questions(
     questions: tuple[tuple[int, str, str, str, str, str], ...],
 ) -> None:
     connection.execute(
-        "INSERT INTO papers (id, title, import_status)"
+        "INSERT OR IGNORE INTO papers (id, title, import_status)"
         " VALUES (1, 'BNU24合成题源', 'ready')"
     )
     for (
@@ -1840,8 +652,14 @@ def _approve_synthetic_criteria(
         data_root=data_root,
     )
     loaded = loader.load(question_ids)
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    resolver = CurrentKnowledgeResolver.from_active_database(db_path)
     with connect(db_path) as connection:
         for question in loaded:
+            keys = sorted({identity.stable_key for tag in connection.execute(
+                "SELECT tag_value FROM question_tags WHERE question_id = ? AND tag_type IN ('knowledge_point', 'canonical_knowledge_id')",
+                (question.question_id,)).fetchall() for identity in resolver.resolve(tag["tag_value"])})
+            kind = connection.execute("SELECT question_type FROM questions WHERE id = ?", (question.question_id,)).fetchone()[0]
             version_id = hashlib.sha256(
                 f"criterion:{question.question_id}".encode()
             ).hexdigest()
@@ -1863,6 +681,11 @@ def _approve_synthetic_criteria(
                 "rationale": "合成测试判定点",
                 "confidence": 1.0,
                 "source_kind": "confirmed_rubric_adapter",
+                "solution_evidence": {"parts": [{"part_id": "part1",
+                    "response_mode": "exact_objective" if any(word in kind for word in ("选择", "填空")) else "process_required",
+                    "evidence_points": [{"target": "计算并说明数量关系", "observable_evidence": "写出等式、依据和单位",
+                        "fine_term_links": [{"fine_term_id": key, "role": "direct",
+                                             "core_resolution": {"status": "resolved", "stable_keys": [key]}} for key in keys]}]}]},
             }
             criteria_json = json.dumps(
                 criteria,
@@ -1970,6 +793,9 @@ def _diagnosis(
                                     "question_id": f"EX-{index}",
                                     "score_awarded": 4,
                                     "full_score": 10,
+                                    "source_kind": "current_exam",
+                                    "question_difficulty": 6 if student_id == "SYN-S02" else 5,
+                                    "direct_fine_terms": [{"一元一次方程": "kp_alg_linear_equation", "三角形全等": "kp_geo_triangle_congruence", "尺规作图": "kp_geo_construction", "一次函数": "kp_fun_linear"}[weak]],
                                 }
                             ],
                             "actionable_reasons": ["合成掌握证据偏弱"],
@@ -2027,3 +853,634 @@ def _mark_question_recent(
             """,
             (variant_id, question_id),
         )
+
+
+@pytest.fixture()
+def direct_module(bnu24_difficulty_module):
+    module = bnu24_difficulty_module
+    rows = [(100 + i, str(100 + i), "解答题", f"合成直角三角形长度应用：已知一边{i+20}，列式求另一边", str(7 + i % 2), BNU_TARGET) for i in range(14)]
+    rows += [(200 + i, str(200 + i), "解答题", f"合成全等对应边长度：已知一边{i+30}，求对应边", "5", BNU_PREREQ_NEAR) for i in range(4)]
+    rows += [(300, "300", "解答题", "判定三角形是否为直角三角形", "7", BNU_TARGET),
+             (301, "301", "解答题", "利用面积差求阴影面积", "7", BNU_TARGET)]
+    with connect(module.db_path) as conn:
+        _insert_bnu24_questions(conn, tuple(rows + [
+            (900, "17", "解答题", "合成错题：折断树高，列直角三角形方程求长度", "8", BNU_TARGET),
+            (901, "18", "解答题", "合成错题：全等三角形对应边求值", "5", BNU_PREREQ_NEAR)]))
+        for qid, *_ in rows:
+            method = "直角三角形列式求长度" if qid < 200 else "全等对应边" if qid < 300 else "逆定理判定" if qid == 300 else "面积计算"
+            conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES (?,'method',?,'synthetic')", (qid, method))
+        for qid, method in ((900, "直角三角形列式求长度"), (901, "全等对应边")):
+            conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES (?,'method',?,'synthetic')", (qid,method))
+    _approve_synthetic_criteria(module.db_path, module.data_root, tuple(row[0] for row in rows))
+    return module
+
+
+def _direct_diagnosis(entries=(("A", .9, 900, BNU_TARGET),)):
+    return {"exam_scope": {"mode": "current", "session_ids": [1]}, "students": [
+        {"student_id": sid, "student_name": f"合成学生{sid}", "class_id": "synthetic",
+         "score_rate": rate, "weak_points": [{"knowledge_key": key, "knowledge_point": key,
+            "mastery": .8 if rate is None else rate, "evidence_count": 1,
+            "source_question_refs": [{"session_id": 1, "question_id": f"Q{source}", "bank_question_id": source,
+                "full_score": 5, "score_awarded": 4, "score_rate": .8, "source_kind": "current_exam",
+                "assessment": {"granularity": "part", "part_id": "part1", "eligible": True, "evidence_weight": 1}}]}]}
+        for sid, rate, source, key in entries]}
+
+
+def _make_direct(module, *, diagnosis=None, token="a", **settings):
+    return module.create(request_token=token * 32, diagnosis=diagnosis or _direct_diagnosis(),
+        config=PersonalizedRecommendationConfig(question_count=8, scope_keys=(BNU_CHAPTER4,), **settings), actor_ref="synthetic")
+
+
+def test_same_hard_loss_varies_by_overall_score_and_obeys_cap(direct_module):
+    diagnosis = _direct_diagnosis((("strong", .95, 900, BNU_TARGET), ("weak", .3, 900, BNU_TARGET)))
+    draft = _make_direct(direct_module, diagnosis=diagnosis, difficulty_max=10)
+    by_id = {s["student_id"]: s for s in draft["students"]}
+    for sid, expected in (("strong", 8), ("weak", 7)):
+        preferred = next(q for q in by_id[sid]["items"] if q["question_id"] in range(100, 114))
+        assert preferred["difficulty"] == expected
+    for student in draft["students"]:
+        assert student["items"] and all(7 <= q["difficulty"] <= 8 for q in student["items"])
+        assert all(q["stage"] == "direct" for q in student["items"])
+        assert all(q["matched_key"] == BNU_TARGET for q in student["items"] if q["selection_kind"] == "direct")
+        assert [q["difficulty"] for q in student["items"]] == sorted(q["difficulty"] for q in student["items"])
+        assert len([q for q in student["items"] if q["question_id"] in range(100, 114)]) == 1
+    capped = _make_direct(direct_module, diagnosis=diagnosis, token="b")
+    assert all(q["difficulty"] == 7 for s in capped["students"] for q in s["items"])
+    assert all(q["target"]["target_difficulty"] == 7 for s in capped["students"] for q in s["items"])
+
+
+def test_part_difficulty_overrides_whole_and_low_cap_remains_authoritative(direct_module):
+    diagnosis = _direct_diagnosis((("A", .95, 900, BNU_TARGET),))
+    diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]["assessment"]["part_difficulty"] = 3
+    draft = _make_direct(direct_module, diagnosis=diagnosis, difficulty_max=10)
+    assert draft["students"][0]["items"]
+    assert all(2 <= q["difficulty"] <= 3 for q in draft["students"][0]["items"])
+    assert all(q["question_id"] not in range(100, 114) for q in draft["students"][0]["items"])
+    from question_bank.recommendation.personalized import _loss_difficulty
+    ref = diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
+    assert _loss_difficulty(ref,.95,10) == 3
+    assert _loss_difficulty(ref,.95,1) == 1
+    assert PersonalizedRecommendationConfig(difficulty_min=2,difficulty_max=1).difficulty_min == 1
+
+
+@pytest.mark.parametrize("change", ["full_score", "missing_difficulty", "ineligible"])
+def test_insufficient_sources_do_not_invent_recommendations(direct_module, change):
+    diagnosis = _direct_diagnosis()
+    ref = diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
+    if change == "full_score": ref["score_awarded"] = 5
+    if change == "ineligible": ref["assessment"]["eligible"] = False
+    with connect(direct_module.db_path) as conn:
+        if change == "missing_difficulty": conn.execute("UPDATE questions SET difficulty=NULL WHERE id=900")
+    draft = _make_direct(direct_module, diagnosis=diagnosis)
+    assert draft["students"][0]["items"] == []
+    assert draft["students"][0]["shortages"][0]["missing_count"] == 8
+    assert draft["students"][0]["warnings"]
+
+
+def test_current_full_score_does_not_resurrect_historical_loss(direct_module):
+    diagnosis = _direct_diagnosis()
+    point = diagnosis["students"][0]["weak_points"][0]
+    old = deepcopy(point["source_question_refs"][0]); old["source_kind"] = "history_exam"; old["session_id"] = 2
+    point["source_question_refs"][0]["score_awarded"] = 5
+    point["source_question_refs"].append(old)
+    assert not _make_direct(direct_module, diagnosis=diagnosis)["students"][0]["items"]
+    assert not _group_needs(diagnosis, (BNU_TARGET,))["A"]
+
+
+def test_missing_overall_score_is_explained_and_time_is_not_used(direct_module):
+    diagnosis = _direct_diagnosis((("A",None,900,BNU_TARGET),))
+    short = _make_direct(direct_module, diagnosis=diagnosis, expected_minutes=1)
+    long = _make_direct(direct_module, diagnosis=diagnosis, expected_minutes=999, token="b")
+    assert short["students"] == long["students"]
+    assert "整体成绩缺失" in short["students"][0]["items"][0]["reason"]
+    assert "expected_minutes" not in short["config"]
+    assert "stage_ratios" not in short["config"]
+    assert all("estimated_minutes" not in q for q in short["students"][0]["items"])
+
+
+def test_shared_union_covers_disjoint_needs_and_is_order_independent(direct_module):
+    diagnosis = _direct_diagnosis((("A",.8,900,BNU_TARGET),("B",.79,901,BNU_PREREQ_NEAR)))
+    first = _make_direct(direct_module, diagnosis=diagnosis, paper_mode="shared")
+    items = first["students"][0]["items"]
+    assert {q["matched_key"] for q in items if q["selection_kind"] == "direct"} == {BNU_TARGET,BNU_PREREQ_NEAR}
+    assert {sid for q in items for sid in q["beneficiary_student_ids"]} == {"A","B"}
+    assert all(len(q["beneficiary_student_ids"]) == 1 for q in items)
+    ids = [q["question_id"] for q in items]
+    assert ids == [q["question_id"] for q in first["students"][1]["items"]]
+    diagnosis["students"].reverse()
+    second = _make_direct(direct_module, diagnosis=diagnosis, token="b", paper_mode="shared")
+    assert ids == [q["question_id"] for q in second["students"][0]["items"]]
+
+
+def test_chapter_groups_use_overall_level_and_member_union(direct_module):
+    diagnosis = _direct_diagnosis((("A",.8,900,BNU_TARGET),("B",.79,901,BNU_PREREQ_NEAR),("C",.2,900,BNU_TARGET)))
+    config = PersonalizedRecommendationConfig(paper_mode="shared", scope_keys=(BNU_CHAPTER4,), group_scope_keys=(BNU_CHAPTER4,))
+    preview = direct_module.chapter_groups(diagnosis=diagnosis, config=config)
+    assert len(preview["groups"]) == 1
+    group = preview["groups"][0]
+    assert group["ready"]
+    assert {m["student_id"] for m in group["members"]} == {"A","B"}
+    assert {t["knowledge_key"] for t in group["targets"]} == {BNU_TARGET,BNU_PREREQ_NEAR}
+    assert all(t["affected_student_count"] == 1 for t in group["targets"])
+    selected = deepcopy(diagnosis); selected["students"] = selected["students"][:2]
+    adopted = replace(config, scope_keys=(), target_keys=tuple(t["knowledge_key"] for t in group["targets"]), group_source_version=group["source_version"])
+    draft = direct_module.create(request_token="a"*32,diagnosis=selected,config=adopted,actor_ref="synthetic")
+    assert direct_module.get(draft["draft_id"]) == draft
+    selected["students"][0]["weak_points"][0]["source_question_refs"][0]["score_awarded"] = 2
+    with pytest.raises(RecommendationSourceChanged):
+        direct_module.create(request_token="b"*32,diagnosis=selected,config=adopted,actor_ref="synthetic")
+
+
+def test_saved_lock_replace_exclude_and_idempotent_retry(direct_module):
+    draft = _make_direct(direct_module, difficulty_max=10)
+    item = next(q for q in draft["students"][0]["items"] if q["question_id"] in range(100, 114))
+    def command(action, token, revision, replacement=None):
+        return RecommendationEditCommand(request_token=token*32,expected_revision=revision,action=action,
+            student_id="A",item_id=item["item_id"],actor_ref="synthetic",reason="合成验收",replacement_question_id=replacement)
+    lock = command("lock","b",1)
+    locked = direct_module.edit(draft["draft_id"],lock)
+    assert direct_module.edit(draft["draft_id"],lock) == locked
+    with pytest.raises(RecommendationEditInvalid): direct_module.edit(draft["draft_id"],command("replace","c",2))
+    direct_module.edit(draft["draft_id"],command("unlock","d",2))
+    with pytest.raises(RecommendationEditInvalid): direct_module.edit(draft["draft_id"],command("replace","e",3,46))
+    other = next(q for q in draft["students"][0]["items"] if q["question_id"] == 300)
+    with pytest.raises(RecommendationEditInvalid):
+        direct_module.edit(draft["draft_id"], RecommendationEditCommand(
+            request_token="9"*32, expected_revision=3, action="replace", student_id="A",
+            item_id=other["item_id"], actor_ref="synthetic", reason="不能换入已选题的数字变式", replacement_question_id=102))
+    replaced = direct_module.edit(draft["draft_id"],command("replace","f",3))
+    replacement = next(q for q in replaced["students"][0]["items"] if q["item_id"] == item["item_id"])
+    assert replacement["question_id"] != item["question_id"]
+    assert replacement["target"]["target_difficulty"] == item["target"]["target_difficulty"]
+    assert replacement["replacement_history"] and replacement["difficulty"] in (7,8)
+    items = replaced["students"][0]["items"]
+    assert [q["difficulty"] for q in items] == sorted(q["difficulty"] for q in items)
+    assert [q["item_order"] for q in items] == list(range(1, len(items) + 1))
+    assert direct_module.get(draft["draft_id"]) == replaced
+    removed = direct_module.edit(draft["draft_id"],command("exclude","1",4))
+    assert len(removed["students"][0]["items"]) == len(draft["students"][0]["items"]) - 1
+    assert direct_module.get(draft["draft_id"]) == removed
+    assert [q["item_order"] for q in removed["students"][0]["items"]] == list(range(1, len(items)))
+
+    supplement = next(q for q in removed["students"][0]["items"] if q["selection_kind"] == "supplement")
+    count_before = sum(q["selection_kind"] == "supplement" for q in removed["students"][0]["items"])
+    updated = direct_module.edit(draft["draft_id"], RecommendationEditCommand(
+        request_token="8"*32, expected_revision=5, action="exclude", student_id="A", item_id=supplement["item_id"],
+        actor_ref="synthetic", reason="移除补充题后更新题量说明"))
+    count_text = f" {count_before - 1} 道补充练习"
+    warnings = updated["students"][0]["warnings"]
+    assert any(count_text in warning for warning in warnings) if count_before > 1 else not any("直接练习不足，已用" in w for w in warnings)
+    assert direct_module.get(draft["draft_id"]) == updated
+
+
+def test_source_difficulty_change_invalidates_draft(direct_module):
+    draft = _make_direct(direct_module)
+    assert direct_module.ensure_current(draft["draft_id"]) == draft
+    with connect(direct_module.db_path) as conn: conn.execute("UPDATE questions SET difficulty='4' WHERE id=900")
+    with pytest.raises(RecommendationSourceChanged): direct_module.ensure_current(draft["draft_id"])
+    with pytest.raises(RecommendationRequestConflict): _make_direct(direct_module, diagnosis=_direct_diagnosis((("B",.8,900,BNU_TARGET),)))
+
+
+def test_concurrent_teacher_edits_allow_only_one_revision(direct_module):
+    draft = _make_direct(direct_module)
+    item = draft["students"][0]["items"][0]
+    def apply(token):
+        try:
+            direct_module.edit(draft["draft_id"],RecommendationEditCommand(request_token=token*32,expected_revision=1,
+                action="lock",student_id="A",item_id=item["item_id"],actor_ref="synthetic",reason="并发验收"))
+            return "applied"
+        except RecommendationRevisionConflict: return "conflict"
+    with ThreadPoolExecutor(max_workers=2) as pool: results = list(pool.map(apply,("b","c")))
+    assert sorted(results) == ["applied","conflict"]
+    assert direct_module.get(draft["draft_id"])["revision"] == 2
+
+
+def test_recent_exact_duplicate_is_excluded_for_the_student(direct_module):
+    _mark_question_recent(direct_module.db_path,student_id="A",question_id=100)
+    draft = _make_direct(direct_module)
+    assert 100 not in [q["question_id"] for q in draft["students"][0]["items"]]
+
+
+def test_direct_scope_does_not_expand_confirmed_or_textbook_neighbours(direct_module):
+    draft = _make_direct(direct_module, direct_ratio=0, prerequisite_ratio=.5, transfer_ratio=.5)
+    assert draft["students"][0]["items"]
+    assert all(q["stage"] == "direct" for q in draft["students"][0]["items"])
+    assert all(q["matched_key"] == BNU_TARGET for q in draft["students"][0]["items"] if q["selection_kind"] == "direct")
+    assert all(q["matched_key"].startswith(BNU_CHAPTER4 + "_") for q in draft["students"][0]["items"])
+
+
+def _selection_candidate(qid, text, key=BNU_TARGET, difficulty=5, **extra):
+    return {"question_id": qid, "question_number": str(qid), "question_type": "选择题",
+            "question_text": text, "difficulty": difficulty, "stable_keys": [key],
+            "required_keys": [key], "scope_complete": True, "stable_names": {key: key},
+            "criterion_version_id": "c" * 64, "criterion_point_count": 1,
+            "source_paper": "合成题源", "similarity_profile": {"tags": []}, **extra}
+
+
+def _selection_draft(monkeypatch, candidates, diagnosis=None, shared=False, question_count=10, **settings):
+    module = object.__new__(PersonalizedRecommendationModule)
+    monkeypatch.setattr(module, "_source_practice_metadata", lambda _: {})
+    diagnosis = deepcopy(diagnosis or _direct_diagnosis())
+    mastery = {}
+    for student in diagnosis["students"]:
+        for point in student["weak_points"]:
+            for ref in point["source_question_refs"]:
+                ref.setdefault("question_difficulty", 5)
+            key = point["knowledge_key"]
+            mastery[(student["student_id"], key)] = {**point, "stable_key": key, "display_name": key}
+    return module._build_draft(
+        diagnosis=diagnosis, config=PersonalizedRecommendationConfig(
+            question_count=question_count, paper_mode="shared" if shared else "individual", scope_keys=(BNU_CHAPTER4,), **settings),
+        candidates=tuple(candidates), relations=tuple(
+            {"relation_type": "parent", "source_key": key, "target_key": BNU_CHAPTER4}
+            for key in (BNU_TARGET, BNU_PREREQ_NEAR)), mastery=mastery, recent={}, excluded_question_ids=set())
+
+
+def test_same_knowledge_survives_missing_or_different_fine_method_model_and_response_tags(monkeypatch):
+    diagnosis = _direct_diagnosis()
+    ref = diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
+    ref.update(direct_keys=[BNU_TARGET, BNU_PREREQ_NEAR], direct_fine_terms=["原题细项"],
+               practice_tags={"method": ["公式计算"], "model": ["直角三角形"]},
+               question_type="解答题", deduction_reason="缺少依据和推理步骤")
+    candidate = _selection_candidate(1, "从正方形面积关系中选择满足条件的边长")
+    candidate["practice_observations_by_key"] = {BNU_TARGET: [{"response_mode": "answer_only", "fine_terms": ["另一细项"]}]}
+    item = _selection_draft(monkeypatch, [candidate], diagnosis)["students"][0]["items"][0]
+    assert item["selection_kind"] == "direct"
+    assert item["question_id"] == 1
+    assert item["practice_tasks"] == []  # Answer-only criteria cannot claim written-reasoning assessment.
+    assert "相近解题要求与方法" not in item["reason"]
+    ref.pop("practice_tags")
+    ref.pop("direct_fine_terms")
+    assert _selection_draft(monkeypatch, [candidate], diagnosis)["students"][0]["items"]
+
+
+def test_range_supplements_fill_ten_without_claiming_new_weaknesses(monkeypatch):
+    texts = ["用拼图面积说明一个边长等式", "从坐标计算两个标记之间的距离", "分析折断树木触地点与树根间距",
+             "研究梯子沿墙滑动后底端位置", "在长方体表面规划蚂蚁的最短行程", "水池中央芦苇弯曲时求水深",
+             "利用菱形对角线计算四条边的总长", "测量河宽时设置岸上的垂直标杆", "围绕等边三角形中线建立关系",
+             "观察纸片折叠后重合点的位置", "利用风筝斜线长度求离地高度", "在扇形内部确定弦与半径的位置"]
+    candidates = [_selection_candidate(i + 1, text, BNU_TARGET if i < 2 else BNU_PREREQ_NEAR,
+                                       5 if i % 2 == 0 else 4) for i, text in enumerate(texts)]
+    candidates += [_selection_candidate(90, "范围外的概率题", BNU_OTHER_CHAPTER, 5),
+                   _selection_candidate(91, "范围内过难的综合题", BNU_PREREQ_NEAR, 8),
+                   _selection_candidate(92, "范围内太简单的填空题", BNU_PREREQ_NEAR, 1)]
+    before = deepcopy(candidates)
+    student = _selection_draft(monkeypatch, candidates)["students"][0]
+    assert len(student["items"]) == 10
+    assert sum(item["selection_kind"] == "direct" for item in student["items"]) == 2
+    assert sum(item["selection_kind"] == "supplement" for item in student["items"]) == 8
+    assert [item["difficulty"] for item in student["items"]] == sorted(item["difficulty"] for item in student["items"])
+    assert all(item["question_id"] < 90 and item["difficulty"] in (4, 5) for item in student["items"])
+    for item in (q for q in student["items"] if q["selection_kind"] == "supplement"):
+        assert item["matched_key"] == BNU_PREREQ_NEAR
+        assert item["target"]["stable_key"] == BNU_TARGET  # Origin is retained only as the difficulty basis.
+        assert "补充练习" in item["reason"] and "对应错题" not in item["reason"]
+        assert not item["practice_tasks"]
+    assert not student["shortages"]
+    assert candidates == before  # Selection never rewrites tags or criteria.
+
+
+def test_public_paper_covers_minority_need_before_repeating_majority(monkeypatch):
+    diagnosis = _direct_diagnosis(tuple((sid, .8, 900, BNU_TARGET) for sid in "ABCDE") + (("F", .79, 901, BNU_PREREQ_NEAR),))
+    candidates = [_selection_candidate(1, "已知两直角边求三角形周长"),
+                  _selection_candidate(2, "根据图形中的面积差推算线段长度"),
+                  _selection_candidate(3, "在网格纸中观察对称点之间的距离"),
+                  _selection_candidate(4, "测绘队沿两个方向行走后测算直线距离"),
+                  _selection_candidate(9, "识别两个全等图形的对应角", BNU_PREREQ_NEAR)]
+    first = _selection_draft(monkeypatch, candidates, diagnosis, shared=True)
+    items = first["students"][0]["items"]
+    assert items[0]["beneficiary_student_ids"] == list("ABCDE")
+    assert items[1]["question_id"] == 9
+    assert items[1]["beneficiary_student_ids"] == ["F"]
+    diagnosis["students"].reverse()
+    second = _selection_draft(monkeypatch, list(reversed(candidates)), diagnosis, shared=True)
+    assert {tuple(item["question_id"] for item in student["items"]) for student in second["students"]} == {
+        tuple(item["question_id"] for item in items)}
+
+
+def test_each_loss_difficulty_is_covered_before_extra_practice(monkeypatch):
+    diagnosis = _direct_diagnosis()
+    refs = diagnosis["students"][0]["weak_points"][0]["source_question_refs"]
+    refs[0]["question_difficulty"] = 3
+    refs.append({**deepcopy(refs[0]), "question_id": "Q901", "bank_question_id": 901, "question_difficulty": 6})
+    texts = ["观察网格中的线段关系并填空", "已知等式求出图形中的未知边", "从正方形面积推算边长",
+             "比较两条道路的长度", "利用绳子测量井深", "测算梯子顶部离地高度", "判断木框能否通过门洞",
+             "用拼图展示面积之间的关系", "根据航海路线确定距离"]
+    candidates = [_selection_candidate(index, text, difficulty=3) for index, text in enumerate(texts, 1)]
+    candidates.append(_selection_candidate(20, "折叠纸片并由多组条件求重合点位置", difficulty=6))
+    items = _selection_draft(monkeypatch, candidates, diagnosis, question_count=8)["students"][0]["items"]
+    assert [item["difficulty"] for item in items] == [3] * 7 + [6]
+    assert {q["target"]["source_question_refs"][0]["question_id"] for q in items} == {"Q900", "Q901"}
+
+
+def test_numeric_variants_and_basic_judgements_do_not_fill_the_paper(monkeypatch):
+    from question_bank.recommendation.personalized import _paper_diversity_allowed
+    diagnosis = _direct_diagnosis()
+    diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]["question_difficulty"] = 3
+    candidates = [_selection_candidate(i + 1, f"已知一个直角三角形的两条直角边长分别为 {i+3} 和 {i+4}，求斜边长。", difficulty=3)
+                  for i in range(12)]
+    candidates += [_selection_candidate(20, "下列给出的数组中，哪些是勾股数？", difficulty=3),
+                   _selection_candidate(21, "一根绳子分成三段，能否构成直角三角形？", difficulty=3),
+                   _selection_candidate(22, "小明列出几种三边长度，请判断其中的直角三角形。", difficulty=3)]
+    items = _selection_draft(monkeypatch, candidates, diagnosis)["students"][0]["items"]
+    assert len([item for item in items if item["question_id"] <= 12]) == 1
+    assert len([item for item in items if item["question_id"] >= 20]) == 2
+    assert len(items) == 3
+    other_image = {**candidates[0], "question_id": 99, "image_identity": ("different-drawing",)}
+    assert _paper_diversity_allowed(other_image, [candidates[0]])
+
+
+def test_supplements_do_not_hide_an_uncovered_loss(monkeypatch):
+    student = _selection_draft(monkeypatch, [
+        _selection_candidate(1, "由对称图形的对应边读出长度", BNU_PREREQ_NEAR)
+    ])["students"][0]
+    assert student["items"][0]["selection_kind"] == "supplement"
+    assert any("尚未获得直接练习" in warning for warning in student["warnings"])
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_easy_first_presentation_keeps_tied_order_and_all_loss_sources(monkeypatch, shared):
+    diagnosis = _direct_diagnosis((("A", .9, 900, BNU_TARGET), ("B", .9, 900, BNU_TARGET)))
+    for student in diagnosis["students"]:
+        refs = student["weak_points"][0]["source_question_refs"]
+        refs[0]["question_difficulty"] = 6
+        refs.append({**deepcopy(refs[0]), "question_id": "Q901", "bank_question_id": 901, "question_difficulty": 3})
+    parts = {"parts": [{"label": "(1)", "difficulty": 2}, {"label": "(2)", "difficulty": 6}]}
+    candidates = [
+        _selection_candidate(1, "通过辅助线构造全等三角形证明结论", difficulty=6, part_assessment=parts),
+        _selection_candidate(2, "从已知面积推算正方形的边长", difficulty=3),
+        _selection_candidate(3, "计算小船沿河航行后与码头的直线距离", difficulty=3),
+    ]
+    draft = _selection_draft(monkeypatch, candidates, diagnosis, shared=shared)
+    for student in draft["students"]:
+        items = student["items"]
+        assert [q["question_id"] for q in items] == [2, 3, 1]
+        assert [q["difficulty"] for q in items] == [3, 3, 6]
+        assert [q["item_order"] for q in items] == [1, 2, 3]
+        assert items[-1]["part_assessment"] == parts
+        assert {q["target"]["source_question_refs"][0]["question_id"] for q in items} == {"Q900", "Q901"}
+        assert all(student["student_id"] in q["beneficiary_student_ids"] for q in items)
+
+
+def test_extra_in_scope_knowledge_does_not_hide_better_method_and_model_matches(monkeypatch):
+    diagnosis = _direct_diagnosis()
+    ref = diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
+    ref.update(direct_keys=[BNU_TARGET], question_type="解答题",
+               practice_tags={"method": ["列方程"], "model": ["直角三角形"]})
+    choice = _selection_candidate(1, "观察三角形中的已知数据选择线段长度",
+        similarity_profile={"tags": [{"tag_type": "model", "tag_value": "直角三角形"}]})
+    written = _selection_candidate(2, "结合全等关系列方程计算未知边长", question_type="解答题",
+        stable_keys=[BNU_TARGET, BNU_PREREQ_NEAR], required_keys=[BNU_TARGET, BNU_PREREQ_NEAR],
+        similarity_profile={"tags": [{"tag_type": "method", "tag_value": "列方程"},
+                                     {"tag_type": "model", "tag_value": "直角三角形"}]})
+    items = _selection_draft(monkeypatch, [choice, written], diagnosis)["students"][0]["items"]
+    assert items[0]["question_id"] == 2
+    assert items[0]["difficulty"] == 5
+    # The same source still admits a single-knowledge question when it is all we have.
+    assert _selection_draft(monkeypatch, [choice], diagnosis)["students"][0]["items"][0]["question_id"] == 1
+
+
+def test_thought_match_prefers_candidate_without_becoming_a_gate(monkeypatch):
+    diagnosis = _direct_diagnosis()
+    ref = diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
+    ref["practice_tags"] = {"thought": ["分类讨论"]}
+    plain = _selection_candidate(1, "由已知边长计算一个三角形的面积")
+    matching = _selection_candidate(2, "讨论顶点不同位置下三角形的边长",
+        similarity_profile={"tags": [{"tag_type": "thought", "tag_value": "分类讨论"}]})
+    items = _selection_draft(monkeypatch, [plain, matching], diagnosis)["students"][0]["items"]
+    assert items[0]["question_id"] == 2
+    assert _selection_draft(monkeypatch, [plain], diagnosis)["students"][0]["items"]
+    ref.pop("practice_tags")
+    assert len(_selection_draft(monkeypatch, [plain, matching], diagnosis)["students"][0]["items"]) == 2
+
+
+def test_thought_tags_are_read_from_bank_and_invalidate_saved_source(direct_module):
+    with connect(direct_module.db_path) as conn:
+        for qid in (900, 301):
+            conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES (?,'thought','分类讨论','synthetic')", (qid,))
+    metadata = direct_module._source_practice_metadata(_direct_diagnosis())
+    assert metadata[900]["practice_tags"]["thought"] == ["分类讨论"]
+    candidates, _, _ = direct_module._source_snapshot()
+    assert {"tag_type": "thought", "tag_value": "分类讨论"} in next(q for q in candidates if q["question_id"] == 301)["similarity_profile"]["tags"]
+    draft = _make_direct(direct_module)
+    assert direct_module.get(draft["draft_id"]) == draft
+    with connect(direct_module.db_path) as conn:
+        conn.execute("UPDATE question_tags SET tag_value='数形结合' WHERE question_id=301 AND tag_type='thought'")
+    with pytest.raises(RecommendationSourceChanged):
+        direct_module.ensure_current(draft["draft_id"])
+
+
+def _printed_original_variants(data_root):
+    from PIL import Image, ImageChops, ImageDraw
+    import numpy as np
+    folder = data_root / "question_bank" / "extracted_images"
+    folder.mkdir(parents=True, exist_ok=True)
+    drawing = Image.new("RGB", (160, 100), "white")
+    pen = ImageDraw.Draw(drawing)
+    pen.line([(20, 15), (20, 80), (130, 80), (20, 15)], fill="black", width=2)
+    pen.text((3, 10), "A", fill="black")
+    pen.text((65, 83), "12", fill="black")
+    background = Image.new("RGB", drawing.size, "white")
+    ImageDraw.Draw(background).text((35, 32), "SYNTHETIC", fill=(205, 220, 235))
+    # Same contours with channel-rounding noise across the entire picture.
+    # A few dark pixels also have the small tint produced by image encoders.
+    encoded_pixels = np.array(drawing)
+    encoded_pixels[:, :, 0] = np.maximum(encoded_pixels[:, :, 0].astype(int) - 1, 0)
+    encoded_pixels[16, 20] = (11, 20, 8)
+    encoded = Image.fromarray(encoded_pixels)
+    pale = Image.new("RGB", drawing.size, "white")
+    ImageDraw.Draw(pale).text((40, 55), "PRINT", fill=(249, 252, 255))
+    encoded = ImageChops.darker(encoded, pale)
+    changed = drawing.copy()
+    ImageDraw.Draw(changed).line((20, 80, 100, 20), fill="black", width=2)
+    label = drawing.copy()
+    ImageDraw.Draw(label).rectangle((62, 82, 90, 99), fill="white")
+    ImageDraw.Draw(label).text((65, 83), "13", fill="black")
+    for name, picture in (("original", drawing), ("printed", ImageChops.darker(drawing, background)), ("encoded", encoded),
+                          ("changed", changed), ("label", label)):
+        picture.save(folder / f"{name}.png")
+    stem = "如图，两根竖直杆高分别为9米、4米，杆底相距12米，求两杆顶端的距离。"
+    def row(number, name, text=stem):
+        path = f"question_bank/extracted_images/{name}.png"
+        return {"question_number": str(number), "question_text": f"{number}. {text}[[IMAGE:{path}]]",
+                "has_images": True, "image_paths": [path]}
+    return {
+        "original": row(17, "original"),
+        "printed": row(39, "printed", "（3分）" + stem),
+        "encoded": row(44, "encoded", "（6分）" + stem),
+        "numbers": row(40, "printed", stem.replace("12米", "13米")),
+        "drawing": row(41, "changed"),
+        "label": row(42, "label"),
+        "missing": row(43, "missing"),
+    }
+
+
+def test_original_comparison_ignores_printing_but_preserves_question_conditions(tmp_path):
+    from question_bank.services.duplicate_analysis_copy_service import exact_question_key, exam_original_key
+    rows = _printed_original_variants(tmp_path)
+    keys = {name: exam_original_key(row, data_root=tmp_path) for name, row in rows.items()}
+    assert keys["original"] and keys["original"] == keys["printed"] == keys["encoded"]
+    assert all(keys["original"] != keys[name] for name in ("numbers", "drawing", "label"))
+    assert not keys["missing"]
+    # Exclusion tolerance must not change import-time copying or bank identities.
+    assert exact_question_key(rows["original"], data_root=tmp_path) != exact_question_key(rows["printed"], data_root=tmp_path)
+    assert exact_question_key(rows["original"], data_root=tmp_path) != exact_question_key(rows["encoded"], data_root=tmp_path)
+    def key(text, **kwargs):
+        return exam_original_key({"question_text": text, "question_number": "3", **kwargs}, data_root=tmp_path)
+    assert key("3.5的平方") != key("5的平方")
+    assert key("选出正确结果", options=["A.3", "B.4"]) != key("选出正确结果", options=["A.4", "B.3"])
+    assert exam_original_key({"question_text": "求下式的值"}, data_root=tmp_path,
+        rich_content={"math_expressions": [{"restricted_latex": "x^2+1"}]}) != exam_original_key(
+        {"question_text": "求下式的值"}, data_root=tmp_path,
+        rich_content={"math_expressions": [{"restricted_latex": "x^2-1"}]})
+
+
+@pytest.mark.parametrize("shade", [(180, 180, 180), (205, 220, 235), (0, 120, 200)])
+def test_original_comparison_preserves_gray_lines_and_shaded_regions(tmp_path, shade):
+    from PIL import Image, ImageDraw
+    from question_bank.services.duplicate_analysis_copy_service import exam_original_key
+    rows = _printed_original_variants(tmp_path)
+    folder = tmp_path / "question_bank" / "extracted_images"
+    picture = Image.open(folder / "original.png").convert("RGB")
+    drawing = ImageDraw.Draw(picture)
+    drawing.rectangle((28, 45, 45, 68), fill=shade)
+    drawing.line((20, 80, 100, 20), fill=(180, 180, 180), width=1)
+    picture.save(folder / "shaded.png")
+    row = {**rows["original"], "image_paths": ["question_bank/extracted_images/shaded.png"],
+           "question_text": rows["original"]["question_text"].replace("original.png", "shaded.png")}
+    assert exam_original_key(rows["original"], data_root=tmp_path) != exam_original_key(row, data_root=tmp_path)
+
+
+@pytest.mark.parametrize("shade", [(180, 180, 180), (230, 230, 230), (245, 245, 245), (0, 100, 200)])
+def test_printed_identity_keeps_an_added_auxiliary_line_without_a_large_region(tmp_path, shade):
+    from PIL import Image, ImageDraw
+    from question_bank.services.duplicate_analysis_copy_service import exam_original_key
+    rows = _printed_original_variants(tmp_path)
+    folder = tmp_path / "question_bank" / "extracted_images"
+    with Image.open(folder / "original.png") as source:
+        picture = source.convert("RGB")
+    ImageDraw.Draw(picture).line((30, 65, 60, 65), fill=shade, width=1)
+    picture.save(folder / "auxiliary.png")
+    row = {**rows["original"], "image_paths": ["question_bank/extracted_images/auxiliary.png"],
+           "question_text": rows["original"]["question_text"].replace("original.png", "auxiliary.png")}
+    assert exam_original_key(rows["original"], data_root=tmp_path) != exam_original_key(row, data_root=tmp_path)
+
+
+def test_exam_duplicate_is_excluded_despite_printing_and_tag_differences(direct_module):
+    variants = _printed_original_variants(direct_module.data_root)
+    rows = [(900, "original", BNU_TARGET), (902, "printed", BNU_PREREQ_NEAR),
+            (903, "numbers", BNU_TARGET), (904, "drawing", BNU_TARGET), (905, "encoded", BNU_TARGET)]
+    with connect(direct_module.db_path) as conn:
+        _insert_bnu24_questions(conn, tuple((qid, str(qid), "填空题", variants[name]["question_text"], "7", key)
+            for qid, name, key in rows if qid != 900))
+        for qid, name, _ in rows:
+            row = variants[name]
+            conn.execute("UPDATE questions SET question_number=?,question_text=?,has_images=1,image_paths=? WHERE id=?",
+                (row["question_number"], row["question_text"], json.dumps(row["image_paths"]), qid))
+        conn.execute("INSERT INTO grading_question_links(grading_session_id,source_question_id,bank_question_id,link_method,status) VALUES ('1','Q900',900,'manual','confirmed')")
+    _approve_synthetic_criteria(direct_module.db_path, direct_module.data_root, (902, 903, 904, 905))
+    assert direct_module._current_exam_question_ids(_direct_diagnosis()) == {900, 902, 905}
+    draft = _make_direct(direct_module, exclude_current_exam_originals=True)
+    assert draft["students"][0]["items"]
+    assert not {900, 902, 905}.intersection(q["question_id"] for q in draft["students"][0]["items"])
+    assert direct_module.get(draft["draft_id"]) == draft
+    allowed = _make_direct(direct_module, token="b", exclude_current_exam_originals=False)
+    assert len({902, 905} & {q["question_id"] for q in allowed["students"][0]["items"]}) == 1
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_printed_duplicates_are_excluded_from_generation_and_replacement(direct_module, shared):
+    from question_bank.recommendation.personalized import _paper_diversity_allowed
+    variants = _printed_original_variants(direct_module.data_root)
+    rows = [(910, "original"), (911, "encoded"), (912, "drawing")]
+    with connect(direct_module.db_path) as conn:
+        _insert_bnu24_questions(conn, tuple((qid, str(qid), "解答题", variants[name]["question_text"], "7", BNU_TARGET)
+                                           for qid, name in rows))
+        for qid, name in rows:
+            variant = variants[name]
+            conn.execute("UPDATE questions SET question_number=?,has_images=1,image_paths=? WHERE id=?",
+                         (variant["question_number"], json.dumps(variant["image_paths"]), qid))
+    _approve_synthetic_criteria(direct_module.db_path, direct_module.data_root, (910, 911, 912))
+    candidates, _, _ = direct_module._source_snapshot()
+    by_id = {q["question_id"]: q for q in candidates}
+    assert by_id[910]["duplicate_identity"] != by_id[911]["duplicate_identity"]
+    assert by_id[910]["practice_identity"] == by_id[911]["practice_identity"]
+    assert not _paper_diversity_allowed(by_id[911], [by_id[910]])
+    assert _paper_diversity_allowed(by_id[912], [by_id[910]])
+    diagnosis = _direct_diagnosis((("A", .9, 900, BNU_TARGET), ("B", .9, 900, BNU_TARGET)))
+    draft = _make_direct(direct_module, diagnosis=diagnosis, paper_mode="shared" if shared else "individual")
+    for student in draft["students"]:
+        chosen = {q["question_id"] for q in student["items"]}
+        assert len(chosen & {910, 911}) == 1
+        assert 912 in chosen  # The extra line encodes a genuinely different drawing.
+    student = draft["students"][0]
+    chosen = {q["question_id"] for q in student["items"]}
+    duplicate = ({910, 911} - chosen).pop()
+    other = next(q for q in student["items"] if q["question_id"] not in {910, 911})
+    message = "shared paper questions cannot be edited" if shared else "no approved replacement"
+    with pytest.raises(RecommendationEditInvalid, match=message):
+        direct_module.edit(draft["draft_id"], RecommendationEditCommand(request_token="c" * 32,
+            expected_revision=1, action="replace", student_id=student["student_id"], item_id=other["item_id"],
+            actor_ref="synthetic", reason="合成重复题换题验证", replacement_question_id=duplicate))
+    assert direct_module.get(draft["draft_id"]) == draft
+
+
+def _ordered_paper_workspace(tmp_path):
+    from html import escape
+    from question_bank.services.rich_content_service import save_question_rich_content
+    db_path, data_root = tmp_path / "question_bank.db", tmp_path / "data"
+    initialize_database(db_path)
+    install_current_knowledge(db_path, taxonomy_revision=4)
+    questions = (
+        (900, "17", "选择题", "合成错题：根据直角三角形边长关系求值", "5", BNU_TARGET),
+        (201, "21", "解答题", "直角三角形的两条直角边分别为6和8，求斜边长并写出计算过程。", "5", BNU_TARGET),
+        (202, "22", "填空题", "边长为5的正方形，其面积是____。", "4", BNU_TARGET),
+        (203, "23", "选择题", "长方形对角线将图形分成的两个三角形是否全等？A.是 B.否", "5", BNU_TARGET),
+        (204, "24", "解答题", "直角三角形的两条直角边分别为9和12，求斜边长并写出计算过程。", "4", BNU_TARGET),
+    )
+    with connect(db_path) as conn:
+        _insert_bnu24_questions(conn, questions)
+    for qid, _, _, text, _, _ in questions:
+        save_question_rich_content(qid, root=data_root / "question_bank" / "rich_content", question_blocks=[{
+            "text": text, "xml": '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:t>'
+            + escape(text) + '</w:t></w:r></w:p>',
+        }])
+    _approve_synthetic_criteria(db_path, data_root, (201, 202, 203, 204))
+    module = PersonalizedRecommendationModule(db_path=db_path, data_root=data_root, clock=lambda: NOW)
+    return module, _make_direct(module)
+
+
+def test_replacement_reorders_saved_draft_and_paper_uses_the_same_question_numbers(tmp_path):
+    from docx import Document
+    from question_bank.personalized_papers import CreatePaperCommand, PersonalizedPaperModule
+    from question_bank.personalized_papers.latex_render import render_training_tex
+    module, draft = _ordered_paper_workspace(tmp_path)
+    assert [q["question_id"] for q in draft["students"][0]["items"]] == [202, 203, 201]
+    item = draft["students"][0]["items"][-1]
+    updated = module.edit(draft["draft_id"], RecommendationEditCommand(
+        request_token="b" * 32, expected_revision=1, action="replace", student_id="A", item_id=item["item_id"],
+        actor_ref="synthetic", reason="换为较简单的合成题", replacement_question_id=204))
+    reentered = module.get(draft["draft_id"])
+    assert reentered == updated
+    expected = [202, 204, 203]
+    items = reentered["students"][0]["items"]
+    assert [q["question_id"] for q in items] == expected
+    assert [q["difficulty"] for q in items] == [4, 4, 5]
+    assert items[1]["item_id"] == item["item_id"]
+    paper_module = PersonalizedPaperModule(db_path=module.db_path, data_root=module.data_root, clock=lambda: NOW)
+    paper = paper_module.create_review_instance(draft["draft_id"], CreatePaperCommand(
+        operation_token="c" * 32, expected_draft_revision=2, student_id="A", actor_ref="synthetic"))
+    with connect(module.db_path) as conn:
+        snapshot = json.loads(conn.execute("SELECT snapshot_json FROM personalized_paper_instances WHERE paper_instance_id=?",
+            (paper["paper_instance_id"],)).fetchone()[0])
+        saved = conn.execute("SELECT bank_question_id,item_order,task_item_code FROM personalized_paper_items WHERE paper_instance_id=? ORDER BY item_order",
+            (paper["paper_instance_id"],)).fetchall()
+    assert [q["bank_question_id"] for q in saved] == expected
+    assert [q["item_order"] for q in saved] == [1, 2, 3]
+    assert all(q["task_item_code"].endswith(f"Q{index:02d}") for index, q in enumerate(saved, 1))
+    review_path, _ = paper_module.artifact_path(paper["paper_instance_id"], "review-docx")
+    document_text = "\n".join(p.text for p in Document(review_path).paragraphs)
+    tex = render_training_tex(snapshot, data_root=module.data_root)
+    markers = ["边长为5的正方形", "直角三角形的两条直角边分别为9和12", "长方形对角线"]
+    for content in (document_text, tex):
+        assert [content.index(marker) for marker in markers] == sorted(content.index(marker) for marker in markers)

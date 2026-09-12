@@ -117,6 +117,7 @@ describe('knowledge graph view', () => {
     }, expect.any(AbortSignal)))
     expect(host.textContent).toContain('知识图谱')
     expect(host.textContent).toContain('三角形全等')
-    expect(host.textContent).toContain('已确认关系')
+    expect(host.textContent).toContain('知识点')
+    expect(host.textContent).not.toContain('已确认关系')
   })
 })

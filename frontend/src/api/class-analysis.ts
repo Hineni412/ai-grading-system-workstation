@@ -1,6 +1,8 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
+import type { QuestionBankRichContent } from './question-bank'
+import { isConfigRichContent } from './config-workspace'
 
 export const CLASS_ANALYSIS_STATUSES = ['no_data', 'ready', 'generating'] as const
 
@@ -24,10 +26,44 @@ export interface ClassScoreDistribution {
 
 export interface ClassAnalysisRecord {
   student_name: string
+  student_id?: number
+  student_code?: string
+  class_name?: string
   score: number | null
   deduction_reason: string | null
   error_category: string | null
   error_summary: string | null
+}
+
+export interface ClassCauseEvidence {
+  text: string
+  student_ids: number[]
+  student_answer?: string
+  evidence_steps?: string[]
+  missing_steps?: string[]
+  previous_answers?: { question_id: string; student_answer: string; text: string; evidence_steps: string[] }[]
+}
+
+export const CLASS_CAUSE_KINDS = ['error', 'process', 'response_state', 'carry_forward', 'review'] as const
+export type ClassCauseKind = (typeof CLASS_CAUSE_KINDS)[number]
+
+export interface ClassCause {
+  reason: string
+  count: number
+  kind?: ClassCauseKind
+  evidence?: ClassCauseEvidence[]
+  manifestations?: { description: string; source_question_id: string | null; evidence: ClassCauseEvidence[] }[]
+}
+
+export interface ClassCauseAnalysis {
+  status: 'ready' | 'partial' | 'not_generated'
+  pending_questions: number
+  total_questions: number
+  failed_questions: number
+  legacy_questions?: number
+  stale: boolean
+  generated_at: string | null
+  origin: string | null
 }
 
 export interface ClassAnalysisQuestion {
@@ -37,6 +73,18 @@ export interface ClassAnalysisQuestion {
   stem_summary: string | null
   canonical_answer: string | null
   records: ClassAnalysisRecord[]
+  causes?: ClassCause[]
+  causes_grouped?: boolean
+  causes_legacy?: boolean
+  cause_review?: { positive: ClassCauseEvidence[]; uncertain: ClassCauseEvidence[] }
+}
+
+export interface ClassQuestionPreview {
+  question_id: string
+  parent_question_id: string
+  text: string
+  rich_content: QuestionBankRichContent
+  notice: string
 }
 
 export interface ClassAnalysisLostRecord {
@@ -105,6 +153,9 @@ export interface ClassAnalysisResponse {
   generated_at: string | null
   stale: boolean
   active_job_id: number | null
+  class_names?: string[]
+  selected_class?: string | null
+  cause_analysis?: ClassCauseAnalysis | null
 }
 
 export interface ClassAnalysisSettings {
@@ -124,18 +175,24 @@ function decodeRecord(value: unknown): ClassAnalysisRecord {
     !isRecord(value)
     || typeof value.student_name !== 'string'
     || !(isFiniteNumber(value.score) || value.score === null)
-    || !isNullableString(value.deduction_reason)
-    || !isNullableString(value.error_category)
-    || !isNullableString(value.error_summary)
+    || !(value.deduction_reason === undefined || isNullableString(value.deduction_reason))
+    || !(value.error_category === undefined || isNullableString(value.error_category))
+    || !(value.error_summary === undefined || isNullableString(value.error_summary))
+    || !(value.student_id === undefined || isFiniteNumber(value.student_id))
+    || !(value.student_code === undefined || typeof value.student_code === 'string')
+    || !(value.class_name === undefined || typeof value.class_name === 'string')
   ) {
     throw new Error('Invalid class analysis record')
   }
   return {
     student_name: value.student_name,
+    ...(typeof value.student_id === 'number' ? { student_id: value.student_id } : {}),
+    ...(typeof value.student_code === 'string' ? { student_code: value.student_code } : {}),
+    ...(typeof value.class_name === 'string' ? { class_name: value.class_name } : {}),
     score: value.score,
-    deduction_reason: value.deduction_reason,
-    error_category: value.error_category,
-    error_summary: value.error_summary,
+    deduction_reason: value.deduction_reason ?? null,
+    error_category: value.error_category ?? null,
+    error_summary: value.error_summary ?? null,
   }
 }
 
@@ -155,6 +212,55 @@ function decodeLostRecord(value: unknown): ClassAnalysisLostRecord {
   }
 }
 
+function decodeCauseEvidence(value: unknown): ClassCauseEvidence[] {
+  const strings = (items: unknown) => Array.isArray(items) && items.every((item) => typeof item === 'string')
+  if (!Array.isArray(value) || !value.every((item) => (
+    isRecord(item) && typeof item.text === 'string'
+    && Array.isArray(item.student_ids) && item.student_ids.every(isNonNegativeCount)
+    && (item.student_answer === undefined || typeof item.student_answer === 'string')
+    && (item.evidence_steps === undefined || strings(item.evidence_steps))
+    && (item.missing_steps === undefined || strings(item.missing_steps))
+    && (item.previous_answers === undefined || (Array.isArray(item.previous_answers) && item.previous_answers.every((previous) => (
+      isRecord(previous) && typeof previous.question_id === 'string' && typeof previous.student_answer === 'string'
+      && typeof previous.text === 'string' && strings(previous.evidence_steps)
+    ))))
+  ))) throw new Error('Invalid class cause evidence')
+  return value as ClassCauseEvidence[]
+}
+
+function decodeCause(value: unknown): ClassCause {
+  if (!isRecord(value) || typeof value.reason !== 'string' || !isNonNegativeCount(value.count)
+    || !(value.kind === undefined || CLASS_CAUSE_KINDS.some((kind) => kind === value.kind))) {
+    throw new Error('Invalid class cause')
+  }
+  let manifestations: ClassCause['manifestations']
+  if (value.manifestations !== undefined) {
+    if (!Array.isArray(value.manifestations)) throw new Error('Invalid class cause manifestations')
+    manifestations = value.manifestations.map((item) => {
+      if (!isRecord(item) || typeof item.description !== 'string' || !isNullableString(item.source_question_id)) {
+        throw new Error('Invalid class cause manifestation')
+      }
+      return { description: item.description, source_question_id: item.source_question_id, evidence: decodeCauseEvidence(item.evidence) }
+    })
+  }
+  return { reason: value.reason, count: value.count,
+    ...(value.kind === undefined ? {} : { kind: value.kind as ClassCauseKind }),
+    ...(manifestations === undefined ? {} : { manifestations }),
+    ...(value.evidence === undefined ? {} : { evidence: decodeCauseEvidence(value.evidence) }) }
+}
+
+function decodeCauseAnalysis(value: unknown): ClassCauseAnalysis | null {
+  if (value == null) return null
+  if (!isRecord(value) || !['ready', 'partial', 'not_generated'].includes(String(value.status))
+    || !isNonNegativeCount(value.pending_questions) || !isNonNegativeCount(value.total_questions)
+    || !isNonNegativeCount(value.failed_questions) || typeof value.stale !== 'boolean'
+    || !(value.legacy_questions === undefined || isNonNegativeCount(value.legacy_questions))
+    || !isNullableString(value.generated_at) || !isNullableString(value.origin)) {
+    throw new Error('Invalid class cause analysis')
+  }
+  return value as unknown as ClassCauseAnalysis
+}
+
 function decodeQuestion(value: unknown): ClassAnalysisQuestion {
   if (
     !isRecord(value)
@@ -165,6 +271,12 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     || !isNullableString(value.stem_summary)
     || !isNullableString(value.canonical_answer)
     || !Array.isArray(value.records)
+    || !(value.causes_grouped === undefined || typeof value.causes_grouped === 'boolean')
+    || !(value.causes_legacy === undefined || typeof value.causes_legacy === 'boolean')
+    || !(value.cause_review === undefined || isRecord(value.cause_review))
+    || !(value.causes === undefined || (Array.isArray(value.causes) && value.causes.every((cause) => (
+      isRecord(cause) && typeof cause.reason === 'string' && isNonNegativeCount(cause.count)
+    ))))
   ) {
     throw new Error('Invalid class analysis question')
   }
@@ -175,6 +287,13 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     stem_summary: value.stem_summary,
     canonical_answer: value.canonical_answer,
     records: value.records.map(decodeRecord),
+    ...(Array.isArray(value.causes) ? { causes: value.causes.map(decodeCause) } : {}),
+    ...(typeof value.causes_grouped === 'boolean' ? { causes_grouped: value.causes_grouped } : {}),
+    ...(typeof value.causes_legacy === 'boolean' ? { causes_legacy: value.causes_legacy } : {}),
+    ...(isRecord(value.cause_review) ? { cause_review: {
+      positive: decodeCauseEvidence(value.cause_review.positive),
+      uncertain: decodeCauseEvidence(value.cause_review.uncertain),
+    } } : {}),
   }
 }
 
@@ -328,6 +447,8 @@ export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisRespon
     || !isNullableString(value.generated_at)
     || typeof value.stale !== 'boolean'
     || decodeActiveJobId(value.active_job_id) === undefined
+    || !(value.class_names === undefined || (Array.isArray(value.class_names) && value.class_names.every((item) => typeof item === 'string')))
+    || !(value.selected_class === undefined || isNullableString(value.selected_class))
   ) {
     throw new Error('Invalid class analysis response')
   }
@@ -341,6 +462,9 @@ export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisRespon
     generated_at: value.generated_at,
     stale: value.stale,
     active_job_id: decodeActiveJobId(value.active_job_id) ?? null,
+    ...(value.cause_analysis === undefined ? {} : { cause_analysis: decodeCauseAnalysis(value.cause_analysis) }),
+    ...(Array.isArray(value.class_names) ? { class_names: value.class_names as string[] } : {}),
+    ...(value.selected_class !== undefined ? { selected_class: value.selected_class as string | null } : {}),
   }
 }
 
@@ -363,11 +487,32 @@ export const classAnalysisApi = {
   async getClassAnalysis(
     sessionId: number,
     signal?: AbortSignal,
+    className?: string,
+    view?: 'summary' | 'narrative',
   ): Promise<ClassAnalysisResponse> {
     const id = requireSessionId(sessionId)
-    return apiClient.request(`/api/sessions/${id}/class-analysis`, {
+    const query = new URLSearchParams()
+    if (className !== undefined) query.set('class_name', className)
+    if (view !== undefined) query.set('view', view)
+    return apiClient.request(`/api/sessions/${id}/class-analysis${query.size ? `?${query}` : ''}`, {
       decode: decodeClassAnalysisResponse,
       signal,
+    })
+  },
+
+  async getQuestionPreview(sessionId: number, questionId: string, signal?: AbortSignal): Promise<ClassQuestionPreview> {
+    const id = requireSessionId(sessionId)
+    return apiClient.request(`/api/sessions/${id}/class-analysis/questions/${encodeURIComponent(questionId)}/preview`, {
+      signal,
+      decode(value) {
+        assertNoPathLikeKeys(value)
+        if (!isRecord(value) || typeof value.question_id !== 'string'
+          || typeof value.parent_question_id !== 'string' || typeof value.text !== 'string'
+          || typeof value.notice !== 'string' || !isConfigRichContent(value.rich_content)) {
+          throw new Error('Invalid class question preview')
+        }
+        return value as unknown as ClassQuestionPreview
+      },
     })
   },
 
@@ -388,9 +533,10 @@ export const classAnalysisApi = {
   async regenerate(
     sessionId: number,
     signal?: AbortSignal,
+    kind: 'narrative' | 'causes' = 'narrative',
   ): Promise<JobResponse> {
     const id = requireSessionId(sessionId)
-    return apiClient.request(`/api/sessions/${id}/class-analysis/regenerate`, {
+    return apiClient.request(`/api/sessions/${id}/class-analysis/regenerate${kind === 'causes' ? '?kind=causes' : ''}`, {
       method: 'POST',
       decode: decodeJobResponse,
       signal,

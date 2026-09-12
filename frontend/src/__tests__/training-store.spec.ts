@@ -189,6 +189,19 @@ beforeEach(() => {
 })
 
 describe('training store', () => {
+  it('only reuses chapter previews for the same source and request within two minutes', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    const store = useTrainingStore()
+    store.rememberGroupDiagnosis('chapter-a', diagnosis, diagnosis)
+    expect(store.cachedGroupDiagnosis('chapter-a', diagnosis)).toEqual(diagnosis)
+    expect(store.cachedGroupDiagnosis('chapter-b', diagnosis)).toBeNull()
+    expect(store.cachedGroupDiagnosis('chapter-a', { ...diagnosis })).toBeNull()
+    now.mockReturnValue(121_000)
+    expect(store.cachedGroupDiagnosis('chapter-a', diagnosis)).toBeNull()
+    store.rememberGroupDiagnosis('chapter-a', diagnosis, diagnosis)
+    store.reset()
+    expect(store.cachedGroupDiagnosis('chapter-a', diagnosis)).toBeNull()
+  })
   it('normalizes explicit scope and ignores a diagnosis from the old selection', async () => {
     const first = deferred<TrainingDiagnosis>()
     const second = deferred<TrainingDiagnosis>()

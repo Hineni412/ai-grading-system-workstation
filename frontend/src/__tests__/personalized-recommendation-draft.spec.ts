@@ -295,6 +295,8 @@ describe('personalized recommendation draft', () => {
       scope: { mode: 'student', student_ids: ['SYN-S01'] },
       examScope: { mode: 'current', session_ids: [7] },
       questionCount: 8,
+      trainingIntent: 'challenge',
+      teachingProgressChapterId: 'bnu24-math-g8-upper-c02',
       stageRatios: {
         direct: 0.6,
         prerequisite: 0.3,
@@ -325,6 +327,8 @@ describe('personalized recommendation draft', () => {
         target_names: ['一元一次方程'],
         paper_mode: 'individual',
         question_count: 8,
+        difficulty_max: 7,
+        teaching_progress_chapter_id: 'bnu24-math-g8-upper-c02',
       }),
     )
     expect(host.textContent).toContain('直接巩固一元一次方程')
@@ -408,11 +412,13 @@ describe('personalized recommendation draft', () => {
     expect(firstPair.querySelector('.personalized-match__evidence')?.textContent)
       .toContain('合成考试 · 第 5 题 · 得 3/10 分')
     expect(firstPair.querySelector('.personalized-stage-badge')?.textContent).toContain('直接巩固')
+    expect(firstPair.querySelector('.personalized-match__order')?.textContent).toContain('第 1 题')
+    expect(firstPair.querySelector('.personalized-match__meta')?.textContent).toContain('原卷第 3 题')
     expect(firstPair.querySelector('.personalized-match__head strong')?.textContent).toBe('一元一次方程')
     expect(firstPair.querySelector('.personalized-match__stem')?.textContent).toContain('解方程 2x + 3 = 9。')
     expect(firstPair.textContent).toContain('来源：合成题源')
-    // 直接巩固卡不重复显示理由（与左栏错题依据重复）。
-    expect(firstPair.querySelector('.personalized-match__reason')).toBeNull()
+    // 推荐依据包含难度与覆盖说明，直接练习也要可见。
+    expect(firstPair.querySelector('.personalized-match__reason')?.textContent).toContain('直接巩固一元一次方程。')
 
     // 旧草稿项没有题干时给出诚实提示；无匹配细点时给出空依据提示。
     const pairs = [...host.querySelectorAll<HTMLElement>('.personalized-match')]
@@ -445,6 +451,27 @@ describe('personalized recommendation draft', () => {
     excludeCurrentExamOriginals: true,
     targetKeys: ['knowledge_point:一元一次方程'],
   }
+
+  it('marks range supplements without pairing them with a student mistake', async () => {
+    const supplemented: PersonalizedRecommendationDraft = structuredClone(matchedDraft)
+    const item = supplemented.students[0]!.items[0]!
+    item.selection_kind = 'supplement'
+    item.reason = '补充练习：选定范围内的近似难度题，不作为此知识点薄弱的证据。'
+    trainingApiMock.createPersonalizedDraft.mockResolvedValue(supplemented)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(PersonalizedRecommendationDraftView, { ...externalProps, diagnosis: matchedDiagnosis })
+    mounted.push(app)
+    const view = app.mount(host) as unknown as { generate: () => Promise<void> }
+    await settle()
+    await view.generate()
+    await settle()
+    const pair = host.querySelector<HTMLElement>('.personalized-match')!
+    expect(pair.querySelector('.personalized-stage-badge')?.textContent).toBe('补充练习')
+    expect(pair.querySelector('.personalized-match__evidence')?.textContent).toContain('补充依据')
+    expect(pair.querySelector('.personalized-match__evidence')?.textContent).not.toContain('得 3/10 分')
+    expect(pair.querySelector('.personalized-match__reason')?.textContent).toContain('不作为此知识点薄弱的证据')
+  })
 
   it('restores the saved draft after returning with unchanged settings', async () => {
     const host1 = document.createElement('div')

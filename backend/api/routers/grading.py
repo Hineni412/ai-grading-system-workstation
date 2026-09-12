@@ -28,6 +28,7 @@ from backend.scan_grading.workspace import (
     PendingScanIssuesError,
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
+    ScanMatchConflictError,
     UploadBatchRevisionError,
 )
 from backend.jobs.manager import ActiveJobExistsError, JobManager, UnsupportedJobTypeError
@@ -403,6 +404,8 @@ def run_session_grading(
                 max_workers=request.max_workers,
                 requests_per_minute=request.requests_per_minute,
             )
+        except ScanMatchConflictError as exc:
+            raise ApiError(409, "scan_match_conflict", str(exc)) from exc
         except PendingScanIssuesError as exc:
             raise ApiError(
                 409,

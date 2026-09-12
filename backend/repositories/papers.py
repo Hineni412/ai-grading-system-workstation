@@ -124,7 +124,7 @@ class PaperRepository:
     ) -> list[dict[str, Any]]:
         rows = self.session.connection.execute(
             """
-            SELECT front_image, back_image, student_id
+            SELECT id, front_image, back_image, student_id, match_status
             FROM exam_papers
             WHERE session_id = ?
             ORDER BY id

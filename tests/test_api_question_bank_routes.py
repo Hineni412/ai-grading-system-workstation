@@ -311,6 +311,8 @@ def test_solution_evidence_route_returns_latest_point_level_union(
         "evidence_version_id": None,
         "status": None,
         "evidence": None,
+        "part_assessments": [],
+        "assessment_revision": None,
     }
 
     class Resolver:
@@ -398,6 +400,15 @@ def test_solution_evidence_route_returns_latest_point_level_union(
     assert union["resolved_core_node_ids"] == ["kp_equation"]
     assert union["unmapped_fine_term_ids"] == ["fine-support"]
 
+    from question_bank.solution_evidence.part_assessments import save_profile
+    save_profile(db_path, question_id=1, evidence_version_id=version_id,
+                 parts=[{"part_id": part["part_id"], "difficulty": 3, "source": "model",
+                         "rationale": "synthetic estimate"} for part in evidence.to_dict()["parts"]],
+                 created_by="test")
+    supplemented = client.get("/api/question-bank/questions/1/solution-evidence").json()
+    assert supplemented["part_assessments"][0]["difficulty"] == 3
+    assert supplemented["assessment_revision"] == 1
+
     with sqlite3.connect(db_path) as conn:
         if changed_content == "stem":
             conn.execute(
@@ -429,6 +440,8 @@ def test_solution_evidence_route_returns_latest_point_level_union(
         "evidence_version_id": version_id,
         "status": "stale",
         "evidence": None,
+        "part_assessments": [],
+        "assessment_revision": None,
     }
 
 
@@ -696,7 +709,7 @@ def test_collapse_duplicates_hides_linked_duplicate_questions(
             """,
             [
                 (1, "1", "重复组源题"),
-                (2, "2", "重复题（已关联到 1）"),
+                (2, "2", "重复组源题"),
                 (3, "3", "独立题"),
             ],
         )
@@ -845,10 +858,10 @@ def test_question_facets_do_not_expand_empty_taxonomy_filters_repeatedly(
         expand_calls.append((dimension, tuple(values)))
         return original_expand(dimension, values)
 
-    def counted_snapshot():
+    def counted_snapshot(**kwargs):
         nonlocal snapshot_calls
         snapshot_calls += 1
-        return original_snapshot()
+        return original_snapshot(**kwargs)
 
     monkeypatch.setattr(governance, "expand_filter_values", counted_expand)
     monkeypatch.setattr(governance, "snapshot_and_identity_lookup", counted_snapshot)

@@ -129,6 +129,16 @@ afterEach(() => {
 })
 
 describe('solution evidence review', () => {
+  it('decodes and displays persisted small-part estimates', async () => {
+    const payload = { ...evidenceResponse(), assessment_revision: 1,
+      part_assessments: [{ part_id: 'part-1', difficulty: 3, source: 'model',
+        rationale: '先识别直角，再代入求边长。', review_note: '' }] }
+    expect(decodeQuestionSolutionEvidenceResponse(payload)).toEqual(payload)
+    const host = await mountReview(payload)
+    expect(host.textContent).toContain('3 / 10')
+    expect(host.textContent).toContain('先识别直角，再代入求边长。')
+    expect(host.textContent).toContain('非实测难度')
+  })
   it('decodes the exact public contract and rejects drift or private fields', () => {
     const payload = evidenceResponse()
     expect(decodeQuestionSolutionEvidenceResponse(payload)).toEqual(payload)

@@ -337,6 +337,7 @@ describe('scan grading workspace', () => {
         auto_matched: 1, ready_to_grade: 1, issues: 0, absent_candidates: 0, total_pages: 2,
       },
       groups: [{ id: 'g1', student_name: '学生乙', detected_name: '学生一', source_label: '001',
+        front_media_url: '/api/synthetic/g1/front', back_media_url: '/api/synthetic/g1/back',
         match_method: 'fuzzy', match_score: 0.7 }], issues: [], absent_students: [], warnings: [],
       decisions: [], pending_issue_count: 0,
     })
@@ -475,6 +476,58 @@ describe('scan grading workspace', () => {
     }
 
     expect(api.startPreflight).toHaveBeenCalledWith(7)
+    app.unmount()
+  })
+
+  it('submits only selected complete papers once and shows the saved unresolved count', async () => {
+    vi.mocked(api.saveScanDecisions).mockImplementation(async (_id, _revision, decisions) => ({
+      revision: 3, decisions, pending_issue_count: 1, ready_to_grade: 29,
+      summary: { scanned_papers: 30, matched_papers: 29, unique_students: 29, ready_to_grade: 29 },
+      absent_students: [], match_conflicts: [],
+    }))
+    const { app, host } = await mountView()
+    const batch = host.querySelector<HTMLButtonElement>('[data-match-selected]')!
+    expect(batch.disabled).toBe(true)
+    await chooseStudent(host, '选择学生')
+    expect(batch.textContent).toContain('1 项')
+    batch.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('已保存 1 项；仍有 1 份待处理'))
+    expect(api.saveScanDecisions).toHaveBeenCalledTimes(1)
+    expect(api.saveScanDecisions).toHaveBeenCalledWith(7, 2, [
+      { target_type: 'issue', target_id: 'i1', action: 'match', student_id: 11 },
+    ])
+    expect(batch.disabled).toBe(true)
+    expect(host.querySelector('[data-scan-reconciliation]')?.textContent).toContain('对应 29 名学生')
+    app.unmount()
+  })
+
+  it('retains selections and shows no success when a bulk match is rejected', async () => {
+    vi.mocked(api.saveScanDecisions).mockRejectedValue(new Error('同一学生被分配了多份答卷，本次匹配未保存'))
+    const { app, host } = await mountView()
+    await chooseStudent(host, '选择学生')
+    host.querySelector<HTMLButtonElement>('[data-match-selected]')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('本次匹配未保存'))
+    expect(host.querySelector('[data-match-selected]')?.textContent).toContain('1 项')
+    expect(host.textContent).not.toContain('已保存 1 项；')
+    app.unmount()
+  })
+
+  it('exposes exact-name duplicate papers and prevents starting despite pending confirmation', async () => {
+    const fixture = await api.fetchPreflight(7)
+    fixture.groups = [1, 2].map((id) => ({ id: `g${id}`, student_id: 11, student_name: '学生甲',
+      source_label: `合成卷${id}`, match_method: 'exact', match_score: 1,
+      front_media_url: `/api/synthetic/${id}/front`, back_media_url: `/api/synthetic/${id}/back` }))
+    fixture.match_conflicts = [{ code: 'scan_student_multiple_papers', message: '同一学生对应 2 份答卷', student_id: 11,
+      targets: [{ target_type: 'group', target_id: 'g1' }, { target_type: 'group', target_id: 'g2' }] }]
+    const { app, host } = await mountView()
+    expect(host.textContent).toContain('合成卷1')
+    expect(host.textContent).toContain('合成卷2')
+    const confirmation = host.querySelector<HTMLInputElement>('[data-confirm-pending]')!
+    confirmation.checked = true
+    confirmation.dispatchEvent(new Event('change', { bubbles: true }))
+    host.querySelector<HTMLButtonElement>('[data-grading-mode="full_paper"]')!.click()
+    await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>('[data-confirm-grading-plan]')?.disabled).toBe(true))
+    expect(api.startGrading).not.toHaveBeenCalled()
     app.unmount()
   })
 })

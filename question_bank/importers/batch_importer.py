@@ -6,7 +6,8 @@ import logging
 import re
 import textwrap
 from collections.abc import Mapping
-from dataclasses import dataclass
+from contextlib import nullcontext
+from dataclasses import asdict, dataclass
 from dataclasses import field
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.importers.docx_importer import import_docx
 from question_bank.importers.pdf_importer import import_pdf
 from question_bank.importers.types import ExtractedDocument
-from question_bank.models.question import duplicate_question_key
+from question_bank.services.duplicate_analysis_copy_service import exact_question_key, link_exact_duplicate
 from question_bank.services.similarity_service import text_similarity
 from question_bank.services.source_paper_archive_service import archive_source_paper
 from question_bank.services.rich_content_service import save_question_rich_content
@@ -137,6 +138,7 @@ class _DuplicateIndex:
     Both grow as the batch imports so later files match earlier ones.
     """
 
+    data_root: Path = field(default_factory=Path)
     exact: dict[str, int] = field(default_factory=dict)
     questions: list[dict[str, Any]] = field(default_factory=list)
 
@@ -148,9 +150,14 @@ class _DuplicateIndex:
         answer_text: object,
         question_type: object,
         paper_title: object,
+        question_number: object = "",
+        image_paths: object = (),
+        has_images: object = False,
     ) -> None:
-        key = duplicate_question_key(
-            {"question_text": question_text, "answer_text": answer_text}
+        key = exact_question_key(
+            {"id": question_id, "question_text": question_text, "answer_text": answer_text,
+             "question_number": question_number, "image_paths": image_paths, "has_images": has_images},
+            data_root=self.data_root,
         )
         if key:
             self.exact.setdefault(key, int(question_id))
@@ -164,20 +171,20 @@ class _DuplicateIndex:
         )
 
 
-def _load_duplicate_index(db_path: Path) -> _DuplicateIndex:
-    with connect(db_path) as conn:
+def _load_duplicate_index(db_path: Path, *, data_root: Path | None = None, connection: Any = None) -> _DuplicateIndex:
+    with nullcontext(connection) if connection is not None else connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT q.id, q.question_text, q.answer_text, q.question_type,
+            SELECT q.id, q.question_text, q.answer_text, q.question_type, q.question_number, q.image_paths, q.has_images,
                    p.title AS paper_title
             FROM questions q
             LEFT JOIN papers p ON p.id = q.paper_id
             WHERE COALESCE(q.is_deleted, 0) = 0
               AND COALESCE(p.import_status, '') <> 'deleted'
-            ORDER BY q.updated_at DESC, q.id DESC
+            ORDER BY (SELECT COUNT(*) FROM question_tags t WHERE t.question_id=q.id) DESC, q.id
             """
         ).fetchall()
-    index = _DuplicateIndex()
+    index = _DuplicateIndex(data_root=data_root or _rich_content_root_for_database(db_path).parent.parent)
     for row in rows:
         index.add(
             int(row["id"]),
@@ -185,6 +192,7 @@ def _load_duplicate_index(db_path: Path) -> _DuplicateIndex:
             answer_text=row["answer_text"],
             question_type=row["question_type"],
             paper_title=row["paper_title"],
+            question_number=row["question_number"], image_paths=row["image_paths"], has_images=bool(row["has_images"]),
         )
     return index
 
@@ -375,7 +383,7 @@ def import_scanned_papers(
         raw_papers_dir=raw_papers_dir,
     )
     file_results: list[PaperImportFileResult] = []
-    duplicate_index = _load_duplicate_index(database_path)
+    duplicate_index = _load_duplicate_index(database_path, data_root=rich_content_directory.parent.parent)
 
     for scanned in scanned_papers:
         original_path = Path(scanned.source_file)
@@ -503,7 +511,6 @@ def _import_scanned_paper(
         image_paths=extracted.image_paths,
         type_overrides=type_overrides,
     )
-    parsed = _without_existing_duplicate_questions(db_path, parsed)
     if not parsed.questions:
         if extracted.needs_ocr:
             return PaperImportFileResult(
@@ -519,28 +526,26 @@ def _import_scanned_paper(
     # Cross-paper duplicate detection.  Exact key matches still import as
     # their own rows but are linked to the existing question and reuse its
     # analysis; looser matches only surface as hints in the import result.
-    exact_sources: dict[str, tuple[int, str]] = {}
-    near_hints: list[dict[str, Any]] = []
-    if duplicate_index is not None:
-        for item in parsed.questions:
-            key = duplicate_question_key(
-                {
-                    "question_text": item.question_text,
-                    "answer_text": item.answer_text,
-                }
-            )
-            source_id = duplicate_index.exact.get(key) if key else None
-            if source_id is not None:
-                exact_sources[item.question_number] = (source_id, key)
-                continue
-            hint = _near_duplicate_hint(item, duplicate_index)
-            if hint is not None:
-                near_hints.append(hint)
-    import_status = _import_status(extracted.needs_ocr, parsed)
     rich_content = map_rich_content_by_number(
-        getattr(extracted, "rich_paragraphs", []),
-        source_file=source_value,
+        getattr(extracted, "rich_paragraphs", []), source_file=source_value,
     )
+    if duplicate_index is None:
+        duplicate_index = _load_duplicate_index(db_path, data_root=(rich_content_root or _rich_content_root_for_database(db_path)).parent.parent)
+    exact_keys: dict[str, str] = {}
+    near_hints: list[dict[str, Any]] = []
+    for item in parsed.questions:
+        key = exact_question_key(asdict(item), data_root=duplicate_index.data_root, rich_content={
+            "question_blocks": rich_content["question"].get(item.question_number, []),
+            "answer_blocks": rich_content["answer"].get(item.question_number, []),
+        })
+        exact_keys[item.question_number] = key
+        source_id = duplicate_index.exact.get(key) if key else None
+        if source_id is not None:
+            continue
+        hint = _near_duplicate_hint(item, duplicate_index)
+        if hint is not None:
+            near_hints.append(hint)
+    import_status = _import_status(extracted.needs_ocr, parsed)
     pending_rich_content: list[tuple[int, list[dict[str, object]], list[dict[str, object]]]] = []
     pending_analysis_reuse: list[tuple[int, int]] = []
     inserted_questions: list[tuple[int, ParsedQuestion]] = []
@@ -566,6 +571,7 @@ def _import_scanned_paper(
                 paper_id=paper_id,
                 message="paper already imported",
             )
+        duplicate_index = _load_duplicate_index(db_path, data_root=duplicate_index.data_root, connection=conn)
         paper_cursor = conn.execute(
             """
             INSERT INTO papers (
@@ -624,7 +630,9 @@ def _import_scanned_paper(
                     (question_id, item.essay_subtype),
                 )
             inserted_questions.append((question_id, item))
-            exact_source = exact_sources.get(item.question_number)
+            key = exact_keys[item.question_number]
+            source_id = duplicate_index.exact.get(key) if key else None
+            exact_source = (source_id, key) if source_id is not None else None
             if exact_source is not None:
                 _link_exact_duplicate(
                     conn,
@@ -633,6 +641,8 @@ def _import_scanned_paper(
                     signature=exact_source[1],
                 )
                 pending_analysis_reuse.append((question_id, exact_source[0]))
+            elif key:
+                duplicate_index.exact[key] = question_id
             question_blocks = rich_content["question"].get(item.question_number, [])
             answer_blocks = rich_content["answer"].get(item.question_number, [])
             if question_blocks or answer_blocks:
@@ -676,6 +686,7 @@ def _import_scanned_paper(
                 answer_text=item.answer_text,
                 question_type=item.question_type,
                 paper_title=source_title or path.stem,
+                question_number=item.question_number, image_paths=item.image_paths, has_images=item.has_images,
             )
 
     return PaperImportFileResult(
@@ -1369,25 +1380,6 @@ def _is_floating_image_only_paragraph(paragraph: dict[str, object]) -> bool:
     return _is_image_marker_only(text) and "<wp:anchor" in xml
 
 
-def _without_existing_duplicate_questions(db_path: Path, parsed: ParsedPaperText) -> ParsedPaperText:
-    seen_signatures: set[str] = set()
-    questions: list[ParsedQuestion] = []
-    answer_match_count = 0
-    for question in parsed.questions:
-        signature = _question_duplicate_signature(question.question_text)
-        if signature and signature in seen_signatures:
-            continue
-        if signature:
-            seen_signatures.add(signature)
-        questions.append(question)
-        if question.answer_text:
-            answer_match_count += 1
-    return ParsedPaperText(
-        questions=questions,
-        answer_match_count=answer_match_count,
-        review_count=sum(1 for item in questions if item.needs_review) + len(parsed.review_reasons),
-        review_reasons=parsed.review_reasons,
-    )
 
 
 def _link_exact_duplicate(
@@ -1397,40 +1389,7 @@ def _link_exact_duplicate(
     source_id: int,
     signature: str,
 ) -> None:
-    """Record the duplicate link and reuse the source's tags in one go.
-
-    Tags and difficulty/reason carry no versioned hashes, so plain SQL copies
-    are safe; evidence and criteria are re-anchored later via
-    ``copy_duplicate_analysis`` once rich content has been written.
-    """
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO question_duplicate_links (
-            question_id, duplicate_of_question_id, match_kind, signature
-        ) VALUES (?, ?, 'exact', ?)
-        """,
-        (int(question_id), int(source_id), signature),
-    )
-    conn.execute(
-        """
-        INSERT INTO question_tags (
-            question_id, tag_type, tag_value, confidence, source, model_name
-        )
-        SELECT ?, tag_type, tag_value, confidence, source, model_name
-        FROM question_tags
-        WHERE question_id = ?
-        """,
-        (int(question_id), int(source_id)),
-    )
-    conn.execute(
-        """
-        UPDATE questions
-        SET difficulty = (SELECT difficulty FROM questions WHERE id = ?),
-            reason = (SELECT reason FROM questions WHERE id = ?)
-        WHERE id = ?
-        """,
-        (int(source_id), int(source_id), int(question_id)),
-    )
+    link_exact_duplicate(conn, question_id=question_id, source_id=source_id, signature=signature)
 
 
 def _question_duplicate_signature(value: object) -> str:

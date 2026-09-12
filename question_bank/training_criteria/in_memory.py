@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis
+from question_bank.solution_evidence.part_assessments import model_part_estimates, save_profile
 from question_bank.services.ai_tagging_service import converge_tag_analysis
 from question_bank.solution_evidence.convergence import converge_evidence_terms
 from question_bank.solution_evidence.contracts import (
@@ -156,8 +157,11 @@ class DeferredCombinedAnalysisItem:
     operation_id: str
     reference_assessment: str = "insufficient"
     reference_assessment_reason: str = ""
+    part_assessments: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "part_assessments", model_part_estimates(
+            self.part_assessments or None, self.solution_evidence.to_dict()))
         reference = str(self.source_question_ref or "").strip()
         operation = str(self.operation_id or "").strip()
         model = str(self.model_name or "").strip()
@@ -365,6 +369,9 @@ class DeferredCombinedAnalysisItem:
             "model_name": self.model_name,
             "operation_id": self.operation_id,
         }
+        if self.part_assessments:
+            payload["schema_version"] = "deferred-combined-analysis-item-v5"
+            payload["part_assessments"] = [dict(item) for item in self.part_assessments]
         return {**payload, "content_hash": _hash_payload(payload)}
 
     def to_checkpoint_dict(self) -> dict[str, Any]:
@@ -409,7 +416,7 @@ class DeferredCombinedAnalysisItem:
                 {*common_keys, "taxonomy_audit"},
                 "deferred analysis item",
             )
-        elif version == "deferred-combined-analysis-item-v4":
+        elif version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5"}:
             _require_exact_keys(
                 payload,
                 {
@@ -417,6 +424,7 @@ class DeferredCombinedAnalysisItem:
                     "taxonomy_audit",
                     "reference_assessment",
                     "reference_assessment_reason",
+                    *({"part_assessments"} if version.endswith("-v5") else set()),
                 },
                 "deferred analysis item",
             )
@@ -448,7 +456,7 @@ class DeferredCombinedAnalysisItem:
         )
         taxonomy_audit = (
             _normalize_taxonomy_audit(payload.get("taxonomy_audit"))
-            if version in {"deferred-combined-analysis-item-v3", "deferred-combined-analysis-item-v4"}
+            if version in {"deferred-combined-analysis-item-v3", "deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5"}
             else _legacy_taxonomy_audit(normalized_tag)
         )
         return cls(
@@ -470,15 +478,16 @@ class DeferredCombinedAnalysisItem:
             taxonomy_audit=taxonomy_audit,
             reference_assessment=(
                 str(payload.get("reference_assessment") or "insufficient")
-                if version == "deferred-combined-analysis-item-v4"
+                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5"}
                 else "insufficient"
             ),
             reference_assessment_reason=(
                 str(payload.get("reference_assessment_reason") or "")
-                if version == "deferred-combined-analysis-item-v4"
+                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5"}
                 else ""
             ),
             model_name=str(payload.get("model_name") or ""),
+            part_assessments=tuple(payload.get("part_assessments") or ()),
             operation_id=str(payload.get("operation_id") or ""),
         )
 
@@ -1644,6 +1653,7 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 model_name=response.model_name,
                                 operation_id=operation_id,
                             )
+                            estimates = model_part_estimates(raw.get("part_assessments"), evidence.to_dict())
                         except Exception as exc:
                             if isinstance(exc, _DeferredAnalysisValidationError):
                                 validation_category = exc.category
@@ -1680,6 +1690,7 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 taxonomy_audit=taxonomy_audit,
                                 reference_assessment=reference_assessment,
                                 reference_assessment_reason=reference_assessment_reason,
+                                part_assessments=estimates,
                                 model_name=response.model_name,
                                 operation_id=operation_id,
                             )
@@ -1691,6 +1702,7 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 "solution_evidence": normalized_evidence,
                                 "reference_assessment": reference_assessment,
                                 "reference_assessment_reason": reference_assessment_reason,
+                                **({"part_assessments": list(estimates)} if estimates else {}),
                             }
                         )
                         parsed_count += 1
@@ -1882,6 +1894,10 @@ class DeferredCombinedProjectionWriter:
                 ),
                 created_by=f"model:{item.model_name or 'unknown'}",
             )
+            if item.part_assessments:
+                save_profile(self.evidence_repository.db_path, question_id=question.question_id,
+                             evidence_version_id=evidence_version_id, parts=item.part_assessments,
+                             created_by=f"model:{item.model_name}")
         except Exception:
             evidence_error = "evidence_validation"
         else:
@@ -1991,6 +2007,10 @@ class DeferredCombinedProjectionWriter:
                     f"linked-by:{link.confirmed_by}"
                 ),
             )
+            if item.part_assessments:
+                save_profile(self.evidence_repository.db_path, question_id=question.question_id,
+                             evidence_version_id=evidence_version_id, parts=item.part_assessments,
+                             created_by=f"model:{item.model_name}")
         except Exception:
             evidence_error = "evidence_validation"
         else:

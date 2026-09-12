@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -26,31 +27,37 @@ ALLOWED_TAG_TYPES = {
 
 CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope")
 
-# 与 question_bank/services/similarity_service.py 的 IMAGE_MARKER_PATTERN 保持一致；
-# models 层不 import services 层，故在此单独定义，修改时必须两处同步。
-_IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:.+?\]\]")
+# Exact identity keeps each image's position; similarity search has a separate,
+# deliberately looser text comparison.
+_IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:(.*?)\]\]", re.IGNORECASE | re.DOTALL)
 
 
 def duplicate_question_key(question: Mapping[str, object]) -> str:
-    """Canonical identity key for "exactly the same question" detection.
+    """Exact question identity; visual evidence must be supplied by the reader.
 
-    ``[[IMAGE:...]]`` image markers are stripped first (their embedded paths
-    are per-import and never stable), then the remaining question text plus
-    answer text is compared whitespace-insensitively; empty when the question
-    text itself is empty.  Used by import-time duplicate linking and by the
-    tag-analysis reuse lookup, so the two must never drift apart.
+    Numbering and answers belong to the source paper, while the stem (including
+    options and formula symbols) and every illustration identify the exercise.
+    Missing image evidence deliberately produces no identity.
     """
-    question_text = re.sub(
-        r"\s+",
-        "",
-        _IMAGE_MARKER_PATTERN.sub("", str(question.get("question_text") or "")),
-    ).strip()
-    answer_text = re.sub(
-        r"\s+",
-        "",
-        _IMAGE_MARKER_PATTERN.sub("", str(question.get("answer_text") or "")),
-    ).strip()
-    return f"{question_text}\n{answer_text}" if question_text else ""
+    text = str(question.get("question_text") or "").strip()
+    number = str(question.get("question_number") or "").strip()
+    if number:
+        text = re.sub(r"^\s*" + re.escape(number) + r"\s*[.．、)）](?!\d)\s*", "", text, count=1)
+    pictures = question.get("image_content_keys")
+    has_visual = bool(_IMAGE_MARKER_PATTERN.search(text) or question.get("image_paths")
+                      or question.get("has_images") or question.get("source_regions"))
+    if has_visual and not pictures:
+        return ""
+    marker_keys = question.get("image_marker_keys") or {}
+    if any(path not in marker_keys for path in _IMAGE_MARKER_PATTERN.findall(text)):
+        return ""
+    text = _IMAGE_MARKER_PATTERN.sub(lambda match: "[[IMAGE:" + str(marker_keys[match.group(1)]) + "]]", text)
+    text = re.sub(r"\s+", "", text)
+    if not text or (question.get("visual_evidence_missing")):
+        return ""
+    return "exact-v2:" + json.dumps({"text": text, "options": question.get("options") or [],
+                                     "formulas": question.get("formula_content") or [],
+                                     "images": pictures or []}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def has_complete_analysis_tags(question: Mapping[str, object]) -> bool:

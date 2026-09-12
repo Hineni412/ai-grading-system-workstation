@@ -4,7 +4,7 @@ import os
 from typing import Any, Mapping, Protocol, Sequence
 
 
-DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 240.0
+DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 600.0
 
 
 class ConfigGenerationGateway(Protocol):

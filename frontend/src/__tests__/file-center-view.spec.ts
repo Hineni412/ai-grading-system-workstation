@@ -632,6 +632,8 @@ describe('file center view', () => {
     expect(host.textContent).toContain('粗略估算')
     expect(host.textContent).toContain('其中 3 份复用已生成内容，不重复计费')
     expect(host.textContent).toContain('实际费用取决于服务商定价')
+    expect(host.textContent).toContain('学生答卷图片')
+    expect(host.textContent).toContain('图片用量另计')
     expect(host.textContent).toContain('AI 分析内容仅供参考')
     expect(apiMock.submitReport).not.toHaveBeenCalled()
 

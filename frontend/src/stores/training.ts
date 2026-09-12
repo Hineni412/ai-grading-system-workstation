@@ -174,6 +174,23 @@ export const useTrainingStore = defineStore('training', () => {
   let lastPlanRequest: TrainingPlanRequest | null = null
   let confirmationCacheKey = ''
   const confirmationIds = new Map<string, string>()
+  // Browsing a chapter or returning from its editor reuses recent results.
+  // Adoption still makes a fresh request; these previews never authorize a write.
+  const groupDiagnosisCache = new Map<string, {
+    basis: TrainingDiagnosis; diagnosis: TrainingDiagnosis; expiresAt: number
+  }>()
+
+  function cachedGroupDiagnosis(key: string, basis: TrainingDiagnosis): TrainingDiagnosis | null {
+    const entry = groupDiagnosisCache.get(key)
+    if (!entry || entry.basis !== basis || entry.expiresAt <= Date.now()) return null
+    return entry.diagnosis
+  }
+
+  function rememberGroupDiagnosis(key: string, basis: TrainingDiagnosis, value: TrainingDiagnosis): void {
+    groupDiagnosisCache.delete(key)
+    groupDiagnosisCache.set(key, { basis, diagnosis: value, expiresAt: Date.now() + 120_000 })
+    while (groupDiagnosisCache.size > 8) groupDiagnosisCache.delete(groupDiagnosisCache.keys().next().value!)
+  }
 
   const hasCurrentDiagnosis = computed(
     () => diagnosis.value !== null && diagnosisScopeKey === scopeKey(),
@@ -600,6 +617,7 @@ export const useTrainingStore = defineStore('training', () => {
     historyState.value = 'idle'
     submittingExportKey.value = ''
     confirmationIds.clear()
+    groupDiagnosisCache.clear()
   }
 
   return {
@@ -619,6 +637,8 @@ export const useTrainingStore = defineStore('training', () => {
     actionMessage,
     submittingExportKey,
     hasCurrentDiagnosis,
+    cachedGroupDiagnosis,
+    rememberGroupDiagnosis,
     hasCurrentPlan,
     knowledgePoints,
     setStudentScope,

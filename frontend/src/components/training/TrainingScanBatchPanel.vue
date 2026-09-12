@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import {
   trainingApi,
   type PersonalizedPaperInstance,
   type TrainingScanBatch,
+  type TrainingScanBatchSummary,
   type TrainingScanCandidate,
   type TrainingScanIssue,
   type TrainingScanPage,
@@ -29,6 +30,12 @@ const message = ref('')
 const errorMessage = ref('')
 const targets = ref<Record<string, string>>({})
 const targetPages = ref<Record<string, number>>({})
+const batches = ref<TrainingScanBatchSummary[]>([])
+const historyLoaded = ref(false)
+const paperBatchIds = computed(() => [...new Set(
+  props.instances.map((instance) => instance.paper_batch_id),
+)].sort())
+let loadVersion = 0
 
 const frozenInstances = computed(() => props.instances.filter(
   (instance) => instance.status === 'frozen',
@@ -41,23 +48,97 @@ const reviewPages = computed(() => (
   )) ?? []
 ))
 
+function selectLatestInstances(): void {
+  const latest = new Map<string, PersonalizedPaperInstance>()
+  for (const instance of frozenInstances.value) {
+    const current = latest.get(instance.student_id)
+    if (!current || instance.series_version > current.series_version) {
+      latest.set(instance.student_id, instance)
+    }
+  }
+  selectedIds.value = [...latest.values()].map(
+    (instance) => instance.paper_instance_id,
+  )
+}
+
 watch(
   frozenInstances,
-  (instances) => {
-    if (batch.value) return
-    const latest = new Map<string, PersonalizedPaperInstance>()
-    for (const instance of instances) {
-      const current = latest.get(instance.student_id)
-      if (!current || instance.series_version > current.series_version) {
-        latest.set(instance.student_id, instance)
-      }
-    }
-    selectedIds.value = [...latest.values()].map(
-      (instance) => instance.paper_instance_id,
-    )
+  () => {
+    if (!batch.value) selectLatestInstances()
   },
   { immediate: true },
 )
+
+function beginNewBatch(): void {
+  batch.value = null
+  files.value = []
+  targets.value = {}
+  targetPages.value = {}
+  message.value = ''
+  errorMessage.value = ''
+  selectLatestInstances()
+}
+
+async function restoreBatches(): Promise<void> {
+  const version = ++loadVersion
+  beginNewBatch()
+  batches.value = []
+  historyLoaded.value = false
+  busy.value = false
+  if (!paperBatchIds.value.length) return
+  busy.value = true
+  try {
+    const groups = await Promise.all(paperBatchIds.value.map(
+      (id) => trainingApi.listTrainingScanBatches(id),
+    ))
+    if (version !== loadVersion) return
+    const items = groups.flat().sort((left, right) => right.created_at.localeCompare(left.created_at))
+    batches.value = items
+    const latest = items[0]
+    if (latest) {
+      const restored = await trainingApi.getTrainingScanBatch(latest.batch_id)
+      if (version !== loadVersion) return
+      batch.value = restored
+      message.value = '已恢复最近一次扫描批次，可以继续归卷和复核。'
+    }
+    historyLoaded.value = true
+  } catch {
+    if (version === loadVersion) errorMessage.value = '扫描批次读取未完成，请重新读取后继续。'
+  } finally {
+    if (version === loadVersion) busy.value = false
+  }
+}
+
+async function openBatch(batchId: string): Promise<void> {
+  if (!batchId || busy.value) return
+  const version = ++loadVersion
+  busy.value = true
+  errorMessage.value = ''
+  try {
+    const restored = await trainingApi.getTrainingScanBatch(batchId)
+    if (version !== loadVersion) return
+    beginNewBatch()
+    batch.value = restored
+  } catch {
+    if (version === loadVersion) errorMessage.value = '扫描批次读取未完成，请重试。'
+  } finally {
+    if (version === loadVersion) busy.value = false
+  }
+}
+
+function changeBatch(event: Event): void {
+  void openBatch((event.target as HTMLSelectElement).value)
+}
+
+function batchLabel(item: TrainingScanBatchSummary): string {
+  const date = new Date(item.created_at).toLocaleString('zh-CN', { hour12: false })
+  const value = batch.value?.batch_id === item.batch_id ? batch.value.status : item.status
+  const status = value === 'ready' ? '归组完成' : value === 'cancelled' ? '已取消' : '需要检查'
+  return `${date} · ${item.submission_count} 人 · ${status}`
+}
+
+watch(() => paperBatchIds.value.join(','), restoreBatches, { immediate: true })
+onBeforeUnmount(() => { loadVersion += 1 })
 
 function requestToken(): string {
   const bytes = new Uint8Array(16)
@@ -110,6 +191,14 @@ async function createBatch(): Promise<void> {
       selectedIds.value,
       requestToken(),
     )
+    batches.value.unshift({
+      batch_id: batch.value.batch_id,
+      paper_batch_id: batch.value.paper_batch_id,
+      status: batch.value.status,
+      submission_count: batch.value.submissions.length,
+      created_at: batch.value.created_at,
+      updated_at: batch.value.updated_at,
+    })
     message.value = '扫描批次已建立；只有选中的冻结卷会被自动归组。'
   } catch (error) {
     errorMessage.value = safeError(error)
@@ -212,7 +301,26 @@ async function cancelSubmission(submissionId: string): Promise<void> {
       />
     </header>
 
-    <template v-if="!batch">
+    <div v-if="batches.length" class="scan-history">
+      <label>
+        扫描批次
+        <select :value="batch?.batch_id || ''" :disabled="busy" @change="changeBatch">
+          <option v-if="!batch" value="">正在建立新批次</option>
+          <option v-for="item in batches" :key="item.batch_id" :value="item.batch_id">
+            {{ batchLabel(item) }}
+          </option>
+        </select>
+      </label>
+      <div>
+        <button v-if="batch" type="button" class="training-link" :disabled="busy" @click="openBatch(batch.batch_id)">刷新批次</button>
+        <button v-if="batch" type="button" class="training-link" :disabled="busy" @click="beginNewBatch">建立另一批次</button>
+      </div>
+    </div>
+
+    <p v-if="!historyLoaded && busy" class="scan-note">正在恢复扫描批次…</p>
+    <button v-else-if="!historyLoaded && paperBatchIds.length" type="button" class="training-link" @click="restoreBatches">重新读取批次</button>
+
+    <template v-if="!batch && historyLoaded">
       <p v-if="!frozenInstances.length" class="training-empty is-compact">
         至少冻结一份训练卷后，才能建立扫描批次。
       </p>
@@ -242,7 +350,7 @@ async function cancelSubmission(submissionId: string): Promise<void> {
       </button>
     </template>
 
-    <template v-else>
+    <template v-else-if="batch">
       <div class="scan-upload">
         <label>
           导入扫描文件（PDF、JPG 或 PNG，可多选）
@@ -293,6 +401,7 @@ async function cancelSubmission(submissionId: string): Promise<void> {
           </button>
           <TrainingAssessmentPanel
             v-if="submission.status === 'ready'"
+            :key="`${submission.submission_id}:${submission.revision}`"
             :submission="submission"
             @open-draft="emit('openDraft', $event)"
           />
@@ -416,6 +525,33 @@ async function cancelSubmission(submissionId: string): Promise<void> {
 
 .scan-status {
   flex: 0 0 auto;
+}
+
+.scan-history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+
+.scan-history label {
+  display: grid;
+  gap: 0.3rem;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.scan-history select {
+  width: 100%;
+  min-width: 0;
+  padding: 0.45rem;
+}
+
+.scan-history > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
 .scan-upload {

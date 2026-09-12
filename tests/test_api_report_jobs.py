@@ -546,7 +546,7 @@ def test_report_context_paginates_history(
     assert payload["total_pages"] == 2
 
 
-def test_score_revision_changes_when_report_visible_detail_changes() -> None:
+def test_score_revision_changes_when_report_visible_detail_changes(tmp_path) -> None:
     from backend.report_exports import score_revision
 
     class FakeReviews:
@@ -557,6 +557,7 @@ def test_score_revision_changes_when_report_visible_detail_changes() -> None:
             return self.locks
 
     class FakeDB:
+        db_path = tmp_path / "grading.db"
         deduction_reason = "计算错误"
 
         def __init__(self):

@@ -1600,11 +1600,13 @@ def _knowledge_bucket_labels(
         label = _clean_knowledge_label(kid, knowledge_label_map.get(kid, ""))
         if label and label != "未命名知识点" and label not in labels:
             labels.append(label)
-    if labels:
-        return [(label, label) for label in labels]
-
     backfill_map = knowledge_backfill or {}
     qid = str(item.get("question_id") or "").strip()
+    refined_entries = backfill_map.get(qid, backfill_map.get(_parent_question_id(qid)))
+    refined = refined_entries == [] or any("stable_key" in entry for entry in refined_entries or [])
+    if labels and not refined:
+        return [(label, label) for label in labels]
+
     entries = backfill_map.get(qid)
     if entries is None and qid:
         parent = _parent_question_id(qid)

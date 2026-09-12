@@ -66,7 +66,7 @@ class AnalysisPreflightResponse(BaseModel):
     service_name: str | None
     model_name: str | None
     call_count: int = Field(ge=0)
-    estimated_total_tokens: int = Field(ge=0)
+    estimated_total_tokens: int = Field(ge=0, description="文本输入和输出上限的粗估，不含服务商另计的图片用量")
     cache_hits: int = Field(ge=0)
 
 
@@ -84,6 +84,9 @@ class ClassAnalysisResponse(BaseModel):
     generated_at: str | None
     stale: bool
     active_job_id: int | None
+    class_names: list[str] = Field(default_factory=list)
+    selected_class: str | None = None
+    cause_analysis: dict[str, Any] | None = None
 
 
 class ClassAnalysisSettingsRequest(BaseModel):

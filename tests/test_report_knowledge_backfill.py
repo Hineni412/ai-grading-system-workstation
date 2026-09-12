@@ -117,7 +117,8 @@ def _seed_grading_db(work: Path) -> Path:
                 knowledge_id TEXT,
                 knowledge_ids TEXT,
                 error_category TEXT,
-                error_summary TEXT
+                error_summary TEXT,
+                confidence_score REAL
             );
             CREATE TABLE teacher_score_locks (
                 id INTEGER PRIMARY KEY,

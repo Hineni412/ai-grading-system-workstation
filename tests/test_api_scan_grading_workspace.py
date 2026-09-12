@@ -269,7 +269,8 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
         loaded = client.get(f"/api/sessions/{session_id}/scan/preflight")
         assert loaded.status_code == 200
         assert str(tmp_path) not in loaded.text
-        assert loaded.json()["summary"]["ready_to_grade"] == 1
+        assert loaded.json()["summary"]["ready_to_grade"] == 0
+        assert loaded.json()["match_conflicts"][0]["code"] == "scan_name_mismatch"
         group_id = loaded.json()["groups"][0]["id"]
         media = client.get(loaded.json()["groups"][0]["front_media_url"])
         assert media.status_code == 200
@@ -303,6 +304,18 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
         assert saved.json()["ready_to_grade"] == 2
         refreshed = client.get(f"/api/sessions/{session_id}/scan/preflight")
         assert refreshed.json()["summary"]["ready_to_grade"] == 2
+
+        duplicate_decisions = [dict(item) for item in saved.json()["decisions"]]
+        duplicate_decisions[1]["student_id"] = duplicate_decisions[0]["student_id"]
+        rejected = client.put(
+            f"/api/sessions/{session_id}/scan/preflight/decisions",
+            json={"expected_revision": saved.json()["revision"], "decisions": duplicate_decisions},
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["error"]["code"] == "scan_match_conflict"
+        unchanged = client.get(f"/api/sessions/{session_id}/scan/preflight").json()
+        assert unchanged["revision"] == saved.json()["revision"]
+        assert unchanged["decisions"] == saved.json()["decisions"]
 
         stale = client.put(
             f"/api/sessions/{session_id}/scan/preflight/decisions",

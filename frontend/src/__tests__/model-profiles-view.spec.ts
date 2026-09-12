@@ -4,11 +4,8 @@ import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
-import { aiDiagnosticsApi, type AiDiagnosticSummary } from '../api/ai-diagnostics'
 import { modelProfilesApi } from '../api/model-profiles'
 import { createAppRouter } from '../router'
-import { workspaceAITaskApi } from '../workspaces/shared/ai-tasks/api'
-import type { WorkspaceAITask } from '../workspaces/shared/ai-tasks/contracts'
 
 vi.mock('../api/sessions', () => ({
   fetchSessions: vi.fn(async () => []),

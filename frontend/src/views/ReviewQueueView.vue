@@ -27,6 +27,7 @@ import {
   type ReviewSort,
 } from '../stores/review-queue'
 import { useSessionStore } from '../stores/session'
+import { useResultsCenterStore } from '../stores/results-center'
 
 interface AnnotationRetryEntry {
   input: ReviewConfirmInput
@@ -38,6 +39,7 @@ const router = useRouter()
 const sessionStore = useSessionStore()
 const reviewStore = useReviewQueueStore()
 const draftStore = useReviewDraftStore()
+const resultsStore = useResultsCenterStore()
 const reviewPage = ref<HTMLElement | null>(null)
 const batchSubmitting = ref(false)
 const feedback = ref('')
@@ -51,6 +53,29 @@ let itemGeneration = 0
 let unmounting = false
 let initialRouteSessionHandled = false
 let querySync = Promise.resolve()
+
+const resultsReturnPath = computed(() => {
+  if (route.query.entry !== 'results') return null
+  const saved = resultsStore.viewState
+  if (saved && saved.sessionId === sessionStore.selectedSessionId) return saved.fullPath
+  return router.resolve({
+    path: '/results',
+    query: { tab: 'details', ...(sessionStore.selectedSessionId === null ? {} : { session: String(sessionStore.selectedSessionId) }) },
+  }).fullPath
+})
+const resultsReturnLabel = computed(() => {
+  if (!resultsReturnPath.value) return undefined
+  return router.resolve(resultsReturnPath.value).query.tab === 'details' ? '返回成绩明细' : '返回成绩总览'
+})
+
+async function returnToResults(): Promise<void> {
+  const target = resultsReturnPath.value
+  if (!target) return
+  // 先结束当前页排队中的路由同步，避免离开后又写回复核页面的查询条件。
+  await querySync
+  if (router.options.history.state.back === target) router.back()
+  else await router.replace(target)
+}
 
 const hasRetainedContentError = computed(() =>
   Boolean(
@@ -522,6 +547,10 @@ async function openItem(reviewItemId: string): Promise<void> {
 }
 
 async function closeDeepReview(): Promise<void> {
+  if (resultsReturnPath.value) {
+    await returnToResults()
+    return
+  }
   mode.value = 'batch'
   syncValidatedQuery()
   await querySync
@@ -553,7 +582,9 @@ async function handleDeepConfirmed(payload: {
     : reviewStore.itemLoadState === 'error'
       ? '此份评分已确认，但页面刷新失败；可安全重新加载。'
       : '此份评分已确认。'
-  if (!selectionChanged) await closeDeepReview()
+  // 标注重试和刷新失败提示仍留在当前页，避免返回成绩页后丢失处理入口。
+  const needsFollowUp = resultsReturnPath.value && (payload.annotationRetry || reviewStore.itemLoadState === 'error')
+  if (!selectionChanged && !needsFollowUp) await closeDeepReview()
 }
 
 function handleDeepAnnotationRetry(entry: AnnotationRetryEntry): void {
@@ -676,10 +707,11 @@ onBeforeUnmount(() => {
   >
     <header class="review-page__header">
       <div class="review-page__header-copy">
-        <h1 id="review-page-title" tabindex="-1">人工干预工作台</h1>
-        <p>需要教师处理的答卷优先显示；高置信 AI 结果保留在队列中，也可以随时修改。</p>
+        <h1 id="review-page-title" tabindex="-1">{{ resultsReturnPath ? '学生作答' : '人工干预工作台' }}</h1>
+        <p>{{ resultsReturnPath ? '查看原卷与本题评分；返回后保留成绩页的筛选和位置。' : '需要教师处理的答卷优先显示；高置信 AI 结果保留在队列中，也可以随时修改。' }}</p>
       </div>
       <AppButton
+        v-if="!resultsReturnPath"
         class="review-page__run-switch"
         :disabled="sessionStore.selectedSessionId === null"
         :title="sessionStore.selectedSessionId === null ? '请先选择考试' : '进入当前考试的批改执行'"
@@ -687,6 +719,7 @@ onBeforeUnmount(() => {
       >
         批改执行
       </AppButton>
+      <AppButton v-else-if="!deepItem" @click="returnToResults">{{ resultsReturnLabel }}</AppButton>
     </header>
 
     <ReviewShortcutGuide v-if="mode === 'batch'" />
@@ -741,6 +774,7 @@ onBeforeUnmount(() => {
       :item="deepItem"
       :previous-item="previousDeepItem"
       :next-item="nextDeepItem"
+      :back-label="resultsReturnLabel"
       :register-annotation-retry="handleDeepAnnotationRetry"
       @back="closeDeepReview"
       @confirmed="handleDeepConfirmed"

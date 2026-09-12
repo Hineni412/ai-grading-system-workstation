@@ -508,6 +508,9 @@ def test_read_has_no_write_side_effect(tmp_path: Path) -> None:
 
     assert workspace["available"] is False
     assert workspace["revision"] == proposed["revision"]
+    assert module.read_many((changed,)) == {1: workspace}
+    assert module.read_many((question,)) == {1: module.read(question)}
+    assert module.read_many(()) == {}
     assert module.get_version(version_id)["status"] == "proposed"
     with connect(database) as connection:
         stale_events = connection.execute(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, useSlots, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { knowledgeLeafLabel } from '../../api/question-bank'
@@ -10,15 +10,19 @@ const props = defineProps<{
   diagnosis: TrainingDiagnosis
   modelValue: string[]
   groupScopeLabel: string
+  initialChapterKey?: string
+  initialSectionKey?: string
 }>()
 const emit = defineEmits<{
   'update:modelValue': [keys: string[]]
   'adjust-scope': []
+  'scope-change': [scope: { chapterKey: string; sectionKey: string }]
 }>()
 
-const viewMode = ref<'student' | 'group'>('student')
-const activeChapterKey = ref('')
-const activeSectionKey = ref('')
+const slots = useSlots()
+const viewMode = ref<'student' | 'group' | 'recommendations'>(slots.recommendations ? 'recommendations' : 'student')
+const activeChapterKey = ref(props.initialChapterKey ?? '')
+const activeSectionKey = ref(props.initialSectionKey ?? '')
 const selectedCell = ref<{ studentId: string; knowledgeKey: string } | null>(null)
 const selectedGroupKey = ref('')
 
@@ -107,7 +111,8 @@ watch(points, (items) => {
 watch([activeChapterKey, activeSectionKey], () => {
   selectedCell.value = null
   selectedGroupKey.value = ''
-})
+  emit('scope-change', { chapterKey: activeChapterKey.value, sectionKey: activeSectionKey.value })
+}, { immediate: true })
 
 function selectChapter(key: string): void {
   activeChapterKey.value = key
@@ -138,6 +143,21 @@ function toggleTarget(key: string): void {
 const selectedWeak = computed(() => selectedCell.value
   ? weakFor(selectedCell.value.studentId, selectedCell.value.knowledgeKey)
   : null)
+
+const selectedEvidenceSummary = computed(() => {
+  const refs = selectedWeak.value?.source_question_refs ?? []
+  const fine = refs.filter(ref => ['part', 'step'].includes(String(ref.assessment?.granularity)))
+  const missing = fine.filter(ref => ref.assessment?.eligible === false).length
+  const coarse = refs.length - fine.length
+  const difficulties = [...new Set(fine.map(ref => ref.assessment?.part_difficulty)
+    .filter((value): value is number => typeof value === 'number'))]
+  return [fine.length ? `${fine.length} 条小问或步骤来源` : '',
+    coarse ? `${coarse} 条整题来源，细分依据尚未补齐` : '',
+    missing ? `${missing} 条空白或待复核记录未计入掌握度` : '',
+    difficulties.length ? `来源小问预估难度 ${difficulties.join('、')}（1–10），有效记录按此难度计算` : '',
+    fine.some(ref => ref.assessment?.reason === 'part_composite_attribution_limited') ? '小问综合表现，内部归因有限' : '',
+  ].filter(Boolean).join('；')
+})
 const selectedStudent = computed(() => props.diagnosis.students.find(
   (student) => student.student_id === selectedCell.value?.studentId,
 ) ?? null)
@@ -165,15 +185,16 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
     <header class="chapter-training__toolbar">
       <div>
         <strong>章节训练视图</strong>
-        <span>同一章或小节可查看个人明细，也可查看当前范围的群体加权结果</span>
+        <span>{{ slots.recommendations ? '先核对共同训练小组，掌握度明细按需查看' : '同一章或小节可查看个人明细，也可查看当前范围的群体加权结果' }}</span>
       </div>
       <div class="chapter-training__modes" aria-label="章节训练展示方式">
+        <button v-if="slots.recommendations" type="button" :class="{ 'is-active': viewMode === 'recommendations' }" @click="viewMode = 'recommendations'">推荐小组</button>
         <button type="button" :class="{ 'is-active': viewMode === 'student' }" @click="viewMode = 'student'">学生明细</button>
         <button type="button" :class="{ 'is-active': viewMode === 'group' }" @click="viewMode = 'group'">群体加权</button>
       </div>
     </header>
 
-    <div class="chapter-training__body">
+    <div class="chapter-training__body" :class="{ 'is-recommending': viewMode === 'recommendations' }">
       <aside class="chapter-training__scope">
         <header><strong>章节与小节</strong><span>点章名看整章汇总，点小节只看单节</span></header>
         <p v-if="!chapters.length" class="chapter-training__empty">当前学期在此范围内没有章节。</p>
@@ -210,6 +231,8 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
       </aside>
 
       <main class="chapter-training__main">
+        <slot v-if="viewMode === 'recommendations'" name="recommendations" :scope-key="activeSectionKey || activeChapterKey" />
+        <template v-else>
         <header>
           <div>
             <span>{{ activeSectionKey ? sections.find((item) => item.knowledge_key === activeSectionKey)?.knowledge_point : activeChapter?.knowledge_point }}</span>
@@ -257,7 +280,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
               </thead>
               <tbody>
                 <tr v-for="student in visibleStudents" :key="student.student_id">
-                  <th scope="row"><strong>{{ student.student_name }}</strong><span>{{ student.student_code }}</span></th>
+                  <th scope="row"><strong>{{ student.student_name }}</strong><span>{{ student.class_id }} · {{ student.student_code }}</span></th>
                   <td v-for="point in visiblePoints" :key="point.knowledge_key">
                     <button
                       type="button"
@@ -297,15 +320,17 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
           </div>
           <p class="chapter-training__group-note">群体掌握度直接使用后端证据加权结果；无证据学生不进入分母，也不按 0 分计算。</p>
         </div>
+        </template>
       </main>
 
-      <aside class="chapter-training__detail">
+      <aside v-if="viewMode !== 'recommendations'" class="chapter-training__detail">
         <template v-if="viewMode === 'student' && selectedWeak && selectedStudent">
           <span>当前学生</span>
           <h2>{{ selectedStudent.student_name }}</h2>
           <strong :title="selectedWeak.knowledge_point">{{ knowledgeLeafLabel(selectedWeak.knowledge_point) }}</strong>
           <div :class="['chapter-training__score', heatClass(selectedWeak.mastery)]">{{ percent(selectedWeak.mastery) }}</div>
           <dl><div><dt>证据</dt><dd>{{ selectedWeak.evidence_count }} 条</dd></div><div><dt>考试</dt><dd>{{ selectedWeak.exam_count }} 场</dd></div></dl>
+          <p v-if="selectedEvidenceSummary">{{ selectedEvidenceSummary }}</p>
           <button type="button" @click="toggleTarget(selectedWeak.knowledge_key)">{{ modelValue.includes(selectedWeak.knowledge_key) ? '移出训练目标' : '加入训练目标' }}</button>
           <RouterLink
             class="chapter-training__evidence-link"
@@ -339,6 +364,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
 .chapter-training__modes button{padding:.45rem .75rem;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;color:var(--color-text-secondary);cursor:pointer}
 .chapter-training__modes button.is-active{background:var(--color-bg-surface);color:var(--color-accent-active);font-weight:700}
 .chapter-training__body{display:grid;grid-template-columns:220px minmax(560px,1fr) 230px;min-height:560px}
+.chapter-training__body.is-recommending{grid-template-columns:220px minmax(0,1fr)}
 .chapter-training__scope{padding:.8rem;border-right:1px solid var(--color-border-default);background:var(--color-bg-subtle)}
 .chapter-training__scope header{display:grid;gap:.15rem;padding:.35rem .4rem .75rem}
 .chapter-training__scope header span{color:var(--color-text-secondary);font-size:.76rem}
@@ -396,4 +422,5 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
 .chapter-training__detail section{margin-top:1rem;padding-top:1rem;border-top:1px solid var(--color-border-default)}
 .chapter-training__detail ul{max-height:180px;overflow:auto;padding-left:1.1rem}
 @media(max-width:1180px){.chapter-training__body{grid-template-columns:195px minmax(0,1fr)}.chapter-training__detail{grid-column:1/-1;border-top:1px solid var(--color-border-default);border-left:0}.chapter-training__groups>div>button{grid-template-columns:minmax(110px,150px) minmax(140px,1fr) 48px 76px 72px}}
+@media(max-width:760px){.chapter-training__body,.chapter-training__body.is-recommending{grid-template-columns:minmax(0,1fr)}.chapter-training__toolbar,.chapter-training__toolbar>div:first-child{align-items:flex-start;flex-direction:column}.chapter-training__scope{border-right:0;border-bottom:1px solid var(--color-border-default)}.chapter-training__modes{flex-wrap:wrap}.chapter-training__modes button{white-space:nowrap}}
 </style>

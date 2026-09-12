@@ -32,7 +32,6 @@ from question_bank.current_knowledge import (
 from question_bank.models.question import (
     ALLOWED_TAG_TYPES,
     CORE_ANALYSIS_TAG_TYPES,
-    duplicate_question_key,
     has_complete_analysis_tags,
 )
 from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, TagAnalysis
@@ -1279,11 +1278,30 @@ class QuestionBankReadService:
             ],
         }
 
+    def _read_filter_parts(self, filters: QuestionReadFilters, *, taxonomy_expansions: dict[str, tuple[str, ...]] | None = None):
+        joins, where, params = _question_filter_parts(filters, current_knowledge=self.current_knowledge, taxonomy_expansions=taxonomy_expansions)
+        if filters.collapse_duplicates:
+            from question_bank.services.duplicate_analysis_copy_service import exact_identity_map
+            with _read_connection(self.db_path) as conn:
+                ids = [int(row[0]) for row in conn.execute(" ".join([
+                    "SELECT DISTINCT q.id FROM questions q", *joins,
+                    "WHERE " + " AND ".join(where), "ORDER BY q.id"]), params).fetchall()]
+                identities = exact_identity_map(conn, data_root=self.data_root or self.db_path.parent.parent)
+            seen = set()
+            hidden = []
+            for qid in ids:
+                key = identities.get(qid)
+                if key and key in seen:
+                    hidden.append(qid)
+                elif key:
+                    seen.add(key)
+            if hidden:
+                where.append("q.id NOT IN (" + ",".join("?" for _ in hidden) + ")")
+                params.extend(hidden)
+        return joins, where, params
+
     def _list_questions(self, filters: QuestionReadFilters) -> QuestionReadPage:
-        joins, where, params = _question_filter_parts(
-            filters,
-            current_knowledge=self.current_knowledge,
-        )
+        joins, where, params = self._read_filter_parts(filters)
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         count_sql = " ".join(
             [
@@ -1378,10 +1396,7 @@ class QuestionBankReadService:
         Returns only id/paper_id/question_number so poll-driven refreshes do
         not drag rich content, tags or asset files across the wire.
         """
-        joins, where, params = _question_filter_parts(
-            filters,
-            current_knowledge=self.current_knowledge,
-        )
+        joins, where, params = self._read_filter_parts(filters)
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         count_sql = " ".join(
             [
@@ -1493,18 +1508,17 @@ class QuestionBankReadService:
             filters,
             current_knowledge=self.current_knowledge,
         )
+        source_cache: dict[QuestionReadFilters, tuple[str, list[Any]]] = {}
 
         def facet_source(
             **excluded_dimension: object,
         ) -> tuple[str, list[Any]]:
             facet_filters = replace(filters, **excluded_dimension)
-            joins, where, params = _question_filter_parts(
-                facet_filters,
-                taxonomy_expansions=taxonomy_expansions,
-                current_knowledge=self.current_knowledge,
-            )
+            if facet_filters in source_cache:
+                return source_cache[facet_filters]
+            joins, where, params = self._read_filter_parts(facet_filters, taxonomy_expansions=taxonomy_expansions)
             where_sql = "WHERE " + " AND ".join(where) if where else ""
-            return (
+            result = (
                 " ".join(
                     [
                         """
@@ -1522,6 +1536,8 @@ class QuestionBankReadService:
                 ),
                 params,
             )
+            source_cache[facet_filters] = result
+            return result
 
         sources = {
             "exam_scopes": facet_source(exam_scopes=()),
@@ -1548,162 +1564,96 @@ class QuestionBankReadService:
             "grades": facet_source(grades=()),
         }
 
-        def source(name: str) -> tuple[str, list[Any]]:
-            return sources[name]
-
-        taxonomy_governance = get_taxonomy_governance()
+        tag_specs = {
+            "exam_scopes": ("exam_scope", None),
+            "curriculum_sections": ("curriculum_section", None),
+            "knowledge_points": ("knowledge_point", "knowledge"),
+            "abilities": ("ability", "ability"),
+            "methods": ("method", "method"),
+            "thoughts": ("thought", "thought"),
+            "models": ("model", "model"),
+            "special_types": ("special_type", "special_type"),
+            "error_types": ("error_type", None),
+            "student_levels": ("student_level", None),
+            "teaching_stages": ("teaching_stage", None),
+            "sub_skills": ("sub_skill", None),
+        }
+        column_specs = {
+            "question_types": "question_type", "years": "year",
+            "exam_types": "exam_type", "grades": "grade",
+        }
+        # Each facet excludes only its own selection. Most facets share the
+        # same source, so read its tags/columns once within this snapshot.
+        grouped: dict[tuple[str, tuple[Any, ...]], list[str]] = {}
+        for name, (sql, params) in sources.items():
+            grouped.setdefault((sql, tuple(params)), []).append(name)
+        current_knowledge = self.current_knowledge
         taxonomy_snapshot, taxonomy_identity_lookup = (
-            taxonomy_governance.snapshot_and_identity_lookup()
+            get_taxonomy_governance().snapshot_and_identity_lookup(
+                taxonomy_revision=(
+                    current_knowledge.taxonomy_revision
+                    if current_knowledge is not None else None
+                ),
+            )
         )
+        result: dict[str, list[dict[str, Any]]] = {}
         with _read_connection(self.db_path) as conn:
-            filtered_sql, params = source("exam_scopes")
-            curriculum_section_sql, curriculum_section_params = source(
-                "curriculum_sections"
-            )
-            knowledge_sql, knowledge_params = source("knowledge_points")
-            chapter_sql, chapter_params = source("curriculum_chapters")
-            ability_sql, ability_params = source("abilities")
-            method_sql, method_params = source("methods")
-            thought_sql, thought_params = source("thoughts")
-            model_sql, model_params = source("models")
-            special_type_sql, special_type_params = source("special_types")
-            error_type_sql, error_type_params = source("error_types")
-            student_level_sql, student_level_params = source(
-                "student_levels"
-            )
-            teaching_stage_sql, teaching_stage_params = source(
-                "teaching_stages"
-            )
-            sub_skill_sql, sub_skill_params = source("sub_skills")
-            question_type_sql, question_type_params = source(
-                "question_types"
-            )
-            year_sql, year_params = source("years")
-            exam_type_sql, exam_type_params = source("exam_types")
-            grade_sql, grade_params = source("grades")
-            return {
-                "exam_scopes": _tag_facet(
-                    conn,
-                    filtered_sql,
-                    params,
-                    tag_type="exam_scope",
-                ),
-                "curriculum_sections": _tag_facet(
-                    conn,
-                    curriculum_section_sql,
-                    curriculum_section_params,
-                    tag_type="curriculum_section",
-                ),
-                "knowledge_points": _tag_facet(
-                    conn,
-                    knowledge_sql,
-                    knowledge_params,
-                    tag_type="knowledge_point",
-                    taxonomy_dimension="knowledge",
-                    taxonomy_snapshot=taxonomy_snapshot,
-                    taxonomy_identity_lookup=taxonomy_identity_lookup,
-                    current_knowledge=self.current_knowledge,
-                ),
-                "curriculum_chapters": _curriculum_chapter_facet(
-                    conn,
-                    chapter_sql,
-                    chapter_params,
-                ),
-                "abilities": _tag_facet(
-                    conn,
-                    ability_sql,
-                    ability_params,
-                    tag_type="ability",
-                    taxonomy_dimension="ability",
-                    taxonomy_snapshot=taxonomy_snapshot,
-                    taxonomy_identity_lookup=taxonomy_identity_lookup,
-                ),
-                "methods": _tag_facet(
-                    conn,
-                    method_sql,
-                    method_params,
-                    tag_type="method",
-                    taxonomy_dimension="method",
-                    taxonomy_snapshot=taxonomy_snapshot,
-                    taxonomy_identity_lookup=taxonomy_identity_lookup,
-                ),
-                "thoughts": _tag_facet(
-                    conn,
-                    thought_sql,
-                    thought_params,
-                    tag_type="thought",
-                    taxonomy_dimension="thought",
-                    taxonomy_snapshot=taxonomy_snapshot,
-                    taxonomy_identity_lookup=taxonomy_identity_lookup,
-                ),
-                "models": _tag_facet(
-                    conn,
-                    model_sql,
-                    model_params,
-                    tag_type="model",
-                    taxonomy_dimension="model",
-                    taxonomy_snapshot=taxonomy_snapshot,
-                    taxonomy_identity_lookup=taxonomy_identity_lookup,
-                ),
-                "special_types": _tag_facet(
-                    conn,
-                    special_type_sql,
-                    special_type_params,
-                    tag_type="special_type",
-                    taxonomy_dimension="special_type",
-                    taxonomy_snapshot=taxonomy_snapshot,
-                    taxonomy_identity_lookup=taxonomy_identity_lookup,
-                ),
-                "error_types": _tag_facet(
-                    conn,
-                    error_type_sql,
-                    error_type_params,
-                    tag_type="error_type",
-                    allowed_values=frozenset(ERROR_PRONE_CATEGORIES),
-                ),
-                "student_levels": _tag_facet(
-                    conn,
-                    student_level_sql,
-                    student_level_params,
-                    tag_type="student_level",
-                ),
-                "teaching_stages": _tag_facet(
-                    conn,
-                    teaching_stage_sql,
-                    teaching_stage_params,
-                    tag_type="teaching_stage",
-                ),
-                "sub_skills": _tag_facet(
-                    conn,
-                    sub_skill_sql,
-                    sub_skill_params,
-                    tag_type="sub_skill",
-                ),
-                "question_types": _column_facet(
-                    conn,
-                    question_type_sql,
-                    question_type_params,
-                    column="question_type",
-                ),
-                "years": _column_facet(
-                    conn,
-                    year_sql,
-                    year_params,
-                    column="year",
-                ),
-                "exam_types": _column_facet(
-                    conn,
-                    exam_type_sql,
-                    exam_type_params,
-                    column="exam_type",
-                ),
-                "grades": _column_facet(
-                    conn,
-                    grade_sql,
-                    grade_params,
-                    column="grade",
-                ),
-            }
+            for (sql, parameters), names in grouped.items():
+                params = list(parameters)
+                tag_types = {
+                    tag_specs[name][0] for name in names if name in tag_specs
+                }
+                if "thoughts" in names:
+                    tag_types.add("method")
+                if "curriculum_chapters" in names:
+                    tag_types.add("exam_scope")
+                tags: dict[str, list[Any]] = {}
+                if tag_types:
+                    placeholders = ", ".join("?" for _ in tag_types)
+                    rows = conn.execute(
+                        f"""
+                        WITH filtered_questions AS ({sql})
+                        SELECT f.id AS question_id,
+                               t.tag_type, t.tag_value AS value
+                        FROM filtered_questions f
+                        JOIN question_tags t ON t.question_id = f.id
+                        WHERE t.tag_type IN ({placeholders})
+                          AND COALESCE(t.tag_value, '') <> ''
+                        """,
+                        [*params, *sorted(tag_types)],
+                    ).fetchall()
+                    for row in rows:
+                        tags.setdefault(str(row["tag_type"]), []).append(row)
+                columns = (
+                    conn.execute(sql, params).fetchall()
+                    if any(name in column_specs for name in names) else []
+                )
+                for name in names:
+                    if name in tag_specs:
+                        tag_type, dimension = tag_specs[name]
+                        tag_rows = tags.get(tag_type, [])
+                        if dimension == "thought":
+                            tag_rows = [*tag_rows, *tags.get("method", [])]
+                        result[name] = _tag_facet(
+                            tag_rows,
+                            taxonomy_dimension=dimension,
+                            taxonomy_snapshot=taxonomy_snapshot,
+                            taxonomy_identity_lookup=taxonomy_identity_lookup,
+                            current_knowledge=self.current_knowledge,
+                            allowed_values=(
+                                frozenset(ERROR_PRONE_CATEGORIES)
+                                if name == "error_types" else None
+                            ),
+                        )
+                    elif name == "curriculum_chapters":
+                        result[name] = _curriculum_chapter_facet(
+                            tags.get("exam_scope", []),
+                        )
+                    else:
+                        result[name] = _column_facet(
+                            columns, column=column_specs[name],
+                        )
+        return result
 
     def find_similar_questions(
         self,
@@ -1896,7 +1846,7 @@ class QuestionBankReadService:
         with _read_connection(self.db_path) as conn:
             target = conn.execute(
                 """
-                SELECT id, question_text, answer_text, difficulty, reason
+                SELECT id, question_number, question_text, answer_text, difficulty, reason, image_paths, has_images
                 FROM questions
                 WHERE id = ? AND COALESCE(is_deleted, 0) = 0
                 """,
@@ -1904,12 +1854,13 @@ class QuestionBankReadService:
             ).fetchone()
             if target is None:
                 return None
-            target_key = duplicate_question_key(dict(target))
+            from question_bank.services.duplicate_analysis_copy_service import exact_question_key
+            target_key = exact_question_key(dict(target), data_root=self.data_root or self.db_path.parent.parent)
             if not target_key:
                 return None
             rows = conn.execute(
                 """
-                SELECT q.id, q.question_text, q.answer_text, q.difficulty, q.reason
+                SELECT q.id, q.question_number, q.question_text, q.answer_text, q.difficulty, q.reason, q.image_paths, q.has_images
                 FROM questions q
                 LEFT JOIN papers p ON p.id = q.paper_id
                 WHERE q.id <> ? AND q.is_deleted = 0
@@ -1919,7 +1870,7 @@ class QuestionBankReadService:
                 (int(question_id),),
             ).fetchall()
             for row in rows:
-                if duplicate_question_key(dict(row)) != target_key:
+                if exact_question_key(dict(row), data_root=self.data_root or self.db_path.parent.parent) != target_key:
                     continue
                 tags = [
                     dict(tag)
@@ -2078,6 +2029,23 @@ class QuestionBankReadService:
             rich_blocks,
             asset_paths,
         )
+        item["duplicate_of_question_id"] = None
+        item["duplicate_labels_reused"] = False
+        with _read_connection(self.db_path) as conn:
+            source = conn.execute("""SELECT q.* FROM question_duplicate_links link
+                JOIN questions q ON q.id=link.duplicate_of_question_id
+                LEFT JOIN papers p ON p.id=q.paper_id
+                WHERE link.question_id=? AND q.is_deleted=0 AND COALESCE(p.import_status,'')<>'deleted'""",
+                (question_id,)).fetchone()
+            if source is not None:
+                from question_bank.services.duplicate_analysis_copy_service import exact_question_key
+                target_key = exact_question_key(dict(row), data_root=self.data_root or self.db_path.parent.parent, rich_content=rich_payload)
+                if target_key and target_key == exact_question_key(dict(source), data_root=self.data_root or self.db_path.parent.parent):
+                    item["duplicate_of_question_id"] = int(source["id"])
+                    source_tags = {(str(tag["tag_type"]), str(tag["tag_value"])) for tag in conn.execute(
+                        "SELECT tag_type,tag_value FROM question_tags WHERE question_id=?", (int(source["id"]),)).fetchall()}
+                    target_tags = {(str(tag["tag_type"]), str(tag["tag_value"])) for tag in tags}
+                    item["duplicate_labels_reused"] = bool(source_tags) and source_tags <= target_tags and str(row["difficulty"] or "") == str(source["difficulty"] or "")
         return item
 
     def resolve_asset(self, question_id: int, asset_index: int) -> ResolvedFile:
@@ -2338,11 +2306,6 @@ def _question_filter_parts(
         params.extend(CORE_ANALYSIS_TAG_TYPES)
     if filters.criteria_needs_review:
         where.append(_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id"))
-    if filters.collapse_duplicates:
-        # 每组排重只保留 duplicate_of 源题，隐藏已关联的重复题（opt-in）。
-        where.append(
-            "q.id NOT IN (SELECT question_id FROM question_duplicate_links)"
-        )
     if filters.teaching_progress_chapter.strip():
         allowed_prefixes = teaching_progress_allowed_prefixes(
             filters.teaching_progress_chapter
@@ -2429,38 +2392,17 @@ def _taxonomy_filter_expansions(
 
 
 def _tag_facet(
-    conn: sqlite3.Connection,
-    filtered_sql: str,
-    params: list[Any],
+    rows: list[sqlite3.Row],
     *,
-    tag_type: str,
     taxonomy_dimension: str | None = None,
     taxonomy_snapshot: dict[str, Any] | None = None,
     taxonomy_identity_lookup: dict[str, dict[str, str]] | None = None,
     current_knowledge: CurrentKnowledgeResolver | None = None,
     allowed_values: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
-    if tag_type not in {
-        "ability",
-        "curriculum_section",
-        "error_type",
-        "exam_scope",
-        "knowledge_point",
-        "method",
-        "thought",
-        "model",
-        "special_type",
-        "student_level",
-        "sub_skill",
-        "teaching_stage",
-    }:
-        raise ValueError("Unsupported question facet")
     if taxonomy_dimension is not None:
         items = _controlled_taxonomy_facet(
-            conn,
-            filtered_sql,
-            params,
-            tag_type=tag_type,
+            rows,
             dimension=taxonomy_dimension,
             taxonomy_snapshot=taxonomy_snapshot,
             taxonomy_identity_lookup=taxonomy_identity_lookup,
@@ -2468,36 +2410,21 @@ def _tag_facet(
         if taxonomy_dimension == "knowledge":
             return _current_knowledge_facet(items, current_knowledge)
         return items
-    rows = conn.execute(
-        f"""
-        WITH filtered_questions AS (
-            {filtered_sql}
-        )
-        SELECT
-            facet.tag_value AS value,
-            COUNT(DISTINCT filtered_questions.id) AS count
-        FROM filtered_questions
-        JOIN question_tags facet
-          ON facet.question_id = filtered_questions.id
-         AND facet.tag_type = '{tag_type}'
-        WHERE COALESCE(facet.tag_value, '') <> ''
-        GROUP BY facet.tag_value
-        ORDER BY count DESC, value COLLATE NOCASE ASC
-        """,
-        params,
-    ).fetchall()
-    items = _public_facet_items(rows)
+    questions_by_value: dict[str, set[int]] = {}
+    for row in rows:
+        questions_by_value.setdefault(row["value"], set()).add(row["question_id"])
+    items = _public_facet_items(
+        {"value": value, "count": len(ids)}
+        for value, ids in questions_by_value.items()
+    )
     if allowed_values is not None:
         items = [item for item in items if item["value"] in allowed_values]
     return items
 
 
 def _controlled_taxonomy_facet(
-    conn: sqlite3.Connection,
-    filtered_sql: str,
-    params: list[Any],
+    rows: list[sqlite3.Row],
     *,
-    tag_type: str,
     dimension: str,
     taxonomy_snapshot: dict[str, Any] | None = None,
     taxonomy_identity_lookup: dict[str, dict[str, str]] | None = None,
@@ -2527,41 +2454,26 @@ def _controlled_taxonomy_facet(
     thought_index = dict(
         (taxonomy_identity_lookup or {}).get("thought", {})
     )
-    tag_type_sql = (
-        "facet.tag_type IN ('thought', 'method')"
-        if dimension == "thought"
-        else f"facet.tag_type = '{tag_type}'"
-    )
-    rows = conn.execute(
-        f"""
-        WITH filtered_questions AS (
-            {filtered_sql}
-        )
-        SELECT DISTINCT
-            filtered_questions.id AS question_id,
-            facet.tag_type AS tag_type,
-            facet.tag_value AS value
-        FROM filtered_questions
-        JOIN question_tags facet
-          ON facet.question_id = filtered_questions.id
-         AND {tag_type_sql}
-        WHERE COALESCE(facet.tag_value, '') <> ''
-        """,
-        params,
-    ).fetchall()
     questions_by_value: dict[str, set[int]] = {}
+    public_values: dict[tuple[str, str], str | None] = {}
     for row in rows:
         raw_value = str(row["value"] or "").strip()
         if not raw_value:
             continue
-        key = _taxonomy_value_key(raw_value)
-        if dimension == "method" and key in thought_index:
-            continue
-        public_value = alias_index.get(key)
+        identity = (str(row["tag_type"]), raw_value)
+        if identity not in public_values:
+            key = _taxonomy_value_key(raw_value)
+            public_value = alias_index.get(key)
+            if dimension == "method" and key in thought_index:
+                public_value = None
+            elif public_value is None and not (
+                dimension == "thought" and identity[0] == "method"
+            ):
+                public_value = raw_value
+            public_values[identity] = public_value
+        public_value = public_values[identity]
         if public_value is None:
-            if dimension == "thought" and str(row["tag_type"]) == "method":
-                continue
-            public_value = raw_value
+            continue
         questions_by_value.setdefault(public_value, set()).add(
             int(row["question_id"])
         )
@@ -2581,79 +2493,35 @@ def _taxonomy_value_key(value: object) -> str:
     return re.sub(r"[\s\W_]+", "", normalized)
 
 
-def _curriculum_chapter_facet(
-    conn: sqlite3.Connection,
-    filtered_sql: str,
-    params: list[Any],
-) -> list[dict[str, Any]]:
-    chapter_values = curriculum_chapter_exam_scope_values()
-    value_rows = [
-        (chapter_id, exam_scope)
-        for chapter_id, exam_scopes in chapter_values.items()
-        for exam_scope in exam_scopes
-    ]
-    value_placeholders = ", ".join("(?, ?)" for _ in value_rows)
-    rows = conn.execute(
-        f"""
-        WITH filtered_questions AS (
-            {filtered_sql}
-        ),
-        chapter_values(chapter_id, tag_value) AS (
-            VALUES {value_placeholders}
-        )
-        SELECT
-            chapter_values.chapter_id AS value,
-            COUNT(DISTINCT filtered_questions.id) AS count
-        FROM filtered_questions
-        JOIN question_tags facet
-          ON facet.question_id = filtered_questions.id
-         AND facet.tag_type = 'exam_scope'
-        JOIN chapter_values
-          ON chapter_values.tag_value = facet.tag_value
-        WHERE COALESCE(facet.tag_value, '') <> ''
-        GROUP BY chapter_values.chapter_id
-        ORDER BY count DESC, value COLLATE NOCASE ASC
-        """,
-        [
-            *params,
-            *(
-                value
-                for chapter_id, exam_scope in value_rows
-                for value in (chapter_id, exam_scope)
-            ),
-        ],
-    ).fetchall()
-    return _public_facet_items(rows)
+def _curriculum_chapter_facet(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    chapters_by_value: dict[str, list[str]] = {}
+    for chapter, values in curriculum_chapter_exam_scope_values().items():
+        for value in values:
+            chapters_by_value.setdefault(value, []).append(chapter)
+    questions_by_chapter: dict[str, set[int]] = {}
+    for row in rows:
+        for chapter in chapters_by_value.get(row["value"], []):
+            questions_by_chapter.setdefault(chapter, set()).add(row["question_id"])
+    return _public_facet_items(
+        {"value": value, "count": len(ids)}
+        for value, ids in questions_by_chapter.items()
+    )
 
 
 def _column_facet(
-    conn: sqlite3.Connection,
-    filtered_sql: str,
-    params: list[Any],
-    *,
-    column: str,
+    rows: list[sqlite3.Row], *, column: str,
 ) -> list[dict[str, Any]]:
-    if column not in {"question_type", "year", "exam_type", "grade"}:
-        raise ValueError("Unsupported question facet")
-    rows = conn.execute(
-        f"""
-        WITH filtered_questions AS (
-            {filtered_sql}
-        )
-        SELECT
-            {column} AS value,
-            COUNT(DISTINCT id) AS count
-        FROM filtered_questions
-        WHERE COALESCE({column}, '') <> ''
-        GROUP BY {column}
-        ORDER BY count DESC, value COLLATE NOCASE ASC
-        """,
-        params,
-    ).fetchall()
-    return _public_facet_items(rows)
+    questions_by_value: dict[Any, set[int]] = {}
+    for row in rows:
+        if row[column] is not None and row[column] != "":
+            questions_by_value.setdefault(row[column], set()).add(row["id"])
+    return _public_facet_items(
+        {"value": value, "count": len(ids)}
+        for value, ids in questions_by_value.items()
+    )
 
 
-def _public_facet_items(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
+def _public_facet_items(rows: Iterable[sqlite3.Row | Mapping[str, Any]]) -> list[dict[str, Any]]:
     counts: dict[str, int] = {}
     for row in rows:
         value = _public_tag_value(row["value"])

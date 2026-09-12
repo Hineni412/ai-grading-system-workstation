@@ -600,6 +600,7 @@ class SolutionEvidenceProjectionWriter:
         model_name: str,
         operation_id: str,
         objective_response_shape: str | None = None,
+        part_assessments: Sequence[Mapping[str, Any]] | None = None,
     ) -> QuestionSolutionEvidence:
         from question_bank.training_criteria.analysis import (
             solution_evidence_source_content_hash,
@@ -674,7 +675,9 @@ class SolutionEvidenceProjectionWriter:
             db_path = getattr(self.evidence_repository, "db_path", None)
             if db_path is not None:
                 active_graph_release_id = active_release_id(Path(db_path)) or ""
-        self.evidence_repository.save(
+        from question_bank.solution_evidence.part_assessments import model_part_estimates, save_profile
+        estimates = model_part_estimates(part_assessments, evidence.to_dict())
+        saved_version_id = self.evidence_repository.save(
             evidence,
             source_kind="combined_model",
             source_reference=f"analysis:{operation_id}:{question.question_id}",
@@ -685,6 +688,10 @@ class SolutionEvidenceProjectionWriter:
                 else None
             ),
         )
+        if estimates:
+            save_profile(self.evidence_repository.db_path, question_id=question.question_id,
+                         evidence_version_id=saved_version_id, parts=estimates,
+                         created_by=f"model:{model_name}")
         return evidence
 
     def criterion_review_required(

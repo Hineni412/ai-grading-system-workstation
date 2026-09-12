@@ -7,6 +7,7 @@ import type {
   TrainingSubmission,
 } from '../api/training'
 import TrainingAssessmentPanel from '../components/training/TrainingAssessmentPanel.vue'
+import { ApiError } from '../api/errors'
 
 const trainingApiMock = vi.hoisted(() => ({
   getTrainingAssessment: vi.fn(),
@@ -167,7 +168,7 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks()
+  vi.resetAllMocks()
   trainingApiMock.getTrainingAssessment.mockResolvedValue(pendingAssessment)
   trainingApiMock.getTrainingFeedback.mockRejectedValue(new Error('not found'))
   trainingApiMock.reviewTrainingPoint.mockResolvedValue(completedAssessment)
@@ -176,10 +177,60 @@ beforeEach(() => {
 
 afterEach(() => {
   mounted.splice(0).forEach((app) => app.unmount())
+  vi.useRealTimers()
   document.body.innerHTML = ''
 })
 
 describe('training assessment panel', () => {
+  it('queries a timed-out assessment until complete without submitting it again', async () => {
+    vi.useFakeTimers()
+    trainingApiMock.getTrainingAssessment
+      .mockRejectedValueOnce(new ApiError({
+        kind: 'not_found', status: 404, code: 'training_assessment_not_found',
+        message: 'not found', details: {}, requestId: 'read', retryable: false,
+      }))
+      .mockResolvedValueOnce({ ...pendingAssessment, status: 'running' })
+      .mockResolvedValue(completedAssessment)
+    trainingApiMock.startTrainingAssessment.mockRejectedValue(new ApiError({
+      kind: 'timeout', status: null, code: 'request_timeout', message: 'timeout',
+      details: {}, requestId: 'start', retryable: false,
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TrainingAssessmentPanel, { submission })
+    mounted.push(app)
+    app.mount(host)
+    await settle()
+    ;[...host.querySelectorAll('button')].find((b) => b.textContent?.includes('开始整卷判定'))?.click()
+    await settle()
+    expect(host.textContent).toContain('判定进行中')
+    await vi.advanceTimersByTimeAsync(3000)
+    await settle()
+    expect(host.textContent).toContain('复核完成')
+    expect(trainingApiMock.startTrainingAssessment).toHaveBeenCalledTimes(1)
+    expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(9000)
+    expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(3)
+  })
+
+  it('resumes queries for a running assessment and stops them when leaving', async () => {
+    vi.useFakeTimers()
+    trainingApiMock.getTrainingAssessment.mockResolvedValue({ ...pendingAssessment, status: 'running' })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TrainingAssessmentPanel, { submission })
+    mounted.push(app)
+    app.mount(host)
+    await settle()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(2)
+    expect(trainingApiMock.startTrainingAssessment).not.toHaveBeenCalled()
+    mounted.splice(mounted.indexOf(app), 1)
+    app.unmount()
+    await vi.advanceTimersByTimeAsync(9000)
+    expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(2)
+  })
+
   it('locks an uncertain point, publishes evidence, and opens only a draft', async () => {
     const host = document.createElement('div')
     document.body.append(host)

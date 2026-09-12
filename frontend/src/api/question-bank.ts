@@ -54,6 +54,8 @@ export function questionTypeWithSubtype(
 
 export interface QuestionBankListItem {
   id: number
+  duplicate_of_question_id?: number | null
+  duplicate_labels_reused?: boolean
   revision: string
   paper_id: number | null
   question_number: string
@@ -482,6 +484,8 @@ export interface QuestionSolutionEvidenceResponse {
   evidence_version_id: string | null
   status: 'proposed' | 'approved' | 'rejected' | 'superseded' | 'stale' | null
   evidence: QuestionSolutionEvidence | null
+  part_assessments?: Array<{ part_id: string; difficulty: number | null; source: string; rationale: string; review_note?: string }>
+  assessment_revision?: number | null
 }
 
 export type QuestionBankTagStatus = 'all' | 'tagged' | 'untagged'
@@ -565,6 +569,12 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   )
 }
 
+function hasExactQuestionKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const base = Object.fromEntries(Object.entries(value).filter(([key]) =>
+    key !== 'duplicate_of_question_id' && key !== 'duplicate_labels_reused'))
+  return hasExactKeys(base, keys)
+}
+
 function hasRequiredKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return keys.every((key) => Object.prototype.hasOwnProperty.call(value, key))
 }
@@ -618,13 +628,15 @@ function isQuestionBankTag(value: unknown): value is QuestionBankTag {
 }
 
 function isQuestionBankListItem(value: unknown): value is QuestionBankListItem {
-  if (!isRecord(value) || !hasExactKeys(value, QUESTION_LIST_KEYS)) return false
+  if (!isRecord(value) || !hasExactQuestionKeys(value, QUESTION_LIST_KEYS)) return false
   return hasQuestionBankListFields(value)
 }
 
 function hasQuestionBankListFields(value: Record<string, unknown>): boolean {
   return (
     isPositiveInteger(value.id) &&
+    (value.duplicate_of_question_id === undefined || value.duplicate_of_question_id === null || isPositiveInteger(value.duplicate_of_question_id)) &&
+    (value.duplicate_labels_reused === undefined || typeof value.duplicate_labels_reused === 'boolean') &&
     isRevision(value.revision) &&
     isNullableInteger(value.paper_id) &&
     typeof value.question_number === 'string' &&
@@ -1223,7 +1235,7 @@ export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
 function isSimilarQuestion(value: unknown): value is SimilarQuestionItem {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, [
+    !hasExactQuestionKeys(value, [
       ...QUESTION_LIST_KEYS,
       'similarity_score',
       'similarity_reasons',
@@ -1429,7 +1441,16 @@ export function decodeQuestionSolutionEvidenceResponse(
     !isRecord(value)
     || !hasExactKeys(value, [
       'question_id', 'available', 'evidence_version_id', 'status', 'evidence',
+      ...('part_assessments' in value ? ['part_assessments'] : []),
+      ...('assessment_revision' in value ? ['assessment_revision'] : []),
     ])
+    || !(value.assessment_revision === undefined || value.assessment_revision === null || isPositiveInteger(value.assessment_revision))
+    || !(value.part_assessments === undefined || (Array.isArray(value.part_assessments)
+      && value.part_assessments.every(part => isRecord(part)
+        && typeof part.part_id === 'string' && typeof part.source === 'string'
+        && typeof part.rationale === 'string'
+        && (part.review_note === undefined || typeof part.review_note === 'string')
+        && (part.difficulty === null || (isFiniteNumber(part.difficulty) && part.difficulty >= 1 && part.difficulty <= 10)))))
     || !isPositiveInteger(value.question_id)
     || typeof value.available !== 'boolean'
     || !(value.evidence_version_id === null || isHex(value.evidence_version_id, 64))
@@ -1446,7 +1467,7 @@ export function decodeQuestionSolutionEvidenceResponse(
 export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, [
+    !hasExactQuestionKeys(value, [
       ...QUESTION_LIST_KEYS,
       'page_range',
       'assets',

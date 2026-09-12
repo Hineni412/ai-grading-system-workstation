@@ -3,7 +3,10 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-from backend.config_generation.gateway import LLMConfigGenerationGateway
+from backend.config_generation.gateway import (
+    LLMConfigGenerationGateway,
+    config_generation_extra_kwargs,
+)
 from backend.config_generation.contract import GENERATED_ID_CONTRACT_PROMPT
 from backend.config_generation.orchestration import (
     ConfigGenerationOrchestrator,
@@ -160,6 +163,8 @@ def test_active_batch_prompt_keeps_current_scoring_contract() -> None:
     assert "response_mode" in prompt
     assert "knowledge_id" not in prompt
     assert "knowledge_name" not in prompt
+    assert "allow_alternative_methods=false 不禁止同一方法的等价表达" in prompt
+    assert "扣分规则必须指出缺失的数学依据" in prompt
 
 
 def test_score_allocation_prompt_snapshot_is_exact() -> None:
@@ -208,6 +213,8 @@ def test_manual_refinement_prompt_keeps_ids_and_excludes_knowledge() -> None:
     assert "不要输出" in prompt
     assert "教师创建的 parts[] 小问结构" in prompt
     assert "教师创建 the parts 部分" not in prompt
+    assert "补入 equivalent_rules" in prompt
+    assert "不把省略简单算术展开判作缺少证明" in prompt
 
 
 def test_gateway_adapter_preserves_single_request_methods_and_parameters() -> None:
@@ -436,3 +443,23 @@ def test_production_job_no_longer_imports_config_orchestration_from_session_mana
     assert "os.getenv" not in orchestration_source
     source = inspect.getsource(config_generation)
     assert "ConfigGenerationOrchestrator" not in source
+
+
+def test_config_generation_timeout_defaults_to_600_seconds(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS", raising=False)
+    kwargs = config_generation_extra_kwargs()
+    assert kwargs["timeout"] == 600.0
+    assert kwargs["timeout_override_seconds"] == 600.0
+
+
+def test_config_generation_timeout_env_stays_between_240_and_600(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS", "120")
+    assert config_generation_extra_kwargs()["timeout_override_seconds"] == 240.0
+    monkeypatch.setenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS", "480")
+    assert config_generation_extra_kwargs()["timeout_override_seconds"] == 480.0
+    monkeypatch.setenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS", "900")
+    assert config_generation_extra_kwargs()["timeout_override_seconds"] == 600.0

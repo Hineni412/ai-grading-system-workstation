@@ -47,7 +47,7 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-async function mountFilters() {
+async function mountFilters(compactRoster = false, showScoreFloor = false, query = initialQuery) {
   const applies: GraphQueryInput[] = []
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -57,12 +57,12 @@ async function mountFilters() {
   const Wrapper = defineComponent({
     components: { EvidenceScopeFilters },
     setup() {
-      const model = ref<GraphQueryInput>(initialQuery)
+      const model = ref<GraphQueryInput>(query)
       const onApply = (next: GraphQueryInput): void => {
         applies.push(next)
         model.value = next
       }
-      return { model, onApply, sessions, students, scoreProfiles }
+      return { model, onApply, sessions, students, scoreProfiles, compactRoster, showScoreFloor }
     },
     template: `
       <EvidenceScopeFilters
@@ -72,6 +72,8 @@ async function mountFilters() {
         :current-session-id="7"
         :applying="false"
         :score-profiles="scoreProfiles"
+        :compact-roster="compactRoster"
+        :show-score-floor="showScoreFloor"
         @apply="onApply"
       />`,
   })
@@ -116,6 +118,50 @@ afterEach(() => {
 })
 
 describe('evidence scope filters queue', () => {
+  it('exposes the chapter score floor without expanding the roster and preserves it for explicit members', async () => {
+    const { host, applies } = await mountFilters(true)
+    expect(host.querySelector('.evidence-scope__roster')).toBeNull()
+    const floor = setScoreMin(host, '50')
+    floor.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(applies[applies.length - 1]?.scope.score_rate_min).toBe(.5)
+    expect(host.textContent).toContain('无可用成绩的学生不进入推荐')
+    clickButton(host, '更多筛选')
+    await settle()
+    const add = host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生甲"]')!
+    add.click()
+    await settle()
+    clickApply(host)
+    await settle()
+    expect(applies[applies.length - 1]?.scope.mode).toBe('selected')
+    expect(applies[applies.length - 1]?.scope.student_ids).toEqual(['12'])
+    expect(applies[applies.length - 1]?.scope.score_rate_min).toBe(.5)
+  })
+  it('applies and restores the student score floor even for a saved queue, without changing the roster layout', async () => {
+    const query: GraphQueryInput = { ...initialQuery, scope: { ...initialQuery.scope,
+      mode: 'selected', student_ids: ['12', '22'], score_rate_min: .2 } }
+    const { host, applies } = await mountFilters(false, true, query)
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="最低得分率"]')!.value).toBe('20')
+    expect(host.querySelector('.evidence-scope__queue')!.textContent).toContain('队列 2 人')
+    setScoreMin(host, '80')
+    clickApply(host)
+    await settle()
+    expect(applies[applies.length - 1]?.scope).toMatchObject({ mode: 'selected', student_ids: ['12', '22'], score_rate_min: .8 })
+    clickButton(host, '更多筛选')
+    await settle()
+    expect(host.querySelectorAll('.evidence-scope__card')).toHaveLength(1)
+    expect(host.querySelector('.evidence-scope__card-name b')?.textContent).toBe('匿名学生乙')
+    setScoreMin(host, '101')
+    clickApply(host)
+    await settle()
+    expect(applies).toHaveLength(1)
+    expect(host.textContent).toContain('得分率请输入 0–100 之间的数字')
+    setScoreMin(host, '')
+    clickApply(host)
+    await settle()
+    expect(applies[applies.length - 1]?.scope.score_rate_min).toBeUndefined()
+    expect(applies[applies.length - 1]?.scope.student_ids).toEqual(['12', '22'])
+  })
   it('always renders the queue row with an empty placeholder until students are queued', async () => {
     const { host } = await mountFilters()
     // 初始空队列：行常显占位文案，chips 不存在。

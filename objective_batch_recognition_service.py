@@ -983,6 +983,10 @@ def validate_objective_paper_response(
 
         item = candidates[0]
         confidence = _confidence_0_to_1(item.get("confidence", 0))
+        answer_keys = ("recognized_answer",) if spec.question_type == "choice" else ("raw_answer", "recognized_answer")
+        if not any(item.get(key) is not None for key in answer_keys):
+            review.append(_manifest_review_item(manifest_item, spec, "missing_answer_field", confidence))
+            continue
         if spec.question_type == "choice":
             answer = str(item.get("recognized_answer") or "").strip()
             normalized_answer = answer.upper()
@@ -1191,6 +1195,10 @@ def validate_objective_batch_response(
             continue
         seen.add(paper_key)
         confidence = _confidence_0_to_1(item.get("confidence", 0))
+        answer_key = "recognized_answer" if spec.question_type == "choice" else "raw_answer"
+        if item.get(answer_key) is None:
+            review.append(_manifest_review_item(expected[paper_key], spec, "missing_answer_field", confidence))
+            continue
         answer = str(item.get("recognized_answer") if spec.question_type == "choice" else item.get("raw_answer") or "").strip()
         normalized_answer = normalize_answer_text(answer) if spec.question_type == "fill_blank" else answer.upper()
         reason = str(item.get("review_reason") or "").strip()
@@ -1326,7 +1334,7 @@ def _objective_hard_zero_reason(answer: str, reason: str, question_type: str) ->
 def _objective_is_blank_answer(answer: str, question_type: str) -> bool:
     text = str(answer or "").strip()
     if question_type == "choice":
-        return text.lower() == "blank"
+        return text.lower() in {"", "blank"}
     return text == ""
 
 

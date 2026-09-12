@@ -99,6 +99,7 @@ export interface GraphResponse {
 }
 
 export interface GraphEvidenceItem {
+  assessment?: { granularity?: string; part_difficulty?: number | null; difficulty_source?: string; reason?: string }
   student_id: number
   student_code: string
   student_name: string
