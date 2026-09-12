@@ -31,6 +31,9 @@ frontend/test-results/
 output/playwright/
 /output/performance/
 /output/knowledge-graph/
+/output/*-frontend-dist/
+/output/*-qa/
+**/.playwright-cli/
 
 # Temporary files
 *.tmp

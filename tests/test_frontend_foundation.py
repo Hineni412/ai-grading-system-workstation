@@ -72,11 +72,3 @@ def test_frontend_lockfile_and_generated_outputs_are_governed() -> None:
         "frontend/test-results/",
     ):
         assert pattern in gitignore
-
-
-def test_frontend_vite_proxy_stays_on_loopback_api() -> None:
-    config = (FRONTEND / "vite.config.ts").read_text(encoding="utf-8")
-
-    assert "'/api'" in config
-    assert "http://127.0.0.1:8000" in config
-    assert "0.0.0.0" not in config

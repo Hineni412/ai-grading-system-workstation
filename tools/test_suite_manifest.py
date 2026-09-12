@@ -57,7 +57,9 @@ RELEASE_AUDIT_TEST_PATHS = (
 # directly; no duplicate "quick versions" of product tests are maintained.
 QUICK_TEST_PATHS = (
     Path("tests/test_answer_normalizer.py"),
+    Path("tests/api_e2e/test_failure_recovery.py"),
     Path("tests/api_e2e/test_five_flow.py"),
+    Path("tests/api_e2e/test_restart_recovery.py"),
     Path("tests/test_annotation_margin_layout.py"),
     Path("tests/test_api_app.py"),
     Path("tests/test_api_grading_run_control.py"),
@@ -67,19 +69,39 @@ QUICK_TEST_PATHS = (
     Path("tests/test_api_scan_grading_workspace.py"),
     Path("tests/test_grading_completeness.py"),
     Path("tests/test_grading_limits.py"),
-    Path("tests/test_frontend_foundation.py"),
     Path("tests/test_job_manager.py"),
     Path("tests/test_llm_execution_control.py"),
     Path("tests/test_llm_gateway.py"),
+    Path("tests/test_manual_review_atomic.py"),
     Path("tests/test_model_profile_execution_settings.py"),
+    Path("tests/phase4/test_personalized_recommendation.py"),
     Path("tests/test_question_id_contract.py"),
     Path("tests/test_question_id_readonly_integration.py"),
+    Path("tests/test_question_import_duplicates.py"),
+    Path("tests/test_report_ai_teacher_comparison.py"),
     Path("tests/test_report_export_job.py"),
     Path("tests/test_report_print_layout.py"),
     Path("tests/test_request_pacer.py"),
     Path("tests/test_run_bat_api_entry.py"),
     Path("tests/test_scan_grading_workspace_service.py"),
     Path("tests/test_test_suite_runner.py"),
+)
+
+
+# Paths are relative to the project root, like the backend manifest. The full
+# frontend suite still discovers every spec; only quick runs use this selection.
+QUICK_FRONTEND_TEST_PATHS = (
+    Path("frontend/src/api/__tests__/client.spec.ts"),
+    Path("frontend/src/__tests__/job-store.spec.ts"),
+    Path("frontend/src/__tests__/config-workspace-store.spec.ts"),
+    Path("frontend/src/__tests__/scan-grading-store.spec.ts"),
+    Path("frontend/src/__tests__/review-drafts-store.spec.ts"),
+    Path("frontend/src/__tests__/review-scoring-inspector.spec.ts"),
+    Path("frontend/src/__tests__/training-recommendations-view.spec.ts"),
+    Path("frontend/src/__tests__/personalized-recommendation-draft.spec.ts"),
+    Path("frontend/src/__tests__/training-group-recommendations.spec.ts"),
+    Path("frontend/src/__tests__/knowledge-training-hierarchy.spec.ts"),
+    Path("frontend/src/__tests__/results-center-view.spec.ts"),
 )
 
 

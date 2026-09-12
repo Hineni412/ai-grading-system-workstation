@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from tools.test_suite_manifest import (  # noqa: E402
     PROCESS_ISOLATED_TEST_PATHS,
+    QUICK_FRONTEND_TEST_PATHS,
     QUICK_TEST_PATHS,
     RELEASE_AUDIT_TEST_PATHS,
     SERIAL_TEST_PATHS,
@@ -250,19 +251,32 @@ def _run_frontend(
     *,
     full: bool,
     environment: dict[str, str],
-) -> CommandResult:
+) -> list[CommandResult]:
     if full:
-        label = "前端静态检查、单元测试与构建"
-        command = _npm_command("run", "verify")
-    else:
-        label = "前端单元测试"
-        command = _npm_command("run", "test:all")
-    return _run_command(
-        label,
-        command,
+        return [_run_command(
+            "前端静态检查、单元测试与构建",
+            _npm_command("run", "verify"),
+            cwd=FRONTEND_ROOT,
+            environment=environment,
+        )]
+    selected_paths = tuple(
+        (PROJECT_ROOT / path).relative_to(FRONTEND_ROOT).as_posix()
+        for path in QUICK_FRONTEND_TEST_PATHS
+    )
+    result = _run_command(
+        "前端关键流程测试",
+        _npm_command("run", "test", "--", *selected_paths),
         cwd=FRONTEND_ROOT,
         environment=environment,
     )
+    if not result.ok:
+        return [result]
+    return [result, _run_command(
+        "题框编辑器测试",
+        _npm_command("run", "test:editor"),
+        cwd=FRONTEND_ROOT,
+        environment=environment,
+    )]
 
 
 def _split_paths(
@@ -323,8 +337,8 @@ def _run_current_suite(
             environment=environment,
         )
         backend_results = backend_future.result()
-        frontend_result = frontend_future.result()
-    return [*backend_results, frontend_result]
+        frontend_results = frontend_future.result()
+    return [*backend_results, *frontend_results]
 
 
 def _run_release_audit(
@@ -416,7 +430,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--durations 不能为负数")
 
     _validate_paths(
-        tuple(dict.fromkeys((*QUICK_TEST_PATHS, *SERIAL_TEST_PATHS, *RELEASE_AUDIT_TEST_PATHS)))
+        tuple(dict.fromkeys((
+            *QUICK_TEST_PATHS,
+            *QUICK_FRONTEND_TEST_PATHS,
+            *SERIAL_TEST_PATHS,
+            *RELEASE_AUDIT_TEST_PATHS,
+        )))
     )
     started = time.perf_counter()
     with tempfile.TemporaryDirectory(
