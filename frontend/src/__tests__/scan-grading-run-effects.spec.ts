@@ -122,7 +122,7 @@ describe('scan grading run effects', () => {
     } satisfies JobResponse)
     const { host } = await mountView()
 
-    host.querySelector<HTMLButtonElement>('[data-grading-mode="full_paper"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-grading-mode="ai"]')!.click()
     let button: HTMLButtonElement | null = null
     await vi.waitFor(() => {
       button = host.querySelector<HTMLButtonElement>('[data-confirm-grading-plan]')
@@ -135,7 +135,7 @@ describe('scan grading run effects', () => {
     expect(button.getAttribute('data-variant')).toBe('primary')
     expect(button.getAttribute('type')).toBe('button')
     expect(button.querySelector('.app-button__ripples')).not.toBeNull()
-    expect(button.textContent).toContain('确认并开始整卷批改')
+    expect(button.textContent).toContain('确认并开始 AI 批改')
 
     button.click()
     await nextTick()

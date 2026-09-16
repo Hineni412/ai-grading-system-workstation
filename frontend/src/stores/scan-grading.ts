@@ -22,7 +22,7 @@ import {
   uploadScan,
   type AutomatedGradingMode,
   type GradingPlan,
-  type GradingMode,
+  type SelectableGradingMode,
   type GradingWorkspace,
   type ScanDecision,
   type ScanPreflight,
@@ -43,7 +43,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   const errorMessage = ref('')
   const activeJobId = ref<number | null>(null)
   const preflightJobId = ref<number | null>(null)
-  const selectedMode = ref<GradingMode | null>(null)
+  const selectedMode = ref<SelectableGradingMode | null>(null)
   const gradingPlan = ref<GradingPlan | null>(null)
   const planState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const planErrorMessage = ref('')
@@ -428,7 +428,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     return succeeded
   }
 
-  async function previewPlan(mode: GradingMode): Promise<void> {
+  async function previewPlan(mode: SelectableGradingMode): Promise<void> {
     const id = sessionId.value; const batch = uploadBatch.value; const check = preflight.value
     const current = generation
     if (!id || !batch || !check || busyAction.value) return

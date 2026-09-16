@@ -38,7 +38,7 @@ from grading_limits import (
     SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,
     bounded_int,
 )
-from grading_completeness import audit_grading_details, major_question_id, major_question_ids_for_issues
+from grading_completeness import audit_grading_details, major_question_id, major_question_ids_for_issues, merge_detail_metadata, details_require_review
 from image_preprocessor import enhance_image_file, is_standard_pdf_page
 from integration.question_tag_projection_service import QuestionTagProjectionService
 from llm_client import LLMClient
@@ -178,8 +178,10 @@ class GradingService:
         answer_regions = answer_regions_with_template_source_sizes(self.db, session_id, data_root=data_root)
         if grading_mode == "hybrid_batch":
             resolved_grading_mode = "hybrid_batch"
-        else:
+        elif grading_mode == "full_paper":
             resolved_grading_mode = "full_paper"
+        else:
+            resolved_grading_mode = "ai"
         teacher_locks = (
             self.db.reviews.list_teacher_score_locks(
                 session_id,
@@ -537,7 +539,7 @@ class GradingService:
                 "grading_mode": resolved_grading_mode,
             }
 
-        if resolved_grading_mode == "hybrid_batch":
+        if resolved_grading_mode in {"hybrid_batch", "ai"}:
             matched_records, hybrid_run_item_by_paper = yield from (
                 self._classify_full_paper_candidates(
                     matched_records,
@@ -661,11 +663,14 @@ class GradingService:
                 subjective_completed = 0
                 subjective_total = 0
 
+                ai_full_page = resolved_grading_mode == "ai"
+
                 def _hybrid_progress(event: dict[str, Any]) -> None:
                     nonlocal objective_completed, subjective_completed, subjective_total
                     stage = str(event.get("stage") or "")
                     qid = str(event.get("question_id") or "?")
                     batch_index = event.get("batch_index")
+                    unit = "位" if ai_full_page else "批"
                     if stage.startswith("objective"):
                         if stage.endswith(("_done", "_error")):
                             objective_completed += 1
@@ -704,7 +709,7 @@ class GradingService:
                         msg = (
                             f"正在批改主观题，已完成 "
                             f"{subjective_completed}/{max(1, subjective_total)} 个批次"
-                            f"（当前 {qid}，第 {batch_index} 批）{suffix}"
+                            f"（当前 {qid}，第 {batch_index} {unit}）{suffix}"
                         )
                         public_stage = "grading_subjective"
                     else:
@@ -728,7 +733,14 @@ class GradingService:
                         answer_key=grader.answer_key,
                         llm_client=self.llm_client,
                         grading_model=grading_model,
-                        output_root=get_path_manager().outputs_dir / "hybrid_batch",
+                        output_root=(
+                            get_path_manager().outputs_dir
+                            / ("ai_grading" if ai_full_page else "hybrid_batch")
+                        ),
+                        subjective_evidence=(
+                            "full_page" if ai_full_page else "major_atlas"
+                        ),
+                        result_mode=resolved_grading_mode,
                         batch_size=bounded_int(
                             os.getenv("LLM_HYBRID_MAJOR_BATCH_SIZE"),
                             4,
@@ -855,8 +867,13 @@ class GradingService:
                             raise ValueError("Structured incomplete result has no rubric major questions to retry safely")
                         merged_raw_json = dict(existing["raw_json"])
                         merged_raw_json.pop("hybrid_batch_fallback", None)
+                        merged_raw_json.pop("detail_metadata", None)
                         if result.raw_json:
                             merged_raw_json.update(result.raw_json)
+                        merged_raw_json = merge_detail_metadata(existing["raw_json"], merged_raw_json,
+                            [d["question_id"] for d in existing["details"] if existing["replace_all_details"]
+                             or major_question_id(grader.rubric, d["question_id"]) in affected_major_ids]
+                            + [d.question_id for d in result.grading_details])
                         preserved_details = [
                             _detail_from_row(detail)
                             for detail in existing["details"]
@@ -873,13 +890,8 @@ class GradingService:
                             raise ValueError("Retry did not return every affected major-question part exactly once and in range")
                         result.total_score = existing["total_score"]
                         result.student_score = sum(detail.score_awarded for detail in merged_details)
-                        result.needs_human_review = (
-                            any(
-                                detail.confidence_score is not None and detail.confidence_score < 80
-                                for detail in merged_details
-                            )
-                            or result.needs_human_review
-                        )
+                        merged_raw_json["grading_completeness"] = audit_grading_details(grader.rubric, merged_details)
+                        result.needs_human_review = details_require_review(merged_details, merged_raw_json)
                         result.grading_details = merged_details
                         result.raw_json = merged_raw_json
 
@@ -887,8 +899,11 @@ class GradingService:
                         existing = retry_existing
                         merged_raw_json = dict(existing["raw_json"])
                         merged_raw_json.pop("hybrid_batch_fallback", None)
+                        merged_raw_json.pop("detail_metadata", None)
                         if result.raw_json:
                             merged_raw_json.update(result.raw_json)
+                        merged_raw_json = merge_detail_metadata(existing["raw_json"], merged_raw_json,
+                            [d.question_id for d in result.grading_details])
 
                         new_details_map = {d.question_id: d for d in result.grading_details}
                         merged_details = []
@@ -897,13 +912,8 @@ class GradingService:
                         merged_details.extend(new_details_map.values())
                         result.total_score = existing["total_score"]
                         result.student_score = sum(detail.score_awarded for detail in merged_details)
-                        result.needs_human_review = (
-                            any(
-                                detail.confidence_score is not None and detail.confidence_score < 80
-                                for detail in merged_details
-                            )
-                            or result.needs_human_review
-                        )
+                        merged_raw_json["grading_completeness"] = audit_grading_details(grader.rubric, merged_details)
+                        result.needs_human_review = details_require_review(merged_details, merged_raw_json)
                         result.grading_details = merged_details
                         result.raw_json = merged_raw_json
 

@@ -37,6 +37,9 @@ from question_bank.training_criteria import (
     QuestionAnalysisInputLoader,
     TrainingCriterionModule,
 )
+from question_bank.training_criteria.adapters import (
+    BankQuestionTypeSuggestionWriter,
+)
 
 
 QuestionImportRunner = Callable[..., dict[str, object]]
@@ -255,7 +258,11 @@ def run_session_question_bank_sync_job(
             data_root=Path(data_root),
             require_configured=deferred_artifact is None,
         )
-        candidates = _bank_questions(Path(question_bank_db_path), question_ids)
+        candidates = _bank_questions(
+            Path(question_bank_db_path),
+            question_ids,
+            paper_id=_imported_paper_id(import_result),
+        )
         source_questions = current.payload.get("rubric", {}).get("questions", [])
         if not isinstance(source_questions, list):
             source_questions = []
@@ -938,11 +945,12 @@ def _adopt_deferred_analysis_with_links(
         "status": "current_standard",
         "release_id": mapping_repository.release_id,
     }
+    bank_write_service = QuestionBankWriteService(
+        question_bank_db_path,
+        data_root=data_root,
+    )
     tag_writer = ExistingTagProjectionWriter(
-        write_service=QuestionBankWriteService(
-            question_bank_db_path,
-            data_root=data_root,
-        ),
+        write_service=bank_write_service,
         tagging_service=ai_service,
     )
     writer = DeferredCombinedProjectionWriter(
@@ -961,6 +969,23 @@ def _adopt_deferred_analysis_with_links(
             missing_links += 1
             continue
         bank_question_id = int(raw_link["bank_question_id"])
+        # Exact-duplicate reuse: the canonical question already owns the
+        # analysis products, so adoption must not write them back.
+        if item.reused_from_question_id is not None:
+            if int(item.reused_from_question_id) != bank_question_id:
+                missing_links += 1
+                continue
+            adoption_results.append(
+                {
+                    "question_id": bank_question_id,
+                    "source_question_ref": item.source_question_ref,
+                    "tag_status": "reused",
+                    "evidence_status": "reused",
+                    "criteria_status": "reused",
+                    "reused_from_question_id": bank_question_id,
+                }
+            )
+            continue
         question = questions.get(bank_question_id)
         if question is None:
             missing_links += 1

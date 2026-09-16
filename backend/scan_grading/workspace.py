@@ -607,7 +607,9 @@ class ScanGradingWorkspace:
             payload: dict[str, Any] = {
                 "session_id": int(session_id),
                 "grading_mode": (
-                    "hybrid_batch" if grading_mode == "hybrid_batch" else "full_paper"
+                    grading_mode
+                    if grading_mode in {"ai", "hybrid_batch", "full_paper"}
+                    else "ai"
                 ),
                 "failed_only": False,
                 "enhance_images": bool(enhance_images),
@@ -1329,6 +1331,7 @@ class ScanGradingWorkspace:
         expected_revision: int,
         valid_student_ids: set[int],
         decisions: list[dict[str, Any]],
+        allow_partial_matches: bool = False,
     ) -> dict[str, Any]:
         with self._lock(session_id):
             analysis, identity = self._read_analysis(session_id)
