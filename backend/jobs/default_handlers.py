@@ -652,7 +652,7 @@ def _build_grading_run_handler(
             question_bank_db_path=question_bank_db_path,
             llm_client_factory=llm_client_factory,
             report=context.report,
-            grading_mode=str(context.payload.get("grading_mode") or "full_paper"),
+            grading_mode=str(context.payload.get("grading_mode") or "ai"),
             scan_batch_id=(
                 str(context.payload["scan_batch_id"])
                 if context.payload.get("scan_batch_id")

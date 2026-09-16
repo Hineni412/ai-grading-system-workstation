@@ -85,7 +85,7 @@ class GradingRunSummaryResponse(BaseModel):
     progress: float | None = Field(default=None, ge=0, le=1)
     started_at: str | None = None
     updated_at: str | None = None
-    mode: Literal["full_paper", "hybrid_batch"]
+    mode: Literal["ai", "full_paper", "hybrid_batch"]
     state: str
     counts: GradingRunCountsResponse
     allowed_actions: list[str]
@@ -103,6 +103,7 @@ class ScanDecisionItem(BaseModel):
 class ScanDecisionRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     decisions: list[ScanDecisionItem] = Field(default_factory=list)
+    allow_partial_matches: bool = False
 
 
 class ScanDecisionResponse(BaseModel):

@@ -89,3 +89,22 @@ def test_session_grading_run_route_requires_existing_session(client_with_db_and_
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "session_not_found"
     assert response.json()["error"]["request_id"] == "rid-grading-missing"
+
+
+def test_grading_run_request_defaults_to_ai_and_accepts_legacy_modes() -> None:
+    from backend.api.schemas.grading import GradingRunRequest
+
+    assert GradingRunRequest().grading_mode == "ai"
+    assert GradingRunRequest(grading_mode="ai").grading_mode == "ai"
+    assert GradingRunRequest(grading_mode="hybrid_batch").grading_mode == "hybrid_batch"
+    assert GradingRunRequest(grading_mode="full_paper").grading_mode == "full_paper"
+
+
+def test_normalize_grading_mode_preserves_known_modes_and_defaults_to_ai() -> None:
+    from backend.jobs.grading_run import _normalize_grading_mode
+
+    assert _normalize_grading_mode("ai") == "ai"
+    assert _normalize_grading_mode("hybrid_batch") == "hybrid_batch"
+    assert _normalize_grading_mode("full_paper") == "full_paper"
+    assert _normalize_grading_mode("") == "ai"
+    assert _normalize_grading_mode("unknown-mode") == "ai"

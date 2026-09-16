@@ -3,7 +3,8 @@ import { JOB_STATUSES, decodeJobResponse, type JobResponse, type JobStatus } fro
 import { assertNoPathLikeKeys, isRecord } from './validation'
 
 export type UploadBatchState = 'draft' | 'frozen'
-export type GradingMode = 'full_paper' | 'manual' | 'hybrid_batch'
+export type GradingMode = 'ai' | 'manual' | 'full_paper' | 'hybrid_batch'
+export type SelectableGradingMode = 'ai' | 'manual'
 export type AutomatedGradingMode = Exclude<GradingMode, 'manual'>
 export type GradingPlanStatus = 'ready' | 'blocked'
 export type GradingPlanMetricValue = number | string | boolean | null
@@ -120,6 +121,7 @@ export interface ScanDecisionSaveResult {
   summary?: Record<string, number>
   absent_students?: Record<string, unknown>[]
   match_conflicts?: ScanMatchConflict[]
+  rejected_conflicts?: ScanMatchConflict[]
 }
 
 export interface ScanStudentMatchOption {
@@ -186,7 +188,7 @@ function decodeRun(value: unknown): GradingRunSummary {
     'mode', 'state', 'counts', 'allowed_actions',
     'incomplete_result_count', 'incomplete_item_count',
   ]) || !finiteInteger(value.run_id, 1)
-    || (value.mode !== 'full_paper' && value.mode !== 'hybrid_batch')
+    || (value.mode !== 'ai' && value.mode !== 'full_paper' && value.mode !== 'hybrid_batch')
     || typeof value.state !== 'string' || !isRecord(value.counts)
     || !Array.isArray(value.allowed_actions) || !value.allowed_actions.every((item) => typeof item === 'string')) {
     throw new Error('Invalid grading run')
@@ -271,7 +273,7 @@ function decodePreflight(value: unknown): ScanPreflight {
 }
 
 function isGradingMode(value: unknown): value is GradingMode {
-  return value === 'full_paper' || value === 'manual' || value === 'hybrid_batch'
+  return value === 'ai' || value === 'full_paper' || value === 'manual' || value === 'hybrid_batch'
 }
 
 function decodePlanMetrics(value: unknown, label: string): GradingPlanMetrics {

@@ -9,9 +9,9 @@ import {
 } from '../api/review'
 import type {
   AutomatedGradingMode,
-  GradingMode,
   GradingPlanMetrics,
   ScanDecision,
+  SelectableGradingMode,
 } from '../api/scan-grading'
 import AppButton from '../components/design-system/AppButton.vue'
 import StudentMatchSelect from '../components/scan-grading/StudentMatchSelect.vue'
@@ -62,7 +62,7 @@ const preflightProgressText = computed(() => {
 })
 
 interface GradingModeOption {
-  mode: GradingMode
+  mode: SelectableGradingMode
   label: string
   title: string
   description: string
@@ -71,11 +71,11 @@ interface GradingModeOption {
 
 const gradingModes: GradingModeOption[] = [
   {
-    mode: 'full_paper',
-    label: '整卷批改',
-    title: '按考生提交整份答卷',
-    description: '保留整张试卷的上下文，适合需要综合判断整卷作答的情况。',
-    note: '会调用 AI · 每份答卷独立处理',
+    mode: 'ai',
+    label: 'AI 批改',
+    title: '整页原图，按题批改',
+    description: '每位考生的客观题整区一次识别；每道解答题单独一次请求，送整页原图并标注目标题位置，不裁切。',
+    note: '会调用 AI · 执行前显示请求估算',
   },
   {
     mode: 'manual',
@@ -83,13 +83,6 @@ const gradingModes: GradingModeOption[] = [
     title: '直接进入按题评分',
     description: '不调用 AI，使用现有评分工作台逐题查看全班答题区域。',
     note: 'AI 请求 0 · 教师分数为最终结果',
-  },
-  {
-    mode: 'hybrid_batch',
-    label: '混合批改',
-    title: '客观题整块，解答题分组',
-    description: '排除教师已完成题目，再按客观题整图和解答题答题框组织请求。',
-    note: '会调用 AI · 执行前显示请求估算',
   },
 ]
 
@@ -107,7 +100,10 @@ const stage = computed(() => {
 })
 const pendingCount = computed(() => store.preflight?.pending_issue_count ?? 0)
 const matchConflicts = computed(() => store.preflight?.match_conflicts ?? [])
+const reviewMatchConflicts = computed(() => [...matchConflicts.value, ...store.decisionConflicts])
 const decisionNotice = ref('')
+const decisionFailed = ref(false)
+const savingDecisionCount = ref(0)
 const canPreviewPlan = computed(() => Boolean(store.preflight)
   && !store.gradingRun && !gradingStarting.value && !gradingCompletedWithoutRun.value
   && !store.busyAction && store.planState !== 'loading')
@@ -131,7 +127,7 @@ const preflightPageAssignment = computed(() => (
 ))
 const lowConfidenceGroups = computed(() => store.preflight?.groups.filter((item) => (
   item.match_method !== 'exact' || Number(item.match_score ?? 0) < 1
-  || matchConflicts.value.some((conflict) => conflict.targets.some((target) => target.target_type === 'group' && target.target_id === String(item.id)))
+  || reviewMatchConflicts.value.some((conflict) => conflict.targets.some((target) => target.target_type === 'group' && target.target_id === String(item.id)))
   || store.preflight?.decisions.some((decision) => decision.target_type === 'group' && decision.target_id === String(item.id))
 )) ?? [])
 const selectedMatches = computed<ScanDecision[]>(() => {
@@ -223,8 +219,7 @@ const gradingRunActive = computed(() => (
 const selectedModeOption = computed(() => gradingModes.find((item) => item.mode === store.selectedMode) ?? null)
 const confirmPlanLabel = computed(() => {
   if (store.selectedMode === 'manual') return '进入人工批改'
-  if (store.selectedMode === 'hybrid_batch') return '确认并开始混合批改'
-  return '确认并开始整卷批改'
+  return '确认并开始 AI 批改'
 })
 const requestTotal = computed(() => {
   if (store.selectedMode === 'manual') return 0
@@ -331,7 +326,7 @@ function chooseFiles(event: Event): void {
   if (input.files?.length) void store.addFiles([...input.files])
   input.value = ''
 }
-function chooseMode(mode: GradingMode): void {
+function chooseMode(mode: SelectableGradingMode): void {
   if (!canPreviewPlan.value) return
   void store.previewPlan(mode)
 }
@@ -408,26 +403,46 @@ function decisionTargetLabel(decision: ScanDecision): string {
     || (decision.target_type === 'group' ? '自动匹配答卷' : '异常答卷'),
   )
 }
-async function submitDecisions(changes: ScanDecision[]): Promise<void> {
+async function submitDecisions(changes: ScanDecision[], allowPartialMatches = false): Promise<void> {
   if (!changes.length || store.busyAction) return
+  // Freeze this click's selection before the saved state updates computed lists.
+  changes = changes.map((change) => ({ ...change }))
   decisionNotice.value = ''
+  decisionFailed.value = false
+  savingDecisionCount.value = changes.length
   const decisions = (store.preflight?.decisions ?? []).filter((item) => !changes.some(
     (change) => change.target_type === item.target_type && change.target_id === item.target_id,
   ))
-  const succeeded = await store.saveDecisions([...decisions, ...changes])
-  if (!succeeded) return
-  for (const change of changes) {
+  const succeeded = await store.saveDecisions([...decisions, ...changes], allowPartialMatches)
+  savingDecisionCount.value = 0
+  if (!succeeded) {
+    decisionFailed.value = true
+    decisionNotice.value = `${changes.length} 项匹配未确认保存。${store.errorMessage || '请核对当前结果后重试。'} 当前选择已保留。`
+    return
+  }
+  const accepted = changes.filter((change) => {
+    const saved = decisionFor(change.target_type, change.target_id)
+    return saved?.action === change.action && (change.action !== 'match' || saved.student_id === change.student_id)
+  })
+  for (const change of accepted) {
     if (selectedStudents.value[change.target_id] === change.student_id) delete selectedStudents.value[change.target_id]
   }
-  decisionNotice.value = `已保存 ${changes.length} 项；仍有 ${pendingCount.value} 份待处理。`
+  const rejected = changes.length - accepted.length
+  decisionFailed.value = rejected > 0
+  decisionNotice.value = rejected
+    ? `已保存 ${accepted.length} 项；${rejected} 项因重复归属未保存。相关答卷已在下方列出，请核对后更正学生或标记重复卷无效。未保存的选择已保留。`
+    : `已保存 ${accepted.length} 项；仍有 ${pendingCount.value} 份待处理。`
 }
 function saveDecision(targetType: 'group' | 'issue', targetId: string, action: 'match' | 'invalid' | 'pending'): void {
   void submitDecisions([{ target_type: targetType, target_id: targetId, action,
     ...(action === 'match' ? { student_id: selectedStudents.value[targetId] } : {}) }])
 }
 function conflictMessages(targetType: 'group' | 'issue', targetId: string): string {
-  return matchConflicts.value.filter((c) => c.targets.some((t) => t.target_type === targetType && t.target_id === targetId))
-    .map((c) => c.message).join(' ')
+  return reviewMatchConflicts.value.filter((c) => c.targets.some((t) => t.target_type === targetType && t.target_id === targetId))
+    .map((c) => {
+      const student = store.students.find((s) => s.id === c.student_id)
+      return `${student ? [student.name, student.student_code, student.class_name].filter(Boolean).join(' · ') + '：' : ''}${c.message}`
+    }).join(' ')
 }
 function classEvidence(item: Record<string, unknown>, targetType: 'group' | 'issue'): string {
   if (!item.detected_class_name) return ''
@@ -669,13 +684,14 @@ watch(
           <p v-if="matchConflicts.length" class="scan-warning" role="alert">存在答卷归属冲突，请处理下方标出的答卷后再开始批改。可以更正归属，或将重复扫描标为无效。</p>
           <p v-else-if="pendingCount" class="scan-warning"><strong>仍有 {{ pendingCount }} 份异常答卷待处理</strong>。确认跳过后，可以先批改其余学生。</p>
           <div class="scan-stage__actions scan-match-actions">
-            <button type="button" class="secondary" data-match-selected :disabled="!selectedMatches.length || Boolean(store.busyAction)" @click="submitDecisions(selectedMatches)">
+            <button type="button" class="secondary" data-match-selected :disabled="!selectedMatches.length || Boolean(store.busyAction)" @click="submitDecisions(selectedMatches, true)">
               {{ store.busyAction === 'decisions' ? '正在保存…' : `一键匹配（${selectedMatches.length} 项）` }}
             </button>
-            <span>只提交已选好学生的完整答卷；未选择的项目继续保留。</span>
+            <span>保存已选好学生的完整答卷；重复归属的项目保留待处理，其余正常保存。</span>
           </div>
-          <p v-if="decisionNotice" class="scan-decision-state" role="status">{{ decisionNotice }}</p>
-          <div v-if="lowConfidenceGroups.length" class="scan-issue-list" aria-label="低可信自动匹配">
+          <p v-if="savingDecisionCount" class="scan-decision-state" role="status">正在保存 {{ savingDecisionCount }} 项，请稍候…</p>
+          <p v-else-if="decisionNotice" data-match-result :class="decisionFailed ? 'scan-match-conflict' : 'scan-decision-state'" :role="decisionFailed ? 'alert' : 'status'">{{ decisionNotice }}</p>
+          <div v-if="lowConfidenceGroups.length" class="scan-issue-list" aria-label="自动匹配核对">
             <div v-for="group in lowConfidenceGroups" :key="String(group.id)" class="scan-issue-row">
               <div class="scan-evidence" :aria-label="`${group.source_label || '答卷'}正反面证据`">
                 <button v-if="group.front_media_url" type="button" class="scan-evidence__thumb"
@@ -855,14 +871,10 @@ watch(
             <p v-if="store.selectedMode === 'manual'" class="grading-plan__batching">
               人工模式不会调用模型。进入后按题查看全班答题区域，教师保存的分数作为最终结果。
             </p>
-            <p v-else-if="store.selectedMode === 'full_paper'" class="grading-plan__batching">
-              整卷请求 {{ formatPlanNumber(store.gradingPlan.requests, ['full_paper', 'full_paper_requests']) }} 次；
-              每位考生的整份答卷保持在同一请求中。
-            </p>
             <p v-else class="grading-plan__batching">
-              客观题整图 {{ formatPlanNumber(store.gradingPlan.requests, ['objective_sheet', 'objective_requests']) }} 次；
-              解答题分组 {{ formatPlanNumber(store.gradingPlan.requests, ['subjective_batches', 'subjective_requests']) }} 次；
-              每组 {{ formatPlanNumber(store.gradingPlan.batching, ['subjective_group_min', 'group_min']) }}–{{ formatPlanNumber(store.gradingPlan.batching, ['subjective_group_max', 'group_max']) }} 位考生。
+              客观题整区 {{ formatPlanNumber(store.gradingPlan.requests, ['objective_sheet', 'objective_requests']) }} 次；
+              解答题 {{ formatPlanNumber(store.gradingPlan.requests, ['subjective_batches', 'subjective_requests']) }} 次
+              （每位考生每道解答题一次，整页原图）。
             </p>
             <p v-if="store.selectedMode !== 'manual'" class="grading-plan__batching" data-teacher-score-priority-note>
               已人工确认的分数始终有效：AI 会照常批改所有题目，但不会替代人工分。
@@ -920,12 +932,12 @@ watch(
             </progress>
           </div>
           <section
-            v-if="store.gradingRun.mode === 'hybrid_batch'"
+            v-if="['hybrid_batch', 'ai'].includes(store.gradingRun.mode)"
             class="hybrid-run-board"
-            aria-label="混合批改统计"
+            aria-label="AI 批改统计"
           >
             <header>
-              <div><strong>混合批改流水</strong><span>客观题先识别，解答题再按题分批，最后集中交给老师复核。</span></div>
+              <div><strong>AI 批改流水</strong><span>客观题先识别，解答题再按题批改，最后集中交给老师复核。</span></div>
               <b>{{ runStateLabel }}</b>
             </header>
             <ol class="hybrid-run-board__phases">

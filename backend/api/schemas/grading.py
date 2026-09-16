@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class GradingRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    grading_mode: Literal["full_paper", "hybrid_batch"] = "full_paper"
+    grading_mode: Literal["ai", "full_paper", "hybrid_batch"] = "ai"
     failed_only: bool = False
     enhance_images: bool = True
     max_workers: int | None = Field(default=None, ge=1, le=100)
@@ -22,7 +22,7 @@ class GradingRunRequest(BaseModel):
 class GradingPlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    grading_mode: Literal["full_paper", "manual", "hybrid_batch"]
+    grading_mode: Literal["ai", "full_paper", "manual", "hybrid_batch"]
 
 
 class GradingPlanIssueResponse(BaseModel):
@@ -35,7 +35,7 @@ class GradingPlanResponse(BaseModel):
     scan_batch_id: str
     upload_revision: int
     decision_revision: int
-    mode: Literal["full_paper", "manual", "hybrid_batch"]
+    mode: Literal["ai", "full_paper", "manual", "hybrid_batch"]
     status: Literal["ready", "blocked"]
     counts: dict[str, int]
     requests: dict[str, int]

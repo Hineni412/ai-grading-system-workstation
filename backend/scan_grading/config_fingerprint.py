@@ -52,7 +52,9 @@ def session_grading_config_fingerprint(
         answer_key=answer_key,
         answer_regions=regions,
         grading_mode=(
-            "hybrid_batch" if grading_mode == "hybrid_batch" else "full_paper"
+            grading_mode
+            if grading_mode in {"ai", "hybrid_batch", "full_paper"}
+            else "ai"
         ),
         grading_model=grading_model or active_grading_model(),
     )

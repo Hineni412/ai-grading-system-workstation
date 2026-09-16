@@ -31,7 +31,7 @@ def run_grading_job(
     llm_client_factory: Callable[[], Any],
     service_factory: GradingServiceFactory = GradingService,
     report: Callable[[float, str, str], None] | None = None,
-    grading_mode: str = "full_paper",
+    grading_mode: str = "ai",
     scan_batch_id: str | None = None,
     failed_only: bool = False,
     enhance_images: bool = True,
@@ -165,7 +165,10 @@ def _read_optional_json_list(path: Path) -> list[dict[str, Any]] | None:
 
 
 def _normalize_grading_mode(value: str) -> str:
-    return "hybrid_batch" if str(value or "").strip() == "hybrid_batch" else "full_paper"
+    normalized = str(value or "").strip()
+    if normalized in {"ai", "hybrid_batch", "full_paper"}:
+        return normalized
+    return "ai"
 
 
 def _model_for_client(service: Any, attr_name: str) -> str | None:

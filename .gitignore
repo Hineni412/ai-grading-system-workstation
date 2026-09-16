@@ -58,3 +58,4 @@ Thumbs.db
 # 历史沙箱快照（保留本地文件，不跟踪）
 .p35t/
 .codex_artifacts/
+agent_bridge/session_*/

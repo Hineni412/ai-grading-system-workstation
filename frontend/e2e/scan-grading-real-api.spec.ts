@@ -21,7 +21,7 @@ test('real isolated API preserves grading controls, later-match supplement and b
   await expect(page.locator('.scan-evidence img').first()).toBeVisible()
 
   await page.locator('[data-confirm-pending]').check()
-  await page.locator('[data-grading-mode="hybrid_batch"]').click()
+  await page.locator('[data-grading-mode="ai"]').click()
   await expect.poll(async () => {
     const response = await page.request.get('/api/sessions/1/grading-workspace')
     const payload = await response.json() as { grading_run: unknown }
@@ -80,7 +80,7 @@ test('real isolated API preserves grading controls, later-match supplement and b
     return payload.items[0]?.status
   }).toBe('succeeded')
   await page.locator('[data-confirm-pending]').check()
-  await page.locator('[data-grading-mode="hybrid_batch"]').click()
+  await page.locator('[data-grading-mode="ai"]').click()
   await expect(page.locator('[data-action="cancel"]')).toBeVisible()
   page.once('dialog', (dialog) => dialog.accept())
   await page.locator('[data-action="cancel"]').click()

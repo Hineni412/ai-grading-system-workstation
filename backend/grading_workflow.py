@@ -12,7 +12,7 @@ import re
 from typing import Any, Literal
 
 
-GradingWorkflowMode = Literal["full_paper", "manual", "hybrid_batch"]
+GradingWorkflowMode = Literal["ai", "full_paper", "manual", "hybrid_batch"]
 _OBJECTIVE_TYPES = frozenset({"choice", "fill_blank"})
 
 
@@ -110,6 +110,7 @@ def build_grading_plan(
         )
     )
     subjective_batches = 0
+    subjective_requests = 0
     singleton_subjective_batches = 0
     for group in subjective_groups:
         eligible_students = sum(
@@ -120,6 +121,7 @@ def build_grading_plan(
                 for question_id in group["detail_question_ids"]
             )
         )
+        subjective_requests += eligible_students
         sizes = balanced_subjective_group_sizes(eligible_students)
         subjective_batches += len(sizes)
         singleton_subjective_batches += sizes.count(1)
@@ -147,6 +149,16 @@ def build_grading_plan(
             "full_paper": full_paper_requests,
             "objective_sheet": 0,
             "subjective_batches": 0,
+        }
+        ai_target_items = pending_items
+        manual_target_items = 0
+    elif mode == "ai":
+        # AI 批改：每名学生一次客观题整区识别，每道解答大题每名学生一次整页请求。
+        requests = {
+            "total": objective_students + subjective_requests,
+            "full_paper": 0,
+            "objective_sheet": objective_students,
+            "subjective_batches": subjective_requests,
         }
         ai_target_items = pending_items
         manual_target_items = 0
@@ -242,9 +254,11 @@ def build_grading_plan(
         "requests": requests,
         "batching": {
             "objective_requests_per_student": 1,
-            "subjective_group_min": 2,
-            "subjective_group_max": 3,
-            "singleton_subjective_batches": singleton_subjective_batches,
+            "subjective_group_min": 1 if mode == "ai" else 2,
+            "subjective_group_max": 1 if mode == "ai" else 3,
+            "singleton_subjective_batches": (
+                0 if mode == "ai" else singleton_subjective_batches
+            ),
         },
         "warnings": warnings,
         "blockers": blockers,
@@ -405,8 +419,9 @@ def preflight_match_status(
             continue
         if detected and len(names.get(detected, set())) > 1:
             add("scan_name_ambiguous", "名单中有重名学生，请核对学号和班级后确认归属。", [paper], student_id)
-        elif (detected and detected != _identity_text(student.get("name"))) or paper["match_score"] < 1 or paper["match_method"] in {"fuzzy", "reduced_fuzzy"}:
-            add("scan_name_mismatch", "识别姓名与名单姓名不一致，请看卷后确认归属。", [paper], student_id)
+        # The scanner already applies its similarity and candidate-gap rules.
+        # An accepted fuzzy match keeps its student ID; OCR spelling differences
+        # alone do not block it. Duplicate assignments are checked below.
         detected_class = _identity_text(paper["detected_class_name"])
         if detected_class and detected_class != _identity_text(student.get("class_name")):
             add("scan_class_mismatch", "卷面班级与所选学生的班级不一致，请看卷后确认归属。", [paper], student_id)
