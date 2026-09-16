@@ -18,6 +18,43 @@ class _ExpectedQuestion:
     max_score: float | None
 
 
+def merge_detail_metadata(previous: Any, incoming: Any, replaced_question_ids: list[str]) -> dict:
+    """Replace evidence only for retried questions, retaining all other evidence."""
+    old = _safe_json_loads(previous)
+    new = _safe_json_loads(incoming)
+    result = dict(new) if isinstance(new, dict) else {}
+    old_map = old.get("detail_metadata") if isinstance(old, dict) else None
+    new_map = result.get("detail_metadata")
+    if isinstance(old_map, dict) or isinstance(new_map, dict):
+        replaced = set(replaced_question_ids)
+        merged = {key: value for key, value in (old_map if isinstance(old_map, dict) else {}).items() if key not in replaced}
+        # Incoming full-result metadata may contain retained items too.
+        merged.update(new_map if isinstance(new_map, dict) else {})
+        result["detail_metadata"] = merged
+    return result
+
+
+def details_require_review(details: list[Any], raw_json: dict) -> bool:
+    metadata = raw_json.get("detail_metadata") or {}
+    completeness = raw_json.get("grading_completeness") or {}
+    if completeness.get("status") in {"incomplete", "invalid"} or raw_json.get("hybrid_batch_fallback"):
+        return True
+    for detail in details:
+        category = str(_detail_value(detail, "error_category") or "")
+        if category in {"教师已确认", "已复核", "人工复核"}:
+            continue
+        confidence = _detail_value(detail, "confidence_score")
+        reason = str(_detail_value(detail, "deduction_reason") or "")
+        item = metadata.get(str(_detail_value(detail, "question_id"))) or {}
+        if (confidence is not None and float(confidence) < 80) or "需复核" in category or "需复核" in reason:
+            return True
+        if any(item.get(key) is True for key in ("need_review", "needs_human_review")) or any(
+            item.get(key) for key in ("step_assessments_error", "score_contract_error")
+        ):
+            return True
+    return False
+
+
 def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
     normalized_rubric = canonicalize_question_document(rubric)
     catalog = QuestionIdCatalog.from_document(normalized_rubric)

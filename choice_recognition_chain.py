@@ -120,6 +120,10 @@ def score_choice_by_program(
     if selected in {"MULTIPLE", "UNCLEAR"} or not selected:
         result["review_reason"] = selected.lower() if selected else "unclear"
         return result
+
+    if selected not in {"A", "B", "C", "D", "E", "F"}:
+        result["review_reason"] = "invalid_choice_answer"
+        return result
         
     if confidence < threshold:
         result["review_reason"] = "low_confidence"

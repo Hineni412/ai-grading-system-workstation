@@ -297,6 +297,19 @@ def test_large_review_class_uses_one_join_query(tmp_path: Path, monkeypatch) -> 
     assert cleaned.error_summary is None
 
 
+def test_explicit_review_survives_database_read_at_high_confidence(tmp_path: Path) -> None:
+    db, session_id, session, result_ids = _seed_large_review_class(tmp_path)
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (
+            json.dumps({"detail_metadata": {"Q1": {"needs_human_review": True}}}), result_ids[2]))
+        conn.execute("UPDATE session_details SET confidence_score=95, error_category='其他', deduction_reason='存在两种评分解释' WHERE result_id=? AND question_id='Q1'", (result_ids[2],))
+    items = ReviewApplicationService(db).list_items(session_id, session)
+    item = next(row for row in items if row.result_id == result_ids[2] and row.question_id == "Q1")
+    assert item.confidence_score == 95
+    assert item.needs_review
+    assert item.score_status == "ai_review"
+
+
 def test_review_metadata_exposes_only_sanitized_historical_allowlist(
     tmp_path: Path,
 ) -> None:

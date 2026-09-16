@@ -39,6 +39,7 @@ export function scoreIssue(scoreText: string, maxScore: number): string | null {
   if (score < 0) return '教师最终分不能低于 0 分'
   if (!Number.isFinite(maxScore) || maxScore < 0) return '评分标准满分暂不可用'
   if (score > maxScore) return `教师最终分不能超过 ${String(maxScore)} 分`
+  if (!Number.isInteger(score)) return '教师最终分必须是整数'
   return null
 }
 

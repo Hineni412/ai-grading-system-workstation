@@ -73,7 +73,9 @@ describe('review draft store', () => {
     ['Infinity', '教师最终分必须是有效数字'],
     ['-0.1', '教师最终分不能低于 0 分'],
     ['5.1', '教师最终分不能超过 5 分'],
-    ['4.25', null],
+    ['4.25', '教师最终分必须是整数'],
+    ['4.0', null],
+    ['4', null],
   ])('validates score %s against the existing maximum', (scoreText, expected) => {
     expect(scoreIssue(scoreText, 5)).toBe(expected)
   })

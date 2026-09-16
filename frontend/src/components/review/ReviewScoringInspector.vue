@@ -71,7 +71,39 @@ const disabledReason = computed(() => {
 })
 const evidenceSteps = computed(() => stringList(item.value?.metadata.evidence_steps))
 const missingSteps = computed(() => stringList(item.value?.metadata.missing_steps))
-const hasAiAssessment = computed(() => item.value?.score_source === 'ai')
+const stepAssessments = computed(() => {
+  const raw = item.value?.metadata.step_assessments
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return []
+    const record = entry as Record<string, unknown>
+    const stepId = typeof record.step_id === 'string' ? record.step_id.trim() : ''
+    if (!stepId) return []
+    const score = typeof record.score_awarded === 'number' && Number.isFinite(record.score_awarded)
+      ? record.score_awarded
+      : null
+    const achievement = typeof record.achievement === 'string' ? record.achievement.trim() : ''
+    const reason = typeof record.reason === 'string' ? record.reason.trim() : ''
+    const studentEvidence = typeof record.student_evidence === 'string' ? record.student_evidence.trim() : ''
+    const missingOrError = typeof record.missing_or_error === 'string' ? record.missing_or_error.trim() : ''
+    const partId = typeof record.part_id === 'string' ? record.part_id.trim() : ''
+    return [{ stepId, partId, score, achievement, reason, studentEvidence, missingOrError }]
+  })
+})
+const achievementLabel = (value: string): string => ({
+  full: '完成',
+  equivalent: '等价完成',
+  partial: '部分完成',
+  none: '未完成',
+  uncertain: '无法确定（按最优判断给分）',
+}[value] ?? value)
+const aiScore = computed(() => {
+  const original = item.value?.metadata.ai_score_awarded
+  if (typeof original === 'number' && Number.isFinite(original)) return original
+  return item.value?.score_source === 'ai' ? item.value.score_awarded : null
+})
+const hasAiAssessment = computed(() => aiScore.value != null || stepAssessments.value.length > 0
+  || evidenceSteps.value.length > 0 || missingSteps.value.length > 0)
 const statusLabel = computed(() => {
   const status = item.value?.score_status
   if (!status) return ''
@@ -367,7 +399,7 @@ onBeforeUnmount(() => {
         >
           <h3 id="review-ai-title">AI 初评</h3>
           <div class="review-ai-score">
-            <strong>{{ formatScore(item.score_awarded) }}</strong>
+            <strong>{{ formatScore(aiScore ?? null) }}</strong>
             <span>/ {{ formatScore(item.max_score) }} 分</span>
           </div>
           <p>置信度：{{ formatConfidence(item.confidence_score) }}</p>
@@ -377,6 +409,18 @@ onBeforeUnmount(() => {
           <ul v-if="missingSteps.length" class="review-evidence-list review-evidence-list--warning">
             <li v-for="entry in missingSteps" :key="entry">缺失步骤：{{ entry }}</li>
           </ul>
+          <ul v-if="stepAssessments.length" class="review-step-list">
+            <li v-for="step in stepAssessments" :key="`${step.partId}:${step.stepId}`" class="review-step-item">
+              <strong>{{ step.partId }} {{ step.stepId }}</strong>
+              <span v-if="step.score !== null"> · {{ formatScore(step.score) }} 分</span>
+              <span v-if="step.achievement"> · {{ achievementLabel(step.achievement) }}</span>
+              <p v-if="step.reason">{{ step.reason }}</p>
+              <p v-if="step.studentEvidence" class="review-step-item__evidence">依据：{{ step.studentEvidence }}</p>
+              <p v-if="step.missingOrError" class="review-step-item__evidence review-step-item__evidence--warning">缺漏：{{ step.missingOrError }}</p>
+            </li>
+          </ul>
+          <p v-if="!stepAssessments.length" class="review-scoring-section__muted">暂无步骤评分依据</p>
+          <p v-if="item.score_source === 'teacher'" class="review-scoring-section__muted">以上为 AI 初评依据，教师最终分为 {{ formatScore(item.score_awarded) }} 分。</p>
           <details v-if="candidates.length">
             <summary>查看其他 AI 候选</summary>
             <ul class="review-candidate-list">
@@ -433,7 +477,7 @@ onBeforeUnmount(() => {
             inputmode="decimal"
             min="0"
             :max="item.max_score"
-            step="any"
+            step="1"
             :value="currentDraft.scoreText"
             :aria-invalid="issue ? 'true' : 'false'"
             aria-describedby="teacher-score-help teacher-score-error"

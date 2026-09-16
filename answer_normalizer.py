@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal, InvalidOperation, localcontext
 
 _MULTI_ANSWER_SEPARATORS = ("或", "、", ",", ";", "；", "和")
 _SCORE_BAIT_PATTERNS = (
@@ -45,6 +46,8 @@ def normalize_answer_text(answer: str | list | None) -> str | list[str] | None:
     halfwidth_digits = '0123456789'
     trans = str.maketrans(fullwidth_digits, halfwidth_digits)
     ans = ans.translate(trans)
+    ans = ans.translate(str.maketrans({'＞': '>', '＜': '<', '＝': '='}))
+    ans = ans.replace('>=', '≥').replace('<=', '≤')
     
     return ans
 
@@ -83,12 +86,100 @@ def _answer_value_key(answer: str, tolerance: float) -> tuple[str, object]:
     normalized = normalize_answer_text(answer)
     if not isinstance(normalized, str):
         return ("text", "")
-    values = _extract_numeric_values(normalized)
-    if len(values) == 1:
-        parsed = _parse_numeric_value(values[0])
-        if parsed is not None:
-            return ("num", round(parsed / tolerance))
+    parsed = _numeric_expression_value(normalized)
+    if parsed is not None:
+        return ("num", round(parsed / Decimal(str(tolerance))))
     return ("text", normalized)
+
+
+def _numeric_expression_value(answer: str) -> Decimal | None:
+    """Read a complete numeric expression, preserving roots and operators.
+
+    Only an explicit trailing measurement unit is ignored. Unparsed text is
+    never reduced to whichever digits happen to be present in it.
+    """
+    text = str(normalize_answer_text(answer) or '')
+    text = re.sub(
+        r'(?:平方厘米|平方毫米|平方分米|平方米|平方千米|立方厘米|立方米|'
+        r'厘米|毫米|分米|千米|米|平方度|度|°|尺|个|秒|分钟|元|'
+        r'(?:mm|cm|dm|km|m)(?:²|³|\^(?:[23]|\([23]\)|\{[23]\}))?)$',
+        '', text, flags=re.IGNORECASE,
+    )
+    text = text.replace('\\sqrt', '√').replace('sqrt', '√')
+    text = text.replace('{', '(').replace('}', ')')
+    text = text.replace('×', '*').replace('·', '*').replace('÷', '/')
+    text = text.replace('²', '^2').replace('³', '^3')
+    tokens = re.findall(r'\d+(?:\.\d*)?|\.\d+|[()+*/^√-]', text)
+    if not tokens or ''.join(tokens) != text or len(tokens) > 128:
+        return None
+    position = 0
+
+    def take() -> str:
+        nonlocal position
+        if position >= len(tokens):
+            raise ValueError('incomplete expression')
+        token = tokens[position]
+        position += 1
+        return token
+
+    def atom() -> Decimal:
+        token = take()
+        if token == '(':
+            value = expression()
+            if take() != ')':
+                raise ValueError('unclosed group')
+            return value
+        if token == '√':
+            return atom().sqrt()
+        if not re.fullmatch(r'\d+(?:\.\d*)?|\.\d+', token):
+            raise ValueError('expected number')
+        return Decimal(token)
+
+    def factor() -> Decimal:
+        nonlocal position
+        if position < len(tokens) and tokens[position] in ('+', '-'):
+            sign = take()
+            value = factor()
+            return -value if sign == '-' else value
+        value = atom()
+        if position < len(tokens) and tokens[position] == '^':
+            take()
+            exponent = factor()
+            if exponent != exponent.to_integral_value() or abs(exponent) > 100:
+                raise ValueError('unsupported power')
+            value = value ** int(exponent)
+        return value
+
+    def term() -> Decimal:
+        nonlocal position
+        value = factor()
+        while position < len(tokens):
+            token = tokens[position]
+            if token in ('*', '/'):
+                take()
+                right = factor()
+                value = value * right if token == '*' else value / right
+            elif token in ('√', '('):
+                value *= factor()
+            else:
+                break
+        return value
+
+    def expression() -> Decimal:
+        value = term()
+        while position < len(tokens) and tokens[position] in ('+', '-'):
+            operator = take()
+            right = term()
+            value = value + right if operator == '+' else value - right
+        return value
+
+    try:
+        with localcontext() as context:
+            context.prec = 50
+            value = expression()
+            return value if position == len(tokens) and value.is_finite() else None
+    except (InvalidOperation, ArithmeticError, ValueError, RecursionError):
+        return None
 
 
 def _extract_numeric_values(answer: str) -> list[str]:
@@ -213,6 +304,10 @@ def match_fill_blank_answer(
     # 2. Exact match
     if norm_stu == norm_std:
         return {"matched": True, "match_status": "equivalent", "match_reason": "exact_match"}
+
+    comparison_symbols = {'>', '<', '=', '≥', '≤', '≠'}
+    if norm_stu in comparison_symbols and norm_std in comparison_symbols:
+        return {"matched": False, "match_status": "definite_mismatch", "match_reason": "comparison_symbol_mismatch"}
         
     # Check for text indicating multiple values BEFORE numeric extraction
     if '或' in norm_stu or '和' in norm_stu or ',' in norm_stu or '，' in norm_stu:
@@ -232,31 +327,16 @@ def match_fill_blank_answer(
     if '不是' in norm_stu or '不对' in norm_stu or '!= ' in norm_stu or '≠' in norm_stu:
         return {"matched": False, "match_status": "definite_mismatch", "match_reason": "definite_mismatch_negative"}
         
-    # Operators check: If there are arithmetic operators that aren't a single negative sign or a single fraction slash
-    if re.search(r'[\+*×÷]', norm_stu):
-        return {"matched": False, "match_status": "definite_mismatch", "match_reason": "complex_expression_uncertain"}
-        
-    if norm_stu.count('/') > 1:
-        return {"matched": None, "match_status": "equivalence_uncertain", "match_reason": "complex_expression_uncertain"}
-        
-    stu_vals = _extract_numeric_values(norm_stu)
-    std_vals = _extract_numeric_values(norm_std)
-    
-    if len(stu_vals) > 1:
-        return {"matched": None, "match_status": "equivalence_uncertain", "match_reason": "multiple_values_uncertain"}
-        
-    # If exactly one numeric value in student and standard
-    if len(stu_vals) == 1 and len(std_vals) == 1:
-        stu_f = _parse_numeric_value(stu_vals[0])
-        std_f = _parse_numeric_value(std_vals[0])
-        
-        if stu_f is not None and std_f is not None:
-            if abs(stu_f - std_f) < tolerance:
-                return {"matched": True, "match_status": "equivalent", "match_reason": "unit_tolerant_match"}
-            else:
-                return {"matched": False, "match_status": "definite_mismatch", "match_reason": "definite_numeric_mismatch"}
-                
-    if len(stu_vals) == 0:
+    stu_value = _numeric_expression_value(norm_stu)
+    std_value = _numeric_expression_value(norm_std)
+    if stu_value is not None and std_value is not None:
+        matched = abs(stu_value - std_value) < Decimal(str(tolerance))
+        return {
+            "matched": matched,
+            "match_status": "equivalent" if matched else "definite_mismatch",
+            "match_reason": "numeric_expression_equivalent" if matched else "definite_numeric_mismatch",
+        }
+    if not _extract_numeric_values(norm_stu):
         return {"matched": None, "match_status": "equivalence_uncertain", "match_reason": "no_numeric_value"}
             
     return {"matched": None, "match_status": "equivalence_uncertain", "match_reason": "equivalence_uncertain"}

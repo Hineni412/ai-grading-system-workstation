@@ -17,6 +17,19 @@ def test_subjective_metadata_keeps_observed_answer_separate_from_evidence() -> N
     assert metadata["evidence_steps"] == ["AB=AC", "∠B=∠C"]
 
 
+def test_explicit_subjective_review_is_preserved_with_high_confidence_and_other_category() -> None:
+    from hybrid_batch_grading_service import _detail_from_ai_item, _build_result
+    detail, error, metadata = _detail_from_ai_item({
+        "question_id": "Q1", "score_awarded": 2, "confidence_score": 95,
+        "needs_human_review": True, "error_category": "其他", "deduction_reason": "评分存在两种解释",
+    }, ["Q1"], 80)
+    assert not error
+    assert metadata["needs_human_review"] is True
+    result = _build_result("Synthetic", {"questions": [{"question_id": "Q1", "max_score": 6}]},
+        6, [detail], [metadata], "synthetic")
+    assert result.needs_human_review
+
+
 def test_symbolic_and_expanded_proofs_preserve_the_model_score_without_literal_answer_matching() -> None:
     spec = MajorQuestionSpec(
         question_id="Q1",
@@ -53,6 +66,14 @@ def test_symbolic_and_expanded_proofs_preserve_the_model_score_without_literal_a
             "observed_answer": observed, "evidence_steps": [observed],
             "confidence_score": 95, "needs_human_review": False,
             "answer_is_blank_or_no_valid_work": False,
+            "step_assessments": [{
+                "step_id": step_id,
+                "achievement": "full" if score else "none",
+                "score_awarded": 3 if score else 0,
+                "student_evidence": observed,
+                "missing_or_error": "" if score else "给定三边不满足平方关系",
+                "reason": "平方关系与结论成立" if score else "关系不成立，不能支持结论",
+            } for step_id in ("S1", "S2")],
         }
         response = {"question_id": "Q1", "items": [{
             "paper_key": "synthetic_proof", "student_id": 1,
@@ -62,6 +83,73 @@ def test_symbolic_and_expanded_proofs_preserve_the_model_score_without_literal_a
         assert failed == []
         assert accepted[0]["details"][0].score_awarded == score
         assert accepted[0]["metadata"][0]["observed_answer"] == observed
+
+
+_PROCESS_SPEC = MajorQuestionSpec(
+    question_id="Q1",
+    detail_question_ids=["Q1(P1)"],
+    rubric={
+        "question_id": "Q1", "question_type": "proof", "max_score": 6,
+        "parts": [{
+            "part_id": "Q1(P1)", "part_score": 6,
+            "response_mode": "process_required",
+            "steps": [
+                {"step_id": "S1", "step_score": 3, "core_goal": "核验条件"},
+                {"step_id": "S2", "step_score": 3, "core_goal": "得到结论"},
+            ],
+        }],
+    },
+    answer_key={"canonical_answer": "结论成立"},
+    max_score=6,
+)
+
+
+def test_uncertain_step_point_forces_teacher_review() -> None:
+    from hybrid_batch_grading_service import _detail_from_ai_item
+    detail, error, metadata = _detail_from_ai_item(
+        {
+            "question_id": "Q1(P1)", "score_awarded": 6, "confidence_score": 95,
+            "observed_answer": "∠A=90°，故三角形为直角三角形",
+            "step_assessments": [
+                {"step_id": "S1", "achievement": "full", "score_awarded": 3,
+                 "student_evidence": "∠A=90°", "missing_or_error": "", "reason": "条件已给出"},
+                {"step_id": "S2", "achievement": "uncertain", "score_awarded": 3,
+                 "student_evidence": "字迹模糊的结论", "missing_or_error": "",
+                 "reason": "看不清是否表达了等价结论"},
+            ],
+        },
+        {"Q1(P1)"}, 80, spec=_PROCESS_SPEC,
+    )
+    assert not error
+    assert detail is not None and detail.score_awarded == 6
+    assert metadata["needs_human_review"] is True
+    assert detail.error_category == "需复核"
+    assert detail.error_summary == "uncertain_step_points"
+    assert "S2" in (detail.deduction_reason or "")
+
+
+def test_alternative_solution_forces_teacher_review() -> None:
+    from hybrid_batch_grading_service import _detail_from_ai_item
+    detail, error, metadata = _detail_from_ai_item(
+        {
+            "question_id": "Q1(P1)", "score_awarded": 6, "confidence_score": 95,
+            "observed_answer": "以坐标法完成证明",
+            "alternative_solution_detected": True,
+            "alternative_solution_summary": "坐标法",
+            "step_assessments": [
+                {"step_id": "S1", "achievement": "full", "score_awarded": 3,
+                 "student_evidence": "建立坐标系并核验条件", "missing_or_error": "", "reason": "条件达成"},
+                {"step_id": "S2", "achievement": "full", "score_awarded": 3,
+                 "student_evidence": "由坐标关系得到结论", "missing_or_error": "", "reason": "结论达成"},
+            ],
+        },
+        {"Q1(P1)"}, 80, spec=_PROCESS_SPEC,
+    )
+    assert not error
+    assert detail is not None
+    assert metadata["needs_human_review"] is True
+    assert detail.error_summary == "alternative_method_review"
+    assert "参考答案之外的方法" in (detail.deduction_reason or "")
 
 
 SPEC = MajorQuestionSpec(
