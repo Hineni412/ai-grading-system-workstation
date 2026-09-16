@@ -41,6 +41,10 @@ def extract_observed_text(detail: dict[str, Any]) -> str:
     evidence_steps = detail.get("evidence_steps")
     if isinstance(evidence_steps, list):
         parts.extend(str(step) for step in evidence_steps if step)
+    assessments = detail.get("step_assessments")
+    if isinstance(assessments, list):
+        parts.extend(str(step.get("student_evidence") or "") for step in assessments
+                     if isinstance(step, dict))
     summary = detail.get("alternative_solution_summary")
     if summary:
         parts.append(str(summary))
@@ -96,11 +100,24 @@ def has_solution_process_evidence(answer: str | None) -> bool:
     return False
 
 
+def _rubric_questions(rubric: dict[str, Any]) -> list[Any]:
+    """Accept either a whole-paper rubric or a single question node.
+
+    混合批改入口按大题传单个 question 节点；整卷入口传整份 rubric。
+    两种形态都应得到同一套评分单元语义。
+    """
+    if not isinstance(rubric, dict):
+        return []
+    questions = rubric.get("questions")
+    if isinstance(questions, list):
+        return questions
+    if "question_id" in rubric or isinstance(rubric.get("parts"), list):
+        return [rubric]
+    return []
+
+
 def rubric_question_meta(rubric: dict[str, Any], question_id: str) -> tuple[str, float, int]:
-    questions = rubric.get("questions") if isinstance(rubric, dict) else []
-    if not isinstance(questions, list):
-        return "", 0.0, 1
-    for question in questions:
+    for question in _rubric_questions(rubric):
         if not isinstance(question, dict):
             continue
         qtype = str(question.get("question_type") or "")
@@ -127,10 +144,7 @@ def rubric_question_meta(rubric: dict[str, Any], question_id: str) -> tuple[str,
 
 
 def rubric_response_mode(rubric: dict[str, Any], question_id: str) -> str:
-    questions = rubric.get("questions") if isinstance(rubric, dict) else []
-    if not isinstance(questions, list):
-        return ""
-    for question in questions:
+    for question in _rubric_questions(rubric):
         if not isinstance(question, dict):
             continue
         qid = str(question.get("question_id") or "")
@@ -167,7 +181,7 @@ def _meta_from_question_node(question: dict[str, Any], qtype: str) -> tuple[str,
 
 
 def _answer_only_max_from_node(question: dict[str, Any], max_score: float) -> int:
-    default_answer_only = max(1, int(round(max_score * 0.25))) if max_score > 0 else 1
+    default_answer_only = 1
     raw = question.get("answer_only_max_score")
     try:
         answer_only = int(round(float(raw)))
@@ -178,6 +192,223 @@ def _answer_only_max_from_node(question: dict[str, Any], max_score: float) -> in
     return max(0, answer_only)
 
 
+def rubric_scoring_unit_steps(
+    rubric: dict[str, Any],
+    question_id: str,
+) -> list[dict[str, Any]]:
+    """Return the rubric steps of the scoring unit addressed by ``question_id``.
+
+    question_id 可以是整题 ID（单元含该题全部步骤），也可以是 part_id
+    （单元只含该小问的步骤）。找不到对应评分单元时返回空列表。
+    """
+    target = str(question_id or "").strip()
+    if not target:
+        return []
+    for question in _rubric_questions(rubric):
+        if not isinstance(question, dict):
+            continue
+        parts = question.get("parts")
+        if isinstance(parts, list):
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                if str(part.get("part_id") or "").strip() == target:
+                    return [
+                        {**step, "part_id": str(part.get("part_id") or "")}
+                        for step in part.get("steps") or []
+                        if isinstance(step, dict)
+                    ]
+        if str(question.get("question_id") or "").strip() == target:
+            steps: list[dict[str, Any]] = []
+            if isinstance(parts, list):
+                for part in parts:
+                    if isinstance(part, dict):
+                        steps.extend(
+                            {**step, "part_id": str(part.get("part_id") or "")}
+                            for step in part.get("steps") or []
+                            if isinstance(step, dict)
+                        )
+            return steps
+    return []
+
+
+_STEP_ACHIEVEMENTS = {"full", "equivalent", "none", "uncertain"}
+
+
+def _integer_score_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not number.is_integer() or number < 0:
+        return None
+    return int(number)
+
+
+def integer_business_score(value: Any) -> int | None:
+    """Normalize a business score (question/step/unit score) to an int.
+
+    业务得分契约：整数或数值上为整数的 ``3.0`` 归一为 ``3``；
+    布尔、非有限、非整数或负值返回 ``None``，调用方不得静默
+    四舍五入后保存为有效成绩。
+    """
+    return _integer_score_or_none(value)
+
+
+def normalize_candidate_scores(value: Any) -> list[dict[str, Any]]:
+    """Normalize the model's candidate_scores entries.
+
+    候选分同属业务得分：数值上为整数的 ``8.0`` 归一为 ``8``；
+    非整数候选分不进入候选列表，但保留理由与置信度条目。
+    """
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        entry = {
+            key: item[key]
+            for key in ("score", "confidence", "reason")
+            if key in item
+        }
+        if "score" in entry:
+            integer = _integer_score_or_none(entry["score"])
+            if integer is None:
+                entry.pop("score", None)
+            else:
+                entry["score"] = integer
+        if entry:
+            normalized.append(entry)
+    return normalized
+
+
+def validate_step_assessments(
+    value: Any,
+    *,
+    rubric: dict[str, Any],
+    question_id: str,
+    score_awarded: float,
+    answer_only_correct: bool = False,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Validate the model's step_assessments against this rubric scoring unit.
+
+    契约：每个有效步骤恰好一项、step_id 来自本单元 rubric、完成状态在
+    full/equivalent/none/uncertain，每个步骤是整点有无的判定点、
+    各步得分之和等于该单元 score_awarded。
+    返回 (规范化明细, None)；契约不满足时返回 (None, 原因)。
+    """
+    steps = rubric_scoring_unit_steps(rubric, question_id)
+    if value is None:
+        if steps and response_mode_requires_process(rubric_response_mode(rubric, question_id)):
+            return None, "过程评分缺少 step_assessments"
+        return None, None
+    if not isinstance(value, list):
+        return None, "step_assessments 不是数组"
+    if not steps:
+        if value:
+            return None, "step_assessments 对应的评分单元不存在"
+        return None, None
+    step_ids = [str(step.get("step_id") or "").strip() for step in steps]
+    ambiguous = {step_id for step_id in step_ids if step_ids.count(step_id) > 1}
+    step_by_id = {
+        (str(step.get("part_id") or "") if step_ids[index] in ambiguous else "", step_ids[index]): step
+        for index, step in enumerate(steps)
+    }
+    seen: set[tuple[str, str]] = set()
+    normalized: list[dict[str, Any]] = []
+    total = 0
+    for item in value:
+        if not isinstance(item, dict):
+            return None, "step_assessments 元素不是对象"
+        step_id = str(item.get("step_id") or "").strip()
+        part_id = str(item.get("part_id") or "").strip()
+        identity = (part_id if step_id in ambiguous else "", step_id)
+        step = step_by_id.get(identity)
+        if step is None:
+            return None, f"step_assessments 含未知步骤 {step_id or '<空>'}"
+        if part_id and step.get("part_id") and part_id != step["part_id"]:
+            return None, f"步骤 {step_id} 的小问身份不匹配"
+        if identity in seen:
+            return None, f"step_assessments 步骤 {step_id} 重复"
+        seen.add(identity)
+        achievement = str(item.get("achievement") or "").strip().lower()
+        if achievement == "partial":
+            return None, f"步骤 {step_id} 使用了已停用的部分分 partial；判定点只能整点有无"
+        if achievement not in _STEP_ACHIEVEMENTS:
+            return None, f"步骤 {step_id} 完成状态无效"
+        awarded = _integer_score_or_none(item.get("score_awarded"))
+        if awarded is None:
+            return None, f"步骤 {step_id} 得分不是有效整数"
+        step_max = _integer_score_or_none(step.get("step_score"))
+        if step_max is not None and awarded > step_max:
+            return None, f"步骤 {step_id} 得分超过该步满分"
+        if answer_only_correct and (achievement != "none" or awarded != 0):
+            return None, f"answer_only_correct 与步骤判定矛盾：步骤 {step_id}"
+        evidence = str(item.get("student_evidence") or "").strip()
+        missing = str(item.get("missing_or_error") or "").strip()
+        if achievement == "none" and awarded != 0:
+            return None, f"步骤 {step_id} 未完成却有得分"
+        if achievement == "none" and not missing:
+            return None, f"步骤 {step_id} 未达成须写明缺失或错误内容"
+        if achievement in {"full", "equivalent"} and (awarded != step_max or not evidence):
+            return None, f"步骤 {step_id} 完成状态、满分与作答依据不一致"
+        if achievement == "uncertain" and (
+            awarded not in {0, step_max} or (not evidence and not missing)
+        ):
+            return None, f"步骤 {step_id} 无法确定时须按最优判断给 0 或该步满分，并给出依据或缺漏"
+        reason = str(item.get("reason") or "").strip()
+        if not reason:
+            return None, f"步骤 {step_id} 缺少评分理由"
+        normalized.append(
+            {
+                "step_id": step_id,
+                **({"part_id": part_id} if part_id else {}),
+                "achievement": achievement,
+                "score_awarded": awarded,
+                "student_evidence": str(item.get("student_evidence") or "").strip(),
+                "missing_or_error": str(item.get("missing_or_error") or "").strip(),
+                "reason": reason,
+            }
+        )
+        total += awarded
+    missing = [identity for identity in step_by_id if identity not in seen]
+    if missing:
+        return None, f"step_assessments 漏评步骤 {missing}"
+    if not answer_only_correct and abs(total - float(score_awarded or 0)) > 1e-6:
+        return None, "step_assessments 得分之和不等于该单元得分"
+    return normalized, None
+
+
+def uncertain_step_ids(normalized: list[dict[str, Any]] | None) -> list[str]:
+    """返回 achievement 为 uncertain 的 step_id 列表，供调用方决定复核。"""
+    return [
+        str(step.get("step_id") or "")
+        for step in normalized or []
+        if isinstance(step, dict)
+        and str(step.get("achievement") or "").strip().lower() == "uncertain"
+    ]
+
+
+def answer_only_correct_flag(value: Any) -> bool | None:
+    """Normalize the model's ``answer_only_correct`` declaration.
+
+    只有模型明确核对过最终答案正确性才返回布尔值；缺省或不可识别时
+    返回 None，本地不凭 ``x=数字`` 之类的表面形式猜测对错。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+    return None
+
+
 def apply_solution_substance_rules(
     *,
     observed_answer: str | None,
@@ -185,8 +416,18 @@ def apply_solution_substance_rules(
     full_score: float,
     answer_only_max_score: int | None,
     current_score: float,
+    answer_only_correct: bool | None = None,
+    has_valid_step_evidence: bool = False,
 ) -> tuple[float, str | None, str | None, str | None]:
     if question_type not in SOLUTION_TYPES or full_score <= 0:
+        return current_score, None, None, None
+
+    # 明确的无过程正确答案不依赖 x=数值 等表面文字形式。
+    if answer_only_correct is True:
+        cap = min(float(answer_only_max_score if answer_only_max_score is not None else 1), full_score)
+        return cap, "逻辑断裂", "缺少有效过程", f"只有正确最终答案且没有有效过程，本评分单元得 {cap:g} 分。"
+    # 已校验的逐块作答证据优先于旧的文字启发式；不以关键词判数学完成度。
+    if has_valid_step_evidence:
         return current_score, None, None, None
 
     zero_reason = classify_non_substantive_solution_answer(observed_answer)
@@ -197,16 +438,28 @@ def apply_solution_substance_rules(
 
     answer_only = answer_only_max_score
     if answer_only is None:
-        answer_only = max(1, int(round(full_score * 0.25)))
+        # 配分后的过程评分单元恒为 1：正确最终答案且无有效过程得 1 分。
+        answer_only = 1
     answer_only = max(0, min(int(answer_only), int(round(full_score))))
 
-    if not has_solution_process_evidence(observed_answer) and current_score > answer_only + 1e-6:
-        if current_score >= full_score - 1e-6:
-            summary = "缺少有效过程"
-            reason = f"未见有效证明或推导过程，最多给 {answer_only} 分。"
-        else:
-            summary = "缺少有效过程"
-            reason = f"仅有结论或无效作答痕迹，最多给 {answer_only} 分。"
-        return float(answer_only), "逻辑断裂", summary, reason
+    if not has_solution_process_evidence(observed_answer):
+        if answer_only_correct is False:
+            # 模型明确最终答案错误且无有效过程：不能赠送答案分。
+            if current_score > 1e-6:
+                return (
+                    0.0,
+                    "逻辑断裂",
+                    "答案错误且无有效过程",
+                    "最终答案错误且未见有效过程，按硬规则判 0 分。",
+                )
+            return current_score, None, None, None
+        if current_score > answer_only + 1e-6:
+            if current_score >= full_score - 1e-6:
+                summary = "缺少有效过程"
+                reason = f"未见有效证明或推导过程，最多给 {answer_only} 分。"
+            else:
+                summary = "缺少有效过程"
+                reason = f"仅有结论或无效作答痕迹，最多给 {answer_only} 分。"
+            return float(answer_only), "逻辑断裂", summary, reason
 
     return current_score, None, None, None

@@ -143,6 +143,30 @@ def test_replace_result_details_atomic_rolls_back_delete_and_result_update(tmp_p
     ]
 
 
+def test_retry_retains_other_question_evidence_and_recomputes_review_after_reload(tmp_path: Path) -> None:
+    db, session_id, _, _, _, _, _ = _seed_retry_case(tmp_path)
+    result_id = db.get_session_results(session_id)[0]["result_id"]
+    previous = {"detail_metadata": {
+        "Q1": {"recognized_answer": "A", "need_review": False},
+        "10-1": {"observed_answer": "obsolete", "needs_human_review": True},
+    }}
+    with db._connect() as conn:
+        conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(previous), result_id))
+        conn.commit()
+    db.replace_result_details_atomic(result_id, ["10-1", "10-2"], [_detail("10-1", 4), _detail("10-2", 6)],
+        rubric=RUBRIC, student_score=15, needs_human_review=True,
+        raw_json={"detail_metadata": {"10-1": {"observed_answer": "new evidence", "needs_human_review": False},
+                                    "10-2": {"needs_human_review": False}}})
+    stored = db.get_session_results(session_id)[0]
+    raw = stored["raw_json"]
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    assert raw["detail_metadata"]["Q1"] == previous["detail_metadata"]["Q1"]
+    assert raw["detail_metadata"]["10-1"]["observed_answer"] == "new evidence"
+    assert raw["grading_completeness"]["status"] == "complete"
+    assert not stored["needs_human_review"]
+
+
 def test_atomic_replace_recomputes_stale_score_and_completeness_inside_transaction(tmp_path: Path) -> None:
     db, session_id, _, _, _, _, _ = _seed_retry_case(tmp_path)
     result_id = db.get_session_results(session_id)[0]["result_id"]

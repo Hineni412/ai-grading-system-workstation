@@ -160,13 +160,29 @@
 
 .review-scoring-tags,
 .review-evidence-list,
-.review-candidate-list {
+.review-candidate-list,
+.review-step-list {
   display: grid;
   gap: var(--space-2);
   margin: 0;
   padding-inline-start: var(--space-4);
   color: var(--color-text-secondary);
   font-size: var(--font-size-dense);
+}
+
+.review-step-item {
+  padding: var(--space-2);
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-tag);
+  background: var(--color-bg-surface);
+}
+
+.review-step-item p {
+  margin: var(--space-1) 0 0;
+}
+
+.review-step-item__evidence--warning {
+  color: var(--color-warning);
 }
 
 .review-scoring-tags {

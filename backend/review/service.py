@@ -223,6 +223,9 @@ class ReviewApplicationService:
             else {}
         )
         metadata = _detail_metadata_for_qid(raw_json, question_id)
+        ai_score = row.get("ai_score_awarded")
+        if ai_score is not None:
+            metadata["ai_score_awarded"] = float(ai_score)
         candidate_scores = (
             metadata.get("candidate_scores")
             if isinstance(metadata, dict)
@@ -233,6 +236,7 @@ class ReviewApplicationService:
             str(row.get("deduction_reason") or ""),
             str(row.get("error_category") or ""),
             confidence,
+            explicit_review=metadata.get("need_review") is True or metadata.get("needs_human_review") is True,
         )
         detail_id = int(row.get("detail_id") or 0)
         student_id = int(row.get("student_id") or 0)
@@ -1190,7 +1194,22 @@ def _detail_metadata_for_qid(raw_json: dict[str, Any], question_id: str) -> dict
     metadata = sanitize_public_mapping(
         {
             key: direct[key]
-            for key in ("question_id", "evidence_steps", "missing_steps")
+            for key in (
+                "question_id",
+                "need_review",
+                "needs_human_review",
+                "review_reason",
+                "evidence_steps",
+                "missing_steps",
+                "step_assessments",
+                "step_assessments_error",
+                "score_contract_error",
+                "answer_only_correct",
+                "alternative_solution_detected",
+                "alternative_solution_summary",
+                "answer_is_blank_or_no_valid_work",
+                "answer_discarded_by_smudge",
+            )
             if key in direct
         }
     )
@@ -1213,11 +1232,13 @@ def _detail_metadata_for_qid(raw_json: dict[str, Any], question_id: str) -> dict
     return metadata
 
 
-def _is_substantive_review_reason(reason: str, cat: str = "", confidence: Any = None) -> bool:
+def _is_substantive_review_reason(reason: str, cat: str = "", confidence: Any = None, *, explicit_review: bool = False) -> bool:
     text = str(reason or "").strip()
     cat_text = str(cat or "").strip()
-    if "已复核" in cat_text or "人工复核" in cat_text:
+    if "已复核" in cat_text or "人工复核" in cat_text or cat_text == "教师已确认":
         return False
+    if explicit_review:
+        return True
 
     review_markers = ["需复核", "踴", "锟借复锟"]
     if any(marker in cat_text for marker in review_markers):

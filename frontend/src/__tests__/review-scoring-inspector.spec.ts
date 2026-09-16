@@ -269,6 +269,12 @@ describe('review scoring inspector', () => {
     input.value = '4.5'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
+    expect(host.textContent).toContain('教师最终分必须是整数')
+    expect(button.disabled).toBe(true)
+
+    input.value = '4'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
     expect(button.disabled).toBe(false)
     expect(useReviewDraftStore(pinia).dirtyCount).toBe(1)
     app.unmount()

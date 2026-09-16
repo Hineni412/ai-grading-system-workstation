@@ -333,6 +333,9 @@ class ManualReviewService:
             score = float(adjustment.get("score_awarded"))
             if not math.isfinite(score) or score < 0:
                 raise ValueError(f"{detail.get('question_id')} 的得分必须是非负有限数字。")
+            if not score.is_integer():
+                raise ValueError(f"{detail.get('question_id')} 的得分必须是整数。")
+            score = float(int(score))
 
             result_id = int(detail["result_id"])
             qid = str(detail.get("question_id") or "").strip()

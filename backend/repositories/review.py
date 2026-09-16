@@ -119,6 +119,9 @@ def _normalize_teacher_score_confirmation(
         raise ValueError("max_score must be greater than zero.")
     if score_awarded < 0 or score_awarded > max_score:
         raise ValueError("score_awarded must be between zero and max_score.")
+    if not score_awarded.is_integer():
+        raise ValueError("score_awarded must be an integer score.")
+    score_awarded = float(int(score_awarded))
     deduction_reason = raw.get("deduction_reason")
     if deduction_reason is not None:
         deduction_reason = str(deduction_reason).strip() or None
@@ -822,6 +825,7 @@ class ReviewRepository:
                 sd.id AS detail_id,
                 sd.question_id,
                 sd.score_awarded,
+                sd.ai_score_awarded,
                 sd.deduction_reason,
                 sd.error_category,
                 sd.error_summary,

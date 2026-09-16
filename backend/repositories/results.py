@@ -12,7 +12,25 @@ from backend.domain_models import (
 )
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
 from backend.repositories.papers import PaperRepository
-from grading_completeness import audit_grading_details
+from grading_completeness import audit_grading_details, merge_detail_metadata, details_require_review
+from solution_answer_guard import integer_business_score
+
+
+def _validate_new_ai_details(
+    details: list[QuestionGradingDetail], raw_json: dict[str, Any],
+) -> None:
+    """Check incoming grades before either full-save or selected retry writes."""
+    question_ids = {str(detail.question_id) for detail in details}
+    for detail in details:
+        if integer_business_score(detail.score_awarded) is None:
+            raise ValueError("score_contract_error: 新 AI 成绩必须为非负整数")
+    metadata = raw_json.get("detail_metadata", {})
+    if isinstance(metadata, dict) and any(
+        str(question_id) in question_ids and isinstance(item, dict)
+        and (item.get("step_assessments_error") or item.get("score_contract_error"))
+        for question_id, item in metadata.items()
+    ):
+        raise ValueError("score_contract_error: 评分依据校验未通过，未保存成绩")
 
 
 class ResultRepository:
@@ -34,6 +52,9 @@ class ResultRepository:
         *,
         scan_batch_id: str | None = None,
     ) -> int:
+        # 在覆盖既有成绩、合并教师锁之前拒绝无效的新 AI 结果。
+        # 历史读取和锁定的教师最终分不经过这条新成绩校验。
+        _validate_new_ai_details(grading_result.grading_details, grading_result.raw_json or {})
         details, student_score, raw_json = self._merge_teacher_locks(
             session_id=session_id,
             student_id=student_id,
@@ -631,8 +652,9 @@ class ResultRepository:
         rubric: dict[str, Any] | None = None,
         scan_batch_id: str | None = None,
     ) -> None:
+        _validate_new_ai_details(replacement_details, raw_json)
         owner = self.session.connection.execute(
-            "SELECT session_id, student_id FROM session_results WHERE id = ?",
+            "SELECT session_id, student_id, raw_json FROM session_results WHERE id = ?",
             (result_id,),
         ).fetchone()
         if owner is None:
@@ -784,9 +806,8 @@ class ResultRepository:
         recalculated_ai_score = (
             float(sum(known_ai_scores)) if known_ai_scores else None
         )
-        persisted_raw_json = (
-            dict(raw_json) if isinstance(raw_json, dict) else {}
-        )
+        persisted_raw_json = merge_detail_metadata(owner["raw_json"], raw_json,
+            [*question_ids, *(str(d.question_id) for d in replacement_details)])
         if scan_batch_id and locked_rows:
             persisted_raw_json["teacher_score_locks"] = {
                 "scan_batch_id": str(scan_batch_id),
@@ -802,6 +823,7 @@ class ResultRepository:
                     f"got {completeness['status']}"
                 )
             persisted_raw_json["grading_completeness"] = completeness
+            needs_human_review = details_require_review(stored_details, persisted_raw_json)
         self.session.connection.execute(
             """
             UPDATE session_results
