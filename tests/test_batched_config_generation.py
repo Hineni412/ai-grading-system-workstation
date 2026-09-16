@@ -208,16 +208,18 @@ def test_independent_batches_overlap_when_profile_allows_parallel_requests() -> 
         ("Q7",),
     }
     assert payload["meta"]["failed_batches"] == []
-    assert payload["meta"]["score_allocation_ai_success"] is True
+    assert payload["meta"]["score_allocation_mode"] == "local_step_weighted"
+    assert payload["meta"]["score_allocation_ai_success"] is False
 
 
 def test_unconfirmed_parser_type_does_not_override_model_reclassification() -> None:
     class ReclassifyingClient(FakeBatchClient):
         def json_from_text_once(self, prompt: str, **kwargs):
-            if "BATCH_QUESTION_IDS_JSON=" not in prompt:
-                raise RuntimeError("score allocation deliberately unavailable")
-            payload = _batch_payload(["Q11"])
-            payload["rubric"]["questions"][0]["question_type"] = "comprehensive"
+            ids = _prompt_ids(prompt)
+            payload = _batch_payload(ids)
+            for question in payload["rubric"]["questions"]:
+                if question["question_id"] == "Q11":
+                    question["question_type"] = "comprehensive"
             return payload
 
     block = {
@@ -227,14 +229,27 @@ def test_unconfirmed_parser_type_does_not_override_model_reclassification() -> N
         "text": "阅读材料并回答三个问题。",
         "answer_text": "略",
     }
+    confirmed = [
+        {
+            "question_id": f"Q{index}",
+            "question_type": "choice",
+            "question_type_confirmed": True,
+            "text": f"Question {index}",
+            "answer_text": "A",
+        }
+        for index in range(1, 7)
+    ]
 
     payload = session_manager.generate_grading_config_in_batches(
-        [block],
+        [block, *confirmed],
         "document",
         llm_client=ReclassifyingClient(),
     )
 
-    question = payload["rubric"]["questions"][0]
+    question = next(
+        item for item in payload["rubric"]["questions"]
+        if item["question_id"] == "Q11"
+    )
     assert question["question_type"] == "comprehensive"
     assert question["question_type_confirmed"] is False
 
@@ -258,131 +273,67 @@ def test_twelve_questions_send_constructed_response_questions_one_per_batch() ->
         ("Q11",),
         ("Q12",),
     ]
-    assert client.score_calls == 1
-    assert len(checkpoints) == 8
+    # 本地配分不再发送整卷 AI 配分请求。
+    assert client.score_calls == 0
+    assert len(checkpoints) == 7
     assert payload["meta"]["generation_mode"] == "batched"
-    assert payload["meta"]["score_allocation_mode"] == "dedicated_ai_scoring"
-    assert payload["meta"]["score_allocation_ai_success"] is True
+    assert payload["meta"]["score_allocation_mode"] == "local_step_weighted"
+    assert payload["meta"]["score_allocation_ai_success"] is False
     assert payload["meta"]["score_allocation_pending"] is False
     assert payload["meta"]["failed_batches"] == []
     assert payload["rubric"]["total_score"] == 100
     assert sum(item["max_score"] for item in payload["rubric"]["questions"]) == 100
-    assert {
+    # 同型客观题同分；主观题按步骤权重取整数。
+    scores = {
         item["question_id"]: item["max_score"]
         for item in payload["rubric"]["questions"]
-    } == {
-        **{f"Q{index}": 5 for index in range(1, 7)},
-        "Q7": 10,
-        "Q8": 10,
-        "Q9": 10,
-        "Q10": 14,
-        "Q11": 13,
-        "Q12": 13,
     }
-    assert "Check Q12" in client.score_prompts[0]
+    assert len({scores[f"Q{index}"] for index in range(1, 7)}) == 1
+    assert all(isinstance(score, int) and score > 0 for score in scores.values())
 
 
-def test_score_allocation_records_local_json_repair_without_raw_response() -> None:
-    class RepairedScoreClient(FakeBatchClient):
-        def json_from_text_once(self, prompt: str, **kwargs):
-            payload = super().json_from_text_once(prompt, **kwargs)
-            if "BATCH_QUESTION_IDS_JSON=" not in prompt:
-                payload["meta"] = {
-                    "local_json_repair": {
-                        "repaired": True,
-                        "operations": ["remove_trailing_comma"],
-                        "response_chars": 1234,
-                        "response_sha256": "a" * 64,
-                        "raw_response": "must-not-be-persisted",
-                    }
-                }
-            return payload
+def test_local_score_allocation_needs_no_score_model_call() -> None:
+    client = FakeBatchClient()
 
     payload = session_manager.generate_grading_config_in_batches(
         _blocks(12),
         "document",
-        llm_client=RepairedScoreClient(),
+        llm_client=client,
     )
 
-    assert payload["meta"]["score_allocation_local_json_repair"] == {
-        "repaired": True,
-        "operations": ["remove_trailing_comma"],
-        "response_chars": 1234,
-        "response_sha256": "a" * 64,
-    }
-    assert "raw_response" not in json.dumps(
-        payload["meta"]["score_allocation_local_json_repair"]
-    )
+    assert client.score_calls == 0
+    assert payload["meta"]["score_allocation_mode"] == "local_step_weighted"
+    assert payload["meta"]["score_allocation_ai_success"] is False
+    assert "score_allocation_local_json_repair" not in payload["meta"]
 
 
-def test_score_allocation_failure_preserves_batches_and_retries_only_scoring() -> None:
-    failed_client = FakeBatchClient(fail_score_allocation=True)
-    checkpoints: list[dict] = []
+def test_completed_batches_get_local_scores_and_retry_is_noop() -> None:
+    client = FakeBatchClient()
 
-    pending = session_manager.generate_grading_config_in_batches(
+    completed = session_manager.generate_grading_config_in_batches(
         _blocks(12),
         "document",
-        llm_client=failed_client,
-        checkpoint=lambda value: checkpoints.append(copy.deepcopy(value)),
+        llm_client=client,
     )
 
-    assert failed_client.calls == [
-        ("Q1", "Q2", "Q3"),
-        ("Q4", "Q5", "Q6"),
-        ("Q7", "Q8", "Q9"),
-        ("Q10",),
-        ("Q11",),
-        ("Q12",),
-    ]
-    assert failed_client.score_calls == 1
-    assert pending["meta"]["failed_batches"] == []
-    assert pending["meta"]["score_allocation_ai_success"] is False
-    assert pending["meta"]["score_allocation_pending"] is True
-    assert pending["meta"]["score_allocation_failed"] is True
-    assert sum(item["max_score"] for item in pending["rubric"]["questions"]) == 12
-    assert checkpoints[-1]["meta"]["score_allocation_failed"] is True
+    assert client.score_calls == 0
+    assert completed["meta"]["failed_batches"] == []
+    assert completed["meta"]["score_allocation_pending"] is False
+    assert completed["meta"]["score_allocation_failed"] is False
+    assert sum(item["max_score"] for item in completed["rubric"]["questions"]) == 100
 
     retry_client = FakeBatchClient()
-    completed = session_manager.retry_failed_grading_config_batches(
-        pending,
+    resumed = session_manager.retry_failed_grading_config_batches(
+        completed,
         _blocks(12),
         "document",
         llm_client=retry_client,
     )
 
     assert retry_client.calls == []
-    assert retry_client.score_calls == 1
-    assert completed["meta"]["score_allocation_ai_success"] is True
-    assert completed["meta"]["score_allocation_pending"] is False
-    assert completed["meta"]["score_allocation_failed"] is False
-    assert sum(item["max_score"] for item in completed["rubric"]["questions"]) == 100
-
-
-def test_incomplete_score_allocation_is_not_published_or_locally_replaced() -> None:
-    class IncompleteScoreClient(FakeBatchClient):
-        def json_from_text_once(self, prompt: str, **kwargs):
-            if "BATCH_QUESTION_IDS_JSON=" in prompt:
-                return super().json_from_text_once(prompt, **kwargs)
-            self.score_calls += 1
-            self.score_prompts.append(prompt)
-            question_ids = _score_prompt_ids(prompt)
-            payload = _score_payload(question_ids)
-            payload["question_scores"].pop()
-            return payload
-
-    client = IncompleteScoreClient()
-
-    pending = session_manager.generate_grading_config_in_batches(
-        _blocks(12),
-        "document",
-        llm_client=client,
-    )
-
-    assert client.score_calls == 1
-    assert pending["meta"]["score_allocation_ai_success"] is False
-    assert pending["meta"]["score_allocation_pending"] is True
-    assert pending["meta"]["score_allocation_failed"] is True
-    assert sum(item["max_score"] for item in pending["rubric"]["questions"]) == 12
+    assert retry_client.score_calls == 0
+    assert resumed["meta"]["score_allocation_mode"] == "local_step_weighted"
+    assert sum(item["max_score"] for item in resumed["rubric"]["questions"]) == 100
 
 
 def test_batch_accepts_answer_aliases_through_local_normalization() -> None:
@@ -412,7 +363,7 @@ def test_batch_accepts_answer_aliases_through_local_normalization() -> None:
     assert [
         item["canonical_answer"] for item in payload["answer_key"]["questions"]
     ] == ["A", "A", "A", "A", "A", "A", "A"]
-    assert payload["meta"]["score_allocation_ai_success"] is True
+    assert payload["meta"]["score_allocation_mode"] == "local_step_weighted"
 
 
 def test_batched_generation_strips_knowledge_fields_without_extra_model_calls() -> None:
@@ -554,7 +505,7 @@ def test_legacy_failed_big_question_batch_resumes_as_three_single_question_batch
     )
 
     assert client.calls == [("Q10",), ("Q11",), ("Q12",)]
-    assert client.score_calls == 1
+    assert client.score_calls == 0
     after = {
         item["question_id"]: item for item in completed["rubric"]["questions"]
     }
@@ -565,7 +516,7 @@ def test_legacy_failed_big_question_batch_resumes_as_three_single_question_batch
 
 
 
-def test_already_ai_scored_checkpoint_resumes_without_another_model_call() -> None:
+def test_already_scored_checkpoint_resumes_without_another_model_call() -> None:
     initial_client = FakeBatchClient()
     checkpoint = session_manager.generate_grading_config_in_batches(
         _blocks(12), "document", llm_client=initial_client
@@ -583,7 +534,7 @@ def test_already_ai_scored_checkpoint_resumes_without_another_model_call() -> No
     assert resume_client.score_calls == 0
     assert resumed["rubric"]["total_score"] == 100
     assert sum(item["max_score"] for item in resumed["rubric"]["questions"]) == 100
-    assert resumed["meta"]["score_allocation_mode"] == "dedicated_ai_scoring"
+    assert resumed["meta"]["score_allocation_mode"] == "local_step_weighted"
 
 
 def test_retry_rejects_partial_failed_batch_without_calling_model() -> None:

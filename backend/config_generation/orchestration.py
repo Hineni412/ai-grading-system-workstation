@@ -14,16 +14,13 @@ from question_id_contract import QuestionIdContractError
 from .contract import (
     GeneratedOutputContractError,
     align_generated_question_ids,
-    align_score_allocation_ids,
     attach_structure_repairs,
 )
 from .gateway import ConfigGenerationGateway
 from .quality import blocking_quality_question_ids
 from .prompts import (
     build_batch_generation_prompt,
-    build_score_allocation_prompt,
 )
-from .score_allocation import collect_score_consistency_issues
 
 
 DEFAULT_CONFIG_GENERATION_BATCH_SIZE = 3
@@ -573,7 +570,7 @@ class ConfigGenerationOrchestrator:
                 "分批生成完成",
                 (
                     f"{len(batches)} 个批次（共 {len(question_blocks)} 道题）"
-                    "和整卷 AI 统一配分均已完成。"
+                    "和整卷本地配分均已完成。"
                 ),
             )
         return merged
@@ -662,184 +659,78 @@ class ConfigGenerationOrchestrator:
         self,
         existing_payload: dict[str, Any],
         question_blocks: list[dict[str, Any]],
-        doc_text: str,
+        doc_text: str,  # noqa: ARG002
         *,
         q_images: dict[str, Any] | None,
         checkpoint: CheckpointWriter | None,
     ) -> dict[str, Any]:
-        if failed_grading_config_batches(existing_payload):
-            raise ValueError("仍有失败批次，不能进行整卷 AI 统一配分。")
-        payload = copy.deepcopy(existing_payload)
-        meta = payload.setdefault("meta", {})
-        if (
-            isinstance(meta, dict)
-            and bool(meta.get("score_allocation_ai_success"))
-            and not bool(meta.get("score_allocation_pending"))
-        ):
-            return payload
-        if not isinstance(meta, dict):
-            payload["meta"] = meta = {}
-        previous_score_feedback = (
-            [str(meta.get("score_allocation_error") or "").strip()]
-            if str(meta.get("score_allocation_failure_category") or "")
-            == "local_validation"
-            and str(meta.get("score_allocation_error") or "").strip()
-            else []
-        )
-        meta["score_allocation_mode"] = "dedicated_ai_scoring"
-        meta["score_allocation_ai_success"] = False
-        meta["score_allocation_pending"] = True
-        meta["score_allocation_failed"] = False
-        meta.pop("score_allocation_error", None)
-        meta.pop("score_allocation_failure_category", None)
-        meta.pop("score_allocation_local_structure_repairs", None)
-        meta.pop("score_allocation_local_score_repairs", None)
-        if checkpoint:
-            checkpoint(copy.deepcopy(payload))
+        """Local step-weighted allocation; no whole-paper AI scoring request.
 
-        structure_summary = self._policy.score_structure_summary(payload)
-        question_ids = [
-            str(item.get("question_id") or "")
-            for item in structure_summary
-        ]
-        prompt = build_score_allocation_prompt(
-            structure_summary,
-            doc_text,
-            include_document_text=not (
-                bool(q_images)
-                or any(
-                    str(block.get("semantic_source") or "").strip()
-                    == "images"
-                    for block in question_blocks
-                )
-            ),
-            validation_feedback=previous_score_feedback,
+        本场配分只使用本卷判分结构的步骤数作权重：原卷分值前缀不作为依据，
+        重复题也不会再被送给模型赋分。约束无解时按旧的配分失败契约
+        保留批次结果，交给教师调整后重试，不丢弃已生成结构。
+        """
+        if failed_grading_config_batches(existing_payload):
+            raise ValueError("仍有失败批次，不能完成本地配分。")
+        incoming_meta = (
+            existing_payload.get("meta")
+            if isinstance(existing_payload, dict)
+            else None
         )
-        prompt = (
-            "SCORE_QUESTION_IDS_JSON="
-            f"{json.dumps(question_ids, ensure_ascii=False)}\n"
-            + prompt
-        )
+        if isinstance(incoming_meta, dict) and not bool(
+            incoming_meta.get("score_allocation_pending")
+        ):
+            if bool(incoming_meta.get("score_allocation_ai_success")) or str(
+                incoming_meta.get("score_allocation_mode") or ""
+            ) == "local_step_weighted":
+                return copy.deepcopy(existing_payload)
         if self._report:
             self._report(
                 0.88,
-                "AI 统一配分",
-                f"正在根据 {len(question_ids)} 道题的完整评分步骤统一配置 100 分。",
+                "本地统一配分",
+                "正在根据评分步骤结构为整卷配置 100 分。",
             )
-        score_repair: dict[str, Any] | None = None
-        score_structure_repairs: list[str] = []
-        score_value_repairs: list[str] = []
         try:
-            score_data = self._gateway.request_text(prompt)
-            score_meta = (
-                score_data.get("meta")
-                if isinstance(score_data, dict)
-                else None
+            payload = self._finalize_completed_draft(
+                existing_payload,
+                question_blocks,
+                q_images=q_images,
             )
-            raw_score_repair = (
-                score_meta.get("local_json_repair")
-                if isinstance(score_meta, dict)
-                else None
-            )
-            if isinstance(raw_score_repair, dict):
-                score_repair = {
-                    "repaired": bool(raw_score_repair.get("repaired")),
-                    "operations": [
-                        str(item)
-                        for item in raw_score_repair.get("operations") or []
-                    ],
-                    "response_chars": int(
-                        raw_score_repair.get("response_chars") or 0
-                    ),
-                    "response_sha256": str(
-                        raw_score_repair.get("response_sha256") or ""
-                    ),
-                }
-            score_structure_repairs = align_score_allocation_ids(
-                score_data,
-                structure_summary,
-            )
-            if self._policy.normalize_score_payload is not None:
-                score_value_repairs = self._policy.normalize_score_payload(
-                    score_data,
-                    structure_summary,
-                )
-            self._policy.validate_score_payload(
-                score_data,
-                structure_summary,
-            )
-            self._policy.apply_score_allocation(payload, score_data)
-            score_issues = collect_score_consistency_issues(
-                payload,
-                expected_total=100.0,
-            )
-            if score_issues:
-                raise ValueError("；".join(score_issues))
         except Exception as exc:
+            payload = copy.deepcopy(existing_payload)
+            meta = payload.setdefault("meta", {})
+            if not isinstance(meta, dict):
+                payload["meta"] = meta = {}
+            meta["score_allocation_mode"] = "local_step_weighted"
+            meta["score_allocation_ai_success"] = False
+            meta["score_allocation_pending"] = True
             meta["score_allocation_failed"] = True
-            if "响应字符数" in str(exc) and "响应摘要" in str(exc):
-                failure_category = "model_response_parse"
-            elif isinstance(
-                exc,
-                (GeneratedOutputContractError, QuestionIdContractError),
-            ):
-                failure_category = "model_output_contract"
-            elif self._policy.is_transient_error(exc):
-                failure_category = "model_transport"
-            elif isinstance(exc, ValueError):
-                failure_category = "local_validation"
-            else:
-                failure_category = "model_request"
-            meta["score_allocation_failure_category"] = failure_category
-            meta["score_allocation_error"] = (
-                _safe_score_allocation_failure_message(exc)
-            )
-            if score_structure_repairs:
-                meta["score_allocation_local_structure_repairs"] = list(
-                    dict.fromkeys(score_structure_repairs)
-                )
-            if score_value_repairs:
-                meta["score_allocation_local_score_repairs"] = list(
-                    dict.fromkeys(score_value_repairs)
-                )
+            meta["score_allocation_failure_category"] = "local_validation"
+            meta["score_allocation_error"] = _safe_local_allocation_message(exc)
             if self._report:
                 self._report(
                     0.91,
-                    "AI 统一配分失败",
-                    "评分标准批次已保存在本机；没有自动重试，也没有使用本地分值替代。",
+                    "本地统一配分失败",
+                    "评分标准批次已保存在本机；没有自动重试。",
                 )
             if checkpoint:
                 checkpoint(copy.deepcopy(payload))
             return payload
-
-        payload = self._finalize_completed_draft(
-            payload,
-            question_blocks,
-            q_images=q_images,
-        )
         meta = payload.setdefault("meta", {})
-        meta["score_allocation_mode"] = "dedicated_ai_scoring"
-        meta["score_allocation_ai_success"] = True
+        if not isinstance(meta, dict):
+            payload["meta"] = meta = {}
+        meta["score_allocation_mode"] = "local_step_weighted"
+        meta["score_allocation_ai_success"] = False
         meta["score_allocation_pending"] = False
         meta["score_allocation_failed"] = False
-        meta.pop("score_allocation_error", None)
-        meta.pop("score_allocation_failure_category", None)
-        if score_repair is not None:
-            meta["score_allocation_local_json_repair"] = score_repair
-        else:
-            meta.pop("score_allocation_local_json_repair", None)
-        if score_value_repairs:
-            meta["score_allocation_local_score_repairs"] = list(
-                dict.fromkeys(score_value_repairs)
-            )
-        else:
-            meta.pop("score_allocation_local_score_repairs", None)
-        if score_structure_repairs:
-            meta["score_allocation_local_structure_repairs"] = list(
-                dict.fromkeys(score_structure_repairs)
-            )
-        else:
-            meta.pop("score_allocation_local_structure_repairs", None)
+        for key in (
+            "score_allocation_error",
+            "score_allocation_failure_category",
+            "score_allocation_local_json_repair",
+            "score_allocation_local_score_repairs",
+            "score_allocation_local_structure_repairs",
+        ):
+            meta.pop(key, None)
         if checkpoint:
             checkpoint(copy.deepcopy(payload))
         return payload
@@ -1568,6 +1459,13 @@ def _replace_question_payloads(
     )
 
 
+def _safe_local_allocation_message(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    if isinstance(exc, ValueError) and message:
+        return f"本地统一配分未满足约束：{message[:300]}"
+    return "本地统一配分失败，未自动重试。"
+
+
 def _safe_batch_failure_message(exc: Exception) -> str:
     message = str(exc or "").strip()
     if isinstance(
@@ -1625,16 +1523,3 @@ def _failed_batch_state(
         "category": category,
         "error": _safe_batch_failure_message(exc),
     }
-
-
-def _safe_score_allocation_failure_message(exc: Exception) -> str:
-    message = str(exc or "").strip()
-    if "响应字符数" in message and "响应摘要" in message:
-        return f"模型已返回，但配分 JSON 无法解析：{message[:240]}"
-    status_code = getattr(exc, "status_code", None)
-    if isinstance(status_code, int):
-        return f"AI 统一配分失败（HTTP {status_code}），未自动重试。"
-    if isinstance(exc, ValueError):
-        if message:
-            return f"模型已返回，但本地配分校验未通过：{message[:240]}"
-    return "AI 统一配分或本地校验失败，未自动重试。"

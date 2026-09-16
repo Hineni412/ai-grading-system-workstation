@@ -522,20 +522,11 @@ def force_payload_total_score(payload: dict[str, Any], target_total: float = 100
         rubric["total_score"] = target_total
         return
 
-    current_total = sum(_safe_float(q.get("max_score"), 0.0) for q in questions if isinstance(q, dict))
-    if current_total <= 0:
-        each = round(target_total / len(questions), 2)
-        for question in questions:
-            if isinstance(question, dict):
-                _scale_question_to_score(question, each)
-        _fix_question_sum(questions, target_total)
-    elif abs(current_total - target_total) > 0.01:
-        ratio = target_total / current_total
-        for question in questions:
-            if isinstance(question, dict):
-                _scale_question_scores(question, ratio)
-        _fix_question_sum(questions, target_total)
-
+    # 原卷分值不进入本场配分：先按每题有效评分步骤数播种本地权重，
+    # 再由整数分配器在题型约束下把总分落到每道题。
+    for question in questions:
+        if isinstance(question, dict):
+            _seed_question_scores_from_steps(question)
     enforce_integer_scores_by_type(
         questions,
         target_total=int(target_total),
@@ -548,6 +539,33 @@ def force_payload_total_score(payload: dict[str, Any], target_total: float = 100
             _ensure_solution_hard_rules(question)
     rubric["total_score"] = target_total
     payload.setdefault("meta", {}).setdefault("warnings", [])
+
+
+def _seed_question_scores_from_steps(question: dict[str, Any]) -> None:
+    """Seed local score weights from the rubric's own step structure.
+
+    分值权重只来自本卷判分结构：每个评分步骤贡献一份权重，
+    来源卷面残留的分值前缀不作为分配依据。
+    """
+
+    parts = [
+        part
+        for part in question.get("parts") or []
+        if isinstance(part, dict)
+    ]
+    total_steps = 0
+    for part in parts:
+        steps = [
+            step
+            for step in part.get("steps") or []
+            if isinstance(step, dict)
+        ]
+        weight = max(1, len(steps))
+        part["part_score"] = float(weight)
+        for step in steps:
+            step["step_score"] = 1.0
+        total_steps += weight
+    question["max_score"] = float(max(1, total_steps))
 
 def _scale_question_scores(question: dict[str, Any], ratio: float) -> None:
     new_score = round(_safe_float(question.get("max_score"), 0.0) * ratio, 2)
@@ -1476,7 +1494,7 @@ def _ensure_solution_hard_rules(question: dict[str, Any]) -> None:
         return
 
     max_score = _safe_float(question.get("max_score"), 0.0)
-    default_answer_only = max(1, int(round(max_score * 0.25))) if max_score > 0 else 1
+    default_answer_only = 1
 
     if "require_final_answer" not in question:
         # Proof and pure calculation questions usually do not need an extra "绛?;
@@ -1507,18 +1525,14 @@ def _ensure_solution_hard_rules(question: dict[str, Any]) -> None:
                 part["answer_only_max_score"] = int(round(part_score))
             else:
                 has_process_part = True
-                part_default_answer_only = max(1, int(round(part_score * 0.25))) if part_score > 0 else 1
+                # 过程评分单元只有正确最终答案且没有有效过程时统一给 1 分；
+                # 错误答案或无有效作答为 0，不再按小问分的 25% 计算。
                 if "require_final_answer" not in part:
                     part["require_final_answer"] = question["require_final_answer"]
                 part["require_final_answer"] = bool(part.get("require_final_answer"))
-                if "answer_only_max_score" not in part:
-                    part["answer_only_max_score"] = part_default_answer_only
-                part["answer_only_max_score"] = max(
-                    0,
-                    min(
-                        int(round(_safe_float(part.get("answer_only_max_score"), part_default_answer_only))),
-                        int(round(part_score)),
-                    ),
+                part["answer_only_max_score"] = min(
+                    1,
+                    max(0, int(round(part_score))),
                 )
                 if part["require_final_answer"]:
                     rules.append(
@@ -1533,8 +1547,7 @@ def _ensure_solution_hard_rules(question: dict[str, Any]) -> None:
     if isinstance(parts, list) and parts:
         answer_only_max = part_answer_only_total
     else:
-        answer_only_raw = question.get("answer_only_max_score")
-        answer_only_max = int(round(_safe_float(answer_only_raw, default_answer_only)))
+        answer_only_max = default_answer_only
         has_process_part = True
     if max_score > 0:
         answer_only_max = max(0, min(answer_only_max, int(round(max_score))))

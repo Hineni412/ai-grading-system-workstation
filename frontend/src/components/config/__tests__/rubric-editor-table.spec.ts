@@ -35,6 +35,42 @@ async function mountTable(options: {
 }
 
 describe('RubricEditorTable', () => {
+  it('groups process blocks by part and displays the configured rules without opening an editor', async () => {
+    const mounted = await mountTable({ rows: [
+      row({ response_mode: 'process_required', answer_only_max_score: 1, allow_alternative_methods: true }),
+      row({ row_id: 's2', step_id: 'S2', response_mode: 'process_required', answer_only_max_score: 1 }),
+      row({ row_id: 'p2', part_id: 'Q12(P2)', response_mode: 'short_answer_points', allow_alternative_methods: false }),
+      row({ row_id: 'obj', question_id: 'Q1', part_id: 'Q1', question_type: 'choice', response_mode: 'exact_objective' }),
+    ] })
+    const groups = mounted.host.querySelectorAll('.rubric-part')
+    expect(groups).toHaveLength(3)
+    expect(groups[0]?.querySelector('h3')?.textContent).toBe('Q12 第1问')
+    expect(groups[0]?.querySelectorAll('.rubric-unit-card')).toHaveLength(2)
+    expect(groups[0]?.querySelector('.rubric-part__rules')?.textContent).toContain('只有正确答案、无有效过程：1 分')
+    expect(groups[0]?.textContent).toContain('0—3 分，按目标完成程度给分')
+    expect(groups[1]?.querySelector('.rubric-part__rules')?.textContent).toContain('各答案项分别给分')
+    expect(groups[1]?.querySelector('.rubric-part__rules')?.textContent).toContain('限定方法')
+    expect(groups[2]?.querySelector('.rubric-part__rules')?.textContent).toContain('答对得满分')
+    expect(groups[2]?.querySelector('[data-edit-field="answer_only_max_score"]')).toBeNull()
+    mounted.unmount()
+  })
+
+  it('clears a policy validation error independently of the block score', async () => {
+    const mounted = await mountTable()
+    const cap = mounted.host.querySelector<HTMLInputElement>('[data-edit-field="answer_only_max_score"]')!
+    const score = mounted.host.querySelector<HTMLInputElement>('[data-edit-field="score"]')!
+    cap.value = '2.5'; cap.dispatchEvent(new Event('change', { bubbles: true }))
+    score.value = '4'; score.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(cap.getAttribute('aria-invalid')).toBe('true')
+    expect(mounted.host.textContent).toContain('仅答案最高分必须')
+    cap.value = ''; cap.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(cap.getAttribute('aria-invalid')).toBe('false')
+    expect(mounted.emitted).not.toContainEqual(expect.objectContaining({ answer_only_max_score: 2.5 }))
+    mounted.unmount()
+  })
+
   it('renders every scoring point as a compact editable card', async () => {
     const mounted = await mountTable()
 
@@ -271,12 +307,12 @@ describe('RubricEditorTable', () => {
     expect(mounted.emitted).toEqual([
       { row_id: 'choice-1', score: 3 },
       { row_id: 'choice-2', score: 3 },
-      { row_id: 'fill-1a', score: 2.5 },
-      { row_id: 'fill-1b', score: 2.5 },
+      { row_id: 'fill-1a', score: 3 },
+      { row_id: 'fill-1b', score: 2 },
     ])
   })
 
-  it.each(['', 'NaN', 'Infinity', '-1', '100.1'])(
+  it.each(['', 'NaN', 'Infinity', '-1', '100.1', '2.5'])(
     'rejects an out-of-contract rubric score %s without emitting it',
     async (raw) => {
       const mounted = await mountTable()

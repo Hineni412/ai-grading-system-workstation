@@ -187,8 +187,14 @@ def _aligned_whole_generation_rules() -> str:
         "5. 主观题评分点必须写出可核验的必要条件、式子或结论，不得只写通用描述。\n"
         "6. 作图题应输出 visual_requirements 和必要踩分点，不得把答案图臆造为唯一文字答案。\n"
         "7. 总分严格为100；单题不超过18分；相同类型客观题必须同分，其他题型不要求同分。\n"
-        f"8. {GENERATED_ID_CONTRACT_PROMPT}\n"
-        f"9. {TEACHER_TYPE_CONTRACT_PROMPT}\n"
+        "8. 定理或判定的适用前提、必要条件（直角/垂直/平行、全等或相似的对应关系、取值范围、"
+        "分母不为零等）必须单列为独立步骤（判定点），不得与“列式”“代入”合并为一步；"
+        "该步 core_goal 写明要求成立的数学含义，required_elements 写学生可写出的任一书面形式"
+        "并注明“任一即可”（例：∠OEB=90°、OE⊥EB、△OEB 为直角三角形、图中直角标记并在推理中引用）。"
+        "每个步骤是整点有无的判定单位，粒度以“教师会否为此单独扣分”为准："
+        "有独立教学价值的中间结论、条件、结论各占一步。\n"
+        f"9. {GENERATED_ID_CONTRACT_PROMPT}\n"
+        f"10. {TEACHER_TYPE_CONTRACT_PROMPT}\n"
     )
 
 
@@ -2199,38 +2205,40 @@ def retry_grading_config_score_allocation(
     existing_payload: dict[str, Any],
     question_blocks: list[dict[str, Any]],
     doc_text: str,
-    llm_client: LLMClient,
-    model_name: str | None = None,
+    llm_client: LLMClient,  # noqa: ARG001 - kept for caller signature compatibility
+    model_name: str | None = None,  # noqa: ARG001
     report: Any = None,
     q_images: dict[str, Any] | None = None,
     *,
-    include_document_text: bool | None = None,
+    include_document_text: bool | None = None,  # noqa: ARG001
 ) -> dict[str, Any]:
     if failed_grading_config_question_ids(existing_payload):
         raise ValueError("仍有失败题目，需先重试失败题目，再进行整体赋分。")
     merged = copy.deepcopy(existing_payload)
-    if include_document_text is None:
-        include_document_text = not (
-            bool(q_images)
-            or any(str(block.get("semantic_source") or "").strip() == "images" for block in question_blocks)
-        )
-    _assign_scores_to_merged_config(
-        merged,
-        doc_text,
-        llm_client,
-        model_name,
-        report=report,
-        include_document_text=include_document_text,
-    )
     _ensure_question_blocks_covered(merged, question_blocks)
     _apply_local_question_facts(merged, question_blocks)
     normalize_new_generated_config_payload(merged)
     meta = merged.setdefault("meta", {})
-    meta["score_allocation_mode"] = (
-        "dedicated_ai_scoring" if meta.get("score_allocation_ai_success") else "local_score_fallback"
-    )
+    if not isinstance(meta, dict):
+        merged["meta"] = meta = {}
+    try:
+        force_payload_total_score(merged, target_total=100.0)
+    except Exception as exc:
+        meta["score_allocation_mode"] = "local_step_weighted"
+        meta["score_allocation_ai_success"] = False
+        meta["score_allocation_pending"] = True
+        meta["score_allocation_failed"] = True
+        meta["score_allocation_failure_category"] = "local_validation"
+        meta["score_allocation_error"] = f"本地统一配分未满足约束：{str(exc or '')[:300]}"
+        _attach_reference_answer_images(merged, q_images)
+        refresh_generated_config_quality_warnings(merged)
+        return merged
+    meta["score_allocation_mode"] = "local_step_weighted"
+    meta["score_allocation_ai_success"] = False
     meta["score_allocation_pending"] = False
-    force_payload_total_score(merged, target_total=100.0)
+    meta["score_allocation_failed"] = False
+    meta.pop("score_allocation_error", None)
+    meta.pop("score_allocation_failure_category", None)
     _attach_reference_answer_images(merged, q_images)
     refresh_generated_config_quality_warnings(merged)
     return merged

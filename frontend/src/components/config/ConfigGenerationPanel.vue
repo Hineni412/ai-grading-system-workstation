@@ -816,22 +816,22 @@ watch(
             <template v-if="totalBatchCount">、共 {{ totalBatchCount }} 个批次</template>
             的生成结果已经保存在本机。
           </strong>
-          <template v-if="scoreAllocationFailed">AI 统一配分没有成功；没有发布评分依据，也没有使用本地分数替代。</template>
-          <template v-else>尚未完成 AI 统一配分。</template>
+          <template v-if="scoreAllocationFailed">本地统一配分没有成功；没有发布评分依据。</template>
+          <template v-else>尚未完成统一配分。</template>
         </p>
         <p v-if="scoreAllocationError" class="config-generation__error" role="alert">
           <strong>{{ failureCategoryCopy(scoreAllocationFailureCategory) }}</strong>：
           {{ scoreAllocationError }}
         </p>
-        <button type="button" name="重新进行 AI 统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
-          重新进行 AI 统一配分
+        <button type="button" name="重新进行统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
+          重新进行统一配分
         </button>
       </div>
 
       <div v-if="['failed', 'cancelled'].includes(job.status) && outcome === 'complete'" class="config-generation__partial">
-        <p>全部批次已经保存在本机，只差 AI 统一配分；继续时将调用模型一次，不会重新生成题目批次。</p>
-        <button type="button" name="继续 AI 统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
-          继续 AI 统一配分
+        <p>全部批次已经保存在本机，只差统一配分；继续时在本地完成配分，不调用模型，也不会重新生成题目批次。</p>
+        <button type="button" name="继续统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
+          继续统一配分
         </button>
       </div>
       <p

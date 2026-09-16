@@ -6,6 +6,7 @@ from typing import Any
 from xml.etree import ElementTree
 
 from equivalence_engine import merge_equivalent_forms
+from question_bank.parsers.type_detector import subq_mark_labels
 
 
 _INLINE_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
@@ -19,8 +20,7 @@ _VISIBLE_FILL_BLANK_MARK = re.compile(
 )
 _VISIBLE_SUBPART = re.compile(
     r"(?:"
-    r"[（(]\s*[1-9]\d*\s*[）)]"
-    r"|任务\s*[一二三四五六七八九十百\d]+"
+    r"任务\s*[一二三四五六七八九十百\d]+"
     r"|第[一二三四五六七八九十百\d]+问"
     r")"
 )
@@ -491,8 +491,18 @@ def has_visible_subparts(value: str) -> bool:
     raw = str(value or "")
     if _VISIBLE_SUBPART.search(raw):
         return True
+    # 括号小问编号走共享检测器：公式下标 S_(1)、分数 (1)/(2)、
+    # 函数参数 f(1) 等不算小问。
+    if subq_mark_labels(raw):
+        return True
     stripped = _strip_inline_html(raw)
-    return stripped != raw and _VISIBLE_SUBPART.search(stripped) is not None
+    return (
+        stripped != raw
+        and (
+            _VISIBLE_SUBPART.search(stripped) is not None
+            or bool(subq_mark_labels(stripped))
+        )
+    )
 
 
 def has_visible_fill_blank_mark(value: str) -> bool:
@@ -648,11 +658,7 @@ def _local_accepted_forms(canonical: str, qtype: str) -> list[str]:
 
 def _has_multiple_required_answers(question_text: str) -> bool:
     text = str(question_text or "")
-    subquestion_numbers = {
-        match.group(1)
-        for match in re.finditer(r"[（(]\s*(\d{1,2})\s*[)）]", text)
-    }
-    if len(subquestion_numbers) >= 2:
+    if len(subq_mark_labels(text)) >= 2:
         return True
     blank_count = len(re.findall(r"_{2,}|＿{2,}|　{2,}", text))
     return blank_count >= 2

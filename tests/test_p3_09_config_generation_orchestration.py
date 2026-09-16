@@ -282,33 +282,7 @@ def test_partial_failure_retries_only_failed_batch_then_scores_once() -> None:
     assert first["meta"]["failed_question_ids"] == ["Q2"]
     assert len(checkpoints) == 2
 
-    score_payload = {
-        "question_scores": [
-            {
-                "question_id": "Q1",
-                "max_score": 50,
-                "parts": [
-                    {
-                        "part_id": "Q1",
-                        "part_score": 50,
-                        "steps": [{"step_id": "S1", "step_score": 50}],
-                    }
-                ],
-            },
-            {
-                "question_id": "Q2",
-                "max_score": 50,
-                "parts": [
-                    {
-                        "part_id": "Q2",
-                        "part_score": 50,
-                        "steps": [{"step_id": "S1", "step_score": 50}],
-                    }
-                ],
-            },
-        ]
-    }
-    retry_gateway = _ScriptedGateway([_question_payload("Q2"), score_payload])
+    retry_gateway = _ScriptedGateway([_question_payload("Q2")])
     completed = ConfigGenerationOrchestrator(
         retry_gateway,
         _policy(),
@@ -320,54 +294,72 @@ def test_partial_failure_retries_only_failed_batch_then_scores_once() -> None:
         retry_question_ids=["Q2"],
     )
 
-    assert [call[0] for call in retry_gateway.calls] == ["text", "text"]
+    # 重试只补失败批次；整卷配分是本地计算，不再发模型请求。
+    assert [call[0] for call in retry_gateway.calls] == ["text"]
     assert "Q2" in retry_gateway.calls[0][1]
-    assert "SCORE_QUESTION_IDS_JSON" in retry_gateway.calls[1][1]
     assert completed["meta"]["failed_question_ids"] == []
-    assert completed["meta"]["score_allocation_ai_success"] is True
+    assert completed["meta"]["score_allocation_ai_success"] is False
+    assert completed["meta"]["score_allocation_mode"] == "local_step_weighted"
+    assert completed["rubric"]["total_score"] == 100
 
 
-def test_solution_evidence_structure_uses_only_one_score_request() -> None:
+def test_solution_evidence_structure_scores_locally_without_model_request() -> None:
+    from backend.config_generation.normalization import (
+        force_payload_total_score,
+    )
+
     structure = _question_payload("Q1")
+    for index in range(2, 11):
+        extra = _question_payload(f"Q{index}")
+        structure["rubric"]["questions"].extend(
+            extra["rubric"]["questions"]
+        )
+        structure["answer_key"]["questions"].extend(
+            extra["answer_key"]["questions"]
+        )
     structure["rubric"]["questions"][0]["max_score"] = 1
     structure["rubric"]["questions"][0]["parts"][0]["part_score"] = 1
     structure["rubric"]["questions"][0]["parts"][0]["steps"][0][
         "step_score"
     ] = 1
-    score_payload = {
-        "question_scores": [
-            {
-                "question_id": "Q1",
-                "max_score": 100,
-                "parts": [
-                    {
-                        "part_id": "Q1",
-                        "part_score": 100,
-                        "steps": [{"step_id": "S1", "step_score": 100}],
-                    }
-                ],
-            }
-        ]
-    }
-    gateway = _ScriptedGateway([score_payload])
+    gateway = _ScriptedGateway([])
+    policy = _policy()
+    policy = ConfigGenerationPolicy(
+        **{
+            **policy.__dict__,
+            "force_total_score": force_payload_total_score,
+        }
+    )
 
     completed = ConfigGenerationOrchestrator(
         gateway,
-        _policy(),
+        policy,
     ).allocate_scores_for_structure(
         structure,
-        [{"question_id": "Q1", "question_type": "choice", "text": "one"}],
+        [
+            {
+                "question_id": f"Q{index}",
+                "question_type": "choice",
+                "text": f"stem {index}",
+            }
+            for index in range(1, 11)
+        ],
         "document",
     )
 
-    assert len(gateway.calls) == 1
-    assert gateway.calls[0][0] == "text"
-    assert "SCORE_QUESTION_IDS_JSON" in gateway.calls[0][1]
-    assert "BATCH_QUESTION_IDS_JSON" not in gateway.calls[0][1]
-    assert completed["rubric"]["questions"][0]["max_score"] == 100
+    assert gateway.calls == []
+    scores = [
+        question["max_score"]
+        for question in completed["rubric"]["questions"]
+    ]
+    assert sum(scores) == 100
+    assert all(isinstance(score, int) and score > 0 for score in scores)
+    # 本地配分按步骤权重分配：选择题不再被压成固定的 3 分。
+    assert all(score == 10 for score in scores)
     assert completed["meta"]["structure_source"] == "solution_evidence"
     assert completed["meta"]["structure_generation_model_requests"] == 0
-    assert completed["meta"]["score_allocation_ai_success"] is True
+    assert completed["meta"]["score_allocation_ai_success"] is False
+    assert completed["meta"]["score_allocation_mode"] == "local_step_weighted"
 
 
 def test_targeted_regeneration_replaces_selected_question_then_reallocates_scores() -> None:
@@ -388,21 +380,7 @@ def test_targeted_regeneration_replaces_selected_question_then_reallocates_score
     ] = "采用最新返回核对 B"
     replacement["answer_key"]["questions"][0]["canonical_answer"] = "B"
     replacement["answer_key"]["questions"][0]["parts"][0]["answer"] = "B"
-    score_payload = {
-        "question_scores": [
-            {
-                "question_id": question_id,
-                "max_score": 50,
-                "parts": [{
-                    "part_id": question_id,
-                    "part_score": 50,
-                    "steps": [{"step_id": "S1", "step_score": 50}],
-                }],
-            }
-            for question_id in ("Q1", "Q2")
-        ],
-    }
-    gateway = _ScriptedGateway([replacement, score_payload])
+    gateway = _ScriptedGateway([replacement])
     blocks = [
         {"question_id": "Q1", "question_type": "choice", "text": "one"},
         {"question_id": "Q2", "question_type": "choice", "text": "two"},
@@ -419,19 +397,16 @@ def test_targeted_regeneration_replaces_selected_question_then_reallocates_score
         regenerate_question_ids=["Q1"],
     )
 
-    assert len(gateway.calls) == 2
+    # 只重新生成被选题目；整卷配分是本地计算，不发模型请求。
+    assert len(gateway.calls) == 1
     assert 'BATCH_QUESTION_IDS_JSON=["Q1"]' in gateway.calls[0][1]
-    assert "SCORE_QUESTION_IDS_JSON" in gateway.calls[1][1]
     q1 = completed["rubric"]["questions"][0]
     assert q1["parts"][0]["steps"][0]["core_goal"] == "采用最新返回核对 B"
-    assert q1["max_score"] == 50
-    assert q1["parts"][0]["part_score"] == 50
-    assert q1["parts"][0]["steps"][0]["step_score"] == 50
     assert completed["answer_key"]["questions"][0]["canonical_answer"] == "B"
     assert completed["rubric"]["questions"][1]["question_id"] == original_q2["question_id"]
-    assert completed["rubric"]["questions"][1]["max_score"] == 50
+    assert completed["rubric"]["questions"][1]["max_score"] == 60
     assert completed["rubric"]["total_score"] == 100
-    assert completed["meta"]["score_allocation_mode"] == "dedicated_ai_scoring"
+    assert completed["meta"]["score_allocation_mode"] == "local_step_weighted"
 
 
 def test_production_job_no_longer_imports_config_orchestration_from_session_manager() -> None:

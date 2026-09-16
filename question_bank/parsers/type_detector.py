@@ -4,11 +4,60 @@ import re
 
 # 题干开头的分值标记，如“（12分）”。高分值是解答题的可靠信号。
 _LEADING_SCORE_RE = re.compile(r"^\s*[（(]\s*(\d+)\s*分\s*[)）]")
-# 规范小问标记：（1）（2）成对出现才算小问；排除两类编号/算式用法：
-# “七年级（2）班”这类编号（后接 班/组/年级），以及分数写法 (1)/(2)（斜杠相邻）。
-_SUBQ_MARK_RE = re.compile(
-    r"(?<![/0-9])[（(]([12])[)）](?![/0-9])(?!\s*[班组])(?!\s*年级)"
-)
+# 规范小问标记：（1）（2）成对出现才算小问；括号数字候选由
+# _is_subq_marker_context 按上下文排除公式下标、指数、分数、函数参数
+# 和图表/编号引用。
+_SUBQ_CANDIDATE_RE = re.compile(r"[（(]\s*(\d{1,2})\s*[)）]")
+
+# 括号数字前紧邻这些字符时属于编号或引用，不是小问：
+# 图(1) 表(1) 式(1) 项(1) 空(1) 例(1) 号(1) 题(1) 问(1) 组(1) 班(1) 章(1) 节(1) 卷(1) 款(1)
+_CJK_REF_PREFIX_CHARS = "图表式项空例号题问班组章节卷款"
+
+
+def _is_subq_marker_context(text: str, start: int, end: int) -> bool:
+    """区分真实小问编号与公式下标、指数、分数、函数参数和图表引用。"""
+    # 只跨越行内空白，不把上一行末尾的字母吞成下一小问的公式前缀。
+    prefix = text[:start].rstrip(" \t\u3000")
+    suffix = text[end:].lstrip(" \t\u3000")
+    prev = prefix[-1:] if prefix else ""
+    nxt = suffix[:1]
+    if (prev and prev in "/0123456789") or nxt == "/":
+        # (1)/(2) 分数写法，以及 2(1) 这类系数紧邻。
+        return False
+    if prev == "_":
+        # S_(1) 是下标；____（2）这类 2 个及以上下划线是填空后的真小问。
+        run = 0
+        cursor = len(prefix) - 1
+        while cursor >= 0 and text[cursor] == "_":
+            run += 1
+            cursor -= 1
+        if run < 2:
+            return False
+    elif (prev and prev in "^{") or (prev.isascii() and prev.isalpha()):
+        # x^(1)、x^{(1)} 上标，f(1)、sin(1) 函数参数。
+        return False
+    if prev and prev in _CJK_REF_PREFIX_CHARS:
+        # 图(1)、式(1)、题(1) 等图表或编号引用。
+        return False
+    if (nxt and nxt in "班组题式问") or text[end : end + 2] == "年级":
+        # (1)班、(1)组、(1)年级、(1)题 是编号引用；(1)式、(1)问 是公式/小问引用。
+        return False
+    return True
+
+
+def subq_mark_labels(text: object, *, max_label: int = 19) -> tuple[str, ...]:
+    """按出现顺序返回去重后的真实小问编号（已过上下文过滤）。"""
+    value = str(text or "")
+    labels: list[str] = []
+    for match in _SUBQ_CANDIDATE_RE.finditer(value):
+        if not _is_subq_marker_context(value, match.start(), match.end()):
+            continue
+        number = int(match.group(1))
+        if 1 <= number <= max_label:
+            label = str(number)
+            if label not in labels:
+                labels.append(label)
+    return tuple(labels)
 
 # 分值达到该阈值时，即使题干含填空信号也按解答题处理。
 _FULL_SOLUTION_SCORE_THRESHOLD = 6
@@ -90,7 +139,7 @@ def _looks_like_full_solution(text: str) -> bool:
     score_match = _LEADING_SCORE_RE.match(text)
     if score_match and int(score_match.group(1)) >= _FULL_SOLUTION_SCORE_THRESHOLD:
         return True
-    marks = {m.group(1) for m in _SUBQ_MARK_RE.finditer(text)}
+    marks = set(subq_mark_labels(text))
     return {"1", "2"} <= marks
 
 

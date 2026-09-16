@@ -125,6 +125,9 @@ export interface ConfigEditorRow {
   deduction_rules: string[]
   part_deduction_rules: string[]
   final_answer_rule: string
+  response_mode?: string
+  allow_alternative_methods?: boolean
+  equivalent_rules?: string[]
 }
 
 export interface ConfigEditorIssue {
@@ -339,6 +342,7 @@ function isEditorRow(value: unknown): value is ConfigEditorRow {
     'score', 'standard_answer', 'accepted_answers', 'match_rule',
     'answer_only_max_score', 'require_final_answer', 'required_elements', 'deduction_rules',
     'part_deduction_rules', 'final_answer_rule',
+    ...['response_mode', 'allow_alternative_methods', 'equivalent_rules'].filter((key) => key in value),
   ])) return false
   return ['row_id', 'question_id', 'part_id', 'step_id', 'part_label', 'question_type',
     'core_goal', 'standard_answer', 'match_rule', 'final_answer_rule']
@@ -349,6 +353,9 @@ function isEditorRow(value: unknown): value is ConfigEditorRow {
     && isStringList(value.accepted_answers) && isStringList(value.required_elements)
     && isStringList(value.deduction_rules)
     && isStringList(value.part_deduction_rules)
+    && (value.response_mode === undefined || typeof value.response_mode === 'string')
+    && (value.allow_alternative_methods === undefined || typeof value.allow_alternative_methods === 'boolean')
+    && (value.equivalent_rules === undefined || isStringList(value.equivalent_rules))
 }
 
 function isEditorIssue(value: unknown): value is ConfigEditorIssue {
