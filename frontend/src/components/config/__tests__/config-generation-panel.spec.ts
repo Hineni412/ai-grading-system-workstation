@@ -385,7 +385,7 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.textContent).toContain('模型服务或网络请求失败')
     expect(mounted.host.textContent).toContain('模型服务暂时不可用')
     expect(mounted.host.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
-    expect(mounted.host.querySelector('button[name="重新进行 AI 统一配分"]')).toBeNull()
+    expect(mounted.host.querySelector('button[name="重新进行统一配分"]')).toBeNull()
     mounted.host.querySelector<HTMLInputElement>('[aria-label="选择失败批次 B002"]')!.click()
     await nextTick()
     mounted.host.querySelector<HTMLButtonElement>('button[name="重试所选批次"]')!.click()
@@ -441,8 +441,8 @@ describe('ConfigGenerationPanel', () => {
       configStore.attachJob(31, configStore.captureGenerationContext())
       const mounted = await mountPanel({ retryer })
 
-      expect(mounted.host.textContent).toContain('将调用模型一次')
-      mounted.host.querySelector<HTMLButtonElement>('button[name="继续 AI 统一配分"]')!.click()
+      expect(mounted.host.textContent).toContain('不调用模型')
+      mounted.host.querySelector<HTMLButtonElement>('button[name="继续统一配分"]')!.click()
       await settle()
 
       expect(retryer).toHaveBeenCalledWith(
@@ -466,9 +466,9 @@ describe('ConfigGenerationPanel', () => {
     const mounted = await mountPanel({ retryer })
 
     expect(mounted.host.textContent).toMatch(/12 道题\s+的生成结果已经保存在本机/)
-    expect(mounted.host.textContent).toContain('没有使用本地分数替代')
+    expect(mounted.host.textContent).toContain('没有发布评分依据')
     expect(mounted.host.querySelectorAll('input[type="checkbox"]')).toHaveLength(0)
-    mounted.host.querySelector<HTMLButtonElement>('button[name="重新进行 AI 统一配分"]')!.click()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新进行统一配分"]')!.click()
     await settle()
 
     expect(retryer).toHaveBeenCalledWith(

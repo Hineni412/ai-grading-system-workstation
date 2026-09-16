@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
@@ -29,8 +30,10 @@ from question_bank.training_criteria.analysis import (
     GatewayBatchResponse,
     GatewayResponseParseError,
     PlannedAnalysisBatch,
+    ProjectionValidationError,
     QuestionAnalysisGateway,
     QuestionAnalysisInput,
+    QuestionTypeSuggestion,
     TaxonomyProjectionReviewRequired,
     criteria_from_confirmed_rubric,
     grading_config_skeleton_from_solution_evidence,
@@ -42,6 +45,8 @@ from question_bank.training_criteria.analysis import (
 
 
 _MAX_REJECTED_RESULT_CHARS = 50_000
+
+LOGGER = logging.getLogger(__name__)
 
 
 class UnmappedFineTermResolver:
@@ -158,6 +163,11 @@ class DeferredCombinedAnalysisItem:
     reference_assessment: str = "insufficient"
     reference_assessment_reason: str = ""
     part_assessments: tuple[Mapping[str, Any], ...] = ()
+    question_type_suggestion: Mapping[str, Any] | None = None
+    # Exact-duplicate reuse: the source was matched to this canonical bank
+    # question before any model call, so the item carries the canonical's
+    # stored analysis. Adoption must not write it back onto the canonical.
+    reused_from_question_id: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "part_assessments", model_part_estimates(
@@ -216,6 +226,29 @@ class DeferredCombinedAnalysisItem:
             self,
             "solution_evidence_payload",
             dict(self.solution_evidence_payload),
+        )
+        object.__setattr__(
+            self,
+            "question_type_suggestion",
+            (
+                dict(self.question_type_suggestion)
+                if isinstance(self.question_type_suggestion, Mapping)
+                else None
+            ),
+        )
+        if self.reused_from_question_id is not None and (
+            isinstance(self.reused_from_question_id, bool)
+            or int(self.reused_from_question_id) <= 0
+        ):
+            raise ValueError("reused question id must be positive")
+        object.__setattr__(
+            self,
+            "reused_from_question_id",
+            (
+                int(self.reused_from_question_id)
+                if self.reused_from_question_id is not None
+                else None
+            ),
         )
 
     def grading_config_skeleton(self) -> dict[str, Any]:
@@ -372,6 +405,16 @@ class DeferredCombinedAnalysisItem:
         if self.part_assessments:
             payload["schema_version"] = "deferred-combined-analysis-item-v5"
             payload["part_assessments"] = [dict(item) for item in self.part_assessments]
+        if self.question_type_suggestion is not None:
+            payload["schema_version"] = "deferred-combined-analysis-item-v6"
+            payload["question_type_suggestion"] = dict(
+                self.question_type_suggestion
+            )
+        if self.reused_from_question_id is not None:
+            payload["schema_version"] = "deferred-combined-analysis-item-v7"
+            payload["reused_from_question_id"] = int(
+                self.reused_from_question_id
+            )
         return {**payload, "content_hash": _hash_payload(payload)}
 
     def to_checkpoint_dict(self) -> dict[str, Any]:
@@ -428,6 +471,36 @@ class DeferredCombinedAnalysisItem:
                 },
                 "deferred analysis item",
             )
+        elif version == "deferred-combined-analysis-item-v6":
+            submitted_keys = {str(key) for key in payload}
+            v6_base = {
+                *common_keys,
+                "taxonomy_audit",
+                "reference_assessment",
+                "reference_assessment_reason",
+                "question_type_suggestion",
+            }
+            if submitted_keys != v6_base and submitted_keys != (
+                v6_base | {"part_assessments"}
+            ):
+                raise ValueError(
+                    "deferred analysis item fields do not match the contract"
+                )
+        elif version == "deferred-combined-analysis-item-v7":
+            v7_base = {
+                *common_keys,
+                "taxonomy_audit",
+                "reference_assessment",
+                "reference_assessment_reason",
+                "reused_from_question_id",
+            }
+            submitted_keys = {str(key) for key in payload}
+            if not v7_base.issubset(submitted_keys) or not submitted_keys.issubset(
+                v7_base | {"part_assessments", "question_type_suggestion"}
+            ):
+                raise ValueError(
+                    "deferred analysis item fields do not match the contract"
+                )
         else:
             raise ValueError("deferred analysis item version is invalid")
         submitted_hash = _sha256_text(payload.get("content_hash"), "content_hash")
@@ -456,7 +529,7 @@ class DeferredCombinedAnalysisItem:
         )
         taxonomy_audit = (
             _normalize_taxonomy_audit(payload.get("taxonomy_audit"))
-            if version in {"deferred-combined-analysis-item-v3", "deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5"}
+            if version in {"deferred-combined-analysis-item-v3", "deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5", "deferred-combined-analysis-item-v6", "deferred-combined-analysis-item-v7"}
             else _legacy_taxonomy_audit(normalized_tag)
         )
         return cls(
@@ -478,16 +551,26 @@ class DeferredCombinedAnalysisItem:
             taxonomy_audit=taxonomy_audit,
             reference_assessment=(
                 str(payload.get("reference_assessment") or "insufficient")
-                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5"}
+                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5", "deferred-combined-analysis-item-v6", "deferred-combined-analysis-item-v7"}
                 else "insufficient"
             ),
             reference_assessment_reason=(
                 str(payload.get("reference_assessment_reason") or "")
-                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5"}
+                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5", "deferred-combined-analysis-item-v6", "deferred-combined-analysis-item-v7"}
                 else ""
             ),
             model_name=str(payload.get("model_name") or ""),
             part_assessments=tuple(payload.get("part_assessments") or ()),
+            question_type_suggestion=(
+                dict(payload["question_type_suggestion"])
+                if isinstance(payload.get("question_type_suggestion"), Mapping)
+                else None
+            ),
+            reused_from_question_id=(
+                int(payload["reused_from_question_id"])
+                if version == "deferred-combined-analysis-item-v7"
+                else None
+            ),
             operation_id=str(payload.get("operation_id") or ""),
         )
 
@@ -499,6 +582,71 @@ class DeferredCombinedAnalysisItem:
         resolver: FineTermResolver,
     ) -> "DeferredCombinedAnalysisItem":
         return cls.from_dict(payload, resolver=resolver)
+
+
+def reused_analysis_item(
+    *,
+    source: ConfigQuestionAnalysisSource,
+    bank_question_id: int,
+    evidence: QuestionSolutionEvidence,
+    evidence_payload: Mapping[str, Any],
+    model_name: str,
+    fine_term_links: Sequence[Mapping[str, Any]],
+    operation_id: str,
+) -> DeferredCombinedAnalysisItem:
+    """Build a completed bundle item from a canonical bank question's analysis.
+
+    The caller has already proven the source is an exact duplicate, so this
+    factory only re-anchors the stored evidence payload and derives the
+    governed candidate snapshot from the evidence's own links; the durable
+    item still passes the normal contract validation.
+    """
+    source_hash = solution_evidence_source_content_hash(source.question)
+    if evidence.question_id != int(source.question.question_id):
+        raise ValueError("reused evidence question id does not match")
+    if evidence.source_content_hash != source_hash:
+        raise ValueError("reused evidence source hash does not match")
+    candidates = tuple(
+        DeferredKnowledgeCandidate(
+            fine_term_id=str(link.get("fine_term_id") or ""),
+            fine_term_name=str(link.get("fine_term_name") or ""),
+        )
+        for link in fine_term_links
+        if isinstance(link, Mapping)
+    )
+    return DeferredCombinedAnalysisItem(
+        source_question_ref=source.source_question_ref,
+        analysis_question_id=int(source.question.question_id),
+        source_content_hash=source_hash,
+        curriculum_volume_id=str(
+            source.question.tagging_context.curriculum_volume_id or ""
+        ).strip(),
+        taxonomy_contract_hash=_hash_payload(
+            dict(source.question.taxonomy_contract)
+        ),
+        knowledge_candidates=candidates,
+        tag_analysis=TagAnalysis.from_dict({}).to_dict(),
+        solution_evidence_payload=dict(evidence_payload),
+        solution_evidence=evidence,
+        taxonomy_audit=_normalize_taxonomy_audit(
+            {
+                "schema_version": "deferred-taxonomy-audit-v1",
+                "taxonomy_revision": 0,
+                "status": "accepted",
+                "tag_quality_status": "",
+                "quality_notes": [],
+                "retrieval_misses": [],
+                "proposals": [],
+                "secondary_matches": [],
+                "unresolved_links": [],
+            }
+        ),
+        reference_assessment="consistent",
+        reference_assessment_reason="题库中已有完全相同题目的判定结果",
+        model_name=model_name,
+        operation_id=operation_id,
+        reused_from_question_id=int(bank_question_id),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1000,6 +1148,9 @@ class InMemoryCombinedQuestionAnalysisModule:
         operation_id: str,
         curriculum_volume_id: str,
         sources: Sequence[ConfigQuestionAnalysisSource],
+        reused_items: Mapping[
+            str, DeferredCombinedAnalysisItem | DeferredAnalysisFailure
+        ] | None = None,
         checkpoint: Callable[[DeferredCombinedAnalysisBundle], None] | None = None,
     ) -> DeferredCombinedAnalysisBundle:
         clean_operation, volume_id, normalized = _normalize_sources(
@@ -1007,6 +1158,25 @@ class InMemoryCombinedQuestionAnalysisModule:
             curriculum_volume_id,
             sources,
         )
+        reused = dict(reused_items or {})
+        if reused:
+            available = {item.source_question_ref for item in normalized}
+            invalid = sorted(
+                reference
+                for reference, item in reused.items()
+                if reference not in available
+                or item.source_question_ref != reference
+                or (isinstance(item, DeferredCombinedAnalysisItem) and (
+                    item.reused_from_question_id is None
+                    or item.curriculum_volume_id != volume_id
+                    or item.operation_id != clean_operation
+                ))
+                or (isinstance(item, DeferredAnalysisFailure) and item.category not in {"duplicate_analysis_missing", "duplicate_content_uncertain"})
+            )
+            if invalid:
+                raise ValueError(
+                    "reused analysis items must match parsed sources"
+                )
         source_fingerprints = tuple(
             (
                 item.source_question_ref,
@@ -1024,11 +1194,19 @@ class InMemoryCombinedQuestionAnalysisModule:
         return self._run(
             operation_id=clean_operation,
             curriculum_volume_id=volume_id,
-            selected_sources=normalized,
+            selected_sources=tuple(
+                item
+                for item in normalized
+                if item.source_question_ref not in reused
+            ),
             source_fingerprints=source_fingerprints,
             input_fingerprint=input_fingerprint,
-            base_items=(),
-            base_failures=(),
+            base_items=tuple(
+                reused[item.source_question_ref]
+                for item in normalized
+                if isinstance(reused.get(item.source_question_ref), DeferredCombinedAnalysisItem)
+            ),
+            base_failures=tuple(item for item in reused.values() if isinstance(item, DeferredAnalysisFailure)),
             base_requests=(),
             checkpoint=checkpoint,
         )
@@ -1072,6 +1250,8 @@ class InMemoryCombinedQuestionAnalysisModule:
         failed_refs = set(previous.failed_source_refs)
         uncertain_refs = set(previous.uncertain_source_refs)
         available_refs = uncertain_refs if retry_uncertain else failed_refs
+        available_refs -= {failure.source_question_ref for failure in previous.failures
+                           if failure.category in {"duplicate_analysis_missing", "duplicate_content_uncertain"}}
         selected_refs: set[str] | None = None
         if retry_source_refs is not None:
             requested = tuple(
@@ -1642,9 +1822,13 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 evidence,
                                 candidate_snapshot,
                                 taxonomy_audit,
+                                suggestion_audit,
                             ) = _govern_deferred_analysis_item(
                                 raw_tag=raw_tag,
                                 raw_evidence=raw_evidence,
+                                raw_type_suggestion=raw.get(
+                                    "question_type_suggestion"
+                                ),
                                 question=question,
                                 source_question_ref=source.source_question_ref,
                                 source_content_hash=source_hash,
@@ -1691,6 +1875,7 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 reference_assessment=reference_assessment,
                                 reference_assessment_reason=reference_assessment_reason,
                                 part_assessments=estimates,
+                                question_type_suggestion=suggestion_audit,
                                 model_name=response.model_name,
                                 operation_id=operation_id,
                             )
@@ -1764,12 +1949,14 @@ class DeferredCombinedProjectionWriter:
         evidence_repository: SolutionEvidenceRepository,
         taxonomy_governance: Any | None = None,
         criterion_module: Any | None = None,
+        question_type_writer: Any | None = None,
     ) -> None:
         self.tag_writer = tag_writer
         self.mapping_repository = mapping_repository
         self.evidence_repository = evidence_repository
         self.taxonomy_governance = taxonomy_governance
         self.criterion_module = criterion_module
+        self.question_type_writer = question_type_writer
 
     def _publish_criterion(
         self,
@@ -1881,6 +2068,35 @@ class DeferredCombinedProjectionWriter:
             tag_error = "tag_validation"
         else:
             tag_status = "succeeded"
+        # 分析阶段已采纳的题型建议随标签落库：未确认题型按模型真实题型订正，
+        # 教师确认或冲突项在分析阶段已排除，不重复处理。
+        suggestion = item.question_type_suggestion
+        if (
+            suggestion is not None
+            and self.question_type_writer is not None
+            and str(suggestion.get("action") or "") == "applied"
+        ):
+            try:
+                self.question_type_writer.apply(
+                    question,
+                    QuestionTypeSuggestion(
+                        question_type=str(
+                            suggestion.get("suggested_type") or ""
+                        ),
+                        reason=str(suggestion.get("reason") or ""),
+                        essay_subtype=(
+                            str(suggestion.get("suggested_subtype") or "")
+                            or None
+                        ),
+                    ),
+                    model_name=item.model_name,
+                    operation_id=item.operation_id,
+                )
+            except Exception:  # noqa: BLE001 - 题型订正不阻断已验证的标签/证据
+                LOGGER.exception(
+                    "deferred question-type suggestion apply failed: %s",
+                    item.source_question_ref,
+                )
         try:
             binding = self._bind_adoption_evidence(item, question=question)
             taxonomy_proposal_ids = binding.proposal_ids
@@ -1985,6 +2201,35 @@ class DeferredCombinedProjectionWriter:
             tag_error = "tag_validation"
         else:
             tag_status = "succeeded"
+        # 分析阶段已采纳的题型建议随标签落库：未确认题型按模型真实题型订正，
+        # 教师确认或显式小问冲突的项在分析阶段已排除，不重复处理。
+        suggestion = item.question_type_suggestion
+        if (
+            suggestion is not None
+            and self.question_type_writer is not None
+            and str(suggestion.get("action") or "") == "applied"
+        ):
+            try:
+                self.question_type_writer.apply(
+                    question,
+                    QuestionTypeSuggestion(
+                        question_type=str(
+                            suggestion.get("suggested_type") or ""
+                        ),
+                        reason=str(suggestion.get("reason") or ""),
+                        essay_subtype=(
+                            str(suggestion.get("suggested_subtype") or "")
+                            or None
+                        ),
+                    ),
+                    model_name=item.model_name,
+                    operation_id=item.operation_id,
+                )
+            except Exception:  # noqa: BLE001 - 题型订正不阻断已验证的标签/证据
+                LOGGER.exception(
+                    "deferred question-type suggestion apply failed: %s",
+                    item.source_question_ref,
+                )
         try:
             binding = self._bind_adoption_evidence(
                 item,
@@ -2732,6 +2977,7 @@ def _govern_deferred_analysis_item(
     *,
     raw_tag: object,
     raw_evidence: Mapping[str, Any],
+    raw_type_suggestion: object = None,
     question: QuestionAnalysisInput,
     source_question_ref: str,
     source_content_hash: str,
@@ -2745,16 +2991,50 @@ def _govern_deferred_analysis_item(
     QuestionSolutionEvidence,
     tuple[DeferredKnowledgeCandidate, ...],
     dict[str, Any],
+    dict[str, Any] | None,
 ]:
     """Validate scoring structure and audit taxonomy on independent axes."""
 
+    suggestion: QuestionTypeSuggestion | None = None
+    suggestion_audit: dict[str, Any] | None = None
+    if raw_type_suggestion is not None:
+        try:
+            suggestion = QuestionTypeSuggestion.from_dict(raw_type_suggestion)
+        except ProjectionValidationError:
+            suggestion_audit = {"action": "invalid_ignored"}
+        else:
+            suggestion_audit = {
+                "local_type": str(
+                    question.tagging_context.question_type or ""
+                ).strip(),
+                "suggested_type": suggestion.question_type,
+                "suggested_subtype": suggestion.essay_subtype,
+                "reason": suggestion.reason,
+                "model_name": str(model_name or ""),
+            }
+    effective_group = question.question_type_group
+    effective_shape = question.objective_response_shape
+    if suggestion is not None and suggestion_audit is not None:
+        if suggestion.question_type_group == effective_group:
+            suggestion_audit["action"] = "unchanged"
+        elif question.question_type_confirmed:
+            # 教师确认的题型是事实：建议只登记冲突，不改变评分结构。
+            suggestion_audit["action"] = "conflict_only"
+        else:
+            # 未确认的本地题型只是预览提示；采纳模型的真实题型，
+            # 让评分结构按真实题组组织（例如本地误判为填空的过程题）。
+            effective_group = suggestion.question_type_group
+            effective_shape = question.objective_response_shape_for(
+                effective_group
+            )
+            suggestion_audit["action"] = "applied"
     evidence_normalization = normalize_model_solution_evidence(
         raw_evidence,
         question_id=question.question_id,
-        question_type=question.question_type_group,
+        question_type=effective_group,
         taxonomy_contract=question.taxonomy_contract,
         question_type_confirmed=question.question_type_confirmed,
-        objective_response_shape=question.objective_response_shape,
+        objective_response_shape=effective_shape,
         expected_answer=question.tagging_context.answer_text,
         expected_part_count=(
             len(question.explicit_part_labels)
@@ -2827,6 +3107,7 @@ def _govern_deferred_analysis_item(
                 "secondary_matches": [],
                 "unresolved_links": [],
             },
+            suggestion_audit,
         )
 
     tag_parse_failed = False
@@ -2976,6 +3257,7 @@ def _govern_deferred_analysis_item(
         evidence,
         candidates,
         _normalize_taxonomy_audit(audit),
+        suggestion_audit,
     )
 
 

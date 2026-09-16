@@ -43,6 +43,9 @@ class ConfigEditorRow:
     deduction_rules: tuple[str, ...] = ()
     part_deduction_rules: tuple[str, ...] = ()
     final_answer_rule: str = ""
+    response_mode: str = ""
+    allow_alternative_methods: bool = True
+    equivalent_rules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +141,7 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
         max_score = _number(question.get("max_score"), 0.0)
         answer_only = _number_or_none(question.get("answer_only_max_score"))
         if "answer_only_max_score" not in question:
-            answer_only = float(max(1, round(max_score * 0.25))) if max_score > 0 else 1.0
+            answer_only = 1.0 if max_score > 0 else 0.0
         final_rule = _final_answer_rule(question) or (
             _DEFAULT_FINAL_ANSWER_RULE if question_type in _SOLUTION_TYPES else ""
         )
@@ -153,6 +156,8 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
                     part_label=_WHOLE_ID,
                     question_type=question_type,
                     core_goal=_WHOLE_ID,
+                    response_mode=str(question.get("response_mode") or ("exact_objective" if question_type in _OBJECTIVE_TYPES else "process_required")),
+                    allow_alternative_methods=bool(question.get("allow_alternative_methods", True)),
                     score=max_score,
                     standard_answer=_answer_text(answer_question),
                     accepted_answers=_unique_texts(answer_question.get("accepted_forms")),
@@ -175,7 +180,7 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
             if "answer_only_max_score" not in part:
                 part_answer_only = _number_or_none(question.get("answer_only_max_score"))
             if "answer_only_max_score" not in part and "answer_only_max_score" not in question:
-                part_answer_only = float(max(1, round(part_score * 0.25))) if part_score > 0 else 1.0
+                part_answer_only = 1.0 if part_score > 0 else 0.0
             part_final_rule = _final_answer_rule(part) or final_rule
             part_deduction_rules = _deduction_policy_texts(
                 part.get("deduction_policy")
@@ -191,6 +196,9 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
                         part_label=part_label,
                         question_type=question_type,
                         core_goal=_UNSPLIT_ID,
+                        response_mode=str(part.get("response_mode") or ("exact_objective" if question_type in _OBJECTIVE_TYPES else "process_required")),
+                        allow_alternative_methods=bool(part.get("allow_alternative_methods", True)),
+                        equivalent_rules=_unique_texts(part.get("equivalent_rules")),
                         score=part_score,
                         standard_answer=_answer_text(first_answer),
                         accepted_answers=_unique_texts(first_answer.get("accepted_forms")),
@@ -216,6 +224,9 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
                         part_label=part_label,
                         question_type=question_type,
                         core_goal=_step_goal(step, step_index + 1),
+                        response_mode=str(part.get("response_mode") or ("exact_objective" if question_type in _OBJECTIVE_TYPES else "process_required")),
+                        allow_alternative_methods=bool(step.get("allow_alternative_methods", part.get("allow_alternative_methods", True))),
+                        equivalent_rules=_unique_texts(step.get("equivalent_rules")),
                         score=_number(_first_value(step, "step_score", "score", "point_score", "max_score"), 0.0),
                         standard_answer=_answer_text(first_answer) if is_first else "",
                         accepted_answers=_unique_texts(first_answer.get("accepted_forms")) if is_first else (),
@@ -564,7 +575,7 @@ def _apply_split(payload: dict[str, Any], command: SplitScoringUnitCommand) -> N
                 "part_score": score,
                 "response_mode": "exact_objective" if direct else "process_required",
                 "require_final_answer": False if direct else bool(question.get("require_final_answer", qtype == "comprehensive")),
-                "answer_only_max_score": score if direct else min(score, max(1, round(score * 0.25))),
+                "answer_only_max_score": score if direct else min(score, 1),
                 "steps": [
                     {
                         "step_id": "S1",
@@ -857,7 +868,7 @@ def _aggregate_scores(payload: dict[str, Any]) -> None:
                     raw_answer_only = (
                         part_score
                         if mode in {"exact_objective", "short_answer_points", "visual_construction"}
-                        else float(max(1, round(part_score * 0.25)))
+                        else 1.0
                     )
                 answer_only_total += min(part_score, max(0.0, raw_answer_only))
             question["max_score"] = question_total
@@ -1263,9 +1274,9 @@ def _optional_bool(value: Any) -> bool | None:
 
 def _valid_score(value: Any, row_id: str | None) -> float:
     score = _number_or_none(value)
-    if score is None or score < 0:
+    if isinstance(value, bool) or score is None or score < 0 or not score.is_integer():
         raise ConfigEditorValidationError(
-            (_issue("invalid_score", "score", "Scores must be finite and non-negative.", row_id=row_id),)
+            (_issue("invalid_score", "score", "分值必须是非负整数。", row_id=row_id),)
         )
     return score
 

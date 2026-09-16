@@ -2855,9 +2855,8 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
     assert len(intake_calls) == 1
     assert intake_calls[0]["artifact"].bundle.status == "succeeded"
     assert len(protocol.calls) == 1
-    assert len(score_client.calls) == 1
-    assert "SCORE_QUESTION_IDS_JSON" in score_client.calls[0]
-    assert "BATCH_QUESTION_IDS_JSON" not in score_client.calls[0]
+    # 本地配分不发模型请求；单题卷不满足整数约束时保持配分待办。
+    assert len(score_client.calls) == 0
     assert tagging_factory_calls == 1
     store.finish(first_context.job_id, "succeeded", result=first)
     completed_first = store.get_job(first_context.job_id)
@@ -2895,7 +2894,7 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
     assert retried["outcome"] == "partial"
     assert len(protocol.calls) == 1
     assert tagging_factory_calls == 1
-    assert len(score_client.calls) == 2
+    assert len(score_client.calls) == 0
     assert len(intake_calls) == 2
 
 
@@ -3216,7 +3215,7 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
     assert confirmed["generated_questions"] == 1
     assert confirmed.get("uncertain_question_ids") is None
     assert confirmed["score_allocation_pending"] is True
-    assert len(score_client.calls) == 1
+    assert len(score_client.calls) == 0
 
 
 def test_complete_evidence_first_generation_intake_receives_exact_artifact_identity(
@@ -3336,7 +3335,8 @@ def test_complete_evidence_first_generation_intake_receives_exact_artifact_ident
         ensure_ascii=False,
         sort_keys=True,
     )
-    assert len(score_client.calls) == 1
+    # 本地配分不再请求模型。
+    assert len(score_client.calls) == 0
     analysis_reports = [
         item
         for item in progress_reports

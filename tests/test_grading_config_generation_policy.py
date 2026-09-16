@@ -1410,11 +1410,11 @@ def test_split_generation_retries_transient_question_failure_before_scoring(
         client,
     )
 
-    assert client.calls == 4
+    assert client.calls == 3
     assert payload["meta"]["single_question_failure_count"] == 0
     assert payload["meta"]["single_question_attempts"]["Q1"] == 3
     assert payload["meta"]["failed_question_ids"] == []
-    assert payload["meta"]["score_allocation_ai_success"] is True
+    assert payload["meta"]["score_allocation_mode"] == "local_step_weighted"
 
 
 def test_split_generation_pauses_scoring_when_question_still_failed(
@@ -1505,10 +1505,10 @@ def test_retry_failed_questions_preserves_successes_and_then_scores(
     payload = session_manager.retry_failed_grading_config_questions(existing, blocks, "", client)
 
     questions = {question["question_id"]: question for question in payload["rubric"]["questions"]}
-    assert client.calls == 2
+    assert client.calls == 1
     assert not any(key.startswith("knowledge") for key in questions["Q2"])
     assert payload["meta"]["failed_question_ids"] == []
-    assert payload["meta"]["score_allocation_ai_success"] is True
+    assert payload["meta"]["score_allocation_mode"] == "local_step_weighted"
     assert not any(
         "Q2 placeholder added" in warning
         for warning in payload["meta"]["warnings"]
@@ -1760,7 +1760,8 @@ def test_word_split_sends_embedded_images_with_rich_text_prompt(
     )
 
     assert client.image_calls == 1
-    assert client.text_calls == 1
+    # 本地配分不再追加整卷 AI 配分文本请求。
+    assert client.text_calls == 0
     assert payload["meta"]["failed_question_ids"] == []
     assert payload["meta"]["generation_mode"] == "word_rich_split_parallel"
 
@@ -1805,7 +1806,8 @@ def test_pdf_split_keeps_image_semantics_and_shared_split_pipeline(
     )
 
     assert client.image_calls == 1
-    assert client.text_calls == 1
+    # 本地配分不再追加整卷 AI 配分文本请求。
+    assert client.text_calls == 0
     assert payload["meta"]["generation_mode"] == "pdf_image_split_parallel"
 
 

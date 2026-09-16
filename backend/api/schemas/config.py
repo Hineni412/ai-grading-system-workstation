@@ -485,6 +485,9 @@ class ConfigEditorRowResponse(BaseModel):
     deduction_rules: list[str]
     part_deduction_rules: list[str]
     final_answer_rule: str
+    response_mode: str = ""
+    allow_alternative_methods: bool = True
+    equivalent_rules: list[str] = Field(default_factory=list)
 
 
 class ConfigEditorIssueResponse(BaseModel):

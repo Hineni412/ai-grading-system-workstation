@@ -12,7 +12,11 @@ from collections.abc import Iterable
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
-from question_bank.parsers.type_detector import ESSAY_SUBTYPES, QUESTION_TYPES
+from question_bank.parsers.type_detector import (
+    ESSAY_SUBTYPES,
+    QUESTION_TYPES,
+    subq_mark_labels,
+)
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
@@ -319,17 +323,10 @@ class QuestionAnalysisInput:
     def explicit_part_labels(self) -> tuple[str, ...]:
         """Return only an objective, sequential (1)(2)... structure fact."""
 
-        # 斜杠相邻的 (1)/(2) 是分数写法（1/2），与
-        # parsers/type_detector._SUBQ_MARK_RE 的排除语义保持一致；
-        # 编号范围仍按原约定允许 (1)~(19)，不影响真小问识别。
-        labels = [
-            str(match)
-            for match in re.findall(
-                r"(?<![/0-9])[（(]\s*([1-9]\d?)\s*[）)](?![/0-9])",
-                str(self.tagging_context.question_text or ""),
-            )
-        ]
-        ordered = tuple(dict.fromkeys(labels))
+        # subq_mark_labels 与 parsers/type_detector 的排除语义一致：
+        # 公式下标 S_(1)、指数 x^(1)、分数 (1)/(2)、函数参数 f(1) 和
+        # 图(1)/式(1) 等编号引用都不算小问；真实小问标记不受影响。
+        ordered = subq_mark_labels(self.tagging_context.question_text)
         if len(ordered) < 2:
             return ()
         expected = tuple(str(index) for index in range(1, len(ordered) + 1))
@@ -2582,27 +2579,20 @@ def rubric_skeleton_from_solution_evidence(
                 "steps": [
                     {
                         "step_id": point.evidence_point_id,
+                        # core_goal 是学生必须达成的数学目标；
+                        # required_elements 只收可核验的作答成果，
+                        # 参考解法说明与定位锚点留在答案侧 step_milestones，
+                        # 不作为学生必写清单。
                         "core_goal": point.target,
                         "required_elements": list(
-                            _text_tuple(
-                                (
-                                    point.justification,
-                                    point.answer_anchor,
-                                    point.observable_evidence,
-                                )
-                            )
+                            _text_tuple((point.observable_evidence,))
                         ),
                         "depends_on": list(point.depends_on),
                         "equivalent_rules": list(point.equivalent_rules),
                         "counterexamples": list(point.counterexamples),
-                        "deduction_rules": list(
-                            dict.fromkeys(
-                                [
-                                    *point.counterexamples,
-                                    *part.deduction_policy,
-                                ]
-                            )
-                        ),
+                        # 步骤扣分规则只含该步反例；小问级通用扣分政策
+                        # 保留在 part.deduction_policy，不复制到每一步。
+                        "deduction_rules": list(point.counterexamples),
                     }
                     for point in part.evidence_points
                 ],
