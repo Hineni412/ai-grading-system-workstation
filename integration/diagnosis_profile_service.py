@@ -77,13 +77,15 @@ class DiagnosisProfileService:
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
     ) -> dict[str, Any]:
+        if exam_scope.get("mode") == "semester":
+            scope = {**scope, "use_historical_fallback": False}
         source_identity = self.cache_identity or (
             *_path_generation(self.grading_db_path),
             *_path_generation(self.question_bank_db_path),
         )
         cache_key = (
             "\u0000".join(source_identity),
-            "tag-profile-part-v4-source-root",
+            "tag-profile-part-v5-semester-evidence",
             str(self.data_root),
             json.dumps(scope, ensure_ascii=False, sort_keys=True, default=str),
             json.dumps(exam_scope, ensure_ascii=False, sort_keys=True, default=str),
@@ -136,7 +138,20 @@ class DiagnosisProfileService:
             full_score = max(_number(row.get("full_score")), 0.0)
             score_for_rate = min(awarded, full_score) if full_score > 0 else awarded
             tags = row.get("question_tags") if isinstance(row.get("question_tags"), Mapping) else {}
-            for knowledge_point in tags.get("knowledge_point", []):
+            contributions = row.get("target_contributions")
+            has_contributions = isinstance(contributions, Mapping)
+            targets: Iterable[tuple[str, tuple[float, float]]] = (
+                (
+                    (str(key), (float(value[0]), float(value[1])))
+                    for key, value in contributions.items()
+                )
+                if has_contributions
+                else (
+                    (str(point or ""), (score_for_rate, full_score))
+                    for point in tags.get("knowledge_point", [])
+                )
+            )
+            for knowledge_point, (point_score, point_full) in targets:
                 point = str(knowledge_point or "").strip()
                 if not point:
                     continue
@@ -155,29 +170,36 @@ class DiagnosisProfileService:
                         "secondary_errors": Counter(),
                     },
                 )
-                item["score_sum"] += score_for_rate
-                item["full_score_sum"] += full_score
-                if full_score > 0 and awarded < full_score - 1e-6:
+                item["score_sum"] += point_score
+                item["full_score_sum"] += point_full
+                if point_full > 0 and point_score < point_full - 1e-6:
                     item["deduction_count"] += 1
                 reference = {
                     "session_id": int(row.get("session_id") or 0),
                     "session_name": str(row.get("session_name") or ""),
                     "question_id": str(row.get("question_id") or ""),
                     "bank_question_id": int(row.get("bank_question_id") or 0),
-                    "score_awarded": awarded,
-                    "full_score": full_score,
+                    "score_awarded": point_score if has_contributions else awarded,
+                    "full_score": point_full if has_contributions else full_score,
                     "assessment": dict(row.get("assessment") or {}),
                     "deduction_reason": str(row.get("deduction_reason") or "").strip(),
                     "error_summary": str(row.get("error_summary") or "").strip(),
                     "secondary_errors": [dict(error) for error in row.get("secondary_errors") or []
                                          if isinstance(error, Mapping)],
-                    "score_rate": round(awarded / full_score, 4) if full_score > 0 else None,
+                    "score_rate": (round(point_score / point_full, 4) if point_full > 0 else None)
+                    if has_contributions else (round(awarded / full_score, 4) if full_score > 0 else None),
                     "source_kind": (
                         "current_exam"
                         if int(row.get("session_id") or 0) in selected_session_ids
                         else "historical_exam"
                     ),
                 }
+                observations = row.get("point_observations")
+                if isinstance(observations, list):
+                    reference["assessment"]["point_observations"] = [
+                        dict(observation) for observation in observations
+                        if observation["stable_key"] == point
+                    ]
                 if reference not in item["source_question_refs"]:
                     item["source_question_refs"].append(reference)
                 reasons = _actionable_reasons(
@@ -283,6 +305,7 @@ class DiagnosisProfileService:
         group_weak_points: list[dict[str, Any]] = []
         aggregated_mastery: dict[str, Any] = {}
         knowledge_catalog: list[dict[str, Any]] = []
+        knowledge_associations: list[dict[str, Any]] = []
         try:
             resolver = hierarchy_resolver
             if resolver is None:
@@ -291,6 +314,7 @@ class DiagnosisProfileService:
                 )
             mastery_profile = {
                 "scope": {"student_ids": student_ids},
+                "exam_scope": dict(exam_scope),
                 "students": student_profiles,
                 "_mastery_session_times": self.mastery_session_times(
                     exam_scope=exam_scope
@@ -333,6 +357,15 @@ class DiagnosisProfileService:
                 }
                 for node in resolver.nodes
             ]
+            from question_bank.recommendation.target_matching import (
+                knowledge_skill_associations, load_question_facets, target_index,
+            )
+            facets_index = target_index(resolver)
+            for item in knowledge_catalog:
+                item["node_kind"] = facets_index.get(item["knowledge_key"], {}).get("kind", "topic")
+            knowledge_associations = knowledge_skill_associations(
+                load_question_facets(self.question_bank_db_path, resolver)
+            )
         except (
             CurrentKnowledgeUnavailable,
             OSError,
@@ -363,6 +396,8 @@ class DiagnosisProfileService:
             "scope": normalized_scope,
             "exam_scope": {
                 "mode": str(exam_scope.get("mode") or "current"),
+                **({"curriculum_volume_id": str(exam_scope.get("curriculum_volume_id") or "")}
+                   if exam_scope.get("mode") == "semester" else {}),
                 "session_ids": session_ids,
                 "sessions": [
                     {
@@ -375,6 +410,7 @@ class DiagnosisProfileService:
             "students": student_profiles,
             "group_weak_points": group_weak_points,
             "knowledge_catalog": knowledge_catalog,
+            "knowledge_associations": knowledge_associations,
             "coverage": {
                 "covered_items": covered_items,
                 "total_items": total_items,
@@ -640,18 +676,20 @@ class DiagnosisProfileService:
         *,
         knowledge_point: str,
         student_ids: list[str] | tuple[str, ...] = (),
-        session_ids: list[int] | tuple[int, ...] = (),
+        session_ids: list[int] | tuple[int, ...] | None = None,
     ) -> list[dict[str, Any]]:
         target = str(knowledge_point or "").strip()
         if not target:
             raise ValueError("knowledge_point is required")
         selected_sessions = _int_list(session_ids)
-        if not selected_sessions:
+        if session_ids is None:
             selected_sessions = [
                 int(item["id"])
                 for item in self.db.list_grading_sessions()
                 if not item.get("is_deleted")
             ]
+        if not selected_sessions:
+            return []
         rows = self._projected_tag_evidence(
             student_ids=_text_list(student_ids),
             session_ids=selected_sessions,
@@ -712,6 +750,22 @@ class DiagnosisProfileService:
             enriched["assessment"] = exam_assessment_state(projected.assessment, row.get("assessment_state") or {},
                 teacher_final=row.get("teacher_final_revision") is not None,
                 teacher_score=float(row["score_awarded"]) if row.get("teacher_final_revision") is not None else None)
+            if row.get("teacher_final_revision") is None:
+                records = (row.get("assessment_state") or {}).get("step_assessments")
+                observations = _step_point_observations(projected, records)
+                contributions = _step_target_contributions(projected, records)
+                if observations is not None:
+                    enriched["point_observations"] = observations
+                    enriched["target_contributions"] = contributions
+                elif contributions:
+                    enriched["target_contributions"] = contributions
+            else:
+                # A teacher's final total does not supply new per-step facts.
+                # Do not reintroduce the superseded AI step scores.
+                enriched["assessment"].update(
+                    granularity="whole_question", reason="teacher_final_without_step_attribution",
+                    evidence_weight=1.0 / max(len(projected.tags.get("knowledge_point", ())), 1),
+                )
             if row.get("teacher_final_max_score") is not None:
                 enriched["full_score"] = row["teacher_final_max_score"]
             enriched["question_tags"] = {
@@ -871,6 +925,112 @@ def _number(value: object) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _step_point_observations(projected: Any, step_assessments: object) -> list[dict[str, Any]] | None:
+    """Frozen point identities, dependencies and weights; no missing-as-failure."""
+    points = getattr(projected, "evidence_points", None) or {}
+    links = getattr(projected, "point_links", None) or {}
+    if not points or not isinstance(step_assessments, list) or not step_assessments:
+        return None
+    states: dict[str, tuple[float, float]] = {}
+    for step in getattr(projected, "steps", ()):
+        matches = [entry for entry in step_assessments if isinstance(entry, Mapping)
+                   and str(entry.get("step_id") or "") == str(step.get("step_id") or "")
+                   and (not entry.get("part_id") or not step.get("part_id")
+                        or str(entry["part_id"]) == str(step["part_id"]))]
+        if len(matches) != 1:
+            continue
+        record = matches[0]
+        ids = list(dict.fromkeys(pid for pid in step.get("evidence_point_ids", ()) if pid in points))
+        if not ids:
+            continue
+        score = _number(step.get("step_score"))
+        achievement = str(record.get("achievement") or "").lower()
+        if achievement in {"full", "equivalent"}:
+            value = 1.0
+        elif achievement == "none":
+            value = 0.0
+        elif achievement == "partial" and len(ids) == 1:
+            value = 0.5
+        elif achievement == "partial" and score > 0:
+            value = min(max(_number(record.get("score_awarded")) / score, 0.0), 1.0)
+        else:
+            continue
+        for pid in ids:
+            states[pid] = (value, score / len(ids))
+    observed: list[tuple[str, float, float, list[Mapping[str, Any]]]] = []
+    for pid, (achieved, score) in states.items():
+        if achieved < 1.0 and any(states.get(dep, (None,))[0] != 1.0
+                                  for dep in points[pid].get("depends_on", ())):
+            continue
+        direct = [link for link in links.get(pid, ())
+                  if link.get("role") == "direct" and link.get("resolution_status") == "resolved"
+                  and link.get("stable_key") and _number(link.get("weight")) > 0]
+        if direct:
+            observed.append((pid, achieved, score, direct))
+    return [{"point_id": pid, "stable_key": str(link["stable_key"]),
+             "achieved": achieved, "weight": float(link["weight"]) / len(observed),
+             "score_weight": score * float(link["weight"])}
+            for pid, achieved, score, direct in observed for link in direct]
+
+
+def _step_target_contributions(
+    projected: Any,
+    step_assessments: object,
+) -> dict[str, tuple[float, float]]:
+    """Per-step achievement allocated to evidence-linked targets.
+
+    Returns ``{stable_key: (score_sum, full_score_sum)}``; empty when the item
+    has no step-level snapshot or no recorded step assessments.
+    """
+    observations = _step_point_observations(projected, step_assessments)
+    if observations is not None:
+        totals: dict[str, list[float]] = {}
+        for item in observations:
+            bucket = totals.setdefault(item["stable_key"], [0.0, 0.0])
+            bucket[0] += item["achieved"] * item["score_weight"]
+            bucket[1] += item["score_weight"]
+        return {key: (values[0], values[1]) for key, values in totals.items()}
+    steps = getattr(projected, "steps", None) or ()
+    step_targets = getattr(projected, "step_targets", None) or {}
+    if not steps or not isinstance(step_assessments, list):
+        return {}
+    records = [
+        entry for entry in step_assessments if isinstance(entry, Mapping)
+    ]
+    result: dict[str, list[float]] = {}
+    for step in steps:
+        step_id = str(step.get("step_id") or "")
+        step_part = str(step.get("part_id") or "")
+        record = None
+        for entry in records:
+            if str(entry.get("step_id") or "") != step_id:
+                continue
+            entry_part = str(entry.get("part_id") or "")
+            if entry_part and step_part and entry_part != step_part:
+                continue
+            record = entry
+            break
+        step_score = _number(step.get("step_score"))
+        if record is None or step_score <= 0:
+            continue
+        achievement = str(record.get("achievement") or "").lower()
+        awarded = _number(record.get("score_awarded"))
+        covered = step.get("evidence_point_ids") or []
+        if achievement in {"full", "equivalent"}:
+            achieved = 1.0
+        elif achievement == "none":
+            achieved = 0.0
+        elif achievement == "partial":
+            achieved = 0.5 if len(covered) == 1 else min(max(awarded / step_score, 0.0), 1.0)
+        else:
+            achieved = min(max(awarded / step_score, 0.0), 1.0)
+        for stable_key in step_targets.get(step_id, ()):
+            bucket = result.setdefault(str(stable_key), [0.0, 0.0])
+            bucket[0] += achieved * step_score
+            bucket[1] += step_score
+    return {key: (value[0], value[1]) for key, value in result.items()}
 
 
 __all__ = ["DiagnosisProfileService"]

@@ -89,6 +89,29 @@ describe('SettingsHubView', () => {
     expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe(heading)
   })
 
+  it('reopens the last visited section when none is requested', async () => {
+    localStorage.setItem('ai-grading:settings-section:v1', 'ai-trace')
+    const { host, router } = await mountAt('/settings')
+
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.query.section).toBe('ai-trace')
+      expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe('AI 调用记录')
+    })
+  })
+
+  it('remembers the section the teacher switches to', async () => {
+    const { host, router } = await mountAt('/settings')
+
+    const traceButton = [...host.querySelectorAll<HTMLButtonElement>('.settings-hub__menu button')]
+      .find((button) => button.textContent?.includes('AI 调用记录'))!
+    traceButton.click()
+
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.query.section).toBe('ai-trace')
+    })
+    expect(localStorage.getItem('ai-grading:settings-section:v1')).toBe('ai-trace')
+  })
+
   it('keeps an unsaved AI service draft in place when the teacher declines to leave', async () => {
     const { host, router } = await mountAt('/settings')
     await vi.waitFor(() => expect(host.querySelector('[name="profile-name"]')).toBeTruthy(), { timeout: 5000 })

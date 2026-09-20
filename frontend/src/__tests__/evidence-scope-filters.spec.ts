@@ -70,6 +70,7 @@ async function mountFilters(compactRoster = false, showScoreFloor = false, query
         :students="students"
         :sessions="sessions"
         :current-session-id="7"
+        curriculum-volume-id="bnu24-math-g8-upper"
         :applying="false"
         :score-profiles="scoreProfiles"
         :compact-roster="compactRoster"
@@ -118,6 +119,21 @@ afterEach(() => {
 })
 
 describe('evidence scope filters queue', () => {
+  it('replaces a saved manual exam selection with the automatic semester scope', async () => {
+    const { host, applies } = await mountFilters(false, true, {
+      scope: { mode: 'all', use_historical_fallback: true },
+      exam_scope: { mode: 'manual', session_ids: [7, 99] },
+    })
+    expect(host.querySelector('.evidence-scope__sessions')).toBeNull()
+    expect(host.querySelector('select')).toBeNull()
+    expect(host.textContent).toContain('本学期全部')
+    clickButton(host, '更多筛选')
+    await settle()
+    expect(host.querySelector('.evidence-scope__history')).toBeNull()
+    clickApply(host)
+    expect(applies[0]?.exam_scope).toEqual({ mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper' })
+    expect(applies[0]?.scope.use_historical_fallback).toBe(false)
+  })
   it('exposes the chapter score floor without expanding the roster and preserves it for explicit members', async () => {
     const { host, applies } = await mountFilters(true)
     expect(host.querySelector('.evidence-scope__roster')).toBeNull()

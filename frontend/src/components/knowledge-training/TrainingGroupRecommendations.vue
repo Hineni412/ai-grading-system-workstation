@@ -43,6 +43,7 @@ let revision = 0
 let timer: ReturnType<typeof setTimeout> | null = null
 
 const sourceKey = computed(() => JSON.stringify({ scope: props.scope, exams: props.examScope, settings: props.settings }))
+const diagnosisBasis = computed(() => training.groupDiagnosisBasis(props.diagnosis))
 const sortExplanation = computed(() => ({
   size: '先看人数；人数相同时，依次看训练目标掌握度更低、组内差距更小。',
   weakness: '先看训练目标掌握度更低；相同时，依次看人数更多、组内差距更小。',
@@ -68,6 +69,10 @@ const ready = computed(() => editing.value && checked.value?.ready && !busy.valu
   && !props.disabled && (!overlaps.value.length || overlapConfirmed.value) && targetKeys.value.length > 0 && memberIds.value.length >= 2)
 
 function percent(value: number | null): string { return value === null ? '—' : `${Math.round(value * 100)}%` }
+function scoreTone(value: number | null): string {
+  if (value === null) return 'unscored'
+  return value >= .8 ? 'high' : value >= .6 ? 'middle' : 'low'
+}
 function classLabel(value: string): string {
   const name = value.trim()
   if (!name) return '未分班'
@@ -115,6 +120,17 @@ const sortedCards = computed(() => (result.value?.groups ?? []).map(group => ({ 
   }))
 const cards = computed(() => showAll.value ? sortedCards.value : sortedCards.value.slice(0, 6))
 const selectionStats = computed(() => checked.value ? groupStats(checked.value) : null)
+const unassignedBreakdown = computed(() => {
+  const list = result.value?.unassigned ?? []
+  const noEvidence = list.filter(item => item.reason_kind === 'no_direct_evidence').length
+  const noFit = list.filter(item => item.reason_kind === 'no_group_fit').length
+  const rest = list.length - noEvidence - noFit
+  return [
+    noEvidence ? `无直接失分证据 ${noEvidence} 人` : '',
+    noFit ? `有证据但未满足成组条件 ${noFit} 人` : '',
+    rest ? `其他 ${rest} 人` : '',
+  ].filter(Boolean).join('，')
+})
 function sameSelection(group: TrainingGroup): boolean {
   return JSON.stringify(group.members.map(member => member.student_id).sort()) === JSON.stringify([...memberIds.value].sort())
     && JSON.stringify(group.targets.map(target => target.knowledge_key).sort()) === JSON.stringify([...targetKeys.value].sort())
@@ -219,9 +235,9 @@ function closeEditor(): void {
   emit('edit', null)
 }
 
-watch([sourceKey, () => props.diagnosis, () => props.disabled], (_value, previous) => {
+watch([sourceKey, diagnosisBasis, () => props.disabled], (_value, previous) => {
   overlapConfirmed.value = false
-  if (previous?.length && (previous[0] !== sourceKey.value || previous[1] !== props.diagnosis)) latestDiagnosis.value = null
+  if (previous?.length && (previous[0] !== sourceKey.value || previous[1] !== diagnosisBasis.value)) latestDiagnosis.value = null
   if (props.editor && JSON.stringify(props.editor.scopeKeys) === JSON.stringify(props.settings.scope_keys) && !editing.value) {
     editing.value = true
     memberIds.value = [...props.editor.memberIds]
@@ -255,6 +271,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
     <p v-if="scope.score_rate_min != null || scope.score_rate_max != null" class="training-groups__note">已启用辅助条件：在得分率 {{ Math.round((scope.score_rate_min ?? 0) * 100) }}%–{{ Math.round((scope.score_rate_max ?? 1) * 100) }}% 范围内推荐。</p>
     <p v-if="message" class="training-groups__alert" role="alert">{{ message }}</p>
     <p v-if="!result && busy" class="training-groups__empty">正在核对训练目标、证据和可用题目……</p>
+    <p v-if="result?.summary" class="training-groups__note">范围内 {{ result.summary.student_count }} 人 · {{ result.summary.students_with_needs }} 人有可成组的直接失分证据 · 编成 {{ result.summary.group_count }} 组（{{ result.summary.grouped_student_count }} 人）<span v-if="result.unassigned.length"> · {{ result.unassigned.length }} 人暂未推荐</span></p>
     <template v-if="!editing">
       <div v-if="result?.groups.length" class="training-groups__sorting">
         <label>卡片排序
@@ -267,7 +284,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
         <p id="training-group-sort-explanation">{{ sortExplanation }}</p>
       </div>
       <div class="training-groups__grid">
-        <article v-for="{ group, stats } in cards" :key="group.group_id" class="training-groups__candidate">
+        <article v-for="{ group, stats } in cards" :key="group.group_id" class="training-groups__candidate" :class="`training-groups__candidate--${scoreTone(stats.scoreRate)}`">
           <header class="training-groups__card-heading">
             <h3>{{ group.targets.map(target => knowledgeLeafLabel(target.knowledge_point)).join('、') }}</h3>
             <strong class="training-groups__size">{{ group.members.length }}<span>人</span></strong>
@@ -323,7 +340,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
       <div v-if="overlaps.length" class="training-groups__alert"><p>与本页此前生成草稿的小组有成员及目标重合。请调整名单或目标；确需重复训练时，请先核对安排。</p><label><input v-model="overlapConfirmed" type="checkbox">已核对重合，仍采用本组</label></div>
       <footer><span>{{ memberIds.length }} 人 · {{ targetKeys.length }} 个训练目标</span><AppButton variant="primary" :disabled="!ready" @click="adopt">采用小组并核对出卷设置</AppButton></footer>
     </section>
-    <details v-if="result?.unassigned.length" class="training-groups__unassigned"><summary>暂未推荐 {{ result.unassigned.length }} 人 · 查看原因</summary><p v-for="student in result.unassigned" :key="student.student_id"><strong>{{ student.student_name }} · {{ classLabel(student.class_id) }}</strong>：{{ student.reason }}</p></details>
+    <details v-if="result?.unassigned.length" class="training-groups__unassigned"><summary>暂未推荐 {{ result.unassigned.length }} 人<span v-if="unassignedBreakdown">（{{ unassignedBreakdown }}）</span> · 查看原因</summary><p v-for="student in result.unassigned" :key="student.student_id"><strong>{{ student.student_name }} · {{ classLabel(student.class_id) }}</strong>：{{ student.reason }}</p></details>
     <details class="training-groups__explanation"><summary>分组与统计说明</summary><p>按实际失分需求和接近的整体考试水平分组；各成员目标可以不同。汇总成员适用题目，按整张卷覆盖选择，不要求每道题适合所有成员。平均掌握度按每名成员在训练目标上的平均值汇总；组内差距是这些平均值的最高与最低之差。考试平均得分率按有成绩成员计算，缺失成绩不按零分处理。</p><p>无证据不推断薄弱；明显不同需求可安排个人训练。采用小组时会自动核对最新依据。</p></details>
   </section>
 </template>
@@ -341,6 +358,9 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
 .training-groups__heading span,.training-groups__note{color:var(--color-text-secondary);font-size:.8rem;line-height:1.6}
 .training-groups__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,310px),1fr));gap:1rem;align-items:stretch}
 .training-groups__candidate{display:flex;flex-direction:column;gap:.8rem;min-width:0;padding:1rem;background:var(--color-bg-surface);border:1px solid var(--color-border-default);border-radius:10px}
+.training-groups__candidate--high{background:var(--color-success-subtle)}
+.training-groups__candidate--middle{background:var(--color-warning-subtle)}
+.training-groups__candidate--low{background:var(--color-danger-subtle)}
 .training-groups__card-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem;min-height:3.15rem}
 .training-groups__card-heading h3{font-weight:650;overflow-wrap:anywhere}
 .training-groups__size{display:flex;align-items:baseline;gap:.2rem;flex-shrink:0;font-size:1.5rem;font-variant-numeric:tabular-nums;font-weight:600;color:var(--color-accent)}

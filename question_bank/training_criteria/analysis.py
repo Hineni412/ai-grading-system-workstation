@@ -2579,6 +2579,9 @@ def rubric_skeleton_from_solution_evidence(
                 "steps": [
                     {
                         "step_id": point.evidence_point_id,
+                        # evidence_point_ids 是该步覆盖的题库证据点；赋分合并步骤时
+                        # 合并 id 列表，不得删除（§7.1 引用而非重写）。
+                        "evidence_point_ids": [point.evidence_point_id],
                         # core_goal 是学生必须达成的数学目标；
                         # required_elements 只收可核验的作答成果，
                         # 参考解法说明与定位锚点留在答案侧 step_milestones，

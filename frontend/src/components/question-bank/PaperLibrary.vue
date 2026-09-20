@@ -7,7 +7,6 @@ import {
   ref,
   watch,
 } from 'vue'
-import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
 import type {
@@ -54,8 +53,6 @@ const emit = defineEmits<{
 const store = useQuestionBankStore()
 const jobStore = useJobStore()
 const curriculumScope = useCurriculumScopeStore()
-// 部分既有单测在无 router 的环境直接挂载本组件；此时"用作 AI 组卷模板"点击不跳转。
-const router = useRouter() as ReturnType<typeof useRouter> | undefined
 const keyword = ref('')
 // 搜索输入防抖：逐键全量筛选 + 分组重算在试卷多时明显卡顿。
 const debouncedKeyword = ref('')
@@ -316,16 +313,6 @@ function togglePaperMenu(paperId: number): void {
 
 function closePaperMenu(): void {
   openMenuPaperId.value = null
-}
-
-// 试卷卡"用作 AI 组卷模板"：跳到组卷工作台 AI 模式并带上模板卷 id，
-// AI 组卷面板挂载时读取 template query 套用模板。
-function useAsAiAssemblyTemplate(paper: QuestionBankPaper): void {
-  if (!router) return
-  void router.push({
-    name: 'question-assembly',
-    query: { mode: 'ai', template: String(paper.id) },
-  })
 }
 
 onMounted(() => document.addEventListener('click', closePaperMenu))
@@ -1192,32 +1179,26 @@ async function confirmPermanentDelete(): Promise<void> {
             class="paper-card"
             :class="{ 'is-selected': isPaperSelected(paper.id) }"
           >
-        <label class="paper-card__check" @click.stop>
-          <input
-            type="checkbox"
-            :checked="isPaperSelected(paper.id)"
-            :aria-label="`选择${paper.title || `试卷 ${paper.id}`}`"
-            @change="onPaperSelectChange(paper.id, $event)"
-          >
-        </label>
-        <div class="paper-card__cover" :class="`is-${paper.source_type}`" aria-hidden="true">
-          <span>{{ sourceLabel(paper.source_type) }}</span>
-          <strong>试卷</strong>
-          <i />
-          <i />
-          <i />
-        </div>
         <div class="paper-card__body">
           <div class="paper-card__topline">
+            <label class="paper-card__check" @click.stop>
+              <input
+                type="checkbox"
+                :checked="isPaperSelected(paper.id)"
+                :aria-label="`选择${paper.title || `试卷 ${paper.id}`}`"
+                @change="onPaperSelectChange(paper.id, $event)"
+              >
+            </label>
             <span class="paper-chip is-format">{{ sourceLabel(paper.source_type) }}</span>
-            <span v-if="paper.year" class="paper-chip">{{ paper.year }}</span>
-            <span v-if="paper.exam_type" class="paper-chip">{{ paper.exam_type }}</span>
-            <span v-if="paper.grade" class="paper-chip">{{ paper.grade }}</span>
+            <span v-if="paper.year" class="paper-card__detail">{{ paper.year }}</span>
+            <span v-if="paper.exam_type" class="paper-card__detail">{{ paper.exam_type }}</span>
+            <span class="paper-card__question-count"><strong>{{ paper.question_count }}</strong> 道题</span>
           </div>
           <h2>
             <button
               type="button"
               class="paper-card__title"
+              :title="paper.title || `未命名试卷 #${paper.id}`"
               @click="emit('open', paper)"
             >{{ paper.title || `未命名试卷 #${paper.id}` }}</button>
           </h2>
@@ -1227,14 +1208,26 @@ async function confirmPermanentDelete(): Promise<void> {
                 paper.province,
                 paper.city,
                 paper.district,
+                paper.grade,
                 paper.semester,
                 paper.textbook_version,
               ].filter(Boolean).join(' · ') || '来源信息待补充'
             }}
           </p>
           <div class="paper-card__progress-heading">
-            <span>联合分析完整度</span>
-            <strong>{{ paper.complete_analysis_count }} / {{ paper.question_count }} 道</strong>
+            <span
+              class="paper-card__status"
+              :class="{
+                'is-complete': paper.question_count > 0 && paper.complete_analysis_count >= paper.question_count && !paper.criteria_needs_review_count,
+                'is-pending': paper.criteria_needs_review_count > 0 || paper.complete_analysis_count < paper.question_count,
+              }"
+            >
+              <template v-if="paper.criteria_needs_review_count">待审核判定点 {{ paper.criteria_needs_review_count }}</template>
+              <template v-else-if="!paper.question_count">暂无试题</template>
+              <template v-else-if="paper.complete_analysis_count < paper.question_count">待完善 {{ paper.question_count - paper.complete_analysis_count }} 道</template>
+              <template v-else>分析完整</template>
+            </span>
+            <span>联合分析 <strong>{{ paper.complete_analysis_count }} / {{ paper.question_count }}</strong></span>
           </div>
           <p
             v-if="paperStatusLines.get(paper.id)?.live"
@@ -1244,6 +1237,7 @@ async function confirmPermanentDelete(): Promise<void> {
             {{ paperStatusLines.get(paper.id)?.live }}
           </p>
           <div
+            v-if="paper.question_count > 0 && paper.complete_analysis_count < paper.question_count"
             class="paper-card__progress"
             role="progressbar"
             aria-label="联合分析完整度"
@@ -1254,12 +1248,8 @@ async function confirmPermanentDelete(): Promise<void> {
             <span :style="{ width: `${progressFor(paper)}%` }" />
           </div>
           <p class="paper-card__progress-note">
-            {{ progressFor(paper) }}% 完整
-            · 标签 {{ paper.tagged_question_count }}/{{ paper.question_count }}
+            标签 {{ paper.tagged_question_count }}/{{ paper.question_count }}
             · 判定点 {{ paper.criteria_question_count }}/{{ paper.question_count }}
-            <template v-if="paper.criteria_needs_review_count">
-              · 待审核判定点 {{ paper.criteria_needs_review_count }}
-            </template>
           </p>
           <ul
             v-if="paperStatusLines.get(paper.id)?.leftovers.length"
@@ -1308,11 +1298,6 @@ async function confirmPermanentDelete(): Promise<void> {
                     ? '准备中…'
                     : '重新打标签'
                 }}</button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  @click="closePaperMenu(); useAsAiAssemblyTemplate(paper)"
-                >用作 AI 组卷模板</button>
                 <button
                   type="button"
                   role="menuitem"
@@ -1658,7 +1643,7 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-library__grid {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
 }
 
 .paper-folders {
@@ -1749,17 +1734,15 @@ async function confirmPermanentDelete(): Promise<void> {
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 5%, transparent);
-  display: grid;
-  grid-template-columns: 108px minmax(0, 1fr);
-  min-height: 230px;
+  display: flex;
+  min-width: 0;
   position: relative;
-  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
 .paper-card:hover {
   border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
-  box-shadow: 0 8px 26px color-mix(in srgb, var(--color-text-primary) 8%, transparent);
-  transform: translateY(-1px);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-text-primary) 6%, transparent);
 }
 
 .paper-card.is-selected {
@@ -1770,17 +1753,10 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-card__check {
   align-items: center;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--color-text-primary) 12%, transparent);
   cursor: pointer;
   display: flex;
-  inset-block-start: 10px;
-  inset-inline-start: 10px;
-  padding: 5px;
-  position: absolute;
-  z-index: 2;
+  flex: 0 0 auto;
+  padding: 3px 2px;
 }
 
 .paper-batch-bar__select-all input,
@@ -1800,71 +1776,35 @@ async function confirmPermanentDelete(): Promise<void> {
   width: 18px;
 }
 
-.paper-card__cover {
-  align-items: center;
-  background: var(--color-accent-subtle);
-  border-right: 1px solid var(--border);
-  color: var(--color-accent);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  overflow: hidden;
-  padding: 16px;
-  position: relative;
-}
-
-.paper-card__cover::before {
-  background: currentColor;
-  content: "";
-  height: 100%;
-  left: 0;
-  opacity: .84;
-  position: absolute;
-  top: 0;
-  width: 4px;
-}
-
-.paper-card__cover.is-pdf {
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
-}
-
-.paper-card__cover.is-other {
-  background: var(--secondary);
-  color: var(--color-text-secondary);
-}
-
-.paper-card__cover span {
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: .08em;
-}
-
-.paper-card__cover strong {
-  font-size: 25px;
-  letter-spacing: .08em;
-  margin: 9px 0 16px;
-}
-
-.paper-card__cover i {
-  background: currentColor;
-  height: 2px;
-  margin: 3px 0;
-  opacity: .18;
-  width: 56px;
-}
-
 .paper-card__body {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
   padding: 16px 17px 14px;
 }
 
 .paper-card__topline {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+}
+
+.paper-card__detail,
+.paper-card__question-count {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.paper-card__question-count {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.paper-card__question-count strong {
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
 .paper-chip {
@@ -1884,9 +1824,9 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-card h2 {
   color: var(--color-text-primary);
   display: -webkit-box;
-  font-size: 16px;
+  font-size: var(--font-size-h3);
   line-height: 1.45;
-  margin: 11px 0 5px;
+  margin: 12px 0 6px;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -1901,6 +1841,7 @@ async function confirmPermanentDelete(): Promise<void> {
   font: inherit;
   padding: 0;
   text-align: left;
+  overflow-wrap: anywhere;
 }
 
 .paper-card__title:hover {
@@ -1909,18 +1850,35 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-card__meta {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: 12px;
   margin: 0;
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
 }
 
 .paper-card__progress-heading {
+  align-items: center;
   color: var(--color-text-secondary);
   display: flex;
-  font-size: 11px;
+  flex-wrap: wrap;
+  font-size: var(--font-size-caption);
+  gap: 6px;
   justify-content: space-between;
   margin-top: auto;
-  padding-top: 15px;
+  padding-top: 14px;
+}
+
+.paper-card__status {
+  font-weight: var(--font-weight-semibold);
+}
+
+.paper-card__status.is-complete {
+  color: var(--color-success);
+}
+
+.paper-card__status.is-pending {
+  color: var(--color-warning);
 }
 
 .paper-card__progress-heading strong {
@@ -1930,7 +1888,7 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-card__progress {
   background: var(--color-border-subtle);
   border-radius: 999px;
-  height: 6px;
+  height: 4px;
   margin-top: 7px;
   overflow: hidden;
 }
@@ -1940,12 +1898,11 @@ async function confirmPermanentDelete(): Promise<void> {
   border-radius: inherit;
   display: block;
   height: 100%;
-  min-width: 2px;
 }
 
 .paper-card__progress-note {
-  color: var(--color-text-muted);
-  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
   margin: 6px 0 0;
 }
 
@@ -2632,9 +2589,6 @@ async function confirmPermanentDelete(): Promise<void> {
     grid-template-columns: minmax(220px, 1fr) repeat(2, minmax(130px, 1fr));
   }
 
-  .paper-library__grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 760px) {
@@ -2655,18 +2609,13 @@ async function confirmPermanentDelete(): Promise<void> {
     grid-column: 1 / -1;
   }
 
-  .paper-card {
-    grid-template-columns: 78px minmax(0, 1fr);
-  }
-
-  .paper-card footer,
   .paper-trash-list article {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .paper-card__more {
-    align-self: flex-end;
+  .paper-card footer {
+    flex-wrap: wrap;
   }
 
   .paper-trash-filters,

@@ -5,7 +5,6 @@ from typing import Any
 
 from backend.config_generation.gateway import (
     LLMConfigGenerationGateway,
-    config_generation_extra_kwargs,
 )
 from backend.config_generation.contract import GENERATED_ID_CONTRACT_PROMPT
 from backend.config_generation.orchestration import (
@@ -420,21 +419,17 @@ def test_production_job_no_longer_imports_config_orchestration_from_session_mana
     assert "ConfigGenerationOrchestrator" not in source
 
 
-def test_config_generation_timeout_defaults_to_600_seconds(
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS", raising=False)
-    kwargs = config_generation_extra_kwargs()
-    assert kwargs["timeout"] == 600.0
-    assert kwargs["timeout_override_seconds"] == 600.0
+def test_config_generation_requests_use_the_shared_policy_timeout() -> None:
+    # 配置生成不再持有独立的超时层：最终时限一律由共享 request policy
+    # （界面的"单次请求超时"或 CONFIG_GENERATION 内置默认）决定。
+    import backend.config_generation.compat as compat
+    import backend.config_generation.gateway as gateway_module
+    import session_manager
 
+    for module in (gateway_module, compat, session_manager):
+        source = inspect.getsource(module)
+        assert "AI_GRADING_CONFIG_TIMEOUT_SECONDS" not in source
+        assert "timeout_override_seconds" not in source
 
-def test_config_generation_timeout_env_stays_between_240_and_600(
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS", "120")
-    assert config_generation_extra_kwargs()["timeout_override_seconds"] == 240.0
-    monkeypatch.setenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS", "480")
-    assert config_generation_extra_kwargs()["timeout_override_seconds"] == 480.0
-    monkeypatch.setenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS", "900")
-    assert config_generation_extra_kwargs()["timeout_override_seconds"] == 600.0
+    assert not hasattr(gateway_module, "config_generation_extra_kwargs")
+    assert not hasattr(session_manager, "_config_generation_extra_kwargs")

@@ -348,9 +348,9 @@ def detect_printed_question_anchors(
 
     if ocr_engine is None:
         try:
-            from rapidocr_onnxruntime import RapidOCR
+            from local_ocr import get_local_ocr
 
-            ocr_engine = RapidOCR()
+            ocr_engine = get_local_ocr()
         except Exception:
             return {}
 

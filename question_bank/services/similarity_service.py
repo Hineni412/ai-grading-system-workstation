@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Iterable
@@ -110,20 +111,65 @@ def build_ai_upload_similarity_plan(
 
 
 def text_similarity(left: object, right: object) -> float:
-    left_text = _normalize_question_text(left)
-    right_text = _normalize_question_text(right)
-    if not left_text or not right_text:
+    return profiled_text_similarity(
+        question_text_profile(left),
+        question_text_profile(right),
+    )
+
+
+@dataclass(frozen=True)
+class QuestionTextProfile:
+    normalized: str
+    ngrams: frozenset[str]
+    char_counts: Counter[str]
+
+
+def question_text_profile(value: object) -> QuestionTextProfile:
+    """一次性算出文本相似度需要的全部派生量，供批量比较复用。"""
+
+    normalized = _normalize_question_text(value)
+    return QuestionTextProfile(
+        normalized=normalized,
+        ngrams=frozenset(_char_ngrams(normalized)),
+        char_counts=Counter(normalized),
+    )
+
+
+def profiled_text_similarity(
+    left: QuestionTextProfile,
+    right: QuestionTextProfile,
+) -> float:
+    if not left.normalized or not right.normalized:
         return 0.0
-    if left_text == right_text:
+    if left.normalized == right.normalized:
         return 1.0
-    sequence_score = SequenceMatcher(None, left_text, right_text).ratio()
-    left_grams = _char_ngrams(left_text)
-    right_grams = _char_ngrams(right_text)
-    if left_grams and right_grams:
-        jaccard_score = len(left_grams & right_grams) / len(left_grams | right_grams)
-    else:
-        jaccard_score = 0.0
-    return round(max(sequence_score, jaccard_score), 4)
+    sequence_score = SequenceMatcher(None, left.normalized, right.normalized).ratio()
+    return round(max(sequence_score, _ngram_jaccard(left, right)), 4)
+
+
+def wording_similarity_upper_bound(
+    left: QuestionTextProfile,
+    right: QuestionTextProfile,
+) -> float:
+    """不走 SequenceMatcher 的 wording 分上界，用于跳过不可能达标的候选。
+
+    ngram Jaccard 本身就是 wording 分的一部分；SequenceMatcher 的匹配字符数
+    又不可能超过两侧字符多重集的交集，二者取 max 即安全上界。
+    """
+
+    if not left.normalized or not right.normalized:
+        return 0.0
+    if left.normalized == right.normalized:
+        return 1.0
+    shared = sum((left.char_counts & right.char_counts).values())
+    sequence_bound = (2.0 * shared) / (len(left.normalized) + len(right.normalized))
+    return max(sequence_bound, _ngram_jaccard(left, right))
+
+
+def _ngram_jaccard(left: QuestionTextProfile, right: QuestionTextProfile) -> float:
+    if left.ngrams and right.ngrams:
+        return len(left.ngrams & right.ngrams) / len(left.ngrams | right.ngrams)
+    return 0.0
 
 
 def _groups_from_pairs(candidate_ids: list[int], pairs: list[tuple[int, int, float]]) -> list[SimilarQuestionGroup]:
@@ -185,8 +231,12 @@ def _char_ngrams(text: str, size: int = 3) -> set[str]:
 
 
 __all__ = [
+    "QuestionTextProfile",
     "SimilarQuestionGroup",
     "SimilarityPlan",
     "build_ai_upload_similarity_plan",
+    "profiled_text_similarity",
+    "question_text_profile",
     "text_similarity",
+    "wording_similarity_upper_bound",
 ]

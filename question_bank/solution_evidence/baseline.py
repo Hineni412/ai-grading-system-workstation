@@ -225,7 +225,7 @@ def install_fine_term_mapping_baseline(
 
 
 def _term_kind(term_id: str, name: str) -> TermKind:
-    if term_id.casefold().startswith(("kp_", "ki_")):
+    if term_id.casefold().startswith(("kp_", "ki_", "sk_")):
         return "core_knowledge"
     compact_name = _normalize(name)
     if any(_normalize(marker) in compact_name for marker in _PROCEDURE_MARKERS):

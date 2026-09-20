@@ -6,7 +6,7 @@ import {
 import { assertNoPathLikeKeys, isRecord } from './validation'
 
 export type TrainingStudentScopeMode = 'all' | 'student' | 'selected' | 'class'
-export type TrainingExamScopeMode = 'current' | 'manual' | 'cross_exam'
+export type TrainingExamScopeMode = 'current' | 'manual' | 'cross_exam' | 'semester'
 export type TrainingVariantMode = 'individual' | 'auto_group'
 export type TrainingStage = 'direct' | 'prerequisite' | 'transfer'
 
@@ -25,6 +25,7 @@ export interface TrainingStudentScopeRequest {
 export interface TrainingExamScopeRequest {
   mode: TrainingExamScopeMode
   session_ids: number[]
+  curriculum_volume_id?: string | null
 }
 
 export interface TrainingDiagnosisRequest {
@@ -78,7 +79,13 @@ export interface TrainingGrouping {
   mastery_parameter_version?: string
   groups: TrainingGroup[]
   selection: TrainingGroup | null
-  unassigned: Array<{ student_id: string; student_name: string; class_id: string; reason: string }>
+  summary?: {
+    student_count: number
+    students_with_needs: number
+    grouped_student_count: number
+    group_count: number
+  }
+  unassigned: Array<{ student_id: string; student_name: string; class_id: string; reason: string; reason_kind?: 'no_direct_evidence' | 'no_group_fit' }>
   warnings: string[]
 }
 
@@ -150,6 +157,10 @@ export interface PersonalizedRecommendationItem {
   question_text?: string
   stage: TrainingStage
   selection_kind?: 'direct' | 'supplement'
+  match_level?: 1 | 2 | 3 | 4
+  match_label?: string
+  matched_topic_keys?: string[]
+  matched_skill_keys?: string[]
   target: Record<string, unknown>
   matched_key: string
   matched_name: string
@@ -423,7 +434,7 @@ export interface TrainingFeedback {
   timeline: Array<Record<string, unknown>>
   safety: {
     is_exam_score: boolean
-    changes_v1: boolean
+    changes_exam_score: boolean
     auto_paper_created: boolean
     auto_printed: boolean
   }
@@ -448,7 +459,7 @@ export interface TrainingEvidenceReference {
 export interface TrainingWeakPoint {
   knowledge_key: string
   knowledge_point: string
-  mastery: number | null
+  mastery?: number | null
   score_sum: number
   full_score_sum: number
   deduction_count: number
@@ -511,6 +522,14 @@ export interface TrainingDiagnosis {
     knowledge_point: string
     parent_knowledge_key?: string | null
     parent_knowledge_point?: string | null
+    node_kind?: 'chapter' | 'section' | 'topic' | 'skill'
+  }>
+  knowledge_associations?: Array<{
+    topic_key: string
+    skill_key: string
+    question_count: number
+    same_part_question_count: number
+    basis: 'same_part' | 'question_cooccurrence'
   }>
   coverage: {
     covered_items: number
@@ -639,7 +658,7 @@ function isStudentScopeMode(value: unknown): value is TrainingStudentScopeMode {
 }
 
 function isExamScopeMode(value: unknown): value is TrainingExamScopeMode {
-  return value === 'current' || value === 'manual' || value === 'cross_exam'
+  return value === 'current' || value === 'manual' || value === 'cross_exam' || value === 'semester'
 }
 
 function isStage(value: unknown): value is TrainingStage {
@@ -672,7 +691,7 @@ function isWeakPoint(value: unknown): value is TrainingWeakPoint {
     isRecord(value)
     && isNonEmptyString(value.knowledge_key)
     && isNonEmptyString(value.knowledge_point)
-    && (value.mastery === null || isRate(value.mastery))
+    && (value.mastery === undefined || value.mastery === null || isRate(value.mastery))
     && isFiniteNumber(value.score_sum)
     && isFiniteNumber(value.full_score_sum)
     && value.full_score_sum >= 0
@@ -1332,6 +1351,9 @@ function decodeTrainingAssessment(
 
 function decodeTrainingFeedback(value: unknown): TrainingFeedback {
   assertNoPathLikeKeys(value)
+  const changesExamScore = isRecord(value) && isRecord(value.safety)
+    ? value.safety.changes_exam_score ?? value.safety.changes_v1
+    : undefined
   if (
     !isRecord(value)
     || value.schema_version !== 'training-feedback-v1'
@@ -1361,14 +1383,17 @@ function decodeTrainingFeedback(value: unknown): TrainingFeedback {
     || !value.timeline.every(isRecord)
     || !isRecord(value.safety)
     || typeof value.safety.is_exam_score !== 'boolean'
-    || typeof value.safety.changes_v1 !== 'boolean'
+    || typeof changesExamScore !== 'boolean'
     || typeof value.safety.auto_paper_created !== 'boolean'
     || typeof value.safety.auto_printed !== 'boolean'
     || !/^[0-9a-f]{64}$/.test(String(value.evidence_version || ''))
   ) {
     throw new Error('Invalid training feedback')
   }
-  return value as unknown as TrainingFeedback
+  return {
+    ...value,
+    safety: { ...value.safety, changes_exam_score: changesExamScore },
+  } as unknown as TrainingFeedback
 }
 
 function decodeTrainingEvidenceReplay(value: unknown): {
@@ -1451,6 +1476,17 @@ export const trainingApi = {
     return apiClient.request('/api/training/personalized-drafts', {
       method: 'POST',
       body,
+      decode: decodePersonalizedRecommendationDraft,
+      signal,
+      timeoutMs: 120_000,
+    })
+  },
+
+  getPersonalizedDraftByRequest(
+    requestToken: string,
+    signal?: AbortSignal,
+  ): Promise<PersonalizedRecommendationDraft> {
+    return apiClient.request(`/api/training/personalized-drafts/by-request/${requestToken}`, {
       decode: decodePersonalizedRecommendationDraft,
       signal,
       timeoutMs: 30_000,

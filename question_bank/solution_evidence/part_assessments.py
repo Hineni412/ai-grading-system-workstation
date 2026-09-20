@@ -169,11 +169,10 @@ def model_part_estimates(raw: Any, evidence: Mapping[str, Any]) -> tuple[dict[st
     return tuple(clean)
 
 
-def direct_targets(part: Mapping[str, Any]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(str(key) for step in part.get("evidence_points", [])
-                              for link in step.get("fine_term_links", [])
-                              if link.get("role") == "direct" and link.get("core_resolution", {}).get("status") == "resolved"
-                              for key in link["core_resolution"].get("stable_keys", [])))
+def direct_targets(part: Mapping[str, Any], links: Mapping[str, Sequence[Any]]) -> tuple[str, ...]:
+    """Stable keys of a part's resolved direct links from the links table."""
+    from question_bank.solution_evidence.knowledge_links import direct_targets_for_part
+    return direct_targets_for_part(part, links)
 
 
 def exam_assessment_state(assessment: Mapping[str, Any], metadata: Mapping[str, Any], *, teacher_final: bool,
@@ -287,9 +286,11 @@ def historical_source_matches(db_path: Path, profile: Mapping[str, Any], rubric:
 
 
 def training_part_observations(profile: Mapping[str, Any], criteria: Mapping[str, Any],
-                               final_points: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]] | None:
+                               final_points: Sequence[Mapping[str, Any]],
+                               links: Mapping[str, Sequence[Any]]) -> list[dict[str, Any]] | None:
     """Read frozen, final step facts without changing the publication or its locks."""
     from question_bank.training_criteria.analysis import TrainingCriterionPoint
+    from question_bank.solution_evidence.knowledge_links import direct_links_for_part
     if not profile.get("available"):
         return []
     try:
@@ -318,13 +319,13 @@ def training_part_observations(profile: Mapping[str, Any], criteria: Mapping[str
             # An unobserved dependent failure does not establish another deficit.
             if states[point["evidence_point_id"]] == "not_met" and any(states.get(dep) != "met" for dep in point.get("depends_on", [])):
                 continue
-            targets = direct_targets({"evidence_points": [point]})
+            targets = direct_links_for_part({"evidence_points": [point]}, links)
             if targets:
                 observed.append((point, targets))
         for point, targets in observed:
             for target in targets:
                 result.append({"part_id": part["part_id"], "point_id": point["evidence_point_id"],
-                               "stable_key": target, "achieved": int(states[point["evidence_point_id"]] == "met"),
-                               "weight": 1.0 / len(observed) / len(targets),
+                               "stable_key": target.stable_key, "achieved": int(states[point["evidence_point_id"]] == "met"),
+                               "weight": target.weight / len(observed),
                                "difficulty": estimates.get(part["part_id"], {}).get("difficulty")})
     return result

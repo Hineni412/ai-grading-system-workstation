@@ -28,6 +28,7 @@ from backend.performance.metrics import instrument_sqlite_connection
 from question_bank.current_knowledge import (
     CurrentKnowledgeResolver,
     CurrentKnowledgeUnavailable,
+    ResolvedKnowledge,
 )
 from question_bank.models.question import (
     ALLOWED_TAG_TYPES,
@@ -42,13 +43,21 @@ from question_bank.services.asset_path_service import (
 from question_bank.services.preview_html import block_preview_html
 from question_bank.services.question_frequency_service import (
     calculate_question_similarity,
+    canonical_knowledge_containment,
 )
 from question_bank.services.question_revision import question_revision, question_revisions
 from question_bank.services.rich_content_service import clean_question_blocks
-from question_bank.services.similarity_service import text_similarity
+from question_bank.services.similarity_service import (
+    profiled_text_similarity,
+    question_text_profile,
+    wording_similarity_upper_bound,
+)
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_chapter_exam_scope_values,
+    curriculum_knowledge_ancestors,
+    curriculum_knowledge_node,
     curriculum_volume,
+    load_curriculum_catalog,
     teaching_progress_allowed_exam_scope_values,
     teaching_progress_allowed_prefixes,
 )
@@ -137,7 +146,25 @@ def build_question_filter_query(
 ) -> tuple[list[str], list[str], list[Any]]:
     """Build the shared read query without depending on the retired service."""
 
-    joins = ["LEFT JOIN papers p ON p.id = q.paper_id"]
+    cleaned_paper_ids = [int(value) for value in paper_ids or [] if int(value) > 0]
+    # Reused questions have no questions row in this paper; their
+    # paper-local membership lives in paper_question_occurrences.  The
+    # join literalizes already-sanitized integer ids so join params do
+    # not interleave with WHERE params.  When a paper filter is active,
+    # ``papers p`` resolves to the viewing paper so paper attributes and
+    # the question number display the importing paper's own values.
+    joins: list[str] = []
+    if cleaned_paper_ids:
+        inline_ids = ", ".join(str(value) for value in cleaned_paper_ids)
+        joins.append(
+            "LEFT JOIN paper_question_occurrences occ "
+            f"ON occ.question_id = q.id AND occ.paper_id IN ({inline_ids})"
+        )
+        joins.append(
+            "LEFT JOIN papers p ON p.id = COALESCE(occ.paper_id, q.paper_id)"
+        )
+    else:
+        joins.append("LEFT JOIN papers p ON p.id = q.paper_id")
     where = ["q.is_deleted = ?", "COALESCE(p.import_status, '') <> 'deleted'"]
     params: list[Any] = [1 if is_deleted else 0]
     if clean := _filter_text(knowledge_point):
@@ -147,7 +174,12 @@ def build_question_filter_query(
         )
         params.append(f"%{clean}%")
     if clean := _filter_text(question_number):
-        where.append("q.question_number = ?")
+        number_column = (
+            "COALESCE(occ.question_number, q.question_number)"
+            if cleaned_paper_ids
+            else "q.question_number"
+        )
+        where.append(f"{number_column} = ?")
         params.append(clean)
     if clean := _filter_text(keyword):
         where.append("(q.question_text LIKE ? OR COALESCE(q.answer_text, '') LIKE ?)")
@@ -199,10 +231,11 @@ def build_question_filter_query(
                     ]
                 )
             where.append(f"({' OR '.join(clauses)})")
-    cleaned_paper_ids = [int(value) for value in paper_ids or [] if int(value) > 0]
     if cleaned_paper_ids:
         placeholders = ", ".join("?" for _ in cleaned_paper_ids)
-        where.append(f"q.paper_id IN ({placeholders})")
+        where.append(
+            f"(q.paper_id IN ({placeholders}) OR occ.question_id IS NOT NULL)"
+        )
         params.extend(cleaned_paper_ids)
     for tag_type, tag_values in (tag_filters or {}).items():
         cleaned = [item for value in tag_values if (item := _filter_text(value))]
@@ -494,6 +527,7 @@ class QuestionReadFilters:
     criteria_needs_review: bool = False
     teaching_progress_chapter: str = ""
     collapse_duplicates: bool = False
+    scope_mode: str = "any"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1167,7 +1201,14 @@ class QuestionBankReadService:
                         THEN 1
                     END) AS complete_analysis_count
                 FROM papers p
-                LEFT JOIN questions q ON q.paper_id = p.id
+                LEFT JOIN (
+                    SELECT questions.*, questions.paper_id AS _member_paper_id
+                    FROM questions
+                    UNION ALL
+                    SELECT questions.*, occ.paper_id
+                    FROM paper_question_occurrences occ
+                    JOIN questions ON questions.id = occ.question_id
+                ) q ON q._member_paper_id = p.id
                 LEFT JOIN tag_summary ts ON ts.question_id = q.id
                 WHERE {paper_state_sql}
                 GROUP BY p.id
@@ -1316,13 +1357,25 @@ class QuestionBankReadService:
             list_joins.append(
                 "LEFT JOIN question_frequency_cache qfc ON qfc.question_id = q.id"
             )
+        # A reused question displays the importing paper's own number.
+        number_select = (
+            "COALESCE(occ.question_number, q.question_number) AS question_number"
+            if filters.paper_ids
+            else "q.question_number"
+        )
+        order_clause = _QUESTION_SORT_CLAUSES[filters.sort]
+        if filters.paper_ids and filters.sort == "paper_order":
+            order_clause = order_clause.replace(
+                "q.question_number",
+                "COALESCE(occ.question_number, q.question_number)",
+            )
         list_sql = " ".join(
             [
-                """
+                f"""
                 SELECT DISTINCT
                     q.id,
                     q.paper_id,
-                    q.question_number,
+                    {number_select},
                     q.question_type,
                     q.question_text,
                     q.answer_text,
@@ -1348,7 +1401,7 @@ class QuestionBankReadService:
                 """,
                 *list_joins,
                 where_sql,
-                f"ORDER BY {_QUESTION_SORT_CLAUSES[filters.sort]}",
+                f"ORDER BY {order_clause}",
                 "LIMIT ? OFFSET ?",
             ]
         )
@@ -1396,6 +1449,21 @@ class QuestionBankReadService:
         Returns only id/paper_id/question_number so poll-driven refreshes do
         not drag rich content, tags or asset files across the wire.
         """
+        # Governed tag expansion needs the same active read context as the
+        # full question query, even when the caller only requests identities.
+        generation = _source_generation_token(self.db_path) if not filters.collapse_duplicates and _ACTIVE_READ_SCOPE.get() is None else None
+        key = ("question_refs", generation, self._cache_data_root, _taxonomy_generation_token(), filters)
+        if generation is not None:
+            cached = _read_result_cache_get(key)
+            if cached is not _CACHE_MISS:
+                return cached  # type: ignore[return-value]
+        with _read_connection(self.db_path):
+            result = self._list_question_refs(filters)
+        if generation is not None and generation == _source_generation_token(self.db_path):
+            _read_result_cache_put(key, result)
+        return result
+
+    def _list_question_refs(self, filters: QuestionReadFilters) -> QuestionReadPage:
         joins, where, params = self._read_filter_parts(filters)
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         count_sql = " ".join(
@@ -1405,18 +1473,34 @@ class QuestionBankReadService:
                 where_sql,
             ]
         )
+        number_select = (
+            "COALESCE(occ.question_number, q.question_number) AS question_number"
+            if filters.paper_ids
+            else "q.question_number"
+        )
+        paper_select = (
+            "COALESCE(occ.paper_id, q.paper_id) AS paper_id"
+            if filters.paper_ids
+            else "q.paper_id"
+        )
+        order_clause = _QUESTION_SORT_CLAUSES["paper_order"]
+        if filters.paper_ids:
+            order_clause = order_clause.replace(
+                "q.question_number",
+                "COALESCE(occ.question_number, q.question_number)",
+            )
         list_sql = " ".join(
             [
-                """
+                f"""
                 SELECT DISTINCT
                     q.id,
-                    q.paper_id,
-                    q.question_number
+                    {paper_select},
+                    {number_select}
                 FROM questions q
                 """,
                 *joins,
                 where_sql,
-                f"ORDER BY {_QUESTION_SORT_CLAUSES['paper_order']}",
+                f"ORDER BY {order_clause}",
                 "LIMIT ? OFFSET ?",
             ]
         )
@@ -1661,6 +1745,42 @@ class QuestionBankReadService:
         *,
         limit: int,
     ) -> list[dict[str, Any]] | None:
+        # 题库文件未变时整份结果可直接复用；与 list_questions 同一代际令牌。
+        generation: tuple[object, ...] | None = None
+        taxonomy_token: tuple[object, ...] = ()
+        if _ACTIVE_READ_SCOPE.get() is None:
+            try:
+                generation = _source_generation_token(self.db_path)
+                taxonomy_token = _taxonomy_generation_token()
+            except (AttributeError, OSError):
+                # 治理替身在测试中没有状态文件；无法计算代际时不缓存。
+                generation = None
+        key = (
+            "similar_questions",
+            generation,
+            self._cache_data_root,
+            taxonomy_token,
+            int(question_id),
+            int(limit),
+        )
+        if generation is not None:
+            cached = _read_result_cache_get(key)
+            if cached is not _CACHE_MISS:
+                return cached  # type: ignore[return-value]
+        result = self._find_similar_questions(question_id, limit=limit)
+        if (
+            generation is not None
+            and generation == _source_generation_token(self.db_path)
+        ):
+            _read_result_cache_put(key, result)
+        return result
+
+    def _find_similar_questions(
+        self,
+        question_id: int,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]] | None:
         with _read_connection(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -1699,50 +1819,82 @@ class QuestionBankReadService:
             target = rows_by_id.get(int(question_id))
             if target is None:
                 return None
-            tags_by_question = _load_page_tags(
+            # 打分只消费 method/model 公共标签（知识点重合走
+            # current_knowledge_key 规范键），全量公共标签只对目标题与
+            # 最终入选题展开，用于推荐理由和返回体。
+            scoring_tags_by_question = _load_page_tags(
                 conn,
                 list(rows_by_id),
                 current_knowledge=self.current_knowledge,
+                tag_types=("method", "model"),
             )
-            target_tags = tags_by_question.get(int(question_id), [])
-            scored: list[tuple[float, str, int, sqlite3.Row, list[str]]] = []
+            # 相似度算法只认规范键（current_knowledge_key）；公开展示标签
+            # 里没有它，需要按原始存储值单独投影后并入评分输入。
+            knowledge_key_tags = _current_knowledge_key_tags(
+                conn,
+                list(rows_by_id),
+                self.current_knowledge,
+            )
+            scored: list[tuple[float, str, int, sqlite3.Row, float]] = []
             target_for_similarity = {
                 "difficulty": target["difficulty"],
-                "tags": target_tags,
+                "tags": [
+                    *scoring_tags_by_question.get(int(question_id), []),
+                    *knowledge_key_tags.get(int(question_id), []),
+                ],
             }
+            target_profile = question_text_profile(target["question_text"])
             for candidate_id, candidate in rows_by_id.items():
                 if candidate_id == int(question_id):
                     continue
-                candidate_tags = tags_by_question.get(candidate_id, [])
+                candidate_tags = scoring_tags_by_question.get(candidate_id, [])
                 tag_score = calculate_question_similarity(
                     target_for_similarity,
                     {
                         "difficulty": candidate["difficulty"],
-                        "tags": candidate_tags,
+                        "tags": [
+                            *candidate_tags,
+                            *knowledge_key_tags.get(candidate_id, []),
+                        ],
                     },
+                    knowledge_overlap=canonical_knowledge_containment,
                 )
-                wording_score = text_similarity(
-                    target["question_text"],
-                    candidate["question_text"],
+                # 先用廉价上界过滤：就算题干完全命中也够不到 0.35 线的
+                # 候选不再跑昂贵的 SequenceMatcher；上界由 ngram Jaccard
+                # 与字符多重集交集组成，不会误杀本应入选的题。
+                tag_component = max(0.0, min(float(tag_score), 1.0))
+                needed_wording = (
+                    (0.35 - tag_component * 0.8) / 0.2
+                    if tag_component > 0
+                    else 0.7
+                )
+                if needed_wording > 1.0:
+                    continue
+                candidate_profile = question_text_profile(
+                    candidate["question_text"]
+                )
+                if needed_wording > 0.0 and (
+                    wording_similarity_upper_bound(
+                        target_profile, candidate_profile
+                    )
+                    < needed_wording - 0.001
+                ):
+                    continue
+                wording_score = profiled_text_similarity(
+                    target_profile,
+                    candidate_profile,
                 )
                 score = _combined_similarity_score(tag_score, wording_score)
                 # 不为凑满数量返回弱相关题：标签或题干证据不足时宁可为空。
                 if score < 0.35:
                     continue
-                reasons = _similarity_reasons(
-                    target,
-                    target_tags,
-                    candidate,
-                    candidate_tags,
-                    wording_score=wording_score,
-                )
                 scored.append(
                     (
                         score,
                         str(candidate["updated_at"] or ""),
                         candidate_id,
                         candidate,
-                        reasons,
+                        wording_score,
                     )
                 )
             selected = sorted(
@@ -1750,20 +1902,31 @@ class QuestionBankReadService:
                 key=lambda item: (item[0], item[1], item[2]),
                 reverse=True,
             )[: max(1, min(int(limit), 20))]
-            revisions = question_revisions(
+            selected_ids = [
+                candidate_id for _, _, candidate_id, _, _ in selected
+            ]
+            display_tags = _load_page_tags(
                 conn,
-                [candidate_id for _, _, candidate_id, _, _ in selected],
+                [int(question_id), *selected_ids],
+                current_knowledge=self.current_knowledge,
             )
-            review_ids = _load_criteria_needs_review_ids(
-                conn,
-                [candidate_id for _, _, candidate_id, _, _ in selected],
-            )
+            target_tags = display_tags.get(int(question_id), [])
+            revisions = question_revisions(conn, selected_ids)
+            review_ids = _load_criteria_needs_review_ids(conn, selected_ids)
 
         items: list[dict[str, Any]] = []
-        for score, _, candidate_id, candidate, reasons in selected:
+        for score, _, candidate_id, candidate, wording_score in selected:
+            candidate_tags = display_tags.get(candidate_id, [])
+            reasons = _similarity_reasons(
+                target,
+                target_tags,
+                candidate,
+                candidate_tags,
+                wording_score=wording_score,
+            )
             item = self._public_question_with_rich_content(
                 candidate,
-                tags_by_question.get(candidate_id, []),
+                candidate_tags,
                 revision=revisions[candidate_id],
             )
             item["criteria_needs_review"] = candidate_id in review_ids
@@ -1914,6 +2077,12 @@ class QuestionBankReadService:
         question_ids: Iterable[int],
         *,
         include_storage_fields: bool,
+    ) -> list[dict[str, Any]]:
+        with _read_connection(self.db_path):
+            return self._load_questions_by_id(question_ids, include_storage_fields=include_storage_fields)
+
+    def _load_questions_by_id(
+        self, question_ids: Iterable[int], *, include_storage_fields: bool,
     ) -> list[dict[str, Any]]:
         ordered_ids: list[int] = []
         for value in question_ids:
@@ -2167,6 +2336,217 @@ class QuestionBankReadService:
         return payload
 
 
+def _scope_mode_selection(
+    filters: QuestionReadFilters,
+    expanded_knowledge: tuple[str, ...],
+    expanded_scopes: tuple[str, ...],
+    current_knowledge,
+) -> dict[str, Any] | None:
+    """Resolve the selected scope (chapter/section/knowledge filters) into
+    section knowledge keys + volume order for strict/primary matching."""
+    if not (
+        filters.exam_scopes
+        or filters.curriculum_sections
+        or expanded_knowledge
+    ):
+        return None
+    catalog = load_curriculum_catalog()
+    chapter_by_scope: dict[str, dict[str, Any]] = {}
+    sections_of_chapter: dict[str, tuple[str, ...]] = {}
+    section_key_of_id: dict[str, str] = {}
+    section_id_of_key: dict[str, str] = {}
+    volume_order: dict[str, int] = {}
+    for volume in catalog["volumes"]:
+        order = int(volume["order"])
+        for chapter in volume["chapters"]:
+            chapter_key = str(chapter["knowledge_id"])
+            volume_order[chapter_key] = order
+            sections_of_chapter[chapter_key] = tuple(
+                str(section["knowledge_id"]) for section in chapter["sections"]
+            )
+            for value in chapter.get("exam_scope_values") or ():
+                chapter_by_scope.setdefault(str(value), chapter)
+            for section in chapter["sections"]:
+                section_key = str(section["knowledge_id"])
+                volume_order[section_key] = order
+                section_key_of_id[str(section["id"])] = section_key
+                section_id_of_key[section_key] = str(section["id"])
+                for point in section["knowledge_points"]:
+                    volume_order[str(point["id"])] = order
+
+    parent_of = {
+        str(relation.source_key): str(relation.target_key)
+        for relation in current_knowledge.relations
+        if relation.relation_type == "parent"
+    }
+
+    def anchor_sections(key: str) -> tuple[str, ...]:
+        node = curriculum_knowledge_node(key)
+        if node is None:
+            parent = parent_of.get(key)
+            if parent:
+                node = curriculum_knowledge_node(parent)
+                key = parent
+            if node is None:
+                return ()
+        level = int(node.get("level") or 0)
+        if level == 1:
+            return sections_of_chapter.get(key, ())
+        if level == 2:
+            return (key,)
+        ancestors = curriculum_knowledge_ancestors(key)
+        return ancestors[:1] if ancestors else ()
+
+    section_keys: set[str] = set()
+    volume_orders: set[int] = set()
+
+    def absorb_key(key: str) -> None:
+        for section_key in anchor_sections(key):
+            section_keys.add(section_key)
+            if section_key in volume_order:
+                volume_orders.add(volume_order[section_key])
+
+    for value in expanded_scopes:
+        chapter = chapter_by_scope.get(str(value))
+        if chapter is None:
+            continue
+        chapter_key = str(chapter["knowledge_id"])
+        section_keys.update(sections_of_chapter.get(chapter_key, ()))
+        if chapter_key in volume_order:
+            volume_orders.add(volume_order[chapter_key])
+
+    for value in filters.curriculum_sections:
+        absorb_key(section_key_of_id.get(str(value), str(value)))
+
+    for value in expanded_knowledge:
+        for identity in current_knowledge.resolve(str(value)):
+            absorb_key(str(identity.stable_key))
+
+    return {
+        "section_keys": tuple(sorted(section_keys)),
+        # Tag fallback compares against stored tag values, which are the raw
+        # selected ids (catalog section ids or free values like 小节甲).
+        "section_tag_ids": tuple(
+            sorted(
+                {section_id_of_key[key] for key in section_keys if key in section_id_of_key}
+                | {str(value) for value in filters.curriculum_sections}
+            )
+        ),
+        "volume_order_max": max(volume_orders) if volume_orders else 0,
+        "scope_values": expanded_scopes if filters.exam_scopes else (),
+        "selected_sections": bool(filters.curriculum_sections),
+        "knowledge_values": expanded_knowledge,
+    }
+
+
+def _scope_mode_sql(mode: str, selection: dict[str, Any]) -> tuple[str, list[Any]]:
+    """WHERE clause for strict/primary scope matching.
+
+    ``question_scope_summary`` (rebuilt when evidence links are written) is the
+    authoritative scope source.  Questions without a summary row fall back to
+    the legacy tag checks so unlinked questions stay visible under their
+    model-derived ownership tags.
+    """
+    section_keys = selection["section_keys"]
+    section_tag_ids = selection["section_tag_ids"]
+    placeholders = ",".join("?" for _ in section_keys) or "''"
+    # Tag fallback keeps the legacy per-dimension AND semantics: each selected
+    # dimension contributes one required EXISTS clause.
+    tag_clauses: list[str] = []
+    tag_params: list[Any] = []
+    if selection["scope_values"]:
+        tag_clauses.append(
+            "(tag_type = 'exam_scope' AND tag_value IN ("
+            + ",".join("?" for _ in selection["scope_values"])
+            + "))"
+        )
+        tag_params.extend(selection["scope_values"])
+    if selection["selected_sections"]:
+        tag_clauses.append(
+            "(tag_type = 'curriculum_section' AND tag_value IN ("
+            + ",".join("?" for _ in section_tag_ids)
+            + "))"
+        )
+        tag_params.extend(section_tag_ids)
+    if selection["knowledge_values"]:
+        tag_clauses.append(
+            "(tag_type = 'knowledge_point' AND tag_value IN ("
+            + ",".join("?" for _ in selection["knowledge_values"])
+            + "))"
+        )
+        tag_params.extend(selection["knowledge_values"])
+    legacy_match = (
+        " AND ".join(
+            "EXISTS (SELECT 1 FROM question_tags lt "
+            "WHERE lt.question_id = q.id AND "
+            + clause
+            + ")"
+            for clause in tag_clauses
+        )
+        if tag_clauses
+        else "0"
+    )
+    no_summary = (
+        "NOT EXISTS (SELECT 1 FROM question_scope_summary s0 "
+        "WHERE s0.question_id = q.id)"
+    )
+    if mode == "primary":
+        clause = (
+            "EXISTS ("
+            "SELECT 1 FROM question_scope_summary s "
+            "WHERE s.question_id = q.id "
+            f"AND s.primary_section_id IN ({placeholders})"
+            ")"
+        )
+        return (
+            f"({clause} OR ({no_summary} AND {legacy_match}))",
+            [*section_keys, *tag_params],
+        )
+    # strict: every direct-link section must sit inside the selection and
+    # supporting prerequisites must come from earlier volumes.
+    clause = (
+        "EXISTS ("
+        "SELECT 1 FROM question_scope_summary s "
+        "WHERE s.question_id = q.id "
+        "AND json_array_length(s.direct_section_ids_json) > 0 "
+        "AND s.supporting_max_volume_order < ? "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM json_each(s.direct_section_ids_json) je "
+        f"WHERE je.value NOT IN ({placeholders})"
+        ")"
+        ")"
+    )
+    strict_fallback = f"({legacy_match}"
+    strict_params: list[Any] = [
+        selection["volume_order_max"],
+        *section_keys,
+        *tag_params,
+    ]
+    if section_tag_ids:
+        strict_fallback += (
+            " AND NOT EXISTS (SELECT 1 FROM question_tags ft "
+            "WHERE ft.question_id = q.id AND ft.tag_type = 'curriculum_section' "
+            "AND ft.tag_value NOT IN ("
+            + ",".join("?" for _ in section_tag_ids)
+            + "))"
+        )
+        strict_params.extend(section_tag_ids)
+    if selection["scope_values"]:
+        strict_fallback += (
+            " AND NOT EXISTS (SELECT 1 FROM question_tags ft "
+            "WHERE ft.question_id = q.id AND ft.tag_type = 'exam_scope' "
+            "AND ft.tag_value NOT IN ("
+            + ",".join("?" for _ in selection["scope_values"])
+            + "))"
+        )
+        strict_params.extend(selection["scope_values"])
+    strict_fallback += ")"
+    return (
+        f"({clause} OR ({no_summary} AND {strict_fallback}))",
+        strict_params,
+    )
+
+
 def _question_filter_parts(
     filters: QuestionReadFilters,
     *,
@@ -2214,6 +2594,22 @@ def _question_filter_parts(
         if value
     )
     expanded_knowledge = expand("knowledge", requested_knowledge)
+    expanded_scopes = expand("curriculum", filters.exam_scopes)
+    scope_mode = str(filters.scope_mode or "any").strip().casefold()
+    scope_clause: tuple[str, list[Any]] | None = None
+    if (
+        scope_mode in {"strict", "primary"}
+        and current_knowledge is not None
+        and (expanded_scopes or filters.curriculum_sections or expanded_knowledge)
+    ):
+        selection = _scope_mode_selection(
+            filters,
+            expanded_knowledge,
+            expanded_scopes,
+            current_knowledge,
+        )
+        if selection is not None:
+            scope_clause = _scope_mode_sql(scope_mode, selection)
     joins, where, params = build_question_filter_query(
         question_number=filters.question_number,
         keyword=filters.keyword,
@@ -2228,14 +2624,20 @@ def _question_filter_parts(
         tag_filters={
             tag_type: list(values)
             for tag_type, values in (
-                (
-                    "exam_scope",
-                    expand("curriculum", filters.exam_scopes),
-                ),
-                ("curriculum_section", filters.curriculum_sections),
-                (
-                    "knowledge_point",
-                    expanded_knowledge,
+                *(
+                    ()
+                    if scope_clause is not None
+                    else (
+                        (
+                            "exam_scope",
+                            expanded_scopes,
+                        ),
+                        ("curriculum_section", filters.curriculum_sections),
+                        (
+                            "knowledge_point",
+                            expanded_knowledge,
+                        ),
+                    )
                 ),
                 (
                     "ability",
@@ -2338,6 +2740,9 @@ def _question_filter_parts(
             )
             params.extend(f"{prefix}%" for prefix in allowed_prefixes)
             params.extend(allowed_scope_values)
+    if scope_clause is not None:
+        where.append(scope_clause[0])
+        params.extend(scope_clause[1])
     return joins, where, params
 
 
@@ -2575,29 +2980,23 @@ def _similarity_reasons(
     candidate_tags: list[dict[str, Any]],
     *,
     wording_score: float,
-) -> list[str]:
-    reasons: list[str] = []
-    shared_knowledge = _shared_tag_values(
-        target_tags,
-        candidate_tags,
-        ("knowledge_point",),
-    )
-    if shared_knowledge:
-        reasons.append(f"同知识点：{'、'.join(shared_knowledge[:2])}")
-    shared_methods = _shared_tag_values(
-        target_tags,
-        candidate_tags,
-        ("method",),
-    )
-    if shared_methods:
-        reasons.append(f"同解法：{'、'.join(shared_methods[:2])}")
-    shared_models = _shared_tag_values(
-        target_tags,
-        candidate_tags,
-        ("model",),
-    )
-    if shared_models:
-        reasons.append(f"同模型：{'、'.join(shared_models[:2])}")
+) -> list[dict[str, Any]]:
+    """按维度分组的推荐理由；kind 是稳定标识，前端据其决定标签和样式。
+
+    标签类维度返回原始 tag_value（知识点/技能是全路径，叶子名由前端截取），
+    信号类维度的 values 直接是展示短语。
+    """
+
+    reasons: list[dict[str, Any]] = []
+    for kind, tag_types in (
+        ("knowledge_point", ("knowledge_point",)),
+        ("skill", ("skill",)),
+        ("method", ("method",)),
+        ("model", ("model",)),
+    ):
+        shared = _shared_tag_values(target_tags, candidate_tags, tag_types)
+        if shared:
+            reasons.append({"kind": kind, "values": shared[:2]})
     target_difficulty = _numeric_difficulty(target["difficulty"])
     candidate_difficulty = _numeric_difficulty(candidate["difficulty"])
     if (
@@ -2605,17 +3004,17 @@ def _similarity_reasons(
         and candidate_difficulty is not None
         and abs(target_difficulty - candidate_difficulty) <= 1
     ):
-        reasons.append("难度接近")
+        reasons.append({"kind": "difficulty", "values": ["难度接近"]})
     if wording_score >= 0.55:
-        reasons.append("题干表述相近")
+        reasons.append({"kind": "wording", "values": ["题干表述相近"]})
     if (
         not reasons
         and str(target["question_type"] or "").strip()
         and target["question_type"] == candidate["question_type"]
     ):
-        reasons.append("题型相同")
+        reasons.append({"kind": "question_type", "values": ["题型相同"]})
     if not reasons:
-        reasons.append("题干存在相似片段")
+        reasons.append({"kind": "text_fragment", "values": ["题干存在相似片段"]})
     return reasons[:4]
 
 
@@ -2694,16 +3093,117 @@ def _ordered_question_assets(
     return asset_paths, rich_blocks
 
 
+def _current_knowledge_key_tags(
+    conn: sqlite3.Connection,
+    question_ids: list[int],
+    resolver: CurrentKnowledgeResolver | None,
+) -> dict[int, list[dict[str, Any]]]:
+    """按原始存储值投影规范键，与考频统计共用同一套身份规则。
+
+    粗粒度标签（如只标到章的题）与细粒度标签（标到小节的题）解析
+    到不同层级的节点，直接比较会漏掉明显的同族重合；这里沿 parent
+    关系把每个规范键的祖先一并计入，让层级包含关系也能得分。
+    """
+    if not question_ids or resolver is None:
+        return {}
+    parent_of = {
+        relation.source_key: relation.target_key
+        for relation in resolver.relations
+        if relation.relation_type == "parent"
+    }
+
+    def _lineage(stable_key: str) -> set[str]:
+        lineage = {stable_key}
+        current = stable_key
+        while current in parent_of:
+            current = parent_of[current]
+            if current in lineage:
+                break
+            lineage.add(current)
+        return lineage
+
+    placeholders = ", ".join("?" for _ in question_ids)
+    rows = conn.execute(
+        f"""
+        SELECT question_id, tag_value
+        FROM question_tags
+        WHERE question_id IN ({placeholders})
+          AND tag_type IN ('knowledge_point', 'canonical_knowledge_id')
+        """,
+        question_ids,
+    ).fetchall()
+    keys_by_question: dict[int, set[str]] = {}
+    resolve_cache: dict[str, tuple[ResolvedKnowledge, ...]] = {}
+    lineage_cache: dict[str, set[str]] = {}
+    for row in rows:
+        raw_value = str(row["tag_value"] or "")
+        resolved_items = resolve_cache.get(raw_value)
+        if resolved_items is None:
+            resolved_items = resolver.resolve(raw_value)
+            resolve_cache[raw_value] = resolved_items
+        for resolved in resolved_items:
+            lineage = lineage_cache.get(resolved.stable_key)
+            if lineage is None:
+                lineage = _lineage(resolved.stable_key)
+                lineage_cache[resolved.stable_key] = lineage
+            keys_by_question.setdefault(int(row["question_id"]), set()).update(
+                lineage
+            )
+    return {
+        question_id: [
+            {"tag_type": "current_knowledge_key", "tag_value": key}
+            for key in sorted(keys)
+        ]
+        for question_id, keys in keys_by_question.items()
+    }
+
+
+_TAG_LOOKUP_CACHE_LOCK = threading.Lock()
+# (taxonomy_generation_token, lookups)；状态文件代际变化即自动失效。
+_TAG_LOOKUP_CACHE: tuple[
+    tuple[object, ...],
+    tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]],
+] | None = None
+
+
+def _identity_and_teacher_lookup() -> (
+    tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]
+):
+    """治理查找表重建一次约数百毫秒，按 taxonomy 状态代际缓存复用。
+
+    返回的查找表在进程内共享，调用方只读不写。
+    """
+
+    global _TAG_LOOKUP_CACHE
+    try:
+        token: tuple[object, ...] | None = _taxonomy_generation_token()
+    except (AttributeError, OSError):
+        token = None
+    if token is not None:
+        with _TAG_LOOKUP_CACHE_LOCK:
+            if _TAG_LOOKUP_CACHE is not None and _TAG_LOOKUP_CACHE[0] == token:
+                return _TAG_LOOKUP_CACHE[1]
+    lookups = get_taxonomy_governance().identity_and_teacher_lookup()
+    if token is not None:
+        with _TAG_LOOKUP_CACHE_LOCK:
+            _TAG_LOOKUP_CACHE = (token, lookups)
+    return lookups
+
+
 def _load_page_tags(
     conn: sqlite3.Connection,
     question_ids: list[int],
     *,
     current_knowledge: CurrentKnowledgeResolver | None,
+    tag_types: Iterable[str] | None = None,
 ) -> dict[int, list[dict[str, Any]]]:
     if not question_ids:
         return {}
+    selected_types = tuple(_PUBLIC_TAG_TYPES if tag_types is None else tag_types)
+    if not selected_types:
+        return {}
     question_placeholders = ", ".join("?" for _ in question_ids)
-    tag_type_placeholders = ", ".join("?" for _ in _PUBLIC_TAG_TYPES)
+    tag_type_placeholders = ", ".join("?" for _ in selected_types)
     rows = conn.execute(
         f"""
         SELECT question_id, tag_type, tag_value, confidence
@@ -2712,48 +3212,31 @@ def _load_page_tags(
           AND tag_type IN ({tag_type_placeholders})
         ORDER BY id ASC
         """,
-        [*question_ids, *_PUBLIC_TAG_TYPES],
+        [*question_ids, *selected_types],
     ).fetchall()
-    identity_lookup, teacher_lookup = (
-        get_taxonomy_governance().identity_and_teacher_lookup()
-    )
+    identity_lookup, teacher_lookup = _identity_and_teacher_lookup()
     tags_by_question: dict[int, list[dict[str, Any]]] = {}
+    # 同一标签值在不同题上反复出现（全库扫描时可达上万行），规范值解析
+    # 是纯函数，按 (tag_type, tag_value) 记忆化避免每行重跑正则与查询。
+    resolved_tag_cache: dict[tuple[str, str], tuple[str, str] | None] = {}
     for row in rows:
-        tag_value = _public_tag_value(row["tag_value"])
-        if tag_value is None:
+        raw_type = str(row["tag_type"])
+        raw_value = str(row["tag_value"] or "")
+        cache_key = (raw_type, raw_value)
+        if cache_key in resolved_tag_cache:
+            resolved = resolved_tag_cache[cache_key]
+        else:
+            resolved = _resolve_public_tag(
+                raw_type,
+                raw_value,
+                current_knowledge=current_knowledge,
+                identity_lookup=identity_lookup,
+                teacher_lookup=teacher_lookup,
+            )
+            resolved_tag_cache[cache_key] = resolved
+        if resolved is None:
             continue
-        tag_type = str(row["tag_type"])
-        if tag_type == "knowledge_point":
-            if current_knowledge is None:
-                continue
-            term = current_knowledge.canonical_term(tag_value)
-            if term is not None and current_knowledge.resolve(term[0]):
-                tag_value = term[1]
-            else:
-                teacher_name = teacher_lookup["knowledge"].get(
-                    _taxonomy_value_key(tag_value)
-                )
-                if teacher_name is None:
-                    continue
-                tag_value = teacher_name
-        dimension = {
-            "knowledge_point": "knowledge",
-            "method": "method",
-            "thought": "thought",
-            "ability": "ability",
-            "model": "model",
-            "special_type": "special_type",
-            "exam_scope": "curriculum",
-        }.get(tag_type)
-        key = _taxonomy_value_key(tag_value)
-        if tag_type == "method":
-            thought_value = identity_lookup["thought"].get(key)
-            if thought_value:
-                tag_type = "thought"
-                tag_value = thought_value
-                dimension = "thought"
-        if dimension:
-            tag_value = identity_lookup[dimension].get(key, tag_value)
+        tag_type, tag_value = resolved
         bucket = tags_by_question.setdefault(int(row["question_id"]), [])
         if any(
             item["tag_type"] == tag_type
@@ -2773,6 +3256,56 @@ def _load_page_tags(
             }
         )
     return tags_by_question
+
+
+def _resolve_public_tag(
+    tag_type: str,
+    raw_value: str,
+    *,
+    current_knowledge: CurrentKnowledgeResolver | None,
+    identity_lookup: dict[str, dict[str, str]],
+    teacher_lookup: dict[str, dict[str, str]],
+) -> tuple[str, str] | None:
+    """把一行存储标签解析成公开 (tag_type, tag_value)；不可公开返回 None。"""
+
+    tag_value = _public_tag_value(raw_value)
+    if tag_value is None:
+        return None
+    if tag_type == "knowledge_point":
+        if current_knowledge is None:
+            return None
+        term = current_knowledge.canonical_term(tag_value)
+        if term is not None and current_knowledge.resolve(term[0]):
+            tag_value = term[1]
+            if term[0].startswith("sk_"):
+                # 技能节点在存储层与知识点同列，对外读取单列成 skill。
+                tag_type = "skill"
+        else:
+            teacher_name = teacher_lookup["knowledge"].get(
+                _taxonomy_value_key(tag_value)
+            )
+            if teacher_name is None:
+                return None
+            tag_value = teacher_name
+    dimension = {
+        "knowledge_point": "knowledge",
+        "method": "method",
+        "thought": "thought",
+        "ability": "ability",
+        "model": "model",
+        "special_type": "special_type",
+        "exam_scope": "curriculum",
+    }.get(tag_type)
+    key = _taxonomy_value_key(tag_value)
+    if tag_type == "method":
+        thought_value = identity_lookup["thought"].get(key)
+        if thought_value:
+            tag_type = "thought"
+            tag_value = thought_value
+            dimension = "thought"
+    if dimension:
+        tag_value = identity_lookup[dimension].get(key, tag_value)
+    return tag_type, tag_value
 
 
 def _load_criteria_needs_review_ids(

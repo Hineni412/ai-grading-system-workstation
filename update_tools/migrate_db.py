@@ -93,6 +93,7 @@ _DROP_TABLE_TARGET_RE = re.compile(
     re.IGNORECASE,
 )
 _APPROVED_TABLE_REBUILDS = {
+    "036_allow_training_evidence_without_time_estimate": frozenset({"training_evidence_records"}),
     "005_add_status_constraints": frozenset(
         {"grading_sessions", "exam_papers", "answer_regions"}
     ),
@@ -103,6 +104,9 @@ _APPROVED_TABLE_REBUILDS = {
     ),
     "029_allow_solution_evidence_v2": frozenset(
         {"question_solution_evidence_versions"}
+    ),
+    "039_allow_skill_stable_keys": frozenset(
+        {"knowledge_tag_identities", "knowledge_graph_node_profiles"}
     ),
     "032_allow_judgment_points_v1": frozenset(
         {"training_criterion_versions"}

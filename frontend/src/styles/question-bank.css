@@ -867,7 +867,7 @@
 }
 
 .qb-similar-card__score {
-  align-items: center;
+  align-items: flex-start;
   display: flex;
   gap: 10px;
 }
@@ -876,13 +876,75 @@
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   border-radius: 999px;
   color: var(--color-accent);
+  flex: 0 0 auto;
   font-size: 12px;
   padding: 4px 9px;
 }
 
-.qb-similar-card__score span {
+.qb-similar-reasons__empty {
   color: var(--color-text-muted);
   font-size: 11px;
+}
+
+.qb-similar-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.qb-similar-reason {
+  align-items: center;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 7px;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  font-size: 11px;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 7px;
+}
+
+.qb-similar-reason__kind {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.qb-similar-reason.is-knowledge_point .qb-similar-reason__kind {
+  color: var(--color-accent);
+}
+
+.qb-similar-reason.is-skill .qb-similar-reason__kind {
+  color: var(--color-ai);
+}
+
+.qb-similar-reason.is-method .qb-similar-reason__kind {
+  color: var(--color-teacher);
+}
+
+.qb-similar-reason.is-model .qb-similar-reason__kind {
+  color: var(--color-info);
+}
+
+.qb-similar-reason__values {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qb-similar-reason.is-difficulty,
+.qb-similar-reason.is-wording,
+.qb-similar-reason.is-question_type,
+.qb-similar-reason.is-text_fragment {
+  background: transparent;
+  border-style: dashed;
+  color: var(--color-text-muted);
 }
 
 .qb-similar-card footer {
@@ -1167,6 +1229,28 @@
   color: var(--color-text-secondary);
   font-size: 12px;
   margin: 16px 0 2px;
+}
+
+.criterion-skills {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.criterion-skills__label {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.criterion-skills__chip {
+  background: var(--color-accent-subtle);
+  border-radius: 999px;
+  color: var(--color-accent-hover);
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 10px;
 }
 
 .criterion-status {

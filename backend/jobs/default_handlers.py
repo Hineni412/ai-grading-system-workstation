@@ -30,6 +30,7 @@ from .manager import JobContext, JobManager
 from .ai_assembly import run_ai_assembly_spec_job
 from .config_generation import run_config_generation_job
 from .criterion_backfill import run_criterion_backfill_job
+from .knowledge_link_job import run_knowledge_link_job, build_knowledge_link_gateway
 from .assembly_export import run_assembly_export_job
 from .grading_run import run_grading_job
 from .question_import import run_question_import_job
@@ -113,6 +114,10 @@ def register_default_job_handlers(
     criterion_backfill_runner: Callable[
         ..., dict[str, object]
     ] = run_criterion_backfill_job,
+    knowledge_link_runner: Callable[
+        ..., dict[str, object]
+    ] = run_knowledge_link_job,
+    knowledge_link_gateway_factory: Callable[[], Any] | None = None,
     taxonomy_governance: Any | None = None,
     tagging_ai_service_factory: Callable[[], Any] = AITaggingService,
     llm_client_factory: Callable[[], Any] | None = None,
@@ -142,6 +147,9 @@ def register_default_job_handlers(
         )
         if tagging_ai_service_factory is AITaggingService
         else tagging_ai_service_factory
+    )
+    resolved_link_gateway_factory = knowledge_link_gateway_factory or (
+        lambda: build_knowledge_link_gateway(resolved_tagging_factory())
     )
     manager.register(
         "report_export",
@@ -239,6 +247,25 @@ def register_default_job_handlers(
             data_root=base_data_root,
             criterion_backfill_runner=criterion_backfill_runner,
             ai_service_factory=resolved_tagging_factory,
+            link_job_submitter=(
+                (
+                    lambda payload: manager.submit(
+                        "knowledge_link", payload
+                    )
+                )
+                if resolved_link_gateway_factory is not None
+                else None
+            ),
+        ),
+    )
+    manager.register(
+        "knowledge_link",
+        _build_knowledge_link_handler(
+            question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root,
+            knowledge_link_runner=knowledge_link_runner,
+            gateway_factory=resolved_link_gateway_factory,
+            taxonomy_governance=resolved_taxonomy_governance,
         ),
     )
     manager.register(
@@ -394,6 +421,7 @@ def _build_criterion_backfill_handler(
     data_root: Path,
     criterion_backfill_runner: Callable[..., dict[str, object]],
     ai_service_factory: Callable[[], Any],
+    link_job_submitter: Callable[[dict[str, Any]], Any] | None = None,
 ):
     def handler(context: JobContext) -> dict[str, object]:
         return criterion_backfill_runner(
@@ -401,6 +429,29 @@ def _build_criterion_backfill_handler(
             question_bank_db_path=question_bank_db_path,
             data_root=data_root,
             ai_service_factory=ai_service_factory,
+            link_job_submitter=link_job_submitter,
+        )
+
+    return handler
+
+
+def _build_knowledge_link_handler(
+    *,
+    question_bank_db_path: Path,
+    data_root: Path,
+    knowledge_link_runner: Callable[..., dict[str, object]],
+    gateway_factory: Callable[[], Any] | None,
+    taxonomy_governance: Any,
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        return knowledge_link_runner(
+            context=context,
+            question_bank_db_path=question_bank_db_path,
+            data_root=data_root,
+            link_gateway=(
+                gateway_factory() if gateway_factory is not None else None
+            ),
+            taxonomy_governance=taxonomy_governance,
         )
 
     return handler
@@ -781,12 +832,6 @@ def _optional_str(value: object) -> str | None:
     return text or None
 
 
-def _truthy(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _active_llm_settings() -> LLMSettings | None:
     store = get_api_profile_store()
     profile = resolve_profile_for_task(store, "grading")
@@ -798,14 +843,6 @@ def _active_llm_settings() -> LLMSettings | None:
         str(profile.get("base_url") or os.getenv("LLM_BASE_URL") or "https://api.openai.com/v1")
     )
     grading_model = str(profile.get("grading_model") or os.getenv("LLM_GRADING_MODEL") or "gpt-4o")
-    batch_enabled = _truthy(
-        profile.get("batch_enabled")
-        if profile.get("batch_enabled") is not None
-        else os.getenv("LLM_BATCH_ENABLED")
-    )
-    batch_base_url = _optional_str(
-        profile.get("batch_base_url") or os.getenv("LLM_BATCH_BASE_URL")
-    )
     return LLMSettings(
         api_key=api_key,
         base_url=base_url,
@@ -817,14 +854,4 @@ def _active_llm_settings() -> LLMSettings | None:
             str(content_profile.get("config_base_url") or content_profile.get("base_url") or os.getenv("LLM_CONFIG_BASE_URL") or base_url)
         ),
         policy_profile=policy_overrides_from_profile(profile),
-        batch_enabled=batch_enabled,
-        batch_api_key=_optional_str(
-            profile.get("batch_api_key") or os.getenv("LLM_BATCH_API_KEY")
-        ),
-        batch_base_url=(
-            normalize_openai_base_url(batch_base_url) if batch_base_url else None
-        ),
-        batch_model=_optional_str(
-            profile.get("batch_model") or os.getenv("LLM_BATCH_MODEL")
-        ),
     )

@@ -58,6 +58,7 @@ export type TrainingStudentScopeUpdate = Pick<
 export interface TrainingExamScopeInput {
   mode: TrainingExamScopeRequest['mode']
   sessionIds: number[]
+  curriculumVolumeId?: string
 }
 
 export interface TrainingPlanConfig {
@@ -174,21 +175,25 @@ export const useTrainingStore = defineStore('training', () => {
   let lastPlanRequest: TrainingPlanRequest | null = null
   let confirmationCacheKey = ''
   const confirmationIds = new Map<string, string>()
-  // Browsing a chapter or returning from its editor reuses recent results.
+  // Browsing a chapter or returning from its editor reuses the last result.
   // Adoption still makes a fresh request; these previews never authorize a write.
   const groupDiagnosisCache = new Map<string, {
-    basis: TrainingDiagnosis; diagnosis: TrainingDiagnosis; expiresAt: number
+    basis: string; diagnosis: TrainingDiagnosis
   }>()
+
+  function groupDiagnosisBasis(value: TrainingDiagnosis): string {
+    return JSON.stringify([value.scope, value.exam_scope, value.students, value.knowledge_catalog])
+  }
 
   function cachedGroupDiagnosis(key: string, basis: TrainingDiagnosis): TrainingDiagnosis | null {
     const entry = groupDiagnosisCache.get(key)
-    if (!entry || entry.basis !== basis || entry.expiresAt <= Date.now()) return null
+    if (!entry || entry.basis !== groupDiagnosisBasis(basis)) return null
     return entry.diagnosis
   }
 
   function rememberGroupDiagnosis(key: string, basis: TrainingDiagnosis, value: TrainingDiagnosis): void {
     groupDiagnosisCache.delete(key)
-    groupDiagnosisCache.set(key, { basis, diagnosis: value, expiresAt: Date.now() + 120_000 })
+    groupDiagnosisCache.set(key, { basis: groupDiagnosisBasis(basis), diagnosis: value })
     while (groupDiagnosisCache.size > 8) groupDiagnosisCache.delete(groupDiagnosisCache.keys().next().value!)
   }
 
@@ -233,6 +238,7 @@ export const useTrainingStore = defineStore('training', () => {
     return {
       mode: examScope.value.mode,
       session_ids: uniquePositiveIntegers(examScope.value.sessionIds),
+      ...(examScope.value.mode === 'semester' ? { curriculum_volume_id: examScope.value.curriculumVolumeId ?? '' } : {}),
     }
   }
 
@@ -249,7 +255,7 @@ export const useTrainingStore = defineStore('training', () => {
     if ((scope.mode === 'student' || scope.mode === 'selected') && scope.student_ids.length === 0) {
       throw new Error('请至少选择一名学生')
     }
-    if (nextExamScope.session_ids.length === 0) throw new Error('请至少选择一场考试')
+    if (nextExamScope.mode !== 'semester' && nextExamScope.session_ids.length === 0) throw new Error('请至少选择一场考试')
     return {
       scope,
       exam_scope: nextExamScope,
@@ -318,8 +324,11 @@ export const useTrainingStore = defineStore('training', () => {
     const normalized: TrainingExamScopeInput = {
       mode: next.mode,
       sessionIds: uniquePositiveIntegers(next.sessionIds),
+      ...(next.mode === 'semester' ? { curriculumVolumeId: next.curriculumVolumeId ?? '' } : {}),
     }
     if (JSON.stringify(normalized) === JSON.stringify(examScope.value)) return
+    if (normalized.mode === 'semester' && (examScope.value.mode !== 'semester'
+      || normalized.curriculumVolumeId !== examScope.value.curriculumVolumeId)) diagnosis.value = null
     examScope.value = normalized
     invalidateScopeResults()
   }
@@ -638,6 +647,7 @@ export const useTrainingStore = defineStore('training', () => {
     submittingExportKey,
     hasCurrentDiagnosis,
     cachedGroupDiagnosis,
+    groupDiagnosisBasis,
     rememberGroupDiagnosis,
     hasCurrentPlan,
     knowledgePoints,

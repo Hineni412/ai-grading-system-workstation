@@ -216,6 +216,25 @@ def test_exam_results_default_only_deducted_sorted_desc(exam_results_client) -> 
     assert "C:/private" not in response.text
 
 
+def test_exam_results_semester_filter_excludes_old_and_unassigned(exam_results_client, tmp_path):
+    with sqlite3.connect(tmp_path / "databases" / "grading.db") as conn:
+        conn.execute("UPDATE grading_sessions SET curriculum_volume_id = 'current' WHERE id = 2")
+        conn.execute("UPDATE grading_sessions SET curriculum_volume_id = 'old' WHERE id = 1")
+    for volume, expected in [("current", [2]), ("old", [1]), ("empty", []), ("", [])]:
+        response = exam_results_client.get(
+            "/api/students/1/exam-results", params={"curriculum_volume_id": volume}
+        )
+        assert response.status_code == 200
+        assert [item["session_id"] for item in response.json()["sessions"]] == expected
+        assert response.json()["total_sessions"] == len(expected)
+    with sqlite3.connect(tmp_path / "databases" / "grading.db") as conn:
+        conn.execute("UPDATE grading_sessions SET curriculum_volume_id = NULL WHERE id = 2")
+    assert exam_results_client.get(
+        "/api/students/1/exam-results", params={"curriculum_volume_id": "current"}
+    ).json()["sessions"] == []
+    assert exam_results_client.get("/api/students/1/exam-results").json()["total_sessions"] == 2
+
+
 def test_exam_results_only_deducted_false_returns_all_items(
     exam_results_client,
 ) -> None:

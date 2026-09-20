@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from db_manager import DBManager
 from report import ReportGenerator
 
 
@@ -30,70 +31,8 @@ def _seed_session(tmp_path: Path) -> Path:
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(json.dumps(RUBRIC, ensure_ascii=False), encoding="utf-8")
 
+    DBManager(db_path).initialize()
     with sqlite3.connect(db_path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE grading_sessions (
-                id INTEGER PRIMARY KEY,
-                session_name TEXT,
-                rubric_path TEXT,
-                answer_key_path TEXT
-            );
-            CREATE TABLE students (
-                id INTEGER PRIMARY KEY,
-                student_code TEXT,
-                name TEXT,
-                class_name TEXT
-            );
-            CREATE TABLE session_results (
-                id INTEGER PRIMARY KEY,
-                session_id INTEGER,
-                student_id INTEGER,
-                paper_id INTEGER,
-                total_score REAL,
-                student_score REAL,
-                ai_student_score REAL,
-                needs_human_review INTEGER,
-                raw_json TEXT,
-                graded_at TEXT
-            );
-            CREATE TABLE session_details (
-                id INTEGER PRIMARY KEY,
-                result_id INTEGER,
-                question_id TEXT,
-                score_awarded REAL,
-                ai_score_awarded REAL,
-                deduction_reason TEXT,
-                knowledge_id TEXT,
-                knowledge_ids TEXT,
-                error_category TEXT,
-                error_summary TEXT
-            );
-            CREATE TABLE teacher_score_locks (
-                id INTEGER PRIMARY KEY,
-                session_id INTEGER,
-                scan_batch_id TEXT,
-                student_id INTEGER,
-                question_id TEXT,
-                score_awarded REAL,
-                max_score REAL,
-                deduction_reason TEXT,
-                source_target_type TEXT,
-                source_target_id INTEGER,
-                revision INTEGER,
-                created_at TEXT,
-                updated_at TEXT
-            );
-            CREATE TABLE session_attendance (
-                id INTEGER PRIMARY KEY,
-                session_id INTEGER,
-                student_id INTEGER,
-                attendance_status TEXT,
-                source_reason TEXT,
-                created_at TEXT
-            );
-            """
-        )
         conn.execute(
             "INSERT INTO grading_sessions (id, session_name, rubric_path, answer_key_path) VALUES (1, '期末测试', ?, '')",
             (str(rubric_path),),
@@ -104,6 +43,15 @@ def _seed_session(tmp_path: Path) -> Path:
                 (1, "001", "张三", "一班"),
                 (2, "002", "李四", "一班"),
             ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO exam_papers (
+                id, session_id, student_id, front_image, back_image,
+                match_status, processing_status
+            ) VALUES (?, 1, ?, 'front.png', 'back.png', 'matched', 'graded')
+            """,
+            [(1, 1), (2, 2)],
         )
         conn.executemany(
             """

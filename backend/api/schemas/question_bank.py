@@ -216,6 +216,7 @@ class QuestionTagResponse(_QuestionBankModel):
         "thought",
         "model",
         "prerequisite",
+        "skill",
         "special_type",
         "student_level",
         "sub_skill",
@@ -380,9 +381,23 @@ class QuestionFacetsResponse(_QuestionBankModel):
     grades: list[QuestionFacetItem]
 
 
+class SimilarityReason(_QuestionBankModel):
+    kind: Literal[
+        "knowledge_point",
+        "skill",
+        "method",
+        "model",
+        "difficulty",
+        "wording",
+        "question_type",
+        "text_fragment",
+    ]
+    values: list[str]
+
+
 class SimilarQuestionItem(QuestionListItem):
     similarity_score: float = Field(ge=0.0, le=1.0)
-    similarity_reasons: list[str]
+    similarity_reasons: list[SimilarityReason]
 
 
 class SimilarQuestionListResponse(_QuestionBankModel):

@@ -55,7 +55,7 @@ def _add_question(
     question_type: str = "选择题",
     difficulty: str = "5",
     knowledge_points: tuple[str, ...] = (),
-    text: str = "匿名题干",
+    text: str | None = None,
     paper_id: int | None = None,
     special_types: tuple[str, ...] = (),
 ) -> int:
@@ -63,7 +63,8 @@ def _add_question(
         QuestionCreate(
             question_number=number,
             question_type=question_type,
-            question_text=text,
+            # Distinct candidates must not collapse into the same content identity.
+            question_text=text if text is not None else f"匿名题干 {paper_id}:{number}",
             answer_text="A",
             difficulty=difficulty,
             paper_id=paper_id,
@@ -643,7 +644,6 @@ def test_suggest_relaxations_skips_inapplicable_steps(tmp_path: Path) -> None:
         read_service=store.reader,
     )
     assert suggestions == ()
-
 
 
 # ---------------------------------------------------------------------------

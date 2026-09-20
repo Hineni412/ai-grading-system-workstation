@@ -267,6 +267,7 @@ export const aiDiagnosticsApi = {
   list(
     options: {
       limit?: number
+      offset?: number
       requestKind?: string
       outcome?: '' | AiDiagnosticOutcome
       workspaceModule?: string
@@ -276,6 +277,9 @@ export const aiDiagnosticsApi = {
   ): Promise<AiDiagnosticList> {
     const query = new URLSearchParams()
     query.set('limit', String(Math.min(100, Math.max(1, options.limit ?? 50))))
+    if (options.offset) {
+      query.set('offset', String(Math.max(0, options.offset)))
+    }
     if (options.requestKind) {
       query.set('request_kind', options.requestKind)
     }

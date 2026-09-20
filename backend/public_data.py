@@ -160,7 +160,10 @@ def contains_filesystem_reference(value: Any) -> bool:
 
 
 def sanitize_public_mapping(value: dict[Any, Any]) -> dict[str, Any]:
-    sanitized = _sanitize_public_value(value)
+    # Diagnosis responses repeat the same field names and evidence text for
+    # many students. Reuse classification within this call, never across
+    # requests, and still build independent output containers.
+    sanitized = _sanitize_public_value(value, key_checks={}, text_checks={})
     return sanitized if isinstance(sanitized, dict) else {}
 
 
@@ -176,25 +179,42 @@ def sanitize_public_diagnostic_text(value: object) -> str | None:
     return None
 
 
-def _sanitize_public_value(value: Any) -> Any:
+def _sanitize_public_value(
+    value: Any,
+    *,
+    key_checks: dict[str, bool],
+    text_checks: dict[str, bool],
+) -> Any:
     if isinstance(value, dict):
         result: dict[str, Any] = {}
         for key, item in value.items():
-            if is_sensitive_public_key(key) or is_path_public_key(key):
+            key_text = str(key or "")
+            if key_text not in key_checks:
+                key_checks[key_text] = (
+                    is_sensitive_public_key(key_text) or is_path_public_key(key_text)
+                )
+            if key_checks[key_text]:
                 continue
-            sanitized_item = _sanitize_public_value(item)
+            sanitized_item = _sanitize_public_value(
+                item, key_checks=key_checks, text_checks=text_checks,
+            )
             if sanitized_item is not _OMIT:
                 result[str(key)] = sanitized_item
         return _OMIT if value and not result else result
     if isinstance(value, (list, tuple)):
         result = []
         for item in value:
-            sanitized_item = _sanitize_public_value(item)
+            sanitized_item = _sanitize_public_value(
+                item, key_checks=key_checks, text_checks=text_checks,
+            )
             if sanitized_item is not _OMIT:
                 result.append(sanitized_item)
         return result
-    if isinstance(value, str) and _contains_filesystem_token(value):
-        return _OMIT
+    if isinstance(value, str):
+        if value not in text_checks:
+            text_checks[value] = _contains_filesystem_token(value)
+        if text_checks[value]:
+            return _OMIT
     return value
 
 

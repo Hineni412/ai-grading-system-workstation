@@ -200,6 +200,19 @@ describe('training API', () => {
     })).toThrow()
   })
 
+  it('decodes weak points whose mastery was dropped by exclude_none serialization', () => {
+    const { mastery: _mastery, ...weakPointWithoutMastery } = diagnosisPayload.students[0].weak_points[0]
+    const decoded = decodeTrainingDiagnosis({
+      ...diagnosisPayload,
+      students: [{
+        ...diagnosisPayload.students[0],
+        weak_points: [weakPointWithoutMastery],
+      }],
+    })
+
+    expect(decoded.students[0]?.weak_points[0]?.mastery).toBeUndefined()
+  })
+
   it('rejects impossible mastery and malformed evidence', () => {
     expect(() => decodeTrainingDiagnosis({
       ...diagnosisPayload,

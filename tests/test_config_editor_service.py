@@ -395,6 +395,23 @@ def test_solution_structure_can_replace_subquestions_and_each_scoring_step() -> 
     assert updated["rubric"]["questions"][0]["max_score"] == 6
 
 
+def test_step_reorder_and_new_step_never_borrow_frozen_point_identity():
+    payload = _payload()
+    steps = payload['rubric']['questions'][0]['parts'][0]['steps']
+    steps[0]['evidence_point_ids'] = ['p1']
+    steps[1]['evidence_point_ids'] = ['p2']
+    command = ReplaceQuestionStructureCommand(kind='replace_question_structure', question_id='Q12', parts=(
+        ManualQuestionPartInput(part_id='P1', steps=(
+            ManualStepInput(step_id='S2', score=2, core_goal='先处理原第二步'),
+            ManualStepInput(step_id='S3', score=2, core_goal='新加步骤'),
+            ManualStepInput(step_id='S1', score=2, core_goal='后处理原第一步'),
+        )),
+    ))
+    updated = apply_config_editor_changes(payload, edits=(), commands=(command,))
+    actual = updated['rubric']['questions'][0]['parts'][0]['steps']
+    assert [step.get('evidence_point_ids') for step in actual] == [['p2'], None, ['p1']]
+
+
 def test_replace_parts_rejects_opaque_internal_id_without_guessing() -> None:
     command = ReplaceScoringUnitsCommand(
         kind="replace_parts",

@@ -80,6 +80,66 @@ export interface AssemblyRecordDelete {
   deleted: boolean
 }
 
+export interface AssemblyAssistantRequest {
+  class_id: string
+  curriculum_volume_id: string
+  chapter_id: string
+  target_keys: string[] | null
+  question_type: '' | '选择题' | '多选题' | '填空题' | '解答题'
+  difficulty_min: number
+  difficulty_max: number
+  exclude_exam_originals: boolean
+  exclude_recent: boolean
+}
+
+export interface AssemblyWeakness {
+  knowledge_key: string
+  knowledge_point: string
+  mastery: number
+  weak_student_count: number
+  evidence_student_count: number
+  exam_score_rate: number | null
+  evidence_count: number
+  candidate_count: number | null
+  target_difficulty?: number | null
+}
+
+export interface AssemblyAssistantResult {
+  student_count: number
+  evidence_student_count: number
+  exam_student_count: number
+  exam_score_rate: number | null
+  exam_count: number
+  weaknesses: AssemblyWeakness[]
+  selected_target_keys: string[]
+  candidate_total: number
+  candidates: Array<{ question_id: number; target_keys: string[]; practice_kind?: 'focus' | 'foundation'; match_level?: number | null; match_label?: string; difficulty?: number | null; difficulty_band?: 'suitable' | 'lower' | 'higher' | 'unknown'; similar_question_ids?: number[]; direct_target_keys?: string[] }>
+}
+
+export function decodeAssemblyAssistant(value: unknown): AssemblyAssistantResult {
+  const count = (v: unknown) => Number.isSafeInteger(v) && Number(v) >= 0
+  const rate = (v: unknown) => v === null || (typeof v === 'number' && v >= 0 && v <= 1)
+  const strings = (v: unknown) => Array.isArray(v) && v.every(item => typeof item === 'string')
+  if (!isRecord(value) || !count(value.student_count) || !count(value.evidence_student_count) || !count(value.exam_student_count)
+    || !rate(value.exam_score_rate) || !count(value.exam_count) || !count(value.candidate_total)
+    || !strings(value.selected_target_keys) || !Array.isArray(value.weaknesses)
+    || !value.weaknesses.every(item => isRecord(item)
+      && typeof item.knowledge_key === 'string' && typeof item.knowledge_point === 'string'
+      && typeof item.mastery === 'number' && rate(item.mastery) && rate(item.exam_score_rate)
+      && count(item.weak_student_count) && count(item.evidence_student_count) && count(item.evidence_count)
+      && (item.candidate_count === null || count(item.candidate_count)))
+    || !Array.isArray(value.candidates)
+    || !value.candidates.every(item => isRecord(item) && isPositiveInteger(item.question_id) && strings(item.target_keys)
+      && (item.practice_kind === undefined || item.practice_kind === 'focus' || item.practice_kind === 'foundation')
+      && (item.difficulty_band === undefined || item.difficulty_band === 'suitable'
+        || item.difficulty_band === 'lower' || item.difficulty_band === 'higher' || item.difficulty_band === 'unknown')
+      && (item.similar_question_ids === undefined
+        || (Array.isArray(item.similar_question_ids) && item.similar_question_ids.every(isPositiveInteger))))) {
+    throw new Error('Invalid class assembly candidates')
+  }
+  return value as unknown as AssemblyAssistantResult
+}
+
 const REVISION = /^[0-9a-f]{64}$/
 const SECTION_ID = /^[A-Za-z0-9_.:-]{1,64}$/
 
@@ -290,6 +350,12 @@ function normalizedQuestionIds(values: readonly number[]): number[] {
   }
   if (result.length === 0 || result.length > 500) throw new Error('Invalid question ids')
   return result
+}
+
+export function fetchAssemblyCandidates(body: AssemblyAssistantRequest, signal?: AbortSignal): Promise<AssemblyAssistantResult> {
+  return apiClient.request('/api/question-assembly/assistant/candidates', {
+    method: 'POST', body, decode: decodeAssemblyAssistant, signal, timeoutMs: 120_000,
+  })
 }
 
 export const assemblyApi = {

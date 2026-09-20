@@ -911,3 +911,69 @@ def test_grading_run_completion_triggers_auto_generation(tmp_path: Path, monkeyp
         assert fake.calls == 1
     finally:
         manager.shutdown()
+
+
+def test_class_analysis_report_serves_generated_class_html(
+    class_analysis_api_client,
+) -> None:
+    client, db, session_id, _reports_dir, manager, _llm, monkeypatch = (
+        class_analysis_api_client
+    )
+    _patch_configured(monkeypatch, True)
+
+    pending = client.get(f"/api/sessions/{session_id}/class-analysis/report")
+    assert pending.status_code == 409
+    assert pending.json()["error"]["code"] == "class_report_not_ready"
+
+    created = _generate_via_api(client, session_id)
+    manager.wait(created["id"], timeout=5)
+    assert manager.get(created["id"]).status == "succeeded"
+
+    response = client.get(f"/api/sessions/{session_id}/class-analysis/report")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    body = response.text
+    assert "班级报告" in body
+    # AI 叙述进入报告正文。
+    assert "证明题得分率低" in body
+    assert "张三" in body
+    assert "李四" in body
+
+    named = client.get(
+        f"/api/sessions/{session_id}/class-analysis/report",
+        params={"class_name": "1 班"},
+    )
+    assert named.status_code == 200
+    assert "1 班" in named.text
+
+
+def test_class_analysis_report_selects_each_class(
+    class_analysis_api_client,
+) -> None:
+    client, db, session_id, _reports_dir, manager, _llm, monkeypatch = (
+        class_analysis_api_client
+    )
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE students SET class_name='2 班' WHERE name='李四'")
+    _patch_configured(monkeypatch, True)
+    created = _generate_via_api(client, session_id)
+    manager.wait(created["id"], timeout=5)
+    assert manager.get(created["id"]).status == "succeeded"
+
+    first = client.get(
+        f"/api/sessions/{session_id}/class-analysis/report",
+        params={"class_name": "1 班"},
+    )
+    second = client.get(
+        f"/api/sessions/{session_id}/class-analysis/report",
+        params={"class_name": "2 班"},
+    )
+    assert first.status_code == 200 and second.status_code == 200
+    assert "张三" in first.text and "李四" not in first.text
+    assert "李四" in second.text and "张三" not in second.text
+    # 无此班级时按首个可用班级回退，不产生错误页。
+    fallback = client.get(
+        f"/api/sessions/{session_id}/class-analysis/report",
+        params={"class_name": "9 班"},
+    )
+    assert fallback.status_code == 200

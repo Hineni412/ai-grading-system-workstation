@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { saveEvidenceScope } from '../features/evidence-scope/session'
 import { createAppRouter } from '../router'
 import { useSessionStore } from '../stores/session'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import StudentEvidenceView from '../views/StudentEvidenceView.vue'
 
 const fetchStudentExamResultsMock = vi.hoisted(() => vi.fn())
@@ -156,6 +157,7 @@ async function settle(): Promise<void> {
 async function mountView(path = '/training/evidence/12?from=student') {
   const pinia = createPinia()
   setActivePinia(pinia)
+  useCurriculumScopeStore(pinia).$patch({ loadState: 'ready', selectedVolumeId: 'bnu24-math-g8-upper' })
   useSessionStore(pinia).$patch({
     sessions: [
       {
@@ -222,7 +224,7 @@ describe('student evidence view', () => {
     expect(back.getAttribute('href')).toContain('/training?mode=student')
     expect(fetchStudentExamResultsMock).toHaveBeenCalledWith(
       '12',
-      { onlyDeducted: true, page: 1, pageSize: 10 },
+      { onlyDeducted: true, page: 1, pageSize: 10, curriculumVolumeId: 'bnu24-math-g8-upper' },
       expect.any(AbortSignal),
     )
   })
@@ -241,7 +243,7 @@ describe('student evidence view', () => {
 
     expect(fetchStudentExamResultsMock).toHaveBeenLastCalledWith(
       '12',
-      { onlyDeducted: true, page: 2, pageSize: 10 },
+      { onlyDeducted: true, page: 2, pageSize: 10, curriculumVolumeId: 'bnu24-math-g8-upper' },
       expect.any(AbortSignal),
     )
     expect(host.textContent).not.toContain('加载更多')
@@ -257,7 +259,7 @@ describe('student evidence view', () => {
     await vi.waitFor(() => expect(fetchStudentExamResultsMock).toHaveBeenCalledTimes(2))
     expect(fetchStudentExamResultsMock).toHaveBeenLastCalledWith(
       '12',
-      { onlyDeducted: false, page: 1, pageSize: 10 },
+      { onlyDeducted: false, page: 1, pageSize: 10, curriculumVolumeId: 'bnu24-math-g8-upper' },
       expect.any(AbortSignal),
     )
   })
@@ -295,8 +297,8 @@ describe('student evidence view knowledge mode', () => {
     expect(fetchStudentExamResultsMock).not.toHaveBeenCalled()
     expect(fetchGraphEvidenceMock).toHaveBeenCalledWith(
       {
-        scope: { mode: 'selected', student_ids: ['12'] },
-        exam_scope: { mode: 'manual', session_ids: [7, 8] },
+        scope: { mode: 'selected', student_ids: ['12'], use_historical_fallback: false },
+        exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper' },
       },
       'kp_triangle_congruence',
       expect.any(AbortSignal),
@@ -314,15 +316,15 @@ describe('student evidence view knowledge mode', () => {
     expect(host.textContent).not.toContain('全部作答')
   })
 
-  it('falls back to the current session when no scope was saved', async () => {
+  it('uses the teaching semester when no exam scope was saved', async () => {
     fetchGraphEvidenceMock.mockResolvedValue(graphEvidenceResponse([graphEvidenceItem(7)], [7]))
     const { host } = await mountView('/training/evidence/12?knowledge=kp_triangle_congruence')
     await vi.waitFor(() => expect(host.textContent).toContain('匿名考试7'))
 
     expect(fetchGraphEvidenceMock).toHaveBeenCalledWith(
       {
-        scope: { mode: 'selected', student_ids: ['12'] },
-        exam_scope: { mode: 'current', session_ids: [7] },
+        scope: { mode: 'selected', student_ids: ['12'], use_historical_fallback: false },
+        exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper' },
       },
       'kp_triangle_congruence',
       expect.any(AbortSignal),
@@ -358,8 +360,8 @@ describe('student evidence view group questions mode', () => {
     expect(fetchStudentExamResultsMock).not.toHaveBeenCalled()
     expect(fetchGraphEvidenceMock).toHaveBeenCalledWith(
       {
-        scope: { mode: 'class', class_id: '七年级一班', class_ids: ['七年级一班'] },
-        exam_scope: { mode: 'manual', session_ids: [7, 8] },
+        scope: { mode: 'class', class_id: '七年级一班', class_ids: ['七年级一班'], use_historical_fallback: false },
+        exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper' },
       },
       'kp_triangle_congruence',
       expect.any(AbortSignal),

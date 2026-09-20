@@ -55,8 +55,9 @@ class TrainingScopeRequest(_TrainingModel):
 
 
 class TrainingExamScopeRequest(_TrainingModel):
-    mode: Literal["current", "manual", "cross_exam"]
+    mode: Literal["current", "manual", "cross_exam", "semester"]
     session_ids: list[int] = Field(default_factory=list, max_length=100)
+    curriculum_volume_id: str | None = Field(default=None, max_length=100)
 
     @field_validator("session_ids")
     @classmethod
@@ -184,7 +185,7 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
         result: list[str] = []
         for raw_value in values:
             value = str(raw_value or "").strip().casefold()
-            if not value.startswith(("kp_", "ki_")):
+            if not value.startswith(("kp_", "ki_", "sk_")):
                 raise ValueError(
                     "keys must use governed stable identities"
                 )
@@ -597,9 +598,10 @@ class TrainingExamSession(_TrainingModel):
 
 
 class TrainingNormalizedExamScope(_TrainingModel):
-    mode: Literal["current", "manual", "cross_exam"]
+    mode: Literal["current", "manual", "cross_exam", "semester"]
     session_ids: list[int]
     sessions: list[TrainingExamSession]
+    curriculum_volume_id: str | None = None
 
 
 class TrainingCoverage(_TrainingModel):
@@ -614,6 +616,7 @@ class TrainingDiagnosisResponse(_TrainingModel):
     students: list[TrainingStudentProfile]
     group_weak_points: list[TrainingWeakPoint] = Field(default_factory=list)
     knowledge_catalog: list[dict[str, Any]] = Field(default_factory=list)
+    knowledge_associations: list[dict[str, Any]] = Field(default_factory=list)
     coverage: TrainingCoverage
     confirmed_concept_ids: list[int]
     suggested_terms: list[str]

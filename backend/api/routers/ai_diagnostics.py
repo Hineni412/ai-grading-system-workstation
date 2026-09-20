@@ -33,6 +33,7 @@ _NO_STORE = "no-store, max-age=0"
 def list_ai_diagnostics(
     response: Response,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
     request_kind: Annotated[str, Query(max_length=80)] = "",
     outcome: Annotated[
         str,
@@ -51,6 +52,7 @@ def list_ai_diagnostics(
     try:
         payload = _JOURNAL.list_calls(
             limit=limit,
+            offset=offset,
             request_kind=request_kind,
             outcome=outcome,
             workspace_module=workspace_module,

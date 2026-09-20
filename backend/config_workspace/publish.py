@@ -240,6 +240,29 @@ def _save_editor_config_locked(
         if edits or commands
         else copy.deepcopy(current.payload)
     )
+    from question_bank.solution_evidence.evidence_snapshot import (
+        load_snapshot,
+        validate_rubric_evidence_coverage,
+    )
+    snapshot = load_snapshot(Path(upload_config_dir), int(session_id))
+    if snapshot is not None:
+        violations = validate_rubric_evidence_coverage(
+            candidate.get("rubric") if isinstance(candidate, Mapping) else {},
+            snapshot,
+        )
+        if violations:
+            raise ConfigEditorValidationError(
+                tuple(
+                    {
+                        "code": "evidence_point_coverage_violation",
+                        "severity": "error",
+                        "row_id": None,
+                        "field": "rubric",
+                        "message": message,
+                    }
+                    for message in violations
+                )
+            )
     publication: PublishedConfig | None = None
     try:
         publication = publish_generated_config(

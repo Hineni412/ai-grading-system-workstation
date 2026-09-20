@@ -65,6 +65,10 @@ class EvidenceScopeResolver:
             for item in self.db.list_grading_sessions()
             if not item.get("is_deleted")
         ]
+        if exam_scope.get("mode") == "semester":
+            volume_id = str(exam_scope.get("curriculum_volume_id") or "").strip()
+            all_sessions = [item for item in all_sessions
+                            if volume_id and item.get("curriculum_volume_id") == volume_id]
         sessions = self._resolve_sessions(all_sessions, exam_scope, warnings)
         all_students = [dict(item) for item in self.db.list_students()]
         score_profiles, history_ids = self._score_profiles(
@@ -98,7 +102,7 @@ class EvidenceScopeResolver:
         active = {int(item["id"]): item for item in active_sessions}
         mode = str(exam_scope.get("mode") or "current")
         requested = _int_list(exam_scope.get("session_ids"))
-        if mode == "cross_exam":
+        if mode in {"cross_exam", "semester"}:
             ids = sorted(active)
         elif mode == "manual":
             ids = [item for item in requested if item in active]
@@ -109,11 +113,11 @@ class EvidenceScopeResolver:
                 ids = [max(active, key=lambda item: _session_order(active[item]))] if active else []
         else:
             raise ValueError(f"unsupported exam scope mode: {mode}")
-        missing = [item for item in requested if item not in active]
+        missing = [item for item in requested if item not in active] if mode != "semester" else []
         if missing:
             warnings.append(f"已忽略不存在或已删除的考试：{', '.join(map(str, missing))}")
         if not ids:
-            warnings.append("未选择可用考试。")
+            warnings.append("本学期尚无已关联考试。" if mode == "semester" else "未选择可用考试。")
         return [active[item] for item in ids]
 
     def _resolve_students(

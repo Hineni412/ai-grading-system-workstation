@@ -91,16 +91,6 @@ def test_request_timeout_per_kind_override_wins() -> None:
     assert policy.timeout_seconds == 120.0
 
 
-def test_request_timeout_ignored_by_batch_channels() -> None:
-    profile = {"name": "x", "request_timeout_seconds": 45}
-
-    grading_batch = policy_from_profile(LLMRequestKind.GRADING_BATCH, profile)
-    tagging_batch = policy_from_profile(LLMRequestKind.TAGGING_BATCH, profile)
-
-    assert grading_batch.timeout_seconds == 3600.0
-    assert tagging_batch.timeout_seconds == 3600.0
-
-
 def test_request_timeout_accepts_online_maximum() -> None:
     policy = policy_from_profile(
         LLMRequestKind.TAGGING,

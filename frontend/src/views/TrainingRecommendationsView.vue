@@ -20,7 +20,7 @@ import PaperSettingsPanel from '../components/knowledge-training/PaperSettingsPa
 import TrainingKnowledgeStructure from '../components/knowledge-training/TrainingKnowledgeStructure.vue'
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import AppButton from '../components/design-system/AppButton.vue'
-import { loadEvidenceScope, saveEvidenceScope } from '../features/evidence-scope/session'
+import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { loadPaperSelectionSession, savePaperSelectionSession, type AdoptedChapterGroup, type ChapterGroupEditor, type ChapterGroupSort } from '../features/training/paper-selection-session'
 import { useSessionStore } from '../stores/session'
 import '../styles/training-recommendations.css'
@@ -66,6 +66,7 @@ const groupChecking = ref(false)
 const latestGroupDiagnosis = ref<TrainingDiagnosis | null>(null)
 const workflowStage = ref<'diagnosis' | 'draft' | 'wps' | 'scan'>('diagnosis')
 const draftRequestState = ref<'idle' | 'loading' | 'ready' | 'error' | 'editing'>('idle')
+const draftNeedsCheck = ref(false)
 const scopeFilters = ref<InstanceType<typeof EvidenceScopeFilters> | null>(null)
 const paperDraft = ref<{ generate: () => Promise<void> } | null>(null)
 let studentsController: AbortController | null = null
@@ -78,11 +79,11 @@ const trainingMode = computed<TrainingMode>(() => {
 const pageCopy = computed(() => ({
   chapter: {
     title: '按章节训练',
-    description: '选择多个班和章／小节，查看需求互补、整体水平接近的小组；核对名单后采用同卷训练。',
+    description: '选择多个班和章／小节，按成绩相近、共同薄弱点覆盖每人至少一半的条件分组；核对名单后采用同卷训练。',
   },
   student: {
     title: '按学生训练',
-    description: '用顶部筛选确定学生群体，勾选章或小节作为训练范围；生成一人一卷时按每名学生的细知识点掌握情况配题。',
+    description: '用顶部筛选确定学生群体，勾选章或小节作为训练范围；生成一人一卷时按每名学生的实际失分匹配知识与技能。',
   },
   paper: {
     title: '生成试卷',
@@ -103,7 +104,7 @@ const scoreProfiles = computed(() => {
 })
 
 const selectedStudentCount = computed(() => training.diagnosis?.students.length ?? 0)
-const groupingAvailable = computed(() => training.diagnosis?.knowledge_catalog?.some(node => !node.parent_knowledge_key && /^(kp_|ki_)/.test(node.knowledge_key)) ?? false)
+const groupingAvailable = computed(() => training.diagnosis?.knowledge_catalog?.some(node => !node.parent_knowledge_key && /^(kp_|sk_|ki_)/.test(node.knowledge_key)) ?? false)
 const sharedStudentCount = computed(() => adoptedGroup.value?.memberIds.length ?? selectedStudentCount.value)
 const paperStudentCount = computed(() => paperMode.value === 'shared' ? sharedStudentCount.value : selectedStudentCount.value)
 const paperDiagnosis = computed<TrainingDiagnosis | null>(() => {
@@ -117,9 +118,8 @@ const paperDiagnosis = computed<TrainingDiagnosis | null>(() => {
 const scoreSourceSummary = computed(() => {
   const profiles = training.diagnosis?.students ?? []
   const current = profiles.filter((student) => student.score_rate_source === 'current_exam').length
-  const historical = profiles.filter((student) => student.score_rate_source === 'historical_fallback').length
-  const none = profiles.length - current - historical
-  return `所选 ${profiles.length} 人 · 本次成绩 ${current} 人 · 历史参考 ${historical} 人 · 无成绩 ${none} 人`
+  const none = profiles.length - current
+  return `所选 ${profiles.length} 人 · 本学期有成绩 ${current} 人 · 无成绩 ${none} 人`
 })
 const groupScopeLabel = computed(() => {
   if (training.studentScope.mode === 'selected') return `当前筛选 · ${selectedStudentCount.value} 人`
@@ -152,7 +152,7 @@ const paperSettingsValid = computed(() => (
     ? sharedSettingsValid.value
     : individualSettingsValid.value
 ))
-const expectedPaperCount = computed(() => paperStudentCount.value)
+const expectedPaperCount = computed(() => paperMode.value === 'shared' ? 1 : paperStudentCount.value)
 
 const sourceStudentScope = computed<TrainingStudentScopeRequest>(() => ({
   mode: training.studentScope.mode,
@@ -169,8 +169,9 @@ const personalizedScope = computed<TrainingStudentScopeRequest>(() => paperMode.
   ? { mode: 'selected', student_ids: [...adoptedGroup.value.memberIds], use_historical_fallback: training.studentScope.useHistoricalFallback }
   : sourceStudentScope.value)
 const personalizedExamScope = computed<TrainingExamScopeRequest>(() => ({
-  mode: training.examScope.mode,
-  session_ids: [...training.examScope.sessionIds],
+  mode: 'semester',
+  session_ids: [],
+  curriculum_volume_id: curriculumScope.selectedVolumeId ?? '',
 }))
 const groupingSettings = computed<TrainingGroupingRequest>(() => ({
   scope_keys: sectionKey.value || chapterKey.value ? [sectionKey.value || chapterKey.value] : [],
@@ -180,10 +181,7 @@ const groupingSettings = computed<TrainingGroupingRequest>(() => ({
   teaching_progress_chapter_id: teachingProgressChapterId.value,
 }))
 const activeEvidenceQuery = computed<GraphQueryInput | null>(() => {
-  const sessionIds = training.examScope.sessionIds
-  if (training.examScope.mode !== 'cross_exam' && !sessionIds.length) return null
-  return {
-    scope: {
+  return semesterEvidenceQuery({
       mode: training.studentScope.mode,
       ...(training.studentScope.classId ? { class_id: training.studentScope.classId } : {}),
       ...(training.studentScope.classIds.length ? { class_ids: [...training.studentScope.classIds] } : {}),
@@ -193,13 +191,7 @@ const activeEvidenceQuery = computed<GraphQueryInput | null>(() => {
       include_student_ids: [...training.studentScope.includeStudentIds],
       exclude_student_ids: [...training.studentScope.excludeStudentIds],
       use_historical_fallback: training.studentScope.useHistoricalFallback,
-    },
-    exam_scope: training.examScope.mode === 'cross_exam'
-      ? { mode: 'cross_exam' }
-      : training.examScope.mode === 'current'
-        ? { mode: 'current', session_ids: [sessionIds[0]!] }
-        : { mode: 'manual', session_ids: [...sessionIds] },
-  }
+    }, curriculumScope.selectedVolumeId)
 })
 
 async function analyze(): Promise<void> {
@@ -211,6 +203,7 @@ async function analyze(): Promise<void> {
 }
 
 async function applyEvidenceScope(query: GraphQueryInput, reuseCurrent = false): Promise<void> {
+  query = semesterEvidenceQuery(query.scope, curriculumScope.selectedVolumeId)
   if (trainingMode.value === 'chapter') chapterScope.value = query
   saveEvidenceScope(query)
   training.setStudentScope({
@@ -225,10 +218,7 @@ async function applyEvidenceScope(query: GraphQueryInput, reuseCurrent = false):
     useHistoricalFallback: query.scope.use_historical_fallback !== false,
   })
   training.setExamScope({
-    mode: query.exam_scope.mode,
-    sessionIds: query.exam_scope.mode === 'cross_exam'
-      ? availableSessions.value.map((item) => item.id)
-      : [...query.exam_scope.session_ids],
+    mode: 'semester', sessionIds: [], curriculumVolumeId: curriculumScope.selectedVolumeId ?? '',
   })
   if (!reuseCurrent || !training.hasCurrentDiagnosis) await analyze()
 }
@@ -243,6 +233,7 @@ function openScopeFilters(): void {
 async function generatePaperDraft(): Promise<void> {
   if (groupChecking.value) return
   groupMessage.value = ''
+  if (draftNeedsCheck.value) { await paperDraft.value?.generate(); return }
   if (paperMode.value === 'shared' && adoptedGroup.value) {
     groupChecking.value = true
     try {
@@ -319,25 +310,12 @@ async function loadStudents(): Promise<void> {
   try {
     students.value = await fetchStudents(controller.signal)
     referenceState.value = 'ready'
-    if (sessionStore.selectedSessionId && training.analysisState === 'idle') {
+    if (curriculumScope.loadState === 'ready') {
       const generalQuery = loadEvidenceScope()
       const savedQuery = trainingMode.value === 'chapter' || (trainingMode.value === 'paper' && paperMode.value === 'shared')
         ? chapterScope.value ?? (generalQuery ? { ...generalQuery, scope: { ...generalQuery.scope, score_rate_min: null, score_rate_max: null } } : null)
         : generalQuery
-      const knownSessionIds = new Set(availableSessions.value.map((item) => item.id))
-      const compatibleSavedQuery = savedQuery?.exam_scope.mode === 'cross_exam'
-        || savedQuery?.exam_scope.session_ids.every((id) => knownSessionIds.has(id))
-        ? savedQuery
-        : null
-      await applyEvidenceScope(compatibleSavedQuery ?? {
-        scope: {
-          mode: 'all',
-          include_student_ids: [],
-          exclude_student_ids: [],
-          use_historical_fallback: true,
-        },
-        exam_scope: { mode: 'current', session_ids: [sessionStore.selectedSessionId] },
-      }, true)
+      await applyEvidenceScope(semesterEvidenceQuery(savedQuery?.scope ?? { mode: 'all' }, curriculumScope.selectedVolumeId), true)
     }
   } catch {
     if (controller.signal.aborted) return
@@ -410,18 +388,21 @@ watch(trainingMode, (mode, previous) => {
   if (query) void applyEvidenceScope(query, true)
 })
 
-watch(() => sessionStore.selectedSessionId, (sessionId) => {
-  const active = activeEvidenceQuery.value
-  if (
-    sessionId === null
-    || !active
-    || active.exam_scope.mode !== 'current'
-    || active.exam_scope.session_ids[0] === sessionId
-  ) return
-  void applyEvidenceScope({
-    ...active,
-    exam_scope: { mode: 'current', session_ids: [sessionId] },
-  })
+watch(() => curriculumScope.selectedVolumeId, () => {
+  profileCache.value = {}
+  adoptedGroup.value = null
+  groupEditor.value = null
+  latestGroupDiagnosis.value = null
+  chapterKey.value = ''
+  sectionKey.value = ''
+  selectedTargetKeys.value = []
+  selectedRangeKeys.value = []
+  if (referenceState.value === 'ready' && activeEvidenceQuery.value) void applyEvidenceScope(activeEvidenceQuery.value)
+})
+watch(() => curriculumScope.loadState, state => {
+  if (state === 'ready' && referenceState.value === 'ready' && training.analysisState === 'idle' && activeEvidenceQuery.value) {
+    void applyEvidenceScope(activeEvidenceQuery.value)
+  }
 })
 
 onMounted(() => void loadStudents())
@@ -432,7 +413,7 @@ onBeforeUnmount(() => studentsController?.abort())
   <section class="training-workspace" aria-labelledby="training-title">
     <header class="training-heading training-heading--compact">
       <div>
-        <p class="training-eyebrow">知识与训练 · {{ curriculumScope.selectedVolume?.label ?? '全部学期' }}</p>
+        <p class="training-eyebrow">知识与训练 · {{ curriculumScope.selectedVolume?.label ?? '未选择教学学期' }}</p>
         <h1 id="training-title">{{ pageCopy.title }}</h1>
         <p>{{ pageCopy.description }}</p>
       </div>
@@ -521,8 +502,8 @@ onBeforeUnmount(() => studentsController?.abort())
           v-model="selectedRangeKeys"
           selection-kind="range"
           :diagnosis="training.diagnosis"
-          title="所选学生的加权知识结构"
-          description="勾选章或小节作为训练范围；细知识点只作掌握情况参考，一人一卷时按每名学生自动配题。"
+          title="所选学生的知识与技能关联"
+          description="勾选章或小节作为训练范围，点击知识主题或技能查看关联；一人一卷时按每名学生的实际失分自动配题。"
           @focus="() => undefined"
         />
         <div v-else-if="training.analysisState === 'empty'" class="status-card empty-state">
@@ -595,7 +576,8 @@ onBeforeUnmount(() => studentsController?.abort())
           <div class="paper-console__main">
             <div class="paper-review-bar">
               <span><b>{{ paperMode === 'individual' ? '一人一卷' : '多人同一套卷' }}</b></span>
-              <span><b>{{ paperStudentCount }}</b> 名学生</span>
+              <span v-if="paperMode === 'shared'">供 <b>{{ paperStudentCount }}</b> 名学生共同练习</span>
+              <span v-else><b>{{ paperStudentCount }}</b> 名学生</span>
               <span v-if="paperMode === 'shared'"><b>{{ selectedTargetKeys.length }}</b> 项细点</span>
               <span v-else><b>{{ selectedRangeKeys.length }}</b> 个范围</span>
               <span>每卷 <b>{{ questionCount }}</b> 题</span>
@@ -610,7 +592,7 @@ onBeforeUnmount(() => studentsController?.abort())
                 :disabled="!paperSettingsValid || draftRequestState === 'loading' || groupChecking"
                 @click="generatePaperDraft"
               >
-                {{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成…' : `生成 ${expectedPaperCount} 份草稿` }}
+                {{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成并核对…' : draftNeedsCheck ? '核对生成结果' : `生成 ${expectedPaperCount} 份草稿` }}
               </AppButton>
             </div>
             <p v-if="workflowStage === 'diagnosis' && !paperSettingsValid" class="paper-review-hint">
@@ -639,6 +621,7 @@ onBeforeUnmount(() => studentsController?.abort())
               :disabled="!paperSettingsValid"
               @stage-change="onPaperStageChange"
               @state-change="draftRequestState = $event"
+              @recovery-change="draftNeedsCheck = $event"
             />
           </div>
         </div>

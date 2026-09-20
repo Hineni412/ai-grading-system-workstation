@@ -280,3 +280,147 @@ def test_read_service_filters_questions_by_exact_curriculum_volume(tmp_path: Pat
     )
 
     assert [item["question_number"] for item in page.items] == ["2"]
+
+
+def test_find_similar_questions_matches_shared_canonical_knowledge(
+    tmp_path: Path,
+) -> None:
+    db_path, reader, writer = _services(tmp_path)
+    target_id = writer.add_question(
+        QuestionCreate(
+            question_number="1",
+            question_text="求 8 的立方根。",
+            question_type="填空题",
+            difficulty="3",
+            tags=[
+                TagCreate(
+                    "knowledge_point",
+                    "kp_bnu24_math_g8_upper_2_2",
+                    source="manual",
+                ),
+            ],
+        )
+    )
+    variant_id = writer.add_question(
+        QuestionCreate(
+            question_number="2",
+            question_text="已知一个数的立方根是 2，求这个数的相反数。",
+            question_type="填空题",
+            difficulty="4",
+            tags=[
+                TagCreate(
+                    "knowledge_point",
+                    "kp_bnu24_math_g8_upper_2_2",
+                    source="manual",
+                ),
+                TagCreate(
+                    "knowledge_point",
+                    "sk_bnu24_math_g8_upper_2_2_102",
+                    source="manual",
+                ),
+            ],
+        )
+    )
+    unrelated_id = writer.add_question(
+        QuestionCreate(
+            question_number="3",
+            question_text="观察图形，说出其中立体图形的名称。",
+            question_type="填空题",
+            difficulty="4",
+            tags=[
+                TagCreate(
+                    "knowledge_point",
+                    "kp_bnu24_math_g7_upper_1",
+                    source="manual",
+                ),
+            ],
+        )
+    )
+    install_current_knowledge(db_path, taxonomy_revision=8)
+
+    items = reader.find_similar_questions(target_id, limit=5)
+    ids = {int(item["id"]) for item in items}
+
+    assert variant_id in ids
+    assert unrelated_id not in ids
+
+
+def test_detail_splits_skill_nodes_out_of_knowledge_point_tags(
+    tmp_path: Path,
+) -> None:
+    db_path, reader, writer = _services(tmp_path)
+    question_id = writer.add_question(
+        QuestionCreate(
+            question_number="1",
+            question_text="求 27 的立方根。",
+            question_type="填空题",
+            tags=[
+                TagCreate(
+                    "knowledge_point",
+                    "kp_bnu24_math_g8_upper_2_2",
+                    source="manual",
+                ),
+                TagCreate(
+                    "knowledge_point",
+                    "sk_bnu24_math_g8_upper_2_2_104",
+                    source="manual",
+                ),
+            ],
+        )
+    )
+    install_current_knowledge(db_path, taxonomy_revision=8)
+
+    detail = reader.get_question(question_id)
+    pairs = {(tag["tag_type"], tag["tag_value"]) for tag in detail["tags"]}
+
+    assert (
+        "knowledge_point",
+        "八年级上册｜第二章 实数｜2 平方根与立方根",
+    ) in pairs
+    assert (
+        "skill",
+        "八年级上册｜第二章 实数｜2 平方根与立方根｜技能·求立方根",
+    ) in pairs
+    assert all(
+        "技能·" not in value
+        for tag_type, value in pairs
+        if tag_type == "knowledge_point"
+    )
+
+
+def test_replace_tags_stores_skill_as_knowledge_point(tmp_path: Path) -> None:
+    from question_bank.services.question_write_service import ConfirmedQuestionTag
+
+    db_path, _reader, writer = _services(tmp_path)
+    question_id = writer.add_question(
+        QuestionCreate(
+            question_number="1",
+            question_text="求 27 的立方根。",
+            question_type="填空题",
+        )
+    )
+    revision = writer.get_revision(question_id)
+
+    writer.replace_tags(
+        question_id,
+        expected_revision=revision,
+        tags=[
+            ConfirmedQuestionTag(
+                "skill",
+                "八年级上册｜第二章 实数｜2 平方根与立方根｜技能·求立方根",
+                None,
+            ),
+        ],
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        stored = conn.execute(
+            "SELECT tag_type, tag_value FROM question_tags WHERE question_id = ?",
+            (question_id,),
+        ).fetchall()
+    assert stored == [
+        (
+            "knowledge_point",
+            "八年级上册｜第二章 实数｜2 平方根与立方根｜技能·求立方根",
+        )
+    ]

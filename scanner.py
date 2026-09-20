@@ -312,8 +312,6 @@ class Scanner:
         self.delete_source_pdfs = delete_source_pdfs
         self.render_dir = self.exams_dir / "_pdf_pages"
         self.enhanced_dir = self.exams_dir / "_enhanced"
-        import threading
-        self._ocr_lock = threading.Lock()
         self._detected_classes: dict[str, str] = {}
 
     def scan(self) -> List[ExamPaperGroup]:
@@ -907,27 +905,17 @@ class Scanner:
 
     def _do_local_ocr(self, image: Image.Image) -> str | None:
         try:
-            import threading
-            lock = getattr(self, "_ocr_lock", threading.Lock())
-            with lock:
-                from rapidocr_onnxruntime import RapidOCR
-                if not hasattr(self, "_rapid_ocr"):
-                    self._rapid_ocr = RapidOCR()
-                
-                import numpy as np
-                img_cv = np.array(image.convert("RGB"))
-                img_cv = img_cv[:, :, ::-1] # RGB to BGR
-                
-                result, _ = self._rapid_ocr(img_cv)
-                if result:
-                    texts = [res[1] for res in result]
-                    return "".join(texts)
-            return None
+            import numpy as np
+            from local_ocr import get_local_ocr
+
+            img_cv = np.asarray(image.convert("RGB"))[:, :, ::-1].copy()
+            result, _ = get_local_ocr()(img_cv)
+            return "".join(row[1] for row in result) or None
         except ImportError:
-            print("[WARNING] rapidocr_onnxruntime 未安装，将跳过本地OCR")
+            print("[WARNING] MinerU 本地 OCR 依赖未就绪，将使用原有姓名识别兜底流程")
             return None
         except Exception as exc:
-            print(f"[WARNING] 本地 OCR 失败: {exc}")
+            print(f"[WARNING] 本地 OCR 失败（{type(exc).__name__}），将使用原有姓名识别兜底流程")
             return None
 
     def _extract_student_name(self, front_image: Path, student_lookup: dict[str, dict[str, Any]] | None = None, report: Any = None) -> str | None:

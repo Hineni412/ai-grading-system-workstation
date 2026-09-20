@@ -91,9 +91,9 @@ def test_full_paper_grading_uses_one_model_request_and_local_json_repair_path(
     assert result.student_score == 5
     assert len(client.once_calls) == 1
     assert callable(client.once_calls[0]["usage_callback"])
-    assert client.once_calls[0]["extra_kwargs"] == {
-        "timeout_override_seconds": 600
-    }
+    assert "timeout_override_seconds" not in (
+        client.once_calls[0].get("extra_kwargs") or {}
+    )
     assert client.repairing_calls == 0
 
 
@@ -144,7 +144,7 @@ def test_evidence_atlas_user_prompt_uses_clear_chinese_without_changing_protocol
     assert "Return strict JSON only" not in prompt
 
 
-def test_full_paper_timeout_reaches_sdk_without_changing_shared_grading_default(
+def test_grading_requests_share_the_policy_timeout_at_the_sdk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -227,7 +227,7 @@ def test_full_paper_timeout_reaches_sdk_without_changing_shared_grading_default(
     )
 
     assert result.student_score == 5
-    assert [call["timeout"] for call in sdk_calls] == [600.0, 300.0]
+    assert [call["timeout"] for call in sdk_calls] == [600.0, 600.0]
 
 
 def test_full_paper_transport_failure_is_not_retried_by_default(

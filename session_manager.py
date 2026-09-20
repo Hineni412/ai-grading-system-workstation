@@ -27,7 +27,6 @@ from equivalence_engine import merge_equivalent_forms
 from llm_client import LLMClient
 
 
-DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 600.0
 DEFAULT_CONFIG_GENERATION_RETRY_DELAYS = (2.0, 6.0)
 DEFAULT_CONFIG_GENERATION_BATCH_SIZE = 3
 MAX_WORD_IMAGES_PER_QUESTION = 16
@@ -43,15 +42,6 @@ class _QuestionGenerationRequestError(RuntimeError):
         self.attempts = attempts
         self.category = category
         self.original = original
-
-
-def _config_generation_extra_kwargs() -> dict[str, float]:
-    raw_timeout = os.getenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS")
-    try:
-        timeout = float(raw_timeout) if raw_timeout else DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS
-    except (TypeError, ValueError):
-        timeout = DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS
-    return {"timeout": max(120.0, timeout)}
 
 
 def save_uploaded_json(upload_dir: Path, file_name: str, file_bytes: bytes) -> Path:
@@ -313,14 +303,12 @@ def generate_grading_config_from_docx_text(
             prompt,
             image_blobs,
             model=model_name,
-            extra_kwargs=_config_generation_extra_kwargs(),
             use_config_client=True,
         )
     else:
         payload = llm_client.json_from_text_once(
             prompt,
             model=model_name,
-            extra_kwargs=_config_generation_extra_kwargs(),
         )
     try:
         finalized = _finalize_whole_generation_payload(
@@ -340,14 +328,12 @@ def generate_grading_config_from_docx_text(
                 retry_prompt,
                 image_blobs,
                 model=model_name,
-                extra_kwargs=_config_generation_extra_kwargs(),
                 use_config_client=True,
             )
         else:
             payload = llm_client.json_from_text_once(
                 retry_prompt,
                 model=model_name,
-                extra_kwargs=_config_generation_extra_kwargs(),
             )
         finalized = _finalize_whole_generation_payload(
             payload,
@@ -370,7 +356,7 @@ def generate_grading_config_from_docx_text_legacy(
     if report:
         report(0.18, "旧版整卷生成", "直接把整份 Word 文本发送给模型生成评分标准。")
     prompt = _build_generation_prompt(doc_text)
-    payload = llm_client.json_from_text(prompt, model=model_name, extra_kwargs=_config_generation_extra_kwargs())
+    payload = llm_client.json_from_text(prompt, model=model_name)
     normalize_new_generated_config_payload(payload)
     validate_generated_config(payload)
     if _needs_objective_repair(payload, doc_text):
@@ -379,7 +365,6 @@ def generate_grading_config_from_docx_text_legacy(
         payload = llm_client.json_from_text(
             _build_objective_repair_prompt(doc_text, payload),
             model=model_name,
-            extra_kwargs=_config_generation_extra_kwargs(),
         )
         normalize_new_generated_config_payload(payload)
         validate_generated_config(payload)
@@ -1553,14 +1538,12 @@ def _run_config_generation_batches(
                     prompt,
                     image_blobs,
                     model=model_name,
-                    extra_kwargs=_config_generation_extra_kwargs(),
                     use_config_client=True,
                 )
             else:
                 batch_payload = llm_client.json_from_text_once(
                     prompt,
                     model=model_name,
-                    extra_kwargs=_config_generation_extra_kwargs(),
                 )
             _validate_exact_batch_payload(
                 batch_payload,
@@ -1701,7 +1684,6 @@ def _score_completed_batch_draft_once(
         score_data = llm_client.json_from_text_once(
             prompt,
             model=model_name,
-            extra_kwargs=_config_generation_extra_kwargs(),
         )
         score_meta = score_data.get("meta") if isinstance(score_data, dict) else None
         raw_score_repair = (
@@ -3818,7 +3800,6 @@ def generate_grading_config_from_images(
         prompt,
         image_blobs,
         model=model_name,
-        extra_kwargs=_config_generation_extra_kwargs(),
         use_config_client=True,
     )
     try:
@@ -3837,7 +3818,6 @@ def generate_grading_config_from_images(
             _whole_generation_retry_prompt(prompt, error),
             image_blobs,
             model=model_name,
-            extra_kwargs=_config_generation_extra_kwargs(),
             use_config_client=True,
         )
         return _finalize_whole_generation_payload(
@@ -3871,9 +3851,6 @@ from backend.config_generation.compat import (  # noqa: E402
     generate_grading_config_in_batches as generate_grading_config_in_batches,
     refine_grading_config_from_manual_structure as refine_grading_config_from_manual_structure,
     retry_failed_grading_config_batches as retry_failed_grading_config_batches,
-)
-from backend.config_generation.gateway import (  # noqa: E402
-    config_generation_extra_kwargs as _config_generation_extra_kwargs,
 )
 from backend.config_generation.prompts import (  # noqa: E402
     build_manual_structure_refinement_prompt as _build_manual_structure_refinement_prompt,

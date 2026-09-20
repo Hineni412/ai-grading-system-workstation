@@ -11,8 +11,8 @@ import '../styles/question-assembly.css'
 const AssemblyEditorWorkspace = defineAsyncComponent(
   () => import('../components/question-bank/AssemblyEditorWorkspace.vue'),
 )
-const AiAssemblyPanel = defineAsyncComponent(
-  () => import('../components/question-assembly/AiAssemblyPanel.vue'),
+const AssemblyAssistantPanel = defineAsyncComponent(
+  () => import('../components/question-assembly/AssemblyAssistantPanel.vue'),
 )
 
 const route = useRoute() as ReturnType<typeof useRoute> | undefined
@@ -20,16 +20,18 @@ const router = useRouter() as ReturnType<typeof useRouter> | undefined
 
 const assembly = useAssemblyStore()
 const jobs = useJobStore()
-type AssemblyMode = 'browse' | 'ai' | 'edit'
+type AssemblyMode = 'browse' | 'assistant' | 'edit'
 
 // 部分既有单测在无 router 的环境直接挂载本视图，此时回退到内存模式。
 const localMode = ref<AssemblyMode>('browse')
-// 模式与 URL 同步：?mode=ai|edit，browse 为默认（不带参数）；刷新后回到原模式。
+const selectionMode = ref<'browse' | 'assistant'>('browse')
+// 兼容旧 ?mode=ai 链接，将其打开为当前本地学情助手。
 const mode = computed<AssemblyMode>(() => {
   if (!route || !router) return localMode.value
   const raw = route.query.mode
   const value = Array.isArray(raw) ? raw[0] : raw
-  return value === 'ai' || value === 'edit' ? value : 'browse'
+  if (value === 'ai') return 'assistant'
+  return value === 'assistant' || value === 'edit' ? value : 'browse'
 })
 
 function setMode(next: AssemblyMode): void {
@@ -45,16 +47,19 @@ function setMode(next: AssemblyMode): void {
 }
 
 function showEditor(): void {
+  if (mode.value !== 'edit') selectionMode.value = mode.value
   void jobs.initialize()
   setMode('edit')
 }
+
+function returnToSelection(): void { setMode(selectionMode.value) }
 
 function showBrowser(): void {
   setMode('browse')
 }
 
-function showAi(): void {
-  setMode('ai')
+function showAssistant(): void {
+  setMode('assistant')
 }
 </script>
 
@@ -64,7 +69,7 @@ function showAi(): void {
       <div>
         <p class="assembly-kicker">PAPER ASSEMBLY</p>
         <h1 tabindex="-1">组卷工作台</h1>
-        <p>先从现有题库筛题并加入试卷篮，再统一调整顺序、分节和导出。</p>
+        <p>从题库选题，或依据班级学情缩小候选范围；加入试卷篮后统一整理和导出。</p>
       </div>
       <div class="assembly__summary" aria-label="当前试卷概况">
         <span><strong>{{ assembly.selectedQuestionCount }}</strong> 道题</span>
@@ -79,10 +84,10 @@ function showAi(): void {
         <small>章节、标签与相似题</small>
       </button>
       <i aria-hidden="true" />
-      <button type="button" :class="{ 'is-active': mode === 'ai' }" @click="showAi">
-        <span>AI</span>
-        <strong>AI 组卷</strong>
-        <small>需求生成细目表，题库选题</small>
+      <button type="button" :class="{ 'is-active': mode === 'assistant' }" @click="showAssistant">
+        <span>荐</span>
+        <strong>学情组卷助手</strong>
+        <small>班级薄弱点，少量候选题</small>
       </button>
       <i aria-hidden="true" />
       <button
@@ -98,7 +103,7 @@ function showAi(): void {
     </nav>
 
     <AssemblyQuestionBrowser v-if="mode === 'browse'" @edit="showEditor" />
-    <AiAssemblyPanel v-else-if="mode === 'ai'" @settled="showEditor" />
-    <AssemblyEditorWorkspace v-else @browse="showBrowser" />
+    <AssemblyAssistantPanel v-else-if="mode === 'assistant'" @edit="showEditor" />
+    <AssemblyEditorWorkspace v-else @browse="returnToSelection" />
   </section>
 </template>

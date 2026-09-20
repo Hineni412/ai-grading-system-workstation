@@ -241,14 +241,25 @@ def test_image_markers_do_not_defeat_exact_duplicate_linking(
 
     assert second.question_count == 1
     assert second.exact_duplicate_count == 1
-    target_id = _single_question_id(bank["db"], "b")
     with connect(bank["db"]) as conn:
-        link = conn.execute(
-            "SELECT duplicate_of_question_id FROM question_duplicate_links WHERE question_id = ?",
-            (target_id,),
+        occurrence = conn.execute(
+            """
+            SELECT occ.question_id, occ.question_number
+            FROM paper_question_occurrences occ
+            JOIN papers p ON p.id = occ.paper_id
+            WHERE p.title = 'b'
+            """,
         ).fetchone()
-    assert link is not None
-    assert int(link["duplicate_of_question_id"]) == source_id
+        assert conn.execute(
+            """
+            SELECT COUNT(*) FROM questions q
+            JOIN papers p ON p.id = q.paper_id
+            WHERE p.title = 'b'
+            """,
+        ).fetchone()[0] == 0
+    assert occurrence is not None
+    assert int(occurrence["question_id"]) == source_id
+    assert str(occurrence["question_number"]) == "1"
 
 
 def test_exact_duplicate_links_and_reuses_analysis(
@@ -278,27 +289,34 @@ def test_exact_duplicate_links_and_reuses_analysis(
     assert second.question_count == 1
     assert second.exact_duplicate_count == 1
     assert second.analysis_reused_count == 1
-    target_id = _single_question_id(bank["db"], "b")
     with connect(bank["db"]) as conn:
-        link = conn.execute(
+        occurrence = conn.execute(
             """
-            SELECT duplicate_of_question_id, match_kind
-            FROM question_duplicate_links
-            WHERE question_id = ?
+            SELECT occ.question_id, occ.question_number
+            FROM paper_question_occurrences occ
+            JOIN papers p ON p.id = occ.paper_id
+            WHERE p.title = 'b'
             """,
-            (target_id,),
         ).fetchone()
         tags = conn.execute(
             "SELECT tag_type, tag_value FROM question_tags WHERE question_id = ? ORDER BY tag_type",
-            (target_id,),
+            (source_id,),
         ).fetchall()
         question = conn.execute(
             "SELECT difficulty, reason FROM questions WHERE id = ?",
-            (target_id,),
+            (source_id,),
         ).fetchone()
-    assert link is not None
-    assert int(link["duplicate_of_question_id"]) == source_id
-    assert link["match_kind"] == "exact"
+        assert conn.execute(
+            """
+            SELECT COUNT(*) FROM questions q
+            JOIN papers p ON p.id = q.paper_id
+            WHERE p.title = 'b'
+            """,
+        ).fetchone()[0] == 0
+    # 出现记录保留本卷题号，标签/难度/理由共享规范题而不再复制。
+    assert occurrence is not None
+    assert int(occurrence["question_id"]) == source_id
+    assert str(occurrence["question_number"]) == "1"
     assert [(row["tag_type"], row["tag_value"]) for row in tags] == [
         ("ability", "运算能力"),
         ("exam_scope", "中考"),
@@ -308,13 +326,13 @@ def test_exact_duplicate_links_and_reuses_analysis(
     assert question["reason"] == "基础题"
     gaps = _load_analysis_gaps(
         bank["db"],
-        [target_id],
+        [source_id],
         data_root=bank["data_root"],
     )
-    assert gaps[target_id] == {"evidence_ready": True, "criteria_ready": True}
+    assert gaps[source_id] == {"evidence_ready": True, "criteria_ready": True}
 
 
-def test_identical_question_reuses_labels_and_retains_each_answer(
+def test_identical_question_reuses_labels_and_shared_answer(
     bank: dict[str, Path],
     tmp_path: Path,
     monkeypatch,
@@ -330,21 +348,25 @@ def test_identical_question_reuses_labels_and_retains_each_answer(
 
     assert second.question_count == 1
     assert second.exact_duplicate_count == 1
-    target_id = _single_question_id(bank["db"], "b")
     with connect(bank["db"]) as conn:
-        links = conn.execute(
-            "SELECT COUNT(*) AS n FROM question_duplicate_links WHERE question_id = ?",
-            (target_id,),
+        occurrence = conn.execute(
+            """
+            SELECT occ.question_id
+            FROM paper_question_occurrences occ
+            JOIN papers p ON p.id = occ.paper_id
+            WHERE p.title = 'b'
+            """,
         ).fetchone()
         tags = conn.execute(
             "SELECT COUNT(*) AS n FROM question_tags WHERE question_id = ?",
-            (target_id,),
+            (source_id,),
         ).fetchone()
-    assert int(links["n"]) == 1
+    # 答案按查重身份属于规范题；完全重复题共享旧答案，不再产生第二行。
+    assert occurrence is not None
+    assert int(occurrence["question_id"]) == source_id
     assert int(tags["n"]) == 3
     with connect(bank["db"]) as conn:
         assert conn.execute("SELECT answer_text FROM questions WHERE id=?", (source_id,)).fetchone()[0] == "42"
-        assert conn.execute("SELECT answer_text FROM questions WHERE id=?", (target_id,)).fetchone()[0] == "43"
 
 
 def test_near_variant_imports_normally_with_hint_only(
@@ -383,14 +405,17 @@ def test_exact_duplicate_without_source_analysis_only_links(
 
     assert second.exact_duplicate_count == 1
     assert second.analysis_reused_count == 0
-    target_id = _single_question_id(bank["db"], "b")
     with connect(bank["db"]) as conn:
-        link = conn.execute(
-            "SELECT duplicate_of_question_id FROM question_duplicate_links WHERE question_id = ?",
-            (target_id,),
+        occurrence = conn.execute(
+            """
+            SELECT occ.question_id
+            FROM paper_question_occurrences occ
+            JOIN papers p ON p.id = occ.paper_id
+            WHERE p.title = 'b'
+            """,
         ).fetchone()
-    assert link is not None
-    assert int(link["duplicate_of_question_id"]) == source_id
+    assert occurrence is not None
+    assert int(occurrence["question_id"]) == source_id
 
 
 def test_later_file_in_same_batch_matches_earlier_file(
@@ -416,14 +441,17 @@ def test_later_file_in_same_batch_matches_earlier_file(
 
     assert result.failed_files == 0
     first_id = _single_question_id(bank["db"], "a")
-    second_id = _single_question_id(bank["db"], "b")
     with connect(bank["db"]) as conn:
-        link = conn.execute(
-            "SELECT duplicate_of_question_id FROM question_duplicate_links WHERE question_id = ?",
-            (second_id,),
+        occurrence = conn.execute(
+            """
+            SELECT occ.question_id
+            FROM paper_question_occurrences occ
+            JOIN papers p ON p.id = occ.paper_id
+            WHERE p.title = 'b'
+            """,
         ).fetchone()
-    assert link is not None
-    assert int(link["duplicate_of_question_id"]) == first_id
+    assert occurrence is not None
+    assert int(occurrence["question_id"]) == first_id
 
 
 

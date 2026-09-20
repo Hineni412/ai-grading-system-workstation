@@ -13,6 +13,7 @@ export type WorkspaceRouteId =
   | 'grading'
   | 'model-profiles'
   | 'settings'
+  | 'ai-trace'
 
 export type WorkspaceNavigationIcon =
   | 'workbench'
@@ -27,6 +28,7 @@ export type WorkspaceNavigationIcon =
   | 'students'
   | 'model'
   | 'settings'
+  | 'ai-trace'
 
 export type AppIconName =
   | WorkspaceNavigationIcon
@@ -188,6 +190,16 @@ export const settingsRouteDefinition = {
   icon: 'settings',
 } as const satisfies WorkspaceRouteDefinition
 
+export const aiTraceRouteDefinition = {
+  id: 'ai-trace',
+  label: '调用记录',
+  path: '/settings?section=ai-trace',
+  title: 'AI 调用记录',
+  description: '查看每次模型调用的发送、返回与解析',
+  breadcrumb: '设置 / AI 调用记录',
+  icon: 'ai-trace',
+} as const satisfies WorkspaceRouteDefinition
+
 workspaceRegistry.assertNoCoreConflicts([
   workbenchRouteDefinition,
   sessionRouteDefinition,
@@ -201,6 +213,7 @@ workspaceRegistry.assertNoCoreConflicts([
   resultsRouteDefinition,
   modelProfilesRouteDefinition,
   settingsRouteDefinition,
+  aiTraceRouteDefinition,
 ])
 
 export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
@@ -239,11 +252,13 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
 
 export const settingsNavigationItems: readonly WorkspaceRouteDefinition[] = [
   studentsRouteDefinition,
+  aiTraceRouteDefinition,
   settingsRouteDefinition,
 ] as const
 
 export const navigationItems: readonly WorkspaceRouteDefinition[] = [
   workbenchRouteDefinition,
   ...navigationGroups.flatMap((group) => group.items),
-  ...settingsNavigationItems,
+  studentsRouteDefinition,
+  settingsRouteDefinition,
 ] as const

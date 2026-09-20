@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -11,6 +12,8 @@ from backend.api.dependencies import (
     get_assembly_workspace_service,
     get_job_manager,
     get_question_bank_read_service,
+    get_request_diagnosis_profile_service,
+    get_personalized_recommendation_module,
 )
 from backend.api.schemas.assembly import (
     AssemblyDraftResponse,
@@ -21,6 +24,8 @@ from backend.api.schemas.assembly import (
     AssemblyRecordListResponse,
     AssemblyRecordRestoreRequest,
     AssemblyRecordResponse,
+    AssemblyAssistantRequest,
+    AssemblyAssistantResponse,
 )
 from backend.api.schemas.jobs import JobResponse
 from backend.api.routers.jobs import _job_response
@@ -38,11 +43,46 @@ from question_bank.services.question_read_service import (
     QuestionBankReadService,
     QuestionBankSnapshotError,
 )
+from integration.diagnosis_profile_service import DiagnosisProfileService
+from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+from question_bank.services.assembly_assistant import shortlist_candidates
 
 
 router = APIRouter(prefix="/api/question-assembly", tags=["question-assembly"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 _LEADING_SCORE = re.compile(r"^[（(]\s*(\d+)\s*分\s*[）)]")
+
+
+@router.post("/assistant/candidates", response_model=AssemblyAssistantResponse)
+def get_assistant_candidates(
+    body: AssemblyAssistantRequest,
+    diagnosis_service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
+    read_service: QuestionBankReadService = Depends(get_question_bank_read_service),
+    recommendations: PersonalizedRecommendationModule = Depends(get_personalized_recommendation_module),
+    workspace: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
+) -> AssemblyAssistantResponse:
+    try:
+        if body.difficulty_min > body.difficulty_max:
+            raise ValueError("Difficulty range is reversed")
+        diagnosis = diagnosis_service.build_profiles(
+            scope={"mode": "class", "class_ids": [body.class_id], "use_historical_fallback": False},
+            exam_scope={"mode": "semester", "session_ids": [], "curriculum_volume_id": body.curriculum_volume_id},
+        )
+        excluded = recommendations.current_exam_question_ids(diagnosis) if body.exclude_exam_originals else set()
+        if body.exclude_recent:
+            excluded.update(qid for record in workspace.list_records(limit=5) for qid in record.question_ids)
+        result = shortlist_candidates(
+            diagnosis=diagnosis, read_service=read_service,
+            volume_id=body.curriculum_volume_id, chapter_id=body.chapter_id,
+            target_keys=body.target_keys, question_type=body.question_type,
+            difficulty_min=body.difficulty_min, difficulty_max=body.difficulty_max,
+            excluded_question_ids=excluded,
+        )
+    except ValueError as exc:
+        raise ApiError(422, "assembly_assistant_scope_invalid", "Class evidence or candidate filters changed") from exc
+    except (OSError, sqlite3.Error, QuestionBankSnapshotError) as exc:
+        raise ApiError(503, "assembly_assistant_unavailable", "Class evidence or question bank is temporarily unavailable") from exc
+    return AssemblyAssistantResponse.model_validate(result)
 
 
 @router.get("/draft", response_model=AssemblyDraftResponse)

@@ -83,6 +83,7 @@ class DeferredKnowledgeCandidate:
     fine_term_id: str
     fine_term_name: str
     aliases: tuple[str, ...] = ()
+    usage: str = ""
 
     def __post_init__(self) -> None:
         term_id = str(self.fine_term_id or "").strip()
@@ -99,21 +100,32 @@ class DeferredKnowledgeCandidate:
         object.__setattr__(self, "fine_term_id", term_id)
         object.__setattr__(self, "fine_term_name", term_name)
         object.__setattr__(self, "aliases", aliases)
+        object.__setattr__(
+            self, "usage", str(self.usage or "").strip()
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.fine_term_id,
             "name": self.fine_term_name,
             "aliases": list(self.aliases),
         }
+        if self.usage:
+            result["usage"] = self.usage
+        return result
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "DeferredKnowledgeCandidate":
-        _require_exact_keys(
-            payload,
-            {"id", "name", "aliases"},
-            "deferred knowledge candidate",
-        )
+        keys = {str(key) for key in payload}
+        if not {"id", "name", "aliases"} <= keys <= {
+            "id",
+            "name",
+            "aliases",
+            "usage",
+        }:
+            raise ValueError(
+                "deferred knowledge candidate fields do not match the contract"
+            )
         aliases = payload.get("aliases")
         if not isinstance(aliases, list) or not all(
             isinstance(item, str) for item in aliases
@@ -123,6 +135,7 @@ class DeferredKnowledgeCandidate:
             fine_term_id=str(payload.get("id") or ""),
             fine_term_name=str(payload.get("name") or ""),
             aliases=tuple(aliases),
+            usage=str(payload.get("usage") or ""),
         )
 
 
@@ -3364,6 +3377,7 @@ def _governed_candidate_snapshot(
                 fine_term_id=term_id,
                 fine_term_name=term_name,
                 aliases=aliases,
+                usage=str(raw.get("usage") or ""),
             )
     referenced_ids: list[str] = []
     for part in evidence.parts:
@@ -3404,12 +3418,14 @@ def _minimal_candidate_snapshot(
         )
         if not term_id or not term_name:
             continue
+        usage = str(raw.get("usage") or "").strip()
         previous = by_id.get(term_id)
         if previous is None:
             by_id[term_id] = DeferredKnowledgeCandidate(
                 fine_term_id=term_id,
                 fine_term_name=term_name,
                 aliases=aliases,
+                usage=usage,
             )
             continue
         by_id[term_id] = DeferredKnowledgeCandidate(
@@ -3420,6 +3436,7 @@ def _minimal_candidate_snapshot(
                 *((term_name,) if term_name != previous.fine_term_name else ()),
                 *aliases,
             ),
+            usage=previous.usage or usage,
         )
     referenced_ids: list[str] = []
     for part in evidence.parts:

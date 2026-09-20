@@ -342,6 +342,70 @@ def test_ai_diagnostics_api_reads_legacy_labels_without_retired_clear_route(
     assert client.get("/api/ai-diagnostics", params={"workspace_module": "other_workspace"}).json()["matching"] == 1
 
 
+def test_diagnostic_list_offset_pages_through_calls(
+    tmp_path: Path,
+) -> None:
+    journal = JsonlDiagnosticJournal(tmp_path / "logs" / "llm_diagnostics.jsonl")
+    for index in range(5):
+        _record_workspace_call(
+            journal,
+            operation_id=f"synthetic-offset-call-{index}",
+            module="other_workspace",
+            task_kind="other_task",
+            request_text=f"合成分页请求 {index}",
+            response_text=f'{{"plan":"合成分页响应 {index}"}}',
+        )
+
+    first_page = journal.list_calls(limit=2)
+    second_page = journal.list_calls(limit=2, offset=2)
+    third_page = journal.list_calls(limit=2, offset=4)
+
+    assert first_page["matching"] == 5
+    assert first_page["returned"] == 2
+    assert first_page["truncated"] is True
+    assert second_page["returned"] == 2
+    assert second_page["truncated"] is True
+    assert third_page["returned"] == 1
+    assert third_page["truncated"] is False
+    paged_ids = [
+        item["call_id"]
+        for page in (first_page, second_page, third_page)
+        for item in page["items"]
+    ]
+    all_ids = [item["call_id"] for item in journal.list_calls(limit=10)["items"]]
+    assert paged_ids == all_ids
+
+
+def test_ai_diagnostics_api_accepts_offset(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    journal = JsonlDiagnosticJournal(tmp_path / "logs" / "llm_diagnostics.jsonl")
+    for index in range(3):
+        _record_workspace_call(
+            journal,
+            operation_id=f"api-offset-call-{index}",
+            module="other_workspace",
+            task_kind="other_task",
+            request_text=f"合成 API 分页请求 {index}",
+            response_text=f'{{"plan":"合成 API 分页响应 {index}"}}',
+        )
+    monkeypatch.setattr(diagnostics_router, "_JOURNAL", journal)
+    app = FastAPI()
+    app.include_router(diagnostics_router.router)
+    client = TestClient(app)
+
+    listed = client.get("/api/ai-diagnostics", params={"limit": 2, "offset": 2})
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert payload["returned"] == 1
+    assert payload["matching"] == 3
+    assert payload["truncated"] is False
+
+    rejected = client.get("/api/ai-diagnostics", params={"offset": -1})
+    assert rejected.status_code == 422
+
+
 def test_diagnostic_list_omits_request_bodies_while_detail_keeps_them(
     tmp_path: Path,
 ) -> None:

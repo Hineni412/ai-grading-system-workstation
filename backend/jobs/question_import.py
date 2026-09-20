@@ -126,6 +126,13 @@ def _run_question_import_job_locked(
             )
         )
     )
+    imported_paper_ids = sorted(
+        {
+            int(item.paper_id)
+            for item in result.files
+            if item.paper_id is not None and int(item.paper_id) > 0
+        }
+    )
     context.report(0.9, "question_import", "indexing")
     failed_count = int(result.failed_files) + len(trash_collisions)
     if trash_collisions:
@@ -139,6 +146,7 @@ def _run_question_import_job_locked(
         "request_id": resource.request_id,
         "outcome": outcome,
         "imported_papers": int(result.imported_papers),
+        "imported_paper_ids": imported_paper_ids,
         "question_count": len(question_ids),
         "failed_count": failed_count,
         "successful_question_ids": question_ids,
@@ -181,9 +189,15 @@ def _active_question_ids(db_path: Path, source_files: list[str]) -> list[int]:
             SELECT id FROM questions
             WHERE COALESCE(is_deleted, 0) = 0
               AND source_file IN ({placeholders})
+            UNION
+            SELECT occ.question_id AS id
+            FROM paper_question_occurrences occ
+            JOIN papers p ON p.id = occ.paper_id
+            WHERE COALESCE(p.import_status, '') <> 'deleted'
+              AND p.source_file IN ({placeholders})
             ORDER BY id
             """,
-            clean_sources,
+            [*clean_sources, *clean_sources],
         ).fetchall()
     return [int(row["id"]) for row in rows]
 
@@ -204,9 +218,15 @@ def _active_question_ids_by_content_fingerprint(
             WHERE COALESCE(questions.is_deleted, 0) = 0
               AND COALESCE(papers.import_status, '') <> 'deleted'
               AND papers.content_fingerprint = ?
-            ORDER BY questions.id
+            UNION
+            SELECT occ.question_id AS id
+            FROM paper_question_occurrences occ
+            JOIN papers ON papers.id = occ.paper_id
+            WHERE COALESCE(papers.import_status, '') <> 'deleted'
+              AND papers.content_fingerprint = ?
+            ORDER BY id
             """,
-            (clean_fingerprint,),
+            (clean_fingerprint, clean_fingerprint),
         ).fetchall()
     return [int(row["id"]) for row in rows]
 

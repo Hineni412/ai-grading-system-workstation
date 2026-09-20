@@ -387,7 +387,8 @@ def preview_recommendation(question: dict[str, Any]) -> dict[str, Any]:
         "knowledge_points": [
             tag["tag_value"]
             for tag in question.get("tags", [])
-            if tag.get("tag_type") == "knowledge_point" and tag.get("tag_value")
+            if tag.get("tag_type") in ("knowledge_point", "skill")
+            and tag.get("tag_value")
         ],
         "difficulty": question.get("difficulty") or "",
         "recommend_reason": "题库手动组卷",

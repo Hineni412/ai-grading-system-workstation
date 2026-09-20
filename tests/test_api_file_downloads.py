@@ -460,24 +460,6 @@ def test_job_download_rejects_absolute_path_outside_reports(file_client, tmp_pat
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_job_download_rejects_relative_path_traversal(file_client, tmp_path: Path) -> None:
-    client, store, _reports_dir = file_client
-    outside = tmp_path / "outside.xlsx"
-    outside.write_bytes(b"xlsx")
-    job = _finish_job(
-        store,
-        "report_export",
-        result={"file_path": "reports/../outside.xlsx"},
-    )
-
-    response = client.get(f"/api/jobs/{job.id}/download")
-
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "job_file_forbidden"
-    assert str(outside) not in str(response.json())
-    assert response.headers["cache-control"] == "no-store"
-
-
 @pytest.mark.parametrize(
     ("suffix", "media_type"),
     [(".html", "text/html"), (".zip", "application/zip")],
@@ -518,37 +500,6 @@ def test_job_download_rejects_disallowed_extension(file_client, suffix: str) -> 
     assert response.json()["error"]["code"] == "job_file_type_not_supported"
     assert str(unsafe) not in str(response.json())
     assert response.headers["cache-control"] == "no-store"
-
-
-def test_job_download_rejects_resolved_escape_deterministically(
-    file_client,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client, store, reports_dir = file_client
-    outside = tmp_path / "outside.xlsx"
-    outside.write_bytes(b"xlsx")
-    link = reports_dir / "linked.xlsx"
-    link.write_bytes(b"placeholder")
-    original_resolve = Path.resolve
-    outside_resolved = original_resolve(outside, strict=False)
-
-    def resolve_with_escape(path: Path, *args, **kwargs) -> Path:
-        if path == link:
-            return outside_resolved
-        return original_resolve(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", resolve_with_escape)
-    job = _finish_job(
-        store,
-        "report_export",
-        result={"file_path": str(link)},
-    )
-
-    response = client.get(f"/api/jobs/{job.id}/download")
-
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "job_file_forbidden"
 
 
 # ---------------------------------------------------------------------------

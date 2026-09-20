@@ -505,6 +505,7 @@ class ResultRepository:
             row["assessment_state"] = {
                 key: detail.get(key) for key in (
                     "need_review", "answer_is_blank_or_no_valid_work", "answer_discarded_by_smudge",
+                    "step_assessments",
                 ) if key in detail
             } if isinstance(detail, dict) else {}
             result.append(_detail_row_with_secondary_errors(row))

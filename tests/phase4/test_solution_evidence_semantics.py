@@ -2408,3 +2408,136 @@ def test_evidence_writer_saves_governed_scoring_and_audits_unknown_links(
     assert len(audit["proposals"]) == 1
     assert audit["proposals"][0]["proposed_name"] == "全新代数平衡术"
     assert governance.list_proposals(status="pending")["counts"] == {"pending": 1}
+
+
+def _two_part_evidence_payload(question_id: int) -> dict[str, Any]:
+    """Two process-required parts; only survives uncollapsed under a process type."""
+    payload = _evidence_payload(question_id)
+    payload["parts"] = [
+        {
+            **payload["parts"][0],
+            "canonical_answer": "x=2",
+            "accepted_forms": ["x=2"],
+        },
+        {
+            **payload["parts"][0],
+            "part_id": "part-2",
+            "label": "第2问",
+            "canonical_answer": "结论成立",
+            "accepted_forms": ["结论成立"],
+            "full_answer": "由第一问结果化简得到最终结论。",
+            "evidence_points": [
+                {
+                    **payload["parts"][0]["evidence_points"][0],
+                    "evidence_point_id": "step-2",
+                }
+            ],
+        },
+    ]
+    return payload
+
+
+def _suggested_type_payload(
+    question_id: int,
+    suggestion: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = _combined_payload(question_id)
+    result = payload["results"][0]
+    result["solution_evidence"] = _two_part_evidence_payload(question_id)
+    result["question_type_suggestion"] = dict(suggestion)
+    return payload
+
+
+def _analyze_single(
+    question: QuestionAnalysisInput,
+    payload: Mapping[str, Any],
+) -> DeferredCombinedAnalysisBundle:
+    return InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([dict(payload)]),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:type-suggestion",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(
+            ConfigQuestionAnalysisSource(
+                "Q1",
+                question,
+            ),
+        ),
+    )
+
+
+def test_deferred_analysis_applies_suggestion_when_local_type_unconfirmed() -> None:
+    question = _question(
+        1,
+        question_type="填空题",
+        text="先求出 x 的值 ____，再说明结论成立。",
+    )
+    payload = _suggested_type_payload(
+        1,
+        {
+            "question_type": "解答题",
+            "essay_subtype": "计算",
+            "reason": "题面要求写出求解过程",
+        },
+    )
+
+    bundle = _analyze_single(question, payload)
+
+    assert bundle.status == "succeeded"
+    item = bundle.items[0]
+    suggestion = item.question_type_suggestion
+    assert suggestion is not None
+    assert suggestion["action"] == "applied"
+    assert suggestion["suggested_type"] == "解答题"
+    # 采纳后按过程题组织证据：两个模型小问不合并为单一填空评分单元。
+    assert len(item.solution_evidence.parts) == 2
+
+
+def test_deferred_analysis_keeps_confirmed_type_against_suggestion() -> None:
+    question = question_analysis_input_from_config_source(
+        {
+            "question_id": "Q1",
+            "question_text": "先求出 x 的值 ____，再说明结论成立。",
+            "answer_text": "x=2；结论成立。",
+            "question_type": "填空题",
+            "question_type_confirmed": True,
+        },
+        question_id=1,
+        curriculum_volume_id=VOLUME_ID,
+        taxonomy_contract=_taxonomy_contract(),
+    )
+    payload = _suggested_type_payload(
+        1,
+        {
+            "question_type": "解答题",
+            "essay_subtype": "计算",
+            "reason": "题面要求写出求解过程",
+        },
+    )
+
+    bundle = _analyze_single(question, payload)
+
+    assert bundle.status == "succeeded"
+    item = bundle.items[0]
+    suggestion = item.question_type_suggestion
+    assert suggestion is not None
+    assert suggestion["action"] == "conflict_only"
+    # 确认的填空题型仍按本地客观形态组织：多个模型小问折叠为一个答案单元。
+    assert len(item.solution_evidence.parts) == 1
+
+
+def test_deferred_analysis_records_invalid_suggestion_without_failing() -> None:
+    question = _question(1)
+    payload = _combined_payload(1)
+    payload["results"][0]["question_type_suggestion"] = {
+        "question_type": "不存在的题型",
+        "reason": "模型臆造",
+    }
+
+    bundle = _analyze_single(question, payload)
+
+    assert bundle.status == "succeeded"
+    item = bundle.items[0]
+    assert item.question_type_suggestion == {"action": "invalid_ignored"}
+    assert item.solution_evidence.parts

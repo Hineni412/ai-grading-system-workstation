@@ -9,8 +9,10 @@ interface KatexApi {
 const props = withDefaults(defineProps<{
   html: string
   imageAlt?: string
+  typesetText?: boolean
 }>(), {
   imageAlt: '题目图片',
+  typesetText: false,
 })
 
 const emit = defineEmits<{
@@ -30,6 +32,7 @@ function loadKatex(): Promise<KatexApi | null> {
 async function hydrateFormulas(): Promise<void> {
   const root = host.value
   if (!root) return
+  if (props.typesetText) markLinearFormulas(root)
   const targets = root.querySelectorAll<HTMLElement>('.qm[data-latex]:not(.qm--done)')
   if (!targets.length) return
   const katex = await loadKatex()
@@ -47,6 +50,57 @@ async function hydrateFormulas(): Promise<void> {
       target.classList.add('qm--done')
     }
   }
+}
+
+// Some Word sources use ordinary runs + superscripts rather than OMML.
+// Only the assistant opts into typesetting those explicit arithmetic runs.
+// Chinese prose, option labels, dates and the original fallback stay intact.
+function markLinearFormulas(root: HTMLElement): void {
+  let run: Node[] = []
+  const flush = () => {
+    if (!run.length) return
+    const original = run.map(node => {
+      if (node instanceof HTMLElement) return node.outerHTML
+      const span = document.createElement('span')
+      span.textContent = node.textContent
+      return span.innerHTML
+    }).join('')
+    const pattern = /(?:<sup>[+\-−A-Za-z0-9]+<\/sup>|<sub>[A-Za-z0-9]+<\/sub>|&(?:lt|gt);|(?!(?:[A-D][.．、]))[A-Za-z0-9πθ√+\-−×÷=<>≤≥≠²³^_{}()./]|[ \t])+/g
+    const updated = original.replace(pattern, fragment => {
+      const prefix = fragment.match(/^[ .\t]*/)?.[0] ?? ''
+      const suffix = fragment.match(/[ \t]*$/)?.[0] ?? ''
+      const formula = fragment.slice(prefix.length, fragment.length - suffix.length)
+      if (!/[=+×÷≤≥≠²³√]|<su[pb]>|&(?:lt|gt);/.test(formula)
+        && !/[A-Za-z].*[-−]|[-−].*[A-Za-z]/.test(formula)) return fragment
+      if (!/[A-Za-z0-9πθ]/.test(formula)) return fragment
+      const text = document.createElement('span')
+      text.innerHTML = formula.replace(/<sup>([^<]+)<\/sup>/g, '^{$1}').replace(/<sub>([^<]+)<\/sub>/g, '_{$1}')
+      const latex = (text.textContent ?? '').replace(/−/g, '-').replace(/²/g, '^{2}').replace(/³/g, '^{3}')
+        .replace(/×/g, '\\times ').replace(/÷/g, '\\div ').replace(/≤/g, '\\leq ').replace(/≥/g, '\\geq ')
+        .replace(/≠/g, '\\ne ').replace(/π/g, '\\pi ').replace(/θ/g, '\\theta ')
+        .replace(/√\(([^()]*)\)/g, '\\sqrt{$1}').replace(/√([A-Za-z0-9]+)/g, '\\sqrt{$1}')
+      const span = document.createElement('span')
+      span.className = 'qm'
+      span.dataset.latex = latex
+      span.innerHTML = formula
+      return prefix + span.outerHTML + suffix
+    })
+    if (updated !== original) {
+      const template = document.createElement('template')
+      template.innerHTML = updated
+      run[0]!.parentNode!.insertBefore(template.content, run[0]!)
+      run.forEach(node => node.parentNode?.removeChild(node))
+    }
+    run = []
+  }
+  for (const node of [...root.childNodes]) {
+    if (node.nodeType === Node.TEXT_NODE || (node instanceof HTMLElement && /^(SUP|SUB)$/.test(node.tagName))) run.push(node)
+    else {
+      flush()
+      if (node instanceof HTMLElement && !node.classList.contains('qm') && !/^(IMG|BR)$/.test(node.tagName)) markLinearFormulas(node)
+    }
+  }
+  flush()
 }
 
 function handleClick(event: MouseEvent): void {

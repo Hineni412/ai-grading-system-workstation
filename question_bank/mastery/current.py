@@ -83,9 +83,12 @@ class CurrentMasteryCalculator:
         if self.parameters is None:
             raise ValueError("current mastery parameters are unavailable")
         exam = self._exam_evidence(profile)
+        exam_scope = profile.get("exam_scope") or {}
         training = self._training_evidence(
             exclude_evidence_ids=exclude_training_evidence_ids,
             allowed_student_ids=allowed_student_ids,
+            curriculum_volume_id=(str(exam_scope.get("curriculum_volume_id") or "")
+                                  if exam_scope.get("mode") == "semester" else None),
         )
         identities = set(exam) | set(training)
         as_of = self.clock()
@@ -278,6 +281,7 @@ class CurrentMasteryCalculator:
         *,
         exclude_evidence_ids: frozenset[str],
         allowed_student_ids: frozenset[str] | None,
+        curriculum_volume_id: str | None = None,
     ) -> dict[tuple[str, str], list[TrainingEvidence]]:
         if not self.db_path.is_file():
             raise sqlite3.OperationalError("question bank database is missing")
@@ -293,17 +297,47 @@ class CurrentMasteryCalculator:
                 ORDER BY student_id, stable_key, occurred_at, evidence_id
                 """
             ).fetchall()
+            rows = [row for row in rows if str(row["evidence_id"]) not in exclude_evidence_ids
+                    and (allowed_student_ids is None or str(row["student_id"]) in allowed_student_ids)]
+            if curriculum_volume_id is not None:
+                # Semester belongs to the frozen training request, not to the
+                # day the teacher finally publishes the marking result.
+                scoped_rows = []
+                volumes_by_draft: dict[str, str] = {}
+                for row in rows:
+                    source = json.loads(row["source_json"])
+                    draft_id = str(source.get("draft_id") or "")
+                    if draft_id not in volumes_by_draft:
+                        draft = connection.execute(
+                            "SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id=?",
+                            (draft_id,),
+                        ).fetchone() if draft_id else None
+                        request = json.loads(draft["request_json"]) if draft else {}
+                        frozen_scope = request.get("diagnosis", {}).get("exam_scope", {})
+                        volumes_by_draft[draft_id] = str(
+                            frozen_scope.get("curriculum_volume_id")
+                            or request.get("config", {}).get("curriculum_volume_id") or "")
+                    if curriculum_volume_id and volumes_by_draft[draft_id] == curriculum_volume_id:
+                        scoped_rows.append(row)
+                rows = scoped_rows
             from question_bank.solution_evidence.part_assessments import load_profiles, training_part_observations
+            from question_bank.solution_evidence.knowledge_links import load_point_links
             source_by_id = {str(row["evidence_id"]): json.loads(row["source_json"]) for row in rows
                             if "source_json" in row.keys()}
             profiles = load_profiles(self.db_path, sorted({int(source["bank_question_id"]) for source in source_by_id.values() if source.get("bank_question_id")}), connection=connection, data_root=self.data_root)
+            point_links = load_point_links(
+                self.db_path,
+                [str(profile["evidence_version_id"]) for profile in profiles.values() if profile.get("evidence_version_id")],
+                None,
+                connection=connection,
+            )
             refined = {}
             for row in rows:
                 profile = profiles.get(int(source_by_id.get(str(row["evidence_id"]), {}).get("bank_question_id") or 0))
                 if profile is None:
                     continue
                 criterion = connection.execute("SELECT criteria_json,criteria_hash FROM training_criterion_versions WHERE version_id=? AND question_id=?", (row["criterion_version_id"], profile["question_id"])).fetchone()
-                refined[str(row["evidence_id"])] = training_part_observations(profile, json.loads(criterion["criteria_json"]), json.loads(row["final_points_json"])) if criterion and criterion["criteria_hash"] == row["criterion_hash"] else []
+                refined[str(row["evidence_id"])] = training_part_observations(profile, json.loads(criterion["criteria_json"]), json.loads(row["final_points_json"]), links=point_links.get(str(profile["evidence_version_id"]), {})) if criterion and criterion["criteria_hash"] == row["criterion_hash"] else []
         finally:
             connection.close()
         result: dict[tuple[str, str], list[TrainingEvidence]] = defaultdict(list)
@@ -420,6 +454,12 @@ def _exam_evidence(
     score_awarded = _optional_number(reference.get("score_awarded"))
     occurred_at = session_times.get(session_id)
     assessment = reference.get("assessment") or {}
+    observations = assessment.get("point_observations")
+    if isinstance(observations, list):
+        weight = sum(float(item["weight"]) for item in observations)
+        score_awarded = sum(float(item["achieved"]) * float(item["weight"]) for item in observations)
+        full_score = weight
+        assessment = {**assessment, "evidence_weight": weight}
     status = (
         EvidenceStatus.COMPLETED
         if occurred_at is not None

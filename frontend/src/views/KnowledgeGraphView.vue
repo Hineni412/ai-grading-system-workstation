@@ -9,7 +9,7 @@ import GraphScopeFilters from '../components/knowledge-graph/GraphScopeFilters.v
 import KnowledgeStructureBrowser from '../components/knowledge-training/KnowledgeStructureBrowser.vue'
 import KnowledgeTrainingTabs from '../components/knowledge-training/KnowledgeTrainingTabs.vue'
 import { summarizeGraph } from '../features/knowledge-graph/model'
-import { loadEvidenceScope, saveEvidenceScope } from '../features/evidence-scope/session'
+import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import {
   parseGraphRouteScope,
   serializeGraphRouteScope,
@@ -39,56 +39,15 @@ const summary = computed(() => summarizeGraph(
 const visibleWarnings = computed(() => [...new Set(graphStore.graph?.warnings ?? [])])
 
 async function initializeFromRoute(): Promise<void> {
-  if (routeInitialized || sessionStore.loadState !== 'ready' || studentsState.value !== 'ready') return
+  if (routeInitialized || sessionStore.loadState !== 'ready' || studentsState.value !== 'ready' || curriculumScope.loadState !== 'ready') return
   routeInitialized = true
   const parsed = parseGraphRouteScope(route.query, sessionStore.sessions, students.value)
-  if (parsed.query === null) {
-    if (sessionStore.selectedSessionId === null) {
-      routeNotice.value = '请先在顶部选择当前考试'
-      return
-    }
-    const savedQuery = loadEvidenceScope()
-    const knownSessionIds = new Set(sessionStore.sessions.map((item) => item.id))
-    const compatibleSavedQuery = savedQuery?.exam_scope.mode === 'cross_exam'
-      || savedQuery?.exam_scope.session_ids.every((id) => knownSessionIds.has(id))
-      ? savedQuery
-      : null
-    const defaultQuery: GraphQueryInput = compatibleSavedQuery ?? {
-      scope: {
-        mode: 'all',
-        include_student_ids: [],
-        exclude_student_ids: [],
-        use_historical_fallback: true,
-      },
-      exam_scope: {
-        mode: 'current',
-        session_ids: [sessionStore.selectedSessionId],
-      },
-    }
-    activeQuery.value = defaultQuery
-    if (
-      defaultQuery.exam_scope.mode === 'current'
-      && sessionStore.selectedSessionId !== defaultQuery.exam_scope.session_ids[0]
-    ) {
-      sessionStore.selectSession(defaultQuery.exam_scope.session_ids[0])
-    }
-    saveEvidenceScope(defaultQuery)
-    routeNotice.value = parsed.notice
-    await router.replace({ name: 'knowledge-graph', query: serializeGraphRouteScope(defaultQuery) })
-    await graphStore.loadGraph(defaultQuery)
-    return
-  }
-  if (
-    parsed.query.exam_scope.mode === 'current' &&
-    sessionStore.selectedSessionId !== parsed.query.exam_scope.session_ids[0]
-  ) {
-    sessionStore.selectSession(parsed.query.exam_scope.session_ids[0])
-  }
-  activeQuery.value = parsed.query
-  saveEvidenceScope(parsed.query)
+  const query = semesterEvidenceQuery(parsed.query?.scope ?? loadEvidenceScope()?.scope ?? { mode: 'all' }, curriculumScope.selectedVolumeId)
+  activeQuery.value = query
+  saveEvidenceScope(query)
   routeNotice.value = parsed.notice
-  await router.replace({ name: 'knowledge-graph', query: parsed.canonical })
-  await graphStore.loadGraph(parsed.query)
+  await router.replace({ name: 'knowledge-graph', query: serializeGraphRouteScope(query) })
+  await graphStore.loadGraph(query)
 }
 
 async function loadStudentOptions(): Promise<void> {
@@ -110,6 +69,7 @@ async function loadStudentOptions(): Promise<void> {
 }
 
 async function applyQuery(query: GraphQueryInput): Promise<void> {
+  query = semesterEvidenceQuery(query.scope, curriculumScope.selectedVolumeId)
   activeQuery.value = query
   saveEvidenceScope(query)
   routeNotice.value = ''
@@ -131,27 +91,20 @@ function retryStudents(): void {
 }
 
 watch(
-  () => sessionStore.loadState,
+  [() => sessionStore.loadState, () => curriculumScope.loadState],
   () => { void initializeFromRoute() },
 )
 
 watch(
-  () => sessionStore.selectedSessionId,
-  (sessionId) => {
+  () => curriculumScope.selectedVolumeId,
+  () => {
     const applied = activeQuery.value
-    if (
-      !routeInitialized ||
-      applied?.exam_scope.mode !== 'current' ||
-      applied.exam_scope.session_ids[0] === sessionId
-    ) return
-    if (sessionId === null) return
-    const next: GraphQueryInput = {
-      ...applied,
-      exam_scope: { mode: 'current', session_ids: [sessionId] },
-    }
+    if (!routeInitialized || !applied) return
+    graphStore.clearScope()
+    const next = semesterEvidenceQuery(applied.scope, curriculumScope.selectedVolumeId)
     activeQuery.value = next
     saveEvidenceScope(next)
-    routeNotice.value = '已按新的当前考试更新范围'
+    routeNotice.value = '已按当前教学学期更新全部考试和训练掌握度'
     void router.replace({ name: 'knowledge-graph', query: serializeGraphRouteScope(next) })
     void graphStore.loadGraph(next)
   },
@@ -168,13 +121,13 @@ onBeforeUnmount(() => {
   <section class="knowledge-graph-view" aria-labelledby="knowledge-graph-title">
     <header class="knowledge-graph-page-heading">
       <div>
-        <p>知识点热力图 · 自身证据</p>
+        <p>知识结构热力图 · 自身证据</p>
         <h1 id="knowledge-graph-title" tabindex="-1">知识结构</h1>
-        <p>按教材章、节、知识点查看掌握状况；每个知识点独立计算，无证据显示证据不足。</p>
+        <p>按教材章、节查看知识主题与技能的掌握状况；每项独立计算，无证据显示证据不足。</p>
       </div>
       <div class="knowledge-graph-heading-scope">
         <dl v-if="graphStore.graph" class="knowledge-graph-summary" aria-label="知识图谱汇总">
-          <div><dt>知识点</dt><dd>{{ summary.total }}</dd></div>
+          <div><dt>知识项</dt><dd>{{ summary.total }}</dd></div>
           <div><dt>证据不足</dt><dd>{{ summary.missing }}</dd></div>
           <div><dt>重点薄弱</dt><dd>{{ summary.weak }}</dd></div>
           <div><dt>需要讲评</dt><dd>{{ summary.review }}</dd></div>

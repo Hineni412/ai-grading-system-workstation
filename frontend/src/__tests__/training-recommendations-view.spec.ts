@@ -10,6 +10,9 @@ import type {
 } from '../api/training'
 import { createAppRouter } from '../router'
 import { useSessionStore } from '../stores/session'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
+import { useTrainingStore } from '../stores/training'
+import { savePaperSelectionSession } from '../features/training/paper-selection-session'
 import TrainingRecommendationsView from '../views/TrainingRecommendationsView.vue'
 
 const trainingApiMock = vi.hoisted(() => ({
@@ -301,9 +304,9 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-async function mountView(path = '/training') {
-  const pinia = createPinia()
+async function mountView(path = '/training', pinia = createPinia()) {
   setActivePinia(pinia)
+  useCurriculumScopeStore(pinia).$patch({ loadState: 'ready', selectedVolumeId: 'bnu24-math-g8-upper' })
   useSessionStore(pinia).$patch({
     sessions: [{
       id: 7,
@@ -328,7 +331,7 @@ async function mountView(path = '/training') {
   app.mount(host)
   mounted.push(app)
   await settle()
-  return { app, host, router }
+  return { app, host, router, pinia }
 }
 
 beforeEach(() => {
@@ -415,7 +418,7 @@ describe('training recommendations view', () => {
     expect(host.textContent).toContain('学生 × 知识点')
     expect(host.textContent).toContain('三角形全等')
     expect(host.textContent).toContain('当前证据范围')
-    expect(host.textContent).toContain('缺考参考历史')
+    expect(host.textContent).toContain('最新训练掌握度')
     ;[...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.trim() === '群体加权')!
       .click()
@@ -663,7 +666,7 @@ describe('training recommendations view', () => {
     expect(host.querySelector('h1')?.textContent).toBe('按学生训练')
     expect(host.querySelector('.student-filter-strip')).toBeNull()
     expect(host.textContent).not.toContain('多选学生')
-    expect(host.textContent).toContain('所选学生的加权知识结构')
+    expect(host.textContent).toContain('所选学生的知识与技能关联')
     expect(host.textContent).toContain('勾选章或小节作为训练范围')
 
     ;[...host.querySelectorAll<HTMLButtonElement>('button')]
@@ -765,6 +768,48 @@ describe('training recommendations view', () => {
     expect(generate.disabled).toBe(false)
   })
 
+  it('keeps the current diagnosis on a return visit with the same evidence scope', async () => {
+    const first = await mountView('/training?mode=chapter')
+    await vi.waitFor(() => expect(useTrainingStore(first.pinia).hasCurrentDiagnosis).toBe(true))
+    mounted.splice(mounted.indexOf(first.app), 1); first.app.unmount(); first.host.remove()
+    const second = await mountView('/training?mode=chapter', first.pinia)
+    await vi.waitFor(() => expect(second.host.textContent).toContain('学生 × 知识点'))
+    expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1)
+  })
+
+  it('checks seventeen adopted members and generates one shared draft without resetting it on diagnosis refresh', async () => {
+    const ids = Array.from({ length: 17 }, (_, index) => `SYN-${index}`)
+    const key = 'kp_synthetic_target'
+    const data: TrainingDiagnosis = {
+      ...diagnosis,
+      students: ids.map(id => ({ ...diagnosis.students[0]!, student_id: id,
+        weak_points: [{ ...diagnosis.students[0]!.weak_points[0]!, knowledge_key: key }] })),
+      knowledge_catalog: [{ knowledge_key: key, knowledge_point: '合成训练目标' }],
+      grouping: { version: 'v1', scope_keys: ['kp_chapter'], groups: [], unassigned: [], warnings: [],
+        selection: { group_id: 'group-17', source_version: 'b'.repeat(64), ready: true, issues: [], warnings: [],
+          members: [], targets: [], compatibility: 1, available_question_count: 10, recent_excluded_count: 0, reason: '' } },
+    }
+    trainingApiMock.diagnose.mockImplementation(async () => JSON.parse(JSON.stringify(data)))
+    savePaperSelectionSession({ targetKeys: [key], rangeKeys: [], questionCount: 10, difficultyMax: 7,
+      excludeCurrentOriginals: true, paperMode: 'shared', chapterKey: 'kp_chapter',
+      adoptedGroup: { groupId: 'group-17', memberIds: ids, targetKeys: [key], scopeKeys: ['kp_chapter'], sourceVersion: 'a'.repeat(64) } })
+    const { host, pinia } = await mountView('/training?mode=paper')
+    await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false))
+    const generate = host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!
+    expect(generate.textContent).toContain('生成 1 份草稿')
+    expect(host.querySelector('.paper-review-bar')?.textContent).toContain('17 名学生共同练习')
+    generate.click()
+    await vi.waitFor(() => expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce())
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({
+      paper_mode: 'shared', scope: expect.objectContaining({ student_ids: ids }), group_source_version: 'b'.repeat(64),
+    }))
+    await vi.waitFor(() => expect(host.textContent).toContain('04 · 草稿审核与匹配预览'))
+    useTrainingStore(pinia).diagnosis = JSON.parse(JSON.stringify(data))
+    await settle()
+    expect(host.textContent).toContain('04 · 草稿审核与匹配预览')
+    expect(trainingApiMock.getPersonalizedDraft).not.toHaveBeenCalled()
+  })
+
   it('moves individual-paper settings to the student page and unlocks one-paper-per-student drafts', async () => {
     const { host, router } = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(host.textContent).toContain('群体知识结构'))
@@ -849,16 +894,19 @@ describe('training recommendations view', () => {
       .mockResolvedValueOnce(diagnosis)
       .mockImplementationOnce(() => second)
     const { host } = await mountView('/training?mode=student')
-    await vi.waitFor(() => expect(host.textContent).toContain('所选学生的加权知识结构'))
+    await vi.waitFor(() => expect(host.textContent).toContain('所选学生的知识与技能关联'))
 
     ;[...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((item) => item.textContent?.trim() === '更多筛选')!
       .click()
     await settle()
-    host.querySelector<HTMLInputElement>('.evidence-scope__history input')!.click()
+    const floor = host.querySelector<HTMLInputElement>('input[aria-label="最低得分率"]')!
+    floor.value = '20'
+    floor.dispatchEvent(new Event('input', { bubbles: true }))
+    floor.dispatchEvent(new Event('change', { bubbles: true }))
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
 
-    expect(host.textContent).toContain('所选学生的加权知识结构')
+    expect(host.textContent).toContain('所选学生的知识与技能关联')
     expect(host.textContent).not.toContain('正在汇总学生与知识点')
     expect(host.textContent).toContain('正在更新掌握汇总')
     finishSecond?.(diagnosis)

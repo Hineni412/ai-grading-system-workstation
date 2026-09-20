@@ -83,7 +83,7 @@ def test_local_ocr_finds_printed_question_number_anchors(
     front = tmp_path / "front.png"
     Image.new("RGB", (1000, 1400), "white").save(front)
 
-    class FakeRapidOCR:
+    class FakeLocalOcr:
         def __call__(self, _image):
             return (
                 [
@@ -109,7 +109,7 @@ def test_local_ocr_finds_printed_question_number_anchors(
     anchors = detect_printed_question_anchors(
         {"front": front},
         ["Q10", "Q11"],
-        ocr_engine=FakeRapidOCR(),
+        ocr_engine=FakeLocalOcr(),
     )
 
     assert anchors == {

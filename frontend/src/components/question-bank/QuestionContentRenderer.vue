@@ -12,6 +12,7 @@ const props = withDefaults(defineProps<{
   imageAlt?: string
   compact?: boolean
   dense?: boolean
+  typesetText?: boolean
   paperMediaFlow?: boolean
   /**
    * Mirrors the Word exporter's compact_standalone_images_with_text split:
@@ -31,6 +32,7 @@ const props = withDefaults(defineProps<{
   imageAlt: '题目图片',
   compact: false,
   dense: false,
+  typesetText: false,
   paperMediaFlow: false,
   compactMediaWithText: undefined,
   supplementalImageUrls: () => [],
@@ -294,6 +296,18 @@ function handleViewerKey(event: KeyboardEvent): void {
     imageZoom.value = 1
   }
 }
+
+function fallbackHtml(block?: QuestionBankRichBlock): string {
+  const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  if (!block?.segments?.length) return escape(block?.text ?? props.fallback ?? '')
+  return block.segments.map(segment => {
+    let html = escape(segment.text)
+    if (segment.underline) html = `<u>${html}</u>`
+    if (segment.superscript) html = `<sup>${html}</sup>`
+    else if (segment.subscript) html = `<sub>${html}</sub>`
+    return (segment.line_break ? '<br>' : '') + html
+  }).join('')
+}
 </script>
 
 <template>
@@ -339,8 +353,9 @@ function handleViewerKey(event: KeyboardEvent): void {
           }"
         >
           <QuestionHtmlBlock
-            v-if="block.html"
-            :html="block.html"
+            v-if="block.html || (typesetText && block.kind !== 'table')"
+            :html="block.html || fallbackHtml(block)"
+            :typeset-text="typesetText"
             :image-alt="imageAlt"
             @open-image="(url) => openImage(url, imageAlt)"
           />
@@ -406,6 +421,7 @@ function handleViewerKey(event: KeyboardEvent): void {
         </div>
       </div>
     </template>
+    <QuestionHtmlBlock v-else-if="fallback && typesetText" :html="fallbackHtml()" typeset-text />
     <p v-else-if="fallback" class="question-content__fallback">{{ fallback }}</p>
     <p v-else-if="!supplementalImageUrls.length" class="question-content__empty">{{ emptyLabel }}</p>
 

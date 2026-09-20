@@ -13,7 +13,7 @@ const emit = defineEmits<{
   select: [key: string]
 }>()
 
-const CHAPTER_LEVEL_SECTION = '章级知识点'
+const CHAPTER_LEVEL_SECTION = '章级内容'
 
 interface NodePath {
   volume: string
@@ -30,6 +30,8 @@ interface EnrichedNode {
 interface SectionGroup {
   name: string
   items: EnrichedNode[]
+  topics: EnrichedNode[]
+  skills: EnrichedNode[]
   evidenceCount: number
 }
 
@@ -84,6 +86,16 @@ function observedCount(items: EnrichedNode[]): number {
   return items.filter(item => ownMastery(item.node) !== null).length
 }
 
+function isSkillNode(node: GraphNode): boolean {
+  return node.stable_key.startsWith('sk_')
+}
+
+function displayLabel(item: EnrichedNode): string {
+  return isSkillNode(item.node)
+    ? item.path.label.replace(/^技能[·：:]/, '')
+    : item.path.label
+}
+
 const chapters = computed<ChapterGroup[]>(() => {
   const chapterMap = new Map<string, { volume: string; name: string; items: EnrichedNode[] }>()
   const parents = new Set(props.edges.filter(edge => edge.relation_type === 'parent').map(edge => edge.target_key))
@@ -108,6 +120,8 @@ const chapters = computed<ChapterGroup[]>(() => {
     const sections = [...sectionMap].map(([name, items]) => ({
       name,
       items,
+      topics: items.filter((item) => !isSkillNode(item.node)),
+      skills: items.filter((item) => isSkillNode(item.node)),
       evidenceCount: items.reduce((total, item) => total + item.node.mastery.evidence_count, 0),
     }))
     return {
@@ -125,6 +139,27 @@ const volumeLabel = computed(() => {
   return volumes.length ? volumes.join('、') : '教材结构'
 })
 
+const totalTopics = computed(() => chapters.value.reduce(
+  (sum, chapter) => sum + chapter.sections.reduce((count, section) => count + section.topics.length, 0),
+  0,
+))
+const totalSkills = computed(() => chapters.value.reduce(
+  (sum, chapter) => sum + chapter.sections.reduce((count, section) => count + section.skills.length, 0),
+  0,
+))
+
+function sectionCounts(section: SectionGroup): string {
+  if (!section.skills.length) return `${section.topics.length} 知识主题`
+  return `${section.topics.length} 知识主题 · ${section.skills.length} 技能`
+}
+
+function chapterCounts(chapter: ChapterGroup): string {
+  const topics = chapter.sections.reduce((count, section) => count + section.topics.length, 0)
+  const skills = chapter.sections.reduce((count, section) => count + section.skills.length, 0)
+  if (!skills) return `${chapter.sections.length} 小节 · ${topics} 知识主题`
+  return `${chapter.sections.length} 小节 · ${topics} 知识主题 · ${skills} 技能`
+}
+
 const activeChapter = computed(() => chapters.value.find((chapter) => chapter.key === activeChapterKey.value)
   ?? chapters.value[0]
   ?? null)
@@ -140,6 +175,24 @@ const visibleItems = computed<EnrichedNode[]>(() => {
 const selectedNode = computed(() => visibleItems.value.find((item) => item.node.stable_key === props.selectedKey)?.node
   ?? visibleItems.value[0]?.node
   ?? null)
+
+const selectedIsSkill = computed(() => (selectedNode.value ? isSkillNode(selectedNode.value) : false))
+
+const selectedEntry = computed(() => {
+  const key = selectedNode.value?.stable_key
+  if (!key) return null
+  for (const chapter of chapters.value) {
+    for (const section of chapter.sections) {
+      const item = section.items.find((candidate) => candidate.node.stable_key === key)
+      if (item) return { item, section, chapter }
+    }
+  }
+  return null
+})
+
+const relatedTopics = computed<EnrichedNode[]>(
+  () => (selectedIsSkill.value ? selectedEntry.value?.section.topics ?? [] : []),
+)
 
 const visibleSections = computed(() => activeSection.value ? [activeSection.value] : activeChapter.value?.sections ?? [])
 
@@ -206,7 +259,7 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
 <template>
   <section class="structure-browser" aria-label="教材知识结构">
     <aside class="structure-browser__chapters">
-      <header><strong>{{ volumeLabel }}</strong><span>{{ chapters.reduce((sum, chapter) => sum + chapter.items.length, 0) }} 个知识点</span></header>
+      <header><strong>{{ volumeLabel }}</strong><span>{{ totalTopics }} 知识主题<template v-if="totalSkills"> · {{ totalSkills }} 技能</template></span></header>
       <nav class="structure-browser__chapter-tree" aria-label="章节导航">
         <div v-for="chapter in chapters" :key="chapter.key" class="structure-browser__chapter-node">
           <div class="structure-browser__chapter-row">
@@ -249,8 +302,8 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
           <span>{{ activeSection ? '当前小节' : '当前章节' }}</span>
           <h2>{{ activeSection ? `${activeChapter.name} / ${activeSection.name}` : activeChapter.name }}</h2>
         </div>
-        <strong v-if="activeSection">{{ activeSection.items.length }} 知识点</strong>
-        <strong v-else>{{ activeChapter.sections.length }} 小节 · {{ activeChapter.items.length }} 知识点</strong>
+        <strong v-if="activeSection">{{ sectionCounts(activeSection) }}</strong>
+        <strong v-else>{{ chapterCounts(activeChapter) }}</strong>
       </header>
       <div class="structure-browser__legend">
         <span class="is-low">待补强</span><span class="is-mid">需巩固</span><span class="is-good">较稳定</span><span class="is-empty">证据不足</span>
@@ -264,28 +317,44 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
         ← 返回{{ activeChapter.name }}的小节列表
       </button>
 
-      <p class="structure-browser__evidence-note">每格只显示该知识点自身证据；目录数字表示有证据的知识点数 / 总数。相邻或相关知识点互不推断。</p>
+      <p class="structure-browser__evidence-note">每格只显示该知识主题或技能自身的证据；目录数字表示有证据项数 / 总数。相邻或相关项目互不推断。</p>
       <section v-for="section in visibleSections" :key="section.name" class="structure-browser__heatmap-section">
         <h3>{{ section.name }} <small>{{ observedCount(section.items) }}/{{ section.items.length }} 项有证据</small></h3>
-        <div class="structure-browser__points">
-          <button v-for="item in section.items" :key="item.node.stable_key" type="button"
+        <div v-if="section.topics.length" class="structure-browser__points">
+          <button v-for="item in section.topics" :key="item.node.stable_key" type="button"
             :class="['structure-browser__point', masteryClass(ownMastery(item.node)), { 'is-selected': selectedNode?.stable_key === item.node.stable_key }]"
             :title="item.node.display_name" @click="emit('select', item.node.stable_key)">
-            <span>{{ item.path.label }}</span>
+            <span>{{ displayLabel(item) }}</span>
             <i><b :style="{ width: `${Math.round((ownMastery(item.node) ?? 0) * 100)}%` }" /></i>
             <strong>{{ percentage(ownMastery(item.node)) }}</strong>
             <small>{{ item.node.mastery.evidence_count }} 条自身证据</small>
           </button>
+        </div>
+        <div v-if="section.skills.length" class="structure-browser__skills">
+          <h4>可训练技能<small>{{ observedCount(section.skills) }}/{{ section.skills.length }} 项有证据</small></h4>
+          <div class="structure-browser__points structure-browser__points--skills">
+            <button v-for="item in section.skills" :key="item.node.stable_key" type="button"
+              :class="['structure-browser__point', masteryClass(ownMastery(item.node)), { 'is-selected': selectedNode?.stable_key === item.node.stable_key }]"
+              :title="item.node.display_name" @click="emit('select', item.node.stable_key)">
+              <span>{{ displayLabel(item) }}</span>
+              <i><b :style="{ width: `${Math.round((ownMastery(item.node) ?? 0) * 100)}%` }" /></i>
+              <strong>{{ percentage(ownMastery(item.node)) }}</strong>
+              <small>{{ item.node.mastery.evidence_count }} 条自身证据</small>
+            </button>
+          </div>
         </div>
       </section>
     </main>
 
     <aside class="structure-browser__detail">
       <template v-if="selectedNode">
-        <span>当前知识点</span>
-        <h2>{{ selectedNode.display_name }}</h2>
+        <span>{{ selectedIsSkill ? '当前技能' : '当前知识点' }}</span>
+        <h2>{{ selectedEntry ? displayLabel(selectedEntry.item) : selectedNode.display_name }}</h2>
+        <p v-if="selectedIsSkill && selectedEntry" class="structure-browser__skill-belong">
+          属于：{{ selectedEntry.section.name }}
+        </p>
         <div :class="['structure-browser__score', masteryClass(ownMastery(selectedNode))]">
-          <strong>{{ percentage(ownMastery(selectedNode)) }}</strong><span>本知识点掌握状况</span>
+          <strong>{{ percentage(ownMastery(selectedNode)) }}</strong><span>{{ selectedIsSkill ? '本技能掌握状况' : '本知识点掌握状况' }}</span>
         </div>
         <dl>
           <div><dt>证据</dt><dd>{{ selectedNode.mastery.evidence_count }} 条</dd></div>
@@ -293,8 +362,21 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
           <div><dt>扣分</dt><dd>{{ selectedNode.evidence.deduction_count }} 次</dd></div>
         </dl>
         <p>{{ selectedNode.definition }}</p>
-        <p v-if="ownMastery(selectedNode) === null">本知识点证据不足，不依据先修、相关关系或相邻章节推断掌握情况。</p>
-        <p v-else>仅根据本知识点已有作答与训练证据显示；安排练习时还会核对实际错题、解题要求与难度。</p>
+        <p v-if="selectedIsSkill && selectedNode.observable_evidence">{{ selectedNode.observable_evidence }}</p>
+        <section v-if="selectedIsSkill && relatedTopics.length" class="structure-browser__related-topics">
+          <h4>相关知识主题</h4>
+          <button
+            v-for="item in relatedTopics"
+            :key="item.node.stable_key"
+            type="button"
+            @click="emit('select', item.node.stable_key)"
+          >
+            <span>{{ item.path.label }}</span>
+            {{ percentage(ownMastery(item.node)) }}
+          </button>
+        </section>
+        <p v-if="ownMastery(selectedNode) === null">{{ selectedIsSkill ? '本技能' : '本知识点' }}证据不足，不依据先修、相关关系或相邻章节推断掌握情况。</p>
+        <p v-else>仅根据本{{ selectedIsSkill ? '技能' : '知识点' }}已有作答与训练证据显示；安排练习时还会核对实际错题、解题要求与难度。</p>
         <RouterLink :to="{ name: 'training', query: { mode: 'chapter' } }">用本章安排训练</RouterLink>
       </template>
     </aside>
@@ -334,6 +416,14 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
 .structure-browser__section-card > i b { display: block; height: 100%; background: var(--color-success); }
 .structure-browser__section-card.is-mid > i b { background: var(--color-warning); }.structure-browser__section-card.is-low > i b { background: var(--color-danger); }
 .structure-browser__points { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-border-default); }
+.structure-browser__skills { margin-top: .8rem; }
+.structure-browser__skills > h4 { display: flex; justify-content: space-between; gap: var(--space-2); margin: 0 0 .45rem; font-size: .82rem; font-weight: 600; color: var(--color-text-secondary); }
+.structure-browser__skills > h4 small { font-weight: normal; }
+.structure-browser__points--skills { border-style: dashed; }
+.structure-browser__skill-belong { margin: .2rem 0 0; color: var(--color-text-secondary); font-size: .8rem; }
+.structure-browser__related-topics h4 { margin: 0; font-size: .82rem; color: var(--color-text-secondary); }
+.structure-browser__related-topics button { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }
+.structure-browser__related-topics button:hover { border-color: var(--color-accent); }
 .structure-browser__point { display: grid; grid-template-columns: minmax(0, 1fr) 4rem auto; gap: .35rem .55rem; align-items: center; padding: .65rem; border: 0; background: var(--color-bg-surface); color: var(--color-text-primary); text-align: left; cursor: pointer; }
 .structure-browser__point.is-low { background: var(--color-danger-subtle); }
 .structure-browser__point.is-mid { background: var(--color-warning-subtle); }

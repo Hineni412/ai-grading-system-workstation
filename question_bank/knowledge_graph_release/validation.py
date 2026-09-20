@@ -22,7 +22,7 @@ _DISPOSITIONS = {
     "retired",
 }
 _MAPPING_ROLES = {"primary", "secondary", "context_only"}
-_NODE_KINDS = {"core", "structural", "legacy"}
+_NODE_KINDS = {"core", "structural", "legacy", "skill"}
 _NODE_STATUSES = {"active", "retired"}
 _RELATION_TYPES = {"parent", "prerequisite", "related"}
 _BASIS_KINDS = {

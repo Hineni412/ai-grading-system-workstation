@@ -138,7 +138,7 @@ def test_comparison_sheet_shows_ai_teacher_and_final_scores(tmp_path: Path) -> N
     db_path = _seed_mixed_session(tmp_path)
 
     export_path = ReportGenerator(db_path, tmp_path / "reports").export_session(1)
-    compare = pd.read_excel(export_path, sheet_name="AI与人工分对比")
+    compare = pd.read_excel(export_path, sheet_name="AI与人工分对比", header=2)
 
     assert list(compare.columns) == [
         "班级",
@@ -151,12 +151,11 @@ def test_comparison_sheet_shows_ai_teacher_and_final_scores(tmp_path: Path) -> N
         "最终得分",
     ]
     rows = {str(row["题号"]): row for _, row in compare.iterrows()}
+    # 只保留教师实际打过分的行；Q2 没有人工得分，不再出现在对比页。
+    assert set(rows) == {"Q1"}
     assert rows["Q1"]["AI 得分"] == 4
     assert rows["Q1"]["人工得分"] == 5
     assert rows["Q1"]["最终得分"] == 5
-    assert rows["Q2"]["AI 得分"] == 3
-    assert pd.isna(rows["Q2"]["人工得分"])
-    assert rows["Q2"]["最终得分"] == 3
 
 
 def test_manual_only_session_exports_with_empty_ai_track(tmp_path: Path) -> None:
@@ -164,7 +163,7 @@ def test_manual_only_session_exports_with_empty_ai_track(tmp_path: Path) -> None
 
     export_path = ReportGenerator(db_path, tmp_path / "reports").export_session(1)
 
-    compare = pd.read_excel(export_path, sheet_name="AI与人工分对比")
+    compare = pd.read_excel(export_path, sheet_name="AI与人工分对比", header=2)
     assert len(compare) == 2
     rows = {str(row["题号"]): row for _, row in compare.iterrows()}
     assert pd.isna(rows["Q1"]["AI 得分"])

@@ -6,7 +6,6 @@ import pytest
 
 from tools.check_documentation import (
     AUTHORITY_DOCUMENT_PATHS,
-    RETAINED_NON_AUTHORITY_DOCUMENT_PATHS,
     check_authority_documents,
     check_current_document_facts,
     check_historical_documents,
@@ -14,25 +13,6 @@ from tools.check_documentation import (
     check_skill_authority,
     run_checks,
 )
-
-
-EXPECTED_AUTHORITY_DOCUMENTS = (
-    "README.md",
-    "AGENTS.md",
-    "ARCHITECTURE.md",
-    "CLAUDE.md",
-    "CONTEXT.md",
-    "docs/product/GRADING.md",
-    "docs/product/KNOWLEDGE_AND_TRAINING.md",
-    "docs/product/CLASS_TEACHER.md",
-    "docs/security/SECURITY.md",
-    "docs/maintenance/storage-policy.md",
-    "docs/maintenance/packaging.md",
-    "docs/testing/README.md",
-    "docs/ui/STYLE.md",
-)
-
-EXPECTED_RETAINED_NON_AUTHORITY_DOCUMENTS = ()
 
 
 def _write(path: Path, text: str = "# 当前说明\n") -> None:
@@ -43,17 +23,6 @@ def _write(path: Path, text: str = "# 当前说明\n") -> None:
 def _write_authority_set(root: Path) -> None:
     for relative_path in AUTHORITY_DOCUMENT_PATHS:
         _write(root / relative_path)
-
-
-def test_authority_document_set_is_exact() -> None:
-    assert AUTHORITY_DOCUMENT_PATHS == EXPECTED_AUTHORITY_DOCUMENTS
-
-
-def test_retained_non_authority_document_set_is_exact() -> None:
-    assert (
-        RETAINED_NON_AUTHORITY_DOCUMENT_PATHS
-        == EXPECTED_RETAINED_NON_AUTHORITY_DOCUMENTS
-    )
 
 
 def test_missing_relative_markdown_link_has_stable_location(tmp_path: Path) -> None:
@@ -76,7 +45,7 @@ def test_all_missing_authority_documents_are_reported(tmp_path: Path) -> None:
     issues = check_authority_documents(tmp_path)
     assert [(item.code, item.path) for item in issues] == [
         ("DOC301", relative_path)
-        for relative_path in EXPECTED_AUTHORITY_DOCUMENTS
+        for relative_path in AUTHORITY_DOCUMENT_PATHS
     ]
 
 

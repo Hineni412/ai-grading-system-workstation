@@ -1923,6 +1923,7 @@ def list_question_facets(
     analysis_status: Literal["all", "complete", "incomplete"] = "all",
     teaching_progress_chapter: str | None = None,
     collapse_duplicates: bool = False,
+    scope_mode: Literal["any", "primary", "strict"] = "primary",
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionFacetsResponse:
     _validate_difficulty_range(difficulty_min, difficulty_max)
@@ -1956,6 +1957,7 @@ def list_question_facets(
                 analysis_status=analysis_status,
                 teaching_progress_chapter=teaching_progress_chapter or "",
                 collapse_duplicates=collapse_duplicates,
+                scope_mode=scope_mode,
             )
         )
     except QuestionBankSnapshotError as exc:
@@ -2015,6 +2017,7 @@ def list_questions(
     compact: bool = False,
     criteria_needs_review: bool = False,
     collapse_duplicates: bool = False,
+    scope_mode: Literal["any", "primary", "strict"] = "primary",
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionListResponse:
     _validate_difficulty_range(difficulty_min, difficulty_max)
@@ -2053,6 +2056,7 @@ def list_questions(
                 criteria_needs_review=criteria_needs_review,
                 teaching_progress_chapter=teaching_progress_chapter or "",
                 collapse_duplicates=collapse_duplicates,
+                scope_mode=scope_mode,
             )
         )
     except QuestionBankSnapshotError as exc:

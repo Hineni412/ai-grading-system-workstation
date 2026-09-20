@@ -65,7 +65,7 @@ const resultsReturnPath = computed(() => {
 })
 const resultsReturnLabel = computed(() => {
   if (!resultsReturnPath.value) return undefined
-  return router.resolve(resultsReturnPath.value).query.tab === 'details' ? '返回成绩明细' : '返回成绩总览'
+  return '返回成绩明细'
 })
 
 async function returnToResults(): Promise<void> {
@@ -169,6 +169,51 @@ function entryQuery(): string | null {
     : null
 }
 
+const studentStripId = computed(() => (
+  entryQuery() === 'results' ? positiveIntegerQuery(route.query.student) : null
+))
+const stripStudent = computed(() => {
+  if (studentStripId.value === null) return null
+  const data = resultsStore.results
+  if (!data || data.session_id !== sessionStore.selectedSessionId) return null
+  return data.students.find(
+    (student) => student.student_id === studentStripId.value,
+  ) ?? null
+})
+const studentStripEntries = computed(() => {
+  const student = stripStudent.value
+  const data = resultsStore.results
+  if (!student || !data) return []
+  const byQuestion = new Map(
+    student.items.map((item) => [item.question_id, item]),
+  )
+  return data.questions.map((question) => ({
+    questionId: question.question_id,
+    item: byQuestion.get(question.question_id) ?? null,
+  }))
+})
+const showStudentStrip = computed(() => (
+  mode.value === 'deep'
+  && stripStudent.value !== null
+  && studentStripEntries.value.length > 0
+))
+
+function stripScoreText(score: number | null): string {
+  return score === null
+    ? '—'
+    : Number.isInteger(score) ? String(score) : score.toFixed(1).replace(/\.0$/, '')
+}
+
+function stripStatusLabel(status: string): string {
+  return {
+    ungraded: '未评',
+    failed: '失败',
+    ai_review: '待复核',
+    ai_ready: 'AI',
+    teacher_final: '教师',
+  }[status] ?? status
+}
+
 function openGradingRun(): void {
   const sessionId = sessionStore.selectedSessionId
   if (sessionId !== null) void router.push(`/sessions/${sessionId}/grading-run`)
@@ -188,6 +233,7 @@ function syncValidatedQuery(): void {
   if (sessionId !== null) query.session = String(sessionId)
   const entry = entryQuery()
   if (entry !== null) query.entry = entry
+  if (studentStripId.value !== null) query.student = String(studentStripId.value)
   if (questionIsValid && questionId !== null) query.question = questionId
   if (
     mode.value === 'deep'
@@ -537,6 +583,29 @@ async function retryAnnotations(): Promise<void> {
   }
 }
 
+async function openStudentQuestion(
+  questionId: string,
+  reviewItemId: string,
+): Promise<void> {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId === null) return
+  if (questionId === reviewStore.selectedQuestionId) {
+    reviewStore.selectItem(reviewItemId)
+    mode.value = 'deep'
+    syncValidatedQuery()
+    await querySync
+    return
+  }
+  await loadQuestion(
+    sessionId,
+    questionId,
+    reviewItemId,
+    null,
+    true,
+    contextGeneration,
+  )
+}
+
 async function openItem(reviewItemId: string): Promise<void> {
   const scrollingElement = reviewPage.value?.parentElement
   batchScrollTop.value = scrollingElement?.scrollTop ?? 0
@@ -683,6 +752,18 @@ const stopSelectionWatch = watch(
   syncValidatedQuery,
 )
 
+// 从成绩页进入且带学生参数时，复用成绩快照生成该生各题横条；快照缺失时补一次读取。
+const stopStudentStripWatch = watch(
+  [studentStripId, () => sessionStore.selectedSessionId],
+  ([studentId, sessionId]) => {
+    if (studentId === null || sessionId === null) return
+    if (resultsStore.state === 'loading') return
+    if (resultsStore.sessionId === sessionId && resultsStore.results !== null) return
+    void resultsStore.load(sessionId)
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
 })
@@ -693,6 +774,7 @@ onBeforeUnmount(() => {
   itemGeneration += 1
   stopSessionWatch()
   stopSelectionWatch()
+  stopStudentStripWatch()
   window.removeEventListener('keydown', onKeydown)
   reviewStore.reset()
 })
@@ -778,7 +860,36 @@ onBeforeUnmount(() => {
       :register-annotation-retry="handleDeepAnnotationRetry"
       @back="closeDeepReview"
       @confirmed="handleDeepConfirmed"
-    />
+    >
+      <template #strip>
+        <nav
+          v-if="showStudentStrip"
+          class="review-question-strip review-student-strip"
+          data-testid="student-question-strip"
+          :aria-label="`${stripStudent!.student_name} 各题得分与切换`"
+        >
+          <button
+            v-for="entry in studentStripEntries"
+            :key="entry.questionId"
+            type="button"
+            :disabled="entry.item === null"
+            :data-status="entry.item?.score_status"
+            :aria-current="entry.questionId === reviewStore.selectedQuestionId ? 'true' : undefined"
+            :aria-label="entry.item === null
+              ? `${entry.questionId}，无作答记录`
+              : `${entry.questionId}，得分 ${stripScoreText(entry.item.score_awarded)} 分`"
+            @click="entry.item !== null && openStudentQuestion(entry.questionId, entry.item.review_item_id)"
+          >
+            <strong>{{ entry.questionId }}</strong>
+            <span v-if="entry.item">
+              {{ stripScoreText(entry.item.score_awarded) }} / {{ stripScoreText(entry.item.max_score) }}
+              · {{ stripStatusLabel(entry.item.score_status) }}
+            </span>
+            <span v-else>无记录</span>
+          </button>
+        </nav>
+      </template>
+    </ReviewDeepWorkspace>
 
     <ReviewBatchWorkspace
       v-else-if="hasValidatedQuestion"

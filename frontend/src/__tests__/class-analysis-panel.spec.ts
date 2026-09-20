@@ -1,5 +1,6 @@
-import { createApp, nextTick, type App } from 'vue'
+import { createApp, h, nextTick, type App } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -163,24 +164,27 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-async function mountPanel(sessionId: number | null = 7) {
+async function mountPanel(sessionId: number | null = 7): Promise<{ host: HTMLElement; router: Router }> {
   const pinia = createPinia()
   setActivePinia(pinia)
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { render: () => h('div') } },
+      { path: '/class-report', component: { render: () => h('div', '合成班级报告页') } },
+    ],
+  })
+  await router.push('/')
+  await router.isReady()
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp(ClassAnalysisPanel, { sessionId })
   app.use(pinia)
+  app.use(router)
   app.mount(host)
   mounted.push(app)
   await settle()
-  return { host }
-}
-
-async function openAi(host: HTMLElement): Promise<void> {
-  await vi.waitFor(() => expect(host.querySelector('[data-testid="ai-analysis-open"]')).not.toBeNull())
-  host.querySelector<HTMLButtonElement>('[data-testid="ai-analysis-open"]')!.click()
-  await vi.waitFor(() => expect(document.querySelector('[data-testid="ai-analysis-dialog"]')).not.toBeNull())
-  await settle()
+  return { host, router }
 }
 
 beforeEach(() => {
@@ -251,8 +255,7 @@ describe('class analysis panel', () => {
     const reopened = await mountPanel()
     await vi.waitFor(() => expect(reopened.host.textContent).toContain('用水平边替换竖直绳段'))
     expect(apiMock.regenerate).not.toHaveBeenCalled()
-    await openAi(reopened.host)
-    expect(document.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.disabled).toBe(true)
+    expect(reopened.host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.disabled).toBe(true)
   })
 
   it('opens source evidence and only submits cause grouping after explicit confirmation', async () => {
@@ -275,13 +278,12 @@ describe('class analysis panel', () => {
     expect(detail.textContent).toContain('钱肖白（0 分）')
     expect(host.querySelector('.class-analysis__causes')!.textContent).not.toContain('方程及求解正确')
     expect(host.querySelector('.class-analysis__cause-review')!.textContent).toContain('未归为错因的批语')
-    await openAi(host)
     expect(apiMock.regenerate).not.toHaveBeenCalled()
-    document.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
     await settle()
-    expect(document.body.textContent).toContain('各班共用逐题归并结果')
+    expect(host.textContent).toContain('各班共用逐题归并结果')
     expect(apiMock.regenerate).not.toHaveBeenCalled()
-    document.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
     await vi.waitFor(() => expect(apiMock.regenerate).toHaveBeenCalledWith(7, undefined, 'causes'))
   })
 
@@ -332,6 +334,7 @@ describe('class analysis panel', () => {
     expect(apiMock.getClassAnalysis).toHaveBeenLastCalledWith(7, expect.any(AbortSignal), '', 'summary')
     expect(host.textContent).toContain('全部班级合并')
   })
+
   it('shows the empty state when the session has no graded results', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       status: 'no_data',
@@ -343,7 +346,6 @@ describe('class analysis panel', () => {
     const { host } = await mountPanel()
 
     expect(host.textContent).toContain('当前范围尚无已批改成绩')
-    expect(host.querySelector('[data-testid="auto-generate-toggle"]')).toBeNull()
   })
 
   it('shows the generating state and reloads when the tracked job finishes', async () => {
@@ -369,8 +371,8 @@ describe('class analysis panel', () => {
     await vi.waitFor(() => expect(apiMock.getClassAnalysis).toHaveBeenCalledTimes(2))
   })
 
-  it('keeps only statistics and diagnostics on the page and loads AI on demand', async () => {
-    const { host } = await mountPanel()
+  it('keeps only statistics and diagnostics on the page and navigates to the report for AI analysis', async () => {
+    const { host, router } = await mountPanel()
     await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
     expect(apiMock.getClassAnalysis).toHaveBeenCalledTimes(1)
     expect(apiMock.getClassAnalysis).toHaveBeenCalledWith(7, expect.any(AbortSignal), '', 'summary')
@@ -384,90 +386,35 @@ describe('class analysis panel', () => {
     expect(host.textContent).not.toContain('逐人失分点')
     expect(host.textContent).not.toContain('陈维懋')
     expect(host.textContent).not.toContain('两极分化严重')
-    await openAi(host)
-    expect(document.body.textContent).toContain('两极分化严重')
-    expect(document.body.textContent).toContain('用第 12 题整题做板书示范')
-    expect(document.body.textContent).toContain('高分组布置压轴变式')
-    expect(document.body.textContent).toContain('AI 分析 · 仅供参考')
     expect(apiMock.regenerate).not.toHaveBeenCalled()
+
+    host.querySelector<HTMLButtonElement>('[data-testid="ai-analysis-open"]')!.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/class-report'))
+    expect(router.currentRoute.value.query).toMatchObject({ session: '7' })
   })
 
-  it('shows the stale banner and the small-sample caution', async () => {
+  it('requires confirmation before submitting cause grouping and tracks the new job', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
-      stale: true,
-      small_sample: true,
+      cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
+        failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
     }))
-
     const { host } = await mountPanel()
-    await openAi(host)
+    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
+
+    host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
     await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="stale-banner"]'),
-    ).not.toBeNull())
-
-    expect(document.body.textContent).toContain('成绩已更新或统计口径已调整，请重新生成 AI 分析')
-    expect(document.body.querySelector('[data-testid="small-sample-note"]')).not.toBeNull()
-  })
-
-  it('keeps data sections and degrades the AI block when the narrative failed', async () => {
-    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
-      narrative: null,
-      narrative_failed: true,
-    }))
-
-    const { host } = await mountPanel()
-    host.querySelector<HTMLButtonElement>('.class-analysis__score-band-toggle:not(:disabled)')!.click()
-    await settle()
-    await openAi(host)
-    await vi.waitFor(() => expect(document.body.textContent).toContain('数学阶段测试'))
-
-    expect(document.body.textContent).toContain('钱肖白')
-    expect(document.body.querySelector('[data-testid="narrative-missing"]')?.textContent)
-      .toContain('AI 分析生成失败，可重新生成')
-    expect(document.body.querySelector('[data-testid="regenerate-open"]')).not.toBeNull()
-  })
-
-  it('persists the auto-generate toggle immediately and rolls back on failure', async () => {
-    const { host } = await mountPanel()
-    await openAi(host)
-    await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="auto-generate-toggle"]'),
-    ).not.toBeNull())
-
-    const toggle = document.body.querySelector<HTMLInputElement>(
-      '[data-testid="auto-generate-toggle"]',
-    )!
-    expect(toggle.checked).toBe(true)
-
-    toggle.click()
-    await vi.waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledWith(7, false))
-    // 等第一次保存落库、绑定值刷新后再触发第二次，避免与进行中状态竞争。
-    await vi.waitFor(() => expect(toggle.checked).toBe(false))
-
-    apiMock.updateSettings.mockRejectedValueOnce(new Error('save failed'))
-    toggle.click()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('自动生成设置未能保存'))
-    expect(toggle.checked).toBe(false)
-  })
-
-  it('requires confirmation before regenerating and tracks the new job', async () => {
-    const { host } = await mountPanel()
-    await openAi(host)
-    await vi.waitFor(() => expect(document.body.textContent).toContain('数学阶段测试'))
-
-    document.body.querySelector<HTMLButtonElement>('[data-testid="regenerate-open"]')!.click()
-    await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="regenerate-confirm-dialog"]'),
+      host.querySelector('[data-testid="regenerate-confirm-dialog"]'),
     ).not.toBeNull())
     await vi.waitFor(() => expect(modelProfilesMock.getState).toHaveBeenCalled())
 
-    expect(document.body.textContent).toContain('默认内容服务')
-    expect(document.body.textContent).toContain('qwen-plus')
+    expect(host.textContent).toContain('默认内容服务')
+    expect(host.textContent).toContain('qwen-plus')
     expect(apiMock.regenerate).not.toHaveBeenCalled()
 
-    document.body.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
-    await vi.waitFor(() => expect(apiMock.regenerate).toHaveBeenCalledWith(7))
+    host.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
+    await vi.waitFor(() => expect(apiMock.regenerate).toHaveBeenCalledWith(7, undefined, 'causes'))
     await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="regenerate-confirm-dialog"]'),
+      host.querySelector('[data-testid="regenerate-confirm-dialog"]'),
     ).toBeNull())
     expect(useJobStore().jobs[92]).toBeDefined()
   })
@@ -483,16 +430,19 @@ describe('class analysis panel', () => {
         class_teacher: { profile_name: '默认内容服务', model: 'qwen-plus' },
       },
     })
+    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
+      cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
+        failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
+    }))
     const { host } = await mountPanel()
-    await openAi(host)
-    await vi.waitFor(() => expect(document.body.textContent).toContain('数学阶段测试'))
+    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
 
-    document.body.querySelector<HTMLButtonElement>('[data-testid="regenerate-open"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
     await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="regenerate-not-configured"]'),
+      host.querySelector('[data-testid="regenerate-not-configured"]'),
     ).not.toBeNull())
 
-    const confirm = document.body.querySelector<HTMLButtonElement>(
+    const confirm = host.querySelector<HTMLButtonElement>(
       '[data-testid="regenerate-confirm"]',
     )!
     expect(confirm.disabled).toBe(true)
@@ -511,18 +461,21 @@ describe('class analysis panel', () => {
       requestId: 'req-1',
       retryable: false,
     }))
+    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
+      cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
+        failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
+    }))
     const { host } = await mountPanel()
-    await openAi(host)
-    await vi.waitFor(() => expect(document.body.textContent).toContain('数学阶段测试'))
+    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
 
-    document.body.querySelector<HTMLButtonElement>('[data-testid="regenerate-open"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
     await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="regenerate-confirm"]'),
+      host.querySelector('[data-testid="regenerate-confirm"]'),
     ).not.toBeNull())
-    document.body.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
 
     await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="regenerate-error"]')?.textContent,
+      host.querySelector('[data-testid="regenerate-error"]')?.textContent,
     ).toContain('未配置内容生成模型'))
     expect(apiMock.regenerate).toHaveBeenCalledTimes(1)
   })

@@ -84,8 +84,8 @@ def test_034_unifies_essay_types_and_converts_subtypes_to_tags(
     )
 
     assert report.error is None, report.error
-    assert report.results[-1].name == "034_unify_essay_types"
-    assert report.results[-1].status == "applied"
+    migration = next(item for item in report.results if item.name == MIGRATION_034.stem)
+    assert migration.status == "applied"
     # 三种子类题型与裸"解答题"都归一为"解答题"；其他题型不动。
     assert _question_types(database) == {
         1: "解答题",

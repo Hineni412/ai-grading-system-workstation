@@ -116,17 +116,16 @@ def test_phase_gate_upgrades_every_supported_historical_version(
         item["target"]: item for item in matrix["targets"]
     }
     assert set(by_target) == {"grading", "question_bank"}
-    for target, expected_count, latest_version in (
-        ("grading", 15, "013_dual_track_ai_scores"),
-        (
-            "question_bank",
-            36,
-            "034_unify_essay_types",
-        ),
-    ):
+    for target in ("grading", "question_bank"):
+        migration_dir = Path(__file__).resolve().parents[1] / "migrations" / target
+        expected_versions = [
+            "empty",
+            *(path.stem for path in sorted(migration_dir.glob("*.sql"))),
+        ]
         item = by_target[target]
-        assert len(item["versions"]) == expected_count
-        assert item["versions"][0]["start_version"] == "empty"
+        assert [
+            version["start_version"] for version in item["versions"]
+        ] == expected_versions
         assert all(
             version["status"]
             in {
@@ -137,4 +136,3 @@ def test_phase_gate_upgrades_every_supported_historical_version(
             }
             for version in item["versions"]
         )
-        assert item["versions"][-1]["start_version"] == latest_version

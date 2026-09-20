@@ -8,10 +8,12 @@ import type {
   TrainingDiagnosis,
 } from '../api/training'
 import PersonalizedRecommendationDraftView from '../components/training/PersonalizedRecommendationDraft.vue'
+import { ApiError } from '../api/errors'
 
 const trainingApiMock = vi.hoisted(() => ({
   createPersonalizedDraft: vi.fn(),
   getPersonalizedDraft: vi.fn(),
+  getPersonalizedDraftByRequest: vi.fn(),
   editPersonalizedDraft: vi.fn(),
   listPaperInstances: vi.fn(),
   listPaperBatches: vi.fn(),
@@ -451,6 +453,38 @@ describe('personalized recommendation draft', () => {
     excludeCurrentExamOriginals: true,
     targetKeys: ['knowledge_point:一元一次方程'],
   }
+
+  it('recovers a saved draft after the create request times out without posting again', async () => {
+    trainingApiMock.createPersonalizedDraft.mockRejectedValueOnce(new ApiError({ kind: 'timeout', status: null,
+      code: 'request_timeout', message: 'timeout', details: {}, requestId: 'synthetic', retryable: false }))
+    trainingApiMock.getPersonalizedDraftByRequest.mockResolvedValueOnce(draft)
+    const host = document.createElement('div'); document.body.append(host)
+    const app = createApp(PersonalizedRecommendationDraftView, externalProps)
+    mounted.push(app)
+    const view = app.mount(host) as unknown as { generate: () => Promise<void> }
+    await settle(); await view.generate(); await settle()
+    expect(host.textContent).toContain('已取回上次请求生成的草稿')
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce()
+    expect(trainingApiMock.getPersonalizedDraftByRequest).toHaveBeenCalledWith(
+      trainingApiMock.createPersonalizedDraft.mock.calls[0]![0].request_token)
+  })
+
+  it('remembers an uncertain request on a return visit and only checks its saved result', async () => {
+    trainingApiMock.createPersonalizedDraft.mockRejectedValueOnce(new ApiError({ kind: 'timeout', status: null,
+      code: 'request_timeout', message: 'timeout', details: {}, requestId: 'synthetic', retryable: false }))
+    trainingApiMock.getPersonalizedDraftByRequest.mockRejectedValueOnce(new Error('not saved yet')).mockResolvedValueOnce(draft)
+    const host = document.createElement('div'); document.body.append(host)
+    const first = createApp(PersonalizedRecommendationDraftView, externalProps)
+    const view = first.mount(host) as unknown as { generate: () => Promise<void> }
+    await settle(); await view.generate(); await settle()
+    expect(host.textContent).toContain('后台可能仍在处理')
+    first.unmount()
+    const second = createApp(PersonalizedRecommendationDraftView, externalProps)
+    mounted.push(second); second.mount(host)
+    await vi.waitFor(() => expect(host.textContent).toContain('已取回上次请求生成的草稿'))
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce()
+    expect(trainingApiMock.getPersonalizedDraftByRequest).toHaveBeenCalledTimes(2)
+  })
 
   it('marks range supplements without pairing them with a student mistake', async () => {
     const supplemented: PersonalizedRecommendationDraft = structuredClone(matchedDraft)

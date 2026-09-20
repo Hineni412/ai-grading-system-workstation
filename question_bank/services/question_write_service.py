@@ -27,6 +27,11 @@ from question_bank.models.question import (
 from question_bank.models.tag_schema import MAX_TAG_LENGTH, TagAnalysis
 from question_bank.parsers.type_detector import ESSAY_SUBTYPES, QUESTION_TYPES
 from question_bank.services.question_revision import question_revision
+from question_bank.solution_evidence.knowledge_links import (
+    load_point_links,
+    resolve_anchor_keys,
+)
+from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
 
 if TYPE_CHECKING:
     from question_bank.taxonomy.governance import TaxonomyGovernance
@@ -46,6 +51,13 @@ _TAG_ANALYSIS_MAP = {
     "textbook_chapters": "exam_scope",
     "curriculum_sections": "curriculum_section",
 }
+# 服务端忽略的模型字段：归属（章/节）改由证据链接派生，模型值只作无链接时的既有保留值。
+_MODEL_IGNORED_ANALYSIS_FIELDS = frozenset(
+    {"textbook_chapters", "curriculum_sections"}
+)
+_OWNERSHIP_TAG_TYPES = ("exam_scope", "curriculum_section")
+_TAG_STATUS_TYPE = "tag_status"
+_DERIVED_PENDING_STATUS = "derived_pending"
 _ANSWERED_AI_CONFIDENCE = 0.8
 _ANSWERLESS_AI_CONFIDENCE = 0.55
 _PAPER_DELETE_ASSET_SUBDIRS = (
@@ -484,8 +496,14 @@ class QuestionBankWriteService:
             ).fetchone()
             if question is None:
                 return False
+            derived = _derived_ownership(
+                conn,
+                self.db_path,
+                int(question_id),
+            )
             covered = tuple(_TAG_ANALYSIS_MAP.values()) + (
                 "canonical_knowledge_id",
+                _TAG_STATUS_TYPE,
             )
             placeholders = ", ".join("?" for _ in covered)
             conn.execute(
@@ -493,7 +511,7 @@ class QuestionBankWriteService:
                 DELETE FROM question_tags
                 WHERE question_id = ?
                   AND tag_type IN ({placeholders})
-                  AND (source = 'ai' OR ? = 1)
+                  AND (source IN ('ai', 'taxonomy') OR ? = 1)
                 """,
                 (int(question_id), *covered, int(overwrite_manual)),
             )
@@ -515,7 +533,38 @@ class QuestionBankWriteService:
                 model_name=_clean_optional(model_name),
                 resolver=resolver,
                 taxonomy_governance=taxonomy_governance,
+                # 无可用链接时模型章/节值作为临时值照常写入（derived_pending 标记）。
+                include_ownership_fields=derived is None,
             )
+            if derived is not None:
+                rows.extend(
+                    (
+                        int(question_id),
+                        tag_type,
+                        value,
+                        resolved_confidence,
+                        "taxonomy",
+                        _clean_optional(model_name),
+                    )
+                    for tag_type, values in (
+                        ("exam_scope", derived["exam_scope"]),
+                        ("curriculum_section", derived["curriculum_section"]),
+                        ("knowledge_point", derived["direct_keys"]),
+                    )
+                    for value in values
+                )
+            else:
+                rows.append(
+                    (
+                        int(question_id),
+                        _TAG_STATUS_TYPE,
+                        _DERIVED_PENDING_STATUS,
+                        resolved_confidence,
+                        "taxonomy",
+                        _clean_optional(model_name),
+                    )
+                )
+            rows = _dedupe_tag_rows(rows)
             conn.executemany(
                 """
                 INSERT INTO question_tags (
@@ -799,6 +848,10 @@ class QuestionBankWriteService:
             next_updated_at = _next_paper_updated_at(current_updated_at)
             if desired:
                 operation_id = uuid.uuid4().hex
+                # A canonical question still referenced by a live paper keeps
+                # its bank identity: the oldest surviving occurrence becomes
+                # its new host instead of being trashed with this paper.
+                _rehome_surviving_questions(conn, (paper_id,), None)
                 question_cursor = conn.execute(
                     """
                     UPDATE questions
@@ -1478,6 +1531,9 @@ def _normalize_tags(
     seen: set[tuple[str, str]] = set()
     for item in tags:
         tag_type = str(item.tag_type).strip()
+        # skill 是读取层的展示类型；写回时仍按 knowledge_point 存储。
+        if tag_type == "skill":
+            tag_type = "knowledge_point"
         tag_value = str(item.tag_value).strip()
         if tag_type not in ALLOWED_TAG_TYPES:
             raise ValueError("Unsupported question tag type")
@@ -2206,11 +2262,81 @@ def _delete_selected_rows(
         active.remove(selection)
 
 
+def _rehome_surviving_questions(
+    conn: sqlite3.Connection,
+    paper_ids: tuple[int, ...],
+    counts: _PaperDatabaseDeleteCounts | None = None,
+) -> None:
+    """Keep canonical questions that still appear in surviving papers.
+
+    A deleted paper may host a canonical question that other papers reference
+    through ``paper_question_occurrences``. The oldest surviving occurrence
+    becomes the question's new host (its own paper number moves onto the
+    canonical row); every other occurrence stays as a normal appearance.
+    """
+    if not paper_ids:
+        return
+    placeholders = ",".join("?" for _ in paper_ids)
+    rows = conn.execute(
+        f"""
+        SELECT occ.id AS occurrence_id,
+               occ.question_id AS question_id,
+               occ.paper_id AS paper_id,
+               occ.question_number AS question_number,
+               q.paper_id AS original_paper_id,
+               q.question_number AS original_question_number
+        FROM paper_question_occurrences occ
+        JOIN questions q ON q.id = occ.question_id
+        WHERE q.paper_id IN ({placeholders})
+          AND occ.paper_id NOT IN ({placeholders})
+        ORDER BY occ.question_id, occ.paper_id, occ.id
+        """,
+        [*paper_ids, *paper_ids],
+    ).fetchall()
+    rehomed: set[int] = set()
+    for row in rows:
+        question_id = int(row["question_id"])
+        if question_id in rehomed:
+            continue
+        rehomed.add(question_id)
+        cursor = conn.execute(
+            f"""
+            UPDATE questions
+            SET paper_id = ?, question_number = ?
+            WHERE id = ? AND paper_id IN ({placeholders})
+            """,
+            [
+                int(row["paper_id"]),
+                str(row["question_number"]),
+                question_id,
+                *paper_ids,
+            ],
+        )
+        if cursor.rowcount != 1:
+            continue
+        # 迁走的是规范题的托管位置，原卷中的出现关系必须保留供恢复。
+        conn.execute(
+            """INSERT OR IGNORE INTO paper_question_occurrences
+               (paper_id, question_id, question_number) VALUES (?, ?, ?)""",
+            (int(row["original_paper_id"]), question_id, str(row["original_question_number"])),
+        )
+        removed = conn.execute(
+            """
+            DELETE FROM paper_question_occurrences
+            WHERE id = ?
+            """,
+            (int(row["occurrence_id"]),),
+        )
+        if counts is not None:
+            counts.record("paper_question_occurrences", removed.rowcount)
+
+
 def _execute_paper_database_delete(
     conn: sqlite3.Connection,
     paper_ids: tuple[int, ...],
 ) -> dict[str, int]:
     counts = _PaperDatabaseDeleteCounts()
+    _rehome_surviving_questions(conn, tuple(paper_ids), counts)
     _delete_selected_rows(
         conn,
         table="papers",
@@ -2677,10 +2803,16 @@ def _tag_analysis_rows(
     model_name: str | None,
     resolver: CurrentKnowledgeResolver,
     taxonomy_governance: object | None,
+    include_ownership_fields: bool = False,
 ) -> list[tuple[int, str, str, float, str, str | None]]:
     rows: list[tuple[int, str, str, float, str, str | None]] = []
     payload = analysis.to_dict()
     for field_name, tag_type in _TAG_ANALYSIS_MAP.items():
+        if (
+            not include_ownership_fields
+            and field_name in _MODEL_IGNORED_ANALYSIS_FIELDS
+        ):
+            continue
         source = "manual" if field_name in edited_fields else "ai"
         values = payload.get(field_name)
         if isinstance(values, str):
@@ -2714,30 +2846,120 @@ def _tag_analysis_rows(
             for tag_value in values or []
             if str(tag_value or "").strip()
         )
-    canonical_id = _resolve_canonical_id(analysis, resolver)
-    if canonical_id:
-        rows.append(
-            (
-                question_id,
-                "canonical_knowledge_id",
-                canonical_id,
-                confidence,
-                "taxonomy",
-                model_name,
-            )
-        )
     return rows
 
 
-def _resolve_canonical_id(
-    analysis: TagAnalysis,
-    resolver: CurrentKnowledgeResolver,
-) -> str:
-    for value in (
-        analysis.canonical_knowledge_id,
-        *analysis.knowledge_points,
-    ):
-        term = resolver.canonical_term(value)
-        if term is not None:
-            return term[0]
-    return ""
+def _dedupe_tag_rows(
+    rows: list[tuple[int, str, str, float, str, str | None]],
+) -> list[tuple[int, str, str, float, str, str | None]]:
+    seen: set[tuple[int, str, str]] = set()
+    result: list[tuple[int, str, str, float, str, str | None]] = []
+    for row in rows:
+        key = (row[0], row[1], row[2])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(row)
+    return result
+
+
+def refresh_derived_ownership_tags(conn: sqlite3.Connection, question_id: int) -> bool:
+    """Refresh only the ownership projection; retain contextual/manual tags."""
+    qid = int(question_id)
+    derived = _derived_ownership(conn, Path('.'), qid)
+    if derived is None:
+        return False
+    conn.execute("DELETE FROM question_tags WHERE question_id=? AND (tag_type IN ('exam_scope','curriculum_section','canonical_knowledge_id') OR (tag_type='tag_status' AND tag_value='derived_pending') OR (tag_type='knowledge_point' AND tag_value LIKE 'sk_%'))", (qid,))
+    for kind, values in [('exam_scope', derived['exam_scope']),
+                         ('curriculum_section', derived['curriculum_section']),
+                         ('knowledge_point', derived['direct_keys'])]:
+        for value in values:
+            conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,confidence,source) SELECT ?,?,?,1.0,'taxonomy' WHERE NOT EXISTS(SELECT 1 FROM question_tags WHERE question_id=? AND tag_type=? AND tag_value=?)",
+                         (qid, kind, value, qid, kind, value))
+    conn.execute("DELETE FROM question_tags WHERE id IN (SELECT id FROM (SELECT id,ROW_NUMBER() OVER(PARTITION BY tag_type,tag_value ORDER BY CASE WHEN source='manual' THEN 0 ELSE 1 END,id) AS n FROM question_tags WHERE question_id=?) WHERE n>1)", (qid,))
+    conn.execute("UPDATE questions SET updated_at=datetime('now','localtime') WHERE id=?", (qid,))
+    return True
+
+
+def _derived_ownership(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    question_id: int,
+) -> dict[str, Any] | None:
+    """Derive chapter/section ownership from the current usable evidence
+    version's resolved ``direct`` links. Returns ``None`` when no usable link
+    exists so the caller can keep model-written values."""
+    row = conn.execute(
+        """
+        SELECT v.evidence_version_id, v.graph_release_id
+        FROM question_solution_evidence_versions v
+        JOIN (
+            SELECT question_id, MAX(created_at) AS max_created
+            FROM question_solution_evidence_versions
+            WHERE status IN ('proposed', 'approved')
+            GROUP BY question_id
+        ) m
+          ON m.question_id = v.question_id
+         AND m.max_created = v.created_at
+        WHERE v.question_id = ? AND v.status IN ('proposed', 'approved')
+        LIMIT 1
+        """,
+        (int(question_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    version_id = str(row["evidence_version_id"])
+    grouped = load_point_links(
+        Path(db_path),
+        [version_id],
+        None,
+        connection=conn,
+    )
+    release_id = next((link.graph_release_id for links in grouped.get(version_id, {}).values()
+                       for link in links), None)
+    direct_keys = [
+        str(link.stable_key or link.term_id)
+        for links in grouped.get(version_id, {}).values()
+        for link in links
+        if link.role == "direct" and link.resolution_status == "resolved"
+    ]
+    direct_keys = [
+        key for key in dict.fromkeys(direct_keys) if key.strip()
+    ]
+    if not direct_keys:
+        return None
+    section_ids, scope_values = _catalog_ownership_indexes()
+    anchors = resolve_anchor_keys(conn, direct_keys, preferred_release_id=release_id)
+    exam_scope = [
+        scope_values[key]
+        for key in anchors["chapters"]
+        if key in scope_values
+    ]
+    curriculum_sections = [
+        section_ids[key]
+        for key in anchors["sections"]
+        if key in section_ids
+    ]
+    if not exam_scope and not curriculum_sections:
+        return None
+    return {
+        "exam_scope": exam_scope,
+        "curriculum_section": curriculum_sections,
+        "direct_keys": direct_keys,
+    }
+
+
+def _catalog_ownership_indexes() -> tuple[dict[str, str], dict[str, str]]:
+    """Build ``knowledge_id`` → catalog section id / exam_scope value maps."""
+    section_ids: dict[str, str] = {}
+    scope_values: dict[str, str] = {}
+    for volume in load_curriculum_catalog()["volumes"]:
+        for chapter in volume["chapters"]:
+            chapter_scopes = chapter.get("exam_scope_values") or ()
+            if chapter_scopes:
+                scope_values[str(chapter["knowledge_id"])] = str(
+                    chapter_scopes[0]
+                )
+            for section in chapter["sections"]:
+                section_ids[str(section["knowledge_id"])] = str(section["id"])
+    return section_ids, scope_values

@@ -28,8 +28,9 @@ const configStore = useConfigWorkspaceStore()
 const showOtherSessions = ref(false)
 const pageTitle = computed(() => String(route.meta.title ?? '工作台'))
 const pageDescription = computed(() => String(route.meta.description ?? ''))
+const knowledgeTraining = computed(() => ['knowledge-graph', 'training', 'student-evidence'].includes(String(route.name)))
 const showCurrentExamContext = computed(
-  () => route.meta.topbarContext !== 'workspace',
+  () => !knowledgeTraining.value && route.meta.topbarContext !== 'workspace',
 )
 const currentWorkspace = computed(() => workspaceRegistry.modules.find(
   ({ manifest }) => route.path === manifest.routePrefix
@@ -192,6 +193,7 @@ watch(showCurriculumScope, (visible) => {
     :class="{
       'app-topbar--workspace-context': !showCurrentExamContext,
       'app-topbar--curriculum-context': showCurriculumScope,
+      'app-topbar--knowledge-training': knowledgeTraining,
     }"
     data-testid="app-topbar"
   >
@@ -221,7 +223,7 @@ watch(showCurriculumScope, (visible) => {
         :disabled="curriculumScope.loadState === 'loading' || curriculumScope.loadState === 'error'"
         @change="selectCurriculumVolume"
       >
-        <option value="">未选择（显示全部）</option>
+        <option value="">{{ knowledgeTraining ? '请选择教学学期' : '未选择（显示全部）' }}</option>
         <option v-for="volume in curriculumScope.volumes" :key="volume.id" :value="volume.id">
           {{ volume.label }}
         </option>
@@ -313,3 +315,12 @@ watch(showCurriculumScope, (visible) => {
     </div>
   </header>
 </template>
+
+<style scoped>
+@media (max-width: 620px) {
+  .app-topbar.app-topbar--knowledge-training {
+    grid-template-areas: "page tasks" "curriculum curriculum" "curriculum-status curriculum-status";
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+</style>

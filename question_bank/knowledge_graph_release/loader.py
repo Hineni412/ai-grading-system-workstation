@@ -11,13 +11,13 @@ DEFAULT_RELEASE_PATH = (
     Path(__file__).resolve().parents[1]
     / "taxonomy"
     / "catalogs"
-    / "knowledge_graph_release_v2.json"
+    / "knowledge_graph_release_v3.json"
 )
 DEFAULT_TAXONOMY_PATH = (
     Path(__file__).resolve().parents[1]
     / "taxonomy"
     / "catalogs"
-    / "tag_vocabulary_v3.json"
+    / "tag_vocabulary_v4.json"
 )
 _RELEASE_PATHS_BY_TAXONOMY_REVISION = {
     3: (
@@ -26,7 +26,16 @@ _RELEASE_PATHS_BY_TAXONOMY_REVISION = {
         / "catalogs"
         / "knowledge_graph_release_v1.json"
     ),
-    4: DEFAULT_RELEASE_PATH,
+    4: (
+        Path(__file__).resolve().parents[1]
+        / "taxonomy"
+        / "catalogs"
+        / "knowledge_graph_release_v2.json"
+    ),
+    5: DEFAULT_RELEASE_PATH,
+    6: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v4.json'),
+    7: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v5.json'),
+    8: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v6.json'),
 }
 _TAXONOMY_PATHS_BY_REVISION = {
     3: (
@@ -35,7 +44,16 @@ _TAXONOMY_PATHS_BY_REVISION = {
         / "catalogs"
         / "tag_vocabulary_v2.json"
     ),
-    4: DEFAULT_TAXONOMY_PATH,
+    4: (
+        Path(__file__).resolve().parents[1]
+        / "taxonomy"
+        / "catalogs"
+        / "tag_vocabulary_v3.json"
+    ),
+    5: DEFAULT_TAXONOMY_PATH,
+    6: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v5.json'),
+    7: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v6.json'),
+    8: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v7.json'),
 }
 
 

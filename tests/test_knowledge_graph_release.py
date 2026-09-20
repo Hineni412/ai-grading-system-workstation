@@ -53,14 +53,18 @@ def test_checked_in_release_covers_every_governed_knowledge_term() -> None:
     report = validate_release(release, load_taxonomy_catalog())
 
     assert report.valid, report.to_dict()
-    assert len(release.payload["fine_term_dispositions"]) == 1124
-    assert len(release.payload["core_nodes"]) == 1124
+    assert len(release.payload["fine_term_dispositions"]) == 1218
+    assert len(release.payload["core_nodes"]) == 1218
     assert sum(
         item["status"] == "active"
         for item in release.payload["core_nodes"]
-    ) == 1124
-    assert len(release.payload["mappings"]) == 1124
-    assert len(release.payload["relations"]) == 1088
+    ) == 1218
+    assert sum(
+        item["node_kind"] == "skill"
+        for item in release.payload["core_nodes"]
+    ) == 94
+    assert len(release.payload["mappings"]) == 1218
+    assert len(release.payload["relations"]) == 1182
 
 
 def test_bootstrap_release_syncs_identity_states(tmp_path: Path) -> None:
@@ -97,7 +101,7 @@ def test_release_can_be_staged_activated_and_rolled_back_atomically(
 ) -> None:
     db_path = _database(tmp_path)
     first = load_release_for_taxonomy_revision(3)
-    second = load_release()
+    second = load_release_for_taxonomy_revision(4)
     with connect(db_path) as connection:
         active_before_stage = connection.execute(
             """
@@ -262,7 +266,7 @@ def test_tagging_contract_follows_activation_and_rollback(
         knowledge_graph_db_path=db_path,
     )
     first = load_release_for_taxonomy_revision(3)
-    second = load_release()
+    second = load_release_for_taxonomy_revision(4)
 
     def tagging_contract() -> dict[str, object]:
         return governance.prompt_contract(
@@ -338,3 +342,64 @@ def test_tagging_contract_follows_activation_and_rollback(
         for term in governance.catalog()["dimensions"]["knowledge"]
     )
     assert governance.observation_snapshot()["graph_release_id"] == first.release_id
+
+
+def test_skill_layer_release_marks_linkable_candidates(tmp_path: Path) -> None:
+    db_path = _database(tmp_path)
+    governance = TaxonomyGovernance(
+        state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=db_path,
+    )
+    chain = (
+        load_release_for_taxonomy_revision(3),
+        load_release_for_taxonomy_revision(4),
+        load_release(),
+    )
+    expected_active: str | None = None
+    for release in chain:
+        stage_release(
+            db_path,
+            release,
+            actor_ref="teacher:test",
+            source_reference="test-release",
+        )
+        activate_release(
+            db_path,
+            release.release_id,
+            expected_active_release_id=expected_active,
+            actor_ref="teacher:test",
+            reason="test activation",
+        )
+        expected_active = release.release_id
+
+    contract = governance.prompt_contract(
+        {
+            "curriculum_volume_id": "bnu24-math-g8-upper",
+            "question_text": "利用勾股定理求旗杆高度",
+        }
+    )
+    assert contract["knowledge_catalog_revision"] == 5
+    knowledge = contract["candidates"]["knowledge"]
+    skills = [item for item in knowledge if item["id"].startswith("sk_")]
+    assert skills
+    assert all(item["usage"] == "direct_core" for item in skills)
+    this_volume_sections = [
+        item
+        for item in knowledge
+        if item.get("level") == 2
+        and item.get("volume_id") == "bnu24-math-g8-upper"
+    ]
+    assert this_volume_sections
+    assert all(
+        item["usage"] == "direct_core" for item in this_volume_sections
+    )
+    context_terms = [
+        item
+        for item in knowledge
+        if item["id"].startswith("kp_")
+        and item["usage"] not in {"direct_core"}
+    ]
+    assert context_terms
+    assert all(
+        item["usage"] == "retrieval_only" for item in context_terms
+    )

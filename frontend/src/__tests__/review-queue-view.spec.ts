@@ -12,6 +12,10 @@ import {
   type ReviewItem,
   type ReviewQuestionSummary,
 } from '../api/review'
+import {
+  fetchResultsCenter,
+  type ResultsCenterResponse,
+} from '../api/results-center'
 import { createAppRouter } from '../router'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import { useReviewQueueStore } from '../stores/review-queue'
@@ -25,6 +29,11 @@ vi.mock('../api/review', async (importOriginal) => ({
   confirmReviewItems: vi.fn(),
   fetchReviewItems: vi.fn(),
   fetchReviewRubric: vi.fn(),
+}))
+
+vi.mock('../api/results-center', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../api/results-center')>(),
+  fetchResultsCenter: vi.fn(),
 }))
 
 const media = {
@@ -1008,5 +1017,77 @@ describe('source-recalibrated review view', () => {
     pending.resolve([item(99)])
     await settleUi()
     expect(mounted.reviewStore.items).toEqual([])
+  })
+
+  it('shows the per-student question strip from results and switches questions within the student', async () => {
+    const stripResults: ResultsCenterResponse = {
+      session_id: 7,
+      session_name: '合成成绩验证',
+      summary: {
+        student_count: 1, complete_student_count: 1, average_sample_count: 1,
+        average_score: 7, highest_score: 7, lowest_score: 7, max_score: 10,
+        ungraded_item_count: 0, failed_item_count: 0, needs_review_item_count: 1,
+        ai_ready_item_count: 1, teacher_final_item_count: 0,
+      },
+      questions: [
+        { question_id: 'Q1', max_score: 5, total_count: 1, ungraded_count: 0, failed_count: 0, needs_review_count: 1, ai_ready_count: 0, teacher_final_count: 0, average_score: 3 },
+        { question_id: 'Q2', max_score: 5, total_count: 1, ungraded_count: 0, failed_count: 0, needs_review_count: 0, ai_ready_count: 1, teacher_final_count: 0, average_score: 4 },
+      ],
+      students: [{
+        student_id: 11, student_code: 'S011', student_name: '学生甲', class_name: '七年级一班',
+        pinyin_initials: 'xsj', pinyin_full: 'xueshengjia',
+        current_score: 7, max_score: 10,
+        ungraded_count: 0, failed_count: 0, needs_review_count: 1, status: 'needs_review',
+        items: [
+          {
+            review_item_id: '7:Q1:11', question_id: 'Q1', score_awarded: 3, max_score: 5,
+            score_status: 'ai_review', score_source: 'ai', confidence_score: 65,
+            needs_review: true, review_reason: null, result_id: 11, detail_id: 11,
+          },
+          {
+            review_item_id: '7:Q2:11', question_id: 'Q2', score_awarded: 4, max_score: 5,
+            score_status: 'ai_ready', score_source: 'ai', confidence_score: 90,
+            needs_review: false, review_reason: null, result_id: 12, detail_id: 12,
+          },
+        ],
+      }],
+    }
+    vi.mocked(fetchResultsCenter).mockResolvedValue(stripResults)
+    const { host, reviewStore, router } = await mountView({
+      initialUrl: '/grading?session=7&question=Q1&item=7:Q1:11&entry=results&student=11',
+      reviewItems: {
+        Q1: [item(11), item(12)],
+        Q2: [item(11, { question_id: 'Q2', score_awarded: 4, needs_review: false }), item(21, { question_id: 'Q2' })],
+      },
+    })
+
+    const strip = await vi.waitFor(() => {
+      const element = host.querySelector('[data-testid="student-question-strip"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    const buttons = [...strip.querySelectorAll<HTMLButtonElement>('button')]
+    expect(buttons.map((button) => button.querySelector('strong')?.textContent)).toEqual(['Q1', 'Q2'])
+    expect(buttons[0]!.getAttribute('aria-current')).toBe('true')
+    expect(buttons[0]!.textContent).toContain('3 / 5')
+    expect(buttons[0]!.textContent).toContain('待复核')
+    expect(buttons[1]!.textContent).toContain('4 / 5')
+
+    buttons[1]!.click()
+    await vi.waitFor(() => {
+      expect(reviewStore.selectedQuestionId).toBe('Q2')
+      expect(reviewStore.selectedReviewItemId).toBe('7:Q2:11')
+    })
+    expect(router.currentRoute.value.query).toMatchObject({
+      entry: 'results',
+      student: '11',
+      question: 'Q2',
+      item: '7:Q2:11',
+    })
+    await vi.waitFor(() => {
+      const current = host.querySelector('[data-testid="student-question-strip"]')
+      expect(current).not.toBeNull()
+      expect(current!.querySelectorAll('button')[1]!.getAttribute('aria-current')).toBe('true')
+    })
   })
 })

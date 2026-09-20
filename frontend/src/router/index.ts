@@ -140,6 +140,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/class-report',
+    name: 'class-report',
+    component: () => import('../views/ClassReportView.vue'),
+    meta: {
+      title: '班级报告',
+      description: '按班级生成的 AI 分析报告，内嵌于系统框架',
+      breadcrumb: `${resultsRouteDefinition.breadcrumb} / 班级报告`,
+    },
+  },
+  {
     path: filesRouteDefinition.path,
     redirect: (to) => ({
       path: resultsRouteDefinition.path,

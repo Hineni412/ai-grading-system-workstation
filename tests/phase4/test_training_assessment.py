@@ -1457,6 +1457,13 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
     ]
     assert feedback["next_round"]["draft_id"]
     assert feedback["next_round"]["student"]["targets"][0]["mode"] == "current"
+    next_target = next(
+        item for item in feedback["next_round"]["student"]["targets"]
+        if item["stable_key"] == "kp_alg_linear_equation"
+    )
+    assert next_target["value"] == change["mastery_after"]["value"]
+    assert next_target["evidence_count"] == change["mastery_after"]["evidence_count"]
+    assert next_target["value"] != 0.2
     next_ids = {
         item["question_id"]
         for item in feedback["next_round"]["student"]["items"]
@@ -1483,8 +1490,60 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
             """,
             (feedback["next_round"]["draft_id"],),
         ).fetchone()["status"]
+        original_request = json.loads(connection.execute(
+            "SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id = ?",
+            (DRAFT_ID,),
+        ).fetchone()["request_json"])
     assert paper_count == 1
     assert next_status == "draft"
+    assert original_request["diagnosis"]["students"][0]["weak_points"][0]["mastery"] == 0.2
+
+
+def test_optional_duration_migration_preserves_published_evidence(assessment_workspace):
+    import re
+    import sqlite3
+
+    db_path, data_root = assessment_workspace
+    module = TrainingAssessmentModule(db_path=db_path, data_root=data_root,
+        gateway=FakeTrainingAssessmentGateway(lambda request: {"results": [
+            {"task_item_code": item.task_item_code, "point_id": point["point_id"],
+             "state": "met", "evidence": "合成已核对步骤"}
+            for item in request.items for point in item.points
+        ]}))
+    outcome = module.assess(SUBMISSION_ID, REVISION)
+    module.sync_evidence(SUBMISSION_ID, REVISION, EvidenceSyncCommand(
+        operation_token="7" * 32, expected_review_revision=outcome.review_revision,
+        action="publish", actor_ref="synthetic", reason="准备旧版已发布训练证据"))
+    with connect(db_path) as connection:
+        records = [dict(row) for row in connection.execute(
+            "SELECT * FROM training_evidence_records ORDER BY evidence_id")]
+    assert len(records) == 2 and all(row["expected_minutes"] > 0 for row in records)
+    migrations = Path(__file__).resolve().parents[2] / "migrations" / "question_bank"
+    old_sql = (migrations / "023_add_training_evidence_feedback.sql").read_text(encoding="utf-8")
+    old_table = re.search(r"CREATE TABLE IF NOT EXISTS training_evidence_records \([\s\S]*?\n\);", old_sql).group()
+    with sqlite3.connect(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("CREATE TABLE training_submissions(submission_id TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO training_submissions VALUES(?)", (SUBMISSION_ID,))
+        connection.executescript(old_table)
+        columns = tuple(records[0])
+        insert = f"INSERT INTO training_evidence_records ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})"
+        connection.executemany(insert, [tuple(row[key] for key in columns) for row in records])
+        connection.executescript((migrations / "036_allow_training_evidence_without_time_estimate.sql").read_text(encoding="utf-8"))
+        assert [dict(row) for row in connection.execute("SELECT * FROM training_evidence_records ORDER BY evidence_id")] == records
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert {row["name"] for row in connection.execute("PRAGMA index_list(training_evidence_records)")} >= {
+            "idx_training_evidence_student_key", "idx_training_evidence_submission",
+        }
+        current = {**records[0], "evidence_id": "9" * 64,
+                   "task_item_code": "SYN-NO-DURATION", "expected_minutes": None}
+        connection.execute(insert, tuple(current[key] for key in columns))
+        assert connection.execute("SELECT expected_minutes FROM training_evidence_records WHERE evidence_id=?",
+            (current["evidence_id"],)).fetchone()[0] is None
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE training_evidence_records SET expected_minutes=0 WHERE evidence_id=?",
+                (current["evidence_id"],))
 
 
 def test_openai_adapter_uses_strict_one_request_and_injection_guard(

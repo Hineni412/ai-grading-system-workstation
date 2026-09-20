@@ -3,7 +3,7 @@ from .adapters import (
     LocalOcrAdapter,
     OcrLine,
     PreparedImage,
-    RapidOcrAdapter,
+    MineruOcrAdapter,
     SafeImagePreprocessor,
 )
 from .contracts import (
@@ -99,7 +99,7 @@ __all__ = [
     "QuestionBankPublicationAdapter",
     "QuestionDraft",
     "QuestionReviewDecision",
-    "RapidOcrAdapter",
+    "MineruOcrAdapter",
     "RichBlockRenderResult",
     "RecognitionSource",
     "RestrictedMathError",

@@ -14,7 +14,8 @@ export interface GraphScope {
 }
 
 export interface GraphExamScope {
-  mode: 'current' | 'manual' | 'cross_exam'
+  mode: 'current' | 'manual' | 'cross_exam' | 'semester'
+  curriculum_volume_id?: string | null
   session_ids: number[]
   sessions: Array<{ session_id: number; session_name: string }>
 }
@@ -32,6 +33,7 @@ export interface GraphStudentScopeInput {
 }
 
 export type GraphExamScopeInput =
+  | { mode: 'semester'; curriculum_volume_id: string; session_ids?: never }
   | { mode: 'current'; session_ids: [number] }
   | { mode: 'manual'; session_ids: number[] }
   | { mode: 'cross_exam'; session_ids?: never }
@@ -123,7 +125,9 @@ export function normalizeGraphQuery(query: GraphQueryInput): GraphQueryInput {
   }
 
   let examScope: GraphExamScopeInput
-  if (query.exam_scope.mode === 'cross_exam') {
+  if (query.exam_scope.mode === 'semester') {
+    examScope = { mode: 'semester', curriculum_volume_id: query.exam_scope.curriculum_volume_id.trim() }
+  } else if (query.exam_scope.mode === 'cross_exam') {
     examScope = { mode: 'cross_exam' }
   } else {
     const sessionIds = normalizeSessionIds(query.exam_scope.session_ids)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
+import sys
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,9 +12,6 @@ import pytest
 
 import api_profiles
 from path_manager import PathManager
-
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 POLICY_PROFILE = {
@@ -402,7 +402,48 @@ def test_saved_config_profile_is_forwarded_to_combined_analysis_adapter(monkeypa
     assert service.model == "config-model"
 
 
-def test_updates_do_not_copy_api_keys_into_data_backups() -> None:
-    update_source = (ROOT / "update_tools" / "apply_update.py").read_text(encoding="utf-8")
+def test_update_backup_keeps_settings_without_copying_api_keys(tmp_path: Path, monkeypatch) -> None:
+    from update_tools import apply_update, backup_core
 
-    assert 'create_backup("before_update", include_api_keys=False)' in update_source
+    target = tmp_path / "workstation"
+    data_root = target / "user_data"
+    key_paths = [target / "config" / "api_profiles.json", data_root / "config" / "api_profiles.json"]
+    for path in key_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"api_key": "synthetic-test-key"}', encoding="utf-8")
+    settings = data_root / "config" / "settings.json"
+    settings.write_text('{"theme": "light"}', encoding="utf-8")
+    update = tmp_path / "update"
+    (update / "app").mkdir(parents=True)
+    (update / "app" / "VERSION").write_text("test-new", encoding="utf-8")
+    (update / "update_manifest.json").write_text('{"app_version": "test-new"}', encoding="utf-8")
+    (target / "VERSION").write_text("test-old", encoding="utf-8")
+
+    logger = logging.getLogger("test_update_backup")
+    monkeypatch.setattr(apply_update, "_get_logger", lambda _target: logger)
+    monkeypatch.setattr(backup_core, "_get_logger", lambda: logger)
+    monkeypatch.setattr(backup_core, "_get_pm", lambda: SimpleNamespace(project_root=target, data_root=data_root))
+    monkeypatch.setattr(backup_core, "_backup_root", lambda: tmp_path / "backups")
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+
+    class BackupCompleted(BaseException):
+        """Stop after the real backup, before code replacement or migrations."""
+
+    def backup_and_stop(*args, **kwargs):
+        raise BackupCompleted(backup_core.create_backup(*args, **kwargs))
+
+    def reject_code_copy(*_args, **_kwargs):
+        pytest.fail("This test must stop at the update backup boundary")
+
+    monkeypatch.setitem(sys.modules, "backup_core", SimpleNamespace(create_backup=backup_and_stop))
+    monkeypatch.setattr(apply_update.shutil, "copy2", reject_code_copy)
+    with pytest.raises(BackupCompleted) as completed:
+        apply_update.apply_update(update, target)
+
+    result = completed.value.args[0]
+    assert result["error"] is None
+    with zipfile.ZipFile(result["zip_path"]) as archive:
+        assert archive.namelist() == ["user_data/config/settings.json"]
+        assert archive.read("user_data/config/settings.json") == settings.read_bytes()
+    assert all(json.loads(path.read_text(encoding="utf-8"))["api_key"] == "synthetic-test-key" for path in key_paths)
+    assert (target / "VERSION").read_text(encoding="utf-8") == "test-old"

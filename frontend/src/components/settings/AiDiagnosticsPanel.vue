@@ -12,10 +12,14 @@ import '../../styles/model-profiles.css'
 
 type DiagnosticTab = 'request' | 'attachments' | 'response' | 'parsed' | 'error'
 
+const DIAGNOSTIC_PAGE_SIZE = 20
+
 const diagnostics = ref<AiDiagnosticSummary[]>([])
 const diagnosticsState = ref<'idle' | 'loading' | 'error'>('idle')
 const diagnosticsError = ref('')
 const diagnosticsNotice = ref('')
+const diagnosticsMatching = ref(0)
+const diagnosticsLoadingMore = ref(false)
 const workspaceTaskRecords = ref<WorkspaceAITask[]>([])
 const diagnosticOutcome = ref<'' | AiDiagnosticOutcome>('')
 const diagnosticKind = ref('')
@@ -265,6 +269,10 @@ async function loadDiagnosticDetail(callId: string): Promise<void> {
   }
 }
 
+const hasMoreDiagnostics = computed(
+  () => diagnostics.value.length < diagnosticsMatching.value,
+)
+
 async function loadDiagnostics(): Promise<void> {
   diagnosticsController?.abort()
   const controller = new AbortController()
@@ -273,7 +281,7 @@ async function loadDiagnostics(): Promise<void> {
   diagnosticsError.value = ''
   try {
     const result = await aiDiagnosticsApi.list({
-      limit: 100,
+      limit: DIAGNOSTIC_PAGE_SIZE,
       requestKind: diagnosticKind.value,
       outcome: diagnosticOutcome.value,
       workspaceModule: workspaceModuleFilter.value,
@@ -281,6 +289,7 @@ async function loadDiagnostics(): Promise<void> {
       signal: controller.signal,
     })
     diagnostics.value = result.items
+    diagnosticsMatching.value = result.matching
     diagnosticsState.value = 'idle'
     const selectedStillVisible = visibleDiagnostics.value.some(
       ({ call_id: callId }) => callId === selectedDiagnosticId.value,
@@ -294,6 +303,40 @@ async function loadDiagnostics(): Promise<void> {
     diagnosticsError.value = error instanceof Error
       ? error.message
       : 'AI 调用记录没有加载成功。'
+  }
+}
+
+async function loadMoreDiagnostics(): Promise<void> {
+  if (diagnosticsLoadingMore.value || diagnosticsState.value === 'loading') return
+  diagnosticsController?.abort()
+  const controller = new AbortController()
+  diagnosticsController = controller
+  diagnosticsLoadingMore.value = true
+  diagnosticsError.value = ''
+  try {
+    const result = await aiDiagnosticsApi.list({
+      limit: DIAGNOSTIC_PAGE_SIZE,
+      offset: diagnostics.value.length,
+      requestKind: diagnosticKind.value,
+      outcome: diagnosticOutcome.value,
+      workspaceModule: workspaceModuleFilter.value,
+      workspaceTaskKind: workspaceTaskKindFilter.value,
+      signal: controller.signal,
+    })
+    const seen = new Set(diagnostics.value.map(({ call_id }) => call_id))
+    diagnostics.value = [
+      ...diagnostics.value,
+      ...result.items.filter(({ call_id }) => !seen.has(call_id)),
+    ]
+    diagnosticsMatching.value = result.matching
+  } catch (error) {
+    if (controller.signal.aborted) return
+    diagnosticsError.value = error instanceof Error
+      ? error.message
+      : '更早的调用记录没有加载成功。'
+  } finally {
+    if (diagnosticsController === controller) diagnosticsController = null
+    diagnosticsLoadingMore.value = false
   }
 }
 
@@ -409,7 +452,7 @@ onBeforeUnmount(() => {
       <aside class="ai-diagnostics-ledger" aria-label="AI 调用列表">
         <header>
           <strong>最近调用</strong>
-          <span>{{ visibleDiagnostics.length }} 条</span>
+          <span>{{ visibleDiagnostics.length }} / {{ diagnosticsMatching }} 条</span>
         </header>
         <p
           v-if="diagnosticsState === 'loading' && diagnostics.length === 0"
@@ -451,6 +494,15 @@ onBeforeUnmount(() => {
             </button>
           </li>
         </ul>
+        <button
+          v-if="hasMoreDiagnostics"
+          type="button"
+          class="ai-diagnostics-ledger__more"
+          :disabled="diagnosticsLoadingMore"
+          @click="loadMoreDiagnostics"
+        >
+          {{ diagnosticsLoadingMore ? '正在读取更早的记录…' : `加载更早（还有 ${diagnosticsMatching - diagnostics.length} 条）` }}
+        </button>
       </aside>
 
       <article class="ai-diagnostic-detail" aria-live="polite">
