@@ -23,7 +23,7 @@ function item(index: number, overrides: Partial<ReviewItem> = {}): ReviewItem {
     student_code: `S${index}`,
     student_name: `匿名学生${index}`,
     class_name: '匿名班级',
-    score_awarded: index === 1 ? 3 : 2.5,
+    score_awarded: index === 1 ? 3 : 2,
     max_score: 5,
     deduction_reason: '步骤不完整',
     error_category: '需复核',
@@ -197,7 +197,7 @@ describe('question batch review workspace', () => {
         student_id: 102,
         result_id: 102,
         detail_id: 2,
-        score_awarded: 2.5,
+        score_awarded: 2,
       },
     ])
     expect(confirmBatch.mock.calls[0]?.[1]).toEqual(['7:Q1:1', '7:Q1:2'])

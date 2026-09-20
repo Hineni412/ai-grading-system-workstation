@@ -310,7 +310,7 @@ describe('source-recalibrated review view', () => {
   it('confirms the visible pending batch once and accepts unchanged scores', async () => {
     const pending = [
       item(11, { score_awarded: 3 }),
-      item(12, { score_awarded: 2.5 }),
+      item(12, { score_awarded: 2 }),
     ]
     const { host, pinia } = await mountView({
       reviewQuestions: [
@@ -345,7 +345,7 @@ describe('source-recalibrated review view', () => {
         student_id: 12,
         result_id: 12,
         detail_id: 12,
-        score_awarded: 2.5,
+        score_awarded: 2,
       },
     ])
     await vi.waitFor(() => expect(useReviewQueueStore(pinia).selectedQuestionId).toBe('Q1'))

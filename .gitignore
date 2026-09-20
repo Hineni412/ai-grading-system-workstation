@@ -59,3 +59,6 @@ Thumbs.db
 .p35t/
 .codex_artifacts/
 agent_bridge/session_*/
+
+# Machine-local playwright CLI config
+.playwright/
