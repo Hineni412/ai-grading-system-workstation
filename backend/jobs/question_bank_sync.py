@@ -315,6 +315,29 @@ def run_session_question_bank_sync_job(
                 cancel_check=context.raise_if_cancelled,
             )
 
+        # §7.2 hard rule: freeze the evidence/link snapshot after links are
+        # confirmed and any adoption/tag retry has written evidence versions.
+        from question_bank.solution_evidence.evidence_snapshot import (
+            freeze_session_evidence_snapshot,
+        )
+        # §7.2 hard rule: freeze the evidence/link snapshot after links are
+        # confirmed and any adoption/tag retry has written evidence versions.
+        # The rubric is annotated in place (§7.2 question-level records +
+        # §7.1 step ids); only refs/ids are added, scoring content untouched.
+        from question_bank.solution_evidence.evidence_snapshot import (
+            freeze_session_evidence_snapshot,
+        )
+        snapshot_path = freeze_session_evidence_snapshot(
+            Path(question_bank_db_path),
+            grading_session_id=session_id,
+            upload_config_dir=Path(data_root) / "config" / "uploaded",
+            data_root=Path(data_root),
+            rubric_path=resolve_stored_file_path(
+                current.session.get("rubric_path"),
+                data_root=Path(data_root),
+            ),
+        )
+
         result = _result(
             session_id=session_id,
             mode=mode,
@@ -322,6 +345,7 @@ def run_session_question_bank_sync_job(
             tagging_result=tagging_result,
             link_result=link_result,
         )
+        result["evidence_snapshot_frozen"] = snapshot_path is not None
         if mode == "tag_retry":
             result = _merge_tag_retry_result(
                 context=context,
@@ -345,6 +369,8 @@ def run_session_question_bank_sync_job(
                 config_revision=config_revision,
                 outcome=result["outcome"],
                 imported_count=result["imported_count"],
+                new_question_count=result.get("new_question_count", 0),
+                reused_count=result.get("reused_count", 0),
                 tagged_count=result["tagged_count"],
                 evidence_count=result["evidence_count"],
                 criteria_count=result.get("criteria_count", 0),
@@ -509,20 +535,55 @@ def _load_current_inputs(
     return loaded, source_path
 
 
-def _bank_questions(db_path: Path, question_ids: list[int]) -> list[dict[str, Any]]:
+def _imported_paper_id(import_result: dict[str, object]) -> int | None:
+    paper_ids = import_result.get("imported_paper_ids")
+    if not isinstance(paper_ids, list) or len(paper_ids) != 1:
+        return None
+    try:
+        paper_id = int(paper_ids[0])
+    except (TypeError, ValueError):
+        return None
+    return paper_id if paper_id > 0 else None
+
+
+def _bank_questions(
+    db_path: Path,
+    question_ids: list[int],
+    *,
+    paper_id: int | None = None,
+) -> list[dict[str, Any]]:
     if not question_ids:
         return []
     placeholders = ",".join("?" for _ in question_ids)
+    if paper_id is None:
+        with connect(db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, question_number, question_text, source_file
+                FROM questions
+                WHERE COALESCE(is_deleted, 0) = 0
+                  AND id IN ({placeholders})
+                ORDER BY id
+                """,
+                question_ids,
+            ).fetchall()
+        return [dict(row) for row in rows]
     with connect(db_path) as conn:
+        # Reused questions carry this paper's own number in the occurrence
+        # record, not the canonical row's number.
         rows = conn.execute(
             f"""
-            SELECT id, question_number, question_text, source_file
-            FROM questions
-            WHERE COALESCE(is_deleted, 0) = 0
-              AND id IN ({placeholders})
-            ORDER BY id
+            SELECT q.id,
+                   COALESCE(occ.question_number, q.question_number) AS question_number,
+                   q.question_text, q.source_file
+            FROM questions q
+            LEFT JOIN paper_question_occurrences occ
+              ON occ.question_id = q.id AND occ.paper_id = ?
+            WHERE COALESCE(q.is_deleted, 0) = 0
+              AND q.id IN ({placeholders})
+            ORDER BY q.id
             """,
-            question_ids,
+            [int(paper_id), *question_ids],
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -617,6 +678,15 @@ def _result(
             allow_empty=True,
         ),
         "linked_count": int(link_result.get("confirmed") or 0),
+        "reused_count": max(
+            int(tagging_result.get("reused_count") or 0),
+            int(import_result.get("analysis_reused_count") or 0),
+        ),
+        "new_question_count": max(
+            0,
+            len(imported_ids)
+            - int(import_result.get("exact_duplicate_count") or 0),
+        ),
         "failed_count": failed_count,
         "successful_question_ids": successful_ids,
         "failed_question_ids": failed_ids,
@@ -959,6 +1029,9 @@ def _adopt_deferred_analysis_with_links(
         evidence_repository=SolutionEvidenceRepository(question_bank_db_path),
         taxonomy_governance=taxonomy_governance,
         criterion_module=TrainingCriterionModule(question_bank_db_path),
+        question_type_writer=BankQuestionTypeSuggestionWriter(
+            write_service=bank_write_service,
+        ),
     )
     adoption_results: list[dict[str, Any]] = []
     missing_links = 0
@@ -1011,21 +1084,21 @@ def _adopt_deferred_analysis_with_links(
         int(item["question_id"])
         for item in adoption_results
         if item.get("tag_status")
-        in {"succeeded", "needs_taxonomy_review"}
+        in {"succeeded", "needs_taxonomy_review", "reused"}
         and item.get("evidence_status")
-        in {"succeeded", "needs_taxonomy_review"}
+        in {"succeeded", "needs_taxonomy_review", "reused"}
         and item.get("criteria_status")
-        in {"succeeded", "not_requested"}
+        in {"succeeded", "not_requested", "reused"}
     ]
     failed_ids = [
         int(item["question_id"])
         for item in adoption_results
         if item.get("tag_status")
-        not in {"succeeded", "needs_taxonomy_review"}
+        not in {"succeeded", "needs_taxonomy_review", "reused"}
         or item.get("evidence_status")
-        not in {"succeeded", "needs_taxonomy_review"}
+        not in {"succeeded", "needs_taxonomy_review", "reused"}
         or item.get("criteria_status")
-        not in {"succeeded", "not_requested"}
+        not in {"succeeded", "not_requested", "reused"}
     ]
     tagged_count = sum(
         item.get("tag_status") == "succeeded" for item in adoption_results
@@ -1109,6 +1182,11 @@ def _adopt_deferred_analysis_with_links(
             and str(item.get("source_question_ref") or "").strip()
         )
     )
+    reused_ids = [
+        int(item["question_id"])
+        for item in adoption_results
+        if item.get("tag_status") == "reused"
+    ]
     failed_count = len(failed_ids) + missing_links
     if failed_count == 0 and len(successful_ids) == len(artifact.bundle.items):
         outcome = "complete"
@@ -1120,6 +1198,8 @@ def _adopt_deferred_analysis_with_links(
         "outcome": outcome,
         "requested_count": len(artifact.bundle.items),
         "tagged_count": tagged_count,
+        "reused_count": len(reused_ids),
+        "reused_question_ids": reused_ids,
         "complete_tagged_count": tagged_count,
         "evidence_count": evidence_count,
         "criteria_count": criteria_count,
@@ -1213,7 +1293,11 @@ def run_deferred_question_bank_intake(
         import_result.get("successful_question_ids"),
         allow_empty=True,
     )
-    candidates = _bank_questions(Path(question_bank_db_path), question_ids)
+    candidates = _bank_questions(
+        Path(question_bank_db_path),
+        question_ids,
+        paper_id=_imported_paper_id(import_result),
+    )
     matcher = SourceQuestionLinkService(Path(question_bank_db_path))
     match_result = matcher.match_imported_questions(
         source_questions=[

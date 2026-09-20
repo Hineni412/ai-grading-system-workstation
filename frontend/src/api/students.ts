@@ -104,6 +104,7 @@ export interface StudentExamResultsQuery {
   onlyDeducted?: boolean
   page?: number
   pageSize?: number
+  curriculumVolumeId?: string
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -190,6 +191,7 @@ export function fetchStudentExamResults(
   parameters.set('only_deducted', String(query.onlyDeducted !== false))
   parameters.set('page', String(page))
   parameters.set('page_size', String(pageSize))
+  if (query.curriculumVolumeId !== undefined) parameters.set('curriculum_volume_id', query.curriculumVolumeId)
   return apiClient.request(`/api/students/${id}/exam-results?${parameters.toString()}`, {
     decode: (value) => {
       const response = decodeStudentExamResults(value)

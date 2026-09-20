@@ -177,7 +177,6 @@ class AITaggingService:
                 config_model=self.model,
                 config_api_key=tagging_api_key,
                 config_base_url=dedicated_base_url,
-                **_batch_settings_kwargs({}, self.env),
             )
             self.llm_client = LLMClient(settings)
         elif llm_client is not None:
@@ -353,9 +352,6 @@ class AITaggingService:
                     response_format=_chat_response_format(
                         _taxonomy_suggestion_response_format()
                     ),
-                    # Interactive UX: taxonomy merge suggestions must stay on
-                    # the online channel even when batch inference is enabled.
-                    extra_kwargs={"disable_batch_routing": True},
                 )
             except (
                 LLMOutputTruncatedError,
@@ -738,14 +734,10 @@ def _system_prompt(
       answers "what reusable reasoning strategy guided the solution";
       math_model_tags names a stable structure whose defining relations are
       actually present. Never copy a term across these three fields.
-    - When curriculum_volume is present in the contract, curriculum_sections
-      must contain only exact stable section IDs from that volume. Return the
-      smallest accurate section set. Leave textbook_chapters empty because the
-      local program derives chapters from those section IDs.
-    - Without curriculum_volume, textbook_chapters is a list of exact approved
-      curriculum names.
-    - canonical_knowledge_id must be the approved ID corresponding to the first
-      knowledge_points value. If no approved knowledge term fits, return "".
+    - textbook_chapters, curriculum_sections and canonical_knowledge_id are
+      retained only for response compatibility. The server derives chapter and
+      section ownership from evidence-point knowledge links and ignores any
+      value returned there; leave them as [] and "".
     - A shared knowledge entry marked usage=do_not_use_as_knowledge describes a
       method, ability or question style that was historically put in the wrong
       dimension; never select it as a knowledge point. An entry marked
@@ -988,7 +980,6 @@ def _controlled_field_violation_notes(
         "ability_tags": "ability",
         "math_model_tags": "model",
         "special_type_tags": "special_type",
-        "textbook_chapters": "curriculum",
     }
     notes: list[str] = []
     for field_name, dimension in field_dimensions.items():
@@ -1000,21 +991,6 @@ def _controlled_field_violation_notes(
         values = getattr(analysis, field_name, [])
         if any(str(value or "").strip() not in allowed for value in values):
             notes.append(f"controlled_field_violation:{field_name}")
-    section_ids = set(_curriculum_section_ids(contract))
-    if any(
-        str(value or "").strip() not in section_ids
-        for value in analysis.curriculum_sections
-    ):
-        notes.append("controlled_field_violation:curriculum_sections")
-    canonical_id = str(analysis.canonical_knowledge_id or "").strip()
-    allowed_knowledge_ids = {
-        item["id"]
-        for item in _contract_candidates(contract, "knowledge")
-        if item.get("usage")
-        not in {"do_not_use_as_knowledge", "retrieval_only"}
-    }
-    if canonical_id and canonical_id not in allowed_knowledge_ids:
-        notes.append("controlled_field_violation:canonical_knowledge_id")
     return notes
 
 
@@ -1303,39 +1279,6 @@ def _llm_client_from_saved_profile(env: Mapping[str, str]) -> LLMClient | None:
     return LLMClient(settings)
 
 
-def _truthy(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _batch_settings_kwargs(
-    source: Mapping[str, Any],
-    environ: Mapping[str, str],
-) -> dict[str, Any]:
-    """Resolve the optional batch-inference channel fields for tagging clients."""
-    enabled_raw = source.get("batch_enabled")
-    if enabled_raw is None:
-        enabled_raw = environ.get("LLM_BATCH_ENABLED")
-    base_url = str(
-        source.get("batch_base_url") or environ.get("LLM_BATCH_BASE_URL") or ""
-    ).strip()
-    return {
-        "batch_enabled": _truthy(enabled_raw),
-        "batch_api_key": str(
-            source.get("batch_api_key") or environ.get("LLM_BATCH_API_KEY") or ""
-        ).strip()
-        or None,
-        "batch_base_url": (
-            normalize_openai_base_url(base_url) if base_url else None
-        ),
-        "batch_model": str(
-            source.get("batch_model") or environ.get("LLM_BATCH_MODEL") or ""
-        ).strip()
-        or None,
-    }
-
-
 def _llm_settings_from_env(env: Mapping[str, str]) -> LLMSettings | None:
     api_key = str(env.get("LLM_API_KEY") or "").strip()
     config_api_key = str(env.get("LLM_CONFIG_API_KEY") or api_key).strip()
@@ -1349,7 +1292,6 @@ def _llm_settings_from_env(env: Mapping[str, str]) -> LLMSettings | None:
         config_model=str(env.get("QUESTION_BANK_TAGGING_MODEL") or env.get("LLM_CONFIG_MODEL") or DEFAULT_TAGGING_MODEL),
         config_api_key=config_api_key,
         config_base_url=normalize_openai_base_url(str(env.get("LLM_CONFIG_BASE_URL") or env.get("LLM_BASE_URL") or "https://api.openai.com/v1")),
-        **_batch_settings_kwargs({}, env),
     )
 
 
@@ -1371,7 +1313,6 @@ def _llm_settings_from_profile() -> LLMSettings | None:
         config_api_key=config_api_key,
         config_base_url=normalize_openai_base_url(str(profile.get("config_base_url") or profile.get("base_url") or "https://api.openai.com/v1")),
         policy_profile=policy_overrides_from_profile(profile),
-        **_batch_settings_kwargs(profile, os.environ),
     )
 
 

@@ -25,6 +25,8 @@ const emit = defineEmits<{
 
 const localParts = ref<ManualQuestionPartInput[]>([])
 const validationError = ref('')
+let nextPartNumber = 1
+let nextStepNumber = 1
 const expectedTotal = computed(() => props.rows.reduce((total, row) => total + row.score, 0))
 const draftTotal = computed(() => localParts.value.reduce(
   (total, part) => total + part.steps.reduce((subtotal, step) => subtotal + Number(step.score || 0), 0),
@@ -66,12 +68,14 @@ function resetParts(): void {
   localParts.value = grouped.size > 0
     ? [...grouped.values()]
     : [{ part_id: 'P1', steps: [{ step_id: 'S1', score: 0, core_goal: '' }] }]
+  nextPartNumber = Math.max(0, ...localParts.value.map(part => Number(part.part_id.match(/P(\d+)/)?.[1] ?? 0))) + 1
+  nextStepNumber = Math.max(0, ...localParts.value.flatMap(part => part.steps.map(step => Number(step.step_id.match(/^S(\d+)$/)?.[1] ?? 0)))) + 1
   validationError.value = ''
 }
 
 function addPart(): void {
   localParts.value.push({
-    part_id: `P${localParts.value.length + 1}`,
+    part_id: `P${nextPartNumber++}`,
     steps: [{ step_id: 'S1', score: 0, core_goal: '' }],
   })
 }
@@ -84,7 +88,7 @@ function removePart(index: number): void {
 function addStep(partIndex: number): void {
   const part = localParts.value[partIndex]
   if (!part) return
-  part.steps.push({ step_id: `S${part.steps.length + 1}`, score: 0, core_goal: '' })
+  part.steps.push({ step_id: `S${nextStepNumber++}`, score: 0, core_goal: '' })
 }
 
 function removeStep(partIndex: number, stepIndex: number): void {
@@ -106,10 +110,10 @@ function applyStructure(): void {
   emit('command', {
     kind: 'replace_question_structure',
     question_id: props.questionId,
-    parts: localParts.value.map((part, partIndex) => ({
-      part_id: `P${partIndex + 1}`,
-      steps: part.steps.map((step, stepIndex) => ({
-        step_id: `S${stepIndex + 1}`,
+    parts: localParts.value.map((part) => ({
+      part_id: part.part_id,
+      steps: part.steps.map((step) => ({
+        step_id: step.step_id,
         score: Number(step.score),
         core_goal: step.core_goal.trim(),
       })),

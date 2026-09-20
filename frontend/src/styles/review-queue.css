@@ -176,6 +176,39 @@
   background: linear-gradient(135deg, var(--color-danger-subtle) 0%, var(--color-bg-selected) 100%);
 }
 
+.review-student-strip {
+  border-block-end: 0;
+  border-block-start: var(--border-width) solid var(--color-border-default);
+}
+
+.review-student-strip button {
+  min-width: 96px;
+}
+
+.review-student-strip button[data-status="ai_review"] {
+  border-inline-start: 4px solid var(--color-warning);
+  background: var(--color-warning-subtle);
+}
+
+.review-student-strip button[data-status="failed"] {
+  border-inline-start: 4px solid var(--color-danger);
+  background: var(--color-danger-subtle);
+}
+
+.review-student-strip button[data-status="ungraded"] {
+  border-inline-start: 4px dashed var(--color-info);
+  background: var(--color-info-subtle);
+}
+
+.review-student-strip button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.review-student-strip button:disabled:hover {
+  background: transparent;
+}
+
 .review-question-strip strong {
   font-size: var(--font-size-h3);
   font-weight: var(--font-weight-semibold);

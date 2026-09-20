@@ -189,15 +189,18 @@ beforeEach(() => {
 })
 
 describe('training store', () => {
-  it('only reuses chapter previews for the same source and request within two minutes', () => {
+  it('reuses chapter previews by evidence content until the source, settings or workspace changes', () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000)
     const store = useTrainingStore()
     store.rememberGroupDiagnosis('chapter-a', diagnosis, diagnosis)
     expect(store.cachedGroupDiagnosis('chapter-a', diagnosis)).toEqual(diagnosis)
     expect(store.cachedGroupDiagnosis('chapter-b', diagnosis)).toBeNull()
-    expect(store.cachedGroupDiagnosis('chapter-a', { ...diagnosis })).toBeNull()
+    expect(store.cachedGroupDiagnosis('chapter-a', { ...diagnosis })).toEqual(diagnosis)
+    const changed = structuredClone(diagnosis)
+    changed.students[0]!.weak_points[0]!.score_sum = 12
+    expect(store.cachedGroupDiagnosis('chapter-a', changed)).toBeNull()
     now.mockReturnValue(121_000)
-    expect(store.cachedGroupDiagnosis('chapter-a', diagnosis)).toBeNull()
+    expect(store.cachedGroupDiagnosis('chapter-a', diagnosis)).toEqual(diagnosis)
     store.rememberGroupDiagnosis('chapter-a', diagnosis, diagnosis)
     store.reset()
     expect(store.cachedGroupDiagnosis('chapter-a', diagnosis)).toBeNull()

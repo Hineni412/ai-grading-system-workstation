@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { DialogClose, DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle, DialogTrigger } from 'reka-ui'
+import { useRouter } from 'vue-router'
+import { DialogClose, DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 
 import {
   classAnalysisApi,
@@ -18,34 +19,27 @@ import {
 } from '../../api/model-profiles'
 import { useJobStore } from '../../stores/jobs'
 import AppButton from '../design-system/AppButton.vue'
+import ClassAnalysisGenerateConfirm from './ClassAnalysisGenerateConfirm.vue'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 
 const props = defineProps<{
   sessionId: number | null
 }>()
 
+const router = useRouter()
 const jobStore = useJobStore()
 const analysis = ref<ClassAnalysisResponse | null>(null)
 const selectedClass = ref('')
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const errorMessage = ref('')
-const actionError = ref('')
-const settingsSaving = ref(false)
 const confirmOpen = ref(false)
-const confirmKind = ref<'narrative' | 'causes'>('narrative')
 const confirmLoading = ref(false)
 const confirmBinding = ref<ModelTaskBinding | null>(null)
 const confirmError = ref('')
 const regenerating = ref(false)
 let loadGeneration = 0
 let loadController: AbortController | null = null
-let narrativeGeneration = 0
 let previewController: AbortController | null = null
-const aiOpen = ref(false)
-const aiClass = ref('')
-const aiAnalysis = ref<ClassAnalysisResponse | null>(null)
-const aiLoading = ref(false)
-const aiError = ref('')
 const previewQuestion = ref<ClassAnalysisQuestion | null>(null)
 const preview = ref<ClassQuestionPreview | null>(null)
 const previewLoading = ref(false)
@@ -74,15 +68,14 @@ const canRegenerate = computed(() => (
 ))
 
 const data = computed(() => analysis.value?.data ?? null)
-const narrative = computed(() => aiAnalysis.value?.narrative ?? null)
 const causeAnalysis = computed(() => analysis.value?.cause_analysis ?? null)
 const causeStatusText = computed(() => {
   const state = causeAnalysis.value
-  if (state?.legacy_questions) return `${state.legacy_questions} 题保留既有归并；从 AI 入口更新后，将结合真实作答分别整理错因、过程缺项和待核对事项。`
+  if (state?.legacy_questions) return `${state.legacy_questions} 题保留既有归并；更新整理后，将结合真实作答分别整理错因、过程缺项和待核对事项。`
   if (!state || state.status === 'not_generated') return state?.failed_questions
-    ? '错因整理未完成，保留原始理由；可从右上角 AI 入口重试。'
-    : state?.stale ? '作答、批语或题目依据已变化，请从右上角 AI 入口更新整理。' : '当前按原始表述合并，可从右上角 AI 入口结合真实作答整理。'
-  if (state.status === 'partial') return `部分题目已整理，${state.pending_questions} 题仍显示原始理由，可从 AI 入口继续整理。`
+    ? '错因整理未完成，保留原始理由；可重新整理。'
+    : state?.stale ? '作答、批语或题目依据已变化，建议更新整理。' : '当前按原始表述合并，可结合真实作答整理。'
+  if (state.status === 'partial') return `部分题目已整理，${state.pending_questions} 题仍显示原始理由，可继续整理。`
   return '已结合现有作答整理；展开可核对本题表现、作答与批语。同一学生同类只计一次，不同类可重复出现。'
 })
 const diagnosticQuestions = computed(() => [...(data.value?.questions ?? [])]
@@ -138,12 +131,10 @@ watch(
   () => props.sessionId,
   () => {
     closeConfirm()
-    aiOpen.value = false
     closePreview()
     previewCache.clear()
     selectedClass.value = ''
     analysis.value = null
-    actionError.value = ''
     void load()
   },
   { immediate: true },
@@ -152,10 +143,7 @@ watch(
 watch(
   () => activeJob.value?.status,
   (status) => {
-    if (status !== undefined && TERMINAL_JOB_STATUSES.has(status)) {
-      void load()
-      if (aiOpen.value) void loadNarrative()
-    }
+    if (status !== undefined && TERMINAL_JOB_STATUSES.has(status)) void load()
   },
 )
 
@@ -188,39 +176,15 @@ async function load(): Promise<void> {
   }
 }
 
-watch(aiOpen, (open) => {
-  closeConfirm()
-  if (open) {
-    aiClass.value = selectedClass.value || analysis.value?.class_names?.[0] || ''
-    void loadNarrative()
-  } else {
-    narrativeGeneration += 1
-    aiAnalysis.value = null
-  }
-})
-
-async function loadNarrative(): Promise<void> {
-  const sessionId = props.sessionId
-  if (sessionId === null) return
-  const generation = ++narrativeGeneration
-  aiAnalysis.value = null
-  aiLoading.value = true
-  aiError.value = ''
-  try {
-    const result = await classAnalysisApi.getClassAnalysis(sessionId, undefined, aiClass.value || undefined, 'narrative')
-    if (generation !== narrativeGeneration || !aiOpen.value || sessionId !== props.sessionId) return
-    aiAnalysis.value = result
-    if (analysis.value) {
-      analysis.value = { ...analysis.value, active_job_id: result.active_job_id,
-        status: result.status === 'generating' ? 'generating' : analysis.value.data ? 'ready' : 'no_data' }
-    }
-    void ensureTracked(result.active_job_id)
-  } catch {
-    if (generation !== narrativeGeneration) return
-    aiError.value = 'AI 分析暂时无法读取，请重试。'
-  } finally {
-    if (generation === narrativeGeneration) aiLoading.value = false
-  }
+function openReport(): void {
+  if (props.sessionId === null) return
+  void router.push({
+    path: '/class-report',
+    query: {
+      session: String(props.sessionId),
+      ...(selectedClass.value ? { class: selectedClass.value } : {}),
+    },
+  })
 }
 
 function closePreview(): void {
@@ -260,7 +224,6 @@ async function openPreview(question: ClassAnalysisQuestion, event?: Event): Prom
 
 onBeforeUnmount(() => {
   loadGeneration += 1
-  narrativeGeneration += 1
   loadController?.abort()
   previewController?.abort()
 })
@@ -279,29 +242,8 @@ async function ensureTracked(id: number | null): Promise<void> {
   }
 }
 
-async function toggleAutoGenerate(event: Event): Promise<void> {
-  const input = event.target instanceof HTMLInputElement ? event.target : null
-  const sessionId = props.sessionId
-  if (input === null || sessionId === null || settingsSaving.value) return
-  const checked = input.checked
-  settingsSaving.value = true
-  actionError.value = ''
-  try {
-    const saved = await classAnalysisApi.updateSettings(sessionId, checked)
-    if (analysis.value !== null && props.sessionId === sessionId) {
-      analysis.value = { ...analysis.value, auto_generate: saved.auto_generate }
-    }
-  } catch {
-    input.checked = !checked
-    actionError.value = '自动生成设置未能保存，请稍后重试。'
-  } finally {
-    settingsSaving.value = false
-  }
-}
-
-async function openRegenerateConfirm(kind: 'narrative' | 'causes' = 'narrative'): Promise<void> {
+async function openRegenerateConfirm(): Promise<void> {
   if (!canRegenerate.value) return
-  confirmKind.value = kind
   confirmOpen.value = true
   confirmBinding.value = null
   confirmError.value = ''
@@ -331,20 +273,17 @@ async function confirmRegenerate(): Promise<void> {
   regenerating.value = true
   confirmError.value = ''
   try {
-    const job = confirmKind.value === 'causes'
-      ? await classAnalysisApi.regenerate(sessionId, undefined, 'causes')
-      : await classAnalysisApi.regenerate(sessionId)
+    const job = await classAnalysisApi.regenerate(sessionId, undefined, 'causes')
     if (props.sessionId !== sessionId) return
     jobStore.track(job)
     closeConfirm()
     await load()
-    if (aiOpen.value) await loadNarrative()
   } catch (error) {
     if (props.sessionId !== sessionId) return
     confirmError.value = error instanceof ApiError
       && error.code === 'content_generation_model_not_configured'
       ? '未配置内容生成模型，请前往 设置→模型配置 绑定后重试。'
-      : '重新生成请求未能提交，请稍后重试。'
+      : '整理请求未能提交，请稍后重试。'
   } finally {
     regenerating.value = false
   }
@@ -390,16 +329,6 @@ function formatTime(value: string | null): string {
   return value.replace('T', ' ').replace('Z', '').slice(0, 19)
 }
 
-const SEVERITY_LABELS: Record<string, string> = {
-  high: '重点关注',
-  medium: '需要留意',
-  low: '参考',
-}
-
-function severityLabel(severity: string): string {
-  return SEVERITY_LABELS[severity] ?? severity
-}
-
 function rateTone(rate: number): 'low' | 'mid' | 'high' {
   const normalized = rate <= 1 ? rate : rate / 100
   if (normalized < 0.4) return 'low'
@@ -410,8 +339,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
 
 
 <template>
-  <DialogRoot v-model:open="aiOpen">
-    <section class="class-analysis" aria-label="班级分析">
+  <section class="class-analysis" aria-label="班级分析">
       <div v-if="props.sessionId === null" class="results-state-panel">
         <strong>请先在顶部选择考试</strong>
         <span>选择后，这里会显示该考试的班级整体分析。</span>
@@ -425,11 +353,9 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
               <option v-for="name in analysis.class_names" :key="name" :value="name">{{ name }}</option>
             </select>
           </label>
-          <DialogTrigger as-child>
-            <AppButton variant="secondary" data-testid="ai-analysis-open">
-              AI 班级分析<span v-if="generating"> · 生成中</span>
-            </AppButton>
-          </DialogTrigger>
+          <AppButton variant="secondary" data-testid="ai-analysis-open" @click="openReport">
+            AI 班级分析<span v-if="generating"> · 生成中</span>
+          </AppButton>
         </div>
         <div v-if="loadState === 'loading'" class="results-state-panel" role="status">
           <strong>正在读取班级分析</strong>
@@ -491,7 +417,17 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                 <p class="class-analysis__cause-status" data-testid="cause-analysis-status">{{ causeStatusText }}</p>
                 <p>失分名单按本题满分分为三档，临界分归入较高档；点击档位查看名单。</p>
               </div>
-              <span class="class-analysis__privacy">含学生姓名，请勿直接外发</span>
+              <div class="class-analysis__heading-actions">
+                <AppButton
+                  variant="secondary"
+                  data-testid="group-causes-open"
+                  :disabled="!canRegenerate || causeAnalysis?.pending_questions === 0"
+                  @click="openRegenerateConfirm()"
+                >
+                  {{ causeAnalysis?.status === 'ready' ? '已整理' : causeAnalysis?.status === 'partial' || causeAnalysis?.stale ? '继续整理 / 更新' : '整理错因' }}
+                </AppButton>
+                <span class="class-analysis__privacy">含学生姓名，请勿直接外发</span>
+              </div>
             </div>
             <div class="results-table-wrap class-analysis__table-wrap">
               <table class="class-analysis__questions">
@@ -582,121 +518,19 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
         </template>
       </template>
     </section>
-    <DialogPortal>
-      <DialogOverlay class="class-analysis__overlay" />
-      <DialogContent class="class-analysis__sheet" data-testid="ai-analysis-dialog">
-        <div class="class-analysis__dialog-heading">
-          <DialogTitle>AI 班级分析</DialogTitle>
-          <DialogClose class="class-analysis__link" aria-label="关闭 AI 班级分析">关闭</DialogClose>
-        </div>
-        <DialogDescription class="class-analysis__note">
-          基于相同成绩提供讲评与分组建议，按班级分别生成；图表和试题诊断直接统计当前成绩。
-        </DialogDescription>
-        <template v-if="analysis">
-          <div class="class-analysis__toolbar">
-            <label v-if="(analysis.class_names?.length ?? 0) > 1" class="class-analysis__toggle">
-              <span>分析班级</span>
-              <select v-model="aiClass" aria-label="AI 分析班级" @change="loadNarrative">
-                <option v-for="name in analysis.class_names" :key="name" :value="name">{{ name }}</option>
-              </select>
-            </label>
-            <span v-else>{{ aiClass }}</span>
-            <AppButton variant="secondary" data-testid="regenerate-open" :disabled="!canRegenerate" @click="openRegenerateConfirm('narrative')">重新生成分析</AppButton>
-          </div>
-          <label class="class-analysis__toggle">
-            <input type="checkbox" data-testid="auto-generate-toggle" :checked="analysis.auto_generate" :disabled="settingsSaving" @change="toggleAutoGenerate">
-            <span>阅卷完成后自动生成班级分析</span>
-          </label>
-          <div class="class-analysis__cause-action">
-            <div><strong>逐题错因整理</strong><p>{{ causeStatusText }}</p></div>
-            <AppButton variant="secondary" data-testid="group-causes-open" :disabled="!canRegenerate || causeAnalysis?.pending_questions === 0" @click="openRegenerateConfirm('causes')">{{ causeAnalysis?.status === 'ready' ? '已整理' : causeAnalysis?.status === 'partial' || causeAnalysis?.stale ? '继续整理 / 更新' : '整理错因' }}</AppButton>
-          </div>
-          <p v-if="actionError" class="class-analysis__error" role="alert">{{ actionError }}</p>
-        </template>
-              <form
-        v-if="confirmOpen" class="class-analysis__confirm"
-        aria-labelledby="regenerate-confirm-title"
-        data-testid="regenerate-confirm-dialog"
-        @submit.prevent="confirmRegenerate"
-      >
-        <div class="class-analysis__dialog-heading">
-          <div>
-            <p class="results-center__eyebrow">AI 内容生成确认</p>
-            <h3 id="regenerate-confirm-title">{{ confirmKind === 'causes' ? '整理本场各题错因' : '重新生成班级分析' }}</h3>
-          </div>
-          <button type="button" class="class-analysis__link" @click="closeConfirm">关闭</button>
-        </div>
 
-        <p v-if="confirmLoading" role="status">正在读取模型配置…</p>
+    <ClassAnalysisGenerateConfirm
+      v-if="confirmOpen"
+      kind="causes"
+      :loading="confirmLoading"
+      :binding="confirmBinding"
+      :error="confirmError"
+      :submitting="regenerating"
+      :call-count="causeAnalysis?.pending_questions ?? data?.questions.filter((q) => q.records.length).length ?? 0"
+      @close="closeConfirm"
+      @confirm="confirmRegenerate"
+    />
 
-        <template v-else>
-          <p>
-            {{ confirmKind === 'causes' ? '各班共用逐题归并结果，结合作答与题目依据；输入未变且已升级的题目直接复用，旧结果保留。最多调用' : '将为本场各班分别生成分析，最多调用' }} {{ confirmKind === 'causes' ? causeAnalysis?.pending_questions ?? data?.questions.filter(q => q.records.length).length ?? 0 : analysis?.class_names?.length || 1 }} 次内容生成模型（{{
-              confirmBinding?.profile_name ?? '未配置'
-            }}<template v-if="confirmBinding?.model"> · {{ confirmBinding.model }}</template>），
-            实际费用取决于服务商定价。AI 分析内容仅供参考，建议抽查后再使用。
-          </p>
-          <p
-            v-if="confirmBinding && !confirmBinding.profile_name"
-            class="class-analysis__error"
-            role="alert"
-            data-testid="regenerate-not-configured"
-          >
-            未配置内容生成模型，请前往 设置→模型配置 绑定后重试。
-          </p>
-          <p v-if="confirmError" class="class-analysis__error" role="alert" data-testid="regenerate-error">
-            {{ confirmError }}
-          </p>
-        </template>
-
-        <div class="class-analysis__dialog-actions">
-          <span>确认后才会发起模型调用并产生费用。</span>
-          <div>
-            <AppButton variant="secondary" @click="closeConfirm">取消</AppButton>
-            <AppButton
-              variant="primary"
-              type="submit"
-              data-testid="regenerate-confirm"
-              :disabled="
-                confirmLoading
-                  || regenerating
-                  || confirmBinding?.profile_name == null
-                  || confirmBinding?.profile_name === ''
-              "
-              :loading="regenerating"
-              loading-label="正在提交"
-            >
-              {{ confirmKind === 'causes' ? '确认整理错因' : '确认重新生成' }}
-            </AppButton>
-          </div>
-        </div>
-      </form>
-        <template v-if="!confirmOpen">
-          <p v-if="aiLoading" role="status">正在读取 AI 分析…</p>
-          <div v-else-if="aiError" class="class-analysis__error" role="alert">{{ aiError }} <button class="class-analysis__link" @click="loadNarrative">重试</button></div>
-          <p v-else-if="generating" role="status">AI 正在处理，完成后会自动更新。可关闭此处继续查看统计。</p>
-          <div v-else-if="aiAnalysis?.stale" class="class-analysis__banner" role="status" data-testid="stale-banner">
-            成绩已更新或统计口径已调整，请重新生成 AI 分析。主页面统计已按当前成绩更新。
-          </div>
-          <div v-else-if="!narrative" class="class-analysis__narrative-missing" data-testid="narrative-missing">
-            <p>{{ aiAnalysis?.narrative_failed ? 'AI 分析生成失败，可重新生成。' : 'AI 分析未生成，可重新生成。' }}</p>
-          </div>
-          <template v-else>
-            <p class="class-analysis__note"><span class="class-analysis__ai-badge">AI 分析 · 仅供参考</span> 生成于 {{ formatTime(aiAnalysis?.generated_at ?? null) }}</p>
-            <div v-if="narrative.key_findings.length" class="class-analysis__findings">
-              <article v-for="finding in narrative.key_findings" :key="finding.title" class="class-analysis__finding" :data-severity="finding.severity">
-                <strong>{{ finding.title }} <span class="class-analysis__severity">{{ severityLabel(finding.severity) }}</span></strong><p>{{ finding.detail }}</p>
-              </article>
-            </div>
-            <ol v-if="narrative.common_issues.length" class="class-analysis__issues">
-              <li v-for="issue in narrative.common_issues" :key="issue.title"><strong>{{ issue.title }}</strong><p class="class-analysis__evidence">{{ issue.evidence }}</p><p class="class-analysis__action"><b>讲评动作：</b>{{ issue.teaching_action }}</p></li>
-            </ol>
-            <div v-if="narrative.grouping_advice" class="class-analysis__grouping"><strong>分组教学建议</strong><p>{{ narrative.grouping_advice }}</p></div>
-          </template>
-        </template>
-      </DialogContent>
-    </DialogPortal>
-  </DialogRoot>
   <DialogRoot :open="previewQuestion !== null" @update:open="!$event && closePreview()">
     <DialogPortal>
       <DialogOverlay class="class-analysis__overlay" />

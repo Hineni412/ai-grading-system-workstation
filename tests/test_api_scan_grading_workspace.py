@@ -269,8 +269,10 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
         loaded = client.get(f"/api/sessions/{session_id}/scan/preflight")
         assert loaded.status_code == 200
         assert str(tmp_path) not in loaded.text
-        assert loaded.json()["summary"]["ready_to_grade"] == 0
-        assert loaded.json()["match_conflicts"][0]["code"] == "scan_name_mismatch"
+        assert loaded.json()["summary"]["ready_to_grade"] == 1
+        assert loaded.json()["pending_issue_count"] == 1  # Only the unmatched issue remains.
+        assert loaded.json()["match_conflicts"] == []
+        assert client.get(f"/api/sessions/{session_id}/scan/preflight").json()["summary"]["ready_to_grade"] == 1
         group_id = loaded.json()["groups"][0]["id"]
         media = client.get(loaded.json()["groups"][0]["front_media_url"])
         assert media.status_code == 200
@@ -313,9 +315,18 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(tmp_path
         )
         assert rejected.status_code == 422
         assert rejected.json()["error"]["code"] == "scan_match_conflict"
+        assert len(rejected.json()["error"]["details"]["conflicts"][0]["targets"]) == 2
         unchanged = client.get(f"/api/sessions/{session_id}/scan/preflight").json()
         assert unchanged["revision"] == saved.json()["revision"]
         assert unchanged["decisions"] == saved.json()["decisions"]
+        partial = client.put(
+            f"/api/sessions/{session_id}/scan/preflight/decisions",
+            json={"expected_revision": saved.json()["revision"], "decisions": duplicate_decisions, "allow_partial_matches": True},
+        )
+        assert partial.status_code == 200
+        assert partial.json()["decisions"] == saved.json()["decisions"]
+        assert partial.json()["revision"] == saved.json()["revision"]
+        assert len(partial.json()["rejected_conflicts"][0]["targets"]) == 2
 
         stale = client.put(
             f"/api/sessions/{session_id}/scan/preflight/decisions",

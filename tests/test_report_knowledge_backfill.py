@@ -257,7 +257,8 @@ def test_export_backfills_knowledge_labels_from_question_bank(tmp_path: Path) ->
     db_path, _ = _seed(tmp_path)
 
     export_path = ReportGenerator(db_path, tmp_path / "reports").export_session(1)
-    sheet = pd.read_excel(export_path, sheet_name="知识点分析")
+    # 含“未命名知识点”时表头上方有标题与说明两行。
+    sheet = pd.read_excel(export_path, sheet_name="知识点分析", header=2)
 
     rows = [dict(row) for _, row in sheet.iterrows()]
     assert PENDING_TAG not in set(sheet["知识点"])
@@ -289,7 +290,7 @@ def test_export_without_question_bank_keeps_placeholder_bucket(tmp_path: Path) -
     db_path = _seed_grading_db(_controlled_work_dir(tmp_path))
 
     export_path = ReportGenerator(db_path, tmp_path / "reports").export_session(1)
-    sheet = pd.read_excel(export_path, sheet_name="知识点分析")
+    sheet = pd.read_excel(export_path, sheet_name="知识点分析", header=2)
 
     labels = set(sheet["知识点"])
     assert labels == {"因式分解", "未命名知识点"}

@@ -318,6 +318,24 @@ def create_personalized_recommendation_draft(
     )
 
 
+@router.get("/personalized-drafts/by-request/{request_token}",
+            response_model=PersonalizedRecommendationDraftResponse,
+            responses={404: {"model": ErrorResponse}, **TRAINING_DATABASE_RESPONSES})
+def get_personalized_draft_by_request(
+    request_token: str,
+    module: PersonalizedRecommendationModule = Depends(get_personalized_recommendation_module),
+) -> PersonalizedRecommendationDraftResponse:
+    try:
+        draft = module.get_by_request_token(request_token)
+    except (RecommendationDraftNotFound, ValueError) as exc:
+        raise ApiError(404, "personalized_recommendation_not_found",
+                       "No saved draft was found for this request") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(503, "training_database_unavailable",
+                       "Training data is temporarily unavailable") from exc
+    return PersonalizedRecommendationDraftResponse.model_validate(_public_training_mapping(draft))
+
+
 @router.get(
     "/personalized-drafts/{draft_id}",
     response_model=PersonalizedRecommendationDraftResponse,

@@ -715,6 +715,7 @@ watch(
                 <small v-if="group.detected_name">识别姓名：{{ group.detected_name }}</small>
                 <small v-if="classEvidence(group, 'group')">{{ classEvidence(group, 'group') }}</small>
                 <small v-if="conflictMessages('group', String(group.id))" class="scan-match-conflict">{{ conflictMessages('group', String(group.id)) }}</small>
+                <small v-else-if="!decisionFor('group', String(group.id))" class="scan-decision-state">已自动匹配，可直接批改；如有误可更正。</small>
                 <small v-if="decisionFor('group', String(group.id))"
                   :data-saved-decision="`group:${String(group.id)}`" class="scan-decision-state">
                   {{ decisionStatus(decisionFor('group', String(group.id))) }}

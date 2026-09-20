@@ -16,7 +16,7 @@ from .adapters import (
     ImagePreprocessor,
     LocalOcrAdapter,
     OcrLine,
-    RapidOcrAdapter,
+    MineruOcrAdapter,
     SafeImagePreprocessor,
 )
 from .contracts import (
@@ -88,7 +88,7 @@ class QuestionDocumentPipeline:
         root = Path(workspace_root).resolve()
         root.mkdir(parents=True, exist_ok=True)
         self.workspace_root = root
-        self.ocr_adapter = ocr_adapter or RapidOcrAdapter()
+        self.ocr_adapter = ocr_adapter or MineruOcrAdapter()
         self.image_preprocessor = image_preprocessor or SafeImagePreprocessor()
         self.publisher = publisher
 

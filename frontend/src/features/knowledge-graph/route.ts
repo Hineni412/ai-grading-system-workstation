@@ -19,7 +19,7 @@ export interface ParsedGraphRouteScope {
 
 const CONTROLLED_KEYS = new Set([
   'exam', 'sessions', 'scope', 'class', 'students', 'session',
-  'min', 'max', 'include', 'exclude', 'history',
+  'min', 'max', 'include', 'exclude', 'history', 'volume',
 ])
 
 function singleText(value: unknown): string | null {
@@ -45,7 +45,9 @@ export function serializeGraphRouteScope(query: GraphQueryInput): Record<string,
     exam: query.exam_scope.mode,
     scope: 'snapshot',
   }
-  if (query.exam_scope.mode !== 'cross_exam') {
+  if (query.exam_scope.mode === 'semester') {
+    result.volume = query.exam_scope.curriculum_volume_id
+  } else if (query.exam_scope.mode !== 'cross_exam') {
     result.sessions = query.exam_scope.session_ids.join(',')
   }
   return result
@@ -164,7 +166,7 @@ export function parseGraphRouteScope(
   const validClasses = new Set(students.flatMap((student) => (
     student.class_name ? [student.class_name] : []
   )))
-  const requestedSessions = query?.exam_scope.mode === 'cross_exam'
+  const requestedSessions = query?.exam_scope.mode === 'cross_exam' || query?.exam_scope.mode === 'semester'
     ? []
     : query?.exam_scope.session_ids ?? []
   const valid = query !== null &&

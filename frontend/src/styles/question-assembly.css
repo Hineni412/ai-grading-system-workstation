@@ -1182,7 +1182,7 @@
 }
 
 .assembly-similar-score {
-  align-items: center;
+  align-items: flex-start;
   display: flex;
   gap: 9px;
 }
@@ -1191,13 +1191,75 @@
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   border-radius: 999px;
   color: var(--color-accent);
+  flex: 0 0 auto;
   font-size: 11px;
   padding: 4px 8px;
 }
 
-.assembly-similar-score span {
+.assembly-similar-reasons__empty {
   color: var(--color-text-muted);
   font-size: 10px;
+}
+
+.assembly-similar-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.assembly-similar-reason {
+  align-items: center;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 7px;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  font-size: 10px;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 6px;
+}
+
+.assembly-similar-reason__kind {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.assembly-similar-reason.is-knowledge_point .assembly-similar-reason__kind {
+  color: var(--color-accent);
+}
+
+.assembly-similar-reason.is-skill .assembly-similar-reason__kind {
+  color: var(--color-ai);
+}
+
+.assembly-similar-reason.is-method .assembly-similar-reason__kind {
+  color: var(--color-teacher);
+}
+
+.assembly-similar-reason.is-model .assembly-similar-reason__kind {
+  color: var(--color-info);
+}
+
+.assembly-similar-reason__values {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assembly-similar-reason.is-difficulty,
+.assembly-similar-reason.is-wording,
+.assembly-similar-reason.is-question_type,
+.assembly-similar-reason.is-text_fragment {
+  background: transparent;
+  border-style: dashed;
+  color: var(--color-text-muted);
 }
 
 .assembly-similar-list footer {

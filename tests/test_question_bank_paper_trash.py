@@ -32,12 +32,18 @@ _TAXONOMY_CATALOG_PATH = (
 
 _CURRENT_PAPER_QUESTION_FK_CHILDREN = {
     ("grading_question_links", "questions", "bank_question_id"),
+    ("paper_question_occurrences", "papers", "paper_id"),
+    ("paper_question_occurrences", "questions", "question_id"),
     ("question_analysis_items", "questions", "question_id"),
+    ("question_content_index", "questions", "question_id"),
     ("question_content_revisions", "questions", "question_id"),
     ("question_document_items", "questions", "bank_question_id"),
     ("question_document_publications", "papers", "paper_id"),
+    ("question_duplicate_links", "questions", "question_id"),
+    ("question_duplicate_links", "questions", "duplicate_of_question_id"),
     ("question_fingerprints", "questions", "question_id"),
     ("question_frequency_cache", "questions", "question_id"),
+    ("question_part_assessment_profiles", "questions", "question_id"),
     ("question_previews", "questions", "question_id"),
     ("question_solution_evidence_versions", "questions", "question_id"),
     ("question_tags", "questions", "question_id"),
@@ -320,6 +326,44 @@ def _seed_complete_analysis_dependencies(
                   'teacher', '2026-08-09 10:00:00')
         """,
         ("2" * 64, question_id, "3" * 64, "4" * 64),
+    )
+    conn.execute(
+        """
+        INSERT INTO question_part_assessment_profiles (
+            question_id, evidence_version_id, current_source_content_hash,
+            parts_json, revision, created_by
+        ) VALUES (?, ?, ?, '[]', 1, 'test')
+        """,
+        (question_id, "2" * 64, "3" * 64),
+    )
+    kept_question_id = int(conn.execute(
+        "INSERT INTO questions (question_number, question_text) "
+        "VALUES ('kept-outside-paper', '独立保留的合成题目')"
+    ).lastrowid)
+    other_deleted_id = int(conn.execute(
+        "SELECT id FROM questions WHERE paper_id = ? AND id != ? ORDER BY id LIMIT 1",
+        (paper_id, question_id),
+    ).fetchone()[0])
+    # Cover both foreign-key directions with the other endpoint outside the paper.
+    conn.executemany(
+        "INSERT INTO question_duplicate_links "
+        "(question_id, duplicate_of_question_id, signature) VALUES (?, ?, 'synthetic')",
+        [(question_id, kept_question_id), (kept_question_id, other_deleted_id)],
+    )
+    conn.execute(
+        """
+        INSERT INTO question_content_index (question_id, content_key)
+        VALUES (?, 'synthetic-content-key')
+        """,
+        (question_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO paper_question_occurrences (
+            paper_id, question_id, question_number, signature
+        ) VALUES (?, ?, '9', 'synthetic-content-key')
+        """,
+        (paper_id, question_id),
     )
 
 
@@ -683,6 +727,15 @@ def test_permanent_delete_handles_every_current_fk_child_of_a_complete_analysis(
             "SELECT paper_id FROM question_document_publications "
             "WHERE operation_id = 'delete-document-publication'"
         ).fetchone()[0] is None
+        assert conn.execute(
+            "SELECT COUNT(*) FROM question_part_assessment_profiles"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM question_duplicate_links"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM questions WHERE question_number = 'kept-outside-paper'"
+        ).fetchone()[0] == 1
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -1108,3 +1161,71 @@ def test_permanent_delete_prunes_orphan_pending_taxonomy_proposals(
         dry_run=True,
     )
     assert follow_up["removed_pending_proposals"] == 0
+
+
+def test_paper_delete_rehomes_canonical_question_to_surviving_paper(
+    tmp_path: Path,
+) -> None:
+    """A canonical question referenced by another paper is never deleted."""
+    writer, _reader, paper_id, version, _source_path = _seed_paper(tmp_path)
+    with connect(writer.db_path) as conn:
+        canonical_id = int(
+            conn.execute(
+                "SELECT id FROM questions WHERE paper_id = ? ORDER BY id LIMIT 1",
+                (paper_id,),
+            ).fetchone()[0]
+        )
+        surviving_paper_id = int(
+            conn.execute(
+                """
+                INSERT INTO papers (
+                    title, source_file, import_status, updated_at
+                ) VALUES ('留存卷', 'other-source.docx', 'completed', ?)
+                """,
+                ("2026-07-30 12:00:00.000000",),
+            ).lastrowid
+        )
+        conn.execute(
+            """
+            INSERT INTO paper_question_occurrences (
+                paper_id, question_id, question_number, signature
+            ) VALUES (?, ?, '7', 'shared-content-key')
+            """,
+            (surviving_paper_id, canonical_id),
+        )
+
+    trashed = writer.set_paper_deleted(
+        paper_id,
+        expected_updated_at=version,
+        deleted=True,
+    )
+    with connect(writer.db_path) as conn:
+        row = conn.execute(
+            "SELECT paper_id, question_number, is_deleted FROM questions WHERE id = ?",
+            (canonical_id,),
+        ).fetchone()
+        assert int(row["paper_id"]) == surviving_paper_id
+        assert str(row["question_number"]) == "7"
+        assert int(row["is_deleted"] or 0) == 0
+
+    result = writer.permanently_delete_papers(
+        [PaperPermanentDeleteSelection(paper_id, trashed.updated_at)],
+        confirmation_phrase="彻底删除 1 份试卷",
+        request_token="b" * 32,
+    )
+    assert result.deleted_paper_ids == (paper_id,)
+    with connect(writer.db_path) as conn:
+        row = conn.execute(
+            "SELECT paper_id, question_number FROM questions WHERE id = ?",
+            (canonical_id,),
+        ).fetchone()
+        assert row is not None, "canonical question must survive its host paper"
+        assert int(row["paper_id"]) == surviving_paper_id
+        assert str(row["question_number"]) == "7"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM paper_question_occurrences"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM questions WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchone()[0] == 0

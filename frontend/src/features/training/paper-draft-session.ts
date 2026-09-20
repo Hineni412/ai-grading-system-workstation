@@ -3,6 +3,7 @@ const STORAGE_KEY = 'ai-grading:personalized-paper-draft:v1'
 export interface PaperDraftSession {
   fingerprint: string
   draftId: string
+  requestToken?: string
 }
 
 export function loadPaperDraftSession(): PaperDraftSession | null {
@@ -14,11 +15,11 @@ export function loadPaperDraftSession(): PaperDraftSession | null {
       typeof parsed.fingerprint !== 'string'
       || typeof parsed.draftId !== 'string'
       || !parsed.fingerprint
-      || !parsed.draftId
+      || (!parsed.draftId && !/^[0-9a-f]{32}$/.test(parsed.requestToken ?? ''))
     ) {
       return null
     }
-    return { fingerprint: parsed.fingerprint, draftId: parsed.draftId }
+    return { fingerprint: parsed.fingerprint, draftId: parsed.draftId, requestToken: parsed.requestToken }
   } catch {
     return null
   }

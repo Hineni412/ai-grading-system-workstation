@@ -212,7 +212,7 @@ function isCountMap(value: unknown): value is Record<string, Record<string, numb
 }
 
 function isStableKey(value: unknown): value is string {
-  return typeof value === 'string' && /^(?:kp_[a-z0-9_]+|ki_[0-9a-f]{32})$/.test(value)
+  return typeof value === 'string' && /^(?:kp_[a-z0-9_]+|sk_[a-z0-9_]+|ki_[0-9a-f]{32})$/.test(value)
 }
 
 function isSha256(value: unknown): value is string {
@@ -237,8 +237,9 @@ function isScope(value: unknown): value is GraphScope {
 
 function isExamScope(value: unknown): value is GraphExamScope {
   return isRecord(value)
-    && hasExactKeys(value, ['mode', 'session_ids', 'sessions'])
-    && (value.mode === 'current' || value.mode === 'manual' || value.mode === 'cross_exam')
+    && hasExactKeys(value, ['mode', 'session_ids', 'sessions', ...('curriculum_volume_id' in value ? ['curriculum_volume_id'] : [])])
+    && (value.mode === 'current' || value.mode === 'manual' || value.mode === 'cross_exam' || value.mode === 'semester')
+    && (value.mode !== 'semester' || typeof value.curriculum_volume_id === 'string')
     && Array.isArray(value.session_ids)
     && value.session_ids.every((id) => isInteger(id, true))
     && Array.isArray(value.sessions)
@@ -372,6 +373,7 @@ function matchesQuery(scope: GraphScope, examScope: GraphExamScope, query: Graph
       [...(query.scope.student_ids ?? []), ...(query.scope.include_student_ids ?? [])],
     )
   ) return false
+  if (query.exam_scope.mode === 'semester') return examScope.curriculum_volume_id === query.exam_scope.curriculum_volume_id
   return query.exam_scope.mode === 'cross_exam'
     || isOrderedSubset(examScope.session_ids, query.exam_scope.session_ids)
 }

@@ -843,6 +843,7 @@ class JsonlDiagnosticJournal:
         self,
         *,
         limit: int = 50,
+        offset: int = 0,
         request_kind: str = "",
         outcome: str = "",
         workspace_module: str = "",
@@ -880,16 +881,17 @@ class JsonlDiagnosticJournal:
             reverse=True,
         )
         safe_limit = min(100, max(1, int(limit)))
+        safe_offset = max(0, int(offset))
         items = [
             self._summary(call)
-            for call in filtered[:safe_limit]
+            for call in filtered[safe_offset:safe_offset + safe_limit]
         ]
         return {
             "items": items,
             "returned": len(items),
             "matching": len(filtered),
             "scanned_event_count": scanned_event_count,
-            "truncated": read_truncated or len(filtered) > safe_limit,
+            "truncated": read_truncated or len(filtered) > safe_offset + safe_limit,
         }
 
     def get_call(self, call_id: str) -> dict[str, object] | None:

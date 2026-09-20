@@ -107,6 +107,63 @@ def test_batch_score_adjustment_rejects_entire_batch_when_score_exceeds_max(tmp_
     assert db.get_session_results(1)[0]["student_score"] == 5.0
 
 
+def test_batch_score_adjustment_accepts_integer_valued_scores(tmp_path: Path) -> None:
+    db, _db_path = _seed_session(tmp_path)
+    service = ManualReviewService(db, tmp_path / "annotated")
+
+    result = service.apply_batch_score_adjustments(
+        1,
+        [{"detail_id": 1, "score_awarded": 4.0}],
+    )
+
+    assert result["updated_details"] == 1
+    assert db.get_result_details(1)[0]["score_awarded"] == 4.0
+
+
+def test_batch_score_adjustment_rejects_non_integer_scores(tmp_path: Path) -> None:
+    db, _db_path = _seed_session(tmp_path)
+    service = ManualReviewService(db, tmp_path / "annotated")
+
+    with pytest.raises(ValueError, match="整数"):
+        service.apply_batch_score_adjustments(
+            1,
+            [{"detail_id": 1, "score_awarded": 2.5}],
+        )
+
+    assert db.get_result_details(1)[0]["score_awarded"] == 2.0
+    assert db.get_session_results(1)[0]["student_score"] == 5.0
+
+
+def test_teacher_score_confirmation_requires_integer_scores() -> None:
+    from backend.repositories.review import _normalize_teacher_score_confirmation
+
+    normalized = _normalize_teacher_score_confirmation(
+        {
+            "student_id": 1,
+            "question_id": "Q1",
+            "score_awarded": 4.0,
+            "max_score": 5,
+            "source_target_type": "detail",
+            "source_target_id": 7,
+            "expected_revision": 0,
+        }
+    )
+    assert normalized["score_awarded"] == 4.0
+
+    with pytest.raises(ValueError, match="integer"):
+        _normalize_teacher_score_confirmation(
+            {
+                "student_id": 1,
+                "question_id": "Q1",
+                "score_awarded": 2.5,
+                "max_score": 5,
+                "source_target_type": "detail",
+                "source_target_id": 7,
+                "expected_revision": 0,
+            }
+        )
+
+
 def test_excel_export_uses_latest_adjusted_scores(tmp_path: Path) -> None:
     db, db_path = _seed_session(tmp_path)
     service = ManualReviewService(db, tmp_path / "annotated")

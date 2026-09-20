@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import HTMLResponse
 
 from backend.api.app import ApiError
 from backend.api.dependencies import (
@@ -288,6 +289,63 @@ def get_class_analysis(
         active_job_id=active_job_id,
         class_names=class_names,
         selected_class=selected_class,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/class-analysis/report",
+    response_class=HTMLResponse,
+    responses={
+        409: {
+            "description": "Report is not ready",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorResponse"}
+                }
+            },
+        },
+        422: {
+            "description": "Report request is invalid",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorResponse"}
+                }
+            },
+        },
+    },
+)
+def get_class_analysis_report(
+    session_id: int,
+    class_name: str | None = Query(default=None),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    reports_dir: Path = Depends(get_reports_dir),
+) -> HTMLResponse:
+    """内嵌班级报告页：按已生成的班级叙述渲染自包含 HTML，供系统内页面嵌套展示。"""
+    from analysis_report_exporter import _render_class_html, split_session_analysis_by_class
+    from backend.class_analysis import assemble_cause_data
+
+    _require_session(db, session_id)
+    data = assemble_cause_data(db, int(session_id))
+    groups = split_session_analysis_by_class(data)
+    selected_class = class_name if class_name in groups else next(iter(groups), None)
+    if selected_class is None:
+        raise ApiError(
+            409,
+            "class_report_no_data",
+            "The exam has no graded results for a class report",
+        )
+    state = ClassAnalysisStateStore(reports_dir).load(session_id)
+    reports = state.get("class_reports") if isinstance(state, dict) else None
+    entry = reports.get(selected_class, {}) if isinstance(reports, dict) else {}
+    if entry.get("status") != "ready" or not isinstance(entry.get("narrative"), dict):
+        raise ApiError(
+            409,
+            "class_report_not_ready",
+            "The class report has not been generated yet",
+            {"class_name": selected_class},
+        )
+    return HTMLResponse(
+        _render_class_html(groups[selected_class], entry["narrative"])
     )
 
 

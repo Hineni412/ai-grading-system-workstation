@@ -47,6 +47,7 @@ from question_bank.services.source_paper_archive_service import (
 )
 from question_bank.parsers.type_detector import question_type_from_rubric
 from question_bank.database.schema import connect
+from path_manager import resolve_stored_file_path
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
     _normalize_question_number,
@@ -64,13 +65,23 @@ from question_bank.taxonomy.curriculum_catalog import (
     curriculum_volume,
     infer_curriculum_volume_from_text,
 )
+from question_bank.services.duplicate_analysis_copy_service import (
+    analysis_source_exact_key,
+    content_index_lookup,
+    ensure_content_index,
+    reusable_analysis,
+    uncertain_image_candidates,
+)
 from question_bank.training_criteria import (
     ConfigQuestionAnalysisSource,
     DeferredCombinedAnalysisBundle,
+    DeferredCombinedAnalysisItem,
+    DeferredAnalysisFailure,
     InMemoryCombinedQuestionAnalysisModule,
     OpenAICombinedAnalysisGateway,
     QuestionAnalysisImage,
     question_analysis_input_from_config_source,
+    reused_analysis_item,
 )
 from backend.config_workspace.deferred_analysis import (
     DeferredAnalysisArtifact,
@@ -826,6 +837,20 @@ def _run_config_generation_job_impl(
                 operation_id=f"config:{session_id}:{analysis_artifact_id}",
                 curriculum_volume_id=curriculum_volume_id,
                 sources=sources,
+                reused_items=_reused_analysis_items(
+                    (
+                        Path(question_bank_db_path)
+                        if question_bank_db_path is not None
+                        else None
+                    ),
+                    data_root=(
+                        Path(data_root)
+                        if data_root is not None
+                        else _infer_data_root(Path(db.db_path))
+                    ),
+                    sources=sources,
+                    operation_id=f"config:{session_id}:{analysis_artifact_id}",
+                ),
                 checkpoint=evidence_checkpoint,
             )
         elif previous_artifact.bundle.running_source_refs:
@@ -1314,6 +1339,8 @@ def _run_config_generation_job_impl(
                                 db=db,
                                 session_id=session_id,
                                 question_bank_db_path=question_bank_db_path,
+                                upload_config_dir=Path(upload_config_dir),
+                                data_root=Path(resolved_data_root),
                                 summary=summary,
                             )
                         except Exception:
@@ -1692,6 +1719,8 @@ def _confirm_intake_source_links(
     db: GradingRepositoryAccess,
     session_id: int,
     question_bank_db_path: Path | None,
+    upload_config_dir: Path,
+    data_root: Path,
     summary: dict[str, object],
 ) -> None:
     """Confirm grading-source links for a completed intake.
@@ -1728,9 +1757,20 @@ def _confirm_intake_source_links(
                 SELECT id, question_number, question_text, source_file
                 FROM questions
                 WHERE COALESCE(is_deleted, 0) = 0 AND source_file = ?
+                UNION
+                SELECT occ.question_id AS id,
+                       occ.question_number AS question_number,
+                       q.question_text AS question_text,
+                       p.source_file AS source_file
+                FROM paper_question_occurrences occ
+                JOIN questions q ON q.id = occ.question_id
+                JOIN papers p ON p.id = occ.paper_id
+                WHERE COALESCE(q.is_deleted, 0) = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
+                  AND p.source_file = ?
                 ORDER BY id
                 """,
-                (source_path_value,),
+                (source_path_value, source_path_value),
             ).fetchall()
         candidates = [dict(row) for row in rows]
     link_result = SourceQuestionLinkService(
@@ -1742,6 +1782,19 @@ def _confirm_intake_source_links(
         sync_job_id=context.job_id,
         sync_config_revision=str(loaded.revision),
         preserve_existing_confirmed=True,
+    )
+    from question_bank.solution_evidence.evidence_snapshot import (
+        freeze_session_evidence_snapshot,
+    )
+    freeze_session_evidence_snapshot(
+        Path(question_bank_db_path),
+        grading_session_id=int(session_id),
+        upload_config_dir=Path(upload_config_dir),
+        data_root=Path(data_root),
+        rubric_path=resolve_stored_file_path(
+            loaded.session.get("rubric_path"),
+            data_root=Path(data_root),
+        ),
     )
     confirmed = max(0, int(link_result.get("confirmed") or 0))
     unresolved_ids = [
@@ -1893,6 +1946,97 @@ def _submit_automatic_question_bank_sync(
     summary["question_bank_sync_job_id"] = int(job.id)
     summary["config_revision"] = str(loaded.revision)
     summary["source_paper_sha256"] = source_sha
+
+
+def _reused_analysis_items(
+    question_bank_db_path: Path | None,
+    *,
+    data_root: Path,
+    sources: tuple[ConfigQuestionAnalysisSource, ...],
+    operation_id: str,
+) -> dict[str, DeferredCombinedAnalysisItem | DeferredAnalysisFailure]:
+    """Match parsed sources to canonical bank questions before model calls.
+
+    A source whose full content is identical to a bank question carries the
+    canonical's stored analysis into the bundle, so a fully duplicated paper
+    issues no model request at all. Missing stored analysis remains a local
+    pending item; neither a lookup error nor a reuse error authorizes a call.
+    """
+    if not sources or question_bank_db_path is None:
+        return {}
+    bank_path = Path(question_bank_db_path)
+    if not bank_path.is_file():
+        return {}
+    keys: dict[str, str] = {}
+    for source in sources:
+        try:
+            key = analysis_source_exact_key(
+                source.question,
+                data_root=data_root,
+            )
+        except Exception:  # noqa: BLE001 - a failed lookup must not authorize a model call
+            LOGGER.exception(
+                "exact-duplicate key failed for source %s",
+                source.source_question_ref,
+            )
+            raise ValueError("题目查重未完成，请检查来源后重试；尚未调用模型") from None
+        if key:
+            keys[source.source_question_ref] = key
+    if not keys:
+        return {}
+    try:
+        from question_bank.database.schema import initialize_database
+
+        initialize_database(bank_path)
+        with connect(bank_path) as conn:
+            ensure_content_index(conn, data_root=data_root)
+            matches = content_index_lookup(conn, list(keys.values()))
+            uncertain_images = uncertain_image_candidates(conn, tuple(source for source in sources
+                if keys.get(source.source_question_ref) not in matches))
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("exact-duplicate index lookup failed")
+        raise ValueError("题库查重索引暂不可用；尚未调用模型") from None
+    if not matches and not uncertain_images:
+        return {}
+    result: dict[str, DeferredCombinedAnalysisItem | DeferredAnalysisFailure] = {}
+    for source in sources:
+        uncertain = source.source_question_ref in uncertain_images
+        bank_id = matches.get(keys.get(source.source_question_ref, ""), uncertain_images.get(source.source_question_ref))
+        if bank_id is None:
+            continue
+        try:
+            if uncertain:
+                raise ValueError("diagram identity requires checking")
+            reused = reusable_analysis(
+                bank_path,
+                bank_question_id=int(bank_id),
+                target_question=source.question,
+                data_root=data_root,
+            )
+            if reused is None:
+                raise ValueError("duplicate analysis unavailable")
+            result[source.source_question_ref] = reused_analysis_item(
+                source=source,
+                bank_question_id=int(bank_id),
+                evidence=reused["evidence"],
+                evidence_payload=reused["evidence_payload"],
+                model_name=str(reused["model_name"] or "question-bank-reuse"),
+                fine_term_links=tuple(reused["fine_term_links"]),
+                operation_id=operation_id,
+            )
+        except Exception:  # noqa: BLE001 - preserve a local pending item, never call the model
+            reference = source.source_question_ref
+            local_id = hashlib.sha256(f"{operation_id}:reuse:{reference}:{bank_id}".encode()).hexdigest()
+            result[reference] = DeferredAnalysisFailure(
+                source_question_ref=reference,
+                analysis_question_id=int(source.question.question_id),
+                request_id=local_id,
+                batch_hash=local_id,
+                category="duplicate_content_uncertain" if uncertain else "duplicate_analysis_missing",
+                validation_error=("题库存在相同题干的带图题，但图片内容尚不能确定相同。请先核对图中标注、线条和阴影并在题库处理，再重新生成评分依据；本题未自动合并或调用模型。" if uncertain else
+                    "题库已存在相同题目，但已存分析缺失、失效或无法复用。请先在题库处理该题，再重新生成评分依据；本题未调用模型。"),
+            )
+    return result
 
 
 def _config_analysis_sources(
@@ -2135,8 +2279,10 @@ def _deferred_analysis_draft(
         if source_ref in running_refs:
             state, reason, retryable = "running", "", False
         elif failure is not None:
-            state = "blocked" if failure.category == "local_validation" else "failed"
-            reason, retryable = failure.category, True
+            reuse_blocked = failure.category in {"duplicate_analysis_missing", "duplicate_content_uncertain"}
+            state = "blocked" if failure.category == "local_validation" or reuse_blocked else "failed"
+            reason = failure.validation_error if reuse_blocked else failure.category
+            retryable = not reuse_blocked
         elif source_ref in uncertain_set:
             state, reason, retryable = "failed", "outcome_unknown", True
         elif source_ref in item_refs:

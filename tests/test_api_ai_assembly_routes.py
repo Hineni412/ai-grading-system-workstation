@@ -497,7 +497,6 @@ def test_record_source_marker_roundtrip(ai_client, tmp_path: Path) -> None:
     assert by_id[fresh.id]["source"] == "ai"
 
 
-
 # ---------------------------------------------------------------------------
 # 解答题子类（W4）
 # ---------------------------------------------------------------------------
@@ -620,39 +619,6 @@ def test_select_essay_subtype_filters_by_tag(ai_client) -> None:
     body = response.json()
     assert body["rows"][0]["question_ids"] == [proof]
     assert body["gaps"] == []
-
-
-def test_template_structure_merges_and_normalizes_legacy_types(ai_client) -> None:
-    client, _, store, _, _ = ai_client
-    _insert_paper(store, 1, "旧真卷")
-    _add_question(
-        store, number="1", question_type="选择题", difficulty="3", paper_id=1
-    )
-    _add_question(
-        store,
-        number="2",
-        question_type="解答题（证明）",
-        difficulty="7",
-        paper_id=1,
-    )
-    _add_question(
-        store,
-        number="3",
-        question_type="解答题（计算）",
-        difficulty="7",
-        paper_id=1,
-    )
-
-    found = client.get("/api/question-assembly/ai/template-structure/1")
-    assert found.status_code == 200
-    entries = found.json()["entries"]
-    assert [
-        (entry["question_number"], entry["question_type"], entry["count"])
-        for entry in entries
-    ] == [
-        ("1", "选择题", 1),
-        ("2-3", "解答题", 2),
-    ]
 
 
 # ---------------------------------------------------------------------------

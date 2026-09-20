@@ -3,6 +3,13 @@ import { normalizeGraphQuery } from '../../api/graph-query'
 
 const STORAGE_KEY = 'p4-evidence-scope-v1'
 
+export function semesterEvidenceQuery(scope: GraphQueryInput['scope'], volumeId: string | null): GraphQueryInput {
+  return {
+    scope: { ...scope, use_historical_fallback: false },
+    exam_scope: { mode: 'semester', curriculum_volume_id: volumeId ?? '' },
+  }
+}
+
 export function loadEvidenceScope(): GraphQueryInput | null {
   try {
     const raw = globalThis.localStorage?.getItem(STORAGE_KEY)

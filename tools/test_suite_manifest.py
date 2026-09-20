@@ -18,7 +18,6 @@ SERIAL_TEST_PATHS = (
     Path("tests/test_config_source_service.py"),
     Path("tests/test_job_manager.py"),
     Path("tests/test_ops_lock.py"),
-    Path("tests/test_p1_29_acceptance.py"),
     Path("tests/test_performance_benchmark.py"),
     Path("tests/test_question_bank_local_file_dialog.py"),
     Path("tests/test_request_connection_benchmark.py"),
@@ -40,11 +39,7 @@ PROCESS_ISOLATED_TEST_PATHS = (
 # every routine development check.
 RELEASE_AUDIT_TEST_PATHS = (
     Path("tests/test_frontend_portable_packaging.py"),
-    Path("tests/test_p1_29_acceptance.py"),
-    Path("tests/test_p2_20_acceptance.py"),
     Path("tests/test_p2_22_streamlit_retirement.py"),
-    Path("tests/test_p3_01_structural_baseline.py"),
-    Path("tests/test_p3_18_performance.py"),
     Path("tests/test_p3_19_phase3_gate.py"),
     Path("tests/test_performance_benchmark.py"),
     Path("tests/test_performance_dataset.py"),

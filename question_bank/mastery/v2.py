@@ -67,7 +67,7 @@ def _identity(value: object, field: str) -> str:
 
 def _stable_key(value: object) -> str:
     key = _identity(value, "stable_key").casefold()
-    if re.fullmatch(r"(?:kp_[a-z0-9_]+|ki_[0-9a-f]{32})", key) is None:
+    if re.fullmatch(r"(?:kp_[a-z0-9_]+|sk_[a-z0-9_]+|ki_[0-9a-f]{32})", key) is None:
         raise ValueError("stable_key must use a governed identity")
     return key
 

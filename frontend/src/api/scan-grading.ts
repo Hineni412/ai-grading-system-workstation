@@ -454,9 +454,9 @@ export function fetchGradingPlan(sessionId: number, mode: GradingMode, signal?: 
   })
 }
 
-export function saveScanDecisions(sessionId: number, revision: number, decisions: ScanDecision[]): Promise<ScanDecisionSaveResult> {
+export function saveScanDecisions(sessionId: number, revision: number, decisions: ScanDecision[], allowPartialMatches = false): Promise<ScanDecisionSaveResult> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan/preflight/decisions`, {
-    method: 'PUT', body: { expected_revision: revision, decisions },
+    method: 'PUT', body: { expected_revision: revision, decisions, allow_partial_matches: allowPartialMatches },
     decode(value) {
       assertNoPathLikeKeys(value)
       if (!isRecord(value) || !finiteInteger(value.revision) || !Array.isArray(value.decisions)

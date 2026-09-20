@@ -115,7 +115,9 @@ describe('章节小组的采用与失败恢复', () => {
     await nextTick()
     expect(diagnose).toHaveBeenCalledTimes(1)
     app!.unmount(); host.remove()
-    const adopted = mount(false, null, pinia)
+    // A return visit may deserialize the same diagnosis after a long edit.
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 180_000)
+    const adopted = mount(false, null, pinia, JSON.parse(JSON.stringify(diagnosis)))
     await vi.waitFor(() => expect(button('查看小组').disabled).toBe(false))
     expect(diagnose).toHaveBeenCalledTimes(1)
     button('查看小组').click()
@@ -123,6 +125,7 @@ describe('章节小组的采用与失败恢复', () => {
     button('采用小组并核对出卷设置').click()
     await vi.waitFor(() => expect(adopted).toHaveBeenCalledOnce())
     expect(diagnose).toHaveBeenCalledTimes(2)
+    now.mockRestore()
   })
   it('identifies a timed-out request without suggesting that calculation is still running', async () => {
     mount()

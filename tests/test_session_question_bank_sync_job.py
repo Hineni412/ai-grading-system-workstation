@@ -14,6 +14,7 @@ from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifactS
 from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
 from backend.jobs.question_bank_sync import (
     StaleQuestionBankSyncError,
+    _adopt_deferred_analysis_with_links,
     _result,
     run_deferred_question_bank_intake,
     run_session_question_bank_sync_job,
@@ -30,6 +31,7 @@ from question_bank.services.question_write_service import QuestionBankWriteServi
 from tests.question_bank_support import QuestionBankTestStore
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
 from question_bank.solution_evidence import SolutionEvidenceRepository
+from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.training_criteria import (
     ConfigQuestionAnalysisSource,
@@ -37,7 +39,12 @@ from question_bank.training_criteria import (
     DeferredCombinedAnalysisBundle,
     GatewayBatchResponse,
     InMemoryCombinedQuestionAnalysisModule,
+    UnmappedFineTermResolver,
     question_analysis_input_from_config_source,
+    reused_analysis_item,
+)
+from question_bank.training_criteria.analysis import (
+    solution_evidence_source_content_hash,
 )
 
 
@@ -534,7 +541,17 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
     assert result["tagged_count"] == 1
     assert result["review_count"] == 0
     assert db.get_grading_session(session_id)["question_bank_sync_state"] == "ready"
-    assert Path(db.get_grading_session(session_id)["rubric_path"]).read_bytes() == rubric_before
+    # §7.2：冻结快照时允许在题级/步骤级追加证据引用注解，
+    # 但评分语义（分值、步骤目标、答案键、路径）不得变化。
+    after_rubric = json.loads(
+        Path(db.get_grading_session(session_id)["rubric_path"]).read_text(encoding="utf-8")
+    )
+    before_rubric = json.loads(rubric_before.decode("utf-8"))
+    if isinstance(before_rubric, dict) and "rubric" in before_rubric:
+        before_rubric = before_rubric["rubric"]
+    if isinstance(after_rubric, dict) and "rubric" in after_rubric:
+        after_rubric = after_rubric["rubric"]
+    assert _strip_snapshot_annotations(after_rubric) == _strip_snapshot_annotations(before_rubric)
 
 
 def test_sync_carries_original_filename_and_grading_paper_defaults_to_import(
@@ -1883,3 +1900,141 @@ def test_sync_saves_empty_link_scoring_without_retry_loop(
     assert evidence["evidence"]["parts"][0]["evidence_points"][0][
         "fine_term_links"
     ] == []
+
+
+def test_analyze_reused_items_issue_no_requests_and_adopt_skips_writes(
+    tmp_path: Path,
+) -> None:
+    """Exact-duplicate reuse: no model request; adoption never rewrites canonical."""
+    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
+    initialize_database(question_bank_db)
+    install_current_knowledge(question_bank_db)
+    with connect(question_bank_db) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO questions (
+                question_number, question_type, question_text, answer_text,
+                source_file
+            ) VALUES ('1', 'choice', '1 + 1 = ?', 'B', 'bank-source.docx')
+            """
+        )
+        bank_id = int(cursor.lastrowid)
+
+    source_question = question_analysis_input_from_config_source(
+        {
+            "question_id": "Q1",
+            "question_text": "1 + 1 = ?",
+            "answer_text": "B",
+            "question_type": "choice",
+        },
+        question_id=1,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        taxonomy_contract=_deferred_sync_contract(),
+    )
+    source = ConfigQuestionAnalysisSource("Q1", source_question)
+    evidence_payload = _deferred_sync_result(1)["results"][0][
+        "solution_evidence"
+    ]
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        evidence_payload,
+        question_id=1,
+        source_content_hash=solution_evidence_source_content_hash(
+            source_question
+        ),
+        resolver=UnmappedFineTermResolver(),
+    )
+    item = reused_analysis_item(
+        source=source,
+        bank_question_id=bank_id,
+        evidence=evidence,
+        evidence_payload=evidence_payload,
+        model_name="question-bank-reuse",
+        fine_term_links=(
+            {
+                "fine_term_id": "kp_alg_linear_equation",
+                "fine_term_name": "一元一次方程",
+            },
+        ),
+        operation_id="config:synthetic:reuse",
+    )
+
+    class _ForbiddenGateway:
+        def analyze(self, batch: Any, **_kwargs: Any) -> GatewayBatchResponse:
+            pytest.fail("reused source must not issue a model request")
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=_ForbiddenGateway(),
+    ).analyze(
+        operation_id="config:synthetic:reuse",
+        curriculum_volume_id="bnu24-math-g7-upper",
+        sources=(source,),
+        reused_items={"Q1": item},
+    )
+    assert bundle.status == "succeeded"
+    assert bundle.requests == ()
+    assert bundle.items[0].reused_from_question_id == bank_id
+
+    artifact_root = tmp_path / "analysis-artifacts"
+    artifact = DeferredAnalysisArtifactStore(artifact_root).save(
+        artifact_id="d" * 32,
+        session_id=1,
+        source_id="b" * 32,
+        source_revision="c" * 64,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        bundle=bundle,
+    )
+    loaded = DeferredAnalysisArtifactStore(artifact_root).load(
+        artifact.artifact_id,
+        session_id=1,
+        source_id="b" * 32,
+        source_revision="c" * 64,
+        curriculum_volume_id="bnu24-math-g7-upper",
+    )
+    assert loaded.bundle.items[0].reused_from_question_id == bank_id
+
+    result = _adopt_deferred_analysis_with_links(
+        artifact=loaded,
+        session_id=1,
+        question_bank_db_path=question_bank_db,
+        data_root=tmp_path / "data",
+        links={"Q1": {"bank_question_id": bank_id}},
+        ai_service_factory=lambda: _DeferredAdoptionTaggingService(),
+        taxonomy_governance=_PassThroughTaxonomyGovernance(),
+    )
+    assert result["outcome"] == "complete"
+    assert result["successful_question_ids"] == [bank_id]
+    adoption = result["adoption_results"][0]
+    assert adoption["tag_status"] == "reused"
+    assert adoption["evidence_status"] == "reused"
+    assert adoption["criteria_status"] == "reused"
+    # Nothing was written back onto the canonical question.
+    assert (
+        SolutionEvidenceRepository(question_bank_db).latest(bank_id) is None
+    )
+    with connect(question_bank_db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM question_tags WHERE question_id = ?",
+            (bank_id,),
+        ).fetchone()[0] == 0
+
+
+_ANNOTATION_KEYS = {
+    "evidence_snapshot_ref",
+    "source_evidence_version_id",
+    "graph_release_id",
+    "evidence_part_id",
+    "evidence_point_ids",
+}
+
+
+def _strip_snapshot_annotations(value: Any) -> Any:
+    """递归删除 §7.1/§7.2 的快照注解键，只保留评分语义内容。"""
+    if isinstance(value, dict):
+        return {
+            key: _strip_snapshot_annotations(item)
+            for key, item in value.items()
+            if key not in _ANNOTATION_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_snapshot_annotations(item) for item in value]
+    return value

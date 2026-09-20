@@ -7,6 +7,7 @@ from typing import Iterable
 
 
 _CANONICAL_KEY = re.compile(r"^kp_[a-z0-9]+(?:_[a-z0-9]+)*$")
+_SKILL_KEY = re.compile(r"^sk_[a-z0-9]+(?:_[a-z0-9]+)*$")
 _LOCAL_KEY = re.compile(r"^ki_[0-9a-f]{32}$")
 
 
@@ -40,9 +41,15 @@ def normalize_stable_key(value: str) -> str:
     """Normalize a governed canonical ID or validate an opaque local ID."""
 
     key = str(value or "").strip().casefold()
-    if _CANONICAL_KEY.fullmatch(key) or _LOCAL_KEY.fullmatch(key):
+    if (
+        _CANONICAL_KEY.fullmatch(key)
+        or _SKILL_KEY.fullmatch(key)
+        or _LOCAL_KEY.fullmatch(key)
+    ):
         return key
-    raise ValueError("knowledge stable key must be a governed kp_* or opaque ki_* ID")
+    raise ValueError(
+        "knowledge stable key must be a governed kp_*/sk_* or opaque ki_* ID"
+    )
 
 
 @dataclass(frozen=True, slots=True)

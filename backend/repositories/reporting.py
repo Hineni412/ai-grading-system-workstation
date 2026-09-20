@@ -46,7 +46,7 @@ class ReportRepository:
         connection = self._session.connection
         session_row = connection.execute(
             """
-            SELECT id, session_name, rubric_path
+            SELECT id, session_name, rubric_path, answer_key_path
             FROM grading_sessions
             WHERE id = ?
             """,
@@ -378,7 +378,6 @@ def load_question_bank_part_context(
             overrides = {
                 str(row[0]): [] for row in connection.execute(
                     """SELECT link.source_question_id FROM grading_question_links link
-                       JOIN question_part_assessment_profiles p ON p.question_id=link.bank_question_id AND p.status='active'
                        WHERE link.status='confirmed' AND CAST(link.grading_session_id AS INTEGER)=?""", (session_id,),
                 )
             }

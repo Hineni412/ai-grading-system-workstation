@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pytest
 
 from question_bank.mastery.v2 import ExamEvidence, MasteryV2Parameters, compute_mastery_v2
+from question_bank.solution_evidence.knowledge_links import links_from_embedded
 from question_bank.solution_evidence.part_assessments import direct_targets, match_rubric_parts
 
 
@@ -90,6 +91,10 @@ def test_real_diagnosis_dependency_path_keeps_original_assets_and_forms_groups(r
         part.update(part_id=f'Q1(P{index})',part_score=5)
     rubric_path = root/'rubric.json'
     rubric_path.write_text(json.dumps({'questions':[rubric_question]}),encoding='utf-8')
+    # 设计 E §7.4：旧会话先迁移出冻结证据快照，投影按 evidence_point_ids 归因。
+    from question_bank.solution_evidence.evidence_snapshot import freeze_session_evidence_snapshot
+    freeze_session_evidence_snapshot(path,grading_session_id=1,
+        upload_config_dir=root/'config'/'uploaded',data_root=root,rubric_path=rubric_path)
     with grading._connect() as conn:
         conn.execute("INSERT INTO grading_sessions(id,session_name,rubric_path,answer_key_path,status,is_deleted) VALUES(1,'合成考试',?,'','completed',0)",(str(rubric_path),))
         for student in (1,2):
@@ -154,12 +159,17 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
     assert frozen['recommendation_snapshot']['part_assessment']['parts'][1]['difficulty'] == 8
     points = frozen['criterion_snapshot']['criteria']['points']
     observed = training_part_observations(profile,frozen['criterion_snapshot']['criteria'],[
-        {'point_id':point['point_id'],'state':'met' if index == 0 else 'not_met'} for index,point in enumerate(points)])
+        {'point_id':point['point_id'],'state':'met' if index == 0 else 'not_met'} for index,point in enumerate(points)],
+        links_from_embedded(profile['evidence']))
     assert [(o['stable_key'],o['achieved'],o['difficulty']) for o in observed] == [
         ('kp_alg_linear_equation',1,2),('kp_geo_triangle_congruence',0,8)]
     from tests.phase4.test_personalized_recommendation import _diagnosis
+    # Snapshot persistence needs an actual loss at a compatible difficulty.
+    # SYN-S05 has no loss evidence and correctly receives no recommendations.
+    diagnosis = _diagnosis(student_ids=('SYN-S01',))
+    diagnosis['students'][0]['weak_points'][0]['source_question_refs'][0]['question_difficulty'] = 8
     draft = module.create(request_token='a'*32, actor_ref='test',
-        diagnosis=_diagnosis(student_ids=('SYN-S05',)),
+        diagnosis=diagnosis,
         config=PersonalizedRecommendationConfig(question_count=8,expected_minutes=45,
             direct_ratio=1,prerequisite_ratio=0,transfer_ratio=0,difficulty_min=8,difficulty_max=8,training_intent="challenge",
             target_keys=('kp_alg_linear_equation',),exclude_current_exam_originals=False))
@@ -224,6 +234,12 @@ def test_report_and_heatmap_share_exact_part_targets_and_revision(refined_traini
     for index,part in enumerate(rubric_question['parts'],1):
         part.update(part_id=f'Q1(P{index})',part_score=5)
     rubric = {'questions':[rubric_question]}
+    # 设计 E §7.2/§7.4：会话冻结快照并对 rubric 盖 evidence_part_id。
+    from question_bank.solution_evidence.evidence_snapshot import (
+        build_session_snapshot, annotate_rubric_payload, write_snapshot)
+    snapshot = build_session_snapshot(path,source_to_bank={'Q1':1},data_root=root)
+    write_snapshot(root/'config'/'uploaded',1,snapshot)
+    annotate_rubric_payload(rubric,snapshot,1)
     projection = QuestionTagProjectionService(path).project_session(grading_session_id=1,rubric=rubric)
     backfill,assessments = load_question_bank_part_context(path,1,rubric)
     assert len(backfill) == 3 and backfill['Q1'] == []
@@ -236,9 +252,9 @@ def test_report_and_heatmap_share_exact_part_targets_and_revision(refined_traini
     save_profile(path,question_id=1,evidence_version_id=profile['evidence_version_id'],created_by='test',parts=[dict(p,difficulty=3) for p in profile['parts']])
     assert _question_bank_report_source(root/'databases'/'grading.db',1) != revision
     rubric_question['parts'][0]['steps'][0]['core_goal'] = '历史题目不匹配'
-    excluded,assessment = load_question_bank_part_context(path,1,rubric)
-    assert excluded == {'Q1':[],'Q1(P1)':[],'Q1(P2)':[]}
-    assert _knowledge_bucket_labels({'question_id':'Q1(P1)','knowledge_ids':['old']},{'old':'旧整题知识'},excluded) == [('未命名知识点','未命名知识点')]
+    # §7.3：措辞漂移不再破坏归因——步骤按 evidence_point_ids 对位。
+    still_attributed,_ = load_question_bank_part_context(path,1,rubric)
+    assert [entry['stable_key'] for entry in still_attributed['Q1(P1)']] == ['kp_alg_linear_equation']
     assert load_question_bank_part_context(path,1,{}) == ({'Q1':[]},{})
     assert _knowledge_bucket_labels({'question_id':'Q1(P1)','knowledge_ids':['old']},{'old':'旧整题知识'},{'Q1':[]}) == [('未命名知识点','未命名知识点')]
 
@@ -327,8 +343,8 @@ def test_part_mapping_uses_obligations_not_order_or_counts():
     rubric = {'parts': [{'part_id': 'exam-b', 'response_mode': 'constructed', 'steps': [{'core_goal': 'second', 'required_elements': ['show second']}]},
                         {'part_id': 'exam-a', 'response_mode': 'constructed', 'steps': [{'core_goal': 'first', 'required_elements': ['show first']}]}]}
     matched = match_rubric_parts(rubric, {'parts': parts})
-    assert direct_targets(matched['exam-a']) == ('kp_a',)
-    assert direct_targets(matched['exam-b']) == ('kp_b',)
+    assert direct_targets(matched['exam-a'], links_from_embedded(matched['exam-a'])) == ('kp_a',)
+    assert direct_targets(matched['exam-b'], links_from_embedded(matched['exam-b'])) == ('kp_b',)
     rubric['parts'][0]['steps'][0]['required_elements'] = ['changed obligation']
     assert match_rubric_parts(rubric, {'parts': parts}) == {}
 
@@ -367,12 +383,12 @@ def test_training_dependency_failure_is_not_counted_twice():
     criteria = {'solution_evidence': {'source_content_hash': 'a'*64}, 'points': [
         {'point_id': p['evidence_point_id'], **{k:p.get(k,[]) for k in ('target','observable_evidence','depends_on')}} for p in (first,second)]}
     final = [{'point_id':p['evidence_point_id'],'state':'not_met'} for p in (first,second)]
-    observations = training_part_observations(profile,criteria,final)
+    observations = training_part_observations(profile,criteria,final,links_from_embedded(profile['evidence']))
     assert len(observations) == 1
     assert observations[0]['weight'] == 1
     assert observations[0]['achieved'] == 0
     final[0]['state'] = 'met'
-    observations = training_part_observations(profile,criteria,final)
+    observations = training_part_observations(profile,criteria,final,links_from_embedded(profile['evidence']))
     assert len(observations) == 2
     assert sum(o['weight'] for o in observations) == 1
 

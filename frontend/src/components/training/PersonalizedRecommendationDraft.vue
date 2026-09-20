@@ -15,7 +15,7 @@ import {
   type TrainingStudentScopeRequest,
 } from '../../api/training'
 import { knowledgeLeafLabel } from '../../api/question-bank'
-import { ApiError } from '../../api/errors'
+import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import TrainingScanBatchPanel from './TrainingScanBatchPanel.vue'
 import QuestionPreviewDialog from './QuestionPreviewDialog.vue'
 import {
@@ -48,6 +48,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   stageChange: [stage: 'diagnosis' | 'draft' | 'wps' | 'scan']
   stateChange: [state: RequestState]
+  recoveryChange: [pending: boolean]
 }>()
 
 type RequestState = 'idle' | 'loading' | 'ready' | 'error' | 'editing'
@@ -57,6 +58,7 @@ const selectedTargets = ref<string[]>([])
 const editReason = ref('教师根据课堂安排调整推荐草稿')
 const state = ref<RequestState>('idle')
 const draft = ref<PersonalizedRecommendationDraft | null>(null)
+const pendingRequestToken = ref('')
 const selectedDraftStudentId = ref('')
 const confirmDiscard = ref(false)
 const errorMessage = ref('')
@@ -163,6 +165,12 @@ async function restoreDraft(): Promise<void> {
     } catch { return }
   }
   restoring = true
+  if (stored.requestToken && !stored.draftId) {
+    pendingRequestToken.value = stored.requestToken
+    await recoverPendingDraft()
+    restoring = false
+    return
+  }
   state.value = 'loading'
   try {
     const restored = await trainingApi.getPersonalizedDraft(stored.draftId)
@@ -204,23 +212,18 @@ function discardDraft(): void {
 
 watch(workflowStage, (stage) => emit('stageChange', stage), { immediate: true })
 watch(state, (nextState) => emit('stateChange', nextState), { immediate: true })
+watch(pendingRequestToken, value => emit('recoveryChange', Boolean(value)), { immediate: true })
 watch(() => props.difficultyMax, (value) => {
   if (value !== undefined) difficultyMax.value = value
 })
 
 watch(
-  [() => props.diagnosis, () => props.targetKeys, () => props.scopeKeys],
-  (next, prev) => {
-    // 父级刷新诊断时会重建数组；内容没变就不清空已有草稿。
-    if (
-      prev !== undefined
-      && next[0] === prev[0]
-      && JSON.stringify(next[1] ?? []) === JSON.stringify(prev[1] ?? [])
-      && JSON.stringify(next[2] ?? []) === JSON.stringify(prev[2] ?? [])
-    ) {
-      return
-    }
+  [settingsFingerprint, () => JSON.stringify(props.diagnosis?.students.map(student => student.student_id).sort() ?? [])],
+  () => {
+    // 草稿自带生成时的证据快照；重读同一批学生不清空草稿。
+    // 设置或成员变化才重置，生成与出卷仍由后端核对来源。
     draft.value = null
+    pendingRequestToken.value = ''
     selectedDraftStudentId.value = ''
     state.value = 'idle'
     errorMessage.value = ''
@@ -259,6 +262,7 @@ function stageLabel(stage: TrainingStage): string {
 }
 
 function itemLabel(item: PersonalizedRecommendationItem): string {
+  if (item.match_level && item.match_label) return `${item.match_level}级 · ${item.match_label}`
   return item.selection_kind === 'supplement' ? '补充练习' : stageLabel(item.stage)
 }
 
@@ -402,14 +406,48 @@ function safeError(error: unknown, fallback: string): string {
   return fallback
 }
 
+function acceptGeneratedDraft(value: PersonalizedRecommendationDraft): void {
+  draft.value = value
+  pendingRequestToken.value = ''
+  paperInstances.value = []
+  selectedDraftStudentId.value = value.students[0]?.student_id ?? ''
+  state.value = 'ready'
+  errorMessage.value = ''
+  actionMessage.value = '草稿已生成并自动暂存，切页后返回会自动恢复；尚未形成正式训练卷。'
+  rememberDraft(value.draft_id)
+}
+
+async function recoverPendingDraft(): Promise<void> {
+  const token = pendingRequestToken.value
+  const fingerprint = settingsFingerprint.value
+  if (!token) return
+  state.value = 'loading'
+  errorMessage.value = ''
+  try {
+    const recovered = await trainingApi.getPersonalizedDraftByRequest(token)
+    if (fingerprint !== settingsFingerprint.value || token !== pendingRequestToken.value) return
+    acceptGeneratedDraft(recovered)
+    actionMessage.value = '已取回上次请求生成的草稿，没有重复创建。'
+  } catch {
+    if (fingerprint !== settingsFingerprint.value || token !== pendingRequestToken.value) return
+    state.value = 'error'
+    errorMessage.value = '暂未取得生成结果，后台可能仍在处理。请稍后核对生成结果；当前设置已保留，不会重复创建草稿。'
+  }
+}
+
 async function generate(): Promise<void> {
   if (!canGenerate.value) return
+  if (pendingRequestToken.value) { await recoverPendingDraft(); return }
+  const token = requestToken()
+  const fingerprint = settingsFingerprint.value
+  pendingRequestToken.value = token
+  savePaperDraftSession({ fingerprint, draftId: '', requestToken: token })
   state.value = 'loading'
   errorMessage.value = ''
   actionMessage.value = ''
   try {
-    draft.value = await trainingApi.createPersonalizedDraft({
-      request_token: requestToken(),
+    const generated = await trainingApi.createPersonalizedDraft({
+      request_token: token,
       scope: props.scope,
       exam_scope: props.examScope,
       question_count: props.questionCount,
@@ -423,12 +461,16 @@ async function generate(): Promise<void> {
       teaching_progress_chapter_id: props.teachingProgressChapterId ?? '',
       ...(props.groupScopeKeys?.length ? { group_scope_keys: props.groupScopeKeys, group_source_version: props.groupSourceVersion } : {}),
     })
-    paperInstances.value = []
-    selectedDraftStudentId.value = draft.value.students[0]?.student_id ?? ''
-    state.value = 'ready'
-    actionMessage.value = '草稿已生成并自动暂存，切页后返回会自动恢复；尚未形成正式训练卷。'
-    rememberDraft(draft.value.draft_id)
+    if (fingerprint !== settingsFingerprint.value || token !== pendingRequestToken.value) return
+    acceptGeneratedDraft(generated)
   } catch (error) {
+    if (fingerprint !== settingsFingerprint.value || token !== pendingRequestToken.value) return
+    if (isAmbiguousWriteError(error) || (error instanceof ApiError && error.kind === 'contract')) {
+      await recoverPendingDraft()
+      return
+    }
+    pendingRequestToken.value = ''
+    clearPaperDraftSession()
     state.value = 'error'
     errorMessage.value = safeError(
       error,
@@ -711,7 +753,7 @@ async function editItem(
       :disabled="!canGenerate"
       @click="generate"
     >
-      {{ state === 'loading' ? '正在生成…' : '生成个性化草稿' }}
+      {{ state === 'loading' ? '正在生成并核对…' : pendingRequestToken ? '核对生成结果' : '生成个性化草稿' }}
     </button>
       </section>
     </details>

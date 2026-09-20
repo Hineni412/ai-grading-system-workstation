@@ -32,6 +32,13 @@ CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope")
 _IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:(.*?)\]\]", re.IGNORECASE | re.DOTALL)
 
 
+def normalize_identity_text(value: object) -> str:
+    # Do not use NFKC: it turns exponents such as ² into ordinary digits.
+    text = str(value or "").translate({**{n: n - 0xFEE0 for n in range(0xFF01, 0xFF5F)},
+                                      ord("−"): "-", ord("﹣"): "-"})
+    return re.sub(r"\s+", "", text)
+
+
 def duplicate_question_key(question: Mapping[str, object]) -> str:
     """Exact question identity; visual evidence must be supplied by the reader.
 
@@ -43,6 +50,7 @@ def duplicate_question_key(question: Mapping[str, object]) -> str:
     number = str(question.get("question_number") or "").strip()
     if number:
         text = re.sub(r"^\s*" + re.escape(number) + r"\s*[.．、)）](?!\d)\s*", "", text, count=1)
+    text = re.sub(r"^(?:[（(]\s*\d+(?:\.\d+)?\s*分\s*[）)]\s*)+", "", text)
     pictures = question.get("image_content_keys")
     has_visual = bool(_IMAGE_MARKER_PATTERN.search(text) or question.get("image_paths")
                       or question.get("has_images") or question.get("source_regions"))
@@ -52,10 +60,10 @@ def duplicate_question_key(question: Mapping[str, object]) -> str:
     if any(path not in marker_keys for path in _IMAGE_MARKER_PATTERN.findall(text)):
         return ""
     text = _IMAGE_MARKER_PATTERN.sub(lambda match: "[[IMAGE:" + str(marker_keys[match.group(1)]) + "]]", text)
-    text = re.sub(r"\s+", "", text)
+    text = normalize_identity_text(text)
     if not text or (question.get("visual_evidence_missing")):
         return ""
-    return "exact-v2:" + json.dumps({"text": text, "options": question.get("options") or [],
+    return "exact-v3:" + json.dumps({"text": text, "options": question.get("options") or [],
                                      "formulas": question.get("formula_content") or [],
                                      "images": pictures or []}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 

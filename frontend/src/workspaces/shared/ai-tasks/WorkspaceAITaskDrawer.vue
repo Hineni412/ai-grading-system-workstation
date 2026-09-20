@@ -216,6 +216,7 @@ function toggleDrawer(): void {
 <template>
   <div class="workspace-ai-drawer-host">
     <button
+      v-if="totalCount > 0 || open"
       class="workspace-ai-drawer-toggle"
       type="button"
       :aria-expanded="open"

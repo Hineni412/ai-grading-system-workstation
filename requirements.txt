@@ -11,5 +11,6 @@ fastapi>=0.139.0
 uvicorn>=0.30.0
 opencv-python>=4.10.0.84
 PyMuPDF>=1.24.0
-rapidocr_onnxruntime
+# MinerU 内置 PP-OCRv6；与 PDF 解析共用，基础 OCR 不加载视觉大模型。
+mineru==4.0.3
 pypinyin>=0.53.0

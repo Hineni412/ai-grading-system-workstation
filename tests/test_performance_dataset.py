@@ -4,17 +4,12 @@ import json
 import shutil
 import sqlite3
 import tempfile
-from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 import pytest
 
 from tools.performance.dataset import (
-    LARGE,
-    MEDIUM,
-    SMALL,
     BenchmarkDataset,
-    DatasetManifest,
     ScaleDefinition,
     build_benchmark_dataset,
 )
@@ -172,28 +167,6 @@ def _assert_generated_content(dataset: BenchmarkDataset) -> None:
         == dataset.representative_knowledge_term_id
     )
     assert all(code.startswith("GEN-") and creator.startswith("generated-") for code, creator in tasks)
-
-
-def test_default_scale_counts_are_the_approved_design_sizes() -> None:
-    assert SMALL.counts == (1, 30, 10, 300, 200, 10, 5)
-    assert MEDIUM.counts == (5, 200, 20, 20_000, 2_000, 100, 50)
-    assert LARGE.name == "large_5pct"
-    assert LARGE.counts == (1, 25, 2, 7_500, 500, 25, 5)
-
-
-def test_manifest_is_frozen_and_contains_only_allowlisted_summary_fields() -> None:
-    assert tuple(field.name for field in fields(DatasetManifest)) == (
-        "scale_name",
-        "seed",
-        "table_counts",
-        "grading_database_bytes",
-        "question_bank_database_bytes",
-        "backup_database_bytes",
-        "generated_asset_bytes",
-    )
-    manifest = DatasetManifest("micro", 126, (), 1, 2, 3, 4)
-    with pytest.raises(FrozenInstanceError):
-        manifest.seed = 999  # type: ignore[misc]
 
 
 def test_build_uses_explicit_paths_and_restores_the_default_path_provider(

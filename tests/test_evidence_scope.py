@@ -26,6 +26,29 @@ class _GradingData:
         }[session_id]
 
 
+def test_semester_uses_all_attached_exams_and_never_other_term_history():
+    class SemesterData(_GradingData):
+        def list_grading_sessions(self):
+            return [{**row, "curriculum_volume_id": "this-term" if row["id"] in (2, 3) else "old-term"}
+                    for row in super().list_grading_sessions()]
+
+    resolved = EvidenceScopeResolver(SemesterData()).resolve(
+        scope={"mode": "all", "use_historical_fallback": True},
+        exam_scope={"mode": "semester", "curriculum_volume_id": "this-term", "session_ids": [1, 2]},
+    )
+    assert [row["id"] for row in resolved.sessions] == [2, 3]
+    assert resolved.score_profiles["2"]["score_rate"] == 1
+    assert all(not ids for ids in resolved.historical_session_ids_by_student.values())
+    assert all(row["historical_exam_count"] == 0 for row in resolved.score_profiles.values())
+    for volume in ("", "term-without-exams"):
+        empty = EvidenceScopeResolver(SemesterData()).resolve(
+            scope={"mode": "all", "score_rate_min": .2},
+            exam_scope={"mode": "semester", "curriculum_volume_id": volume},
+        )
+        assert not empty.sessions and not empty.students
+        assert all(row["score_rate"] is None for row in empty.score_profiles.values())
+
+
 def test_scope_uses_only_prior_history_and_applies_manual_union_last() -> None:
     resolved = EvidenceScopeResolver(_GradingData()).resolve(
         scope={

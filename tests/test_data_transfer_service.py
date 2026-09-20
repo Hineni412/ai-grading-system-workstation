@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
+import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -22,6 +25,37 @@ def _write(path: Path, content: str = "x") -> Path:
 
 def _arc_names(paths) -> set[str]:
     return {entry.arc_name for entry in paths}
+
+
+@contextmanager
+def _redirected_file(source: Path, target: Path):
+    """Use a real link, including Windows without the file-symlink privilege."""
+    try:
+        os.symlink(target, source)
+    except OSError as error:
+        if os.name != "nt" or error.winerror != 1314:
+            raise
+        assert source.name == target.name
+        source.parent.rmdir()  # The dedicated link directory must be empty.
+        pwsh = shutil.which("pwsh") or r"C:\Program Files\PowerShell\7\pwsh.exe"
+        subprocess.run(
+            [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+             "New-Item -ItemType Junction -Path $env:TEST_LINK_PATH "
+             "-Target $env:TEST_LINK_TARGET -ErrorAction Stop | Out-Null"],
+            env={**os.environ, "TEST_LINK_PATH": str(source.parent),
+                 "TEST_LINK_TARGET": str(target.parent)},
+            check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        try:
+            assert source.resolve() == target.resolve()
+            yield
+        finally:
+            os.rmdir(source.parent)  # Remove the junction itself, never its target.
+    else:
+        try:
+            yield
+        finally:
+            source.unlink()
 
 
 def test_lean_export_skips_regenerable_and_historical_heavy_data(tmp_path: Path) -> None:
@@ -103,18 +137,16 @@ def test_export_skips_sqlite_runtime_sidecars(tmp_path: Path) -> None:
     assert _arc_names(entries) == {"user_data/databases/grading_system.db"}
 
 
-def test_export_rejects_symlink_below_controlled_root(tmp_path: Path) -> None:
+def test_export_rejects_redirected_file_below_controlled_root(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
-    outside = _write(tmp_path / "outside.txt", "secret")
-    source_root.mkdir()
-    link = source_root / "innocent.txt"
-    try:
-        os.symlink(outside, link)
-    except OSError:
-        pytest.skip("symlink creation is unavailable")
+    outside = _write(tmp_path / "outside" / "innocent.txt", "synthetic-outside")
+    link = source_root / "linked" / "innocent.txt"
+    link.parent.mkdir(parents=True)
 
-    with pytest.raises(ValueError):
-        build_export_manifest([(source_root, "user_data")], scope="full")
+    with _redirected_file(link, outside):
+        with pytest.raises(ValueError):
+            build_export_manifest([(source_root, "user_data")], scope="full")
+    assert outside.read_text(encoding="utf-8") == "synthetic-outside"
 
 
 def test_export_rejects_detected_reparse_point(
@@ -136,20 +168,18 @@ def test_export_rejects_detected_reparse_point(
 
 def test_zip_writer_rechecks_source_after_manifest_creation(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
-    source = _write(source_root / "safe.txt", "safe")
-    outside = _write(tmp_path / "outside.txt", "secret")
-    entry = ExportEntry(source, "user_data/safe.txt", 4, source_root)
+    source = _write(source_root / "linked" / "safe.txt", "safe")
+    outside = _write(tmp_path / "outside" / "safe.txt", "fake")
+    entry = ExportEntry(source, "user_data/linked/safe.txt", 4, source_root)
     source.unlink()
-    try:
-        os.symlink(outside, source)
-    except OSError:
-        pytest.skip("symlink creation is unavailable")
 
-    with pytest.raises(ValueError):
-        write_export_zip([entry], tmp_path / "out.zip")
+    with _redirected_file(source, outside):
+        with pytest.raises(ValueError):
+            write_export_zip([entry], tmp_path / "out.zip")
+    assert outside.read_text(encoding="utf-8") == "fake"
 
 
-def test_private_package_excludes_legacy_api_profiles(tmp_path: Path) -> None:
+def test_private_package_preserves_full_snapshot_and_skips_runtime_caches(tmp_path: Path) -> None:
     module_path = Path(__file__).resolve().parents[1] / "package_v1.5.0.py"
     spec = importlib.util.spec_from_file_location("package_v1_5_0", module_path)
     assert spec is not None and spec.loader is not None
@@ -158,12 +188,18 @@ def test_private_package_excludes_legacy_api_profiles(tmp_path: Path) -> None:
 
     source = tmp_path / "source"
     package = tmp_path / "package"
-    _write(source / "user_data" / "config" / "api_profiles.json")
+    _write(source / "user_data" / "config" / "api_profiles.json", '{"api_key":"synthetic-test-key"}')
     _write(source / "user_data" / "databases" / "grading_system.db")
     _write(source / "user_data" / "workspaces" / "class-teacher" / "private.db")
+    _write(source / "user_data" / "__pycache__" / "cached.pyc")
+    _write(source / "user_data" / "temp" / "cached.pyo")
 
     package_module.copy_private_user_data(source, package)
 
-    assert not (package / "user_data" / "config" / "api_profiles.json").exists()
+    assert (package / "user_data" / "config" / "api_profiles.json").read_text(
+        encoding="utf-8"
+    ) == '{"api_key":"synthetic-test-key"}'
     assert (package / "user_data" / "databases" / "grading_system.db").exists()
-    assert not (package / "user_data" / "workspaces").exists()
+    assert (package / "user_data" / "workspaces" / "class-teacher" / "private.db").exists()
+    assert not (package / "user_data" / "__pycache__").exists()
+    assert not (package / "user_data" / "temp" / "cached.pyo").exists()

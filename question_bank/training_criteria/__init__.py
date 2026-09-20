@@ -61,6 +61,7 @@ from question_bank.training_criteria.in_memory import (
     InMemoryCombinedQuestionAnalysisModule,
     UnmappedFineTermResolver,
     compose_generated_config_from_skeletons,
+    reused_analysis_item,
 )
 
 __all__ = [
@@ -97,6 +98,7 @@ __all__ = [
     "QuestionAnalysisInputLoader",
     "QuestionTypeSuggestion",
     "question_analysis_input_from_config_source",
+    "reused_analysis_item",
     "QualityGateResult",
     "TagOnlyV1ResultAdapter",
     "TaxonomyProjectionReviewRequired",

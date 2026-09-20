@@ -179,6 +179,21 @@ def main() -> int:
     )
     print(f"已建立确认关联 {confirmed} 条,场次状态写为 {'ready' if ready else 'partial'}。")
 
+    # 设计 E §7.2/§7.4：确认关联后冻结证据快照并对评分依据盖章。
+    from question_bank.solution_evidence.evidence_snapshot import (
+        freeze_session_evidence_snapshot,
+    )
+    snapshot_path = freeze_session_evidence_snapshot(
+        Path(args.question_bank_db),
+        grading_session_id=args.session_id,
+        upload_config_dir=Path(args.data_root) / "config" / "uploaded",
+        data_root=Path(args.data_root),
+        rubric_path=resolve_stored_file_path(
+            session.get("rubric_path"), data_root=Path(args.data_root)
+        ),
+    )
+    print(f"证据快照: {snapshot_path or '无可冻结内容'}")
+
     projection = QuestionTagProjectionService(args.question_bank_db).project_session(
         grading_session_id=args.session_id,
         rubric=rubric,

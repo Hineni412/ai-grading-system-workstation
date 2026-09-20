@@ -57,6 +57,8 @@ export interface ResultsCenterStudent {
   student_code: string | null
   student_name: string
   class_name: string | null
+  pinyin_initials: string
+  pinyin_full: string
   current_score: number
   max_score: number
   ungraded_count: number
@@ -120,6 +122,8 @@ const STUDENT_KEYS = [
   'student_code',
   'student_name',
   'class_name',
+  'pinyin_initials',
+  'pinyin_full',
   'current_score',
   'max_score',
   'ungraded_count',
@@ -246,6 +250,8 @@ function isStudent(value: unknown): value is ResultsCenterStudent {
     && typeof value.student_name === 'string'
     && value.student_name.trim().length > 0
     && isNullableString(value.class_name)
+    && typeof value.pinyin_initials === 'string'
+    && typeof value.pinyin_full === 'string'
     && isNonnegativeNumber(value.current_score)
     && isNonnegativeNumber(value.max_score)
     && isNonnegativeInteger(value.ungraded_count)

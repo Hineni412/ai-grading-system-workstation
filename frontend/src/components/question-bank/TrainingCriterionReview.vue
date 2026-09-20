@@ -16,7 +16,7 @@ interface EditorPoint extends TrainingCriterionPoint {
   counterexample_text: string
 }
 
-const props = defineProps<{ questionId: number }>()
+const props = defineProps<{ questionId: number; skillLabels?: string[] }>()
 
 const workspace = ref<TrainingCriterionWorkspace | null>(null)
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
@@ -309,6 +309,15 @@ onBeforeUnmount(() => loadController?.abort())
         刷新
       </button>
     </header>
+
+    <div v-if="skillLabels?.length" class="criterion-skills">
+      <span class="criterion-skills__label">技能</span>
+      <span
+        v-for="label in skillLabels"
+        :key="label"
+        class="criterion-skills__chip"
+      >{{ label }}</span>
+    </div>
 
     <p v-if="loadState === 'loading'" class="criterion-review__loading" role="status">
       正在读取判定点…

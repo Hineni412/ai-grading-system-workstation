@@ -43,9 +43,6 @@ def analyze_template_package(
         prompt,
         [front_blob, back_blob],
         model=model_name,
-        # Template analysis is an interactive setup step; keep it online even
-        # when batch inference is enabled for grading.
-        extra_kwargs={"disable_batch_routing": True},
     )
     config = normalize_template_analysis(raw_payload)
     # Answer-region detection from vision models is too unstable for real marking.

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import BinaryIO, Any, Callable
 from uuid import uuid4
 
-from backend.grading_workflow import preflight_match_status
+from backend.grading_workflow import effective_preflight_papers, preflight_match_status
 
 
 class ScanGradingWorkspaceError(RuntimeError):
@@ -41,6 +41,10 @@ class PendingScanIssuesError(ScanGradingWorkspaceError):
 
 class ScanMatchConflictError(ScanGradingWorkspaceError):
     """答卷归属冲突必须先在扫描预检中解决。"""
+
+    def __init__(self, message: str, conflicts: list[dict[str, Any]] | None = None):
+        super().__init__(message)
+        self.conflicts = conflicts or []
 
 
 class GradingConfigChangedError(ScanGradingWorkspaceError):
@@ -1406,11 +1410,47 @@ class ScanGradingWorkspace:
                 for c in preflight_match_status(snapshot)["conflicts"]
                 if c["code"] == "scan_student_multiple_papers"
             }
+            old_assignments = {(p["target_type"], p["target_id"]): p["student_id"]
+                               for p in effective_preflight_papers(snapshot)}
+            previous_decisions = {(d["target_type"], d["target_id"]): d for d in state.get("public_decisions", [])}
+            candidates = {(d["target_type"], d["target_id"]): d for d in public_decisions}
             snapshot["decisions"] = public_decisions
-            for conflict in preflight_match_status(snapshot)["conflicts"]:
-                targets = {(t["target_type"], t["target_id"]) for t in conflict["targets"]}
-                if not targets <= old_conflicts.get(conflict["student_id"], set()):
-                    raise ScanMatchConflictError("同一学生被分配了多份答卷，本次匹配未保存。请核对已选学生；重复扫描可标为无效。")
+            rejected_conflicts = []
+            while True:
+                conflicts = [c for c in preflight_match_status(snapshot)["conflicts"]
+                             if not {(t["target_type"], t["target_id"]) for t in c["targets"]}
+                             <= old_conflicts.get(c["student_id"], set())]
+                if not conflicts:
+                    break
+                if not allow_partial_matches:
+                    raise ScanMatchConflictError("同一学生被分配了多份答卷，本次匹配未保存。请核对已选学生；重复扫描可标为无效。", conflicts)
+                rejected = set()
+                for conflict in conflicts:
+                    for target in conflict["targets"]:
+                        key = (target["target_type"], target["target_id"])
+                        decision = candidates.get(key)
+                        if decision and decision["action"] == "match" and old_assignments.get(key) != decision["student_id"]:
+                            rejected.add(key)
+                if not rejected:
+                    raise ScanMatchConflictError("答卷归属存在冲突，请核对相关答卷。", conflicts)
+                rejected_conflicts.extend(c for c in conflicts if c not in rejected_conflicts)
+                for key in rejected:
+                    if key in previous_decisions:
+                        candidates[key] = previous_decisions[key]
+                    else:
+                        candidates.pop(key)
+                # Restoring a rejected change can expose another conflict in a
+                # chain of reassignments; settle the entire set before saving.
+                snapshot["decisions"] = list(candidates.values())
+            if rejected_conflicts:
+                if candidates == previous_decisions:
+                    result = self.get_preflight(session_id)
+                    result["ready_to_grade"] = result["summary"]["ready_to_grade"]
+                else:
+                    result = self.save_decisions(session_id, expected_revision=expected_revision,
+                                                 valid_student_ids=valid_student_ids, decisions=list(candidates.values()))
+                result["rejected_conflicts"] = rejected_conflicts
+                return result
 
             next_state = {
                 "analysis_identity": identity,

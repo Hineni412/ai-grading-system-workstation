@@ -422,6 +422,18 @@ class SolutionEvidenceRepository:
                     graph_id,
                 ),
             )
+            from question_bank.solution_evidence.knowledge_links import (
+                project_embedded_links,
+                refresh_question_scope_summary,
+            )
+            project_embedded_links(
+                connection,
+                evidence_version_id=storage_version_id,
+                question_id=evidence.question_id,
+                evidence_payload=stored_payload,
+                default_release_id=graph_id,
+            )
+            refresh_question_scope_summary(connection, evidence.question_id)
         return storage_version_id
 
     def has_current(self, question_id: int, source_content_hash: str) -> bool:
@@ -857,7 +869,7 @@ def _source_kind(value: object) -> str:
 
 def _stable_key(value: object) -> str:
     key = _required_text(value, "stable_key").casefold()
-    if not (key.startswith("kp_") or key.startswith("ki_")):
+    if not key.startswith(("kp_", "ki_", "sk_")):
         raise ValueError("stable_key is invalid")
     return key
 

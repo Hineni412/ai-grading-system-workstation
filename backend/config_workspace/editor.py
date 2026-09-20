@@ -781,17 +781,13 @@ def _apply_replace_question_structure(
     score_index = 0
     for part_index, (part_input, maybe_part_id) in enumerate(zip(command.parts, part_ids)):
         part_id = str(maybe_part_id)
-        old_part = old_part_map.get(part_id) or (
-            old_parts[part_index] if part_index < len(old_parts) else {}
-        )
+        old_part = old_part_map.get(part_id) or {}
         old_steps = _dict_list(old_part.get("steps"))
         old_steps_by_id = {str(step.get("step_id") or ""): step for step in old_steps}
         new_steps: list[dict[str, Any]] = []
         for step_index, step_input in enumerate(part_input.steps):
             step_id = str(step_input.step_id).strip()
-            old_step = old_steps_by_id.get(step_id) or (
-                old_steps[step_index] if step_index < len(old_steps) else {}
-            )
+            old_step = old_steps_by_id.get(step_id) or {}
             new_step = copy.deepcopy(old_step)
             new_step.update(
                 {

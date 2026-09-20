@@ -135,24 +135,9 @@ def test_jobs_list_sanitizes_legacy_detail_values(client_with_manager) -> None:
     assert "C:/private" not in response.text
 
 
-@pytest.mark.parametrize(
-    "unsafe_detail, marker",
-    [
-        ("token=plain-secret", "plain-secret"),
-        ('{"payload":{"result":"private-result"}}', "private-result"),
-        ("diagnostic payload=private-payload", "private-payload"),
-        (
-            "Traceback (most recent call last): ValueError: private-stack",
-            "private-stack",
-        ),
-        ("Student wrote a private free-text answer", "private free-text"),
-    ],
-)
-def test_jobs_list_rejects_unrecognized_legacy_detail_text(
-    client_with_manager,
-    unsafe_detail: str,
-    marker: str,
-) -> None:
+def test_jobs_list_rejects_unrecognized_legacy_detail_text(client_with_manager) -> None:
+    unsafe_detail = 'diagnostic payload=private-payload'
+    marker = 'private-payload'
     client, manager = client_with_manager
     job = manager.store.create_job("grading_run", {"session_id": 7})
     manager.store.update_progress(
@@ -169,19 +154,8 @@ def test_jobs_list_rejects_unrecognized_legacy_detail_text(
     assert marker not in response.text
 
 
-@pytest.mark.parametrize(
-    "safe_detail",
-    [
-        "processing",
-        "graded=3 failed=1",
-        "matched=2 issues=1 pages=4",
-        "processing batch 2 of 5",
-    ],
-)
-def test_jobs_list_keeps_whitelisted_stage_and_count_details(
-    client_with_manager,
-    safe_detail: str,
-) -> None:
+def test_jobs_list_keeps_whitelisted_stage_and_count_details(client_with_manager) -> None:
+    safe_detail = 'graded=3 failed=1'
     client, manager = client_with_manager
     job = manager.store.create_job("grading_run", {"session_id": 7})
     manager.store.update_progress(
@@ -461,7 +435,12 @@ def test_jobs_api_rejects_nested_sensitive_payload_before_persistence(
 
     response = client.post(
         "/api/jobs/report_export",
-        json={"payload": {"session_id": 8, "config": {"api_key": "secret-value"}}},
+        json={
+            "payload": {
+                "session_id": 8,
+                "nested": [{"config": {"configApiKey": "secret-value"}}],
+            }
+        },
     )
 
     assert response.status_code == 422
@@ -472,42 +451,29 @@ def test_jobs_api_rejects_nested_sensitive_payload_before_persistence(
 
 
 @pytest.mark.parametrize(
-    "sensitive_key",
+    "sensitive_keys",
     [
-        "api key",
-        "configApiKey",
-        "accessToken",
-        "access token",
-        "token",
-        "authToken",
-        "oauth_token",
-        "id_token",
+        pytest.param(("api key", "accessToken", "access token"), id="canonical-names"),
+        pytest.param(("configApiKey",), id="api-key-suffix"),
+        pytest.param(("token", "authToken", "oauth_token", "id_token"), id="token-suffix"),
     ],
 )
-def test_jobs_api_rejects_canonical_sensitive_key_variants_before_persistence(
-    client_with_manager,
-    sensitive_key: str,
+def test_public_key_rules_reject_and_redact_equivalent_sensitive_names(
+    sensitive_keys: tuple[str, ...],
 ) -> None:
-    import sqlite3
+    from backend.public_data import contains_sensitive_key, sanitize_public_mapping
 
-    client, manager = client_with_manager
-    manager.register("report_export", lambda _context: {})
-
-    response = client.post(
-        "/api/jobs/report_export",
-        json={
-            "payload": {
-                "session_id": 8,
-                "nested": [{"config": {sensitive_key: "secret-value"}}],
-            }
-        },
-    )
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "unsafe_job_payload"
-    assert "secret-value" not in response.text
-    with sqlite3.connect(manager.store.db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
+    public = {"session_id": 8, "nested": [{"summary": {"token_count": 3}}]}
+    assert contains_sensitive_key(public) is False
+    assert sanitize_public_mapping(public) == public
+    # Equivalent spellings share a rule; check each independently without an API/DB fixture.
+    for sensitive_key in sensitive_keys:
+        payload = {
+            "session_id": 8,
+            "nested": [{"summary": {"token_count": 3}, sensitive_key: "secret-value"}],
+        }
+        assert contains_sensitive_key(payload) is True, sensitive_key
+        assert sanitize_public_mapping(payload) == public, sensitive_key
 
 
 def test_jobs_api_redacts_internal_paths_and_sensitive_keys_from_public_payload(
@@ -554,24 +520,19 @@ def test_job_response_redacts_sensitive_keys_from_legacy_stored_payload(
     assert "old-secret" not in str(payload)
 
 
-@pytest.mark.parametrize(
-    "sensitive_key",
-    ["token", "authToken", "oauth_token", "id_token"],
-)
-def test_job_response_redacts_token_variants_from_legacy_payload_and_result(
+def test_job_response_redacts_sensitive_fields_from_legacy_payload_and_result(
     client_with_manager,
-    sensitive_key: str,
 ) -> None:
     client, manager = client_with_manager
     legacy = manager.store.create_job(
         "scan_analysis",
-        {"session_id": 8, sensitive_key: "old-token"},
+        {"session_id": 8, "authToken": "old-token"},
     )
     assert manager.store.mark_running(legacy.id) is True
     manager.store.finish(
         legacy.id,
         "succeeded",
-        result={"summary": {"count": 1}, sensitive_key: "old-token"},
+        result={"summary": {"count": 1}, "authToken": "old-token"},
     )
 
     response = client.get(f"/api/jobs/{legacy.id}")

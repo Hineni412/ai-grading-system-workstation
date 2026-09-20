@@ -11,6 +11,7 @@ import {
 import { fetchStudents } from '../api/students'
 import { createAppRouter } from '../router'
 import { useSessionStore } from '../stores/session'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import KnowledgeGraphView from '../views/KnowledgeGraphView.vue'
 
 vi.mock('../api/students', async (importOriginal) => ({
@@ -41,7 +42,7 @@ function responseFor(): GraphResponse {
     response_schema_version: 'knowledge-graph-current',
     response_version: 'a'.repeat(64),
     scope: { mode: 'class', student_ids: ['12'], class_id: '七年级一班' },
-    exam_scope: { mode: 'current', session_ids: [7], sessions: [{ session_id: 7, session_name: '匿名考试七' }] },
+    exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper', session_ids: [7], sessions: [{ session_id: 7, session_name: '匿名考试七' }] },
     coverage: { covered_items: 4, total_items: 5, missing_items: { Q5: '未标注' } },
     current_standard: { release_id: 'current', content_hash: 'c'.repeat(64), taxonomy_revision: 2 },
     nodes: [{
@@ -72,6 +73,7 @@ async function settle() { await nextTick(); await Promise.resolve(); await nextT
 async function mountView(target: string) {
   const pinia = createPinia()
   setActivePinia(pinia)
+  useCurriculumScopeStore(pinia).$patch({ loadState: 'ready', selectedVolumeId: 'bnu24-math-g8-upper' })
   useSessionStore(pinia).$patch({ sessions, selectedSessionId: 7, loadState: 'ready' })
   const router = createAppRouter(createMemoryHistory())
   await router.push(target)
@@ -112,8 +114,9 @@ describe('knowledge graph view', () => {
         mode: 'class',
         class_id: '七年级一班',
         class_ids: ['七年级一班'],
+        use_historical_fallback: false,
       },
-      exam_scope: { mode: 'current', session_ids: [7] },
+      exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper' },
     }, expect.any(AbortSignal)))
     expect(host.textContent).toContain('知识图谱')
     expect(host.textContent).toContain('三角形全等')

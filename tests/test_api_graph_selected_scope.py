@@ -143,6 +143,29 @@ def _client(grading_db: Path, question_bank_db: Path) -> TestClient:
     return TestClient(app)
 
 
+def test_semester_graph_and_evidence_exclude_other_terms_and_empty_scope(tmp_path):
+    grading_db = _seed_grading_db(tmp_path)
+    question_bank_db = _seed_question_bank_db(tmp_path)
+    with sqlite3.connect(grading_db) as conn:
+        conn.execute("UPDATE grading_sessions SET curriculum_volume_id=CASE WHEN id=2 THEN 'bnu24-math-g8-upper' ELSE 'bnu24-math-g7-lower' END")
+    client = _client(grading_db, question_bank_db)
+    query = {"scope": {"mode": "all", "use_historical_fallback": True},
+             "exam_scope": {"mode": "semester", "curriculum_volume_id": "bnu24-math-g8-upper", "session_ids": [1]}}
+    response = client.post('/api/graph/query', json=query)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['exam_scope']['session_ids'] == [2]
+    assert payload['scope']['student_score_profiles']['3']['score_rate'] is None
+    assert payload['scope']['use_historical_fallback'] is False
+    assert payload['nodes']
+    key = 'kp_alg_linear_equation'
+    for volume, expected in [('bnu24-math-g8-upper', {2}), ('term-without-exams', set()), ('', set())]:
+        query['exam_scope']['curriculum_volume_id'] = volume
+        evidence = client.post('/api/graph/evidence', json={**query, 'stable_key': key})
+        assert evidence.status_code == 200, evidence.text
+        assert {row['session_id'] for row in evidence.json()['items']} == expected
+
+
 def test_graph_query_selected_scope_keeps_queue_order_and_tolerates_gaps(
     tmp_path: Path,
 ) -> None:

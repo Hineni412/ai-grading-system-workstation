@@ -94,3 +94,51 @@ class AssemblyRecordListResponse(_AssemblyModel):
 class AssemblyRecordDeleteResponse(_AssemblyModel):
     record_id: str
     deleted: bool
+
+
+class AssemblyAssistantRequest(_AssemblyModel):
+    class_id: str = Field(min_length=1, max_length=100)
+    curriculum_volume_id: str = Field(min_length=1, max_length=100)
+    chapter_id: str = Field(default="", max_length=100)
+    target_keys: list[str] | None = Field(default=None, max_length=100)
+    question_type: Literal["", "选择题", "多选题", "填空题", "解答题"] = ""
+    difficulty_min: int = Field(default=1, ge=1, le=10)
+    difficulty_max: int = Field(default=10, ge=1, le=10)
+    exclude_exam_originals: bool = True
+    exclude_recent: bool = True
+
+
+class AssemblyWeakness(_AssemblyModel):
+    knowledge_key: str
+    knowledge_point: str
+    mastery: float = Field(ge=0, le=1)
+    weak_student_count: int = Field(ge=0)
+    evidence_student_count: int = Field(ge=0)
+    exam_score_rate: float | None = Field(ge=0, le=1)
+    evidence_count: int = Field(ge=0)
+    candidate_count: int | None = Field(ge=0)
+    target_difficulty: float | None = Field(default=None, ge=1, le=10)
+
+
+class AssemblyAssistantCandidate(_AssemblyModel):
+    question_id: int = Field(gt=0)
+    target_keys: list[str]
+    practice_kind: Literal["focus", "foundation"] = "focus"
+    match_level: int | None = Field(default=None, ge=1, le=4)
+    match_label: str = "按已选目标关联"
+    difficulty: float | None = Field(default=None, ge=1, le=10)
+    difficulty_band: Literal["suitable", "lower", "higher", "unknown"] = "unknown"
+    similar_question_ids: list[int] = Field(default_factory=list)
+    direct_target_keys: list[str] = Field(default_factory=list)
+
+
+class AssemblyAssistantResponse(_AssemblyModel):
+    student_count: int
+    evidence_student_count: int
+    exam_student_count: int
+    exam_score_rate: float | None
+    exam_count: int
+    weaknesses: list[AssemblyWeakness]
+    selected_target_keys: list[str]
+    candidate_total: int
+    candidates: list[AssemblyAssistantCandidate]

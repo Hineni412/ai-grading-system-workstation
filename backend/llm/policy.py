@@ -18,11 +18,9 @@ class LLMPolicyError(ValueError):
 
 class LLMRequestKind(str, Enum):
     GRADING = "grading"
-    GRADING_BATCH = "grading_batch"
     RECOGNITION = "recognition"
     CONFIG_GENERATION = "config_generation"
     TAGGING = "tagging"
-    TAGGING_BATCH = "tagging_batch"
     WORKSPACE = "workspace"
     ASSEMBLY = "assembly"
 
@@ -38,19 +36,12 @@ class LLMRequestPolicy:
     max_retries: int
     requests_per_minute: int
     retry_delays: tuple[float, ...]
-    # Batch endpoints queue requests server-side, so a client-side timeout
-    # must not trigger a silent resend (the original request may still be
-    # processed and billed).  Online channels keep the legacy behaviour.
-    retry_on_timeout: bool = True
 
 
 DEFAULT_POLICIES: Mapping[LLMRequestKind, LLMRequestPolicy] = MappingProxyType(
     {
         LLMRequestKind.GRADING: LLMRequestPolicy(
-            300.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
-        ),
-        LLMRequestKind.GRADING_BATCH: LLMRequestPolicy(
-            3600.0, 10, 1000, (2.0, 5.0, 10.0, 20.0, 40.0), False
+            600.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
         ),
         LLMRequestKind.RECOGNITION: LLMRequestPolicy(
             60.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
@@ -60,9 +51,6 @@ DEFAULT_POLICIES: Mapping[LLMRequestKind, LLMRequestPolicy] = MappingProxyType(
         ),
         LLMRequestKind.TAGGING: LLMRequestPolicy(
             480.0, 2, 1000, (0.5, 1.5, 3.0, 5.0, 8.0)
-        ),
-        LLMRequestKind.TAGGING_BATCH: LLMRequestPolicy(
-            3600.0, 10, 1000, (2.0, 5.0, 10.0, 20.0, 40.0), False
         ),
         LLMRequestKind.WORKSPACE: LLMRequestPolicy(
             120.0, 0, 1000, ()
@@ -97,14 +85,11 @@ MAX_AUTO_RETRIES_PROFILE_FIELD = "max_auto_retries"
 MAX_AUTO_RETRIES_MIN = 0
 MAX_AUTO_RETRIES_MAX = 5
 # Channel-level default for a single request timeout on online channels.
-# When present it replaces each online kind's default; the finer-grained
-# llm_{kind}_timeout_seconds keys still win, and batch channels ignore it.
+# When present it replaces each kind's default; the finer-grained
+# llm_{kind}_timeout_seconds keys still win.
 REQUEST_TIMEOUT_PROFILE_FIELD = "request_timeout_seconds"
 REQUEST_TIMEOUT_MIN = 30.0
 REQUEST_TIMEOUT_MAX = 1200.0
-_BATCH_REQUEST_KINDS = frozenset(
-    {LLMRequestKind.GRADING_BATCH, LLMRequestKind.TAGGING_BATCH}
-)
 EXECUTION_SCOPE_PROFILE_FIELD = "_llm_execution_scope_key"
 
 
@@ -143,25 +128,9 @@ def _bounded_int(
     return value
 
 
-# Batch inference requests may legitimately pend for tens of minutes, so the
-# batch channel accepts much longer timeout overrides than online channels.
-_TIMEOUT_OVERRIDE_CAPS: Mapping[LLMRequestKind, float] = MappingProxyType(
-    {
-        LLMRequestKind.GRADING_BATCH: 7200.0,
-        LLMRequestKind.TAGGING_BATCH: 7200.0,
-    }
-)
-_DEFAULT_TIMEOUT_OVERRIDE_CAP = REQUEST_TIMEOUT_MAX
+_TIMEOUT_OVERRIDE_CAP = REQUEST_TIMEOUT_MAX
 
-# A rejected (429/503) batch attempt is never billed, so batch channels may
-# keep drawing tickets far longer than online channels.
-_RETRY_COUNT_CAPS: Mapping[LLMRequestKind, int] = MappingProxyType(
-    {
-        LLMRequestKind.GRADING_BATCH: 20,
-        LLMRequestKind.TAGGING_BATCH: 20,
-    }
-)
-_DEFAULT_RETRY_COUNT_CAP = 5
+_RETRY_COUNT_CAP = 5
 
 
 def _retry_delays_for(
@@ -186,19 +155,15 @@ def policy_from_profile(
     timeout = _bounded_float(
         values,
         f"{prefix}_timeout_seconds",
-        (
-            base.timeout_seconds
-            if request_kind in _BATCH_REQUEST_KINDS
-            else _bounded_float(
-                values,
-                REQUEST_TIMEOUT_PROFILE_FIELD,
-                base.timeout_seconds,
-                REQUEST_TIMEOUT_MIN,
-                REQUEST_TIMEOUT_MAX,
-            )
+        _bounded_float(
+            values,
+            REQUEST_TIMEOUT_PROFILE_FIELD,
+            base.timeout_seconds,
+            REQUEST_TIMEOUT_MIN,
+            REQUEST_TIMEOUT_MAX,
         ),
         1.0,
-        _TIMEOUT_OVERRIDE_CAPS.get(request_kind, _DEFAULT_TIMEOUT_OVERRIDE_CAP),
+        _TIMEOUT_OVERRIDE_CAP,
     )
     retries = _bounded_int(
         values,
@@ -208,13 +173,10 @@ def policy_from_profile(
             MAX_AUTO_RETRIES_PROFILE_FIELD,
             base.max_retries,
             MAX_AUTO_RETRIES_MIN,
-            min(
-                MAX_AUTO_RETRIES_MAX,
-                _RETRY_COUNT_CAPS.get(request_kind, _DEFAULT_RETRY_COUNT_CAP),
-            ),
+            MAX_AUTO_RETRIES_MAX,
         ),
         0,
-        _RETRY_COUNT_CAPS.get(request_kind, _DEFAULT_RETRY_COUNT_CAP),
+        _RETRY_COUNT_CAP,
     )
     if _EXECUTION_PROFILE_FIELDS.intersection(values):
         requests_per_minute = (
@@ -237,7 +199,6 @@ def policy_from_profile(
         retries,
         requests_per_minute,
         _retry_delays_for(base, retries),
-        base.retry_on_timeout,
     )
 
 

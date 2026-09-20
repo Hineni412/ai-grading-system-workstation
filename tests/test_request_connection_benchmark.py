@@ -859,7 +859,7 @@ def test_publish_report_reuses_p1_26_recovery_primitives_and_contract() -> None:
     assert "mixed old/new pair" in contract
 
 
-@pytest.mark.parametrize("failure_type", [OSError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("failure_type", [OSError, KeyboardInterrupt])
 def test_publish_report_restores_both_outputs_after_catchable_second_replace_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

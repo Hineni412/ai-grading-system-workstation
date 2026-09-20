@@ -114,6 +114,7 @@ class ScanDecisionResponse(BaseModel):
     summary: ScanPreflightSummaryResponse
     absent_students: list[dict[str, Any]]
     match_conflicts: list[dict[str, Any]]
+    rejected_conflicts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ScanPreflightSummaryResponse(BaseModel):

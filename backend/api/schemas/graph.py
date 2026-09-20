@@ -23,8 +23,12 @@ class GraphQueryRequest(_GraphModel):
 
 
 class RelationShape(_GraphModel):
-    source_key: str = Field(pattern=r"^(?:kp_[a-z0-9_]+|ki_[0-9a-f]{32})$")
-    target_key: str = Field(pattern=r"^(?:kp_[a-z0-9_]+|ki_[0-9a-f]{32})$")
+    source_key: str = Field(
+        pattern=r"^(?:kp_[a-z0-9_]+|sk_[a-z0-9_]+|ki_[0-9a-f]{32})$"
+    )
+    target_key: str = Field(
+        pattern=r"^(?:kp_[a-z0-9_]+|sk_[a-z0-9_]+|ki_[0-9a-f]{32})$"
+    )
     relation_type: Literal["prerequisite", "parent", "related"]
 
 
@@ -114,7 +118,7 @@ class CurrentGraphQueryRequest(GraphQueryRequest):
         normalized: list[str] = []
         for value in values:
             key = str(value or "").strip().casefold()
-            if not key.startswith(("kp_", "ki_")):
+            if not key.startswith(("kp_", "ki_", "sk_")):
                 raise ValueError("knowledge_keys must use stable identities")
             if key not in normalized:
                 normalized.append(key)
@@ -123,7 +127,7 @@ class CurrentGraphQueryRequest(GraphQueryRequest):
 
 class CurrentGraphEvidenceRequest(GraphQueryRequest):
     stable_key: str = Field(
-        pattern=r"^(?:kp_[a-z0-9_]+|ki_[0-9a-f]{32})$"
+        pattern=r"^(?:kp_[a-z0-9_]+|sk_[a-z0-9_]+|ki_[0-9a-f]{32})$"
     )
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)

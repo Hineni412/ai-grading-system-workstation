@@ -117,6 +117,8 @@ class ReportGenerator:
         rubric = self._load_rubric_from_session(snapshot.session)
         score_map, type_map = self._question_maps_from_rubric(rubric)
         knowledge_label_map = self._knowledge_label_map_from_rubric(rubric)
+        answer_map = self._load_session_answer_map(snapshot.session)
+        pending_review_counts = _pending_review_counts(df_results)
 
         result_status = self._result_statuses(
             df_results,
@@ -160,6 +162,7 @@ class ReportGenerator:
             score_map,
             type_map,
             hidden_student_ids,
+            answer_map,
         )
         error_detail = self._build_error_detail_sheet(
             eligible_details,
@@ -180,6 +183,19 @@ class ReportGenerator:
             df_results,
             df_attendance,
         )
+        expected_count = (
+            len(df_attendance) if not df_attendance.empty else len(df_results)
+        )
+        attendance_stats = {
+            "expected": expected_count,
+            "not_counted": max(0, expected_count - len(eligible_results)),
+        }
+        knowledge_note = (
+            "标注“未命名知识点”的题目在题库中未能可靠匹配知识点标签，暂不能细分。"
+            if not knowledge_summary.empty
+            and (knowledge_summary["知识点"] == "未命名知识点").any()
+            else None
+        )
 
         workbook = Workbook()
         workbook.remove(workbook.active)
@@ -189,17 +205,18 @@ class ReportGenerator:
             eligible_results,
             options,
             hidden_student_ids,
+            attendance_stats,
         )
         self._write_class_score_sheet(
             workbook.create_sheet("班级成绩总表"),
             session_name,
             eligible_results,
+            pending_review_counts,
         )
         self._write_question_print_sheet(
             workbook.create_sheet("小题分析打印"),
             session_name,
             question_print,
-            eligible_results,
             hidden_student_ids,
             options,
         )
@@ -212,8 +229,12 @@ class ReportGenerator:
         self._write_dataframe_sheet(
             workbook.create_sheet("AI与人工分对比"),
             ai_teacher_compare,
-            freeze_cell="E2",
+            freeze_cell="E3",
             landscape=True,
+            top_notes=[
+                f"{session_name} · AI与人工分对比",
+                "本页仅列出教师人工打分或确认过的题目行；未人工干预的题目不再逐行列出。",
+            ],
         )
         self._write_dataframe_sheet(
             workbook.create_sheet("错因明细"),
@@ -224,8 +245,13 @@ class ReportGenerator:
         self._write_dataframe_sheet(
             workbook.create_sheet("知识点分析"),
             knowledge_summary,
-            freeze_cell="C2",
+            freeze_cell="C3" if knowledge_note else "C2",
             landscape=True,
+            top_notes=(
+                [f"{session_name} · 知识点分析", knowledge_note]
+                if knowledge_note
+                else None
+            ),
         )
         self._write_dataframe_sheet(
             workbook.create_sheet("缺考与异常"),
@@ -327,6 +353,7 @@ class ReportGenerator:
         score_map: dict[str, float],
         type_map: dict[str, str],
         hidden_student_ids: set[int],
+        answer_map: dict[str, str] | None = None,
     ) -> pd.DataFrame:
         columns = [
             "班级",
@@ -351,12 +378,22 @@ class ReportGenerator:
         if not records:
             return pd.DataFrame(columns=columns)
         work_df = pd.DataFrame(records)
+        answer_map = answer_map or {}
+        objective_types = {
+            "choice",
+            "single_choice",
+            "multiple_choice",
+            "fill_blank",
+            "objective",
+            "judgement",
+        }
         rows: list[dict[str, object]] = []
         class_names = sorted(
             {
                 str(value or "未分班")
                 for value in work_df["class_name"].tolist()
-            }
+            },
+            key=_class_sort_key,
         )
         for class_name in class_names:
             class_df = work_df[
@@ -416,6 +453,9 @@ class ReportGenerator:
                         "主要错因": _summarize_error_categories(
                             qdf.to_dict(orient="records"),
                             full_score,
+                            canonical_answer=answer_map.get(qid, ""),
+                            is_objective=str(type_map.get(qid) or "")
+                            in objective_types,
                         ),
                     }
                 )
@@ -460,7 +500,7 @@ class ReportGenerator:
             awarded = float(item.get("score_awarded") or 0)
             if full_score <= 0 or awarded >= full_score - 1e-6:
                 continue
-            deduction_reason = _public_grading_reason(
+            deduction_reason = _translate_deduction_reason(
                 item.get("deduction_reason"),
                 fallback="AI 未提供明确扣分依据，建议教师复核",
             )
@@ -474,10 +514,31 @@ class ReportGenerator:
                     "满分": full_score,
                     "扣分": full_score - awarded,
                     "扣分原因": deduction_reason,
-                    "错误类别": _public_grading_reason(item.get("error_category")),
-                    "错误摘要": _public_grading_reason(item.get("error_summary")),
+                    "错误类别": (
+                        _public_grading_reason(item.get("error_category"))
+                        or "—"
+                    ),
+                    "错误摘要": (
+                        _public_grading_reason(item.get("error_summary"))
+                        or "—"
+                    ),
                 }
             )
+        qid_order = {
+            qid: index
+            for index, qid in enumerate(
+                _natural_question_order(
+                    [str(row["题号"]) for row in rows]
+                )
+            )
+        }
+        rows.sort(
+            key=lambda row: (
+                _class_sort_key(row["班级"]),
+                str(row["学号"] or ""),
+                qid_order.get(str(row["题号"]), len(qid_order)),
+            )
+        )
         return pd.DataFrame(rows, columns=columns)
 
     def _build_ai_teacher_comparison_sheet(
@@ -513,8 +574,12 @@ class ReportGenerator:
             lock = lock_by_key.get(
                 (int(item.get("student_id") or 0), qid)
             )
+            # Only rows a teacher actually scored belong in this sheet;
+            # unreviewed AI rows add no comparison information.
+            if lock is None:
+                continue
             full_score = float(score_map.get(qid) or 0)
-            if full_score <= 0 and lock is not None:
+            if full_score <= 0:
                 full_score = float(lock.get("max_score") or 0)
             rows.append(
                 {
@@ -524,11 +589,7 @@ class ReportGenerator:
                     "题号": qid,
                     "满分": full_score,
                     "AI 得分": _number_or_none(item.get("ai_score_awarded")),
-                    "人工得分": (
-                        float(lock["score_awarded"])
-                        if lock is not None
-                        else None
-                    ),
+                    "人工得分": float(lock["score_awarded"]),
                     "最终得分": _number_or_none(item.get("score_awarded")),
                 }
             )
@@ -542,7 +603,7 @@ class ReportGenerator:
         }
         rows.sort(
             key=lambda row: (
-                str(row["班级"]),
+                _class_sort_key(row["班级"]),
                 str(row["学号"] or ""),
                 str(row["学生姓名"] or ""),
                 qid_order.get(str(row["题号"]), len(qid_order)),
@@ -602,6 +663,12 @@ class ReportGenerator:
                     "说明": item.get("source_reason") or "",
                 }
             )
+        rows.sort(
+            key=lambda row: (
+                _class_sort_key(row["班级"]),
+                str(row["学号"] or ""),
+            )
+        )
         return pd.DataFrame(rows, columns=columns)
 
     def _write_overview_sheet(
@@ -611,6 +678,7 @@ class ReportGenerator:
         eligible_results: pd.DataFrame,
         options: dict[str, object],
         hidden_student_ids: set[int],
+        attendance_stats: dict[str, int] | None = None,
     ) -> None:
         sheet.merge_cells("A1:H1")
         sheet["A1"] = f"{session_name} · 考试总览"
@@ -624,7 +692,8 @@ class ReportGenerator:
             {
                 str(value or "未分班")
                 for value in eligible_results["class_name"].tolist()
-            }
+            },
+            key=_class_sort_key,
         )
         sheet["A3"] = "统计人数"
         sheet["B3"] = len(eligible_results)
@@ -638,6 +707,14 @@ class ReportGenerator:
             if scores
             else "-"
         )
+        if attendance_stats and attendance_stats.get("expected"):
+            sheet.merge_cells("A4:H4")
+            sheet["A4"] = (
+                f"应考 {attendance_stats['expected']} 人"
+                f" · 计入统计 {len(eligible_results)} 人"
+                f" · 缺考或未计入 {attendance_stats.get('not_counted', 0)} 人"
+                "（名单见“缺考与异常”页）"
+            )
         sheet.merge_cells("A5:H5")
         sheet["A5"] = _excel_option_note(
             options,
@@ -684,6 +761,7 @@ class ReportGenerator:
         sheet: Worksheet,
         session_name: str,
         eligible_results: pd.DataFrame,
+        pending_review_counts: dict[int, int] | None = None,
     ) -> None:
         sheet.merge_cells("A1:H1")
         sheet["A1"] = f"{session_name} · 班级成绩总表"
@@ -692,8 +770,10 @@ class ReportGenerator:
             {
                 str(value or "未分班")
                 for value in eligible_results["class_name"].tolist()
-            }
+            },
+            key=_class_sort_key,
         )
+        pending_review_counts = pending_review_counts or {}
         for class_index, class_name in enumerate(class_names):
             class_df = eligible_results[
                 eligible_results["class_name"].fillna("未分班").astype(str)
@@ -746,7 +826,7 @@ class ReportGenerator:
                 "学生得分",
                 "试卷总分",
                 "得分率",
-                "需人工复核",
+                "待复核题数",
                 "批改时间",
             ]
             header_row = current_row
@@ -759,6 +839,13 @@ class ReportGenerator:
             ):
                 total_score = float(result.get("total_score") or 0)
                 student_score = float(result.get("student_score") or 0)
+                pending_count = pending_review_counts.get(
+                    int(result.get("result_id") or 0), 0
+                )
+                if pending_count > 0:
+                    review_cell: object = pending_count
+                else:
+                    review_cell = "是" if result.get("needs_human_review") else ""
                 values = [
                     rank,
                     result.get("student_code"),
@@ -766,7 +853,7 @@ class ReportGenerator:
                     student_score,
                     total_score,
                     student_score / total_score if total_score > 0 else None,
-                    "是" if result.get("needs_human_review") else "否",
+                    review_cell,
                     result.get("graded_at"),
                 ]
                 for column, value in enumerate(values, start=1):
@@ -791,7 +878,6 @@ class ReportGenerator:
         sheet: Worksheet,
         session_name: str,
         question_print: pd.DataFrame,
-        eligible_results: pd.DataFrame,
         hidden_student_ids: set[int],
         options: dict[str, object],
     ) -> None:
@@ -799,19 +885,10 @@ class ReportGenerator:
         sheet["A1"] = f"{session_name} · 小题分析打印"
         sheet.merge_cells("A2:L2")
         sheet["A2"] = "得分率、均分和失分人数始终按全部完整成绩计算；隐藏规则仅缩短“失分同学”姓名。"
-        hidden_labels = [
-            _student_label(row)
-            for row in eligible_results.to_dict(orient="records")
-            if int(row.get("student_id") or 0) in hidden_student_ids
-        ]
         sheet.merge_cells("A3:L3")
-        sheet["A3"] = (
-            f"{_excel_option_note(options, hidden_count=len(hidden_student_ids))}"
-            + (
-                f" 隐藏名单：{'、'.join(hidden_labels)}"
-                if hidden_labels
-                else ""
-            )
+        sheet["A3"] = _excel_option_note(
+            options,
+            hidden_count=len(hidden_student_ids),
         )
         headers = list(question_print.columns)
         for column, header in enumerate(headers, start=1):
@@ -823,6 +900,7 @@ class ReportGenerator:
             for column, value in enumerate(values, start=1):
                 sheet.cell(row_index, column, value)
             sheet.cell(row_index, 6).number_format = "0.0%"
+            sheet.cell(row_index, 7).number_format = "0.00"
         self._style_title_sheet(sheet, header_rows={5})
         sheet.sheet_view.showGridLines = False
         sheet.freeze_panes = "A6"
@@ -850,22 +928,38 @@ class ReportGenerator:
         *,
         freeze_cell: str,
         landscape: bool,
+        top_notes: list[str] | None = None,
     ) -> None:
-        for row in dataframe_to_rows(frame, index=False, header=True):
-            sheet.append(row)
-        self._style_title_sheet(sheet, header_rows={1})
+        top_notes = [text for text in (top_notes or []) if text]
+        header_row = len(top_notes) + 1
+        last_column = get_column_letter(max(1, len(frame.columns) or 1))
+        for index, text in enumerate(top_notes, start=1):
+            sheet.merge_cells(f"A{index}:{last_column}{index}")
+            sheet.cell(index, 1, text)
+            sheet.cell(index, 1).alignment = Alignment(
+                vertical="center",
+                wrap_text=True,
+            )
+        for row_offset, values in enumerate(
+            dataframe_to_rows(frame, index=False, header=True)
+        ):
+            for column, value in enumerate(values, start=1):
+                sheet.cell(header_row + row_offset, column, value)
+        self._style_title_sheet(sheet, header_rows={header_row})
         sheet.sheet_view.showGridLines = False
         sheet.freeze_panes = freeze_cell
         if sheet.max_column > 0:
             sheet.auto_filter.ref = (
-                f"A1:{get_column_letter(sheet.max_column)}"
-                f"{max(1, sheet.max_row)}"
+                f"A{header_row}:{get_column_letter(sheet.max_column)}"
+                f"{max(header_row, sheet.max_row)}"
             )
         for column in range(1, sheet.max_column + 1):
             letter = get_column_letter(column)
             values = [
                 str(sheet.cell(row, column).value or "")
-                for row in range(1, min(sheet.max_row, 80) + 1)
+                for row in range(
+                    header_row, min(sheet.max_row, header_row + 79) + 1
+                )
             ]
             longest = max(
                 (_excel_display_width(value) for value in values),
@@ -875,15 +969,18 @@ class ReportGenerator:
                 38,
                 max(10, longest * 1.15 + 2),
             )
-            header = str(sheet.cell(1, column).value or "").strip()
+            header = str(sheet.cell(header_row, column).value or "").strip()
             if header == "得分率":
-                for row_index in range(2, sheet.max_row + 1):
+                for row_index in range(header_row + 1, sheet.max_row + 1):
                     sheet.cell(row_index, column).number_format = "0.0%"
-        for row_index, row in enumerate(sheet.iter_rows(), start=1):
+        for row_index, row in enumerate(
+            sheet.iter_rows(min_row=header_row),
+            start=header_row,
+        ):
             required_lines = 1
             for cell in row:
                 header = str(
-                    sheet.cell(1, cell.column).value or ""
+                    sheet.cell(header_row, cell.column).value or ""
                 ).strip()
                 column_width = float(
                     sheet.column_dimensions[
@@ -918,7 +1015,7 @@ class ReportGenerator:
                     vertical="top",
                     wrap_text=wrap_text,
                 )
-                if row_index > 1:
+                if row_index > header_row:
                     cell.border = Border(
                         bottom=Side(
                             style="thin",
@@ -932,7 +1029,7 @@ class ReportGenerator:
                             text_width / max(8, column_width - 2)
                         ),
                     )
-            if row_index > 1 and required_lines > 1:
+            if row_index > header_row and required_lines > 1:
                 sheet.row_dimensions[row_index].height = min(
                     72,
                     17 * required_lines,
@@ -940,7 +1037,7 @@ class ReportGenerator:
         self._set_print_layout(
             sheet,
             landscape=landscape,
-            repeat_rows="1:1",
+            repeat_rows=f"1:{header_row}",
         )
 
     def _style_title_sheet(
@@ -1111,7 +1208,7 @@ class ReportGenerator:
             awarded = float(detail.get("score_awarded") or 0)
             full = score_map.get(qid)
             row[f"{qid}得分"] = f"{_format_score(awarded)}/{_format_score(full)}" if full is not None else _format_score(awarded)
-            reason = str(detail.get("deduction_reason") or "").strip()
+            reason = _translate_deduction_reason(detail.get("deduction_reason"))
             if full is not None and awarded >= float(full) - 1e-6:
                 reason = ""
             row[f"{qid}扣分原因"] = reason
@@ -1121,9 +1218,15 @@ class ReportGenerator:
             columns.extend([f"{qid}得分", f"{qid}扣分原因"])
             
         df_out = pd.DataFrame(rows_by_result.values()).reindex(columns=columns)
-        
-        # Sort by Class, then Rank
-        df_out.sort_values(by=["班级", "总分"], ascending=[True, False], inplace=True)
+
+        # Sort by class (numeric-aware: 9 before 10), then total score.
+        df_out["_class_sort"] = df_out["班级"].map(_class_sort_key)
+        df_out.sort_values(
+            by=["_class_sort", "总分"],
+            ascending=[True, False],
+            inplace=True,
+        )
+        df_out.drop(columns=["_class_sort"], inplace=True)
         return df_out
 
     def _load_session_rubric(self, session_id: int) -> dict:
@@ -1153,6 +1256,38 @@ class ReportGenerator:
         return self._question_maps_from_rubric(
             self._load_session_rubric(session_id)
         )
+
+    def _load_session_answer_map(self, session: dict | None) -> dict[str, str]:
+        """question_id -> canonical answer from the session's answer key."""
+        if not isinstance(session, dict):
+            return {}
+        path = self._resolve_stored_file_path(session.get("answer_key_path"))
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        answers: dict[str, str] = {}
+        questions = data.get("questions") if isinstance(data, dict) else []
+        for question in questions if isinstance(questions, list) else []:
+            if not isinstance(question, dict):
+                continue
+            qid = str(question.get("question_id") or "").strip()
+            canonical = str(question.get("canonical_answer") or "").strip()
+            if qid and canonical:
+                answers[qid] = canonical
+            parts = question.get("parts")
+            for part in parts if isinstance(parts, list) else []:
+                if not isinstance(part, dict):
+                    continue
+                pid = str(part.get("part_id") or "").strip()
+                part_answer = str(
+                    part.get("canonical_answer") or part.get("answer") or ""
+                ).strip()
+                if pid and (part_answer or canonical):
+                    answers[pid] = part_answer or canonical
+        return answers
 
     def _question_maps_from_rubric(
         self,
@@ -1305,7 +1440,14 @@ class ReportGenerator:
                     "失分人数": len(lost_students.get((class_name, _bucket_key), set())),
                 }
             )
-        return pd.DataFrame(rows, columns=columns).sort_values(by=["班级", "得分率", "知识点"], kind="stable")
+        rows.sort(
+            key=lambda row: (
+                _class_sort_key(row["班级"]),
+                float(row["得分率"] or 0),
+                str(row["知识点"] or ""),
+            )
+        )
+        return pd.DataFrame(rows, columns=columns)
 
 def _normalized_excel_options(
     raw_options: dict[str, object] | None,
@@ -1367,6 +1509,28 @@ def _excel_option_note(
     )
 
 
+def _pending_review_counts(df_results: pd.DataFrame) -> dict[int, int]:
+    """result_id -> count of questions still flagged need_review."""
+    counts: dict[int, int] = {}
+    for row in df_results.to_dict(orient="records"):
+        raw = row.get("raw_json")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                raw = {}
+        metadata = raw.get("detail_metadata") if isinstance(raw, dict) else None
+        pending = 0
+        if isinstance(metadata, dict):
+            for item in metadata.values():
+                if isinstance(item, dict) and (
+                    item.get("need_review") or item.get("needs_human_review")
+                ):
+                    pending += 1
+        counts[int(row.get("result_id") or 0)] = pending
+    return counts
+
+
 def _natural_question_order(question_ids: list[str]) -> list[str]:
     import re
 
@@ -1414,7 +1578,7 @@ def _normalize_question_detail_records(
             ("error_category", "_error_categories"),
             ("error_summary", "_error_summaries"),
         ):
-            value = str(record.get(field) or "").strip()
+            value = _clean_grading_text(record.get(field))
             if value:
                 item[private_field].append(value)
         item["_knowledge_ids"].extend(kid for kid in _knowledge_ids_from_detail(record) if kid != "UNKNOWN")
@@ -1481,8 +1645,23 @@ def _format_score(value) -> str:
     return f"{number:g}"
 
 
+_OBJECTIVE_ANSWER_PREFIX = "objective_answer="
+
+
+def _clean_grading_text(value: object) -> str:
+    """Return stripped text, treating pandas NaN/None-ish markers as empty."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    if text.lower() in {"nan", "none", "null", "nat"}:
+        return ""
+    return text
+
+
 def _public_grading_reason(value: object, fallback: str = "") -> str:
-    text = str(value or "").strip()
+    text = _clean_grading_text(value)
     if not text:
         return fallback
     labels = {
@@ -1498,12 +1677,35 @@ def _public_grading_reason(value: object, fallback: str = "") -> str:
         "needs_review": "AI 建议教师复核",
         "objective_needs_review": "客观题识别结果需要教师复核",
         "objective_score_uncertain": "答案识别存在不确定性",
+        "teacher_score_locked": "教师已确认最终分",
+        "no_numeric_value": "无法确定数值，需复核",
+        "equivalence_uncertain": "等价关系待判定，需复核",
     }
     if text.lower() in labels:
         return labels[text.lower()]
     if re.search(r"[\u3400-\u9fff]", text):
         return text
     return fallback or "自动处理未完成，请教师复核"
+
+
+def _translate_deduction_reason(value: object, fallback: str = "") -> str:
+    """Translate a stored deduction_reason for teacher-facing sheets."""
+    text = _clean_grading_text(value)
+    if not text:
+        return fallback
+    if text.startswith(_OBJECTIVE_ANSWER_PREFIX):
+        answer = text[len(_OBJECTIVE_ANSWER_PREFIX):].strip()
+        return f"识别作答：{answer}" if answer else "识别作答缺失"
+    return _public_grading_reason(text, fallback=fallback)
+
+
+def _class_sort_key(name: object) -> tuple[int, int, str]:
+    """Order class labels numerically (9 before 10), text labels last."""
+    text = str(name or "").strip()
+    digits = re.sub(r"\D", "", text)
+    if digits:
+        return (0, int(digits), text)
+    return (1, 0, text)
 
 
 def _student_label(item: dict) -> str:
@@ -1624,16 +1826,64 @@ def _knowledge_bucket_labels(
     return pairs or [("未命名知识点", "未命名知识点")]
 
 
-def _summarize_error_categories(items: list[dict], full_score: float) -> str:
+def _loss_entry_label(item: dict) -> str:
+    """Short per-item label used by the 主要错因 aggregation.
+
+    Prefer the human-readable summary; fall back to the recognized answer
+    stored in ``deduction_reason`` (``objective_answer=X``), then to the
+    stored reason/category text.
+    """
+    summary = _clean_grading_text(item.get("error_summary"))
+    if summary:
+        return _short_loss_label(_public_grading_reason(summary))
+    reason = _clean_grading_text(item.get("deduction_reason"))
+    if reason.startswith(_OBJECTIVE_ANSWER_PREFIX):
+        answer = reason[len(_OBJECTIVE_ANSWER_PREFIX):].strip()
+        return answer or "未识别作答"
+    if reason:
+        return _short_loss_label(_public_grading_reason(reason))
+    category = _clean_grading_text(item.get("error_category"))
+    if category:
+        return _short_loss_label(_public_grading_reason(category))
+    return "原因未记录"
+
+
+def _short_loss_label(text: str) -> str:
+    """Collapse boilerplate reasons into short countable labels."""
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    if "未见有效作答" in normalized or "未作答" in normalized or "未完成作答" in normalized:
+        return "未作答"
+    if "作废" in normalized:
+        return "答案作废"
+    if "人工复核已确认" in normalized or "教师已确认" in normalized:
+        return "教师已确认"
+    return normalized
+
+
+def _summarize_error_categories(
+    items: list[dict],
+    full_score: float,
+    *,
+    canonical_answer: str = "",
+    is_objective: bool = False,
+) -> str:
     counts: dict[str, int] = {}
     for item in items:
         awarded = float(item.get("score_awarded") or 0)
         if full_score > 0 and awarded >= full_score - 1e-6:
             continue
-        category = str(item.get("error_category") or "").strip()
-        summary = str(item.get("error_summary") or "").strip()
-        text = category or summary
-        if not text:
+        label = _loss_entry_label(item)
+        if not label:
             continue
-        counts[text] = counts.get(text, 0) + 1
-    return "；".join(f"{key}×{value}" for key, value in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5])
+        counts[label] = counts.get(label, 0) + 1
+    text = "、".join(
+        f"{key}×{value}"
+        for key, value in sorted(
+            counts.items(), key=lambda kv: (-kv[1], kv[0])
+        )[:5]
+    )
+    if is_objective and canonical_answer and text:
+        text = f"{text}（正确：{canonical_answer}）"
+    return text

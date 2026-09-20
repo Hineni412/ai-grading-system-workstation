@@ -24,10 +24,6 @@ function profile(overrides: Record<string, unknown> = {}) {
     requests_per_minute: 1000,
     max_auto_retries: null,
     request_timeout_seconds: null,
-    batch_enabled: false,
-    batch_model: '',
-    batch_base_url: '',
-    has_batch_api_key: false,
     ...overrides,
   }
 }
@@ -329,74 +325,4 @@ describe('model profile request speed contract', () => {
     expect(JSON.stringify(fetchSpy.mock.calls[0]?.[1]?.body)).not.toContain('api_key')
   })
 
-  it('accepts a profile with batch inference enabled', () => {
-    const active = profile({
-      batch_enabled: true,
-      batch_model: 'ep-bi-abc123',
-      batch_base_url: 'https://ark.cn-beijing.volces.com/api/v3/batch',
-      has_batch_api_key: true,
-    })
-    expect(decodeModelProfilesState({
-      profiles: [active],
-      active_profile_name: '校内模型',
-      active_profile: active,
-      task_bindings: taskBindings(),
-    }).active_profile).toMatchObject({
-      batch_enabled: true,
-      batch_model: 'ep-bi-abc123',
-      batch_base_url: 'https://ark.cn-beijing.volces.com/api/v3/batch',
-      has_batch_api_key: true,
-    })
-  })
-
-  it('rejects enabling batch inference without an endpoint id', () => {
-    expect(() => normalizeModelProfileInput({
-      name: '校内模型',
-      base_url: 'https://example.test/v1',
-      api_key: 'secret',
-      ocr_model: 'ocr',
-      grading_model: 'grading',
-      config_base_url: '',
-      config_model: '',
-      request_speed_mode: 'automatic',
-      max_concurrent_requests: 20,
-      requests_per_minute: 1000,
-      batch_enabled: true,
-      batch_model: '  ',
-    })).toThrow('启用批量推理时请填写批量推理接入点 ID')
-  })
-
-  it('sends batch settings in the save body and only non-empty secrets', async () => {
-    const { modelProfilesApi } = await import('../api/model-profiles')
-    const active = profile({ batch_enabled: true, batch_model: 'ep-bi-abc123' })
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
-      JSON.stringify({
-        profiles: [active],
-        active_profile_name: '校内模型',
-        active_profile: active,
-        task_bindings: taskBindings(),
-      }),
-      { status: 200, headers: { 'content-type': 'application/json' } },
-    ))
-
-    await modelProfilesApi.saveProfile('校内模型', {
-      name: '校内模型',
-      base_url: 'https://example.test/v1',
-      api_key: 'secret',
-      ocr_model: 'ocr',
-      grading_model: 'grading',
-      config_base_url: '',
-      config_model: '',
-      request_speed_mode: 'automatic',
-      max_concurrent_requests: 20,
-      requests_per_minute: 1000,
-      batch_enabled: true,
-      batch_model: 'ep-bi-abc123',
-    })
-    const body = JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))
-    expect(body.batch_enabled).toBe(true)
-    expect(body.batch_model).toBe('ep-bi-abc123')
-    expect('batch_base_url' in body).toBe(false)
-    expect('batch_api_key' in body).toBe(false)
-  })
 })

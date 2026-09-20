@@ -6,6 +6,8 @@ import {
   questionBankApi,
   questionTypeWithSubtype,
   type QuestionBankListItem,
+  type SimilarityReason,
+  type SimilarityReasonKind,
   type SimilarQuestionItem,
 } from '../../api/question-bank'
 import { useAssemblyStore } from '../../stores/assembly'
@@ -82,6 +84,34 @@ function closeSimilar(): void {
   similarSource.value = null
   similarItems.value = []
   similarState.value = 'idle'
+}
+
+// 标签类维度显示维度名 + 叶子名；信号类维度 values 已是完整短语。
+const SIMILAR_REASON_KIND_LABELS: Partial<Record<SimilarityReasonKind, string>> = {
+  knowledge_point: '同知识点',
+  skill: '同技能',
+  method: '同解法',
+  model: '同模型',
+}
+
+function similarReasonKindLabel(kind: SimilarityReasonKind): string {
+  return SIMILAR_REASON_KIND_LABELS[kind] ?? ''
+}
+
+function similarReasonText(reason: SimilarityReason): string {
+  const values =
+    reason.kind === 'knowledge_point' || reason.kind === 'skill'
+      ? reason.values.map(
+          (value) => knowledgeLeafLabel(value).replace(/^技能[·：:]\s*/, ''),
+        )
+      : reason.values
+  return values.join('、')
+}
+
+function similarReasonTitle(reason: SimilarityReason): string | undefined {
+  return reason.kind === 'knowledge_point' || reason.kind === 'skill'
+    ? reason.values.join('、')
+    : undefined
 }
 </script>
 
@@ -188,7 +218,7 @@ function closeSimilar(): void {
           <span>{{ questionTypeWithSubtype(question.question_type, question.tags) }}</span>
           <span>难度 {{ question.difficulty || '待定' }}</span>
           <span
-            v-for="tag in tagsFor(question, 'knowledge_point').slice(0, 3)"
+            v-for="tag in [...tagsFor(question, 'knowledge_point'), ...tagsFor(question, 'skill')].slice(0, 3)"
             :key="`knowledge:${tag}`"
             :title="tag"
           >
@@ -257,7 +287,22 @@ function closeSimilar(): void {
           <article v-for="item in similarItems" :key="item.id" class="qb-similar-card">
             <div class="qb-similar-card__score">
               <strong>{{ Math.round(item.similarity_score * 100) }}%</strong>
-              <span>{{ item.similarity_reasons.join(' · ') || '内容相近' }}</span>
+              <ul v-if="item.similarity_reasons.length" class="qb-similar-reasons">
+                <li
+                  v-for="(reason, index) in item.similarity_reasons"
+                  :key="`${reason.kind}:${index}`"
+                  class="qb-similar-reason"
+                  :class="`is-${reason.kind}`"
+                  :title="similarReasonTitle(reason)"
+                >
+                  <span
+                    v-if="similarReasonKindLabel(reason.kind)"
+                    class="qb-similar-reason__kind"
+                  >{{ similarReasonKindLabel(reason.kind) }}</span>
+                  <span class="qb-similar-reason__values">{{ similarReasonText(reason) }}</span>
+                </li>
+              </ul>
+              <span v-else class="qb-similar-reasons__empty">内容相近</span>
             </div>
             <QuestionContentRenderer
               :blocks="item.rich_content?.question_blocks"

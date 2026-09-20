@@ -33,10 +33,6 @@ class ModelProfileUpdateRequest(_ModelProfileModel):
         ge=int(REQUEST_TIMEOUT_MIN),
         le=int(REQUEST_TIMEOUT_MAX),
     )
-    batch_enabled: bool | None = None
-    batch_model: str | None = Field(default=None, max_length=200)
-    batch_base_url: str | None = Field(default=None, max_length=2048)
-    batch_api_key: str | None = Field(default=None, max_length=8192)
 
 
 class ModelProfileResponse(_ModelProfileModel):
@@ -58,10 +54,6 @@ class ModelProfileResponse(_ModelProfileModel):
         ge=int(REQUEST_TIMEOUT_MIN),
         le=int(REQUEST_TIMEOUT_MAX),
     )
-    batch_enabled: bool
-    batch_model: str
-    batch_base_url: str
-    has_batch_api_key: bool
 
 
 class ModelTaskBinding(_ModelProfileModel):

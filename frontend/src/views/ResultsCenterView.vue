@@ -17,8 +17,8 @@ import { useSessionStore } from '../stores/session'
 import { translateGradingReason } from '../utils/grading-reasons'
 import FileCenterView from './FileCenterView.vue'
 
-type ResultsTab = 'overview' | 'details' | 'analysis' | 'exports'
-type DetailFilter = 'all' | ResultsStudentStatus
+type ResultsTab = 'details' | 'analysis' | 'exports'
+type DetailFilter = 'all' | 'attention' | ResultsStudentStatus
 type MatrixSortKey = 'student' | 'total' | 'question'
 type SortDirection = 'ascending' | 'descending'
 
@@ -46,19 +46,19 @@ const drawerCloseButton = ref<HTMLButtonElement | null>(null)
 let drawerTrigger: HTMLElement | null = null
 
 const tabs: Array<{ id: ResultsTab; label: string }> = [
-  { id: 'overview', label: '成绩总览' },
   { id: 'details', label: '成绩明细' },
   { id: 'analysis', label: '班级分析' },
   { id: 'exports', label: '导出文件' },
 ]
 
-const detailFilters: Array<{ id: DetailFilter; label: string }> = [
-  { id: 'all', label: '全部学生' },
-  { id: 'complete', label: '成绩完整' },
-  { id: 'needs_review', label: '待复核' },
-  { id: 'incomplete', label: '未评分' },
-  { id: 'failed', label: '处理失败' },
-]
+const DETAIL_FILTER_LABELS: Record<DetailFilter, string> = {
+  all: '全部学生',
+  attention: '待处理',
+  complete: '成绩完整',
+  needs_review: '待复核',
+  incomplete: '未评分',
+  failed: '处理失败',
+}
 
 function stringQuery(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
@@ -72,14 +72,13 @@ function positiveIntegerQuery(value: unknown): number | null {
 
 const activeTab = computed<ResultsTab>(() => {
   const candidate = stringQuery(route.query.tab)
-  return candidate === 'details' || candidate === 'analysis' || candidate === 'exports'
-    ? candidate
-    : 'overview'
+  return candidate === 'analysis' || candidate === 'exports' ? candidate : 'details'
 })
 
 const activeFilter = computed<DetailFilter>(() => {
   const candidate = stringQuery(route.query.filter)
-  return candidate === 'complete'
+  return candidate === 'attention'
+    || candidate === 'complete'
     || candidate === 'needs_review'
     || candidate === 'incomplete'
     || candidate === 'failed'
@@ -111,9 +110,51 @@ const visibleStudents = computed(() => {
       student.student_name,
       student.student_code,
       student.class_name,
+      student.pinyin_initials,
+      student.pinyin_full,
     ].some((value) => value?.toLocaleLowerCase().includes(query))
   })
 })
+
+const classRanks = computed(() => {
+  const groups = new Map<string, ResultsCenterStudent[]>()
+  for (const student of results.value?.students ?? []) {
+    const key = student.class_name ?? ''
+    const group = groups.get(key) ?? []
+    group.push(student)
+    groups.set(key, group)
+  }
+  const ranks = new Map<number, { rank: number; size: number }>()
+  for (const group of groups.values()) {
+    const ranked = group
+      .filter((student) => student.ungraded_count === 0 && student.failed_count === 0)
+      .sort((left, right) => (
+        right.current_score - left.current_score || left.student_id - right.student_id
+      ))
+    let previous: number | null = null
+    let rank = 0
+    ranked.forEach((student, index) => {
+      if (previous === null || student.current_score !== previous) rank = index + 1
+      previous = student.current_score
+      ranks.set(student.student_id, { rank, size: ranked.length })
+    })
+  }
+  return ranks
+})
+
+function studentRankText(student: ResultsCenterStudent): string | null {
+  const entry = classRanks.value.get(student.student_id)
+  return entry === null || entry === undefined
+    ? null
+    : `班内第 ${entry.rank} 名`
+}
+
+function studentRankTitle(student: ResultsCenterStudent): string | null {
+  const entry = classRanks.value.get(student.student_id)
+  return entry === null || entry === undefined
+    ? null
+    : `按当前完整成绩排名，班内共 ${entry.size} 人有名次`
+}
 
 const summary = computed(() => {
   const original = results.value?.summary
@@ -240,7 +281,7 @@ watch(
 
 function rememberView(): void {
   const sessionId = sessionStore.selectedSessionId
-  if (sessionId === null || !['overview', 'details'].includes(activeTab.value)) return
+  if (sessionId === null || activeTab.value !== 'details') return
   const scroller = resultsPage.value?.parentElement
   resultsStore.viewState = {
     sessionId,
@@ -284,6 +325,11 @@ function matchesFilter(
   filter: DetailFilter,
 ): boolean {
   if (filter === 'all') return true
+  if (filter === 'attention') {
+    return student.ungraded_count > 0
+      || student.failed_count > 0
+      || student.needs_review_count > 0
+  }
   if (filter === 'complete') {
     return student.ungraded_count === 0 && student.failed_count === 0
   }
@@ -292,22 +338,22 @@ function matchesFilter(
   return student.failed_count > 0
 }
 
-function selectTab(tab: ResultsTab, filter: DetailFilter = 'all'): void {
+function selectTab(tab: ResultsTab): void {
   const query: Record<string, string> = {
     tab,
     ...selectedSessionQuery(),
   }
-  if (tab === 'details' && filter !== 'all') query.filter = filter
   void router.replace({ path: '/results', query })
 }
 
 function selectDetailFilter(filter: DetailFilter): void {
+  const next = filter !== 'all' && filter === activeFilter.value ? 'all' : filter
   void router.replace({
     path: '/results',
     query: {
       tab: 'details',
       ...selectedSessionQuery(),
-      ...(filter === 'all' ? {} : { filter }),
+      ...(next === 'all' ? {} : { filter: next }),
     },
   })
 }
@@ -500,7 +546,7 @@ function confidenceLabel(value: number | null): string | null {
   return `置信度 ${Math.round(percent)}%`
 }
 
-function navigateToReview(item: ResultsCenterItem): void {
+function navigateToReview(item: ResultsCenterItem, student: ResultsCenterStudent): void {
   const sessionId = sessionStore.selectedSessionId
   if (sessionId === null) return
   void router.push({
@@ -510,6 +556,7 @@ function navigateToReview(item: ResultsCenterItem): void {
       scope: 'all',
       question: item.question_id,
       item: item.review_item_id,
+      student: String(student.student_id),
       entry: 'results',
     },
   })
@@ -580,7 +627,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
         <p>集中查看班级成绩、定位需要处理的题目，并导出正式文件。</p>
       </div>
       <div
-        v-if="activeTab === 'overview' || activeTab === 'details'"
+        v-if="activeTab === 'details'"
         class="results-center__hero-actions"
       >
         <span v-if="resultsStore.updatedAt">
@@ -658,12 +705,20 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             <span>点击任一数字查看对应学生</span>
           </div>
           <div class="results-conclusion__strip">
-            <button type="button" @click="selectTab('details', 'complete')">
+            <button
+              type="button"
+              :aria-pressed="activeFilter === 'complete'"
+              @click="selectDetailFilter('complete')"
+            >
               <span>成绩完整</span>
               <strong>{{ summary?.complete_student_count }}<small> / {{ summary?.student_count }} 人</small></strong>
               <em>所有题目均已有成绩</em>
             </button>
-            <button type="button" @click="selectTab('details', 'complete')">
+            <button
+              type="button"
+              :aria-pressed="activeFilter === 'complete'"
+              @click="selectDetailFilter('complete')"
+            >
               <span>当前平均分</span>
               <strong>
                 {{ formatScore(summary?.average_score ?? null) }}
@@ -678,7 +733,8 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             <button
               type="button"
               class="results-conclusion__risk"
-              @click="selectTab('details', 'needs_review')"
+              :aria-pressed="activeFilter === 'needs_review'"
+              @click="selectDetailFilter('needs_review')"
             >
               <span>待复核</span>
               <strong>{{ summary?.needs_review_item_count }}<small> 题</small></strong>
@@ -687,7 +743,8 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             <button
               type="button"
               class="results-conclusion__pending"
-              @click="selectTab('details', 'incomplete')"
+              :aria-pressed="activeFilter === 'incomplete'"
+              @click="selectDetailFilter('incomplete')"
             >
               <span>未评分</span>
               <strong>{{ summary?.ungraded_item_count }}<small> 题</small></strong>
@@ -696,7 +753,8 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             <button
               type="button"
               class="results-conclusion__danger"
-              @click="selectTab('details', 'failed')"
+              :aria-pressed="activeFilter === 'failed'"
+              @click="selectDetailFilter('failed')"
             >
               <span>处理失败</span>
               <strong>{{ summary?.failed_item_count }}<small> 题</small></strong>
@@ -710,60 +768,8 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           <span>开始批改或人工评分后，成绩会出现在这里。</span>
         </div>
 
-        <template v-else-if="activeTab === 'overview'">
-          <div class="results-overview-insights">
-            <section class="results-insight" aria-labelledby="score-distribution-title">
-              <div class="results-insight__heading">
-                <div>
-                  <p class="results-center__eyebrow">分数分布</p>
-                  <h2 id="score-distribution-title">完整成绩样本</h2>
-                </div>
-                <span>{{ summary?.average_sample_count }} 人</span>
-              </div>
-              <div class="results-distribution">
-                <div v-for="band in scoreBands" :key="band.id">
-                  <span>{{ band.label }}</span>
-                  <div aria-hidden="true">
-                    <i :style="{ width: band.width }"></i>
-                  </div>
-                  <strong>{{ band.count }} 人</strong>
-                </div>
-              </div>
-            </section>
-
-            <section class="results-insight" aria-labelledby="question-insights-title">
-              <div class="results-insight__heading">
-                <div>
-                  <p class="results-center__eyebrow">题目情况</p>
-                  <h2 id="question-insights-title">需处理题目优先</h2>
-                </div>
-                <span>{{ results.questions.length }} 题</span>
-              </div>
-              <div class="results-question-insights">
-                <button
-                  v-for="question in questionInsights"
-                  :key="question.question_id"
-                  type="button"
-                  @click="navigateQuestionToReview(question.question_id)"
-                >
-                  <strong>{{ question.question_id }}</strong>
-                  <span>
-                    均分 {{ formatScore(question.average_score) }}
-                    / {{ formatScore(question.max_score) }}
-                  </span>
-                  <em :class="{ 'has-risk': questionRiskCount(question) > 0 }">
-                    {{ questionIssueText(question) }}
-                  </em>
-                  <span aria-hidden="true">›</span>
-                </button>
-              </div>
-            </section>
-          </div>
-
-        </template>
-
+        <template v-else>
         <section
-          v-else
           class="results-panel results-panel--matrix"
           aria-labelledby="score-matrix-title"
         >
@@ -783,21 +789,28 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
               </label>
               <label class="results-search">
                 <span>搜索学生</span>
-                <Input v-model="searchQuery" type="search" placeholder="姓名、学号或班级" />
+                <Input v-model="searchQuery" type="search" placeholder="姓名、学号、班级或拼音首字母" />
               </label>
             </div>
           </div>
 
           <div class="results-filter-bar" aria-label="学生成绩筛选">
             <button
-              v-for="filter in detailFilters"
-              :key="filter.id"
               type="button"
-              :aria-pressed="activeFilter === filter.id"
-              :class="{ 'is-active': activeFilter === filter.id }"
-              @click="selectDetailFilter(filter.id)"
+              :aria-pressed="activeFilter === 'attention'"
+              :class="{ 'is-active': activeFilter === 'attention' }"
+              @click="selectDetailFilter('attention')"
             >
-              {{ filter.label }}
+              只看待处理学生
+            </button>
+            <button
+              v-if="activeFilter !== 'all'"
+              type="button"
+              class="results-filter-chip"
+              :aria-label="`清除筛选：${DETAIL_FILTER_LABELS[activeFilter]}`"
+              @click="selectDetailFilter('all')"
+            >
+              已筛选：{{ DETAIL_FILTER_LABELS[activeFilter] }} ×
             </button>
             <span>显示 {{ visibleStudents.length }} / {{ studentsInClass.length }} 人</span>
           </div>
@@ -853,6 +866,9 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                       <span>
                         {{ student.student_code || '无学号' }}
                         <template v-if="student.class_name"> · {{ student.class_name }}</template>
+                        <template v-if="studentRankText(student)">
+                          · <em class="results-matrix__rank" :title="studentRankTitle(student) ?? undefined">{{ studentRankText(student) }}</em>
+                        </template>
                       </span>
                     </button>
                   </th>
@@ -877,7 +893,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                       type="button"
                       :data-status="itemFor(student, question.question_id)!.score_status"
                       :aria-label="`${student.student_name}，${question.question_id}，${scoreStatusLabel(itemFor(student, question.question_id)!.score_status)}，得分 ${formatScore(itemFor(student, question.question_id)!.score_awarded)}，查看作答`"
-                      @click="navigateToReview(itemFor(student, question.question_id)!)"
+                      @click="navigateToReview(itemFor(student, question.question_id)!, student)"
                     >
                       <strong>{{ formatScore(itemFor(student, question.question_id)!.score_awarded) }}</strong>
                       <span>{{ shortScoreStatusLabel(itemFor(student, question.question_id)!.score_status) }}</span>
@@ -892,6 +908,62 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             没有符合当前筛选条件的学生。
           </p>
         </section>
+
+        <details class="results-extra">
+          <summary>
+            分数分布与题目情况
+            <span>原成绩总览内容，点击展开</span>
+          </summary>
+          <div class="results-overview-insights">
+            <section class="results-insight" aria-labelledby="score-distribution-title">
+              <div class="results-insight__heading">
+                <div>
+                  <p class="results-center__eyebrow">分数分布</p>
+                  <h2 id="score-distribution-title">完整成绩样本</h2>
+                </div>
+                <span>{{ summary?.average_sample_count }} 人</span>
+              </div>
+              <div class="results-distribution">
+                <div v-for="band in scoreBands" :key="band.id">
+                  <span>{{ band.label }}</span>
+                  <div aria-hidden="true">
+                    <i :style="{ width: band.width }"></i>
+                  </div>
+                  <strong>{{ band.count }} 人</strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="results-insight" aria-labelledby="question-insights-title">
+              <div class="results-insight__heading">
+                <div>
+                  <p class="results-center__eyebrow">题目情况</p>
+                  <h2 id="question-insights-title">需处理题目优先</h2>
+                </div>
+                <span>{{ results.questions.length }} 题</span>
+              </div>
+              <div class="results-question-insights">
+                <button
+                  v-for="question in questionInsights"
+                  :key="question.question_id"
+                  type="button"
+                  @click="navigateQuestionToReview(question.question_id)"
+                >
+                  <strong>{{ question.question_id }}</strong>
+                  <span>
+                    均分 {{ formatScore(question.average_score) }}
+                    / {{ formatScore(question.max_score) }}
+                  </span>
+                  <em :class="{ 'has-risk': questionRiskCount(question) > 0 }">
+                    {{ questionIssueText(question) }}
+                  </em>
+                  <span aria-hidden="true">›</span>
+                </button>
+              </div>
+            </section>
+          </div>
+        </details>
+        </template>
       </template>
     </template>
   </section>
@@ -945,7 +1017,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             :key="item.review_item_id"
             type="button"
             :data-status="item.score_status"
-            @click="navigateToReview(item)"
+            @click="navigateToReview(item, selectedStudent)"
           >
             <span class="results-drawer__question">{{ item.question_id }}</span>
             <span class="results-drawer__item-score">

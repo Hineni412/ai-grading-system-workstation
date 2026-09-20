@@ -151,6 +151,7 @@ describe('AppShell', () => {
       '组卷工作台',
       '知识与训练',
       '学生管理',
+      '调用记录',
       '设置',
     ])
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()

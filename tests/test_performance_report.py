@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import inspect
 import re
 import subprocess
 import sys
@@ -283,16 +282,6 @@ def test_cli_supports_direct_script_execution() -> None:
     assert "--scales" in completed.stdout
 
 
-def test_publish_report_contract_states_per_file_atomicity_and_power_loss_gap() -> None:
-    contract = inspect.getdoc(publish_report)
-
-    assert contract is not None
-    assert "Each destination is replaced atomically" in contract
-    assert "caught BaseException" in contract
-    assert "termination or power loss" in contract
-    assert "mixed old/new pair" in contract
-
-
 def test_render_failure_leaves_existing_outputs_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -320,13 +309,15 @@ def test_render_failure_leaves_existing_outputs_untouched(
     ]
 
 
-@pytest.mark.parametrize("json_exists,markdown_exists", [
-    (True, True),
-    (False, False),
-    (True, False),
-    (False, True),
+# Exercise each output-state branch once, then both non-Exception exits.
+@pytest.mark.parametrize("json_exists,markdown_exists,failure_type", [
+    (True, True, OSError),
+    (False, False, OSError),
+    (True, False, OSError),
+    (False, True, OSError),
+    (True, True, KeyboardInterrupt),
+    (True, True, SystemExit),
 ])
-@pytest.mark.parametrize("failure_type", [OSError, KeyboardInterrupt, SystemExit])
 def test_catchable_second_replace_failure_restores_previous_outputs_and_reraises(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

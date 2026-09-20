@@ -33,6 +33,7 @@ from question_bank.knowledge_graph_release.loader import (
 )
 from question_bank.knowledge_graph_release.repository import load_active_release
 from question_bank.taxonomy.curriculum_catalog import (
+    curriculum_knowledge_node,
     curriculum_volume_contract,
     eligible_curriculum_knowledge_nodes,
 )
@@ -1135,6 +1136,33 @@ def _knowledge_release_prompt_contract(
         target_name = node_names.get(str(item.get("stable_key") or ""), "")
         if fine_term_id and target_name:
             targets.setdefault(fine_term_id, []).append(target_name)
+    parent_of = {
+        str(item["source_key"]): str(item["target_key"])
+        for item in payload.get("relations", [])
+        if isinstance(item, Mapping)
+        and str(item.get("relation_type") or "") == "parent"
+    }
+    skill_terms: dict[str, dict[str, Any]] = {}
+    for item in payload.get("core_nodes", []):
+        if not isinstance(item, Mapping):
+            continue
+        stable_key = str(item.get("stable_key") or "").strip()
+        if str(item.get("node_kind") or "") != "skill" or not stable_key or item.get('status') != 'active':
+            continue
+        section_key = parent_of.get(stable_key, "")
+        section_meta = curriculum_knowledge_node(section_key) or {}
+        skill_terms[stable_key] = {
+            "definition": str(item.get('definition') or ''),
+            "include_scope": str(item.get('include_scope') or ''),
+            "exclude_scope": str(item.get('exclude_scope') or ''),
+            "observable_evidence": str(item.get('observable_evidence') or ''),
+            "section_id": section_key,
+            "chapter_id": parent_of.get(
+                section_key, str(section_meta.get("parent_id") or "")
+            ),
+            "volume_id": str(section_meta.get("volume_id") or ""),
+            "volume_order": int(section_meta.get("volume_order") or 0),
+        }
     terms: dict[str, dict[str, str]] = {}
     for item in payload.get("fine_term_dispositions", []):
         if not isinstance(item, Mapping):
@@ -1153,6 +1181,11 @@ def _knowledge_release_prompt_contract(
             "usage": usage,
         }
         mapped_names = targets.get(fine_term_id, [])
+        if fine_term_id.startswith('sk_') and fine_term_id not in skill_terms:
+            row['usage'] = 'retrieval_only'
+        elif fine_term_id in skill_terms:
+            row.update({key: skill_terms[fine_term_id][key] for key in
+                        ('definition', 'include_scope', 'exclude_scope', 'observable_evidence')})
         if mapped_names:
             row["core"] = "/".join(mapped_names)
         if str(item.get("review_priority") or "") == "high_impact":
@@ -1166,6 +1199,7 @@ def _knowledge_release_prompt_contract(
         ),
         "taxonomy_revision": release.taxonomy_revision,
         "terms": terms,
+        "skill_terms": skill_terms,
     }
 
 
@@ -1906,6 +1940,26 @@ class TaxonomyGovernance:
                     for node_id in scoped_knowledge_by_id
                     if node_id in term_by_id
                 ]
+                skill_terms = knowledge_release.get("skill_terms") or {}
+                selected_volume_order = max(
+                    (
+                        int(item.get("volume_order") or 0)
+                        for item in scoped_knowledge_by_id.values()
+                    ),
+                    default=0,
+                )
+                selected.extend(
+                    term
+                    for _score, term in ranked
+                    if int(
+                        (
+                            skill_terms.get(term["id"]) or {}
+                        ).get("volume_order")
+                        or 0
+                    )
+                    <= selected_volume_order
+                    and term["id"] in skill_terms
+                )
             else:
                 selected = [
                     term
@@ -1917,8 +1971,17 @@ class TaxonomyGovernance:
             truncated[dimension] = len(eligible) > len(selected)
             if dimension == "knowledge":
                 release_terms = knowledge_release["terms"]
-                candidates[dimension] = [
-                    {
+                skill_terms = knowledge_release.get("skill_terms") or {}
+                volume_id = (
+                    str(volume_contract["id"])
+                    if volume_contract is not None
+                    else ""
+                )
+                knowledge_candidates: list[dict[str, Any]] = []
+                for term in selected:
+                    metadata = scoped_knowledge_by_id.get(term["id"])
+                    skill_meta = skill_terms.get(term["id"])
+                    item = {
                         "id": term["id"],
                         "name": term["name"],
                         **dict(
@@ -1930,24 +1993,42 @@ class TaxonomyGovernance:
                                 },
                             )
                         ),
-                        **(
+                    }
+                    if metadata is not None:
+                        item.update(
                             {
                                 "volume_id": metadata["volume_id"],
                                 "level": metadata["level"],
                                 "parent_id": metadata["parent_id"],
                                 "label": metadata["label"],
                             }
-                            if (
-                                metadata := scoped_knowledge_by_id.get(
-                                    term["id"]
-                                )
+                        )
+                    elif skill_meta is not None:
+                        item.update(
+                            {
+                                "volume_id": skill_meta["volume_id"],
+                                "level": 4,
+                                "parent_id": skill_meta["section_id"],
+                                "label": term["name"],
+                            }
+                        )
+                    if skill_terms:
+                        usage = str(item.get("usage") or "")
+                        if usage not in {
+                            "retrieval_only",
+                            "do_not_use_as_knowledge",
+                            "temporary_observation",
+                        }:
+                            linkable = term["id"].startswith("sk_") or (
+                                metadata is not None
+                                and int(metadata.get("level") or 0) == 2
+                                and str(metadata.get("volume_id") or "")
+                                == volume_id
                             )
-                            is not None
-                            else {}
-                        ),
-                    }
-                    for term in selected
-                ]
+                            if not linkable:
+                                item["usage"] = "retrieval_only"
+                    knowledge_candidates.append(item)
+                candidates[dimension] = knowledge_candidates
             else:
                 candidates[dimension] = [
                     {"id": term["id"], "name": term["name"]}

@@ -31,12 +31,9 @@ const emit = defineEmits<{
   apply: [query: GraphQueryInput]
 }>()
 
-const examMode = ref<'current' | 'manual' | 'cross_exam'>('current')
-const manualSessionIds = ref<number[]>([])
 const classIds = ref<string[]>([])
 const scoreMin = ref<string>('')
 const scoreMax = ref<string>('')
-const useHistory = ref(true)
 // 勾选即入队；训练页的得分率条件会进一步筛选队列，但不删除勾选记录。
 const queueIds = ref<string[]>([])
 const search = ref('')
@@ -60,22 +57,12 @@ const visibleStudents = computed(() => {
   })
 })
 
-const currentSessionName = computed(() => props.sessions.find(
-  (item) => item.id === props.currentSessionId,
-)?.name ?? '尚未选择考试')
 const primarySessions = computed(() => props.curriculumVolumeId
   ? props.sessions.filter(item => item.curriculum_volume_id === props.curriculumVolumeId)
-  : props.sessions)
-const otherSessions = computed(() => props.curriculumVolumeId
-  ? props.sessions.filter(item => item.curriculum_volume_id !== props.curriculumVolumeId)
   : [])
 
 const snapshotText = computed(() => {
-  const exam = examMode.value === 'current'
-    ? currentSessionName.value
-    : examMode.value === 'manual'
-      ? `${manualSessionIds.value.length} 场指定考试`
-      : '全部可用考试'
+  const exam = props.curriculumVolumeId ? `本学期全部 ${primarySessions.value.length} 场考试` : '请在顶部选定教学学期'
   const roster = classIds.value.length ? `${classIds.value.length} 个班级` : '全部班级'
   const range = scoreMin.value || scoreMax.value
     ? `得分率 ${scoreMin.value || '0'}%–${scoreMax.value || '100'}%`
@@ -83,7 +70,7 @@ const snapshotText = computed(() => {
   const manual = queueIds.value.length
     ? `队列 ${queueIds.value.length} 人`
     : '未指定学生'
-  return `${exam} · ${roster} · ${range} · ${manual} · ${useHistory.value ? '缺考参考历史' : '仅本次成绩'}`
+  return `${exam} + 最新训练掌握度 · ${roster} · ${range} · ${manual}`
 })
 
 watch(
@@ -100,10 +87,6 @@ watch(
         scoreMax.value = query.scope.score_rate_max == null ? '' : String(Math.round(query.scope.score_rate_max * 1000) / 10)
       }
     } else {
-      examMode.value = query.exam_scope.mode
-      manualSessionIds.value = query.exam_scope.mode === 'manual'
-        ? [...query.exam_scope.session_ids]
-        : []
       classIds.value = query.scope.mode === 'class'
         ? [...(query.scope.class_ids ?? (query.scope.class_id ? [query.scope.class_id] : []))]
         : []
@@ -112,7 +95,6 @@ watch(
       scoreMax.value = query.scope.score_rate_max === null || query.scope.score_rate_max === undefined
         ? '' : String(Math.round(query.scope.score_rate_max * 1000) / 10)
       queueIds.value = []
-      useHistory.value = query.scope.use_historical_fallback !== false
     }
     void nextTick(() => { synchronizing = false })
   },
@@ -203,12 +185,6 @@ const queuedStudents = computed(() => {
     .filter((student): student is StudentSummary => Boolean(student))
 })
 
-function toggleSession(sessionId: number): void {
-  manualSessionIds.value = manualSessionIds.value.includes(sessionId)
-    ? manualSessionIds.value.filter((item) => item !== sessionId)
-    : [...manualSessionIds.value, sessionId]
-}
-
 function apply(): void {
   if (debounceTimer) {
     clearTimeout(debounceTimer)
@@ -234,24 +210,8 @@ function buildApplyPayload(): GraphQueryInput | null {
     validationMessage.value = '得分率下限不能大于上限'
     return null
   }
-  let examScope: GraphQueryInput['exam_scope']
-  if (examMode.value === 'current') {
-    if (props.currentSessionId === null) {
-      validationMessage.value = '请先在顶部选择当前考试'
-      return null
-    }
-    examScope = { mode: 'current', session_ids: [props.currentSessionId] }
-  } else if (examMode.value === 'manual') {
-    if (!manualSessionIds.value.length) {
-      validationMessage.value = '请至少选择一场考试'
-      return null
-    }
-    examScope = { mode: 'manual', session_ids: [...manualSessionIds.value] }
-  } else {
-    examScope = { mode: 'cross_exam' }
-  }
   return {
-    exam_scope: examScope,
+    exam_scope: { mode: 'semester', curriculum_volume_id: props.curriculumVolumeId ?? '' },
     scope: queueIds.value.length
       ? {
           mode: 'selected',
@@ -260,7 +220,7 @@ function buildApplyPayload(): GraphQueryInput | null {
           ...(scoreFloorEnabled.value && maximum !== undefined ? { score_rate_max: maximum } : {}),
           include_student_ids: [],
           exclude_student_ids: [],
-          use_historical_fallback: useHistory.value,
+          use_historical_fallback: false,
         }
       : {
           mode: classIds.value.length ? 'class' : 'all',
@@ -269,13 +229,13 @@ function buildApplyPayload(): GraphQueryInput | null {
           ...(maximum !== undefined ? { score_rate_max: maximum } : {}),
           include_student_ids: [],
           exclude_student_ids: [],
-          use_historical_fallback: useHistory.value,
+          use_historical_fallback: false,
         },
   }
 }
 
 watch(
-  [examMode, manualSessionIds, classIds, useHistory, queueIds],
+  [classIds, queueIds],
   () => {
     if (synchronizing) return
     if (debounceTimer) clearTimeout(debounceTimer)
@@ -299,17 +259,9 @@ defineExpose({ openMoreFilters })
   <section class="evidence-scope" aria-labelledby="evidence-scope-title">
     <div class="evidence-scope__quickbar">
       <div class="evidence-scope__snapshot-text">
-        <span>当前证据范围</span>
+        <span id="evidence-scope-title">当前证据范围</span>
         <strong>{{ snapshotText }}</strong>
       </div>
-      <label>
-        <span id="evidence-scope-title">考试</span>
-        <select v-model="examMode">
-          <option value="current">当前考试</option>
-          <option value="manual">指定考试</option>
-          <option value="cross_exam">全部可用考试</option>
-        </select>
-      </label>
       <details class="evidence-scope__classes">
         <summary>班级 · {{ classIds.length ? `${classIds.length} 个` : '全部' }}</summary>
         <div>
@@ -356,20 +308,6 @@ defineExpose({ openMoreFilters })
       <p v-else class="evidence-scope__queue-empty">队列为空 · 勾选下方卡片加入</p>
     </div>
 
-    <div v-if="examMode === 'manual'" class="evidence-scope__sessions">
-      <button v-for="session in primarySessions" :key="session.id" type="button" :class="{ active: manualSessionIds.includes(session.id) }" @click="toggleSession(session.id)">
-        {{ session.name }}
-      </button>
-      <details v-if="otherSessions.length" class="evidence-scope__other-sessions">
-        <summary>其他学期或未归类考试（{{ otherSessions.length }}）</summary>
-        <div>
-          <button v-for="session in otherSessions" :key="session.id" type="button" :class="{ active: manualSessionIds.includes(session.id) }" @click="toggleSession(session.id)">
-            {{ session.name }}
-          </button>
-        </div>
-      </details>
-    </div>
-
     <div v-if="moreOpen" class="evidence-scope__more">
       <div class="evidence-scope__more-row">
         <fieldset class="evidence-scope__range">
@@ -378,10 +316,6 @@ defineExpose({ openMoreFilters })
           <b>—</b>
           <label><span>最高</span><input v-model="scoreMax" inputmode="decimal" placeholder="100" aria-label="最高得分率"><i>%</i></label>
         </fieldset>
-        <label class="evidence-scope__history">
-          <input v-model="useHistory" type="checkbox">
-          <span><strong>缺考时参考历史</strong><small>仅使用目标考试之前的成绩与相似知识点证据</small></span>
-        </label>
       </div>
     </div>
 
@@ -438,7 +372,7 @@ defineExpose({ openMoreFilters })
 .evidence-scope__quickbar { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; padding: 12px 16px; }
 .evidence-scope__snapshot-text { display: flex; flex: 1 1 280px; align-items: baseline; gap: 12px; min-width: 0; padding: 4px 0 4px 12px; border-left: 4px solid var(--color-accent); }
 .evidence-scope__snapshot-text span { color: var(--color-text-secondary); font-size: 12px; white-space: nowrap; }
-.evidence-scope__snapshot-text strong { color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evidence-scope__snapshot-text strong { color: var(--color-text-primary); overflow-wrap: anywhere; }
 .evidence-scope__quickbar > label { flex: 0 1 170px; min-width: 140px; }
 label > span, legend { display: block; margin-bottom: 6px; color: var(--color-text-secondary); font-size: 12px; }
 select, input { width: 100%; min-height: var(--control-height-large); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-primary); padding: 8px 10px; }
@@ -503,4 +437,5 @@ select, input { width: 100%; min-height: var(--control-height-large); border: 1p
 .evidence-scope__card-evidence:hover { text-decoration: underline; }
 .evidence-scope__error { margin: 0; padding: 0 16px 14px; color: var(--color-danger); }
 @media (max-width: 1100px) { .evidence-scope__quickbar > label, .evidence-scope__classes { flex: 1 1 200px; } .primary-button { width: 100%; } }
+@media (max-width: 620px) { .evidence-scope__snapshot-text { flex-direction: column; gap: 4px; } }
 </style>

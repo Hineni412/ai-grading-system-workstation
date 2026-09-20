@@ -22,13 +22,35 @@ type SettingsSection = 'ai' | 'ai-trace' | 'backup' | 'maintenance'
 type ModelProfilesViewInstance = ComponentPublicInstance & {
   hasUnsavedChanges: boolean
 }
+const SETTINGS_SECTION_STORAGE_KEY = 'ai-grading:settings-section:v1'
+const SETTINGS_SECTIONS: readonly SettingsSection[] = [
+  'ai',
+  'ai-trace',
+  'backup',
+  'maintenance',
+]
 const route = useRoute()
 const router = useRouter()
 const modelView = ref<ModelProfilesViewInstance | null>(null)
+
+function isSettingsSection(value: unknown): value is SettingsSection {
+  return SETTINGS_SECTIONS.includes(value as SettingsSection)
+}
+
+function storedSection(): SettingsSection {
+  try {
+    const value = globalThis.localStorage?.getItem(SETTINGS_SECTION_STORAGE_KEY)
+    if (isSettingsSection(value)) return value
+  } catch {
+    // localStorage may be unavailable; fall through to the default section.
+  }
+  return 'ai'
+}
+
 const section = computed<SettingsSection>(() => {
   const value = route.query.section
-  if (value === 'backup' || value === 'maintenance' || value === 'ai-trace') return value
-  return 'ai'
+  if (isSettingsSection(value)) return value
+  return storedSection()
 })
 
 async function selectSection(next: SettingsSection): Promise<void> {
@@ -38,8 +60,15 @@ async function selectSection(next: SettingsSection): Promise<void> {
 }
 
 watch(() => route.query.section, value => {
-  if (value === 'ai' || value === 'ai-trace' || value === 'backup' || value === 'maintenance') return
-  void router.replace({ query: { ...route.query, section: 'ai' } })
+  if (isSettingsSection(value)) {
+    try {
+      globalThis.localStorage?.setItem(SETTINGS_SECTION_STORAGE_KEY, value)
+    } catch {
+      // localStorage may be unavailable; the section still applies this visit.
+    }
+    return
+  }
+  void router.replace({ query: { ...route.query, section: storedSection() } })
 }, { immediate: true })
 </script>
 

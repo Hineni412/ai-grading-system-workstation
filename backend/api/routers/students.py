@@ -306,6 +306,7 @@ def get_student_exam_results(
     only_deducted: bool = Query(default=True),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
+    curriculum_volume_id: str | None = Query(default=None, max_length=100),
     db: GradingRepositoryAccess = Depends(get_grading_db),
     students: StudentRepositoryGateway = Depends(get_student_repository),
     question_bank_db_path: Path = Depends(get_question_bank_db_path),
@@ -326,6 +327,11 @@ def get_student_exam_results(
             {"student_id": int(student_id)},
         )
     rows = db.get_active_assessment_evidence(student_ids=[int(student_id)])
+    if curriculum_volume_id is not None:
+        session_ids = {int(item["id"]) for item in db.list_grading_sessions()
+                       if curriculum_volume_id and item.get("curriculum_volume_id") == curriculum_volume_id
+                       and not item.get("is_deleted")}
+        rows = [row for row in rows if int(row["session_id"]) in session_ids]
     if only_deducted:
         rows = [row for row in rows if row.get("is_deducted")]
     bank_links = _confirmed_bank_question_links(

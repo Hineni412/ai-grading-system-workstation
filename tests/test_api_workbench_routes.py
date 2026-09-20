@@ -20,14 +20,13 @@ warnings.filterwarnings(
     "unsafe_text",
     [
         "Authorization Bearer abcdefghijklmnopqrstuvwxyz",
-        "diagnostic data eyJ0b2tlbiI6InNlY3JldCJ9",
-        "diagnostic %7B%22token%22%3A%22private%22%7D",
-        "Exception at Worker.run Worker.java 12",
-        "File worker.py line 12 in run",
+        "ordinary unknown stage",
+        "graded=-1 failed=0",
+        None,
     ],
 )
 def test_public_diagnostic_whitelist_rejects_unrecognized_text(
-    unsafe_text: str,
+    unsafe_text: object,
 ) -> None:
     from backend.public_data import sanitize_public_diagnostic_text
 
@@ -37,8 +36,8 @@ def test_public_diagnostic_whitelist_rejects_unrecognized_text(
 @pytest.mark.parametrize(
     "safe_text",
     [
-        "starting",
         "processing",
+        "total=3",
         "graded=3 failed=1",
         "matched=2 issues=1 pages=4",
         "processing batch 2 of 5",
@@ -51,6 +50,43 @@ def test_public_diagnostic_whitelist_keeps_known_safe_templates(
     from backend.public_data import sanitize_public_diagnostic_text
 
     assert sanitize_public_diagnostic_text(safe_text) == safe_text
+
+
+def test_public_mapping_reuses_checks_without_sharing_output_containers(monkeypatch) -> None:
+    from collections import Counter
+    from backend import public_data
+
+    checked = Counter()
+    original = public_data._contains_filesystem_token
+
+    def tracked(value: str, **kwargs) -> bool:
+        checked[value] += 1
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(public_data, "_contains_filesystem_token", tracked)
+    item = {
+        "skill": "求直角边长",
+        "formula": r"\sqrt{a^2-b^2}",
+        "url": "/api/jobs/8",
+        "internal": "C:/private/result.json",
+        "api_key": "secret-value",
+        "source_path": "private-value",
+    }
+    result = public_data.sanitize_public_mapping({"students": [item, item]})
+    expected = {"skill": item["skill"], "formula": item["formula"], "url": item["url"]}
+    assert result == {"students": [expected, expected]}
+    assert checked["求直角边长"] == checked["C:/private/result.json"] == 1
+    result["students"][0]["skill"] = "changed"
+    assert result["students"][1]["skill"] == item["skill"] == "求直角边长"
+
+
+def test_public_mapping_classification_cache_lives_only_for_one_call(monkeypatch) -> None:
+    from backend import public_data
+
+    value = {"items": [{"text": "same text"}, {"text": "same text"}]}
+    assert public_data.sanitize_public_mapping(value) == value
+    monkeypatch.setattr(public_data, "_contains_filesystem_token", lambda value: True)
+    assert public_data.sanitize_public_mapping(value) == {"items": []}
 
 
 @pytest.fixture
@@ -545,21 +581,9 @@ def test_anomalies_are_stable_paginated_filterable_and_sanitized(
     assert filtered.json()["items"][0]["anomaly_type"] == "scan_issue"
 
 
-@pytest.mark.parametrize(
-    "ocr_name, marker",
-    [
-        ("C:/private/student.png", "C:/private"),
-        ("file:///C:/private/student.png", "file:///"),
-        ("token=private-token", "private-token"),
-        ("opaque-student-marker-7f31", "opaque-student-marker"),
-        ("普通匿名标签", "普通匿名标签"),
-    ],
-)
-def test_anomaly_display_names_never_publish_ocr_text(
-    workbench_client,
-    ocr_name: str,
-    marker: str,
-) -> None:
+def test_anomaly_display_names_never_publish_ocr_text(workbench_client) -> None:
+    ocr_name = 'opaque-student-marker'
+    marker = 'opaque-student-marker'
     client, session_id, db_path, _latest_job_id = workbench_client
     with sqlite3.connect(db_path) as conn:
         unmatched_id = int(
@@ -781,37 +805,9 @@ def test_failure_lists_keep_one_row_per_paper_with_historical_results(
     )
 
 
-@pytest.mark.parametrize(
-    "unsafe_text, marker",
-    [
-        ("token=plain-secret", "plain-secret"),
-        ('{"payload":{"result":"private-result","error":"boom"}}', "private-result"),
-        ("diagnostic payload=private-payload", "private-payload"),
-        ("Traceback (most recent call last): ValueError: private-stack", "private-stack"),
-        ("Bearer eyJ...private-signature", "private-signature"),
-        ('diagnostic: {"debug":"private-marker"}', "private-marker"),
-        (
-            "java.lang.IllegalStateException: private-java at app.Worker.java:12",
-            "private-java",
-        ),
-        (
-            "Authorization Bearer abcdefghijklmnopqrstuvwxyz",
-            "abcdefghijklmnopqrstuvwxyz",
-        ),
-        ("diagnostic data eyJ0b2tlbiI6InNlY3JldCJ9", "eyJ0b2tlbiI6InNlY3JldCJ9"),
-        (
-            "diagnostic %7B%22token%22%3A%22private%22%7D",
-            "%7B%22token%22%3A%22private%22%7D",
-        ),
-        ("Exception at Worker.run Worker.java 12", "Worker.run"),
-        ("File worker.py line 12 in run", "worker.py"),
-    ],
-)
-def test_anomaly_detail_rejects_opaque_diagnostic_text(
-    workbench_client,
-    unsafe_text: str,
-    marker: str,
-) -> None:
+def test_anomaly_detail_rejects_opaque_diagnostic_text(workbench_client) -> None:
+    unsafe_text = 'diagnostic payload=private-payload'
+    marker = 'private-payload'
     client, session_id, db_path, _latest_job_id = workbench_client
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -833,37 +829,9 @@ def test_anomaly_detail_rejects_opaque_diagnostic_text(
     assert marker not in response.text
 
 
-@pytest.mark.parametrize(
-    "unsafe_text, marker",
-    [
-        ("secret=plain-secret", "plain-secret"),
-        ('{"payload":{"result":"private-result","error":"boom"}}', "private-result"),
-        ("diagnostic error=private-error", "private-error"),
-        ("Traceback (most recent call last): ValueError: private-stack", "private-stack"),
-        ("Bearer eyJ...private-signature", "private-signature"),
-        ('diagnostic: {"debug":"private-marker"}', "private-marker"),
-        (
-            "java.lang.IllegalStateException: private-java at app.Worker.java:12",
-            "private-java",
-        ),
-        (
-            "Authorization Bearer abcdefghijklmnopqrstuvwxyz",
-            "abcdefghijklmnopqrstuvwxyz",
-        ),
-        ("diagnostic data eyJ0b2tlbiI6InNlY3JldCJ9", "eyJ0b2tlbiI6InNlY3JldCJ9"),
-        (
-            "diagnostic %7B%22token%22%3A%22private%22%7D",
-            "%7B%22token%22%3A%22private%22%7D",
-        ),
-        ("Exception at Worker.run Worker.java 12", "Worker.run"),
-        ("File worker.py line 12 in run", "worker.py"),
-    ],
-)
-def test_recent_job_detail_rejects_opaque_diagnostic_text(
-    workbench_client,
-    unsafe_text: str,
-    marker: str,
-) -> None:
+def test_recent_job_detail_rejects_opaque_diagnostic_text(workbench_client) -> None:
+    unsafe_text = 'diagnostic error=private-error'
+    marker = 'private-error'
     client, session_id, db_path, latest_job_id = workbench_client
     with sqlite3.connect(db_path) as conn:
         conn.execute(

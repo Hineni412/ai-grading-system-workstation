@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -485,7 +486,7 @@ class TrainingEvidencePublisher:
                         item["difficulty"]
                     ),
                     "evidence_weight": 1.0,
-                    "expected_minutes": _positive_minutes(
+                    "expected_minutes": _optional_minutes(
                         item["estimated_minutes"]
                     ),
                     "criterion_version_id": str(
@@ -1041,7 +1042,7 @@ class TrainingEvidencePublisher:
         student_id = str(context["student_id"])
         students = diagnosis.get("students")
         selected_students = [
-            dict(item)
+            deepcopy(item)
             for item in (students if isinstance(students, list) else [])
             if isinstance(item, Mapping)
             and str(item.get("student_id") or "") == student_id
@@ -1057,6 +1058,26 @@ class TrainingEvidencePublisher:
             **dict(diagnosis),
             "students": selected_students,
         }
+        # The paper keeps its original diagnosis. Only the next draft receives
+        # the mastery just calculated from the published training evidence.
+        current_by_key = {
+            str(item["stable_key"]): item["mastery_after"]
+            for item in mastery_changes
+        }
+        for point in selected_students[0].get("weak_points", []):
+            targets = self.current_knowledge.resolve(
+                point.get("knowledge_key") or point.get("knowledge_point")
+            )
+            if len(targets) != 1:
+                continue
+            current = current_by_key.get(targets[0].stable_key)
+            if current is None:
+                continue
+            point.update(
+                mastery=current.get("value"),
+                evidence_count=int(current.get("evidence_count") or 0),
+                effective_weight=float(current.get("effective_weight") or 0),
+            )
         try:
             config = PersonalizedRecommendationConfig(
                 **{
@@ -1081,13 +1102,14 @@ class TrainingEvidencePublisher:
             )
             token = stable_hash(
                 {
-                    "kind": "training-next-round-draft-v1",
+                    "kind": "training-next-round-draft-v2-current-mastery",
                     "submission_id": context["submission_id"],
                     "submission_revision": context[
                         "submission_revision"
                     ],
                     "student_id": student_id,
                     "evidence_version": evidence_version,
+                    "diagnosis": next_diagnosis,
                 }
             )[:32]
             draft = PersonalizedRecommendationModule(
@@ -1405,6 +1427,7 @@ def _stable_key(value: object) -> str:
     key = str(value or "").strip().casefold()
     if not (
         (key.startswith("kp_") and len(key) > 3)
+        or (key.startswith("sk_") and len(key) > 3)
         or (
             key.startswith("ki_")
             and len(key) == 35
@@ -1431,7 +1454,10 @@ def _difficulty_weight(value: object) -> float:
     return round(difficulty / 5.0, 6)
 
 
-def _positive_minutes(value: object) -> int:
+def _optional_minutes(value: object) -> int | None:
+    # Current recommendations have no time estimate; legacy snapshots may.
+    if value is None:
+        return None
     try:
         minutes = int(value)
     except (TypeError, ValueError):

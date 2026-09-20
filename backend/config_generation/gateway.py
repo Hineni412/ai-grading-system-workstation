@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import os
 from typing import Any, Mapping, Protocol, Sequence
-
-
-DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS = 600.0
 
 
 class ConfigGenerationGateway(Protocol):
@@ -20,26 +16,6 @@ class ConfigGenerationGateway(Protocol):
         prompt: str,
         image_blobs: Sequence[bytes],
     ) -> dict[str, Any]: ...
-
-
-def config_generation_extra_kwargs() -> dict[str, float]:
-    raw_timeout = os.getenv("AI_GRADING_CONFIG_TIMEOUT_SECONDS")
-    try:
-        timeout = (
-            float(raw_timeout)
-            if raw_timeout
-            else DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS
-        )
-    except (TypeError, ValueError):
-        timeout = DEFAULT_CONFIG_GENERATION_TIMEOUT_SECONDS
-    resolved_timeout = min(600.0, max(240.0, timeout))
-    # The shared gateway derives its final deadline from the request policy.
-    # Pass the explicit override as well as the SDK option so config generation
-    # cannot silently fall back to a shorter profile timeout.
-    return {
-        "timeout": resolved_timeout,
-        "timeout_override_seconds": resolved_timeout,
-    }
 
 
 class LLMConfigGenerationGateway:

@@ -11,7 +11,7 @@ from typing import Any, Literal, Mapping, Protocol, Sequence
 FineTermRole = Literal["direct", "supporting_prerequisite"]
 CoreResolutionStatus = Literal["resolved", "ambiguous", "unmapped"]
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{1,127}$")
-_CORE_KEY = re.compile(r"^(?:kp|ki)_[a-z0-9_]+$")
+_CORE_KEY = re.compile(r"^(?:kp|ki|sk)_[a-z0-9_]+$")
 _BANNED_SCORE_KEYS = frozenset(
     {
         "score",
@@ -666,6 +666,7 @@ def validate_evidence_fine_terms(
         else None
     )
     candidates: dict[str, set[str]] = {}
+    non_linkable: set[str] = set()
     for raw in (knowledge if isinstance(knowledge, list) else []):
         if not isinstance(raw, Mapping):
             continue
@@ -673,6 +674,9 @@ def validate_evidence_fine_terms(
         name = str(raw.get("name") or "").strip()
         if not term_id or not name:
             continue
+        usage = str(raw.get("usage") or "").strip()
+        if usage in {"retrieval_only", "do_not_use_as_knowledge"}:
+            non_linkable.add(term_id)
         names = {name}
         aliases = raw.get("aliases")
         if isinstance(aliases, list):
@@ -686,6 +690,11 @@ def validate_evidence_fine_terms(
     for link in links:
         if link.fine_term_id in locally_converged:
             continue
+        if link.fine_term_id in non_linkable:
+            raise ValueError(
+                "solution evidence fine term is marked non-linkable "
+                "(retrieval_only or wrong dimension)"
+            )
         allowed_names = candidates.get(link.fine_term_id)
         if not allowed_names or _normalize_term_name(
             link.fine_term_name

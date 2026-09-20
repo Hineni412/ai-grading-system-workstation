@@ -25,6 +25,7 @@ import {
   type SelectableGradingMode,
   type GradingWorkspace,
   type ScanDecision,
+  type ScanMatchConflict,
   type ScanPreflight,
   type ScanStudentMatchOption,
 } from '../api/scan-grading'
@@ -41,6 +42,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const busyAction = ref('')
   const errorMessage = ref('')
+  const decisionConflicts = ref<ScanMatchConflict[]>([])
   const activeJobId = ref<number | null>(null)
   const preflightJobId = ref<number | null>(null)
   const selectedMode = ref<SelectableGradingMode | null>(null)
@@ -224,6 +226,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     sessionId.value = id
     workspace.value = null
     preflight.value = null
+    decisionConflicts.value = []
     students.value = []
     activeJobId.value = null
     preflightJobId.value = null
@@ -399,15 +402,27 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     },
   )
 
-  async function saveDecisions(decisions: ScanDecision[]): Promise<boolean> {
+  async function saveDecisions(decisions: ScanDecision[], allowPartialMatches = false): Promise<boolean> {
     const id = sessionId.value; const check = preflight.value; const current = generation
     if (!id || !check) return false
     let succeeded = false
+    const changedTargets = decisions.filter((decision) => !check.decisions.some((saved) =>
+      saved.target_type === decision.target_type && saved.target_id === decision.target_id
+      && saved.action === decision.action && saved.student_id === decision.student_id))
+    const retainedConflicts = decisionConflicts.value.filter((conflict) => !conflict.targets.some((target) =>
+      changedTargets.some((change) => change.target_type === target.target_type && change.target_id === target.target_id)))
+    decisionConflicts.value = retainedConflicts
     await runAction('decisions', id, current, async () => {
       let saved
       try {
-        saved = await saveScanDecisions(id, check.revision, decisions)
+        saved = allowPartialMatches
+          ? await saveScanDecisions(id, check.revision, decisions, true)
+          : await saveScanDecisions(id, check.revision, decisions)
       } catch (error) {
+        if (isCurrent(id, current) && error instanceof ApiError && error.code === 'scan_match_conflict'
+          && Array.isArray(error.details.conflicts)) {
+          decisionConflicts.value = [...retainedConflicts, ...error.details.conflicts as ScanMatchConflict[]]
+        }
         if (error instanceof ApiError && error.code === 'scan_decision_revision_conflict') {
           try {
             const latest = await fetchPreflight(id)
@@ -423,6 +438,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
       check.summary = saved.summary ?? { ...check.summary, ready_to_grade: saved.ready_to_grade }
       if (saved.absent_students) check.absent_students = saved.absent_students
       if (saved.match_conflicts) check.match_conflicts = saved.match_conflicts
+      decisionConflicts.value = [...retainedConflicts, ...saved.rejected_conflicts ?? []]
       succeeded = true
     })
     return succeeded
@@ -568,7 +584,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     })
   }
 
-  return { sessionId, workspace, preflight, students, loadState, busyAction, errorMessage,
+  return { sessionId, workspace, preflight, students, loadState, busyAction, errorMessage, decisionConflicts,
     activeJobId, preflightJobId, selectedMode, gradingPlan, planState, planErrorMessage,
     uploadBatch, replacementBatch, gradingRun, preflightJob, gradingJob,
     load, addFiles, remove, clear, analyze, refreshPreflight,

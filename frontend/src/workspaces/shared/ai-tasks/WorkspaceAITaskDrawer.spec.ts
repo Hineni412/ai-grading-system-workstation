@@ -64,6 +64,12 @@ afterEach(() => {
 })
 
 describe('WorkspaceAITaskDrawer', () => {
+  it('hides the toggle while there are no tracked tasks', async () => {
+    const { app, host } = await mountDrawer()
+    expect(host.querySelector('.workspace-ai-drawer-toggle')).toBeNull()
+    app.unmount()
+  })
+
   it('shows a floating peek card while a job runs and minimizes it on demand', async () => {
     const { app, host, jobs } = await mountDrawer()
     jobs.track(job('running', 0.35, 'question_bank_sync', '正在写入题目'))

@@ -335,4 +335,28 @@ describe('personalized training API', () => {
       expected_revision: 1,
     })
   })
+
+  it.each(['changes_exam_score', 'changes_v1'])(
+    'reads published mastery feedback with %s and reloads its values', async (scoreField) => {
+      const payload = {
+        schema_version: 'training-feedback-v1', feedback_id: 'f'.repeat(64),
+        submission_id: 'c'.repeat(64), submission_revision: 1, source_review_revision: 1,
+        status: 'complete', student: { student_id: 'SYN-S01' },
+        summary: { published_question_count: 1, ready_question_count: 1,
+          total_question_count: 1, pending_outbox_count: 0, message: '掌握度已更新。' },
+        questions: [], mastery_changes: [{ stable_key: 'kp_alg_linear_equation',
+          mastery_before: { value: .4 }, mastery_after: { value: .55 } }],
+        next_round: { status: 'source_unavailable', message: '训练结果已保存。', changes: [] },
+        timeline: [], safety: { is_exam_score: false, [scoreField]: false,
+          auto_paper_created: false, auto_printed: false }, evidence_version: 'e'.repeat(64),
+      }
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(payload), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }))
+      const first = await trainingApi.getTrainingFeedback(payload.submission_id, 1)
+      expect(first.mastery_changes[0]).toMatchObject({ mastery_after: { value: .55 } })
+      expect(first.safety.changes_exam_score).toBe(false)
+      expect(await trainingApi.getTrainingFeedback(payload.submission_id, 1)).toEqual(first)
+    },
+  )
 })

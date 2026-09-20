@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { knowledgeLeafLabel } from '../../api/question-bank'
@@ -36,6 +36,95 @@ const selectedCountLabel = computed(() => (
 const activeRootKey = ref('')
 const expandedSectionKeys = ref<string[]>([])
 const showEmptyPoints = ref(true)
+const structureElement = ref<HTMLElement | null>(null)
+const focusedKey = ref('')
+const connectionLines = ref<Array<{ section: string; path: string; confirmed: boolean }>>([])
+const associations = computed(() => props.diagnosis.knowledge_associations ?? [])
+const associationsByNode = computed(() => {
+  const index = new Map<string, typeof associations.value>()
+  for (const edge of associations.value) {
+    for (const key of new Set([edge.topic_key, edge.skill_key])) {
+      const edges = index.get(key) ?? []
+      edges.push(edge)
+      index.set(key, edges)
+    }
+  }
+  return index
+})
+const nodeKinds = computed(() => new Map((props.diagnosis.knowledge_catalog ?? []).map(item => [item.knowledge_key, item.node_kind])))
+const allNodes = computed(() => {
+  const nodes = new Map<string, KnowledgeNode>()
+  const add = (node: KnowledgeNode) => { nodes.set(node.key, node); node.children.forEach(add) }
+  tree.value.forEach(add)
+  // Related prerequisite skills can belong to an earlier teaching volume.
+  const weakByKey = new Map((props.diagnosis.group_weak_points ?? []).map(item => [item.knowledge_key, item]))
+  for (const item of props.diagnosis.knowledge_catalog ?? []) {
+    if (!nodes.has(item.knowledge_key)) nodes.set(item.knowledge_key, {
+      key: item.knowledge_key, label: item.knowledge_point,
+      parentKey: item.parent_knowledge_key ?? null,
+      weak: weakByKey.get(item.knowledge_key) ?? null, children: [],
+    })
+  }
+  return nodes
+})
+function hasVisibleEvidence(node: KnowledgeNode): boolean {
+  return node.weak !== null || (associationsByNode.value.get(node.key) ?? []).some(edge => edge.topic_key === node.key
+    && allNodes.value.get(edge.skill_key)?.weak != null)
+}
+function isSkill(node: KnowledgeNode): boolean { return node.key.startsWith('sk_') || nodeKinds.value.get(node.key) === 'skill' }
+function related(key: string): boolean {
+  return key === focusedKey.value || focusedRelations.value.some(edge =>
+    (edge.topic_key === focusedKey.value && edge.skill_key === key) || (edge.skill_key === focusedKey.value && edge.topic_key === key))
+}
+function focusNode(key: string): void { focusedKey.value = focusedKey.value === key ? '' : key; emit('focus', key) }
+function sectionSkills(points: KnowledgeNode[]): KnowledgeNode[] {
+  const topics = new Set(points.filter(point => !isSkill(point)).map(point => point.key))
+  const topicFocused = topics.has(focusedKey.value)
+  const skills = new Map((topicFocused ? [] : points.filter(isSkill)).map(point => [point.key, point]))
+  for (const edge of associationsByNode.value.get(focusedKey.value) ?? []) {
+    const node = allNodes.value.get(edge.skill_key)
+    // Keep the default section compact; reveal cross-section skills on demand.
+    if (topics.has(edge.topic_key) && node && (edge.topic_key === focusedKey.value || edge.skill_key === focusedKey.value)) {
+      skills.set(node.key, node)
+    }
+  }
+  const visible = [...skills.values()].filter(node => showEmptyPoints.value || node.weak !== null)
+  if (topicFocused) {
+    const edges = new Map(focusedRelations.value.map(edge => [edge.skill_key, edge]))
+    visible.sort((a, b) => (edges.get(b.key)?.same_part_question_count ?? 0) - (edges.get(a.key)?.same_part_question_count ?? 0)
+      || (edges.get(b.key)?.question_count ?? 0) - (edges.get(a.key)?.question_count ?? 0))
+  }
+  return visible
+}
+const focusedRelations = computed(() => [...(associationsByNode.value.get(focusedKey.value) ?? [])]
+  .sort((a, b) => b.same_part_question_count - a.same_part_question_count || b.question_count - a.question_count))
+async function drawConnections(): Promise<void> {
+  await nextTick()
+  const lines: typeof connectionLines.value = []
+  structureElement.value?.querySelectorAll<HTMLElement>('.relationship-board').forEach(board => {
+    const rect = board.getBoundingClientRect()
+    const elements = new Map([...board.querySelectorAll<HTMLElement>('[data-node-key]')].map(el => [el.dataset.nodeKey, el]))
+    for (const edge of focusedRelations.value) {
+      const left = elements.get(edge.topic_key)?.getBoundingClientRect()
+      const right = elements.get(edge.skill_key)?.getBoundingClientRect()
+      if (!left || !right) continue
+      const x1 = left.right - rect.left, y1 = (left.top + left.bottom) / 2 - rect.top
+      const x2 = right.left - rect.left, y2 = (right.top + right.bottom) / 2 - rect.top
+      const mid = (x1 + x2) / 2
+      lines.push({ section: board.dataset.section ?? '', path: `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`, confirmed: edge.same_part_question_count > 0 })
+    }
+  })
+  connectionLines.value = lines
+}
+watch([focusedKey, expandedSectionKeys, showEmptyPoints, associations], () => { void drawConnections() }, { flush: 'post' })
+let resizeObserver: ResizeObserver | undefined
+onMounted(() => {
+  if (typeof ResizeObserver !== 'undefined' && structureElement.value) {
+    resizeObserver = new ResizeObserver(() => { void drawConnections() })
+    resizeObserver.observe(structureElement.value)
+  }
+})
+onBeforeUnmount(() => resizeObserver?.disconnect())
 
 const curriculumScope = useCurriculumScopeStore()
 onMounted(() => { void curriculumScope.initialize() })
@@ -97,7 +186,7 @@ const displaySections = computed(() => {
       const candidates = selectableChildren(section)
       return {
         section,
-        points: showEmptyPoints.value ? candidates : candidates.filter((point) => point.weak !== null),
+        points: showEmptyPoints.value ? candidates : candidates.filter(hasVisibleEvidence),
       }
     })
     .filter((entry) => showEmptyPoints.value || entry.points.length > 0)
@@ -107,7 +196,7 @@ const hiddenPointCount = computed(() => {
   const root = activeRoot.value
   if (!root) return 0
   return root.children.reduce((total, section) => (
-    total + selectableChildren(section).filter((point) => point.weak === null).length
+    total + selectableChildren(section).filter((point) => !hasVisibleEvidence(point)).length
   ), 0)
 })
 
@@ -118,6 +207,7 @@ watch(tree, (roots) => {
 }, { immediate: true })
 
 watch(activeRoot, (root) => {
+  focusedKey.value = ''
   expandedSectionKeys.value = root?.children.map((item) => item.key) ?? []
   if (root) emit('focus', root.key)
 }, { immediate: true })
@@ -158,10 +248,10 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
 </script>
 
 <template>
-  <section class="knowledge-structure" aria-labelledby="training-structure-title">
+  <section ref="structureElement" class="knowledge-structure" aria-labelledby="training-structure-title">
     <header>
       <div>
-        <p class="structure-eyebrow">{{ selectionKind === 'range' ? '先圈定章或小节，系统按每人细点掌握情况配题' : '完整结构，不替教师挑前三项' }}</p>
+        <p class="structure-eyebrow">{{ selectionKind === 'range' ? '先圈定章或小节，系统按每人的实际失分匹配知识与技能' : '查看知识与技能，选择训练目标' }}</p>
         <h3 id="training-structure-title">{{ title }}</h3>
         <p>{{ description }}</p>
       </div>
@@ -200,6 +290,15 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
         </div>
 
         <p v-if="!displaySections.length" class="structure-empty">当前章的知识点都没有证据；勾选上方“显示无证据知识点”可查看完整结构。</p>
+        <p class="relationship-help">默认显示本小节技能，点击知识主题展开关联技能，再次点击恢复。实线有同小问依据，虚线仅表示同题出现；关联不代表掌握度相同。</p>
+        <div v-if="focusedKey" class="relationship-summary" role="status">
+          <strong>{{ knowledgeLeafLabel(allNodes.get(focusedKey)?.label ?? focusedKey) }}</strong>
+          <span v-if="!focusedRelations.length">暂无已确认关联，保留独立显示。</span>
+          <span v-for="edge in focusedRelations" :key="`${edge.topic_key}:${edge.skill_key}`">
+            {{ knowledgeLeafLabel(allNodes.get(edge.topic_key === focusedKey ? edge.skill_key : edge.topic_key)?.label ?? '') }}：
+            {{ edge.same_part_question_count }} 道有同小问依据 / {{ edge.question_count }} 道同题出现
+          </span>
+        </div>
 
         <article
           v-for="entry in displaySections"
@@ -215,11 +314,26 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
             <strong>{{ knowledgeLeafLabel(entry.section.label) }}</strong>
             <b>{{ masteryText(entry.section) }}</b>
           </button>
-          <div v-if="expandedSectionKeys.includes(entry.section.key)" class="structure-points">
+          <div v-if="expandedSectionKeys.includes(entry.section.key)" class="relationship-board" :data-section="entry.section.key">
+            <svg class="relationship-lines" aria-hidden="true"><path v-for="(line, i) in connectionLines.filter(line => line.section === entry.section.key)" :key="i" :d="line.path" :class="{ 'is-inferred': !line.confirmed }" /></svg>
+            <div class="relationship-topics">
+              <h4>知识主题 · 考查什么</h4>
+              <div v-for="point in entry.points.filter(point => !isSkill(point))" :key="point.key" class="structure-point topic-node" :class="{ 'is-related': related(point.key), 'is-focused': focusedKey === point.key }" :data-node-key="point.key">
+                <input v-if="selectionKind === 'targets'" type="checkbox" :aria-label="`选择${knowledgeLeafLabel(point.label)}`" :checked="modelValue.includes(point.key)" @change="toggleTarget(point.key)">
+                <button type="button" class="structure-point-name" :aria-pressed="focusedKey === point.key" @click="focusNode(point.key)">{{ knowledgeLeafLabel(point.label) }}</button>
+                <small>用于题目匹配</small>
+                <small v-if="point.weak">{{ point.weak.evidence_count }} 条证据</small>
+                <RouterLink v-if="hasGroupEvidence(point)" class="structure-point-evidence" :to="{ name: 'student-evidence', params: { studentId: 'group' }, query: { mode: 'questions', knowledge: point.key, klabel: knowledgeLeafLabel(point.label), from: 'student' } }">证据</RouterLink>
+              </div>
+            </div>
+            <div class="relationship-skills structure-points">
+              <h4>可训练技能 · 具体怎么做</h4>
+              <p v-if="!sectionSkills(entry.points).length" class="structure-empty">当前没有可显示的技能，点击知识主题查看关联。</p>
             <label
-              v-for="point in entry.points"
+              v-for="point in sectionSkills(entry.points)"
               :key="point.key"
-              :class="['structure-point', masteryClass(point)]"
+              :class="['structure-point', masteryClass(point), { 'is-related': related(point.key), 'is-focused': focusedKey === point.key }]"
+              :data-node-key="point.key"
               :title="point.label"
             >
               <input
@@ -228,7 +342,7 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
                 :checked="modelValue.includes(point.key)"
                 @change="toggleTarget(point.key)"
               >
-              <span class="structure-point-name">{{ knowledgeLeafLabel(point.label) }}</span>
+              <button type="button" class="structure-point-name" :aria-pressed="focusedKey === point.key" @click.prevent="focusNode(point.key)">{{ knowledgeLeafLabel(point.label).replace(/^技能[·：:]/, '') }}</button>
               <span class="structure-track" aria-hidden="true">
                 <i v-if="point.weak?.mastery != null" :style="{ width: `${Math.round(point.weak.mastery * 100)}%` }" />
                 <b />
@@ -243,6 +357,7 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
                 @click.stop
               >证据</RouterLink>
             </label>
+            </div>
           </div>
         </article>
 
@@ -274,6 +389,20 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
 </template>
 
 <style scoped>
+.relationship-help { color: var(--color-text-secondary); font-size: .85rem; line-height: 1.7; }
+.relationship-summary { display: grid; gap: .35rem; padding: .7rem; background: var(--color-accent-subtle); border-radius: var(--radius-control); font-size: .85rem; max-height: 180px; overflow: auto; }
+.relationship-board { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 3rem; position: relative; padding: .8rem; align-items: start; }
+.relationship-board h4 { margin: 0 0 .65rem; font-size: .85rem; color: var(--color-text-secondary); }
+.relationship-topics, .relationship-skills { display: grid; gap: .6rem; min-width: 0; z-index: 1; }
+.relationship-board .structure-point { display: flex; flex-wrap: wrap; gap: .5rem; padding: .65rem; min-width: 0; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
+.relationship-board .structure-point-name { flex: 1 1 100%; min-width: 100px; border: 0; padding: 0; text-align: left; font: inherit; color: inherit; background: transparent; cursor: pointer; overflow-wrap: anywhere; line-height: 1.55; }
+.relationship-board .structure-track { flex-basis: 65%; flex-grow: 1; }
+.relationship-board .is-related { border-color: var(--color-accent); }
+.relationship-board .is-focused { background: var(--color-accent-subtle); box-shadow: inset 3px 0 var(--color-accent); }
+.relationship-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.relationship-lines path { fill: none; stroke: var(--color-accent); stroke-width: 2; opacity: .7; }
+.relationship-lines path.is-inferred { stroke-dasharray: 5 4; }
+@media(max-width: 650px) { .relationship-board { grid-template-columns: 1fr; gap: 1rem; } .relationship-lines { display: none; } }
 .knowledge-structure { display: grid; gap: 1rem; margin: 1rem 0; padding: 1rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
 .knowledge-structure > header { display: flex; justify-content: space-between; gap: 1rem; align-items: start; }
 .knowledge-structure h3, .knowledge-structure p { margin: .2rem 0; }
@@ -318,4 +447,5 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
   .structure-point { grid-template-columns: auto minmax(120px, 1fr) 3rem; }
   .structure-track, .structure-point > small { grid-column: 2 / -1; }
 }
+@media (max-width: 500px) { .structure-layout > nav { grid-template-columns: 1fr; } }
 </style>

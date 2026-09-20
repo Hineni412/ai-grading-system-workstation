@@ -139,8 +139,8 @@ const feedback = {
   mastery_changes: [{
     stable_key: 'kp_alg_linear_equation',
     display_name: '一元一次方程',
-    v2_before: { value: 0.4 },
-    v2_after: { value: 0.55 },
+    mastery_before: { value: 0.4 },
+    mastery_after: { value: 0.55 },
     reason: '按每题覆盖比例重算。',
   }],
   next_round: {
@@ -152,7 +152,7 @@ const feedback = {
   timeline: [],
   safety: {
     is_exam_score: false,
-    changes_v1: false,
+    changes_exam_score: false,
     auto_paper_created: false,
     auto_printed: false,
   },
@@ -182,6 +182,23 @@ afterEach(() => {
 })
 
 describe('training assessment panel', () => {
+  it('restores current mastery after returning even if no next draft is available', async () => {
+    trainingApiMock.getTrainingAssessment.mockResolvedValue(completedAssessment)
+    trainingApiMock.getTrainingFeedback.mockResolvedValue({ ...feedback,
+      next_round: { status: 'source_unavailable', message: '结果已保存，暂无下一轮候选。', changes: [] },
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TrainingAssessmentPanel, { submission })
+    mounted.push(app)
+    app.mount(host)
+    await settle()
+    expect(host.textContent).toContain('40%')
+    expect(host.textContent).toContain('55%')
+    expect(host.textContent).toContain('结果已保存，暂无下一轮候选。')
+    expect(trainingApiMock.syncTrainingEvidence).not.toHaveBeenCalled()
+  })
+
   it('queries a timed-out assessment until complete without submitting it again', async () => {
     vi.useFakeTimers()
     trainingApiMock.getTrainingAssessment
@@ -270,7 +287,7 @@ describe('training assessment panel', () => {
     )
 
     const publish = [...host.querySelectorAll('button')].find(
-      (button) => button.textContent?.includes('发布已完成题目'),
+      (button) => button.textContent?.includes('确认并更新掌握度'),
     )
     publish?.click()
     await settle()

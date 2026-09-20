@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
+from backend.name_pinyin import student_name_initials, student_name_pinyin
 from backend.public_data import contains_filesystem_reference
 from backend.review.service import ReviewApplicationService, ReviewItem
 
@@ -42,6 +43,8 @@ class ResultsCenterStudent:
     student_code: str | None
     student_name: str
     class_name: str | None
+    pinyin_initials: str
+    pinyin_full: str
     current_score: float
     max_score: float
     ungraded_count: int
@@ -258,6 +261,8 @@ def _student_summary(
         student_code=identity.student_code,
         student_name=identity.student_name,
         class_name=identity.class_name,
+        pinyin_initials=student_name_initials(identity.student_name),
+        pinyin_full=student_name_pinyin(identity.student_name),
         current_score=sum(
             float(item.score_awarded)
             for item in items

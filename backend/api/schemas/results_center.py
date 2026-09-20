@@ -52,6 +52,8 @@ class ResultsCenterStudentResponse(BaseModel):
     student_code: str | None = None
     student_name: str
     class_name: str | None = None
+    pinyin_initials: str = ""
+    pinyin_full: str = ""
     current_score: float
     max_score: float
     ungraded_count: int

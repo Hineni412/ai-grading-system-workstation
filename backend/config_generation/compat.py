@@ -4,10 +4,7 @@ import importlib
 import json
 from typing import Any, Callable, Sequence
 
-from .gateway import (
-    LLMConfigGenerationGateway,
-    config_generation_extra_kwargs,
-)
+from .gateway import LLMConfigGenerationGateway
 from .orchestration import (
     DEFAULT_CONFIG_GENERATION_BATCH_SIZE,
     ConfigGenerationOrchestrator,
@@ -60,7 +57,7 @@ def _orchestrator(
         LLMConfigGenerationGateway(
             llm_client,
             model_name=model_name,
-            extra_kwargs=config_generation_extra_kwargs(),
+            extra_kwargs={},
         ),
         _policy(),
         batch_size=batch_size,

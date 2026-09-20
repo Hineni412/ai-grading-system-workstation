@@ -33,23 +33,18 @@ _EDITABLE_FIELDS = frozenset(
         "requests_per_minute",
         "max_auto_retries",
         "request_timeout_seconds",
-        "batch_enabled",
-        "batch_model",
-        "batch_base_url",
-        "batch_api_key",
     }
 )
-_ENDPOINT_FIELDS = frozenset({"base_url", "config_base_url", "batch_base_url"})
+_ENDPOINT_FIELDS = frozenset({"base_url", "config_base_url"})
 _MODEL_FIELDS = frozenset(
     {
         "ocr_model",
         "grading_model",
         "config_model",
         "class_teacher_model",
-        "batch_model",
     }
 )
-_SECRET_FIELDS = frozenset({"api_key", "config_api_key", "batch_api_key"})
+_SECRET_FIELDS = frozenset({"api_key", "config_api_key"})
 _MAX_ENDPOINT_LENGTH = 2048
 _MAX_MODEL_LENGTH = 200
 _MAX_SECRET_LENGTH = 8192
@@ -266,9 +261,7 @@ def _validated_updates(values: Mapping[str, Any]) -> dict[str, Any]:
         if raw_value is None:
             continue
         value = str(raw_value).strip()
-        if field_name == "batch_enabled":
-            updates[field_name] = bool(raw_value)
-        elif field_name in _ENDPOINT_FIELDS:
+        if field_name in _ENDPOINT_FIELDS:
             updates[field_name] = _validated_endpoint(value)
         elif field_name in _MODEL_FIELDS:
             if len(value) > _MAX_MODEL_LENGTH:
@@ -379,10 +372,6 @@ def _public_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
         "request_timeout_seconds": _public_request_timeout(
             profile.get("request_timeout_seconds")
         ),
-        "batch_enabled": bool(profile.get("batch_enabled")),
-        "batch_model": _clean_existing_text(profile.get("batch_model")),
-        "batch_base_url": _public_endpoint(profile.get("batch_base_url")),
-        "has_batch_api_key": _has_nonempty_value(profile.get("batch_api_key")),
     }
 
 

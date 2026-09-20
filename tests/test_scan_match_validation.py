@@ -101,6 +101,42 @@ def test_conflicting_batch_is_rejected_atomically_and_revision_stays_current(sca
     assert workspace.get_preflight(7)["revision"] == 1
 
 
+def test_partial_batch_saves_valid_matches_and_returns_every_conflicting_paper(scan_workspace):
+    workspace, _, _ = scan_workspace
+    check = workspace.get_preflight(7)
+    first, second = check["groups"]
+    good = {"target_type": "group", "target_id": second["id"], "action": "match", "student_id": 2}
+    bad = {"target_type": "issue", "target_id": "homonym", "action": "match", "student_id": 1}
+    saved = workspace.save_decisions(7, expected_revision=0, valid_student_ids={1, 2, 3, 4},
+                                     decisions=[good, bad], allow_partial_matches=True)
+    assert saved["decisions"] == [good]
+    assert saved["summary"]["ready_to_grade"] == 2
+    assert saved["match_conflicts"] == []
+    conflict = saved["rejected_conflicts"][0]
+    assert conflict["student_id"] == 1
+    assert {(t["target_type"], t["target_id"]) for t in conflict["targets"]} == {("group", first["id"]), ("issue", "homonym")}
+    reentered = ScanGradingWorkspace(exams_root=workspace.exams_root, templates_root=workspace.templates_root).get_preflight(7)
+    assert reentered["decisions"] == [good] and reentered["summary"]["ready_to_grade"] == 2
+    corrected = workspace.save_decisions(7, expected_revision=1, valid_student_ids={1, 2, 3, 4},
+        decisions=[good, {**bad, "student_id": 3}], allow_partial_matches=True)
+    assert corrected["ready_to_grade"] == 3 and corrected["match_conflicts"] == []
+
+
+def test_partial_batch_rechecks_restored_assignments_and_accepts_valid_swaps(scan_workspace):
+    workspace, path, original = scan_workspace
+    original["groups"] = [_raw_group(1, 1), _raw_group(2, 2), _raw_group(3, 3)]
+    path.write_text(json.dumps(original), encoding="utf-8")
+    groups = workspace.get_preflight(7)["groups"]
+    moves = [{"target_type": "group", "target_id": groups[i]["id"], "action": "match", "student_id": i + 2} for i in range(2)]
+    saved = workspace.save_decisions(7, expected_revision=0, valid_student_ids={1, 2, 3, 4},
+                                     decisions=moves, allow_partial_matches=True)
+    assert saved["revision"] == 0 and saved["decisions"] == []
+    assert len(saved["rejected_conflicts"]) == 2
+    swapped = workspace.save_decisions(7, expected_revision=0, valid_student_ids={1, 2, 3, 4},
+        decisions=[moves[0], {**moves[1], "student_id": 1}], allow_partial_matches=True)
+    assert len(swapped["decisions"]) == 2 and swapped["match_conflicts"] == []
+
+
 def test_duplicate_scan_can_be_marked_invalid_without_losing_the_original(scan_workspace):
     workspace, path, original = scan_workspace
     check = workspace.get_preflight(7)
@@ -115,12 +151,11 @@ def test_duplicate_scan_can_be_marked_invalid_without_losing_the_original(scan_w
 
 
 @pytest.mark.parametrize("extra,code", [
-    ({"detected_name": "林清"}, "scan_name_mismatch"),
     ({"student_id": 3, "detected_name": "陈晨"}, "scan_name_ambiguous"),
     ({"student_id": 3, "detected_name": "", "student_name": "陈晨"}, "scan_name_ambiguous"),
     ({"detected_class_name": "七年级2班"}, "scan_class_mismatch"),
 ])
-def test_ocr_disagreement_homonym_and_cross_class_require_explicit_identity_confirmation(extra, code):
+def test_homonym_and_cross_class_require_explicit_identity_confirmation(extra, code):
     group = {"id": "g1", "student_id": 1, "student_name": "林青", "detected_name": "林青",
              "front_media_url": "front", "back_media_url": "back", **extra}
     preflight = {"groups": [group]}
@@ -130,6 +165,38 @@ def test_ocr_disagreement_homonym_and_cross_class_require_explicit_identity_conf
     preflight["decisions"] = [{"target_type": "group", "target_id": "g1", "action": "match", "student_id": group["student_id"]}]
     status = preflight_match_status(preflight, ROSTER)
     assert status["conflicts"] == [] and status["summary"]["ready_to_grade"] == 1
+
+
+@pytest.mark.parametrize("detected_name,method,score", [
+    ("林清", "fuzzy", 0.8),
+    ("青", "reduced_fuzzy", 0.7),
+    ("林青", "exact", 0.99),
+    ("林青", "fuzzy", 1),
+])
+def test_accepted_name_variations_pass_preflight_plan_and_execution(detected_name, method, score):
+    raw = _raw_group(1, detected_name=detected_name, match_method=method, match_score=score)
+    preflight = {"groups": [{**raw, "id": "g1", "front_media_url": "front", "back_media_url": "back"}]}
+    status = preflight_match_status(preflight, ROSTER)
+    assert status["conflicts"] == []
+    assert status["summary"]["ready_to_grade"] == 1
+    assert status["pending_issue_count"] == 0
+    for mode in ("full_paper", "manual", "hybrid_batch"):
+        plan = build_grading_plan(session_id=7, mode=mode, scan_batch_id="synthetic", upload_revision=2,
+                                 preflight=preflight, rubric={"questions": [{"question_id": "Q1", "max_score": 5}]}, teacher_locks=[])
+        assert plan["status"] == "ready"
+    groups = apply_scan_manual_decisions(ScanAnalysis.from_dict({"groups": [raw]}), [], ROSTER)
+    assert len(groups) == 1 and groups[0].student_id == 1
+    assert groups[0].detected_name == detected_name
+
+
+def test_fuzzy_duplicate_assignment_still_blocks_both_papers():
+    groups = [_raw_group(1), _raw_group(2, detected_name="林清", match_method="reduced_fuzzy", match_score=0.8)]
+    status = preflight_match_status({"groups": [{**group, "id": str(i)} for i, group in enumerate(groups)]}, ROSTER)
+    assert [c["code"] for c in status["conflicts"]] == ["scan_student_multiple_papers"]
+    assert status["summary"]["ready_to_grade"] == 0
+    assert status["summary"]["conflicting_papers"] == 2
+    with pytest.raises(ValueError, match="归属存在冲突"):
+        apply_scan_manual_decisions(ScanAnalysis.from_dict({"groups": groups}), [], ROSTER)
 
 
 def test_actual_grading_refuses_duplicate_groups_before_attendance_or_score_registration():
@@ -168,3 +235,64 @@ def test_name_lookup_does_not_overwrite_homonyms_or_promote_fuzzy_ocr_to_exact(t
     assert scanner._extract_student_names_batch([path], fuzzy_roster) == ["王小朋"]
     assert _match_student("王小朋", fuzzy_roster).method == "fuzzy"
     assert scanner._detected_classes[str(path)] == "七年级2班"
+
+
+def test_ai_mode_plan_counts_one_request_per_student_per_major_question():
+    preflight = {
+        "groups": [
+            {
+                "id": f"g{index}",
+                "student_id": index,
+                "student_name": f"学生{index}",
+                "front_media_url": f"front-{index}",
+                "back_media_url": f"back-{index}",
+            }
+            for index in (1, 2, 3)
+        ]
+    }
+    rubric = {
+        "questions": [
+            {"question_id": "Q1", "question_type": "choice", "max_score": 5},
+            {
+                "question_id": "Q10",
+                "question_type": "proof",
+                "parts": [
+                    {"part_id": "10-1", "part_score": 4},
+                    {"part_id": "10-2", "part_score": 4},
+                ],
+            },
+        ]
+    }
+
+    plan = build_grading_plan(
+        session_id=7, mode="ai", scan_batch_id="synthetic", upload_revision=2,
+        preflight=preflight, rubric=rubric, teacher_locks=[],
+    )
+
+    assert plan["status"] == "ready"
+    assert plan["mode"] == "ai"
+    assert plan["requests"]["objective_sheet"] == 3
+    assert plan["requests"]["subjective_batches"] == 3
+    assert plan["requests"]["full_paper"] == 0
+    assert plan["requests"]["total"] == 6
+    assert plan["batching"]["subjective_group_min"] == 1
+    assert plan["batching"]["subjective_group_max"] == 1
+    assert plan["batching"]["singleton_subjective_batches"] == 0
+    assert not any(w["code"] == "subjective_singleton" for w in plan["warnings"])
+
+
+def test_manual_mode_plan_still_requests_no_ai_work():
+    preflight = {
+        "groups": [
+            {"id": "g1", "student_id": 1, "student_name": "学生1",
+             "front_media_url": "front-1", "back_media_url": "back-1"}
+        ]
+    }
+    rubric = {"questions": [{"question_id": "Q1", "question_type": "choice", "max_score": 5}]}
+
+    plan = build_grading_plan(
+        session_id=7, mode="manual", scan_batch_id="synthetic", upload_revision=2,
+        preflight=preflight, rubric=rubric, teacher_locks=[],
+    )
+
+    assert plan["requests"]["total"] == 0

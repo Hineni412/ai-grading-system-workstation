@@ -16,7 +16,12 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.importers.docx_importer import import_docx
 from question_bank.importers.pdf_importer import import_pdf
 from question_bank.importers.types import ExtractedDocument
-from question_bank.services.duplicate_analysis_copy_service import exact_question_key, link_exact_duplicate
+from question_bank.services.duplicate_analysis_copy_service import (
+    ensure_content_index,
+    exact_question_key,
+    record_paper_occurrence,
+    upsert_content_index,
+)
 from question_bank.services.similarity_service import text_similarity
 from question_bank.services.source_paper_archive_service import archive_source_paper
 from question_bank.services.rich_content_service import save_question_rich_content
@@ -153,12 +158,14 @@ class _DuplicateIndex:
         question_number: object = "",
         image_paths: object = (),
         has_images: object = False,
+        key: str | None = None,
     ) -> None:
-        key = exact_question_key(
-            {"id": question_id, "question_text": question_text, "answer_text": answer_text,
-             "question_number": question_number, "image_paths": image_paths, "has_images": has_images},
-            data_root=self.data_root,
-        )
+        if key is None:
+            key = exact_question_key(
+                {"id": question_id, "question_text": question_text, "answer_text": answer_text,
+                 "question_number": question_number, "image_paths": image_paths, "has_images": has_images},
+                data_root=self.data_root,
+            )
         if key:
             self.exact.setdefault(key, int(question_id))
         self.questions.append(
@@ -172,28 +179,51 @@ class _DuplicateIndex:
 
 
 def _load_duplicate_index(db_path: Path, *, data_root: Path | None = None, connection: Any = None) -> _DuplicateIndex:
+    root = data_root or _rich_content_root_for_database(db_path).parent.parent
     with nullcontext(connection) if connection is not None else connect(db_path) as conn:
+        # The persistent content index is built once and refreshed on writes;
+        # lookups read stored keys instead of decoding every bank image.
+        ensure_content_index(conn, data_root=root)
+        key_rows = conn.execute(
+            """
+            SELECT idx.content_key AS content_key, idx.question_id AS question_id,
+                   (SELECT COUNT(DISTINCT tag_type) FROM question_tags t
+                     WHERE t.question_id = idx.question_id) AS tag_count
+            FROM question_content_index idx
+            JOIN questions q ON q.id = idx.question_id
+            LEFT JOIN papers p ON p.id = q.paper_id
+            WHERE COALESCE(q.is_deleted, 0) = 0
+              AND COALESCE(p.import_status, '') <> 'deleted'
+            """
+        ).fetchall()
         rows = conn.execute(
             """
-            SELECT q.id, q.question_text, q.answer_text, q.question_type, q.question_number, q.image_paths, q.has_images,
+            SELECT q.id, q.question_text, q.question_type,
                    p.title AS paper_title
             FROM questions q
             LEFT JOIN papers p ON p.id = q.paper_id
             WHERE COALESCE(q.is_deleted, 0) = 0
               AND COALESCE(p.import_status, '') <> 'deleted'
-            ORDER BY (SELECT COUNT(*) FROM question_tags t WHERE t.question_id=q.id) DESC, q.id
+            ORDER BY q.id
             """
         ).fetchall()
-    index = _DuplicateIndex(data_root=data_root or _rich_content_root_for_database(db_path).parent.parent)
-    for row in rows:
-        index.add(
-            int(row["id"]),
-            question_text=row["question_text"],
-            answer_text=row["answer_text"],
-            question_type=row["question_type"],
-            paper_title=row["paper_title"],
-            question_number=row["question_number"], image_paths=row["image_paths"], has_images=bool(row["has_images"]),
-        )
+    index = _DuplicateIndex(data_root=root)
+    best: dict[str, tuple[int, int]] = {}
+    for row in key_rows:
+        key = str(row["content_key"])
+        rank = (-int(row["tag_count"] or 0), int(row["question_id"]))
+        if key not in best or rank < best[key]:
+            best[key] = rank
+    index.exact = {key: rank[1] for key, rank in best.items()}
+    index.questions = [
+        {
+            "id": int(row["id"]),
+            "question_text": str(row["question_text"] or ""),
+            "question_type": str(row["question_type"] or ""),
+            "paper_title": str(row["paper_title"] or ""),
+        }
+        for row in rows
+    ]
     return index
 
 
@@ -547,7 +577,7 @@ def _import_scanned_paper(
             near_hints.append(hint)
     import_status = _import_status(extracted.needs_ocr, parsed)
     pending_rich_content: list[tuple[int, list[dict[str, object]], list[dict[str, object]]]] = []
-    pending_analysis_reuse: list[tuple[int, int]] = []
+    pending_analysis_reuse: list[tuple[int, str]] = []
     inserted_questions: list[tuple[int, ParsedQuestion]] = []
 
     with connect(db_path) as conn:
@@ -596,6 +626,20 @@ def _import_scanned_paper(
         )
         paper_id = int(paper_cursor.lastrowid)
         for item in parsed.questions:
+            key = exact_keys[item.question_number]
+            source_id = duplicate_index.exact.get(key) if key else None
+            if source_id is not None:
+                # Determined reuse: keep this paper's number as an occurrence
+                # record instead of inserting a second canonical question row.
+                record_paper_occurrence(
+                    conn,
+                    paper_id=paper_id,
+                    question_id=source_id,
+                    question_number=item.question_number,
+                    signature=key,
+                )
+                pending_analysis_reuse.append((source_id, item.question_number))
+                continue
             question_cursor = conn.execute(
                 """
                 INSERT INTO questions (
@@ -630,18 +674,10 @@ def _import_scanned_paper(
                     (question_id, item.essay_subtype),
                 )
             inserted_questions.append((question_id, item))
-            key = exact_keys[item.question_number]
-            source_id = duplicate_index.exact.get(key) if key else None
-            exact_source = (source_id, key) if source_id is not None else None
-            if exact_source is not None:
-                _link_exact_duplicate(
-                    conn,
-                    question_id=question_id,
-                    source_id=exact_source[0],
-                    signature=exact_source[1],
-                )
-                pending_analysis_reuse.append((question_id, exact_source[0]))
-            elif key:
+            if key:
+                # New canonical question: persist its identity key so later
+                # batches match it without recomputing image content.
+                upsert_content_index(conn, question_id=question_id, key=key)
                 duplicate_index.exact[key] = question_id
             question_blocks = rich_content["question"].get(item.question_number, [])
             answer_blocks = rich_content["answer"].get(item.question_number, [])
@@ -660,25 +696,30 @@ def _import_scanned_paper(
         except OSError:
             LOGGER.exception("Failed to save rich question content for question %s", question_id)
 
+    # Reused occurrences share the canonical question's analysis products
+    # directly; count how many actually carry usable analysis.
     analysis_reused_count = 0
-    if duplicate_index is not None:
-        # Rich content lives under <data_root>/question_bank/rich_content, so
-        # the loader's data root is two levels up from the rich content root.
-        rich_root = rich_content_root or _rich_content_root_for_database(db_path)
-        loader_data_root = rich_root.parent.parent
-        from question_bank.services.duplicate_analysis_copy_service import (
-            copy_duplicate_analysis,
-        )
-
-        for question_id, source_id in pending_analysis_reuse:
-            reused = copy_duplicate_analysis(
-                db_path,
-                source_question_id=source_id,
-                target_question_id=question_id,
-                data_root=loader_data_root,
+    if pending_analysis_reuse:
+        source_ids = sorted({source_id for source_id, _ in pending_analysis_reuse})
+        with connect(db_path) as conn:
+            placeholders = ",".join(
+                "?" for _ in source_ids
             )
-            if reused["evidence"] or reused["criteria"]:
-                analysis_reused_count += 1
+            analysed = {
+                int(row["question_id"])
+                for row in conn.execute(
+                    f"""SELECT DISTINCT question_id FROM question_tags
+                        WHERE question_id IN ({placeholders})
+                        UNION
+                        SELECT DISTINCT question_id FROM question_solution_evidence_versions
+                        WHERE question_id IN ({placeholders})""",
+                    source_ids * 2,
+                ).fetchall()
+            }
+        analysis_reused_count = sum(
+            1 for source_id, _ in pending_analysis_reuse if source_id in analysed
+        )
+    if duplicate_index is not None:
         for question_id, item in inserted_questions:
             duplicate_index.add(
                 question_id,
@@ -1380,16 +1421,6 @@ def _is_floating_image_only_paragraph(paragraph: dict[str, object]) -> bool:
     return _is_image_marker_only(text) and "<wp:anchor" in xml
 
 
-
-
-def _link_exact_duplicate(
-    conn: Any,
-    *,
-    question_id: int,
-    source_id: int,
-    signature: str,
-) -> None:
-    link_exact_duplicate(conn, question_id=question_id, source_id=source_id, signature=signature)
 
 
 def _question_duplicate_signature(value: object) -> str:

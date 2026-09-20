@@ -130,6 +130,7 @@ def test_question_import_job_uses_server_request_and_returns_safe_ids(
         "exact_duplicate_count": 0,
         "analysis_reused_count": 0,
         "near_duplicate_hints": [],
+        "imported_paper_ids": [],
     }
     assert str(tmp_path) not in json.dumps(result, ensure_ascii=False)
 

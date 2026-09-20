@@ -44,11 +44,11 @@ describe('ScoringUnitEditor', () => {
     expect(mounted.commands).toEqual([{
       kind: 'replace_question_structure', question_id: 'Q12',
       parts: [
-        { part_id: 'P1', steps: [
+        { part_id: 'Q12(P1)', steps: [
           { step_id: 'S1', score: 2, core_goal: '写出条件' },
           { step_id: 'S2', score: 1, core_goal: '完成推理' },
         ] },
-        { part_id: 'P2', steps: [
+        { part_id: 'Q12(P2)', steps: [
           { step_id: 'S1', score: 3, core_goal: '得出结论' },
         ] },
       ],
@@ -87,5 +87,22 @@ describe('ScoringUnitEditor', () => {
     expect(mounted.host.textContent).toContain('请逐项确认步骤并重新赋分')
     mounted.host.querySelector<HTMLButtonElement>('button[name="单题AI重试"]')!.click()
     expect(mounted.retries).toEqual(['Q12'])
+  })
+
+  it('preserves a remaining step identity after deleting the preceding step', async () => {
+    const mounted = await mountEditor()
+    mounted.host.querySelector<HTMLButtonElement>('[aria-label="删除第 1 小问步骤 1"]')!.click()
+    await nextTick()
+    const score = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 第 1 小问步骤 1 分值"]')!
+    score.value = '3'
+    score.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存本题结构"]')!.click()
+    await nextTick()
+    const command = mounted.commands[0]
+    expect(command?.kind).toBe('replace_question_structure')
+    if (command?.kind !== 'replace_question_structure') throw new Error('missing saved structure')
+    expect(command.parts[0]?.steps[0]?.step_id).toBe('S2')
+    expect(command.parts[0]?.part_id).toBe('Q12(P1)')
   })
 })

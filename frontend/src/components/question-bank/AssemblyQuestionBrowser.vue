@@ -12,6 +12,8 @@ import {
   type QuestionBankListItem,
   type QuestionBankRichBlock,
   type QuestionBankSort,
+  type SimilarityReason,
+  type SimilarityReasonKind,
   type SimilarQuestionItem,
 } from '../../api/question-bank'
 import { useAssemblyStore } from '../../stores/assembly'
@@ -803,11 +805,39 @@ function closeSimilar(): void {
   similarState.value = 'idle'
 }
 
+// 标签类维度显示维度名 + 叶子名；信号类维度 values 已是完整短语。
+const SIMILAR_REASON_KIND_LABELS: Partial<Record<SimilarityReasonKind, string>> = {
+  knowledge_point: '同知识点',
+  skill: '同技能',
+  method: '同解法',
+  model: '同模型',
+}
+
+function similarReasonKindLabel(kind: SimilarityReasonKind): string {
+  return SIMILAR_REASON_KIND_LABELS[kind] ?? ''
+}
+
+function similarReasonText(reason: SimilarityReason): string {
+  const values =
+    reason.kind === 'knowledge_point' || reason.kind === 'skill'
+      ? reason.values.map(
+          (value) => knowledgeLeafLabel(value).replace(/^技能[·：:]\s*/, ''),
+        )
+      : reason.values
+  return values.join('、')
+}
+
+function similarReasonTitle(reason: SimilarityReason): string | undefined {
+  return reason.kind === 'knowledge_point' || reason.kind === 'skill'
+    ? reason.values.join('、')
+    : undefined
+}
+
 function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
   return question.tags
     .filter((tag) => tag.tag_type === tagType)
     .map((tag) => (
-      tagType === 'knowledge_point'
+      tagType === 'knowledge_point' || tagType === 'skill'
         ? knowledgeLeafLabel(tag.tag_value)
         : tag.tag_value
     ))
@@ -1280,7 +1310,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
           <div class="assembly-result-card__meta">
             <span>{{ question.question_type || '未分类' }}</span>
             <span>难度 {{ question.difficulty || '待定' }}</span>
-            <span v-for="tag in tagsFor(question, 'knowledge_point').slice(0, 3)" :key="tag">{{ tag }}</span>
+            <span v-for="tag in [...tagsFor(question, 'knowledge_point'), ...tagsFor(question, 'skill')].slice(0, 3)" :key="tag">{{ tag }}</span>
           </div>
 
           <div v-if="expandedAnswers.has(question.id)" class="assembly-result-card__answer">
@@ -1387,7 +1417,22 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
           <article v-for="item in similarItems" :key="item.id">
             <div class="assembly-similar-score">
               <strong>{{ Math.round(item.similarity_score * 100) }}%</strong>
-              <span>{{ item.similarity_reasons.join(' · ') || '内容相近' }}</span>
+              <ul v-if="item.similarity_reasons.length" class="assembly-similar-reasons">
+                <li
+                  v-for="(reason, index) in item.similarity_reasons"
+                  :key="`${reason.kind}:${index}`"
+                  class="assembly-similar-reason"
+                  :class="`is-${reason.kind}`"
+                  :title="similarReasonTitle(reason)"
+                >
+                  <span
+                    v-if="similarReasonKindLabel(reason.kind)"
+                    class="assembly-similar-reason__kind"
+                  >{{ similarReasonKindLabel(reason.kind) }}</span>
+                  <span class="assembly-similar-reason__values">{{ similarReasonText(reason) }}</span>
+                </li>
+              </ul>
+              <span v-else class="assembly-similar-reasons__empty">内容相近</span>
             </div>
             <QuestionContentRenderer
               :blocks="item.rich_content?.question_blocks"

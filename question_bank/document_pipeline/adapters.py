@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from importlib import metadata
 from typing import Protocol
 
 from PIL import Image, ImageOps
@@ -63,7 +62,7 @@ class ImagePreprocessor(Protocol):
     def prepare(self, image_bytes: bytes, *, media_type: str) -> PreparedImage: ...
 
 
-class RapidOcrAdapter:
+class MineruOcrAdapter:
     """Local-only OCR adapter. Import and model initialization are lazy."""
 
     def __init__(self, engine: object | None = None) -> None:
@@ -75,22 +74,19 @@ class RapidOcrAdapter:
 
         engine = self._engine
         if engine is None:
-            from rapidocr_onnxruntime import RapidOCR
+            from local_ocr import get_local_ocr
 
-            engine = RapidOCR()
+            engine = get_local_ocr()
             self._engine = engine
         with Image.open(io.BytesIO(png_bytes)) as source:
             rgb = source.convert("RGB")
             width, height = rgb.size
-            image = np.asarray(rgb)[:, :, ::-1]
+            image = np.asarray(rgb)[:, :, ::-1].copy()
         raw = engine(image)  # type: ignore[operator]
         result = raw[0] if isinstance(raw, tuple) else raw
         if not isinstance(result, list):
             return ()
-        try:
-            version = f"rapidocr-onnxruntime/{metadata.version('rapidocr-onnxruntime')}"
-        except metadata.PackageNotFoundError:
-            version = "rapidocr-onnxruntime/unknown"
+        version = str(getattr(engine, "engine_version", "mineru/unknown/pp-ocrv6-onnx"))
         lines: list[OcrLine] = []
         for item in result:
             if not isinstance(item, (tuple, list)) or len(item) < 3:
@@ -160,6 +156,6 @@ __all__ = [
     "LocalOcrAdapter",
     "OcrLine",
     "PreparedImage",
-    "RapidOcrAdapter",
+    "MineruOcrAdapter",
     "SafeImagePreprocessor",
 ]

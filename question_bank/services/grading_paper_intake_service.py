@@ -249,6 +249,17 @@ def intake_grading_paper_to_question_bank(
             "unresolved": int(direct_summary["unresolved"]),
             "unresolved_question_ids": list(direct_summary["unresolved_question_ids"]),
         }
+        from question_bank.solution_evidence.evidence_snapshot import (
+            freeze_session_evidence_snapshot,
+        )
+        freeze_session_evidence_snapshot(
+            Path(database_path),
+            grading_session_id=grading_session_id,
+            upload_config_dir=(
+                Path(data_root or Path(database_path).parent) / "config" / "uploaded"
+            ),
+            data_root=Path(data_root or Path(database_path).parent),
+        )
     emit("link", 4, failed_questions=failed_tagging)
 
     stored_source = next(iter(imported_sources), str(paper_path))

@@ -278,6 +278,32 @@
   background: var(--color-bg-subtle);
 }
 
+.model-profiles-disclosure {
+  margin-block-start: var(--space-3);
+}
+
+.model-profiles-disclosure > summary {
+  width: fit-content;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+
+.model-profiles-disclosure > summary:hover {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+}
+
+.model-profiles-disclosure__list {
+  margin: var(--space-2) 0 0;
+  padding-inline-start: var(--space-5);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+}
+
 .model-profile-execution__summary {
   margin: var(--space-4) 0 0;
   padding: var(--space-3) var(--space-4);
@@ -288,34 +314,6 @@
 
 .model-profile-execution__summary strong {
   margin-inline-end: var(--space-1);
-}
-
-.model-profile-batch {
-  min-width: 0;
-  margin: var(--space-5);
-  padding: 0;
-  border: 0;
-  border-block-start: var(--border-width) solid var(--color-border-default);
-}
-
-.model-profile-batch legend {
-  padding: var(--space-4) 0 0;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-panel-title);
-  font-weight: var(--font-weight-semibold);
-}
-
-.model-profile-batch .model-profile-speed-option {
-  max-width: 420px;
-  margin-block-start: var(--space-4);
-}
-
-.model-profile-batch__endpoint {
-  max-width: 420px;
-  margin-block-start: var(--space-3);
-  padding: var(--space-4);
-  border-inline-start: var(--border-selected-width) solid var(--color-accent);
-  background: var(--color-bg-subtle);
 }
 
 .model-profile-runtime {
@@ -906,6 +904,29 @@
   line-height: var(--line-height-relaxed);
 }
 
+.ai-diagnostics-ledger__more {
+  display: block;
+  width: calc(100% - var(--space-4));
+  margin: 0 var(--space-2) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) dashed var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+
+.ai-diagnostics-ledger__more:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-text-primary);
+}
+
+.ai-diagnostics-ledger__more:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
 .ai-diagnostic-call {
   display: grid;
   width: 100%;
@@ -1249,9 +1270,6 @@
   gap: var(--space-3);
   padding: var(--space-3);
   background: var(--color-bg-surface);
-}
-.model-task-row--batch {
-  grid-template-columns: minmax(210px, 1.1fr) minmax(140px, .7fr) minmax(150px, .85fr) minmax(170px, .95fr);
 }
 .model-task-row__title { display: grid; gap: 2px; }
 .model-task-row__title small { color: var(--color-text-secondary); }

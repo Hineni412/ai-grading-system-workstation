@@ -182,6 +182,23 @@ def _canonical_overlap(target_grouped: dict, candidate_grouped: dict) -> float:
     return _jaccard(target_keys, candidate_keys)
 
 
+def canonical_knowledge_containment(
+    target_grouped: dict,
+    candidate_grouped: dict,
+) -> float:
+    # 重叠度：一方知识键被另一方完全覆盖即满分。相似题推荐需要
+    # "同点更简/更繁的变式"，Jaccard 会把标签更细的题压到阈值以下。
+    target_keys = set(
+        _filtered(target_grouped.get("current_knowledge_key"))
+    )
+    candidate_keys = set(
+        _filtered(candidate_grouped.get("current_knowledge_key"))
+    )
+    if not target_keys or not candidate_keys:
+        return 0.0
+    return len(target_keys & candidate_keys) / min(len(target_keys), len(candidate_keys))
+
+
 def _jaccard(a: set[str], b: set[str]) -> float:
     # 缺失标签不是相似证据；双方都空时也必须返回 0。
     if not a and not b:
@@ -222,6 +239,8 @@ def _skill_overlap_score(
 def calculate_question_similarity(
     target: dict[str, Any] | Mapping[str, Any],
     candidate: dict[str, Any] | Mapping[str, Any],
+    *,
+    knowledge_overlap=None,
 ) -> float:
     # 1. 难度判定 (Difficulty Penalty)
     t_diff = _number(target.get("difficulty"))
@@ -242,7 +261,9 @@ def calculate_question_similarity(
     candidate_grouped = _group_tags(candidate.get("tags", []))
 
     # A. 核心知识点相似度
-    knowledge_score = _canonical_overlap(target_grouped, candidate_grouped)
+    knowledge_score = (knowledge_overlap or _canonical_overlap)(
+        target_grouped, candidate_grouped
+    )
 
     # B. 解题方法相似度
     t_methods = set(_filtered(target_grouped.get("method"), exclude=GENERIC_METHOD_TAGS))
@@ -291,14 +312,33 @@ def _skill_frequency_for_papers(
 
 def _question_ids_in_papers(conn, paper_ids: list[int]) -> list[int]:
     # 获取指定试卷中的所有未删除题目 ID。
+    return sorted(_question_memberships_in_papers(conn, paper_ids))
+
+
+def _question_memberships_in_papers(conn, paper_ids: list[int]) -> dict[int, set[int]]:
+    # 题目在本服务范围内属于哪些试卷：宿主行 + 出现记录两条来源。
     if not paper_ids:
-        return []
+        return {}
     placeholders = ", ".join("?" for _ in paper_ids)
     rows = conn.execute(
-        f"SELECT id FROM questions WHERE paper_id IN ({placeholders}) AND is_deleted = 0",
-        paper_ids,
+        f"""
+        SELECT q.id AS question_id, q.paper_id AS member_paper_id
+        FROM questions q
+        WHERE q.paper_id IN ({placeholders}) AND q.is_deleted = 0
+        UNION ALL
+        SELECT occ.question_id, occ.paper_id
+        FROM paper_question_occurrences occ
+        JOIN questions q ON q.id = occ.question_id
+        WHERE occ.paper_id IN ({placeholders}) AND q.is_deleted = 0
+        """,
+        [*paper_ids, *paper_ids],
     ).fetchall()
-    return [int(row["id"]) for row in rows]
+    memberships: dict[int, set[int]] = {}
+    for row in rows:
+        memberships.setdefault(int(row["question_id"]), set()).add(
+            int(row["member_paper_id"])
+        )
+    return memberships
 
 
 def build_question_fingerprint(question: dict[str, Any] | Mapping[str, Any]) -> str:
@@ -589,15 +629,21 @@ class QuestionFrequencyService:
                     )
                     params.append(semester)
                 formal_dependants.update(
-                    int(row["id"])
+                    int(row["question_id"])
                     for row in conn.execute(
                         f"""
-                        SELECT q.id
+                        SELECT q.id AS question_id
                         FROM questions q
                         JOIN papers p ON p.id = q.paper_id
                         WHERE {' AND '.join(clauses)}
+                        UNION
+                        SELECT occ.question_id
+                        FROM paper_question_occurrences occ
+                        JOIN questions q ON q.id = occ.question_id
+                        JOIN papers p ON p.id = occ.paper_id
+                        WHERE {' AND '.join(clauses)}
                         """,
-                        params,
+                        [*params, *params],
                     ).fetchall()
                 )
 
@@ -622,26 +668,23 @@ def _matching_count_by_similarity(conn, target: Mapping[str, Any], paper_ids: li
     if not paper_ids:
         return 0
     key = tuple(sorted(paper_ids))
-    candidates = None
-    if cache is not None:
-        candidates = cache.get(key)
-    if candidates is None:
-        candidate_ids = _question_ids_in_papers(conn, paper_ids)
+    entry = cache.get(key) if cache is not None else None
+    if entry is None:
+        memberships = _question_memberships_in_papers(conn, paper_ids)
         candidates = _batch_load_questions(
             conn,
-            candidate_ids,
+            sorted(memberships),
             resolver=_resolver_from_question(target),
         )
+        entry = (candidates, memberships)
         if cache is not None:
-            cache[key] = candidates
-            
+            cache[key] = entry
+    candidates, memberships = entry
     matched_papers: set[int] = set()
     for qid, candidate in candidates.items():
         sim = calculate_question_similarity(target, candidate)
         if sim >= QUESTION_SIMILARITY_MATCH_THRESHOLD:
-            paper_id = int(candidate.get("paper_id") or 0)
-            if paper_id:
-                matched_papers.add(paper_id)
+            matched_papers.update(memberships.get(qid) or set())
     return len(matched_papers)
 
 
@@ -649,25 +692,23 @@ def _matching_similarity_stats(conn, target: Mapping[str, Any], paper_ids: list[
     if not paper_ids:
         return 0, 0.0
     key = tuple(sorted(paper_ids))
-    candidates = None
-    if cache is not None:
-        candidates = cache.get(key)
-    if candidates is None:
-        candidate_ids = _question_ids_in_papers(conn, paper_ids)
+    entry = cache.get(key) if cache is not None else None
+    if entry is None:
+        memberships = _question_memberships_in_papers(conn, paper_ids)
         candidates = _batch_load_questions(
             conn,
-            candidate_ids,
+            sorted(memberships),
             resolver=_resolver_from_question(target),
         )
+        entry = (candidates, memberships)
         if cache is not None:
-            cache[key] = candidates
-            
+            cache[key] = entry
+    candidates, memberships = entry
     best_by_paper: dict[int, float] = {}
     for qid, candidate in candidates.items():
         sim = calculate_question_similarity(target, candidate)
         if sim >= QUESTION_SIMILARITY_MATCH_THRESHOLD:
-            paper_id = int(candidate.get("paper_id") or 0)
-            if paper_id:
+            for paper_id in memberships.get(qid) or ():
                 best_by_paper[paper_id] = max(best_by_paper.get(paper_id, 0.0), sim)
     return len(best_by_paper), round(sum(best_by_paper.values()), 4)
 

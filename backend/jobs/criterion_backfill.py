@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from question_bank.models.tag_schema import TaggingContext
 from question_bank.services.ai_tagging_service import AITaggingService
+from question_bank.taxonomy.curriculum_catalog import (
+    infer_curriculum_volume_from_text,
+)
 from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.solution_evidence import (
@@ -52,6 +57,7 @@ def run_criterion_backfill_job(
     question_bank_db_path: Path,
     data_root: Path,
     ai_service_factory: Callable[[], AITaggingService],
+    link_job_submitter: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, object]:
     run_id = str(context.payload.get("run_id") or "").strip().casefold()
     if len(run_id) != 64:
@@ -76,6 +82,32 @@ def run_criterion_backfill_job(
                 status="failed",
                 error_category="input_unavailable",
             )
+
+    # 两遍加载：第一遍取 tagging_context 生成每题 taxonomy 候选表，
+    # 第二遍带候选表重载，判定点正文生成才能拿到合法链接候选
+    # （对齐 question_bank_sync._adopt_deferred_analysis_with_links）。
+    tagging_service: AITaggingService | None = None
+    if loaded:
+        tagging_service = ai_service_factory()
+        contracts = tagging_service.taxonomy_contracts(
+            {
+                question_id: _contract_context(question.tagging_context)
+                for question_id, question in loaded.items()
+            }
+        )
+        for question_id in list(loaded):
+            try:
+                loaded[question_id] = loader.load(
+                    (question_id,), taxonomy_contracts=contracts
+                )[0]
+            except (KeyError, OSError, TypeError, ValueError):
+                del loaded[question_id]
+                criterion_module.finish_backfill_item(
+                    run_id=run_id,
+                    question_id=question_id,
+                    status="failed",
+                    error_category="input_unavailable",
+                )
 
     pending: list[QuestionAnalysisInput] = []
     expected_revisions: dict[int, int] = {}
@@ -125,7 +157,7 @@ def run_criterion_backfill_job(
             criterion_module.cancel_backfill(run_id)
             raise
         try:
-            tagging_service = ai_service_factory()
+            assert tagging_service is not None
             protocol_adapter = tagging_service._protocol_adapter()
             gateway = _CancellationAwareGateway(
                 OpenAICombinedAnalysisGateway(
@@ -272,9 +304,22 @@ def run_criterion_backfill_job(
                 )
 
     result = criterion_module.complete_backfill(run_id)
+    link_job_queued = False
+    if link_job_submitter is not None and any(
+        item["status"] == "succeeded" for item in result["items"]
+    ):
+        # §4.4：新版本成为可用版本后，由链接任务 missing_only 补链接。
+        try:
+            link_job_submitter({"mode": "missing_only", "question_ids": [
+                item['question_id'] for item in result['items'] if item['status'] == 'succeeded'
+            ]})
+            link_job_queued = True
+        except Exception:
+            link_job_queued = False
     context.report(1.0, "criterion_backfill", str(result["status"]))
     context.raise_if_cancelled()
     return {
+        "link_job_queued": link_job_queued,
         "run_id": run_id,
         "status": result["status"],
         "successful_question_ids": [
@@ -292,6 +337,21 @@ def run_criterion_backfill_job(
             for item in result["items"]
         ),
     }
+
+
+def _contract_context(context: TaggingContext) -> TaggingContext:
+    """Contract-building context: fill curriculum_volume_id from grade/semester."""
+    if str(context.curriculum_volume_id or "").strip():
+        return context
+    volume = infer_curriculum_volume_from_text(
+        f"{context.grade or ''}{context.semester or ''}"
+    )
+    if not isinstance(volume, Mapping):
+        return context
+    volume_id = str(volume.get("id") or "").strip()
+    if not volume_id:
+        return context
+    return dataclasses.replace(context, curriculum_volume_id=volume_id)
 
 
 __all__ = ["run_criterion_backfill_job"]

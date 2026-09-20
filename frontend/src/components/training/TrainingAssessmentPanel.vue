@@ -378,9 +378,10 @@ function masteryTitle(item: Record<string, unknown>): string {
 
 function masteryValue(
   item: Record<string, unknown>,
-  key: 'v2_before' | 'v2_after',
+  key: 'mastery_before' | 'mastery_after',
 ): string {
-  const snapshot = item[key]
+  const legacyKey = key === 'mastery_before' ? 'v2_before' : 'v2_after'
+  const snapshot = item[key] ?? item[legacyKey]
   if (
     !snapshot
     || typeof snapshot !== 'object'
@@ -542,8 +543,8 @@ onBeforeUnmount(() => {
 
       <div class="ledger-publish">
         <div>
-          <strong>发布逐题训练证据</strong>
-          <p>不确定和无法辨认项不会补成“未达成”；这里不产生考试总分或排名。</p>
+          <strong>更新学生掌握度</strong>
+          <p>确认后保存已完成题目的训练结果，并更新知识掌握度。不确定和无法辨认项保留待复核，不计作未达成。</p>
         </div>
         <div>
           <button
@@ -552,7 +553,7 @@ onBeforeUnmount(() => {
             :disabled="Boolean(busy) || !canPublish"
             @click="syncEvidence('publish')"
           >
-            {{ busy === 'publish' ? '正在发布…' : '发布已完成题目' }}
+            {{ busy === 'publish' ? '正在更新…' : '确认并更新掌握度' }}
           </button>
           <button
             v-if="feedback && feedback.status !== 'withdrawn'"
@@ -595,9 +596,9 @@ onBeforeUnmount(() => {
           >
             <strong>{{ masteryTitle(item) }}</strong>
             <span>
-              {{ masteryValue(item, 'v2_before') }}
+              {{ masteryValue(item, 'mastery_before') }}
               <b aria-hidden="true">→</b>
-              {{ masteryValue(item, 'v2_after') }}
+              {{ masteryValue(item, 'mastery_after') }}
             </span>
             <small>{{ String(item.reason || '') }}</small>
           </article>

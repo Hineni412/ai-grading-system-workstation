@@ -107,6 +107,8 @@ const emit = defineEmits<{
       </div>
     </header>
 
+    <slot name="strip" />
+
     <div class="review-deep-workspace__body">
       <div class="review-deep-workspace__evidence">
         <ImageCompare

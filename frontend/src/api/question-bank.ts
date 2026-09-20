@@ -14,6 +14,7 @@ export const QUESTION_BANK_TAG_TYPES = [
   'model',
   'special_type',
   'prerequisite',
+  'skill',
   'student_level',
   'sub_skill',
   'supporting_skill_name',
@@ -375,9 +376,26 @@ export interface QuestionBankFacets {
   grades: QuestionBankFacet[]
 }
 
+// 相似题推荐理由按维度分组：标签类维度的 values 是原始标签值
+// （知识点/技能为全路径，展示时取叶子名），信号类维度的 values 是展示短语。
+export type SimilarityReasonKind =
+  | 'knowledge_point'
+  | 'skill'
+  | 'method'
+  | 'model'
+  | 'difficulty'
+  | 'wording'
+  | 'question_type'
+  | 'text_fragment'
+
+export interface SimilarityReason {
+  kind: SimilarityReasonKind
+  values: string[]
+}
+
 export interface SimilarQuestionItem extends QuestionBankListItem {
   similarity_score: number
-  similarity_reasons: string[]
+  similarity_reasons: SimilarityReason[]
 }
 
 export interface SimilarQuestionResponse {
@@ -1232,6 +1250,27 @@ export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
   return value as unknown as QuestionBankFacets
 }
 
+const SIMILARITY_REASON_KINDS: ReadonlySet<string> = new Set([
+  'knowledge_point',
+  'skill',
+  'method',
+  'model',
+  'difficulty',
+  'wording',
+  'question_type',
+  'text_fragment',
+])
+
+function isSimilarityReason(value: unknown): value is SimilarityReason {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['kind', 'values']) &&
+    typeof value.kind === 'string' &&
+    SIMILARITY_REASON_KINDS.has(value.kind) &&
+    isStringArray(value.values)
+  )
+}
+
 function isSimilarQuestion(value: unknown): value is SimilarQuestionItem {
   if (
     !isRecord(value) ||
@@ -1245,7 +1284,8 @@ function isSimilarQuestion(value: unknown): value is SimilarQuestionItem {
     !Number.isFinite(value.similarity_score) ||
     value.similarity_score < 0 ||
     value.similarity_score > 1 ||
-    !isStringArray(value.similarity_reasons)
+    !Array.isArray(value.similarity_reasons) ||
+    !value.similarity_reasons.every(isSimilarityReason)
   ) {
     return false
   }

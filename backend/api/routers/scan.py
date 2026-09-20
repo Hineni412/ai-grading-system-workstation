@@ -5,7 +5,6 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import FileResponse
-from pypinyin import Style, lazy_pinyin
 
 from backend.api.app import ApiError
 from backend.api.dependencies import (
@@ -40,6 +39,10 @@ from backend.scan_grading.workspace import (
     UploadBatchRevisionError,
 )
 from backend.jobs.manager import ActiveJobExistsError, UnsupportedJobTypeError
+from backend.name_pinyin import (
+    student_name_initials as _student_name_initials,
+    student_name_pinyin as _student_name_pinyin,
+)
 from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.sessions import SessionDeletionActiveWork
 from session_cleanup import SessionDerivedTrainingDataExists
@@ -47,25 +50,6 @@ from template_upload_service import TemplateUploadError, TemplateUploadService
 
 
 router = APIRouter(prefix="/api", tags=["scan"])
-
-
-def _student_name_initials(name: object) -> str:
-    return "".join(
-        lazy_pinyin(
-            str(name or "").strip(),
-            style=Style.FIRST_LETTER,
-            strict=False,
-        )
-    ).casefold()
-
-
-def _student_name_pinyin(name: object) -> str:
-    return "".join(
-        lazy_pinyin(
-            str(name or "").strip(),
-            strict=False,
-        )
-    ).casefold()
 
 
 @router.get(
@@ -406,11 +390,12 @@ def save_session_scan_decisions(
             expected_revision=request.expected_revision,
             valid_student_ids=valid_student_ids,
             decisions=[item.model_dump() for item in request.decisions],
+            allow_partial_matches=request.allow_partial_matches,
         )
     except UploadBatchRevisionError as exc:
         raise ApiError(409, "scan_decision_revision_conflict", "Scan decisions changed") from exc
     except ScanMatchConflictError as exc:
-        raise ApiError(422, "scan_match_conflict", str(exc)) from exc
+        raise ApiError(422, "scan_match_conflict", str(exc), {"conflicts": exc.conflicts}) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(422, "scan_decision_invalid", "Scan decision is invalid") from exc
     return ScanDecisionResponse.model_validate(result)

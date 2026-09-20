@@ -41,8 +41,6 @@ interface ModelProfileDraft {
   requestsPerMinute: number
   maxAutoRetries: number | null
   requestTimeoutSeconds: number | null
-  batchEnabled: boolean
-  batchModel: string
 }
 
 const profilesStore = useModelProfilesStore()
@@ -59,7 +57,7 @@ const taskBindingsDraft = ref<ModelTaskBindings>({
 })
 const taskRows = [
   { key: 'content_generation', title: '题库与评分标准生成', detail: '题库打标、评分标准生成、AI 组卷等内容生成' },
-  { key: 'grading', title: '识别姓名与批改试卷', detail: '姓名识别和批改共用同一个模型与站点' },
+  { key: 'grading', title: '识别姓名与批改试卷', detail: '姓名先在本地识别；无法匹配时，使用这里的模型补充识别。试卷批改也使用此模型与站点。' },
 ] as const
 let executionStatusController: AbortController | null = null
 
@@ -81,8 +79,6 @@ const draft = reactive<ModelProfileDraft>({
   requestsPerMinute: 1000,
   maxAutoRetries: null,
   requestTimeoutSeconds: null,
-  batchEnabled: false,
-  batchModel: '',
 })
 
 function draftSnapshot(): string {
@@ -102,8 +98,6 @@ function draftSnapshot(): string {
     requestsPerMinute: draft.requestsPerMinute,
     maxAutoRetries: draft.maxAutoRetries,
     requestTimeoutSeconds: draft.requestTimeoutSeconds,
-    batchEnabled: draft.batchEnabled,
-    batchModel: draft.batchModel,
   })
 }
 
@@ -212,8 +206,6 @@ function applyProfile(profile: ModelProfile): void {
     requestsPerMinute: profile.requests_per_minute,
     maxAutoRetries: profile.max_auto_retries,
     requestTimeoutSeconds: profile.request_timeout_seconds,
-    batchEnabled: profile.batch_enabled,
-    batchModel: profile.batch_model,
   } satisfies ModelProfileDraft)
   localError.value = ''
   baseline.value = draftSnapshot()
@@ -238,8 +230,6 @@ function applyBlankProfile(): void {
     requestsPerMinute: 1000,
     maxAutoRetries: null,
     requestTimeoutSeconds: null,
-    batchEnabled: false,
-    batchModel: '',
   } satisfies ModelProfileDraft)
   localError.value = ''
   baseline.value = draftSnapshot()
@@ -308,8 +298,6 @@ function toUpsertInput(): ModelProfileUpsertInput {
     request_timeout_seconds: rawTimeout === '' || rawTimeout === undefined
       ? null
       : rawTimeout,
-    batch_enabled: draft.batchEnabled,
-    batch_model: draft.batchModel,
   }
 }
 
@@ -754,11 +742,22 @@ onBeforeUnmount(() => {
                 placeholder="默认"
               >
               <small>
-                超过多少秒算一次调用失败；允许 30–1200 秒。留空按任务默认（阅卷 300 秒、识别 60 秒、打标 480 秒等）。
-                批量推理不受此设置影响；个别工作台短任务有自己的上限。
+                超过多少秒算一次调用失败；对所有在线 AI 请求统一生效，允许 30–1200 秒。
+                留空按任务内置默认。
               </small>
             </label>
           </div>
+          <details class="model-profiles-disclosure">
+            <summary>了解各任务的内置默认</summary>
+            <ul class="model-profiles-disclosure__list">
+              <li>试卷批改：600 秒</li>
+              <li>图片识别：60 秒</li>
+              <li>评分标准生成：600 秒</li>
+              <li>题库打标：480 秒</li>
+              <li>组卷细目表：300 秒</li>
+              <li>工作台任务：120 秒</li>
+            </ul>
+          </details>
           <p class="model-profile-execution__summary" aria-live="polite">
             <strong>当前计划：</strong>{{ requestSpeedSummary }}
           </p>
@@ -827,45 +826,6 @@ onBeforeUnmount(() => {
           <p class="model-profile-execution__note">
             保存不会测试接口或产生费用；新设置从下一次任务启动时生效，
             已经运行的任务继续使用启动时的方案。
-          </p>
-        </fieldset>
-
-        <fieldset class="model-profile-batch">
-          <legend>批量推理（阅卷省钱模式）</legend>
-          <label
-            class="model-profile-speed-option"
-            :class="{ 'model-profile-speed-option--selected': draft.batchEnabled }"
-          >
-            <input
-              v-model="draft.batchEnabled"
-              type="checkbox"
-              name="batch-enabled"
-              :disabled="isBusy"
-            >
-            <span>
-              <strong>启用批量推理</strong>
-            </span>
-          </label>
-          <div
-            v-if="draft.batchEnabled"
-            class="model-profile-batch__endpoint"
-          >
-            <label class="model-profile-field model-profile-field--wide">
-              <span>批量推理接入点 ID</span>
-              <input
-                v-model="draft.batchModel"
-                name="batch-model"
-                type="text"
-                autocomplete="off"
-                :maxlength="MODEL_PROFILE_LIMITS.model"
-                placeholder="ep-bi-..."
-                :disabled="isBusy"
-                :required="draft.batchEnabled"
-              >
-            </label>
-          </div>
-          <p class="model-profile-execution__note">
-            启用后，阅卷请求走火山引擎批量推理，费用约为在线推理的一半，但每份答卷可能多等几分钟到几十分钟。只影响阅卷；扫描识别和配置生成仍走在线推理。保存不会调用模型、不产生费用。
           </p>
         </fieldset>
 

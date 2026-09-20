@@ -958,13 +958,22 @@ def test_missing_overall_score_is_explained_and_time_is_not_used(direct_module):
     assert all("estimated_minutes" not in q for q in short["students"][0]["items"])
 
 
-def test_shared_union_covers_disjoint_needs_and_is_order_independent(direct_module):
+def test_shared_paper_rejects_disjoint_weaknesses(direct_module):
     diagnosis = _direct_diagnosis((("A",.8,900,BNU_TARGET),("B",.79,901,BNU_PREREQ_NEAR)))
+    with pytest.raises(ValueError, match="common weak knowledge"):
+        _make_direct(direct_module, diagnosis=diagnosis, paper_mode="shared")
+
+
+def test_shared_union_keeps_individual_needs_after_common_weakness_check(direct_module):
+    diagnosis = _direct_diagnosis((("A",.8,900,BNU_TARGET),("B",.79,900,BNU_TARGET)))
+    extra = _direct_diagnosis((("B",.79,901,BNU_PREREQ_NEAR),))["students"][0]["weak_points"][0]
+    diagnosis["students"][1]["weak_points"].append(extra)
     first = _make_direct(direct_module, diagnosis=diagnosis, paper_mode="shared")
     items = first["students"][0]["items"]
     assert {q["matched_key"] for q in items if q["selection_kind"] == "direct"} == {BNU_TARGET,BNU_PREREQ_NEAR}
     assert {sid for q in items for sid in q["beneficiary_student_ids"]} == {"A","B"}
-    assert all(len(q["beneficiary_student_ids"]) == 1 for q in items)
+    assert any(set(q["beneficiary_student_ids"]) == {"A", "B"} for q in items)
+    assert any(q["beneficiary_student_ids"] == ["B"] for q in items)
     ids = [q["question_id"] for q in items]
     assert ids == [q["question_id"] for q in first["students"][1]["items"]]
     diagnosis["students"].reverse()
@@ -972,16 +981,24 @@ def test_shared_union_covers_disjoint_needs_and_is_order_independent(direct_modu
     assert ids == [q["question_id"] for q in second["students"][0]["items"]]
 
 
-def test_chapter_groups_use_overall_level_and_member_union(direct_module):
-    diagnosis = _direct_diagnosis((("A",.8,900,BNU_TARGET),("B",.79,901,BNU_PREREQ_NEAR),("C",.2,900,BNU_TARGET)))
+def test_chapter_groups_require_both_score_and_common_weakness(direct_module):
+    diagnosis = _direct_diagnosis((("A",.8,900,BNU_TARGET),("B",.79,900,BNU_TARGET),
+                                 ("C",.2,900,BNU_TARGET),("D",.8,901,BNU_PREREQ_NEAR)))
     config = PersonalizedRecommendationConfig(paper_mode="shared", scope_keys=(BNU_CHAPTER4,), group_scope_keys=(BNU_CHAPTER4,))
     preview = direct_module.chapter_groups(diagnosis=diagnosis, config=config)
     assert len(preview["groups"]) == 1
     group = preview["groups"][0]
     assert group["ready"]
     assert {m["student_id"] for m in group["members"]} == {"A","B"}
-    assert {t["knowledge_key"] for t in group["targets"]} == {BNU_TARGET,BNU_PREREQ_NEAR}
-    assert all(t["affected_student_count"] == 1 for t in group["targets"])
+    assert {t["knowledge_key"] for t in group["targets"]} == {BNU_TARGET}
+    assert all(t["affected_student_count"] == 2 for t in group["targets"])
+    assert {member["student_id"] for member in preview["unassigned"]} == {"C", "D"}
+    assert preview["summary"] == {"student_count": 4, "students_with_needs": 4,
+                                "grouped_student_count": 2, "group_count": 1}
+    assert {member["reason_kind"] for member in preview["unassigned"]} == {"no_group_fit"}
+    rejected = direct_module.chapter_groups(diagnosis=diagnosis, config=config, member_ids=("A", "D"))["selection"]
+    assert not rejected["ready"]
+    assert any("共同薄弱" in issue for issue in rejected["issues"])
     selected = deepcopy(diagnosis); selected["students"] = selected["students"][:2]
     adopted = replace(config, scope_keys=(), target_keys=tuple(t["knowledge_key"] for t in group["targets"]), group_source_version=group["source_version"])
     draft = direct_module.create(request_token="a"*32,diagnosis=selected,config=adopted,actor_ref="synthetic")
@@ -989,6 +1006,96 @@ def test_chapter_groups_use_overall_level_and_member_union(direct_module):
     selected["students"][0]["weak_points"][0]["source_question_refs"][0]["score_awarded"] = 2
     with pytest.raises(RecommendationSourceChanged):
         direct_module.create(request_token="b"*32,diagnosis=selected,config=adopted,actor_ref="synthetic")
+
+
+def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(direct_module):
+    from backend.api.app import create_app
+    from backend.api.dependencies import get_diagnosis_profile_service, get_request_diagnosis_profile_service
+    from backend.api.dependencies import get_personalized_recommendation_module
+    from backend.api.routers.training import _grouping_module
+    from fastapi.testclient import TestClient
+
+    members = [f"SYN-{index:02}" for index in range(17)]
+    source = _direct_diagnosis(tuple((sid, .8, 900, BNU_TARGET) for sid in members)
+                              + tuple((f"OTHER-{index:02}", .2, 901, BNU_PREREQ_NEAR) for index in range(56)))
+    source.update(knowledge_catalog=[], coverage={"covered_items": 2, "total_items": 2, "missing_items": {}},
+                  diagnosis_identity="question_tag", warnings=[], confirmed_concept_ids=[], suggested_terms=[], unmapped_terms=[])
+    for student in source["students"]:
+        student["student_code"] = student["student_id"]
+        for point in student["weak_points"]:
+            point.update(score_sum=4, full_score_sum=5, deduction_count=1, exam_count=1,
+                         actionable_reasons=[], tag_context={}, error_counts={})
+            for ref in point["source_question_refs"]:
+                ref["session_name"] = "合成学期考试"
+
+    class Diagnosis:
+        def build_profiles(self, *, scope, exam_scope):
+            result = deepcopy(source)
+            result["scope"] = scope
+            result["exam_scope"] = {**exam_scope, "session_ids": [1, 2], "sessions": []}
+            if scope["mode"] == "selected":
+                result["students"] = [student for student in result["students"] if student["student_id"] in scope["student_ids"]]
+            return result
+
+    app = create_app()
+    app.dependency_overrides[get_diagnosis_profile_service] = Diagnosis
+    app.dependency_overrides[get_request_diagnosis_profile_service] = Diagnosis
+    app.dependency_overrides[get_personalized_recommendation_module] = lambda: direct_module
+    app.dependency_overrides[_grouping_module] = lambda: direct_module
+    client = TestClient(app)
+    exams = {"mode": "semester", "session_ids": [], "curriculum_volume_id": "bnu24-math-g8-upper"}
+    settings = {"scope_keys": [BNU_CHAPTER4], "question_count": 10, "difficulty_max": 7}
+    response = client.post("/api/training/diagnosis", json={
+        "scope": {"mode": "all"}, "exam_scope": exams, "grouping": settings})
+    assert response.status_code == 200, response.text
+    group = next(group for group in response.json()["grouping"]["groups"] if len(group["members"]) == 17)
+    assert group["ready"]
+    targets = [target["knowledge_key"] for target in group["targets"]]
+    checked = client.post("/api/training/diagnosis", json={
+        "scope": {"mode": "all"}, "exam_scope": exams,
+        "grouping": {**settings, "member_ids": members, "target_keys": targets}})
+    assert checked.status_code == 200, checked.text
+    request_url = "/api/training/personalized-drafts/by-request/" + "8" * 32
+    assert client.get(request_url).status_code == 404
+    created = client.post("/api/training/personalized-drafts", json={
+        "request_token": "8" * 32, "scope": {"mode": "selected", "student_ids": members}, "exam_scope": exams,
+        "paper_mode": "shared", "question_count": 10, "difficulty_max": 7, "target_keys": targets,
+        "group_scope_keys": [BNU_CHAPTER4], "group_source_version": checked.json()["grouping"]["selection"]["source_version"]})
+    assert created.status_code == 200, created.text
+    draft = created.json()
+    assert {student["student_id"] for student in draft["students"]} == set(members)
+    question_sets = {tuple(item["question_id"] for item in student["items"]) for student in draft["students"]}
+    assert len(question_sets) == 1
+    assert next(iter(question_sets))
+    assert client.get(f"/api/training/personalized-drafts/{draft['draft_id']}").json() == draft
+    recovered = client.get(request_url)
+    assert recovered.status_code == 200
+    assert recovered.json() == draft
+    assert "_input_fingerprint" not in recovered.json()
+    with connect(direct_module.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM personalized_recommendation_drafts").fetchone()[0] == 1
+
+
+def test_group_common_core_must_cover_half_of_every_member_and_whole_group():
+    def need(*keys, score=.8):
+        return {key: {"score_rate": score, "mastery": .4} for key in keys}
+    # One shared target out of four is insufficient for the broader need.
+    assert _chapter_group_members({"A": need("a"), "B": need("a", "b", "c", "d")}) == []
+    assert _chapter_group_members({"A": need("a"), "B": need("a", "b")}) == [("A", "B")]
+    # Every pair overlaps by half, but the three members share no common core.
+    needs = {"A": need("a", "b"), "B": need("a", "c"), "C": need("b", "c")}
+    assert _chapter_group_members(needs) == [("A", "B")]
+    assert _chapter_group_members(dict(reversed(list(needs.items())))) == [("A", "B")]
+    assert _chapter_group_members({"A": need("a", score=.8), "B": need("a", score=.55)}) == [("A", "B")]
+    assert _chapter_group_members({"A": need("a", score=.8), "B": need("a", score=.549)}) == []
+
+
+def test_singleton_can_pair_with_a_compatible_member_without_breaking_original_group():
+    def need(*keys):
+        return {key: {"score_rate": .8, "mastery": .4} for key in keys}
+    needs = {"A": need("a", "b"), "B": need("a"), "C": need("a"), "D": need("b")}
+    assert _chapter_group_members(needs) == [("A", "D"), ("B", "C")]
+    assert _chapter_group_members(dict(reversed(list(needs.items())))) == [("A", "D"), ("B", "C")]
 
 
 def test_saved_lock_replace_exclude_and_idempotent_retry(direct_module):
@@ -1079,6 +1186,10 @@ def _selection_candidate(qid, text, key=BNU_TARGET, difficulty=5, **extra):
 
 def _selection_draft(monkeypatch, candidates, diagnosis=None, shared=False, question_count=10, **settings):
     module = object.__new__(PersonalizedRecommendationModule)
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.knowledge_graph_release.loader import load_release_for_taxonomy_revision, load_taxonomy_catalog_for_release
+    release = load_release_for_taxonomy_revision(4)
+    module.current_knowledge = CurrentKnowledgeResolver(release, load_taxonomy_catalog_for_release(release))
     monkeypatch.setattr(module, "_source_practice_metadata", lambda _: {})
     diagnosis = deepcopy(diagnosis or _direct_diagnosis())
     mastery = {}
@@ -1142,6 +1253,7 @@ def test_range_supplements_fill_ten_without_claiming_new_weaknesses(monkeypatch)
 
 def test_public_paper_covers_minority_need_before_repeating_majority(monkeypatch):
     diagnosis = _direct_diagnosis(tuple((sid, .8, 900, BNU_TARGET) for sid in "ABCDE") + (("F", .79, 901, BNU_PREREQ_NEAR),))
+    diagnosis["students"][-1]["weak_points"].append(deepcopy(diagnosis["students"][0]["weak_points"][0]))
     candidates = [_selection_candidate(1, "已知两直角边求三角形周长"),
                   _selection_candidate(2, "根据图形中的面积差推算线段长度"),
                   _selection_candidate(3, "在网格纸中观察对称点之间的距离"),
@@ -1149,7 +1261,7 @@ def test_public_paper_covers_minority_need_before_repeating_majority(monkeypatch
                   _selection_candidate(9, "识别两个全等图形的对应角", BNU_PREREQ_NEAR)]
     first = _selection_draft(monkeypatch, candidates, diagnosis, shared=True)
     items = first["students"][0]["items"]
-    assert items[0]["beneficiary_student_ids"] == list("ABCDE")
+    assert items[0]["beneficiary_student_ids"] == list("ABCDEF")
     assert items[1]["question_id"] == 9
     assert items[1]["beneficiary_student_ids"] == ["F"]
     diagnosis["students"].reverse()
@@ -1366,7 +1478,7 @@ def test_printed_identity_keeps_an_added_auxiliary_line_without_a_large_region(t
     assert exam_original_key(rows["original"], data_root=tmp_path) != exam_original_key(row, data_root=tmp_path)
 
 
-def test_exam_duplicate_is_excluded_despite_printing_and_tag_differences(direct_module):
+def test_exam_duplicate_is_excluded_despite_printing_and_tag_differences(direct_module, monkeypatch):
     variants = _printed_original_variants(direct_module.data_root)
     rows = [(900, "original", BNU_TARGET), (902, "printed", BNU_PREREQ_NEAR),
             (903, "numbers", BNU_TARGET), (904, "drawing", BNU_TARGET), (905, "encoded", BNU_TARGET)]
@@ -1379,7 +1491,17 @@ def test_exam_duplicate_is_excluded_despite_printing_and_tag_differences(direct_
                 (row["question_number"], row["question_text"], json.dumps(row["image_paths"]), qid))
         conn.execute("INSERT INTO grading_question_links(grading_session_id,source_question_id,bank_question_id,link_method,status) VALUES ('1','Q900',900,'manual','confirmed')")
     _approve_synthetic_criteria(direct_module.db_path, direct_module.data_root, (902, 903, 904, 905))
-    assert direct_module._current_exam_question_ids(_direct_diagnosis()) == {900, 902, 905}
+    from question_bank.recommendation import personalized
+    original_key = personalized.exam_original_key
+    examined = []
+    def track_key(row, **kwargs):
+        examined.append(row["id"])
+        return original_key(row, **kwargs)
+    with monkeypatch.context() as guarded:
+        guarded.setattr(personalized, "exam_original_key", track_key)
+        assert direct_module.current_exam_question_ids(_direct_diagnosis()) == {900, 902, 905}
+    # Different text cannot be an original copy: do not decode its figure.
+    assert set(examined) == {900, 902, 904, 905}
     draft = _make_direct(direct_module, exclude_current_exam_originals=True)
     assert draft["students"][0]["items"]
     assert not {900, 902, 905}.intersection(q["question_id"] for q in draft["students"][0]["items"])

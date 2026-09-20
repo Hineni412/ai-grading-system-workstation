@@ -1,11 +1,8 @@
-"""Copy saved analysis products between exactly-duplicated questions.
+"""Identify identical questions and reuse their canonical analysis products.
 
-When the importer detects that a newly imported question is identical
-(full question text, formulas, options and figures) to an existing bank question, the two rows stay
-separate but the new question can reuse the source's solution evidence and
-training criteria.  Everything is re-anchored through the official write
-paths so version ids and source-content hashes are recomputed for the new
-question id; nothing is copied as raw rows.
+New imports record paper occurrences against the existing canonical question.
+Exam analysis re-anchors saved evidence to its source identity without a model
+request. Legacy copy helpers remain for callers with existing distinct rows.
 """
 
 from __future__ import annotations
@@ -14,10 +11,11 @@ import json
 import logging
 import hashlib
 import re
+import sqlite3
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
-from question_bank.models.question import duplicate_question_key
+from question_bank.models.question import duplicate_question_key, normalize_identity_text
 
 from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.database.schema import connect
@@ -67,20 +65,31 @@ def exam_original_key(question: Mapping[str, Any], *, data_root: Path,
                                  image_cache=image_cache, exam_printing=True)
 
 
+def _exam_original_text(question: Mapping[str, Any]) -> str:
+    text = str(question.get("question_text") or "").strip()
+    number = str(question.get("question_number") or "").strip()
+    if number:
+        text = re.sub(r"^\s*" + re.escape(number) + r"\s*[.．、)）](?!\d)\s*", "", text, count=1)
+    return re.sub(r"^(?:[（(]\s*\d+(?:\.\d+)?\s*分\s*[）)]\s*)+", "", text)
+
+
+def exam_original_text_key(question: Mapping[str, Any]) -> str:
+    """Cheap necessary condition only; matching text still needs full figure checks."""
+    text = re.sub(r"\[\[IMAGE:(.*?)\]\]", "[[IMAGE]]", _exam_original_text(question), flags=re.I | re.S)
+    return re.sub(r"\s+", "", text)
+
+
 def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
                           rich_content: Mapping[str, Any] | None,
                           image_cache: dict[str, str] | None,
-                          exam_printing: bool) -> str:
+                          exam_printing: bool,
+                          image_bytes: Sequence[bytes] = ()) -> str:
     from PIL import Image
     from question_bank.services.asset_path_service import resolve_question_bank_asset_path
     from question_bank.services.rich_content_service import load_question_rich_content
     value = dict(question)
     if exam_printing:
-        text = str(value.get("question_text") or "").strip()
-        number = str(value.get("question_number") or "").strip()
-        if number:
-            text = re.sub(r"^\s*" + re.escape(number) + r"\s*[.．、)）](?!\d)\s*", "", text, count=1)
-        value["question_text"] = re.sub(r"^(?:[（(]\s*\d+(?:\.\d+)?\s*分\s*[）)]\s*)+", "", text)
+        value["question_text"] = _exam_original_text(value)
         value["question_number"] = ""
     cache = image_cache if image_cache is not None else {}
     try:
@@ -103,7 +112,7 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
                 import xml.etree.ElementTree as ET
                 try:
                     root = ET.fromstring(str(block["xml"]))
-                    formulas.extend(ET.tostring(item, encoding="unicode") for item in root.iter(
+                    formulas.extend(_formula_identity(item) for item in root.iter(
                         "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath"))
                 except ET.ParseError:
                     return ""
@@ -120,6 +129,8 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
                                                 round(max(xs) * image.width), round(max(ys) * image.height)))
                     if exam_printing:
                         picture = _exam_printed_figure(picture)
+                    else:
+                        picture = _exact_resized_figure(picture)
                     cache[token] = f"{picture.width}x{picture.height}:" + hashlib.sha256(picture.tobytes()).hexdigest()
             return cache[token]
         images = [pixels(path) for path in paths]
@@ -127,6 +138,24 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
         for region in regions:
             page = rich.get("source_page_assets", [])[int(region["page_number"]) - 1]
             images.append(pixels(str(page), region["polygon"]))
+        # Parsed analysis sources carry decoded image bodies instead of bank
+        # asset paths; digest them through the identical RGBA pipeline so the
+        # same figures still produce the same identity.
+        if not images and image_bytes:
+            from io import BytesIO
+            for content in image_bytes:
+                with Image.open(BytesIO(bytes(content))) as image:
+                    picture = image.convert("RGBA")
+                    if exam_printing:
+                        picture = _exam_printed_figure(picture)
+                    else:
+                        picture = _exact_resized_figure(picture)
+                    images.append(
+                        f"{picture.width}x{picture.height}:"
+                        + hashlib.sha256(picture.tobytes()).hexdigest()
+                    )
+            if images:
+                value["has_images"] = True
         value.update(image_paths=paths, image_content_keys=images, source_regions=regions,
                      image_marker_keys={path: pixels(path) for path in stem_paths},
                      formula_content=[*formulas, *(str(item.get("restricted_latex") or item.get("semantic_mathml") or item.get("omml") or "")
@@ -142,6 +171,90 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
         return ""
 
 
+def _formula_identity(element: Any) -> str:
+    """Keep formula structure and semantic properties, discard only styling.
+
+    The preview converter has a text fallback for unsupported formula nodes;
+    that fallback is unsuitable for identity, so preserve unknown nodes here.
+    """
+    def node(item):
+        name = item.tag.rsplit("}", 1)[-1]
+        if name in {"rPr", "ctrlPr"}:
+            return []
+        if name == "t":
+            return [normalize_identity_text(item.text)]
+        children = []
+        for child in item:
+            for value in node(child):
+                if isinstance(value, str) and children and isinstance(children[-1], str):
+                    children[-1] += value
+                else:
+                    children.append(value)
+        if name in {"r", "oMath"}:
+            return children
+        attributes = {}
+        for key, value in item.attrib.items():
+            key = key.rsplit("}", 1)[-1]
+            if name in {"degHide", "subHide", "supHide", "grow", "hideTop", "hideBot", "hideLeft", "hideRight"}:
+                value = "true" if str(value).lower() in {"1", "on", "true"} else "false"
+            attributes[key] = normalize_identity_text(value)
+        return [[name, attributes, children]]
+    return json.dumps(node(element), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _exact_resized_figure(picture):
+    """Remove provable uniform pixel replication, never blur away labels.
+
+    Non-exact resampling/compression stays a candidate for human checking;
+    similarity alone is not permission to merge mathematical diagrams.
+    """
+    import numpy as np
+    from PIL import Image
+    from math import gcd
+    pixels = np.asarray(picture.convert("RGBA"))
+    rows = np.flatnonzero(np.any(pixels[1:] != pixels[:-1], axis=(1, 2))) + 1
+    cols = np.flatnonzero(np.any(pixels[:, 1:] != pixels[:, :-1], axis=(0, 2))) + 1
+    scale = gcd(picture.width, picture.height)
+    for boundary in (*rows, *cols):
+        scale = gcd(scale, int(boundary))
+        if scale == 1:
+            return picture
+    return Image.fromarray(pixels[::scale, ::scale].copy()) if scale > 1 else picture
+
+
+def _content_revision(question: Mapping[str, Any], data_root: Path) -> str:
+    """Cheap change detection; stat assets without decoding their pixels."""
+    from question_bank.services.asset_path_service import resolve_question_bank_asset_path
+    from question_bank.services.rich_content_service import rich_content_path
+    fields = {key: question.get(key) for key in ("question_text", "question_number", "image_paths", "has_images", "options")}
+    sidecar = rich_content_path(int(question["id"]), data_root / "question_bank" / "rich_content")
+    paths = question.get("image_paths") or []
+    if isinstance(paths, str):
+        paths = json.loads(paths)
+    paths = set(str(path) for path in paths)
+    paths.update(re.findall(r"\[\[IMAGE:(.*?)\]\]", str(question.get("question_text") or ""), re.I | re.S))
+    if sidecar.is_file():
+        rich = json.loads(sidecar.read_text(encoding="utf-8"))
+        paths.update(str(path) for path in rich.get("source_page_assets", []))
+        for block in rich.get("question_blocks", []):
+            paths.update(str(path) for path in (block.get("image_relationships") or {}).values())
+    files = [sidecar]
+    for path in sorted(paths):
+        try:
+            files.append(resolve_question_bank_asset_path(path, data_root=data_root,
+                         search_subdirs=("question_bank/extracted_images", "question_bank/document_pages")))
+        except (OSError, ValueError):
+            fields.setdefault("missing", []).append(path)
+    stamps = []
+    for path in files:
+        try:
+            stat = path.stat()
+            stamps.append((str(path), stat.st_size, stat.st_mtime_ns))
+        except OSError:
+            stamps.append((str(path), None, None))
+    return hashlib.sha256(json.dumps([fields, stamps], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
 def _exam_printed_figure(picture):
     """Compare printed contours without requiring identical RGB encodings.
 
@@ -155,7 +268,10 @@ def _exam_printed_figure(picture):
     white = Image.new("RGB", picture.size, "white")
     white.paste(picture, mask=picture.getchannel("A"))
     pixels = np.array(white)
-    darkest, lightest = pixels.min(axis=2), pixels.max(axis=2)
+    # Elementwise comparisons give the identical three-channel extrema without
+    # a slow reduction for every pixel in a full-resolution page image.
+    darkest = np.minimum(np.minimum(pixels[:, :, 0], pixels[:, :, 1]), pixels[:, :, 2])
+    lightest = np.maximum(np.maximum(pixels[:, :, 0], pixels[:, :, 1]), pixels[:, :, 2])
     # A one-channel rounding difference is not coloured printing. Treating it
     # as a watermark erased gray antialiasing in only one copy of a drawing.
     marks = (darkest >= 160) & (lightest - darkest >= 8)
@@ -165,7 +281,8 @@ def _exam_printed_figure(picture):
         if (len(components) >= 4 and not filled
                 and not any(width > 48 or height > 48 for _, _, width, height, _ in components[1:])):
             pixels[marks] = 255
-    darkest, lightest = pixels.min(axis=2), pixels.max(axis=2)
+            darkest[marks] = 255
+            lightest[marks] = 255
     if ((lightest < 248) & (lightest - darkest >= 24)).any():
         return Image.fromarray(pixels)
     # Retain three intensity layers rather than dropping everything except
@@ -174,11 +291,301 @@ def _exam_printed_figure(picture):
     return Image.fromarray(layers.astype(np.uint8))
 
 
-def exact_identity_map(conn: Any, *, data_root: Path) -> dict[int, str]:
-    rows = conn.execute("""SELECT q.* FROM questions q LEFT JOIN papers p ON p.id=q.paper_id
-                           WHERE q.is_deleted=0 AND COALESCE(p.import_status,'')<>'deleted' ORDER BY q.id""").fetchall()
+def exact_identity_map(conn: Any, *, data_root: Path,
+                       question_ids: Sequence[int] | None = None) -> dict[int, str]:
+    # A filtered shortlist only needs its own identities and explicit exclusions.
+    # Existing callers retain the full-bank comparison with identical semantics.
+    ids = list(dict.fromkeys(question_ids)) if question_ids is not None else None
+    if ids == []:
+        return {}
+    has_index = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='question_content_index'"
+    ).fetchone() is not None
+    index_columns = ", idx.content_key AS indexed_key, idx.source_revision AS indexed_revision" if has_index else ""
+    index_join = " LEFT JOIN question_content_index idx ON idx.question_id=q.id" if has_index else ""
+    rows = []
+    for batch in ([None] if ids is None else [ids[i:i + 500] for i in range(0, len(ids), 500)]):
+        condition = "" if batch is None else " AND q.id IN (" + ",".join("?" for _ in batch) + ")"
+        rows.extend(conn.execute("SELECT q.*" + index_columns + """ FROM questions q
+                           LEFT JOIN papers p ON p.id=q.paper_id""" + index_join + """
+                           WHERE q.is_deleted=0 AND COALESCE(p.import_status,'')<>'deleted'"""
+                           + condition + " ORDER BY q.id", batch or []).fetchall())
     cache: dict[str, str] = {}
-    return {int(row["id"]): exact_question_key(dict(row), data_root=data_root, image_cache=cache) for row in rows}
+    result: dict[int, str] = {}
+    for row in rows:
+        question = dict(row)
+        indexed_key = str(question.pop("indexed_key", None) or "")
+        indexed_revision = str(question.pop("indexed_revision", None) or "")
+        if indexed_key.startswith("exact-v3:") and indexed_revision:
+            try:
+                # A matching stat-based revision means the indexed key is the
+                # identity exact_question_key would recompute; skip decoding.
+                if _content_revision(question, data_root) == indexed_revision:
+                    result[int(question["id"])] = indexed_key
+                    continue
+            except (OSError, ValueError, TypeError):
+                pass
+        key = exact_question_key(question, data_root=data_root, image_cache=cache)
+        result[int(question["id"])] = key
+        try:
+            revision = _content_revision(question, data_root)
+        except (OSError, ValueError, TypeError):
+            continue
+        try:
+            # Self-heal: older or missing index rows get the current key format
+            # once, so later lookups skip decoding entirely.
+            upsert_content_index(conn, question_id=int(question["id"]), key=key, source_revision=revision)
+        except sqlite3.OperationalError:
+            pass
+    return result
+
+
+def ensure_content_index(conn: Any, *, data_root: Path) -> None:
+    """Persist each active question's exact identity key once.
+
+    Rows missing from ``question_content_index`` get their key computed here;
+    later lookups and imports only compute keys for new questions instead of
+    decoding the whole bank's images on every batch.
+    """
+    missing = conn.execute(
+        """SELECT q.*, idx.content_key AS indexed_key, idx.source_revision AS indexed_revision FROM questions q
+           LEFT JOIN papers p ON p.id = q.paper_id
+           LEFT JOIN question_content_index idx ON idx.question_id = q.id
+           WHERE COALESCE(q.is_deleted, 0) = 0
+             AND COALESCE(p.import_status, '') <> 'deleted'
+           ORDER BY q.id"""
+    ).fetchall()
+    if not missing:
+        return
+    cache: dict[str, str] = {}
+    for row in missing:
+        question = dict(row)
+        try:
+            revision = _content_revision(question, data_root)
+        except (OSError, ValueError, TypeError):
+            upsert_content_index(conn, question_id=int(row["id"]), key="")
+            continue
+        if row["indexed_revision"] == revision and str(row["indexed_key"] or "").startswith("exact-v3:"):
+            continue
+        key = exact_question_key(question, data_root=data_root, image_cache=cache)
+        upsert_content_index(conn, question_id=int(row["id"]), key=key, source_revision=revision)
+
+
+def upsert_content_index(conn: Any, *, question_id: int, key: str, source_revision: str = "") -> None:
+    """Refresh one question's index row after its content is (re)written."""
+    if not key:
+        conn.execute(
+            "DELETE FROM question_content_index WHERE question_id = ?",
+            (int(question_id),),
+        )
+        return
+    conn.execute(
+        """INSERT OR REPLACE INTO question_content_index
+           (question_id, content_key, source_revision, updated_at)
+           VALUES (?, ?, ?, datetime('now','localtime'))""",
+        (int(question_id), str(key), source_revision),
+    )
+
+
+def content_index_lookup(conn: Any, keys: list[str] | tuple[str, ...] | set[str]) -> dict[str, int]:
+    """Map exact identity keys to canonical bank question ids.
+
+    Several historical rows may share one key; per the dedup contract the
+    best-labelled candidate wins and the smallest id breaks ties, so a manual
+    or fully analysed version is preferred over a bare one.
+    """
+    wanted = sorted({str(key) for key in keys if str(key or "").strip()})
+    if not wanted:
+        return {}
+    placeholders = ",".join("?" for _ in wanted)
+    rows = conn.execute(
+        f"""SELECT idx.content_key AS content_key, idx.question_id AS question_id,
+                   (SELECT COUNT(DISTINCT tag_type) FROM question_tags t
+                     WHERE t.question_id = idx.question_id) AS tag_count
+            FROM question_content_index idx
+            JOIN questions q ON q.id = idx.question_id
+            LEFT JOIN papers p ON p.id = q.paper_id
+            WHERE idx.content_key IN ({placeholders})
+              AND COALESCE(q.is_deleted, 0) = 0
+              AND COALESCE(p.import_status, '') <> 'deleted'""",
+        wanted,
+    ).fetchall()
+    best: dict[str, tuple[int, int]] = {}
+    for row in rows:
+        key = str(row["content_key"])
+        qid = int(row["question_id"])
+        rank = (-int(row["tag_count"] or 0), qid)
+        if key not in best or rank < best[key]:
+            best[key] = rank
+    return {key: rank[1] for key, rank in best.items()}
+
+
+def analysis_source_exact_key(question: Any, *, data_root: Path) -> str:
+    """Exact-duplicate identity for a parsed exam-analysis source.
+
+    ``QuestionAnalysisInput`` carries decoded image bodies rather than bank
+    asset paths, so the same RGBA digest is applied to the in-memory images.
+    Unresolvable figure references still produce no identity instead of a
+    text-only key, matching the bank-side contract.
+    """
+    value = {
+        "question_text": str(
+            getattr(question.tagging_context, "question_text", "") or ""
+        ),
+        "question_number": "",
+        "image_paths": [],
+    }
+    image_bytes = tuple(
+        bytes(item.content)
+        for item in question.images
+        if item.role == "question"
+    )
+    return _question_content_key(
+        value,
+        data_root=Path(data_root),
+        rich_content={
+            "question_blocks": [
+                dict(block) for block in question.rich_question_blocks
+            ],
+        },
+        image_cache={},
+        exam_printing=False,
+        image_bytes=image_bytes,
+    )
+
+
+def uncertain_image_candidates(conn: Any, sources: Sequence[Any]) -> dict[str, int]:
+    """Flag same-stem images for checking, never for automatic identity reuse.
+
+    Exact pixels already matched upstream. Compression, resampling, watermarks
+    and actual diagram changes cannot be separated by text alone.
+    """
+    def stem(question: Mapping[str, Any]) -> str:
+        return normalize_identity_text(re.sub(r"\[\[IMAGE:.*?\]\]", "",
+            _exam_original_text(question), flags=re.I | re.S))
+
+    targets = {source.source_question_ref: stem({"question_text": source.question.tagging_context.question_text})
+               for source in sources if any(image.role == "question" for image in source.question.images)}
+    if not targets:
+        return {}
+    wanted = set(targets.values())
+    matches: dict[str, int] = {}
+    for row in conn.execute("""SELECT q.id, q.question_text, q.question_number
+            FROM questions q LEFT JOIN papers p ON p.id=q.paper_id
+            WHERE COALESCE(q.is_deleted,0)=0 AND COALESCE(p.import_status,'')<>'deleted'
+              AND (q.has_images=1 OR (q.image_paths IS NOT NULL AND q.image_paths NOT IN ('','[]')))
+            ORDER BY q.id"""):
+        key = stem(dict(row))
+        if key and key in wanted:
+            matches.setdefault(key, int(row["id"]))
+    return {reference: matches[key] for reference, key in targets.items() if key in matches}
+
+
+def reusable_analysis(
+    db_path: str | Path,
+    *,
+    bank_question_id: int,
+    target_question: Any,
+    data_root: str | Path,
+) -> dict[str, Any] | None:
+    """Return the canonical question's usable analysis re-anchored to a source.
+
+    Used when an exam source is an exact duplicate of a bank question: the
+    deferred analysis bundle can carry the stored products instead of issuing
+    a new model request. Returns ``None`` when the canonical has no usable
+    evidence for the identical content, or when re-anchoring fails.
+    """
+    database = Path(db_path)
+    repository = SolutionEvidenceRepository(database)
+    latest = repository.latest(int(bank_question_id))
+    if not latest or str(latest.get("status")) not in _USABLE_STATUSES:
+        return None
+    canonical = QuestionAnalysisInputLoader(db_path=database, data_root=Path(data_root)).load((int(bank_question_id),))
+    if not canonical or str(latest.get("source_content_hash") or "") != solution_evidence_source_content_hash(canonical[0]):
+        return None
+    # 相同题面的排版变体允许重新锚定，但旧证据仍须对应规范题当前内容。
+    canonical_key = analysis_source_exact_key(canonical[0], data_root=Path(data_root))
+    if not canonical_key or canonical_key != analysis_source_exact_key(target_question, data_root=Path(data_root)):
+        return None
+    source_hash = solution_evidence_source_content_hash(target_question)
+    payload = latest.get("evidence")
+    if not isinstance(payload, dict):
+        return None
+    clean = _model_evidence_payload(payload)
+    model_payload = {
+        key: clean[key] for key in _EVIDENCE_MODEL_KEYS if key in clean
+    }
+    model_payload["question_id"] = int(target_question.question_id)
+    resolver = CurrentFineTermResolver.from_active_database(database)
+    try:
+        evidence = QuestionSolutionEvidence.from_model_dict(
+            model_payload,
+            question_id=int(target_question.question_id),
+            source_content_hash=source_hash,
+            resolver=resolver,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        LOGGER.warning(
+            "reusable analysis rejected for bank question %s: %s",
+            bank_question_id,
+            exc,
+        )
+        return None
+    seen_links: dict[str, Any] = {}
+    for part in evidence.parts:
+        for point in part.evidence_points:
+            for link in point.fine_term_links:
+                seen_links.setdefault(link.fine_term_id, link)
+    fine_term_links = tuple(
+        {
+            "fine_term_id": link.fine_term_id,
+            "fine_term_name": link.fine_term_name,
+        }
+        for link in seen_links.values()
+    )
+    return {
+        "evidence": evidence,
+        "evidence_payload": model_payload,
+        "model_name": str(latest.get("model_name") or "")
+        or "question-bank-reuse",
+        "fine_term_links": fine_term_links,
+    }
+
+
+def record_paper_occurrence(
+    conn: Any,
+    *,
+    paper_id: int,
+    question_id: int,
+    question_number: str,
+    signature: str,
+) -> None:
+    """Record that ``paper_id`` reuses canonical ``question_id``.
+
+    Reused questions keep the importing paper's own question number here
+    instead of gaining a second ``questions`` row.
+    """
+    conn.execute(
+        """INSERT INTO paper_question_occurrences
+           (paper_id, question_id, question_number, match_kind, signature)
+           VALUES (?, ?, ?, 'exact', ?)""",
+        (
+            int(paper_id),
+            int(question_id),
+            str(question_number or "").strip(),
+            str(signature or ""),
+        ),
+    )
+
+
+def paper_occurrence_number_map(conn: Any, paper_id: int) -> dict[int, str]:
+    """Map canonical question ids to this paper's own question numbers."""
+    rows = conn.execute(
+        """SELECT question_id, question_number FROM paper_question_occurrences
+           WHERE paper_id = ?""",
+        (int(paper_id),),
+    ).fetchall()
+    return {int(row["question_id"]): str(row["question_number"]) for row in rows}
 
 
 def link_exact_duplicate(conn: Any, *, question_id: int, source_id: int, signature: str, copy_tags: bool = True) -> None:

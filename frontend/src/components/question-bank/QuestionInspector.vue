@@ -18,8 +18,9 @@ const store = useQuestionBankStore()
 const curriculum = ref<CurriculumCatalog | null>(null)
 // 教材小节不单独成行显示：位置信息统一由下方"精确标定教材小节"选择器呈现，
 // 选择器会同时校准教材章节（exam_scope），标签区不再重复出现两个位置标签。
+// 技能（skill）由判定点归属产生、不参与手输编辑，在下方判定点区块只读展示。
 const editableTagTypes = QUESTION_BANK_TAG_TYPES.filter(
-  (type) => !['student_level', 'canonical_knowledge_id', 'curriculum_section'].includes(type),
+  (type) => !['student_level', 'canonical_knowledge_id', 'curriculum_section', 'skill'].includes(type),
 )
 const newTagType = ref<QuestionBankTag['tag_type']>('knowledge_point')
 
@@ -34,6 +35,7 @@ const tagLabels: Record<string, string> = {
   exam_scope: '教材章节/考试范围',
   knowledge_point: '知识点',
   measured_skill_name: '测量技能',
+  skill: '技能',
   method: '解题方法',
   thought: '数学思想',
   model: '模型',
@@ -97,6 +99,14 @@ function chooseCurriculumSection(sectionId: string): void {
     return
   }
 }
+
+// 技能标签供判定点区块展示：只保留末端操作名（"技能·求立方根"→"求立方根"）。
+const skillLabels = computed(() => [
+  ...new Set(store.tagDraft
+    .filter((tag) => tag.tag_type === 'skill')
+    .map((tag) => knowledgeLeafLabel(tag.tag_value).replace(/^技能·/, ''))
+    .filter(Boolean)),
+])
 
 const coreTagTypes: QuestionBankTag['tag_type'][] = ['knowledge_point', 'ability', 'exam_scope']
 const coreTagStatus = computed(() => [
@@ -348,7 +358,10 @@ async function removeCurrent(): Promise<void> {
             </AppButton>
           </section>
 
-          <TrainingCriterionReview :question-id="store.detail.id" />
+          <TrainingCriterionReview
+            :question-id="store.detail.id"
+            :skill-labels="skillLabels"
+          />
 
           <dl class="qb-facts">
             <div><dt>题型</dt><dd>{{ questionTypeWithSubtype(store.detail.question_type, store.detail.tags) }}</dd></div>

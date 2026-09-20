@@ -64,10 +64,6 @@ def test_model_profile_saves_custom_request_speed_settings(tmp_path) -> None:
         "requests_per_minute": 10_000,
         "max_auto_retries": None,
         "request_timeout_seconds": None,
-        "batch_enabled": False,
-        "batch_model": "",
-        "batch_base_url": "",
-        "has_batch_api_key": False,
     }
 
 
@@ -186,81 +182,16 @@ def test_model_profile_rejects_invalid_request_speed_settings(
         )
 
 
-def test_model_profile_saves_batch_inference_settings(tmp_path) -> None:
-    store = ApiProfileStore(tmp_path / "profiles.json")
-    service = ModelProfileService(store)
-
-    state = service.upsert(
-        "校内模型",
-        {
-            "api_key": "secret",
-            "base_url": "https://example.test/v1",
-            "grading_model": "grading",
-            "batch_enabled": True,
-            "batch_model": "ep-bi-abc123",
-            "batch_base_url": "https://ark.example.test/api/v3/batch",
-            "batch_api_key": "batch-secret",
-        },
-    )
-
-    profile = state["active_profile"]
-    assert profile["batch_enabled"] is True
-    assert profile["batch_model"] == "ep-bi-abc123"
-    assert profile["batch_base_url"] == "https://ark.example.test/api/v3/batch"
-    assert profile["has_batch_api_key"] is True
-    assert "batch_api_key" not in profile
-
-    saved = store.load()[0]
-    assert saved["batch_enabled"] is True
-    assert saved["batch_model"] == "ep-bi-abc123"
-    assert saved["batch_api_key"] == "batch-secret"
-
-
-def test_model_profile_blank_batch_api_key_keeps_the_saved_one(tmp_path) -> None:
-    store = ApiProfileStore(tmp_path / "profiles.json")
-    service = ModelProfileService(store)
-    service.upsert(
-        "校内模型",
-        {
-            "api_key": "secret",
-            "base_url": "https://example.test/v1",
-            "batch_api_key": "batch-secret",
-        },
-    )
-
-    state = service.upsert("校内模型", {"batch_api_key": ""})
-
-    assert state["active_profile"]["has_batch_api_key"] is True
-    assert store.load()[0]["batch_api_key"] == "batch-secret"
-
-
-def test_model_profile_batch_inference_defaults_to_off(tmp_path) -> None:
-    service = ModelProfileService(ApiProfileStore(tmp_path / "profiles.json"))
-
-    state = service.upsert(
-        "校内模型",
-        {
-            "api_key": "secret",
-            "base_url": "https://example.test/v1",
-        },
-    )
-
-    profile = state["active_profile"]
-    assert profile["batch_enabled"] is False
-    assert profile["batch_model"] == ""
-    assert profile["batch_base_url"] == ""
-    assert profile["has_batch_api_key"] is False
-
-
 @pytest.mark.parametrize(
     "updates",
     [
-        {"batch_base_url": "ftp://ark.example.test"},
-        {"batch_base_url": "https://user:pass@ark.example.test/api/v3/batch"},
-        {"batch_model": "x" * 201},
+        {"batch_enabled": True},
+        {"batch_model": "ep-bi-abc123"},
+        {"batch_base_url": "https://ark.example.test/api/v3/batch"},
+        {"batch_api_key": "batch-secret"},
     ],
 )
-def test_model_profile_rejects_invalid_batch_inference_settings(
+def test_model_profile_rejects_removed_batch_inference_fields(
     tmp_path,
     updates,
 ) -> None:

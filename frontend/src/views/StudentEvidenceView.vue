@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 import { fetchGraphEvidence, type GraphEvidenceItem, type GraphQueryInput } from '../api/graph'
@@ -17,8 +17,9 @@ import {
 } from '../api/students'
 import AppButton from '../components/design-system/AppButton.vue'
 import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
-import { loadEvidenceScope } from '../features/evidence-scope/session'
+import { loadEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { useSessionStore } from '../stores/session'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 
 interface KnowledgeRow {
   key: string
@@ -55,6 +56,7 @@ interface QuestionSessionGroup {
 
 const route = useRoute()
 const sessionStore = useSessionStore()
+const curriculumScope = useCurriculumScopeStore()
 
 const studentId = computed(() => String(route.params.studentId ?? ''))
 const knowledgeKey = computed(() => typeof route.query.knowledge === 'string'
@@ -117,6 +119,7 @@ async function load(nextPage: number): Promise<void> {
       onlyDeducted: onlyDeducted.value,
       page: nextPage,
       pageSize: 10,
+      curriculumVolumeId: curriculumScope.selectedVolumeId ?? '',
     }, active.signal)
     student.value = response.student
     sessions.value = nextPage === 1 ? response.sessions : [...sessions.value, ...response.sessions]
@@ -184,17 +187,9 @@ async function loadKnowledgeEvidence(): Promise<void> {
   loadState.value = 'loading'
   try {
     const saved = loadEvidenceScope()
-    const examScope = saved?.exam_scope
-      ?? (sessionStore.selectedSessionId !== null
-        ? { mode: 'current' as const, session_ids: [sessionStore.selectedSessionId] }
-        : null)
-    if (!examScope) throw new Error('Missing exam scope')
-    const query: GraphQueryInput = {
-      scope: groupMode.value
+    const query: GraphQueryInput = semesterEvidenceQuery(groupMode.value
         ? (saved?.scope ?? { mode: 'all' })
-        : { mode: 'selected', student_ids: [studentId.value] },
-      exam_scope: examScope,
-    }
+        : { mode: 'selected', student_ids: [studentId.value] }, curriculumScope.selectedVolumeId)
     const first = await fetchGraphEvidence(query, knowledgeKey.value, active.signal, 1)
     const items = [...first.items]
     for (let nextPage = 2; nextPage <= first.total_pages; nextPage += 1) {
@@ -303,6 +298,7 @@ interface QuestionPanelTagGroupView {
 
 const questionPanelTagGroupDefs: { type: QuestionBankTagType; label: string; tone: string }[] = [
   { type: 'knowledge_point', label: '知识点', tone: 'accent' },
+  { type: 'skill', label: '技能', tone: 'accent' },
   { type: 'method', label: '解题方法', tone: 'info' },
   { type: 'thought', label: '数学思想', tone: 'success' },
   { type: 'ability', label: '能力', tone: 'warning' },
@@ -332,7 +328,7 @@ const questionPanelTagGroups = computed<QuestionPanelTagGroupView[]>(() => {
         .filter((tag) => tag.tag_type === def.type)
         .map((tag) => ({
           value: tag.tag_value,
-          display: def.type === 'knowledge_point' ? knowledgeLeafLabel(tag.tag_value) : tag.tag_value,
+          display: def.type === 'knowledge_point' || def.type === 'skill' ? knowledgeLeafLabel(tag.tag_value) : tag.tag_value,
         }))
         .filter((tag) => isReadableTagValue(tag.display)),
     }))
@@ -380,10 +376,18 @@ function onPanelKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape' && questionPanelState.value !== 'idle') closeQuestionPanel()
 }
 
-onMounted(() => {
-  window.addEventListener('keydown', onPanelKeydown)
+function reloadSemester(): void {
+  if (curriculumScope.loadState !== 'ready') return
+  sessions.value = []
+  knowledgeSessions.value = []
+  questionSessions.value = []
   if (knowledgeMode.value || groupMode.value) void loadKnowledgeEvidence()
   else void load(1)
+}
+watch([() => curriculumScope.loadState, () => curriculumScope.selectedVolumeId], reloadSemester)
+onMounted(() => {
+  window.addEventListener('keydown', onPanelKeydown)
+  reloadSemester()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onPanelKeydown)

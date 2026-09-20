@@ -515,7 +515,7 @@ def test_chat_and_responses_receive_explicit_timeout_and_preserve_kwargs():
     ) is responses_response
 
     assert chat.calls == [
-        {"messages": [], "temperature": 0.2, "model": "g", "timeout": 300.0}
+        {"messages": [], "temperature": 0.2, "model": "g", "timeout": 600.0}
     ]
     assert responses.calls == [
         {
