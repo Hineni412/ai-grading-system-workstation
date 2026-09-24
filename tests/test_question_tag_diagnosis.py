@@ -145,6 +145,25 @@ def test_tag_profile_aggregates_exact_current_tags_and_reports_partial_coverage(
     }
 
 
+def test_tag_profile_cache_hit_returns_isolated_copy(tmp_path: Path) -> None:
+    service, _question_bank_db = _seed_system(tmp_path)
+    scope = {"mode": "student", "student_ids": ["12"]}
+    exam_scope = {"mode": "current", "session_ids": [14]}
+
+    first = service.build_tag_profiles(scope=scope, exam_scope=exam_scope)
+    # Mutating the returned profile must not corrupt the cached payload; the
+    # next identical request rebuilds from the stored snapshot.
+    first["students"][0]["weak_points"][0]["knowledge_point"] = "已破坏"
+    first["students"][0]["weak_points"][0]["source_question_refs"].clear()
+    first["warnings"].append("已破坏")
+
+    second = service.build_tag_profiles(scope=scope, exam_scope=exam_scope)
+    weak = second["students"][0]["weak_points"][0]
+    assert weak["knowledge_point"] == "三角形全等"
+    assert weak["source_question_refs"]
+    assert "已破坏" not in second["warnings"]
+
+
 def test_editing_bank_tag_moves_historical_evidence_without_regrading(tmp_path: Path) -> None:
     service, question_bank_db = _seed_system(tmp_path)
     scope = {"mode": "student", "student_ids": ["12"]}

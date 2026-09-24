@@ -23,6 +23,7 @@ from question_bank.services.ai_tagging_service import (
 from question_bank.services.asset_path_service import (
     resolve_question_bank_asset_path,
 )
+from question_bank.services.file_cache import cached_file_bytes
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.rich_content_service import (
     load_question_rich_content,
@@ -577,7 +578,7 @@ class QuestionAnalysisInputLoader:
                 image = QuestionAnalysisImage(
                     role=role,  # type: ignore[arg-type]
                     mime_type=mime,
-                    content=resolved.read_bytes(),
+                    content=cached_file_bytes(resolved),
                 )
                 result.append(image)
                 if image_hashes_by_path is not None:

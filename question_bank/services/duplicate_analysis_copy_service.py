@@ -19,6 +19,10 @@ from question_bank.models.question import duplicate_question_key, normalize_iden
 
 from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.database.schema import connect
+from question_bank.services.file_cache import (
+    cached_parsed_file,
+    cached_processed_image_digest,
+)
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.solution_evidence.repository import (
     SolutionEvidenceRepository,
@@ -121,17 +125,21 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
             if token not in cache:
                 path = resolve_question_bank_asset_path(stored, data_root=data_root,
                     search_subdirs=("question_bank/extracted_images", "question_bank/document_pages"))
-                with Image.open(path) as image:
-                    picture = image.convert("RGBA")
-                    if polygon:
-                        xs, ys = zip(*polygon)
-                        picture = picture.crop((round(min(xs) * image.width), round(min(ys) * image.height),
-                                                round(max(xs) * image.width), round(max(ys) * image.height)))
-                    if exam_printing:
-                        picture = _exam_printed_figure(picture)
-                    else:
-                        picture = _exact_resized_figure(picture)
-                    cache[token] = f"{picture.width}x{picture.height}:" + hashlib.sha256(picture.tobytes()).hexdigest()
+
+                def compute(resolved: Path) -> str:
+                    with Image.open(resolved) as image:
+                        picture = image.convert("RGBA")
+                        if polygon:
+                            xs, ys = zip(*polygon)
+                            picture = picture.crop((round(min(xs) * image.width), round(min(ys) * image.height),
+                                                    round(max(xs) * image.width), round(max(ys) * image.height)))
+                        if exam_printing:
+                            picture = _exam_printed_figure(picture)
+                        else:
+                            picture = _exact_resized_figure(picture)
+                        return f"{picture.width}x{picture.height}:" + hashlib.sha256(picture.tobytes()).hexdigest()
+
+                cache[token] = cached_processed_image_digest(path, variant=token, compute=compute)
             return cache[token]
         images = [pixels(path) for path in paths]
         regions = rich.get("identity_regions", rich.get("source_regions", []))
@@ -234,7 +242,9 @@ def _content_revision(question: Mapping[str, Any], data_root: Path) -> str:
     paths = set(str(path) for path in paths)
     paths.update(re.findall(r"\[\[IMAGE:(.*?)\]\]", str(question.get("question_text") or ""), re.I | re.S))
     if sidecar.is_file():
-        rich = json.loads(sidecar.read_text(encoding="utf-8"))
+        rich = cached_parsed_file(
+            sidecar, lambda p: json.loads(p.read_text(encoding="utf-8"))
+        )
         paths.update(str(path) for path in rich.get("source_page_assets", []))
         for block in rich.get("question_blocks", []):
             paths.update(str(path) for path in (block.get("image_relationships") or {}).values())
@@ -374,10 +384,26 @@ def ensure_content_index(conn: Any, *, data_root: Path) -> None:
 def upsert_content_index(conn: Any, *, question_id: int, key: str, source_revision: str = "") -> None:
     """Refresh one question's index row after its content is (re)written."""
     if not key:
-        conn.execute(
-            "DELETE FROM question_content_index WHERE question_id = ?",
+        # A DELETE on an absent row still opens a write transaction and
+        # touches the WAL file; only delete when there is a row to remove.
+        if conn.execute(
+            "SELECT 1 FROM question_content_index WHERE question_id = ?",
             (int(question_id),),
-        )
+        ).fetchone() is not None:
+            conn.execute(
+                "DELETE FROM question_content_index WHERE question_id = ?",
+                (int(question_id),),
+            )
+        return
+    existing = conn.execute(
+        "SELECT content_key, source_revision FROM question_content_index WHERE question_id = ?",
+        (int(question_id),),
+    ).fetchone()
+    if (
+        existing is not None
+        and str(existing[0]) == str(key)
+        and str(existing[1] or "") == str(source_revision)
+    ):
         return
     conn.execute(
         """INSERT OR REPLACE INTO question_content_index
