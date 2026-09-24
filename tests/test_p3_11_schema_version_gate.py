@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -86,19 +87,18 @@ def test_schema_inspection_is_memoized_until_schema_changes(
     database = tmp_path / "question_bank.db"
     initialize_database(database)
     # initialize_database already verified the schema through the same gate;
-    # clear the memo so this test counts only its own calls. gc.collect()
-    # forces the initializer's connection to close and checkpoint the -wal
-    # file, so the file generation is stable before the counted calls begin.
+    # clear the memo and the full-check ledger so this test counts only its
+    # own calls. gc.collect() forces the initializer's connection to close.
     import gc
     gc.collect()
     schema_migrations._SCHEMA_INSPECT_CACHE.clear()
+    schema_migrations._FULL_CHECK_DONE.clear()
 
-    calls = 0
+    full_checks: list[bool] = []
     real_inspect = schema_migrations._inspect_schema_version_uncached
 
     def counting_inspect(*args, **kwargs):
-        nonlocal calls
-        calls += 1
+        full_checks.append(bool(kwargs.get("full_check", True)))
         return real_inspect(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -109,31 +109,47 @@ def test_schema_inspection_is_memoized_until_schema_changes(
 
     schema_migrations.inspect_schema_version("question_bank", database)
     schema_migrations.inspect_schema_version("question_bank", database)
-    assert calls == 1
+    assert full_checks == [True]
 
-    # A data write changes the db/-wal file generation, so the memo must not
-    # suppress re-verification: integrity/fk checks inspect content, not only
-    # schema.
-    with sqlite3.connect(database) as connection:
+    # A data write leaves the memo key (file identity + schema_version +
+    # history) unchanged: the cached verification is reused and no
+    # integrity/fk check runs again for this file.
+    from contextlib import closing
+
+    with closing(sqlite3.connect(database)) as connection:
         connection.execute(
             "INSERT INTO papers (title, semester) VALUES ('memo-probe', '')"
         )
+        connection.commit()
     schema_migrations.inspect_schema_version("question_bank", database)
-    assert calls == 2
-    schema_migrations.inspect_schema_version("question_bank", database)
-    assert calls == 2
+    assert full_checks == [True]
 
-    # A schema change bumps PRAGMA schema_version, so the next inspection must
-    # re-verify (and reject the drift) instead of replaying the memoized pass.
-    with sqlite3.connect(database) as connection:
+    # A schema change bumps PRAGMA schema_version, so the next inspection
+    # re-verifies the signature/history and rejects the drift — without
+    # repeating the full integrity/fk checks on the same file identity.
+    with closing(sqlite3.connect(database)) as connection:
         connection.execute("CREATE TABLE _memo_probe (id INTEGER)")
+        connection.commit()
     with pytest.raises(SchemaVersionError):
         schema_migrations.inspect_schema_version("question_bank", database)
-    assert calls == 3
+    assert full_checks == [True, False]
     # Failed verifications are never memoized.
     with pytest.raises(SchemaVersionError):
         schema_migrations.inspect_schema_version("question_bank", database)
-    assert calls == 4
+    assert full_checks == [True, False, False]
+
+    # A replaced file has a new identity: the next inspection runs the full
+    # integrity/fk checks again even though the path did not change.
+    # (initialize_database runs the same gate on the replacement file, so
+    # count relative to the current length.)
+    before_replace = len(full_checks)
+    replacement = tmp_path / "replacement.db"
+    initialize_database(replacement)
+    os.replace(replacement, database)
+    schema_migrations.inspect_schema_version("question_bank", database)
+    assert full_checks[-1] is True
+    schema_migrations.inspect_schema_version("question_bank", database)
+    assert len(full_checks) == before_replace + 2
 
 
 def test_exclusive_name_migration_preserves_historical_duplicates_but_blocks_new_ones(

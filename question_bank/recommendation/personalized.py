@@ -13,6 +13,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Literal
 
+from integration.data_generation import commit_generation
+from integration.result_cache import ResultCache
 from question_bank.current_knowledge import (
     CurrentKnowledgeResolver,
     CurrentKnowledgeUnavailable,
@@ -44,6 +46,9 @@ GROUPING_VERSION = "chapter-score-common-weakness-v4"
 GROUP_MIN_SIMILARITY = 0.58
 GROUP_MIN_COMMON_WEAK_COVERAGE = 0.5
 RECENT_WINDOW_DAYS = 90
+# Read-only _source_snapshot results, keyed on the question-bank commit
+# generation + release + full request inputs; pickle bytes with single-flight.
+_SOURCE_SNAPSHOT_CACHE = ResultCache(limit=8)
 Stage = Literal["direct", "prerequisite", "transfer"]
 Action = Literal["lock", "unlock", "exclude", "replace"]
 _PRACTICE_TAG_KINDS = ("method", "model", "thought")
@@ -608,30 +613,49 @@ def _difficulty_band(entry: Mapping[str, Any]) -> str:
     return "consolidation" if difficulty <= plan["consolidation"] else "stretch"
 
 
-def _member_entries(group: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _need_id(entry: Mapping[str, Any], memo: dict | None = None) -> tuple[str, ...]:
+    if memo is None:
+        return _loss_need_id(entry)
+    stored = memo.get(id(entry))
+    if stored is not None and stored[0] is entry:
+        return stored[1]
+    need_id = _loss_need_id(entry)
+    memo[id(entry)] = (entry, need_id)
+    return need_id
+
+
+def _member_entries(
+    group: Sequence[dict[str, Any]], memo: dict | None = None,
+) -> dict[str, dict[str, Any]]:
+    if memo is not None:
+        stored = memo.get(("members", id(group)))
+        if stored is not None and stored[0] is group:
+            return stored[1]
     members: dict[str, dict[str, Any]] = {}
-    for entry in sorted(group, key=lambda e: (not _is_core(e), e["distance"], e.get("match_level", 2), _loss_need_id(e))):
+    for entry in sorted(group, key=lambda e: (not _is_core(e), e["distance"], e.get("match_level", 2), _need_id(e, memo))):
         members.setdefault(entry["student_id"], entry)
+    if memo is not None:
+        memo[("members", id(group))] = (group, members)
     return members
 
 
-def _structure_distance(group, selected) -> float:
+def _structure_distance(group, selected, memo: dict | None = None) -> float:
     distances = []
-    for sid, entry in _member_entries(group).items():
+    for sid, entry in _member_entries(group, memo).items():
         band = _difficulty_band(entry)
-        own = [members[sid] for _, old in selected if sid in (members := _member_entries(old))]
+        own = [members[sid] for _, old in selected if sid in (members := _member_entries(old, memo))]
         ratio = entry["target"].get("difficulty_plan", {}).get("ratios", {}).get(band, 1.)
         distances.append(abs(sum(_difficulty_band(e) == band for e in own) + 1 - (len(own) + 1) * ratio))
     return max(distances, default=0.)
 
 
-def _structure_allowed(group: Sequence[dict[str, Any]], selected, question_count: int) -> bool:
-    for sid, entry in _member_entries(group).items():
+def _structure_allowed(group: Sequence[dict[str, Any]], selected, question_count: int, memo: dict | None = None) -> bool:
+    for sid, entry in _member_entries(group, memo).items():
         plan = entry["target"].get("difficulty_plan")
         if not plan:
             continue
         band = _difficulty_band(entry)
-        own = [members[sid] for _, g in selected if sid in (members := _member_entries(g))]
+        own = [members[sid] for _, g in selected if sid in (members := _member_entries(g, memo))]
         same = sum(_difficulty_band(other) == band for other in own)
         # A collapsed range (e.g. teacher cap=1) has only one usable band.
         if plan["starter"] == plan["consolidation"]:
@@ -706,6 +730,7 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
     coverage: dict[tuple[str, ...], int] = {}
     member_coverage: set[str] = set()
     remaining = list(entries)
+    memo: dict = {}
     while len(selected) < question_count:
         grouped: dict[Any, list[dict[str, Any]]] = {}
         printed = [entry["candidate"] for entry, _ in selected]
@@ -722,7 +747,7 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
         groups = []
         for group in grouped.values():
             core = [entry for entry in group if _is_core(entry)]
-            if not _structure_allowed(core or group, selected, question_count):
+            if not _structure_allowed(core or group, selected, question_count, memo):
                 continue
             if core:
                 groups.append(core)
@@ -733,10 +758,10 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
 
         def rank(group):
             is_direct = _is_core(group[0])
-            needs = {_loss_need_id(entry) for entry in group} if is_direct else set()
+            needs = {_need_id(entry, memo) for entry in group} if is_direct else set()
             members = {entry["student_id"] for entry in group} if is_direct else set()
             return (not is_direct,
-                    _structure_distance(group, selected),
+                    _structure_distance(group, selected, memo),
                     -len(needs - coverage.keys()),
                     -len(members - member_coverage),
                     _pattern_count(group[0]["candidate"], printed),
@@ -748,11 +773,11 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
                     min(entry["candidate"]["question_id"] for entry in group))
 
         group = min(groups, key=rank)
-        best = min(_member_entries(group).values(), key=lambda entry: (entry["distance"], entry.get("match_level", 2), -entry["preference"], -entry["loss"],
-                                            entry["student_id"], _loss_need_id(entry)))
+        best = min(_member_entries(group, memo).values(), key=lambda entry: (entry["distance"], entry.get("match_level", 2), -entry["preference"], -entry["loss"],
+                                            entry["student_id"], _need_id(entry, memo)))
         selected.append((best, group))
         if _is_core(best):
-            for need in {_loss_need_id(entry) for entry in group}:
+            for need in {_need_id(entry, memo) for entry in group}:
                 coverage[need] = coverage.get(need, 0) + 1
             member_coverage.update(entry["student_id"] for entry in group)
         remaining = [entry for values in grouped.values() for entry in values
@@ -764,19 +789,19 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
         if _is_core(entry):
             core_groups.setdefault(entry["candidate"]["question_id"], []).append(entry)
     for _ in range(question_count):
-        covered = {_loss_need_id(e) for _, group in selected for e in group if _is_core(e)}
+        covered = {_need_id(e, memo) for _, group in selected for e in group if _is_core(e)}
         replacement = None
         for qid, group in sorted(core_groups.items()):
-            if not {_loss_need_id(e) for e in group} - covered:
+            if not {_need_id(e, memo) for e in group} - covered:
                 continue
             for i in range(len(selected) - 1, -1, -1):
                 rest = selected[:i] + selected[i + 1:]
-                rest_needs = {_loss_need_id(e) for _, g in rest for e in g if _is_core(e)}
-                if not covered <= rest_needs | {_loss_need_id(e) for e in group}:
+                rest_needs = {_need_id(e, memo) for _, g in rest for e in g if _is_core(e)}
+                if not covered <= rest_needs | {_need_id(e, memo) for e in group}:
                     continue
                 if (_paper_diversity_allowed(group[0]["candidate"], [e["candidate"] for e, _ in rest])
-                        and _structure_allowed(group, rest, question_count)):
-                    replacement = (i, min(_member_entries(group).values(), key=lambda e: (e["distance"], e.get("match_level", 2), -e["preference"])), group)
+                        and _structure_allowed(group, rest, question_count, memo)):
+                    replacement = (i, min(_member_entries(group, memo).values(), key=lambda e: (e["distance"], e.get("match_level", 2), -e["preference"])), group)
                     break
             if replacement:
                 break
@@ -1036,14 +1061,28 @@ class PersonalizedRecommendationModule:
             warnings.append("少量范围内补充题不计作薄弱目标覆盖，自动选题不超过实际题量20%。")
         similarities = [_group_similarity(needs[left], needs[right])
                         for index, left in enumerate(members) for right in members[index + 1:]]
-        selected = deepcopy({**diagnosis, "students": [profiles[sid] for sid in sorted(members)]})
         # Scope-specific diagnoses can be calculated seconds apart. The existing
         # source revision covers raw scores, training records and parameters;
-        # natural time decay is not a teacher/source edit.
-        for profile in selected["students"]:
-            for point in profile["weak_points"]:
-                point.pop("mastery", None)
-                point.pop("effective_weight", None)
+        # natural time decay is not a teacher/source edit. Build the hashed
+        # subset without mutating the shared diagnosis: each weak_points entry
+        # drops the volatile mastery/effective_weight keys during construction.
+        selected = {
+            **diagnosis,
+            "students": [
+                {
+                    **profiles[sid],
+                    "weak_points": [
+                        {
+                            key: value
+                            for key, value in point.items()
+                            if key not in ("mastery", "effective_weight")
+                        }
+                        for point in profiles[sid]["weak_points"]
+                    ],
+                }
+                for sid in sorted(members)
+            ],
+        }
         settings = config.to_dict()
         settings.pop("group_source_version", None)
         settings["target_keys"] = list(keys)
@@ -1104,10 +1143,12 @@ class PersonalizedRecommendationModule:
             if config.exclude_current_exam_originals
             else set()
         )
-        candidates, relations, base_source_version = self._source_snapshot(
+        snapshot_generation = commit_generation(self.db_path)
+        snapshot = self._source_snapshot(
             excluded_question_ids=excluded,
             prepare_refinements=True,
         )
+        candidates, relations, base_source_version = snapshot
         base_source_version = _hash_payload({"bank": base_source_version, "loss_sources": self._source_practice_metadata(normalized_diagnosis)})
         mastery = self._mastery_snapshot(normalized_diagnosis)
         recent = self._recent_question_ids(
@@ -1159,9 +1200,15 @@ class PersonalizedRecommendationModule:
         }
         encoded_request = _json(request)
         encoded_draft = _json(stored)
-        with connect(self.db_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
+        # g0 is the generation the snapshot key was computed under; any
+        # foreign commit before or during the draft write invalidates it.
+        g0 = commit_generation(self.db_path)
+        with connect(self.db_path) as write_connection:
+            data_version_before = write_connection.execute(
+                "PRAGMA data_version"
+            ).fetchone()[0]
+            write_connection.execute("BEGIN IMMEDIATE")
+            row = write_connection.execute(
                 """
                 SELECT input_fingerprint, draft_json
                 FROM personalized_recommendation_drafts
@@ -1175,7 +1222,7 @@ class PersonalizedRecommendationModule:
                         "recommendation request token was reused"
                     )
                 return json.loads(str(row["draft_json"]))
-            connection.execute(
+            write_connection.execute(
                 """
                 INSERT INTO personalized_recommendation_drafts (
                     draft_id, request_token, input_fingerprint,
@@ -1195,7 +1242,7 @@ class PersonalizedRecommendationModule:
                     actor,
                 ),
             )
-            connection.execute(
+            write_connection.execute(
                 """
                 INSERT INTO personalized_recommendation_events (
                     draft_id, request_token, command_hash, action,
@@ -1213,6 +1260,30 @@ class PersonalizedRecommendationModule:
                     encoded_draft,
                     encoded_draft,
                 ),
+            )
+            write_connection.commit()
+            data_version_after = write_connection.execute(
+                "PRAGMA data_version"
+            ).fetchone()[0]
+        g1 = commit_generation(self.db_path)
+        # Re-store the snapshot under the new generation only when this call's
+        # own commit is the only change: the snapshot key was built at g0,
+        # no other writer touched the file during the transaction (our own
+        # commit does not change this connection's data_version), and the
+        # generation advanced by exactly one.
+        if (
+            snapshot_generation == g0
+            and data_version_before == data_version_after
+            and g1 == g0 + 1
+        ):
+            _SOURCE_SNAPSHOT_CACHE.put(
+                self._source_snapshot_cache_key(
+                    prepare_refinements=True,
+                    excluded_question_ids=excluded,
+                    knowledge_keys=(),
+                    candidate_config=None,
+                ),
+                snapshot,
             )
         return stored
 
@@ -1854,7 +1925,59 @@ class PersonalizedRecommendationModule:
                 break
         return interleaved
 
+    def _source_snapshot_cache_key(
+        self,
+        *,
+        prepare_refinements: bool,
+        excluded_question_ids: set[int] | None,
+        knowledge_keys: Sequence[str],
+        candidate_config: PersonalizedRecommendationConfig | None,
+    ) -> tuple:
+        return (
+            "source-snapshot-v1",
+            str(Path(self.db_path).resolve(strict=False)),
+            str(Path(self.data_root).resolve(strict=False)),
+            str(self.current_knowledge.release_id),
+            f"commits:{commit_generation(self.db_path)}",
+            bool(prepare_refinements),
+            tuple(sorted(int(qid) for qid in (excluded_question_ids or ()))),
+            tuple(sorted(str(item) for item in knowledge_keys)),
+            json.dumps(
+                candidate_config.to_dict(), sort_keys=True, default=str
+            )
+            if candidate_config is not None
+            else "",
+        )
+
     def _source_snapshot(
+        self,
+        *,
+        excluded_question_ids: set[int] | None = None,
+        prepare_refinements: bool = False,
+        knowledge_keys: Sequence[str] = (),
+        candidate_config: PersonalizedRecommendationConfig | None = None,
+    ) -> tuple[
+        tuple[dict[str, Any], ...],
+        tuple[dict[str, Any], ...],
+        str,
+    ]:
+        key = self._source_snapshot_cache_key(
+            prepare_refinements=prepare_refinements,
+            excluded_question_ids=excluded_question_ids,
+            knowledge_keys=knowledge_keys,
+            candidate_config=candidate_config,
+        )
+        return _SOURCE_SNAPSHOT_CACHE.get_or_compute(
+            key,
+            lambda: self._source_snapshot_uncached(
+                excluded_question_ids=excluded_question_ids,
+                prepare_refinements=prepare_refinements,
+                knowledge_keys=knowledge_keys,
+                candidate_config=candidate_config,
+            ),
+        )
+
+    def _source_snapshot_uncached(
         self,
         *,
         excluded_question_ids: set[int] | None = None,

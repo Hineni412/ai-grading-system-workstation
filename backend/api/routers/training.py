@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import asdict
 from math import ceil
 from tempfile import SpooledTemporaryFile
 from typing import Any, NoReturn
@@ -67,7 +68,10 @@ from backend.api.schemas.training import (
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.public_data import sanitize_public_mapping
 from integration.diagnosis_profile_service import DiagnosisProfileService
-from integration.mastery_overview import build_mastery_overview
+from integration.data_generation import commit_generation
+from integration.mastery_overview import build_mastery_overview, overview_payload
+from integration.result_cache import ResultCache
+from integration.training_prewarm import record_request
 from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.personalized_papers import (
     CreatePaperCommand,
@@ -134,6 +138,7 @@ TRAINING_DATABASE_RESPONSES = {
 }
 PERSONALIZED_PAPER_UPLOAD_LIMIT = 50 * 1024 * 1024
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
+_GROUPING_RESULT_CACHE = ResultCache(limit=8)
 
 
 def _grouping_module(body: TrainingDiagnosisRequest) -> PersonalizedRecommendationModule | None:
@@ -154,27 +159,67 @@ def build_training_diagnosis(
     grouping_module: PersonalizedRecommendationModule | None = Depends(_grouping_module),
 ) -> TrainingDiagnosisResponse:
     try:
+        scope_dump = body.scope.model_dump(exclude_none=True)
+        exam_scope_dump = body.exam_scope.model_dump(exclude_none=True)
+        record_request("diagnosis", scope=scope_dump, exam_scope=exam_scope_dump, params={})
         diagnosis = service.build_profiles(
-            scope=body.scope.model_dump(exclude_none=True),
-            exam_scope=body.exam_scope.model_dump(exclude_none=True),
+            scope=scope_dump,
+            exam_scope=exam_scope_dump,
         )
         if body.grouping is not None:
             grouping = body.grouping
             assert grouping_module is not None
-            diagnosis["grouping"] = grouping_module.chapter_groups(
-                diagnosis=diagnosis,
-                config=PersonalizedRecommendationConfig(
-                    paper_mode="shared", scope_keys=tuple(grouping.scope_keys),
-                    group_scope_keys=tuple(grouping.scope_keys), question_count=grouping.question_count,
-                    expected_minutes=grouping.expected_minutes, difficulty_min=grouping.difficulty_min,
-                    difficulty_max=grouping.difficulty_max, direct_ratio=grouping.direct_ratio,
-                    prerequisite_ratio=grouping.prerequisite_ratio, transfer_ratio=grouping.transfer_ratio,
-                    exclude_current_exam_originals=grouping.exclude_current_exam_originals,
-                    curriculum_volume_id=grouping.curriculum_volume_id,
-                    training_intent=grouping.training_intent,
-                    teaching_progress_chapter_id=grouping.teaching_progress_chapter_id,
-                ), member_ids=grouping.member_ids, target_keys=grouping.target_keys,
+            grouping_config = PersonalizedRecommendationConfig(
+                paper_mode="shared", scope_keys=tuple(grouping.scope_keys),
+                group_scope_keys=tuple(grouping.scope_keys), question_count=grouping.question_count,
+                expected_minutes=grouping.expected_minutes, difficulty_min=grouping.difficulty_min,
+                difficulty_max=grouping.difficulty_max, direct_ratio=grouping.direct_ratio,
+                prerequisite_ratio=grouping.prerequisite_ratio, transfer_ratio=grouping.transfer_ratio,
+                exclude_current_exam_originals=grouping.exclude_current_exam_originals,
+                curriculum_volume_id=grouping.curriculum_volume_id,
+                training_intent=grouping.training_intent,
+                teaching_progress_chapter_id=grouping.teaching_progress_chapter_id,
             )
+
+            def _grouping_compute() -> dict[str, Any]:
+                return grouping_module.chapter_groups(
+                    diagnosis=diagnosis,
+                    config=grouping_config,
+                    member_ids=grouping.member_ids,
+                    target_keys=grouping.target_keys,
+                )
+
+            grouping_key_fn = getattr(service, "tag_profile_cache_key", None)
+            grouping_release = str(
+                getattr(
+                    getattr(grouping_module, "current_knowledge", None),
+                    "release_id",
+                    "",
+                )
+            )
+            if callable(grouping_key_fn):
+                diagnosis["grouping"] = _GROUPING_RESULT_CACHE.get_or_compute(
+                    (
+                        "grouping-v1",
+                        grouping_key_fn(
+                            scope=scope_dump, exam_scope=exam_scope_dump
+                        ),
+                        json.dumps(
+                            asdict(grouping_config),
+                            sort_keys=True,
+                            default=str,
+                        ),
+                        tuple(grouping.member_ids),
+                        tuple(grouping.target_keys),
+                        commit_generation(grouping_module.db_path),
+                        grouping_release,
+                        # _recent_question_ids depends on the current day.
+                        str(grouping_module.clock().date()),
+                    ),
+                    _grouping_compute,
+                )
+            else:
+                diagnosis["grouping"] = _grouping_compute()
     except ValueError as exc:
         raise ApiError(
             422,
@@ -212,14 +257,31 @@ def build_training_overview(
     try:
         if body.exam_scope.mode != "semester":
             raise ValueError("overview requires a semester exam scope")
-        diagnosis = service.build_profiles(
-            scope=body.scope.model_dump(exclude_none=True),
-            exam_scope=body.exam_scope.model_dump(exclude_none=True),
+        scope_dump = body.scope.model_dump(exclude_none=True)
+        exam_scope_dump = body.exam_scope.model_dump(exclude_none=True)
+        record_request(
+            "overview",
+            scope=scope_dump,
+            exam_scope=exam_scope_dump,
+            params={"volume_id": body.exam_scope.curriculum_volume_id or ""},
         )
-        overview = build_mastery_overview(
-            diagnosis,
-            volume_id=body.exam_scope.curriculum_volume_id or "",
-        )
+        key_fn = getattr(service, "tag_profile_cache_key", None)
+        if callable(key_fn):
+            overview = overview_payload(
+                service,
+                scope=scope_dump,
+                exam_scope=exam_scope_dump,
+                volume_id=body.exam_scope.curriculum_volume_id or "",
+            )
+        else:
+            diagnosis = service.build_profiles(
+                scope=scope_dump,
+                exam_scope=exam_scope_dump,
+            )
+            overview = build_mastery_overview(
+                diagnosis,
+                volume_id=body.exam_scope.curriculum_volume_id or "",
+            )
     except ValueError as exc:
         raise ApiError(
             422,

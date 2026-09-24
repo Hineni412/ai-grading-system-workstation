@@ -1746,3 +1746,124 @@ def test_replacement_reorders_saved_draft_and_paper_uses_the_same_question_numbe
     markers = ["边长为5的正方形", "直角三角形的两条直角边分别为9和12", "长方形对角线"]
     for content in (document_text, tex):
         assert [content.index(marker) for marker in markers] == sorted(content.index(marker) for marker in markers)
+
+
+def test_source_snapshot_cache_isolates_callers_and_tracks_commits(
+    bnu24_difficulty_module,
+) -> None:
+    module = bnu24_difficulty_module
+    calls: list[dict] = []
+    real_uncached = module._source_snapshot_uncached
+
+    def counting(**kwargs):
+        calls.append(kwargs)
+        return real_uncached(**kwargs)
+
+    module._source_snapshot_uncached = counting
+    try:
+        first, _relations, version = module._source_snapshot()
+        assert len(calls) == 1
+        # Hits are unpickled copies: mutating a returned candidate cannot
+        # corrupt the cached snapshot.
+        first[0]["question_text"] = "mutated-by-caller"
+        second, _relations2, version2 = module._source_snapshot()
+        assert len(calls) == 1
+        assert version2 == version
+        assert second[0]["question_text"] != "mutated-by-caller"
+
+        # prepare_refinements performs idempotent backfill writes; it is cached
+        # under its own key so the write side effects still run on a miss. A
+        # write bumps the commit generation, so at most one recompute follows;
+        # after that, repeat calls hit the cache.
+        module._source_snapshot(prepare_refinements=True)
+        module._source_snapshot(prepare_refinements=True)
+        module._source_snapshot(prepare_refinements=True)
+        prepare_calls = len(calls)
+        assert prepare_calls >= 2
+        assert all(kwargs["prepare_refinements"] for kwargs in calls[1:prepare_calls])
+        module._source_snapshot(prepare_refinements=True)
+        assert len(calls) == prepare_calls
+
+        # A committed write bumps the commit generation, so the next read
+        # recomputes instead of replaying a stale snapshot.  papers.updated_at
+        # is not part of the snapshot input, so the recomputed result is
+        # identical — only the write itself is observed.
+        with connect(module.db_path) as connection:
+            connection.execute(
+                "UPDATE papers SET updated_at = '2099-01-01 00:00:00'"
+            )
+        third, _relations3, version3 = module._source_snapshot()
+        assert len(calls) == prepare_calls + 1
+        assert version3 == version
+        assert third == second
+    finally:
+        module._source_snapshot_uncached = real_uncached
+
+
+def test_create_skips_snapshot_restore_when_a_foreign_commit_lands(
+    direct_module, monkeypatch, tmp_path
+) -> None:
+    from contextlib import contextmanager
+
+    from question_bank.recommendation import personalized
+
+    module = direct_module
+    calls: list[dict] = []
+    real_uncached = module._source_snapshot_uncached
+
+    def counting(**kwargs):
+        calls.append(kwargs)
+        return real_uncached(**kwargs)
+
+    module._source_snapshot_uncached = counting
+    try:
+        # Reach steady state: once the prepare variant's own backfill write
+        # has been absorbed, the post-create re-store makes further creates
+        # pure cache hits.
+        for token in ("a", "b", "c"):
+            _make_direct(module, token=token)
+        baseline = len(calls)
+        _make_direct(module, token="d")
+        assert len(calls) == baseline
+
+        real_connect = personalized.connect
+        fired = {"done": False}
+
+        class _ForeignCommitProxy:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def execute(self, sql, parameters=(), /):
+                result = self._connection.execute(sql, parameters)
+                # A foreign commit landing after this connection's
+                # data_version read but before BEGIN IMMEDIATE must defeat
+                # the post-create snapshot re-store.
+                if (
+                    not fired["done"]
+                    and isinstance(sql, str)
+                    and "data_version" in sql
+                ):
+                    fired["done"] = True
+                    with real_connect(module.db_path) as other:
+                        other.execute(
+                            "UPDATE papers SET updated_at = '2099-01-01 00:00:00'"
+                        )
+                return result
+
+            def __getattr__(self, name):
+                return getattr(self._connection, name)
+
+        @contextmanager
+        def wrapped_connect(db_path, **kwargs):
+            with real_connect(db_path, **kwargs) as connection:
+                yield _ForeignCommitProxy(connection)
+
+        monkeypatch.setattr(personalized, "connect", wrapped_connect)
+        _make_direct(module, token="e")
+        assert fired["done"]
+        # The snapshot cache was not re-stored under the new generation,
+        # so the next create recomputes instead of hitting stale data.
+        _make_direct(module, token="f")
+        assert len(calls) == baseline + 1
+    finally:
+        module._source_snapshot_uncached = real_uncached

@@ -4,7 +4,10 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from question_bank.database.paths import project_data_root
-from question_bank.services.file_cache import cached_asset_resolution
+from question_bank.services.file_cache import (
+    cached_asset_resolution,
+    memoized_resolve,
+)
 
 
 DEFAULT_SEARCH_SUBDIRS = (
@@ -29,9 +32,9 @@ def resolve_question_bank_asset_path(
     search_subdirs: Iterable[str] | None = None,
 ) -> Path:
     root = (
-        Path(data_root).expanduser().resolve()
+        memoized_resolve(Path(data_root))
         if data_root is not None
-        else project_data_root().resolve()
+        else memoized_resolve(project_data_root())
     )
     subdirs = tuple(search_subdirs or DEFAULT_SEARCH_SUBDIRS)
     text = str(path_value or "").strip()

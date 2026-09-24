@@ -26,6 +26,30 @@ _bytes_used = 0
 _parsed_cache: OrderedDict[tuple[str, int, int], Any] = OrderedDict()
 _digest_cache: OrderedDict[tuple[Any, ...], str] = OrderedDict()
 _resolve_cache: OrderedDict[tuple[Any, ...], Path] = OrderedDict()
+_resolved_path_cache: OrderedDict[str, Path] = OrderedDict()
+_RESOLVED_PATH_LIMIT = 128
+
+
+def memoized_resolve(path: Path) -> Path:
+    """Return ``path.expanduser().resolve()`` cached by the raw path string.
+
+    Resolution walks the filesystem (``GetFinalPathNameByHandle`` on
+    Windows) once per distinct input instead of once per lookup. The
+    resolved value is keyed on the unresolved string, so callers keep full
+    control over *when* resolution happens — it just is not repeated.
+    """
+    raw = os.fspath(path)
+    with _lock:
+        cached = _resolved_path_cache.get(raw)
+        if cached is not None:
+            _resolved_path_cache.move_to_end(raw)
+            return cached
+    resolved = Path(raw).expanduser().resolve()
+    with _lock:
+        _resolved_path_cache[raw] = resolved
+        _resolved_path_cache.move_to_end(raw)
+        _trim(_resolved_path_cache, _RESOLVED_PATH_LIMIT)
+    return resolved
 
 
 def _file_key(path: Path) -> tuple[str, int, int] | None:
@@ -204,7 +228,7 @@ def cached_asset_resolution(
     added or removed files refresh the result. Unresolved results are not
     cached.
     """
-    root = data_root.expanduser().resolve()
+    root = memoized_resolve(data_root)
     subdirs = tuple(search_subdirs)
     key = (saved_path, str(root), subdirs)
     with _lock:
@@ -238,6 +262,7 @@ def clear_file_caches() -> None:
         _parsed_cache.clear()
         _digest_cache.clear()
         _resolve_cache.clear()
+        _resolved_path_cache.clear()
         _bytes_used = 0
 
 
@@ -247,4 +272,5 @@ __all__ = [
     "cached_parsed_file",
     "cached_processed_image_digest",
     "clear_file_caches",
+    "memoized_resolve",
 ]

@@ -49,18 +49,18 @@ class _QuietMigrationLogger:
 _SCHEMA_SIGNATURE_CACHE: dict[tuple[object, ...], dict[str, object]] = {}
 _SCHEMA_SIGNATURE_LOCK = threading.Lock()
 
-# inspect_schema_version is a read-only verification (integrity_check,
-# foreign_key_check, schema signature comparison), but its outcome also
-# depends on database CONTENT, not only on schema. The memo therefore keys on
-# the db file generation (size+mtime_ns of the db file; for the -wal, its
-# size+mtime_ns while it holds frames, else a single empty/missing marker) plus
-# PRAGMA schema_version, the migration manifest stamp, and the recorded
-# migration history: it dedupes repeated checks inside one request or across
-# read-only requests, while any write that touches the files (or bumps the
-# schema version) forces re-verification.
+# inspect_schema_version runs the expensive PRAGMA integrity_check and
+# foreign_key_check only on the first successful inspection per process per
+# database file identity (resolved path + st_dev + st_ino); a restored or
+# replaced file gets a new identity and is fully checked again. Later
+# inspections still verify the schema signature and migration history, and
+# that verification is itself memoized by (path, file identity,
+# PRAGMA schema_version, manifest stamp, history) so ordinary data writes do
+# not repeat it. Operational backup/restore paths keep their own full checks.
 _SCHEMA_INSPECT_CACHE: dict[tuple[object, ...], SchemaGateResult] = {}
 _SCHEMA_INSPECT_LOCK = threading.Lock()
 _SCHEMA_INSPECT_CACHE_LIMIT = 32
+_FULL_CHECK_DONE: set[tuple[str, int, int]] = set()
 
 
 def _manifest_files(migration_root: Path) -> tuple[Path, ...]:
@@ -170,18 +170,34 @@ def inspect_schema_version(
             return cached
     files = _manifest_files(migration_root)
     migrations = tuple(MigrationFile.from_path(path) for path in files)
+    identity = _database_file_identity(database)
+    full_check = True
+    if identity is not None:
+        with _SCHEMA_INSPECT_LOCK:
+            full_check = identity not in _FULL_CHECK_DONE
     result = _inspect_schema_version_uncached(
         target,
         database,
         migration_root=migration_root,
         migrations=migrations,
+        full_check=full_check,
     )
-    if memo_key is not None:
-        with _SCHEMA_INSPECT_LOCK:
+    with _SCHEMA_INSPECT_LOCK:
+        if identity is not None:
+            _FULL_CHECK_DONE.add(identity)
+        if memo_key is not None:
             _SCHEMA_INSPECT_CACHE[memo_key] = result
             while len(_SCHEMA_INSPECT_CACHE) > _SCHEMA_INSPECT_CACHE_LIMIT:
                 _SCHEMA_INSPECT_CACHE.pop(next(iter(_SCHEMA_INSPECT_CACHE)))
     return result
+
+
+def _database_file_identity(database: Path) -> tuple[str, int, int] | None:
+    try:
+        stat = database.stat()
+    except OSError:
+        return None
+    return (str(database.resolve()), int(stat.st_dev), int(stat.st_ino))
 
 
 def _inspect_memo_key(
@@ -210,29 +226,9 @@ def _inspect_memo_key(
                 )
     except (sqlite3.DatabaseError, OSError, TypeError, ValueError):
         return None
-    try:
-        stat = database.stat()
-        db_generation: tuple[object, ...] = (
-            database.name, stat.st_size, stat.st_mtime_ns
-        )
-    except OSError:
+    identity = _database_file_identity(database)
+    if identity is None:
         return None
-    # A read-only open creates/touches an empty -wal, so its mtime is not a
-    # write signal while it holds no frames; missing and size-0 both mean
-    # "no pending WAL data" and share one marker. A non-empty WAL's
-    # (size, mtime_ns) is stable across read-only opens and is keyed fully.
-    wal = Path(f"{database}-wal")
-    try:
-        wal_stat = wal.stat()
-    except FileNotFoundError:
-        wal_generation: tuple[object, ...] = (wal.name, "no-wal-data")
-    except OSError:
-        return None
-    else:
-        if wal_stat.st_size:
-            wal_generation = (wal.name, wal_stat.st_size, wal_stat.st_mtime_ns)
-        else:
-            wal_generation = (wal.name, "no-wal-data")
     try:
         manifest_stamp = tuple(
             (path.name, path.stat().st_size, path.stat().st_mtime_ns)
@@ -247,8 +243,7 @@ def _inspect_memo_key(
         manifest_stamp,
         schema_version,
         history,
-        db_generation,
-        wal_generation,
+        identity,
     )
 
 
@@ -258,16 +253,18 @@ def _inspect_schema_version_uncached(
     *,
     migration_root: Path,
     migrations: tuple[MigrationFile, ...],
+    full_check: bool,
 ) -> SchemaGateResult:
     uri = database.resolve().as_uri() + "?mode=ro"
     try:
         with closing(sqlite3.connect(uri, uri=True)) as connection:
-            quick = connection.execute("PRAGMA quick_check").fetchall()
-            integrity = connection.execute("PRAGMA integrity_check").fetchall()
-            if quick != [("ok",)] or integrity != [("ok",)]:
-                raise SchemaVersionError("database integrity check failed")
-            if connection.execute("PRAGMA foreign_key_check").fetchall():
-                raise SchemaVersionError("database foreign key check failed")
+            if full_check:
+                quick = connection.execute("PRAGMA quick_check").fetchall()
+                integrity = connection.execute("PRAGMA integrity_check").fetchall()
+                if quick != [("ok",)] or integrity != [("ok",)]:
+                    raise SchemaVersionError("database integrity check failed")
+                if connection.execute("PRAGMA foreign_key_check").fetchall():
+                    raise SchemaVersionError("database foreign key check failed")
             table = connection.execute(
                 "SELECT 1 FROM sqlite_master "
                 "WHERE type='table' AND name='schema_migrations'"

@@ -331,6 +331,7 @@ def test_request_read_context_opens_each_database_once_and_cleans_success(
 
     paths = _request_paths(tmp_path)
     real_capture = read_connections.captured_sqlite_read_connection
+    real_direct = read_connections._direct_question_bank_read
     calls: list[Path] = []
     connections: list[sqlite3.Connection] = []
     candidates: list[Path] = []
@@ -343,10 +344,23 @@ def test_request_read_context_opens_each_database_once_and_cleans_success(
             candidates.append(_main_candidate_path(connection))
             yield connection
 
+    @contextmanager
+    def tracked_direct(db_path: Path, **kwargs):
+        calls.append(Path(db_path))
+        with real_direct(db_path, **kwargs) as connection:
+            connections.append(connection)
+            candidates.append(_main_candidate_path(connection))
+            yield connection
+
     monkeypatch.setattr(
         read_connections,
         "captured_sqlite_read_connection",
         tracked_capture,
+    )
+    monkeypatch.setattr(
+        read_connections,
+        "_direct_question_bank_read",
+        tracked_direct,
     )
 
     with read_connections.request_read_context(paths) as context:
@@ -354,14 +368,18 @@ def test_request_read_context_opens_each_database_once_and_cleans_success(
         assert context.grading_connection is connections[0]
         assert context.question_bank_connection is connections[1]
         assert context.grading_candidate == candidates[0]
-        assert context.question_bank_candidate == candidates[1]
+        # The question bank is opened directly read-only: the candidate is
+        # the live database file, not a per-request copy.
+        assert context.question_bank_candidate == paths.qb_db_path.resolve()
         assert context.grading_db._external_connection is connections[0]
         assert context.diagnosis_service.db is context.grading_db
         assert context.diagnosis_service.question_bank_connection is connections[1]
         assert context.practice_service.external_connection is connections[1]
         assert all(candidate.exists() for candidate in candidates)
 
-    assert not any(candidate.exists() for candidate in candidates)
+    assert not candidates[0].exists()
+    # The question-bank database itself is untouched by teardown.
+    assert context.question_bank_candidate.exists()
     for connection in connections:
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             connection.execute("SELECT 1")
@@ -379,19 +397,27 @@ def test_request_read_context_cleans_first_database_when_second_capture_fails(
     first_candidate: Path | None = None
 
     @contextmanager
-    def fail_second_capture(db_path: Path, **kwargs):
+    def tracked_capture(db_path: Path, **kwargs):
         nonlocal first_connection, first_candidate
-        if Path(db_path) == paths.qb_db_path:
-            raise QuestionBankSnapshotUnavailable("private path must stay hidden")
         with real_capture(db_path, **kwargs) as connection:
             first_connection = connection
             first_candidate = _main_candidate_path(connection)
             yield connection
 
+    @contextmanager
+    def fail_direct(db_path: Path, **kwargs):
+        raise QuestionBankSnapshotUnavailable("private path must stay hidden")
+        yield
+
     monkeypatch.setattr(
         read_connections,
         "captured_sqlite_read_connection",
-        fail_second_capture,
+        tracked_capture,
+    )
+    monkeypatch.setattr(
+        read_connections,
+        "_direct_question_bank_read",
+        fail_direct,
     )
 
     with pytest.raises(QuestionBankSnapshotUnavailable):
@@ -418,7 +444,9 @@ def test_request_read_context_cleans_both_databases_after_business_error(
 
     assert context is not None
     assert not context.grading_candidate.exists()
-    assert not context.question_bank_candidate.exists()
+    # The question bank is read directly; its file is not a temp copy.
+    assert context.question_bank_candidate == paths.qb_db_path.resolve()
+    assert context.question_bank_candidate.exists()
     for connection in (
         context.grading_connection,
         context.question_bank_connection,
@@ -450,14 +478,14 @@ def test_concurrent_request_read_contexts_have_distinct_owned_resources(
         identities = list(executor.map(capture_identity, range(2)))
 
     assert identities[0][0] != identities[1][0]
-    assert identities[0][1] != identities[1][1]
+    # Both contexts read the same live question-bank file directly.
+    assert identities[0][1] == identities[1][1] == paths.qb_db_path.resolve()
     assert identities[0][2] != identities[1][2]
     assert identities[0][3] != identities[1][3]
     assert not any(
-        candidate.exists()
-        for identity in identities
-        for candidate in identity[:2]
+        identity[0].exists() for identity in identities
     )
+    assert paths.qb_db_path.exists()
 
 
 def test_request_read_context_can_teardown_on_another_worker_thread(
@@ -465,7 +493,8 @@ def test_request_read_context_can_teardown_on_another_worker_thread(
 ) -> None:
     import backend.api.read_connections as read_connections
 
-    manager = read_connections.request_read_context(_request_paths(tmp_path))
+    paths = _request_paths(tmp_path)
+    manager = read_connections.request_read_context(paths)
     context = manager.__enter__()
     exited = False
     try:
@@ -477,7 +506,8 @@ def test_request_read_context_can_teardown_on_another_worker_thread(
             manager.__exit__(None, None, None)
 
     assert not context.grading_candidate.exists()
-    assert not context.question_bank_candidate.exists()
+    assert context.question_bank_candidate == paths.qb_db_path.resolve()
+    assert context.question_bank_candidate.exists()
     for connection in (
         context.grading_connection,
         context.question_bank_connection,
@@ -498,6 +528,7 @@ def test_route_validation_error_cleans_request_read_context(
 
     paths = _request_paths(tmp_path)
     real_capture = read_connections.captured_sqlite_read_connection
+    real_direct = read_connections._direct_question_bank_read
     connections: list[sqlite3.Connection] = []
     candidates: list[Path] = []
 
@@ -508,10 +539,22 @@ def test_route_validation_error_cleans_request_read_context(
             candidates.append(_main_candidate_path(connection))
             yield connection
 
+    @contextmanager
+    def tracked_direct(db_path: Path, **kwargs):
+        with real_direct(db_path, **kwargs) as connection:
+            connections.append(connection)
+            candidates.append(_main_candidate_path(connection))
+            yield connection
+
     monkeypatch.setattr(
         read_connections,
         "captured_sqlite_read_connection",
         tracked_capture,
+    )
+    monkeypatch.setattr(
+        read_connections,
+        "_direct_question_bank_read",
+        tracked_direct,
     )
     app = create_app(path_manager=paths)
     app.dependency_overrides[get_path_manager] = lambda: paths
@@ -523,7 +566,11 @@ def test_route_validation_error_cleans_request_read_context(
 
     assert response.status_code == 422
     assert len(connections) == len(candidates) == 2
-    assert not any(candidate.exists() for candidate in candidates)
+    # candidates[0] is the grading temp copy; candidates[1] is the live
+    # question bank read directly — only the copy is removed.
+    assert not candidates[0].exists()
+    assert candidates[1] == paths.qb_db_path.resolve()
+    assert candidates[1].exists()
     for connection in connections:
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             connection.execute("SELECT 1")
