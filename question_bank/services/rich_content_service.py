@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from question_bank.database.paths import project_data_root
+from question_bank.services.file_cache import cached_parsed_file
 
 
 LOGGER = logging.getLogger(__name__)
@@ -60,10 +61,7 @@ def save_question_rich_content(
     return output_path
 
 
-def load_question_rich_content(question_id: int, root: str | Path | None = None) -> dict[str, object] | None:
-    path = rich_content_path(question_id, root)
-    if not path.exists():
-        return None
+def _parse_rich_content(path: Path) -> dict[str, object] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -79,6 +77,14 @@ def load_question_rich_content(question_id: int, root: str | Path | None = None)
             [item for item in question_blocks if isinstance(item, dict)]
         )
     return payload
+
+
+def load_question_rich_content(question_id: int, root: str | Path | None = None) -> dict[str, object] | None:
+    path = rich_content_path(question_id, root)
+    if not path.exists():
+        return None
+    # Callers treat the payload as read-only, so the parsed value can be shared.
+    return cached_parsed_file(path, _parse_rich_content)
 
 
 def is_question_rich_content_current(question_id: int, root: str | Path | None = None) -> bool:

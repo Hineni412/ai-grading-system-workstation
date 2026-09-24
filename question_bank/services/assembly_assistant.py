@@ -76,7 +76,7 @@ def _question_ids(service: QuestionBankReadService, filters: QuestionReadFilters
     ids = []
     page = 1
     while True:
-        result = service.list_question_refs(replace(filters, page=page, page_size=500))
+        result = service.list_question_refs(replace(filters, page=page, page_size=20000))
         ids.extend(int(item["id"]) for item in result.items)
         if not result.items or page >= result.total_pages:
             return ids
@@ -198,8 +198,16 @@ def shortlist_candidates(
     with connect(read_service.db_path) as connection:
         identities = exact_identity_map(connection, data_root=read_service.data_root or read_service.db_path.parent.parent,
                                         question_ids=sorted(pool_ids | excluded_question_ids))
-        rows = connection.execute(
-            "SELECT id, difficulty, question_type, question_text FROM questions WHERE is_deleted=0").fetchall()
+        # Only pool questions are consumed below; a chunked IN scan avoids
+        # materializing the whole bank on every request.
+        rows = []
+        pool_list = sorted(pool_ids)
+        for start in range(0, len(pool_list), 500):
+            batch = pool_list[start:start + 500]
+            rows.extend(connection.execute(
+                "SELECT id, difficulty, question_type, question_text FROM questions"
+                " WHERE is_deleted=0 AND id IN (" + ",".join("?" for _ in batch) + ")",
+                batch).fetchall())
         difficulties = {int(row["id"]): float(row["difficulty"]) for row in rows
                         if int(row["id"]) in pool_ids and row["difficulty"] is not None
                         and 1 <= float(row["difficulty"]) <= 10}

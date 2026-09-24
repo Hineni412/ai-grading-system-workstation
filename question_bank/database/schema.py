@@ -53,27 +53,53 @@ def initialize_database(
             conn,
             preserve_conflicts=preserve_governed_conflicts,
         )
-        conn.execute(
+        # The backfill UPDATEs below are write statements even when they change
+        # nothing, and every write transaction touches the WAL file (which is
+        # part of downstream cache fingerprints). Only run them when a row
+        # would actually change.
+        if conn.execute(
             """
-            UPDATE papers
-            SET province = COALESCE(NULLIF(province, ''), '广东省'),
-                city = COALESCE(NULLIF(city, ''), '深圳市')
-            WHERE title LIKE '%深圳%'
+            SELECT 1 FROM papers
+            WHERE (title LIKE '%深圳%'
                OR source_file LIKE '%深圳%'
-               OR district IN ('深圳市', '福田区', '罗湖区', '南山区', '宝安区', '龙岗区', '龙华区', '盐田区', '坪山区', '光明区', '大鹏新区')
+               OR district IN ('深圳市', '福田区', '罗湖区', '南山区', '宝安区', '龙岗区', '龙华区', '盐田区', '坪山区', '光明区', '大鹏新区'))
+              AND (COALESCE(NULLIF(province, ''), '广东省') <> '广东省'
+               OR COALESCE(NULLIF(city, ''), '深圳市') <> '深圳市')
+            LIMIT 1
             """
-        )
-        conn.execute(
+        ).fetchone() is not None:
+            conn.execute(
+                """
+                UPDATE papers
+                SET province = COALESCE(NULLIF(province, ''), '广东省'),
+                    city = COALESCE(NULLIF(city, ''), '深圳市')
+                WHERE title LIKE '%深圳%'
+                   OR source_file LIKE '%深圳%'
+                   OR district IN ('深圳市', '福田区', '罗湖区', '南山区', '宝安区', '龙岗区', '龙华区', '盐田区', '坪山区', '光明区', '大鹏新区')
+                """
+            )
+        if conn.execute(
             """
-            UPDATE papers
-            SET semester = CASE
-                WHEN title LIKE '%（上）%' OR title LIKE '%(上)%'
-                  OR title LIKE '%上学期%' OR title LIKE '%上册%' THEN '上学期'
-                WHEN title LIKE '%（下）%' OR title LIKE '%(下)%'
-                  OR title LIKE '%下学期%' OR title LIKE '%下册%' THEN '下学期'
-                ELSE semester
-            END
+            SELECT 1 FROM papers
             WHERE COALESCE(semester, '') = ''
+              AND (title LIKE '%（上）%' OR title LIKE '%(上)%'
+                OR title LIKE '%上学期%' OR title LIKE '%上册%'
+                OR title LIKE '%（下）%' OR title LIKE '%(下)%'
+                OR title LIKE '%下学期%' OR title LIKE '%下册%')
+            LIMIT 1
             """
-        )
+        ).fetchone() is not None:
+            conn.execute(
+                """
+                UPDATE papers
+                SET semester = CASE
+                    WHEN title LIKE '%（上）%' OR title LIKE '%(上)%'
+                      OR title LIKE '%上学期%' OR title LIKE '%上册%' THEN '上学期'
+                    WHEN title LIKE '%（下）%' OR title LIKE '%(下)%'
+                      OR title LIKE '%下学期%' OR title LIKE '%下册%' THEN '下学期'
+                    ELSE semester
+                END
+                WHERE COALESCE(semester, '') = ''
+                """
+            )
         conn.commit()

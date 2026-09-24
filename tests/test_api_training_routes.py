@@ -363,6 +363,46 @@ def test_training_diagnosis_uses_question_tag_identity(
     assert "C:/private" not in response.text
 
 
+def test_training_diagnosis_accepts_cause_fields_in_weak_points(
+    training_client: TestClient,
+    training_services,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnosis, _practice, _tasks = training_services
+    real_build_profiles = diagnosis.build_profiles
+
+    def build_profiles_with_causes(**kwargs):
+        payload = real_build_profiles(**kwargs)
+        for student in payload["students"]:
+            for weak in student["weak_points"]:
+                weak["error_categories"] = ["概念不清"]
+                weak["error_patterns"] = ["错用判定条件"]
+                for reference in weak["source_question_refs"]:
+                    reference["causes"] = [
+                        {
+                            "category": "概念不清",
+                            "pattern": "错用判定条件",
+                            "status": "confirmed",
+                        }
+                    ]
+        return payload
+
+    monkeypatch.setattr(diagnosis, "build_profiles", build_profiles_with_causes)
+    response = training_client.post(
+        "/api/training/diagnosis",
+        json={
+            "scope": {"mode": "student", "student_ids": ["12"]},
+            "exam_scope": {"mode": "current", "session_ids": [14]},
+        },
+    )
+
+    assert response.status_code == 200
+    weak = response.json()["students"][0]["weak_points"][0]
+    assert weak["error_categories"] == ["概念不清"]
+    assert weak["error_patterns"] == ["错用判定条件"]
+    assert weak["source_question_refs"][0]["causes"][0]["category"] == "概念不清"
+
+
 def test_training_diagnosis_returns_clear_empty_state_for_missing_selection(
     training_client: TestClient,
 ) -> None:

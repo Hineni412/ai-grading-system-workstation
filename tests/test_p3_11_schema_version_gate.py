@@ -77,6 +77,65 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
     } <= tables
 
 
+def test_schema_inspection_is_memoized_until_schema_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend import schema_migrations
+
+    database = tmp_path / "question_bank.db"
+    initialize_database(database)
+    # initialize_database already verified the schema through the same gate;
+    # clear the memo so this test counts only its own calls. gc.collect()
+    # forces the initializer's connection to close and checkpoint the -wal
+    # file, so the file generation is stable before the counted calls begin.
+    import gc
+    gc.collect()
+    schema_migrations._SCHEMA_INSPECT_CACHE.clear()
+
+    calls = 0
+    real_inspect = schema_migrations._inspect_schema_version_uncached
+
+    def counting_inspect(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_inspect(*args, **kwargs)
+
+    monkeypatch.setattr(
+        schema_migrations,
+        "_inspect_schema_version_uncached",
+        counting_inspect,
+    )
+
+    schema_migrations.inspect_schema_version("question_bank", database)
+    schema_migrations.inspect_schema_version("question_bank", database)
+    assert calls == 1
+
+    # A data write changes the db/-wal file generation, so the memo must not
+    # suppress re-verification: integrity/fk checks inspect content, not only
+    # schema.
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO papers (title, semester) VALUES ('memo-probe', '')"
+        )
+    schema_migrations.inspect_schema_version("question_bank", database)
+    assert calls == 2
+    schema_migrations.inspect_schema_version("question_bank", database)
+    assert calls == 2
+
+    # A schema change bumps PRAGMA schema_version, so the next inspection must
+    # re-verify (and reject the drift) instead of replaying the memoized pass.
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE _memo_probe (id INTEGER)")
+    with pytest.raises(SchemaVersionError):
+        schema_migrations.inspect_schema_version("question_bank", database)
+    assert calls == 3
+    # Failed verifications are never memoized.
+    with pytest.raises(SchemaVersionError):
+        schema_migrations.inspect_schema_version("question_bank", database)
+    assert calls == 4
+
+
 def test_exclusive_name_migration_preserves_historical_duplicates_but_blocks_new_ones(
     tmp_path: Path,
 ) -> None:

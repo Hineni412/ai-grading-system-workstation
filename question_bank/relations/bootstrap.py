@@ -24,16 +24,23 @@ def bootstrap_governed_knowledge_identities(
     """
 
     conflicting_keys: set[str] = set()
+    # Load the seeded catalog once; per-row existence checks multiply into
+    # tens of thousands of statements on a warm database.
+    existing_identities = {
+        str(row[0]): (str(row[1]), str(row[2]))
+        for row in connection.execute(
+            "SELECT stable_key, display_name, origin FROM knowledge_tag_identities"
+        ).fetchall()
+    }
+    existing_aliases = {
+        (str(row[0]), str(row[1]))
+        for row in connection.execute(
+            "SELECT stable_key, normalized_alias FROM knowledge_tag_aliases"
+        ).fetchall()
+    }
     for item in CANONICAL_KNOWLEDGE:
         stable_key = normalize_stable_key(item.canonical_id)
-        existing = connection.execute(
-            """
-            SELECT display_name, origin
-            FROM knowledge_tag_identities
-            WHERE stable_key = ?
-            """,
-            (stable_key,),
-        ).fetchone()
+        existing = existing_identities.get(stable_key)
         if existing is None:
             connection.execute(
                 """
@@ -43,6 +50,7 @@ def bootstrap_governed_knowledge_identities(
                 """,
                 (stable_key, item.canonical_name),
             )
+            existing_identities[stable_key] = (item.canonical_name, "builtin")
         elif (
             str(existing[0]) != item.canonical_name
             or str(existing[1]) != "builtin"
@@ -63,6 +71,12 @@ def bootstrap_governed_knowledge_identities(
             normalized_alias = normalize_knowledge_alias(alias)
             if not normalized_alias:
                 continue
+            # Skip the write entirely when the alias row already exists: an
+            # ON CONFLICT DO NOTHING hit still opens a write transaction,
+            # which touches the WAL file on every call.
+            if (stable_key, normalized_alias) in existing_aliases:
+                continue
+            existing_aliases.add((stable_key, normalized_alias))
             connection.execute(
                 """
                 INSERT INTO knowledge_tag_aliases (
@@ -82,16 +96,14 @@ def bootstrap_governed_knowledge_identities(
         ORDER BY id
         """
     ).fetchall()
+    mapped_tag_ids = {
+        int(row[0])
+        for row in connection.execute(
+            "SELECT question_tag_id FROM knowledge_tag_identity_mappings"
+        ).fetchall()
+    }
     for row in historical_rows:
-        existing_mapping = connection.execute(
-            """
-            SELECT stable_key
-            FROM knowledge_tag_identity_mappings
-            WHERE question_tag_id = ?
-            """,
-            (int(row[0]),),
-        ).fetchone()
-        if existing_mapping is not None:
+        if int(row[0]) in mapped_tag_ids:
             # The row identity is stable even if a teacher later edits the
             # visible tag text. Re-running bootstrap must not reinterpret that
             # edit as a move to a different governed identity.

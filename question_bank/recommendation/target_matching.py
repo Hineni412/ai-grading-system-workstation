@@ -269,8 +269,10 @@ def load_question_facets(db_path: Path, resolver: CurrentKnowledgeResolver,
     try:
         cache_key = None
         if question_ids is None:
-            resolved = Path(db_path).resolve()
-            cache_key = (str(resolved), resolver.release_id, _facets_signature(conn))
+            # The signature covers every table feeding the facets, so a request
+            # snapshot copy of the same database shares one entry instead of
+            # re-reading the whole bank under a different path.
+            cache_key = (resolver.release_id, _facets_signature(conn))
             with _FACETS_CACHE_LOCK:
                 cached = _FACETS_CACHE.get(cache_key)
                 if cached is not None:

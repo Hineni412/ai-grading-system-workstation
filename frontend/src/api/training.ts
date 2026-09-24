@@ -448,6 +448,7 @@ export interface TrainingEvidenceReference {
   deduction_reason?: string
   error_summary?: string
   secondary_errors?: Array<Record<string, unknown>>
+  causes?: Array<Record<string, unknown>>
   session_id: number
   session_name: string
   question_id: string
@@ -472,6 +473,8 @@ export interface TrainingWeakPoint {
   actionable_reasons: string[]
   tag_context: Record<string, string[]>
   error_counts: Record<string, Record<string, number>>
+  error_categories?: string[]
+  error_patterns?: string[]
   hierarchy_kind?: 'root' | 'child' | 'parent_summary'
   parent_knowledge_key?: string | null
   parent_knowledge_point?: string | null

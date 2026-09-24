@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from copy import deepcopy
 import json
 from pathlib import Path
+import pickle
 import sqlite3
 import threading
 from typing import Any, Iterable, Mapping
@@ -34,9 +34,12 @@ GENERIC_ERROR_REASONS = {
 
 _TAG_PROFILE_CACHE_LOCK = threading.RLock()
 _TAG_PROFILE_CACHE_LIMIT = 12
+# Cached payloads are stored as pickle bytes: rebuilding a hit with
+# pickle.loads is far cheaper than deepcopy on large profiles, and bytes are
+# inherently isolated from caller mutation in both directions.
 _TAG_PROFILE_CACHE: dict[
     tuple[str, ...],
-    tuple[dict[str, Any], dict[str, Any]],
+    tuple[bytes, bytes],
 ] = {}
 
 
@@ -96,8 +99,8 @@ class DiagnosisProfileService:
         with _TAG_PROFILE_CACHE_LOCK:
             cached = _TAG_PROFILE_CACHE.get(cache_key)
         if cached is not None:
-            self.latest_aggregated_mastery = dict(cached[1])
-            return deepcopy(cached[0])
+            self.latest_aggregated_mastery = pickle.loads(cached[1])
+            return pickle.loads(cached[0])
 
         resolved = EvidenceScopeResolver(self.db).resolve(
             scope=scope,
@@ -454,8 +457,8 @@ class DiagnosisProfileService:
         self.latest_aggregated_mastery = dict(aggregated_mastery)
         with _TAG_PROFILE_CACHE_LOCK:
             _TAG_PROFILE_CACHE[cache_key] = (
-                deepcopy(result),
-                dict(aggregated_mastery),
+                pickle.dumps(result, pickle.HIGHEST_PROTOCOL),
+                pickle.dumps(aggregated_mastery, pickle.HIGHEST_PROTOCOL),
             )
             while len(_TAG_PROFILE_CACHE) > _TAG_PROFILE_CACHE_LIMIT:
                 _TAG_PROFILE_CACHE.pop(next(iter(_TAG_PROFILE_CACHE)))

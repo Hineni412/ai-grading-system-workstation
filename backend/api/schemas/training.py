@@ -540,6 +540,7 @@ class TrainingEvidenceReference(_TrainingModel):
     deduction_reason: str = ""
     error_summary: str = ""
     secondary_errors: list[dict[str, Any]] = Field(default_factory=list)
+    causes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TrainingWeakPoint(_TrainingModel):
@@ -563,6 +564,8 @@ class TrainingWeakPoint(_TrainingModel):
     direct_evidence_count: int = Field(default=0, ge=0)
     child_evidence_count: int = Field(default=0, ge=0)
     precise_training_evidence_count: int = Field(default=0, ge=0)
+    error_categories: list[str] = Field(default_factory=list)
+    error_patterns: list[str] = Field(default_factory=list)
 
 
 class TrainingStudentProfile(_TrainingModel):
