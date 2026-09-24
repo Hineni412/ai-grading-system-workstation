@@ -9,7 +9,7 @@ from backend.config_generation.score_allocation import (
     score_allocation_structure_summary,
     validate_score_allocation_payload,
 )
-from session_manager import _whole_generation_retry_prompt
+from session_manager import _aligned_whole_generation_rules, _whole_generation_retry_prompt
 
 
 def _payload() -> dict:
@@ -86,6 +86,13 @@ def test_whole_generation_retry_prompt_includes_exact_local_failure() -> None:
     assert "Q11(P1)" in prompt
     assert "相差 5" in prompt
     assert "重新返回完整整卷评分标准" in prompt
+
+
+def test_whole_generation_rules_scope_any_of_wording() -> None:
+    rules = _aligned_whole_generation_rules()
+
+    assert "只用于同一个数学结果的不同写法" in rules
+    assert "required_elements" in rules
 
 
 def test_repairable_twelve_question_allocation_is_normalized_before_validation() -> None:

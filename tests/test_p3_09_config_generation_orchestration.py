@@ -164,6 +164,7 @@ def test_active_batch_prompt_keeps_current_scoring_contract() -> None:
     assert "knowledge_name" not in prompt
     assert "allow_alternative_methods=false 不禁止同一方法的等价表达" in prompt
     assert "扣分规则必须指出缺失的数学依据" in prompt
+    assert "只用于同一个数学结果的不同写法" in prompt
 
 
 def test_score_allocation_prompt_snapshot_is_exact() -> None:
@@ -214,6 +215,7 @@ def test_manual_refinement_prompt_keeps_ids_and_excludes_knowledge() -> None:
     assert "教师创建 the parts 部分" not in prompt
     assert "补入 equivalent_rules" in prompt
     assert "不把省略简单算术展开判作缺少证明" in prompt
+    assert "只用于同一个数学结果的不同写法" in prompt
 
 
 def test_gateway_adapter_preserves_single_request_methods_and_parameters() -> None:

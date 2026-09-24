@@ -38,7 +38,7 @@ from grading_limits import (
     SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,
     bounded_int,
 )
-from grading_completeness import audit_grading_details, major_question_id, major_question_ids_for_issues, merge_detail_metadata, details_require_review
+from grading_completeness import audit_grading_details, is_objective_detail, major_question_id, major_question_ids_for_issues, merge_detail_metadata, details_require_review, review_confidence_threshold
 from image_preprocessor import enhance_image_file, is_standard_pdf_page
 from integration.question_tag_projection_service import QuestionTagProjectionService
 from llm_client import LLMClient
@@ -1576,7 +1576,7 @@ def _merge_teacher_score_locks_into_result(
             and (
                 (
                     detail.confidence_score is not None
-                    and detail.confidence_score < 80
+                    and detail.confidence_score < review_confidence_threshold(is_objective_detail(detail))
                 )
                 or str(detail.error_category or "") == "需复核"
             )

@@ -487,6 +487,7 @@ def assemble_session_analysis(
         # Match the review queue's per-item rules; the original whole-paper AI
         # flag remains historical after a teacher confirms a flagged answer.
         from backend.review.service import _is_substantive_review_reason
+        from grading_completeness import is_objective_detail
         pending_review = False
         for detail in details_by_result.get(student.result_id, []):
             qid = resolve_known_question_id(str(detail.get("question_id") or ""), score_map) or str(detail.get("question_id") or "")
@@ -498,6 +499,7 @@ def assemble_session_analysis(
                     str(detail.get("deduction_reason") or ""),
                     str(detail.get("error_category") or ""),
                     detail.get("confidence_score"),
+                    objective=is_objective_detail(detail),
                 )
         student.needs_review = pending_review
     # 名册中缺考且无结果的学生也要进入未生成清单。

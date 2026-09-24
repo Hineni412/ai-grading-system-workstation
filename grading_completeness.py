@@ -3,12 +3,40 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from question_id_contract import (
     QuestionIdCatalog,
     canonicalize_question_document,
 )
+
+
+REVIEW_CONFIDENCE_THRESHOLD = 80.0
+OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD = 70.0
+_OBJECTIVE_METADATA_SOURCES = {
+    "objective_paper_recognition",
+    "objective_batch_recognition",
+}
+
+
+def review_confidence_threshold(objective: bool) -> float:
+    return OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD if objective else REVIEW_CONFIDENCE_THRESHOLD
+
+
+def is_objective_detail(detail: Any, metadata_item: Mapping | None = None) -> bool:
+    """Objective questions auto-score via the objective recognition paths and
+    always carry knowledge_ids == ["OBJECTIVE"]; subjective details do not."""
+    if isinstance(metadata_item, Mapping) and str(
+        metadata_item.get("source") or ""
+    ) in _OBJECTIVE_METADATA_SOURCES:
+        return True
+    knowledge_ids = _detail_value(detail, "knowledge_ids")
+    if isinstance(knowledge_ids, str):
+        try:
+            knowledge_ids = json.loads(knowledge_ids)
+        except json.JSONDecodeError:
+            knowledge_ids = None
+    return isinstance(knowledge_ids, list) and knowledge_ids == ["OBJECTIVE"]
 
 
 @dataclass(frozen=True)
@@ -46,7 +74,8 @@ def details_require_review(details: list[Any], raw_json: dict) -> bool:
         confidence = _detail_value(detail, "confidence_score")
         reason = str(_detail_value(detail, "deduction_reason") or "")
         item = metadata.get(str(_detail_value(detail, "question_id"))) or {}
-        if (confidence is not None and float(confidence) < 80) or "需复核" in category or "需复核" in reason:
+        threshold = review_confidence_threshold(is_objective_detail(detail, item))
+        if (confidence is not None and float(confidence) < threshold) or "需复核" in category or "需复核" in reason:
             return True
         if any(item.get(key) is True for key in ("need_review", "needs_human_review")) or any(
             item.get(key) for key in ("step_assessments_error", "score_contract_error")

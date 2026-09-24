@@ -128,12 +128,13 @@ def test_uncertain_step_point_forces_teacher_review() -> None:
     assert "S2" in (detail.deduction_reason or "")
 
 
-def test_alternative_solution_forces_teacher_review() -> None:
+def test_alternative_solution_keeps_flag_without_forcing_review() -> None:
     from hybrid_batch_grading_service import _detail_from_ai_item
     detail, error, metadata = _detail_from_ai_item(
         {
             "question_id": "Q1(P1)", "score_awarded": 6, "confidence_score": 95,
             "observed_answer": "以坐标法完成证明",
+            "needs_human_review": False,
             "alternative_solution_detected": True,
             "alternative_solution_summary": "坐标法",
             "step_assessments": [
@@ -147,9 +148,36 @@ def test_alternative_solution_forces_teacher_review() -> None:
     )
     assert not error
     assert detail is not None
+    assert metadata["needs_human_review"] is False
+    assert metadata["alternative_solution_detected"] is True
+    assert detail.error_summary != "alternative_method_review"
+    assert "使用参考答案之外的方法，已按各步骤数学目标整步判定" in (detail.deduction_reason or "")
+    assert "请教师确认" not in (detail.deduction_reason or "")
+
+
+def test_alternative_solution_with_uncertain_step_still_needs_review() -> None:
+    from hybrid_batch_grading_service import _detail_from_ai_item
+    detail, error, metadata = _detail_from_ai_item(
+        {
+            "question_id": "Q1(P1)", "score_awarded": 6, "confidence_score": 95,
+            "observed_answer": "以坐标法完成证明",
+            "alternative_solution_detected": True,
+            "alternative_solution_summary": "坐标法",
+            "step_assessments": [
+                {"step_id": "S1", "achievement": "full", "score_awarded": 3,
+                 "student_evidence": "建立坐标系并核验条件", "missing_or_error": "", "reason": "条件达成"},
+                {"step_id": "S2", "achievement": "uncertain", "score_awarded": 3,
+                 "student_evidence": "字迹模糊的结论", "missing_or_error": "",
+                 "reason": "看不清是否表达了等价结论"},
+            ],
+        },
+        {"Q1(P1)"}, 80, spec=_PROCESS_SPEC,
+    )
+    assert not error
+    assert detail is not None
     assert metadata["needs_human_review"] is True
-    assert detail.error_summary == "alternative_method_review"
-    assert "参考答案之外的方法" in (detail.deduction_reason or "")
+    assert detail.error_summary == "uncertain_step_points"
+    assert "使用参考答案之外的方法，已按各步骤数学目标整步判定" in (detail.deduction_reason or "")
 
 
 SPEC = MajorQuestionSpec(
