@@ -297,10 +297,22 @@ def test_training_second_snapshot_failure_is_sanitized_and_cleans_first(
             )
             yield connection
 
+    @contextmanager
+    def fail_direct_bank_read(db_path: Path, **kwargs):
+        raise QuestionBankSnapshotUnavailable(
+            "C:/private/question_bank.db changed"
+        )
+        yield  # pragma: no cover - unreachable, keeps this a context manager
+
     monkeypatch.setattr(
         read_connections,
         "captured_sqlite_read_connection",
         fail_second_capture,
+    )
+    monkeypatch.setattr(
+        read_connections,
+        "_direct_question_bank_read",
+        fail_direct_bank_read,
     )
     app = create_app()
     app.dependency_overrides[get_path_manager] = lambda: paths
@@ -401,6 +413,64 @@ def test_training_diagnosis_accepts_cause_fields_in_weak_points(
     assert weak["error_categories"] == ["概念不清"]
     assert weak["error_patterns"] == ["错用判定条件"]
     assert weak["source_question_refs"][0]["causes"][0]["category"] == "概念不清"
+
+
+def test_training_diagnosis_caches_identical_grouping_requests(
+    training_client: TestClient,
+    training_services,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+
+    from backend.api.routers import training as training_router
+
+    diagnosis, _practice, _tasks = training_services
+    training_router._GROUPING_RESULT_CACHE.clear()
+
+    calls: list[dict] = []
+
+    def fake_chapter_groups(**kwargs):
+        calls.append(kwargs)
+        return {
+            "version": 1,
+            "groups": [],
+            "unassigned": [],
+            "selection": None,
+            "scope_keys": list(kwargs["config"].group_scope_keys),
+            "warnings": [],
+            "summary": {"student_count": 0},
+        }
+
+    fake_module = SimpleNamespace(
+        db_path=diagnosis.question_bank_db_path,
+        current_knowledge=SimpleNamespace(release_id="rel-test"),
+        clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        chapter_groups=fake_chapter_groups,
+    )
+    training_client.app.dependency_overrides[training_router._grouping_module] = (
+        lambda: fake_module
+    )
+    body = {
+        "scope": {"mode": "student", "student_ids": ["12"]},
+        "exam_scope": {"mode": "current", "session_ids": [14]},
+        "grouping": {"scope_keys": ["kp_x"]},
+    }
+
+    first = training_client.post("/api/training/diagnosis", json=body)
+    second = training_client.post("/api/training/diagnosis", json=body)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["grouping"] == second.json()["grouping"]
+    # Second identical request is a whole-result cache hit.
+    assert len(calls) == 1
+
+    changed = {
+        **body,
+        "grouping": {**body["grouping"], "question_count": 9},
+    }
+    third = training_client.post("/api/training/diagnosis", json=changed)
+    assert third.status_code == 200
+    assert len(calls) == 2
 
 
 def test_training_diagnosis_returns_clear_empty_state_for_missing_selection(

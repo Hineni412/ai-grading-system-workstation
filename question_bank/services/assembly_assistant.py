@@ -6,6 +6,8 @@ from dataclasses import replace
 from statistics import median
 from typing import Any, Mapping, Sequence
 
+from integration.data_generation import commit_generation
+from integration.result_cache import ResultCache
 from question_bank.database.schema import connect
 from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.recommendation.recommendation_engine import normalize_question_text, text_similarity
@@ -20,6 +22,18 @@ from question_bank.recommendation.target_matching import load_question_facets, m
 # Stems this alike inside one difficulty band are shown once; alternates stay
 # reachable through the representative card instead of crowding the shortlist.
 SIMILAR_FOLD_THRESHOLD = 0.9
+
+# Pool-invariant work (eligible ids, question facets) is reused across
+# weakness switches for the same (bank generation, release, volume, chapter,
+# type, difficulty band, exclusions).
+_CONTEXT_CACHE = ResultCache(limit=16)
+# Identity/difficulty/text maps are scoped to pool ∪ exclusions so unrelated
+# questions never enter the expensive exact-content comparison; they are
+# cached per pool set so revisiting the same weakness set is free.
+_MAP_CACHE = ResultCache(limit=64)
+# Per-key ranked pools additionally depend on the class diagnosis; callers
+# pass cache_scope (the diagnosis cache key) to enable reuse.
+_KEY_POOL_CACHE = ResultCache(limit=64)
 
 
 def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id: str,
@@ -83,11 +97,187 @@ def _question_ids(service: QuestionBankReadService, filters: QuestionReadFilters
         page += 1
 
 
+def _context_key(
+    *,
+    read_service: QuestionBankReadService,
+    resolver: Any,
+    volume_id: str,
+    chapter_id: str,
+    question_type: str,
+    difficulty_min: int,
+    difficulty_max: int,
+) -> tuple[Any, ...]:
+    return (
+        "assistant-context-v1",
+        str(read_service.db_path.resolve(strict=False)),
+        commit_generation(read_service.db_path),
+        str(getattr(resolver, "release_id", "")),
+        volume_id,
+        chapter_id,
+        question_type,
+        difficulty_min,
+        difficulty_max,
+    )
+
+
+def _build_context(
+    *,
+    read_service: QuestionBankReadService,
+    resolver: Any,
+    volume_id: str,
+    question_type: str,
+    difficulty_min: int,
+    difficulty_max: int,
+) -> dict[str, Any]:
+    """Pool-invariant reads: eligible ids and question facets.
+
+    Every per-key pool is a subset of the eligible set (same filters minus the
+    knowledge-point filter), so both are reusable when only the selected
+    weakness changes.
+    """
+
+    filters = QuestionReadFilters(
+        question_types=(question_type,) if question_type else (),
+        difficulty_min=difficulty_min, difficulty_max=difficulty_max,
+        curriculum_volume_ids=(volume_id,),
+        collapse_duplicates=False,
+        scope_mode="primary",
+    )
+    return {
+        "eligible_ids": _question_ids(read_service, filters),
+        "facets": load_question_facets(read_service.db_path, resolver),
+    }
+
+
+def _build_maps(
+    *,
+    read_service: QuestionBankReadService,
+    pool_ids: set[int],
+    excluded_question_ids: set[int],
+) -> dict[str, Any]:
+    """Identity/difficulty/text maps bounded to pool ∪ exclusions."""
+
+    universe = sorted(pool_ids | {int(qid) for qid in excluded_question_ids})
+    with connect(read_service.db_path) as connection:
+        identities = exact_identity_map(
+            connection,
+            data_root=read_service.data_root or read_service.db_path.parent.parent,
+            question_ids=universe,
+        )
+        # Only pool questions are consumed below; a chunked IN scan avoids
+        # materializing the whole bank on every request.
+        rows = []
+        pool_list = sorted(pool_ids)
+        for start in range(0, len(pool_list), 500):
+            batch = pool_list[start:start + 500]
+            rows.extend(connection.execute(
+                "SELECT id, difficulty, question_type, question_text FROM questions"
+                " WHERE is_deleted=0 AND id IN (" + ",".join("?" for _ in batch) + ")",
+                batch).fetchall())
+    difficulties = {int(row["id"]): float(row["difficulty"]) for row in rows
+                    if int(row["id"]) in pool_ids and row["difficulty"] is not None
+                    and 1 <= float(row["difficulty"]) <= 10}
+    texts = {int(row["id"]): (str(row["question_text"] or ""), str(row["question_type"] or ""))
+             for row in rows if int(row["id"]) in pool_ids}
+    return {
+        "identities": identities,
+        "difficulties": difficulties,
+        "texts": texts,
+    }
+
+
+def _key_pool(
+    *,
+    key: str,
+    knowledge_point: str,
+    students: Sequence[Mapping[str, Any]],
+    read_service: QuestionBankReadService,
+    base_filters: QuestionReadFilters,
+    facets: Mapping[int, Any],
+    index: Mapping[str, Any],
+    eligible_ids: Sequence[int],
+    allowed_chapters: set[str],
+    difficulty_max: int,
+) -> tuple[list[int], dict[tuple[str, int], dict[str, Any]], float | None]:
+    pool = _question_ids(
+        read_service,
+        replace(base_filters, knowledge_points=(knowledge_point,)),
+    )
+    source_parts = []
+    source_tasks = []
+    aims = []
+    for student in students:
+        for point in student.get("weak_points", []):
+            if point["knowledge_key"] != key:
+                continue
+            for ref in _loss_refs(point):
+                if float(ref.get("score_awarded") or 0) >= float(ref.get("full_score") or 0):
+                    continue
+                assessment = ref.get("assessment") or {}
+                if assessment.get("eligible") is False or float(assessment.get("evidence_weight", 1)) < .999:
+                    continue
+                aim = _loss_difficulty(ref, student.get("score_rate"), difficulty_max)
+                if aim is not None:
+                    aims.append(aim)
+                part_id = assessment.get("evidence_part_id") or assessment.get("part_id")
+                source_facet = facets.get(int(ref.get("bank_question_id") or 0), {})
+                parts = [part for part in source_facet.get("parts", [])
+                         if (not part_id or part["part_id"] == part_id) and key in part["direct_keys"]]
+                source_parts.extend(parts)
+                enriched = {**ref, "practice_observations_by_key": {
+                    key: [part for part in source_facet.get("practice_observations_by_key", {}).get(key, [])
+                          if not part_id or part["part_id"] == part_id]},
+                    "task_evidence_version_matches": bool(assessment.get("evidence_version_id")) and
+                    assessment["evidence_version_id"] == source_facet.get("evidence_version_id")}
+                source_tasks.append((enriched, parts, _training_tasks({"stable_key": key, "source_question_refs": [enriched]})))
+    target_difficulty = round(median(aims), 1) if aims else None
+    if not source_parts:
+        return pool, {}, target_difficulty
+    ranked = []
+    details: dict[tuple[str, int], dict[str, Any]] = {}
+    for qid in eligible_ids:
+        parts = facets.get(qid, {}).get("parts", [])
+        chapters = {chapter for part in parts for chapter in part["chapter_keys"]}
+        if not chapters or not chapters <= allowed_chapters:
+            continue
+        options = []
+        candidate = {"practice_observations_by_key": facets.get(qid, {}).get("practice_observations_by_key", {})}
+        for ref, anchors, tasks in source_tasks:
+            for part in parts:
+                match = match_target(key, anchors, [part], index)
+                if match is None:
+                    continue
+                direct = match["match_level"] <= 2 or (not key.startswith("sk_") and key in part["direct_keys"])
+                full_response = not tasks or any(p["part_id"] == part["part_id"] and _practice_part_fits(p, tasks)
+                                                 for p in candidate["practice_observations_by_key"].get(key, []))
+                task_match = None
+                if not direct and any(set(anchor["chapter_keys"]) & set(part["chapter_keys"])
+                                      and (not anchor["topic_keys"] or set(anchor["topic_keys"]) <= set(part["topic_keys"]))
+                                      for anchor in anchors):
+                    task_match = _task_matched_part(candidate, key, ref, tasks, {part["part_id"]})
+                kind = "direct" if direct else "task_matched" if task_match else "supplement"
+                label = ("同技能环节练习（不代替完整书写）" if direct and not full_response else
+                         "原小问环节匹配（不代替完整书写）" if task_match and task_match.get("practice_role") == "step_practice" else
+                         "原小问任务匹配（已有解题步骤）" if task_match else
+                         "同技能，作答要求不足（仅作补充）" if not direct and key in part["direct_keys"] else match["match_label"])
+                options.append({**match, "selection_kind": kind, "match_label": label})
+        if options:
+            match = min(options, key=lambda m: (m["selection_kind"] == "supplement", m["match_level"]))
+            details[key, qid] = match
+            ranked.append(qid)
+    return (
+        sorted(ranked, key=lambda qid: (details[key, qid]["selection_kind"] == "supplement", details[key, qid]["match_level"], qid)),
+        details,
+        target_difficulty,
+    )
+
+
 def shortlist_candidates(
     *, diagnosis: Mapping[str, Any], read_service: QuestionBankReadService,
     volume_id: str, chapter_id: str, target_keys: list[str] | None,
     question_type: str, difficulty_min: int, difficulty_max: int,
     excluded_question_ids: set[int], limit: int | None = None,
+    cache_scope: object = None,
 ) -> dict[str, Any]:
     resolver = read_service.current_knowledge or CurrentKnowledgeResolver.from_active_database(read_service.db_path)
     weaknesses = class_weaknesses(diagnosis, volume_id=volume_id, chapter_id=chapter_id,
@@ -119,100 +309,65 @@ def shortlist_candidates(
     # Identity-only queries rank the pool before loading rich content for the
     # final shortlist. Duplicate folding and governed tag aliases stay shared
     # with the existing question browser.
-    # Query each selected point once. The union then bounds image decoding;
-    # unrelated questions never enter the expensive exact-content comparison.
-    pools = {key: _question_ids(read_service, replace(filters, knowledge_points=(by_key[key]["knowledge_point"],))) for key in selected}
-    index = target_index(resolver)
-    facets = load_question_facets(read_service.db_path, resolver)
     volume = curriculum_volume(volume_id=volume_id)
     allowed_chapters = {chapter["knowledge_id"] for chapter in volume["chapters"]
                         if not chapter_id or chapter["id"] == chapter_id}
+    context_key = _context_key(
+        read_service=read_service, resolver=resolver, volume_id=volume_id,
+        chapter_id=chapter_id, question_type=question_type,
+        difficulty_min=difficulty_min, difficulty_max=difficulty_max,
+    )
+    context = _CONTEXT_CACHE.get_or_compute(
+        context_key,
+        lambda: _build_context(
+            read_service=read_service, resolver=resolver, volume_id=volume_id,
+            question_type=question_type, difficulty_min=difficulty_min,
+            difficulty_max=difficulty_max,
+        ),
+    )
+    index = target_index(resolver)
+    facets = context["facets"]
     # The manual assistant retains the teacher's difficulty bounds. Candidate
     # context must remain inside the selected chapter(s), including all parts.
-    eligible_ids = _question_ids(read_service, replace(filters, knowledge_points=()))
+    eligible_ids = context["eligible_ids"]
     details: dict[tuple[str, int], dict[str, Any]] = {}
+    pools: dict[str, list[int]] = {}
     for key in selected:
-        source_parts = []
-        source_tasks = []
-        aims = []
-        for student in students:
-            for point in student.get("weak_points", []):
-                if point["knowledge_key"] != key:
-                    continue
-                for ref in _loss_refs(point):
-                    if float(ref.get("score_awarded") or 0) >= float(ref.get("full_score") or 0):
-                        continue
-                    assessment = ref.get("assessment") or {}
-                    if assessment.get("eligible") is False or float(assessment.get("evidence_weight", 1)) < .999:
-                        continue
-                    aim = _loss_difficulty(ref, student.get("score_rate"), difficulty_max)
-                    if aim is not None:
-                        aims.append(aim)
-                    part_id = assessment.get("evidence_part_id") or assessment.get("part_id")
-                    source_facet = facets.get(int(ref.get("bank_question_id") or 0), {})
-                    parts = [part for part in source_facet.get("parts", [])
-                             if (not part_id or part["part_id"] == part_id) and key in part["direct_keys"]]
-                    source_parts.extend(parts)
-                    enriched = {**ref, "practice_observations_by_key": {
-                        key: [part for part in source_facet.get("practice_observations_by_key", {}).get(key, [])
-                              if not part_id or part["part_id"] == part_id]},
-                        "task_evidence_version_matches": bool(assessment.get("evidence_version_id")) and
-                        assessment["evidence_version_id"] == source_facet.get("evidence_version_id")}
-                    source_tasks.append((enriched, parts, _training_tasks({"stable_key": key, "source_question_refs": [enriched]})))
-        by_key[key]["target_difficulty"] = round(median(aims), 1) if aims else None
-        if not source_parts:
-            continue  # Existing exact-tag selection remains available without a wrong-question anchor.
-        ranked = []
-        for qid in eligible_ids:
-            parts = facets.get(qid, {}).get("parts", [])
-            chapters = {chapter for part in parts for chapter in part["chapter_keys"]}
-            if not chapters or not chapters <= allowed_chapters:
-                continue
-            options = []
-            candidate = {"practice_observations_by_key": facets.get(qid, {}).get("practice_observations_by_key", {})}
-            for ref, anchors, tasks in source_tasks:
-                for part in parts:
-                    match = match_target(key, anchors, [part], index)
-                    if match is None:
-                        continue
-                    direct = match["match_level"] <= 2 or (not key.startswith("sk_") and key in part["direct_keys"])
-                    full_response = not tasks or any(p["part_id"] == part["part_id"] and _practice_part_fits(p, tasks)
-                                                     for p in candidate["practice_observations_by_key"].get(key, []))
-                    task_match = None
-                    if not direct and any(set(anchor["chapter_keys"]) & set(part["chapter_keys"])
-                                          and (not anchor["topic_keys"] or set(anchor["topic_keys"]) <= set(part["topic_keys"]))
-                                          for anchor in anchors):
-                        task_match = _task_matched_part(candidate, key, ref, tasks, {part["part_id"]})
-                    kind = "direct" if direct else "task_matched" if task_match else "supplement"
-                    label = ("同技能环节练习（不代替完整书写）" if direct and not full_response else
-                             "原小问环节匹配（不代替完整书写）" if task_match and task_match.get("practice_role") == "step_practice" else
-                             "原小问任务匹配（已有解题步骤）" if task_match else
-                             "同技能，作答要求不足（仅作补充）" if not direct and key in part["direct_keys"] else match["match_label"])
-                    options.append({**match, "selection_kind": kind, "match_label": label})
-            if options:
-                match = min(options, key=lambda m: (m["selection_kind"] == "supplement", m["match_level"]))
-                details[key, qid] = match
-                ranked.append(qid)
-        pools[key] = sorted(ranked, key=lambda qid: (details[key, qid]["selection_kind"] == "supplement", details[key, qid]["match_level"], qid))
+        compute = lambda key=key: _key_pool(  # noqa: B023
+            key=key,
+            knowledge_point=by_key[key]["knowledge_point"],
+            students=students,
+            read_service=read_service,
+            base_filters=filters,
+            facets=facets,
+            index=index,
+            eligible_ids=eligible_ids,
+            allowed_chapters=allowed_chapters,
+            difficulty_max=difficulty_max,
+        )
+        if cache_scope is not None:
+            pool, key_details, target_difficulty = _KEY_POOL_CACHE.get_or_compute(
+                ("assistant-pool-v1", context_key, cache_scope, key),
+                compute,
+            )
+        else:
+            pool, key_details, target_difficulty = compute()
+        by_key[key]["target_difficulty"] = target_difficulty
+        pools[key] = pool
+        details.update(key_details)
     pool_ids = set(qid for ids in pools.values() for qid in ids)
-    with connect(read_service.db_path) as connection:
-        identities = exact_identity_map(connection, data_root=read_service.data_root or read_service.db_path.parent.parent,
-                                        question_ids=sorted(pool_ids | excluded_question_ids))
-        # Only pool questions are consumed below; a chunked IN scan avoids
-        # materializing the whole bank on every request.
-        rows = []
-        pool_list = sorted(pool_ids)
-        for start in range(0, len(pool_list), 500):
-            batch = pool_list[start:start + 500]
-            rows.extend(connection.execute(
-                "SELECT id, difficulty, question_type, question_text FROM questions"
-                " WHERE is_deleted=0 AND id IN (" + ",".join("?" for _ in batch) + ")",
-                batch).fetchall())
-        difficulties = {int(row["id"]): float(row["difficulty"]) for row in rows
-                        if int(row["id"]) in pool_ids and row["difficulty"] is not None
-                        and 1 <= float(row["difficulty"]) <= 10}
-        texts = {int(row["id"]): (str(row["question_text"] or ""), str(row["question_type"] or ""))
-                 for row in rows if int(row["id"]) in pool_ids}
+    maps = _MAP_CACHE.get_or_compute(
+        ("assistant-maps-v1", context_key,
+         tuple(sorted(pool_ids | {int(qid) for qid in excluded_question_ids}))),
+        lambda: _build_maps(
+            read_service=read_service,
+            pool_ids=pool_ids,
+            excluded_question_ids=excluded_question_ids,
+        ),
+    )
+    identities = maps["identities"]
+    difficulties = maps["difficulties"]
+    texts = maps["texts"]
     excluded_keys = {identities[qid] for qid in excluded_question_ids if identities.get(qid)}
     available: set[int] = set()
     seen: set[str] = set()

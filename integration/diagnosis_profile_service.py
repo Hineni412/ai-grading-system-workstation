@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.compat import open_grading_repositories
+from integration.data_generation import commit_generation
 from integration.evidence_scope import EvidenceScopeResolver
 from integration.question_tag_projection_service import (
     QuestionTagProjection,
@@ -43,6 +44,63 @@ _TAG_PROFILE_CACHE: dict[
 ] = {}
 
 
+class _ProfileFlight:
+    """Single-flight slot for an in-progress profile computation."""
+
+    __slots__ = ("event", "error")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.error: BaseException | None = None
+
+
+_TAG_PROFILE_FLIGHTS: dict[tuple[str, ...], _ProfileFlight] = {}
+
+
+def _claim_or_wait_tag_profile(
+    cache_key: tuple[str, ...],
+) -> tuple[bytes, bytes] | None:
+    """Return the cached entry, or None when this caller owns the compute.
+
+    Concurrent callers for the same key wait on the in-progress flight
+    instead of duplicating the computation.
+    """
+
+    while True:
+        with _TAG_PROFILE_CACHE_LOCK:
+            cached = _TAG_PROFILE_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            flight = _TAG_PROFILE_FLIGHTS.get(cache_key)
+            if flight is None:
+                flight = _ProfileFlight()
+                _TAG_PROFILE_FLIGHTS[cache_key] = flight
+                return None
+        flight.event.wait()
+        if flight.error is not None:
+            raise flight.error
+
+
+def _release_tag_profile_flight(
+    cache_key: tuple[str, ...],
+    error: BaseException | None = None,
+) -> None:
+    with _TAG_PROFILE_CACHE_LOCK:
+        flight = _TAG_PROFILE_FLIGHTS.pop(cache_key, None)
+        if flight is not None:
+            flight.error = error
+            flight.event.set()
+
+
+def _normalized_profile_scope(
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if exam_scope.get("mode") == "semester":
+        return {**scope, "use_historical_fallback": False}
+    return scope
+
+
 class DiagnosisProfileService:
     def __init__(
         self,
@@ -74,14 +132,15 @@ class DiagnosisProfileService:
     ) -> dict[str, Any]:
         return self.build_tag_profiles(scope=scope, exam_scope=exam_scope)
 
-    def build_tag_profiles(
+    def tag_profile_cache_key(
         self,
         *,
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        if exam_scope.get("mode") == "semester":
-            scope = {**scope, "use_historical_fallback": False}
+    ) -> tuple[str, ...]:
+        """Exact key under which build_tag_profiles caches this request."""
+
+        scope = _normalized_profile_scope(scope, exam_scope)
         source_identity = self.cache_identity or (
             *_path_generation(self.grading_db_path),
             *_path_generation(self.question_bank_db_path),
@@ -89,19 +148,54 @@ class DiagnosisProfileService:
             # 诊断缓存失效，否则 error_categories/causes 看不到新结果。
             *_dir_generation(self.data_root / "reports" / ".class_analysis"),
         )
-        cache_key = (
+        return (
             "\u0000".join(source_identity),
             "tag-profile-part-v6-error-causes",
             str(self.data_root),
             json.dumps(scope, ensure_ascii=False, sort_keys=True, default=str),
             json.dumps(exam_scope, ensure_ascii=False, sort_keys=True, default=str),
         )
-        with _TAG_PROFILE_CACHE_LOCK:
-            cached = _TAG_PROFILE_CACHE.get(cache_key)
+
+    def build_tag_profiles(
+        self,
+        *,
+        scope: Mapping[str, Any],
+        exam_scope: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        cache_key = self.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
+        cached = _claim_or_wait_tag_profile(cache_key)
         if cached is not None:
             self.latest_aggregated_mastery = pickle.loads(cached[1])
             return pickle.loads(cached[0])
+        error: BaseException | None = None
+        try:
+            result, aggregated = self._compute_tag_profiles(
+                scope=_normalized_profile_scope(scope, exam_scope),
+                exam_scope=exam_scope,
+            )
+        except BaseException as exc:
+            error = exc
+            raise
+        else:
+            entry = (
+                pickle.dumps(result, pickle.HIGHEST_PROTOCOL),
+                pickle.dumps(aggregated, pickle.HIGHEST_PROTOCOL),
+            )
+            with _TAG_PROFILE_CACHE_LOCK:
+                _TAG_PROFILE_CACHE[cache_key] = entry
+                while len(_TAG_PROFILE_CACHE) > _TAG_PROFILE_CACHE_LIMIT:
+                    _TAG_PROFILE_CACHE.pop(next(iter(_TAG_PROFILE_CACHE)))
+            self.latest_aggregated_mastery = dict(aggregated)
+            return result
+        finally:
+            _release_tag_profile_flight(cache_key, error)
 
+    def _compute_tag_profiles(
+        self,
+        *,
+        scope: Mapping[str, Any],
+        exam_scope: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         resolved = EvidenceScopeResolver(self.db).resolve(
             scope=scope,
             exam_scope=exam_scope,
@@ -454,15 +548,7 @@ class DiagnosisProfileService:
             "warnings": _unique(warnings),
             "diagnosis_identity": "question_tag",
         }
-        self.latest_aggregated_mastery = dict(aggregated_mastery)
-        with _TAG_PROFILE_CACHE_LOCK:
-            _TAG_PROFILE_CACHE[cache_key] = (
-                pickle.dumps(result, pickle.HIGHEST_PROTOCOL),
-                pickle.dumps(aggregated_mastery, pickle.HIGHEST_PROTOCOL),
-            )
-            while len(_TAG_PROFILE_CACHE) > _TAG_PROFILE_CACHE_LIMIT:
-                _TAG_PROFILE_CACHE.pop(next(iter(_TAG_PROFILE_CACHE)))
-        return result
+        return result, dict(aggregated_mastery)
     def _merge_current_mastery(
         self,
         student_profiles: list[dict[str, Any]],
@@ -949,15 +1035,21 @@ class DiagnosisProfileService:
         }
 
 def _path_generation(path: Path) -> tuple[str, ...]:
+    """Cache identity for a database file: resolved path, file identity, and
+    the commit generation (``PRAGMA data_version`` monitor) so real commits
+    invalidate while read-only opens and checkpoints do not."""
+
     source = Path(path).resolve(strict=False)
-    values = [str(source)]
-    for candidate in (source, Path(f"{source}-wal")):
-        try:
-            stat = candidate.stat()
-            values.append(f"{candidate.name}:{stat.st_size}:{stat.st_mtime_ns}")
-        except FileNotFoundError:
-            values.append(f"{candidate.name}:missing")
-    return tuple(values)
+    try:
+        stat = source.stat()
+        identity = f"{stat.st_dev}:{stat.st_ino}"
+    except OSError:
+        identity = "missing"
+    return (
+        str(source),
+        f"identity:{identity}",
+        f"commits:{commit_generation(source)}",
+    )
 
 
 def _dir_generation(path: Path) -> tuple[str, ...]:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +25,10 @@ from backend.api.schemas.graph import (
     RelationReviewResponse,
     RelationTimelineResponse,
 )
+from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
+from integration.result_cache import ResultCache
+from integration.training_prewarm import record_request
 from question_bank.current_knowledge import CurrentKnowledgeUnavailable
 from question_bank.database.paths import question_bank_db_path
 from question_bank.relations.contracts import KnowledgeRelation
@@ -58,6 +61,10 @@ _GRAPH_SERVICE_CACHE: tuple[
     tuple[str, ...],
     CurrentKnowledgeGraphQueryService,
 ] | None = None
+# Pickle-bytes payload cache keyed on the exact diagnosis cache key plus the
+# normalized query; the question-bank commit generation inside the diagnosis
+# key invalidates entries when evidence or the active release changes.
+_GRAPH_QUERY_CACHE = ResultCache(limit=24)
 
 
 def get_relation_review_service() -> RelationReviewService:
@@ -87,14 +94,12 @@ def get_current_graph_query_service() -> GraphServiceProvider:
 def _cached_current_graph_service(db_path: Path) -> CurrentKnowledgeGraphQueryService:
     global _GRAPH_SERVICE_CACHE
     source = Path(db_path).resolve(strict=False)
-    generation: list[str] = [str(source)]
-    for candidate in (source, Path(f"{source}-wal")):
-        try:
-            stat = candidate.stat()
-            generation.append(f"{candidate.name}:{stat.st_size}:{stat.st_mtime_ns}")
-        except FileNotFoundError:
-            generation.append(f"{candidate.name}:missing")
-    key = tuple(generation)
+    try:
+        stat = source.stat()
+        identity = f"{stat.st_dev}:{stat.st_ino}"
+    except OSError:
+        identity = "missing"
+    key = (str(source), identity, f"commits:{commit_generation(source)}")
     with _GRAPH_SERVICE_CACHE_LOCK:
         if _GRAPH_SERVICE_CACHE is not None and _GRAPH_SERVICE_CACHE[0] == key:
             return _GRAPH_SERVICE_CACHE[1]
@@ -133,20 +138,36 @@ def query_current_graph(
         get_current_graph_query_service
     ),
 ) -> CurrentGraphResponse:
-    profile = _build_profile(body, diagnosis_service)
-    graph_service = _materialize_graph_service(graph_service_provider)
     try:
-        payload = graph_service.query(
-            profile,
-            CurrentGraphQuery(
-                knowledge_keys=tuple(body.knowledge_keys),
-                prerequisite_depth=body.prerequisite_depth,
-            ),
-            mastery_by_key=getattr(
-                diagnosis_service,
-                "latest_aggregated_mastery",
-                None,
-            ),
+        query = CurrentGraphQuery(
+            knowledge_keys=tuple(body.knowledge_keys),
+            prerequisite_depth=body.prerequisite_depth,
+        )
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "graph_query_invalid",
+            "Graph query is invalid",
+        ) from exc
+    graph_service = _materialize_graph_service(graph_service_provider)
+    scope_dump = body.scope.model_dump(exclude_none=True)
+    exam_scope_dump = body.exam_scope.model_dump(exclude_none=True)
+    record_request(
+        "graph",
+        scope=scope_dump,
+        exam_scope=exam_scope_dump,
+        params={
+            "knowledge_keys": list(query.knowledge_keys),
+            "prerequisite_depth": query.prerequisite_depth,
+        },
+    )
+    try:
+        payload = compute_graph_query_payload(
+            diagnosis_service,
+            graph_service,
+            scope=scope_dump,
+            exam_scope=exam_scope_dump,
+            query=query,
         )
     except ValueError as exc:
         raise ApiError(
@@ -486,14 +507,15 @@ def _attach_assessment_evidence(
         )
 
 
-def _build_profile(
-    body: GraphQueryRequest,
+def _build_profile_dicts(
     service: DiagnosisProfileService,
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
 ) -> dict[str, Any]:
     try:
         profile = service.build_tag_profiles(
-            scope=body.scope.model_dump(exclude_none=True),
-            exam_scope=body.exam_scope.model_dump(exclude_none=True),
+            scope=dict(scope),
+            exam_scope=dict(exam_scope),
         )
     except ValueError as exc:
         raise ApiError(
@@ -520,14 +542,66 @@ def _build_profile(
     if callable(time_provider):
         try:
             profile["_mastery_session_times"] = time_provider(
-                exam_scope=body.exam_scope.model_dump(exclude_none=True),
+                exam_scope=dict(exam_scope),
             )
         except (OSError, sqlite3.Error, ValueError):
             profile["_mastery_session_times"] = {}
     return profile
 
 
+def compute_graph_query_payload(
+    diagnosis_service: DiagnosisProfileService,
+    graph_service: CurrentKnowledgeGraphQueryService,
+    *,
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+    query: CurrentGraphQuery,
+) -> dict[str, Any]:
+    """Single compute path shared by /api/graph/query and the prewarm worker."""
+
+    def _compute() -> dict[str, Any]:
+        profile = _build_profile_dicts(
+            diagnosis_service, scope=scope, exam_scope=exam_scope
+        )
+        return graph_service.query(
+            profile,
+            query,
+            mastery_by_key=getattr(
+                diagnosis_service,
+                "latest_aggregated_mastery",
+                None,
+            ),
+        )
+
+    key_fn = getattr(diagnosis_service, "tag_profile_cache_key", None)
+    if not callable(key_fn):
+        return _compute()
+    return _GRAPH_QUERY_CACHE.get_or_compute(
+        (
+            "graph-query-v1",
+            str(Path(graph_service.db_path).resolve(strict=False)),
+            str(getattr(graph_service.resolver, "release_id", "")),
+            key_fn(scope=dict(scope), exam_scope=dict(exam_scope)),
+            query.knowledge_keys,
+            query.prerequisite_depth,
+        ),
+        _compute,
+    )
+
+
+def _build_profile(
+    body: GraphQueryRequest,
+    service: DiagnosisProfileService,
+) -> dict[str, Any]:
+    return _build_profile_dicts(
+        service,
+        body.scope.model_dump(exclude_none=True),
+        body.exam_scope.model_dump(exclude_none=True),
+    )
+
+
 __all__ = [
+    "compute_graph_query_payload",
     "get_current_graph_query_service",
     "get_relation_review_service",
     "router",

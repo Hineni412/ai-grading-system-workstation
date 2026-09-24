@@ -91,6 +91,7 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
 
     manager = None
     ops_service = None
+    prewarm_worker = None
     workspace_services: dict[str, object] = {}
     try:
         owns_manager = get_job_manager not in api.dependency_overrides
@@ -130,11 +131,20 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
             workspace_ai_task_service.recover_interrupted()
             api.state.job_manager = manager
             api.state.workspace_ai_task_service = workspace_ai_task_service
+            from integration.training_prewarm import start_prewarm
+
+            prewarm_worker = start_prewarm(paths, manager)
+            if prewarm_worker is not None:
+                api.state.training_prewarm = prewarm_worker
         if ops_service is not None:
             api.state.ops_write_service = ops_service
         api.state.workspace_services = workspace_services
         yield
     finally:
+        if prewarm_worker is not None:
+            prewarm_worker.stop()
+            if hasattr(api.state, "training_prewarm"):
+                del api.state.training_prewarm
         if manager is not None:
             manager.shutdown()
             if hasattr(api.state, "job_manager"):

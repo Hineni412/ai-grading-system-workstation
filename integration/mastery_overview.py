@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from integration.result_cache import ResultCache
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 
 _TIER_WEAK_MAX = 0.60
@@ -237,4 +238,39 @@ def build_mastery_overview(
     }
 
 
-__all__ = ["build_mastery_overview"]
+_OVERVIEW_CACHE = ResultCache(limit=32)
+
+
+def overview_payload(
+    service: Any,
+    *,
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+    volume_id: str,
+) -> dict[str, Any]:
+    """Cached overview for one (scope, exam_scope, volume) request.
+
+    Keyed on the exact diagnosis cache key so it shares invalidation with
+    the profile cache; results are stored as pickle bytes and each hit is a
+    fresh object.
+    """
+
+    key = (
+        "mastery-overview-v1",
+        service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope),
+        str(volume_id),
+    )
+    return _OVERVIEW_CACHE.get_or_compute(
+        key,
+        lambda: build_mastery_overview(
+            service.build_profiles(scope=scope, exam_scope=exam_scope),
+            volume_id=volume_id,
+        ),
+    )
+
+
+def clear_overview_caches() -> None:
+    _OVERVIEW_CACHE.clear()
+
+
+__all__ = ["build_mastery_overview", "clear_overview_caches", "overview_payload"]

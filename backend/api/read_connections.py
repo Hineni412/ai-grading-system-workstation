@@ -7,11 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from backend.performance.metrics import instrument_sqlite_connection
 from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.compat import open_grading_repositories
+from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.services.question_read_service import (
+    QuestionBankSnapshotBusy,
     QuestionBankSnapshotUnavailable,
     captured_sqlite_read_connection,
 )
@@ -69,11 +72,13 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
         )
         grading_candidate = _main_candidate_path(grading_connection)
 
+        # The ~180 MB question bank is opened directly read-only instead of
+        # copying it per request; the small grading database keeps the
+        # captured snapshot.
         question_bank_connection = stack.enter_context(
-            captured_sqlite_read_connection(
+            _direct_question_bank_read(
                 Path(paths.qb_db_path),
                 required_tables=_QUESTION_BANK_REQUIRED_TABLES,
-                check_same_thread=False,
             )
         )
         question_bank_candidate = _main_candidate_path(question_bank_connection)
@@ -121,6 +126,60 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
                 ) from cleanup_error
 
 
+@contextmanager
+def _direct_question_bank_read(
+    db_path: Path,
+    *,
+    required_tables: frozenset[str],
+) -> Iterator[sqlite3.Connection]:
+    """Open the question bank directly in read-only mode.
+
+    Mirrors ``question_read_service._open_direct_read_connection`` (mode=ro,
+    query_only, one deferred transaction) plus instrumentation, a
+    cross-thread connection, and required-table validation.
+    """
+
+    source = Path(db_path).resolve(strict=False)
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = instrument_sqlite_connection(
+            sqlite3.connect(
+                f"{source.as_uri()}?mode=ro",
+                uri=True,
+                timeout=5.0,
+                check_same_thread=False,
+            )
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN DEFERRED")
+        placeholders = ", ".join("?" for _ in required_tables)
+        rows = connection.execute(
+            f"""
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name IN ({placeholders})
+            """,
+            tuple(sorted(required_tables)),
+        ).fetchall()
+        if not required_tables.issubset({str(row[0]) for row in rows}):
+            raise sqlite3.DatabaseError("Question bank schema is unavailable")
+        yield connection
+    except (OSError, sqlite3.Error) as exc:
+        text = str(exc).casefold()
+        if "locked" in text or "busy" in text:
+            raise QuestionBankSnapshotBusy(
+                "Question bank is busy; retry shortly"
+            ) from exc
+        raise QuestionBankSnapshotUnavailable(
+            "Question bank is unavailable"
+        ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def _main_candidate_path(connection: sqlite3.Connection) -> Path:
     try:
         row = next(
@@ -136,15 +195,21 @@ def _main_candidate_path(connection: sqlite3.Connection) -> Path:
 
 
 def _database_generation(path: Path) -> tuple[str, ...]:
+    """Identity token for cache keys: resolved path, file identity, and the
+    commit generation (``PRAGMA data_version`` monitor). Real commits bump
+    it; read-only opens, checkpoints, and -wal mtime flaps do not."""
+
     source = path.resolve(strict=False)
-    values = [str(source)]
-    for candidate in (source, Path(f"{source}-wal")):
-        try:
-            stat = candidate.stat()
-            values.append(f"{candidate.name}:{stat.st_size}:{stat.st_mtime_ns}")
-        except FileNotFoundError:
-            values.append(f"{candidate.name}:missing")
-    return tuple(values)
+    try:
+        stat = source.stat()
+        identity = f"{stat.st_dev}:{stat.st_ino}"
+    except OSError:
+        identity = "missing"
+    return (
+        str(source),
+        f"identity:{identity}",
+        f"commits:{commit_generation(source)}",
+    )
 
 
 __all__ = [

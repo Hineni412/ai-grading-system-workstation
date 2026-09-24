@@ -43,7 +43,10 @@ from question_bank.services.question_read_service import (
     QuestionBankReadService,
     QuestionBankSnapshotError,
 )
+from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
+from integration.result_cache import ResultCache
+from integration.training_prewarm import record_request
 from question_bank.recommendation.personalized import PersonalizedRecommendationModule
 from question_bank.services.assembly_assistant import shortlist_candidates
 
@@ -51,6 +54,9 @@ from question_bank.services.assembly_assistant import shortlist_candidates
 router = APIRouter(prefix="/api/question-assembly", tags=["question-assembly"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 _LEADING_SCORE = re.compile(r"^[（(]\s*(\d+)\s*分\s*[）)]")
+# Whole-result cache: keyed on the diagnosis key + request body + exclusions +
+# question-bank commit generation, stored as pickle bytes with single-flight.
+_ASSISTANT_CACHE = ResultCache(limit=16)
 
 
 @router.post("/assistant/candidates", response_model=AssemblyAssistantResponse)
@@ -62,27 +68,106 @@ def get_assistant_candidates(
     workspace: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
 ) -> AssemblyAssistantResponse:
     try:
-        if body.difficulty_min > body.difficulty_max:
-            raise ValueError("Difficulty range is reversed")
-        diagnosis = diagnosis_service.build_profiles(
-            scope={"mode": "class", "class_ids": [body.class_id], "use_historical_fallback": False},
-            exam_scope={"mode": "semester", "session_ids": [], "curriculum_volume_id": body.curriculum_volume_id},
-        )
-        excluded = recommendations.current_exam_question_ids(diagnosis) if body.exclude_exam_originals else set()
-        if body.exclude_recent:
-            excluded.update(qid for record in workspace.list_records(limit=5) for qid in record.question_ids)
-        result = shortlist_candidates(
-            diagnosis=diagnosis, read_service=read_service,
-            volume_id=body.curriculum_volume_id, chapter_id=body.chapter_id,
-            target_keys=body.target_keys, question_type=body.question_type,
-            difficulty_min=body.difficulty_min, difficulty_max=body.difficulty_max,
-            excluded_question_ids=excluded,
+        result = compute_assistant_candidates(
+            diagnosis_service=diagnosis_service,
+            read_service=read_service,
+            recommendations=recommendations,
+            workspace=workspace,
+            class_id=body.class_id,
+            curriculum_volume_id=body.curriculum_volume_id,
+            chapter_id=body.chapter_id,
+            target_keys=body.target_keys,
+            question_type=body.question_type,
+            difficulty_min=body.difficulty_min,
+            difficulty_max=body.difficulty_max,
+            exclude_exam_originals=body.exclude_exam_originals,
+            exclude_recent=body.exclude_recent,
         )
     except ValueError as exc:
         raise ApiError(422, "assembly_assistant_scope_invalid", "Class evidence or candidate filters changed") from exc
     except (OSError, sqlite3.Error, QuestionBankSnapshotError) as exc:
         raise ApiError(503, "assembly_assistant_unavailable", "Class evidence or question bank is temporarily unavailable") from exc
     return AssemblyAssistantResponse.model_validate(result)
+
+
+def compute_assistant_candidates(
+    *,
+    diagnosis_service: DiagnosisProfileService,
+    read_service: QuestionBankReadService,
+    recommendations: PersonalizedRecommendationModule,
+    workspace: AssemblyWorkspaceService,
+    class_id: str,
+    curriculum_volume_id: str,
+    chapter_id: str = "",
+    target_keys: list[str] | None = None,
+    question_type: str = "",
+    difficulty_min: int = 1,
+    difficulty_max: int = 10,
+    exclude_exam_originals: bool = True,
+    exclude_recent: bool = True,
+) -> dict:
+    """Single compute path shared by the endpoint and the prewarm worker."""
+    if difficulty_min > difficulty_max:
+        raise ValueError("Difficulty range is reversed")
+    scope = {"mode": "class", "class_ids": [class_id],
+             "use_historical_fallback": False}
+    exam_scope = {"mode": "semester", "session_ids": [],
+                  "curriculum_volume_id": curriculum_volume_id}
+    record_request(
+        "assistant",
+        scope=scope,
+        exam_scope=exam_scope,
+        params={
+            "class_id": class_id,
+            "curriculum_volume_id": curriculum_volume_id,
+            "chapter_id": chapter_id,
+            "target_keys": target_keys,
+            "question_type": question_type,
+            "difficulty_min": difficulty_min,
+            "difficulty_max": difficulty_max,
+            "exclude_exam_originals": exclude_exam_originals,
+            "exclude_recent": exclude_recent,
+        },
+    )
+    diagnosis = diagnosis_service.build_profiles(
+        scope=scope, exam_scope=exam_scope,
+    )
+    excluded = recommendations.current_exam_question_ids(diagnosis) if exclude_exam_originals else set()
+    if exclude_recent:
+        excluded.update(qid for record in workspace.list_records(limit=5) for qid in record.question_ids)
+
+    key_fn = getattr(diagnosis_service, "tag_profile_cache_key", None)
+    diagnosis_key = (
+        key_fn(scope=scope, exam_scope=exam_scope) if callable(key_fn) else None
+    )
+
+    def _compute() -> dict:
+        return shortlist_candidates(
+            diagnosis=diagnosis, read_service=read_service,
+            volume_id=curriculum_volume_id, chapter_id=chapter_id,
+            target_keys=target_keys, question_type=question_type,
+            difficulty_min=difficulty_min, difficulty_max=difficulty_max,
+            excluded_question_ids=excluded,
+            cache_scope=diagnosis_key,
+        )
+
+    if not callable(key_fn):
+        return _compute()
+    return _ASSISTANT_CACHE.get_or_compute(
+        (
+            "assistant-shortlist-v1",
+            str(read_service.db_path.resolve(strict=False)),
+            commit_generation(read_service.db_path),
+            diagnosis_key,
+            chapter_id,
+            None if target_keys is None else tuple(target_keys),
+            question_type,
+            difficulty_min,
+            difficulty_max,
+            tuple(sorted(excluded)),
+        ),
+        _compute,
+    )
 
 
 @router.get("/draft", response_model=AssemblyDraftResponse)
