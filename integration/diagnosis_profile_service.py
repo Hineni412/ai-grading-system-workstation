@@ -82,10 +82,13 @@ class DiagnosisProfileService:
         source_identity = self.cache_identity or (
             *_path_generation(self.grading_db_path),
             *_path_generation(self.question_bank_db_path),
+            # 错因整理物化在各场次 .class_analysis 状态文件里；其变化要让
+            # 诊断缓存失效，否则 error_categories/causes 看不到新结果。
+            *_dir_generation(self.data_root / "reports" / ".class_analysis"),
         )
         cache_key = (
             "\u0000".join(source_identity),
-            "tag-profile-part-v5-semester-evidence",
+            "tag-profile-part-v6-error-causes",
             str(self.data_root),
             json.dumps(scope, ensure_ascii=False, sort_keys=True, default=str),
             json.dumps(exam_scope, ensure_ascii=False, sort_keys=True, default=str),
@@ -123,6 +126,7 @@ class DiagnosisProfileService:
             session_ids=evidence_session_ids,
             projection_by_session=projection_by_session,
         )
+        cause_index = self._error_cause_index(evidence_session_ids)
         selected_session_ids = set(session_ids)
         evidence_rows = [
             row for row in evidence_rows
@@ -168,6 +172,8 @@ class DiagnosisProfileService:
                         "tag_context": defaultdict(list),
                         "primary_errors": Counter(),
                         "secondary_errors": Counter(),
+                        "cause_categories": set(),
+                        "cause_patterns": set(),
                     },
                 )
                 item["score_sum"] += point_score
@@ -194,6 +200,23 @@ class DiagnosisProfileService:
                         else "historical_exam"
                     ),
                 }
+                # 新错因体系：同场次同学同题的物化记录按证据挂到来源引用上，
+                # 未确认的候选项也会附上（由页面按状态自行区分展示）。
+                cause_rows = cause_index.get(
+                    (
+                        int(row.get("session_id") or 0),
+                        _safe_int(row.get("student_id")),
+                        str(row.get("question_id") or ""),
+                    ),
+                    (),
+                )
+                if cause_rows:
+                    reference["causes"] = [dict(cause) for cause in cause_rows]
+                    for cause in cause_rows:
+                        if cause.get("category"):
+                            item["cause_categories"].add(str(cause["category"]))
+                        if cause.get("pattern"):
+                            item["cause_patterns"].add(str(cause["pattern"]))
                 observations = row.get("point_observations")
                 if isinstance(observations, list):
                     reference["assessment"]["point_observations"] = [
@@ -260,6 +283,8 @@ class DiagnosisProfileService:
                 }
                 primary_errors = dict(sorted(item.pop("primary_errors").items()))
                 secondary_errors = dict(sorted(item.pop("secondary_errors").items()))
+                cause_categories = sorted(item.pop("cause_categories"))
+                cause_patterns = sorted(item.pop("cause_patterns"))
                 references = sorted(
                     item["source_question_refs"],
                     key=lambda ref: (ref["session_id"], ref["question_id"]),
@@ -280,6 +305,10 @@ class DiagnosisProfileService:
                             "primary": primary_errors,
                             "secondary": secondary_errors,
                         },
+                        # 新错因体系输出：7 类大类 + 具体错法名；旧 error_types
+                        # 词表由 mastery_adapter 继续按兼容输入换算。
+                        "error_categories": cause_categories,
+                        "error_patterns": cause_patterns,
                     }
                 )
             self._apply_governed_hierarchy(
@@ -701,6 +730,44 @@ class DiagnosisProfileService:
             if target in row.get("question_tags", {}).get("knowledge_point", [])
         ]
 
+    def _error_cause_index(
+        self,
+        session_ids: Iterable[int],
+    ) -> dict[tuple[int, int, str], list[dict[str, Any]]]:
+        """{(session_id, student_id, question_id): [{category, pattern, kind}]}。
+
+        读取错因整理物化的学生错因记录（.class_analysis/error_records），
+        不做指纹校验——诊断页只需要已生成结果的原样引用；文件缺失返回空。
+        """
+        reports_dir = self.data_root / "reports"
+        if not reports_dir.is_dir():
+            return {}
+        from backend.class_analysis import ClassAnalysisStateStore
+
+        store = ClassAnalysisStateStore(reports_dir)
+        index: dict[tuple[int, int, str], list[dict[str, Any]]] = {}
+        for session_id in session_ids:
+            envelopes = (store.load(int(session_id)) or {}).get("error_records") or {}
+            for question_id, envelope in envelopes.items():
+                for row in envelope.get("records") or []:
+                    student_id = _safe_int(row.get("student_id"))
+                    if not student_id:
+                        continue
+                    key = (int(session_id), student_id, str(question_id))
+                    seen = index.setdefault(key, [])
+                    signature = (row.get("kind"), row.get("category"), row.get("pattern"))
+                    if all(
+                        (item.get("kind"), item.get("category"), item.get("pattern")) != signature
+                        for item in seen
+                    ):
+                        seen.append({
+                            "kind": row.get("kind"),
+                            "category": row.get("category"),
+                            "pattern": row.get("pattern"),
+                            "pattern_status": row.get("pattern_status"),
+                        })
+        return index
+
     def _tag_projections(
         self,
         session_ids: Iterable[int],
@@ -750,8 +817,9 @@ class DiagnosisProfileService:
             enriched["assessment"] = exam_assessment_state(projected.assessment, row.get("assessment_state") or {},
                 teacher_final=row.get("teacher_final_revision") is not None,
                 teacher_score=float(row["score_awarded"]) if row.get("teacher_final_revision") is not None else None)
-            if row.get("teacher_final_revision") is None:
-                records = (row.get("assessment_state") or {}).get("step_assessments")
+            teacher_records = _teacher_step_records(projected, row)
+            if row.get("teacher_final_revision") is None or teacher_records is not None:
+                records = teacher_records if teacher_records is not None else (row.get("assessment_state") or {}).get("step_assessments")
                 observations = _step_point_observations(projected, records)
                 contributions = _step_target_contributions(projected, records)
                 if observations is not None:
@@ -759,6 +827,10 @@ class DiagnosisProfileService:
                     enriched["target_contributions"] = contributions
                 elif contributions:
                     enriched["target_contributions"] = contributions
+                if teacher_records is not None:
+                    enriched["assessment"].update(
+                        granularity="step", reason="teacher_step_review", eligible=True,
+                    )
             else:
                 # A teacher's final total does not supply new per-step facts.
                 # Do not reintroduce the superseded AI step scores.
@@ -885,6 +957,30 @@ def _path_generation(path: Path) -> tuple[str, ...]:
     return tuple(values)
 
 
+def _dir_generation(path: Path) -> tuple[str, ...]:
+    """目录级缓存指纹：文件名集合 + 最新修改时间，用于 .class_analysis 状态目录。"""
+    source = Path(path).resolve(strict=False)
+    try:
+        entries = sorted(
+            (item.name, item.stat().st_mtime_ns)
+            for item in source.glob("*.json")
+        )
+    except OSError:
+        return (str(source), "missing")
+    if not entries:
+        return (str(source), "empty")
+    names = ",".join(name for name, _ in entries)
+    newest = max(mtime for _, mtime in entries)
+    return (str(source), f"{len(entries)}:{names}:{newest}")
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
 def _actionable_reasons(value: object) -> list[str]:
     text = str(value or "").replace("；", ";")
     return [
@@ -925,6 +1021,38 @@ def _number(value: object) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _teacher_step_records(projected: Any, row: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+    """Use only the teacher steps attached to the current final-score revision."""
+    review = (row.get("assessment_state") or {}).get("teacher_review")
+    if not isinstance(review, Mapping) or row.get("teacher_final_revision") is None:
+        return None
+    if review.get("revision") != row.get("teacher_final_revision") or review.get("scan_batch_id") != row.get("teacher_final_scan_batch_id"):
+        return None
+    records = review.get("steps")
+    expected = getattr(projected, "steps", ())
+    if not isinstance(records, list) or not expected or len(records) != len(expected):
+        return None
+    if review.get("score_awarded") != row.get("score_awarded"):
+        return None
+    normalized = []
+    for step in expected:
+        matches = [record for record in records if isinstance(record, Mapping)
+                   and record.get("step_id") == step.get("step_id")
+                   and (not step.get("part_id") or record.get("part_id") == step.get("part_id"))]
+        if len(matches) != 1:
+            return None
+        record = matches[0]
+        awarded, maximum = _number(record.get("score_awarded")), _number(step.get("step_score"))
+        if maximum <= 0 or not awarded.is_integer() or awarded < 0 or awarded > maximum:
+            return None
+        if record.get("max_score") != maximum or set(record.get("evidence_point_ids") or []) != set(step.get("evidence_point_ids") or []):
+            return None
+        normalized.append({**record, "achievement": "full" if awarded == maximum else "none"})
+    if sum(_number(record.get("score_awarded")) for record in normalized) != row.get("score_awarded"):
+        return None
+    return normalized
 
 
 def _step_point_observations(projected: Any, step_assessments: object) -> list[dict[str, Any]] | None:

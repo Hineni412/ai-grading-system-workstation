@@ -32,6 +32,7 @@ from question_bank.training_submissions import (
 from tests.phase4.test_personalized_papers import (
     SyntheticPdfConverter,
     _create_command,
+    _diagnosis as _paper_diagnosis,
     paper_workspace,
 )
 from tests.phase4.test_part_assessment_mastery import refined_training_source
@@ -82,6 +83,11 @@ def test_five_mixed_papers_with_different_page_counts_group_correctly(
     reference_weak_points = students[0]["weak_points"]
     for student in students:
         student["weak_points"] = reference_weak_points
+    for point in reference_weak_points:
+        for ref in point["source_question_refs"]:
+            # A strong-but-imperfect source keeps the recorded loss while the
+            # difficulty plan can still reach the seeded 4-6 candidate band.
+            ref["score_awarded"] = 0.8 * ref["full_score"]
     draft = recommendation.create(
         request_token="1" * 32,
         diagnosis=diagnosis,
@@ -264,7 +270,9 @@ def test_shuffled_pages_group_by_signed_identity_and_survive_restart(
     from question_bank.current_knowledge import CurrentKnowledgeResolver
 
     resolver = CurrentKnowledgeResolver.from_active_database(db_path)
-    profile = _diagnosis(student_ids=("SYN-S01",))
+    # The submission stores the draft's diagnosis (paper_workspace applies the
+    # 0.8-rate fixture); reproduce it so the mastery comparison is identical.
+    profile = _paper_diagnosis(student_ids=("SYN-S01",))
     identity = ("SYN-S01", "kp_alg_linear_equation")
     before = CurrentMasteryCalculator(db_path, resolver, clock=lambda: NOW, data_root=data_root).calculate(profile)[identity]
     gateway = FakeTrainingAssessmentGateway(lambda request: {"results": [
@@ -354,6 +362,9 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(refined_tra
     frozen_profile["exam_scope"] = profile["exam_scope"]
     frozen_profile["students"][0]["student_id"] = "1"
     frozen_profile["students"][0]["weak_points"][0]["source_question_refs"][0]["question_difficulty"] = 8
+    # Strong-but-imperfect source: still a loss, but the readiness plan can
+    # reach the difficulty-8 candidate instead of capping at foundation.
+    frozen_profile["students"][0]["weak_points"][0]["source_question_refs"][0]["score_awarded"] = 8
     recommendation = PersonalizedRecommendationModule(db_path=db_path, data_root=data_root, clock=lambda: NOW)
     draft = recommendation.create(request_token="1" * 32, diagnosis=frozen_profile,
         config=PersonalizedRecommendationConfig(question_count=8, difficulty_max=8,

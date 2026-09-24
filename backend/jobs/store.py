@@ -1417,7 +1417,7 @@ class JobStore:
                 continue
             if (
                 payload_session_id == clean_session_id
-                and payload.get("mode") == "generate"
+                and payload.get("mode") in {"generate", "retry"}
                 and payload.get("source_id") == clean_source_id
                 and payload.get("source_revision") == clean_revision
                 and payload.get("generation_mode") == clean_mode
@@ -1742,6 +1742,7 @@ class JobStore:
         expected_rubric_path: str | None = None,
         expected_answer_key_path: str | None = None,
         template_config_path: str | None = None,
+        preserve_question_bank_sync: bool = False,
     ) -> bool:
         clean_session_id = _positive_int(session_id)
         if (expected_rubric_path is None) != (expected_answer_key_path is None):
@@ -1765,6 +1766,9 @@ class JobStore:
                     or str(current["answer_key_path"] or "")
                     != str(answer_key_path)
                 )
+                # Editor saves keep the same question set and re-annotate
+                # evidence ids, so confirmed bank links stay valid.
+                reset_sync = config_changed and not preserve_question_bank_sync
                 if self._find_active_config_session_row(
                     conn,
                     session_id=clean_session_id,
@@ -1803,10 +1807,10 @@ class JobStore:
                         (
                             str(rubric_path), str(answer_key_path),
                             template_config_path,
-                            config_changed,
-                            config_changed,
-                            config_changed,
-                            config_changed,
+                            reset_sync,
+                            reset_sync,
+                            reset_sync,
+                            reset_sync,
                             clean_session_id,
                         ),
                     )
@@ -1834,10 +1838,10 @@ class JobStore:
                         (
                             str(rubric_path),
                             str(answer_key_path),
-                            config_changed,
-                            config_changed,
-                            config_changed,
-                            config_changed,
+                            reset_sync,
+                            reset_sync,
+                            reset_sync,
+                            reset_sync,
                             clean_session_id,
                             str(expected_rubric_path), str(expected_answer_key_path),
                         ),

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import type { ConfigEditorIssue } from '../../api/config-workspace'
 
 type SaveStatus = 'idle' | 'success' | 'conflict' | 'failure' | 'unknown'
 type MappingStatus = 'not_present' | 'refreshed' | 'reconfirm_required'
@@ -7,9 +8,13 @@ type MappingStatus = 'not_present' | 'refreshed' | 'reconfirm_required'
 const props = withDefaults(defineProps<{
   status?: SaveStatus
   mappingStatus?: MappingStatus | null
+  failureReason?: string
+  issues?: ConfigEditorIssue[]
 }>(), {
   status: 'idle',
   mappingStatus: null,
+  failureReason: '',
+  issues: () => [],
 })
 
 const emit = defineEmits<{ reload: [] }>()
@@ -33,6 +38,10 @@ watch(() => props.status, () => { confirmingReload.value = false })
   <div v-else-if="status === 'failure'" class="config-save-result config-save-result--failure" role="alert">
     <strong>本次修改未保存。</strong>
     <span>服务器中的当前版本没有改变，本地修改已保留，可以修正问题后再次保存。</span>
+    <span v-if="failureReason">{{ failureReason }}</span>
+    <ul v-if="issues.length" class="config-save-result__issues">
+      <li v-for="(issue, index) in issues" :key="index">{{ issue.message }}</li>
+    </ul>
   </div>
   <div v-else-if="status === 'conflict'" class="config-save-result config-save-result--conflict" role="alert">
     <strong>服务器已有较新版本，本地修改尚未保存。</strong>

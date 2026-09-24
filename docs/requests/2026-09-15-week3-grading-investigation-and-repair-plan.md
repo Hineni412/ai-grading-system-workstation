@@ -122,7 +122,7 @@
 
 分数没丢不等于补批正确：教师深查依据、候选分和后续诊断会因此受影响。修复代码不会自动找回历史依据；恢复已有记录需单独确认目标，并走相应授权流程。
 
-代码位置：[补批合并](../../grading_service.py:855)、[失败项补批合并](../../grading_service.py:887)、[局部成绩保存](../../backend/repositories/results.py:644)。
+代码位置：[补批合并](../../grading_service.py:855)、[失败项补批合并](../../grading_service.py:887)、局部成绩保存（历史位置 `backend/repositories/results.py:644`）。
 
 ### 8. 复核状态在题目、整卷和页面之间不一致
 
@@ -132,7 +132,7 @@
 
 应保留明确的题目复核状态及原因，再以这些题目状态计算整卷状态，避免只从提示文字推断。正常答错、识别不清、格式失败和数学等价待判，应在现有复核界面中有可理解的不同原因。
 
-代码位置：[主观题接收](../../hybrid_batch_grading_service.py:1290)、[元数据保存](../../hybrid_batch_grading_service.py:1408)、[整卷复核标记](../../hybrid_batch_grading_service.py:1530)、[页面复核判定](../../backend/review/service.py:1231)。
+代码位置：[主观题接收](../../hybrid_batch_grading_service.py:1290)、[元数据保存](../../hybrid_batch_grading_service.py:1408)、[整卷复核标记](../../hybrid_batch_grading_service.py:1530)、页面复核判定（历史位置 `backend/review/service.py:1231`）。
 
 ### 9. 主观题格式失败已有补救，语义质量仍需重点验证
 

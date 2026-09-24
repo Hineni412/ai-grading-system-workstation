@@ -258,6 +258,9 @@ beforeEach(() => {
     call_count: 10,
     estimated_total_tokens: 120000,
     cache_hits: 3,
+    cause_call_count: 0,
+    cause_total_questions: 0,
+    cause_estimated_tokens: 0,
   })
   apiMock.submitTrainingExport.mockResolvedValue(makeJob({
     id: 62,
@@ -648,6 +651,43 @@ describe('file center view', () => {
     ).toBeNull())
   })
 
+  it('lists cause-organization calls separately in the analysis confirmation', async () => {
+    apiMock.getAnalysisPreflight.mockResolvedValue({
+      report_type: 'personal_analysis_html',
+      configured: true,
+      service_name: '默认内容服务',
+      model_name: 'qwen-plus',
+      call_count: 2,
+      estimated_total_tokens: 40000,
+      cache_hits: 0,
+      cause_call_count: 3,
+      cause_total_questions: 5,
+      cause_estimated_tokens: 30000,
+    })
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('学生个人分析报告'))
+
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="generate-personal_analysis_html"]',
+    )!.click()
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="analysis-confirm-dialog"]'),
+    ).not.toBeNull())
+
+    // 总次数 = 错因整理 3 次 + 报告叙述 2 次；两部分分别说明。
+    expect(
+      host.querySelector('[data-testid="analysis-call-count"]')?.textContent,
+    ).toContain('5')
+    const causeLine = host.querySelector('[data-testid="analysis-cause-count"]')
+    expect(causeLine?.textContent).toContain('先整理错因：3 次调用')
+    expect(causeLine?.textContent).toContain('共 5 道失分题')
+    expect(causeLine?.textContent).toContain('报告叙述：2 次调用')
+    expect(
+      host.querySelector('[data-testid="analysis-tokens"]')?.textContent,
+    ).toContain('70,000')
+    expect(apiMock.submitReport).not.toHaveBeenCalled()
+  })
+
   it('blocks confirmation when no content model is configured', async () => {
     apiMock.getAnalysisPreflight.mockResolvedValue({
       report_type: 'personal_analysis_html',
@@ -657,6 +697,9 @@ describe('file center view', () => {
       call_count: 1,
       estimated_total_tokens: 50000,
       cache_hits: 0,
+      cause_call_count: 0,
+      cause_total_questions: 0,
+      cause_estimated_tokens: 0,
     })
     const { host } = await mountView()
     await vi.waitFor(() => expect(host.textContent).toContain('学生个人分析报告'))

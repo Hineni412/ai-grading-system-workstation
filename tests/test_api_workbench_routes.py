@@ -303,6 +303,7 @@ def test_overview_review_count_honors_teacher_lock_in_frozen_batch(
         def get_preflight(self, requested_session_id: int) -> dict:
             assert int(requested_session_id) == int(session_id)
             return {
+                "scan_batch_id": "batch-frozen",
                 "groups": [
                     {
                         "id": "g-1",

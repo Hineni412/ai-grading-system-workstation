@@ -63,6 +63,7 @@ const regenerationMessage = ref('')
 const regenerationError = ref('')
 const inlineRegenerationJobId = ref<number | null>(null)
 const rubricInputValid = ref(true)
+const saveFailureReason = ref('')
 const scoreReviewRequiredQuestions = ref(new Set<string>())
 const scoreReviewSatisfiedQuestions = ref(new Set<string>())
 const templatePresent = ref(false)
@@ -95,7 +96,7 @@ const editorIssues = computed(() => [
   ...(configStore.editor?.issues ?? []),
   ...configStore.serverIssues,
 ])
-const blockingIssues = computed(() => editorIssues.value
+const blockingIssues = computed(() => (configStore.editor?.issues ?? [])
   .some((issue) => issue.severity === 'error'))
 const blockingQualityQuestionIds = computed(() => {
   const knownQuestionIds = [...scoringQuestions.value]
@@ -121,8 +122,7 @@ const pendingScoreReviewQuestions = computed(() => new Set(
     .filter((questionId) => scoringQuestions.value.includes(questionId)
       && !scoreReviewSatisfiedQuestions.value.has(questionId)),
 ))
-const saveBlocked = computed(() => configStore.effectiveTotalScore !== 100
-  || blockingIssues.value || !rubricInputValid.value
+const saveBlocked = computed(() => blockingIssues.value || !rubricInputValid.value
   || pendingScoreReviewQuestions.value.size > 0)
 const solutionQuestionTypes = new Set(['proof', 'calculation', 'comprehensive'])
 const scoringQuestions = computed(() => [...new Set(
@@ -264,6 +264,7 @@ async function saveEditor(): Promise<void> {
   const sessionId = configStore.sessionId
   const request = configStore.buildSaveRequest()
   const context = configStore.captureEditorContext()
+  saveFailureReason.value = ''
   try {
     const response = await props.editorSaver(sessionId, request)
     if (!configStore.isEditorContextCurrent(context)) return
@@ -271,6 +272,11 @@ async function saveEditor(): Promise<void> {
     configStore.replaceWithAuthoritativeEditor(response)
   } catch (error) {
     if (!configStore.isEditorContextCurrent(context)) return
+    saveFailureReason.value = error instanceof ApiError && error.status === 422
+      ? '服务器未通过评分依据检查，请查看具体问题。'
+      : error instanceof ApiError && error.status !== null && error.status >= 500
+        ? '服务器保存评分依据时出错，请稍后重试；不是分值已自动恢复。'
+        : '保存请求未完成，请检查连接后重试。'
     if (error instanceof ApiError
       && (error.code === 'config_revision_conflict' || error.status === 409)) {
       configStore.markConflict()
@@ -620,6 +626,7 @@ watch(
         :template-ready="templateReady"
         @select="selectStage"
       />
+      <div id="config-intake-status-slot" />
       <p v-if="sessionStore.sessions.length === 0" class="session-config-view__empty">
         还没有考试。创建草稿后，可以继续上传试卷并准备评分依据。
       </p>
@@ -716,7 +723,7 @@ watch(
           <div v-if="saveNeeded || saveBlocked || saving" class="config-editor__save-bar">
             <div>
               <strong>{{ configStore.hasDirtyEditor ? '有未保存修改' : '需先处理阻断问题' }}</strong>
-              <span v-if="saveBlocked">需处理阻断问题并使总分为 100 后保存。</span>
+              <span v-if="saveBlocked">请补全有效分值与评分结构后保存。</span>
               <span v-else>保存时会一次提交全部行修改与评分单元命令。</span>
             </div>
             <AppButton
@@ -731,6 +738,8 @@ watch(
           <ConfigSaveResult
             :status="configStore.saveStatus === 'saving' ? 'idle' : configStore.saveStatus"
             :mapping-status="configStore.mappingStatus"
+            :failure-reason="saveFailureReason"
+            :issues="configStore.serverIssues"
             @reload="reloadLatestEditor"
           />
           <div class="config-template-entry">

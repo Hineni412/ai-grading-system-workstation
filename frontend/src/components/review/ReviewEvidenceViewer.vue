@@ -8,12 +8,15 @@ import {
   type ViewerPoint,
 } from '../../composables/use-evidence-viewer'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   item: ReviewItemLike
   previousItem: ReviewItemLike | null
   nextItem: ReviewItemLike | null
   source: EvidenceSource
-}>()
+  expandable?: boolean
+}>(), { expandable: true })
+
+const emit = defineEmits<{ expand: [] }>()
 
 const sourceLabels: Record<EvidenceSource, string> = {
   crop: '裁剪证据',
@@ -56,6 +59,7 @@ let resizeObserver: ResizeObserver | null = null
 let activeLoad = { key: '', generation: 0 }
 let activePointerId: number | null = null
 let lastPointer: ViewerPoint = { x: 0, y: 0 }
+let pointerTravel = 0
 let preloadImages: HTMLImageElement[] = []
 
 function clearPreloads(): void {
@@ -114,6 +118,7 @@ function onPointerDown(event: PointerEvent): void {
   ) return
   activePointerId = event.pointerId
   lastPointer = pointerPosition(event)
+  pointerTravel = 0
   isDragging.value = true
   ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
 }
@@ -121,6 +126,7 @@ function onPointerDown(event: PointerEvent): void {
 function onPointerMove(event: PointerEvent): void {
   if (!isDragging.value || event.pointerId !== activePointerId) return
   const next = pointerPosition(event)
+  pointerTravel += Math.abs(next.x - lastPointer.x) + Math.abs(next.y - lastPointer.y)
   viewer.panBy({ x: next.x - lastPointer.x, y: next.y - lastPointer.y })
   lastPointer = next
 }
@@ -143,6 +149,9 @@ function onCanvasKeydown(event: KeyboardEvent): void {
   if (event.target !== event.currentTarget) return
   let handled = true
   switch (event.key.toLocaleLowerCase()) {
+    case 'enter':
+      if (props.expandable !== false) emit('expand')
+      break
     case 'arrowleft':
       viewer.panBy({ x: -32, y: 0 })
       break
@@ -217,6 +226,7 @@ onBeforeUnmount(() => {
       <button type="button" @click="viewer.zoomBy(0.25)">放大</button>
       <button type="button" @click="viewer.rotateBy(-90)">向左旋转</button>
       <button type="button" @click="viewer.rotateBy(90)">向右旋转</button>
+      <button v-if="expandable !== false" type="button" @click="emit('expand')">弹窗放大</button>
     </div>
 
     <div
@@ -231,6 +241,7 @@ onBeforeUnmount(() => {
       @pointerup="stopDragging"
       @pointercancel="stopDragging"
       @lostpointercapture="stopDragging"
+      @click="expandable !== false && pointerTravel < 5 && emit('expand')"
     >
       <img
         :key="imageRenderKey"
@@ -253,6 +264,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <p class="review-evidence-help">可拖动图片或用方向键移动；图片大小只由上方按钮调整。</p>
+    <p class="review-evidence-help">可拖动图片或用方向键移动；使用上方工具缩放和旋转<span v-if="expandable !== false">，点击图片可弹窗放大</span>。</p>
   </section>
 </template>

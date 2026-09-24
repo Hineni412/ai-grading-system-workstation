@@ -115,12 +115,12 @@ def test_normalization_preserves_first_and_second_pass_golden_payloads() -> None
 
     normalization.normalize_generated_config_schema(payload)
     assert _payload_digest(payload) == (
-        "f4ca988b47ff029140592c0b6828b43074f404248ce36bb863249f7e8c8cba71"
+        "07911a7688d1f83f2988ced530ec248b9e17f724d62bf536f9093d864a4d543f"
     )
 
     normalization.normalize_generated_config_schema(payload)
     assert _payload_digest(payload) == (
-        "92b70bf2f7fd840cc94d81bfe42033d843af58bbb7b1ea84438dd75a4488071e"
+        "183b23cfa9c48e9104fdfca1a26153904776fe9a43ae7f91f1901f9a4d066de9"
     )
 
 

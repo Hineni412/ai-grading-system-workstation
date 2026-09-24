@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import json
 from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
@@ -125,6 +126,12 @@ def _normalize_teacher_score_confirmation(
     deduction_reason = raw.get("deduction_reason")
     if deduction_reason is not None:
         deduction_reason = str(deduction_reason).strip() or None
+    # teacher_note 仅由复核服务层显式提供（无批语时为 None）：区分“教师没填”
+    # 与“旧调用方没传该键”，避免用占位串反推有无批语。
+    teacher_note_provided = "teacher_note" in raw
+    teacher_note = raw.get("teacher_note")
+    if teacher_note is not None:
+        teacher_note = str(teacher_note).strip() or None
     result_id = _optional_positive_integer(raw.get("result_id"), "result_id")
     detail_id = _optional_positive_integer(raw.get("detail_id"), "detail_id")
     if (result_id is None) != (detail_id is None):
@@ -159,6 +166,9 @@ def _normalize_teacher_score_confirmation(
             _optional_nonblank_text(raw.get("detail_question_id"))
             or _nonblank_text(raw.get("question_id"), "question_id")
         ),
+        "teacher_steps": raw.get("teacher_steps"),
+        "teacher_note": teacher_note,
+        "teacher_note_provided": teacher_note_provided,
     }
 
 
@@ -216,6 +226,14 @@ class ReviewRepository:
     @property
     def session(self) -> RepositorySession:
         return self._session
+
+    def invalidate_result_annotations(self, session_id: int, result_ids: list[int]) -> list[dict[str, Any]]:
+        previous = []
+        for result_id in sorted(set(result_ids)):
+            old = self.upsert_annotated_result(session_id, result_id, None, None)
+            if old:
+                previous.append(old)
+        return previous
 
     def list_teacher_score_locks(
         self,
@@ -508,12 +526,28 @@ class ReviewRepository:
         affected_result_ids: set[int] = set()
         synced_details = 0
         if sync_existing_details:
+            # 明细扣分理由写回规则：有批语写批语；无批语且确认满分写复核占位；
+            # 无批语且仍扣分时保留明细原理由（原值为空才写占位）。
+            # 未显式提供 teacher_note 的旧调用方维持原行为：deduction_reason 即写入值。
+            from backend.review.service import REVIEW_CONFIRMED_REASON
+
             for item in normalized:
                 detail = detail_targets[
                     (item["student_id"], item["question_id"])
                 ]
                 if detail is None:
                     continue
+                if not item["teacher_note_provided"]:
+                    detail_reason = item["deduction_reason"]
+                elif item["teacher_note"] is not None:
+                    detail_reason = item["teacher_note"]
+                elif item["score_awarded"] >= item["max_score"]:
+                    detail_reason = REVIEW_CONFIRMED_REASON
+                else:
+                    detail_reason = (
+                        str(detail.get("deduction_reason") or "").strip()
+                        or REVIEW_CONFIRMED_REASON
+                    )
                 cursor = self.session.connection.execute(
                     """
                     UPDATE session_details
@@ -522,7 +556,7 @@ class ReviewRepository:
                     """,
                     (
                         item["score_awarded"],
-                        item["deduction_reason"],
+                        detail_reason,
                         int(detail["detail_id"]),
                     ),
                 )
@@ -551,6 +585,38 @@ class ReviewRepository:
                 persisted_ids,
             ).fetchall()
         }
+        # The final score, lock revision and teacher step evidence commit in
+        # the same transaction. AI evidence remains separate and unchanged.
+        payloads: dict[int, dict[str, Any]] = {}
+        for item in normalized:
+            detail = detail_targets[(item["student_id"], item["question_id"])]
+            if detail is None:
+                if item["teacher_steps"] is not None:
+                    raise ValueError("Teacher steps require a stored result detail.")
+                continue
+            result_id = int(detail["result_id"])
+            if result_id not in payloads:
+                stored = self.session.connection.execute(
+                    "SELECT raw_json FROM session_results WHERE id = ?", (result_id,),
+                ).fetchone()
+                raw = _safe_json_loads(stored["raw_json"])
+                payloads[result_id] = raw if isinstance(raw, dict) else {}
+            reviews = payloads[result_id].setdefault("teacher_reviews", {})
+            qid = item["detail_question_id"]
+            if item["teacher_steps"] is None:
+                reviews.pop(qid, None)
+            else:
+                reviews[qid] = {
+                    "revision": item["expected_revision"] + 1,
+                    "scan_batch_id": requested_batch_id,
+                    "score_awarded": item["score_awarded"],
+                    "steps": item["teacher_steps"],
+                }
+        for result_id, payload in payloads.items():
+            self.session.connection.execute(
+                "UPDATE session_results SET raw_json = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), result_id),
+            )
         return {
             "locks": [dict(persisted_by_id[lock_id]) for lock_id in persisted_ids],
             "inserted": inserted,
@@ -584,7 +650,8 @@ class ReviewRepository:
                 SELECT
                     sd.id AS detail_id,
                     sd.result_id,
-                    sd.question_id
+                    sd.question_id,
+                    sd.deduction_reason
                 FROM session_details sd
                 JOIN session_results sr ON sr.id = sd.result_id
                 WHERE sd.id = ?
@@ -621,7 +688,7 @@ class ReviewRepository:
             return None
         rows = self.session.connection.execute(
             """
-            SELECT sd.id AS detail_id, sd.result_id
+            SELECT sd.id AS detail_id, sd.result_id, sd.deduction_reason
             FROM session_details sd
             JOIN session_results sr ON sr.id = sd.result_id
             WHERE sr.session_id = ?
@@ -821,7 +888,6 @@ class ReviewRepository:
                 s.name AS student_name,
                 s.class_name,
                 ep.ocr_name,
-                sr.raw_json,
                 sd.id AS detail_id,
                 sd.question_id,
                 sd.score_awarded,
@@ -839,16 +905,19 @@ class ReviewRepository:
             """,
             (session_id,),
         ).fetchall()
-        parsed_raw_json: dict[int, Any] = {}
+        # Fetch the paper-level payload once per result, not once per question.
+        parsed_raw_json = {
+            int(row["id"]): _safe_json_loads(row["raw_json"])
+            for row in self.session.connection.execute(
+                "SELECT id, raw_json FROM session_results WHERE session_id = ?",
+                (int(session_id),),
+            ).fetchall()
+        }
         result: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
             result_id = int(item.get("result_id") or 0)
-            if result_id not in parsed_raw_json:
-                parsed_raw_json[result_id] = _safe_json_loads(
-                    item.get("raw_json")
-                )
-            item["raw_json"] = parsed_raw_json[result_id]
+            item["raw_json"] = parsed_raw_json.get(result_id, {})
             result.append(item)
         return result
 
@@ -981,8 +1050,8 @@ class ReviewRepository:
         self,
         session_id: int,
         result_id: int,
-        annotated_front_path: str,
-        annotated_back_path: str,
+        annotated_front_path: str | None,
+        annotated_back_path: str | None,
     ) -> dict[str, Any] | None:
         requested_session_id = int(session_id)
         requested_result_id = int(result_id)
@@ -1051,6 +1120,20 @@ class ReviewRepository:
             (str(path_value), str(path_value)),
         ).fetchone()
         return row is not None
+
+    def referenced_annotation_paths(self, paths: set[str]) -> set[str]:
+        values = sorted(paths)
+        referenced: set[str] = set()
+        for start in range(0, len(values), 400):
+            batch = values[start:start + 400]
+            marks = ','.join('?' for _ in batch)
+            rows = self.session.connection.execute(
+                f"SELECT annotated_front_path, annotated_back_path FROM annotated_results "
+                f"WHERE annotated_front_path IN ({marks}) OR annotated_back_path IN ({marks})",
+                batch + batch,
+            ).fetchall()
+            referenced.update(value for row in rows for value in row if value in paths)
+        return referenced
 
     def get_annotated_result(
         self,
@@ -1177,12 +1260,20 @@ class ReviewRepositoryGateway:
         session_id: int,
         scan_batch_id: str,
         confirmations: list[dict[str, Any]],
+        *,
+        defer_annotations: bool = False,
     ) -> dict[str, Any]:
-        return self.confirm_teacher_score_locks(
-            session_id,
-            scan_batch_id,
-            confirmations,
-        )
+        with self._sessions.session() as session:
+            with session.transaction(immediate=True):
+                repository = ReviewRepository(session)
+                result = repository.confirm_teacher_score_locks(
+                    session_id, scan_batch_id, confirmations,
+                )
+                if defer_annotations:
+                    result["invalidated_annotations"] = repository.invalidate_result_annotations(
+                        session_id, [int(item["result_id"]) for item in confirmations if item.get("result_id")],
+                    )
+                return result
 
     def confirm_teacher_score_locks(
         self,
@@ -1220,26 +1311,30 @@ class ReviewRepositoryGateway:
         self,
         session_id: int,
         adjustments: list[dict[str, Any]],
-    ) -> dict[str, int]:
+        *,
+        defer_annotations: bool = False,
+    ) -> dict[str, Any]:
         if not adjustments:
             return {"updated_details": 0, "updated_results": 0}
         with self._sessions.session() as session:
             with session.transaction(immediate=True):
-                return ReviewRepository(
-                    session
-                ).apply_session_review_adjustments(
-                    session_id,
-                    adjustments,
-                )
+                repository = ReviewRepository(session)
+                result = repository.apply_session_review_adjustments(session_id, adjustments)
+                if defer_annotations:
+                    result["invalidated_annotations"] = repository.invalidate_result_annotations(
+                        session_id, [int(item["result_id"]) for item in adjustments],
+                    )
+                return result
 
     def get_session_review_rows(
         self,
         session_id: int,
     ) -> list[dict[str, Any]]:
         with self._sessions.session(read_only=True) as session:
-            return ReviewRepository(session).get_session_review_rows(
-                session_id
-            )
+            with session.transaction():
+                return ReviewRepository(session).get_session_review_rows(
+                    session_id
+                )
 
     def get_review_media_context(
         self,
@@ -1315,6 +1410,13 @@ class ReviewRepositoryGateway:
             return ReviewRepository(
                 session
             ).is_annotated_result_path_referenced(path_value)
+
+    def referenced_annotation_paths(self, paths: set[str]) -> set[str]:
+        """Check a saved batch with one connection instead of one per page."""
+        if not paths:
+            return set()
+        with self._sessions.session(read_only=True) as session:
+            return ReviewRepository(session).referenced_annotation_paths(paths)
 
     def get_annotated_result(
         self,

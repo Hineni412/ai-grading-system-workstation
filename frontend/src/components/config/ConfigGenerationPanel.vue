@@ -68,6 +68,7 @@ const volumeManuallyChanged = ref(false)
 const curriculumLoading = ref(true)
 const curriculumError = ref('')
 const volumeTeleportTarget = ref<HTMLElement | null>(null)
+const intakeTeleportTarget = ref<HTMLElement | null>(null)
 const editorLoads = new Set<number>()
 const submissionUnknown = computed(() => configStore.pendingJobRequestToken !== null)
 const workspacePending = computed(() => configStore.hasPendingSubmission)
@@ -102,6 +103,7 @@ function resolveDefaultVolumeId(sessionName: string): string {
 
 onMounted(async () => {
   volumeTeleportTarget.value = document.querySelector<HTMLElement>('#config-curriculum-volume-slot')
+  intakeTeleportTarget.value = document.querySelector<HTMLElement>('#config-intake-status-slot')
   try {
     curriculum.value = await props.curriculumLoader()
     selectedVolumeId.value = resolveDefaultVolumeId(props.sessionName)
@@ -252,6 +254,23 @@ const questionBankSyncState = computed(() => {
   const value = job.value?.result.question_bank_sync_state
   return typeof value === 'string' ? value : ''
 })
+const intakeBlocked = computed(() =>
+  job.value?.result.exam_intake_complete === false
+  || ['partial', 'failed', 'intake_failed'].includes(questionBankSyncState.value),
+)
+const intakeQuestionIds = computed(() => {
+  const value = job.value?.result.exam_intake_failed_question_ids
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && /^Q\d+$/.test(id)) : []
+})
+const intakeProgressCopy = computed(() => {
+  const total = totalQuestionCount.value || generatedCount.value
+  const imported = safeCount(job.value?.result.question_bank_imported_count)
+  const tagged = safeCount(job.value?.result.question_bank_tagged_count)
+  return `已分析 ${generatedCount.value}/${total} 题 · 已入库 ${imported}/${total} 题 · 已保存标签 ${tagged}/${total} 题`
+})
+const canResumeIntake = computed(() => terminal.value && intakeBlocked.value
+  && failedBatches.value.length === 0 && generatedCount.value > 0
+  && generatedCount.value === totalQuestionCount.value && retryable.value)
 const questionBankSyncCopy = computed(() => {
   if (!questionBankSyncRequested.value) return ''
   const failedIds = Array.isArray(job.value?.result.exam_intake_failed_question_ids)
@@ -261,9 +280,6 @@ const questionBankSyncCopy = computed(() => {
     : []
   const intakeError = typeof job.value?.result.exam_intake_error === 'string'
     ? job.value.result.exam_intake_error
-    : ''
-  const category = typeof job.value?.result.exam_intake_category === 'string'
-    ? job.value.result.exam_intake_category
     : ''
   if (questionBankSyncState.value === 'ready') {
     const imported = safeCount(job.value?.result.question_bank_imported_count)
@@ -278,8 +294,7 @@ const questionBankSyncCopy = computed(() => {
     const imported = safeCount(job.value?.result.question_bank_imported_count)
     const tagged = safeCount(job.value?.result.question_bank_tagged_count)
     const failedText = failedIds.length > 0 ? `未通过题目：${failedIds.join('、')}。` : ''
-    const categoryText = category ? `失败类别：${category}。` : ''
-    return `${intakeError || '题库入库未完整成功，当前不能赋分、标定题框或开始批改。'} ${categoryText}${failedText}当前入库 ${imported} 题、已有完整标签 ${tagged} 题；只可继续处理缺失项。`
+    return `${intakeError || '题库入库未完整成功，当前不能赋分、标定题框或开始批改。'} ${failedText}当前入库 ${imported} 题、已有完整标签 ${tagged} 题；只可继续处理缺失项。`
   }
   if (questionBankSyncState.value === 'intake_failed') {
     return intakeError || '题目分析结果已保存在本机，但试卷暂时未能写入题库；当前不能赋分。重试时会按同一来源继续入库，不会重新分析已完成题目。'
@@ -383,6 +398,7 @@ function statusCopy(value: JobResponse): string {
   if (value.status === 'running') return '正在生成'
   if (value.status === 'paused') return '生成已暂停'
   if (value.status === 'cancelled') return '已取消'
+  if (intakeBlocked.value) return '入库未完成，尚未赋分'
   if (outcome.value === 'partial' && uncertainQuestionIds.value.length > 0) {
     return '部分题目等待处理'
   }
@@ -692,7 +708,7 @@ watch(
           @click="startGeneration()"
         >{{ submitting ? '正在提交…' : '开始分析并入库' }}</button>
         <button
-          v-else-if="terminal && redStateCount > 0 && retryable"
+          v-else-if="terminal && redStateCount > 0 && retryable && !canResumeIntake"
           type="button"
           class="config-generation__primary"
           :disabled="submitting || workspacePending"
@@ -702,7 +718,7 @@ watch(
     </Teleport>
 
     <p
-      v-if="job !== null && questionBankSyncCopy"
+      v-if="job !== null && questionBankSyncCopy && !intakeBlocked"
       class="config-generation__retained"
       role="status"
     >
@@ -723,6 +739,21 @@ watch(
         <span>{{ passedStateCount }} 题通过 · {{ redStateCount }} 题需处理 · {{ questionStates.length - passedStateCount - redStateCount }} 题处理中</span>
       </div>
       <progress class="sr-only" :value="progress" max="1" aria-label="评分依据生成进度" />
+      <Teleport :to="intakeTeleportTarget ?? 'body'" :disabled="intakeTeleportTarget === null">
+      <div v-if="intakeBlocked" class="config-generation__partial config-generation__intake-alert" role="alert">
+        <p><strong>题库入库未完成，统一赋分尚未开始。</strong></p>
+        <p>{{ intakeProgressCopy }}</p>
+        <p>{{ questionBankSyncCopy }}</p>
+        <p v-if="intakeQuestionIds.length > 0">
+          需要核对：
+          <button v-for="id in intakeQuestionIds" :key="id" type="button" @click="locateQuestion(id)">定位 {{ id }}</button>
+        </p>
+        <template v-if="canResumeIntake">
+          <p>继续时复用已保存的分析，先补齐入库，再在本地赋分；不会重新发送已完成题目给 AI。</p>
+          <button type="button" name="继续入库并赋分" :disabled="submitting || workspacePending" @click="retrySelected(true)">继续入库并赋分</button>
+        </template>
+      </div>
+      </Teleport>
       <p v-if="waitingForCancel">
         已收到取消请求，正在等待已经发出的模型请求返回；服务器确认前任务仍未取消。
       </p>
@@ -809,7 +840,7 @@ watch(
         </div>
       </div>
 
-      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length === 0 && scoreAllocationPending" class="config-generation__partial">
+      <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length === 0 && scoreAllocationPending && !intakeBlocked" class="config-generation__partial">
         <p>
           <strong>
             {{ totalQuestionCount || generatedCount }} 道题
@@ -930,6 +961,8 @@ button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 .config-generation__job p { margin: 0 0 var(--space-3); color: var(--color-text-secondary); }
 .config-generation__job .config-generation__retained { padding: var(--space-3); border-radius: var(--radius-control); background: var(--color-success-subtle); color: var(--color-text-primary); }
 .config-generation__partial { padding-block: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-subtle); }
+.config-generation__intake-alert { margin-block: var(--space-3); padding: var(--space-4); border: 0; border-inline-start: 4px solid var(--color-warning); border-radius: var(--radius-control); background: var(--color-warning-subtle); color: var(--color-text-primary); }
+.config-generation__intake-alert p { margin: 0 0 var(--space-3); line-height: 1.6; }
 .config-generation__refine-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .config-generation__partial fieldset { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-3); border: var(--border-width) solid var(--color-border-subtle); border-radius: var(--radius-control); }
 .config-generation__partial label { display: inline-flex; align-items: center; gap: var(--space-2); }

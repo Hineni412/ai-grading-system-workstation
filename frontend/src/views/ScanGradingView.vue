@@ -130,6 +130,225 @@ const lowConfidenceGroups = computed(() => store.preflight?.groups.filter((item)
   || reviewMatchConflicts.value.some((conflict) => conflict.targets.some((target) => target.target_type === 'group' && target.target_id === String(item.id)))
   || store.preflight?.decisions.some((decision) => decision.target_type === 'group' && decision.target_id === String(item.id))
 )) ?? [])
+
+interface AssignedPaper {
+  targetType: 'group' | 'issue'
+  targetId: string
+  label: string
+}
+
+interface ReviewRow {
+  key: string
+  targetType: 'group' | 'issue'
+  item: Record<string, unknown>
+  bucket: 'conflict' | 'unmatched' | 'review' | 'done'
+}
+
+const showOnlyPending = ref(false)
+
+const decisionMap = computed(() => new Map(
+  (store.preflight?.decisions ?? []).map((item) => [`${item.target_type}:${item.target_id}`, item]),
+))
+
+// Mirrors effective_preflight_papers: which paper currently belongs to each
+// student, so picking an already-assigned student can be resolved inline.
+const assignedByStudent = computed(() => {
+  const map = new Map<number, AssignedPaper[]>()
+  const add = (studentId: unknown, paper: AssignedPaper) => {
+    const id = Number(studentId)
+    if (!Number.isInteger(id) || id <= 0) return
+    const list = map.get(id) ?? []
+    list.push(paper)
+    map.set(id, list)
+  }
+  for (const group of store.preflight?.groups ?? []) {
+    const targetId = String(group.id ?? '')
+    const decision = decisionMap.value.get(`group:${targetId}`)
+    if (decision && (decision.action === 'invalid' || decision.action === 'pending')) continue
+    const studentId = decision?.action === 'match' ? decision.student_id : group.student_id
+    add(studentId, {
+      targetType: 'group',
+      targetId,
+      label: String(group.source_label || group.student_name || group.detected_name || '答卷'),
+    })
+  }
+  const issuesById = new Map(
+    (store.preflight?.issues ?? []).map((item) => [String(item.id ?? ''), item]),
+  )
+  for (const decision of store.preflight?.decisions ?? []) {
+    if (decision.target_type !== 'issue' || decision.action !== 'match') continue
+    const issue = issuesById.get(decision.target_id)
+    if (!issue?.back_media_url) continue
+    add(decision.student_id, {
+      targetType: 'issue',
+      targetId: decision.target_id,
+      label: String(issue.source_label || issue.detected_name || '异常答卷'),
+    })
+  }
+  return map
+})
+
+const assignedLabels = computed(() => {
+  const labels: Record<number, string> = {}
+  for (const [studentId, papers] of assignedByStudent.value) {
+    labels[studentId] = papers.map((paper) => paper.label).join('、')
+  }
+  return labels
+})
+
+const conflictTargetKeys = computed(() => new Set(
+  reviewMatchConflicts.value.flatMap((conflict) => conflict.targets.map(
+    (target) => `${target.target_type}:${target.target_id}`,
+  )),
+))
+
+function rowSortName(row: ReviewRow): string {
+  if (row.targetType === 'group') {
+    const decision = decisionMap.value.get(row.key)
+    const savedStudent = store.students.find((item) => item.id === decision?.student_id)
+    return String(
+      (decision?.action === 'match' ? savedStudent?.name : undefined)
+      || row.item.student_name || row.item.detected_name || '',
+    )
+  }
+  return String(row.item.detected_name || row.item.suggested_student_name || '')
+}
+
+const reviewRows = computed<ReviewRow[]>(() => {
+  const rows: ReviewRow[] = []
+  for (const item of lowConfidenceGroups.value) {
+    const targetId = String(item.id ?? '')
+    const key = `group:${targetId}`
+    const decision = decisionMap.value.get(key)
+    let bucket: ReviewRow['bucket'] = 'review'
+    if (conflictTargetKeys.value.has(key)) bucket = 'conflict'
+    else if (decision?.action === 'match' || decision?.action === 'invalid') bucket = 'done'
+    else if (decision?.action === 'pending') bucket = 'unmatched'
+    rows.push({ key, targetType: 'group', item, bucket })
+  }
+  for (const item of store.preflight?.issues ?? []) {
+    const targetId = String(item.id ?? '')
+    const key = `issue:${targetId}`
+    const decision = decisionMap.value.get(key)
+    let bucket: ReviewRow['bucket'] = 'unmatched'
+    if (conflictTargetKeys.value.has(key)) bucket = 'conflict'
+    else if (decision?.action === 'match' || decision?.action === 'invalid') bucket = 'done'
+    rows.push({ key, targetType: 'issue', item, bucket })
+  }
+  const order = { conflict: 0, unmatched: 1, review: 2, done: 3 } as const
+  return rows.sort((a, b) => (
+    order[a.bucket] - order[b.bucket]
+    || rowSortName(a).localeCompare(rowSortName(b), 'zh-Hans-CN')
+    || String(a.item.source_label ?? '').localeCompare(String(b.item.source_label ?? ''), 'zh-Hans-CN')
+  ))
+})
+
+const reviewBuckets = computed(() => {
+  const buckets: { key: ReviewRow['bucket']; title: string; rows: ReviewRow[] }[] = []
+  for (const row of reviewRows.value) {
+    if (showOnlyPending.value && row.bucket === 'done') continue
+    let bucket = buckets.find((item) => item.key === row.bucket)
+    if (!bucket) {
+      bucket = {
+        key: row.bucket,
+        title: {
+          conflict: '归属冲突', unmatched: '待匹配', review: '待核对（模糊匹配）', done: '已处理',
+        }[row.bucket],
+        rows: [],
+      }
+      buckets.push(bucket)
+    }
+    bucket.rows.push(row)
+  }
+  return buckets
+})
+
+function preflightItem(targetType: 'group' | 'issue', targetId: string): Record<string, unknown> | undefined {
+  const items = targetType === 'group' ? store.preflight?.groups : store.preflight?.issues
+  return items?.find((item) => String(item.id ?? '') === targetId)
+}
+
+interface ConflictTarget {
+  targetType: 'group' | 'issue'
+  targetId: string
+  item?: Record<string, unknown>
+  label: string
+  owner: string
+}
+
+const conflictCards = computed(() => reviewMatchConflicts.value.map((conflict) => {
+  const student = store.students.find((item) => item.id === conflict.student_id)
+  const targets: ConflictTarget[] = conflict.targets.map((target) => {
+    const item = preflightItem(target.target_type, target.target_id)
+    const decision = decisionMap.value.get(`${target.target_type}:${target.target_id}`)
+    return {
+      targetType: target.target_type,
+      targetId: target.target_id,
+      item,
+      label: String(item?.source_label || item?.student_name || item?.detected_name || target.target_id),
+      owner: decision
+        ? { match: '已手动指定', invalid: '已标无效', pending: '已转待处理' }[decision.action]
+        : '自动匹配',
+    }
+  })
+  return {
+    studentId: conflict.student_id,
+    studentLabel: student
+      ? [student.name, student.student_code, student.class_name].filter(Boolean).join(' · ')
+      : `学生 ${conflict.student_id}`,
+    message: conflict.message,
+    targets,
+  }
+}))
+
+function otherAssignedPapers(targetId: string): AssignedPaper[] {
+  const studentId = selectedStudents.value[targetId]
+  if (!studentId) return []
+  return (assignedByStudent.value.get(studentId) ?? []).filter(
+    (paper) => paper.targetId !== targetId,
+  )
+}
+
+function transferMatch(
+  targetType: 'group' | 'issue',
+  targetId: string,
+  otherAction: 'pending' | 'invalid',
+): void {
+  const studentId = selectedStudents.value[targetId]
+  const others = otherAssignedPapers(targetId)
+  if (!studentId || !others.length) return
+  void submitDecisions([
+    { target_type: targetType, target_id: targetId, action: 'match', student_id: studentId },
+    ...others.map((paper) => ({
+      target_type: paper.targetType,
+      target_id: paper.targetId,
+      action: otherAction,
+    })),
+  ])
+}
+
+function keepConflictTarget(card: { targets: ConflictTarget[] }, kept: ConflictTarget): void {
+  const changes = card.targets
+    .filter((target) => target.targetId !== kept.targetId || target.targetType !== kept.targetType)
+    .map((target) => ({
+      target_type: target.targetType,
+      target_id: target.targetId,
+      action: 'pending' as const,
+    }))
+  if (changes.length) void submitDecisions(changes)
+}
+
+const MATCH_METHOD_LABELS: Record<string, string> = {
+  exact: '精确匹配',
+  reduced_fuzzy: '模糊匹配',
+  fuzzy: '模糊匹配',
+}
+function matchMethodLabel(item: Record<string, unknown>): string {
+  const method = String(item.match_method ?? '')
+  const label = MATCH_METHOD_LABELS[method] ?? method
+  const score = Number(item.match_score ?? 0)
+  return score > 0 && score < 1 ? `${label} ${(score * 100).toFixed(0)}%` : label
+}
 const selectedMatches = computed<ScanDecision[]>(() => {
   const selected: ScanDecision[] = []
   for (const [targetType, items] of [
@@ -145,8 +364,6 @@ const selectedMatches = computed<ScanDecision[]>(() => {
   }
   return selected
 })
-const confirmedDecisions = computed(() => store.preflight?.decisions
-  .filter((item) => item.action !== 'pending') ?? [])
 const runProcessed = computed(() => {
   const counts = store.gradingRun?.counts
   if (!counts) return 0
@@ -259,16 +476,10 @@ function viewerTarget(
   }
 }
 
-const viewerTargets = computed(() => [
-  ...lowConfidenceGroups.value.flatMap((item) => {
-    const target = viewerTarget('group', item)
-    return target ? [target] : []
-  }),
-  ...(store.preflight?.issues ?? []).flatMap((item) => {
-    const target = viewerTarget('issue', item)
-    return target ? [target] : []
-  }),
-])
+const viewerTargets = computed(() => reviewRows.value.flatMap((row) => {
+  const target = viewerTarget(row.targetType, row.item)
+  return target ? [target] : []
+}))
 const activeViewerTarget = computed(() => (
   viewerTargets.value.find((item) => item.key === viewerTargetKey.value) ?? null
 ))
@@ -390,18 +601,6 @@ function decisionStatus(decision: ScanDecision | undefined): string {
   if (decision.action === 'pending') return '已保存：稍后处理'
   const student = store.students.find((item) => item.id === decision.student_id)
   return `已保存：匹配至 ${student ? [student.name, student.student_code, student.class_name].filter(Boolean).join(' · ') : '已选学生'}`
-}
-function decisionTargetLabel(decision: ScanDecision): string {
-  const items = decision.target_type === 'group'
-    ? store.preflight?.groups
-    : store.preflight?.issues
-  const item = items?.find((candidate) => String(candidate.id) === decision.target_id)
-  return String(
-    item?.student_name
-    || item?.detected_name
-    || item?.source_label
-    || (decision.target_type === 'group' ? '自动匹配答卷' : '异常答卷'),
-  )
 }
 async function submitDecisions(changes: ScanDecision[], allowPartialMatches = false): Promise<void> {
   if (!changes.length || store.busyAction) return
@@ -691,106 +890,100 @@ watch(
           </div>
           <p v-if="savingDecisionCount" class="scan-decision-state" role="status">正在保存 {{ savingDecisionCount }} 项，请稍候…</p>
           <p v-else-if="decisionNotice" data-match-result :class="decisionFailed ? 'scan-match-conflict' : 'scan-decision-state'" :role="decisionFailed ? 'alert' : 'status'">{{ decisionNotice }}</p>
-          <div v-if="lowConfidenceGroups.length" class="scan-issue-list" aria-label="自动匹配核对">
-            <div v-for="group in lowConfidenceGroups" :key="String(group.id)" class="scan-issue-row">
-              <div class="scan-evidence" :aria-label="`${group.source_label || '答卷'}正反面证据`">
-                <button v-if="group.front_media_url" type="button" class="scan-evidence__thumb"
-                  :aria-label="`查看${group.source_label || '答卷'}正面大图`"
-                  @click="openViewer('group', group, 'front')">
-                  <img :src="String(group.front_media_url)"
-                    :alt="`${group.source_label || '答卷'}正面`" loading="lazy" decoding="async">
+          <div v-if="conflictCards.length" class="scan-conflict-list" aria-label="归属冲突">
+            <div v-for="card in conflictCards" :key="`conflict-${card.studentId}`" class="scan-conflict-card" role="alert">
+              <strong>{{ card.studentLabel }} 对应 {{ card.targets.length }} 份答卷</strong>
+              <small>选择保留的一份，其余会转回待处理；重复扫描可直接标无效。</small>
+              <div v-for="target in card.targets" :key="`${target.targetType}:${target.targetId}`" class="scan-conflict-card__target">
+                <button v-if="target.item?.front_media_url" type="button" class="scan-evidence__thumb"
+                  :aria-label="`查看${target.label}正面大图`"
+                  @click="target.item && openViewer(target.targetType, target.item, 'front')">
+                  <img :src="String(target.item.front_media_url)"
+                    :alt="`${target.label}正面`" loading="lazy" decoding="async">
                   <span>查看正面</span>
                 </button>
-                <button v-if="group.back_media_url" type="button" class="scan-evidence__thumb"
-                  :aria-label="`查看${group.source_label || '答卷'}反面大图`"
-                  @click="openViewer('group', group, 'back')">
-                  <img :src="String(group.back_media_url)"
-                    :alt="`${group.source_label || '答卷'}反面`" loading="lazy" decoding="async">
-                  <span>查看反面</span>
-                </button>
-              </div>
-              <span class="scan-item-copy">
-                <strong>{{ group.student_name || group.detected_name || '待核对姓名' }}</strong>
-                <small>{{ group.source_label }} · {{ group.match_method }}</small>
-                <small v-if="group.detected_name">识别姓名：{{ group.detected_name }}</small>
-                <small v-if="classEvidence(group, 'group')">{{ classEvidence(group, 'group') }}</small>
-                <small v-if="conflictMessages('group', String(group.id))" class="scan-match-conflict">{{ conflictMessages('group', String(group.id)) }}</small>
-                <small v-else-if="!decisionFor('group', String(group.id))" class="scan-decision-state">已自动匹配，可直接批改；如有误可更正。</small>
-                <small v-if="decisionFor('group', String(group.id))"
-                  :data-saved-decision="`group:${String(group.id)}`" class="scan-decision-state">
-                  {{ decisionStatus(decisionFor('group', String(group.id))) }}
-                </small>
-              </span>
-              <div class="scan-issue-controls">
-              <StudentMatchSelect
-                v-model="selectedStudents[String(group.id)]"
-                :students="store.students"
-                placeholder="姓名、学号或拼音"
-                aria-label="重新选择学生"
-              />
-              <div class="scan-issue-controls__actions">
-              <button type="button" class="secondary" :disabled="!selectedStudents[String(group.id)] || !group.back_media_url || Boolean(store.busyAction)" @click="saveDecision('group', String(group.id), 'match')">确认归属</button>
-              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision('group', String(group.id), 'invalid')">标记无效</button>
-              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision('group', String(group.id), 'pending')">稍后处理</button>
-              </div>
+                <span class="scan-conflict-card__label">
+                  <strong>{{ target.label }}</strong>
+                  <small>{{ target.owner }}</small>
+                </span>
+                <span class="scan-conflict-card__actions">
+                  <button type="button" class="secondary" :disabled="Boolean(store.busyAction)"
+                    @click="keepConflictTarget(card, target)">保留这份</button>
+                  <button type="button" class="text-button" :disabled="Boolean(store.busyAction)"
+                    @click="saveDecision(target.targetType, target.targetId, 'invalid')">标无效</button>
+                  <button type="button" class="text-button" :disabled="Boolean(store.busyAction)"
+                    @click="saveDecision(target.targetType, target.targetId, 'pending')">转待处理</button>
+                </span>
               </div>
             </div>
           </div>
-          <div v-if="store.preflight.issues.length" class="scan-issue-list">
-            <div v-for="issue in store.preflight.issues" :key="String(issue.id)" class="scan-issue-row">
-              <div class="scan-evidence" :aria-label="`${issue.source_label || '异常答卷'}正反面证据`">
-                <button v-if="issue.front_media_url" type="button" class="scan-evidence__thumb"
-                  :aria-label="`查看${issue.source_label || '异常答卷'}正面大图`"
-                  @click="openViewer('issue', issue, 'front')">
-                  <img :src="String(issue.front_media_url)"
-                    :alt="`${issue.source_label || '异常答卷'}正面`" loading="lazy" decoding="async">
+          <label v-if="reviewRows.length" class="scan-filter">
+            <input v-model="showOnlyPending" type="checkbox" data-filter-pending>
+            只看未处理
+          </label>
+          <div v-for="bucket in reviewBuckets" :key="bucket.key" class="scan-issue-list" :aria-label="bucket.title">
+            <h3 class="scan-issue-list__title">{{ bucket.title }}（{{ bucket.rows.length }}）</h3>
+            <div v-for="row in bucket.rows" :key="row.key" class="scan-issue-row" :data-bucket="row.bucket">
+              <div class="scan-evidence" :aria-label="`${row.item.source_label || (row.targetType === 'group' ? '答卷' : '异常答卷')}正反面证据`">
+                <button v-if="row.item.front_media_url" type="button" class="scan-evidence__thumb"
+                  :aria-label="`查看${row.item.source_label || '答卷'}正面大图`"
+                  @click="openViewer(row.targetType, row.item, 'front')">
+                  <img :src="String(row.item.front_media_url)"
+                    :alt="`${row.item.source_label || '答卷'}正面`" loading="lazy" decoding="async">
                   <span>查看正面</span>
                 </button>
-                <button v-if="issue.back_media_url" type="button" class="scan-evidence__thumb"
-                  :aria-label="`查看${issue.source_label || '异常答卷'}反面大图`"
-                  @click="openViewer('issue', issue, 'back')">
-                  <img :src="String(issue.back_media_url)"
-                    :alt="`${issue.source_label || '异常答卷'}反面`" loading="lazy" decoding="async">
+                <button v-if="row.item.back_media_url" type="button" class="scan-evidence__thumb"
+                  :aria-label="`查看${row.item.source_label || '答卷'}反面大图`"
+                  @click="openViewer(row.targetType, row.item, 'back')">
+                  <img :src="String(row.item.back_media_url)"
+                    :alt="`${row.item.source_label || '答卷'}反面`" loading="lazy" decoding="async">
                   <span>查看反面</span>
                 </button>
                 <span v-else class="scan-evidence__missing">无反面</span>
               </div>
               <span class="scan-item-copy">
-                <strong>{{ issue.detected_name || '未识别姓名' }}</strong>
-                <small>{{ issue.source_label || '异常答卷' }}</small>
-                <small v-if="issue.issue_type === 'ambiguous_name'">名单中有重名，请按学号和班级选择。</small>
-                <small v-if="classEvidence(issue, 'issue')">{{ classEvidence(issue, 'issue') }}</small>
-                <small v-if="conflictMessages('issue', String(issue.id))" class="scan-match-conflict">{{ conflictMessages('issue', String(issue.id)) }}</small>
-                <small v-if="decisionFor('issue', String(issue.id))"
-                  :data-saved-decision="`issue:${String(issue.id)}`" class="scan-decision-state">
-                  {{ decisionStatus(decisionFor('issue', String(issue.id))) }}
+                <strong>{{ row.item.student_name || row.item.detected_name || '待核对姓名' }}</strong>
+                <small>{{ row.item.source_label || (row.targetType === 'group' ? '答卷' : '异常答卷') }}<template v-if="row.targetType === 'group'"> · {{ matchMethodLabel(row.item) }}</template></small>
+                <small v-if="row.item.detected_name && (row.targetType === 'issue' || row.item.student_name)">识别姓名：{{ row.item.detected_name }}</small>
+                <small v-if="row.item.issue_type === 'ambiguous_name'">名单中有重名，请按学号和班级选择。</small>
+                <small v-if="row.targetType === 'issue' && !row.item.back_media_url" class="scan-match-conflict">缺反面，不能直接归属；可标无效或稍后处理。</small>
+                <small v-if="classEvidence(row.item, row.targetType)">{{ classEvidence(row.item, row.targetType) }}</small>
+                <small v-if="conflictMessages(row.targetType, String(row.item.id))" class="scan-match-conflict">{{ conflictMessages(row.targetType, String(row.item.id)) }}</small>
+                <small v-else-if="row.targetType === 'group' && !decisionFor('group', String(row.item.id))" class="scan-decision-state">已自动匹配，可直接批改；如有误可更正。</small>
+                <small v-if="decisionFor(row.targetType, String(row.item.id))"
+                  :data-saved-decision="row.key" class="scan-decision-state">
+                  {{ decisionStatus(decisionFor(row.targetType, String(row.item.id))) }}
                 </small>
               </span>
               <div class="scan-issue-controls">
               <StudentMatchSelect
-                v-model="selectedStudents[String(issue.id)]"
+                v-model="selectedStudents[String(row.item.id)]"
                 :students="store.students"
+                :assigned="assignedLabels"
                 placeholder="姓名、学号或拼音"
-                aria-label="选择学生"
+                :aria-label="row.targetType === 'group' ? '重新选择学生' : '选择学生'"
               />
               <div class="scan-issue-controls__actions">
-              <button type="button" class="secondary" :disabled="!selectedStudents[String(issue.id)] || !issue.back_media_url || Boolean(store.busyAction)" @click="saveDecision('issue', String(issue.id), 'match')">匹配</button>
-              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision('issue', String(issue.id), 'invalid')">标记无效</button>
-              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision('issue', String(issue.id), 'pending')">稍后处理</button>
+              <button v-if="!otherAssignedPapers(String(row.item.id)).length" type="button" class="secondary"
+                :disabled="!selectedStudents[String(row.item.id)] || !row.item.back_media_url || Boolean(store.busyAction)"
+                @click="saveDecision(row.targetType, String(row.item.id), 'match')">{{ row.targetType === 'group' ? '确认归属' : '匹配' }}</button>
+              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision(row.targetType, String(row.item.id), 'invalid')">标记无效</button>
+              <button type="button" class="text-button" :disabled="Boolean(store.busyAction)" @click="saveDecision(row.targetType, String(row.item.id), 'pending')">稍后处理</button>
+              </div>
+              <div v-if="otherAssignedPapers(String(row.item.id)).length" class="scan-transfer" data-transfer-panel>
+                <span>
+                  {{ store.students.find((s) => s.id === selectedStudents[String(row.item.id)])?.name || '该学生' }}
+                  已归属「{{ otherAssignedPapers(String(row.item.id)).map((p) => p.label).join('、') }}」。
+                </span>
+                <button type="button" class="secondary" :disabled="!row.item.back_media_url || Boolean(store.busyAction)"
+                  @click="transferMatch(row.targetType, String(row.item.id), 'pending')">改用当前卷（原卷转待处理）</button>
+                <button type="button" class="text-button" :disabled="Boolean(store.busyAction)"
+                  @click="transferMatch(row.targetType, String(row.item.id), 'invalid')">原卷标无效</button>
               </div>
               </div>
             </div>
           </div>
-          <details v-if="confirmedDecisions.length" class="scan-confirmed-decisions">
-            <summary>已确认 {{ confirmedDecisions.length }} 项</summary>
-            <ul>
-              <li v-for="decision in confirmedDecisions"
-                :key="`${decision.target_type}:${decision.target_id}`">
-                <span>{{ decisionTargetLabel(decision) }}</span>
-                <strong>{{ decisionStatus(decision) }}</strong>
-              </li>
-            </ul>
-          </details>
+
         </template>
       </section>
 

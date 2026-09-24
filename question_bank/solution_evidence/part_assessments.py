@@ -219,7 +219,10 @@ def match_rubric_parts(rubric_question: Mapping[str, Any], evidence: Mapping[str
                     valid = False
                     break
                 required = list(dict.fromkeys(str(point[k]).strip() for k in ("justification", "answer_anchor", "observable_evidence") if str(point.get(k) or "").strip()))
-                if set(step.get("required_elements") or []) != set(required):
+                # Current skeletons keep only observable student work here;
+                # older skeletons also included explanation and answer anchors.
+                observable = {str(point.get("observable_evidence") or "").strip()} - {""}
+                if set(step.get("required_elements") or []) not in (set(required), observable):
                     valid = False
                     break
                 if set(step.get("counterexamples") or []) != set(point.get("counterexamples") or []) or set(step.get("equivalent_rules") or []) != set(point.get("equivalent_rules") or []):

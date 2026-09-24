@@ -241,6 +241,7 @@ def freeze_session_evidence_snapshot(
     connection: sqlite3.Connection | None = None,
     data_root: Path | None = None,
     rubric_path: Path | None = None,
+    answer_key: Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Freeze once from confirmed links; preserve an existing session snapshot.
 
@@ -257,7 +258,12 @@ def freeze_session_evidence_snapshot(
     existing = load_snapshot(upload_config_dir, grading_session_id)
     if existing is not None:
         if rubric_path is not None:
-            annotate_rubric_with_snapshot(Path(rubric_path), existing, grading_session_id)
+            annotate_rubric_with_snapshot(
+                Path(rubric_path),
+                existing,
+                grading_session_id,
+                answer_key=answer_key,
+            )
         return snapshot_path(upload_config_dir, grading_session_id)
     with reading(Path(db_path), connection) as conn:
         rows = conn.execute(
@@ -290,6 +296,7 @@ def freeze_session_evidence_snapshot(
             Path(rubric_path),
             snapshot,
             grading_session_id,
+            answer_key=answer_key,
         )
     return written
 
@@ -298,6 +305,8 @@ def annotate_rubric_with_snapshot(
     rubric_path: Path,
     snapshot: Mapping[str, Any],
     grading_session_id: str | int,
+    *,
+    answer_key: Mapping[str, Any] | None = None,
 ) -> bool:
     """Stamp ``evidence_point_ids`` and question-level snapshot refs.
 
@@ -312,7 +321,12 @@ def annotate_rubric_with_snapshot(
         return False
     if not isinstance(rubric, dict):
         return False
-    changed = annotate_rubric_payload(rubric, snapshot, grading_session_id)
+    changed = annotate_rubric_payload(
+        rubric,
+        snapshot,
+        grading_session_id,
+        answer_key=answer_key,
+    )
     if changed:
         Path(rubric_path).write_text(
             json.dumps(rubric, ensure_ascii=False, indent=2, allow_nan=False),
@@ -325,6 +339,8 @@ def annotate_rubric_payload(
     rubric: dict[str, Any],
     snapshot: Mapping[str, Any],
     grading_session_id: str | int,
+    *,
+    answer_key: Mapping[str, Any] | None = None,
 ) -> bool:
     """In-memory variant of :func:`annotate_rubric_with_snapshot`."""
     from question_bank.solution_evidence.part_assessments import (
@@ -338,6 +354,11 @@ def annotate_rubric_payload(
     if not isinstance(questions, list):
         return False
     snapshot_ref = snapshot_file_name(grading_session_id)
+    answers = {
+        str(answer.get("question_id")): answer
+        for answer in (answer_key or {}).get("questions", ())
+        if isinstance(answer, Mapping)
+    }
     changed = False
     for question_index, question in enumerate(questions, start=1):
         if not isinstance(question, dict):
@@ -355,13 +376,35 @@ def annotate_rubric_payload(
                 if isinstance(rubric_parts, list) and rubric_parts
                 else [question]
             )
+            # Compatibility for generated objective rubrics whose old composer
+            # dropped point ids before replacing the target with a generic goal.
+            # Require the frozen version, exact answer and a single whole-question
+            # obligation; never infer a multi-part/step mapping by position.
+            objective_part = None
+            source_parts = evidence.get("parts") or []
+            answer = answers.get(source_ref, {})
+            if (len(part_list) == len(source_parts) == 1
+                    and question.get("source_evidence_version_id") == snap_question.get("source_evidence_version_id")
+                    and question.get("question_type") in {"choice", "fill_blank"}):
+                source_part = source_parts[0]
+                part = part_list[0]
+                points = source_part.get("evidence_points") or []
+                steps = part.get("steps") or []
+                canonical = str(source_part.get("canonical_answer") or "").strip()
+                goal = "选择正确的选项" if question.get("question_type") == "choice" else "填写正确或等价的答案"
+                if (source_part.get("response_mode") == part.get("response_mode") == "exact_objective"
+                        and len(points) == len(steps) == 1 and canonical
+                        and str(answer.get("canonical_answer") or "").strip() == canonical
+                        and steps[0].get("core_goal") == goal
+                        and canonical in (steps[0].get("required_elements") or [])):
+                    objective_part = source_part
             for part in part_list:
                 part_key = str(part.get("part_id") or source_ref)
                 linked_part_id = resolve_evidence_part_id(part, snap_question, source_ref)
                 evidence_part = next((p for p in evidence.get("parts", ())
                                       if p.get("part_id") == linked_part_id), None)
                 if evidence_part is None:
-                    evidence_part = matched.get(part_key)
+                    evidence_part = matched.get(part_key) or objective_part
                 if not isinstance(evidence_part, Mapping):
                     continue
                 evidence_part_id = str(evidence_part.get("part_id") or "")
@@ -379,6 +422,8 @@ def annotate_rubric_payload(
                     if step.get("evidence_point_ids"):
                         continue
                     point = points_by_goal.get(str(step.get("core_goal")))
+                    if point is None and evidence_part is objective_part:
+                        point = objective_part["evidence_points"][0]
                     if point is None:
                         continue
                     point_id = str(point.get("evidence_point_id") or "")

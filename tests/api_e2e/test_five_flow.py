@@ -31,7 +31,6 @@ def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
         "question:Q4",
         "question:Q5",
         "question:Q6",
-        "score_allocation",
     ]
 
     config_response = api_e2e.client.get(f"/api/sessions/{session_id}/config")
@@ -50,9 +49,9 @@ def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
         17,
         17,
         17,
+        16,
+        16,
         17,
-        17,
-        15,
     ]
     assert Path(config["rubric_path"]).is_file()
     assert Path(config["answer_key_path"]).is_file()

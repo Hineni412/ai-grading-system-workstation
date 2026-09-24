@@ -118,6 +118,45 @@ describe('review queue store', () => {
     expect(store.items[2]).toMatchObject({ detail_id: 3, needs_review: true })
   })
 
+  it('keeps the original reason when a partial confirmation has no note', () => {
+    const store = useReviewQueueStore()
+    store.replaceItems([
+      item(1, { deduction_reason: 'AI 原扣分理由', error_summary: 'ai_summary' }),
+      item(2),
+      item(3),
+    ], 1)
+    store.markItemsConfirmed([
+      { identity: store.items[0]!, scoreAwarded: 4, deductionReason: '' },
+      { identity: store.items[1]!, scoreAwarded: 5, deductionReason: '' },
+      { identity: store.items[2]!, scoreAwarded: 3, deductionReason: '' },
+    ])
+
+    // 无批语且仍有扣分：保留原理由与原概要。
+    expect(store.items[0]).toMatchObject({
+      detail_id: 1,
+      score_awarded: 4,
+      deduction_reason: 'AI 原扣分理由',
+      error_category: '已复核',
+      error_summary: 'ai_summary',
+      needs_review: false,
+    })
+    // 无批语且确认满分：写占位值。
+    expect(store.items[1]).toMatchObject({
+      detail_id: 2,
+      score_awarded: 5,
+      deduction_reason: '人工复核已确认',
+      error_category: '已复核',
+      error_summary: 'manual_review_confirmed',
+      needs_review: false,
+    })
+    // 无批语、原理由为空且仍有扣分：写占位值。
+    expect(store.items[2]).toMatchObject({
+      detail_id: 3,
+      deduction_reason: '人工复核已确认',
+      error_summary: 'manual_review_confirmed',
+    })
+  })
+
   it('adjusts only the matching question pending count and clamps it safely', async () => {
     const store = useReviewQueueStore()
     await store.loadQuestions(7, async () => [

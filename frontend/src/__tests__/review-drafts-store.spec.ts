@@ -38,6 +38,24 @@ function item(overrides: Partial<ReviewItem> = {}): ReviewItem {
 describe('review draft store', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
+  it('restores saved teacher steps and retains changed attribution even if total is unchanged', () => {
+    const store = useReviewDraftStore()
+    const saved = item({ review_item_id: 'batch:1:Q1', revision: 2, score_awarded: 3,
+      metadata: { teacher_review: { revision: 2, steps: [
+        { part_id: 'Q1', step_id: 'S1', max_score: 3, score_awarded: 3 },
+        { part_id: 'Q1', step_id: 'S2', max_score: 2, score_awarded: 0 },
+      ] } } })
+    const draft = store.ensureDraft(saved)
+    expect(draft.stepScores?.map((step) => step.scoreText)).toEqual(['3', '0'])
+    expect(draft.dirty).toBe(false)
+    store.updateSteps(draft.key, draft.stepScores!.map((step, index) => ({ ...step, scoreText: index ? '1' : '2' })))
+    expect(store.drafts[draft.key]?.dirty).toBe(true)
+    expect(store.ensureDraft(saved).stepScores?.map((step) => step.scoreText)).toEqual(['2', '1'])
+    store.updateScore(draft.key, '3')
+    expect(store.drafts[draft.key]?.stepScores).toBeUndefined()
+    expect(store.drafts[draft.key]?.dirty).toBe(true)
+  })
+
   it('preserves dirty drafts across record switches without storing identity text', () => {
     const store = useReviewDraftStore()
     const first = store.ensureDraft(item())

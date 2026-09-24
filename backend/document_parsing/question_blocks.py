@@ -3,17 +3,19 @@ from __future__ import annotations
 import html
 import re
 from typing import Any
-from xml.etree import ElementTree
 
 from equivalence_engine import merge_equivalent_forms
 from question_bank.parsers.type_detector import subq_mark_labels
+from question_bank.importers.batch_importer import (
+    _extract_question_marker_number,
+    _looks_like_answer_section_heading,
+    _next_leading_main_question_number,
+    _split_consecutive_inline_main_questions,
+    split_inline_main_question_paragraphs,
+)
 
 
 _INLINE_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
-_INLINE_MAIN_QUESTION_MARKER = re.compile(
-    r"(?P<prefix>[。！？!?．.][ \t\r\n]*)"
-    r"(?P<number>\d{1,2})[ \t]*[.．、](?![ \t]*\d)[ \t]*"
-)
 _VISIBLE_FILL_BLANK_MARK = re.compile(
     r"(?:_{2,}|＿{1,}|﹏{2,}|<u\b[^>]*>.*?</u>|（\s*）|\(\s*\)|\b填空\b|[\u00a0\u3000]{2,})",
     re.IGNORECASE | re.DOTALL,
@@ -329,6 +331,12 @@ def _question_type_hints_from_section_headings(doc_text: str) -> dict[str, str]:
     hints: dict[str, str] = {}
     for line in question_text.splitlines():
         value = str(line or "").strip()
+        is_heading = re.match(r"^(?:[一二三四五六七八九十]+|\d+)\s*[、.．]\s*(?:选择|填空|证明|计算|解答)题", value)
+        if not is_heading:
+            number = _extract_question_marker_number(value)
+            if number is not None and current_type:
+                hints.setdefault(str(number), current_type)
+            continue
         if "选择题" in value:
             current_type = "choice"
             continue
@@ -341,9 +349,8 @@ def _question_type_hints_from_section_headings(doc_text: str) -> dict[str, str]:
         if "解答题" in value:
             current_type = "comprehensive"
             continue
-        number = _extract_question_marker_number(value)
-        if number is not None and current_type:
-            hints[str(number)] = current_type
+        if "计算题" in value:
+            current_type = "calculation"
     return hints
 
 
@@ -683,9 +690,14 @@ def _is_local_answer_trusted(
     return False
 
 
-def _strip_leading_question_number(number: int, text: str) -> str:
+def _strip_leading_question_number(number: int | str, text: str) -> str:
     value = str(text or "").lstrip()
-    value = re.sub(rf"^{number}\s*[.．]\s*", "", value, count=1)
+    if not str(number).isdigit():
+        return value.strip()
+    value = re.sub(
+        rf"^(?P<prefix>(?:\[\[IMAGE:[^\r\n]+?\]\]\s*)*){number}\s*[.．、]\s*",
+        r"\g<prefix>", value, count=1,
+    )
     return value.strip()
 
 
@@ -742,75 +754,6 @@ def _normalize_inline_main_question_lines(doc_text: str) -> list[str]:
     return lines
 
 
-def _split_consecutive_inline_main_questions(
-    text: str,
-    *,
-    current_number: int,
-    following_number: int | None,
-) -> tuple[list[str], int]:
-    split_offsets: list[int] = []
-    expected_number = current_number + 1
-    for marker in _INLINE_MAIN_QUESTION_MARKER.finditer(text):
-        marker_number = int(marker.group("number"))
-        if marker_number != expected_number:
-            continue
-        split_offsets.append(marker.start("number"))
-        expected_number += 1
-    if not split_offsets or expected_number != following_number:
-        return [text], current_number
-    boundaries = [0, *split_offsets, len(text)]
-    return (
-        [
-            text[start:end].strip()
-            for start, end in zip(boundaries, boundaries[1:])
-            if text[start:end].strip()
-        ],
-        expected_number - 1,
-    )
-
-
-def _extract_question_marker_number(line: str) -> int | None:
-    value = str(line or "").strip()
-    if not value:
-        return None
-    for pattern in [
-        r"^(?:Q|q)\s*(\d{1,2})(?:\b|[\s:：.．、)])",
-        r"^第\s*(\d{1,2})\s*[题題]",
-        r"^(\d{1,2})\s*[.．、)]",
-    ]:
-        match = re.match(pattern, value)
-        if match and 1 <= int(match.group(1)) <= 99:
-            return int(match.group(1))
-    return None
-
-
-def _looks_like_answer_section_heading(line: str) -> bool:
-    value = str(line or "").strip()
-    if not value:
-        return False
-    if any(marker in value for marker in ["参考答案", "试题解析", "答案与解析"]):
-        return True
-    return value.lower().strip(":： ") in {
-        "answer",
-        "answers",
-        "solution",
-        "solutions",
-        "answer key",
-    }
-
-
-def _next_leading_main_question_number(
-    texts: list[str], *, after_index: int
-) -> int | None:
-    for text in texts[after_index + 1 :]:
-        if _looks_like_answer_section_heading(text):
-            return None
-        number = _extract_question_marker_number(text)
-        if number is not None:
-            return number
-    return None
-
-
 def infer_question_type_from_text(text: str) -> str:
     value = str(text or "")
     if has_explicit_choice_options(value):
@@ -825,131 +768,6 @@ def infer_question_type_from_text(text: str) -> str:
     if any(token in value for token in _EXPLICIT_PROOF_MARKERS):
         return "proof"
     return "comprehensive"
-
-
-def split_inline_main_question_paragraphs(
-    rich_paragraphs: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    current_number: int | None = None
-    in_answer_section = False
-    plain_paragraphs = [
-        _strip_inline_html(
-            _INLINE_IMAGE_MARKER.sub("", str(paragraph.get("text") or ""))
-        ).strip()
-        for paragraph in rich_paragraphs
-    ]
-    for index, paragraph in enumerate(rich_paragraphs):
-        text = str(paragraph.get("text") or "").strip()
-        plain_text = plain_paragraphs[index]
-        if _looks_like_answer_section_heading(plain_text):
-            in_answer_section = True
-        if in_answer_section or not text:
-            normalized.append(paragraph)
-            continue
-        leading_number = _extract_question_marker_number(plain_text)
-        if leading_number is not None:
-            current_number = leading_number
-        if current_number is None:
-            normalized.append(paragraph)
-            continue
-        segments, final_number = _split_consecutive_inline_main_questions(
-            _INLINE_IMAGE_MARKER.sub("", text).strip(),
-            current_number=current_number,
-            following_number=_next_leading_main_question_number(
-                plain_paragraphs, after_index=index
-            ),
-        )
-        if len(segments) == 1:
-            normalized.append(paragraph)
-            continue
-        segments = _attach_inline_images_to_source_segments(
-            paragraph,
-            segments=segments,
-            current_number=current_number,
-            final_number=final_number,
-        )
-        normalized.extend({**paragraph, "text": segment} for segment in segments)
-        current_number = final_number
-    return normalized
-
-
-def _attach_inline_images_to_source_segments(
-    paragraph: dict[str, Any],
-    *,
-    segments: list[str],
-    current_number: int,
-    final_number: int,
-) -> list[str]:
-    fallback_paths = image_paths_from_rich_text(str(paragraph.get("text") or ""))
-
-    def attach_to_last(paths: list[str]) -> list[str]:
-        assigned = list(segments)
-        for path in paths:
-            assigned[-1] = f"{assigned[-1].rstrip()}\n[[IMAGE:{path}]]"
-        return assigned
-
-    relationships = paragraph.get("image_relationships")
-    raw_xml = str(paragraph.get("xml") or "")
-    if not isinstance(relationships, dict) or not relationships or not raw_xml:
-        return attach_to_last(fallback_paths)
-    try:
-        root = ElementTree.fromstring(raw_xml)
-    except ElementTree.ParseError:
-        return attach_to_last(fallback_paths)
-
-    text_parts: list[str] = []
-    positioned_images: list[tuple[int, str]] = []
-    text_length = 0
-    for element in root.iter():
-        local_name = str(element.tag).split("}")[-1]
-        if local_name == "t":
-            value = str(element.text or "")
-            text_parts.append(value)
-            text_length += len(value)
-            continue
-        if local_name != "blip":
-            continue
-        relationship_id = next(
-            (
-                str(value)
-                for key, value in element.attrib.items()
-                if str(key).split("}")[-1] == "embed"
-            ),
-            "",
-        )
-        image_path = str(relationships.get(relationship_id) or "").strip()
-        if image_path:
-            positioned_images.append((text_length, image_path))
-    if not positioned_images:
-        return attach_to_last(fallback_paths)
-
-    source_text = "".join(text_parts)
-    expected_number = current_number + 1
-    split_offsets: list[int] = []
-    for marker in _INLINE_MAIN_QUESTION_MARKER.finditer(source_text):
-        marker_number = int(marker.group("number"))
-        if marker_number != expected_number:
-            continue
-        split_offsets.append(marker.start("number"))
-        expected_number += 1
-        if marker_number == final_number:
-            break
-    if len(split_offsets) != len(segments) - 1:
-        return attach_to_last(fallback_paths)
-
-    assigned = list(segments)
-    positioned_paths: set[str] = set()
-    for image_offset, image_path in positioned_images:
-        segment_index = sum(image_offset >= offset for offset in split_offsets)
-        assigned[segment_index] = (
-            f"{assigned[segment_index].rstrip()}\n[[IMAGE:{image_path}]]"
-        )
-        positioned_paths.add(image_path)
-    for image_path in fallback_paths:
-        if image_path not in positioned_paths:
-            assigned[-1] = f"{assigned[-1].rstrip()}\n[[IMAGE:{image_path}]]"
-    return assigned
 
 
 def flatten_answer_blocks(answer_map: Any) -> list[dict[str, Any]]:
@@ -981,13 +799,13 @@ def _strip_inline_html(value: str) -> str:
     text = str(value or "")
     text = re.sub(
         r"<sup\b[^>]*>(.*?)</sup>",
-        lambda match: f"^({match.group(1)})",
+        lambda match: f"^({match.group(1)})" if match.group(1).strip() else "",
         text,
         flags=re.IGNORECASE | re.DOTALL,
     )
     text = re.sub(
         r"<sub\b[^>]*>(.*?)</sub>",
-        lambda match: f"_({match.group(1)})",
+        lambda match: f"_({match.group(1)})" if match.group(1).strip() else "",
         text,
         flags=re.IGNORECASE | re.DOTALL,
     )
@@ -1000,7 +818,9 @@ def _strip_inline_html(value: str) -> str:
     text = re.sub(r"<br\b[^>]*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</(?:td|th)\s*>", " | ", text, flags=re.IGNORECASE)
     text = re.sub(r"</tr\s*>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]*>", "", text)
+    # Bare < and > are mathematical comparisons, not HTML. Removing everything
+    # between them can silently eat several lines, including question headings.
+    text = re.sub(r"</?(?:p|span|div|table|tbody|thead|tr|td|th|b|strong|i|em|img|sup|sub|u)\b[^>]*>", "", text, flags=re.I)
     return html.unescape(text)
 
 
@@ -1031,7 +851,11 @@ def _parse_answer_section_blocks(answer_blocks: list[Any]) -> tuple[str, str]:
             if "【答案】" in line:
                 in_solution = False
                 after = line.split("【答案】", 1)[1].strip()
-                if after:
+                if re.match(r"【小题\s*\d+】", after):
+                    solution_lines.append(after)
+                    awaiting_answer = False
+                    in_solution = True
+                elif after:
                     final_answer = _clean_local_answer_text(_strip_inline_html(after))
                     awaiting_answer = False
                     in_solution = True
@@ -1059,6 +883,9 @@ def _parse_answer_section_blocks(answer_blocks: list[Any]) -> tuple[str, str]:
                 continue
             if line.startswith("【") and "】" in line:
                 in_solution = True
+                if re.match(r"【小题\s*\d+】", line):
+                    solution_lines.append(line)
+                    continue
                 after = line.split("】", 1)[1].strip()
                 if after:
                     solution_lines.append(after)
@@ -1162,9 +989,9 @@ def parse_rich_question_blocks(
     answer_html = "\n".join(answer_lines).strip()
     analysis_html = "\n".join(analysis_lines).strip()
     image_paths = image_paths_from_rich_text(question_html)
-    question_text = _strip_inline_html(
+    question_text = _strip_leading_question_number(number, _strip_inline_html(
         _INLINE_IMAGE_MARKER.sub("", question_html)
-    ).strip()
+    ).strip())
     answer_text = _strip_inline_html(
         _INLINE_IMAGE_MARKER.sub("", answer_html)
     ).strip()

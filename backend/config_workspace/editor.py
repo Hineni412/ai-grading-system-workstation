@@ -318,17 +318,22 @@ def collect_config_editor_issues(
     refresh_generated_config_quality_warnings(candidate)
     warning_issues = _warning_issues(candidate)
     try:
-        validate_generated_config(candidate)
+        validate_generated_config(candidate, normalize=False, enforce_score_policy=False)
     except (TypeError, ValueError, KeyError):
         warning_issues.append(_issue("invalid_generated_config", "config", "The configuration is not ready to publish."))
-    return warning_issues
+    return warning_issues + _score_policy_warnings(candidate)
 
 
 def validate_config_editor_candidate(payload: dict[str, Any]) -> None:
     issues = collect_config_editor_issues(payload, validate_publish=False)
     if issues:
         raise ConfigEditorValidationError(issues)
-    validate_generated_config(payload)
+    try:
+        validate_generated_config(payload, normalize=False, enforce_score_policy=False)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ConfigEditorValidationError((
+            _issue("invalid_generated_config", "config", "评分依据的数据结构不完整，请检查题目、小问和步骤的对应关系；人工分值不受自动配分规则限制。"),
+        )) from exc
 
 
 def editor_part_ids(payload: dict[str, Any]) -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -647,11 +652,6 @@ def _apply_replace_parts(payload: dict[str, Any], command: ReplaceScoringUnitsCo
     if len(set(part_ids)) != len(part_ids):
         raise ConfigEditorValidationError((_issue("duplicate_part_id", "commands.parts.part_id", "Scoring unit IDs must be unique."),))
     scores = [_valid_score(item.score, None) for item in command.parts]
-    current_total = _number(question.get("max_score"), 0.0)
-    if current_total > 0 and not math.isclose(sum(scores), current_total, abs_tol=1e-6):
-        raise ConfigEditorValidationError(
-            (_issue("score_total_mismatch", "commands.parts.score", "Scoring unit scores must equal the question score."),)
-        )
     answer = _ensure_answer_question(payload, command.question_id)
     old_parts = _dict_list(question.get("parts"))
     old_part_map = _parts_by_canonical_id(old_parts, parent_id)
@@ -708,7 +708,7 @@ def _apply_replace_parts(payload: dict[str, Any], command: ReplaceScoringUnitsCo
         new_parts.append(new_part)
         new_answers.append(new_answer)
     question["parts"] = new_parts
-    question["max_score"] = current_total or sum(scores)
+    question["max_score"] = sum(scores)
     answer["parts"] = new_answers
     _append_warning(payload, f"教师手动编辑了 {command.question_id} 的评分单元结构，AI 二次完善时必须保留这些 part_id。")
 
@@ -765,11 +765,6 @@ def _apply_replace_question_structure(
         for part in command.parts
         for step in part.steps
     ]
-    current_total = _number(question.get("max_score"), 0.0)
-    if current_total > 0 and not math.isclose(sum(scores), current_total, abs_tol=1e-6):
-        raise ConfigEditorValidationError(
-            (_issue("score_total_mismatch", "commands.parts.steps.score", "All scoring steps must add up to the question score."),)
-        )
 
     answer = _ensure_answer_question(payload, command.question_id)
     old_parts = _dict_list(question.get("parts"))
@@ -833,7 +828,7 @@ def _apply_replace_question_structure(
         new_parts.append(new_part)
         new_answers.append(new_answer)
     question["parts"] = new_parts
-    question["max_score"] = current_total or sum(scores)
+    question["max_score"] = sum(scores)
     answer["parts"] = new_answers
     _append_warning(payload, f"教师手动调整了 {command.question_id} 的小问和步骤点结构。")
 
@@ -866,7 +861,7 @@ def _aggregate_scores(payload: dict[str, Any]) -> None:
                         if mode in {"exact_objective", "short_answer_points", "visual_construction"}
                         else 1.0
                     )
-                answer_only_total += min(part_score, max(0.0, raw_answer_only))
+                answer_only_total += raw_answer_only
             question["max_score"] = question_total
             if str(question.get("question_type") or "") in _SOLUTION_TYPES:
                 question["answer_only_max_score"] = answer_only_total
@@ -1130,9 +1125,40 @@ def _warning_issues(payload: dict[str, Any]) -> list[ConfigEditorIssue]:
             "meta.warnings",
             message,
         )
-        if not message.startswith("[质量检查-阻断]"):
-            issue["severity"] = "warning"
+        issue["severity"] = "warning"
+        issue["message"] = message.replace("[质量检查-阻断]", "[质量提醒]")
         issues.append(issue)
+    return issues
+
+
+def _score_policy_warnings(payload: dict[str, Any]) -> list[ConfigEditorIssue]:
+    from score_policy import MAX_QUESTION_SCORE
+
+    issues: list[ConfigEditorIssue] = []
+
+    def warn(code: str, message: str) -> None:
+        issue = _issue(code, "score", message + "；按人工设置保存。")
+        issue["severity"] = "warning"
+        issues.append(issue)
+
+    questions = _questions(payload, "rubric")
+    total = sum(_number(question.get("max_score"), 0.0) for question in questions)
+    if not math.isclose(total, 100.0, abs_tol=1e-6):
+        warn("manual_total_score", f"当前总分为 {total:g} 分，与自动配分的 100 分不同")
+    objective_scores: dict[str, set[float]] = {}
+    for question in questions:
+        qid = str(question.get("question_id"))
+        score = _number(question.get("max_score"), 0.0)
+        if score > MAX_QUESTION_SCORE:
+            warn("manual_question_score", f"{qid} 共 {score:g} 分，超过自动配分的单题 {MAX_QUESTION_SCORE} 分上限")
+        qtype = str(question.get("question_type"))
+        if qtype in _OBJECTIVE_TYPES:
+            objective_scores.setdefault(qtype, set()).add(score)
+        steps = [step for part in _dict_list(question.get("parts")) for step in _dict_list(part.get("steps"))]
+        if any((value := _number(step.get("step_score"), 0.0)) < 0 or not value.is_integer() for step in steps):
+            warn("manual_step_score", f"{qid} 含小数或负数分值，超出自动配分的非负整数规则")
+    if any(len(scores) > 1 for scores in objective_scores.values()):
+        warn("manual_objective_scores", "同类客观题的分值不完全相同")
     return issues
 
 
@@ -1270,9 +1296,9 @@ def _optional_bool(value: Any) -> bool | None:
 
 def _valid_score(value: Any, row_id: str | None) -> float:
     score = _number_or_none(value)
-    if isinstance(value, bool) or score is None or score < 0 or not score.is_integer():
+    if isinstance(value, bool) or score is None:
         raise ConfigEditorValidationError(
-            (_issue("invalid_score", "score", "分值必须是非负整数。", row_id=row_id),)
+            (_issue("invalid_score", "score", "请填写有效数字分值。", row_id=row_id),)
         )
     return score
 
@@ -1399,10 +1425,7 @@ def _sync_solution_policy(question: dict[str, Any]) -> None:
         "answer_only_max_score" in question
         and question.get("answer_only_max_score") is None
     )
-    effective_answer_only = min(
-        max_score,
-        max(0.0, _number(question.get("answer_only_max_score"), 0.0)),
-    )
+    effective_answer_only = _number(question.get("answer_only_max_score"), 0.0)
     answer_only: float | None = None if explicit_null else effective_answer_only
     require_final = bool(question.get("require_final_answer"))
     question["require_final_answer"] = require_final

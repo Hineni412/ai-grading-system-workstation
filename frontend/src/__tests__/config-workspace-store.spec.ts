@@ -75,6 +75,61 @@ beforeEach(() => {
 })
 
 describe('configuration workspace Store', () => {
+  it('restores a partial generation from the server without a browser job index', async () => {
+    const store = useConfigWorkspaceStore()
+    const partial = job({ status: 'succeeded', result: {
+      outcome: 'partial', exam_intake_complete: false, score_allocation_pending: true,
+    } })
+    const loadLatestJob = vi.fn().mockResolvedValue(partial)
+    await store.hydrateSafeIndex([7], 7, {
+      loadActiveSource: async () => source('d'.repeat(32)),
+      loadEditor: async () => editor('2'),
+      loadLatestJob,
+    })
+    expect(loadLatestJob).toHaveBeenCalledWith(7, expect.objectContaining({
+      source_id: 'd'.repeat(32), source_revision: 'b'.repeat(64),
+    }))
+    expect(store.jobId).toBe(31)
+    expect(useJobStore().jobs[31]?.result.exam_intake_complete).toBe(false)
+    expect(JSON.parse(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!).jobId).toBe(31)
+  })
+
+  it('ignores a restored generation when the teacher switches exams during lookup', async () => {
+    const store = useConfigWorkspaceStore()
+    let resolveJob!: (value: JobResponse) => void
+    const lookup = new Promise<JobResponse>((resolve) => { resolveJob = resolve })
+    const loadLatestJob = vi.fn().mockReturnValue(lookup)
+    store.selectSession(7)
+    const loading = store.loadSelectedSessionWorkspace(7, {
+      loadActiveSource: async () => source('d'.repeat(32)),
+      loadEditor: async () => editor('2'),
+      loadLatestJob,
+    })
+    await vi.waitFor(() => expect(loadLatestJob).toHaveBeenCalled())
+    store.selectSession(9)
+    resolveJob(job({ status: 'succeeded' }))
+    await loading
+    expect(store.sessionId).toBe(9)
+    expect(store.jobId).toBeNull()
+  })
+
+  it('replaces a remembered terminal job with its newer retry on reopening', async () => {
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify({
+      sessionId: 7, phase: 'generation', sourceId: 'd'.repeat(32),
+      sourceRevision: 'b'.repeat(64), jobId: 31, decisions: [],
+    }))
+    const store = useConfigWorkspaceStore()
+    const newer = job({ id: 32, status: 'succeeded', result: { generated_questions: 14 } })
+    await store.hydrateSafeIndex([7], 7, {
+      loadSource: async () => source('d'.repeat(32)),
+      loadEditor: async () => editor('2'),
+      loadJob: async () => job({ status: 'succeeded' }),
+      loadLatestJob: async () => newer,
+    })
+    expect(store.jobId).toBe(32)
+    expect(useJobStore().jobs[32]?.result.generated_questions).toBe(14)
+  })
+
   it('builds generation requests from current source facts and invalidates old view updates', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)
@@ -615,7 +670,7 @@ describe('configuration workspace Store', () => {
     expect(store.serverIssues).toEqual([])
   })
 
-  it('retains safe unknown 422 fields as global blockers without dropping known issues', () => {
+  it('retains safe global 422 messages and clears stale validation when the draft changes', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)
     store.setEditor(editor('旧答案'))
@@ -632,9 +687,7 @@ describe('configuration workspace Store', () => {
       { code: 'future_policy', severity: 'error', row_id: null, field: 'future_policy', message: '核对新策略' },
     ])
     store.updateEditor({ row_id: 'row-1', score: 6 })
-    expect(store.serverIssues).toEqual([
-      { code: 'future_policy', severity: 'error', row_id: null, field: 'future_policy', message: '核对新策略' },
-    ])
+    expect(store.serverIssues).toEqual([])
   })
 
   it('builds a single save request from the loaded revision and returns effective rows', () => {

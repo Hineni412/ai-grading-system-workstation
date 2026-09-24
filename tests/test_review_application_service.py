@@ -604,11 +604,110 @@ def test_prepare_adjustments_returns_normalized_ownership_and_review_metadata(
             "detail_id": ids["first_detail_id"],
             "question_id": "Q1",
             "score_awarded": 9.0,
-            "deduction_reason": "人工复核已确认",
+            # 确认分仍有扣分且未填批语：保留明细原理由与原概要，仅标记已复核。
+            "deduction_reason": "original reason",
             "error_category": "已复核",
-            "error_summary": "manual_review_confirmed",
+            "error_summary": "original summary",
         }
     ]
+
+
+def _apply_confirmation(
+    db: DBManager,
+    session_id: int,
+    session: dict[str, Any],
+    item: "review_service_module.ReviewConfirmationInput",
+) -> tuple[Any, ...]:
+    adjustments = ReviewApplicationService(db).prepare_adjustments(
+        session_id, session, "Q1", [item]
+    )
+    db.apply_session_review_adjustments(session_id, adjustments)
+    with sqlite3.connect(db.db_path) as conn:
+        return conn.execute(
+            """
+            SELECT score_awarded, deduction_reason, error_category, error_summary
+            FROM session_details WHERE id = ?
+            """,
+            (item.detail_id,),
+        ).fetchone()
+
+
+def test_prepare_adjustments_partial_score_without_note_keeps_ai_reason(
+    tmp_path: Path,
+) -> None:
+    db, session_id, session, ids = _seed_review_confirmation(tmp_path)
+    row = _apply_confirmation(
+        db,
+        session_id,
+        session,
+        review_service_module.ReviewConfirmationInput(
+            result_id=ids["first_result_id"],
+            detail_id=ids["first_detail_id"],
+            score_awarded=9.0,
+        ),
+    )
+    assert row == (9.0, "original reason", "已复核", "original summary")
+    # 已复核标记使该条不再计入待复核。
+    assert review_service_module._is_substantive_review_reason(row[1], row[2]) is False
+
+
+def test_prepare_adjustments_full_score_without_note_writes_placeholder(
+    tmp_path: Path,
+) -> None:
+    db, session_id, session, ids = _seed_review_confirmation(tmp_path)
+    row = _apply_confirmation(
+        db,
+        session_id,
+        session,
+        review_service_module.ReviewConfirmationInput(
+            result_id=ids["first_result_id"],
+            detail_id=ids["first_detail_id"],
+            score_awarded=10.0,
+        ),
+    )
+    assert row == (10.0, "人工复核已确认", "已复核", "manual_review_confirmed")
+    assert review_service_module._is_substantive_review_reason(row[1], row[2]) is False
+
+
+def test_prepare_adjustments_teacher_note_becomes_final_reason(tmp_path: Path) -> None:
+    db, session_id, session, ids = _seed_review_confirmation(tmp_path)
+    row = _apply_confirmation(
+        db,
+        session_id,
+        session,
+        review_service_module.ReviewConfirmationInput(
+            result_id=ids["first_result_id"],
+            detail_id=ids["first_detail_id"],
+            score_awarded=9.0,
+            deduction_reason="漏写单位",
+            error_summary="教师小结",
+        ),
+    )
+    assert row == (9.0, "漏写单位", "已复核", "教师小结")
+    assert review_service_module._is_substantive_review_reason(row[1], row[2]) is False
+
+
+def test_prepare_adjustments_blank_prior_reason_partial_score_writes_placeholder(
+    tmp_path: Path,
+) -> None:
+    db, session_id, session, ids = _seed_review_confirmation(tmp_path)
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE session_details SET deduction_reason = NULL, error_summary = NULL WHERE id = ?",
+            (ids["first_detail_id"],),
+        )
+    row = _apply_confirmation(
+        db,
+        session_id,
+        session,
+        review_service_module.ReviewConfirmationInput(
+            result_id=ids["first_result_id"],
+            detail_id=ids["first_detail_id"],
+            score_awarded=9.0,
+        ),
+    )
+    assert row == (9.0, "人工复核已确认", "已复核", "manual_review_confirmed")
+    assert review_service_module._is_substantive_review_reason(row[1], row[2]) is False
 
 
 def test_source_region_id_normalizes_part_aliases_without_crossing_siblings() -> None:

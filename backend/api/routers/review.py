@@ -181,10 +181,12 @@ def confirm_review_question_items(
                     deduction_reason=item.deduction_reason,
                     error_category=item.error_category,
                     error_summary=item.error_summary,
+                    step_scores=([step.model_dump() for step in item.step_scores] if item.step_scores is not None else None),
                 )
                 for item in request.items
             ],
             manual_context=manual_context,
+            **({"defer_annotations": True} if request.annotation_mode == "on_demand" else {}),
         )
     except ReviewDetailNotFoundError as exc:
         raise ApiError(

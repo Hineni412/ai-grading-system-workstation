@@ -125,7 +125,7 @@ const canDiscardDraft = computed(() => (
 // 出卷设置指纹：设置一致时才恢复上次草稿，设置变了必须重新生成。
 // rulesVersion 随选题规则升级递增，避免恢复规则升级前的旧草稿。
 const settingsFingerprint = computed(() => JSON.stringify({
-  rulesVersion: 6,
+  rulesVersion: 7,
   scope: props.scope,
   examScope: props.examScope,
   questionCount: props.questionCount,
@@ -155,9 +155,9 @@ async function restoreDraft(): Promise<void> {
   if (stored.fingerprint !== settingsFingerprint.value) {
     try {
       const previous = JSON.parse(stored.fingerprint)
-      previousRules = Number(previous.rulesVersion) < 6
+      previousRules = Number(previous.rulesVersion) < 7
       if (!previousRules) return
-      previous.rulesVersion = 6
+      previous.rulesVersion = 7
       for (const key of ['trainingIntent', 'expectedMinutes', 'difficultyMin', 'stageRatios']) delete previous[key]
       previous.teachingProgressChapterId ??= ''
       previous.difficultyMax = difficultyMax.value
@@ -262,6 +262,7 @@ function stageLabel(stage: TrainingStage): string {
 }
 
 function itemLabel(item: PersonalizedRecommendationItem): string {
+  if (item.selection_kind === 'task_matched') return item.match_label || '原小问任务匹配'
   if (item.match_level && item.match_label) return `${item.match_level}级 · ${item.match_label}`
   return item.selection_kind === 'supplement' ? '补充练习' : stageLabel(item.stage)
 }
@@ -726,7 +727,7 @@ async function editItem(
         难度上限
         <input v-model.number="difficultyMax" type="number" min="1" max="10">
       </label>
-      <p>从实际错题难度起步，下浮 0–1 级；默认上限 7 级，按题量控制规模。</p>
+      <p>按目标作答表现安排起步、巩固和少量突破练习；每份训练最多2道解答题，默认难度上限7级。</p>
     </div>
 
     <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets">
@@ -885,7 +886,7 @@ async function editItem(
                     </span>
                   </details>
                 </template>
-                <small v-else-if="item.selection_kind === 'supplement'">直接练习不足，按选定范围和相近难度补足题量。</small>
+                <small v-else-if="item.selection_kind === 'supplement'">范围内少量补充，不计作原失分任务覆盖；自动选题时最多占实际题量20%。</small>
                 <small v-else>该细点在当前范围内暂无逐题失分记录</small>
               </div>
               <span class="personalized-match__arrow" aria-hidden="true">→</span>
@@ -904,6 +905,7 @@ async function editItem(
                   {{ item.question_text || '旧草稿未包含题干，重新生成后可见' }}
                 </p>
                 <small class="personalized-match__meta">
+                  <template v-if="item.difficulty_band">{{ { starter: '起步练习', consolidation: '巩固练习', stretch: '少量突破' }[item.difficulty_band] }} · </template>
                   原卷第 {{ item.question_number }} 题 · {{ item.part_assessment ? '最难小问' : '整题难度' }} {{ item.difficulty }} ·
                   {{ item.criterion_point_count }} 个判定点 · 来源：{{ item.source_paper }}
                 </small>

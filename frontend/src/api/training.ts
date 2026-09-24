@@ -156,7 +156,7 @@ export interface PersonalizedRecommendationItem {
   // 旧草稿没有题干；新建/替换的草稿项才带 question_text。
   question_text?: string
   stage: TrainingStage
-  selection_kind?: 'direct' | 'supplement'
+  selection_kind?: 'direct' | 'task_matched' | 'supplement'
   match_level?: 1 | 2 | 3 | 4
   match_label?: string
   matched_topic_keys?: string[]
@@ -168,6 +168,8 @@ export interface PersonalizedRecommendationItem {
   criterion_version_id: string
   criterion_point_count: number
   difficulty: number
+  difficulty_band?: 'starter' | 'consolidation' | 'stretch'
+  practice_role?: 'step_practice' | 'full_response' | 'supplement'
   part_assessment?: {
     profile_revision: number
     evidence_version_id: string
@@ -951,7 +953,7 @@ function isRecommendationItem(
     && typeof value.question_number === 'string'
     && (value.question_text === undefined || typeof value.question_text === 'string')
     && isStage(value.stage)
-    && (value.selection_kind === undefined || value.selection_kind === 'direct' || value.selection_kind === 'supplement')
+    && (value.selection_kind === undefined || value.selection_kind === 'direct' || value.selection_kind === 'task_matched' || value.selection_kind === 'supplement')
     && isRecord(value.target)
     && isNonEmptyString(value.matched_key)
     && typeof value.matched_name === 'string'

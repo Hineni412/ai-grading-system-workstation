@@ -863,16 +863,26 @@ function isTrainingDownloadable(job: JobResponse): boolean {
                 <div>
                   <span>模型调用次数</span>
                   <strong data-testid="analysis-call-count">
-                    {{ analysisPreflight.call_count }} 次
+                    {{ analysisPreflight.call_count + analysisPreflight.cause_call_count }} 次
                   </strong>
                 </div>
                 <div>
                   <span>文本 token 量（粗略估算）</span>
                   <strong data-testid="analysis-tokens">
-                    {{ formatTokenCount(analysisPreflight.estimated_total_tokens) }}
+                    {{ formatTokenCount(analysisPreflight.estimated_total_tokens + analysisPreflight.cause_estimated_tokens) }}
                   </strong>
                 </div>
               </div>
+
+              <p
+                v-if="analysisPreflight.cause_total_questions > 0"
+                class="excel-settings-dialog__explanation"
+                data-testid="analysis-cause-count"
+              >
+                其中先整理错因：{{ analysisPreflight.cause_call_count }} 次调用（共
+                {{ analysisPreflight.cause_total_questions }} 道失分题，已整理或整理失败的题不重复调用）；
+                报告叙述：{{ analysisPreflight.call_count }} 次调用。
+              </p>
 
               <p
                 v-if="analysisPreflight.cache_hits > 0"

@@ -217,12 +217,22 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
           && entry.detail_id === identity.detail_id,
       )
       if (!patch) return entry
+      // 与后端一致：批语优先；无批语且确认满分写占位，仍扣分时保留原理由/概要。
+      const note = patch.deductionReason.trim()
+      const confirmedFull = patch.scoreAwarded >= entry.max_score
       return {
         ...entry,
         score_awarded: patch.scoreAwarded,
-        deduction_reason: patch.deductionReason,
+        deduction_reason:
+          note
+          || (confirmedFull
+            ? '人工复核已确认'
+            : entry.deduction_reason?.trim() || '人工复核已确认'),
         error_category: '已复核',
-        error_summary: 'manual_review_confirmed',
+        error_summary:
+          confirmedFull
+            ? 'manual_review_confirmed'
+            : entry.error_summary?.trim() || 'manual_review_confirmed',
         needs_review: false,
         score_status: 'teacher_final',
         score_source: 'teacher',

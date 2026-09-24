@@ -16,6 +16,7 @@ const apiMock = vi.hoisted(() => ({
   updateSettings: vi.fn(),
   regenerate: vi.fn(),
   getQuestionPreview: vi.fn(),
+  confirmCausePattern: vi.fn(),
 }))
 
 const modelProfilesMock = vi.hoisted(() => ({
@@ -258,6 +259,47 @@ describe('class analysis panel', () => {
     expect(reopened.host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.disabled).toBe(true)
   })
 
+  it('shows top-level cause categories and marks outdated v2 results for upgrade', async () => {
+    const result = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1,
+      total_questions: 2, failed_questions: 0, outdated_questions: 1,
+      stale: false, generated_at: '2026-09-09T10:00:00', origin: 'model' } })
+    const question = result.data!.questions[0]!
+    question.causes_grouped = true
+    question.causes = [
+      { kind: 'error', category: '审题与条件', reason: '选错目标量', count: 2,
+        pattern_status: 'existing',
+        evidence: [{ text: '多加一段', student_ids: [31] }] },
+      { kind: 'process', category: '过程与依据', reason: '未写依据', count: 1,
+        evidence: [{ text: '缺依据', student_ids: [32] }] },
+    ]
+    apiMock.getClassAnalysis.mockResolvedValue(result)
+    const { host } = await mountPanel()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="cause-category"]')).not.toBeNull())
+    expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('审题与条件')
+    expect(host.querySelector('[data-kind="process"]')!.textContent).toContain('过程与依据')
+    expect(host.textContent).toContain('1 题为旧版整理，暂无错误大类')
+    mounted.pop()!.unmount()
+    host.remove()
+
+    // v2 旧版结果：仍按 kind 展示但没有大类，题级出现「待升级」标记。
+    const legacy = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1,
+      total_questions: 2, failed_questions: 0, outdated_questions: 1,
+      stale: false, generated_at: '2026-09-01T10:00:00', origin: 'model' } })
+    const legacyQuestion = legacy.data!.questions[0]!
+    legacyQuestion.causes_grouped = true
+    legacyQuestion.causes_outdated = true
+    legacyQuestion.causes = [
+      { kind: 'error', reason: '旧版归并的错因', count: 1,
+        evidence: [{ text: '旧证据', student_ids: [31] }] },
+    ]
+    apiMock.getClassAnalysis.mockResolvedValue(legacy)
+    const second = await mountPanel()
+    await vi.waitFor(() => expect(second.host.querySelector('[data-testid="causes-outdated"]')).not.toBeNull())
+    expect(second.host.querySelector('[data-testid="causes-outdated"]')!.textContent).toContain('待升级')
+    expect(second.host.querySelector('[data-kind="error"]')!.textContent).toContain('旧版归并的错因')
+    expect(second.host.querySelector('[data-testid="cause-category"]')).toBeNull()
+  })
+
   it('opens source evidence and only submits cause grouping after explicit confirmation', async () => {
     const result = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
       failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' } })
@@ -478,5 +520,85 @@ describe('class analysis panel', () => {
       host.querySelector('[data-testid="regenerate-error"]')?.textContent,
     ).toContain('未配置内容生成模型'))
     expect(apiMock.regenerate).toHaveBeenCalledTimes(1)
+  })
+
+  it('confirms a candidate cause pattern into the question bank', async () => {
+    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
+      cause_analysis: { status: 'ready', pending_questions: 0, total_questions: 1,
+        failed_questions: 0, stale: false, generated_at: '2026-08-30T10:00:00Z', origin: 'assistant' },
+      data: {
+        ...makeAnalysis().data!,
+        questions: [{
+          question_id: '1',
+          max_score: 4,
+          class_rate: 0.5,
+          stem_summary: '轴对称图形识别',
+          canonical_answer: 'B',
+          bank_question_id: 101,
+          causes: [{
+            reason: '误认梯形为轴对称',
+            count: 1,
+            kind: 'error',
+            category: '概念理解',
+            bank_confirmed: false,
+            pattern_status: 'candidate',
+            evidence: [{ text: '识别为C', student_ids: [1], student_answer: 'C' }],
+            manifestations: [{ description: '选了 C', source_question_id: null,
+              evidence: [{ text: '识别为C', student_ids: [1], student_answer: 'C' }] }],
+          }],
+          records: [{
+            student_id: 1, student_name: '钱肖白', score: 0,
+            deduction_reason: '识别为C', error_category: '答错', error_summary: null,
+          }],
+        }],
+      },
+    }))
+    apiMock.confirmCausePattern.mockResolvedValue({ ok: true, pattern: { id: 5 } })
+    const { host } = await mountPanel()
+    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="cause-confirm"]')
+    expect(trigger).not.toBeNull()
+    trigger!.click()
+    await vi.waitFor(() => expect(
+      document.body.querySelector('[data-testid="cause-confirm-dialog"]'),
+    ).not.toBeNull())
+
+    // 确认成功后页面会重新加载；先把下一次 GET 改成“已入库”结果。
+    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
+      data: {
+        ...makeAnalysis().data!,
+        questions: [{
+          question_id: '1',
+          max_score: 4,
+          class_rate: 0.5,
+          stem_summary: '轴对称图形识别',
+          canonical_answer: 'B',
+          bank_question_id: 101,
+          causes: [{ reason: '误认梯形为轴对称', count: 1, kind: 'error' as const,
+            category: '概念理解', bank_confirmed: true }],
+          records: [],
+        }],
+      },
+    }))
+    document.body.querySelector<HTMLButtonElement>('[data-testid="cause-confirm-submit"]')!.click()
+    await vi.waitFor(() => expect(apiMock.confirmCausePattern).toHaveBeenCalledTimes(1))
+    const call = apiMock.confirmCausePattern.mock.calls[0]!
+    const [sessionId, payload] = call
+    expect(sessionId).toBe(7)
+    expect(payload).toMatchObject({
+      question_id: '1',
+      kind: 'error',
+      category: '概念理解',
+      reason: '误认梯形为轴对称',
+    })
+    // 已入库的错法不再显示“写入题库”按钮。
+    await vi.waitFor(() => expect(
+      document.body.querySelector('[data-testid="cause-confirm-dialog"]'),
+    ).toBeNull())
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="cause-bank-confirmed"]'),
+    ).not.toBeNull())
+    expect(host.querySelector('[data-testid="cause-confirm"]')).toBeNull()
   })
 })

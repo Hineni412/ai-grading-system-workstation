@@ -507,6 +507,27 @@ describe('personalized recommendation draft', () => {
     expect(pair.querySelector('.personalized-match__reason')?.textContent).toContain('不作为此知识点薄弱的证据')
   })
 
+  it('shows task matches without presenting them as same-skill matches', async () => {
+    const taskDraft: PersonalizedRecommendationDraft = structuredClone(matchedDraft)
+    const item = taskDraft.students[0]!.items[0]!
+    item.selection_kind = 'task_matched'
+    item.match_level = 3
+    item.match_label = '原小问任务匹配（已有解题步骤）'
+    item.reason = '原小问需要列式与推导，本题已有相应解题步骤。'
+    trainingApiMock.createPersonalizedDraft.mockResolvedValue(taskDraft)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(PersonalizedRecommendationDraftView, { ...externalProps, diagnosis: matchedDiagnosis })
+    mounted.push(app)
+    const view = app.mount(host) as unknown as { generate: () => Promise<void> }
+    await settle()
+    await view.generate()
+    await settle()
+    const badge = host.querySelector('.personalized-stage-badge')?.textContent
+    expect(badge).toBe('原小问任务匹配（已有解题步骤）')
+    expect(badge).not.toContain('3级')
+  })
+
   it('restores the saved draft after returning with unchanged settings', async () => {
     const host1 = document.createElement('div')
     document.body.append(host1)

@@ -24,6 +24,64 @@ from question_bank.services.rich_content_service import (
 )
 
 
+def test_drawing_before_question_number_keeps_preview_and_import_aligned(tmp_path: Path) -> None:
+    import io
+    from PIL import Image
+    from backend.document_parsing.docx import parse_docx_question_blocks
+
+    image = io.BytesIO()
+    Image.new("RGB", (24, 16), "white").save(image, format="PNG")
+    image.seek(0)
+    document = Document()
+    document.add_paragraph("1. 第一题：计算十加二的结果。")
+    paragraph = document.add_paragraph()
+    paragraph.add_run().add_picture(image)
+    paragraph.add_run("2. 第二题：按图中的程序计算。")
+    document.add_paragraph("3. 第三题：计算二十减三的结果。")
+    document.add_paragraph("答案和解析")
+    document.add_paragraph("1. 【答案】12")
+    document.add_paragraph("2. 【答案】8")
+    document.add_paragraph("3. 【答案】17")
+    source = tmp_path / "配图前置试卷.docx"
+    document.save(source)
+
+    preview = parse_docx_question_blocks(
+        source.read_bytes(), temporary_root=tmp_path / "preview",
+        asset_root=tmp_path / "preview-assets",
+    )
+    assert [q["question_id"] for q in preview] == ["Q1", "Q2", "Q3"]
+    assert "2. 第二题" not in preview[1]["question_html"]
+    assert preview[1]["image_paths"]
+
+    # Existing manifests retain their original source and revision; normalize
+    # only the displayed text when reopening an older preview.
+    from backend.config_workspace.sources import _config_rich_content
+    legacy = _config_rich_content(
+        {"question_html": "[[IMAGE:legacy.png]]2. 第二题：按图中的程序计算。"},
+        session_id=1, source_id="a" * 32, question_id="Q2",
+        has_question_asset=True, has_answer_asset=False,
+    )
+    assert all("2. 第二题" not in b["text"] for b in legacy["question_blocks"])
+    assert any(b["asset_urls"] for b in legacy["question_blocks"])
+
+    database = tmp_path / "question_bank.db"
+    result = batch_importer._import_scanned_paper(
+        source, database, metadata=PaperMetadata(), question_range=None,
+        asset_root=tmp_path / "bank-assets", rich_content_root=tmp_path / "rich",
+    )
+    assert result.question_count == 3
+    with connect(database) as conn:
+        saved = conn.execute(
+            "SELECT question_number, question_text, has_images, image_paths FROM questions ORDER BY id"
+        ).fetchall()
+    assert [row["question_number"] for row in saved] == ["1", "2", "3"]
+    assert [row["has_images"] for row in saved] == [0, 1, 0]
+    assert "第二题" not in saved[0]["question_text"]
+    assert "第三题" not in saved[1]["question_text"]
+    assert "第二题" in saved[1]["question_text"]
+    assert load_question_rich_content(2, root=tmp_path / "rich")
+
+
 def test_rich_content_drops_next_question_section_heading_on_save_and_load(
     tmp_path: Path,
 ) -> None:

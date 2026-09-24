@@ -183,6 +183,7 @@ class QuestionTagProjectionService:
                 assessment = {
                     "granularity": "part",
                     "part_id": item_part_id,
+                    "evidence_part_id": evidence_part_id,
                     "evidence_version_id": snapshot_question.get(
                         "source_evidence_version_id"
                     ),

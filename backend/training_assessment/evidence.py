@@ -953,6 +953,7 @@ class TrainingEvidencePublisher:
             self.db_path,
             self.current_knowledge,
             clock=self.clock,
+            data_root=self.data_root,
         )
         after_all = calculator.calculate(profile)
         before_all = calculator.calculate(

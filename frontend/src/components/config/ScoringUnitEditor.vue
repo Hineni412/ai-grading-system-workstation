@@ -37,13 +37,10 @@ const manualValidationError = computed(() => {
   if (localParts.value.length === 0) return '至少保留一个小问。'
   if (localParts.value.some((part) => part.steps.length === 0)) return '每个小问至少保留一个步骤点。'
   const steps = localParts.value.flatMap((part) => part.steps)
-  if (steps.some((step) => !Number.isFinite(step.score) || step.score <= 0 || step.score > 100)) {
-    return '每个步骤点都需要填写大于 0 且不超过 100 的分值。'
+  if (steps.some((step) => !Number.isFinite(step.score))) {
+    return '每个步骤点都需要填写有效数字分值。'
   }
   if (steps.some((step) => !step.core_goal.trim())) return '每个步骤点都需要填写评分目标。'
-  if (Math.abs(draftTotal.value - expectedTotal.value) > 0.000001) {
-    return `本题当前总分是 ${expectedTotal.value} 分，步骤点合计需保持一致。`
-  }
   return ''
 })
 
@@ -177,9 +174,7 @@ watch(
               <input
                 v-model.number="step.score"
                 type="number"
-                min="0.5"
-                max="100"
-                step="0.5"
+                step="any"
                 :disabled="disabled"
                 :aria-label="`${questionId} 第 ${partIndex + 1} 小问步骤 ${stepIndex + 1} 分值`"
               >
@@ -205,6 +200,9 @@ watch(
     </button>
     <p v-if="validationError || manualValidationError" role="alert">
       {{ validationError || manualValidationError }}
+    </p>
+    <p v-else-if="Math.abs(draftTotal - expectedTotal) > 0.000001" class="scoring-unit-editor__warning" role="status">
+      本题由 {{ expectedTotal }} 分调整为 {{ draftTotal }} 分，可以按当前人工设置保存。
     </p>
     <footer class="scoring-unit-editor__actions">
       <button

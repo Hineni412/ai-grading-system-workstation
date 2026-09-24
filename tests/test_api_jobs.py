@@ -500,6 +500,27 @@ def test_jobs_api_redacts_internal_paths_and_sensitive_keys_from_public_payload(
     assert "C:/private" not in str(loaded)
 
 
+def test_config_job_exposes_intake_counts_and_failure_to_the_page(client_with_manager) -> None:
+    client, manager = client_with_manager
+    job = manager.store.create_job('config_generation', {
+        'session_id': 5, 'source_id': 'a' * 32, 'mode': 'generate',
+    })
+    manager.store.mark_running(job.id)
+    result = {
+        'outcome': 'partial', 'total_questions': 14, 'generated_questions': 14,
+        'question_bank_imported_count': 13, 'question_bank_tagged_count': 13,
+        'question_bank_criteria_count': 13, 'exam_intake_complete': False,
+        'exam_intake_category': 'question_mapping',
+        'exam_intake_error': 'Q6 未能对应独立题库记录。',
+        'exam_intake_failed_question_ids': ['Q6'], 'exam_intake_retryable': True,
+    }
+    manager.store.finish(job.id, 'succeeded', result=result)
+    response = client.get(f'/api/jobs/{job.id}')
+    assert response.status_code == 200
+    assert response.json()['result'] == result
+    assert '统一赋分尚未开始' in response.json()['detail']
+
+
 def test_job_response_redacts_sensitive_keys_from_legacy_stored_payload(
     client_with_manager,
 ) -> None:

@@ -20,17 +20,12 @@ def current_manual_context(
     consistently.
     """
     try:
-        state = workspace.get_workspace(session_id)
-        upload_batch = state.get("upload_batch")
-        if (
-            not isinstance(upload_batch, dict)
-            or upload_batch.get("state") != "frozen"
-        ):
-            return None
+        # Preflight already checks that the current batch is frozen and that
+        # its analysis belongs to that batch. Avoid loading grading jobs/runs.
         preflight = workspace.get_preflight(session_id)
     except ScanGradingWorkspaceError:
         return None
     return {
-        "scan_batch_id": str(upload_batch["batch_id"]),
+        "scan_batch_id": str(preflight["scan_batch_id"]),
         "papers": preflight_match_status(preflight)["papers"],
     }

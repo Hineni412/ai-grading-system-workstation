@@ -21,7 +21,7 @@ def _is_subq_marker_context(text: str, start: int, end: int) -> bool:
     suffix = text[end:].lstrip(" \t\u3000")
     prev = prefix[-1:] if prefix else ""
     nxt = suffix[:1]
-    if (prev and prev in "/0123456789") or nxt == "/":
+    if (prev and prev in "/0123456789√∛∜") or nxt == "/":
         # (1)/(2) 分数写法，以及 2(1) 这类系数紧邻。
         return False
     if prev == "_":

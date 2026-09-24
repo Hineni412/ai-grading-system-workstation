@@ -501,6 +501,13 @@ def test_solution_evidence_skeletons_compose_into_current_config_contract() -> N
         exam_title="证据生成测试卷",
     )
 
+    for question, skeleton in zip(payload["rubric"]["questions"], skeletons):
+        for part, source_part in zip(question["parts"], skeleton["rubric_question"]["parts"]):
+            assert part["evidence_part_id"] == source_part["part_id"]
+            assert [step["evidence_point_ids"] for step in part["steps"]] == [
+                step["evidence_point_ids"] for step in source_part["steps"]
+            ]
+
     assert payload["rubric"]["total_score"] == 0
     assert all(
         question["max_score"] == 0
@@ -517,6 +524,9 @@ def test_solution_evidence_skeletons_compose_into_current_config_contract() -> N
 
     normalize_new_generated_config_payload(payload)
     validate_generated_config(payload)
+
+    assert all(part.get("evidence_part_id") and all(step.get("evidence_point_ids") for step in part["steps"])
+               for question in payload["rubric"]["questions"] for part in question["parts"])
 
     assert payload["rubric"]["total_score"] == 100
     assert sum(

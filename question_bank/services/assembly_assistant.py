@@ -12,7 +12,9 @@ from question_bank.recommendation.recommendation_engine import normalize_questio
 from question_bank.services.duplicate_analysis_copy_service import exact_identity_map
 from question_bank.services.question_read_service import QuestionBankReadService, QuestionReadFilters
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
-from question_bank.recommendation.personalized import _loss_difficulty
+from question_bank.recommendation.personalized import (
+    _loss_difficulty, _loss_refs, _training_tasks, _practice_part_fits, _task_matched_part,
+)
 from question_bank.recommendation.target_matching import load_question_facets, match_target, target_index
 
 # Stems this alike inside one difficulty band are shown once; alternates stay
@@ -131,12 +133,13 @@ def shortlist_candidates(
     details: dict[tuple[str, int], dict[str, Any]] = {}
     for key in selected:
         source_parts = []
+        source_tasks = []
         aims = []
         for student in students:
             for point in student.get("weak_points", []):
                 if point["knowledge_key"] != key:
                     continue
-                for ref in point.get("source_question_refs", []):
+                for ref in _loss_refs(point):
                     if float(ref.get("score_awarded") or 0) >= float(ref.get("full_score") or 0):
                         continue
                     assessment = ref.get("assessment") or {}
@@ -145,9 +148,17 @@ def shortlist_candidates(
                     aim = _loss_difficulty(ref, student.get("score_rate"), difficulty_max)
                     if aim is not None:
                         aims.append(aim)
-                    part_id = assessment.get("part_id")
-                    source_parts.extend(part for part in facets.get(int(ref.get("bank_question_id") or 0), {}).get("parts", [])
-                                        if (not part_id or part["part_id"] == part_id) and key in part["direct_keys"])
+                    part_id = assessment.get("evidence_part_id") or assessment.get("part_id")
+                    source_facet = facets.get(int(ref.get("bank_question_id") or 0), {})
+                    parts = [part for part in source_facet.get("parts", [])
+                             if (not part_id or part["part_id"] == part_id) and key in part["direct_keys"]]
+                    source_parts.extend(parts)
+                    enriched = {**ref, "practice_observations_by_key": {
+                        key: [part for part in source_facet.get("practice_observations_by_key", {}).get(key, [])
+                              if not part_id or part["part_id"] == part_id]},
+                        "task_evidence_version_matches": bool(assessment.get("evidence_version_id")) and
+                        assessment["evidence_version_id"] == source_facet.get("evidence_version_id")}
+                    source_tasks.append((enriched, parts, _training_tasks({"stable_key": key, "source_question_refs": [enriched]})))
         by_key[key]["target_difficulty"] = round(median(aims), 1) if aims else None
         if not source_parts:
             continue  # Existing exact-tag selection remains available without a wrong-question anchor.
@@ -157,11 +168,32 @@ def shortlist_candidates(
             chapters = {chapter for part in parts for chapter in part["chapter_keys"]}
             if not chapters or not chapters <= allowed_chapters:
                 continue
-            match = match_target(key, source_parts, parts, index)
-            if match:
+            options = []
+            candidate = {"practice_observations_by_key": facets.get(qid, {}).get("practice_observations_by_key", {})}
+            for ref, anchors, tasks in source_tasks:
+                for part in parts:
+                    match = match_target(key, anchors, [part], index)
+                    if match is None:
+                        continue
+                    direct = match["match_level"] <= 2 or (not key.startswith("sk_") and key in part["direct_keys"])
+                    full_response = not tasks or any(p["part_id"] == part["part_id"] and _practice_part_fits(p, tasks)
+                                                     for p in candidate["practice_observations_by_key"].get(key, []))
+                    task_match = None
+                    if not direct and any(set(anchor["chapter_keys"]) & set(part["chapter_keys"])
+                                          and (not anchor["topic_keys"] or set(anchor["topic_keys"]) <= set(part["topic_keys"]))
+                                          for anchor in anchors):
+                        task_match = _task_matched_part(candidate, key, ref, tasks, {part["part_id"]})
+                    kind = "direct" if direct else "task_matched" if task_match else "supplement"
+                    label = ("同技能环节练习（不代替完整书写）" if direct and not full_response else
+                             "原小问环节匹配（不代替完整书写）" if task_match and task_match.get("practice_role") == "step_practice" else
+                             "原小问任务匹配（已有解题步骤）" if task_match else
+                             "同技能，作答要求不足（仅作补充）" if not direct and key in part["direct_keys"] else match["match_label"])
+                    options.append({**match, "selection_kind": kind, "match_label": label})
+            if options:
+                match = min(options, key=lambda m: (m["selection_kind"] == "supplement", m["match_level"]))
                 details[key, qid] = match
                 ranked.append(qid)
-        pools[key] = sorted(ranked, key=lambda qid: (details[key, qid]["match_level"], qid))
+        pools[key] = sorted(ranked, key=lambda qid: (details[key, qid]["selection_kind"] == "supplement", details[key, qid]["match_level"], qid))
     pool_ids = set(qid for ids in pools.values() for qid in ids)
     with connect(read_service.db_path) as connection:
         identities = exact_identity_map(connection, data_root=read_service.data_root or read_service.db_path.parent.parent,
@@ -210,7 +242,7 @@ def shortlist_candidates(
         return difficulties.get(qid, 10) <= 4 or all(by_key[key]["mastery"] >= .8 for key in matches[qid])
     def match_details(qid: int) -> dict[str, Any]:
         options = [details[key, qid] for key in matches[qid] if (key, qid) in details]
-        return min(options, key=lambda item: item["match_level"]) if options else {}
+        return min(options, key=lambda item: (item.get("selection_kind") == "supplement", item["match_level"])) if options else {}
     def band(qid: int) -> tuple[str, float | None]:
         difficulty = difficulties.get(qid)
         aims = [by_key[key]["target_difficulty"] for key in matches[qid]
@@ -224,7 +256,8 @@ def shortlist_candidates(
         return ("lower" if difficulty < aim else "higher"), gap
     bands = {qid: band(qid) for qid in chosen}
     band_order = {"suitable": 0, "lower": 1, "higher": 2, "unknown": 3}
-    chosen.sort(key=lambda qid: (band_order[bands[qid][0]], match_details(qid).get("match_level", 5),
+    chosen.sort(key=lambda qid: (match_details(qid).get("selection_kind") == "supplement",
+                                 band_order[bands[qid][0]], match_details(qid).get("match_level", 5),
                                  bands[qid][1] if bands[qid][1] is not None else 0, qid))
     similar_members = _fold_similar(chosen, bands=bands, difficulties=difficulties,
                                     facets=facets, texts=texts)
@@ -238,11 +271,12 @@ def shortlist_candidates(
                              "practice_kind": "foundation" if foundation(qid) else "focus",
                              "match_level": match_details(qid).get("match_level"),
                              "match_label": match_details(qid).get("match_label", "按已选目标关联"),
+                             "selection_kind": match_details(qid).get("selection_kind"),
                              "difficulty": difficulties.get(qid),
                              "difficulty_band": bands[qid][0],
                              "similar_question_ids": similar_members.get(qid, []),
                              "direct_target_keys": [key for key in matches[qid]
-                                                    if details.get((key, qid), {}).get("match_level", 2) <= 2],
+                                                    if details.get((key, qid), {}).get("selection_kind", "direct") == "direct"],
                              } for qid in chosen]
     return output
 

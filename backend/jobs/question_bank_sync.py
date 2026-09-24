@@ -336,6 +336,11 @@ def run_session_question_bank_sync_job(
                 current.session.get("rubric_path"),
                 data_root=Path(data_root),
             ),
+            answer_key=(
+                current.payload.get("answer_key")
+                if isinstance(current.payload.get("answer_key"), Mapping)
+                else None
+            ),
         )
 
         result = _result(

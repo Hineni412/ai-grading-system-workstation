@@ -2511,6 +2511,7 @@ def compose_generated_config_from_skeletons(
                 steps.append(
                     {
                         "step_id": step_id,
+                        "evidence_point_ids": _text_list(raw_step.get("evidence_point_ids")),
                         "step_score": 0,
                         "core_goal": core_goal,
                         "required_elements": required_elements,
@@ -2532,6 +2533,7 @@ def compose_generated_config_from_skeletons(
             rubric_parts.append(
                 {
                     "part_id": part_id,
+                    "evidence_part_id": part_id,
                     "part_score": 0,
                     "response_mode": response_mode,
                     "require_final_answer": bool(

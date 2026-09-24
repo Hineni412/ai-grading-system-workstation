@@ -63,7 +63,7 @@ def test_direct_targets_do_not_depend_on_difficulty_profile(bnu24_difficulty_mod
     scoped, _, _ = module._source_snapshot(knowledge_keys=(BNU_OTHER_CHAPTER,))
     candidate = next(item for item in scoped if item["question_id"] == question_id)
     assert candidate["stable_keys"] == [BNU_OTHER_CHAPTER]
-    assert candidate["required_keys"] == [BNU_OTHER_CHAPTER]
+    assert BNU_OTHER_CHAPTER in candidate["required_keys"]
     assert candidate["response_modes_by_key"][BNU_OTHER_CHAPTER] == ["process_required"]
 
 
@@ -858,10 +858,12 @@ def _mark_question_recent(
 @pytest.fixture()
 def direct_module(bnu24_difficulty_module):
     module = bnu24_difficulty_module
-    rows = [(100 + i, str(100 + i), "解答题", f"合成直角三角形长度应用：已知一边{i+20}，列式求另一边", str(7 + i % 2), BNU_TARGET) for i in range(14)]
+    rows = [(100 + i, str(100 + i), "填空题", f"合成直角三角形长度应用：已知一边{i+20}，列式求另一边", str(7 + i % 2), BNU_TARGET) for i in range(14)]
     rows += [(200 + i, str(200 + i), "解答题", f"合成全等对应边长度：已知一边{i+30}，求对应边", "5", BNU_PREREQ_NEAR) for i in range(4)]
-    rows += [(300, "300", "解答题", "判定三角形是否为直角三角形", "7", BNU_TARGET),
-             (301, "301", "解答题", "利用面积差求阴影面积", "7", BNU_TARGET)]
+    rows += [(300, "300", "填空题", "判定三角形是否为直角三角形", "7", BNU_TARGET),
+             (301, "301", "填空题", "利用面积差求阴影面积", "7", BNU_TARGET)]
+    rows += [(400+i, str(400+i), "填空题", text, "8", BNU_TARGET) for i, text in enumerate([
+        "由折叠纸片后的重合位置推算动点范围", "在坐标系中分析路径的最短长度", "利用池塘里的芦苇弯折建立方程", "根据斜坡倾斜角分析道路之间的距离"])]
     with connect(module.db_path) as conn:
         _insert_bnu24_questions(conn, tuple(rows + [
             (900, "17", "解答题", "合成错题：折断树高，列直角三角形方程求长度", "8", BNU_TARGET),
@@ -895,18 +897,20 @@ def test_same_hard_loss_varies_by_overall_score_and_obeys_cap(direct_module):
     diagnosis = _direct_diagnosis((("strong", .95, 900, BNU_TARGET), ("weak", .3, 900, BNU_TARGET)))
     draft = _make_direct(direct_module, diagnosis=diagnosis, difficulty_max=10)
     by_id = {s["student_id"]: s for s in draft["students"]}
-    for sid, expected in (("strong", 8), ("weak", 7)):
-        preferred = next(q for q in by_id[sid]["items"] if q["question_id"] in range(100, 114))
-        assert preferred["difficulty"] == expected
-    for student in draft["students"]:
+    # The weak student's pool no longer admits the old 7-8 wall. With no
+    # suitable same-skill material in this fixture it must report a shortage.
+    assert all(q["difficulty"] <= 6 for q in by_id["weak"]["items"])
+    assert by_id["weak"]["shortages"]
+    for student in [by_id["strong"]]:
         assert student["items"] and all(7 <= q["difficulty"] <= 8 for q in student["items"])
         assert all(q["stage"] == "direct" for q in student["items"])
         assert all(q["matched_key"] == BNU_TARGET for q in student["items"] if q["selection_kind"] == "direct")
         assert [q["difficulty"] for q in student["items"]] == sorted(q["difficulty"] for q in student["items"])
         assert len([q for q in student["items"] if q["question_id"] in range(100, 114)]) == 1
     capped = _make_direct(direct_module, diagnosis=diagnosis, token="b")
-    assert all(q["difficulty"] == 7 for s in capped["students"] for q in s["items"])
-    assert all(q["target"]["target_difficulty"] == 7 for s in capped["students"] for q in s["items"])
+    assert all(q["difficulty"] <= 7 for s in capped["students"] for q in s["items"])
+    assert all(q["target"]["target_difficulty"] == (7 if s["student_id"] == "strong" else 6)
+               for s in capped["students"] for q in s["items"])
 
 
 def test_part_difficulty_overrides_whole_and_low_cap_remains_authoritative(direct_module):
@@ -964,16 +968,16 @@ def test_shared_paper_rejects_disjoint_weaknesses(direct_module):
         _make_direct(direct_module, diagnosis=diagnosis, paper_mode="shared")
 
 
-def test_shared_union_keeps_individual_needs_after_common_weakness_check(direct_module):
+def test_shared_paper_retains_only_core_exercises_suitable_for_every_member(direct_module):
     diagnosis = _direct_diagnosis((("A",.8,900,BNU_TARGET),("B",.79,900,BNU_TARGET)))
     extra = _direct_diagnosis((("B",.79,901,BNU_PREREQ_NEAR),))["students"][0]["weak_points"][0]
     diagnosis["students"][1]["weak_points"].append(extra)
     first = _make_direct(direct_module, diagnosis=diagnosis, paper_mode="shared")
     items = first["students"][0]["items"]
-    assert {q["matched_key"] for q in items if q["selection_kind"] == "direct"} == {BNU_TARGET,BNU_PREREQ_NEAR}
+    assert {q["matched_key"] for q in items if q["selection_kind"] == "direct"} == {BNU_TARGET}
     assert {sid for q in items for sid in q["beneficiary_student_ids"]} == {"A","B"}
     assert any(set(q["beneficiary_student_ids"]) == {"A", "B"} for q in items)
-    assert any(q["beneficiary_student_ids"] == ["B"] for q in items)
+    assert all(q["beneficiary_student_ids"] == ["A", "B"] for q in items if q["selection_kind"] != "supplement")
     ids = [q["question_id"] for q in items]
     assert ids == [q["question_id"] for q in first["students"][1]["items"]]
     diagnosis["students"].reverse()
@@ -1129,14 +1133,11 @@ def test_saved_lock_replace_exclude_and_idempotent_retry(direct_module):
     assert direct_module.get(draft["draft_id"]) == removed
     assert [q["item_order"] for q in removed["students"][0]["items"]] == list(range(1, len(items)))
 
-    supplement = next(q for q in removed["students"][0]["items"] if q["selection_kind"] == "supplement")
-    count_before = sum(q["selection_kind"] == "supplement" for q in removed["students"][0]["items"])
+    remaining = removed["students"][0]["items"][0]
     updated = direct_module.edit(draft["draft_id"], RecommendationEditCommand(
-        request_token="8"*32, expected_revision=5, action="exclude", student_id="A", item_id=supplement["item_id"],
-        actor_ref="synthetic", reason="移除补充题后更新题量说明"))
-    count_text = f" {count_before - 1} 道补充练习"
-    warnings = updated["students"][0]["warnings"]
-    assert any(count_text in warning for warning in warnings) if count_before > 1 else not any("直接练习不足，已用" in w for w in warnings)
+        request_token="8"*32, expected_revision=5, action="exclude", student_id="A", item_id=remaining["item_id"],
+        actor_ref="synthetic", reason="移除题目后更新题量说明"))
+    assert len(updated["students"][0]["items"]) == len(removed["students"][0]["items"])-1
     assert direct_module.get(draft["draft_id"]) == updated
 
 
@@ -1207,7 +1208,55 @@ def _selection_draft(monkeypatch, candidates, diagnosis=None, shared=False, ques
             for key in (BNU_TARGET, BNU_PREREQ_NEAR)), mastery=mastery, recent={}, excluded_question_ids=set())
 
 
-def test_same_knowledge_survives_missing_or_different_fine_method_model_and_response_tags(monkeypatch):
+def test_ability_changes_admission_and_whole_paper_distribution(monkeypatch):
+    themes = ["折叠纸片寻找重合位置", "操场跑步比较路径", "池塘芦苇弯折测量", "飞机航行计算距离",
+              "木框能否通过门洞", "梯子沿墙滑动变化", "正方形对角线的关系", "斜坡道路长度计算",
+              "风筝离地高度估计", "菱形边长推算", "绳子围成三角形", "坐标网格中两点距离"]
+    candidates = [_selection_candidate(level*100+i, theme+f"：求第{level}组条件下的结果", difficulty=level,
+                    question_type="解答题" if i in (0, 2, 4, 6) else "填空题")
+                  for level in (2, 3, 4, 5) for i, theme in enumerate(themes)]
+    diagnosis = _direct_diagnosis((("weak", .2, 900, BNU_TARGET), ("middle", .6, 900, BNU_TARGET), ("strong", .9, 900, BNU_TARGET)))
+    for profile, earned in zip(diagnosis["students"], (1, 3, 4), strict=True):
+        ref = profile["weak_points"][0]["source_question_refs"][0]
+        ref.update(question_difficulty=4, score_awarded=earned, score_rate=earned/5)
+    students = _selection_draft(monkeypatch, candidates, diagnosis)["students"]
+    for student, expected in zip(students, ({2:7, 3:3}, {2:3, 3:6, 4:1}, {3:2, 4:7, 5:1}), strict=True):
+        from collections import Counter
+        assert Counter(q["difficulty"] for q in student["items"]) == expected
+        assert student["structure"]["written_count"] <= 2
+    assert not set(q["question_id"] for q in students[0]["items"] if q["difficulty"]>3)
+
+
+def test_hard_source_does_not_set_floor_and_local_success_beats_overall_label():
+    from question_bank.recommendation.personalized import _difficulty_plan
+    ref = {"question_difficulty": 4, "full_score": 10, "score_awarded": 1}
+    assert _difficulty_plan(ref, .3, 7)["maximum"] == 3
+    # An overall high scorer still starts conservatively on an unmastered goal.
+    assert _difficulty_plan(ref, .9, 7)["level"] == "foundation"
+    # Strong local evidence matters even when the overall exam mark is low.
+    assert _difficulty_plan({**ref, "score_awarded":9}, .3, 7)["level"] == "developing"
+
+
+def test_two_written_questions_limit_applies_to_whole_multipart_questions():
+    from question_bank.recommendation.personalized import _paper_diversity_allowed
+    printed = [_selection_candidate(1, "第一道完整证明题", question_type="解答题"),
+               _selection_candidate(2, "第二道完整应用题", question_type="解答题")]
+    assert not _paper_diversity_allowed(_selection_candidate(3, "第三道含两个小问的题", question_type="解答题"), printed)
+    assert _paper_diversity_allowed(_selection_candidate(4, "选择正确的数量关系", question_type="选择题"), printed)
+
+
+def test_sparse_pool_never_fills_low_group_with_hard_questions(monkeypatch):
+    diagnosis = _direct_diagnosis((("A", .25, 900, BNU_TARGET),))
+    ref = diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
+    ref.update(question_difficulty=4, score_awarded=0, score_rate=0)
+    candidates = [_selection_candidate(1,"识别图中已知边对应的位置",difficulty=2),
+                  _selection_candidate(2,"独立建立多组关系完成综合应用",difficulty=4)]
+    student = _selection_draft(monkeypatch, candidates, diagnosis)["students"][0]
+    assert [q["question_id"] for q in student["items"]] == [1]
+    assert student["shortages"][0]["missing_count"] == 9
+
+
+def test_same_skill_short_practice_is_core_without_claiming_written_reasoning(monkeypatch):
     diagnosis = _direct_diagnosis()
     ref = diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
     ref.update(direct_keys=[BNU_TARGET, BNU_PREREQ_NEAR], direct_fine_terms=["原题细项"],
@@ -1215,31 +1264,38 @@ def test_same_knowledge_survives_missing_or_different_fine_method_model_and_resp
                question_type="解答题", deduction_reason="缺少依据和推理步骤")
     candidate = _selection_candidate(1, "从正方形面积关系中选择满足条件的边长")
     candidate["practice_observations_by_key"] = {BNU_TARGET: [{"response_mode": "answer_only", "fine_terms": ["另一细项"]}]}
+    student = _selection_draft(monkeypatch, [candidate], diagnosis)["students"][0]
+    assert student["items"][0]["selection_kind"] == "direct"
+    assert student["items"][0]["practice_role"] == "step_practice"
+    assert student["items"][0]["practice_tasks"] == []
+    assert "不等同于" in student["items"][0]["reason"]
+    candidate["practice_observations_by_key"][BNU_TARGET][0].update(
+        response_mode="process_required", observable="依据定理写出证明过程")
     item = _selection_draft(monkeypatch, [candidate], diagnosis)["students"][0]["items"][0]
     assert item["selection_kind"] == "direct"
     assert item["question_id"] == 1
-    assert item["practice_tasks"] == []  # Answer-only criteria cannot claim written-reasoning assessment.
+    assert [t["code"] for t in item["practice_tasks"]] == ["written_reasoning"]
     assert "相近解题要求与方法" not in item["reason"]
     ref.pop("practice_tags")
     ref.pop("direct_fine_terms")
     assert _selection_draft(monkeypatch, [candidate], diagnosis)["students"][0]["items"]
 
 
-def test_range_supplements_fill_ten_without_claiming_new_weaknesses(monkeypatch):
+def test_range_supplements_stop_at_twenty_percent_of_actual_paper(monkeypatch):
     texts = ["用拼图面积说明一个边长等式", "从坐标计算两个标记之间的距离", "分析折断树木触地点与树根间距",
              "研究梯子沿墙滑动后底端位置", "在长方体表面规划蚂蚁的最短行程", "水池中央芦苇弯曲时求水深",
              "利用菱形对角线计算四条边的总长", "测量河宽时设置岸上的垂直标杆", "围绕等边三角形中线建立关系",
              "观察纸片折叠后重合点的位置", "利用风筝斜线长度求离地高度", "在扇形内部确定弦与半径的位置"]
-    candidates = [_selection_candidate(i + 1, text, BNU_TARGET if i < 2 else BNU_PREREQ_NEAR,
+    candidates = [_selection_candidate(i + 1, text, BNU_TARGET if i < 4 else BNU_PREREQ_NEAR,
                                        5 if i % 2 == 0 else 4) for i, text in enumerate(texts)]
     candidates += [_selection_candidate(90, "范围外的概率题", BNU_OTHER_CHAPTER, 5),
                    _selection_candidate(91, "范围内过难的综合题", BNU_PREREQ_NEAR, 8),
                    _selection_candidate(92, "范围内太简单的填空题", BNU_PREREQ_NEAR, 1)]
     before = deepcopy(candidates)
     student = _selection_draft(monkeypatch, candidates)["students"][0]
-    assert len(student["items"]) == 10
-    assert sum(item["selection_kind"] == "direct" for item in student["items"]) == 2
-    assert sum(item["selection_kind"] == "supplement" for item in student["items"]) == 8
+    assert len(student["items"]) == 5
+    assert sum(item["selection_kind"] == "direct" for item in student["items"]) == 4
+    assert sum(item["selection_kind"] == "supplement" for item in student["items"]) == 1
     assert [item["difficulty"] for item in student["items"]] == sorted(item["difficulty"] for item in student["items"])
     assert all(item["question_id"] < 90 and item["difficulty"] in (4, 5) for item in student["items"])
     for item in (q for q in student["items"] if q["selection_kind"] == "supplement"):
@@ -1247,11 +1303,12 @@ def test_range_supplements_fill_ten_without_claiming_new_weaknesses(monkeypatch)
         assert item["target"]["stable_key"] == BNU_TARGET  # Origin is retained only as the difficulty basis.
         assert "补充练习" in item["reason"] and "对应错题" not in item["reason"]
         assert not item["practice_tasks"]
-    assert not student["shortages"]
+    assert student["shortages"][0]["missing_count"] == 5
+    assert student["structure"]["within_supplement_limit"]
     assert candidates == before  # Selection never rewrites tags or criteria.
 
 
-def test_public_paper_covers_minority_need_before_repeating_majority(monkeypatch):
+def test_public_paper_does_not_assign_minority_only_need_to_everyone(monkeypatch):
     diagnosis = _direct_diagnosis(tuple((sid, .8, 900, BNU_TARGET) for sid in "ABCDE") + (("F", .79, 901, BNU_PREREQ_NEAR),))
     diagnosis["students"][-1]["weak_points"].append(deepcopy(diagnosis["students"][0]["weak_points"][0]))
     candidates = [_selection_candidate(1, "已知两直角边求三角形周长"),
@@ -1262,8 +1319,8 @@ def test_public_paper_covers_minority_need_before_repeating_majority(monkeypatch
     first = _selection_draft(monkeypatch, candidates, diagnosis, shared=True)
     items = first["students"][0]["items"]
     assert items[0]["beneficiary_student_ids"] == list("ABCDEF")
-    assert items[1]["question_id"] == 9
-    assert items[1]["beneficiary_student_ids"] == ["F"]
+    assert all(q["question_id"] != 9 for q in items)
+    assert all(q["beneficiary_student_ids"] == list("ABCDEF") for q in items)
     diagnosis["students"].reverse()
     second = _selection_draft(monkeypatch, list(reversed(candidates)), diagnosis, shared=True)
     assert {tuple(item["question_id"] for item in student["items"]) for student in second["students"]} == {
@@ -1306,8 +1363,91 @@ def test_supplements_do_not_hide_an_uncovered_loss(monkeypatch):
     student = _selection_draft(monkeypatch, [
         _selection_candidate(1, "由对称图形的对应边读出长度", BNU_PREREQ_NEAR)
     ])["students"][0]
-    assert student["items"][0]["selection_kind"] == "supplement"
+    assert student["items"] == []
     assert any("尚未获得直接练习" in warning for warning in student["warnings"])
+
+
+def test_reprinted_diagrams_require_identical_full_question_and_answer_for_deduplication():
+    from question_bank.recommendation.personalized import _paper_diversity_allowed
+    stem = '某数学家用纸片剪拼形成两个面积相等的空洞，图中给出了完整的剪拼过程。根据直角三角形边长与正方形面积的对应关系，判断下列等式中不正确的一项。A．面积等于平方和 B．面积等于边长积 C．两个空洞面积相同 D．符合勾股定理'
+    original = _selection_candidate(1, stem)
+    original.update(image_identity=('original-image',), solution_observable='由勾股定理得到两直角边平方和等于斜边平方。分别计算剪拼前后的面积，可以得到两个空洞的面积相等，并逐一核对四个选项所描述的数量关系，因此选择A。')
+    reprint = {**original, 'question_id':2, 'question_text':'（3分）'+stem, 'image_identity':('different-encoding',)}
+    assert not _paper_diversity_allowed(reprint, [original])
+    assert _paper_diversity_allowed({**reprint, 'solution_observable':original['solution_observable'].replace('选择A', '选择B')}, [original])
+    assert _paper_diversity_allowed({**reprint, 'solution_observable':''}, [original])
+
+
+def test_process_task_uses_existing_steps_without_error_consolidation():
+    from question_bank.recommendation.personalized import _training_tasks
+    ref = {"source_kind": "current_exam", "full_score": 6, "score_awarded": 3,
+           "assessment": {"granularity": "part", "eligible": True},
+           "practice_observations_by_key": {BNU_TARGET: [{"part_id": "p1", "response_mode": "process_required",
+               "evidence_points": [{"evidence_point_id": "step1", "target": "计算平方和"},
+                                   {"evidence_point_id": "step2", "target": "写出推理依据"}]}]}}
+    source = {"stable_key": BNU_TARGET, "source_question_refs": [ref]}
+    assert [t["code"] for t in _training_tasks(source)] == ["process_practice"]
+    ref["task_evidence_version_matches"] = True
+    ref["assessment"]["point_observations"] = [{"point_id": "step1", "achieved": 0}, {"point_id": "step2", "achieved": 1}]
+    ref["deduction_reason"] = "缺少依据"  # Reliable observations supersede this coarse note.
+    tasks = _training_tasks(source)
+    assert [t["code"] for t in tasks] == ["calculation_check", "process_practice"]
+    assert tasks[0]["basis"] == "observed_step"
+    ref["task_evidence_version_matches"] = False
+    assert all(t["basis"] != "observed_step" for t in _training_tasks(source))
+    ref["deduction_reason"] = "未作答，未见计算过程"
+    assert [t["code"] for t in _training_tasks(source)] == ["diagnostic_check", "process_practice"]
+    ref["assessment"]["eligible"] = False
+    assert _training_tasks(source) == []
+
+
+def test_practice_requirements_cannot_be_pooled_across_parts():
+    from question_bank.recommendation.personalized import _practice_matches
+    candidate = {"practice_observations_by_key": {BNU_TARGET: [
+        {"part_id": "p1", "response_mode": "process_required", "observable": "写出推理依据"},
+        {"part_id": "p2", "response_mode": "process_required", "observable": "代入计算"}]}}
+    tasks = [{"code": "written_reasoning"}, {"code": "calculation_check"}]
+    assert not _practice_matches(candidate, BNU_TARGET, tasks)
+    candidate["practice_observations_by_key"][BNU_TARGET][0]["observable"] += "，代入计算"
+    assert _practice_matches(candidate, BNU_TARGET, tasks)
+
+
+def test_explicit_task_operations_accept_existing_formula_serializations():
+    from question_bank.recommendation.personalized import _observable_operations
+    for expression in ("AB²+BC²=AC²", "AB^2+BC^2=AC^2", "AB^{2}+BC^{2}=AC^{2}", "AB<sup>2</sup>+BC<sup>2</sup>=AC<sup>2</sup>"):
+        assert _observable_operations("由勾股定理写出" + expression) == {"pythagorean_equation"}
+    assert _observable_operations("由勾股逆定理判定直角三角形") == {"pythagorean_converse"}
+    assert _observable_operations("利用公式求面积并证明") == set()
+
+
+def test_numeric_variants_with_different_images_require_solution_evidence():
+    from question_bank.recommendation.personalized import _paper_diversity_allowed
+    base = _selection_candidate(1, "如图，分别以直角三角形的三边为边长向外作正方形，三个面积满足已知关系，面积差为18，求图中阴影部分的面积。",
+        image_identity=("drawing-a",), similarity_profile={"tags": [{"tag_type": "model", "tag_value": "弦图模型"}]},
+        solution_template="由勾股定理及正方形面积关系，先列出三个正方形的面积关系，再把已知面积差代入求出直角边上正方形的面积，阴影面积等于该正方形面积的一半。")
+    variant = {**base, "question_id": 2, "question_text": base["question_text"].replace("18", "20"), "image_identity": ("drawing-b",)}
+    assert not _paper_diversity_allowed(variant, [base])
+    variant["solution_template"] = ""
+    assert _paper_diversity_allowed(variant, [base])
+    variant["solution_template"] = base["solution_template"]
+    variant["question_text"] = base["question_text"]
+    assert _paper_diversity_allowed(variant, [base])  # A drawing-only change remains meaningful.
+
+
+def test_whole_paper_repair_recovers_uncovered_need_without_losing_coverage():
+    from question_bank.recommendation.personalized import _choose_practice_entries
+    def entry(qid, key, text, identity):
+        return {"candidate": _selection_candidate(qid, text, key, practice_identity=identity),
+                "selection_kind": "direct", "student_id": "A", "key": key, "matched_key": key,
+                "distance": 0, "preference": 0, "loss": .5, "match_level": 2,
+                "target": {"source_question_refs": [{"session_id": 1, "question_id": key, "bank_question_id": 99,
+                                                     "full_score": 4, "score_awarded": 2}]}}
+    entries = [entry(1, "need-A", "根据已知条件求线段长", "shared"),
+               entry(2, "need-A", "证明两个全等三角形的对应关系", "other"),
+               entry(3, "need-B", "根据已知条件求线段长", "shared")]
+    chosen = _choose_practice_entries(entries, 2)
+    assert {e["candidate"]["question_id"] for e, _ in chosen} == {2, 3}
+    assert {e["key"] for _, group in chosen for e in group} == {"need-A", "need-B"}
 
 
 @pytest.mark.parametrize("shared", [False, True])

@@ -2078,8 +2078,17 @@ class QuestionBankReadService:
         *,
         include_storage_fields: bool,
     ) -> list[dict[str, Any]]:
+        # An empty/invalid id list must not require a database connection;
+        # the dedupe keeps parity with _load_questions_by_id's own guard.
+        ordered_ids: list[int] = []
+        for value in question_ids:
+            question_id = int(value)
+            if question_id > 0 and question_id not in ordered_ids:
+                ordered_ids.append(question_id)
+        if not ordered_ids:
+            return []
         with _read_connection(self.db_path):
-            return self._load_questions_by_id(question_ids, include_storage_fields=include_storage_fields)
+            return self._load_questions_by_id(ordered_ids, include_storage_fields=include_storage_fields)
 
     def _load_questions_by_id(
         self, question_ids: Iterable[int], *, include_storage_fields: bool,

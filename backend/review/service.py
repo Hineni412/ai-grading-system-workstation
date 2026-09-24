@@ -4,6 +4,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,7 @@ class ReviewConfirmationInput:
     deduction_reason: str | None = None
     error_category: str | None = None
     error_summary: str | None = None
+    step_scores: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +140,7 @@ class ReviewApplicationService:
         needs_review_only: bool = False,
         scope: str | None = None,
         manual_context: dict[str, Any] | None = None,
+        include_evidence: bool = True,
     ) -> list[ReviewItem]:
         (
             score_map,
@@ -157,17 +160,22 @@ class ReviewApplicationService:
                 question_catalog,
                 current_id_by_resolved,
                 question_type_by_id,
+                requested_question_id=requested_question_id,
+                include_evidence=include_evidence,
             )
         else:
             items = [
                 item
                 for row in raw_rows
+                if requested_question_id is None
+                or str(row.get("question_id") or "").strip() == requested_question_id
                 if (
                     item := self._review_item_from_ai_row(
                         int(session_id),
                         score_map,
                         row,
                         question_type_by_id,
+                        include_evidence=include_evidence,
                     )
                 )
                 is not None
@@ -213,6 +221,8 @@ class ReviewApplicationService:
         score_map: dict[str, float],
         row: dict[str, Any],
         question_type_by_id: dict[str, str | None],
+        *,
+        include_evidence: bool = True,
     ) -> ReviewItem | None:
         question_id = str(row.get("question_id") or "").strip()
         if not question_id:
@@ -222,7 +232,16 @@ class ReviewApplicationService:
             if isinstance(row.get("raw_json"), dict)
             else {}
         )
-        metadata = _detail_metadata_for_qid(raw_json, question_id)
+        if include_evidence:
+            metadata = _detail_metadata_for_qid(raw_json, question_id)
+        else:
+            # Counts and write validation need flags, not every student's proof.
+            metadata_map = raw_json.get("detail_metadata") or {}
+            direct = metadata_map.get(question_id) if isinstance(metadata_map, dict) else None
+            metadata = {
+                key: direct.get(key) is True
+                for key in ("need_review", "needs_human_review")
+            } if isinstance(direct, dict) else {}
         ai_score = row.get("ai_score_awarded")
         if ai_score is not None:
             metadata["ai_score_awarded"] = float(ai_score)
@@ -283,6 +302,9 @@ class ReviewApplicationService:
         question_catalog: QuestionIdCatalog | None,
         current_id_by_resolved: dict[str, str],
         question_type_by_id: dict[str, str | None],
+        *,
+        requested_question_id: str | None = None,
+        include_evidence: bool = True,
     ) -> list[ReviewItem]:
         scan_batch_id = str(manual_context.get("scan_batch_id") or "").strip()
         papers = [
@@ -324,9 +346,18 @@ class ReviewApplicationService:
             dict(item)
             for item in self.db.list_answer_regions(session_id)
         ]
+        selected_scores = {
+            qid: score for qid, score in score_map.items()
+            if requested_question_id is None or qid == requested_question_id
+        }
+        needs_completeness_check = any(
+            (int(paper["student_id"]), qid) not in ai_rows_by_key
+            and (int(paper["student_id"]), qid) not in lock_by_key
+            for paper in papers for qid in selected_scores
+        )
         incomplete_keys: set[tuple[int, str]] = set()
         try:
-            incomplete_results = self.db.list_incomplete_results(session_id)
+            incomplete_results = self.db.list_incomplete_results(session_id) if needs_completeness_check else []
         except Exception:  # noqa: BLE001
             incomplete_results = []
         for incomplete in incomplete_results:
@@ -345,11 +376,14 @@ class ReviewApplicationService:
                         (incomplete_student_id, current_missing_id)
                     )
 
+        source_regions = {
+            qid: _source_region_id(regions, qid) for qid in selected_scores
+        }
         items: list[ReviewItem] = []
         for paper in papers:
             student_id = int(paper["student_id"])
             student = students.get(student_id, {})
-            for question_id, max_score in score_map.items():
+            for question_id, max_score in selected_scores.items():
                 matching_rows = ai_rows_by_key.get(
                     (student_id, question_id),
                     [],
@@ -363,6 +397,7 @@ class ReviewApplicationService:
                         score_map,
                         row,
                         question_type_by_id,
+                        include_evidence=include_evidence,
                     )
                     if row is not None
                     else None
@@ -389,13 +424,17 @@ class ReviewApplicationService:
                             if paper.get("back_media_url")
                             else None
                         ),
-                        "source_region_id": _source_region_id(
-                            regions,
-                            question_id,
-                        ),
+                        "source_region_id": source_regions[question_id],
                     }
                 )
                 teacher_locked = lock is not None
+                teacher_review = metadata.get("teacher_review")
+                if teacher_review and (
+                    not lock
+                    or teacher_review.get("revision") != lock.get("revision")
+                    or teacher_review.get("scan_batch_id") != scan_batch_id
+                ):
+                    metadata.pop("teacher_review", None)
                 lock_scale_changed = bool(
                     lock
                     and (
@@ -553,6 +592,7 @@ class ReviewApplicationService:
             session,
             scope=scope,
             manual_context=manual_context,
+            include_evidence=False,
         ):
             current = by_question.get(item.question_id)
             if current is None:
@@ -667,6 +707,13 @@ class ReviewApplicationService:
                     f"{requested_question_id} score {score:g} exceeds rubric maximum {max_score:g}."
                 )
 
+            # 教师“批语”= 提交的 deduction_reason（去空白后非空）。确认分仍有
+            # 扣分且未填批语时保留明细原理由与原概要；确认满分或无原值时写占位。
+            teacher_note = str(item.deduction_reason or "").strip()
+            prior_reason = str(row.get("deduction_reason") or "").strip()
+            prior_summary = str(row.get("error_summary") or "").strip()
+            submitted_summary = str(item.error_summary or "").strip()
+            confirmed_full = score >= max_score
             normalized.append(
                 {
                     "session_id": requested_session_id,
@@ -674,9 +721,17 @@ class ReviewApplicationService:
                     "detail_id": detail_id,
                     "question_id": requested_question_id,
                     "score_awarded": score,
-                    "deduction_reason": item.deduction_reason or REVIEW_CONFIRMED_REASON,
+                    "deduction_reason": teacher_note or (
+                        REVIEW_CONFIRMED_REASON
+                        if confirmed_full
+                        else (prior_reason or REVIEW_CONFIRMED_REASON)
+                    ),
                     "error_category": item.error_category or REVIEW_CONFIRMED_CATEGORY,
-                    "error_summary": item.error_summary or REVIEW_CONFIRMED_SUMMARY,
+                    "error_summary": submitted_summary or (
+                        REVIEW_CONFIRMED_SUMMARY
+                        if confirmed_full
+                        else (prior_summary or REVIEW_CONFIRMED_SUMMARY)
+                    ),
                 }
             )
         return normalized
@@ -689,6 +744,30 @@ class ReviewApplicationService:
         items: list[ReviewConfirmationInput],
         *,
         manual_context: dict[str, Any] | None = None,
+        defer_annotations: bool = False,
+    ) -> ReviewConfirmationResult:
+        from answer_region_session_lock import get_answer_region_session_lock
+
+        lock = (
+            get_answer_region_session_lock(
+                self.manual_review_service.annotated_dir / f"session_{session_id}"
+            ) if defer_annotations and self.manual_review_service is not None else nullcontext()
+        )
+        with lock:
+            return self._confirm(
+                session_id, session, question_id, items,
+                manual_context=manual_context, defer_annotations=defer_annotations,
+            )
+
+    def _confirm(
+        self,
+        session_id: int,
+        session: dict[str, Any],
+        question_id: str,
+        items: list[ReviewConfirmationInput],
+        *,
+        manual_context: dict[str, Any] | None = None,
+        defer_annotations: bool = False,
     ) -> ReviewConfirmationResult:
         if manual_context is not None:
             return self._confirm_unified_items(
@@ -697,9 +776,12 @@ class ReviewApplicationService:
                 str(question_id),
                 items,
                 manual_context,
+                defer_annotations=defer_annotations,
             )
         if self.manual_review_service is None:
             raise RuntimeError("Manual review service is required for confirmation.")
+        if any(item.step_scores is not None for item in items):
+            raise ReviewValidationError("Step review requires the current frozen scan batch.")
         adjustments = self.prepare_adjustments(
             session_id,
             session,
@@ -711,6 +793,7 @@ class ReviewApplicationService:
                 session_id,
                 adjustments,
                 highlight_qids=[question_id],
+                **({"defer_annotations": True} if defer_annotations else {}),
             )
         except ReviewAdjustmentOwnershipError as exc:
             raise ReviewDetailNotFoundError(
@@ -740,6 +823,8 @@ class ReviewApplicationService:
         question_id: str,
         inputs: list[ReviewConfirmationInput],
         manual_context: dict[str, Any],
+        *,
+        defer_annotations: bool = False,
     ) -> ReviewConfirmationResult:
         requested_question_id = str(question_id or "").strip()
         if not requested_question_id or not inputs:
@@ -759,6 +844,7 @@ class ReviewApplicationService:
             requested_question_id=requested_question_id,
             scope="all",
             manual_context=manual_context,
+            include_evidence=False,
         )
         by_review_item_id = {
             item.review_item_id: item for item in available
@@ -769,6 +855,14 @@ class ReviewApplicationService:
             if item.result_id is not None and item.detail_id is not None
         }
         confirmations: list[dict[str, Any]] = []
+        step_rubric = None
+        if any(raw.step_scores is not None for raw in inputs):
+            try:
+                step_rubric = canonicalize_question_document(json.loads(resolve_stored_file_path(
+                    session.get("rubric_path"), data_root=_data_root(self.db),
+                ).read_text(encoding="utf-8")))
+            except (OSError, ValueError) as exc:
+                raise ReviewValidationError("The step scoring standard is unavailable.") from exc
         seen_ids: set[str] = set()
         result_ids: set[int] = set()
         for raw in inputs:
@@ -822,8 +916,14 @@ class ReviewApplicationService:
                     "question_id": item.question_id,
                     "score_awarded": score,
                     "max_score": item.max_score,
+                    # 锁表值保持“有批语存批语、无批语存占位”；teacher_note 单独
+                    # 标记教师是否填写了批语，供明细扣分理由按规则写回。
                     "deduction_reason": (
-                        raw.deduction_reason or REVIEW_CONFIRMED_REASON
+                        str(raw.deduction_reason or "").strip()
+                        or REVIEW_CONFIRMED_REASON
+                    ),
+                    "teacher_note": (
+                        str(raw.deduction_reason or "").strip() or None
                     ),
                     "source_target_type": str(
                         "answer_region"
@@ -838,6 +938,10 @@ class ReviewApplicationService:
                         str(item.metadata.get("stored_question_id") or "").strip()
                         or item.question_id
                     ),
+                    "teacher_steps": (
+                        _normalize_teacher_steps(raw.step_scores, step_rubric, item, score)
+                        if raw.step_scores is not None else None
+                    ),
                 }
             )
             if item.result_id is not None:
@@ -848,6 +952,7 @@ class ReviewApplicationService:
                 session_id,
                 scan_batch_id,
                 confirmations,
+                **({"defer_annotations": True} if defer_annotations else {}),
             )
         except ValueError as exc:
             message = str(exc).lower()
@@ -860,7 +965,14 @@ class ReviewApplicationService:
             ) from exc
 
         annotation_outcomes: list[ReviewAnnotationOutcome] = []
-        if self.manual_review_service is not None:
+        if defer_annotations:
+            if self.manual_review_service is not None:
+                self.manual_review_service.cleanup_invalidated_annotations(result.pop("invalidated_annotations", []))
+            annotation_outcomes = [
+                ReviewAnnotationOutcome(result_id=result_id, status="on_demand")
+                for result_id in sorted(result_ids)
+            ]
+        elif self.manual_review_service is not None:
             for result_id in sorted(result_ids):
                 try:
                     rendered = self.manual_review_service.render_result_annotation(
@@ -897,6 +1009,41 @@ class ReviewApplicationService:
 
 def _data_root(db: GradingRepositoryAccess) -> Path | None:
     return db.db_path.parent.parent if db.db_path.parent.name == "databases" else None
+
+
+def _normalize_teacher_steps(
+    submitted: list[dict[str, Any]], rubric: dict[str, Any], item: ReviewItem, total: float,
+) -> list[dict[str, Any]]:
+    from solution_answer_guard import integer_business_score, rubric_scoring_unit_steps
+
+    if item.result_id is None or item.detail_id is None:
+        raise ReviewValidationError("Step review requires an existing grading detail.")
+    expected = rubric_scoring_unit_steps(rubric, item.question_id)
+    if not expected or len(expected) != len(submitted):
+        raise ReviewValidationError("All current scoring steps must be supplied exactly once.")
+    by_identity = {}
+    for raw in submitted:
+        key = (str(raw.get("part_id") or ""), str(raw.get("step_id") or ""))
+        if key in by_identity:
+            raise ReviewValidationError("Duplicate teacher scoring step.")
+        by_identity[key] = raw
+    normalized = []
+    for step in expected:
+        key = (str(step.get("part_id") or ""), str(step.get("step_id") or ""))
+        raw = by_identity.get(key)
+        maximum = integer_business_score(step.get("step_score"))
+        awarded = integer_business_score(raw.get("score_awarded")) if raw else None
+        if maximum is None or maximum <= 0 or awarded is None or awarded > maximum:
+            raise ReviewValidationError("Teacher step score must be an integer within its current maximum.")
+        normalized.append({
+            "part_id": key[0], "step_id": key[1], "score_awarded": awarded,
+            "max_score": maximum, "achievement": "full" if awarded == maximum else "none",
+            "core_goal": str(step.get("core_goal") or ""),
+            "evidence_point_ids": list(step.get("evidence_point_ids") or []),
+        })
+    if sum(step["max_score"] for step in normalized) != item.max_score or sum(step["score_awarded"] for step in normalized) != total:
+        raise ReviewValidationError("Teacher step scores must sum to the submitted question score.")
+    return normalized
 
 
 def _question_sort_key(question_id: str) -> list[Any]:
@@ -1186,16 +1333,18 @@ def _item_matches_scope(
 def _detail_metadata_for_qid(raw_json: dict[str, Any], question_id: str) -> dict[str, Any]:
     metadata_map = raw_json.get("detail_metadata") if isinstance(raw_json, dict) else None
     if not isinstance(metadata_map, dict):
-        return {}
+        metadata_map = {}
     direct = metadata_map.get(question_id)
     if not isinstance(direct, dict):
-        return {}
+        direct = {}
 
     metadata = sanitize_public_mapping(
         {
             key: direct[key]
             for key in (
                 "question_id",
+                "presentation_deduction",
+                "final_answer_simplification",
                 "need_review",
                 "needs_human_review",
                 "review_reason",
@@ -1213,6 +1362,9 @@ def _detail_metadata_for_qid(raw_json: dict[str, Any], question_id: str) -> dict
             if key in direct
         }
     )
+    teacher_reviews = raw_json.get("teacher_reviews")
+    if isinstance(teacher_reviews, dict) and isinstance(teacher_reviews.get(question_id), dict):
+        metadata["teacher_review"] = sanitize_public_mapping(teacher_reviews[question_id])
     raw_candidates = direct.get("candidate_scores")
     if isinstance(raw_candidates, list):
         candidates = []

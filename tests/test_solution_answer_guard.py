@@ -533,6 +533,18 @@ def _step(
 
 
 class StepAssessmentContractTests(unittest.TestCase):
+    def test_one_written_line_can_complete_two_distinct_steps(self) -> None:
+        line = "a+b=10，ab=24"
+        normalized, error = validate_step_assessments(
+            [_step("S1", "equivalent", 3, evidence=line),
+             _step("S2", "equivalent", 3, evidence=line),
+             _step("S3", "none", 0, missing="未求解")],
+            rubric=_THREE_STEP_RUBRIC, question_id="Q1", score_awarded=6,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(sum(step["score_awarded"] for step in normalized), 6)
+        self.assertEqual(normalized[0]["student_evidence"], normalized[1]["student_evidence"])
+
     def test_all_steps_full_passes_when_sum_matches(self) -> None:
         normalized, error = validate_step_assessments(
             [

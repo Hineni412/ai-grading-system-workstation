@@ -72,13 +72,17 @@ async function mountViewer({
   previousItem = makeItem(1),
   nextItem = makeItem(3),
   source = 'crop',
+  expandable = true,
+  onExpand = vi.fn(),
 }: Partial<{
   item: ReviewItem
   previousItem: ReviewItem | null
   nextItem: ReviewItem | null
   source: EvidenceSource
+  expandable: boolean
+  onExpand: () => void
 }> = {}) {
-  const props = reactive({ item, previousItem, nextItem, source })
+  const props = reactive({ item, previousItem, nextItem, source, expandable, onExpand })
   const Root = defineComponent({
     setup: () => () => h(ReviewEvidenceViewer, props),
   })
@@ -114,6 +118,20 @@ function clickButton(host: HTMLElement, name: string): void {
   expect(button).toBeDefined()
   button!.click()
 }
+
+it('opens the larger viewer from a click and suppresses nested expansion', async () => {
+  const onExpand = vi.fn()
+  const { host, props } = await mountViewer({ onExpand })
+  clickButton(host, '弹窗放大')
+  expect(onExpand).toHaveBeenCalledTimes(1)
+  host.querySelector<HTMLElement>('.review-evidence-canvas')!.click()
+  expect(onExpand).toHaveBeenCalledTimes(2)
+  props.expandable = false
+  await settle()
+  expect(host.textContent).not.toContain('弹窗放大')
+  host.querySelector<HTMLElement>('.review-evidence-canvas')!.click()
+  expect(onExpand).toHaveBeenCalledTimes(2)
+})
 
 beforeEach(() => {
   document.body.innerHTML = ''

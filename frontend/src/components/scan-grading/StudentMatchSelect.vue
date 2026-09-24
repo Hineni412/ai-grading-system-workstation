@@ -8,6 +8,8 @@ const props = defineProps<{
   students: ScanStudentMatchOption[]
   placeholder?: string
   ariaLabel?: string
+  // student_id -> labels of papers that already belong to the student.
+  assigned?: Record<number, string>
 }>()
 
 const emit = defineEmits<{
@@ -39,14 +41,25 @@ function normalized(value: unknown): string {
 const filteredStudents = computed(() => {
   const term = normalized(query.value)
   const selectedLabel = selectedStudent.value ? optionLabel(selectedStudent.value) : ''
-  if (!term || query.value === selectedLabel) return props.students.slice(0, 80)
-  return props.students.filter((student) => [
-    student.name,
-    student.student_code,
-    student.class_name,
-    student.pinyin_initials,
-    student.pinyin_full,
-  ].some((value) => normalized(value).includes(term))).slice(0, 80)
+  const filtered = (!term || query.value === selectedLabel)
+    ? props.students
+    : props.students.filter((student) => [
+      student.name,
+      student.student_code,
+      student.class_name,
+      student.pinyin_initials,
+      student.pinyin_full,
+    ].some((value) => normalized(value).includes(term)))
+  // Already-assigned students stay selectable but sink to the bottom group.
+  return filtered
+    .map((student, index) => ({ student, index }))
+    .sort((a, b) => (
+      Number(Boolean(props.assigned?.[a.student.id]))
+      - Number(Boolean(props.assigned?.[b.student.id]))
+      || a.index - b.index
+    ))
+    .map((entry) => entry.student)
+    .slice(0, 80)
 })
 
 watch(
@@ -169,6 +182,7 @@ function onKeydown(event: KeyboardEvent): void {
       >
         <strong>{{ student.name }}</strong>
         <span>{{ student.student_code }}<template v-if="student.class_name"> · {{ student.class_name }}</template></span>
+        <span v-if="assigned?.[student.id]" class="student-match-select__assigned">已归属：{{ assigned[student.id] }}</span>
       </button>
       <p v-if="!filteredStudents.length">没有匹配的学生</p>
     </div>
@@ -247,6 +261,10 @@ function onKeydown(event: KeyboardEvent): void {
 .student-match-select__menu button span {
   color: var(--color-text-secondary);
   font-size: var(--font-size-caption);
+}
+
+.student-match-select__menu button span.student-match-select__assigned {
+  color: var(--color-warning);
 }
 
 .student-match-select__menu p {

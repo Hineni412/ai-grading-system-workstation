@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { DialogClose, DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 
 import {
+  CAUSE_CATEGORIES,
   classAnalysisApi,
   type ClassAnalysisQuestion,
   type ClassQuestionPreview,
@@ -48,6 +49,16 @@ let previewTrigger: HTMLElement | null = null
 const previewCache = new Map<string, ClassQuestionPreview>()
 const expandedBands = ref(new Set<string>())
 const expandedCauses = ref(new Set<string>())
+const patternConfirm = ref<{
+  questionId: string
+  kind: string
+  category: string
+  reason: string
+  manifestation: string
+} | null>(null)
+const patternConfirmLoading = ref(false)
+const patternConfirmError = ref('')
+const CONFIRMABLE_KINDS = new Set(['error', 'process', 'response_state'])
 
 const activeJobId = computed(() => analysis.value?.active_job_id ?? null)
 
@@ -72,6 +83,7 @@ const causeAnalysis = computed(() => analysis.value?.cause_analysis ?? null)
 const causeStatusText = computed(() => {
   const state = causeAnalysis.value
   if (state?.legacy_questions) return `${state.legacy_questions} 题保留既有归并；更新整理后，将结合真实作答分别整理错因、过程缺项和待核对事项。`
+  if (state?.outdated_questions) return `${state.outdated_questions} 题为旧版整理，暂无错误大类；重新整理后自动升级并补充大类。`
   if (!state || state.status === 'not_generated') return state?.failed_questions
     ? '错因整理未完成，保留原始理由；可重新整理。'
     : state?.stale ? '作答、批语或题目依据已变化，建议更新整理。' : '当前按原始表述合并，可结合真实作答整理。'
@@ -305,6 +317,57 @@ function evidenceStudentCount(items: ClassCauseEvidence[]): number {
   return new Set(items.flatMap((item) => item.student_ids)).size
 }
 
+function canConfirmPattern(question: ClassAnalysisQuestion, cause: ClassCause): boolean {
+  return cause.bank_confirmed === false
+    && question.bank_question_id != null
+    && !!cause.kind
+    && CONFIRMABLE_KINDS.has(cause.kind)
+}
+
+function openPatternConfirm(question: ClassAnalysisQuestion, cause: ClassCause): void {
+  if (!cause.kind) return
+  patternConfirm.value = {
+    questionId: question.question_id,
+    kind: cause.kind,
+    category: cause.category ?? '',
+    reason: cause.reason,
+    manifestation: cause.manifestations?.[0]?.description ?? '',
+  }
+  patternConfirmError.value = ''
+}
+
+async function confirmPattern(): Promise<void> {
+  const sessionId = props.sessionId
+  const draft = patternConfirm.value
+  if (sessionId === null || !draft || patternConfirmLoading.value) return
+  patternConfirmLoading.value = true
+  patternConfirmError.value = ''
+  try {
+    await classAnalysisApi.confirmCausePattern(sessionId, {
+      question_id: draft.questionId,
+      kind: draft.kind,
+      category: draft.category || null,
+      reason: draft.reason.trim(),
+      manifestation: draft.manifestation.trim() || null,
+      operation_token: `${sessionId}:${draft.questionId}:${Date.now()}`,
+    })
+    if (props.sessionId !== sessionId) return
+    patternConfirm.value = null
+    await load()
+  } catch (error) {
+    if (props.sessionId !== sessionId) return
+    patternConfirmError.value = error instanceof ApiError
+      ? (error.code === 'cause_pattern_unlinked'
+        ? '该题未关联题库题目，无法写入题库。'
+        : error.code === 'cause_pattern_not_ready' || error.code === 'cause_pattern_group_missing'
+          ? '错因整理结果已变化，请刷新页面后重试。'
+          : '写入题库失败，请稍后重试。')
+      : '写入题库失败，请稍后重试。'
+  } finally {
+    patternConfirmLoading.value = false
+  }
+}
+
 function toggleBand(key: string): void {
   const next = new Set(expandedBands.value)
   if (next.has(key)) next.delete(key)
@@ -473,7 +536,19 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                         <ol class="class-analysis__causes">
                           <li v-for="cause in (expandedCauses.has(section.key) ? section.causes : section.causes.slice(0, 5))" :key="cause.reason">
                             <details v-if="cause.evidence?.length" class="class-analysis__cause-detail">
-                              <summary><span>{{ cause.reason }}</span><b>{{ cause.count }} 人</b></summary>
+                              <summary>
+                                <span v-if="cause.category" class="class-analysis__cause-tag" data-testid="cause-category">{{ cause.category }}</span>
+                                <span v-if="cause.pattern_status === 'candidate'" class="class-analysis__cause-tag class-analysis__cause-tag--new">新错法</span>
+                                <span v-if="cause.bank_confirmed" class="class-analysis__cause-tag class-analysis__cause-tag--bank" data-testid="cause-bank-confirmed">已入库</span>
+                                <span>{{ cause.reason }}</span><b>{{ cause.count }} 人</b>
+                                <button
+                                  v-if="canConfirmPattern(question, cause)"
+                                  type="button"
+                                  class="class-analysis__link class-analysis__cause-confirm"
+                                  data-testid="cause-confirm"
+                                  @click.stop.prevent="openPatternConfirm(question, cause)"
+                                >写入题库</button>
+                              </summary>
                               <div v-for="(variant, variantIndex) in (cause.manifestations ?? [{ description: '', source_question_id: null, evidence: cause.evidence }])" :key="variantIndex" class="class-analysis__cause-manifestation">
                                 <p v-if="variant.description" class="class-analysis__cause-observation">本题表现：{{ variant.description }}</p>
                                 <p v-if="variant.source_question_id" class="class-analysis__note">延续自 {{ variant.source_question_id }}</p>
@@ -487,13 +562,25 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                                 </div>
                               </div>
                             </details>
-                            <template v-else><span>{{ cause.reason }}</span><b>{{ cause.count }} 人</b></template>
+                            <template v-else>
+                              <span v-if="cause.category" class="class-analysis__cause-tag">{{ cause.category }}</span>
+                              <span v-if="cause.bank_confirmed" class="class-analysis__cause-tag class-analysis__cause-tag--bank" data-testid="cause-bank-confirmed">已入库</span>
+                              <span>{{ cause.reason }}</span><b>{{ cause.count }} 人</b>
+                              <button
+                                v-if="canConfirmPattern(question, cause)"
+                                type="button"
+                                class="class-analysis__link class-analysis__cause-confirm"
+                                data-testid="cause-confirm"
+                                @click="openPatternConfirm(question, cause)"
+                              >写入题库</button>
+                            </template>
                           </li>
                         </ol>
                         <button v-if="section.causes.length > 5" type="button" class="class-analysis__preview-button class-analysis__causes-toggle" :aria-expanded="expandedCauses.has(section.key)" @click="toggleCauses(section.key)">
                           {{ expandedCauses.has(section.key) ? '收起错因' : `展开其余 ${section.causes.length - 5} 条错因` }} · 共 {{ section.causes.length }} 条
                         </button>
                       </details>
+                      <span v-if="question.causes_outdated" class="class-analysis__note" data-testid="causes-outdated">旧版整理 · 待升级（暂无错误大类）</span>
                       <span v-if="!question.causeSections.length" class="class-analysis__note">{{ question.records.length ? (question.causes_grouped ? '没有可确认的共同错因，见下方原始证据' : '未记录具体错因') : '—' }}</span>
                       <details v-if="!question.structuredCauses && question.cause_review?.uncertain.length" class="class-analysis__cause-review">
                         <summary>错因待明确 · {{ evidenceStudentCount(question.cause_review.uncertain) }} 人</summary>
@@ -544,6 +631,42 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
         <template v-else-if="preview">
           <p v-if="preview.notice" class="class-analysis__note">{{ preview.notice }}</p>
           <QuestionContentRenderer :blocks="preview.rich_content.question_blocks" :fallback="preview.text" empty-label="此题尚无可预览的原题内容" image-alt="原题配图" media-mode="detail" />
+        </template>
+      </DialogContent>
+    </DialogPortal>
+  </DialogRoot>
+
+  <DialogRoot :open="patternConfirm !== null" @update:open="!$event && (patternConfirm = null)">
+    <DialogPortal>
+      <DialogOverlay class="class-analysis__overlay" />
+      <DialogContent class="class-analysis__preview" data-testid="cause-confirm-dialog" :aria-describedby="undefined">
+        <div class="class-analysis__dialog-heading">
+          <DialogTitle>{{ patternConfirm?.questionId }} · 错法写入题库</DialogTitle>
+          <DialogClose class="class-analysis__link" aria-label="关闭确认对话框">关闭</DialogClose>
+        </div>
+        <template v-if="patternConfirm">
+          <p class="class-analysis__note">确认后，这条错法会作为该题的典型错法保存到题库，以后同题考试可直接复用。写入前可以修改名称和大类。</p>
+          <label class="class-analysis__field">
+            <span>错法名称</span>
+            <input v-model="patternConfirm.reason" class="class-analysis__input" data-testid="cause-confirm-reason" maxlength="80" />
+          </label>
+          <label class="class-analysis__field">
+            <span>错误大类</span>
+            <select v-model="patternConfirm.category" class="class-analysis__input" data-testid="cause-confirm-category">
+              <option v-for="category in CAUSE_CATEGORIES" :key="category" :value="category">{{ category }}</option>
+            </select>
+          </label>
+          <label class="class-analysis__field">
+            <span>本题表现（可选）</span>
+            <textarea v-model="patternConfirm.manifestation" class="class-analysis__input" rows="2" maxlength="200" />
+          </label>
+          <p v-if="patternConfirmError" class="class-analysis__error" role="alert">{{ patternConfirmError }}</p>
+          <div class="class-analysis__dialog-actions">
+            <button type="button" class="class-analysis__link" :disabled="patternConfirmLoading" @click="patternConfirm = null">取消</button>
+            <AppButton variant="primary" :loading="patternConfirmLoading" loading-label="正在写入" :disabled="!patternConfirm.reason.trim()" data-testid="cause-confirm-submit" @click="confirmPattern">
+              确认写入题库
+            </AppButton>
+          </div>
         </template>
       </DialogContent>
     </DialogPortal>

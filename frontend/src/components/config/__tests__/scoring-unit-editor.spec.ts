@@ -74,7 +74,7 @@ describe('ScoringUnitEditor', () => {
     await nextTick()
     expect(mounted.host.textContent).toContain('步骤 3')
     expect(mounted.host.querySelector<HTMLButtonElement>('button[name="保存本题结构"]')!.disabled).toBe(true)
-    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('需要填写大于 0')
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('需要填写评分目标')
 
     const remove = mounted.host.querySelector<HTMLButtonElement>('[aria-label="删除第 1 小问步骤 3"]')!
     remove.click()

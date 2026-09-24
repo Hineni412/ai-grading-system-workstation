@@ -474,11 +474,15 @@ class DBManager:
         answer_key_path: str,
         expected_rubric_path: str,
         expected_answer_key_path: str,
+        preserve_question_bank_sync: bool = False,
     ) -> bool:
         config_changed = (
             str(rubric_path) != str(expected_rubric_path)
             or str(answer_key_path) != str(expected_answer_key_path)
         )
+        # Editor saves keep the same question set and re-annotate evidence
+        # ids, so confirmed bank links stay valid and the sync state is kept.
+        reset_sync = config_changed and not preserve_question_bank_sync
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -501,10 +505,10 @@ class DBManager:
                     (
                         str(rubric_path),
                         str(answer_key_path),
-                        config_changed,
-                        config_changed,
-                        config_changed,
-                        config_changed,
+                        reset_sync,
+                        reset_sync,
+                        reset_sync,
+                        reset_sync,
                         int(session_id),
                         str(expected_rubric_path),
                         str(expected_answer_key_path),

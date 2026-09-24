@@ -33,6 +33,7 @@ from backend.document_parsing import (
     parse_plain_question_blocks,
 )
 from backend.document_parsing.question_blocks import (
+    _strip_leading_question_number,
     has_explicit_choice_options,
     has_visible_fill_blank_mark,
     has_visible_stem_fill_blank_mark,
@@ -57,7 +58,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _QUESTION_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:.+?\]\]", re.IGNORECASE)
 _IMAGE_PATH_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]", re.IGNORECASE)
-_HTML_TAG = re.compile(r"<[^>]*>")
+_HTML_TAG = re.compile(r"</?(?:p|span|div|table|tbody|thead|tr|td|th|b|strong|i|em|img|sup|sub|u|br)\b[^>]*>", re.IGNORECASE)
 _QUESTION_SECTION_HEADING = re.compile(
     r"(?:^|\n)\s*(?:[一二三四五六七八九十]+|\d+)\s*[、.．]\s*"
     r"(?:选择|填空|解答|计算|证明|作图)题[^\n]*",
@@ -2236,6 +2237,8 @@ def _copy_docx_assets(
                     content = filesystem.read_bytes(path)
                     suffix, _media_type = _image_type(content)
                 except Exception:
+                    block.setdefault("parse_warnings", []).append("有一张配图未能生成预览，请核对原卷图片格式。")
+                    block["needs_review"] = True
                     continue
                 output = source_dir / (
                     f"asset-{question_id}-{kind}-{copied_index + 1}{suffix}"
@@ -2521,7 +2524,9 @@ def _public_questions_with_rich_content(
             )
             payload.update(
                 {
-                    "question_preview": _public_preview(question_value),
+                    "question_preview": _public_preview(_strip_leading_question_number(
+                        question.question_id.removeprefix("Q"), str(question_value),
+                    )),
                     "answer_preview": _answer_summary(block),
                     "question_type_review_required": bool(review_reason),
                     "question_type_review_reason": review_reason,
@@ -2540,6 +2545,7 @@ def _public_questions_with_rich_content(
                 )
             ),
         )
+        payload["parse_warnings"] = [str(value)[:200] for value in (block or {}).get("parse_warnings", [])][:20]
         payload["rich_content"] = _config_rich_content(
             block,
             session_id=session_id,
@@ -2571,12 +2577,13 @@ def _config_rich_content(
         question_blocks: list[dict[str, Any]] = []
         answer_blocks: list[dict[str, Any]] = []
     else:
-        question_blocks = _project_config_rich_blocks(
+        question_blocks = _project_config_rich_blocks(_strip_leading_question_number(
+            question_id.removeprefix("Q"),
             block.get("question_html")
             or block.get("question_text")
             or block.get("text")
             or ""
-        )
+        ))
         answer_blocks = _deduplicate_config_rich_blocks(
             _project_config_rich_blocks(
                 block.get("answer_html")
@@ -2863,6 +2870,7 @@ def _public_preview(value: Any) -> str:
     text = _IMAGE_MARKER.sub(" ", str(value or ""))
     text = _HTML_TAG.sub(" ", text)
     text = html.unescape(text)
+    text = re.sub(r"<(b|strong|span|i|em|u)\b[^>]*>(.*?)</\1>", r"\2", text, flags=re.IGNORECASE | re.DOTALL)
     text = " ".join(text.split())
     return text[:PUBLIC_PREVIEW_CHARACTERS]
 

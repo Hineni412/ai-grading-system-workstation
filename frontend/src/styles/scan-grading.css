@@ -46,6 +46,17 @@
 .scan-evidence__missing { width: calc(var(--space-9) + var(--space-6)); height: calc(var(--space-9) + var(--space-6)); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
 .scan-evidence__missing { display: grid; place-items: center; color: var(--color-text-muted); font-size: var(--font-size-caption); }
 .scan-decision-state { color: var(--color-success); font-weight: var(--font-weight-semibold); }
+.scan-issue-list__title { margin: 0; padding: var(--space-2) 0 0; color: var(--color-text-secondary); font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); }
+.scan-issue-list__title + .scan-issue-row { border-top: 0; }
+.scan-filter { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); color: var(--color-text-secondary); font-size: var(--font-size-caption); cursor: pointer; }
+.scan-transfer { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-left: var(--border-selected-width) solid var(--color-warning); background: var(--color-warning-subtle); font-size: var(--font-size-caption); }
+.scan-conflict-list { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
+.scan-conflict-card { padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--color-danger); border-radius: var(--radius-control); background: var(--color-danger-subtle, var(--color-warning-subtle)); display: grid; gap: var(--space-2); }
+.scan-conflict-card > small { color: var(--color-text-secondary); }
+.scan-conflict-card__target { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); padding-top: var(--space-2); border-top: var(--border-width) solid var(--color-border-default); }
+.scan-conflict-card__label { display: grid; gap: var(--space-1); flex: 1; min-width: 8rem; }
+.scan-conflict-card__label small { color: var(--color-text-secondary); }
+.scan-conflict-card__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .scan-confirmed-decisions { margin-top: var(--space-4); border-top: var(--border-width) solid var(--color-border-default); padding-top: var(--space-3); }
 .scan-confirmed-decisions summary { color: var(--color-text-secondary); font-weight: var(--font-weight-semibold); cursor: pointer; }
 .scan-confirmed-decisions ul { display: grid; gap: var(--space-2); margin: var(--space-3) 0 0; padding: 0; list-style: none; }

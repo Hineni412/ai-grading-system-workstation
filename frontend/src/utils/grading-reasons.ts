@@ -1,4 +1,6 @@
 const REASON_LABELS: Record<string, string> = {
+  teacher_score_locked: '教师已确认，当前分数为教师最终分',
+  manual_review_confirmed: '教师已完成人工复核',
   objective_api_disabled: '客观题识别未启用，已转教师复核',
   objective_api_not_configured: '客观题识别模型配置不完整，已转教师复核',
   objective_paper_model_failed: '客观题识别请求失败，已转教师复核',

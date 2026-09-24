@@ -16,6 +16,9 @@ export default defineConfigWithVueTs(
     '**/playwright-report/**',
     '**/test-results/**',
     '**/.playwright-cli/**',
+    // 本机生成的临时构建/预览产物，不是受检源码
+    '**/.tmp-skill-build/**',
+    '**/.tmp-skill-preview/**',
     // 仓库根目录的历史一次性脚本（CommonJS），不参与前端源码规则校验
     '.aihot-study.tmp.cjs',
     'proto-screenshot.cjs',

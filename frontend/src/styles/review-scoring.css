@@ -317,6 +317,54 @@
   font-size: var(--font-size-caption);
 }
 
+.review-step-mode {
+  display: grid;
+  gap: var(--space-2);
+  margin-block: var(--space-3);
+}
+
+.review-step-mode button {
+  justify-self: start;
+  min-height: var(--control-height-default);
+  padding-inline: var(--space-3);
+  border: var(--border-width) solid var(--color-accent);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.review-step-mode p {
+  margin: 0;
+  font-size: var(--font-size-caption);
+}
+
+.review-step-score,
+.review-step-score label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.review-step-score {
+  justify-content: space-between;
+  margin-block: var(--space-3);
+  font-size: var(--font-size-dense);
+}
+
+.review-step-score input {
+  box-sizing: border-box;
+  width: 5rem;
+  min-height: var(--control-height-default);
+  padding-inline: var(--space-2);
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
 .review-scoring-inspector__footer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

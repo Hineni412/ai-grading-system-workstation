@@ -25,6 +25,7 @@ from backend.config_workspace.editor import (
     apply_config_editor_changes,
     collect_config_editor_issues,
     project_config_editor,
+    validate_config_editor_candidate,
 )
 from backend.config_workspace.locks import session_config_lock
 from backend.config_generation.normalization import (
@@ -70,6 +71,7 @@ def publish_generated_config(
     *,
     job_id: int | None = None,
     token: str | None = None,
+    preserve_scores: bool = False,
 ) -> PublishedConfig:
     if (job_id is None) == (token is None):
         raise ValueError("exactly one publication identity is required")
@@ -84,7 +86,9 @@ def publish_generated_config(
             raise ValueError("publication token must be 32 hexadecimal characters")
         stem = f"editor-{clean_token}"
     canonical_payload = canonicalize_grading_config_payload(payload)
-    validate_generated_config(canonical_payload)
+    validate_generated_config(
+        canonical_payload, normalize=not preserve_scores, enforce_score_policy=not preserve_scores,
+    )
     filesystem = SecureRootFilesystem(Path(upload_config_dir))
     rubric_path = filesystem.root / f"rubric_{stem}.json"
     answer_key_path = filesystem.root / f"answer_key_{stem}.json"
@@ -235,38 +239,40 @@ def _save_editor_config_locked(
             "field": "config",
             "message": "The draft has no grading configuration to edit.",
         },))
-    candidate = (
-        apply_config_editor_changes(current.payload, edits=edits, commands=commands)
-        if edits or commands
-        else copy.deepcopy(current.payload)
-    )
     from question_bank.solution_evidence.evidence_snapshot import (
+        annotate_rubric_payload,
         load_snapshot,
         validate_rubric_evidence_coverage,
     )
     snapshot = load_snapshot(Path(upload_config_dir), int(session_id))
+    base_payload = copy.deepcopy(current.payload)
+    if snapshot is not None:
+        # Restore verifiable legacy references before applying teacher edits.
+        # The loaded revision and files remain unchanged until the normal save.
+        annotate_rubric_payload(
+            base_payload["rubric"], snapshot, session_id,
+            answer_key=base_payload.get("answer_key"),
+        )
+    candidate = apply_config_editor_changes(base_payload, edits=edits, commands=commands)
     if snapshot is not None:
         violations = validate_rubric_evidence_coverage(
-            candidate.get("rubric") if isinstance(candidate, Mapping) else {},
+            candidate.get("rubric", {}),
             snapshot,
         )
         if violations:
-            raise ConfigEditorValidationError(
-                tuple(
-                    {
-                        "code": "evidence_point_coverage_violation",
-                        "severity": "error",
-                        "row_id": None,
-                        "field": "rubric",
-                        "message": message,
-                    }
-                    for message in violations
-                )
-            )
+            raise ConfigEditorValidationError(({
+                "code": "evidence_point_coverage_violation",
+                "severity": "error",
+                "row_id": None,
+                "field": "rubric",
+                "message": "评分步骤与题库判定点的关联不完整，请检查小问和步骤结构；分值修改已保留。",
+            },))
     publication: PublishedConfig | None = None
     try:
+        validate_config_editor_candidate(candidate)
         publication = publish_generated_config(
-            Path(upload_config_dir), candidate, token=uuid.uuid4().hex
+            Path(upload_config_dir), candidate, token=uuid.uuid4().hex,
+            preserve_scores=True,
         )
         before_bind = load_editor_config(db, session_id)
         _require_revision(expected_revision, before_bind)
@@ -284,6 +290,7 @@ def _save_editor_config_locked(
                 answer_key_path=str(publication.answer_key_path),
                 expected_rubric_path=str(current.session.get("rubric_path") or ""),
                 expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
+                preserve_question_bank_sync=True,
             )
         else:
             bound = job_store.update_session_config_if_idle(
@@ -292,6 +299,7 @@ def _save_editor_config_locked(
                 answer_key_path=str(publication.answer_key_path),
                 expected_rubric_path=str(current.session.get("rubric_path") or ""),
                 expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
+                preserve_question_bank_sync=True,
             )
         if not bound:
             raise ConfigRevisionConflict("config binding changed")

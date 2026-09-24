@@ -373,7 +373,12 @@ async function refreshServerState(
   preferredReviewItemId: string | null,
 ): Promise<void> {
   const generation = contextGeneration
-  await reviewStore.loadQuestions(sessionId)
+  // Refresh counts and the visible question together, preserving the selected
+  // student's draft until fresh results arrive.
+  const itemRefresh = loadQuestion(
+    sessionId, submittedQuestionId, preferredReviewItemId, null, false, generation,
+  )
+  await Promise.all([reviewStore.loadQuestions(sessionId), itemRefresh])
   if (
     unmounting
     || generation !== contextGeneration
@@ -391,6 +396,7 @@ async function refreshServerState(
     syncValidatedQuery()
     return
   }
+  if (questionId === submittedQuestionId) return
   await loadQuestion(
     sessionId,
     questionId,
