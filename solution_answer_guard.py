@@ -392,6 +392,45 @@ def validate_step_assessments(
         return None, f"step_assessments 漏评步骤 {missing}"
     if not answer_only_correct and abs(total - float(score_awarded or 0)) > 1e-6:
         return None, "step_assessments 得分之和不等于该单元得分"
+    # carried_error_from 只服务掌握度统计：仅保留“本步方法正确、只因沿用
+    # 更早的 none/uncertain 步骤结果而判 none”的标记；其余情况静默丢弃。
+    step_index_by_identity = {
+        (str(step.get("part_id") or "") if step_ids[index] in ambiguous else "", step_ids[index]): index
+        for index, step in enumerate(steps)
+    }
+    normalized_by_identity = {
+        (
+            str(record.get("part_id") or "") if str(record.get("step_id") or "") in ambiguous else "",
+            str(record.get("step_id") or ""),
+        ): record
+        for record in normalized
+    }
+    for item, record in zip(value, normalized):
+        carried = item.get("carried_error_from")
+        if not isinstance(carried, str) or not carried.strip():
+            continue
+        carried = carried.strip()
+        if record.get("achievement") != "none" or record.get("score_awarded") != 0:
+            continue
+        identity = (
+            str(record.get("part_id") or "") if str(record.get("step_id") or "") in ambiguous else "",
+            str(record.get("step_id") or ""),
+        )
+        ref_identity = (
+            str(record.get("part_id") or "") if carried in ambiguous else "",
+            carried,
+        )
+        ref_step = step_by_id.get(ref_identity)
+        ref_record = normalized_by_identity.get(ref_identity)
+        if (
+            ref_step is None
+            or ref_record is None
+            or str(ref_step.get("part_id") or "") != str(step_by_id[identity].get("part_id") or "")
+            or step_index_by_identity[ref_identity] >= step_index_by_identity[identity]
+            or ref_record.get("achievement") not in {"none", "uncertain"}
+        ):
+            continue
+        record["carried_error_from"] = carried
     return normalized, None
 
 

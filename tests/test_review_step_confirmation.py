@@ -59,6 +59,33 @@ def test_step_confirmation_roundtrip_partial_means_not_achieved_and_total_only_c
     assert final.score_awarded == 5 and final.revision == 2 and "teacher_review" not in final.metadata
 
 
+def test_teacher_zero_step_keeps_ai_carried_error_marker(tmp_path):
+    seed, session, context, service = seed_step_review(tmp_path)
+    with sqlite3.connect(seed.db.db_path) as conn:
+        conn.execute("UPDATE session_results SET raw_json=?", (json.dumps({"detail_metadata": {"Q1": {
+            "step_assessments": [
+                {"step_id": "S1", "achievement": "none", "score_awarded": 0},
+                {"step_id": "S2", "achievement": "none", "score_awarded": 0, "carried_error_from": "S1"},
+            ],
+        }}}),))
+    service.confirm(seed.session_id, session, "Q1", [ReviewConfirmationInput(
+        result_id=seed.result_id, detail_id=seed.detail_id, score_awarded=4,
+        step_scores=[{"part_id": "Q1", "step_id": "S1", "score_awarded": 4},
+                     {"part_id": "Q1", "step_id": "S2", "score_awarded": 0}],
+    )], manual_context=context, defer_annotations=True)
+    item, = service.list_items(seed.session_id, session, manual_context=context)
+    steps = item.metadata["teacher_review"]["steps"]
+    assert steps[1]["carried_error_from"] == "S1"
+    assert "carried_error_from" not in steps[0]
+    service.confirm(seed.session_id, session, "Q1", [ReviewConfirmationInput(
+        result_id=seed.result_id, detail_id=seed.detail_id, score_awarded=7, expected_revision=1,
+        step_scores=[{"part_id": "Q1", "step_id": "S1", "score_awarded": 4},
+                     {"part_id": "Q1", "step_id": "S2", "score_awarded": 3}],
+    )], manual_context=context, defer_annotations=True)
+    final, = service.list_items(seed.session_id, session, manual_context=context)
+    assert "carried_error_from" not in final.metadata["teacher_review"]["steps"][1]
+
+
 @pytest.mark.parametrize("change", ["missing", "duplicate", "fraction", "over", "sum"])
 def test_invalid_steps_do_not_save_any_score(tmp_path, change):
     seed, session, context, service = seed_step_review(tmp_path)

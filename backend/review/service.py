@@ -11,6 +11,7 @@ from typing import Any
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.review import ReviewAdjustmentOwnershipError
 from backend.public_data import sanitize_public_mapping
+from grading_completeness import is_objective_detail, review_confidence_threshold
 from path_manager import resolve_stored_file_path
 from question_id_contract import (
     QuestionIdCatalog,
@@ -256,6 +257,11 @@ class ReviewApplicationService:
             str(row.get("error_category") or ""),
             confidence,
             explicit_review=metadata.get("need_review") is True or metadata.get("needs_human_review") is True,
+            objective=(
+                question_type_by_id.get(question_id)
+                in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}
+                or is_objective_detail(row)
+            ),
         )
         detail_id = int(row.get("detail_id") or 0)
         student_id = int(row.get("student_id") or 0)
@@ -844,7 +850,8 @@ class ReviewApplicationService:
             requested_question_id=requested_question_id,
             scope="all",
             manual_context=manual_context,
-            include_evidence=False,
+            # 逐步改分需要 AI 的 step_assessments（沿用错误标记），其余确认仍只取复核标记。
+            include_evidence=any(raw.step_scores is not None for raw in inputs),
         )
         by_review_item_id = {
             item.review_item_id: item for item in available
@@ -1028,6 +1035,7 @@ def _normalize_teacher_steps(
             raise ReviewValidationError("Duplicate teacher scoring step.")
         by_identity[key] = raw
     normalized = []
+    ai_assessments = item.metadata.get("step_assessments")
     for step in expected:
         key = (str(step.get("part_id") or ""), str(step.get("step_id") or ""))
         raw = by_identity.get(key)
@@ -1035,15 +1043,37 @@ def _normalize_teacher_steps(
         awarded = integer_business_score(raw.get("score_awarded")) if raw else None
         if maximum is None or maximum <= 0 or awarded is None or awarded > maximum:
             raise ReviewValidationError("Teacher step score must be an integer within its current maximum.")
-        normalized.append({
+        record = {
             "part_id": key[0], "step_id": key[1], "score_awarded": awarded,
             "max_score": maximum, "achievement": "full" if awarded == maximum else "none",
             "core_goal": str(step.get("core_goal") or ""),
             "evidence_point_ids": list(step.get("evidence_point_ids") or []),
-        })
+        }
+        if awarded == 0:
+            carried = _ai_carried_error_from(ai_assessments, key[0], key[1])
+            if carried:
+                record["carried_error_from"] = carried
+        normalized.append(record)
     if sum(step["max_score"] for step in normalized) != item.max_score or sum(step["score_awarded"] for step in normalized) != total:
         raise ReviewValidationError("Teacher step scores must sum to the submitted question score.")
     return normalized
+
+
+def _ai_carried_error_from(assessments: Any, part_id: str, step_id: str) -> str:
+    if not isinstance(assessments, list):
+        return ""
+    for entry in assessments:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("step_id") or "") != step_id:
+            continue
+        entry_part = str(entry.get("part_id") or "")
+        if entry_part and part_id and entry_part != part_id:
+            continue
+        carried = str(entry.get("carried_error_from") or "").strip()
+        if carried:
+            return carried
+    return ""
 
 
 def _question_sort_key(question_id: str) -> list[Any]:
@@ -1384,7 +1414,7 @@ def _detail_metadata_for_qid(raw_json: dict[str, Any], question_id: str) -> dict
     return metadata
 
 
-def _is_substantive_review_reason(reason: str, cat: str = "", confidence: Any = None, *, explicit_review: bool = False) -> bool:
+def _is_substantive_review_reason(reason: str, cat: str = "", confidence: Any = None, *, explicit_review: bool = False, objective: bool = False) -> bool:
     text = str(reason or "").strip()
     cat_text = str(cat or "").strip()
     if "已复核" in cat_text or "人工复核" in cat_text or cat_text == "教师已确认":
@@ -1399,4 +1429,4 @@ def _is_substantive_review_reason(reason: str, cat: str = "", confidence: Any = 
         return True
 
     clean_confidence = _clean_confidence(confidence)
-    return clean_confidence is not None and clean_confidence < 80.0
+    return clean_confidence is not None and clean_confidence < review_confidence_threshold(objective)

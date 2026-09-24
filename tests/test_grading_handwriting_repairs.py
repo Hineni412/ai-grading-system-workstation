@@ -7,8 +7,12 @@ from answer_normalizer import match_fill_blank_answer
 from choice_recognition_chain import score_choice_by_program
 from agent_bridge.respond_obj import build_response, _parse
 from agent_bridge.respond_subj import _detail
-from grading_completeness import merge_detail_metadata, details_require_review
-from objective_batch_recognition_service import ObjectiveQuestionSpec, validate_objective_paper_response
+from grading_completeness import is_objective_detail, merge_detail_metadata, details_require_review
+from objective_batch_recognition_service import (
+    OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE,
+    ObjectiveQuestionSpec,
+    validate_objective_paper_response,
+)
 from backend.review.service import _is_substantive_review_reason, _detail_metadata_for_qid
 
 
@@ -90,6 +94,40 @@ def test_explicit_review_survives_high_confidence_and_non_review_error_category(
     detail["error_category"] = "教师已确认"
     assert not details_require_review([detail], raw)
     assert not _is_substantive_review_reason("", "教师已确认", 95, explicit_review=True)
+
+
+def test_objective_review_confidence_threshold_is_70_subjective_stays_80():
+    raw = {"detail_metadata": {"Q1": {}}}
+    objective = {"question_id": "Q1", "confidence_score": 75, "knowledge_ids": ["OBJECTIVE"]}
+    assert details_require_review([objective], raw) is False
+    objective["confidence_score"] = 65
+    assert details_require_review([objective], raw) is True
+    subjective = {"question_id": "Q1", "confidence_score": 75, "knowledge_ids": ["K1"]}
+    assert details_require_review([subjective], raw) is True
+    # session_details 行里 knowledge_ids 可能是 JSON 字符串
+    assert is_objective_detail({"knowledge_ids": '["OBJECTIVE"]'}) is True
+    assert is_objective_detail({"knowledge_ids": []}, {"source": "objective_batch_recognition"}) is True
+    assert is_objective_detail({"knowledge_ids": ["K1"]}) is False
+    assert _is_substantive_review_reason("", "", 75, objective=True) is False
+    assert _is_substantive_review_reason("", "", 75, objective=False) is True
+    assert _is_substantive_review_reason("", "", 65, objective=True) is True
+
+
+def test_objective_default_min_confidence_is_point_seven():
+    spec = ObjectiveQuestionSpec("Q1", "choice", "B", 6, {})
+
+    def accepted(confidence):
+        items, review = validate_objective_paper_response(
+            response={"paper_key": "p", "answers": [{"question_id": "Q1",
+                "recognized_answer": "B", "confidence": confidence, "need_review": False,
+                "answer_state": "clear", "score_awarded": 6, "deduction_reason": ""}]},
+            manifest={"paper_key": "p", "student_id": 1, "target_question_ids": ["Q1"]},
+            specs=[spec], min_confidence=OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE)
+        assert not review
+        return items[0]
+
+    assert accepted(.75)["metadata"]["need_review"] is False
+    assert accepted(.65)["metadata"]["need_review"] is True
 
 
 def test_subjective_bridge_requires_real_evidence_and_confidence():

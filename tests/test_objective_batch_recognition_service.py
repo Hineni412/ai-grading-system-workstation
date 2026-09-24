@@ -627,8 +627,8 @@ def test_low_confidence_objective_batch_creates_review_detail_not_fallback(tmp_p
         assert items[0].error_summary == "unclear"
 
 
-def test_objective_confidence_079_correct_answer_needs_review(tmp_path: Path) -> None:
-    client = FakeBatchClient(confidence=0.79, need_review=False, answer="A")
+def test_objective_confidence_069_correct_answer_needs_review(tmp_path: Path) -> None:
+    client = FakeBatchClient(confidence=0.69, need_review=False, answer="A")
 
     result = run_objective_batch_recognition(
         session_id=13,
@@ -645,15 +645,15 @@ def test_objective_confidence_079_correct_answer_needs_review(tmp_path: Path) ->
     detail = next(iter(result.details_by_paper_key.values()))[0]
     metadata = next(iter(result.metadata_by_paper_key.values()))[0]
     assert detail.score_awarded == 8
-    assert detail.confidence_score == 79
+    assert detail.confidence_score == 69
     assert metadata["recognized_answer"] == "A"
     assert metadata["standard_answer"] == ["A"]
     assert metadata["auto_scored"] is False
     assert metadata["need_review"] is True
 
 
-def test_objective_confidence_080_correct_answer_auto_scores(tmp_path: Path) -> None:
-    client = FakeBatchClient(confidence=0.80, need_review=False, answer="A")
+def test_objective_confidence_070_correct_answer_auto_scores(tmp_path: Path) -> None:
+    client = FakeBatchClient(confidence=0.70, need_review=False, answer="A")
 
     result = run_objective_batch_recognition(
         session_id=13,
@@ -670,7 +670,7 @@ def test_objective_confidence_080_correct_answer_auto_scores(tmp_path: Path) -> 
     detail = next(iter(result.details_by_paper_key.values()))[0]
     metadata = next(iter(result.metadata_by_paper_key.values()))[0]
     assert detail.score_awarded == 8
-    assert metadata["confidence"] == 0.8
+    assert metadata["confidence"] == 0.7
     assert metadata["auto_scored"] is True
     assert metadata["need_review"] is False
 
@@ -1408,3 +1408,220 @@ def test_completely_unreadable_objective_answer_stays_unscored() -> None:
     assert accepted == []
     assert len(review) == 1
     assert review[0]["reason"] == "missing_model_score"
+
+
+def _uncertain_paper_fill_blank_item(**overrides: Any) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "question_id": "Q1",
+        "question_type": "fill_blank",
+        "raw_answer": "x≤5",
+        "recognized_answer": "x≤5",
+        "confidence": 0.5,
+        "need_review": True,
+        "review_reason": "unclear handwriting",
+        "answer_state": "uncertain",
+        "score_awarded": 0,
+        "deduction_reason": "不等号方向与参考答案不一致",
+        "candidate_readings": [
+            {"answer": "x≤5", "score_awarded": 0},
+            {"answer": "x<5", "score_awarded": 0},
+        ],
+    }
+    item.update(overrides)
+    return item
+
+
+def _validate_paper_item(item: dict[str, Any], spec: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from objective_batch_recognition_service import validate_objective_paper_response
+
+    return validate_objective_paper_response(
+        response={"paper_key": "p", "student_id": 1, "answers": [{"question_id": "Q1", **item}]},
+        manifest={"paper_key": "p", "student_id": 1, "target_question_ids": ["Q1"]},
+        specs=[spec],
+        min_confidence=0.85,
+    )
+
+
+def test_same_score_candidate_readings_waive_objective_review() -> None:
+    from grading_completeness import details_require_review
+    from objective_batch_recognition_service import ObjectiveQuestionSpec
+
+    spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
+    accepted, review = _validate_paper_item(_uncertain_paper_fill_blank_item(), spec)
+
+    assert review == []
+    assert len(accepted) == 1
+    detail = accepted[0]["detail"]
+    metadata = accepted[0]["metadata"]
+    assert metadata["need_review"] is False
+    assert metadata["auto_scored"] is True
+    assert metadata["review_reason"] == ""
+    assert metadata["review_waiver"] == "all_readings_same_score"
+    assert metadata["recognition_confidence"] == 0.5
+    assert metadata["waived_review_reason"] == "unclear handwriting"
+    assert metadata["candidate_readings"] == [
+        {"answer": "x≤5", "score_awarded": 0},
+        {"answer": "x<5", "score_awarded": 0},
+    ]
+    assert detail.confidence_score == 100
+    assert detail.error_category != "需复核"
+    assert detail.error_summary != "unclear handwriting"
+    assert details_require_review([detail], {"detail_metadata": {"Q1": metadata}}) is False
+
+
+def test_different_score_candidate_readings_still_need_review() -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec
+
+    spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
+    item = _uncertain_paper_fill_blank_item(
+        candidate_readings=[
+            {"answer": "x≤5", "score_awarded": 0},
+            {"answer": "x<5", "score_awarded": 3},
+        ],
+    )
+    accepted, review = _validate_paper_item(item, spec)
+
+    assert review == []
+    assert len(accepted) == 1
+    metadata = accepted[0]["metadata"]
+    assert metadata["need_review"] is True
+    assert "review_waiver" not in metadata
+    assert "candidate_readings" not in metadata
+
+
+def test_single_candidate_reading_still_needs_review() -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec
+
+    spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
+    item = _uncertain_paper_fill_blank_item(
+        candidate_readings=[{"answer": "x≤5", "score_awarded": 0}],
+    )
+    accepted, review = _validate_paper_item(item, spec)
+
+    assert review == []
+    metadata = accepted[0]["metadata"]
+    assert metadata["need_review"] is True
+    assert "review_waiver" not in metadata
+
+
+def test_effective_answer_missing_from_candidate_readings_still_needs_review() -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec
+
+    spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
+    item = _uncertain_paper_fill_blank_item(raw_answer="x≥5", recognized_answer="x≥5")
+    accepted, review = _validate_paper_item(item, spec)
+
+    assert review == []
+    metadata = accepted[0]["metadata"]
+    assert metadata["need_review"] is True
+    assert "review_waiver" not in metadata
+
+
+def test_same_score_readings_do_not_waive_missing_deduction_reason() -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec
+
+    spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
+    item = _uncertain_paper_fill_blank_item(
+        answer_state="clear",
+        need_review=False,
+        confidence=0.95,
+        review_reason="",
+        deduction_reason="",
+    )
+    accepted, review = _validate_paper_item(item, spec)
+
+    assert review == []
+    metadata = accepted[0]["metadata"]
+    assert metadata["need_review"] is True
+    assert metadata["review_reason"] == "missing_deduction_reason"
+    assert "review_waiver" not in metadata
+
+
+def test_same_score_readings_do_not_waive_uncertain_missing_deduction_reason() -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec
+
+    spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
+    item = _uncertain_paper_fill_blank_item(deduction_reason="")
+    accepted, review = _validate_paper_item(item, spec)
+
+    assert review == []
+    metadata = accepted[0]["metadata"]
+    assert metadata["need_review"] is True
+    assert "review_waiver" not in metadata
+
+
+def test_same_score_readings_do_not_waive_answer_state_conflict() -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec
+
+    spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
+    item = _uncertain_paper_fill_blank_item(
+        answer_state="clear",
+        need_review=False,
+        confidence=0.95,
+        review_reason="unclear handwriting",
+    )
+    accepted, review = _validate_paper_item(item, spec)
+
+    assert review == []
+    metadata = accepted[0]["metadata"]
+    assert metadata["need_review"] is True
+    assert metadata["review_reason"] == "answer_state_conflict"
+    assert "review_waiver" not in metadata
+
+
+def test_partial_score_candidate_reading_still_needs_review() -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec
+
+    spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
+    item = _uncertain_paper_fill_blank_item(
+        candidate_readings=[
+            {"answer": "x≤5", "score_awarded": 0},
+            {"answer": "x<5", "score_awarded": 1},
+        ],
+    )
+    accepted, review = _validate_paper_item(item, spec)
+
+    assert review == []
+    metadata = accepted[0]["metadata"]
+    assert metadata["need_review"] is True
+    assert "review_waiver" not in metadata
+
+
+def test_same_score_candidate_readings_waive_choice_review() -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec
+
+    spec = ObjectiveQuestionSpec("Q1", "choice", "A", 3, {})
+    item = {
+        "question_id": "Q1",
+        "question_type": "choice",
+        "recognized_answer": "A",
+        "confidence": 0.5,
+        "need_review": True,
+        "review_reason": "unclear handwriting",
+        "answer_state": "uncertain",
+        "score_awarded": 0,
+        "deduction_reason": "选项与参考答案不一致",
+        "candidate_readings": [
+            {"answer": "A", "score_awarded": 0},
+            {"answer": "C", "score_awarded": 0},
+        ],
+    }
+    accepted, review = _validate_paper_item(item, spec)
+
+    assert review == []
+    metadata = accepted[0]["metadata"]
+    assert metadata["need_review"] is False
+    assert metadata["auto_scored"] is True
+    assert metadata["review_waiver"] == "all_readings_same_score"
+    assert accepted[0]["detail"].confidence_score == 100
+
+
+def test_objective_paper_prompt_requests_candidate_readings() -> None:
+    from objective_batch_recognition_service import ObjectiveQuestionSpec, build_objective_paper_prompt
+
+    prompt = build_objective_paper_prompt(
+        [ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})],
+        {"paper_key": "p", "student_id": 1, "target_question_ids": ["Q1"]},
+    )
+
+    assert '"candidate_readings":[]' in prompt or "candidate_readings" in prompt

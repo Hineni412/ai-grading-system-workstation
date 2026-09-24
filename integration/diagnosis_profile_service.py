@@ -1173,7 +1173,8 @@ def _step_point_observations(projected: Any, step_assessments: object) -> list[d
         if achievement in {"full", "equivalent"}:
             value = 1.0
         elif achievement == "none":
-            value = 0.0
+            # 沿用前步错误结果而判 none、但本步方法正确的步骤按达成计入。
+            value = 1.0 if record.get("carried_error_from") else 0.0
         elif achievement == "partial" and len(ids) == 1:
             value = 0.5
         elif achievement == "partial" and score > 0:
@@ -1244,7 +1245,8 @@ def _step_target_contributions(
         if achievement in {"full", "equivalent"}:
             achieved = 1.0
         elif achievement == "none":
-            achieved = 0.0
+            # 沿用前步错误结果而判 none、但本步方法正确的步骤按达成计入。
+            achieved = 1.0 if record.get("carried_error_from") else 0.0
         elif achievement == "partial":
             achieved = 0.5 if len(covered) == 1 else min(max(awarded / step_score, 0.0), 1.0)
         else:

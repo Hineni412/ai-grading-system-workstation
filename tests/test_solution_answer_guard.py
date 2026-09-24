@@ -455,7 +455,7 @@ class SolutionAnswerGuardTests(unittest.TestCase):
                         "observed_answer": "∵证明过程",
                         "score_awarded": 3.0,
                         "deduction_reason": "缺少最后证明结论",
-                        "confidence_score": 75.0,
+                        "confidence_score": 95.0,
                         "error_category": "逻辑断裂",
                         "error_summary": "没有得出最终结论",
                         "evidence_steps": ["step1", "step2"],
@@ -473,8 +473,9 @@ class SolutionAnswerGuardTests(unittest.TestCase):
             }
             
             result = grader._validate_and_convert(mock_response, expected_student_name="余天策")
-            
-            self.assertTrue(result.needs_human_review)
+
+            # An alternative method alone no longer sends the unit to review.
+            self.assertFalse(result.needs_human_review)
             self.assertIn("detail_metadata", result.raw_json)
             detail_metadata = result.raw_json["detail_metadata"]
             self.assertIn("Q12", detail_metadata)
@@ -486,8 +487,12 @@ class SolutionAnswerGuardTests(unittest.TestCase):
             self.assertEqual(meta["candidate_scores"][0]["score"], 3.0)
             self.assertTrue(meta["alternative_solution_detected"])
             self.assertEqual(meta["alternative_solution_summary"], "用解析几何法")
+            self.assertFalse(meta["needs_human_review"])
             self.assertFalse(meta["answer_discarded_by_smudge"])
             self.assertFalse(meta["answer_is_blank_or_no_valid_work"])
+            detail_reason = result.grading_details[0].deduction_reason or ""
+            self.assertIn("使用参考答案之外的方法，已按各步骤数学目标整步判定", detail_reason)
+            self.assertNotIn("请教师确认", detail_reason)
 
 
 _THREE_STEP_RUBRIC = {
@@ -687,9 +692,96 @@ class StepAssessmentContractTests(unittest.TestCase):
         self.assertIn("矛盾", error or "")
         self.assertIn("S3", error or "")
 
+    def test_carried_error_from_kept_for_earlier_failed_step(self) -> None:
+        for reference_achievement in ("none", "uncertain"):
+            normalized, error = validate_step_assessments(
+                [
+                    _step("S1", reference_achievement, 0, missing="计算错误"),
+                    {
+                        **_step("S2", "none", 0, missing="沿用 S1 错误结果"),
+                        "carried_error_from": "S1",
+                    },
+                    _step("S3", "full", 3, evidence="a=4,b=6"),
+                ],
+                rubric=_THREE_STEP_RUBRIC,
+                question_id="Q1",
+                score_awarded=3,
+            )
+            self.assertIsNone(error, reference_achievement)
+            self.assertEqual(normalized[1]["carried_error_from"], "S1", reference_achievement)
+            self.assertNotIn("carried_error_from", normalized[0])
+            self.assertNotIn("carried_error_from", normalized[2])
+
+    def test_carried_error_from_dropped_without_invalidating(self) -> None:
+        cases = [
+            # 引用更晚的步骤
+            (
+                [
+                    _step("S1", "none", 0, missing="x"),
+                    {**_step("S2", "none", 0, missing="x"), "carried_error_from": "S3"},
+                    _step("S3", "none", 0, missing="x"),
+                ],
+                0,
+            ),
+            # 引用不存在的步骤
+            (
+                [
+                    _step("S1", "none", 0, missing="x"),
+                    {**_step("S2", "none", 0, missing="x"), "carried_error_from": "S9"},
+                    _step("S3", "full", 3, evidence="e"),
+                ],
+                3,
+            ),
+            # 引用的前步并非失败
+            (
+                [
+                    _step("S1", "full", 3, evidence="e"),
+                    {**_step("S2", "none", 0, missing="x"), "carried_error_from": "S1"},
+                    _step("S3", "full", 3, evidence="e"),
+                ],
+                6,
+            ),
+            # 本步自身不是 none
+            (
+                [
+                    _step("S1", "none", 0, missing="x"),
+                    {**_step("S2", "full", 3, evidence="e"), "carried_error_from": "S1"},
+                    _step("S3", "full", 3, evidence="e"),
+                ],
+                6,
+            ),
+            # 引用自身
+            (
+                [
+                    _step("S1", "none", 0, missing="x"),
+                    {**_step("S2", "none", 0, missing="x"), "carried_error_from": "S2"},
+                    _step("S3", "full", 3, evidence="e"),
+                ],
+                3,
+            ),
+        ]
+        for assessments, total in cases:
+            normalized, error = validate_step_assessments(
+                assessments,
+                rubric=_THREE_STEP_RUBRIC,
+                question_id="Q1",
+                score_awarded=total,
+            )
+            self.assertIsNone(error, assessments)
+            self.assertTrue(
+                all("carried_error_from" not in record for record in normalized),
+                assessments,
+            )
+
     def test_prompts_use_checkpoint_wording(self) -> None:
         self.assertIn("uncertain", SHARED_GRADING_RULES)
         self.assertNotIn("给整数部分分", SHARED_GRADING_RULES)
+        self.assertIn("不给“错误延续”分", SHARED_GRADING_RULES)
+        self.assertIn("不单独转复核", SHARED_GRADING_RULES)
+        self.assertIn("只由程序扣这1分", SHARED_GRADING_RULES)
+        self.assertNotIn("后续沿用该数值且方法正确的步骤仍保留对应方法分", SHARED_GRADING_RULES)
+        self.assertNotIn("不得自创分值；该单元会转教师复核", SHARED_GRADING_RULES)
+        self.assertIn("carried_error_from", SHARED_GRADING_RULES)
 
         batch_prompt = build_batch_generation_prompt(
             ["Q12"],
@@ -706,6 +798,7 @@ class StepAssessmentContractTests(unittest.TestCase):
         )
         self.assertIn("适用前提", batch_prompt)
         self.assertIn("判定点", batch_prompt)
+        self.assertIn("只用于同一个数学结果的不同写法", batch_prompt)
 
         spec = MajorQuestionSpec(
             question_id="Q1",
@@ -738,6 +831,7 @@ class StepAssessmentContractTests(unittest.TestCase):
         text = _combined_prompt(batch, "both")[1]["content"][0]["text"]
         self.assertIn("适用前提", text)
         self.assertIn("observable_evidence", text)
+        self.assertIn("只用于同一个数学结果的不同写法", text)
 
 
 if __name__ == "__main__":

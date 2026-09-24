@@ -664,6 +664,49 @@ def test_step_target_contributions_empty_without_assessments() -> None:
     assert _step_target_contributions(projected, []) == {}
 
 
+def test_carried_error_step_counts_as_achieved_for_mastery() -> None:
+    from dataclasses import replace
+    from integration.diagnosis_profile_service import _step_point_observations
+
+    projected = _projected_with_steps()
+    carried = [
+        {"step_id": "S1", "part_id": "part-1", "achievement": "full", "score_awarded": 4},
+        {"step_id": "S2", "part_id": "part-1", "achievement": "none", "score_awarded": 0,
+         "carried_error_from": "S1"},
+    ]
+    contributions = _step_target_contributions(projected, carried)
+    assert contributions[_SKILL_KEY] == (6.0, 6.0)
+    assert contributions[_LEAF_KEY] == (2.0, 2.0)
+    plain_none = [carried[0], {key: value for key, value in carried[1].items()
+                               if key != "carried_error_from"}]
+    contributions = _step_target_contributions(projected, plain_none)
+    assert contributions[_SKILL_KEY] == (4.0, 6.0)
+    assert contributions[_LEAF_KEY] == (0.0, 2.0)
+
+    projected = replace(projected, evidence_points={
+        'p1': {'depends_on': []}, 'p2': {'depends_on': ['p1']}, 'p3': {'depends_on': []},
+    }, point_links={
+        'p1': ({'role': 'direct', 'resolution_status': 'resolved', 'stable_key': _SKILL_KEY, 'weight': 1.0},),
+        'p2': ({'role': 'direct', 'resolution_status': 'resolved', 'stable_key': _OTHER_SKILL_KEY, 'weight': 1.0},),
+        'p3': ({'role': 'direct', 'resolution_status': 'resolved', 'stable_key': _LEAF_KEY, 'weight': 1.0},),
+    })
+    records = [
+        {'step_id': 'S1', 'achievement': 'none'},
+        {'step_id': 'S2', 'achievement': 'none', 'carried_error_from': 'S1'},
+    ]
+    observations = {o['point_id']: o for o in _step_point_observations(projected, records)}
+    assert observations['p1']['achieved'] == 0.0
+    assert observations['p2']['achieved'] == 1.0
+    assert observations['p3']['achieved'] == 1.0
+    contributions = _step_target_contributions(projected, records)
+    assert contributions[_OTHER_SKILL_KEY] == (1.0, 1.0)
+    without_marker = [records[0], {'step_id': 'S2', 'achievement': 'none'}]
+    observations = {o['point_id']: o for o in _step_point_observations(projected, without_marker)}
+    assert observations['p1']['achieved'] == 0.0
+    assert 'p2' not in observations
+    assert observations['p3']['achieved'] == 0.0
+
+
 def test_exam_dependencies_and_point_weights_are_frozen_facts():
     from dataclasses import replace
     from integration.diagnosis_profile_service import _step_point_observations
