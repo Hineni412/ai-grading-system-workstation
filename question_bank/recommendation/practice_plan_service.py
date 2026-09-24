@@ -258,7 +258,7 @@ class PracticePlanService:
                 continue
             target_context: dict[str, set[str]] = {
                 tag_type: set()
-                for tag_type in ("sub_skill", "method", "model", "prerequisite")
+                for tag_type in _TAG_TARGET_DIMS
             }
             for point in matched_points:
                 for tag_type, values in targets[point].items():
@@ -266,7 +266,8 @@ class PracticePlanService:
             tag_matches: dict[str, list[str]] = {}
             matched_value_count = 0
             target_value_count = 0
-            for tag_type, values in target_context.items():
+            for tag_type in _BASE_TAG_DIMS:
+                values = target_context[tag_type]
                 target_value_count += len(values)
                 candidate_values = {
                     str(value).strip()
@@ -277,10 +278,29 @@ class PracticePlanService:
                 if overlap:
                     tag_matches[tag_type] = overlap
                     matched_value_count += len(overlap)
-            tag_overlap = (
-                matched_value_count / target_value_count
-                if target_value_count
-                else 0.0
+            # 错因维度只作加分项：题库侧暂无错法数据时不稀释原有重合度。
+            error_matches: dict[str, list[str]] = {}
+            for tag_type in ("error_pattern", "error_category"):
+                values = target_context[tag_type]
+                if not values:
+                    continue
+                candidate_values = {
+                    str(value).strip()
+                    for value in candidate.get("tags", {}).get(tag_type, [])
+                    if str(value).strip()
+                }
+                overlap = sorted(values.intersection(candidate_values))
+                if overlap:
+                    error_matches[tag_type] = overlap
+            error_bonus = min(
+                0.15,
+                0.10 * len(error_matches.get("error_pattern", ()))
+                + 0.05 * len(error_matches.get("error_category", ())),
+            )
+            tag_overlap = min(
+                1.0,
+                (matched_value_count / target_value_count if target_value_count else 0.0)
+                + error_bonus,
             )
             eligible.append(
                 {
@@ -288,6 +308,7 @@ class PracticePlanService:
                     "tag_match": {
                         "knowledge_points": matched_points,
                         "tag_matches": tag_matches,
+                        "error_matches": error_matches,
                         "tag_overlap": round(tag_overlap, 4),
                     },
                 }
@@ -377,6 +398,7 @@ class PracticePlanService:
                 conn,
                 [int(item["id"]) for item in candidates],
             )
+            _merge_error_pattern_tags(conn, tags_by_question)
         for candidate in candidates:
             candidate["tags"] = tags_by_question.get(int(candidate["id"]), {})
             candidate["fingerprint"] = _candidate_fingerprint(candidate)
@@ -525,17 +547,27 @@ def _question_tag_targets(
             continue
         context = targets.setdefault(
             knowledge_point,
-            {
-                "sub_skill": set(),
-                "method": set(),
-                "model": set(),
-                "prerequisite": set(),
-            },
+            {tag_type: set() for tag_type in _TAG_TARGET_DIMS},
         )
+        # 新错因体系：诊断输出的 7 类大类与错法名直接进入匹配维度。
+        for value in _iter_texts(weak.get("error_patterns")):
+            context["error_pattern"].add(value)
+        for value in _iter_texts(weak.get("error_categories")):
+            context["error_category"].add(value)
+        # 兼容输入：旧 error_types/题库 error_type 词表换算为大类；
+        # 未登记的原文保留作错法名，匹配题库侧同名预测标签。
+        from backend.error_causes import normalize_cause_category
+
+        for value in _iter_texts(weak.get("error_types")):
+            mapped = normalize_cause_category(value)
+            if mapped is not None:
+                context["error_category"].add(mapped)
+            else:
+                context["error_pattern"].add(value)
         raw_context = weak.get("tag_context")
         if not isinstance(raw_context, Mapping):
             continue
-        for tag_type in context:
+        for tag_type in _BASE_TAG_DIMS:
             values = raw_context.get(tag_type, [])
             if isinstance(values, str):
                 values = [values]
@@ -547,6 +579,59 @@ def _question_tag_targets(
                 if (text := str(value or "").strip())
             )
     return targets
+
+
+_BASE_TAG_DIMS = ("sub_skill", "method", "model", "prerequisite")
+_TAG_TARGET_DIMS = (*_BASE_TAG_DIMS, "error_pattern", "error_category")
+
+
+def _iter_texts(values: object) -> list[str]:
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, Iterable):
+        return []
+    return _unique_text(str(value or "").strip() for value in values)
+
+
+def _merge_error_pattern_tags(
+    conn: sqlite3.Connection,
+    tags_by_question: dict[int, dict[str, list[str]]],
+) -> None:
+    """把题库错法写进候选的 error_pattern/error_category 维度。
+
+    - question_error_patterns 的 confirmed 行：pattern → error_pattern，
+      category → error_category。
+    - 旧 question_tags.error_type：11 类词换算为 error_category，未登记
+      的原文进入 error_pattern（保持与薄弱点兼容输入同口径）。
+    - 表缺失（题库未迁移）或查询失败时静默返回，候选照常可用。
+    """
+    from backend.error_causes import normalize_cause_category
+    from question_bank.services.error_pattern_service import list_patterns
+
+    def append(question_id: int, tag_type: str, value: str) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        bucket = tags_by_question.setdefault(int(question_id), {})
+        values = bucket.setdefault(tag_type, [])
+        if text not in values:
+            values.append(text)
+
+    try:
+        patterns = list_patterns(conn, tags_by_question.keys())
+    except Exception:
+        patterns = {}
+    for question_id, rows in patterns.items():
+        for row in rows:
+            append(question_id, "error_pattern", str(row.get("pattern") or ""))
+            append(question_id, "error_category", str(row.get("category") or ""))
+    for question_id, tags in tags_by_question.items():
+        for value in list(tags.get("error_type") or []):
+            mapped = normalize_cause_category(value)
+            if mapped is not None:
+                append(question_id, "error_category", mapped)
+            else:
+                append(question_id, "error_pattern", str(value))
 
 
 def _question_tag_item_payload(

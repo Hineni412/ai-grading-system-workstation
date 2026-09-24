@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import re
 import threading
 from pathlib import Path
@@ -69,6 +70,72 @@ def _write_config(tmp_path: Path, db: DBManager, payload: dict | None = None) ->
     return db.create_grading_session("Editor exam", str(rubric), str(answer))
 
 
+@pytest.mark.parametrize("q14_total, choice_score", [(48, 3), (68, 3), (148, 3.5), (48, -1)])
+def test_teacher_scores_save_exactly_with_advisories_and_structure_command(editor_env, q14_total, choice_score) -> None:
+    client, db, _manager, tmp_path = editor_env
+    payload = _payload()
+    question_template = payload["rubric"]["questions"][0]
+    answer_template = payload["answer_key"]["questions"][0]
+    payload["rubric"]["questions"] = []
+    payload["answer_key"]["questions"] = []
+    requested: dict[str, list[list[float]]] = {}
+    for number in [*range(1, 13), 14, 17]:
+        qid = f"Q{number}"
+        if number <= 6:
+            scores = [[choice_score if number != 2 else 3]]
+        elif number <= 11:
+            scores = [[3]]
+        elif number == 12:
+            scores = [[1, 2] for _ in range(4)]
+        elif number == 14:
+            scores = [[q14_total / 16] * 2 for _ in range(8)]
+            scores[3] = [q14_total / 24] * 3
+        else:
+            scores = [[2, 2, 2, 1]]
+        requested[qid] = scores
+        question = copy.deepcopy(question_template)
+        answer = copy.deepcopy(answer_template)
+        question.update(question_id=qid, question_type="choice" if number <= 6 else "fill_blank" if number <= 11 else "calculation")
+        answer["question_id"] = qid
+        question["parts"] = []
+        answer["parts"] = []
+        for index, step_scores in enumerate(scores, 1):
+            pid = qid if len(scores) == 1 else f"{qid}(P{index})"
+            part = copy.deepcopy(question_template["parts"][0])
+            part.update(part_id=pid, part_score=len(step_scores), steps=[
+                {**copy.deepcopy(part["steps"][0]), "step_id": f"S{step_index}", "step_score": 1}
+                for step_index in range(1, len(step_scores) + 1)
+            ])
+            question["parts"].append(part)
+            answer["parts"].append({**copy.deepcopy(answer_template["parts"][0]), "part_id": pid})
+        question["max_score"] = sum(part["part_score"] for part in question["parts"])
+        payload["rubric"]["questions"].append(question)
+        payload["answer_key"]["questions"].append(answer)
+    session_id = _write_config(tmp_path, db, payload)
+    url = f"/api/sessions/{session_id}/config/editor"
+    first = client.get(url).json()
+    desired = {qid: [score for part in parts for score in part] for qid, parts in requested.items()}
+    edits = []
+    for qid, scores in desired.items():
+        rows = [row for row in first["rows"] if row["question_id"] == qid]
+        edits.extend({"row_id": row["row_id"], "score": score} for row, score in zip(rows, scores, strict=True))
+    # The existing browser can queue its unchanged structure to clear a stale
+    # validation response, while retaining all its unsaved score edits.
+    command = {"kind": "replace_question_structure", "question_id": "Q14", "parts": [
+        {"part_id": f"Q14(P{index})", "steps": [
+            {"step_id": f"S{step_index}", "score": score, "core_goal": "reason correctly"}
+            for step_index, score in enumerate(scores, 1)
+        ]} for index, scores in enumerate(requested["Q14"], 1)
+    ]}
+    saved = client.put(url, json={"revision": first["revision"], "edits": edits, "commands": [command]})
+    assert saved.status_code == 200, saved.json()
+    reopened = client.get(url).json()
+    assert reopened["total_score"] == pytest.approx(sum(sum(scores) for scores in desired.values()))
+    for qid, scores in desired.items():
+        assert [row["score"] for row in reopened["rows"] if row["question_id"] == qid] == pytest.approx(scores)
+    assert reopened["issues"] and all(issue["severity"] == "warning" for issue in reopened["issues"])
+
+
 @pytest.fixture
 def editor_env(tmp_path: Path):
     db = DBManager(tmp_path / "databases" / "grading.db")
@@ -112,6 +179,58 @@ def test_new_draft_editor_is_truthfully_unconfigured(editor_env) -> None:
         "source": None,
     }
     _assert_safe_editor(body, tmp_path)
+
+
+@pytest.mark.parametrize("changed_target", [False, True])
+def test_manual_scores_restore_legacy_evidence_references_before_saving(editor_env, changed_target) -> None:
+    from question_bank.solution_evidence.evidence_snapshot import write_snapshot, validate_rubric_evidence_coverage
+
+    client, db, _manager, tmp_path = editor_env
+    payload = _payload()
+    snapshot = {"schema_version": "evidence-snapshot-v1", "questions": {}}
+    for question in payload["rubric"]["questions"]:
+        qid = question["question_id"]
+        question["source_evidence_version_id"] = "e" * 64
+        part = question["parts"][0]
+        part["response_mode"] = "process_required"
+        point = {"evidence_point_id": "point-1", "target": "reason correctly",
+                 "observable_evidence": "reasoning", "justification": "reference explanation",
+                 "answer_anchor": "reference answer", "counterexamples": [], "equivalent_rules": []}
+        source_part = {"part_id": "part-1", "response_mode": "process_required", "evidence_points": [point]}
+        snapshot["questions"][qid] = {"usable": True, "source_evidence_version_id": "e" * 64,
+                                     "graph_release_id": "test", "evidence": {"parts": [source_part]}}
+    # Objective normalization used to replace the target before losing its id.
+    objective = payload["rubric"]["questions"][0]
+    objective["question_type"] = "choice"
+    objective["parts"][0]["response_mode"] = "exact_objective"
+    objective["parts"][0]["steps"][0].update(core_goal="选择正确的选项", required_elements=["A"])
+    payload["answer_key"]["questions"][0]["canonical_answer"] = "A"
+    payload["answer_key"]["questions"][0]["parts"][0]["answer"] = "A"
+    source = snapshot["questions"]["Q1"]["evidence"]["parts"][0]
+    source.update(response_mode="exact_objective", canonical_answer="A")
+    if changed_target:
+        payload["rubric"]["questions"][1]["parts"][0]["steps"][0]["core_goal"] = "a different obligation"
+    session_id = _write_config(tmp_path, db, payload)
+    write_snapshot(tmp_path / "uploaded", session_id, snapshot)
+    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
+    result = client.put(f"/api/sessions/{session_id}/config/editor", json={
+        "revision": first["revision"], "commands": [],
+        "edits": [{"row_id": first["rows"][0]["row_id"], "score": 16},
+                  {"row_id": first["rows"][-1]["row_id"], "score": 16}],
+    })
+    if changed_target:
+        assert result.status_code == 422
+        assert "关联不完整" in result.json()["error"]["details"]["issues"][0]["message"]
+        assert client.get(f"/api/sessions/{session_id}/config/editor").json()["revision"] == first["revision"]
+        return
+    assert result.status_code == 200, result.text
+    reopened = client.get(f"/api/sessions/{session_id}/config/editor").json()
+    assert reopened["rows"][0]["score"] == reopened["rows"][-1]["score"] == 16
+    assert reopened["total_score"] == 100
+    assert reopened["revision"] != first["revision"]
+    stored = json.loads(Path(db.get_grading_session(session_id)["rubric_path"]).read_text(encoding="utf-8"))
+    assert validate_rubric_evidence_coverage(stored, snapshot) == []
+    assert all(question["parts"][0]["steps"][0]["evidence_point_ids"] == ["point-1"] for question in stored["questions"])
 
 
 def test_configured_editor_has_canonical_revision_rows_and_safe_source(editor_env) -> None:

@@ -18,6 +18,7 @@ from solution_answer_guard import (
     apply_solution_substance_rules,
     extract_observed_text,
     integer_business_score,
+    final_simplification_deduction,
     normalize_candidate_scores,
     response_mode_requires_process,
     rubric_question_meta,
@@ -424,7 +425,7 @@ class AIGrader:
             "observed_answer 只能填写未被涂抹/作废区域中的有效答案。若未涂抹区域另有有效答案，仍按该答案评分；若只有涂抹/作废区域有答案，score_awarded=0、error_category=作废答案。\n"
             "10.1) grading_details.question_id 可以是整题题号（如 Q13），也可以是小问题号/part_id（如 Q13(P1)、Q13(P2)）。若 rubric.parts 中有 part_id，且学生作答过程适合分小问扣分，应优先按 part_id 返回明细；若只有一个大框或无法可靠区分小问，可按整题 question_id 返回总分。\n"
             "10.2) 不要输出知识点或技能字段；这些身份由系统直接读取题库标签。\n"
-            "11) 若答案模糊、看不清、存在争议，needs_human_review 置为 true，并在 deduction_reason 中说明，同时给 confidence_score 低分（如 30）。\n"
+            "11) 若看不清或存在争议会影响给分，needs_human_review 置为 true，并在 deduction_reason 中说明会改变哪些评分点，同时降低 confidence_score。不同合理读法均得同分时，不仅因字迹模糊要求复核。\n"
             "12) student_name 必须输出已识别姓名；如试卷内姓名矛盾，以已识别姓名为准。\n\n"
             "解答题/证明题评分原则：\n"
             "- 每个评分步骤表示数学目标及最高分，而不是必须照抄的参考答案行。每个步骤是一个判定点，只判有/无：达成给该步满分，未达成 0 分，不给步骤内部分分。同一错误不重复扣。\n"
@@ -613,6 +614,14 @@ class AIGrader:
                 item["score_contract_error"] = "得分超过该题满分，需教师复核"
             else:
                 item["score_awarded"] = integer_score
+            presentation_deduction = 0
+            if question_type in {"proof", "calculation", "comprehensive"} and not step_assessments_error and not prompt_injection_seen:
+                presentation_deduction = final_simplification_deduction(item, float(item["score_awarded"]))
+            if presentation_deduction:
+                item["score_awarded"] -= presentation_deduction
+                item["presentation_deduction"] = presentation_deduction
+                item["deduction_reason"] = (str(item.get("deduction_reason") or "").strip() + "；最终答案数值等价但未完成化简，扣1分。").lstrip("；")
+                item["error_category"] = item.get("error_category") or "答案未化简"
             clear_errors = (
                 full_score is not None
                 and float(item.get("score_awarded") or 0) >= full_score - 1e-6
@@ -698,6 +707,8 @@ class AIGrader:
             if qid:
                 metadata_by_qid[qid] = {
                     "question_id": qid,
+                    "presentation_deduction": item.get("presentation_deduction", 0),
+                    "final_answer_simplification": item.get("final_answer_simplification"),
                     "evidence_steps": item.get("evidence_steps") if isinstance(item.get("evidence_steps"), list) else [],
                     "missing_steps": item.get("missing_steps") if isinstance(item.get("missing_steps"), list) else [],
                     "candidate_scores": normalize_candidate_scores(item.get("candidate_scores")),

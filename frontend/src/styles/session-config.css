@@ -64,10 +64,10 @@
   font-size: var(--font-size-dense);
 }
 
-.rubric-ledger__total--blocked {
-  border-color: var(--color-danger);
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
+.rubric-ledger__total--warning {
+  border-color: var(--color-warning);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
 }
 
 .rubric-ledger__issues {
@@ -98,7 +98,11 @@
 
 .rubric-ledger__issues--warning {
   background: var(--color-warning-subtle);
-  color: var(--color-text-primary);
+  color: var(--color-warning);
+}
+
+.scoring-unit-editor__warning {
+  color: var(--color-warning);
 }
 
 .rubric-ledger__regeneration {
@@ -838,7 +842,7 @@
   gap: var(--space-1);
 }
 
-.config-editor__save-bar span {
+.config-editor__save-bar > div > span {
   color: var(--color-text-secondary);
   font-size: var(--font-size-caption);
 }
@@ -873,6 +877,12 @@
 .config-save-result--failure {
   background: var(--color-danger-subtle);
   color: var(--color-danger);
+}
+
+.config-save-result__issues {
+  flex-basis: 100%;
+  margin: 0;
+  padding-inline-start: var(--space-5);
 }
 
 .config-save-result--conflict {

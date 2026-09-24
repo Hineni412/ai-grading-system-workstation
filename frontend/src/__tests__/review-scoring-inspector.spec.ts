@@ -113,6 +113,53 @@ async function mountInspector(items: ReviewItem[] = [item]) {
 }
 
 describe('review scoring inspector', () => {
+  it('saves integer partial step scores and marks only full points as achieved', async () => {
+    vi.mocked(fetchReviewRubric).mockResolvedValue({ ...rubricSection, points: [
+      rubricSection.points[0]!, { ...rubricSection.points[0]!, step_id: 'S2', score: 2 },
+    ] })
+    const { app, host } = await mountInspector([{ ...item, review_item_id: 'batch:1:Q1',
+      metadata: { step_assessments: [
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 3 },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 0 },
+      ] } }])
+    const begin = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === '按步骤复核')!
+    begin.click()
+    await nextTick()
+    const inputs = host.querySelectorAll<HTMLInputElement>('.review-step-score input')
+    expect(inputs).toHaveLength(2)
+    inputs[0]!.value = '2'
+    inputs[0]!.dispatchEvent(new Event('input'))
+    inputs[1]!.value = '2'
+    inputs[1]!.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(host.querySelector<HTMLInputElement>('#teacher-score')!.value).toBe('4')
+    expect(host.querySelector<HTMLInputElement>('#teacher-score')!.readOnly).toBe(true)
+    expect(host.querySelectorAll('.review-step-score > span')[0]!.textContent).toBe('未达成')
+    expect(host.querySelectorAll('.review-step-score > span')[1]!.textContent).toBe('达成')
+    host.querySelector<HTMLButtonElement>('[data-testid="scoring-footer"] button')!.click()
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledWith(7, 'Q1', expect.objectContaining({
+      score_awarded: 4,
+      step_scores: [
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 2 },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 2 },
+      ],
+    })))
+    app.unmount()
+  })
+
+  it('does not silently restore AI points when the teacher total differs', async () => {
+    vi.mocked(fetchReviewRubric).mockResolvedValue({ ...rubricSection,
+      points: [{ ...rubricSection.points[0]!, score: 5 }] })
+    const { app, host } = await mountInspector([{ ...item, review_item_id: 'batch:1:Q1',
+      metadata: { step_assessments: [{ part_id: 'Q1', step_id: 'S1', score_awarded: 5 }] } }])
+    Array.from(host.querySelectorAll('button')).find((button) => button.textContent === '按步骤复核')!.click()
+    await nextTick()
+    expect(host.querySelector<HTMLInputElement>('.review-step-score input')!.value).toBe('')
+    expect(host.textContent).toContain('原步骤分与当前总分不一致')
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="scoring-footer"] button')!.disabled).toBe(true)
+    app.unmount()
+  })
+
   beforeEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()

@@ -159,6 +159,31 @@ beforeEach(async () => {
 })
 
 describe('ConfigGenerationPanel', () => {
+  it('shows incomplete intake distinctly and resumes stored analysis without a model retry', async () => {
+    const retryer = vi.fn(async () => job({ id: 35, status: 'queued' }))
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({ status: 'succeeded', progress: 1, result: {
+      outcome: 'partial', total_questions: 14, generated_questions: 14,
+      failed_count: 0, failed_batches: [], retryable: true,
+      question_bank_sync_requested: true, question_bank_sync_state: 'partial',
+      question_bank_imported_count: 13, question_bank_tagged_count: 13,
+      exam_intake_complete: false, exam_intake_failed_question_ids: ['Q6'],
+      exam_intake_error: 'Q6 未能对应到独立的题库记录',
+      score_allocation_pending: true, score_allocation_failed: false,
+    } }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ retryer })
+    expect(mounted.host.textContent).toContain('入库未完成，尚未赋分')
+    expect(mounted.host.textContent).toContain('已分析 14/14 题 · 已入库 13/14 题')
+    expect(mounted.host.textContent).toContain('定位 Q6')
+    expect(mounted.host.querySelector('button[name="重新进行统一配分"]')).toBeNull()
+    expect(mounted.host.textContent).not.toContain('评分标准生成成功')
+    mounted.host.querySelector<HTMLButtonElement>('button[name="继续入库并赋分"]')!.click()
+    await settle()
+    expect(retryer).toHaveBeenCalledWith(7, 31, [], expect.stringMatching(/^[0-9a-f]{32}$/))
+    mounted.unmount()
+  })
+
   it('does not duplicate the question-bank tagging entry in generation', async () => {
     const mounted = await mountPanel()
     const option = mounted.host.querySelector<HTMLInputElement>(

@@ -39,10 +39,20 @@ from question_bank.recommendation.personalized import (
 from question_bank.training_criteria import QuestionAnalysisImage, QuestionAnalysisInput
 from tests.phase4.test_personalized_recommendation import (
     NOW,
-    _diagnosis,
+    _diagnosis as _base_diagnosis,
     _seed_recommendation_sources,
 )
 from tests.current_knowledge_support import install_current_knowledge
+
+
+def _diagnosis(**kwargs):
+    """Keep export fixtures within their candidate bank's 4-6 difficulty band."""
+    diagnosis = _base_diagnosis(**kwargs)
+    for student in diagnosis["students"]:
+        for point in student["weak_points"]:
+            for ref in point["source_question_refs"]:
+                ref["score_awarded"] = .8 * ref["full_score"]
+    return diagnosis
 
 
 class SyntheticPdfConverter:

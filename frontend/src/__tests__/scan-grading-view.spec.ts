@@ -309,7 +309,7 @@ describe('scan grading workspace', () => {
     }
 
     expect(host.querySelector('[data-saved-decision="issue:i1"]')?.textContent).toContain('已保存：标记无效')
-    expect(host.textContent).toContain('已确认 1 项')
+    expect(host.textContent).toContain('已处理（1）')
     app.unmount()
   })
 
@@ -571,10 +571,13 @@ describe('scan grading workspace', () => {
         targets: [{ target_type: 'group', target_id: 'exact-1' }, { target_type: 'issue', target_id: 'bad' }] }] })
     const { app, host } = await mountView()
     expect(host.textContent).not.toContain('原已匹配卷 第2-1页')
-    const inputs = [...host.querySelectorAll<HTMLInputElement>('input[aria-label="选择学生"]')]
-    for (const [index, input] of inputs.entries()) {
+    // Rows are sorted by detected name now, so pick each row's input by its text.
+    for (const [detected, code] of [['good', 'S2'], ['bad', 'S1']] as const) {
+      const row = [...host.querySelectorAll<HTMLElement>('.scan-issue-row')]
+        .find((candidate) => candidate.textContent?.includes(detected))!
+      const input = row.querySelector<HTMLInputElement>('input[aria-label="选择学生"]')!
       input.dispatchEvent(new FocusEvent('focus'))
-      input.value = index === 0 ? 'S2' : 'S1'
+      input.value = code
       input.dispatchEvent(new Event('input', { bubbles: true }))
       await nextTick()
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
@@ -608,6 +611,112 @@ describe('scan grading workspace', () => {
     host.querySelector<HTMLButtonElement>('[data-grading-mode="ai"]')!.click()
     await vi.waitFor(() => expect(host.querySelector<HTMLButtonElement>('[data-confirm-grading-plan]')?.disabled).toBe(true))
     expect(api.startGrading).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('marks already-assigned students and offers an inline takeover that frees the old paper', async () => {
+    vi.mocked(api.fetchScanStudentOptions).mockResolvedValue([
+      { id: 11, student_code: 'S011', name: '学生甲', class_name: '一班', pinyin_initials: 'xsj', pinyin_full: '' },
+      { id: 12, student_code: 'S012', name: '学生乙', class_name: '一班', pinyin_initials: 'xsy', pinyin_full: '' },
+    ])
+    vi.mocked(api.fetchPreflight).mockResolvedValue({ revision: 0,
+      summary: { auto_matched: 1, ready_to_grade: 1, issues: 1, absent_candidates: 0, total_pages: 4 },
+      groups: [{ id: 'g1', student_id: 11, student_name: '学生甲', source_label: '第3-4页',
+        match_method: 'exact', match_score: 1, front_media_url: '/api/g1/front', back_media_url: '/api/g1/back' }],
+      issues: [{ id: 'i1', detected_name: '学生甲', source_label: '005',
+        front_media_url: '/api/i1/front', back_media_url: '/api/i1/back' }],
+      absent_students: [], warnings: [], decisions: [], pending_issue_count: 1, match_conflicts: [] })
+    vi.mocked(api.saveScanDecisions).mockResolvedValue({
+      revision: 1,
+      decisions: [
+        { target_type: 'issue', target_id: 'i1', action: 'match', student_id: 11 },
+        { target_type: 'group', target_id: 'g1', action: 'pending' },
+      ],
+      pending_issue_count: 1, ready_to_grade: 2,
+    })
+    const { app, host } = await mountView()
+
+    // The exact-matched group is not listed in the review rows, but still owns the student.
+    expect(host.textContent).not.toContain('第3-4页')
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="选择学生"]')!
+    input.dispatchEvent(new FocusEvent('focus'))
+    await nextTick()
+    const options = [...host.querySelectorAll<HTMLElement>('[role="option"]')]
+    expect(options).toHaveLength(2)
+    expect(options[1]!.textContent).toContain('学生甲')
+    expect(options[1]!.textContent).toContain('已归属：第3-4页')
+
+    input.value = 'xsj'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await nextTick()
+
+    const panel = host.querySelector<HTMLElement>('[data-transfer-panel]')!
+    expect(panel.textContent).toContain('已归属「第3-4页」')
+    // The plain match button is hidden while a takeover is pending.
+    expect(panel.closest('.scan-issue-row')!
+      .querySelector('.scan-issue-controls__actions button.secondary')).toBeNull()
+
+    ;[...panel.querySelectorAll('button')]
+      .find((button) => button.textContent?.includes('改用当前卷'))!.click()
+    await vi.waitFor(() => expect(api.saveScanDecisions).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.saveScanDecisions).mock.calls[0]![2]).toEqual([
+      { target_type: 'issue', target_id: 'i1', action: 'match', student_id: 11 },
+      { target_type: 'group', target_id: 'g1', action: 'pending' },
+    ])
+    app.unmount()
+  })
+
+  it('filters the review list down to unresolved items only', async () => {
+    const fixture = await api.fetchPreflight(7)
+    fixture.decisions = [{ target_type: 'issue', target_id: 'i1', action: 'invalid' }]
+    vi.mocked(api.fetchPreflight).mockResolvedValue(fixture)
+    const { app, host } = await mountView()
+
+    expect(host.textContent).toContain('已处理（1）')
+    expect(host.textContent).toContain('待匹配（1）')
+
+    const filter = host.querySelector<HTMLInputElement>('[data-filter-pending]')!
+    filter.checked = true
+    filter.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+
+    expect(host.textContent).not.toContain('已处理（')
+    expect(host.querySelector('[data-bucket="done"]')).toBeNull()
+    expect(host.querySelector('[data-bucket="unmatched"]')).not.toBeNull()
+    expect(host.textContent).toContain('待核对乙')
+    app.unmount()
+  })
+
+  it('groups conflicted papers in one card and returns the unkept one to pending', async () => {
+    const fixture = await api.fetchPreflight(7)
+    fixture.groups = [1, 2].map((id) => ({ id: `g${id}`, student_id: 11, student_name: '学生甲',
+      source_label: `合成卷${id}`, match_method: 'exact', match_score: 1,
+      front_media_url: `/api/synthetic/${id}/front`, back_media_url: `/api/synthetic/${id}/back` }))
+    fixture.match_conflicts = [{ code: 'scan_student_multiple_papers', message: '同一学生对应 2 份答卷', student_id: 11,
+      targets: [{ target_type: 'group', target_id: 'g1' }, { target_type: 'group', target_id: 'g2' }] }]
+    vi.mocked(api.saveScanDecisions).mockResolvedValue({
+      revision: 3,
+      decisions: [{ target_type: 'group', target_id: 'g2', action: 'pending' }],
+      pending_issue_count: 3, ready_to_grade: 28, match_conflicts: [],
+    })
+    const { app, host } = await mountView()
+
+    const card = host.querySelector<HTMLElement>('.scan-conflict-card')!
+    expect(card.textContent).toContain('学生甲')
+    expect(card.textContent).toContain('合成卷1')
+    expect(card.textContent).toContain('合成卷2')
+    expect(host.textContent).toContain('归属冲突（2）')
+    expect(host.textContent).toContain('精确匹配')
+
+    const keepButtons = [...card.querySelectorAll<HTMLButtonElement>('.scan-conflict-card__target')]
+    const first = keepButtons.find((target) => target.textContent?.includes('合成卷1'))!
+    ;[...first.querySelectorAll('button')].find((button) => button.textContent === '保留这份')!.click()
+    await vi.waitFor(() => expect(api.saveScanDecisions).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.saveScanDecisions).mock.calls[0]![2]).toEqual([
+      { target_type: 'group', target_id: 'g2', action: 'pending' },
+    ])
     app.unmount()
   })
 })

@@ -30,6 +30,11 @@ export interface AnalysisPreflight {
   call_count: number
   estimated_total_tokens: number
   cache_hits: number
+  /** 前置错因整理预计新增调用次数；旧版后端不返回时按 0 处理。 */
+  cause_call_count: number
+  /** 本场需要错因整理的失分题总数（含已有结果不重复调用的题）。 */
+  cause_total_questions: number
+  cause_estimated_tokens: number
 }
 
 export const REPORT_FILE_STATUSES = [
@@ -189,6 +194,12 @@ export function decodeAnalysisPreflight(value: unknown): AnalysisPreflight {
     || Number(value.estimated_total_tokens) < 0
     || !Number.isSafeInteger(value.cache_hits)
     || Number(value.cache_hits) < 0
+    || !(value.cause_call_count === undefined
+      || (Number.isSafeInteger(value.cause_call_count) && Number(value.cause_call_count) >= 0))
+    || !(value.cause_total_questions === undefined
+      || (Number.isSafeInteger(value.cause_total_questions) && Number(value.cause_total_questions) >= 0))
+    || !(value.cause_estimated_tokens === undefined
+      || (Number.isSafeInteger(value.cause_estimated_tokens) && Number(value.cause_estimated_tokens) >= 0))
   ) {
     throw new Error('Invalid analysis preflight')
   }
@@ -200,6 +211,9 @@ export function decodeAnalysisPreflight(value: unknown): AnalysisPreflight {
     call_count: Number(value.call_count),
     estimated_total_tokens: Number(value.estimated_total_tokens),
     cache_hits: Number(value.cache_hits),
+    cause_call_count: Number(value.cause_call_count ?? 0),
+    cause_total_questions: Number(value.cause_total_questions ?? 0),
+    cause_estimated_tokens: Number(value.cause_estimated_tokens ?? 0),
   }
 }
 

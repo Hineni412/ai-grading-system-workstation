@@ -53,8 +53,18 @@ def _seed_bank_question(
     points: list[dict] | None = None,
     links: list[tuple[str, str, str, str]] | None = None,
     part_id: str = "part-1",
+    part_overrides: dict | None = None,
 ) -> None:
     """links: (point_id, role, stable_key, resolution_status)."""
+    evidence_part = {
+        "part_id": part_id,
+        "response_mode": "process",
+        "allow_alternative_methods": False,
+        "proof_obligations": [],
+        "evidence_points": points or [],
+    }
+    if part_overrides:
+        evidence_part.update(part_overrides)
     with connect(db_path) as connection:
         connection.execute(
             "INSERT INTO papers(id,title,import_status) VALUES(1,'合成','ready')"
@@ -79,17 +89,7 @@ def _seed_bank_question(
                 "e" * 64,
                 "f" * 64,
                 json.dumps(
-                    {
-                        "parts": [
-                            {
-                                "part_id": part_id,
-                                "response_mode": "process",
-                                "allow_alternative_methods": False,
-                                "proof_obligations": [],
-                                "evidence_points": points or [],
-                            }
-                        ]
-                    },
+                    {"parts": [evidence_part]},
                     ensure_ascii=False,
                 ),
                 release_id,
@@ -201,7 +201,7 @@ def test_snapshot_projection_resolves_direct_keys_by_point_ids(
     projection = _projection_service(tmp_path, db_path).project_session(
         grading_session_id=_SESSION,
         rubric=_rubric(
-            [_step("S1", ["p1"]), _step("S2", ["p2"])]
+            [_step("S1", ["p1"]), _step("S2", ["p2"])], part_id="Q1(P1)"
         ),
     )
 
@@ -209,6 +209,8 @@ def test_snapshot_projection_resolves_direct_keys_by_point_ids(
     assert item.is_graph_eligible
     assert set(item.tags["knowledge_point"]) == {_SKILL_KEY, _LEAF_KEY}
     assert item.assessment["granularity"] == "part"
+    assert item.assessment["part_id"] == "Q1(P1)"
+    assert item.assessment["evidence_part_id"] == "part-1"
     assert item.assessment["reason"] == "snapshot_evidence_point_attribution"
     assert item.step_targets["S1"] == (_SKILL_KEY,)
     assert item.step_targets["S2"] == (_LEAF_KEY,)
@@ -437,6 +439,86 @@ def test_annotate_rubric_stamps_step_ids_and_question_refs(
     assert step["evidence_point_ids"] == ["p1"]
 
 
+def test_freeze_with_answer_key_stamps_objective_generic_goal_steps(
+    tmp_path: Path,
+) -> None:
+    """自动发布路径没有编辑器答案键；冻结时必须转发 answer_key，
+    客观题兼容分支才能给通用目标步骤盖章。"""
+    db_path, release_id = _setup(tmp_path)
+    _seed_bank_question(
+        db_path,
+        release_id,
+        points=[_point("p1", target="作答为C")],
+        links=[("p1", "direct", _SKILL_KEY, "resolved")],
+        part_overrides={
+            "response_mode": "exact_objective",
+            "canonical_answer": "C",
+        },
+    )
+    _confirm_link(db_path)
+
+    rubric_path = tmp_path / "config" / "uploaded" / "rubric_job-1.json"
+    rubric_path.parent.mkdir(parents=True, exist_ok=True)
+    rubric_path.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "question_id": "Q1",
+                        "question_type": "choice",
+                        "source_evidence_version_id": _VERSION,
+                        "parts": [
+                            {
+                                "part_id": "Q1",
+                                "response_mode": "exact_objective",
+                                "steps": [
+                                    {
+                                        "step_id": "S1",
+                                        "core_goal": "选择正确的选项",
+                                        "required_elements": ["C"],
+                                        "step_score": 3,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    answer_key = {
+        "questions": [{"question_id": "Q1", "canonical_answer": "C"}]
+    }
+
+    # 不传 answer_key 时兼容分支无法核对冻结答案，步骤保持未盖章——
+    # 这正是调用方必须转发 answer_key 的原因。
+    freeze_session_evidence_snapshot(
+        db_path,
+        grading_session_id=_SESSION,
+        upload_config_dir=tmp_path / "config" / "uploaded",
+        data_root=tmp_path,
+        rubric_path=rubric_path,
+    )
+    saved = json.loads(rubric_path.read_text(encoding="utf-8"))
+    step = saved["questions"][0]["parts"][0]["steps"][0]
+    assert not step.get("evidence_point_ids")
+
+    # 已有快照分支同样转发 answer_key，重跑后完成盖章。
+    freeze_session_evidence_snapshot(
+        db_path,
+        grading_session_id=_SESSION,
+        upload_config_dir=tmp_path / "config" / "uploaded",
+        data_root=tmp_path,
+        rubric_path=rubric_path,
+        answer_key=answer_key,
+    )
+    saved = json.loads(rubric_path.read_text(encoding="utf-8"))
+    step = saved["questions"][0]["parts"][0]["steps"][0]
+    assert step["evidence_point_ids"] == ["p1"]
+
+
 def _coverage_rubric(
     *,
     steps: list[dict],
@@ -631,6 +713,32 @@ def test_teacher_final_total_does_not_restore_superseded_ai_step_scores():
     assert row['score_awarded'] == row['full_score'] == 6
     assert 'target_contributions' not in row and 'point_observations' not in row
     assert row['assessment']['granularity'] == 'whole_question'
+
+
+def test_teacher_partial_step_is_not_achieved_and_stale_revision_is_not_used():
+    from types import SimpleNamespace
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    projected = _projected_with_steps()
+    steps = [{**step, 'max_score': step['step_score'], 'score_awarded': awarded,
+              'achievement': 'partial'} for step, awarded in zip(projected.steps, (3, 2))]
+    review = {'revision': 2, 'scan_batch_id': 'test-batch', 'score_awarded': 5, 'steps': steps}
+    source = {'session_id': 1, 'student_id': 1, 'question_id': projected.item_ref,
+              'teacher_final_revision': 2, 'teacher_final_scan_batch_id': 'test-batch',
+              'score_awarded': 5, 'teacher_final_max_score': 6,
+              'assessment_state': {'teacher_review': review}}
+    service = object.__new__(DiagnosisProfileService)
+    service.db = SimpleNamespace(get_active_assessment_evidence=lambda **_: [source])
+    def projected_row():
+        return service._projected_tag_evidence(student_ids=['1'], session_ids=[1],
+            projection_by_session={1: SimpleNamespace(items=[projected])})[0]
+    row = projected_row()
+    assert row['assessment']['granularity'] == 'step'
+    assert row['target_contributions'][_SKILL_KEY] == (2, 6)
+    assert row['target_contributions'][_LEAF_KEY] == (2, 2)
+    review['revision'] = 1
+    row = projected_row()
+    assert row['assessment']['granularity'] == 'whole_question'
+    assert 'target_contributions' not in row
 
 
 def test_mastery_uses_equal_point_mass_instead_of_exam_score_allocation():

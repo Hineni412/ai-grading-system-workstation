@@ -7,10 +7,11 @@ import re
 import textwrap
 from collections.abc import Mapping
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from dataclasses import field
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 from question_bank.database.schema import connect, initialize_database
 from question_bank.importers.docx_importer import import_docx
@@ -35,12 +36,17 @@ from question_bank.parsers.type_detector import (
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_PAPER_SUFFIXES = {".pdf", ".docx"}
 _ANSWER_HEADING = re.compile(
-    r"(?m)^[ \t]*(参考答案及评分标准|参考答案|答案与解析|答案解析|试题答案|答案|解析|评分标准)[ \t]*[:：]?.*$"
+    r"(?mi)^[ \t]*(?:参考答案(?:[与和及]?(?:试题)?解析|及评分标准)?|答案[与和及]?解析|试题答案|试题解析|答案|解析|评分标准|answer(?: key|s)?|solutions?)[ \t]*[:：]?[ \t]*$"
 )
-_MAIN_QUESTION_MARKER = re.compile(r"(?m)^[ \t]*(?P<number>\d{1,3})[ \t]*[.．、][ \t]*")
-_PAREN_QUESTION_MARKER = re.compile(r"(?m)^[ \t]*[（(][ \t]*(?P<number>\d{1,3})[ \t]*[）)][ \t]*")
+_NUMBERED_LINE_PREFIX = r"(?m)^[ \t]*(?P<leading_images>(?:\[\[IMAGE:[^\r\n]+?\]\][ \t]*)*)"
+_MAIN_QUESTION_MARKER = re.compile(_NUMBERED_LINE_PREFIX + r"(?P<number>\d{1,3})[ \t]*[.．、][ \t]*")
+_PAREN_QUESTION_MARKER = re.compile(_NUMBERED_LINE_PREFIX + r"[（(][ \t]*(?P<number>\d{1,3})[ \t]*[）)][ \t]*")
 _SECTION_HEADING = re.compile(r"^[一二三四五六七八九十百]+[、.．][ \t]*\S+")
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
+_INLINE_MAIN_QUESTION_MARKER = re.compile(
+    r"(?P<prefix>[。！？!?．.][ \t\r\n]*)"
+    r"(?P<number>\d{1,2})[ \t]*[.．、](?![ \t]*\d)[ \t]*"
+)
 _PAPER_TITLE_NOISE = re.compile(r"(学年|学校|集团|期末|期中|中考|模拟).{0,36}(数学|试卷)|数学试卷")
 _PAPER_META_NOISE = re.compile(r"^(姓名|班级|考号|座号|准考证号|第\s*\d+\s*页|共\s*\d+\s*页)[：:\s]")
 _DUPLICATE_NORMALIZE = re.compile(r"[\s\u3000，。！？；：、,.!?;:（）()【】\[\]{}《》<>“”\"'`~·…—_\-]+")
@@ -789,7 +795,9 @@ def _asset_root_for_database(
 def _extract_paper(path: Path, *, asset_root: Path | None = None):
     if path.suffix.lower() == ".pdf":
         return import_pdf(path)
-    return import_docx(path, asset_root=asset_root)
+    extracted = import_docx(path, asset_root=asset_root)
+    paragraphs = split_inline_main_question_paragraphs(extracted.rich_paragraphs)
+    return replace(extracted, rich_paragraphs=paragraphs, text="\n".join(str(p["text"]) for p in paragraphs))
 
 
 def _find_paper_collision(
@@ -925,8 +933,8 @@ def map_rich_content_by_number(
         doc_title=doc_title,
     )
     use_main_markers = {
-        "question": any(_MAIN_QUESTION_MARKER.match(text) for section, text, _ in sectioned_paragraphs if section == "question"),
-        "answer": any(_MAIN_QUESTION_MARKER.match(text) for section, text, _ in sectioned_paragraphs if section == "answer"),
+        "question": any(_MAIN_QUESTION_MARKER.match(_boundary_text(text)) for section, text, _ in sectioned_paragraphs if section == "question"),
+        "answer": any(_MAIN_QUESTION_MARKER.match(_boundary_text(text)) for section, text, _ in sectioned_paragraphs if section == "answer"),
     }
     use_paren_markers = {
         "question": not use_main_markers["question"],
@@ -938,9 +946,9 @@ def map_rich_content_by_number(
         marker = None
         # 子层级自动编号（Word 列表 ilvl>0）的段落不当成题目分界。
         if paragraph.get("numbering_level") in (None, 0):
-            marker = _MAIN_QUESTION_MARKER.match(text)
+            marker = _MAIN_QUESTION_MARKER.match(_boundary_text(text))
             if marker is None and use_paren_markers[section]:
-                marker = _PAREN_QUESTION_MARKER.match(text)
+                marker = _PAREN_QUESTION_MARKER.match(_boundary_text(text))
         if marker is not None:
             number = _normalized_number(marker)
             last_number = current_numbers[section]
@@ -953,6 +961,234 @@ def map_rich_content_by_number(
             content[section].setdefault(current_number, []).append(paragraph)
 
     return content
+
+
+def _boundary_text(text: str) -> str:
+    """Ignore display wrappers and image markers when locating a paragraph label."""
+    return re.sub(r"</?(?:p|span|b|strong|i|em|u|table|tbody|tr|td)\b[^>]*>", "", _IMAGE_MARKER.sub("", text), flags=re.I).strip()
+
+
+def _split_consecutive_inline_main_questions(
+    text: str,
+    *,
+    current_number: int,
+    following_number: int | None,
+) -> tuple[list[str], int]:
+    split_offsets: list[int] = []
+    expected_number = current_number + 1
+    marker_text = _IMAGE_MARKER.sub(lambda match: " " * len(match.group(0)), text)
+    for marker in _INLINE_MAIN_QUESTION_MARKER.finditer(marker_text):
+        marker_number = int(marker.group("number"))
+        if marker_number != expected_number:
+            continue
+        split_offsets.append(marker.start("number"))
+        expected_number += 1
+    if not split_offsets or expected_number != following_number:
+        return [text], current_number
+    boundaries = [0, *split_offsets, len(text)]
+    return (
+        [
+            text[start:end].strip()
+            for start, end in zip(boundaries, boundaries[1:])
+            if text[start:end].strip()
+        ],
+        expected_number - 1,
+    )
+
+
+def _extract_question_marker_number(line: str) -> int | None:
+    value = str(line or "").strip()
+    if not value:
+        return None
+    for pattern in [
+        r"^(?:Q|q)\s*(\d{1,2})(?:\b|[\s:：.．、)])",
+        r"^第\s*(\d{1,2})\s*[题題]",
+        r"^(\d{1,2})\s*[.．、)]",
+    ]:
+        match = re.match(pattern, value)
+        if match and 1 <= int(match.group(1)) <= 99:
+            return int(match.group(1))
+    return None
+
+
+def _looks_like_answer_section_heading(line: str) -> bool:
+    value = str(line or "").strip()
+    if not value:
+        return False
+    return _ANSWER_HEADING.fullmatch(value) is not None
+
+
+def _next_leading_main_question_number(
+    texts: list[str], *, after_index: int
+) -> int | None:
+    for text in texts[after_index + 1 :]:
+        if _looks_like_answer_section_heading(text):
+            return None
+        number = _extract_question_marker_number(text)
+        if number is not None:
+            return number
+    return None
+
+
+def split_inline_main_question_paragraphs(
+    rich_paragraphs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    current_number: int | None = None
+    in_answer_section = False
+    plain_paragraphs = [
+        _boundary_text(
+            _IMAGE_MARKER.sub("", str(paragraph.get("text") or ""))
+        ).strip()
+        for paragraph in rich_paragraphs
+    ]
+    for index, paragraph in enumerate(rich_paragraphs):
+        text = str(paragraph.get("text") or "").strip()
+        plain_text = plain_paragraphs[index]
+        if _looks_like_answer_section_heading(plain_text):
+            in_answer_section = True
+        if in_answer_section or not text:
+            normalized.append(paragraph)
+            continue
+        leading_number = _extract_question_marker_number(plain_text)
+        if leading_number is not None:
+            current_number = leading_number
+        if current_number is None:
+            normalized.append(paragraph)
+            continue
+        segments, final_number = _split_consecutive_inline_main_questions(
+            (text if paragraph.get("images_in_text_order") else _IMAGE_MARKER.sub("", text)).strip(),
+            current_number=current_number,
+            following_number=_next_leading_main_question_number(
+                plain_paragraphs, after_index=index
+            ),
+        )
+        if len(segments) == 1:
+            normalized.append(paragraph)
+            continue
+        if not paragraph.get("images_in_text_order"):
+            segments = _attach_inline_images_to_source_segments(
+                paragraph,
+                segments=segments,
+                current_number=current_number,
+                final_number=final_number,
+            )
+        for segment in segments:
+            paths = {m.group("path") for m in _IMAGE_MARKER.finditer(segment)}
+            normalized.append({
+                **paragraph,
+                "text": segment,
+                # The original XML contains all questions in this paragraph.
+                # Reusing it would reintroduce the other question on export.
+                "xml": "",
+                "image_relationships": {key: path for key, path in (paragraph.get("image_relationships") or {}).items() if path in paths},
+                "floating_image_paths": [path for path in paragraph.get("floating_image_paths", []) if path in paths],
+            })
+        current_number = final_number
+    return normalized
+
+
+def _attach_inline_images_to_source_segments(
+    paragraph: dict[str, Any],
+    *,
+    segments: list[str],
+    current_number: int,
+    final_number: int,
+) -> list[str]:
+    fallback_paths = list(dict.fromkeys(m.group("path") for m in _IMAGE_MARKER.finditer(str(paragraph.get("text") or ""))))
+
+    def attach_to_last(paths: list[str]) -> list[str]:
+        assigned = list(segments)
+        for path in paths:
+            assigned[-1] = f"{assigned[-1].rstrip()}\n[[IMAGE:{path}]]"
+        return assigned
+
+    relationships = paragraph.get("image_relationships")
+    raw_xml = str(paragraph.get("xml") or "")
+    if not isinstance(relationships, dict) or not relationships or not raw_xml:
+        return attach_to_last(fallback_paths)
+    try:
+        root = ElementTree.fromstring(raw_xml)
+    except ElementTree.ParseError:
+        return attach_to_last(fallback_paths)
+
+    text_parts: list[str] = []
+    positioned_images: list[tuple[int, str]] = []
+    text_length = 0
+    for element in root.iter():
+        local_name = str(element.tag).split("}")[-1]
+        if local_name == "t":
+            value = str(element.text or "")
+            text_parts.append(value)
+            text_length += len(value)
+            continue
+        if local_name != "blip":
+            continue
+        relationship_id = next(
+            (
+                str(value)
+                for key, value in element.attrib.items()
+                if str(key).split("}")[-1] == "embed"
+            ),
+            "",
+        )
+        image_path = str(relationships.get(relationship_id) or "").strip()
+        if image_path:
+            positioned_images.append((text_length, image_path))
+    if not positioned_images:
+        return attach_to_last(fallback_paths)
+
+    source_text = "".join(text_parts)
+    expected_number = current_number + 1
+    split_offsets: list[int] = []
+    for marker in _INLINE_MAIN_QUESTION_MARKER.finditer(source_text):
+        marker_number = int(marker.group("number"))
+        if marker_number != expected_number:
+            continue
+        split_offsets.append(marker.start("number"))
+        expected_number += 1
+        if marker_number == final_number:
+            break
+    if len(split_offsets) != len(segments) - 1:
+        return attach_to_last(fallback_paths)
+
+    assigned = list(segments)
+    positioned_paths: set[str] = set()
+    for image_offset, image_path in positioned_images:
+        segment_index = sum(image_offset >= offset for offset in split_offsets)
+        assigned[segment_index] = (
+            f"{assigned[segment_index].rstrip()}\n[[IMAGE:{image_path}]]"
+        )
+        positioned_paths.add(image_path)
+    for image_path in fallback_paths:
+        if image_path not in positioned_paths:
+            assigned[-1] = f"{assigned[-1].rstrip()}\n[[IMAGE:{image_path}]]"
+    return assigned
+
+
+def _rich_question_positions(paragraphs: list[dict[str, Any]]) -> dict[int, tuple[str, str]]:
+    """Use the same parent-question boundaries for splitting and image ownership."""
+    sections: list[tuple[int, str, str, dict]] = []
+    section = "question"
+    for index, paragraph in enumerate(paragraphs):
+        text = _boundary_text(str(paragraph.get("text") or ""))
+        if _ANSWER_HEADING.fullmatch(text):
+            section = "answer"
+            continue
+        sections.append((index, section, text, paragraph))
+    has_main = {section: any(_MAIN_QUESTION_MARKER.match(text) for _, s, text, _ in sections if s == section) for section in ("question", "answer")}
+    current: dict[str, int] = {}
+    positions = {}
+    for index, section, text, paragraph in sections:
+        if paragraph.get("numbering_level") not in (None, 0):
+            continue
+        marker = _MAIN_QUESTION_MARKER.match(text)
+        if marker is None and not has_main[section]:
+            marker = _PAREN_QUESTION_MARKER.match(text)
+        if marker and int(marker.group("number")) > current.get(section, 0):
+            current[section] = int(marker.group("number"))
+            positions[index] = (section, str(current[section]))
+    return positions
 
 
 def apply_asset_overrides(
@@ -1047,23 +1283,14 @@ def _question_span_end(
     number: str,
 ) -> int | None:
     """Index just past the span of question ``number`` inside ``section``."""
-    current_section = "question"
-    inside_span = False
-    for index, paragraph in enumerate(paragraphs):
-        text = str(paragraph.get("text") or "").strip()
-        if _ANSWER_HEADING.search(text):
-            if inside_span:
-                return index
-            current_section = "answer"
-            continue
-        marker = _MAIN_QUESTION_MARKER.match(text) or _PAREN_QUESTION_MARKER.match(text)
-        if marker is None:
-            continue
-        if inside_span:
+    positions = _rich_question_positions(paragraphs)
+    start = next((index for index, value in positions.items() if value == (section, number)), None)
+    if start is None:
+        return None
+    for index in range(start + 1, len(paragraphs)):
+        if index in positions or _ANSWER_HEADING.fullmatch(_boundary_text(str(paragraphs[index].get("text") or ""))):
             return index
-        if current_section == section and _normalized_number(marker) == number:
-            inside_span = True
-    return len(paragraphs) if inside_span else None
+    return len(paragraphs)
 
 
 def _remove_image_marker_paths(
@@ -1101,34 +1328,42 @@ def partition_ambiguous_floating_images(
     candidates: list[dict[str, object]] = []
     section = "question"
     current_number: str | None = None
+    positions = _rich_question_positions(rich_paragraphs)
 
     for index, paragraph in enumerate(rich_paragraphs):
         text = str(paragraph.get("text") or "").strip()
+        if _SECTION_HEADING.match(_boundary_text(text)) and _IMAGE_MARKER.search(text):
+            # Word often anchors the preceding diagram to the next section
+            # heading. Remove the heading text, then review the image between
+            # its real neighbouring questions instead of deleting the drawing.
+            text = "\n".join(match.group(0) for match in _IMAGE_MARKER.finditer(text))
+            paragraph = {**paragraph, "text": text}
         if _ANSWER_HEADING.search(text):
             section = "answer"
             current_number = None
             normalized.append(paragraph)
             continue
-        marker = _MAIN_QUESTION_MARKER.match(text) or _PAREN_QUESTION_MARKER.match(text)
-        if marker is not None:
-            current_number = _normalized_number(marker)
+        if index in positions:
+            section, current_number = positions[index]
 
         next_number: str | None = None
         if current_number and _is_floating_image_only_paragraph(paragraph):
             future_section = section
-            for following in rich_paragraphs[index + 1 :]:
+            for following_index, following in enumerate(rich_paragraphs[index + 1 :], start=index + 1):
                 following_text = str(following.get("text") or "").strip()
                 if _ANSWER_HEADING.search(following_text):
                     future_section = "answer"
                     if future_section != section:
                         break
                     continue
-                following_marker = (
-                    _MAIN_QUESTION_MARKER.match(following_text)
-                    or _PAREN_QUESTION_MARKER.match(following_text)
-                )
-                if following_marker is not None:
-                    next_number = _normalized_number(following_marker)
+                if following_index in positions:
+                    next_section, next_number = positions[following_index]
+                    if next_section != section:
+                        next_number = None
+                    break
+                if _IMAGE_MARKER.sub("", following_text).strip() and not _SECTION_HEADING.match(following_text):
+                    # More text/subparts belonging to this question follows the
+                    # drawing. This is not an image between two questions.
                     break
             paths = [
                 match.group("path").strip()
@@ -1190,9 +1425,21 @@ def _section_rich_paragraphs(
         text = str(paragraph.get("text") or "").strip()
         if not text:
             continue
-        if _ANSWER_HEADING.search(text):
+        # A single Word paragraph can hold several lines joined by manual
+        # breaks; a bare heading line inside it still marks the answer
+        # boundary. Content the rich mapper cannot split is left for the
+        # plain-text fallback (question_map stays empty -> callers reparse).
+        if _ANSWER_HEADING.search(_boundary_text(text)):
             section = "answer"
             continue
+        if _SECTION_HEADING.match(_boundary_text(text)):
+            image_text = "\n".join(match.group(0) for match in _IMAGE_MARKER.finditer(text))
+            if not image_text:
+                continue
+            # A drawing can be anchored to the next section title. Keep it in
+            # the automatic import path too; reviewed imports use the teacher's binding.
+            paragraph = {**paragraph, "text": image_text, "xml": ""}
+            text = image_text
         if _is_rich_noise_paragraph(text, clean_title=clean_title, doc_title=doc_title):
             continue
         sectioned.append((section, text, paragraph))
@@ -1346,7 +1593,9 @@ def _split_numbered_blocks(
         body_start = match.end()
         body_end = matches[index + 1].start() if index + 1 < len(matches) else None
         body, image_paths = _clean_block(
-            cleaned[body_start:body_end],
+            # A drawing can precede the visible label in the same Word paragraph.
+            # Recognize that label, but keep its drawing with this question.
+            match.group("leading_images") + cleaned[body_start:body_end],
             keep_image_markers=keep_image_markers,
             source_file=source_file,
             doc_title=doc_title,
@@ -1418,7 +1667,7 @@ def _is_image_marker_only(text: str) -> bool:
 def _is_floating_image_only_paragraph(paragraph: dict[str, object]) -> bool:
     text = str(paragraph.get("text") or "").strip()
     xml = str(paragraph.get("xml") or "")
-    return _is_image_marker_only(text) and "<wp:anchor" in xml
+    return _is_image_marker_only(text) and (bool(paragraph.get("floating_image_paths")) or "<wp:anchor" in xml)
 
 
 

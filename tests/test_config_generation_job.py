@@ -3587,6 +3587,32 @@ def _expected_image_asset_override(question_number: str) -> dict[str, Any]:
     }
 
 
+def test_missing_imported_question_is_visible_and_blocks_score_allocation() -> None:
+    from backend.exam_intake import classify_intake_result
+    from backend.config_generation.status_projection import project_question_states
+
+    result = classify_intake_result({
+        "outcome": "partial", "imported_count": 13, "tagged_count": 13,
+        "criteria_count": 13, "failed_question_ids": [],
+        "unresolved_question_ids": ["Q6"],
+    })
+    assert result["complete"] is False
+    assert result["category"] == "question_mapping"
+    assert result["failed_question_ids"] == ["Q6"]
+    assert "Q6" in result["message"]
+    states = project_question_states(["Q5", "Q6"], {
+        "rubric": {"questions": [{"question_id": "Q5"}, {"question_id": "Q6"}]},
+        "meta": {
+            "exam_intake_incomplete": True,
+            "exam_intake_failed_question_ids": result["failed_question_ids"],
+            "exam_intake_retryable": result["retryable"],
+        },
+    }, job_status="succeeded")
+    assert [row["state"] for row in states] == ["passed", "blocked"]
+    assert states[1]["reason"] == "question_bank_intake"
+    assert states[1]["retryable"] is True
+
+
 def test_deferred_intake_carries_teacher_asset_and_type_decisions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

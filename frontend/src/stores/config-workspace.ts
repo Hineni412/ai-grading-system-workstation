@@ -6,6 +6,7 @@ import {
   fetchActiveConfigSource,
   fetchConfigEditor,
   fetchConfigSource,
+  fetchLatestConfigGenerationJob,
   type ConfigGenerationRequest,
   type GenerationMode,
   type ConfigEditorCommand,
@@ -65,6 +66,7 @@ export interface ConfigWorkspaceHydrationDependencies {
   loadActiveSource: (sessionId: number) => Promise<ConfigSource>
   loadSource: ConfigSourceLoader
   loadJob: (jobId: number, signal?: AbortSignal) => Promise<JobResponse>
+  loadLatestJob: typeof fetchLatestConfigGenerationJob
   loadEditor: (sessionId: number, signal?: AbortSignal) => Promise<ConfigEditorResponse>
 }
 
@@ -700,8 +702,45 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       && editorResult.value.session_id === expectedSessionId) {
       editor.value = editorResult.value
     }
+    await restoreLatestGenerationJob(request, overrides)
+    if (request !== hydrationRequest || sessionId.value !== expectedSessionId) return
     phase.value = derivePhase()
     persistSafeIndex()
+  }
+
+  async function restoreLatestGenerationJob(
+    request: number,
+    overrides: Partial<ConfigWorkspaceHydrationDependencies>,
+  ): Promise<void> {
+    const currentSource = source.value
+    const currentJobId = jobId.value
+    const currentJob = currentJobId === null ? null : useJobStore().jobs[currentJobId]
+    if (currentSource === null || hasPendingSubmission.value
+      || (currentJobId !== null && !['succeeded', 'failed', 'cancelled'].includes(currentJob?.status ?? ''))) return
+    try {
+      const latest = await (overrides.loadLatestJob ?? fetchLatestConfigGenerationJob)(
+        currentSource.session_id,
+        {
+          source_id: currentSource.source_id,
+          source_revision: currentSource.source_revision,
+          generation_mode: 'batched',
+          decisions: [],
+          sync_to_question_bank: true,
+        },
+      )
+      if (request !== hydrationRequest || source.value !== currentSource
+        || sessionId.value !== currentSource.session_id || jobId.value !== currentJobId
+        || hasPendingSubmission.value) return
+      if (latest.job_type !== 'config_generation'
+        || latest.payload.session_id !== currentSource.session_id
+        || latest.payload.source_id !== currentSource.source_id
+        || latest.payload.source_revision !== currentSource.source_revision
+        || (currentJobId !== null && latest.id <= currentJobId)) return
+      useJobStore().track(latest)
+      jobId.value = latest.id
+    } catch {
+      // A source may have no generation yet; leave its current workspace intact.
+    }
   }
 
   async function hydrateSafeIndex(
@@ -742,6 +781,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       loadActiveSource: overrides.loadActiveSource ?? fetchActiveConfigSource,
       loadSource: overrides.loadSource ?? fetchConfigSource,
       loadJob: overrides.loadJob ?? jobApi.getJob,
+      loadLatestJob: overrides.loadLatestJob ?? fetchLatestConfigGenerationJob,
       loadEditor: overrides.loadEditor ?? fetchConfigEditor,
     }
     const [initialSourceResult, jobResult, editorResult] = await Promise.allSettled([
@@ -846,6 +886,12 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       && editorResult.value.session_id === candidate.sessionId) {
       editor.value = editorResult.value
     }
+    await restoreLatestGenerationJob(request, overrides)
+    if (request !== hydrationRequest || sessionId.value !== candidate.sessionId) return
+    if (jobId.value !== null && jobId.value !== sanitized.jobId) {
+      sanitized.jobId = jobId.value
+      candidateChanged = true
+    }
     phase.value = derivePhase()
     if (candidateChanged) {
       sanitized.phase = phase.value
@@ -859,8 +905,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     else editorEdits.value[index] = { ...editorEdits.value[index], ...edit }
     editorContextGeneration += 1
     const changedFields = new Set(Object.keys(edit).filter((key) => key !== 'row_id'))
-    serverIssues.value = serverIssues.value.filter((issue) => issue.row_id === null
-      || issue.row_id !== edit.row_id || !changedFields.has(issue.field))
+    serverIssues.value = serverIssues.value.filter((issue) => issue.row_id !== null
+      && (issue.row_id !== edit.row_id || !changedFields.has(issue.field)))
     if (saveStatus.value === 'saving' || saveStatus.value === 'failure') saveStatus.value = 'idle'
     editorDirty.value = true
   }

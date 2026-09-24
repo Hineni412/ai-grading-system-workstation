@@ -87,6 +87,7 @@ class ConfigQuestionPreviewResponse(BaseModel):
     question_type_review_required: bool = False
     question_type_review_reason: str = Field(default="", max_length=200)
     question_type_basis: str = Field(default="", max_length=200)
+    parse_warnings: list[str] = Field(default_factory=list, max_length=20)
     local_answer_trusted: bool
     has_question_asset: bool
     has_answer_asset: bool
@@ -375,10 +376,10 @@ class ConfigEditorEditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     row_id: str = Field(min_length=1, max_length=64)
-    score: float | None = Field(default=None, ge=0, le=100)
+    score: float | None = Field(default=None, allow_inf_nan=False)
     standard_answer: str | None = Field(default=None, max_length=20_000)
     accepted_answers: list[str] | None = Field(default=None, max_length=200)
-    answer_only_max_score: float | None = Field(default=None, ge=0, le=100)
+    answer_only_max_score: float | None = Field(default=None, allow_inf_nan=False)
     require_final_answer: bool | None = None
     required_elements: list[str] | None = Field(default=None, max_length=200)
     deduction_rules: list[str] | None = Field(default=None, max_length=200)
@@ -395,7 +396,7 @@ class ManualPartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     part_id: str = Field(min_length=1, max_length=100)
-    score: float = Field(gt=0, le=100)
+    score: float = Field(allow_inf_nan=False)
     core_goal: str = Field(min_length=1, max_length=20_000)
 
 
@@ -420,7 +421,7 @@ class ManualStepRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     step_id: str = Field(min_length=1, max_length=100)
-    score: float = Field(gt=0, le=100)
+    score: float = Field(allow_inf_nan=False)
     core_goal: str = Field(min_length=1, max_length=20_000)
 
 

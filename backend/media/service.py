@@ -92,6 +92,16 @@ class ReviewMediaService:
                 or int(annotated["session_id"]) != int(session_id)
             ):
                 raise ReviewMediaNotFound("Review media resource was not found.")
+            if not annotated.get("annotated_front_path") or not annotated.get("annotated_back_path"):
+                from manual_review_service import ManualReviewService
+
+                try:
+                    ManualReviewService(self.db, self.annotated_dir).ensure_result_annotation(int(result_id))
+                except Exception as exc:
+                    raise ReviewMediaUnreadable("Annotation could not be refreshed; retry the image.") from exc
+                annotated = self.db.get_annotated_result(int(result_id))
+                if not annotated:
+                    raise ReviewMediaNotFound("Review media resource was not found.")
             path_value = annotated[f"annotated_{normalized_page}_path"]
             root = self.annotated_dir
         else:
@@ -138,19 +148,7 @@ class ReviewMediaService:
             raise ReviewMediaUnreadable(
                 "Review media resource could not be decoded."
             ) from exc
-        if not self.enable_crop_cache:
-            return _render_crop_jpeg(source_bytes, region)
-        cache_key = _crop_cache_key(source_bytes, region, page)
-        cache_path = self.crop_cache_dir / f"{cache_key}.jpg"
-        with self._crop_cache_lock:
-            self._prepare_crop_cache()
-            cached = _read_valid_jpeg(cache_path)
-            if cached is not None:
-                return cached
-
-            rendered = _render_crop_jpeg(source_bytes, region)
-            self._publish_crop_cache(cache_path, rendered)
-            return rendered
+        return self._cached_crop(source_bytes, region, page)
 
     def render_preflight_crop(
         self,
@@ -184,7 +182,23 @@ class ReviewMediaService:
             raise ReviewMediaUnreadable(
                 "Review media resource could not be decoded."
             ) from exc
-        return _render_crop_jpeg(source_bytes, region)
+        return self._cached_crop(source_bytes, region, page)
+
+    def _cached_crop(
+        self, source_bytes: bytes, region: dict[str, Any], page: str,
+    ) -> bytes:
+        if not self.enable_crop_cache:
+            return _render_crop_jpeg(source_bytes, region)
+        cache_key = _crop_cache_key(source_bytes, region, page)
+        cache_path = self.crop_cache_dir / f"{cache_key}.jpg"
+        with self._crop_cache_lock:
+            self._prepare_crop_cache()
+            cached = _read_valid_jpeg(cache_path)
+            if cached is not None:
+                return cached
+            rendered = _render_crop_jpeg(source_bytes, region)
+            self._publish_crop_cache(cache_path, rendered)
+            return rendered
 
     def clear_detail_crop_cache(self) -> int:
         """Remove only rebuildable review crop derivatives."""

@@ -371,6 +371,29 @@ def test_latest_generation_job_endpoint_authoritatively_finds_matching_job(
     manager.wait(created.json()["id"], timeout=5)
 
 
+def test_latest_generation_job_endpoint_includes_retry_for_the_same_source(tmp_path: Path) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    payload = {
+        "session_id": session_id, "mode": "generate", "generation_mode": "batched",
+        "source_id": "a" * 32, "source_revision": "b" * 64,
+    }
+    original = manager.store.create_job("config_generation", payload)
+    retry = manager.store.create_job("config_generation", {
+        **payload, "mode": "retry", "source_job_id": original.id,
+    })
+    manager.store.create_job("config_generation", {
+        **payload, "mode": "retry", "source_revision": "c" * 64,
+        "source_job_id": original.id,
+    })
+    found = client.get(
+        f"/api/sessions/{session_id}/config/generation-jobs/latest",
+        params={key: payload[key] for key in ("source_id", "source_revision", "generation_mode")},
+    )
+    assert found.status_code == 200
+    assert found.json()["id"] == retry.id
+
+
 def test_latest_generation_job_endpoint_does_not_return_a_different_request(
     tmp_path: Path,
 ) -> None:

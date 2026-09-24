@@ -113,7 +113,7 @@ export interface AssemblyAssistantResult {
   weaknesses: AssemblyWeakness[]
   selected_target_keys: string[]
   candidate_total: number
-  candidates: Array<{ question_id: number; target_keys: string[]; practice_kind?: 'focus' | 'foundation'; match_level?: number | null; match_label?: string; difficulty?: number | null; difficulty_band?: 'suitable' | 'lower' | 'higher' | 'unknown'; similar_question_ids?: number[]; direct_target_keys?: string[] }>
+  candidates: Array<{ question_id: number; target_keys: string[]; practice_kind?: 'focus' | 'foundation'; selection_kind?: 'direct' | 'task_matched' | 'supplement' | null; match_level?: number | null; match_label?: string; difficulty?: number | null; difficulty_band?: 'suitable' | 'lower' | 'higher' | 'unknown'; similar_question_ids?: number[]; direct_target_keys?: string[] }>
 }
 
 export function decodeAssemblyAssistant(value: unknown): AssemblyAssistantResult {

@@ -139,6 +139,36 @@ def test_filters_empty_evidence_and_changed_scope_never_silently_expand(client_a
     assert empty["weaknesses"] == empty["candidates"] == []
 
 
+def test_class_assistant_uses_frozen_part_identity_and_prioritizes_response_task(client_and_source, monkeypatch):
+    from question_bank.services import assembly_assistant as assistant
+    client, source, _, workspace = client_and_source
+    key, other = POINTS[0]["id"], POINTS[1]["id"]
+    def facet(skill):
+        return {"part_id": "frozen-part", "direct_keys": [skill], "skill_keys": [], "topic_keys": [key],
+                "section_keys": [CHAPTER["sections"][0]["knowledge_id"]], "chapter_keys": [CHAPTER["knowledge_id"]]}
+    def metadata(skill, mode, text):
+        return {"parts": [facet(skill)], "skill_keys": [], "topic_keys": [key], "evidence_version_id": "frozen-v1",
+                "practice_observations_by_key": {skill: [{"part_id": "frozen-part", "response_mode": mode, "observable": text}]}}
+    facets = {90: metadata(key, "process_required", "由勾股定理列出两边平方和等式"),
+              2: metadata(key, "exact_objective", "答案B"),
+              3: metadata(other, "process_required", "由勾股定理列式AB²+BC²=AC²并求长")}
+    monkeypatch.setattr(assistant, "load_question_facets", lambda *args, **kwargs: facets)
+    for student in source["students"][:4]:
+        student["weak_points"][0]["source_question_refs"] = [{"bank_question_id": 90, "full_score": 6, "score_awarded": 3,
+            "question_difficulty": 5, "assessment": {"granularity": "part", "part_id": "renamed-rubric-part",
+            "evidence_part_id": "frozen-part", "evidence_version_id": "frozen-v1", "eligible": True}}]
+    before = workspace.draft_path.read_bytes()
+    response = client.post("/api/question-assembly/assistant/candidates", json=request(target_keys=[key]))
+    assert response.status_code == 200, response.text
+    candidates = response.json()["candidates"]
+    assert [c["question_id"] for c in candidates] == [2, 3]
+    assert candidates[0]["selection_kind"] == "direct"
+    assert "环节练习" in candidates[0]["match_label"]
+    assert candidates[1]["selection_kind"] == "task_matched"
+    assert "已有解题步骤" in candidates[1]["match_label"]
+    assert workspace.draft_path.read_bytes() == before
+
+
 def test_mastered_points_remain_selectable_and_foundation_questions_follow_focus(client_and_source):
     client, source, _, _ = client_and_source
     reader = client.app.dependency_overrides[get_question_bank_read_service]()
@@ -186,11 +216,11 @@ def test_candidates_sort_by_adaptive_difficulty_band(client_and_source):
         connection.execute("INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(42,'knowledge_point',?)", (point["display_name"],))
     payload = client.post("/api/question-assembly/assistant/candidates", json=request(target_keys=[point["id"]])).json()
     weakness = next(item for item in payload["weaknesses"] if item["knowledge_key"] == point["id"])
-    # score_rate .6 + zero local score -> readiness .48 -> aim ≈ 5.2
-    assert weakness["target_difficulty"] == pytest.approx(5.2, abs=.05)
+    # A zero response on this goal starts lower, even with a middling total mark.
+    assert weakness["target_difficulty"] == 3
     bands = {item["question_id"]: item["difficulty_band"] for item in payload["candidates"]}
-    assert bands[41] == "higher" and bands[42] == "lower"
-    assert bands[2] == "suitable"  # difficulty 5 is within one level of the aim
+    assert bands[41] == "higher" and bands[42] == "suitable"
+    assert bands[2] == "higher"
     order = [item["difficulty_band"] for item in payload["candidates"]]
     assert order == sorted(order, key={"suitable": 0, "lower": 1, "higher": 2, "unknown": 3}.get)
 

@@ -68,6 +68,9 @@ class AnalysisPreflightResponse(BaseModel):
     call_count: int = Field(ge=0)
     estimated_total_tokens: int = Field(ge=0, description="文本输入和输出上限的粗估，不含服务商另计的图片用量")
     cache_hits: int = Field(ge=0)
+    cause_call_count: int = Field(default=0, ge=0, description="前置错因整理预计新增调用次数；失败题不自动重发")
+    cause_total_questions: int = Field(default=0, ge=0, description="本场需要错因整理的失分题总数")
+    cause_estimated_tokens: int = Field(default=0, ge=0)
 
 
 class ClassAnalysisResponse(BaseModel):
@@ -87,6 +90,26 @@ class ClassAnalysisResponse(BaseModel):
     class_names: list[str] = Field(default_factory=list)
     selected_class: str | None = None
     cause_analysis: dict[str, Any] | None = None
+
+
+class CausePatternConfirmRequest(BaseModel):
+    """把班级分析页的一条错法确认写入题库（错因体系 P4）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question_id: str = Field(min_length=1, max_length=40)
+    kind: str = Field(min_length=1, max_length=30)
+    category: str | None = Field(default=None, max_length=20)
+    reason: str = Field(min_length=1, max_length=80)
+    manifestation: str | None = Field(default=None, max_length=200)
+    operation_token: str | None = Field(default=None, max_length=80)
+
+
+class CausePatternConfirmResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    pattern: dict[str, Any]
 
 
 class ClassAnalysisSettingsRequest(BaseModel):

@@ -26,7 +26,7 @@ const selectedWeakness = computed(() => weaknesses.value.get(selectedKey.value))
 const questionMap = computed(() => new Map(assistant.questions.map(item => [item.id, item])))
 const candidates = computed(() => (assistant.result?.candidates ?? []).slice(0, assistant.visibleCount).flatMap(item => {
   const question = questionMap.value.get(item.question_id)
-  return question ? [{ question, matchLabel: item.match_level ? `${item.match_level}级 · ${item.match_label}` : '', practiceKind: item.practice_kind ?? 'focus', band: item.difficulty_band ?? 'unknown', similarIds: item.similar_question_ids ?? [], targets: item.target_keys.flatMap(key => weaknesses.value.get(key) ?? []) }] : []
+  return question ? [{ question, matchLabel: item.selection_kind === 'task_matched' ? item.match_label : item.match_level ? `${item.match_level}级 · ${item.match_label}` : '', practiceKind: item.practice_kind ?? 'focus', band: item.difficulty_band ?? 'unknown', similarIds: item.similar_question_ids ?? [], targets: item.target_keys.flatMap(key => weaknesses.value.get(key) ?? []) }] : []
 }))
 const busy = computed(() => assistant.state === 'loading' || assistant.waiting)
 const BAND_LABELS: Record<string, string> = { suitable: '难度合适', lower: '难度较低', higher: '难度较高' }

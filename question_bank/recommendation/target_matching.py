@@ -7,6 +7,7 @@ describe a single part, but never assert which of several parts tests a topic.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from typing import Any
 import json
 import sqlite3
@@ -65,9 +66,6 @@ def part_facets(evidence: Mapping[str, Any], links: Mapping[str, Sequence[Any]] 
         topics: set[str] = set()
         for point in part.get("evidence_points", []):
             embedded = point.get("fine_term_links") or []
-            for link in embedded:
-                if link.get("role") == "direct":
-                    topics.update(topic_keys([str(link.get("fine_term_id") or "")], resolver, index))
             if links is not None:
                 direct_values = [str(link.stable_key) for link in links.get(str(point.get("evidence_point_id") or ""), ())
                                  if link.role == "direct" and link.resolution_status == "resolved" and link.weight > 0]
@@ -75,6 +73,19 @@ def part_facets(evidence: Mapping[str, Any], links: Mapping[str, Sequence[Any]] 
                 direct_values = [str(link.get("fine_term_id") or "") for link in embedded
                                  if link.get("role") == "direct"]
             keys.update(identity.stable_key for value in direct_values for identity in resolver.resolve(value))
+            current_topics = topic_keys(direct_values, resolver, index)
+            if current_topics:
+                topics.update(current_topics)
+            else:
+                # Skill-only relinking retains the original small-part topic as
+                # compatibility context. Explicit current topics take precedence;
+                # whole-question tags never fill in an unknown multipart topic.
+                for link in embedded:
+                    resolution = link.get("core_resolution") or {}
+                    if link.get("role") != "direct" or resolution.get("status", "resolved") != "resolved":
+                        continue
+                    topics.update(topic_keys(resolution.get("stable_keys") or
+                                             [str(link.get("fine_term_id") or "")], resolver, index))
         basis = "part_evidence" if topics else "unknown"
         if not topics and len(parts) == 1:
             topics.update(question_topics)
@@ -89,6 +100,102 @@ def part_facets(evidence: Mapping[str, Any], links: Mapping[str, Sequence[Any]] 
                        "chapter_keys": sorted({a["chapter"] for a in anchors if a.get("chapter")}),
                        "section_keys": sorted({a["section"] for a in anchors if a.get("section")})})
     return result
+
+
+def _point_link_rows(point: Mapping[str, Any],
+                     links: Mapping[str, Sequence[Any]] | None) -> list[dict[str, Any]]:
+    """Normalise point links to ``{role, term_id, stable_keys, resolved}``.
+
+    ``links`` is the per-point map from ``evidence_point_knowledge_links``
+    (``load_point_links``); when it is ``None`` the embedded
+    ``fine_term_links`` are read as compatibility input.
+    """
+    if links is not None:
+        point_id = str(point.get("evidence_point_id") or "")
+        return [
+            {
+                "role": str(link.role),
+                "term_id": str(link.term_id or ""),
+                "stable_keys": [link.stable_key] if link.stable_key else [],
+                "resolved": (
+                    link.resolution_status == "resolved" and bool(link.stable_key)
+                ),
+            }
+            for link in links.get(point_id, ())
+        ]
+    rows: list[dict[str, Any]] = []
+    for link in point.get("fine_term_links", []):
+        resolution = link.get("core_resolution") or {}
+        keys = resolution.get("stable_keys") or []
+        rows.append({
+            "role": link.get("role"),
+            "term_id": link.get("fine_term_id"),
+            "stable_keys": list(keys),
+            "resolved": resolution.get("status") == "resolved" and bool(keys),
+        })
+    return rows
+
+
+def _question_evidence_metadata(
+    evidence: Mapping[str, Any],
+    resolver: CurrentKnowledgeResolver,
+    links: Mapping[str, Sequence[Any]] | None = None,
+) -> dict[str, Any]:
+    """Keep roles and response modes tied to each small part of the printed question."""
+    direct: set[str] = set()
+    required: set[str] = set()
+    supporting: set[str] = set()
+    modes: dict[str, set[str]] = {}
+    observations: dict[str, list[dict[str, Any]]] = {}
+    parts = evidence.get("parts") or []
+    complete = bool(parts)
+    link_rows_by_point: dict[int, list[dict[str, Any]]] = {}
+    for part in parts:
+        part_direct: set[str] = set()
+        for point_index, point in enumerate(part.get("evidence_points", [])):
+            rows = _point_link_rows(point, links)
+            link_rows_by_point[id(point)] = rows
+            if not any(link["resolved"] and link["role"] == "direct" for link in rows):
+                complete = False
+            for link in rows:
+                if not link["resolved"]:
+                    complete = False
+                    continue
+                for raw_key in link["stable_keys"]:
+                    resolved = resolver.resolve(raw_key)
+                    if not resolved:
+                        complete = False
+                    for identity in resolved:
+                        required.add(identity.stable_key)
+                        if link["role"] == "direct":
+                            part_direct.add(identity.stable_key)
+                        else:
+                            supporting.add(identity.stable_key)
+        if not part_direct:
+            complete = False
+        direct.update(part_direct)
+        for key in part_direct:
+            modes.setdefault(key, set()).add(str(part.get("response_mode") or "unknown"))
+            relevant_points = [point for point in part.get("evidence_points", []) if any(
+                link["role"] == "direct" and key in link["stable_keys"]
+                for link in link_rows_by_point.get(id(point), _point_link_rows(point, links)))]
+            observations.setdefault(key, []).append({
+                "part_id": str(part.get("part_id") or ""),
+                "response_mode": str(part.get("response_mode") or "unknown"),
+                "observable": "；".join(str(point.get(field) or "") for point in relevant_points
+                                        for field in ("target", "observable_evidence", "justification")),
+                "part_observable": "；".join(str(point.get(field) or "") for point in part.get("evidence_points", [])
+                                             for field in ("target", "observable_evidence", "justification")),
+                "evidence_points": [{field: deepcopy(point.get(field)) for field in
+                                     ("evidence_point_id", "target", "observable_evidence", "justification")}
+                                    for point in relevant_points],
+                "fine_terms": sorted({str(link["term_id"]) for point in relevant_points
+                                      for link in link_rows_by_point.get(id(point), [])
+                                      if link["role"] == "direct" and link["term_id"]}),
+            })
+    return {"stable_keys": sorted(direct), "required_keys": sorted(required), "supporting_keys": sorted(supporting), "scope_complete": complete,
+            "response_modes_by_key": {key: sorted(values) for key, values in sorted(modes.items())},
+            "practice_observations_by_key": observations}
 
 
 def match_target(target_key: str, source_parts: Sequence[Mapping[str, Any]],
@@ -188,7 +295,10 @@ def load_question_facets(db_path: Path, resolver: CurrentKnowledgeResolver,
             topics = topic_keys(tags.get(qid, []), resolver, index)
             evidence = json.loads(row["evidence_json"])
             facets = part_facets(evidence, links.get(str(row["evidence_version_id"]), {}), resolver, index, topics)
+            practice = _question_evidence_metadata(evidence, resolver, links=links.get(str(row["evidence_version_id"]), {}))
             result[qid] = {"parts": facets, "topic_keys": topics,
+                           "evidence_version_id": str(row["evidence_version_id"]),
+                           "practice_observations_by_key": practice["practice_observations_by_key"],
                            "skill_keys": sorted({key for part in facets for key in part["skill_keys"]})}
         if cache_key is not None:
             with _FACETS_CACHE_LOCK:

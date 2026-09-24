@@ -151,6 +151,7 @@ describe('review API contract', () => {
 
     expect(request).toHaveBeenCalledTimes(1)
     expect(request.mock.calls[0]?.[1]?.body).toEqual({
+      annotation_mode: 'on_demand',
       items: [{ result_id: 11, detail_id: 21, score_awarded: 3 }],
     })
   })

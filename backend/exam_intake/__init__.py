@@ -80,6 +80,12 @@ def classify_intake_result(result: Mapping[str, Any] | None) -> dict[str, Any]:
         for item in list(payload.get("failed_question_ids") or [])
         if str(item).strip()
     ]
+    unresolved_ids = [
+        str(item).strip()
+        for item in payload.get("unresolved_question_ids") or []
+        if str(item).strip()
+    ]
+    failed_ids = list(dict.fromkeys([*failed_ids, *unresolved_ids]))
     imported = max(0, int(payload.get("imported_count") or 0))
     tagged = max(0, int(payload.get("tagged_count") or 0))
     criteria = max(0, int(payload.get("criteria_count") or 0))
@@ -98,6 +104,13 @@ def classify_intake_result(result: Mapping[str, Any] | None) -> dict[str, Any]:
         category = "analysis_incomplete"
         state = "partial"
         message = "题目分析尚未全部完成，不能赋分。"
+    elif unresolved_ids:
+        category = "question_mapping"
+        state = "partial"
+        message = (
+            f"题目 {'、'.join(unresolved_ids)} 未能对应到独立的题库记录；"
+            "请核对入库题目边界。已有分析已保留，入库完整后才能赋分。"
+        )
     elif failed_ids:
         category = "question_failed"
         state = "partial"

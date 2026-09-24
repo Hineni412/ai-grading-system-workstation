@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -13,7 +14,9 @@ from backend.document_parsing.question_blocks import (
     parse_rich_question_blocks,
     rich_blocks_plain_text,
     split_inline_main_question_paragraphs,
+    image_paths_from_rich_text,
 )
+from question_bank.parsers.type_detector import subq_mark_labels
 
 
 class ControlledDocxWriteError(RuntimeError):
@@ -29,6 +32,7 @@ def parse_docx_question_blocks(
     register_created_file: Callable[[Path], None] | None = None,
     write_created_file: Callable[[Path, bytes], None] | None = None,
 ) -> list[dict[str, Any]]:
+    rich_failed = False
     try:
         rich_blocks = _extract_rich_question_blocks(
             file_bytes,
@@ -41,7 +45,16 @@ def parse_docx_question_blocks(
         raise
     except Exception:
         rich_blocks = None
-    return rich_blocks or parse_plain_question_blocks(fallback_doc_text or "")
+        rich_failed = True
+    if rich_blocks:
+        return rich_blocks
+    blocks = parse_plain_question_blocks(fallback_doc_text or "")
+    if rich_failed:
+        for block in blocks:
+            block.setdefault("parse_warnings", []).append("Word 图文结构未能完整读取，当前为文字提取结果；请核对配图、公式与题目边界。")
+            block["needs_review"] = True
+            block["local_answer_trusted"] = False
+    return blocks
 
 
 def _extract_rich_question_blocks(
@@ -122,7 +135,42 @@ def _extract_rich_question_blocks(
             section_type=section_hints.get(str(number), ""),
         )
         if block:
+            source_answers = answer_map.get(number_key, []) if isinstance(answer_map, dict) else []
+            warnings: list[str] = [str(warning) for p in [*(question_map.get(number_key) or []), *source_answers] for warning in p.get("parse_warnings", [])]
+            question_parts = subq_mark_labels(block.get("question_text", ""))
+            answer_parts = set(re.findall(r"【小题\s*(\d+)】", rich_blocks_plain_text(source_answers)))
+            if question_parts and answer_parts and set(question_parts) != answer_parts:
+                warnings.append(f"题面有 {len(question_parts)} 个小问，同号答案有 {len(answer_parts)} 个小问；请核对原卷合并或删题后的答案对应关系。")
+            if warnings:
+                block["parse_warnings"] = warnings
+                block["needs_review"] = True
+                block["local_answer_trusted"] = False
             blocks.append(block)
+    by_number = {int(b["question_id"][1:]): b for b in blocks}
+    for answer_number in answer_map or {}:
+        number = numeric_key(answer_number)
+        if number not in by_number and by_number:
+            previous = [n for n in by_number if n < number]
+            owner = by_number[max(previous) if previous else min(by_number)]
+            owner.setdefault("parse_warnings", []).append(f"答案区保留了第 {number} 题，但题面没有同号大题；请核对是否需要并入本题。")
+            owner["needs_review"] = True
+            owner["local_answer_trusted"] = False
+
+    # Preserve every body image, including VML pictures, images on headings and
+    # pictures belonging to an answer whose original question was removed.
+    # Unassigned pictures use the existing manual image review lane.
+    assigned = {path for b in blocks for key in ("question_html", "answer_html", "analysis_html") for path in image_paths_from_rich_text(b.get(key, ""))}
+    assigned.update(str(a["path"]) for a in ambiguous_assets)
+    missing = [p for p in extracted.image_paths if p not in assigned]
+    if blocks and missing:
+        for path in missing:
+            if len(blocks) == 1:
+                blocks[0]["question_html"] += f"\n[[IMAGE:{path}]]"
+                blocks[0].setdefault("image_paths", []).append(path)
+            else:
+                ambiguous_assets.append({"path": path, "previous_question_id": blocks[0]["question_id"], "next_question_id": blocks[1]["question_id"], "source_section": "question"})
+        blocks[0].setdefault("parse_warnings", []).append(f"有 {len(missing)} 张图片没有明确的题号位置，已保留供核对归属。")
+        blocks[0]["needs_review"] = True
     if blocks and ambiguous_assets:
         blocks[0]["_ambiguous_assets"] = ambiguous_assets
     return blocks or None

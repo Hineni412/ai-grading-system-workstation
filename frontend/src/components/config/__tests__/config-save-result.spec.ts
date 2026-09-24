@@ -88,6 +88,33 @@ async function mountResult(props: Record<string, unknown>) {
 }
 
 describe('ConfigSaveResult', () => {
+  it('saves a teacher total above 100 and can retry a stale global rejection without losing edits', async () => {
+    const saver = vi.fn().mockRejectedValueOnce(new ApiError({ kind: 'validation', status: 422,
+      requestId: 'manual-score-test', retryable: false,
+      code: 'invalid_config_editor', message: 'invalid', details: { issues: [{
+        code: 'invalid_generated_config', severity: 'error', row_id: null,
+        field: 'config', message: '旧校验未通过',
+      }] },
+    })).mockResolvedValueOnce({ ...saved(), total_score: 148,
+      rows: [{ ...editor().rows[0]!, score: 148 }] })
+    const mounted = await mountView({ saver })
+    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', score: 148 })
+    await nextTick()
+    const save = mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!
+    expect(save.disabled).toBe(false)
+    expect(mounted.host.querySelector('.rubric-ledger__issues--warning')?.textContent).toContain('当前总分为 148')
+    save.click()
+    await settle()
+    expect(mounted.workspace.editorEdits[0]?.score).toBe(148)
+    expect(save.disabled).toBe(false)
+    save.click()
+    await settle()
+    expect(saver).toHaveBeenLastCalledWith(7, expect.objectContaining({ edits: [{ row_id: 'row-q12-p1-s1', score: 148 }] }))
+    expect(mounted.workspace.effectiveTotalScore).toBe(148)
+    expect(mounted.workspace.hasDirtyEditor).toBe(false)
+    mounted.unmount()
+  })
+
   it.each([
     ['refreshed', '评分依据已保存，样卷映射已刷新'],
     ['reconfirm_required', '评分依据已保存；样卷映射需要回旧入口重新确认'],
@@ -286,6 +313,7 @@ describe('ConfigSaveResult', () => {
 
     expect(mounted.workspace.serverIssues).toEqual(invalid.details.issues)
     expect(mounted.host.textContent).toContain('分值必须在 0 至 100 之间')
+    expect(mounted.host.querySelector('.config-save-result--failure')?.textContent).toContain('分值必须在 0 至 100 之间')
     mounted.host.querySelector<HTMLButtonElement>('[data-issue-row-id="row-q12-p1-s1"]')!.click()
     await nextTick()
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Q12 P1 S1 分值')

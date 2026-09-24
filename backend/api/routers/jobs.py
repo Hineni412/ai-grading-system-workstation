@@ -113,6 +113,8 @@ def public_job_detail(job: JobRecord) -> str:
         and str(job.payload.get("source_id") or "").strip()
     ):
         if job.status == "succeeded":
+            if job.result.get("exam_intake_complete") is False:
+                return "题库入库未完成，统一赋分尚未开始；已完成的分析保存在本机。"
             if job.result.get("outcome") == "partial":
                 return "评分依据生成流程已结束，但本地校验尚未全部通过，未发布正式版本。"
             return "Grading configuration generated."
@@ -304,6 +306,14 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "question_bank_sync_state",
             "question_bank_sync_job_id",
             "question_bank_sync_error",
+            "question_bank_imported_count",
+            "question_bank_tagged_count",
+            "question_bank_criteria_count",
+            "exam_intake_complete",
+            "exam_intake_category",
+            "exam_intake_error",
+            "exam_intake_failed_question_ids",
+            "exam_intake_retryable",
             "config_revision",
             "retryable",
             "mapping_status",

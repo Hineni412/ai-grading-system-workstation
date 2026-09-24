@@ -149,6 +149,9 @@ function submitBatch(focusInvalid = false): void {
       detail_id: resolved.detail_id,
       score_awarded: Number(draft.scoreText.trim()),
       ...(note ? { deduction_reason: note } : {}),
+      ...(draft.stepScores ? { step_scores: draft.stepScores.map((step) => ({
+        part_id: step.partId, step_id: step.stepId, score_awarded: Number(step.scoreText),
+      })) } : {}),
     })
     draftKeys.push(draft.key)
     submittedItems.push(item)

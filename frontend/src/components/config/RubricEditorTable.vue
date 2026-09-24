@@ -46,8 +46,36 @@ const editingRowId = ref<string | null>(null)
 const choiceScore = ref<number | null>(null)
 const fillQuestionScore = ref<number | null>(null)
 const blockingIssues = computed(() => props.issues.filter((issue) => issue.severity === 'error'))
-const warningIssues = computed(() => props.issues.filter((issue) => issue.severity !== 'error'))
-const totalBlocked = computed(() => props.totalScore !== 100)
+const warningIssues = computed(() => [
+  ...props.issues.filter((issue) => issue.severity !== 'error' && !issue.code.startsWith('manual_')),
+  ...scoreWarnings.value,
+])
+const totalWarning = computed(() => Math.abs(props.totalScore - 100) > 0.000001)
+const scoreWarnings = computed<ConfigEditorIssue[]>(() => {
+  const warnings: ConfigEditorIssue[] = []
+  const warn = (code: string, message: string, rowId: string | null = null) => warnings.push({
+    code, message: `${message}；可以按当前人工设置保存。`, severity: 'warning', row_id: rowId, field: 'score',
+  })
+  if (totalWarning.value) warn('manual_total_score', `当前总分为 ${props.totalScore} 分，与自动配分的 100 分不同`)
+  const questions = new Map<string, ConfigEditorRow[]>()
+  for (const row of props.rows) questions.set(row.question_id, [...(questions.get(row.question_id) ?? []), row])
+  const objectiveScores = new Map<string, Set<number>>()
+  for (const [id, rows] of questions) {
+    const score = rows.reduce((sum, row) => sum + row.score, 0)
+    if (score > 18) warn(`manual_question_score:${id}`, `${id} 共 ${score} 分，超过自动配分的单题 18 分上限`, rows[0]!.row_id)
+    if (rows.some(row => row.score < 0 || !Number.isInteger(row.score))) {
+      warn(`manual_step_score:${id}`, `${id} 含小数或负数分值，超出自动配分的非负整数规则`, rows[0]!.row_id)
+    }
+    if (isObjective(rows[0]!)) {
+      const type = rows[0]!.question_type
+      const scores = objectiveScores.get(type) ?? new Set<number>()
+      scores.add(score)
+      objectiveScores.set(type, scores)
+    }
+  }
+  if ([...objectiveScores.values()].some(scores => scores.size > 1)) warn('manual_objective_scores', '同类客观题的分值不完全相同')
+  return warnings
+})
 const batchedButtonLabel = computed(() => {
   const ids = props.regenerationQuestionIds.join('、')
   const base = ids ? `重新分析 ${ids}` : '重新分析被拦题目'
@@ -111,13 +139,17 @@ function identity(row: ConfigEditorRow): string {
 }
 
 function distributedScores(total: number, count: number): number[] {
+  if (!Number.isInteger(total)) {
+    const unit = total / count
+    return Array.from({ length: count }, (_, index) => index === count - 1 ? total - unit * (count - 1) : unit)
+  }
   const unit = Math.floor(total / count)
-  return Array.from({ length: count }, (_, index) => unit + (index < total % count ? 1 : 0))
+  return Array.from({ length: count }, (_, index) => unit + (index < total - unit * count ? 1 : 0))
 }
 
 function applyBulkScore(questionType: 'choice' | 'fill_blank', rawScore: number | null): void {
   const score = Number(rawScore)
-  if (!Number.isInteger(score) || score <= 0 || score > 100 || props.disabled) return
+  if (rawScore === null || !Number.isFinite(score) || props.disabled) return
   const ids = questionType === 'choice' ? choiceQuestionIds.value : fillQuestionIds.value
   for (const questionId of ids) {
     const rows = props.rows.filter((row) => (
@@ -167,8 +199,8 @@ function editorId(index: string): string {
 function validateScore(row: ConfigEditorRow, event: Event): number | null {
   const raw = (event.currentTarget as HTMLInputElement).value.trim()
   const value = Number(raw)
-  if (!raw || !Number.isInteger(value) || value < 0 || value > 100) {
-    scoreErrors.value[row.row_id] = '分值必须是 0 至 100 之间的整数。'
+  if (!raw || !Number.isFinite(value)) {
+    scoreErrors.value[row.row_id] = '请填写有效数字分值。'
     emit('validity', false)
     return null
   }
@@ -213,8 +245,8 @@ function policyNumberEdit(row: ConfigEditorRow, event: Event): void {
     return
   }
   const value = Number(raw)
-  if (!Number.isInteger(value) || value < 0 || value > 100) {
-    scoreErrors.value[`${row.row_id}:policy`] = '仅答案最高分必须是 0 至 100 之间的整数。'
+  if (!Number.isFinite(value)) {
+    scoreErrors.value[`${row.row_id}:policy`] = '请填写有效数字分值。'
     emit('validity', false)
     return
   }
@@ -289,29 +321,27 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
       <div class="rubric-ledger__bulk-scores" aria-label="统一修改客观题分值">
         <label>
           <span>选择题每题</span>
-          <input v-model.number="choiceScore" aria-label="选择题每题分值" type="number" min="1" max="100" step="1" :disabled="disabled || choiceQuestionIds.length === 0">
-          <button type="button" :disabled="disabled || choiceQuestionIds.length === 0 || !Number.isInteger(choiceScore) || !choiceScore || choiceScore > 100 || choiceScore < 1" @click="applyBulkScore('choice', choiceScore)">
+          <input v-model.number="choiceScore" aria-label="选择题每题分值" type="number" step="any" :disabled="disabled || choiceQuestionIds.length === 0">
+          <button type="button" :disabled="disabled || choiceQuestionIds.length === 0 || !Number.isFinite(choiceScore)" @click="applyBulkScore('choice', choiceScore)">
             应用到 {{ choiceQuestionIds.length }} 题
           </button>
         </label>
         <label>
           <span>填空题每题总分</span>
-          <input v-model.number="fillQuestionScore" aria-label="填空题每题总分" type="number" min="1" max="100" step="1" :disabled="disabled || fillQuestionIds.length === 0">
-          <button type="button" :disabled="disabled || fillQuestionIds.length === 0 || !Number.isInteger(fillQuestionScore) || !fillQuestionScore || fillQuestionScore > 100 || fillQuestionScore < 1" @click="applyBulkScore('fill_blank', fillQuestionScore)">
+          <input v-model.number="fillQuestionScore" aria-label="填空题每题总分" type="number" step="any" :disabled="disabled || fillQuestionIds.length === 0">
+          <button type="button" :disabled="disabled || fillQuestionIds.length === 0 || !Number.isFinite(fillQuestionScore)" @click="applyBulkScore('fill_blank', fillQuestionScore)">
             应用到 {{ fillQuestionIds.length }} 题
           </button>
         </label>
       </div>
       <strong
         class="rubric-ledger__total"
-        :class="{ 'rubric-ledger__total--blocked': totalBlocked }"
-        :data-save-blocked="totalBlocked ? 'true' : 'false'"
-      >总分 {{ totalScore }} / 100</strong>
+        :class="{ 'rubric-ledger__total--warning': totalWarning }"
+      >总分 {{ totalScore }} 分</strong>
     </header>
 
-    <div v-if="totalBlocked || blockingIssues.length" class="rubric-ledger__issues rubric-ledger__issues--blocking" role="alert">
-      <strong>当前不能保存</strong>
-      <p v-if="totalBlocked">总分需调整为 100 分。</p>
+    <div v-if="blockingIssues.length" class="rubric-ledger__issues rubric-ledger__issues--blocking" role="alert">
+      <strong>保存检查提示</strong>
       <button
         v-for="issue in blockingIssues"
         :key="`${issue.code}:${issue.row_id}:${issue.field}`"
@@ -350,7 +380,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
       </div>
     </div>
     <div v-if="warningIssues.length" class="rubric-ledger__issues rubric-ledger__issues--warning" role="status">
-      <strong>请核对</strong>
+      <strong>请核对（不影响人工保存）</strong>
       <button
         v-for="issue in warningIssues"
         :key="`${issue.code}:${issue.row_id}:${issue.field}`"
@@ -473,9 +503,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               <span>分值</span>
               <input
                 type="number"
-                min="0"
-                max="100"
-                step="1"
+                step="any"
                 data-edit-field="score"
                 :aria-label="`${identity(row)} 分值`"
                 :value="scoreDrafts[row.row_id] ?? row.score"
@@ -572,9 +600,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               <span>仅答案最高分</span>
               <input
                 type="number"
-                min="0"
-                max="100"
-                step="1"
+                step="any"
                 data-edit-field="answer_only_max_score"
                 :aria-label="`${row.question_id} ${row.part_id} 仅答案最高分`"
                 :value="row.answer_only_max_score ?? ''"

@@ -6,6 +6,13 @@ import {
   type ReviewItemLike,
 } from '../api/review'
 
+export interface ReviewStepDraft {
+  partId: string
+  stepId: string
+  maxScore: number
+  scoreText: string
+}
+
 export interface ReviewDraft {
   key: string
   sessionId: number
@@ -19,6 +26,8 @@ export interface ReviewDraft {
   baseNote: string
   dirty: boolean
   updatedAt: number
+  stepScores?: ReviewStepDraft[]
+  baseStepsJson?: string
 }
 
 export function reviewDraftKey(item: ReviewItemLike): string {
@@ -55,6 +64,7 @@ function baseNote(item: ReviewItemLike): string {
 
 function refreshDirty(draft: ReviewDraft): void {
   draft.dirty = draft.scoreText !== draft.baseScoreText || draft.note !== draft.baseNote
+    || JSON.stringify(draft.stepScores ?? null) !== (draft.baseStepsJson ?? 'null')
   draft.updatedAt = Date.now()
 }
 
@@ -73,12 +83,18 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
     const resolved = resolveReviewItem(item)
     const nextScore = scoreText(resolved.score_awarded)
     const nextNote = baseNote(resolved)
+    const review = resolved.metadata.teacher_review as { revision?: number; steps?: Record<string, unknown>[] } | undefined
+    const savedSteps = review?.revision === resolved.revision && Array.isArray(review.steps)
+      ? review.steps.map((step) => ({ partId: String(step.part_id ?? ''), stepId: String(step.step_id ?? ''),
+        maxScore: Number(step.max_score), scoreText: String(step.score_awarded) })) : undefined
     if (current) {
       current.scoreText = nextScore
       current.note = nextNote
       current.baseScoreText = nextScore
       current.baseNote = nextNote
       current.baseRevision = resolved.revision
+      current.stepScores = savedSteps
+      current.baseStepsJson = JSON.stringify(savedSteps ?? null)
       current.dirty = false
       current.updatedAt = Date.now()
       return current
@@ -97,6 +113,8 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
       baseNote: nextNote,
       dirty: false,
       updatedAt: Date.now(),
+      stepScores: savedSteps,
+      baseStepsJson: JSON.stringify(savedSteps ?? null),
     }
     drafts.value[key] = draft
     return draft
@@ -106,6 +124,18 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
     const draft = drafts.value[key]
     if (!draft) return
     draft.scoreText = value
+    draft.stepScores = undefined
+    refreshDirty(draft)
+  }
+
+  function updateSteps(key: string, steps: ReviewStepDraft[] | undefined): void {
+    const draft = drafts.value[key]
+    if (!draft) return
+    draft.stepScores = steps
+    if (steps) {
+      draft.scoreText = steps.every((step) => scoreIssue(step.scoreText, step.maxScore) === null)
+        ? String(steps.reduce((total, step) => total + Number(step.scoreText), 0)) : ''
+    }
     refreshDirty(draft)
   }
 
@@ -140,6 +170,7 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
     hasDirtyDrafts,
     ensureDraft,
     updateScore,
+    updateSteps,
     updateNote,
     markConfirmed,
     markConfirmedMany,

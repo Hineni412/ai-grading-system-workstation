@@ -47,10 +47,23 @@ export interface ClassCauseEvidence {
 export const CLASS_CAUSE_KINDS = ['error', 'process', 'response_state', 'carry_forward', 'review'] as const
 export type ClassCauseKind = (typeof CLASS_CAUSE_KINDS)[number]
 
+/** 7 个固定家长可读错因大类（错因体系改造方案 P1）。 */
+export const CAUSE_CATEGORIES = [
+  '概念理解', '计算与化简', '审题与条件', '方法与思路', '过程与依据', '书写与规范', '未作答',
+] as const
+export type CauseCategory = (typeof CAUSE_CATEGORIES)[number]
+
 export interface ClassCause {
   reason: string
   count: number
   kind?: ClassCauseKind
+  /** v3 起输出；carry_forward/review 与旧版结果没有大类。 */
+  category?: CauseCategory
+  step_id?: string | null
+  /** existing=复用已有错法名；candidate=本场新命名，待教师确认后入库。 */
+  pattern_status?: 'existing' | 'candidate'
+  /** true=该错法已确认写入题库典型错法表（P4）。 */
+  bank_confirmed?: boolean
   evidence?: ClassCauseEvidence[]
   manifestations?: { description: string; source_question_id: string | null; evidence: ClassCauseEvidence[] }[]
 }
@@ -61,6 +74,8 @@ export interface ClassCauseAnalysis {
   total_questions: number
   failed_questions: number
   legacy_questions?: number
+  /** v2 旧版整理结果仍在展示的题目数（无错误大类，建议重新整理）。 */
+  outdated_questions?: number
   stale: boolean
   generated_at: string | null
   origin: string | null
@@ -76,6 +91,10 @@ export interface ClassAnalysisQuestion {
   causes?: ClassCause[]
   causes_grouped?: boolean
   causes_legacy?: boolean
+  /** v2 旧版结果仍在展示：无错误大类，重新整理后自动升级。 */
+  causes_outdated?: boolean
+  /** 已关联题库的题目 id；未关联为 null/缺省（确认入库需要先有关联）。 */
+  bank_question_id?: number | null
   cause_review?: { positive: ClassCauseEvidence[]; uncertain: ClassCauseEvidence[] }
 }
 
@@ -230,7 +249,11 @@ function decodeCauseEvidence(value: unknown): ClassCauseEvidence[] {
 
 function decodeCause(value: unknown): ClassCause {
   if (!isRecord(value) || typeof value.reason !== 'string' || !isNonNegativeCount(value.count)
-    || !(value.kind === undefined || CLASS_CAUSE_KINDS.some((kind) => kind === value.kind))) {
+    || !(value.kind === undefined || CLASS_CAUSE_KINDS.some((kind) => kind === value.kind))
+    || !(value.category === undefined || CAUSE_CATEGORIES.some((category) => category === value.category))
+    || !(value.step_id === undefined || isNullableString(value.step_id))
+    || !(value.pattern_status === undefined || value.pattern_status === 'existing' || value.pattern_status === 'candidate')
+    || !(value.bank_confirmed === undefined || typeof value.bank_confirmed === 'boolean')) {
     throw new Error('Invalid class cause')
   }
   let manifestations: ClassCause['manifestations']
@@ -245,6 +268,10 @@ function decodeCause(value: unknown): ClassCause {
   }
   return { reason: value.reason, count: value.count,
     ...(value.kind === undefined ? {} : { kind: value.kind as ClassCauseKind }),
+    ...(value.category === undefined ? {} : { category: value.category as CauseCategory }),
+    ...(value.step_id === undefined ? {} : { step_id: value.step_id }),
+    ...(value.pattern_status === undefined ? {} : { pattern_status: value.pattern_status as ClassCause['pattern_status'] }),
+    ...(value.bank_confirmed === undefined ? {} : { bank_confirmed: value.bank_confirmed }),
     ...(manifestations === undefined ? {} : { manifestations }),
     ...(value.evidence === undefined ? {} : { evidence: decodeCauseEvidence(value.evidence) }) }
 }
@@ -255,6 +282,7 @@ function decodeCauseAnalysis(value: unknown): ClassCauseAnalysis | null {
     || !isNonNegativeCount(value.pending_questions) || !isNonNegativeCount(value.total_questions)
     || !isNonNegativeCount(value.failed_questions) || typeof value.stale !== 'boolean'
     || !(value.legacy_questions === undefined || isNonNegativeCount(value.legacy_questions))
+    || !(value.outdated_questions === undefined || isNonNegativeCount(value.outdated_questions))
     || !isNullableString(value.generated_at) || !isNullableString(value.origin)) {
     throw new Error('Invalid class cause analysis')
   }
@@ -273,7 +301,9 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     || !Array.isArray(value.records)
     || !(value.causes_grouped === undefined || typeof value.causes_grouped === 'boolean')
     || !(value.causes_legacy === undefined || typeof value.causes_legacy === 'boolean')
+    || !(value.causes_outdated === undefined || typeof value.causes_outdated === 'boolean')
     || !(value.cause_review === undefined || isRecord(value.cause_review))
+    || !(value.bank_question_id === undefined || value.bank_question_id === null || isNonNegativeCount(value.bank_question_id))
     || !(value.causes === undefined || (Array.isArray(value.causes) && value.causes.every((cause) => (
       isRecord(cause) && typeof cause.reason === 'string' && isNonNegativeCount(cause.count)
     ))))
@@ -290,6 +320,8 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     ...(Array.isArray(value.causes) ? { causes: value.causes.map(decodeCause) } : {}),
     ...(typeof value.causes_grouped === 'boolean' ? { causes_grouped: value.causes_grouped } : {}),
     ...(typeof value.causes_legacy === 'boolean' ? { causes_legacy: value.causes_legacy } : {}),
+    ...(typeof value.causes_outdated === 'boolean' ? { causes_outdated: value.causes_outdated } : {}),
+    ...(value.bank_question_id === undefined ? {} : { bank_question_id: value.bank_question_id }),
     ...(isRecord(value.cause_review) ? { cause_review: {
       positive: decodeCauseEvidence(value.cause_review.positive),
       uncertain: decodeCauseEvidence(value.cause_review.uncertain),
@@ -540,6 +572,34 @@ export const classAnalysisApi = {
       method: 'POST',
       decode: decodeJobResponse,
       signal,
+    })
+  },
+
+  /** 教师确认一条错法写入题库典型错法表；重复提交由服务端幂等处理。 */
+  async confirmCausePattern(
+    sessionId: number,
+    payload: {
+      question_id: string
+      kind: string
+      category: string | null
+      reason: string
+      manifestation?: string | null
+      operation_token?: string
+    },
+    signal?: AbortSignal,
+  ): Promise<{ ok: boolean; pattern: Record<string, unknown> }> {
+    const id = requireSessionId(sessionId)
+    return apiClient.request(`/api/sessions/${id}/class-analysis/causes/confirm`, {
+      method: 'POST',
+      body: payload,
+      signal,
+      decode(value) {
+        assertNoPathLikeKeys(value)
+        if (!isRecord(value) || value.ok !== true || !isRecord(value.pattern)) {
+          throw new Error('Invalid cause pattern confirm response')
+        }
+        return value as unknown as { ok: boolean; pattern: Record<string, unknown> }
+      },
     })
   },
 }

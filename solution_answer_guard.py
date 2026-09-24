@@ -257,6 +257,19 @@ def integer_business_score(value: Any) -> int | None:
     return _integer_score_or_none(value)
 
 
+def final_simplification_deduction(detail: dict[str, Any], score: float) -> int:
+    """A separate, capped presentation deduction; never invent step failures."""
+    assessment = detail.get("final_answer_simplification")
+    if not isinstance(assessment, dict) or score < 1:
+        return 0
+    if not (assessment.get("required") is True and assessment.get("equivalent") is True
+            and assessment.get("simplified") is False):
+        return 0
+    if not str(assessment.get("student_evidence") or "").strip() or not str(assessment.get("requirement_evidence") or "").strip():
+        return 0
+    return 1
+
+
 def normalize_candidate_scores(value: Any) -> list[dict[str, Any]]:
     """Normalize the model's candidate_scores entries.
 

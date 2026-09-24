@@ -126,6 +126,7 @@ class AssemblyAssistantCandidate(_AssemblyModel):
     practice_kind: Literal["focus", "foundation"] = "focus"
     match_level: int | None = Field(default=None, ge=1, le=4)
     match_label: str = "按已选目标关联"
+    selection_kind: Literal["direct", "task_matched", "supplement"] | None = None
     difficulty: float | None = Field(default=None, ge=1, le=10)
     difficulty_band: Literal["suitable", "lower", "higher", "unknown"] = "unknown"
     similar_question_ids: list[int] = Field(default_factory=list)

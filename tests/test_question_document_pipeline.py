@@ -618,6 +618,30 @@ def test_ordinary_and_personalized_exports_share_editable_omml_renderer(
             assert any(name.startswith("word/media/") for name in archive.namelist())
 
 
+def test_compact_picture_cell_drops_source_indentation_before_fitting(tmp_path: Path) -> None:
+    from docx.oxml.ns import qn
+    from docx.shared import Mm, Pt
+    image = tmp_path / 'synthetic-wide-picture.png'
+    Image.new('RGB', (310, 149), 'black').save(image)
+    source = Document()
+    text = source.add_paragraph('合成题：根据图中三角形求长度。')
+    picture = source.add_paragraph()
+    picture.paragraph_format.left_indent = Pt(60)
+    picture._p.pPr.find(qn('w:ind')).set(qn('w:leftChars'), '130')
+    picture.add_run().add_picture(str(image), width=Mm(80))
+    relationship_id = picture._p.xpath('.//a:blip')[0].get(qn('r:embed'))
+    result = Document()
+    rendered = SharedWordQuestionRenderer().add_rich_blocks(result, [
+        {'xml':text._p.xml}, {'xml':picture._p.xml, 'image_relationships':{relationship_id:str(image)}}
+    ], compact_standalone_images_with_text=True)
+    assert rendered.appended and rendered.compacted_image_count == 1
+    cell = result.tables[0].cell(0,1)
+    assert not cell._tc.xpath('.//w:ind')
+    extent = cell._tc.xpath('.//wp:extent')[0]
+    assert int(extent.get('cx')) <= int(cell.width) - 80*635
+    assert float(extent.get('cx')) / float(extent.get('cy')) == pytest.approx(310/149, rel=.001)
+
+
 def test_shared_renderer_handles_one_hundred_synthetic_exports(tmp_path: Path) -> None:
     renderer = SharedWordQuestionRenderer()
     for index in range(100):

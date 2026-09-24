@@ -1794,6 +1794,15 @@ def _confirm_intake_source_links(
         rubric_path=resolve_stored_file_path(
             loaded.session.get("rubric_path"),
             data_root=Path(data_root),
+            # The published rubric lives under upload_config_dir, which is a
+            # caller-supplied controlled root and is not required to nest
+            # inside data_root (deployments/tests may keep them separate).
+            search_roots=[Path(upload_config_dir)],
+        ),
+        answer_key=(
+            loaded.payload.get("answer_key")
+            if isinstance(loaded.payload, Mapping)
+            else None
         ),
     )
     confirmed = max(0, int(link_result.get("confirmed") or 0))

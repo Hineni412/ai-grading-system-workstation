@@ -824,6 +824,12 @@ def _is_standalone_picture_paragraph(paragraph) -> bool:
 
 
 def _fit_picture_to_width(paragraph, *, max_width_dxa: int) -> None:
+    # Source Word paragraph indents consume width inside the new picture cell.
+    # Its layout is now defined by the cell, so retain no inherited indentation.
+    for properties in paragraph.iter(qn("w:pPr")):
+        indentation = properties.find(qn("w:ind"))
+        if indentation is not None:
+            properties.remove(indentation)
     max_width_emu = max(int(max_width_dxa), 1) * 635
     for extent in paragraph.iter():
         if extent.tag != qn("wp:extent"):

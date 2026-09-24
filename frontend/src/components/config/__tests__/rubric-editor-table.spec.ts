@@ -55,19 +55,18 @@ describe('RubricEditorTable', () => {
     mounted.unmount()
   })
 
-  it('clears a policy validation error independently of the block score', async () => {
+  it('accepts decimal answer caps and can clear them independently of the block score', async () => {
     const mounted = await mountTable()
     const cap = mounted.host.querySelector<HTMLInputElement>('[data-edit-field="answer_only_max_score"]')!
     const score = mounted.host.querySelector<HTMLInputElement>('[data-edit-field="score"]')!
     cap.value = '2.5'; cap.dispatchEvent(new Event('change', { bubbles: true }))
     score.value = '4'; score.dispatchEvent(new Event('change', { bubbles: true }))
     await nextTick()
-    expect(cap.getAttribute('aria-invalid')).toBe('true')
-    expect(mounted.host.textContent).toContain('仅答案最高分必须')
+    expect(cap.getAttribute('aria-invalid')).toBe('false')
     cap.value = ''; cap.dispatchEvent(new Event('change', { bubbles: true }))
     await nextTick()
     expect(cap.getAttribute('aria-invalid')).toBe('false')
-    expect(mounted.emitted).not.toContainEqual(expect.objectContaining({ answer_only_max_score: 2.5 }))
+    expect(mounted.emitted).toContainEqual(expect.objectContaining({ answer_only_max_score: 2.5 }))
     mounted.unmount()
   })
 
@@ -212,16 +211,16 @@ describe('RubricEditorTable', () => {
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Q12 P1 S1 证据要求/关键步骤')
   })
 
-  it('shows blocking total and normal warnings, then focuses the issue field', async () => {
+  it('shows a total advisory and focuses a warning field', async () => {
     const mounted = await mountTable({
       totalScore: 99,
       issues: [
-        { code: 'total', severity: 'error', row_id: null, field: 'score', message: '总分必须为 100' },
         { code: 'answer', severity: 'warning', row_id: 'row-q12-p1-s1', field: 'standard_answer', message: '请核对标准答案' },
       ],
     })
-    expect(mounted.host.querySelector('[data-save-blocked="true"]')?.textContent).toContain('99')
-    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('总分必须为 100')
+    expect(mounted.host.querySelector('.rubric-ledger__total--warning')?.textContent).toContain('99')
+    expect(mounted.host.querySelector('[role="alert"]')).toBeNull()
+    expect(mounted.host.textContent).toContain('不影响人工保存')
     mounted.host.querySelector<HTMLButtonElement>('[data-issue-row-id="row-q12-p1-s1"]')!.click()
     await nextTick()
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Q12 P1 S1 标准答案')
@@ -312,7 +311,7 @@ describe('RubricEditorTable', () => {
     ])
   })
 
-  it.each(['', 'NaN', 'Infinity', '-1', '100.1', '2.5'])(
+  it.each(['', 'NaN', 'Infinity'])(
     'rejects an out-of-contract rubric score %s without emitting it',
     async (raw) => {
       const mounted = await mountTable()
@@ -323,7 +322,7 @@ describe('RubricEditorTable', () => {
       await nextTick()
       expect(mounted.emitted).toEqual([])
       expect(score.getAttribute('aria-invalid')).toBe('true')
-      expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('0 至 100')
+      expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('有效数字')
     },
   )
 })

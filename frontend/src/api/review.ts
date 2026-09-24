@@ -137,11 +137,12 @@ export interface ReviewConfirmInput {
   detail_id: number | null
   score_awarded: number
   deduction_reason?: string
+  step_scores?: { part_id: string; step_id: string; score_awarded: number }[]
 }
 
 export interface ReviewAnnotationOutcome {
   result_id: number
-  status: 'succeeded' | 'retry_required'
+  status: 'succeeded' | 'retry_required' | 'on_demand'
   message?: string
 }
 
@@ -357,7 +358,7 @@ export function isReviewConfirmResponse(value: unknown): value is ReviewConfirmR
     isRecord(outcome) &&
     isNonnegativeInteger(outcome.result_id) &&
     outcome.result_id > 0 &&
-    (outcome.status === 'succeeded' || outcome.status === 'retry_required') &&
+    (outcome.status === 'succeeded' || outcome.status === 'retry_required' || outcome.status === 'on_demand') &&
     (outcome.message === undefined || typeof outcome.message === 'string'),
   )
 }
@@ -466,7 +467,7 @@ export async function confirmReviewItems(
     `/api/sessions/${sessionId}/review/questions/${encodedQuestion}/confirm`,
     {
       method: 'POST',
-      body: { items: [...inputs] },
+      body: { items: [...inputs], annotation_mode: 'on_demand' },
       signal,
       decode: (value) => {
         if (!isReviewConfirmResponse(value)) throw new Error('invalid review confirmation')

@@ -35,6 +35,7 @@ const currentDraft = ref<ReviewDraft | null>(null)
 const submitting = ref(false)
 const feedback = ref('')
 const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
+const stepModeNotice = ref('')
 const rubricCache = new Map<string, ReviewRubricSection | null>()
 let rubricController: AbortController | null = null
 let rubricGeneration = 0
@@ -61,6 +62,7 @@ const submitDisabled = computed(() =>
   !item.value ||
   !currentDraft.value ||
   issue.value !== null ||
+  (currentDraft.value?.stepScores?.some((step) => scoreIssue(step.scoreText, step.maxScore) !== null) ?? false) ||
   submitting.value,
 )
 const disabledReason = computed(() => {
@@ -90,6 +92,37 @@ const stepAssessments = computed(() => {
     return [{ stepId, partId, score, achievement, reason, studentEvidence, missingOrError }]
   })
 })
+const canReviewSteps = computed(() => Boolean(item.value?.result_id && item.value?.detail_id
+  && !item.value.review_item_id.startsWith('legacy:') && rubric.value?.points.length
+  && rubric.value.points.every((point) => point.step_id && Number.isInteger(point.score) && point.score > 0)
+  && rubric.value.points.reduce((total, point) => total + point.score, 0) === item.value.max_score))
+
+function beginStepReview(): void {
+  if (!currentDraft.value || !rubric.value || !canReviewSteps.value) return
+  const steps = rubric.value.points.map((point) => {
+    const matches = stepAssessments.value.filter((step) => step.stepId === point.step_id
+      && (!step.partId || step.partId === point.part_id))
+    return { partId: point.part_id, stepId: point.step_id, maxScore: point.score,
+      scoreText: matches.length === 1 && matches[0]?.score != null ? String(matches[0].score) : '' }
+  })
+  const matchesCurrentTotal = steps.every((step) => scoreIssue(step.scoreText, step.maxScore) === null)
+    && steps.reduce((total, step) => total + Number(step.scoreText), 0) === Number(currentDraft.value.scoreText)
+  stepModeNotice.value = matchesCurrentTotal ? ''
+    : '原步骤分与当前总分不一致或不完整，请逐步填写。原 AI 依据仍在下方保留；化简扣分请计入最终答案步骤。'
+  draftStore.updateSteps(currentDraft.value.key, matchesCurrentTotal ? steps
+    : steps.map((step) => ({ ...step, scoreText: '' })))
+}
+
+function updateStep(partId: string, stepId: string, event: Event): void {
+  if (!currentDraft.value?.stepScores) return
+  const value = (event.target as HTMLInputElement).value
+  draftStore.updateSteps(currentDraft.value.key, currentDraft.value.stepScores.map((step) =>
+    step.partId === partId && step.stepId === stepId ? { ...step, scoreText: value } : step))
+}
+
+function stepDraft(partId: string, stepId: string) {
+  return currentDraft.value?.stepScores?.find((step) => step.partId === partId && step.stepId === stepId)
+}
 const achievementLabel = (value: string): string => ({
   full: '完成',
   equivalent: '等价完成',
@@ -186,6 +219,9 @@ async function submitCurrent(): Promise<void> {
     detail_id: submittedItem.detail_id,
     score_awarded: score,
     ...(note ? { deduction_reason: note } : {}),
+    ...(draft.stepScores ? { step_scores: draft.stepScores.map((step) => ({
+      part_id: step.partId, step_id: step.stepId, score_awarded: Number(step.scoreText),
+    })) } : {}),
   }
 
   submitting.value = true
@@ -251,6 +287,7 @@ async function loadRubric(sessionId: number, questionId: string): Promise<void> 
 watch(
   item,
   (next) => {
+    stepModeNotice.value = ''
     if (!next) {
       currentDraft.value = null
       return
@@ -323,6 +360,12 @@ onBeforeUnmount(() => {
 
         <section class="review-scoring-section" aria-labelledby="review-rubric-title">
           <h3 id="review-rubric-title">评分标准</h3>
+          <div v-if="canReviewSteps" class="review-step-mode">
+            <button v-if="!currentDraft.stepScores" type="button" @click="beginStepReview">按步骤复核</button>
+            <button v-else type="button" @click="draftStore.updateSteps(currentDraft.key, undefined)">改为只填总分</button>
+            <p>{{ currentDraft.stepScores ? '逐步给整数分，自动汇总；每步满分才算达成，未满分算未达成。' : '只改总分会保留小问整体证据，不能定位具体技能步骤。' }}</p>
+            <p v-if="currentDraft.stepScores && stepModeNotice" class="review-scoring-section__warning">{{ stepModeNotice }}</p>
+          </div>
           <p v-if="rubricState === 'loading'" class="review-scoring-section__muted">正在读取当前题评分标准…</p>
           <p v-else-if="rubricState === 'error'" class="review-scoring-section__warning">
             评分标准暂时无法读取，不影响查看和编辑当前分数。
@@ -352,6 +395,21 @@ onBeforeUnmount(() => {
                   <strong>{{ point.core_goal || point.part_label }}</strong>
                   <span>{{ formatScore(point.score) }} 分</span>
                 </header>
+                <div v-if="stepDraft(point.part_id, point.step_id)" class="review-step-score">
+                  <label>
+                    教师步骤分
+                    <input
+                      type="number" min="0" :max="point.score" step="1"
+                      :aria-label="`${point.part_id} ${point.step_id} 教师步骤分`"
+                      :value="stepDraft(point.part_id, point.step_id)?.scoreText"
+                      :disabled="submitting"
+                      @input="updateStep(point.part_id, point.step_id, $event)"
+                      @focus="selectScore"
+                    >
+                    / {{ point.score }}
+                  </label>
+                  <span>{{ stepDraft(point.part_id, point.step_id)?.scoreText === '' ? '待评分' : Number(stepDraft(point.part_id, point.step_id)?.scoreText) === point.score ? '达成' : '未达成' }}</span>
+                </div>
                 <dl class="review-rubric-point__details">
                   <template v-if="point.standard_answer">
                     <dt>标准答案</dt>
@@ -479,6 +537,7 @@ onBeforeUnmount(() => {
             :max="item.max_score"
             step="1"
             :value="currentDraft.scoreText"
+            :readonly="Boolean(currentDraft.stepScores)"
             :aria-invalid="issue ? 'true' : 'false'"
             aria-describedby="teacher-score-help teacher-score-error"
             @input="updateScore"
@@ -487,7 +546,7 @@ onBeforeUnmount(() => {
           <span>/ {{ formatScore(item.max_score) }} 分</span>
         </div>
         <p id="teacher-score-help" class="review-scoring-section__muted">
-          {{ hasAiAssessment ? '教师确认结果将覆盖 AI 初评。' : '待人工评分答卷必须填写分数后才能确认。' }}
+          {{ currentDraft.stepScores ? '由步骤分自动汇总，保存后以教师步骤判断评估对应知识点和技能点。' : hasAiAssessment ? '教师最终分独立生效；仅改总分按小问整体评估，不推断各步骤掌握情况。' : '待人工评分答卷必须填写分数后才能确认。' }}
         </p>
         <p v-if="issue" id="teacher-score-error" class="review-field-error">{{ issue }}</p>
       </section>

@@ -68,12 +68,21 @@ class ResultRepository:
         )
         old_rows = self.session.connection.execute(
             """
-            SELECT id
+            SELECT id, raw_json
             FROM session_results
             WHERE session_id = ? AND student_id = ?
             """,
             (session_id, student_id),
         ).fetchall()
+        raw_json.pop("teacher_reviews", None)
+        for old_row in old_rows:
+            old_payload = _safe_json_loads(old_row["raw_json"])
+            reviews = old_payload.get("teacher_reviews", {}) if isinstance(old_payload, dict) else {}
+            if not isinstance(reviews, dict):
+                continue
+            for qid, review in reviews.items():
+                if isinstance(review, dict) and review.get("scan_batch_id") == scan_batch_id:
+                    raw_json.setdefault("teacher_reviews", {})[qid] = review
         for old_row in old_rows:
             old_id = int(old_row["id"])
             self.session.connection.execute(
@@ -462,6 +471,7 @@ class ResultRepository:
                 COALESCE(tsl.score_awarded, sd.score_awarded) AS score_awarded,
                 tsl.max_score AS teacher_final_max_score,
                 tsl.revision AS teacher_final_revision,
+                tsl.scan_batch_id AS teacher_final_scan_batch_id,
                 sr.raw_json AS assessment_raw_json,
                 sd.deduction_reason,
                 sd.error_category,
@@ -491,6 +501,7 @@ class ResultRepository:
         rows = self.session.connection.execute(query, params).fetchall()
         result = []
         metadata_by_result = {}
+        teacher_reviews_by_result = {}
         for raw_row in rows:
             row = dict(raw_row)
             raw = row.pop("assessment_raw_json", None)
@@ -499,6 +510,8 @@ class ResultRepository:
                     payload = json.loads(raw or "{}")
                     metadata = payload.get("detail_metadata", {})
                     metadata_by_result[row["result_id"]] = metadata if isinstance(metadata, dict) else {}
+                    teacher_reviews = payload.get("teacher_reviews")
+                    teacher_reviews_by_result[row["result_id"]] = teacher_reviews if isinstance(teacher_reviews, dict) else {}
                 except (TypeError, ValueError, AttributeError):
                     metadata_by_result[row["result_id"]] = {}
             detail = metadata_by_result[row["result_id"]].get(row["question_id"], {})
@@ -508,6 +521,10 @@ class ResultRepository:
                     "step_assessments",
                 ) if key in detail
             } if isinstance(detail, dict) else {}
+            teacher_reviews = teacher_reviews_by_result.get(row["result_id"], {})
+            teacher_review = teacher_reviews.get(row["question_id"])
+            if isinstance(teacher_review, dict):
+                row["assessment_state"]["teacher_review"] = teacher_review
             result.append(_detail_row_with_secondary_errors(row))
         return result
 
@@ -809,6 +826,10 @@ class ResultRepository:
         )
         persisted_raw_json = merge_detail_metadata(owner["raw_json"], raw_json,
             [*question_ids, *(str(d.question_id) for d in replacement_details)])
+        persisted_raw_json.pop("teacher_reviews", None)
+        old_payload = _safe_json_loads(owner["raw_json"])
+        if isinstance(old_payload, dict) and isinstance(old_payload.get("teacher_reviews"), dict):
+            persisted_raw_json["teacher_reviews"] = old_payload["teacher_reviews"]
         if scan_batch_id and locked_rows:
             persisted_raw_json["teacher_score_locks"] = {
                 "scan_batch_id": str(scan_batch_id),

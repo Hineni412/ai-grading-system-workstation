@@ -155,6 +155,7 @@ def test_report_export_handler_publishes_analysis_report(tmp_path) -> None:
             llm_client_factory=None,
             narrative_cache_dir=None,
             data_root=None,
+            reports_dir=None,
         ) -> None:
             self.output_dir = output_dir
             self.narrative_cache_dir = narrative_cache_dir
@@ -379,3 +380,118 @@ def test_concurrent_report_exports_publish_distinct_job_owned_files(tmp_path) ->
         assert set(reports_dir.glob("*.xlsx")) == set(published_paths)
     finally:
         manager.shutdown()
+
+
+def test_personal_report_export_organizes_causes_first(tmp_path) -> None:
+    """生成个人报告前先逐题整理错因；已整理的题不重复调用。"""
+    import json
+    import sqlite3
+
+    from backend.jobs.default_handlers import register_default_job_handlers
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+    from db_manager import DBManager
+    from tests.test_analysis_report import _seed_analysis_session
+
+    db = DBManager(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    session_id = _seed_analysis_session(db, tmp_path)
+    order: list[str] = []
+
+    class CauseClient:
+        def json_from_text(self, prompt, **kwargs):
+            order.append("cause")
+            source = json.loads(prompt.rsplit("\n", 1)[1])
+            return {"groups": [{
+                "kind": "process", "category": "过程与依据",
+                "reason": "缺少关键依据", "manifestation": "未写依据",
+                "evidence_ids": [item["id"] for item in source["evidence"]],
+            }]}
+
+    class FakeAnalysisExporter:
+        def __init__(self, db, output_dir: Path, **_kwargs) -> None:
+            self.output_dir = output_dir
+
+        def export_session(self, session_id: int, report_type: str, **_kwargs) -> Path:
+            order.append("export")
+            output_path = self.output_dir / "个人分析报告.zip"
+            output_path.write_bytes(b"zip")
+            return output_path
+
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    register_default_job_handlers(
+        manager,
+        db_path=db.db_path,
+        reports_dir=tmp_path / "reports",
+        analysis_report_exporter_factory=FakeAnalysisExporter,
+        analysis_llm_client_factory=CauseClient,
+    )
+    job = manager.submit(
+        "report_export",
+        {"session_id": session_id, "report_type": "personal_analysis_html"},
+    )
+    manager.wait(job.id, timeout=10)
+    loaded = manager.get(job.id)
+    assert loaded.status == "succeeded"
+    # 两道失分题先整理（各 1 次），之后才生成报告。
+    assert order == ["cause", "cause", "export"]
+    assert loaded.result["cause_analysis"]["status"] == "ready"
+
+    # 再次导出（绕过幂等复用）：已整理且输入未变的题不重复调用。
+    second = manager.submit(
+        "report_export",
+        {"session_id": session_id, "report_type": "personal_analysis_html"},
+    )
+    manager.wait(second.id, timeout=10)
+    assert manager.get(second.id).status == "succeeded"
+    assert order.count("cause") == 2
+
+
+def test_personal_report_export_survives_cause_failures(tmp_path) -> None:
+    """错因整理整体异常不阻断报告导出；单题失败也不重发。"""
+    from backend.jobs.default_handlers import register_default_job_handlers
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+    from db_manager import DBManager
+    from tests.test_analysis_report import _seed_analysis_session
+
+    db = DBManager(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    session_id = _seed_analysis_session(db, tmp_path)
+
+    class FailingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def json_from_text(self, prompt, **kwargs):
+            self.calls += 1
+            raise TimeoutError("synthetic")
+
+    class FakeAnalysisExporter:
+        def __init__(self, db, output_dir: Path, **_kwargs) -> None:
+            self.output_dir = output_dir
+
+        def export_session(self, session_id: int, report_type: str, **_kwargs) -> Path:
+            output_path = self.output_dir / "个人分析报告.zip"
+            output_path.write_bytes(b"zip")
+            return output_path
+
+    failing = FailingClient()
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    register_default_job_handlers(
+        manager,
+        db_path=db.db_path,
+        reports_dir=tmp_path / "reports",
+        analysis_report_exporter_factory=FakeAnalysisExporter,
+        analysis_llm_client_factory=lambda: failing,
+    )
+    job = manager.submit(
+        "report_export",
+        {"session_id": session_id, "report_type": "personal_analysis_html"},
+    )
+    manager.wait(job.id, timeout=10)
+    loaded = manager.get(job.id)
+    assert loaded.status == "succeeded"
+    assert failing.calls == 2  # 两题各试一次，不重发
+    assert loaded.result["cause_analysis"]["status"] == "failed"
+    assert Path(loaded.result["file_path"]).is_file()

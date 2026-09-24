@@ -119,7 +119,7 @@ def test_active_database_loader_is_read_only_and_fails_closed(tmp_path) -> None:
 
     resolver = CurrentKnowledgeResolver.from_active_database(database)
     assert resolver.release_id == release.release_id
-    assert len(resolver.nodes) == 1124
+    assert len(resolver.nodes) == 1218
 
 
 def test_active_resolver_cache_reads_payload_and_catalog_once(

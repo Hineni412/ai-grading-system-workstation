@@ -17,8 +17,13 @@ _submit_lock = threading.RLock()
 _REPORT_RENDITION_VERSIONS = {
     "score_excel": "score_excel_print_v6_parts",
     "annotated_original_pdf": "annotated_original_pdf_score_boxes_v3",
-    "personal_analysis_html": "personal_analysis_html_v8_parts",
+    "personal_analysis_html": "personal_analysis_html_v11_error_causes",
 }
+
+# 个人报告旧版 AI 叙述缓存仍兼容读取：命中旧 key 时直接复用，不调用模型、不写回新 key。
+LEGACY_PERSONAL_NARRATIVE_VERSIONS = (
+    "personal_analysis_html_v8_parts",
+)
 
 # 考试分析报告（AI 叙述）导出类型：提交时不带 excel_options。
 # 班级分析已改为系统内嵌页面（backend/class_analysis.py），不再是导出类型。
@@ -27,6 +32,14 @@ ANALYSIS_REPORT_TYPES = frozenset({"personal_analysis_html"})
 
 def report_rendition_version(report_type: str) -> str:
     return _REPORT_RENDITION_VERSIONS.get(str(report_type), "unknown")
+
+
+def report_narrative_version(report_type: str) -> str:
+    # 个人报告叙述新增 problems.question_ids（AI 问题带丢分题引用），
+    # 版本升到 v9；旧版 v8 叙述经 LEGACY_PERSONAL_NARRATIVE_VERSIONS 兼容读取。
+    if report_type == 'personal_analysis_html':
+        return 'personal_analysis_html_v9_problem_refs'
+    return report_rendition_version(report_type)
 
 
 def score_revision(db: GradingRepositoryAccess, session_id: int, *, include_question_bank: bool = True) -> str:

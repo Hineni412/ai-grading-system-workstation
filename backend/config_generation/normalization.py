@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import math
 import re
 from typing import Any
 
@@ -1230,6 +1231,12 @@ def _enforce_objective_question_rules(question: dict[str, Any], answer_item: dic
             continue
         if not is_independent_fill:
             first_step = next((step for step in steps if isinstance(step, dict)), {})
+            point_ids = list(dict.fromkeys(
+                point_id for step in steps if isinstance(step, dict)
+                for point_id in _string_list(step.get("evidence_point_ids"))
+            ))
+            if point_ids:
+                first_step["evidence_point_ids"] = point_ids
             first_step["step_id"] = str(first_step.get("step_id") or "S1")
             first_step["step_score"] = int(round(_safe_float(part.get("part_score"), 0.0)))
             first_step["core_goal"] = _default_core_goal(qtype, answer_item)
@@ -1698,9 +1705,12 @@ def _normalize_question_type(value: Any) -> str:
         return "calculation"
     return "comprehensive"
 
-def validate_generated_config(payload: dict[str, Any]) -> None:
-    normalize_generated_config_schema(payload)
-    force_payload_total_score(payload, target_total=100.0)
+def validate_generated_config(
+    payload: dict[str, Any], *, normalize: bool = True, enforce_score_policy: bool = True,
+) -> None:
+    if normalize:
+        normalize_generated_config_schema(payload)
+        force_payload_total_score(payload, target_total=100.0)
     if not isinstance(payload, dict):
         raise ValueError("Generated config must be a JSON object")
     for top_key in ["rubric", "answer_key", "meta"]:
@@ -1736,16 +1746,18 @@ def validate_generated_config(payload: dict[str, Any]) -> None:
         rubric_q_map[qid] = item
         qtype = str(item.get("question_type") or "comprehensive")
         max_score = float(item["max_score"])
-        if not max_score.is_integer():
+        if not math.isfinite(max_score):
+            raise ValueError("Question score must be finite")
+        if enforce_score_policy and not max_score.is_integer():
             raise ValueError(f"rubric.questions[{idx - 1}].max_score must be an integer")
-        if max_score > MAX_QUESTION_SCORE:
+        if enforce_score_policy and max_score > MAX_QUESTION_SCORE:
             raise ValueError(
                 f"rubric.questions[{idx - 1}].max_score must not exceed {MAX_QUESTION_SCORE}"
             )
         # 同类同分仅约束客观题（choice/fill_blank/judgement/true_false）；
         # 解答类大题（calculation/proof/comprehensive）允许各题分值不同。
         if (
-            _normalize_type(qtype) in OBJECTIVE_TYPES
+            enforce_score_policy and _normalize_type(qtype) in OBJECTIVE_TYPES
             and is_simple_objective_question(item)
         ):
             if qtype in scores_by_type and abs(scores_by_type[qtype] - max_score) > 1e-6:
@@ -1763,7 +1775,9 @@ def validate_generated_config(payload: dict[str, Any]) -> None:
                 if key not in part:
                     raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}] is missing field: {key}")
             part_score = float(part["part_score"])
-            if not part_score.is_integer():
+            if not math.isfinite(part_score):
+                raise ValueError("Part score must be finite")
+            if enforce_score_policy and not part_score.is_integer():
                 raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].part_score must be an integer")
             part_total += part_score
             steps = part.get("steps")
@@ -1777,7 +1791,9 @@ def validate_generated_config(payload: dict[str, Any]) -> None:
                     if key not in step:
                         raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].steps[{sidx - 1}] is missing field: {key}")
                 step_score = float(step["step_score"])
-                if not step_score.is_integer():
+                if not math.isfinite(step_score):
+                    raise ValueError("Step score must be finite")
+                if enforce_score_policy and not step_score.is_integer():
                     raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].steps[{sidx - 1}].step_score must be an integer")
                 step_total += step_score
             if abs(step_total - part_score) > 1e-6:
@@ -1815,9 +1831,9 @@ def validate_generated_config(payload: dict[str, Any]) -> None:
     if set(rubric_q_map) != set(answer_q_map):
         raise ValueError("rubric.questions and answer_key.questions must have identical question_id sets")
     total_score = sum(float(item.get("max_score") or 0) for item in rubric_q_map.values())
-    if abs(total_score - 100.0) > 0.02:
+    if enforce_score_policy and abs(total_score - 100.0) > 0.02:
         raise ValueError(f"rubric question total must be 100, got {total_score:.2f}")
-    rubric["total_score"] = 100.0
+    rubric["total_score"] = 100.0 if enforce_score_policy else total_score
 
 
     if "warnings" not in meta or not isinstance(meta["warnings"], list):

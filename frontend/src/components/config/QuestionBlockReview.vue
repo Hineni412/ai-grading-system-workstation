@@ -193,6 +193,10 @@ function stateOf(questionId: string): 'pending' | 'running' | 'passed' | 'blocke
   return props.questionStates.find((item) => item.question_id === questionId)?.state ?? ''
 }
 
+function intakeFailed(questionId: string): boolean {
+  return props.questionStates.some((item) => item.question_id === questionId && item.reason === 'question_bank_intake')
+}
+
 function answerStatus(question: ConfigQuestionPreview): string {
   if (question.local_answer_trusted) return '答案已匹配'
   if (question.answer_present) return '识别到答案，完整预览'
@@ -346,7 +350,13 @@ watch(() => props.source.source_revision, (_revision, previous) => {
           </div>
           <span v-if="question.needs_review" class="question-review__warning">建议留意预览</span>
         </header>
+        <p v-if="intakeFailed(question.question_id)" class="question-review__type-check" role="alert">
+          <strong>本题入库未完成：</strong>AI 分析已保留，请核对题目边界和配图归属；完整入库后才能赋分。
+        </p>
         <p v-if="localTypeNote(question)" class="question-review__local-type">{{ localTypeNote(question) }}</p>
+        <p v-for="warning in question.parse_warnings ?? []" :key="warning" class="question-review__type-check" role="status">
+          <span><strong>来源需核对：</strong>{{ warning }}</span>
+        </p>
 
         <label v-if="question.question_type_review_required" class="question-review__type-check">
           <span><strong>题型建议（可选修改）</strong>{{ question.question_type_review_reason || '题面形式与解析内容存在冲突。' }} 不修改时将沿用系统建议，不会阻塞 AI 生成。</span>

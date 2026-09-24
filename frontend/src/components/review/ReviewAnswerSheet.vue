@@ -5,6 +5,7 @@ import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
 import { reviewDraftKey, scoreIssue, useReviewDraftStore } from '../../stores/review-drafts'
 import { translateGradingReason } from '../../utils/grading-reasons'
 import StatusBadge from '../design-system/StatusBadge.vue'
+import ReviewImageDialog from './ReviewImageDialog.vue'
 
 const props = defineProps<{
   item: ReviewItemLike
@@ -20,6 +21,7 @@ const emit = defineEmits<{
 const draftStore = useReviewDraftStore()
 const imageFailed = ref(false)
 const imageKey = ref(0)
+const imageExpanded = ref(false)
 const reviewItem = computed(() => resolveReviewItem(props.item))
 const draft = computed(() => draftStore.drafts[reviewDraftKey(props.item)]!)
 const issue = computed(() => scoreIssue(draft.value.scoreText, reviewItem.value.max_score))
@@ -153,6 +155,12 @@ watch(
         :src="reviewItem.media.crop_url"
         :alt="`${reviewItem.student_name} 的 ${reviewItem.question_id} 答卷裁剪`"
         :data-testid="`answer-crop-${position}`"
+        role="button"
+        tabindex="0"
+        title="点击放大查看答卷"
+        @click="imageExpanded = true"
+        @keydown.enter.prevent="imageExpanded = true"
+        @keydown.space.prevent="imageExpanded = true"
         @error="imageFailed = true"
       >
       <div v-else class="review-answer-sheet__image-error" role="status">
@@ -160,6 +168,8 @@ watch(
         <button type="button" @click="retryImage">重新加载答卷图片</button>
       </div>
     </div>
+
+    <ReviewImageDialog v-if="imageExpanded" :item="item" @close="imageExpanded = false" />
 
     <div class="review-answer-sheet__decision">
       <label :for="`batch-score-${position}`">

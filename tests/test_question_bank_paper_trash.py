@@ -31,6 +31,7 @@ _TAXONOMY_CATALOG_PATH = (
 
 
 _CURRENT_PAPER_QUESTION_FK_CHILDREN = {
+    ("evidence_point_knowledge_links", "questions", "question_id"),
     ("grading_question_links", "questions", "bank_question_id"),
     ("paper_question_occurrences", "papers", "paper_id"),
     ("paper_question_occurrences", "questions", "question_id"),
@@ -45,6 +46,7 @@ _CURRENT_PAPER_QUESTION_FK_CHILDREN = {
     ("question_frequency_cache", "questions", "question_id"),
     ("question_part_assessment_profiles", "questions", "question_id"),
     ("question_previews", "questions", "question_id"),
+    ("question_scope_summary", "questions", "question_id"),
     ("question_solution_evidence_versions", "questions", "question_id"),
     ("question_tags", "questions", "question_id"),
     ("questions", "papers", "paper_id"),

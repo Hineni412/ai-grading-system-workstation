@@ -310,6 +310,148 @@ def test_stale_job_cannot_claim_running_after_config_binding_changes(
     assert current["question_bank_sync_state"] == "not_started"
 
 
+def test_editor_publish_preserves_ready_sync_when_only_config_changes(
+    tmp_path: Path,
+) -> None:
+    db, session_id, _source, _source_sha256, revision = _configured_session(
+        tmp_path
+    )
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    rubric_path = Path(str(session["rubric_path"]))
+    answer_path = Path(str(session["answer_key_path"]))
+    replacement_rubric = rubric_path.with_name("editor-rubric.json")
+    replacement_answer = answer_path.with_name("editor-answer.json")
+    replacement_payload = json.loads(rubric_path.read_text(encoding="utf-8"))
+    replacement_payload["total_score"] = 97
+    replacement_rubric.write_text(
+        json.dumps(replacement_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    replacement_answer.write_bytes(answer_path.read_bytes())
+    db.update_question_bank_sync_state(
+        session_id,
+        state="ready",
+        details={
+            "config_revision": revision,
+            "source_paper_sha256": session["source_paper_sha256"],
+        },
+        error="old sync error",
+    )
+    synced_at = db.get_grading_session(session_id)["question_bank_sync_updated_at"]
+    _mark_template_snapshot_pending(db, session_id)
+
+    store = JobStore(db.db_path)
+    assert store.update_session_config_if_idle(
+        session_id,
+        rubric_path=str(replacement_rubric),
+        answer_key_path=str(replacement_answer),
+        expected_rubric_path=str(rubric_path),
+        expected_answer_key_path=str(answer_path),
+        preserve_question_bank_sync=True,
+    )
+
+    changed = db.get_grading_session(session_id)
+    assert changed is not None
+    assert load_editor_config(db, session_id).revision != revision
+    assert changed["question_bank_sync_state"] == "ready"
+    assert json.loads(changed["question_bank_sync_details_json"]) == {
+        "config_revision": revision,
+        "source_paper_sha256": session["source_paper_sha256"],
+    }
+    assert changed["question_bank_sync_error"] == "old sync error"
+    assert changed["question_bank_sync_updated_at"] == synced_at
+    _assert_template_snapshot_invalidated(db, session_id)
+
+
+def test_editor_publish_preserves_ready_sync_for_repository_bind(
+    tmp_path: Path,
+) -> None:
+    db, session_id, _source, _source_sha256, revision = _configured_session(
+        tmp_path
+    )
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    old_rubric = str(session["rubric_path"])
+    old_answer = str(session["answer_key_path"])
+    db.update_question_bank_sync_state(
+        session_id,
+        state="ready",
+        details={
+            "config_revision": revision,
+            "source_paper_sha256": session["source_paper_sha256"],
+        },
+        error="old sync error",
+    )
+    synced_at = db.get_grading_session(session_id)["question_bank_sync_updated_at"]
+    _mark_template_snapshot_pending(db, session_id)
+
+    assert db.publish_grading_session_config(
+        session_id,
+        rubric_path="editor-rubric.json",
+        answer_key_path="editor-answer.json",
+        expected_rubric_path=old_rubric,
+        expected_answer_key_path=old_answer,
+        preserve_question_bank_sync=True,
+    )
+
+    changed = db.get_grading_session(session_id)
+    assert changed is not None
+    assert changed["rubric_path"] == "editor-rubric.json"
+    assert changed["answer_key_path"] == "editor-answer.json"
+    assert changed["question_bank_sync_state"] == "ready"
+    assert json.loads(changed["question_bank_sync_details_json"]) == {
+        "config_revision": revision,
+        "source_paper_sha256": session["source_paper_sha256"],
+    }
+    assert changed["question_bank_sync_error"] == "old sync error"
+    assert changed["question_bank_sync_updated_at"] == synced_at
+    _assert_template_snapshot_invalidated(db, session_id)
+
+
+def test_legacy_config_save_resets_ready_sync_when_config_changes(
+    tmp_path: Path,
+) -> None:
+    # PUT /sessions/{id}/config binds new paths without expected values or
+    # the preserve flag, so a changed config still invalidates the sync.
+    db, session_id, _source, _source_sha256, revision = _configured_session(
+        tmp_path
+    )
+    session = db.get_grading_session(session_id)
+    assert session is not None
+    rubric_path = Path(str(session["rubric_path"]))
+    answer_path = Path(str(session["answer_key_path"]))
+    replacement_rubric = rubric_path.with_name("legacy-rubric.json")
+    replacement_answer = answer_path.with_name("legacy-answer.json")
+    replacement_rubric.write_bytes(rubric_path.read_bytes())
+    replacement_answer.write_bytes(answer_path.read_bytes())
+    db.update_question_bank_sync_state(
+        session_id,
+        state="ready",
+        details={
+            "config_revision": revision,
+            "source_paper_sha256": session["source_paper_sha256"],
+        },
+        error="old sync error",
+    )
+    _mark_template_snapshot_pending(db, session_id)
+
+    store = JobStore(db.db_path)
+    assert store.update_session_config_if_idle(
+        session_id,
+        rubric_path=str(replacement_rubric),
+        answer_key_path=str(replacement_answer),
+    )
+
+    changed = db.get_grading_session(session_id)
+    assert changed is not None
+    assert changed["question_bank_sync_state"] == "not_started"
+    assert json.loads(changed["question_bank_sync_details_json"]) == {}
+    assert changed["question_bank_sync_error"] is None
+    assert changed["question_bank_sync_updated_at"] is None
+    _assert_template_snapshot_invalidated(db, session_id)
+
+
 def _configured_session(
     tmp_path: Path,
 ) -> tuple[DBManager, int, Path, str, str]:

@@ -20,6 +20,8 @@ from backend.api.routers.sessions import _require_session
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.reports import (
     AnalysisPreflightResponse,
+    CausePatternConfirmRequest,
+    CausePatternConfirmResponse,
     ClassAnalysisResponse,
     ClassAnalysisSettingsRequest,
     ClassAnalysisSettingsResponse,
@@ -135,6 +137,7 @@ def get_analysis_report_preflight(
         report_type,
         score_revision=score_revision(db, session_id),
         cache_dir=Path(reports_dir) / _ANALYSIS_NARRATIVE_CACHE_DIRNAME,
+        reports_dir=Path(reports_dir),
     )
     return AnalysisPreflightResponse(**payload)
 
@@ -225,14 +228,27 @@ def get_class_analysis(
         class_narrative_with_student_names,
         split_session_analysis_by_class,
     )
-    from backend.class_analysis import CLASS_ANALYSIS_RENDITION_VERSION, assemble_cause_data, build_cause_inputs, apply_cause_results
+    from backend.class_analysis import (
+        CLASS_ANALYSIS_RENDITION_VERSION,
+        assemble_cause_data,
+        apply_cause_results,
+        build_cause_inputs,
+        known_cause_patterns,
+    )
 
     _require_session(db, session_id)
     store = ClassAnalysisStateStore(reports_dir)
     state = store.load(session_id)
     # 页面数据按当前成绩实时装配；无成绩数据时整体降级为 no_data。
     data = assemble_cause_data(db, int(session_id))
-    cause_inputs = build_cause_inputs(data)
+    from analysis_report_exporter import _question_bank_db_path
+
+    cause_inputs = build_cause_inputs(
+        data,
+        known_patterns=known_cause_patterns(
+            store, _question_bank_db_path(Path(db.db_path)), int(session_id),
+        ),
+    )
     groups = split_session_analysis_by_class(data)
     class_names = list(groups)
     # 空字符串明确表示全场合并；省略参数仍兼容原来的首班读取。
@@ -269,7 +285,11 @@ def get_class_analysis(
                 data.students,
             )
     page_data = build_class_page_data(data, compact=view == "summary") if has_data and view != "narrative" else None
-    cause_analysis = apply_cause_results(page_data, data, cause_inputs, state)
+    cause_analysis = apply_cause_results(
+        page_data, data, cause_inputs, state,
+        session_id=int(session_id),
+        question_bank_path=_question_bank_db_path(Path(db.db_path)),
+    )
     return ClassAnalysisResponse(
         status=(
             "generating"
@@ -290,6 +310,117 @@ def get_class_analysis(
         class_names=class_names,
         selected_class=selected_class,
     )
+
+
+@router.post(
+    "/sessions/{session_id}/class-analysis/causes/confirm",
+    response_model=CausePatternConfirmResponse,
+)
+def confirm_cause_pattern(
+    session_id: int,
+    request: CausePatternConfirmRequest,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    reports_dir: Path = Depends(get_reports_dir),
+) -> CausePatternConfirmResponse:
+    """教师确认后把错法写入题库典型错法表；幂等，重复提交不产生重复行。"""
+    from analysis_report_exporter import _question_bank_db_path
+    from backend.class_analysis import CAUSE_ANALYSIS_VERSION
+    from backend.error_causes import CAUSE_KIND_CATEGORIES, normalize_cause_category
+    from backend.error_patterns import (
+        CHOICE_TYPES, FILL_TYPES, normalize_option_answer, normalize_wrong_answer,
+        session_bank_map,
+    )
+    from question_bank.services.error_pattern_service import confirm_pattern
+
+    session = _require_session(db, session_id)
+    store = ClassAnalysisStateStore(reports_dir)
+    saved = (
+        ((store.load(session_id) or {}).get("cause_analysis") or {})
+        .get("questions") or {}
+    ).get(str(request.question_id)) or {}
+    if saved.get("version") != CAUSE_ANALYSIS_VERSION or not isinstance(saved.get("result"), dict):
+        raise ApiError(409, "cause_pattern_not_ready",
+                       "该题尚未完成新版错因整理，不能确认入库")
+    group = next(
+        (item for item in saved["result"].get("groups") or []
+         if isinstance(item, dict)
+         and str(item.get("reason") or "").strip() == request.reason.strip()
+         and str(item.get("kind") or "") == request.kind.strip()),
+        None,
+    )
+    if group is None:
+        raise ApiError(409, "cause_pattern_group_missing",
+                       "未找到对应的错因分组，请先重新整理错因")
+    kind = request.kind.strip()
+    category = normalize_cause_category(request.category)
+    if kind in CAUSE_KIND_CATEGORIES:
+        if category is None or category not in CAUSE_KIND_CATEGORIES[kind]:
+            raise ApiError(422, "cause_pattern_category_invalid",
+                           "错误大类与分组类型不匹配")
+    else:
+        category = None
+    parent = str(saved.get("input", {}).get("question_id") or request.question_id)
+    from analysis_report_exporter import _parent_question_id
+
+    bank_map = session_bank_map(_question_bank_db_path(Path(db.db_path)), int(session_id))
+    bank_id = bank_map.get(_parent_question_id(parent))
+    if not bank_id:
+        raise ApiError(422, "cause_pattern_unlinked",
+                       "该题未关联题库题目，无法写入题库")
+
+    # 触发条件由证据形态推导：选择题全组同一选项字母 → option；
+    # 填空题全组同一答案 → wrong_answer；否则按观察级错法记录。
+    trigger_kind, trigger_value = "observation", ""
+    qtype = ""
+    try:
+        from analysis_report_exporter import _infer_data_root
+        from backend.analytics.service import load_session_score_type_maps
+
+        _scores, type_map = load_session_score_type_maps(
+            session, data_root=_infer_data_root(Path(db.db_path)),
+        )
+        qtype = type_map.get(str(request.question_id), "")
+    except Exception:
+        qtype = ""
+    evidence = {
+        str(item.get("id") or ""): item
+        for item in (saved.get("input") or {}).get("evidence") or []
+        if isinstance(item, dict)
+    }
+    answers = {
+        str((evidence.get(str(eid)) or {}).get("student_answer") or "").strip()
+        for eid in group.get("evidence_ids") or []
+    }
+    answers.discard("")
+    if kind in CAUSE_KIND_CATEGORIES and answers:
+        if qtype in CHOICE_TYPES:
+            letters = {normalize_option_answer(value) for value in answers}
+            letters.discard("")
+            if len(letters) == 1:
+                trigger_kind, trigger_value = "option", sorted(letters)[0]
+        elif qtype in FILL_TYPES:
+            normalized = {normalize_wrong_answer(value) for value in answers}
+            normalized.discard("")
+            if len(normalized) == 1:
+                trigger_kind, trigger_value = "wrong_answer", sorted(normalized)[0]
+    row = confirm_pattern(
+        _question_bank_db_path(Path(db.db_path)),
+        question_id=int(bank_id),
+        category=category,
+        pattern=request.reason.strip(),
+        explanation=str(request.manifestation or "").strip(),
+        trigger_kind=trigger_kind,
+        trigger_value=trigger_value,
+        source="teacher_confirm",
+        occurrence={
+            "session_id": int(session_id),
+            "question_id": str(request.question_id),
+            "kind": kind,
+        },
+        confirm_token=str(request.operation_token or "").strip() or None,
+        confirmed_by="local_teacher",
+    )
+    return CausePatternConfirmResponse(ok=True, pattern=row)
 
 
 @router.get(
@@ -321,11 +452,13 @@ def get_class_analysis_report(
     reports_dir: Path = Depends(get_reports_dir),
 ) -> HTMLResponse:
     """内嵌班级报告页：按已生成的班级叙述渲染自包含 HTML，供系统内页面嵌套展示。"""
-    from analysis_report_exporter import _render_class_html, split_session_analysis_by_class
-    from backend.class_analysis import assemble_cause_data
+    from analysis_report_exporter import (
+        _render_class_html, split_session_analysis_by_class, assemble_session_analysis,
+        _enrich_personal_knowledge,
+    )
 
     _require_session(db, session_id)
-    data = assemble_cause_data(db, int(session_id))
+    data = assemble_session_analysis(db, int(session_id), page_only=True, include_knowledge=True)
     groups = split_session_analysis_by_class(data)
     selected_class = class_name if class_name in groups else next(iter(groups), None)
     if selected_class is None:
@@ -344,9 +477,9 @@ def get_class_analysis_report(
             "The class report has not been generated yet",
             {"class_name": selected_class},
         )
-    return HTMLResponse(
-        _render_class_html(groups[selected_class], entry["narrative"])
-    )
+    selected = groups[selected_class]
+    _enrich_personal_knowledge(db, selected, None)
+    return HTMLResponse(_render_class_html(selected, entry["narrative"]))
 
 
 @router.get("/sessions/{session_id}/class-analysis/questions/{question_id}/preview")

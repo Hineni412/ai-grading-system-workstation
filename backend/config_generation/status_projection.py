@@ -51,6 +51,14 @@ def project_question_states(
     for qid in generated - failed:
         by_id.setdefault(qid, _public_state(qid, "passed", "", False))
 
+    if meta.get("exam_intake_incomplete"):
+        for qid in meta.get("exam_intake_failed_question_ids") or []:
+            if str(qid) in ordered:
+                by_id[str(qid)] = _public_state(
+                    str(qid), "blocked", "question_bank_intake",
+                    bool(meta.get("exam_intake_retryable")),
+                )
+
     default_state = "failed" if job_status in {"failed", "cancelled"} else "pending"
     return [by_id.get(qid, _public_state(qid, default_state, "", default_state == "failed")) for qid in ordered]
 

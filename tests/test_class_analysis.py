@@ -99,7 +99,7 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
         def json_from_text(self, prompt, **kwargs):
             source = json.loads(prompt.rsplit("\n", 1)[1])
             self.calls.append(source)
-            return {"groups": [{"kind": "process", "reason": "缺少直角依据", "manifestation": "未写明直角条件就使用勾股定理", "evidence_ids":
+            return {"groups": [{"kind": "process", "category": "过程与依据", "reason": "缺少直角依据", "manifestation": "未写明直角条件就使用勾股定理", "evidence_ids":
                                 [item["id"] for item in source["evidence"]]}]}
 
     fake = CauseClient()
@@ -170,8 +170,8 @@ def test_cause_classification_preserves_positive_uncertain_and_multiple_errors(t
     negative = next(e["id"] for e in source["evidence"] if "未写" in e["text"])
     store = ClassAnalysisStateStore(tmp_path / "reports")
     save_cause_result(store, sid, source, {"groups": [
-        {"kind": "process", "reason": "缺少直角依据", "manifestation": "未写直角", "evidence_ids": [negative, negative]},
-        {"kind": "error", "reason": "计算错误", "manifestation": "列式后计算错误", "evidence_ids": [negative]},
+        {"kind": "process", "category": "过程与依据", "reason": "缺少直角依据", "manifestation": "未写直角", "evidence_ids": [negative, negative]},
+        {"kind": "error", "category": "计算与化简", "reason": "计算错误", "manifestation": "列式后计算错误", "evidence_ids": [negative]},
     ], "positive_ids": [positive]}, origin="assistant")
     page = build_class_page_data(data, compact=True)
     apply_cause_results(page, data, sources, store.load(sid))
@@ -186,7 +186,7 @@ def test_cause_classification_preserves_positive_uncertain_and_multiple_errors(t
     assert len(next(q for q in page["questions"] if q["question_id"] == "Q2")["cause_review"]["uncertain"]) == 1
     invalid = deepcopy(source)
     with pytest.raises(ValueError, match="reference"):
-        save_cause_result(store, sid, invalid, {"groups": [{"kind": "error", "reason": "虚构", "manifestation": "虚构", "evidence_ids": ["E999"]}]})
+        save_cause_result(store, sid, invalid, {"groups": [{"kind": "error", "category": "计算与化简", "reason": "虚构", "manifestation": "虚构", "evidence_ids": ["E999"]}]})
 
 
 def test_cause_model_failure_does_not_retry_or_replace_original_reasons(class_analysis_api_client):
@@ -236,6 +236,7 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
             for item in source["evidence"]:
                 unfinished = "未继续" in item["student_answer"]
                 groups.append({"kind": "process" if unfinished else "error",
+                               "category": "过程与依据" if unfinished else "计算与化简",
                                "reason": "未完成求解" if unfinished else "计算错误",
                                "manifestation": "停在方程" if unfinished else "求值错误", "evidence_ids": [item["id"]]})
             return {"groups": groups}
@@ -260,7 +261,11 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
     again = client.get(f"/api/sessions/{sid}/class-analysis?view=summary&class_name=").json()
     assert again == first
     reopened = ClassAnalysisStateStore(reports_dir).load(sid)
-    assert reopened["cause_analysis"]["questions"]["Q2"]["input"] == source
+    # 存储的 input 是不含动态 known_patterns 的输入快照（指纹判定也以它为准）。
+    stored_input = reopened["cause_analysis"]["questions"]["Q2"]["input"]
+    assert {k: v for k, v in stored_input.items() if k != "known_patterns"} == {
+        k: v for k, v in source.items() if k != "known_patterns"
+    }
     assert len(fake.calls) == 2
     # 只改作答，不改批语，也必须更新；失败不丢失上次成功结果。
     with sqlite3.connect(db.db_path) as conn:
@@ -270,12 +275,12 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
     assert changed["cause_analysis"]["pending_questions"] == 1
     holder["client"] = FakeLLMClient(error=TimeoutError("test"))
     generate()
-    assert ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"]["questions"]["Q2"]["input"] == source
+    assert ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"]["questions"]["Q2"]["input"] == stored_input
     holder["client"] = fake
     generate()
     current = ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"]["questions"]["Q2"]
-    assert current["history"][0]["input"] == source
-    assert current["input"] != source
+    assert current["history"][0]["input"] == stored_input
+    assert current["input"] != stored_input
     # 参考解答改变也需要重新核对。
     answer_key["questions"][1]["analysis"] = "可接受等价分数，过程需完整。"
     answer_path.write_text(json.dumps(answer_key, ensure_ascii=False), encoding="utf-8")
@@ -324,9 +329,9 @@ def test_cause_multiple_aspects_previous_part_and_legacy_preservation(tmp_path):
     assert old_page["causes_legacy"] is True and old_page["causes"][0]["count"] == 2
     payload = {"groups": [
         {"kind": "carry_forward", "reason": "前问错误结果延续", "manifestation": "沿用绳长16继续计算", "source_question_id": "Q2(P1)", "evidence_ids": [a]},
-        {"kind": "process", "reason": "依据未明确写出", "manifestation": "未写依据", "evidence_ids": [a]},
-        {"kind": "error", "reason": "数量对应错误", "manifestation": "把7用作固定高度", "evidence_ids": [b, b]},
-        {"kind": "error", "reason": "数量对应错误", "manifestation": "把7用作剩余竖段", "evidence_ids": [b]},
+        {"kind": "process", "category": "过程与依据", "reason": "依据未明确写出", "manifestation": "未写依据", "evidence_ids": [a]},
+        {"kind": "error", "category": "审题与条件", "reason": "数量对应错误", "manifestation": "把7用作固定高度", "evidence_ids": [b, b]},
+        {"kind": "error", "category": "审题与条件", "reason": "数量对应错误", "manifestation": "把7用作剩余竖段", "evidence_ids": [b]},
         {"kind": "review", "reason": "文字不足以明确", "manifestation": "最后结果依据待核", "evidence_ids": [b]},
     ]}
     save_cause_result(store, sid, source, payload, origin="assistant")
@@ -977,3 +982,307 @@ def test_class_analysis_report_selects_each_class(
         params={"class_name": "9 班"},
     )
     assert fallback.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# P1 错因体系：7 大类归一、学生错因记录物化、整理编排
+# ---------------------------------------------------------------------------
+
+
+def test_cause_category_normalization_and_internal_code_cleaning() -> None:
+    from backend.error_causes import (
+        CAUSE_CATEGORIES,
+        clean_cause_text,
+        normalize_cause_category,
+    )
+
+    assert len(CAUSE_CATEGORIES) == 7
+    for category in CAUSE_CATEGORIES:
+        assert normalize_cause_category(category) == category
+    # 批改旧词与题库旧词都换算到 7 大类；占位与未知词不猜。
+    assert normalize_cause_category("计算错误") == "计算与化简"
+    assert normalize_cause_category("运算化简错误") == "计算与化简"
+    assert normalize_cause_category("书写依据不完整") == "过程与依据"
+    assert normalize_cause_category("其他") is None
+    assert normalize_cause_category("人工复核已确认") is None
+    assert normalize_cause_category("不存在的类别") is None
+    assert normalize_cause_category(None) is None
+    # 批改写出的内部英文码：受控翻译、占位剔除、未登记纯英文剔除、中文保留。
+    assert clean_cause_text("blank_or_no_valid_work") == "空白或无有效作答内容"
+    assert clean_cause_text("manual_review_confirmed") == ""
+    assert clean_cause_text("人工复核已确认") == ""
+    assert clean_cause_text("mystery_internal_code") == ""
+    assert clean_cause_text("计算时抄错数字") == "计算时抄错数字"
+    assert clean_cause_text("objective_answer=65") == "客观题作答：65"
+
+
+def _cause_source(data, question_id: str) -> dict:
+    from backend.class_analysis import build_cause_inputs
+
+    return next(
+        source for source in build_cause_inputs(data)
+        if source["question_id"] == question_id
+    )
+
+
+def test_normalize_cause_result_requires_valid_category(tmp_path: Path) -> None:
+    import backend.jobs  # 与应用入口保持相同的现有 jobs 初始化顺序。
+    from analysis_report_exporter import assemble_session_analysis
+    from backend.class_analysis import (
+        ClassAnalysisStateStore,
+        save_cause_result,
+    )
+    from db_manager import DBManager
+
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    sid = _seed_analysis_session(db, tmp_path)
+    data = assemble_session_analysis(
+        db, sid, data_root=tmp_path, page_only=True, include_answer_evidence=True
+    )
+    source = _cause_source(data, "Q2")
+    evidence_id = source["evidence"][0]["id"]
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+
+    group = {
+        "kind": "error",
+        "reason": "数量对应错误",
+        "manifestation": "把 7 用作固定高度",
+        "evidence_ids": [evidence_id],
+    }
+    with pytest.raises(ValueError, match="category"):
+        save_cause_result(store, sid, source, {"groups": [group]})
+    with pytest.raises(ValueError, match="category"):
+        save_cause_result(
+            store, sid, source,
+            {"groups": [{**group, "category": "未作答"}]},  # error 不允许挂未作答
+        )
+    with pytest.raises(ValueError, match="category"):
+        save_cause_result(
+            store, sid, source,
+            {"groups": [{**group, "category": "批改旧词未换算"}]},
+        )
+    # review / carry_forward 结构标记不需要大类。
+    save_cause_result(
+        store, sid, source,
+        {"groups": [{"kind": "review", "reason": "过程原因未明",
+                     "manifestation": "仅有最终错误结果", "evidence_ids": [evidence_id]}]},
+    )
+    saved = store.load(sid)["cause_analysis"]["questions"]["Q2"]["result"]
+    assert saved["groups"][0]["category"] is None
+
+
+def test_student_error_records_materialize_and_invalidate_on_input_change(
+    tmp_path: Path,
+) -> None:
+    import backend.jobs
+    from backend.class_analysis import (
+        ClassAnalysisStateStore,
+        assemble_cause_data,
+        build_cause_inputs,
+        save_cause_result,
+        student_error_map,
+    )
+    from db_manager import DBManager
+
+    db = DBManager(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_analysis_session(db, tmp_path)
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+    sources = build_cause_inputs(data)
+    source = _cause_source(data, "Q2")
+    ids = [item["id"] for item in source["evidence"]]
+    save_cause_result(
+        store, sid, source,
+        {"groups": [
+            {"kind": "error", "category": "概念理解", "reason": "垂直关系用错",
+             "manifestation": "未证垂直就用性质", "evidence_ids": ids},
+        ]},
+        data=data,
+    )
+    state = store.load(sid)
+    envelope = state["error_records"]["Q2"]
+    assert envelope["input_fingerprint"]
+    assert {row["category"] for row in envelope["records"]} == {"概念理解"}
+    assert {row["student_id"] for row in envelope["records"]} == {
+        student.student_id for student in data.students
+        if any(r.question_id == "Q2" and r.lost for r in student.records)
+    }
+    lisi = next(s for s in data.students if s.student_name == "李四")
+    mapped = student_error_map(state, lisi, sources)
+    assert [row["pattern"] for row in mapped["Q2"]] == ["垂直关系用错"]
+    # 批语变化 → 输入指纹变化 → 物化记录不再匹配，报告不展示旧归类。
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE session_details SET deduction_reason='复核后改判' WHERE question_id='Q2'"
+        )
+    changed = assemble_cause_data(db, sid, data_root=tmp_path)
+    assert student_error_map(state, lisi, build_cause_inputs(changed)) == {}
+
+
+def test_known_cause_patterns_reuse_and_retry_disabled_skips_failed(
+    tmp_path: Path,
+) -> None:
+    import backend.jobs
+    from backend.class_analysis import (
+        ClassAnalysisStateStore,
+        assemble_cause_data,
+        build_cause_inputs,
+        known_cause_patterns,
+        run_cause_analysis,
+        save_cause_result,
+    )
+    from db_manager import DBManager
+
+    db = DBManager(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_analysis_session(db, tmp_path)
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+    source = _cause_source(data, "Q2")
+    ids = [item["id"] for item in source["evidence"]]
+    save_cause_result(
+        store, sid, source,
+        {"groups": [
+            {"kind": "error", "category": "概念理解", "reason": "垂直关系用错",
+             "manifestation": "未证垂直", "evidence_ids": ids},
+        ]},
+        data=data,
+    )
+    # 本场已整理的错法名进入 shared，供其他题复用。
+    patterns = known_cause_patterns(store, None, sid)
+    assert {item["reason"] for item in patterns["shared"]} == {"垂直关系用错"}
+
+    class _Ctx:
+        payload = {"session_id": sid}
+        def raise_if_cancelled(self): pass
+        def report(self, *args, **kwargs): pass
+
+    class _FailingClient:
+        def __init__(self):
+            self.calls = 0
+        def json_from_text(self, prompt, **kwargs):
+            self.calls += 1
+            raise TimeoutError("synthetic")
+
+    failing = _FailingClient()
+    result = run_cause_analysis(
+        _Ctx(), db=db, data_root=tmp_path, store=store,
+        llm_client_factory=lambda: failing, retry_failed=False,
+    )
+    # Q2 已整理跳过，只有 Q1 调用且失败。
+    assert failing.calls == 1
+    assert result["status"] == "failed" and result["failed_questions"] == 1
+    # 报告前置阶段（retry_failed=False）：失败题不自动重发。
+    second = run_cause_analysis(
+        _Ctx(), db=db, data_root=tmp_path, store=store,
+        llm_client_factory=lambda: failing, retry_failed=False,
+    )
+    assert failing.calls == 1
+    assert second["failed_questions"] == 0
+    # 手动整理（retry_failed=True）仍会重试失败题。
+    run_cause_analysis(
+        _Ctx(), db=db, data_root=tmp_path, store=store,
+        llm_client_factory=lambda: failing, retry_failed=True,
+    )
+    assert failing.calls == 2
+
+
+def test_choice_question_option_path_and_teacher_confirm(
+    class_analysis_api_client, tmp_path: Path,
+) -> None:
+    """P2 端到端：八上选择题走选项诊断；学生选项直接映射；教师确认写题库。"""
+    from question_bank.database.schema import connect, initialize_database
+
+    client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
+    _patch_configured(monkeypatch, True)
+
+    qb_path = tmp_path / "databases" / "question_bank.db"
+    initialize_database(qb_path)
+    with connect(qb_path) as conn:
+        conn.execute(
+            "INSERT INTO questions (question_number, question_text, answer_text, question_type)"
+            " VALUES ('1', '下列图形中是轴对称图形的是 A. 平行四边形 B. 等腰三角形 C. 梯形 D. 三角形',"
+            " '【答案】B', '选择题')"
+        )
+        bank_id = int(conn.execute("SELECT id FROM questions").fetchone()[0])
+        conn.execute(
+            "INSERT INTO grading_question_links (grading_session_id, source_question_id,"
+            " bank_question_id, link_method, status) VALUES (?, 'Q1', ?, 'manual', 'confirmed')",
+            (str(sid), bank_id),
+        )
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE grading_sessions SET curriculum_volume_id='bnu24-math-g8-upper' WHERE id=?",
+            (sid,),
+        )
+
+    class OptionAwareClient:
+        def __init__(self):
+            self.calls = []
+
+        def json_from_text(self, prompt, **kwargs):
+            if "选项诊断" in prompt:
+                self.calls.append("option")
+                return {"options": [
+                    {"option": "A", "category": "概念理解", "pattern": "误认平行四边形为轴对称",
+                     "explanation": "混淆轴对称与中心对称"},
+                    {"option": "C", "category": "概念理解", "pattern": "误认梯形为轴对称",
+                     "explanation": "未区分等腰梯形"},
+                    {"option": "D", "category": "审题与条件", "pattern": "忽略三角形限定",
+                     "explanation": "一般三角形不一定轴对称"},
+                ]}
+            self.calls.append("v3")
+            source = json.loads(prompt.rsplit("\n", 1)[1])
+            return {"groups": [{
+                "kind": "process", "category": "过程与依据", "reason": "缺少直角依据",
+                "manifestation": "未写明直角条件",
+                "evidence_ids": [item["id"] for item in source["evidence"]],
+            }]}
+
+    fake = OptionAwareClient()
+    holder["client"] = fake
+    job = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job["id"], timeout=10)
+    assert manager.get(job["id"]).status == "succeeded"
+    # Q1 选项诊断 1 次 + Q2 整题整理 1 次；李四 Q1 选 C。
+    assert sorted(fake.calls) == ["option", "v3"]
+
+    from backend.class_analysis import ClassAnalysisStateStore
+    state = ClassAnalysisStateStore(reports_dir).load(sid)
+    q1 = state["cause_analysis"]["questions"]["Q1"]
+    group = q1["result"]["groups"][0]
+    assert group["reason"] == "误认梯形为轴对称"
+    assert group["category"] == "概念理解"
+    assert state["option_analysis"]["Q1"]["analysis"]["C"]["pattern"] == "误认梯形为轴对称"
+
+    # 再次整理：选项分析按题目指纹复用、Q2 结果仍新鲜 → 零新调用。
+    job2 = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job2["id"], timeout=10)
+    assert manager.get(job2["id"]).status == "succeeded"
+    assert len(fake.calls) == 2
+
+    # 教师确认入库：触发条件推导为 option/C；重复提交幂等。
+    payload = {
+        "question_id": "Q1", "kind": "error", "category": "概念理解",
+        "reason": "误认梯形为轴对称", "manifestation": "选了 C",
+        "operation_token": "op-1",
+    }
+    resp = client.post(f"/api/sessions/{sid}/class-analysis/causes/confirm", json=payload)
+    assert resp.status_code == 200, resp.text
+    row = resp.json()["pattern"]
+    assert row["question_id"] == bank_id
+    assert row["trigger_kind"] == "option" and row["trigger_value"] == "C"
+    resp2 = client.post(
+        f"/api/sessions/{sid}/class-analysis/causes/confirm",
+        json={**payload, "operation_token": "op-2"},
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["pattern"]["id"] == row["id"]
+
+    # 页面 GET 标注该错法已入库。
+    page = client.get(f"/api/sessions/{sid}/class-analysis?view=summary&class_name=").json()
+    q1_page = next(q for q in page["data"]["questions"] if q["question_id"] == "Q1")
+    cause = next(c for c in q1_page["causes"] if c["reason"] == "误认梯形为轴对称")
+    assert cause["bank_confirmed"] is True

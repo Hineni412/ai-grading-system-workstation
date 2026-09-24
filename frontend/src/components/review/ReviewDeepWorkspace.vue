@@ -10,6 +10,7 @@ import {
 import type { EvidenceSource } from '../../composables/use-evidence-viewer'
 import { ImageCompare } from '../ui/image-compare'
 import ReviewEvidenceViewer from './ReviewEvidenceViewer.vue'
+import ReviewImageDialog from './ReviewImageDialog.vue'
 import ReviewScoringInspector from './ReviewScoringInspector.vue'
 
 const props = defineProps<{
@@ -22,6 +23,8 @@ const props = defineProps<{
     item: ReviewItemLike
   }) => void
 }>()
+
+const imageExpanded = ref(false)
 
 const sourceOptions: readonly {
   value: EvidenceSource
@@ -125,6 +128,7 @@ const emit = defineEmits<{
           :previous-item="previousItem"
           :next-item="nextItem"
           :source="selectedSource"
+          @expand="imageExpanded = true"
         />
       </div>
       <div class="review-deep-workspace__scoring">
@@ -134,5 +138,6 @@ const emit = defineEmits<{
         />
       </div>
     </div>
+    <ReviewImageDialog v-if="imageExpanded" :item="item" :source="selectedSource" @close="imageExpanded = false" />
   </section>
 </template>

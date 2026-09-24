@@ -201,7 +201,8 @@ describe('training API', () => {
   })
 
   it('decodes weak points whose mastery was dropped by exclude_none serialization', () => {
-    const { mastery: _mastery, ...weakPointWithoutMastery } = diagnosisPayload.students[0].weak_points[0]
+    const weakPointWithoutMastery: Record<string, unknown> = { ...diagnosisPayload.students[0].weak_points[0] }
+    delete weakPointWithoutMastery.mastery
     const decoded = decodeTrainingDiagnosis({
       ...diagnosisPayload,
       students: [{

@@ -40,6 +40,26 @@ def convert(grader, item):
         "grading_details": [copy.deepcopy(item)]}, expected_student_name="合成验收")
 
 
+@pytest.mark.parametrize("required,equivalent,simplified,expected", [
+    (True, True, False, 8), (False, True, False, 9),
+    (True, True, True, 9), (True, False, False, 9),
+])
+def test_final_simplification_deducts_exactly_one_in_both_grading_modes(required, equivalent, simplified, expected):
+    grader, spec = grader_and_spec()
+    item = {'question_id': 'Q1', 'score_awarded': 9, 'deduction_reason': '',
+            'step_assessments': assessments(('full', 'full', 'full')),
+            'final_answer_simplification': {'required': required, 'equivalent': equivalent,
+                'simplified': simplified, 'student_evidence': '(2√3)/2−1', 'requirement_evidence': '计算最简结果'}}
+    result = convert(grader, item)
+    detail, reason, metadata = _detail_from_ai_item(copy.deepcopy(item), {'Q1'}, 80, spec=spec)
+    assert not reason
+    assert result.student_score == detail.score_awarded == expected
+    assert sum(step['score_awarded'] for step in metadata['step_assessments']) == 9
+    if expected == 8:
+        assert metadata['presentation_deduction'] == 1
+        assert '未完成化简' in detail.deduction_reason
+
+
 @pytest.mark.parametrize("observed", ["4和6", "a=4，b=6"])
 @pytest.mark.parametrize("raw_score", [0, 1])
 def test_correct_answer_without_work_is_one_in_both_modes(observed, raw_score):

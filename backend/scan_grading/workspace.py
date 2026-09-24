@@ -1287,6 +1287,7 @@ class ScanGradingWorkspace:
                     "front" if front_page_parity == "odd" else "back"
                 )
             payload = {
+                "scan_batch_id": str(manifest["batch_id"]),
                 "revision": int(state["revision"]),
                 "summary": {
                     "auto_matched": len(groups),

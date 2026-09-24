@@ -168,6 +168,9 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
     # SYN-S05 has no loss evidence and correctly receives no recommendations.
     diagnosis = _diagnosis(student_ids=('SYN-S01',))
     diagnosis['students'][0]['weak_points'][0]['source_question_refs'][0]['question_difficulty'] = 8
+    # The loss stays recorded (8 < 10) while the readiness plan can reach the
+    # difficulty-8 candidate; a 40% score would cap the plan at foundation.
+    diagnosis['students'][0]['weak_points'][0]['source_question_refs'][0]['score_awarded'] = 8
     draft = module.create(request_token='a'*32, actor_ref='test',
         diagnosis=diagnosis,
         config=PersonalizedRecommendationConfig(question_count=8,expected_minutes=45,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import sqlite3
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -10,6 +11,7 @@ from annotation_renderer import render_annotated_paper
 from answer_region_session_lock import get_answer_region_session_lock
 from answer_region_geometry import answer_regions_with_template_source_sizes
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
+from backend.repositories.base import RepositoryError
 from path_manager import resolve_stored_file_path
 from question_id_contract import (
     QuestionIdContractError,
@@ -32,6 +34,32 @@ class ManualReviewService:
         self.results = self.db.results
         self.review = self.db.reviews
         self.annotated_dir = annotated_dir
+
+    def ensure_result_annotation(self, result_id: int) -> None:
+        context = self.results.get_result_context(result_id)
+        if not context:
+            return
+        with get_answer_region_session_lock(self.annotated_dir / f"session_{context['session_id']}"):
+            annotated = self.review.get_annotated_result(result_id)
+            if annotated and annotated.get("annotated_front_path") and annotated.get("annotated_back_path"):
+                return
+            details = self.results.get_result_details(result_id)
+            self._render_result_annotation_locked(
+                result_id, [str(item["question_id"]) for item in details],
+            )
+
+    def cleanup_invalidated_annotations(self, rows: list[dict[str, Any]]) -> None:
+        paths = {row.get(field) for row in rows
+                 for field in ("annotated_front_path", "annotated_back_path")
+                 if isinstance(row.get(field), str) and row.get(field)}
+        try:
+            referenced_paths = self.review.referenced_annotation_paths(paths)
+        except (OSError, sqlite3.Error, RepositoryError):
+            # The score and invalidation are already committed. Keep old files
+            # if cleanup cannot check references; never report a failed save.
+            return
+        for row in rows:
+            self._cleanup_replaced_annotation_files(row, current_paths=set(), referenced_paths=referenced_paths)
 
     def render_result_annotation(
         self,
@@ -210,6 +238,7 @@ class ManualReviewService:
         previous: dict[str, Any] | None,
         *,
         current_paths: set[str],
+        referenced_paths: set[str] | None = None,
     ) -> None:
         if not previous:
             return
@@ -229,7 +258,8 @@ class ManualReviewService:
                 continue
             if candidate.suffix.lower() not in _ANNOTATED_IMAGE_SUFFIXES:
                 continue
-            if self.review.is_annotated_result_path_referenced(value):
+            if (value in referenced_paths if referenced_paths is not None
+                    else self.review.is_annotated_result_path_referenced(value)):
                 continue
             try:
                 candidate.unlink(missing_ok=True)
@@ -267,12 +297,20 @@ class ManualReviewService:
         session_id: int,
         adjustments: list[dict[str, Any]],
         highlight_qids: list[str] | None = None,
+        *,
+        defer_annotations: bool = False,
     ) -> dict[str, Any]:
         result = self.review.apply_session_review_adjustments(
             session_id,
             adjustments,
+            **({"defer_annotations": True} if defer_annotations else {}),
         )
         result_ids = sorted({int(item["result_id"]) for item in adjustments})
+        if defer_annotations:
+            self.cleanup_invalidated_annotations(result.pop("invalidated_annotations", []))
+            return {**result, "annotation_outcomes": [
+                {"result_id": result_id, "status": "on_demand"} for result_id in result_ids
+            ]}
         annotation_outcomes: list[dict[str, Any]] = []
         for result_id in result_ids:
             try:

@@ -62,6 +62,12 @@ class ReviewItemListResponse(BaseModel):
     total: int
 
 
+class ReviewStepScore(BaseModel):
+    part_id: str = ""
+    step_id: str
+    score_awarded: float
+
+
 class ReviewConfirmItem(BaseModel):
     review_item_id: str | None = None
     expected_revision: int = Field(default=0, ge=0)
@@ -72,10 +78,12 @@ class ReviewConfirmItem(BaseModel):
     deduction_reason: str | None = None
     error_category: str | None = None
     error_summary: str | None = None
+    step_scores: list[ReviewStepScore] | None = None
 
 
 class ReviewConfirmRequest(BaseModel):
     items: list[ReviewConfirmItem]
+    annotation_mode: Literal["immediate", "on_demand"] = "immediate"
 
     @field_validator("items")
     @classmethod
@@ -87,7 +95,7 @@ class ReviewConfirmRequest(BaseModel):
 
 class ReviewAnnotationOutcomeResponse(BaseModel):
     result_id: int
-    status: Literal["succeeded", "retry_required"]
+    status: Literal["succeeded", "retry_required", "on_demand"]
     message: str | None = None
 
 

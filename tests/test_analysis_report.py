@@ -246,17 +246,18 @@ def test_personal_export_zip_contains_reports_and_absent_list(
         personal_html = archive.read("001_张三_个人报告.html").decode("utf-8")
 
     assert "张三" in personal_html
-    assert "家长版" in personal_html
-    assert "整体表现稳定" in personal_html
+    assert "家长报告" in personal_html
+    # 新版式用本地生成的结论句，不展示 overall_comment 原文。
+    assert "丢的 10 分都在第2题" in personal_html
     assert "证明过程缺关键步骤" in personal_html
     assert "单元测试" in personal_html
     # 隐私：家长版不得出现其他学生姓名。
     assert "李四" not in personal_html
     assert "王五" not in personal_html
-    # 李四是待复核卷，页眉应有提示。
+    # 李四是待复核卷，成绩卡应有提示。
     with zipfile.ZipFile(zip_path) as archive:
         review_html = archive.read("002_李四_个人报告.html").decode("utf-8")
-    assert "成绩可能调整" in review_html
+    assert "分数可能微调" in review_html
 
 
 def test_class_report_type_removed_from_export(analysis_db, tmp_path: Path) -> None:
@@ -284,10 +285,12 @@ def test_llm_failure_degrades_to_data_only_report(analysis_db, tmp_path: Path) -
     assert client.calls == 2  # 失败不暗中重发
     with zipfile.ZipFile(zip_path) as archive:
         personal_html = archive.read("001_张三_个人报告.html").decode("utf-8")
-    assert "AI 分析生成失败，可重新生成" in personal_html
+    # 无 AI 叙述版降级为老师批语/参考答案，不给家长看内部失败提示与原始批改记录。
+    assert "AI 分析生成失败" not in personal_html
+    assert "缺关键步骤" not in personal_html
     # 数据段照常渲染。
-    assert "逐题得分对比" in personal_html
-    assert "丢分题逐题分析" in personal_html
+    assert "本卷答题一览" in personal_html
+    assert "全部失分题详解" in personal_html
 
 
 def test_narrative_cache_avoids_repeat_model_calls(analysis_db, tmp_path: Path) -> None:
@@ -312,6 +315,48 @@ def test_narrative_cache_avoids_repeat_model_calls(analysis_db, tmp_path: Path) 
     assert client.calls == 2
 
 
+def test_legacy_narrative_cache_hit_skips_model_client(
+    analysis_db, tmp_path: Path
+) -> None:
+    """旧版叙述缓存命中时直接复用：不初始化模型客户端，也不回写新 key。"""
+    from analysis_report_exporter import AnalysisNarrativeCache, AnalysisReportGenerator
+    from backend.report_exports import LEGACY_PERSONAL_NARRATIVE_VERSIONS
+
+    db, session_id, root = analysis_db
+    cache_dir = tmp_path / "cache"
+    cache = AnalysisNarrativeCache(cache_dir)
+    for student_id in (1, 2):
+        key = AnalysisNarrativeCache.cache_key(
+            session_id=session_id,
+            score_revision="rev-1",
+            rendition_version=LEGACY_PERSONAL_NARRATIVE_VERSIONS[0],
+            report_key=f"personal:{student_id}",
+        )
+        cache.store(key, PERSONAL_NARRATIVE)
+
+    def unavailable_factory():
+        raise AssertionError("cached reports must not initialize a model client")
+
+    generator = AnalysisReportGenerator(
+        db,
+        tmp_path / "out",
+        llm_client_factory=unavailable_factory,
+        narrative_cache_dir=cache_dir,
+        data_root=root,
+    )
+    zip_path = Path(
+        generator.export_session(
+            session_id, "personal_analysis_html", score_revision="rev-1"
+        )
+    )
+    assert zip_path.is_file()
+    with zipfile.ZipFile(zip_path) as archive:
+        html_text = archive.read("001_张三_个人报告.html").decode("utf-8")
+    assert "证明书写不完整" in html_text  # 复用了旧版叙述内容
+    # 旧 key 不回写到新版本：缓存目录仍只有预置的两份。
+    assert len(list(cache_dir.glob("*.json"))) == 2
+
+
 def test_missing_images_degrade_to_text_cards(analysis_db, tmp_path: Path) -> None:
     # 没有批注图、原卷路径为空、也没有 region：应静默降级为纯文字卡片。
     db, session_id, _root = analysis_db
@@ -327,7 +372,7 @@ def test_missing_images_degrade_to_text_cards(analysis_db, tmp_path: Path) -> No
     with zipfile.ZipFile(zip_path) as archive:
         personal_html = archive.read("001_张三_个人报告.html").decode("utf-8")
     assert "data:image/jpeg;base64" not in personal_html
-    assert "丢分题逐题分析" in personal_html
+    assert "全部失分题详解" in personal_html
 
 
 def test_question_screenshot_embedded_from_original_scan(
@@ -375,8 +420,11 @@ def test_question_screenshot_embedded_from_original_scan(
 
     with zipfile.ZipFile(zip_path) as archive:
         personal_html = archive.read("001_张三_个人报告.html").decode("utf-8")
-    # 张三只有 Q2 丢分 → 恰好一张原卷截图。
-    assert personal_html.count("data:image/jpeg;base64") == 1
+    # 张三只有 Q2 丢分 → 恰好一张原卷截图（在方格面板/附录等处复用同一张）。
+    import re
+
+    shots = set(re.findall(r"data:image/jpeg;base64,[A-Za-z0-9+/=]+", personal_html))
+    assert len(shots) == 1
     assert "原卷截图" in personal_html
 
 
@@ -468,8 +516,15 @@ def test_analysis_preflight_configured(analysis_api_client) -> None:
         "call_count": 2,
         "estimated_total_tokens": payload["estimated_total_tokens"],
         "cache_hits": 0,
+        # 前置错因整理：本场 2 道失分题均未整理过 → 各需 1 次调用。
+        "cause_call_count": payload["cause_call_count"],
+        "cause_total_questions": payload["cause_total_questions"],
+        "cause_estimated_tokens": payload["cause_estimated_tokens"],
     }
     assert payload["estimated_total_tokens"] > 0
+    assert payload["cause_total_questions"] == 2
+    assert payload["cause_call_count"] == 2
+    assert payload["cause_estimated_tokens"] > 0
 
     class_response = client.get(
         f"/api/sessions/{session_id}/reports/analysis-preflight",
@@ -493,6 +548,9 @@ def test_analysis_preflight_unconfigured(analysis_api_client) -> None:
     assert payload["service_name"] is None
     assert payload["model_name"] is None
     assert payload["call_count"] == 2
+    # 未配置模型时仍照常预估整理次数（展示给用户，不会产生调用）。
+    assert payload["cause_total_questions"] == 2
+    assert payload["cause_call_count"] == 2
 
 
 def test_analysis_preflight_counts_cache_hits(analysis_api_client) -> None:
@@ -500,7 +558,7 @@ def test_analysis_preflight_counts_cache_hits(analysis_api_client) -> None:
     _patch_configured(monkeypatch, True)
 
     from analysis_report_exporter import AnalysisNarrativeCache
-    from backend.report_exports import report_rendition_version, score_revision
+    from backend.report_exports import report_narrative_version, score_revision
 
     revision = score_revision(db, session_id)
     cache = AnalysisNarrativeCache(reports_dir / ".analysis_narrative_cache")
@@ -508,7 +566,7 @@ def test_analysis_preflight_counts_cache_hits(analysis_api_client) -> None:
     key = AnalysisNarrativeCache.cache_key(
         session_id=session_id,
         score_revision=revision,
-        rendition_version=report_rendition_version("personal_analysis_html"),
+        rendition_version=report_narrative_version("personal_analysis_html"),
         report_key="personal:1",
     )
     cache.store(key, PERSONAL_NARRATIVE)
@@ -700,8 +758,8 @@ def test_personal_report_html_sanitized_and_typed(analysis_db, tmp_path: Path) -
 
     # 英文类型码不得出现在报告里，大题行显示中文题型。
     assert "comprehensive" not in zhangsan_html
-    assert "第2题 解答" in zhangsan_html
-    # 原始批改记录不再展示，学生作答仍单独成行。
+    assert "第2题 · 解答" in zhangsan_html
+    # 原始批改记录不再展示（含翻译后的扣分理由），学生作答仍单独成行。
     assert "objective_answer" not in lisi_html
     assert "作答识别为「C」，与参考答案不符" not in lisi_html
     assert "<dt>批改记录</dt>" not in lisi_html
@@ -723,8 +781,12 @@ def test_report_displays_part_knowledge_difficulty_and_keeps_exam_rate(analysis_
     assert question['direct_knowledge'][0]['stable_key'] == 'kp_geo_triangle_congruence'
     assert _knowledge_rows(data.knowledge_backfill,student.records)[0]['rate'] == record.score / record.max_score
     html = _render_personal_html(data,student,PERSONAL_NARRATIVE,{})
-    assert '<dt>直接考查</dt><dd>三角形全等</dd>' in html
-    assert '8 / 10（题目难度）' in html and '本次考试得分率' in html
+    # 新版式：直接考查标签进入「本次考查点」三态版块与方格面板，不再展示
+    # 小问难度数值与掌握度百分比。
+    assert '三角形全等' in html
+    assert '本次考查点' in html
+    assert '知识与技能掌握图' not in html
+    assert '不以得分率代替掌握度' not in html
     assert before == (student.student_score, record.score, record.max_score, student.rank)
 
 
@@ -757,7 +819,7 @@ def test_compact_report_preserves_review_solution_and_missing_stem(analysis_db) 
     shots = {record.question_id: {"data_uri": "data:image/png;base64,eA==", "caption": "完整作答截图"}}
     with_scan = _render_personal_html(data, student, narrative, shots)
     assert "完整原题表格" in with_scan
-    assert '<details class="shot">' in with_scan and "点击放大" in with_scan
+    assert 'class="shot"' in with_scan and "完整作答截图" in with_scan
     assert "订正任务" not in with_scan and "补写两步。" not in with_scan
     item["stem_in_scan"] = False
     assert "完整原题表格" in _render_personal_html(data, student, narrative, shots)
@@ -794,19 +856,22 @@ def test_report_lost_questions_follow_numeric_order(analysis_db) -> None:
     assert re.findall(r'<div class="head"><b>第(\d+)题', rendered) == ["1", "2", "10"]
 
 
-def test_report_uses_one_student_bar_and_class_mean_marker(analysis_db) -> None:
+def test_question_grid_marks_status_and_class_average(analysis_db) -> None:
     from analysis_report_exporter import assemble_session_analysis, _render_personal_html
     db, session_id, root = analysis_db
     data = assemble_session_analysis(db, session_id, data_root=root)
     student = data.students[0]
     rendered = _render_personal_html(data, student, PERSONAL_NARRATIVE, {})
-    assert rendered.count('class="bar me"') == len(student.records)
-    assert 'class="bar cls"' not in rendered
-    assert rendered.count('class="class-marker"') == len(student.records)
-    assert 'class="class-marker" style="left:75.00%"' in rendered
+    # 答题一览为每个小问出一枚方格，标注得分状态；面板内给全班平均。
+    assert rendered.count('class="qcell ') == len(student.records)
+    assert 'class="qcell full"' in rendered  # Q1 满分
+    assert 'class="qcell part"' in rendered  # Q2 部分得分
+    # 两处原位面板各一次，失分题详解（Q2）再出现一次。
+    assert rendered.count("全班平均") == 3
     data.questions[0].attempts = 0
     unknown_mean = _render_personal_html(data, student, PERSONAL_NARRATIVE, {})
-    assert unknown_mean.count('class="class-marker"') == len(student.records) - 1
+    # Q1 面板不再给班均；剩 Q2 面板与失分题详解各一次。
+    assert unknown_mean.count("全班平均") == 2
 
 
 def test_report_review_status_follows_teacher_confirmation(analysis_db) -> None:
@@ -828,7 +893,7 @@ def test_report_review_status_follows_teacher_confirmation(analysis_db) -> None:
     assert confirmed.student_score == student.student_score
     rendered = _render_personal_html(updated, confirmed, {**PERSONAL_NARRATIVE,
         "question_analyses": [{"question_id": "Q2", "feedback": "需要补充依据。", "review_note": "本次报告发现的独立疑点。"}]}, {})
-    assert "本卷有待复核题目" not in rendered
+    assert "有题目等待老师复核" not in rendered
     assert "报告分析提示" in rendered and "本次报告发现的独立疑点。" in rendered
     assert _score_state(db.db_path) == before
     with sqlite3.connect(db.db_path) as conn:
@@ -945,7 +1010,8 @@ def test_visual_report_failure_keeps_scores_and_does_not_retry_as_text(analysis_
     assert _score_state(db.db_path) == before
     with zipfile.ZipFile(output) as archive:
         text = archive.read("001_张三_个人报告.html").decode("utf-8")
-    assert "AI 分析生成失败" in text
+    # 无 AI 叙述版降级为数据展示，不向家长暴露失败提示。
+    assert "AI 分析生成失败" not in text
     assert "原卷截图" in text
 
 
@@ -1170,14 +1236,21 @@ def test_each_lost_part_has_its_own_answer_analysis_and_image(analysis_db, regio
         assert image_map[0]["question_ids"] == ["Q2(P1)"]
         assert image_map[1]["question_ids"] == ["Q2(P2)"]
     rendered = _render_personal_html(data, student, narrative, shots)
-    assert rendered.count('class="shot"') == 2
+    # 同一截图复用于方格面板/跟进卡/附录；两个失分小问各自一段详解。
+    assert rendered.count('class="shot"') >= 2
     assert rendered.count('class="qpart"') == 2
     assert rendered.count("第1问的标准答案") == 1
     assert rendered.count("第2问的标准答案") == 1
     assert "第3问的标准答案" not in rendered
     assert "第2(1)题的原因待确认" in rendered
     assert "第2(2)题的原因待确认" in rendered
-    assert "Q2(P" not in rendered
+    # Stable question ids are also used by local graph links; visible copy
+    # still uses the teacher-facing question labels.
+    from bs4 import BeautifulSoup
+    visible = BeautifulSoup(rendered, 'html.parser')
+    for hidden in visible(['script', 'style']):
+        hidden.decompose()
+    assert "Q2(P" not in visible.get_text()
     assert "得 28 分 / 满分 40 分" in rendered
     assert "<p>第一行缺少条件</p><p>第二行有计算</p>" in rendered
 
@@ -1291,7 +1364,7 @@ def test_personal_concurrency_keeps_out_of_order_images_results_and_cache_separa
     monkeypatch.setattr(exporter, "capture_lost_question_shots", lambda *_, **__: {})
     monkeypatch.setattr(exporter, "_personal_image_inputs", lambda _data, student, *_: ([str(student.student_id).encode()], []))
     # Keep file output deterministic while measuring only the changed scheduling.
-    monkeypatch.setattr(exporter, "_render_personal_html", lambda _data, student, narrative, _shots: json.dumps({"student": student.student_id, "narrative": narrative}))
+    monkeypatch.setattr(exporter, "_render_personal_html", lambda _data, student, narrative, _shots, **_kw: json.dumps({"student": student.student_id, "narrative": narrative}))
 
     class DelayedClient:
         def __init__(self, limit, fail=None):
@@ -1359,3 +1432,48 @@ def test_personal_concurrency_keeps_out_of_order_images_results_and_cache_separa
     cached = exporter.AnalysisReportGenerator(db, tmp_path / "concurrent", narrative_cache_dir=tmp_path / "cache-concurrent",
                                               llm_client_factory=unavailable_factory, data_root=root)
     assert cached._export_personal(data, "same-input").is_file()
+
+
+def test_personal_report_shows_error_classification_and_recurrence(
+    analysis_db, tmp_path: Path
+) -> None:
+    """P1：已整理的失分题显示错误归类与跨场次同类错误徽章。"""
+    from analysis_report_exporter import (
+        assemble_session_analysis,
+        _render_personal_html,
+    )
+
+    db, session_id, root = analysis_db
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    lisi = next(s for s in data.students if s.student_name == "李四")
+    error_map = {
+        "Q1": [{"category": "审题与条件", "pattern": "选项看错", "kind": "error",
+                "manifestation": "误选 C", "step_id": None, "pattern_status": "candidate",
+                "score": 30.0, "max_score": 60.0, "lost_points": 30.0}],
+        "Q2": [{"category": "过程与依据", "pattern": "缺少关键依据", "kind": "process",
+                "manifestation": "未写依据", "step_id": None, "pattern_status": "existing",
+                "score": 20.0, "max_score": 40.0, "lost_points": 20.0}],
+    }
+    error_history = {
+        "categories": {"审题与条件": ["第2周测验"], "过程与依据": ["第2周测验"]},
+        "patterns": {"选项看错": ["第2周测验"]},
+    }
+
+    # 无 AI 叙述的降级卡片：按题显示错误归类，附同类错误复发徽章。
+    html = _render_personal_html(
+        data, lisi, None, {},
+        error_map=error_map, error_history=error_history,
+    )
+    assert "错误归类（AI 辅助）" in html
+    assert "审题与条件" in html and "选项看错" in html
+    assert "过程与依据" in html and "缺少关键依据" in html
+    assert "同类错误以前出现过" in html
+    assert "第2周测验" in html
+
+    # 有 AI 叙述时：跟进卡片题号标签带大类，附录照常显示归类。
+    html_with_ai = _render_personal_html(
+        data, lisi, PERSONAL_NARRATIVE, {},
+        error_map=error_map, error_history=error_history,
+    )
+    assert "过程与依据" in html_with_ai
+    assert "错误归类" in html_with_ai
