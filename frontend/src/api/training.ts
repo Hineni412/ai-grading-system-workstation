@@ -548,6 +548,72 @@ export interface TrainingDiagnosis {
   diagnosis_identity: 'question_tag'
 }
 
+export interface TrainingOverviewRequest {
+  scope: TrainingStudentScopeRequest
+  exam_scope: TrainingExamScopeRequest
+}
+
+export type OverviewNodeKind = 'chapter' | 'section' | 'topic' | 'skill'
+
+export interface TrainingOverviewDistribution {
+  weak: number
+  review: number
+  stable: number
+  missing: number
+}
+
+export interface TrainingOverviewNode {
+  knowledge_key: string
+  display_name: string
+  kind: OverviewNodeKind
+  chapter_key: string
+  section_key: string
+  group_mastery: number | null
+  evidence_student_count: number
+  distribution: TrainingOverviewDistribution
+  students: Array<{ student_id: string; mastery: number }>
+}
+
+export interface TrainingOverviewTierCounts {
+  weak: number
+  review: number
+  stable: number
+  evidence: number
+}
+
+export interface TrainingOverviewStudent {
+  student_id: string
+  student_code: string
+  student_name: string
+  class_id: string
+  score_rate: number | null
+  score_rate_source: 'current_exam' | 'historical_fallback' | 'none'
+  topics: TrainingOverviewTierCounts
+  skills: TrainingOverviewTierCounts
+}
+
+export interface TrainingOverviewSummary {
+  student_count: number
+  evidence_student_count: number
+  exam_student_count: number
+  exam_score_rate: number | null
+  topic_count: number
+  skill_count: number
+  weak_topic_count: number
+  weak_skill_count: number
+}
+
+export interface TrainingOverview {
+  scope: TrainingDiagnosis['scope']
+  exam_scope: TrainingDiagnosis['exam_scope'] & {
+    curriculum_volume_id?: string | null
+  }
+  warnings: string[]
+  nodes: TrainingOverviewNode[]
+  students: TrainingOverviewStudent[]
+  summary: TrainingOverviewSummary
+}
+
 export interface TrainingPlanItem {
   question_id: number
   item_order: number
@@ -811,6 +877,104 @@ export function decodeTrainingDiagnosis(value: unknown): TrainingDiagnosis {
     throw new Error('Invalid training diagnosis')
   }
   return value as unknown as TrainingDiagnosis
+}
+
+function isOverviewDistribution(
+  value: unknown,
+): value is TrainingOverviewDistribution {
+  return (
+    isRecord(value)
+    && isInteger(value.weak)
+    && isInteger(value.review)
+    && isInteger(value.stable)
+    && isInteger(value.missing)
+  )
+}
+
+function isOverviewNodeKind(value: unknown): value is OverviewNodeKind {
+  return value === 'chapter' || value === 'section' || value === 'topic' || value === 'skill'
+}
+
+function isOverviewNode(value: unknown): value is TrainingOverviewNode {
+  return (
+    isRecord(value)
+    && isNonEmptyString(value.knowledge_key)
+    && typeof value.display_name === 'string'
+    && isOverviewNodeKind(value.kind)
+    && typeof value.chapter_key === 'string'
+    && typeof value.section_key === 'string'
+    && (value.group_mastery === null || isFiniteNumber(value.group_mastery))
+    && isInteger(value.evidence_student_count)
+    && isOverviewDistribution(value.distribution)
+    && Array.isArray(value.students)
+    && value.students.every((student) => (
+      isRecord(student)
+      && typeof student.student_id === 'string'
+      && isFiniteNumber(student.mastery)
+    ))
+  )
+}
+
+function isOverviewTierCounts(
+  value: unknown,
+): value is TrainingOverviewTierCounts {
+  return (
+    isRecord(value)
+    && isInteger(value.weak)
+    && isInteger(value.review)
+    && isInteger(value.stable)
+    && isInteger(value.evidence)
+  )
+}
+
+function isOverviewStudent(value: unknown): value is TrainingOverviewStudent {
+  return (
+    isRecord(value)
+    && typeof value.student_id === 'string'
+    && typeof value.student_code === 'string'
+    && typeof value.student_name === 'string'
+    && typeof value.class_id === 'string'
+    && (value.score_rate === null || isFiniteNumber(value.score_rate))
+    && (
+      value.score_rate_source === 'current_exam'
+      || value.score_rate_source === 'historical_fallback'
+      || value.score_rate_source === 'none'
+    )
+    && isOverviewTierCounts(value.topics)
+    && isOverviewTierCounts(value.skills)
+  )
+}
+
+function isOverviewSummary(value: unknown): value is TrainingOverviewSummary {
+  return (
+    isRecord(value)
+    && isInteger(value.student_count)
+    && isInteger(value.evidence_student_count)
+    && isInteger(value.exam_student_count)
+    && (value.exam_score_rate === null || isFiniteNumber(value.exam_score_rate))
+    && isInteger(value.topic_count)
+    && isInteger(value.skill_count)
+    && isInteger(value.weak_topic_count)
+    && isInteger(value.weak_skill_count)
+  )
+}
+
+export function decodeTrainingOverview(value: unknown): TrainingOverview {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !isNormalizedScope(value.scope)
+    || !isNormalizedExamScope(value.exam_scope)
+    || !isStringArray(value.warnings)
+    || !Array.isArray(value.nodes)
+    || !value.nodes.every(isOverviewNode)
+    || !Array.isArray(value.students)
+    || !value.students.every(isOverviewStudent)
+    || !isOverviewSummary(value.summary)
+  ) {
+    throw new Error('Invalid training overview')
+  }
+  return value as unknown as TrainingOverview
 }
 
 function isPlanItem(value: unknown): value is TrainingPlanItem {
@@ -1435,6 +1599,19 @@ async function fileSha256(file: File): Promise<string> {
 }
 
 export const trainingApi = {
+  overview(
+    body: TrainingOverviewRequest,
+    signal?: AbortSignal,
+  ): Promise<TrainingOverview> {
+    return apiClient.request('/api/training/overview', {
+      method: 'POST',
+      body,
+      decode: decodeTrainingOverview,
+      signal,
+      timeoutMs: 120_000,
+    })
+  },
+
   diagnose(
     body: TrainingDiagnosisRequest,
     signal?: AbortSignal,

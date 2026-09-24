@@ -4,13 +4,19 @@ import { RouterLink, useRoute } from 'vue-router'
 
 const route = useRoute()
 
-const current = computed<'structure' | 'chapter' | 'student' | 'paper'>(() => {
+const current = computed<'overview' | 'structure' | 'chapter' | 'student' | 'paper'>(() => {
+  if (route.name === 'knowledge-overview') return 'overview'
   if (route.name !== 'training') return 'structure'
   if (route.query.mode === 'paper') return 'paper'
   return route.query.mode === 'student' ? 'student' : 'chapter'
 })
 
 const tabs = [
+  {
+    id: 'overview',
+    label: '学情总览',
+    to: { name: 'knowledge-overview' },
+  },
   {
     id: 'structure',
     label: '知识结构',

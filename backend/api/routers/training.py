@@ -55,6 +55,8 @@ from backend.api.schemas.training import (
     TrainingDiagnosisRequest,
     TrainingDiagnosisResponse,
     TrainingExportSubmitRequest,
+    TrainingOverviewRequest,
+    TrainingOverviewResponse,
     TrainingPlanRequest,
     TrainingPlanResponse,
     TrainingTaskConfirmRequest,
@@ -65,6 +67,7 @@ from backend.api.schemas.training import (
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.public_data import sanitize_public_mapping
 from integration.diagnosis_profile_service import DiagnosisProfileService
+from integration.mastery_overview import build_mastery_overview
 from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.personalized_papers import (
     CreatePaperCommand,
@@ -193,6 +196,43 @@ def build_training_diagnosis(
             "Training scope is invalid",
         )
     return TrainingDiagnosisResponse.model_validate(public)
+
+
+@router.post(
+    "/overview",
+    response_model=TrainingOverviewResponse,
+    responses=TRAINING_DATABASE_RESPONSES,
+)
+def build_training_overview(
+    body: TrainingOverviewRequest,
+    service: DiagnosisProfileService = Depends(
+        get_request_diagnosis_profile_service
+    ),
+) -> TrainingOverviewResponse:
+    try:
+        if body.exam_scope.mode != "semester":
+            raise ValueError("overview requires a semester exam scope")
+        diagnosis = service.build_profiles(
+            scope=body.scope.model_dump(exclude_none=True),
+            exam_scope=body.exam_scope.model_dump(exclude_none=True),
+        )
+        overview = build_mastery_overview(
+            diagnosis,
+            volume_id=body.exam_scope.curriculum_volume_id or "",
+        )
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "training_scope_invalid",
+            "Training scope is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "training_database_unavailable",
+            "Training data is temporarily unavailable",
+        ) from exc
+    return TrainingOverviewResponse.model_validate(overview)
 
 
 @router.post(

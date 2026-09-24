@@ -455,6 +455,198 @@ def test_training_diagnosis_rejects_class_scope_without_class_id(
     assert response.json()["error"]["code"] == "validation_error"
 
 
+def _overview_stub_diagnosis() -> dict[str, object]:
+    return {
+        "scope": {
+            "mode": "all",
+            "student_ids": ["12"],
+            "class_id": None,
+            "class_ids": [],
+            "score_rate_min": None,
+            "score_rate_max": None,
+            "include_student_ids": [],
+            "exclude_student_ids": [],
+            "use_historical_fallback": False,
+            "matched_student_count": 1,
+            "scope_revision": "0" * 64,
+            "student_score_profiles": {},
+        },
+        "exam_scope": {
+            "mode": "semester",
+            "curriculum_volume_id": "bnu24-math-g8-upper",
+            "session_ids": [],
+            "sessions": [],
+        },
+        "knowledge_catalog": [
+            {
+                "knowledge_key": "kp_bnu24_math_g8_upper_1",
+                "knowledge_point": "八年级上册｜第一章 勾股定理",
+                "parent_knowledge_key": None,
+                "parent_knowledge_point": None,
+                "node_kind": "chapter",
+            },
+            {
+                "knowledge_key": "kp_bnu24_math_g8_upper_1_1",
+                "knowledge_point": "八年级上册｜第一章｜1 探索勾股定理",
+                "parent_knowledge_key": "kp_bnu24_math_g8_upper_1",
+                "parent_knowledge_point": "八年级上册｜第一章 勾股定理",
+                "node_kind": "section",
+            },
+            {
+                "knowledge_key": "kp_bnu24_math_g8_upper_1_1_1",
+                "knowledge_point": "八年级上册｜第一章｜1｜用勾股定理求边长",
+                "parent_knowledge_key": "kp_bnu24_math_g8_upper_1_1",
+                "parent_knowledge_point": "八年级上册｜第一章｜1 探索勾股定理",
+                "node_kind": "topic",
+            },
+            {
+                "knowledge_key": "sk_stub_overview",
+                "knowledge_point": "技能·列勾股等式",
+                "parent_knowledge_key": "kp_bnu24_math_g8_upper_1_1_1",
+                "parent_knowledge_point": "用勾股定理求边长",
+                "node_kind": "skill",
+            },
+        ],
+        "group_weak_points": [
+            {"knowledge_key": "kp_bnu24_math_g8_upper_1_1_1", "mastery": 0.5},
+        ],
+        "students": [
+            {
+                "student_id": "12",
+                "student_code": "S12",
+                "student_name": "学生甲",
+                "class_id": "八年级1班",
+                "score_rate": 0.55,
+                "score_rate_source": "current_exam",
+                "weak_points": [
+                    {
+                        "knowledge_key": "kp_bnu24_math_g8_upper_1_1_1",
+                        "knowledge_point": "用勾股定理求边长",
+                        "mastery": 0.5,
+                        "evidence_count": 2,
+                    },
+                    {
+                        "knowledge_key": "sk_stub_overview",
+                        "knowledge_point": "技能·列勾股等式",
+                        "mastery": 0.9,
+                        "evidence_count": 1,
+                    },
+                ],
+            }
+        ],
+        "warnings": [],
+        "diagnosis_identity": "question_tag",
+    }
+
+
+def test_training_overview_returns_tier_distribution(
+    training_client: TestClient,
+    training_services,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnosis, _practice, _tasks = training_services
+    monkeypatch.setattr(
+        diagnosis, "build_profiles", lambda **_kwargs: _overview_stub_diagnosis()
+    )
+    response = training_client.post(
+        "/api/training/overview",
+        json={
+            "scope": {"mode": "all"},
+            "exam_scope": {
+                "mode": "semester",
+                "curriculum_volume_id": "bnu24-math-g8-upper",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["exam_scope"]["mode"] == "semester"
+    nodes = {
+        node["knowledge_key"]: node for node in payload["nodes"]
+    }
+    assert nodes["kp_bnu24_math_g8_upper_1_1_1"]["distribution"] == {
+        "weak": 1,
+        "review": 0,
+        "stable": 0,
+        "missing": 0,
+    }
+    assert nodes["sk_stub_overview"]["kind"] == "skill"
+    assert nodes["sk_stub_overview"]["section_key"] == "kp_bnu24_math_g8_upper_1_1"
+    assert payload["summary"]["topic_count"] >= 1
+    assert payload["summary"]["weak_topic_count"] == 1
+    assert payload["students"][0]["student_id"] == "12"
+    assert payload["students"][0]["topics"]["weak"] == 1
+
+
+def test_training_overview_passes_class_scope_to_build_profiles(
+    training_client: TestClient,
+    training_services,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnosis, _practice, _tasks = training_services
+    captured: dict[str, object] = {}
+
+    def fake_build_profiles(**kwargs):
+        captured.update(kwargs)
+        return _overview_stub_diagnosis()
+
+    monkeypatch.setattr(diagnosis, "build_profiles", fake_build_profiles)
+    response = training_client.post(
+        "/api/training/overview",
+        json={
+            "scope": {
+                "mode": "class",
+                "class_id": "10",
+                "class_ids": ["10"],
+                "student_ids": [],
+            },
+            "exam_scope": {
+                "mode": "semester",
+                "curriculum_volume_id": "bnu24-math-g8-upper",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    scope = captured["scope"]
+    assert scope["mode"] == "class"
+    assert scope["class_id"] == "10"
+    assert scope["class_ids"] == ["10"]
+    assert captured["exam_scope"]["mode"] == "semester"
+    assert captured["exam_scope"]["curriculum_volume_id"] == "bnu24-math-g8-upper"
+
+
+def test_training_overview_rejects_non_semester_scope(
+    training_client: TestClient,
+) -> None:
+    response = training_client.post(
+        "/api/training/overview",
+        json={
+            "scope": {"mode": "all"},
+            "exam_scope": {"mode": "current", "session_ids": [14]},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "training_scope_invalid"
+
+
+def test_training_overview_rejects_empty_volume(
+    training_client: TestClient,
+) -> None:
+    response = training_client.post(
+        "/api/training/overview",
+        json={
+            "scope": {"mode": "all"},
+            "exam_scope": {"mode": "semester", "curriculum_volume_id": ""},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "training_scope_invalid"
+
+
 def _preview_request() -> dict[str, object]:
     return {
         "scope": {"mode": "student", "student_ids": ["12"]},

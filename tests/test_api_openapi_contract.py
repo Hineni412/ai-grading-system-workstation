@@ -66,6 +66,7 @@ EXPECTED_OPERATIONS = {
     ("POST", "/api/question-bank/import-uploads"),
     ("POST", "/api/question-bank/import-requests"),
     ("POST", "/api/training/diagnosis"),
+    ("POST", "/api/training/overview"),
     ("POST", "/api/training/plans/preview"),
     ("POST", "/api/training/tasks"),
     ("GET", "/api/training/tasks"),

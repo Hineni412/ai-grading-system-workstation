@@ -97,6 +97,11 @@ class TrainingDiagnosisRequest(_TrainingModel):
     grouping: TrainingGroupingRequest | None = None
 
 
+class TrainingOverviewRequest(_TrainingModel):
+    scope: TrainingScopeRequest
+    exam_scope: TrainingExamScopeRequest
+
+
 class TrainingStageRatios(_TrainingModel):
     direct: float = Field(default=0.6, ge=0.0, le=1.0)
     prerequisite: float = Field(default=0.3, ge=0.0, le=1.0)
@@ -629,6 +634,68 @@ class TrainingDiagnosisResponse(_TrainingModel):
     grouping: dict[str, Any] | None = None
 
 
+class TrainingOverviewDistribution(_TrainingModel):
+    weak: int = Field(ge=0)
+    review: int = Field(ge=0)
+    stable: int = Field(ge=0)
+    missing: int = Field(ge=0)
+
+
+class TrainingOverviewNodeStudent(_TrainingModel):
+    student_id: str
+    mastery: float
+
+
+class TrainingOverviewNode(_TrainingModel):
+    knowledge_key: str
+    display_name: str
+    kind: Literal["chapter", "section", "topic", "skill"]
+    chapter_key: str
+    section_key: str
+    group_mastery: float | None = None
+    evidence_student_count: int = Field(ge=0)
+    distribution: TrainingOverviewDistribution
+    students: list[TrainingOverviewNodeStudent]
+
+
+class TrainingOverviewTierCounts(_TrainingModel):
+    weak: int = Field(ge=0)
+    review: int = Field(ge=0)
+    stable: int = Field(ge=0)
+    evidence: int = Field(ge=0)
+
+
+class TrainingOverviewStudent(_TrainingModel):
+    student_id: str
+    student_code: str
+    student_name: str
+    class_id: str
+    score_rate: float | None = None
+    score_rate_source: Literal["current_exam", "historical_fallback", "none"] = "none"
+    topics: TrainingOverviewTierCounts
+    skills: TrainingOverviewTierCounts
+
+
+class TrainingOverviewSummary(_TrainingModel):
+    student_count: int = Field(ge=0)
+    evidence_student_count: int = Field(ge=0)
+    exam_student_count: int = Field(ge=0)
+    exam_score_rate: float | None = None
+    topic_count: int = Field(ge=0)
+    skill_count: int = Field(ge=0)
+    weak_topic_count: int = Field(ge=0)
+    weak_skill_count: int = Field(ge=0)
+
+
+class TrainingOverviewResponse(_TrainingModel):
+    scope: TrainingNormalizedScope
+    exam_scope: TrainingNormalizedExamScope
+    warnings: list[str]
+    nodes: list[TrainingOverviewNode]
+    students: list[TrainingOverviewStudent]
+    summary: TrainingOverviewSummary
+
+
 __all__ = [
     "PersonalizedPaperBatchCreateRequest",
     "PersonalizedPaperBatchResponse",
@@ -641,6 +708,8 @@ __all__ = [
     "TrainingDiagnosisRequest",
     "TrainingDiagnosisResponse",
     "TrainingExamScopeRequest",
+    "TrainingOverviewRequest",
+    "TrainingOverviewResponse",
     "TrainingExportSubmitRequest",
     "TrainingPlanRequest",
     "TrainingPlanResponse",

@@ -67,11 +67,18 @@ const knowledgeLabel = computed(() => typeof route.query.klabel === 'string'
   : '')
 const groupMode = computed(() => route.query.mode === 'questions' && knowledgeKey.value !== '')
 const knowledgeMode = computed(() => knowledgeKey.value !== '' && !groupMode.value)
-const backTarget = computed(() => ({
-  name: 'training',
-  query: { mode: route.query.from === 'student' ? 'student' : 'chapter' },
-}))
-const backLabel = computed(() => route.query.from === 'student' ? '返回按学生训练' : '返回按章节训练')
+const backTarget = computed(() => (
+  route.query.from === 'overview'
+    ? { name: 'knowledge-overview' }
+    : {
+      name: 'training',
+      query: { mode: route.query.from === 'student' ? 'student' : 'chapter' },
+    }
+))
+const backLabel = computed(() => {
+  if (route.query.from === 'overview') return '返回学情总览'
+  return route.query.from === 'student' ? '返回按学生训练' : '返回按章节训练'
+})
 
 const student = ref<StudentSummary | null>(null)
 const sessions = ref<StudentExamResultSession[]>([])

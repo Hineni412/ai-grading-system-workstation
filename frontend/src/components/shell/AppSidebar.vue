@@ -23,7 +23,10 @@ const sessionStore = useSessionStore()
 
 function isActive(item: WorkspaceRouteDefinition): boolean {
   if (route.name === gradingRunRouteDefinition.id) return item.id === 'grading'
-  if (item.id === 'knowledge-graph' && route.name === 'training') return true
+  if (
+    item.id === 'knowledge-overview'
+    && ['knowledge-graph', 'training', 'student-evidence'].includes(String(route.name))
+  ) return true
   if (item.id === 'ai-trace') {
     return route.path === '/settings' && route.query.section === 'ai-trace'
   }

@@ -120,7 +120,7 @@ describe('AppShell', () => {
       ['成绩中心', '/results'],
       ['题库管理', '/question-bank'],
       ['组卷工作台', '/question-assembly'],
-      ['知识与训练', '/knowledge-graph'],
+      ['知识与训练', '/knowledge-overview'],
     ])
     expect(
       [...host.querySelectorAll<HTMLAnchorElement>('[data-testid="app-navigation"] a')].map(

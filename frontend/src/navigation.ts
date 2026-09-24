@@ -7,6 +7,7 @@ export type WorkspaceRouteId =
   | 'question-bank'
   | 'question-assembly'
   | 'training'
+  | 'knowledge-overview'
   | 'knowledge-graph'
   | 'results'
   | 'files'
@@ -140,6 +141,16 @@ export const reviewRouteDefinition = {
   icon: 'review',
 } as const satisfies WorkspaceRouteDefinition
 
+export const knowledgeOverviewRouteDefinition = {
+  id: 'knowledge-overview',
+  label: '知识与训练',
+  path: '/knowledge-overview',
+  title: '知识与训练',
+  description: '总览本学期知识点、技能与学生的掌握状况',
+  breadcrumb: '知识与训练',
+  icon: 'graph',
+} as const satisfies WorkspaceRouteDefinition
+
 export const knowledgeGraphRouteDefinition = {
   id: 'knowledge-graph',
   label: '知识与训练',
@@ -208,6 +219,7 @@ workspaceRegistry.assertNoCoreConflicts([
   questionAssemblyRouteDefinition,
   trainingRouteDefinition,
   reviewRouteDefinition,
+  knowledgeOverviewRouteDefinition,
   knowledgeGraphRouteDefinition,
   filesRouteDefinition,
   resultsRouteDefinition,
@@ -238,7 +250,7 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
     id: 'analysis',
     label: '教学分析',
     items: [
-      knowledgeGraphRouteDefinition,
+      knowledgeOverviewRouteDefinition,
     ],
   },
   ...(workspaceRegistry.navigationItems.length
