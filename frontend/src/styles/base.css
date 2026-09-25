@@ -46,9 +46,15 @@ select {
   color: var(--color-text-primary);
   cursor: pointer;
   transition:
-    background-color var(--duration-fast),
-    border-color var(--duration-fast),
-    color var(--duration-fast);
+    background-color var(--duration-fast) ease,
+    border-color var(--duration-fast) ease,
+    color var(--duration-fast) ease,
+    box-shadow var(--duration-fast) ease,
+    transform var(--duration-fast) var(--ease-out);
+}
+
+:where(button:active:not(:disabled)) {
+  transform: scale(0.98);
 }
 
 :where(button:hover:not(:disabled)) {

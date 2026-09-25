@@ -28,11 +28,11 @@ function close(): void {
   <Teleport to="body">
     <div
       v-if="open"
-      class="session-management-layer"
+      class="session-management-layer fx-overlay"
       @click.self="close"
     >
       <aside
-        class="session-management-drawer"
+        class="session-management-drawer fx-drawer-right"
         role="dialog"
         aria-modal="true"
         aria-labelledby="session-management-title"

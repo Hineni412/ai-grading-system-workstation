@@ -257,14 +257,14 @@ function toggleDrawer(): void {
 
     <div
       v-if="open"
-      class="workspace-ai-task-drawer-backdrop"
+      class="workspace-ai-task-drawer-backdrop fx-overlay"
       @click="open = false"
     />
 
     <aside
       v-if="open"
       id="workspace-ai-task-drawer"
-      class="workspace-ai-task-drawer"
+      class="workspace-ai-task-drawer fx-drawer-right"
       aria-label="任务中心"
     >
       <header>
