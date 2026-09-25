@@ -17,6 +17,7 @@ from backend.repositories.compat import open_grading_repositories
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from original_paper_exporter import OriginalPaperExporter
 from report import ReportGenerator
+from question_bank.document_pipeline import QuestionDocumentPipeline
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_write_service import QuestionBankWriteService
@@ -24,6 +25,7 @@ from question_bank.taxonomy.governance import get_taxonomy_governance
 
 from .manager import JobContext, JobManager
 from .ai_assembly import run_ai_assembly_spec_job
+from .answer_draft import run_answer_draft_job
 from .config_generation import run_config_generation_job
 from .criterion_backfill import run_criterion_backfill_job
 from .knowledge_link_job import run_knowledge_link_job, build_knowledge_link_gateway
@@ -100,6 +102,7 @@ def register_default_job_handlers(
         ..., dict[str, object]
     ] = run_session_question_bank_sync_job,
     tagging_sync_runner: Callable[..., dict[str, object]] = run_tagging_sync_job,
+    answer_draft_runner: Callable[..., dict[str, object]] = run_answer_draft_job,
     taxonomy_suggestion_runner: Callable[
         ..., dict[str, object]
     ] = run_taxonomy_suggestion_job,
@@ -320,6 +323,35 @@ def register_default_job_handlers(
             ),
         ),
     )
+    manager.register(
+        "answer_draft",
+        _build_answer_draft_handler(
+            question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root,
+            answer_draft_runner=answer_draft_runner,
+            llm_client_factory=(
+                analysis_llm_client_factory or _content_generation_llm_client
+            ),
+        ),
+    )
+
+
+def _build_answer_draft_handler(
+    *,
+    question_bank_db_path: Path,
+    data_root: Path,
+    answer_draft_runner: Callable[..., dict[str, object]],
+    llm_client_factory: Callable[[], Any] | None,
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        return answer_draft_runner(
+            context=context,
+            question_bank_db_path=question_bank_db_path,
+            data_root=data_root,
+            llm_client_factory=llm_client_factory,
+        )
+
+    return handler
 
 
 def _build_ai_assembly_spec_handler(
@@ -386,6 +418,9 @@ def _build_question_import_handler(
             write_service=QuestionBankWriteService(
                 question_bank_db_path,
                 data_root=data_root,
+            ),
+            document_pipeline=QuestionDocumentPipeline(
+                workspace_root=Path(data_root) / "question_bank" / "document_pipeline",
             ),
         )
 

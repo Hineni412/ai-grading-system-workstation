@@ -86,6 +86,8 @@ const retagBusyPaperId = ref<number | null>(null)
 const retagAllBusy = ref(false)
 const taggingMode = ref<'fill' | 'retag' | null>(null)
 const retagMessage = ref('')
+const answerDraftBusy = ref(false)
+const pendingAnswerDraft = ref<{ paperCount: number; questionIds: number[] } | null>(null)
 const deleteNotice = ref('')
 const refreshedTerminalJobs = new Set<string>()
 const collapsedFolderKeys = ref(new Set<string>())
@@ -255,6 +257,7 @@ const batchActionsDisabled = computed(() => (
   selectedCount.value === 0
   || retagAllBusy.value
   || retagBusyPaperId.value !== null
+  || answerDraftBusy.value
 ))
 
 // Papers disappear from the store after deletion or external refresh; prune the
@@ -765,6 +768,63 @@ async function retagSelectedPapers(): Promise<void> {
   }
 }
 
+// AI 补答案与彻底删除一样用弹层确认：先读出选中试卷的题数，
+// 教师确认会产生模型调用费用、结果标记为待复核后才提交任务。
+async function requestAnswerDraft(): Promise<void> {
+  const papers = selectedPapers.value
+  if (
+    papers.length === 0
+    || retagBusyPaperId.value !== null
+    || retagAllBusy.value
+    || answerDraftBusy.value
+  ) return
+  retagMessage.value = ''
+  answerDraftBusy.value = true
+  try {
+    const questionIds = await loadQuestionIds(papers.map((paper) => paper.id))
+    if (questionIds.length === 0) {
+      retagMessage.value = '选中的试卷没有题目。'
+      return
+    }
+    pendingAnswerDraft.value = {
+      paperCount: papers.length,
+      questionIds,
+    }
+  } catch {
+    retagMessage.value = '题目列表读取失败，请刷新试卷库后重试。'
+  } finally {
+    answerDraftBusy.value = false
+  }
+}
+
+function cancelAnswerDraft(): void {
+  if (answerDraftBusy.value) return
+  pendingAnswerDraft.value = null
+}
+
+async function confirmAnswerDraft(): Promise<void> {
+  const pending = pendingAnswerDraft.value
+  if (!pending || answerDraftBusy.value) return
+  answerDraftBusy.value = true
+  retagMessage.value = ''
+  try {
+    let count = 0
+    for (let index = 0; index < pending.questionIds.length; index += 500) {
+      const batch = pending.questionIds.slice(index, index + 500)
+      if (batch.length === 0) continue
+      const job = await questionBankApi.submitAnswerDraft(batch)
+      jobStore.track(job)
+      count += 1
+    }
+    pendingAnswerDraft.value = null
+    retagMessage.value = `已提交 ${pending.questionIds.length} 道题的 AI 补答案任务（共 ${count} 个任务）；只处理还没有答案的题，生成结果会标记为待复核。`
+  } catch {
+    retagMessage.value = 'AI 补答案任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
+  } finally {
+    answerDraftBusy.value = false
+  }
+}
+
 async function retagPaper(paper: QuestionBankPaper): Promise<void> {
   if (retagBusyPaperId.value !== null || retagAllBusy.value) return
   retagMessage.value = ''
@@ -1119,6 +1179,11 @@ async function confirmPermanentDelete(): Promise<void> {
         :disabled="batchActionsDisabled"
         @click="retagSelectedPapers"
       >{{ retagAllBusy && taggingMode === 'retag' ? '正在准备…' : '重新打标签' }}</AppButton>
+      <AppButton
+        variant="secondary"
+        :disabled="batchActionsDisabled"
+        @click="requestAnswerDraft"
+      >{{ answerDraftBusy ? '正在处理…' : 'AI 补答案' }}</AppButton>
       <AppButton
         variant="danger"
         :disabled="batchActionsDisabled || permanentDeleteState === 'loading' || permanentDeleteState === 'working'"
@@ -1541,6 +1606,41 @@ async function confirmPermanentDelete(): Promise<void> {
               :disabled="!canConfirmPermanentDelete"
               @click="confirmPermanentDelete"
             >{{ permanentDeleteState === 'working' ? '正在彻底删除…' : '确认彻底删除' }}</AppButton>
+          </footer>
+        </section>
+      </div>
+
+      <div
+        v-if="pendingAnswerDraft"
+        class="paper-trash-confirm-layer"
+        @click.self="cancelAnswerDraft"
+      >
+        <section
+          class="paper-trash-confirm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="paper-answer-draft-title"
+        >
+          <p class="paper-trash-confirm__eyebrow">AI 补答案</p>
+          <h2 id="paper-answer-draft-title">确认生成答案草稿？</h2>
+          <strong>
+            选中的 {{ pendingAnswerDraft.paperCount }} 份试卷、共 {{ pendingAnswerDraft.questionIds.length }} 道题
+          </strong>
+          <p>
+            仅对其中还没有答案的题调用 AI 生成答案和解析草稿，已有答案的题目不会改动。
+            会产生模型调用费用；生成结果一律标记为待复核，请教师核对后再使用。
+          </p>
+          <footer>
+            <AppButton
+              variant="secondary"
+              :disabled="answerDraftBusy"
+              @click="cancelAnswerDraft"
+            >取消</AppButton>
+            <AppButton
+              variant="primary"
+              :disabled="answerDraftBusy"
+              @click="confirmAnswerDraft"
+            >{{ answerDraftBusy ? '正在提交…' : '确认生成' }}</AppButton>
           </footer>
         </section>
       </div>

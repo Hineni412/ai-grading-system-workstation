@@ -30,6 +30,7 @@ def run_question_import_job(
     data_root: Path,
     write_service: QuestionBankWriteService,
     importer: ImportRunner = import_scanned_papers,
+    document_pipeline: object | None = None,
 ) -> dict[str, object]:
     request_id = str(context.payload.get("request_id") or "").strip().casefold()
     context.raise_if_cancelled()
@@ -52,6 +53,7 @@ def run_question_import_job(
             data_root=data_root,
             write_service=write_service,
             importer=importer,
+            document_pipeline=document_pipeline,
         )
 
 
@@ -62,6 +64,7 @@ def _run_question_import_job_locked(
     data_root: Path,
     write_service: QuestionBankWriteService,
     importer: ImportRunner,
+    document_pipeline: object | None = None,
 ) -> dict[str, object]:
     request_id = str(context.payload.get("request_id") or "").strip().casefold()
     context.raise_if_cancelled()
@@ -89,6 +92,9 @@ def _run_question_import_job_locked(
         if isinstance(raw_type_overrides, dict)
         else None
     )
+    importer_kwargs: dict[str, object] = {}
+    if document_pipeline is not None:
+        importer_kwargs["document_pipeline"] = document_pipeline
     try:
         result = importer(
             [
@@ -103,6 +109,7 @@ def _run_question_import_job_locked(
             data_root=Path(data_root),
             asset_overrides=asset_overrides,
             type_overrides=type_overrides,
+            **importer_kwargs,
         )
     except Exception:
         raise RuntimeError("question import failed") from None

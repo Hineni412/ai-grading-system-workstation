@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import fitz
 from docx import Document
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
 
+from question_bank.document_pipeline import OcrLine, QuestionDocumentPipeline
 from question_bank.importers import batch_importer
 from question_bank.importers.batch_importer import (
     PaperMetadata,
@@ -905,3 +907,549 @@ def test_docx_importer_marks_sublevel_numbering_without_auto_prefix(tmp_path: Pa
     # 子层级段落不追加自动编号，并携带层级信息供下游识别
     assert record["text"] == "1．手敲编号的子步骤"
     assert record["numbering_level"] == 1
+
+
+def _pdf_with_text_lines(lines: list[str]) -> bytes:
+    """单页 PDF：写入真实文字层（供快速路径用例）。"""
+    document = fitz.open()
+    page = document.new_page(width=600, height=800)
+    for index, line in enumerate(lines):
+        page.insert_text(
+            (40, 60 + index * 28), line, fontsize=12, fontname="china-s"
+        )
+    content = document.tobytes()
+    document.close()
+    return content
+
+
+def _scanned_pdf_from_lines(lines: list[str]) -> bytes:
+    """把文字渲染成图片再嵌入新 PDF，保证页面没有可抽取的文字层。"""
+    text_document = fitz.open()
+    page = text_document.new_page(width=600, height=800)
+    for index, line in enumerate(lines):
+        page.insert_text(
+            (40, 60 + index * 28), line, fontsize=12, fontname="china-s"
+        )
+    pixmap = page.get_pixmap(alpha=False)
+    png = pixmap.tobytes("png")
+    text_document.close()
+    document = fitz.open()
+    scanned_page = document.new_page(width=pixmap.width, height=pixmap.height)
+    scanned_page.insert_image(scanned_page.rect, stream=png)
+    content = document.tobytes()
+    document.close()
+    return content
+
+
+class _FakeOcrAdapter:
+    """按页返回预设文本行的 OCR 替身，记录调用页码。"""
+
+    def __init__(self, lines_by_page: dict[int, tuple[OcrLine, ...]]) -> None:
+        self.lines_by_page = lines_by_page
+        self.calls: list[int] = []
+
+    def recognize(self, png_bytes: bytes, *, page_number: int) -> tuple[OcrLine, ...]:
+        assert png_bytes.startswith(b"\x89PNG")
+        self.calls.append(page_number)
+        return self.lines_by_page.get(page_number, ())
+
+
+def _ocr_line(text: str, y0: float, y1: float) -> OcrLine:
+    return OcrLine(
+        text=text,
+        polygon=((0.05, y0), (0.95, y0), (0.95, y1), (0.05, y1)),
+        confidence=0.9,
+        engine_version="fake-ocr/1",
+    )
+
+
+_PAPER_LINES = [
+    "1. 题干甲内容足够长",
+    "2. 题干乙内容足够长",
+    "参考答案",
+    "1. 答案甲",
+    "2. 答案乙",
+]
+
+
+def test_scanned_pdf_import_runs_local_ocr_and_marks_questions_for_review(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "scan.pdf"
+    source.write_bytes(_scanned_pdf_from_lines(_PAPER_LINES))
+    workspace = tmp_path / "ws"
+    ocr = _FakeOcrAdapter(
+        {
+            1: tuple(
+                _ocr_line(text, 0.08 + index * 0.1, 0.16 + index * 0.1)
+                for index, text in enumerate(_PAPER_LINES)
+            )
+        }
+    )
+    pipeline = QuestionDocumentPipeline(workspace, ocr_adapter=ocr)
+    db_path = tmp_path / "data" / "databases" / "question_bank.db"
+
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="pdf")],
+        db_path,
+        data_root=tmp_path / "data",
+        document_pipeline=pipeline,
+        # 固定跳过完整解析，避免本机模型文件齐备时跑真实 MinerU。
+        full_parser=lambda path: None,
+    )
+
+    assert ocr.calls == [1]
+    (file_result,) = result.files
+    assert file_result.status == "needs_review"
+    assert file_result.question_count == 2
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT question_number, question_text, answer_text, needs_review "
+            "FROM questions ORDER BY question_number"
+        ).fetchall()
+        (paper_status,) = conn.execute("SELECT import_status FROM papers").fetchone()
+    assert paper_status == "needs_review"
+    assert [row["question_number"] for row in rows] == ["1", "2"]
+    assert all(int(row["needs_review"]) == 1 for row in rows)
+    assert "题干甲" in rows[0]["question_text"]
+    assert "答案甲" in rows[0]["answer_text"]
+    assert "答案甲" not in rows[0]["question_text"]
+    assert "答案乙" in rows[1]["answer_text"]
+    # 文档管线快照落在注入的 workspace_root 下。
+    assert list(workspace.rglob("snapshot.json"))
+
+
+def test_scanned_pdf_with_empty_ocr_result_still_reports_needs_ocr(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "scan-empty.pdf"
+    source.write_bytes(_scanned_pdf_from_lines(["占位行"]))
+    ocr = _FakeOcrAdapter({})
+    pipeline = QuestionDocumentPipeline(tmp_path / "ws", ocr_adapter=ocr)
+    db_path = tmp_path / "data" / "databases" / "question_bank.db"
+
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="pdf")],
+        db_path,
+        data_root=tmp_path / "data",
+        document_pipeline=pipeline,
+        full_parser=lambda path: None,
+    )
+
+    assert ocr.calls == [1]
+    (file_result,) = result.files
+    assert file_result.status == "needs_ocr"
+    assert file_result.question_count == 0
+    with connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 0
+
+
+def test_text_layer_pdf_import_uses_fast_path_without_ocr(tmp_path: Path) -> None:
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(_pdf_with_text_lines(_PAPER_LINES))
+    workspace = tmp_path / "ws"
+    ocr = _FakeOcrAdapter({})
+    pipeline = QuestionDocumentPipeline(workspace, ocr_adapter=ocr)
+    db_path = tmp_path / "data" / "databases" / "question_bank.db"
+
+    def forbidden_full_parser(path: Path) -> str | None:
+        raise AssertionError("text-layer PDF must not reach the full parser")
+
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="pdf")],
+        db_path,
+        data_root=tmp_path / "data",
+        document_pipeline=pipeline,
+        full_parser=forbidden_full_parser,
+    )
+
+    assert ocr.calls == []
+    (file_result,) = result.files
+    assert file_result.status == "imported"
+    assert file_result.question_count == 2
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT needs_review FROM questions ORDER BY question_number"
+        ).fetchall()
+    assert all(int(row["needs_review"]) == 0 for row in rows)
+    # 快速路径不经过文档管线，不产生快照文件。
+    assert not list(workspace.rglob("snapshot.json"))
+
+
+def test_scanned_pdf_full_parse_supplies_latex_and_marks_review(tmp_path: Path) -> None:
+    source = tmp_path / "scan-formula.pdf"
+    source.write_bytes(_scanned_pdf_from_lines(_PAPER_LINES))
+    workspace = tmp_path / "ws"
+    ocr = _FakeOcrAdapter({})
+    pipeline = QuestionDocumentPipeline(workspace, ocr_adapter=ocr)
+    markdown = (
+        "1. 已知 $x^2+1$ 的最小值，求 x 的取值范围\n"
+        "2. 题干乙内容足够长\n"
+        "参考答案\n"
+        "1. 答案甲\n"
+        "2. 答案乙\n"
+    )
+    full_calls: list[Path] = []
+
+    def fake_full_parser(path: Path) -> str | None:
+        full_calls.append(path)
+        return markdown
+
+    db_path = tmp_path / "data" / "databases" / "question_bank.db"
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="pdf")],
+        db_path,
+        data_root=tmp_path / "data",
+        document_pipeline=pipeline,
+        full_parser=fake_full_parser,
+    )
+
+    # 完整解析优先于行级 OCR 管线：OCR 替身没有被调用。
+    assert len(full_calls) == 1
+    assert ocr.calls == []
+    (file_result,) = result.files
+    assert file_result.status == "needs_review"
+    assert file_result.question_count == 2
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT question_number, question_text, answer_text, needs_review "
+            "FROM questions ORDER BY question_number"
+        ).fetchall()
+    assert [row["question_number"] for row in rows] == ["1", "2"]
+    assert all(int(row["needs_review"]) == 1 for row in rows)
+    assert "$x^2+1$" in rows[0]["question_text"]
+    # 答案区被剥离到 answer_text，不残留在题干里。
+    assert "答案甲" in rows[0]["answer_text"]
+    assert "答案甲" not in rows[0]["question_text"]
+    assert "答案乙" in rows[1]["answer_text"]
+
+
+def test_scanned_pdf_full_parse_none_falls_back_to_line_ocr(tmp_path: Path) -> None:
+    source = tmp_path / "scan-fallback.pdf"
+    source.write_bytes(_scanned_pdf_from_lines(_PAPER_LINES))
+    workspace = tmp_path / "ws"
+    ocr = _FakeOcrAdapter(
+        {
+            1: tuple(
+                _ocr_line(text, 0.08 + index * 0.1, 0.16 + index * 0.1)
+                for index, text in enumerate(_PAPER_LINES)
+            )
+        }
+    )
+    pipeline = QuestionDocumentPipeline(workspace, ocr_adapter=ocr)
+    db_path = tmp_path / "data" / "databases" / "question_bank.db"
+
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="pdf")],
+        db_path,
+        data_root=tmp_path / "data",
+        document_pipeline=pipeline,
+        full_parser=lambda path: None,
+    )
+
+    assert ocr.calls == [1]
+    (file_result,) = result.files
+    assert file_result.status == "needs_review"
+    assert file_result.question_count == 2
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT question_text, answer_text FROM questions ORDER BY question_number"
+        ).fetchall()
+    assert "题干甲" in rows[0]["question_text"]
+    assert "答案甲" in rows[0]["answer_text"]
+
+
+def test_scanned_pdf_full_parse_none_without_pipeline_reports_needs_ocr(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "scan-nopipeline.pdf"
+    source.write_bytes(_scanned_pdf_from_lines(_PAPER_LINES))
+    db_path = tmp_path / "data" / "databases" / "question_bank.db"
+
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="pdf")],
+        db_path,
+        data_root=tmp_path / "data",
+        full_parser=lambda path: None,
+    )
+
+    (file_result,) = result.files
+    assert file_result.status == "needs_ocr"
+    assert file_result.question_count == 0
+    with connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 0
+
+
+def test_scanned_pdf_full_parse_empty_string_still_uses_line_ocr(tmp_path: Path) -> None:
+    source = tmp_path / "scan-empty-full.pdf"
+    source.write_bytes(_scanned_pdf_from_lines(_PAPER_LINES))
+    ocr = _FakeOcrAdapter(
+        {
+            1: tuple(
+                _ocr_line(text, 0.08 + index * 0.1, 0.16 + index * 0.1)
+                for index, text in enumerate(_PAPER_LINES)
+            )
+        }
+    )
+    pipeline = QuestionDocumentPipeline(tmp_path / "ws", ocr_adapter=ocr)
+    db_path = tmp_path / "data" / "databases" / "question_bank.db"
+
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="pdf")],
+        db_path,
+        data_root=tmp_path / "data",
+        document_pipeline=pipeline,
+        full_parser=lambda path: "",
+    )
+
+    assert ocr.calls == [1]
+    (file_result,) = result.files
+    assert file_result.status == "needs_review"
+    assert file_result.question_count == 2
+
+
+def test_mineru_full_available_requires_every_model_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from question_bank.importers import mineru_parse
+
+    models_dir = tmp_path / "MinerU-4_models_onnx"
+    monkeypatch.setattr(mineru_parse, "MINERU_MODELS_DIR", models_dir)
+    assert mineru_parse.mineru_full_available() is False
+    for relative in mineru_parse._REQUIRED[:-1]:
+        target = models_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"model-bytes")
+    # 还差最后一个文件时仍不可用。
+    assert mineru_parse.mineru_full_available() is False
+    last = models_dir / mineru_parse._REQUIRED[-1]
+    last.parent.mkdir(parents=True, exist_ok=True)
+    last.write_bytes(b"model-bytes")
+    assert mineru_parse.mineru_full_available() is True
+
+
+def test_materialize_markdown_images_stamps_200dpi_and_drops_decorative(
+    tmp_path: Path,
+) -> None:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (400, 200), "white").save(buffer, format="JPEG")
+    payload = base64.b64encode(buffer.getvalue()).decode("ascii")
+    image_dir = tmp_path / "images"
+    text, saved = batch_importer._materialize_markdown_images(
+        f"![](data:image/jpeg;base64,{payload})", image_dir
+    )
+    assert len(saved) == 1
+    assert "[[IMAGE:" in text
+    with Image.open(saved[0]) as image:
+        dpi = image.info.get("dpi")
+        assert dpi is not None
+        assert abs(float(dpi[0]) - 200) < 1
+        assert abs(float(dpi[1]) - 200) < 1
+
+    small = io.BytesIO()
+    Image.new("RGB", (30, 30), "white").save(small, format="PNG")
+    small_payload = base64.b64encode(small.getvalue()).decode("ascii")
+    tiny_dir = tmp_path / "tiny"
+    tiny_text, tiny_saved = batch_importer._materialize_markdown_images(
+        f"![](data:image/png;base64,{small_payload})", tiny_dir
+    )
+    assert tiny_saved == []
+    assert "[[IMAGE:" not in tiny_text
+    assert not tiny_dir.exists() or not list(tiny_dir.iterdir())
+
+
+def test_merge_image_caption_lines_folds_caption_into_marker() -> None:
+    merged = batch_importer._merge_image_caption_lines(
+        "[[IMAGE:x.png]]\n第3题图\n题干文字"
+    )
+    assert "[[IMAGE:x.png|caption=第3题图]]" in merged
+    assert "\n第3题图\n" not in merged
+    match = batch_importer._IMAGE_MARKER.search(merged)
+    assert match is not None
+    assert match.group("path") == "x.png"
+    assert match.group("caption") == "第3题图"
+
+    # 图注在图片之前同样合并。
+    merged_before = batch_importer._merge_image_caption_lines(
+        "第3题图\n[[IMAGE:y.png]]"
+    )
+    assert "[[IMAGE:y.png|caption=第3题图]]" in merged_before
+    # 孤立图注删除。
+    assert batch_importer._merge_image_caption_lines("题干\n示意图\n其余") == (
+        "题干\n其余"
+    )
+    # 下游消费方取 path 仍不含 caption。
+    from question_bank.exporters import paper_docx_exporter
+    from question_bank.exporters import paper_markdown_exporter
+    from question_bank.training_criteria import adapters
+
+    marker = "[[IMAGE:x.png|caption=第3题图]]"
+    assert (
+        paper_docx_exporter.IMAGE_MARKER_PATTERN.search(marker).group("path")
+        == "x.png"
+    )
+    assert (
+        paper_markdown_exporter._IMAGE_MARKER.search(marker).group("path")
+        == "x.png"
+    )
+    assert adapters._IMAGE_MARKER.search(marker).group("path") == "x.png"
+
+
+def test_ocr_section_noise_stripped_only_on_ocr_path() -> None:
+    text = (
+        "1. 求图中直角三角形斜边的长度，写出完整的计算过程。\n"
+        "知识点2 利用勾股定理求面积"
+    )
+    cleaned = parse_paper_text(
+        text, source_file="paper_a.docx", page_range="document", ocr_noise=True
+    )
+    assert "知识点" not in cleaned.questions[0].question_text
+    kept = parse_paper_text(
+        text, source_file="paper_a.docx", page_range="document", ocr_noise=False
+    )
+    assert "知识点2" in kept.questions[0].question_text
+
+
+def test_bracket_section_heading_kept_inside_question_body() -> None:
+    tail = (
+        "1. 探究勾股定理，回答下面的问题，并写出过程。\n"
+        "观察图形写出结论。\n"
+        "【发现并提出问题】"
+    )
+    parsed_tail = parse_paper_text(
+        tail, source_file="paper_b.docx", page_range="document", ocr_noise=True
+    )
+    assert "发现并提出问题" not in parsed_tail.questions[0].question_text
+    middle = (
+        "1. 探究勾股定理，回答下面的问题，并写出过程。\n"
+        "【发现并提出问题】\n"
+        "观察图形写出结论。\n"
+        "再比较两种结果的大小。"
+    )
+    parsed_middle = parse_paper_text(
+        middle, source_file="paper_b.docx", page_range="document", ocr_noise=True
+    )
+    assert "发现并提出问题" in parsed_middle.questions[0].question_text
+
+
+def test_triangle_placeholder_marks_fill_blank() -> None:
+    from question_bank.parsers.type_detector import detect_question_type
+
+    assert (
+        detect_question_type("已知矩形边长 3 和 4，则对角线为▲。") == "填空题"
+    )
+    # △ABC 是三角形记号，不是填空占位。
+    assert detect_question_type("在△ABC中，∠A=90°，求证某结论。") != "填空题"
+
+
+def test_normalize_mineru_formulas_collapses_block_and_wraps_bare_latex() -> None:
+    collapsed = batch_importer._normalize_mineru_formulas(
+        "前文\n$$\n\\because AD = 24 m\n$$\n后文"
+    )
+    assert "$\\because AD = 24 m$" in collapsed
+    assert "$$" not in collapsed
+    bare = batch_importer._normalize_mineru_formulas("1 3 ~ \\mathrm { c m }")
+    assert bare == "$1 3 ~ \\mathrm { c m }$"
+    # 正文行（中文字符 ≥4 个）不包。
+    prose = batch_importer._normalize_mineru_formulas(
+        "图中阴影部分的面积可用 \\frac 表示，请计算。"
+    )
+    assert not prose.startswith("$")
+
+
+def test_split_inline_teacher_answers_moves_embedded_answers() -> None:
+    from question_bank.importers.batch_importer import (
+        ParsedPaperText,
+        ParsedQuestion,
+        _split_inline_teacher_answers,
+    )
+
+    parsed = ParsedPaperText(
+        questions=[
+            ParsedQuestion(
+                question_number="1",
+                question_text="阴影部分的面积是（D）A.10 B.28 C.100 D.50",
+                source_file="paper.docx",
+                page_range="document",
+            ),
+            ParsedQuestion(
+                question_number="2",
+                question_text="证明两三角形全等并写出依据。\n解:连接AC，由SSS可得。",
+                source_file="paper.docx",
+                page_range="document",
+            ),
+        ],
+        answer_match_count=0,
+        review_count=0,
+    )
+    fixed = _split_inline_teacher_answers(parsed)
+    first, second = fixed.questions
+    assert first.answer_text == "D"
+    assert "（D）" not in first.question_text
+    assert "A.10" in first.question_text
+    assert second.answer_text is not None and second.answer_text.startswith("解")
+    assert "解:连接AC" not in second.question_text
+
+
+def test_split_inline_teacher_answers_prefers_main_question_answer() -> None:
+    # 教辅题块尾部常并入“【变式】”子题，子题自带的（A）不能顶掉本题的 (C)。
+    from question_bank.importers.batch_importer import (
+        ParsedPaperText,
+        ParsedQuestion,
+        _split_inline_teacher_answers,
+    )
+
+    parsed = ParsedPaperText(
+        questions=[
+            ParsedQuestion(
+                question_number="7",
+                question_text=(
+                    "则A所代表的正方形的面积为 (C) A.10 B.28 C.100 D. 不能确定\n"
+                    "[[IMAGE:x.jpg]]\n"
+                    "【变式】如图，最大正方形的面积为（A）A.20 B.10 C.5 D.2"
+                ),
+                source_file="paper.pdf",
+                page_range="document",
+            ),
+        ],
+        answer_match_count=0,
+        review_count=0,
+    )
+    (fixed,) = _split_inline_teacher_answers(parsed).questions
+    assert fixed.answer_text == "C"
+    assert "(C)" not in fixed.question_text
+    assert "则A所代表" in fixed.question_text
+
+
+def test_parse_paper_text_section_hint_fill_blank() -> None:
+    # OCR 路径：节标题“二、填空题”把探测器漏掉的填空题改判回来。
+    text = (
+        "二、填空题（本大题共5小题）\n"
+        "9. 若a=2b，则a/b = A O\n"
+        "10. 已知矩形的边长分别为3和4，则该矩形的对角线长为▲。"
+    )
+    parsed = parse_paper_text(
+        text,
+        source_file="ocr_paper.pdf",
+        page_range="document",
+        ocr_noise=True,
+    )
+    by_number = {q.question_number: q for q in parsed.questions}
+    assert by_number["9"].question_type == "填空题"
+    assert by_number["10"].question_type == "填空题"
+
+    # 非 OCR 路径不受节标题影响。
+    parsed_plain = parse_paper_text(
+        text,
+        source_file="regular_paper.docx",
+        page_range="document",
+    )
+    by_number = {q.question_number: q for q in parsed_plain.questions}
+    assert by_number["9"].question_type == "解答题"
