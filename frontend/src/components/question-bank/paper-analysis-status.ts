@@ -1,7 +1,7 @@
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { questionJobFailures, type QuestionBankPaper } from '../../api/question-bank'
 
-export const QUESTION_BANK_LIBRARY_JOB_TYPES = new Set(['question_import', 'tagging_sync'])
+export const QUESTION_BANK_LIBRARY_JOB_TYPES = new Set(['question_import', 'tagging_sync', 'answer_draft'])
 
 export interface PaperQuestionRef {
   id: number
@@ -86,6 +86,12 @@ export function libraryJobDetailLine(job: JobResponse): string {
     if (job.status === 'cancelled') return '试卷入库已取消，点这里回到试卷库'
     return '试卷已入库，点这里回到试卷库'
   }
+  if (job.job_type === 'answer_draft') {
+    if (!TERMINAL_JOB_STATUSES.has(job.status)) return 'AI 补答案进行中，点这里回到试卷库'
+    if (job.status === 'failed') return 'AI 补答案失败，点这里回到试卷库查看'
+    if (job.status === 'cancelled') return 'AI 补答案已取消，点这里回到试卷库'
+    return 'AI 补答案已结束，生成的答案待复核，点这里回到试卷库'
+  }
   if (!TERMINAL_JOB_STATUSES.has(job.status)) return '题库分析进行中，点这里回到试卷库'
   if (job.status === 'failed') return '题库分析失败，点这里回到试卷库查看'
   if (job.status === 'cancelled') return '题库分析已取消，点这里回到试卷库'
@@ -98,6 +104,9 @@ export function libraryJobDetailLine(job: JobResponse): string {
 export function paperLiveAnalysisLine(job: JobResponse): string {
   if (job.job_type === 'question_import') {
     return TERMINAL_JOB_STATUSES.has(job.status) ? '试卷已写入题库' : '正在把试卷写入题库…'
+  }
+  if (job.job_type === 'answer_draft') {
+    return TERMINAL_JOB_STATUSES.has(job.status) ? '' : '正在生成答案草稿…'
   }
   const processed = parseAnalysisProcessed(job.detail)
   if (processed) return `正在分析 ${processed.processed}/${processed.total} 道`

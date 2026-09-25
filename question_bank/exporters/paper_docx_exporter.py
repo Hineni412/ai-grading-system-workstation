@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from docx import Document
+from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 
@@ -13,6 +14,7 @@ from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.assembly_basket_state import SectionSpec
 from question_bank.exporters.base_exporter import (
     _resolve_image_path,
+    _visible_length,
     apply_exporter_layout,
     extract_and_format_options,
     add_noborder_table,
@@ -21,7 +23,9 @@ from question_bank.document_pipeline.word_renderer import (
     SharedWordQuestionRenderer,
     WordStyleProfile,
     add_answer_space,
+    add_floating_picture,
     answer_space_lines,
+    natural_image_width_inches,
 )
 from question_bank.document_pipeline.contracts import FormulaFallback, MathExpression
 from question_bank.document_pipeline.legacy_exports import (
@@ -35,7 +39,9 @@ from question_bank.exporters.export_config import ExportConfig
 
 
 LOGGER = logging.getLogger(__name__)
-IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
+IMAGE_MARKER_PATTERN = re.compile(
+    r"\[\[IMAGE:(?P<path>[^\]|]+?)(?:\|caption=(?P<caption>[^\]]*))?\]\]"
+)
 LEADING_QUESTION_NUMBER_PATTERN = re.compile(r"^\s*(?:第\s*)?\d{1,3}\s*(?:[.．、]|题)[ \t]*")
 
 _CN_SECTION_NUMS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
@@ -465,6 +471,65 @@ def _add_rich_blocks(
     return result.appended, set(result.embedded_assets)
 
 
+_MD_TABLE_SEP_CELL = re.compile(r":?-{2,}:?")
+
+
+def _iter_render_items(lines: list[str]):
+    """连续的 Markdown 管道行合并为 ('table', rows)，其余行原样为 ('line', text)。"""
+    table_rows: list[list[str]] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 3:
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if cells and all(_MD_TABLE_SEP_CELL.fullmatch(cell) for cell in cells):
+                continue
+            table_rows.append(cells)
+            continue
+        if table_rows:
+            yield "table", table_rows
+            table_rows = []
+        if re.fullmatch(r"\$+", stripped):
+            # 识别残留的孤立公式定界符行，不落为文字。
+            continue
+        yield "line", line
+    if table_rows:
+        yield "table", table_rows
+
+
+def _add_markdown_table(
+    document: Document,
+    rows: list[list[str]],
+    *,
+    render_cell,
+    suffix_prefix: str,
+) -> None:
+    rows = [row for row in rows if any(cell for cell in row)]
+    if not rows:
+        return
+    cols = max(len(row) for row in rows)
+    if len(rows) == 1:
+        # 单行管道行多为图注/并排布局，不要边框。
+        table = add_noborder_table(document, 1, cols)
+    else:
+        table = document.add_table(rows=len(rows), cols=cols)
+        try:
+            table.style = "Table Grid"
+        except Exception:  # noqa: BLE001 - 模板无该样式时退回无边框
+            pass
+    for row_index, row in enumerate(rows):
+        for col_index in range(cols):
+            cell = table.cell(row_index, col_index)
+            value = row[col_index] if col_index < len(row) else ""
+            render_cell(
+                cell.paragraphs[0],
+                value,
+                suffix=f"{suffix_prefix}-r{row_index + 1}c{col_index + 1}",
+            )
+
+
+_IMG_SENTINEL = re.compile(r"⟦IMG(?P<idx>\d+)⟧")
+
+
 def _add_text_and_images(
     document: Document,
     text: object,
@@ -480,10 +545,38 @@ def _add_text_and_images(
 ) -> None:
     active_config = config or ExportConfig()
     raw_text = str(text or "")
-    inline_paths = [match.group("path").strip() for match in IMAGE_MARKER_PATTERN.finditer(raw_text)]
-    clean_text = IMAGE_MARKER_PATTERN.sub("", raw_text).strip()
+    # 图片标记换成短哨兵，保住图片在行文中的原位置（避免全部堆到题末）。
+    marker_entries = [
+        (match.group("path").strip(), (match.group("caption") or "").strip())
+        for match in IMAGE_MARKER_PATTERN.finditer(raw_text)
+    ]
+    marker_paths = [path for path, _caption in marker_entries]
+    marker_captions = {
+        index: caption
+        for index, (_path, caption) in enumerate(marker_entries)
+        if caption
+    }
+    marker_index = 0
+
+    def _next_sentinel(match: re.Match[str]) -> str:
+        nonlocal marker_index
+        marker_index += 1
+        return f"⟦IMG{marker_index - 1}⟧"
+
+    sentinel_text = IMAGE_MARKER_PATTERN.sub(_next_sentinel, raw_text)
+    clean_text = sentinel_text.strip()
     if strip_leading_number:
         clean_text = LEADING_QUESTION_NUMBER_PATTERN.sub("", clean_text, count=1).lstrip()
+
+    rendered_images: set[str] = set()
+    # 题干足够长时，第一张图浮动锚定到题目首段右侧环绕；短题干浮动只会
+    # 压住下一题，仍按独立段落插图。浮动锚点目标段是题目正文第一段。
+    float_first = (
+        bool(marker_paths)
+        and len(re.sub(r"\s+", "", _IMG_SENTINEL.sub("", clean_text))) >= 40
+    )
+    floating_image: tuple[Path, str] | None = None
+    first_body_paragraph = len(document.paragraphs)
 
     if clean_text:
         renderer = SharedWordQuestionRenderer(
@@ -512,7 +605,79 @@ def _add_text_and_images(
                     fallback.reason,
                 )
 
-        def render_cell(paragraph, value: str, *, suffix: str) -> None:
+        def emit_sentinel_image(index: int) -> None:
+            nonlocal floating_image
+            if 0 <= index < len(marker_paths):
+                path = marker_paths[index]
+                caption = marker_captions.get(index, "")
+                if index == 0 and float_first:
+                    resolved = _resolve_image_path(path, data_root=data_root)
+                    if resolved is not None:
+                        rendered_images.add(path)
+                        floating_image = (resolved, caption)
+                        return
+                rendered_images.add(path)
+                _add_images(
+                    document,
+                    [path],
+                    data_root=data_root,
+                    captions={path: caption} if caption else None,
+                )
+
+        def render_flow(value: str, *, suffix: str) -> None:
+            """渲染含 ⟦IMGn⟧ 哨兵的行：文字走公式渲染，哨兵处就地插图。"""
+            cursor = 0
+            for match in _IMG_SENTINEL.finditer(value):
+                segment = value[cursor : match.start()].strip()
+                if segment:
+                    render_line(segment, suffix=suffix)
+                emit_sentinel_image(int(match.group("idx")))
+                cursor = match.end()
+            tail = value[cursor:].strip()
+            if tail:
+                render_line(tail, suffix=suffix)
+
+        def render_cell(
+            paragraph,
+            value: str,
+            *,
+            suffix: str,
+            image_option_cell: bool = False,
+        ) -> None:
+            # 单元格内的 ⟦IMGn⟧ 哨兵就地转成内嵌小图；图片选项单元格
+            # 限高 22mm、限宽 1.6 英寸，保证 1×4 行内不顶破单元格。
+            picture_max_width = 1.6 if image_option_cell else 2.5
+            picture_max_height = 0.87 if image_option_cell else None
+            cursor = 0
+            for match in _IMG_SENTINEL.finditer(value):
+                segment = value[cursor : match.start()].strip()
+                if segment:
+                    _render_cell_text(paragraph, segment, suffix=suffix)
+                index = int(match.group("idx"))
+                if 0 <= index < len(marker_paths):
+                    path_text = marker_paths[index]
+                    resolved = _resolve_image_path(path_text, data_root=data_root)
+                    if resolved is not None:
+                        rendered_images.add(path_text)
+                        try:
+                            paragraph.add_run().add_picture(
+                                str(resolved),
+                                width=Inches(
+                                    natural_image_width_inches(
+                                        resolved,
+                                        max_width_inches=picture_max_width,
+                                        max_height_inches=picture_max_height,
+                                    )
+                                ),
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                cursor = match.end()
+            tail = value[cursor:].strip()
+            if tail:
+                _render_cell_text(paragraph, tail, suffix=suffix)
+
+        def _render_cell_text(paragraph, value: str, *, suffix: str) -> None:
             fallbacks = renderer.add_to_paragraph(
                 paragraph,
                 value,
@@ -532,12 +697,66 @@ def _add_text_and_images(
         stem, options = extract_and_format_options(clean_text)
         if options:
             # Render stem
-            for line_index, line in enumerate(stem.splitlines()):
-                if line.strip():
-                    render_line(line.strip(), suffix=f"stem-{line_index + 1}")
+            for line_index, (kind, item) in enumerate(
+                _iter_render_items(stem.splitlines())
+            ):
+                if kind == "table":
+                    _add_markdown_table(
+                        document, item, render_cell=render_cell,
+                        suffix_prefix=f"stem-{line_index + 1}",
+                    )
+                elif item.strip():
+                    render_flow(item.strip(), suffix=f"stem-{line_index + 1}")
             # Render options in table/columns
-            max_len = max(len(opt_text) for _, opt_text in options)
-            if max_len <= 6:
+            image_options = len(options) >= 3 and all(
+                _IMG_SENTINEL.fullmatch(opt_text.strip())
+                for _, opt_text in options
+            )
+            max_len = max(
+                _visible_length(opt_text) for _, opt_text in options
+            )
+            if image_options:
+                # 图片选项一律单行铺开（不足 4 个留空单元格），底边对齐。
+                table = add_noborder_table(document, 1, max(len(options), 4))
+                for i, (label, opt_text) in enumerate(options):
+                    cell = table.cell(0, i)
+                    cell.vertical_alignment = WD_ALIGN_VERTICAL.BOTTOM
+                    p = cell.paragraphs[0]
+                    render_cell(
+                        p,
+                        f"{label}. {opt_text}",
+                        suffix=f"option-{i + 1}",
+                        image_option_cell=True,
+                    )
+            elif float_first:
+                # 浮动图不环绕表格：改段落排布，短选项一行两项。
+                # 哨兵 0 在题尾（选项区之后）时，图片在收尾阶段仍会浮动，
+                # 这里同样按浮动布局排选项，避免表格右行被图覆盖。
+                if max_len <= 12:
+                    for pair_start in range(0, len(options), 2):
+                        p = document.add_paragraph()
+                        p.paragraph_format.tab_stops.add_tab_stop(Inches(3.1))
+                        label, opt_text = options[pair_start]
+                        _render_cell_text(
+                            p,
+                            f"{label}. {opt_text}",
+                            suffix=f"option-{pair_start + 1}",
+                        )
+                        if pair_start + 1 < len(options):
+                            p.add_run("\t")
+                            label, opt_text = options[pair_start + 1]
+                            _render_cell_text(
+                                p,
+                                f"{label}. {opt_text}",
+                                suffix=f"option-{pair_start + 2}",
+                            )
+                else:
+                    for option_index, (label, opt_text) in enumerate(options):
+                        render_flow(
+                            f"{label}. {opt_text}",
+                            suffix=f"option-{option_index + 1}",
+                        )
+            elif max_len <= 6:
                 table = add_noborder_table(document, 1, 4)
                 for i, (label, opt_text) in enumerate(options):
                     cell = table.cell(0, i)
@@ -553,24 +772,89 @@ def _add_text_and_images(
                     render_cell(p, f"{label}. {opt_text}", suffix=f"option-{idx + 1}")
             else:
                 for option_index, (label, opt_text) in enumerate(options):
-                    render_line(
+                    render_flow(
                         f"{label}. {opt_text}",
                         suffix=f"option-{option_index + 1}",
                     )
         else:
-            for line_index, line in enumerate(clean_text.splitlines()):
-                if line.strip():
-                    render_line(line.strip(), suffix=f"line-{line_index + 1}")
+            for line_index, (kind, item) in enumerate(
+                _iter_render_items(clean_text.splitlines())
+            ):
+                if kind == "table":
+                    _add_markdown_table(
+                        document, item, render_cell=render_cell,
+                        suffix_prefix=f"line-{line_index + 1}",
+                    )
+                elif item.strip():
+                    render_flow(item.strip(), suffix=f"line-{line_index + 1}")
 
     elif inline_prefix:
         paragraph = document.add_paragraph(inline_prefix)
         paragraph.paragraph_format.line_spacing = active_config.line_spacing
         paragraph.paragraph_format.keep_with_next = True
 
-    image_paths = _dedupe_paths([*(extra_image_paths or []), *inline_paths])
+    # 哨兵 0 落在选项区或题尾而未原位渲染时，仍把首图浮动到题干首段右侧。
+    if (
+        float_first
+        and floating_image is None
+        and marker_paths
+        and marker_paths[0] not in rendered_images
+    ):
+        resolved = _resolve_image_path(marker_paths[0], data_root=data_root)
+        if resolved is not None:
+            rendered_images.add(marker_paths[0])
+            floating_image = (resolved, marker_captions.get(0, ""))
+
+    if floating_image is not None and first_body_paragraph < len(document.paragraphs):
+        floating_path, floating_caption = floating_image
+        width_inches = natural_image_width_inches(
+            floating_path,
+            max_width_inches=2.8,
+            max_height_inches=3.0,
+        )
+        anchored = add_floating_picture(
+            document.paragraphs[first_body_paragraph],
+            floating_path,
+            width_inches=width_inches,
+            descr=floating_caption or None,
+        )
+        if not anchored:
+            _add_images(
+                document,
+                [str(floating_path)],
+                data_root=data_root,
+                captions={str(floating_path): floating_caption}
+                if floating_caption
+                else None,
+            )
+        # 浮动图挂在首段；题目末段不要 keep_with_next 黏住下一题。
+        if document.paragraphs:
+            document.paragraphs[-1].paragraph_format.keep_with_next = False
+
+    # 只有未被原位渲染的图片（外部 image_paths / 未命中的哨兵）才补到题末。
+    image_paths = _dedupe_paths(
+        [
+            *[str(p) for p in (extra_image_paths or [])],
+            *[p for p in marker_paths if p not in rendered_images],
+        ]
+    )
+    image_paths = [p for p in image_paths if p not in rendered_images]
+    leftover_captions = {
+        marker_paths[index]: caption
+        for index, caption in marker_captions.items()
+        if marker_paths[index] in image_paths
+    }
     if image_paths and document.paragraphs:
         document.paragraphs[-1].paragraph_format.keep_with_next = True
-    _add_images(document, image_paths, data_root=data_root)
+    _add_images(
+        document,
+        image_paths,
+        data_root=data_root,
+        captions=leftover_captions or None,
+    )
+
+
+_MAX_IMAGE_WIDTH_INCHES = 4.8
 
 
 def _add_images(
@@ -578,16 +862,27 @@ def _add_images(
     image_paths: list[object],
     *,
     data_root: str | Path | None = None,
+    captions: Mapping[str, str] | None = None,
 ) -> None:
     for image_path in image_paths:
         path = _resolve_image_path(str(image_path), data_root=data_root)
         if path is None:
             continue
         try:
-            document.add_picture(str(path), width=Inches(4.8))
+            width_inches = natural_image_width_inches(
+                path, max_width_inches=_MAX_IMAGE_WIDTH_INCHES
+            )
+            document.add_picture(str(path), width=Inches(width_inches))
             paragraph = document.paragraphs[-1]
             paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             paragraph.paragraph_format.keep_together = True
+            caption = str((captions or {}).get(str(image_path)) or "").strip()
+            if caption:
+                paragraph.paragraph_format.keep_with_next = True
+                caption_paragraph = document.add_paragraph()
+                caption_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                caption_run = caption_paragraph.add_run(caption)
+                caption_run.font.size = Pt(9)
         except Exception:  # noqa: BLE001
             continue
 

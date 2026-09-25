@@ -2118,4 +2118,35 @@ export const questionBankApi = {
       },
     )
   },
+
+  submitAnswerDraft(
+    questionIds: readonly number[],
+    signal?: AbortSignal,
+  ): Promise<JobResponse> {
+    return apiClient.request('/api/question-bank/answer-draft-jobs', {
+      method: 'POST',
+      body: { question_ids: normalizedQuestionIds(questionIds) },
+      decode: decodeJobResponse,
+      signal,
+    })
+  },
+
+  retryAnswerDraftJob(
+    jobId: number,
+    questionIds?: readonly number[],
+    signal?: AbortSignal,
+  ): Promise<JobResponse> {
+    if (!isPositiveInteger(jobId)) throw new Error('Invalid answer draft job id')
+    return apiClient.request(
+      `/api/question-bank/answer-draft-jobs/${jobId}/retry`,
+      {
+        method: 'POST',
+        body: questionIds === undefined
+          ? {}
+          : { question_ids: normalizedQuestionIds(questionIds) },
+        decode: decodeJobResponse,
+        signal,
+      },
+    )
+  },
 }

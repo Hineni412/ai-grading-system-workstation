@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import re
+import tempfile
 import textwrap
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from dataclasses import field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from xml.etree import ElementTree
 
 from question_bank.database.schema import connect, initialize_database
+from question_bank.document_pipeline.contracts import TextLayerState
 from question_bank.importers.docx_importer import import_docx
+from question_bank.importers.mineru_parse import parse_pdf_full
 from question_bank.importers.pdf_importer import import_pdf
 from question_bank.importers.types import ExtractedDocument
 from question_bank.services.duplicate_analysis_copy_service import (
@@ -33,6 +37,10 @@ from question_bank.parsers.type_detector import (
 )
 
 
+if TYPE_CHECKING:
+    from question_bank.document_pipeline.pipeline import QuestionDocumentPipeline
+
+
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_PAPER_SUFFIXES = {".pdf", ".docx"}
 _ANSWER_HEADING = re.compile(
@@ -42,7 +50,9 @@ _NUMBERED_LINE_PREFIX = r"(?m)^[ \t]*(?P<leading_images>(?:\[\[IMAGE:[^\r\n]+?\]
 _MAIN_QUESTION_MARKER = re.compile(_NUMBERED_LINE_PREFIX + r"(?P<number>\d{1,3})[ \t]*[.．、][ \t]*")
 _PAREN_QUESTION_MARKER = re.compile(_NUMBERED_LINE_PREFIX + r"[（(][ \t]*(?P<number>\d{1,3})[ \t]*[）)][ \t]*")
 _SECTION_HEADING = re.compile(r"^[一二三四五六七八九十百]+[、.．][ \t]*\S+")
-_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
+_IMAGE_MARKER = re.compile(
+    r"\[\[IMAGE:(?P<path>[^\]|]+?)(?:\|caption=(?P<caption>[^\]]*))?\]\]"
+)
 _INLINE_MAIN_QUESTION_MARKER = re.compile(
     r"(?P<prefix>[。！？!?．.][ \t\r\n]*)"
     r"(?P<number>\d{1,2})[ \t]*[.．、](?![ \t]*\d)[ \t]*"
@@ -57,6 +67,269 @@ _COPYRIGHT_META_NOISE = re.compile(r"声明\s*：\s*试题解析著作权属|著
 # Teacher-edition answer blocks carry explicit labels; used as anchors when
 # validating numbered boundaries inside the answer section.
 _ANSWER_BLOCK_LABEL = re.compile(r"【(?:答案|分析|解答|点评|解析)】")
+_MARKDOWN_HEADING = re.compile(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+")
+# MinerU 裁图固定 200dpi；落盘时给 JPEG/PNG 补上 dpi 元数据。
+_MINERU_IMAGE_DPI = 200
+# 装饰小图丢弃阈值：0.4 英寸 * 200dpi 的面积、任一边 40px。
+_DECORATIVE_IMAGE_MIN_AREA_PX = int(0.4 * _MINERU_IMAGE_DPI) ** 2
+_DECORATIVE_IMAGE_MIN_SIDE_PX = 40
+# OCR 归一化阶段的节标题噪声（教辅栏目名、难度分节等整行）。
+_OCR_SECTION_NOISE = re.compile(
+    r"^(知识点\s*\d+|基础题|中档题|综合题|拔高题|易错点|变式|"
+    r"第[一二三四五六七八九十]+部分|【[^】]{1,12}】|"
+    r"[一二三四五六七八九十]+、\S{1,8}题)[\s《》«»:：]*.{0,20}$"
+)
+# 图注行：紧跟 [[IMAGE:]] 行、去空白后整行命中且不超过 12 字。
+_IMAGE_CAPTION_LINE = re.compile(
+    r"^(?:第\s*\d+\s*题\s*图?|图\s*\d+|实物图|示意图|变式题图|第\s*\d+\s*题)$"
+)
+_IMAGE_CAPTION_MAX_LEN = 12
+_BARE_LATEX_COMMAND = re.compile(r"\\[A-Za-z]{2,}")
+_CJK_CHAR = re.compile(r"[一-鿿]")
+_BARE_LATEX_CJK_LIMIT = 4
+
+# 文字层可读字符占比阈值：自定义字体映射的"伪文字层"（提取出 "!"#$% 类
+# 乱码）通常在 20% 左右，正常中英文排版远高于此。
+_EMBEDDED_TEXT_USABLE_RATIO = 0.4
+
+# MinerU Markdown 中的图片引用：![](data:image/…;base64,…) 或 ![](文件路径)。
+_MARKDOWN_IMAGE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<src>[^)\s]+)\)")
+_DATA_URI_MIME_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+
+
+def _embedded_text_usable(text: str) -> bool:
+    """False 表示没有文字层，或文字层是乱码映射（需要走 OCR）。"""
+    chars = [c for c in text if not c.isspace()]
+    if not chars:
+        return False
+    meaningful = sum(1 for c in chars if c.isalnum())
+    return meaningful / len(chars) >= _EMBEDDED_TEXT_USABLE_RATIO
+
+
+def _materialize_markdown_images(
+    text: str, image_dir: Path | None
+) -> tuple[str, list[str]]:
+    """把 Markdown 图片引用落盘并改写成题库通用的 [[IMAGE:path]] 标记。"""
+    saved: list[str] = []
+    if image_dir is None:
+        return text, saved
+
+    def _replace(match: re.Match[str]) -> str:
+        src = match.group("src").strip()
+        try:
+            if src.startswith("data:"):
+                header, _, payload = src.partition(",")
+                mime = header[5:].split(";")[0].strip().lower()
+                ext = _DATA_URI_MIME_EXT.get(mime, ".png")
+                blob = base64.b64decode(payload)
+            else:
+                source_path = Path(src)
+                if not source_path.is_file():
+                    return match.group(0)
+                blob = source_path.read_bytes()
+                ext = source_path.suffix.lower() or ".png"
+            if not blob:
+                return match.group(0)
+            normalized_blob = _stamped_image_blob(blob, ext)
+            if normalized_blob is None:
+                # 装饰小图（图标/分隔符）：不落盘、不保留标记。
+                return ""
+            blob, ext = normalized_blob
+            digest = hashlib.sha1(blob).hexdigest()[:12]
+            output_path = image_dir / f"mineru_{digest}{ext}"
+            image_dir.mkdir(parents=True, exist_ok=True)
+            if not output_path.exists():
+                output_path.write_bytes(blob)
+            saved.append(str(output_path))
+            alt = re.sub(r"[\[\]|]", " ", (match.group("alt") or "").strip())
+            alt = re.sub(r"\s+", " ", alt).strip()
+            if alt:
+                return f"[[IMAGE:{output_path}|caption={alt}]]"
+            return f"[[IMAGE:{output_path}]]"
+        except Exception:  # noqa: BLE001 - 单张图失败不阻塞整份试卷导入
+            return match.group(0)
+
+    return _MARKDOWN_IMAGE.sub(_replace, text), saved
+
+
+def _stamped_image_blob(blob: bytes, ext: str) -> tuple[bytes, str] | None:
+    """重存图片并写入 MinerU 裁图的 200dpi 元数据；装饰小图返回 None。
+
+    PIL 打不开时原样保留（不做尺寸判断）。
+    """
+    try:
+        import io
+
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        return blob, ext
+    try:
+        with Image.open(io.BytesIO(blob)) as image:
+            image.load()
+            width_px, height_px = image.size
+            if (
+                width_px * height_px < _DECORATIVE_IMAGE_MIN_AREA_PX
+                or min(width_px, height_px) < _DECORATIVE_IMAGE_MIN_SIDE_PX
+            ):
+                return None
+            image_format = image.format
+            buffer = io.BytesIO()
+            if image_format == "JPEG" and image.mode not in ("L", "RGB", "CMYK"):
+                image = image.convert("RGB")
+            if image_format:
+                image.save(buffer, format=image_format, dpi=(_MINERU_IMAGE_DPI, _MINERU_IMAGE_DPI))
+            else:
+                image.save(buffer, format="PNG", dpi=(_MINERU_IMAGE_DPI, _MINERU_IMAGE_DPI))
+                ext = ".png"
+            return buffer.getvalue(), ext
+    except Exception:  # noqa: BLE001
+        return blob, ext
+
+
+def _caption_line_text(line: str) -> str | None:
+    collapsed = re.sub(r"\s+", "", str(line or ""))
+    if not collapsed or len(collapsed) > _IMAGE_CAPTION_MAX_LEN:
+        return None
+    return collapsed if _IMAGE_CAPTION_LINE.match(collapsed) else None
+
+
+def _merge_image_caption_lines(text: str) -> str:
+    """把紧邻 [[IMAGE:]] 行的图注行折进标记的 |caption= 后缀；孤立图注删除。"""
+    lines = str(text or "").splitlines()
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        caption = _caption_line_text(lines[index])
+        if caption is None:
+            result.append(lines[index])
+            index += 1
+            continue
+        following = index + 1
+        while following < len(lines) and not lines[following].strip():
+            following += 1
+        merged = False
+        if following < len(lines):
+            marker = _IMAGE_MARKER.fullmatch(lines[following].strip())
+            if marker is not None and marker.group("caption") is None:
+                result.append(
+                    f"[[IMAGE:{marker.group('path').strip()}|caption={caption}]]"
+                )
+                index = following + 1
+                merged = True
+        if not merged:
+            previous = len(result) - 1
+            while previous >= 0 and not result[previous].strip():
+                previous -= 1
+            if previous >= 0:
+                marker = _IMAGE_MARKER.fullmatch(result[previous].strip())
+                if marker is not None and marker.group("caption") is None:
+                    result[previous] = (
+                        f"[[IMAGE:{marker.group('path').strip()}|caption={caption}]]"
+                    )
+                    merged = True
+        index += 1
+    return "\n".join(result)
+
+
+def _wrap_bare_latex_lines(text: str) -> str:
+    """一行含 LaTeX 命令但没有 $ 定界符时整行包成 $...$（正文行除外）。"""
+    wrapped: list[str] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if (
+            stripped
+            and "$" not in stripped
+            and _BARE_LATEX_COMMAND.search(stripped)
+            and len(_CJK_CHAR.findall(stripped)) < _BARE_LATEX_CJK_LIMIT
+        ):
+            wrapped.append(f"${stripped}$")
+        else:
+            wrapped.append(line)
+    return "\n".join(wrapped)
+
+
+def _normalize_mineru_formulas(text: str) -> str:
+    """MinerU 公式归一化：多行 $$..$$ 折成单行，$$..$$ 统一为行内 $..$。"""
+    normalized = re.sub(
+        r"\$\$\s*\n([^$]+?)\n\s*\$\$",
+        lambda match: "$" + " ".join(match.group(1).split()) + "$",
+        str(text or ""),
+    )
+    normalized = re.sub(r"\$\$([^$\n]+?)\$\$", r"$\1$", normalized)
+    return _wrap_bare_latex_lines(normalized)
+
+
+# 空格线占位符在公式里可能被 OCR 成各种形状（\Box/\triangle/\vartriangle/\mathrm{~__~}），
+# 统一视作"占位符原子"；由它们组成的下标组或 \substack 组整体视为一个空格线。
+_BLANK_ATOM = (
+    r"(?:\\triangle|\\vartriangle|\\Delta|\\Box|\\square"
+    r"|\\mathrm\s*\{\s*(?:[_~\s]|\\_|\\[Bb]ox|\\square)*\}"
+    r"|_{2,}|\\_|□|☐|△|▲|~)"
+)
+_BLANK_RUN = rf"(?:{_BLANK_ATOM}|\s)+"
+_OCR_BLANK_BOX_RUN_STR = (
+    r"(?:\\[Bb]ox|\\square|[□☐])(?:\s*(?:\\[Bb]ox|\\square|[□☐]))*"
+)
+_BLANK_GROUP = re.compile(
+    rf"(?:_|\^)\s*\{{\s*\\substack\s*\{{\s*{_BLANK_RUN}\}}\s*\}}"
+    rf"|\\substack\s*\{{\s*{_BLANK_RUN}\}}"
+    rf"|(?:_|\^)\s*\{{\s*{_BLANK_RUN}\}}"
+    rf"|{_OCR_BLANK_BOX_RUN_STR}"
+)
+_OCR_BLANK_BOX_RUN = re.compile(_OCR_BLANK_BOX_RUN_STR)
+
+
+_CHOICE_BLANK_PAREN = re.compile(r"[（(]\s*_{2,}\s*[)）]?")
+
+
+def _normalize_ocr_blanks(text: str) -> str:
+    """把 OCR 对空格线的各种读法统一成 "____"，供题型判定与 Word 渲染。"""
+    normalized = str(text or "")
+
+    # 先把公式内部的占位符折到公式外：$b = \Box\Box\Box$ → $b =$ ____，
+    # 否则 "____" 留在 $...$ 里会被渲染层当成空下标。
+    def _split_blank_math(match: re.Match) -> str:
+        inner = _BLANK_GROUP.sub("\x00", match.group(1))
+        if "\x00" not in inner:
+            return match.group(0)
+        # 占位符被 OCR 包进 aligned 环境壳时先剥壳，否则 ____ 仍困在公式里。
+        inner = re.sub(r"\\(?:begin|end)\s*\{[^{}]*\}", " ", inner)
+        parts = inner.split("\x00")
+        segments: list[str] = []
+        for index, part in enumerate(parts):
+            part = part.strip()
+            if part:
+                segments.append(f"${part}$")
+            if index < len(parts) - 1:
+                segments.append("____")
+        return " ".join(segments)
+
+    normalized = re.sub(r"\$([^$]+)\$", _split_blank_math, normalized)
+    # 没被包进 $...$ 的残余占位符垃圾组（下标组/\substack/\Box 串）同样归一。
+    normalized = _BLANK_GROUP.sub("____", normalized)
+
+    normalized = re.sub(r"\\underline\{[^{}]*\}", "____", normalized)
+    normalized = re.sub(r"(?:\\_){2,}", "____", normalized)
+    normalized = re.sub(r"_{2,}", "____", normalized)
+    # OCR 把长下划线读成长破折号的形态；≥3 个才替换，避免误伤正文破折号。
+    normalized = re.sub(r"[—–―]{3,}", "____", normalized)
+    # 文本层的 □/口 占位符（未被并入公式的形态）。
+    normalized = re.sub(r"[□口☐]{2,}", "____", normalized)
+    normalized = re.sub(r"[□☐]", "____", normalized)
+    # 整段数学里只有空格线时剥掉 $...$，避免下标化失败。
+    normalized = re.sub(r"\$\s*_{2,}\s*\$", "____", normalized)
+    # 相邻占位符碎片合一："____·____"、"____口____" → "____"。
+    normalized = re.sub(
+        r"____(?:\s*(?:\$\s*\\cdot\s*\$|[·•.\s]*[□口])?[·•.\s]*____)+", "____", normalized
+    )
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -82,6 +355,8 @@ class _NumberedBlock:
     image_paths: list[str] = field(default_factory=list)
     # 切分时被并入本块的倒序/重复编号个数（>0 说明原文编号异常，需人工复核）。
     merged_marker_count: int = 0
+    # 本块之前最近的节标题（如"二、填空题（…）"），OCR 路径用于题型推断。
+    section_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -277,6 +552,8 @@ def parse_paper_text(
     needs_image_review: bool = False,
     image_paths: list[str] | None = None,
     type_overrides: Mapping[str, str] | None = None,
+    keep_image_markers: bool = False,
+    ocr_noise: bool = False,
 ) -> ParsedPaperText:
     # Document-level image flags stay in the signature for callers, but each
     # question now uses only the images extracted for that numbered block.
@@ -290,7 +567,13 @@ def parse_paper_text(
     all_block_numbers: list[str] = []
     merged_anomaly_count = 0
 
-    for block in _split_numbered_blocks(question_text, source_file=source_file, doc_title=doc_title):
+    for block in _split_numbered_blocks(
+        question_text,
+        keep_image_markers=keep_image_markers,
+        source_file=source_file,
+        doc_title=doc_title,
+        ocr_noise=ocr_noise,
+    ):
         all_block_numbers.append(block.number)
         if not _is_in_range(block.number, range_filter):
             continue
@@ -318,6 +601,12 @@ def parse_paper_text(
             (type_overrides or {}).get(block.number)
         )
         q_type = override_type or detect_question_type(block.text)
+        if ocr_noise and block.section_hint:
+            q_type = _section_hinted_type(block.section_hint, block.text, q_type)
+        question_text = block.text
+        if ocr_noise and q_type == "选择题":
+            # 教辅括号里的红色答案字母被擦除后留下 "（____"，选择题恢复成空括号。
+            question_text = _CHOICE_BLANK_PAREN.sub("（　）", question_text)
         essay_subtype = override_subtype
         if q_type == "解答题" and essay_subtype is None:
             essay_subtype = detect_essay_subtype(block.text)
@@ -329,7 +618,7 @@ def parse_paper_text(
         questions.append(
             ParsedQuestion(
                 question_number=block.number,
-                question_text=block.text,
+                question_text=question_text,
                 answer_text=answer,
                 source_file=source_file,
                 page_range=page_range,
@@ -400,6 +689,8 @@ def import_scanned_papers(
     archive_sources: bool = True,
     asset_overrides: list[dict[str, Any]] | None = None,
     type_overrides: Mapping[str, str] | None = None,
+    document_pipeline: "QuestionDocumentPipeline | None" = None,
+    full_parser: Callable[[Path], str | None] | None = None,
 ) -> BatchImportResult:
     database_path = Path(db_path)
     # Existing teacher-governed identities must not block an ordinary paper
@@ -448,6 +739,8 @@ def import_scanned_papers(
                     asset_overrides=asset_overrides,
                     type_overrides=type_overrides,
                     duplicate_index=duplicate_index,
+                    document_pipeline=document_pipeline,
+                    full_parser=full_parser,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -510,6 +803,8 @@ def _import_scanned_paper(
     asset_overrides: list[dict[str, Any]] | None = None,
     type_overrides: Mapping[str, str] | None = None,
     duplicate_index: _DuplicateIndex | None = None,
+    document_pipeline: "QuestionDocumentPipeline | None" = None,
+    full_parser: Callable[[Path], str | None] | None = None,
 ) -> PaperImportFileResult:
     initialize_database(db_path)
     source_value = stored_source_file or str(path)
@@ -530,10 +825,12 @@ def _import_scanned_paper(
                 message="paper already imported",
             )
 
-    extracted = (
-        _extract_paper(path, asset_root=asset_root)
-        if asset_root is not None
-        else _extract_paper(path)
+    extracted = _extract_paper(
+        path,
+        asset_root=asset_root,
+        document_pipeline=document_pipeline,
+        full_parser=full_parser,
+        operation_id=f"import-{fingerprint}" if fingerprint else None,
     )
     if asset_overrides:
         extracted = apply_asset_overrides(extracted, asset_overrides)
@@ -545,8 +842,28 @@ def _import_scanned_paper(
         has_images=extracted.has_images,
         needs_image_review=extracted.needs_image_review,
         image_paths=extracted.image_paths,
-        type_overrides=type_overrides,
+        # 提取层推断的题型（彩色答案层）先填，调用方显式覆盖优先。
+        type_overrides={**extracted.type_overrides, **dict(type_overrides or {})},
+        # OCR/MinerU 路径保留 [[IMAGE:]] 标记在题文内，保住图片的原位置。
+        keep_image_markers=extracted.ocr_applied,
+        ocr_noise=extracted.ocr_applied,
     )
+    if extracted.ocr_applied:
+        # 教辅扫描件常把答案/解析印在题干里，入库前再切一次。
+        parsed = _split_inline_teacher_answers(parsed)
+    snapshot = extracted.document_snapshot
+    if extracted.ocr_applied or (
+        snapshot is not None
+        and any(
+            page.text_layer_state == TextLayerState.LOCAL_OCR for page in snapshot.pages
+        )
+    ):
+        # OCR 识别的题目一律进入人工复核队列。
+        parsed = replace(
+            parsed,
+            questions=[replace(item, needs_review=True) for item in parsed.questions],
+            review_count=len(parsed.questions) + len(parsed.review_reasons),
+        )
     if not parsed.questions:
         if extracted.needs_ocr:
             return PaperImportFileResult(
@@ -792,12 +1109,115 @@ def _asset_root_for_database(
     return root / "question_bank" / "extracted_images"
 
 
-def _extract_paper(path: Path, *, asset_root: Path | None = None):
+def _extract_paper(
+    path: Path,
+    *,
+    asset_root: Path | None = None,
+    document_pipeline: "QuestionDocumentPipeline | None" = None,
+    full_parser: Callable[[Path], str | None] | None = None,
+    operation_id: str | None = None,
+):
     if path.suffix.lower() == ".pdf":
-        return import_pdf(path)
+        extracted = import_pdf(path)
+        if not _embedded_text_usable(extracted.text):
+            # 无文字层或文字层乱码（自定义字体映射出 "!"#$% 类字符）的 PDF
+            # 先走 MinerU 完整解析（版面+公式识别+OCR），输出带 LaTeX 的
+            # Markdown；不可用或为空再退回行级 OCR 管线。
+            parser = parse_pdf_full if full_parser is None else full_parser
+            markdown = None
+            extracted_type_overrides: dict[str, str] = {}
+            image_dir: Path | None = None
+            if asset_root is not None:
+                digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:10]
+                image_dir = asset_root / f"{path.stem}_{digest}"
+            # 教辅彩色答案层：拆出学生版/答案版两份 PDF 分别解析。
+            if full_parser is None:
+                markdown, extracted_type_overrides = _extract_with_colored_layers(
+                    path, image_dir=image_dir
+                )
+            if markdown is None:
+                markdown = parser(path)
+            if markdown:
+                # MinerU 标题（## 参考答案）会挡住答案区切分，先还原成普通行。
+                normalized = _MARKDOWN_HEADING.sub("", markdown)
+                # 多行块公式折成单行，$$...$$ 统一成行内 $...$ 供渲染层处理。
+                normalized = _normalize_mineru_formulas(normalized)
+                # 空格线的各种 OCR 形态统一成 "____"。
+                normalized = _normalize_ocr_blanks(normalized)
+                normalized, saved_images = _materialize_markdown_images(normalized, image_dir)
+                normalized = _merge_image_caption_lines(normalized)
+                return replace(
+                    extracted,
+                    text=normalized,
+                    needs_ocr=False,
+                    ocr_applied=True,
+                    has_images=bool(saved_images) or extracted.has_images,
+                    image_paths=[*extracted.image_paths, *saved_images],
+                    type_overrides=extracted_type_overrides,
+                )
+            if document_pipeline is not None and operation_id:
+                # 重算 needs_ocr：OCR 产出文本后不再按"待 OCR"处理。
+                extracted = import_pdf(
+                    path,
+                    document_pipeline=document_pipeline,
+                    operation_id=operation_id,
+                    source_id=f"paper-{operation_id}",
+                )
+                extracted = replace(
+                    extracted,
+                    needs_ocr=not _embedded_text_usable(extracted.text),
+                    ocr_applied=bool(extracted.text.strip()),
+                )
+            elif not extracted.needs_ocr:
+                extracted = replace(extracted, needs_ocr=True)
+        return extracted
     extracted = import_docx(path, asset_root=asset_root)
     paragraphs = split_inline_main_question_paragraphs(extracted.rich_paragraphs)
     return replace(extracted, rich_paragraphs=paragraphs, text="\n".join(str(p["text"]) for p in paragraphs))
+
+
+def _extract_with_colored_layers(
+    path: Path, *, image_dir: Path | None
+) -> tuple[str | None, dict[str, str]]:
+    """彩色答案层路径：拆分 student/answers 双 PDF 并各自跑 MinerU。
+
+    返回 (带参考答案段的 Markdown 或 None, 题型覆盖表)。
+    """
+    from question_bank.importers.mineru_parse import parse_pdf_full_with_answers
+    from question_bank.importers.pdf_importer import split_colored_answer_layers
+
+    work_dir: Path | None = None
+    temp_dir = None
+    if image_dir is not None:
+        work_dir = image_dir / "layers"
+    else:
+        temp_dir = tempfile.TemporaryDirectory(prefix="qb_layers_")
+        work_dir = Path(temp_dir.name)
+    try:
+        try:
+            layers = split_colored_answer_layers(path, work_dir)
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("彩色答案层拆分失败，退回普通 MinerU 路径: %s", path, exc_info=True)
+            return None, {}
+        if layers is None:
+            return None, {}
+        parsed = parse_pdf_full_with_answers(
+            layers.student_pdf, layers.answers_pdf, regions=layers.regions
+        )
+        if parsed is None:
+            return None, {}
+        markdown, answers, types = parsed
+        if answers:
+            lines = ["参考答案"]
+            for number in sorted(answers):
+                # 答案区切分按题号配对，多行答案折成一行。
+                answer = re.sub(r"\s*\n\s*", "  ", str(answers[number]).strip())
+                lines.append(f"{number}. {answer}")
+            markdown = markdown.rstrip() + "\n\n" + "\n".join(lines)
+        return markdown, {str(number): qtype for number, qtype in types.items()}
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
 
 
 def _find_paper_collision(
@@ -911,6 +1331,52 @@ def _answer_map(answer_text: str, source_file: str | None = None, doc_title: str
             # 同一编号只保留第一次出现，避免后面的同号解析块顶掉正确答案。
             answers.setdefault(block.number, block.text)
     return answers
+
+
+# 教辅扫描件题干里的内嵌答案：`（D）` 出现在题干末尾或选项区起始之前。
+_INLINE_CHOICE_ANSWER = re.compile(r"[（(]\s*([A-D])\s*[)）]")
+# 行首“解:/答:/分析:/解答:”起及其后内容都属于答案区。
+_INLINE_ANSWER_LEAD_LINE = re.compile(r"(?m)^[ \t]*(?:分析|解答|解|答)\s*[:：]")
+# 选项区起始（A. / A、 / A) / A） 等），用于判定内嵌答案的位置。
+_OPTION_BLOCK_START = re.compile(r"(?<![A-Za-z])A(?:[.．、\)]|）)")
+
+
+def _split_inline_teacher_answers(parsed: ParsedPaperText) -> ParsedPaperText:
+    """把 OCR 题干里内嵌的教辅答案/解析切到 answer_text（ocr_applied 路径）。"""
+    questions: list[ParsedQuestion] = []
+    for item in parsed.questions:
+        question_text = str(item.question_text or "")
+        answer_text = item.answer_text
+        lead = _INLINE_ANSWER_LEAD_LINE.search(question_text)
+        if lead is not None:
+            tail = question_text[lead.start() :].strip()
+            if tail and not answer_text:
+                answer_text = tail
+            question_text = question_text[: lead.start()].rstrip()
+        # 从前往后取第一个紧跟选项区（或位于题末）的括号字母：教辅把答案印在
+        # 题干与选项之间；块尾若并入了“变式”子题，其答案不能顶掉本题答案。
+        for match in _INLINE_CHOICE_ANSWER.finditer(question_text):
+            start, end = match.start(), match.end()
+            prev_char = question_text[start - 1] if start > 0 else ""
+            if prev_char and prev_char.isascii() and prev_char.isalnum():
+                continue
+            rest = question_text[end:].strip()
+            if rest and _OPTION_BLOCK_START.match(rest) is None:
+                continue
+            if not answer_text:
+                answer_text = match.group(1)
+            question_text = (
+                question_text[:start].rstrip() + (" " + rest if rest else "")
+            ).strip()
+            break
+        if question_text != item.question_text or answer_text != item.answer_text:
+            item = replace(
+                item,
+                question_text=question_text,
+                answer_text=answer_text,
+            )
+        questions.append(item)
+    return replace(parsed, questions=questions)
 
 
 def map_rich_content_by_number(
@@ -1565,6 +2031,7 @@ def _split_numbered_blocks(
     source_file: str | None = None,
     anchor_answer_labels: bool = False,
     doc_title: str | None = None,
+    ocr_noise: bool = False,
 ) -> list[_NumberedBlock]:
     cleaned = textwrap.dedent(str(text or ""))
     merged_counts: list[int] = []
@@ -1599,6 +2066,7 @@ def _split_numbered_blocks(
             keep_image_markers=keep_image_markers,
             source_file=source_file,
             doc_title=doc_title,
+            ocr_noise=ocr_noise,
         )
         if body:
             blocks.append(_NumberedBlock(
@@ -1606,8 +2074,44 @@ def _split_numbered_blocks(
                 text=body,
                 image_paths=image_paths,
                 merged_marker_count=merged_counts[index] if merged_counts else 0,
+                section_hint=_last_section_hint(cleaned[: match.start()]),
             ))
     return blocks
+
+
+# 节标题行：以"一、/二、…"开头且含题类关键词的短行（剥离前用于题型推断）。
+# "第二部分"以"第"开头、"19.（本题10分）综合与实践"是题号行，均不匹配。
+_SECTION_HINT_LINE = re.compile(r"^#{0,6}\s*[一二三四五六七八九十]+\s*[、．.]")
+_SECTION_HINT_KEYWORD = re.compile(r"填空|选择|解答|计算|证明|简答|综合")
+
+
+def _last_section_hint(prefix: str) -> str | None:
+    for line in reversed(prefix.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if len(stripped) <= 40 and _SECTION_HINT_LINE.match(stripped) and _SECTION_HINT_KEYWORD.search(stripped):
+            return stripped.lstrip("#").strip()
+    return None
+
+
+# 选项标签粗查：探测器没判选择题时的兜底"有没有选项"。
+_SECTION_OPTION_LABEL = re.compile(r"(?<![A-Za-z])[A-D](?:[.．、\)]|）)")
+
+
+def _section_hinted_type(section_hint: str, question_text: str, detected: str) -> str:
+    """节标题与探测器冲突时按标题纠正题型（仅 OCR 路径调用）。"""
+    has_options = len(_SECTION_OPTION_LABEL.findall(question_text)) >= 3
+    if "填空" in section_hint:
+        if not has_options and detected != "填空题":
+            return "填空题"
+    elif "选择" in section_hint:
+        if has_options and detected not in ("选择题", "多选题"):
+            return "选择题"
+    elif re.search(r"解答|计算|证明|简答|综合", section_hint):
+        if not has_options and detected != "填空题":
+            return "解答题"
+    return detected
 
 
 def _clean_block(
@@ -1616,6 +2120,7 @@ def _clean_block(
     keep_image_markers: bool = False,
     source_file: str | None = None,
     doc_title: str | None = None,
+    ocr_noise: bool = False,
 ) -> tuple[str, list[str]]:
     image_paths = [match.group("path").strip() for match in _IMAGE_MARKER.finditer(str(text or ""))]
     text_without_images = _IMAGE_MARKER.sub("", str(text or ""))
@@ -1633,8 +2138,16 @@ def _clean_block(
         )
         clean_title = re.sub(r'_\d{8}_\d{6}$', '', clean_title).strip()
 
-    for line in lines:
+    last_line_index = len(lines) - 1
+    for line_index, line in enumerate(lines):
         line_clean = _IMAGE_MARKER.sub("", line).strip()
+        if ocr_noise and _OCR_SECTION_NOISE.match(line_clean):
+            # 【…】式栏目名出现在题干中间时是题内小标题，保留；
+            # 题块首尾一律按节标题噪声删除。
+            if line_clean.startswith("【") and 0 < line_index < last_line_index:
+                pass
+            else:
+                continue
         if _SECTION_HEADING.match(line_clean):
             continue
         if len(line_clean) <= 120 and _PAPER_TITLE_NOISE.search(line_clean):
@@ -1802,3 +2315,4 @@ def _infer_semester(text: str) -> str | None:
     if any(token in text for token in ("下学期", "下册", "七下", "八下", "九下", "（下）", "(下)")):
         return "下学期"
     return None
+

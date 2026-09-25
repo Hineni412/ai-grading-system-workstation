@@ -281,23 +281,56 @@ def add_noborder_table(document, rows: int, cols: int):
     return table
 
 
+def _visible_length(text: str) -> int:
+    """选项布局用的可见长度：LaTeX 源码折成渲染后的近似字符数。"""
+    value = re.sub(r"\$", "", str(text or ""))
+    value = re.sub(r"\\frac\{([^{}]*)\}\{([^{}]*)\}", r"\1/\2", value)
+    value = re.sub(r"\\[A-Za-z]+", "", value)
+    value = re.sub(r"[{}^_]", "", value)
+    value = re.sub(r"\s+", "", value)
+    return len(value)
+
+
+_OPTION_LABEL = r'(?<![A-Za-z])[A-D](?:[\.．、\)]|）)'
+# 教辅把答案印在选项区末尾，形如“（B）”。
+_EMBEDDED_OPTION_ANSWER = re.compile(r'[（(]\s*[A-D]\s*[)）]')
+_TRAILING_OPTION_ANSWER = re.compile(r'[（(]\s*[A-D]\s*[)）]\s*$')
+
+
 def extract_and_format_options(text: str) -> tuple[str, list[tuple[str, str]]]:
-    pattern = re.compile(r'(?:^|[\s\u3000,\(\)（）【】])(A)(?:[\.．、\)]|）)\s*')
+    # 标签前只要不是字母或数字即视为选项区起点（允许紧贴中文，如“根是A.”）。
+    pattern = re.compile(r'(?<![A-Za-z0-9])(A)(?:[\.．、\)]|）)\s*')
     match = pattern.search(text)
     if not match:
         return text, []
 
     start_idx = match.start(1)
     stem = text[:start_idx].strip()
-    options_text = text[start_idx:]
+    # 先去掉选项区末尾的内嵌答案，避免被拆成幻影选项。
+    options_text = _TRAILING_OPTION_ANSWER.sub("", text[start_idx:])
 
-    opt_pattern = re.compile(r'\b([A-D])(?:[\.．、\)]|）)\s*(.*?)(?=\b[A-D](?:[\.．、\)]|）)|$)')
+    # 选项值允许跨行，但在下一个标签或 [[IMAGE:]] 标记行之前停下，
+    # 否则末选项遇到跟随的图片标记行会整体匹配失败而丢失。
+    opt_pattern = re.compile(
+        r'(?<![A-Za-z])([A-D])(?:[\.．、\)]|）)\s*(.*?)(?='
+        + _OPTION_LABEL + r'|\n\[\[IMAGE:|\n⟦IMG\d+⟧|$)',
+        flags=re.S,
+    )
     matches = opt_pattern.findall(options_text)
 
-    if len(matches) < 4:
+    # 选项标签必须递增；递增不上的视为内嵌答案等噪声。
+    ordered: list[tuple[str, str]] = []
+    for label, value in matches:
+        if ordered and label <= ordered[-1][0]:
+            continue
+        ordered.append((label, value.strip()))
+
+    # OCR 偶发丢一个选项；3 个标签也按选项区拆分。
+    if len(ordered) < 3:
         return text, []
 
-    opts = []
-    for m in matches[:4]:
-        opts.append((m[0], m[1].strip()))
+    opts = ordered[:4]
+    if opts:
+        label, value = opts[-1]
+        opts[-1] = (label, _EMBEDDED_OPTION_ANSWER.sub("", value).strip())
     return stem, opts

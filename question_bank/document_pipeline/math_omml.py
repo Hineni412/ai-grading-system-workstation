@@ -17,17 +17,40 @@ _SAFE_COMMANDS = {
     "gamma": "γ",
     "delta": "δ",
     "Delta": "Δ",
+    "epsilon": "ε",
+    "varepsilon": "ε",
+    "zeta": "ζ",
+    "eta": "η",
     "theta": "θ",
+    "vartheta": "ϑ",
+    "Theta": "Θ",
+    "iota": "ι",
+    "kappa": "κ",
     "lambda": "λ",
+    "Lambda": "Λ",
     "mu": "μ",
+    "nu": "ν",
+    "xi": "ξ",
     "pi": "π",
+    "Pi": "Π",
+    "rho": "ρ",
     "sigma": "σ",
+    "Sigma": "Σ",
+    "tau": "τ",
+    "upsilon": "υ",
     "phi": "φ",
+    "varphi": "φ",
+    "Phi": "Φ",
+    "chi": "χ",
+    "psi": "ψ",
+    "Psi": "Ψ",
     "omega": "ω",
+    "Omega": "Ω",
     "times": "×",
     "cdot": "·",
     "div": "÷",
     "pm": "±",
+    "mp": "∓",
     "le": "≤",
     "leq": "≤",
     "ge": "≥",
@@ -36,12 +59,82 @@ _SAFE_COMMANDS = {
     "neq": "≠",
     "in": "∈",
     "notin": "∉",
+    "ni": "∋",
+    "subset": "⊂",
+    "supset": "⊃",
+    "subseteq": "⊆",
+    "supseteq": "⊇",
+    "cap": "∩",
+    "cup": "∪",
+    "emptyset": "∅",
+    "varnothing": "∅",
     "infty": "∞",
     "approx": "≈",
+    "sim": "∼",
+    "simeq": "≃",
+    "cong": "≅",
+    "equiv": "≡",
+    "propto": "∝",
+    "parallel": "∥",
+    "nparallel": "∦",
+    "perp": "⊥",
+    "bot": "⊥",
+    "triangle": "△",
+    "angle": "∠",
+    "measuredangle": "∡",
+    "therefore": "∴",
+    "because": "∵",
+    "circ": "°",
+    "wedge": "∧",
+    "vee": "∨",
+    "lnot": "¬",
+    "neg": "¬",
+    "forall": "∀",
+    "exists": "∃",
+    "nabla": "∇",
+    "partial": "∂",
+    "odot": "⊙",
+    "oplus": "⊕",
+    "otimes": "⊗",
     "rightarrow": "→",
     "leftarrow": "←",
+    "to": "→",
+    "gets": "←",
+    "Rightarrow": "⇒",
+    "Leftarrow": "⇐",
+    "Leftrightarrow": "⇔",
+    "mapsto": "↦",
+    "ldots": "…",
+    "cdots": "⋯",
+    "dots": "…",
 }
-_OPERATOR_CHARS = set("+-*/=<>(),.[]|:×·÷±≤≥≠∈∉∞≈→←")
+_OPERATOR_CHARS = set("+-*/=<>(),.[]|:×·÷±∓≤≥≠∈∉∋⊂⊃⊆⊇∩∪∅∞≈∼≃≅≡∝∥∦⊥∴∵∧∨¬∀∃⊙⊕⊗→←⇒⇐⇔↦…⋯")
+
+# 纯文本包裹命令：内容按原样输出为直立体文本（不切分公式）。
+_TEXT_GROUP_COMMANDS = {
+    "text", "mathrm", "operatorname", "mbox", "textrm",
+    "mathbf", "mathit", "mathnormal", "textbf", "textit", "boldsymbol",
+}
+
+# 反斜杠后跟单字符的转义/间距命令：\% \& \_ 等转义字符，\, \; \: \! 间距。
+_ESCAPED_CHARS = {"%": "%", "&": "&", "#": "#", "_": "_", "$": "$",
+                  "{": "{", "}": "}", ",": " ", ";": " ", ":": " ",
+                  "!": "", " ": " ", "\\": "", "'": "′", "`": "‵",
+                  "\"": "″"}
+_SPACING_COMMANDS = {"quad": " ", "qquad": "  ", "enspace": " ",
+                     "thinspace": " ", "hspace": " "}
+_IGNORED_COMMANDS = {"displaystyle", "limits", "nolimits", "textstyle",
+                     "scriptstyle", "mathstrut", "strut", "protect"}
+# 吃掉一个 {...} 参数但不产出的命令（占位/间距尺寸）。
+_GROUP_CONSUMING_EMPTY_COMMANDS = {"hspace", "vphantom", "hphantom", "phantom"}
+
+# 上/下装饰命令 → OMML bar（上划线/下划线）或 accent（箭头、帽号）。
+_BAR_COMMANDS = {"overline": "top", "underline": "bot", "underbar": "bot"}
+_ACCENT_COMMANDS = {
+    "vec": "⃗", "overrightarrow": "⃗", "overleftarrow": "⃖",
+    "hat": "̂", "widehat": "̂", "dot": "̇",
+    "ddot": "̈", "bar": "̄", "tilde": "̃", "widetilde": "̃",
+}
 
 
 class RestrictedMathError(ValueError):
@@ -113,8 +206,23 @@ class _Parser:
         self.index += 1
         if token == "{":
             return self._sequence("}")
+        if token == "~":
+            # LaTeX 中 ~ 是不间断空格。
+            return _MathNode("text", value=" ")
         if token.startswith("\\"):
             command = token[1:]
+            if command == "":
+                # 裸反斜杠：转义字符或间距命令（\% \, \; \! 等）。
+                if self.index >= len(self.tokens):
+                    raise RestrictedMathError("dangling backslash")
+                escaped = _ESCAPED_CHARS.get(self.tokens[self.index])
+                if escaped is not None:
+                    self.index += 1
+                    return _MathNode("text", value=escaped)
+                if re.fullmatch(r"[A-Za-z]+|[一-鿿]", self.tokens[self.index]):
+                    # 形如 `20\ m`：tokenizer 吃掉了空格，按"转义空格+字母"处理。
+                    return _MathNode("text", value=" ")
+                raise RestrictedMathError("escaped token is not supported")
             if command in {"left", "right"}:
                 if self.index >= len(self.tokens):
                     raise RestrictedMathError(f"\\{command} requires a delimiter")
@@ -123,7 +231,7 @@ class _Parser:
                 if delimiter not in {"(", ")", "[", "]", "|", "{" , "}"}:
                     raise RestrictedMathError("delimiter is not supported")
                 return _MathNode("operator", value=delimiter)
-            if command == "frac":
+            if command == "frac" or command in {"dfrac", "tfrac"}:
                 return _MathNode(
                     "fraction",
                     children=(self._required_group("fraction numerator"), self._required_group("fraction denominator")),
@@ -134,6 +242,31 @@ class _Parser:
                 return _MathNode("sqrt", children=(self._required_group("radicand"),))
             if command in {"sum", "int"}:
                 return _MathNode("operator", value="∑" if command == "sum" else "∫")
+            if command in _TEXT_GROUP_COMMANDS:
+                return _MathNode("text", value=self._raw_group("text content"))
+            if command in _SPACING_COMMANDS:
+                value = _SPACING_COMMANDS[command]
+                if command == "hspace":
+                    # \hspace{1em}：吃掉尺寸参数，只留一个空格。
+                    self._consume_group()
+                return _MathNode("text", value=value)
+            if command in _IGNORED_COMMANDS:
+                return _MathNode("text", value="")
+            if command in _GROUP_CONSUMING_EMPTY_COMMANDS:
+                self._consume_group()
+                return _MathNode("text", value="")
+            if command in _BAR_COMMANDS:
+                return _MathNode(
+                    "bar",
+                    value=_BAR_COMMANDS[command],
+                    children=(self._required_group("barred content"),),
+                )
+            if command in _ACCENT_COMMANDS:
+                return _MathNode(
+                    "accent",
+                    value=_ACCENT_COMMANDS[command],
+                    children=(self._required_group("accented content"),),
+                )
             value = _SAFE_COMMANDS.get(command)
             if value is None:
                 raise RestrictedMathError(f"command \\{command} is not supported")
@@ -148,6 +281,9 @@ class _Parser:
             return _MathNode("operator", value=token)
         if re.fullmatch(r"[A-Za-z]+", token):
             return _MathNode("identifier", value=token)
+        if re.fullmatch(r"[一-鿿　-〿＀-￯]+", token):
+            # 识别结果常把“厘米”“的”等中文包进 $…$，按直立体文本输出。
+            return _MathNode("text", value=token)
         raise RestrictedMathError(f"token {token!r} is not supported")
 
     def _required_group(self, label: str) -> _MathNode:
@@ -155,6 +291,41 @@ class _Parser:
             raise RestrictedMathError(f"{label} must be braced")
         self.index += 1
         return self._sequence("}")
+
+    def _raw_group(self, label: str) -> str:
+        """消费 {…} 并把内部 token 原样拼回文本（供 \\text/\\mathrm 等使用）。"""
+        if self.index >= len(self.tokens) or self.tokens[self.index] != "{":
+            raise RestrictedMathError(f"{label} must be braced")
+        self.index += 1
+        parts: list[str] = []
+        depth = 1
+        while self.index < len(self.tokens):
+            token = self.tokens[self.index]
+            self.index += 1
+            if token == "{":
+                depth += 1
+            elif token == "}":
+                depth -= 1
+                if depth == 0:
+                    return "".join(parts)
+            parts.append(token)
+        raise RestrictedMathError(f"{label} group is unclosed")
+
+    def _consume_group(self) -> None:
+        """吃掉一个可选的 {…} 参数，无括号时不动。"""
+        if self.index >= len(self.tokens) or self.tokens[self.index] != "{":
+            return
+        depth = 0
+        while self.index < len(self.tokens):
+            token = self.tokens[self.index]
+            self.index += 1
+            if token == "{":
+                depth += 1
+            elif token == "}":
+                depth -= 1
+                if depth == 0:
+                    return
+        raise RestrictedMathError("optional group is unclosed")
 
     def _script_value(self) -> _MathNode:
         if self.index >= len(self.tokens):
@@ -165,12 +336,30 @@ class _Parser:
         return self._atom()
 
 
+# 可展开的行列式环境：拆掉环境壳，单元格按空格串联（不再保对齐结构）。
+_MATRIX_ENV_BEGIN = re.compile(
+    r"\\begin\{(?:array|matrix|pmatrix|bmatrix|vmatrix|cases|split|aligned|gathered)\}"
+    r"(?:\s*\{[^{}]*\})?"
+)
+_MATRIX_ENV_END = re.compile(
+    r"\\end\{(?:array|matrix|pmatrix|bmatrix|vmatrix|cases|split|aligned|gathered)\}"
+)
+
+
 def parse_restricted_latex(source: str) -> _MathNode:
     clean = str(source or "").strip()
     if clean.startswith("$$") and clean.endswith("$$"):
         clean = clean[2:-2].strip()
     elif clean.startswith("$") and clean.endswith("$"):
         clean = clean[1:-1].strip()
+    # MinerU 偶发在公式内部混入多余的 $ 定界符（嵌套/空 $$ 段），剥掉再解析。
+    clean = clean.replace("$", "").strip()
+    if "\\begin" in clean:
+        # MinerU 常用 array/cases 包裹简单内容（如 \begin{array}{rl}{BD=}&{6}），
+        # 拆壳后交给普通解析，单元格分隔符 & 和换行 \\ 一律成空格。
+        clean = _MATRIX_ENV_BEGIN.sub(" ", clean)
+        clean = _MATRIX_ENV_END.sub(" ", clean)
+        clean = clean.replace("\\\\", " ").replace("&", " ").strip()
     if len(clean) > 20_000:
         raise RestrictedMathError("expression is too long")
     if any(marker in clean for marker in ("\\begin", "\\end", "\\input", "\\include", "\\write", "\\def")):
@@ -238,6 +427,18 @@ def _mathml(node: _MathNode) -> str:
         return f"<mi>{html.escape(node.value)}</mi>"
     if node.kind == "operator":
         return f"<mo>{html.escape(node.value)}</mo>"
+    if node.kind == "text":
+        return f"<mtext>{html.escape(node.value)}</mtext>"
+    if node.kind == "bar":
+        inner = _mathml(node.children[0])
+        if node.value == "bot":
+            return f'<munder accentunder="true">{inner}<mo>_</mo></munder>'
+        return f'<mover accent="true">{inner}<mo>¯</mo></mover>'
+    if node.kind == "accent":
+        return (
+            f'<mover accent="true">{_mathml(node.children[0])}'
+            f"<mo>{html.escape(node.value)}</mo></mover>"
+        )
     if node.kind == "fraction":
         return f"<mfrac>{_mathml(node.children[0])}{_mathml(node.children[1])}</mfrac>"
     if node.kind == "sqrt":
@@ -259,6 +460,22 @@ def _omml(node: _MathNode) -> str:
         return "".join(_omml(child) for child in node.children)
     if node.kind in {"number", "identifier", "operator"}:
         return f"<m:r><m:t>{html.escape(node.value)}</m:t></m:r>"
+    if node.kind == "text":
+        # 直立体文本；保留空格。
+        return (
+            '<m:r><m:rPr><m:nor/></m:rPr>'
+            f'<m:t xml:space="preserve">{html.escape(node.value)}</m:t></m:r>'
+        )
+    if node.kind == "bar":
+        return (
+            f'<m:bar><m:barPr><m:pos m:val="{node.value}"/></m:barPr>'
+            f"<m:e>{_omml(node.children[0])}</m:e></m:bar>"
+        )
+    if node.kind == "accent":
+        return (
+            f'<m:acc><m:accPr><m:chr m:val="{html.escape(node.value)}"/>'
+            f"</m:accPr><m:e>{_omml(node.children[0])}</m:e></m:acc>"
+        )
     if node.kind == "fraction":
         return (
             f"<m:f><m:num>{_omml(node.children[0])}</m:num>"

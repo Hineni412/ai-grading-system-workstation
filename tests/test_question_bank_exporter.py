@@ -137,3 +137,107 @@ def test_ordinary_export_uses_shared_native_word_blocks(tmp_path: Path) -> None:
         document_xml = archive.read("word/document.xml")
     assert b'<w:u w:val="single"' in document_xml
     assert b'<w:vertAlign w:val="superscript"' in document_xml
+
+
+def _write_test_image(root: Path, name: str = "figure.png", size=(400, 240)) -> Path:
+    from PIL import Image
+
+    image_dir = root / "question_bank" / "extracted_images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    image_path = image_dir / name
+    Image.new("RGB", size, "white").save(image_path)
+    return image_path
+
+
+def test_first_image_floats_right_on_long_stem(tmp_path: Path) -> None:
+    image_path = _write_test_image(tmp_path)
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionBankTestStore(db_path)
+    stem = (
+        "如图，在直角三角形中，两条直角边分别为3和4，"
+        "请计算斜边的长度，并写出完整的推导过程与理由。"
+    )
+    question_id = service.add_question(
+        QuestionCreate(
+            question_number="1",
+            question_type="解答题",
+            question_text=f"{stem}[[IMAGE:{image_path}|caption=第3题图]]",
+            answer_text="答案",
+        )
+    )
+
+    output = export_question_paper_docx(
+        db_path, [question_id], tmp_path / "output", title="浮动图", ensure_previews=False
+    )
+    with ZipFile(output) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "<wp:anchor" in document_xml
+    assert 'wp:wrapSquare wrapText="left"' in document_xml
+    assert 'descr="第3题图"' in document_xml
+
+
+def test_short_stem_image_stays_inline_paragraph(tmp_path: Path) -> None:
+    image_path = _write_test_image(tmp_path, "short.png")
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionBankTestStore(db_path)
+    question_id = service.add_question(
+        QuestionCreate(
+            question_number="1",
+            question_type="解答题",
+            question_text=f"如图，求 x。[[IMAGE:{image_path}]]",
+            answer_text="答案",
+        )
+    )
+
+    output = export_question_paper_docx(
+        db_path, [question_id], tmp_path / "output", title="短题干", ensure_previews=False
+    )
+    with ZipFile(output) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "<wp:anchor" not in document_xml
+    assert "<w:drawing" in document_xml
+
+
+def test_option_extraction_relaxed_boundaries() -> None:
+    from question_bank.exporters.base_exporter import extract_and_format_options
+
+    _stem, options = extract_and_format_options(
+        "下列结论正确的是（）A.25 B.7 C.25或7 D.25 或16"
+    )
+    assert [label for label, _ in options] == ["A", "B", "C", "D"]
+    assert options[0][1] == "25"
+    # 3 个选项（OCR 丢一个）也拆分。
+    _stem3, options3 = extract_and_format_options(
+        "下列结论正确的是（）A.25 B.7 C.25或7"
+    )
+    assert [label for label, _ in options3] == ["A", "B", "C"]
+    # 选项末尾的教辅内嵌答案被剔除。
+    _stem4, options4 = extract_and_format_options(
+        "下列结论正确的是（）A.25 B.7 C.9 D.25或16（D）"
+    )
+    assert options4[-1] == ("D", "25或16")
+
+
+def test_option_extraction_after_chinese_without_space() -> None:
+    from question_bank.exporters.base_exporter import extract_and_format_options
+
+    # 中考卷常见 "…的根是A. x=0 B. x=1 …"：A. 紧贴中文也要能拆。
+    stem, options = extract_and_format_options(
+        "方程x(x-1)=0的根是A. x=0 B. x=1 "
+        "C. $x_1=0$ $x_2=-1$ D. $x_1=0$ $x_2=1$"
+    )
+    assert stem == "方程x(x-1)=0的根是"
+    assert [label for label, _ in options] == ["A", "B", "C", "D"]
+    assert options[0][1] == "x=0"
+    # 不足 3 个标签不误拆。
+    stem, options = extract_and_format_options("点A.在圆上，则B. 不成立")
+    assert options == []
+    assert stem == "点A.在圆上，则B. 不成立"
+
+
+def test_visible_length_counts_rendered_chars() -> None:
+    from question_bank.exporters.base_exporter import _visible_length
+
+    assert _visible_length("$\\frac{3}{2}$") == 3
+    assert _visible_length("$x_{1} = 0$ $x_{2} = - 1$") == 9
+    assert _visible_length("不能确定") == 4

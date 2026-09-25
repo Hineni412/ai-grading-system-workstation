@@ -12,5 +12,6 @@ uvicorn>=0.30.0
 opencv-python>=4.10.0.84
 PyMuPDF>=1.24.0
 # MinerU 内置 PP-OCRv6；与 PDF 解析共用，基础 OCR 不加载视觉大模型。
+# 完整解析另用版面（PP-DocLayoutV2）与公式（PP-FormulaNet_plus-M）ONNX 模型输出 LaTeX。
 mineru==4.0.3
 pypinyin>=0.53.0

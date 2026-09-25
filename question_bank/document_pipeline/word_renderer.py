@@ -28,6 +28,124 @@ _REL_EMBED_ATTR = (
 )
 LOGGER = logging.getLogger(__name__)
 
+# 无 DPI 元数据时按 150dpi 折算（MinerU 页面裁图约 200dpi，屏幕图约 96dpi，
+# 取中间值让小题图按接近原稿的尺寸落版，而不是统一拉满页宽）。
+_DEFAULT_IMAGE_DPI = 150.0
+_MAX_IMAGE_HEIGHT_INCHES = 4.5
+
+
+def natural_image_width_inches(
+    path: Path,
+    *,
+    max_width_inches: float,
+    max_height_inches: float | None = None,
+) -> float:
+    """按图片自然像素与 DPI 折算显示宽度， capped by max_width_inches 与高度上限。"""
+    try:
+        from PIL import Image
+
+        height_cap = (
+            _MAX_IMAGE_HEIGHT_INCHES
+            if max_height_inches is None
+            else float(max_height_inches)
+        )
+        with Image.open(path) as image:
+            width_px, height_px = image.size
+            dpi = image.info.get("dpi")
+            if isinstance(dpi, (tuple, list)) and dpi and dpi[0]:
+                dpi_x = float(dpi[0])
+            elif isinstance(dpi, (int, float)) and dpi:
+                dpi_x = float(dpi)
+            else:
+                dpi_x = _DEFAULT_IMAGE_DPI
+            if dpi_x <= 0 or width_px <= 0 or height_px <= 0:
+                return max_width_inches
+            width_inches = width_px / dpi_x
+            height_inches = height_px / dpi_x
+            if height_inches > height_cap:
+                width_inches *= height_cap / height_inches
+            return min(width_inches, max_width_inches)
+    except Exception:  # noqa: BLE001
+        return max_width_inches
+
+
+def add_floating_picture(
+    paragraph,
+    image_path,
+    *,
+    width_inches: float,
+    align: str = "right",
+    descr: str | None = None,
+) -> bool:
+    """把图片以浮动锚定（wp:anchor，方形环绕）挂到既有段落上。
+
+    先按内联图插入拿到 extent/docPr 等子树，再把 wp:inline 改写成
+    wp:anchor；子元素顺序必须是 simplePos, positionH, positionV, extent,
+    effectExtent, wrapSquare, docPr, cNvGraphicFramePr, graphic。
+    """
+    run = paragraph.add_run()
+    try:
+        run.add_picture(str(image_path), width=Inches(width_inches))
+    except Exception:  # noqa: BLE001
+        return False
+    drawing = run._r.find(qn("w:drawing"))  # noqa: SLF001
+    inline = drawing.find(qn("wp:inline")) if drawing is not None else None
+    if inline is None:
+        return False
+    extent = inline.find(qn("wp:extent"))
+    doc_pr = inline.find(qn("wp:docPr"))
+    graphic_frame = inline.find(qn("wp:cNvGraphicFramePr"))
+    graphic = inline.find(qn("a:graphic"))
+    if descr and doc_pr is not None:
+        doc_pr.set("descr", descr)
+
+    anchor = OxmlElement("wp:anchor")
+    for key, value in {
+        "distT": "0",
+        "distB": "0",
+        "distL": "114300",
+        "distR": "114300",
+        "simplePos": "0",
+        "relativeHeight": "251658240",
+        "behindDoc": "0",
+        "locked": "0",
+        "layoutInCell": "1",
+        "allowOverlap": "0",
+    }.items():
+        anchor.set(key, value)
+    simple_pos = OxmlElement("wp:simplePos")
+    simple_pos.set("x", "0")
+    simple_pos.set("y", "0")
+    position_h = OxmlElement("wp:positionH")
+    position_h.set("relativeFrom", "margin")
+    horizontal = OxmlElement("wp:align")
+    horizontal.text = align
+    position_h.append(horizontal)
+    position_v = OxmlElement("wp:positionV")
+    position_v.set("relativeFrom", "paragraph")
+    offset = OxmlElement("wp:posOffset")
+    offset.text = "0"
+    position_v.append(offset)
+    effect_extent = OxmlElement("wp:effectExtent")
+    for key in ("l", "t", "r", "b"):
+        effect_extent.set(key, "0")
+    wrap_square = OxmlElement("wp:wrapSquare")
+    # 图在右时文字只绕左侧；左对齐时反之。
+    wrap_square.set("wrapText", "left" if align == "right" else "right")
+
+    anchor.append(simple_pos)
+    anchor.append(position_h)
+    anchor.append(position_v)
+    if extent is not None:
+        anchor.append(extent)
+    anchor.append(effect_extent)
+    anchor.append(wrap_square)
+    for child in (doc_pr, graphic_frame, graphic):
+        if child is not None:
+            anchor.append(child)
+    drawing.replace(inline, anchor)
+    return True
+
 
 @dataclass(frozen=True, slots=True)
 class WordStyleProfile:
@@ -286,7 +404,10 @@ class SharedWordQuestionRenderer:
                 document.add_paragraph("[题图不可用]")
                 continue
             try:
-                document.add_picture(str(resolved), width=Inches(self.style.image_width_inches))
+                width = natural_image_width_inches(
+                    resolved, max_width_inches=self.style.image_width_inches
+                )
+                document.add_picture(str(resolved), width=Inches(width))
             except Exception:
                 document.add_paragraph("[题图无法插入]")
 
@@ -367,16 +488,19 @@ class SharedWordQuestionRenderer:
             if fallback_path and self.asset_resolver
             else Path(fallback_path) if fallback_path else None
         )
+        # 回退文本剥掉 $ 定界符；空表达式（形如 $$）不输出任何内容。
+        fallback_text = expression.restricted_latex.replace("$", "").strip()
         if resolved is not None and resolved.is_file():
             try:
                 paragraph.add_run().add_picture(
                     str(resolved), width=Inches(min(3.0, self.style.image_width_inches))
                 )
             except Exception:
-                paragraph.add_run(f"${expression.restricted_latex}$")
+                if fallback_text:
+                    paragraph.add_run(f"${fallback_text}$")
                 reason = f"{reason}; fallback image could not be inserted"
-        else:
-            paragraph.add_run(f"${expression.restricted_latex}$")
+        elif fallback_text:
+            paragraph.add_run(f"${fallback_text}$")
             if fallback_path:
                 reason = f"{reason}; fallback image is unavailable"
         return FormulaFallback(
@@ -1024,6 +1148,7 @@ def _strip_leading_question_number(element) -> None:
 
 __all__ = [
     "add_answer_space",
+    "add_floating_picture",
     "answer_space_lines",
     "compact_source_label",
     "RichBlockRenderResult",

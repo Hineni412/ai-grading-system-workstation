@@ -21,6 +21,7 @@ from backend.api.dependencies import (
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.question_bank import (
+    AnswerDraftJobRequest,
     CurriculumCatalog,
     QuestionDetailResponse,
     QuestionFacetsResponse,
@@ -1238,6 +1239,70 @@ def retry_tagging_sync_job(
     if source.payload.get("source_job_id") is not None:
         payload["source_job_id"] = int(source.payload["source_job_id"])
     return _submit_question_bank_job(manager, "tagging_sync", payload)
+
+
+@router.post(
+    "/answer-draft-jobs",
+    response_model=JobResponse,
+    status_code=202,
+    responses=QUESTION_JOB_RESPONSES,
+)
+def submit_answer_draft_job(
+    body: AnswerDraftJobRequest,
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    question_ids = _unique_positive_ids(body.question_ids)
+    return _submit_question_bank_job(
+        manager,
+        "answer_draft",
+        {"question_ids": question_ids},
+    )
+
+
+@router.post(
+    "/answer-draft-jobs/{job_id}/retry",
+    response_model=JobResponse,
+    status_code=202,
+    responses=QUESTION_JOB_RESPONSES,
+)
+def retry_answer_draft_job(
+    job_id: int,
+    body: QuestionJobRetryRequest,
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    source = _require_question_bank_job(
+        manager,
+        job_id,
+        "answer_draft",
+        "answer_draft_job_not_found",
+    )
+    if source.status in {"failed", "cancelled"}:
+        raw_available = source.payload.get("question_ids") or []
+    elif source.status == "succeeded" and bool(source.result.get("retryable")):
+        raw_available = source.result.get("failed_question_ids") or []
+    else:
+        raw_available = []
+    available = _unique_positive_ids(raw_available) if raw_available else []
+    if not available:
+        raise ApiError(
+            409,
+            "answer_draft_retry_not_available",
+            "Answer draft job cannot retry the requested questions",
+            {"job_id": int(job_id)},
+        )
+    selected = _unique_positive_ids(body.question_ids or available)
+    if not set(selected).issubset(set(available)):
+        raise ApiError(
+            409,
+            "answer_draft_retry_not_available",
+            "Answer draft job cannot retry the requested questions",
+            {"job_id": int(job_id)},
+        )
+    return _submit_question_bank_job(
+        manager,
+        "answer_draft",
+        {"question_ids": selected, "retry_of_job_id": source.id},
+    )
 
 
 def _submit_question_bank_job(

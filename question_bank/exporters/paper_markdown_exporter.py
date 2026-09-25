@@ -9,7 +9,9 @@ from question_bank.services.assembly_basket_state import SectionSpec
 from question_bank.services.question_read_service import QuestionBankReadService
 
 
-_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
+_IMAGE_MARKER = re.compile(
+    r"\[\[IMAGE:(?P<path>[^\]|]+?)(?:\|[^\]]*)?\]\]"
+)
 _SECTION_LABELS = (
     "一",
     "二",

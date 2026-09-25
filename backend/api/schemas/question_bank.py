@@ -466,6 +466,10 @@ class QuestionJobRetryRequest(_QuestionBankModel):
     question_ids: list[int] | None = Field(default=None, min_length=1, max_length=500)
 
 
+class AnswerDraftJobRequest(_QuestionBankModel):
+    question_ids: list[int] = Field(min_length=1, max_length=500)
+
+
 class TrainingCriterionPointSchema(_QuestionBankModel):
     point_id: str = Field(min_length=2, max_length=64)
     target: str = Field(min_length=1, max_length=2000)
