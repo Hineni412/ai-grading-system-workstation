@@ -16,3 +16,8 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
     })),
   })
 }
+
+// jsdom 未实现 scrollIntoView；reka-ui 的列表高亮/弹层会调用它。
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = vi.fn()
+}

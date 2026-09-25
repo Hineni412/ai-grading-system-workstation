@@ -10,6 +10,12 @@
     "sidebar topbar"
     "sidebar main";
   background: var(--color-bg-app);
+  transition: grid-template-columns var(--duration-drawer) var(--ease-out);
+}
+
+/* ≥1440px 且未折叠：导航常驻展开，占据整列并推动内容 */
+.app-shell--expanded {
+  grid-template-columns: var(--shell-navigation-width) minmax(0, 1fr);
 }
 
 .application-boundary__content {
@@ -138,6 +144,7 @@
 }
 
 .app-sidebar__navigation {
+  position: relative;
   display: flex;
   min-height: 0;
   flex: 1 1 auto;
@@ -157,7 +164,7 @@
 .app-sidebar__group > p {
   margin: 0;
   padding: 2px 10px 4px;
-  color: var(--muted-foreground);
+  color: var(--color-text-muted);
   font-size: 10px;
   font-weight: var(--font-weight-semibold);
   letter-spacing: 0.08em;
@@ -165,6 +172,7 @@
 }
 
 .app-sidebar__link {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 36px;
@@ -203,6 +211,55 @@
   font-weight: var(--font-weight-semibold);
 }
 
+/* 滑动指示条就位时，激活链接让位给指示条底色，只保留文字色与字重 */
+.has-indicator .app-sidebar__link[aria-current='page'] {
+  background: transparent;
+}
+
+/* 当前项滑动指示条：位置/高度由 JS 测量注入 */
+.app-sidebar__indicator {
+  position: absolute;
+  inset-inline: 0;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  pointer-events: none;
+  transition:
+    top var(--duration-drawer) var(--ease-out),
+    height var(--duration-drawer) var(--ease-out);
+}
+
+.app-sidebar__command {
+  width: 100%;
+  border-color: transparent;
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+}
+
+.app-sidebar__command kbd {
+  margin-inline-start: auto;
+  padding: 1px 5px;
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-tag);
+  color: var(--color-text-muted);
+  font-family: var(--font-family-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.app-sidebar__collapse-toggle {
+  width: 100%;
+  border-color: transparent;
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+}
+
+.app-sidebar__collapse-toggle:hover {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+
 .app-sidebar__settings {
   display: grid;
   flex: none;
@@ -212,6 +269,7 @@
 }
 
 .app-sidebar__settings-links {
+  position: relative;
   display: grid;
   gap: 3px;
 }
@@ -523,12 +581,36 @@
   /* 内容高度变化时纵向滚动条时隐时现会引起视口宽度变化、页面横移；
    * 预留滚动条槽位保持内容宽度稳定。 */
   scrollbar-gutter: stable;
-  background: var(--color-bg-app);
+  /* 顶部一层极轻的品牌色晕染，随内容一起滚走 */
+  background:
+    radial-gradient(
+      1200px 360px at 30% -120px,
+      color-mix(in srgb, var(--color-accent) 6%, transparent),
+      transparent 70%
+    ) no-repeat,
+    var(--color-bg-app);
+  background-attachment: local;
 }
 
 .main-workspace h1[tabindex='-1']:focus {
   box-shadow: none;
   outline: none;
+}
+
+/* 路由切换：新页面淡入微移；旧页面立即隐藏，不叠加不占位 */
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.page-enter-active {
+  transition:
+    opacity var(--duration-page) var(--ease-out),
+    transform var(--duration-page) var(--ease-out);
+}
+
+.page-leave-active {
+  display: none;
 }
 
 .not-found-view {
@@ -552,7 +634,7 @@
     z-index: calc(var(--shell-topbar-z-index) + 1);
     width: var(--shell-navigation-collapsed-width);
     transition:
-      width var(--duration-base),
+      width var(--duration-drawer) var(--ease-out),
       box-shadow var(--duration-base);
   }
 
@@ -571,44 +653,56 @@
     padding-inline: var(--sidebar-icon-inset);
   }
 
-  .app-sidebar__brand-copy,
-  .app-sidebar__link > span,
-  .app-sidebar__settings-toggle > span,
-  .app-sidebar__settings-chevron,
-  .app-sidebar__group > p {
+  /* 常驻展开模式：侧栏占满整列，标签始终可见 */
+  .app-shell--expanded .app-sidebar {
+    width: var(--shell-navigation-width);
+  }
+
+  /* 图标轨模式（901–1439px，或 ≥1440px 被折叠）：收起标签，悬停/聚焦时浮层展开 */
+  .app-shell--rail .app-sidebar__brand-copy,
+  .app-shell--rail .app-sidebar__link > span,
+  .app-shell--rail .app-sidebar__settings-toggle > span,
+  .app-shell--rail .app-sidebar__settings-chevron,
+  .app-shell--rail .app-sidebar__group > p,
+  .app-shell--rail .app-sidebar__command kbd {
     width: 0;
     max-width: 0;
     opacity: 0;
     overflow: hidden;
     pointer-events: none;
     visibility: hidden;
+    transition: opacity var(--duration-base) var(--ease-out);
   }
 
-  .app-sidebar:hover,
-  .app-sidebar:focus-within {
+  .app-shell--rail .app-sidebar:hover,
+  .app-shell--rail .app-sidebar:focus-within {
     width: var(--shell-navigation-width);
     box-shadow: var(--shadow-overlay);
   }
 
-  .app-sidebar:hover .app-sidebar__brand-copy,
-  .app-sidebar:hover .app-sidebar__link > span,
-  .app-sidebar:hover .app-sidebar__settings-toggle > span,
-  .app-sidebar:hover .app-sidebar__settings-chevron,
-  .app-sidebar:hover .app-sidebar__group > p,
-  .app-sidebar:focus-within .app-sidebar__brand-copy,
-  .app-sidebar:focus-within .app-sidebar__link > span,
-  .app-sidebar:focus-within .app-sidebar__settings-toggle > span,
-  .app-sidebar:focus-within .app-sidebar__settings-chevron,
-  .app-sidebar:focus-within .app-sidebar__group > p {
+  .app-shell--rail .app-sidebar:hover .app-sidebar__brand-copy,
+  .app-shell--rail .app-sidebar:hover .app-sidebar__link > span,
+  .app-shell--rail .app-sidebar:hover .app-sidebar__settings-toggle > span,
+  .app-shell--rail .app-sidebar:hover .app-sidebar__settings-chevron,
+  .app-shell--rail .app-sidebar:hover .app-sidebar__group > p,
+  .app-shell--rail .app-sidebar:hover .app-sidebar__command kbd,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__brand-copy,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__link > span,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__settings-toggle > span,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__settings-chevron,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__group > p,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__command kbd {
     width: auto;
     max-width: 100%;
     opacity: 1;
     pointer-events: auto;
     visibility: visible;
+    /* 展开时标签淡入略滞后于宽度动画，避免展开过程中文字折行 */
+    transition-delay: 60ms;
   }
 
-  .app-sidebar:hover .app-sidebar__settings-chevron,
-  .app-sidebar:focus-within .app-sidebar__settings-chevron {
+  .app-shell--rail .app-sidebar:hover .app-sidebar__settings-chevron,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__settings-chevron {
     margin-inline-start: auto;
   }
 }

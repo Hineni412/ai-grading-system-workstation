@@ -37,7 +37,7 @@ const toneMarker: Record<FeedbackTone, string> = {
 
 const bannerClass = computed(() =>
   cn(
-    'feedback-banner grid min-w-0 grid-cols-[var(--space-1)_minmax(0,1fr)_auto] items-start gap-3 rounded-xl border border-(--color-border-subtle) p-4 text-foreground max-sm:grid-cols-[var(--space-1)_minmax(0,1fr)]',
+    'feedback-banner fx-enter grid min-w-0 grid-cols-[var(--space-1)_minmax(0,1fr)_auto] items-start gap-3 rounded-xl border border-(--color-border-subtle) p-4 text-foreground max-sm:grid-cols-[var(--space-1)_minmax(0,1fr)]',
     toneSurface[props.tone],
   ),
 )

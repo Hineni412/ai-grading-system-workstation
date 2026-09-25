@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
+import { PanelLeftClose, PanelLeftOpen, Search } from '@lucide/vue'
 
 import {
   gradingRunRouteDefinition,
@@ -9,13 +11,20 @@ import {
 } from '../../navigation'
 import { useSessionStore } from '../../stores/session'
 import AppIcon from './AppIcon.vue'
+import { resolveNavigationTarget } from './navigation-target'
 
-defineProps<{
+type SidebarMode = 'expanded' | 'rail' | 'drawer'
+
+const props = defineProps<{
   open: boolean
+  mode: SidebarMode
+  collapsible: boolean
 }>()
 
 const emit = defineEmits<{
   navigate: []
+  toggleCollapse: []
+  openPalette: []
 }>()
 
 const route = useRoute()
@@ -36,16 +45,41 @@ function isActive(item: WorkspaceRouteDefinition): boolean {
   return route.path === item.path || route.path.startsWith(`${item.path}/`)
 }
 
-function navigationTarget(item: WorkspaceRouteDefinition): string {
-  if (item.id === 'grading' && sessionStore.selectedSessionId !== null) {
-    return `/sessions/${sessionStore.selectedSessionId}/grading-run`
-  }
-  return item.path
-}
-
 function completeNavigation(): void {
   emit('navigate')
 }
+
+/* 当前项滑动指示条：与顶栏 tp-workspace-tabs__pill 同法，
+   量出 aria-current 链接的 offsetTop/offsetHeight 后由 CSS 过渡滑动；
+   jsdom 无布局（offsetHeight 为 0）时不渲染，链接保留自身激活底色。 */
+const navigationRef = ref<HTMLElement | null>(null)
+const settingsNavRef = ref<HTMLElement | null>(null)
+const navigationIndicator = ref<{ top: string; height: string } | null>(null)
+const settingsIndicator = ref<{ top: string; height: string } | null>(null)
+
+function measureIndicator(
+  container: HTMLElement | null,
+): { top: string; height: string } | null {
+  const current = container?.querySelector<HTMLElement>('a[aria-current="page"]')
+  if (!container || !current || current.offsetHeight === 0) return null
+  return { top: `${current.offsetTop}px`, height: `${current.offsetHeight}px` }
+}
+
+async function updateIndicators(): Promise<void> {
+  await nextTick()
+  navigationIndicator.value = measureIndicator(navigationRef.value)
+  settingsIndicator.value = measureIndicator(settingsNavRef.value)
+}
+
+watch(() => route.fullPath, () => { void updateIndicators() })
+watch(() => props.mode, () => { void updateIndicators() })
+onMounted(() => {
+  void updateIndicators()
+  window.addEventListener('resize', updateIndicators)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateIndicators)
+})
 </script>
 
 <template>
@@ -72,7 +106,30 @@ function completeNavigation(): void {
       </span>
     </RouterLink>
 
-    <nav class="app-sidebar__navigation" data-testid="app-navigation" aria-label="主要导航">
+    <button
+      type="button"
+      class="app-sidebar__link app-sidebar__command"
+      aria-label="快速跳转（Ctrl+K）"
+      @click="emit('openPalette')"
+    >
+      <Search :size="18" :stroke-width="1.8" aria-hidden="true" />
+      <span>快速跳转</span>
+      <kbd aria-hidden="true">Ctrl K</kbd>
+    </button>
+
+    <nav
+      ref="navigationRef"
+      class="app-sidebar__navigation"
+      :class="{ 'has-indicator': navigationIndicator !== null }"
+      data-testid="app-navigation"
+      aria-label="主要导航"
+    >
+      <span
+        v-if="navigationIndicator"
+        class="app-sidebar__indicator"
+        aria-hidden="true"
+        :style="navigationIndicator"
+      />
       <section
         v-for="group in navigationGroups"
         :key="group.id"
@@ -84,7 +141,7 @@ function completeNavigation(): void {
           v-for="item in group.items"
           :key="item.id"
           class="app-sidebar__link"
-          :to="navigationTarget(item)"
+          :to="resolveNavigationTarget(item, sessionStore.selectedSessionId)"
           :aria-label="item.label"
           :aria-current="isActive(item) ? 'page' : undefined"
           @click="completeNavigation"
@@ -97,10 +154,18 @@ function completeNavigation(): void {
 
     <div class="app-sidebar__settings">
       <nav
+        ref="settingsNavRef"
         id="settings-navigation"
         class="app-sidebar__settings-links"
+        :class="{ 'has-indicator': settingsIndicator !== null }"
         aria-label="设置导航"
       >
+        <span
+          v-if="settingsIndicator"
+          class="app-sidebar__indicator"
+          aria-hidden="true"
+          :style="settingsIndicator"
+        />
         <RouterLink
           v-for="item in settingsNavigationItems"
           :key="item.id"
@@ -114,6 +179,20 @@ function completeNavigation(): void {
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>
+      <button
+        v-if="collapsible"
+        type="button"
+        class="app-sidebar__link app-sidebar__collapse-toggle"
+        :aria-label="mode === 'expanded' ? '收起导航' : '展开导航'"
+        :aria-expanded="mode === 'expanded'"
+        aria-controls="application-sidebar"
+        data-testid="sidebar-collapse-toggle"
+        @click="emit('toggleCollapse')"
+      >
+        <PanelLeftClose v-if="mode === 'expanded'" :size="18" :stroke-width="1.8" aria-hidden="true" />
+        <PanelLeftOpen v-else :size="18" :stroke-width="1.8" aria-hidden="true" />
+        <span>{{ mode === 'expanded' ? '收起导航' : '展开导航' }}</span>
+      </button>
     </div>
   </aside>
 </template>

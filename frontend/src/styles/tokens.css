@@ -90,6 +90,12 @@
   --shell-skip-link-z-index: 33;
 
   --shadow-overlay: 0 10px 28px rgba(28, 39, 51, 0.14);
+  --shadow-raised:
+    0 1px 2px rgba(28, 39, 51, 0.05),
+    0 1px 1px rgba(28, 39, 51, 0.03);
+  --shadow-floating:
+    0 6px 16px -4px rgba(28, 39, 51, 0.10),
+    0 2px 4px rgba(28, 39, 51, 0.05);
   --focus-ring: 0 0 0 3px rgba(19, 94, 107, 0.18);
   --focus-offset: 2px;
   --opacity-disabled: 0.54;
@@ -97,12 +103,20 @@
   --duration-fast: 100ms;
   --duration-base: 160ms;
   --duration-drawer: 220ms;
+  --duration-page: 200ms;
   --duration-reduced: 0.01ms;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 
   /* 科技感微特效专用（frontend/src/styles/ui-effects.css） */
   --fx-shimmer-stripe: rgba(255, 255, 255, 0.14);
   --fx-pulse-accent: rgba(19, 94, 107, 0.22);
   --fx-pulse-accent-soft: rgba(19, 94, 107, 0.08);
+  --fx-shadow-primary-rest:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 1px 2px rgba(19, 94, 107, 0.22);
   --fx-shadow-primary-hover: 0 4px 14px rgba(19, 94, 107, 0.28);
   --fx-shadow-card-hover:
     0 2px 4px rgba(28, 39, 51, 0.06),

@@ -120,6 +120,7 @@ describe('AppShell', () => {
       ['成绩中心', '/results'],
       ['题库管理', '/question-bank'],
       ['组卷工作台', '/question-assembly'],
+      ['命题练习', '/authoring'],
       ['知识与训练', '/knowledge-overview'],
     ])
     expect(
@@ -132,6 +133,7 @@ describe('AppShell', () => {
       '成绩中心',
       '题库管理',
       '组卷工作台',
+      '命题练习',
       '知识与训练',
     ])
     expect(
@@ -149,6 +151,7 @@ describe('AppShell', () => {
       '成绩中心',
       '题库管理',
       '组卷工作台',
+      '命题练习',
       '知识与训练',
       '学生管理',
       '调用记录',
@@ -175,7 +178,12 @@ describe('AppShell', () => {
         'aria-current',
       ),
     ).toBe(false)
-    expect(document.activeElement).toBe(host.querySelector('#main-workspace h1'))
+    /* 页面过渡期间旧视图（page-leave-active）尚未卸载，等待其移除后取新页标题 */
+    await vi.waitFor(() => {
+      const headings = [...host.querySelectorAll<HTMLElement>('#main-workspace h1')]
+      const current = headings.find(heading => heading.closest('.page-leave-active') === null)
+      expect(document.activeElement).toBe(current)
+    })
 
     app.unmount()
   })
@@ -460,7 +468,12 @@ describe('AppShell', () => {
     await router.push('/grading')
     await settleUi()
 
-    expect(document.activeElement).toBe(host.querySelector('#main-workspace h1'))
+    /* 页面过渡期间旧视图（page-leave-active）尚未卸载，等待其移除后取新页标题 */
+    await vi.waitFor(() => {
+      const headings = [...host.querySelectorAll<HTMLElement>('#main-workspace h1')]
+      const current = headings.find(heading => heading.closest('.page-leave-active') === null)
+      expect(document.activeElement).toBe(current)
+    })
 
     app.unmount()
   })
@@ -494,5 +507,170 @@ describe('AppShell', () => {
     expect(initialize).toHaveBeenCalledTimes(2)
 
     app.unmount()
+  })
+
+  describe('wide sidebar', () => {
+    function stubWideViewport(matches: boolean): void {
+      vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+        matches: query === '(min-width: 1440px)' ? matches : false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })))
+    }
+
+    it('starts expanded at ≥1440px, persists collapse, and restores it on remount', async () => {
+      stubWideViewport(true)
+      const first = await mountShell()
+      const shell = first.host.querySelector('[data-testid="app-shell"]')!
+      expect(shell.classList).toContain('app-shell--expanded')
+      const toggle = first.host.querySelector<HTMLButtonElement>(
+        '[data-testid="sidebar-collapse-toggle"]',
+      )!
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+      toggle.click()
+      await settleUi()
+      expect(shell.classList).toContain('app-shell--rail')
+      expect(localStorage.getItem('zhiheng.sidebar.collapsed')).toBe('1')
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+      first.app.unmount()
+
+      const second = await mountShell()
+      const secondShell = second.host.querySelector('[data-testid="app-shell"]')!
+      expect(secondShell.classList).toContain('app-shell--rail')
+      const secondToggle = second.host.querySelector<HTMLButtonElement>(
+        '[data-testid="sidebar-collapse-toggle"]',
+      )!
+      secondToggle.click()
+      await settleUi()
+      expect(secondShell.classList).toContain('app-shell--expanded')
+      expect(localStorage.getItem('zhiheng.sidebar.collapsed')).toBe('0')
+      second.app.unmount()
+    })
+
+    it('hides the collapse toggle outside the wide breakpoint', async () => {
+      stubWideViewport(false)
+      const { app, host } = await mountShell()
+      expect(host.querySelector('[data-testid="sidebar-collapse-toggle"]')).toBeNull()
+      app.unmount()
+    })
+  })
+
+  describe('command palette', () => {
+    async function openPalette(): Promise<HTMLInputElement> {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))
+      await settleUi()
+      const input = document.body.querySelector<HTMLInputElement>('.command-palette__input')
+      expect(input).not.toBeNull()
+      return input!
+    }
+
+    function paletteItems(): HTMLElement[] {
+      return [...document.body.querySelectorAll<HTMLElement>('.command-palette__item')]
+    }
+
+    async function typeQuery(input: HTMLInputElement, value: string): Promise<void> {
+      input.value = value
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await settleUi()
+    }
+
+    it('opens with Ctrl+K and navigates to the highlighted page item', async () => {
+      const { app, router } = await mountShell({ path: '/workbench' })
+      const input = await openPalette()
+
+      await typeQuery(input, '批改')
+      expect(paletteItems().map(item => item.textContent)).toEqual(
+        expect.arrayContaining([expect.stringContaining('考试批改')]),
+      )
+      expect(paletteItems().map(item => item.textContent)).not.toEqual(
+        expect.arrayContaining([expect.stringContaining('成绩中心')]),
+      )
+
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/grading?scope=all'))
+      expect(document.body.querySelector('.command-palette')).toBeNull()
+      app.unmount()
+    })
+
+    it('resolves the grading item to the selected session workspace', async () => {
+      const { app, router } = await mountShell({ path: '/workbench' })
+      const store = useSessionStore()
+      store.sessions = [
+        sessionSummary({ id: 7, name: '考试一' }),
+        sessionSummary({ id: 9, name: '考试二' }),
+      ]
+      store.selectSession(7)
+      await settleUi()
+      const input = await openPalette()
+      await typeQuery(input, '批改')
+
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/sessions/7/grading-run'))
+      app.unmount()
+    })
+
+    it('keeps the palette open when a guarded exam switch is declined', async () => {
+      const { app } = await mountShell()
+      const sessionStore = useSessionStore()
+      const configStore = useConfigWorkspaceStore()
+      sessionStore.sessions = [
+        sessionSummary({ id: 7, name: '考试一' }),
+        sessionSummary({ id: 9, name: '考试二' }),
+      ]
+      sessionStore.selectSession(7)
+      configStore.selectSession(7)
+      configStore.setEditor({
+        session_id: 7, configured: true, revision: 'a'.repeat(64), rows: [],
+        total_score: 0, issues: [], source: null,
+      })
+      configStore.updateEditor({ row_id: 'row-1', standard_answer: '未保存答案' })
+      vi.stubGlobal('confirm', vi.fn(() => false))
+      await settleUi()
+
+      await openPalette()
+      const item = paletteItems().find(el => el.textContent?.includes('考试二'))!
+      item.click()
+      await settleUi()
+
+      expect(document.body.querySelector('.command-palette')).not.toBeNull()
+      expect(sessionStore.selectedSessionId).toBe(7)
+      expect(configStore.sessionId).toBe(7)
+      app.unmount()
+    })
+
+    it('switches exams through the palette when nothing is dirty', async () => {
+      const { app } = await mountShell()
+      const sessionStore = useSessionStore()
+      const configStore = useConfigWorkspaceStore()
+      sessionStore.sessions = [
+        sessionSummary({ id: 7, name: '考试一' }),
+        sessionSummary({ id: 9, name: '考试二' }),
+      ]
+      sessionStore.selectSession(7)
+      configStore.selectSession(7)
+      const loadWorkspace = vi
+        .spyOn(configStore, 'loadSelectedSessionWorkspace')
+        .mockResolvedValue()
+      await settleUi()
+
+      await openPalette()
+      const item = paletteItems().find(el => el.textContent?.includes('考试二'))!
+      item.click()
+      await settleUi()
+
+      expect(sessionStore.selectedSessionId).toBe(9)
+      expect(configStore.sessionId).toBe(9)
+      expect(loadWorkspace).toHaveBeenCalledWith(9)
+      expect(document.body.querySelector('.command-palette')).toBeNull()
+      app.unmount()
+    })
   })
 })

@@ -1,25 +1,38 @@
 /*
  * 科技感微特效：只在现有界面上叠加动画、过渡与投影。
  * 不改变布局、配色、按钮形状、文案与 DOM；颜色全部来自 tokens.css 变量。
- * 持续动画只有三种：呼吸（fx-breathe / fx-tag-pulse）、流光（fx-shimmer /
- * fx-progress-shimmer）、脉冲（fx-step-pulse）。
+ * 持续动画只保留「进行中」语义：进度条与骨架屏的流光。
+ * 静态的待处理/失败状态不再循环闪烁。
  */
 
-/* ===== 按钮：统一过渡 + 按下轻微缩放 + 主按钮 hover 投影 ===== */
+/* ===== 按钮：统一过渡 + 按下轻微缩放 + 主按钮投影 ===== */
 
-/* AppButton 组件样式是 scoped 的，这里用 !important 仅覆盖交互态，
-   其余视觉仍由组件自身决定。 */
-.app-button {
+/* AppButton 组件样式是 scoped 的，且 Tailwind utilities 未分层、引入顺序靠后，
+   这里用重复类提升优先级，仅覆盖交互态，其余视觉仍由组件自身决定。 */
+.app-button.app-button {
   transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    color 180ms ease,
-    box-shadow 180ms ease,
-    transform 180ms ease !important;
+    background-color var(--duration-base) ease,
+    border-color var(--duration-base) ease,
+    color var(--duration-base) ease,
+    box-shadow var(--duration-base) ease,
+    transform var(--duration-fast) var(--ease-out);
 }
 
+.app-button[data-variant='primary'] {
+  box-shadow: var(--fx-shadow-primary-rest);
+}
+
+.app-button[data-variant='secondary'] {
+  box-shadow: var(--shadow-raised);
+}
+
+.app-button[data-variant='secondary']:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+}
+
+/* 保留 !important：按下缩放须压过 fx-lift 等悬停位移与页面 scoped 样式 */
 .app-button:active:not(:disabled) {
-  transform: scale(0.98) !important;
+  transform: scale(0.97) !important;
 }
 
 .app-button[data-variant='primary']:hover:not(:disabled),
@@ -34,11 +47,11 @@
 .results-link-button,
 .quick-archive-button {
   transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    color 180ms ease,
-    box-shadow 180ms ease,
-    transform 180ms ease;
+    background-color var(--duration-base) ease,
+    border-color var(--duration-base) ease,
+    color var(--duration-base) ease,
+    box-shadow var(--duration-base) ease,
+    transform var(--duration-fast) var(--ease-out);
 }
 
 .workbench-primary-button:active:not(:disabled),
@@ -67,13 +80,12 @@
   background: linear-gradient(90deg, transparent, var(--fx-shimmer-stripe), transparent);
   content: "";
   pointer-events: none;
-  transform: skewX(-20deg);
+  transform: skewX(-20deg) translateX(0);
   animation: fx-shimmer 3s linear infinite;
 }
 
 @keyframes fx-shimmer {
-  from { left: -40%; }
-  to { left: 110%; }
+  to { transform: skewX(-20deg) translateX(375%); }
 }
 
 /* 原生 <progress>（扫描阅卷、配置来源上传、 taxonomy 建议进度）。
@@ -102,46 +114,18 @@
   to { background-position: -120% 0; }
 }
 
-/* ===== 状态标签：进行中 / 待处理 / 失败 呼吸脉动（1.6s） ===== */
-
-/* 跟随标签自身文字颜色投影，无需新增颜色变量 */
-@keyframes fx-tag-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent); }
-  50% { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
-}
-
-.results-status[data-status='needs_review'],
-.results-status[data-status='ai_review'],
-.results-status[data-status='incomplete'],
-.results-status[data-status='ungraded'],
-.results-status[data-status='failed'],
-.grading-plan[data-status='blocked'] .grading-plan__header > strong,
-.grading-plan[data-status='error'] .grading-plan__header > strong {
-  animation: fx-tag-pulse 1.6s ease-in-out infinite;
-}
-
-/* 题库评分要点状态条（已有色条元素，只做透明度呼吸） */
-@keyframes fx-breathe {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
-}
-
-.criterion-status[data-tone='review'] .criterion-status__mark,
-.criterion-status[data-tone='blocked'] .criterion-status__mark {
-  animation: fx-breathe 1.6s ease-in-out infinite;
-}
-
-/* ===== 步骤条 / 阶段轨：当前步圆点脉冲光晕（2s） ===== */
+/* ===== 步骤条 / 阶段轨：当前步静态光环 + 出现时单次脉冲 ===== */
 
 @keyframes fx-step-pulse {
-  0%, 100% { box-shadow: 0 0 0 4px var(--fx-pulse-accent); }
-  50% { box-shadow: 0 0 0 8px var(--fx-pulse-accent-soft); }
+  from { box-shadow: 0 0 0 8px var(--fx-pulse-accent-soft); }
+  to { box-shadow: 0 0 0 4px var(--fx-pulse-accent); }
 }
 
 .scan-run-rail li[data-state='current'] > span,
 .hybrid-run-board__phases li.is-current > span,
 .config-stage-rail__item--active .config-stage-rail__number {
-  animation: fx-step-pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 0 4px var(--fx-pulse-accent);
+  animation: fx-step-pulse 600ms var(--ease-out) 1;
 }
 
 /* ===== Tab：激活下划线 scaleX 滑动 ===== */
@@ -151,9 +135,9 @@
   transform: scaleX(0.35);
   transform-origin: left center;
   transition:
-    transform 200ms ease,
-    opacity 200ms ease,
-    background-color 200ms ease;
+    transform var(--duration-page) ease,
+    opacity var(--duration-page) ease,
+    background-color var(--duration-page) ease;
 }
 
 .results-tabs button.is-active::after {
@@ -164,24 +148,94 @@
 /* AI 诊断页签的激活线是 border，只能过渡颜色，不做 scaleX */
 .ai-diagnostic-tab {
   transition:
-    color 160ms ease,
-    border-color 200ms ease;
+    color var(--duration-base) ease,
+    border-color var(--duration-page) ease;
 }
 
-/* ===== 可点击卡片：hover 阴影加深（不做 translateY） ===== */
+/* ===== 可点击卡片：hover 阴影加深（不做 translateY，仅限支持悬停的设备） ===== */
 
 .qb-question-card,
 .grading-modes button {
   transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    box-shadow 180ms ease;
+    background-color var(--duration-base) ease,
+    border-color var(--duration-base) ease,
+    box-shadow var(--duration-base) ease;
 }
 
-.qb-question-card:hover,
-.grading-modes button:hover:not(:disabled),
-.rubric-unit-card:not(.rubric-unit-card--editing):hover {
-  box-shadow: var(--fx-shadow-card-hover);
+@media (hover: hover) {
+  .qb-question-card:hover,
+  .grading-modes button:hover:not(:disabled),
+  .rubric-unit-card:not(.rubric-unit-card--editing):hover {
+    box-shadow: var(--fx-shadow-card-hover);
+  }
+}
+
+/* ===== 通用出现/位移工具类（页面与壳层共用） ===== */
+
+@keyframes fx-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fx-enter {
+  animation: fx-enter var(--duration-drawer) var(--ease-out) backwards;
+}
+
+.fx-stagger > * {
+  animation: fx-enter var(--duration-drawer) var(--ease-out) backwards;
+}
+
+.fx-stagger > :nth-child(2) { animation-delay: 30ms; }
+.fx-stagger > :nth-child(3) { animation-delay: 60ms; }
+.fx-stagger > :nth-child(4) { animation-delay: 90ms; }
+.fx-stagger > :nth-child(5) { animation-delay: 120ms; }
+.fx-stagger > :nth-child(6) { animation-delay: 150ms; }
+.fx-stagger > :nth-child(7) { animation-delay: 180ms; }
+.fx-stagger > :nth-child(8) { animation-delay: 210ms; }
+.fx-stagger > :nth-child(9) { animation-delay: 240ms; }
+.fx-stagger > :nth-child(10) { animation-delay: 270ms; }
+.fx-stagger > :nth-child(11) { animation-delay: 300ms; }
+.fx-stagger > :nth-child(12) { animation-delay: 330ms; }
+.fx-stagger > :nth-child(n + 13) { animation-delay: 330ms; }
+
+@keyframes fx-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.fx-overlay {
+  animation: fx-overlay-in 160ms ease-out backwards;
+}
+
+@keyframes fx-drawer-in-right {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.fx-drawer-right {
+  animation: fx-drawer-in-right 260ms var(--ease-drawer) backwards;
+}
+
+@keyframes fx-dialog-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.fx-dialog {
+  animation: fx-dialog-in 180ms var(--ease-out) backwards;
+}
+
+@media (hover: hover) {
+  .fx-lift {
+    transition:
+      transform var(--duration-base) var(--ease-out),
+      box-shadow var(--duration-base) var(--ease-out);
+  }
+
+  .fx-lift:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--fx-shadow-card-hover);
+  }
 }
 
 /* ===== 减少动态：关闭本文件全部动画与过渡 ===== */
@@ -213,7 +267,14 @@
   .taxonomy-review__suggestion-progress progress::-webkit-progress-value,
   .scan-progress progress::-moz-progress-bar,
   .config-source__progress progress::-moz-progress-bar,
-  .taxonomy-review__suggestion-progress progress::-moz-progress-bar {
+  .taxonomy-review__suggestion-progress progress::-moz-progress-bar,
+  .fx-enter,
+  .fx-stagger > *,
+  .fx-overlay,
+  .fx-drawer-right,
+  .fx-dialog,
+  .fx-lift,
+  .state-panel__skeleton {
     animation: none !important;
     transition: none !important;
   }
