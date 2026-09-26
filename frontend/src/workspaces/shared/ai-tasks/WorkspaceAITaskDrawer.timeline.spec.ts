@@ -104,7 +104,7 @@ describe('WorkspaceAITaskDrawer 时间线任务列表', () => {
     host.querySelector<HTMLButtonElement>('.workspace-ai-drawer-toggle')!.click()
     await nextTick()
 
-    const timeline = host.querySelector('.workspace-ai-task-drawer__timeline')
+    const timeline = document.body.querySelector('.workspace-ai-task-drawer__timeline')
     expect(timeline).not.toBeNull()
     const items = [...timeline!.querySelectorAll('.timeline-item')]
     expect(items).toHaveLength(2)
@@ -128,7 +128,7 @@ describe('WorkspaceAITaskDrawer 时间线任务列表', () => {
     host.querySelector<HTMLButtonElement>('.workspace-ai-drawer-toggle')!.click()
     await nextTick()
 
-    expect(host.querySelector('.timeline-item')?.getAttribute('data-tone')).toBe('danger')
+    expect(document.body.querySelector('.timeline-item')?.getAttribute('data-tone')).toBe('danger')
     app.unmount()
   })
 })

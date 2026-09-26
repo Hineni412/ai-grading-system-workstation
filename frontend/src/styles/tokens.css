@@ -34,6 +34,26 @@
   --color-teacher: #255f49;
   --color-teacher-subtle: #e9f3ee;
 
+  /* 深色侧栏（知衡墨青，取自改版样稿风格 B 侧栏） */
+  --sidebar-bg: linear-gradient(180deg, #0e1c20 0%, #10262b 70%, #0e2026 100%);
+  --sidebar-shell-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ink-1: #e4eff0;
+  --sidebar-ink-2: #a7bfc2;
+  --sidebar-ink-3: #82a4aa;
+  --sidebar-hover: rgba(255, 255, 255, 0.06);
+  --sidebar-active-bg: linear-gradient(90deg, rgba(43, 160, 173, 0.30), rgba(43, 160, 173, 0.12));
+  --sidebar-active-ink: #7fe3ec;
+  --sidebar-active-bar: #2fb9c6;
+  --sidebar-card-bg: rgba(255, 255, 255, 0.045);
+  --sidebar-card-border: rgba(255, 255, 255, 0.10);
+  --sidebar-card-border-strong: rgba(255, 255, 255, 0.16);
+  --sidebar-status-done: #5ad0a2;
+  --sidebar-status-run: #6ab5ec;
+  --sidebar-status-attention: #eebd63;
+  --sidebar-status-danger: #e78a8a;
+  --sidebar-brand-mark: linear-gradient(135deg, #2fb9c6, #136e7c);
+  --sidebar-focus-ring: 0 0 0 3px rgba(47, 185, 198, 0.35);
+
   --font-family-sans: Inter, "PingFang SC", "Microsoft YaHei",
     "Noto Sans CJK SC", system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
@@ -81,7 +101,8 @@
   --control-height-large: 38px;
   --content-max-width: 1180px;
 
-  --shell-topbar-height: 68px;
+  /* 桌面顶栏已在 shell 重构中移除，保留 0 供存量粘性定位计算 */
+  --shell-topbar-height: 0px;
   --shell-navigation-width: 180px;
   --shell-navigation-collapsed-width: 56px;
   --shell-inspector-width: 360px;

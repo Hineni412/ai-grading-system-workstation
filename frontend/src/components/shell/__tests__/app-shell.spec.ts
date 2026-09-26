@@ -12,6 +12,7 @@ import { useSessionStore } from '../../../stores/session'
 import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
 import { useReviewDraftStore } from '../../../stores/review-drafts'
+import { useJobStore } from '../../../stores/jobs'
 import type { SessionSummary } from '../../../api/sessions'
 import { CONFIG_WORKSPACE_STORAGE_KEY } from '../../../stores/config-workspace'
 
@@ -20,6 +21,57 @@ async function settleUi(): Promise<void> {
   await nextTick()
   await Promise.resolve()
   await nextTick()
+}
+
+/* 侧栏考试切换卡 → reka Popover 内容 Teleport 到 body */
+async function openExamSwitcher(host: HTMLElement): Promise<HTMLElement> {
+  const trigger = host.querySelector<HTMLButtonElement>(
+    '.exam-switcher__card, .exam-switcher__icon',
+  )
+  expect(trigger).not.toBeNull()
+  trigger!.click()
+  await settleUi()
+  const popover = document.body.querySelector<HTMLElement>('.exam-switcher-popover')
+  expect(popover).not.toBeNull()
+  return popover!
+}
+
+function switcherRows(popover: ParentNode): HTMLElement[] {
+  return [...popover.querySelectorAll<HTMLElement>('.exam-switcher-popover__row')]
+}
+
+function switcherRowNames(popover: ParentNode): (string | null | undefined)[] {
+  return switcherRows(popover).map(
+    row => row.querySelector('.exam-switcher-popover__row-name')?.textContent,
+  )
+}
+
+/* wide=true → ≥1440px 展开模式（显示切换卡）；false → 图标轨 */
+function stubWideViewport(matches: boolean): void {
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+    matches: query === '(min-width: 1440px)' ? matches : false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })))
+}
+
+/* ≤900px → 抽屉模式 */
+function stubNarrowViewport(): void {
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+    matches: query === '(max-width: 900px)',
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })))
 }
 
 function sessionSummary(
@@ -99,7 +151,8 @@ describe('AppShell', () => {
     },
   )
 
-  it('renders product, page and current-exam context in the topbar', async () => {
+  it('renders product, page and current-exam context in the shell', async () => {
+    stubWideViewport(true)
     const { app, host, initialize } = await mountShell()
 
     expect(initialize).toHaveBeenCalledTimes(1)
@@ -109,7 +162,9 @@ describe('AppShell', () => {
     expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('考试批改')
     expect(host.querySelector('.app-sidebar__brand')).not.toBeNull()
     expect(host.querySelector('.app-sidebar__navigation')).not.toBeNull()
-    expect(host.querySelector('.app-topbar__session')).not.toBeNull()
+    expect(host.querySelector('.exam-switcher__card')).not.toBeNull()
+    expect(host.querySelector('.exam-switcher__card')?.textContent).toContain('当前考试')
+    expect(host.querySelector('.exam-switcher__card')?.textContent).toContain('未选择考试')
     expect(
       [...host.querySelectorAll<HTMLAnchorElement>('[data-testid="app-navigation"] a')].map(
         (link) => [link.textContent, link.getAttribute('href')],
@@ -141,10 +196,9 @@ describe('AppShell', () => {
         'aria-current',
       ),
     ).toBe('page')
-    expect(host.querySelector('label[for="current-session"]')?.textContent).toBe('当前考试')
-    expect(host.querySelector('#current-session')).not.toBeNull()
-    expect(host.querySelector('label[for="current-curriculum-volume"]')?.textContent).toBe('教学学期')
-    expect(host.querySelector('#current-curriculum-volume')).not.toBeNull()
+    const popover = await openExamSwitcher(host)
+    expect(popover.querySelector('label[for="current-curriculum-volume"]')?.textContent).toBe('教学学期')
+    expect(popover.querySelector('#current-curriculum-volume')).not.toBeNull()
     expect([...host.querySelectorAll('nav a')].map((link) => link.textContent)).toEqual([
       '考试配置',
       '考试批改',
@@ -188,23 +242,23 @@ describe('AppShell', () => {
     app.unmount()
   })
 
-  it('defines explicit responsive areas and token-only navigation states for all topbar blocks', () => {
+  it('defines explicit responsive areas and token-only navigation states for shell blocks', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/styles/app-shell.css'), 'utf-8')
     const tabletStart = css.indexOf('@media (max-width: 900px)')
     const compactStart = css.indexOf('@media (max-width: 620px)')
 
-    expect(css).toMatch(
-      /\.app-topbar\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(280px,\s*380px\)\s+auto;/s,
-    )
-    expect(css).toContain('"page session tasks"')
-    expect(css).toContain('"status status status"')
-    expect(css).toMatch(/\.app-topbar__page\s*\{[^}]*grid-area:\s*page;/s)
-    expect(css).toMatch(/\.app-topbar__session\s*\{[^}]*grid-area:\s*session;/s)
-    expect(css).toMatch(/\.app-topbar__status\s*\{[^}]*grid-area:\s*status;/s)
-    expect(css).toMatch(/\.app-topbar__tasks\s*\{[^}]*grid-area:\s*tasks;/s)
+    /* 顶栏精简后：无子导航时桌面零高度，仅保留跳过链接与可选子导航条 */
+    expect(css).toMatch(/\.app-topbar\s*\{[^}]*grid-area:\s*topbar;/s)
+    expect(css).toMatch(/\.app-topbar--with-tabs\s*\{[^}]*border-block-end/s)
+    expect(css).toMatch(/\.app-topbar__workspace-navigation\s*\{/)
+    expect(css).toMatch(/\.tp-workspace-tabs__pill\s*\{/)
+    expect(css).toMatch(/\.app-topbar__skip-link\s*\{[^}]*position:\s*fixed;/s)
     expect(css).toMatch(/\.app-sidebar__link\s*\{/)
     expect(css).toMatch(/\.app-sidebar__link\[aria-current='page'\]\s*\{/)
     expect(css).toMatch(/\.app-sidebar__link:focus-visible/)
+    expect(css).toMatch(/\.exam-switcher__card\s*\{/)
+    expect(css).toMatch(/\.exam-switcher__icon\s*\{/)
+    expect(css).toMatch(/\.exam-switcher-popover\s*\{/)
     expect(css).not.toMatch(
       /\.app-sidebar__group\s*>\s*p\s*\{[^}]*height:\s*0[^}]*\}/s,
     )
@@ -216,12 +270,10 @@ describe('AppShell', () => {
     expect(tabletRules).toContain('"topbar"')
     expect(tabletRules).toContain('"sidebar"')
     expect(tabletRules).toContain('"main"')
+    expect(tabletRules).toMatch(/\.app-topbar__navigation-toggle\s*\{[^}]*display:\s*inline-grid/s)
 
     const compactRules = css.slice(compactStart)
     expect(compactRules).toContain('grid-template-columns: minmax(0, 1fr)')
-    expect(compactRules).toContain('"page tasks"')
-    expect(compactRules).toContain('"session session"')
-    expect(compactRules).toContain('"status status"')
   })
 
   it('keeps desktop sidebar icons on the same horizontal anchor while expanding', () => {
@@ -271,7 +323,7 @@ describe('AppShell', () => {
     app.unmount()
   })
 
-  it('does not let the current-exam selector silently discard config edits', async () => {
+  it('does not let the exam switcher silently discard config edits', async () => {
     const { app, host } = await mountShell()
     const sessionStore = useSessionStore()
     const configStore = useConfigWorkspaceStore()
@@ -289,14 +341,150 @@ describe('AppShell', () => {
     configStore.updateEditor({ row_id: 'row-1', standard_answer: '未保存答案' })
     vi.stubGlobal('confirm', vi.fn(() => false))
 
-    const selector = host.querySelector<HTMLSelectElement>('#current-session')!
-    selector.value = '9'
-    selector.dispatchEvent(new Event('change'))
+    const popover = await openExamSwitcher(host)
+    const row = switcherRows(popover).find(el => el.textContent?.includes('考试二'))!
+    row.click()
     await settleUi()
 
+    /* 守卫拒绝：浮层保持打开、选择不变 */
+    expect(document.body.querySelector('.exam-switcher-popover')).not.toBeNull()
     expect(sessionStore.selectedSessionId).toBe(7)
     expect(configStore.sessionId).toBe(7)
     expect(configStore.editorEdits[0]?.standard_answer).toBe('未保存答案')
+    app.unmount()
+  })
+
+  it('switches exams through the switcher listbox when nothing is dirty', async () => {
+    const { app, host } = await mountShell()
+    const sessionStore = useSessionStore()
+    const configStore = useConfigWorkspaceStore()
+    sessionStore.sessions = [
+      sessionSummary({ id: 7, name: '考试一' }),
+      sessionSummary({ id: 9, name: '考试二' }),
+    ]
+    sessionStore.selectSession(7)
+    configStore.selectSession(7)
+    const loadWorkspace = vi
+      .spyOn(configStore, 'loadSelectedSessionWorkspace')
+      .mockResolvedValue()
+    await settleUi()
+
+    const popover = await openExamSwitcher(host)
+    const row = switcherRows(popover).find(el => el.textContent?.includes('考试二'))!
+    row.click()
+    await settleUi()
+
+    expect(sessionStore.selectedSessionId).toBe(9)
+    expect(configStore.sessionId).toBe(9)
+    expect(loadWorkspace).toHaveBeenCalledWith(9)
+    expect(document.body.querySelector('.exam-switcher-popover')).toBeNull()
+    app.unmount()
+  })
+
+  it('shows the current exam name, status and semester on the switcher card', async () => {
+    stubWideViewport(true)
+    const { app, host } = await mountShell()
+    const sessionStore = useSessionStore()
+    const curriculumScope = useCurriculumScopeStore()
+    const volumeId = 'xkw-bnu-math-8-first'
+    curriculumScope.volumes = [{
+      id: volumeId,
+      order: 1,
+      label: '八年级上册',
+      grade: '八年级',
+      semester: '上册',
+      textbook_version: '北师大版',
+      source: {},
+      statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 },
+    } as never]
+    sessionStore.sessions = [
+      sessionSummary({ id: 7, name: '八年级上册期中', curriculum_volume_id: volumeId }),
+    ]
+    sessionStore.selectSession(7)
+    await settleUi()
+
+    const card = host.querySelector<HTMLElement>('.exam-switcher__card')!
+    expect(card.textContent).toContain('八年级上册期中')
+    expect(card.textContent).toContain('八年级上册')
+    expect(card.textContent).toContain('待开始')
+
+    /* 状态文字在标签行右侧，元信息行带完整 title */
+    const labelRow = card.querySelector('.exam-switcher__label-row')!
+    expect(labelRow.firstElementChild?.textContent?.trim()).toBe('当前考试')
+    const status = labelRow.querySelector<HTMLElement>('.exam-switcher__status')!
+    expect(status.textContent?.trim()).toBe('待开始')
+    expect(status.dataset.tone).toBe('run')
+    const meta = card.querySelector<HTMLElement>('.exam-switcher__meta')!
+    expect(meta.getAttribute('title')).toBe(meta.textContent)
+    app.unmount()
+  })
+
+  it('renders no status text on the card for unknown session statuses', async () => {
+    stubWideViewport(true)
+    const { app, host } = await mountShell()
+    const sessionStore = useSessionStore()
+    sessionStore.sessions = [
+      sessionSummary({ id: 7, name: '八年级上册期中', status: 'archived' as never }),
+    ]
+    sessionStore.selectSession(7)
+    await settleUi()
+
+    const card = host.querySelector<HTMLElement>('.exam-switcher__card')!
+    expect(card.querySelector('.exam-switcher__status')).toBeNull()
+    expect(card.querySelector('.exam-switcher__label-row')?.textContent).toContain('当前考试')
+    app.unmount()
+  })
+
+  it('focuses the search input on open and returns focus to the trigger on close', async () => {
+    stubWideViewport(true)
+    const { app, host } = await mountShell()
+    const popover = await openExamSwitcher(host)
+
+    const input = popover.querySelector<HTMLInputElement>('.exam-switcher-popover__search-input')!
+    expect(document.activeElement).toBe(input)
+
+    /* Esc 关闭后焦点回到当前 trigger（切换卡可能在模式翻转后重建过） */
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await settleUi()
+    expect(document.body.querySelector('.exam-switcher-popover')).toBeNull()
+    const trigger = host.querySelector<HTMLButtonElement>('.exam-switcher__card')!
+    expect(document.activeElement).toBe(trigger)
+    app.unmount()
+  })
+
+  it('sets --shell-sidebar-offset per sidebar mode and removes it on unmount', async () => {
+    const rootStyle = document.documentElement.style
+
+    stubWideViewport(true)
+    const expanded = await mountShell()
+    expect(expanded.host.querySelector('[data-testid="app-shell"]')!.classList).toContain('app-shell--expanded')
+    expect(rootStyle.getPropertyValue('--shell-sidebar-offset')).toBe('180px')
+    expanded.app.unmount()
+    expect(rootStyle.getPropertyValue('--shell-sidebar-offset')).toBe('')
+
+    stubWideViewport(false)
+    const rail = await mountShell()
+    expect(rail.host.querySelector('[data-testid="app-shell"]')!.classList).toContain('app-shell--rail')
+    expect(rootStyle.getPropertyValue('--shell-sidebar-offset')).toBe('56px')
+    rail.app.unmount()
+
+    stubNarrowViewport()
+    const drawer = await mountShell()
+    expect(drawer.host.querySelector('[data-testid="app-shell"]')!.classList).toContain('app-shell--drawer')
+    expect(rootStyle.getPropertyValue('--shell-sidebar-offset')).toBe('0px')
+    drawer.app.unmount()
+  })
+
+  it('opens the session management drawer from the switcher footer', async () => {
+    const { app, host } = await mountShell()
+    const popover = await openExamSwitcher(host)
+    const manageButton = [...popover.querySelectorAll<HTMLElement>('.exam-switcher-popover__footer-link')]
+      .find(el => el.textContent?.includes('考试管理'))!
+    manageButton.click()
+    await settleUi()
+
+    expect(document.body.querySelector('.exam-switcher-popover')).toBeNull()
+    expect(document.body.querySelector('.session-management-drawer')).not.toBeNull()
     app.unmount()
   })
 
@@ -326,18 +514,18 @@ describe('AppShell', () => {
     curriculumScope.selectVolume(volumeId)
     await settleUi()
 
-    const selector = host.querySelector<HTMLSelectElement>('#current-session')!
-    expect([...selector.options].map(option => option.textContent)).toEqual([
-      '未选择',
+    const popover = await openExamSwitcher(host)
+    expect(switcherRowNames(popover)).toEqual([
+      '不选择考试',
       '八年级上册期中',
     ])
-    const otherButton = host.querySelector<HTMLButtonElement>('.app-topbar__other-sessions')!
+    const otherButton = popover.querySelector<HTMLButtonElement>('.exam-switcher-popover__toggle')!
     expect(otherButton.textContent).toContain('其他学期 2')
 
     otherButton.click()
     await settleUi()
-    expect([...selector.options].map(option => option.textContent)).toEqual([
-      '未选择',
+    expect(switcherRowNames(popover)).toEqual([
+      '不选择考试',
       '八年级上册期中',
       '七年级下册期末',
       '历史未归类考试',
@@ -371,7 +559,8 @@ describe('AppShell', () => {
     configStore.selectSession(9)
     await settleUi()
 
-    const scopeSelector = host.querySelector<HTMLSelectElement>('#current-curriculum-volume')!
+    const popover = await openExamSwitcher(host)
+    const scopeSelector = popover.querySelector<HTMLSelectElement>('#current-curriculum-volume')!
     scopeSelector.value = volumeId
     scopeSelector.dispatchEvent(new Event('change'))
     await settleUi()
@@ -379,10 +568,8 @@ describe('AppShell', () => {
     expect(curriculumScope.selectedVolumeId).toBe(volumeId)
     expect(sessionStore.selectedSessionId).toBeNull()
     expect(configStore.sessionId).toBeNull()
-    expect([...host.querySelectorAll<HTMLOptionElement>('#current-session option')].map(
-      option => option.textContent,
-    )).toEqual(['未选择', '七年级上册期中'])
-    expect(host.querySelector('.app-topbar__other-sessions')?.textContent).toContain('其他学期 1')
+    expect(switcherRowNames(popover)).toEqual(['不选择考试', '七年级上册期中'])
+    expect(popover.querySelector('.exam-switcher-popover__toggle')?.textContent).toContain('其他学期 1')
     app.unmount()
   })
 
@@ -422,7 +609,8 @@ describe('AppShell', () => {
     vi.stubGlobal('confirm', vi.fn(() => false))
     await settleUi()
 
-    const scopeSelector = host.querySelector<HTMLSelectElement>('#current-curriculum-volume')!
+    const popover = await openExamSwitcher(host)
+    const scopeSelector = popover.querySelector<HTMLSelectElement>('#current-curriculum-volume')!
     scopeSelector.value = volumeId
     scopeSelector.dispatchEvent(new Event('change'))
     await settleUi()
@@ -450,13 +638,13 @@ describe('AppShell', () => {
       else configStore.markUploadSubmissionPending('2'.repeat(32))
       const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
 
-      const selector = host.querySelector<HTMLSelectElement>('#current-session')!
-      selector.value = '9'
-      selector.dispatchEvent(new Event('change'))
+      const popover = await openExamSwitcher(host)
+      const row = switcherRows(popover).find(el => el.textContent?.includes('考试二'))!
+      row.click()
       await settleUi()
 
       expect(alert).toHaveBeenCalledWith(expect.stringContaining('核对'))
-      expect(selector.value).toBe('7')
+      expect(document.body.querySelector('.exam-switcher-popover')).not.toBeNull()
       expect(sessionStore.selectedSessionId).toBe(7)
       expect(configStore.sessionId).toBe(7)
       app.unmount()
@@ -478,7 +666,7 @@ describe('AppShell', () => {
     app.unmount()
   })
 
-  it('shows a safe exam-list error in the topbar and retries through the store', async () => {
+  it('shows a safe exam-list error in the switcher and retries through the store', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_path, init) => {
       const requestId = String((init?.headers as Record<string, string>)['x-request-id'])
       return new Response(
@@ -496,12 +684,14 @@ describe('AppShell', () => {
     const { app, host, initialize } = await mountShell({ prepareStore: false })
 
     await settleUi()
-    expect(host.querySelector('[data-testid="app-topbar"] [role="alert"]')).not.toBeNull()
-    expect(host.textContent).not.toContain('private network detail')
+    const popover = await openExamSwitcher(host)
+    const sessionAlert = [...popover.querySelectorAll<HTMLElement>('[role="alert"]')]
+      .find(el => el.textContent?.includes('考试列表加载失败'))
+    expect(sessionAlert).not.toBeNull()
+    expect(popover.textContent).not.toContain('private network detail')
     expect(initialize).toHaveBeenCalledTimes(1)
 
-    const retry = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="app-topbar"] button')]
-      .find((button) => button.textContent === '重新加载')!
+    const retry = sessionAlert!.querySelector<HTMLButtonElement>('button')!
     retry.click()
     await settleUi()
     expect(initialize).toHaveBeenCalledTimes(2)
@@ -510,19 +700,6 @@ describe('AppShell', () => {
   })
 
   describe('wide sidebar', () => {
-    function stubWideViewport(matches: boolean): void {
-      vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
-        matches: query === '(min-width: 1440px)' ? matches : false,
-        media: query,
-        onchange: null,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      })))
-    }
-
     it('starts expanded at ≥1440px, persists collapse, and restores it on remount', async () => {
       stubWideViewport(true)
       const first = await mountShell()
@@ -557,6 +734,53 @@ describe('AppShell', () => {
       stubWideViewport(false)
       const { app, host } = await mountShell()
       expect(host.querySelector('[data-testid="sidebar-collapse-toggle"]')).toBeNull()
+      app.unmount()
+    })
+  })
+
+  describe('rail sidebar', () => {
+    it('renders the exam switcher as an icon trigger with an aria-label', async () => {
+      stubWideViewport(false)
+      const { app, host } = await mountShell()
+      const sessionStore = useSessionStore()
+      sessionStore.sessions = [sessionSummary({ id: 7, name: '考试一' })]
+      sessionStore.selectSession(7)
+      await settleUi()
+
+      const shell = host.querySelector('[data-testid="app-shell"]')!
+      expect(shell.classList).toContain('app-shell--rail')
+      const icon = host.querySelector<HTMLButtonElement>('.exam-switcher__icon')
+      expect(icon).not.toBeNull()
+      expect(icon?.getAttribute('aria-label')).toBe('当前考试：考试一')
+      expect(host.querySelector('.exam-switcher__card')).toBeNull()
+      app.unmount()
+    })
+  })
+
+  describe('task center in the sidebar', () => {
+    it('renders the task-center row while tasks exist', async () => {
+      const { app, host } = await mountShell()
+      useJobStore().track({
+        id: 71,
+        job_type: 'grading_run',
+        payload: {},
+        result: {},
+        status: 'running',
+        progress: 0.4,
+        stage: '',
+        detail: '',
+        error: null,
+        cancel_requested: false,
+        created_at: '2026-08-08T00:00:00Z',
+        started_at: '2026-08-08T00:00:01Z',
+        updated_at: '2026-08-08T00:00:02Z',
+        finished_at: null,
+      })
+      await settleUi()
+
+      const toggle = host.querySelector<HTMLButtonElement>('.workspace-ai-drawer-toggle')
+      expect(toggle).not.toBeNull()
+      expect(toggle?.textContent).toContain('任务中心')
       app.unmount()
     })
   })

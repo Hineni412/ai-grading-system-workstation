@@ -225,6 +225,17 @@
   animation: fx-dialog-in 180ms var(--ease-out) backwards;
 }
 
+@keyframes fx-popover-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* reka Popover 内容由 --reka-popover-content-transform-origin 给出触发点方位 */
+.fx-popover {
+  animation: fx-popover-in 160ms var(--ease-out) backwards;
+  transform-origin: var(--reka-popover-content-transform-origin, 50% 0);
+}
+
 @media (hover: hover) {
   .fx-lift {
     transition:
@@ -273,6 +284,7 @@
   .fx-overlay,
   .fx-drawer-right,
   .fx-dialog,
+  .fx-popover,
   .fx-lift,
   .state-panel__skeleton {
     animation: none !important;

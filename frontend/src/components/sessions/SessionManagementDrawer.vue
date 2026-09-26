@@ -1,30 +1,21 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 
-import AppIconButton from '../design-system/AppIconButton.vue'
 import SessionDeletionPanel from '../config/SessionDeletionPanel.vue'
 
-const open = ref(false)
+const open = defineModel<boolean>('open', { default: false })
 const closeButton = ref<HTMLButtonElement | null>(null)
-
-function show(): void {
-  open.value = true
-  void nextTick(() => closeButton.value?.focus())
-}
 
 function close(): void {
   open.value = false
 }
+
+watch(open, (value) => {
+  if (value) void nextTick(() => closeButton.value?.focus())
+})
 </script>
 
 <template>
-  <AppIconButton
-    label="打开考试管理"
-    icon="trash"
-    variant="secondary"
-    @click="show"
-  />
-
   <Teleport to="body">
     <div
       v-if="open"

@@ -54,14 +54,15 @@
   --chart-4: var(--color-info);
   --chart-5: var(--color-success);
 
-  --sidebar: var(--color-bg-sidebar);
-  --sidebar-foreground: var(--color-text-primary);
-  --sidebar-primary: var(--color-accent);
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: var(--color-bg-subtle);
-  --sidebar-accent-foreground: var(--color-text-primary);
-  --sidebar-border: var(--color-border-default);
-  --sidebar-ring: var(--color-accent);
+  /* 侧栏已改为深色墨青（tokens.css 深色侧栏令牌） */
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--sidebar-ink-1);
+  --sidebar-primary: var(--sidebar-active-bar);
+  --sidebar-primary-foreground: #0e1c20;
+  --sidebar-accent: var(--sidebar-hover);
+  --sidebar-accent-foreground: var(--sidebar-ink-1);
+  --sidebar-border: var(--sidebar-shell-border);
+  --sidebar-ring: var(--sidebar-active-bar);
 }
 
 /* 本系统目前仅浅色模式（tokens.css color-scheme: light），

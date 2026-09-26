@@ -36,6 +36,19 @@ const sidebarMode = computed<'expanded' | 'rail' | 'drawer'>(() => {
   return 'rail'
 })
 
+/* 任务中心浮卡（已 Teleport 到 body）据此贴住侧栏右侧，避免遮挡工作区操作 */
+const SIDEBAR_OFFSETS: Record<string, string> = { expanded: '180px', rail: '56px', drawer: '0px' }
+watch(
+  sidebarMode,
+  (mode) => {
+    document.documentElement.style.setProperty(
+      '--shell-sidebar-offset',
+      SIDEBAR_OFFSETS[mode] ?? '0px',
+    )
+  },
+  { immediate: true },
+)
+
 function syncNavigationMode(
   mediaQuery: MediaQueryList | MediaQueryListEvent,
 ): void {
@@ -124,6 +137,7 @@ onBeforeUnmount(() => {
   navigationMediaQuery?.removeEventListener('change', syncNavigationMode)
   wideMediaQuery?.removeEventListener('change', syncWideViewport)
   window.removeEventListener('beforeunload', onBeforeUnload)
+  document.documentElement.style.removeProperty('--shell-sidebar-offset')
 })
 </script>
 

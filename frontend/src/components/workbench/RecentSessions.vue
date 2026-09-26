@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RecentSessionSummary } from '../../api/workbench'
+import { sessionStatusLabel } from '../../lib/session-status'
 import QuickArchiveButton from '../sessions/QuickArchiveButton.vue'
 
 defineProps<{
@@ -11,17 +12,6 @@ defineEmits<{
   select: [sessionId: number]
   archived: [sessionId: number]
 }>()
-
-function sessionStatus(status: string): string {
-  const labels: Record<string, string> = {
-    created: '待开始',
-    pending: '待开始',
-    grading: '批改中',
-    completed: '已完成',
-    failed: '有失败记录',
-  }
-  return labels[status] ?? status
-}
 
 function displayTime(value: string | null): string {
   if (value === null) return '更新时间暂不可用'
@@ -48,7 +38,7 @@ function displayTime(value: string | null): string {
           <button type="button" class="recent-session__select" @click="$emit('select', item.session.id)">
             <span class="recent-session__name">{{ item.session.name }}</span>
             <span class="recent-session__meta">
-              {{ sessionStatus(item.session.status) }} · 已批改
+              {{ sessionStatusLabel(item.session.status) }} · 已批改
               {{ item.progress.graded_papers }} / {{ item.progress.total_papers }} 份
             </span>
             <span class="recent-session__time">{{ displayTime(item.session.updated_at) }}</span>
