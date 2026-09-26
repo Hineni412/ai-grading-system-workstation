@@ -14,6 +14,8 @@ import {
 import { Check, ChevronDown, ClipboardList, Plus, Search, Settings2 } from '@lucide/vue'
 
 import { sessionRouteDefinition } from '../../navigation'
+import { curriculumVolumeAbbrev } from '../../lib/curriculum-label'
+import { formatSessionDate } from '../../lib/session-date'
 import { sessionStatusLabel, sessionStatusTone } from '../../lib/session-status'
 import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
@@ -102,12 +104,8 @@ const currentVolumeLabel = computed(() => {
   const id = currentSession.value?.curriculum_volume_id
   return id ? volumeLabelById.value.get(id) ?? null : null
 })
-function formatSessionDate(value: string | null | undefined): string {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return `${date.getMonth() + 1} 月 ${date.getDate()} 日`
-}
+/* 图标轨触发钮下图标下方的学期缩写（「八年级上册」→「八上」） */
+const railVolumeAbbrev = computed(() => curriculumVolumeAbbrev(currentVolumeLabel.value))
 const currentDateLabel = computed(() => formatSessionDate(currentSession.value?.created_at))
 const sessionListFailed = computed(() => sessionStore.loadState === 'error')
 const cardAttention = computed(() => sessionListFailed.value || currentSessionOutsideScope.value)
@@ -115,7 +113,8 @@ const cardAttention = computed(() => sessionListFailed.value || currentSessionOu
 const currentMetaText = computed(() => {
   if (sessionListFailed.value) return '考试列表加载失败'
   if (currentSessionOutsideScope.value) return '不在当前学期'
-  if (!currentSession.value) return '选择后开始批改与复核'
+  /* 未选考试时只保留全局已选学期，没有就整行不渲染 */
+  if (!currentSession.value) return curriculumScope.selectedVolume?.label ?? ''
   const parts = [currentVolumeLabel.value ?? '全部学期']
   if (currentDateLabel.value) parts.push(currentDateLabel.value)
   return parts.join(' · ')
@@ -248,8 +247,9 @@ function onDocumentKeydown(event: KeyboardEvent): void {
   managementOpen.value = false
 }
 
-onMounted(() => document.addEventListener('keydown', onDocumentKeydown, true))
-onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown, true))
+/* 冒泡阶段即可：抽屉内控件（如行内重命名输入框）的 Esc 能先 stopPropagation 自己消化 */
+onMounted(() => document.addEventListener('keydown', onDocumentKeydown))
+onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown))
 </script>
 
 <template>
@@ -265,8 +265,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown,
           :title="isRail ? iconAriaLabel : undefined"
         >
           <template v-if="isRail">
-            <ClipboardList :size="18" :stroke-width="1.8" aria-hidden="true" />
-            <span v-if="currentSession" class="exam-switcher__icon-dot" aria-hidden="true"></span>
+            <span class="exam-switcher__icon-box" aria-hidden="true">
+              <ClipboardList :size="18" :stroke-width="1.8" />
+              <span v-if="currentSession" class="exam-switcher__icon-dot"></span>
+            </span>
+            <span v-if="railVolumeAbbrev" class="exam-switcher__term">{{ railVolumeAbbrev }}</span>
           </template>
           <template v-else>
             <span class="exam-switcher__label-row">
@@ -285,6 +288,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown,
               <ChevronDown :size="14" :stroke-width="1.8" aria-hidden="true" class="exam-switcher__chevron" />
             </span>
             <span
+              v-if="currentMetaText"
               class="exam-switcher__meta"
               :class="{ 'is-attention': currentMetaAttention }"
               :title="currentMetaText"
@@ -372,7 +376,6 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown,
                 >
                   <span class="exam-switcher-popover__row-main">
                     <span class="exam-switcher-popover__row-name is-empty">不选择考试</span>
-                    <span class="exam-switcher-popover__row-meta">清空当前选择</span>
                   </span>
                   <span v-if="sessionStore.selectedSessionId === null" class="exam-switcher-popover__check">
                     <Check :size="14" :stroke-width="2.2" aria-hidden="true" />

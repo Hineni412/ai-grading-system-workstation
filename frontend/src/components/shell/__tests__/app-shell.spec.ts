@@ -755,6 +755,36 @@ describe('AppShell', () => {
       expect(host.querySelector('.exam-switcher__card')).toBeNull()
       app.unmount()
     })
+
+    it('shows the semester abbreviation under the rail icon only when the exam has a term', async () => {
+      stubWideViewport(false)
+      const { app, host } = await mountShell()
+      const sessionStore = useSessionStore()
+      const curriculumScope = useCurriculumScopeStore()
+      const volumeId = 'xkw-bnu-math-8-first'
+      curriculumScope.volumes = [{
+        id: volumeId,
+        order: 1,
+        label: '八年级上册',
+        grade: '八年级',
+        semester: '上册',
+        textbook_version: '北师大版',
+        source: {},
+        statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 },
+        chapters: [],
+      }]
+      curriculumScope.loadState = 'ready'
+      sessionStore.sessions = [
+        sessionSummary({ id: 7, name: '八上期中', curriculum_volume_id: volumeId }),
+      ]
+      await settleUi()
+
+      expect(host.querySelector('.exam-switcher__term')).toBeNull()
+      sessionStore.selectSession(7)
+      await settleUi()
+      expect(host.querySelector('.exam-switcher__term')?.textContent).toBe('八上')
+      app.unmount()
+    })
   })
 
   describe('task center in the sidebar', () => {
