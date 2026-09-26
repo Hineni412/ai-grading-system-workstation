@@ -331,7 +331,12 @@ describe('App', () => {
     returnButton.click()
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这两件事')
+    /* 页面过渡期间旧视图（page-leave-active）仍挂在 DOM，跳过它取新页标题 */
+    await vi.waitFor(() => {
+      const headings = [...host.querySelectorAll<HTMLElement>('#main-workspace h1')]
+      const current = headings.find((h) => h.closest('.page-leave-active') === null)
+      expect(current?.textContent).toContain('今天先完成这两件事')
+    })
     app.unmount()
   })
 

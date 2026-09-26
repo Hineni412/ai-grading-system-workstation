@@ -11,6 +11,8 @@ import {
 } from '../../navigation'
 import { useSessionStore } from '../../stores/session'
 import AppIcon from './AppIcon.vue'
+import ExamContextSwitcher from './ExamContextSwitcher.vue'
+import WorkspaceAITaskDrawer from '../../workspaces/shared/ai-tasks/WorkspaceAITaskDrawer.vue'
 import { resolveNavigationTarget } from './navigation-target'
 
 type SidebarMode = 'expanded' | 'rail' | 'drawer'
@@ -106,6 +108,8 @@ onBeforeUnmount(() => {
       </span>
     </RouterLink>
 
+    <ExamContextSwitcher :mode="mode" @navigate="emit('navigate')" />
+
     <button
       type="button"
       class="app-sidebar__link app-sidebar__command"
@@ -153,6 +157,7 @@ onBeforeUnmount(() => {
     </nav>
 
     <div class="app-sidebar__settings">
+      <WorkspaceAITaskDrawer />
       <nav
         ref="settingsNavRef"
         id="settings-navigation"

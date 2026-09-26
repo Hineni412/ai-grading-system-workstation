@@ -83,19 +83,19 @@
   gap: 10px;
   padding: 6px 7px;
   border-radius: var(--radius-control);
-  color: var(--color-text-primary);
+  color: var(--sidebar-ink-1);
   text-decoration: none;
 }
 
 .app-sidebar__brand:hover {
-  background: var(--sidebar-accent);
+  background: var(--sidebar-hover);
 }
 
 .app-sidebar__brand:focus-visible,
 .app-sidebar__link:focus-visible,
 .app-sidebar__settings-toggle:focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
+  box-shadow: var(--sidebar-focus-ring);
 }
 
 .app-sidebar__brand-mark {
@@ -105,8 +105,8 @@
   flex: none;
   place-items: center;
   border-radius: 9px;
-  background: var(--color-text-primary);
-  color: var(--color-bg-surface);
+  background: var(--sidebar-brand-mark);
+  color: var(--sidebar-ink-1);
 }
 
 .app-sidebar__brand-mark svg {
@@ -116,7 +116,7 @@
 }
 
 .app-sidebar__brand-accent {
-  fill: var(--color-accent);
+  fill: var(--sidebar-active-ink);
 }
 
 .app-sidebar__brand-copy {
@@ -138,7 +138,7 @@
 }
 
 .app-sidebar__brand-copy small {
-  color: var(--color-text-muted);
+  color: var(--sidebar-ink-3);
   font-size: 10px;
   letter-spacing: 0.03em;
 }
@@ -152,7 +152,7 @@
   gap: var(--space-3);
   overflow-x: hidden;
   overflow-y: auto;
-  scrollbar-color: var(--color-border-strong) transparent;
+  scrollbar-color: var(--sidebar-ink-3) transparent;
   scrollbar-width: thin;
 }
 
@@ -164,7 +164,7 @@
 .app-sidebar__group > p {
   margin: 0;
   padding: 2px 10px 4px;
-  color: var(--color-text-muted);
+  color: var(--sidebar-ink-3);
   font-size: 10px;
   font-weight: var(--font-weight-semibold);
   letter-spacing: 0.08em;
@@ -181,7 +181,7 @@
   padding: 0 10px;
   border: var(--border-width) solid transparent;
   border-radius: var(--radius-control);
-  color: var(--color-text-secondary);
+  color: var(--sidebar-ink-2);
   font-size: var(--font-size-dense);
   font-weight: var(--font-weight-medium);
   text-decoration: none;
@@ -200,14 +200,15 @@
 
 .app-sidebar__link:hover {
   border-color: transparent;
-  background: var(--sidebar-accent);
-  color: var(--sidebar-accent-foreground);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-ink-1);
 }
 
 .app-sidebar__link[aria-current='page'] {
   border-color: transparent;
-  background: var(--accent);
-  color: var(--primary);
+  background: var(--sidebar-active-bg);
+  box-shadow: inset 3px 0 0 var(--sidebar-active-bar);
+  color: var(--sidebar-active-ink);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -221,7 +222,8 @@
   position: absolute;
   inset-inline: 0;
   border-radius: var(--radius-control);
-  background: var(--accent);
+  background: var(--sidebar-active-bg);
+  box-shadow: inset 3px 0 0 var(--sidebar-active-bar);
   pointer-events: none;
   transition:
     top var(--duration-drawer) var(--ease-out),
@@ -239,9 +241,9 @@
 .app-sidebar__command kbd {
   margin-inline-start: auto;
   padding: 1px 5px;
-  border: var(--border-width) solid var(--color-border-default);
+  border: var(--border-width) solid var(--sidebar-card-border);
   border-radius: var(--radius-tag);
-  color: var(--color-text-muted);
+  color: var(--sidebar-ink-3);
   font-family: var(--font-family-mono);
   font-size: 10px;
   white-space: nowrap;
@@ -256,8 +258,8 @@
 }
 
 .app-sidebar__collapse-toggle:hover {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-accent-foreground);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-ink-1);
 }
 
 .app-sidebar__settings {
@@ -283,7 +285,7 @@
   border: var(--border-width) solid transparent;
   border-radius: var(--radius-control);
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--sidebar-ink-2);
   font: inherit;
   font-size: var(--font-size-dense);
   font-weight: var(--font-weight-medium);
@@ -294,10 +296,14 @@
     color var(--duration-fast);
 }
 
-.app-sidebar__settings-toggle:hover,
+.app-sidebar__settings-toggle:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-ink-1);
+}
+
 .app-sidebar__settings-toggle.is-active {
-  background: var(--accent);
-  color: var(--primary);
+  background: var(--sidebar-active-bg);
+  color: var(--sidebar-active-ink);
 }
 
 .app-sidebar__settings-chevron {
@@ -309,70 +315,184 @@
   transform: rotate(180deg);
 }
 
-.app-topbar {
-  position: relative;
-  z-index: var(--shell-topbar-z-index);
-  display: grid;
-  grid-area: topbar;
+/* 侧栏考试切换卡（深色卡片，展开/抽屉模式） */
+.exam-switcher {
+  display: block;
   min-width: 0;
-  min-height: var(--shell-topbar-height);
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px) auto;
-  grid-template-areas:
-    "page session tasks"
-    "status status status";
-  align-items: center;
-  gap: var(--space-1) var(--space-5);
-  padding: 10px var(--space-5);
-  border-block-end: var(--border-width) solid var(--border);
-  background: var(--color-bg-surface);
 }
 
-.app-topbar--workspace-context {
-  grid-template-areas: 'page tasks';
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.app-topbar--workspace-context:has(.app-topbar__workspace-navigation:not(:empty)) {
-  grid-template-areas: 'page workspace-navigation tasks';
-  grid-template-columns: minmax(220px, 1fr) auto auto;
-}
-
-.app-topbar--curriculum-context:not(.app-topbar--workspace-context) {
-  grid-template-areas:
-    "page curriculum session tasks"
-    "status status status status"
-    "curriculum-status curriculum-status curriculum-status curriculum-status";
-  grid-template-columns: minmax(0, 1fr) minmax(170px, 220px) minmax(300px, 460px) auto;
-}
-
-.app-topbar--workspace-context.app-topbar--curriculum-context {
-  grid-template-areas: 'page curriculum tasks';
-  grid-template-columns: minmax(0, 1fr) minmax(170px, 220px) auto;
-}
-
-.app-topbar--workspace-context.app-topbar--curriculum-context:has(.app-topbar__workspace-navigation:not(:empty)) {
-  grid-template-areas: 'page workspace-navigation curriculum tasks';
-  grid-template-columns: minmax(220px, 1fr) auto minmax(170px, 220px) auto;
-}
-
-.app-topbar__tasks { grid-area: tasks; justify-self: end; }
-
-.app-topbar__curriculum {
+.exam-switcher__card {
   display: grid;
-  grid-area: curriculum;
+  width: 100%;
   min-width: 0;
-  grid-template-columns: auto minmax(110px, 1fr);
-  align-items: center;
-  gap: var(--space-2);
+  gap: 2px;
+  padding: 8px 10px;
+  border: var(--border-width) solid var(--sidebar-card-border);
+  border-radius: var(--radius-control);
+  background: var(--sidebar-card-bg);
+  color: var(--sidebar-ink-1);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast),
+    border-color var(--duration-fast);
 }
 
-.app-topbar__curriculum label {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-caption);
+.exam-switcher__card:hover {
+  border-color: var(--sidebar-card-border-strong);
+  background: var(--sidebar-hover);
+}
+
+.exam-switcher__card:focus-visible,
+.exam-switcher__icon:focus-visible {
+  outline: none;
+  box-shadow: var(--sidebar-focus-ring);
+}
+
+.exam-switcher__label-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.exam-switcher__label {
+  color: var(--sidebar-ink-3);
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.06em;
+}
+
+/* 状态文字：标签行右侧，按色调着色（文字本身即语义，不靠颜色单独表达） */
+.exam-switcher__status {
+  flex: none;
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.exam-switcher__status[data-tone='done'] { color: var(--sidebar-status-done); }
+.exam-switcher__status[data-tone='run'] { color: var(--sidebar-status-run); }
+.exam-switcher__status[data-tone='danger'] { color: var(--sidebar-status-danger); }
+
+.exam-switcher__name-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.exam-switcher__name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: var(--font-weight-semibold);
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.app-topbar__curriculum select {
+.exam-switcher__name.is-empty {
+  color: var(--sidebar-status-attention);
+  font-weight: var(--font-weight-medium);
+}
+
+.exam-switcher__attention {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--sidebar-status-attention);
+}
+
+.exam-switcher__chevron {
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--sidebar-ink-3);
+}
+
+.exam-switcher__meta {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--sidebar-ink-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exam-switcher__meta.is-attention {
+  color: var(--sidebar-status-attention);
+}
+
+/* 图标轨模式：36px 图标按钮与导航图标列对齐 */
+.exam-switcher--rail {
+  display: flex;
+  padding-inline: var(--sidebar-icon-inset);
+}
+
+.exam-switcher__icon {
+  position: relative;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  border: var(--border-width) solid var(--sidebar-card-border);
+  border-radius: var(--radius-control);
+  background: var(--sidebar-card-bg);
+  color: var(--sidebar-ink-2);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast),
+    border-color var(--duration-fast),
+    color var(--duration-fast);
+}
+
+.exam-switcher__icon:hover {
+  border-color: var(--sidebar-card-border-strong);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-ink-1);
+}
+
+.exam-switcher__icon-dot {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sidebar-active-bar);
+}
+
+/* 考试切换浮层：浅色卡片（含深色侧栏下的两种触发形态共用） */
+.exam-switcher-popover {
+  z-index: 1400;
+  display: grid;
+  width: 304px;
+  max-width: calc(100vw - 16px);
+  gap: 8px;
+  padding: 10px;
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-panel);
+  background: var(--color-bg-surface);
+  box-shadow: var(--shadow-floating);
+  color: var(--color-text-primary);
+}
+
+.exam-switcher-popover__section {
+  display: grid;
+  gap: 5px;
+}
+
+.exam-switcher-popover__field-label {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+.exam-switcher-popover select {
+  width: 100%;
   min-width: 0;
   min-height: var(--control-height-default);
   padding: 0 30px 0 10px;
@@ -380,22 +500,219 @@
   border-radius: var(--radius-control);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--font-size-dense);
   text-overflow: ellipsis;
 }
 
-.app-topbar__curriculum-status {
+.exam-switcher-popover select:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-disabled);
+}
+
+.exam-switcher-popover__search {
   display: flex;
-  grid-area: curriculum-status;
   align-items: center;
-  justify-content: flex-end;
+  gap: 7px;
+  padding-inline: 10px;
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  color: var(--color-text-muted);
+}
+
+.exam-switcher-popover__search:focus-within {
+  border-color: var(--color-accent);
+}
+
+.exam-switcher-popover__search-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--font-size-dense);
+  outline: none;
+}
+
+.exam-switcher-popover__search-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.exam-switcher-popover__status {
+  margin: 0;
+  padding: 2px 4px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.exam-switcher-popover__status.is-attention {
+  color: var(--color-warning);
+}
+
+.exam-switcher-popover__alert {
+  display: flex;
+  margin: 0;
+  padding: 2px 4px;
+  align-items: center;
   gap: var(--space-2);
   color: var(--color-danger);
   font-size: var(--font-size-caption);
 }
 
+.exam-switcher-popover__retry {
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-active);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.exam-switcher-popover__list {
+  min-width: 0;
+}
+
+.exam-switcher-popover__list-content {
+  display: grid;
+  max-height: 280px;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.exam-switcher-popover__row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  user-select: none;
+}
+
+.exam-switcher-popover__row[data-highlighted] {
+  background: var(--color-bg-subtle);
+}
+
+.exam-switcher-popover__row-main {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.exam-switcher-popover__row-name {
+  overflow: hidden;
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exam-switcher-popover__row-name.is-empty {
+  color: var(--color-text-secondary);
+}
+
+.exam-switcher-popover__row-meta {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exam-switcher-popover__check {
+  display: grid;
+  margin-inline-start: auto;
+  flex: none;
+  place-items: center;
+  color: var(--color-accent);
+}
+
+.exam-switcher-popover__empty {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  text-align: center;
+}
+
+.exam-switcher-popover__toggle {
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-active);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  text-align: start;
+  cursor: pointer;
+}
+
+.exam-switcher-popover__footer {
+  display: flex;
+  gap: var(--space-1);
+  padding-top: 8px;
+  border-block-start: var(--border-width) solid var(--color-border-subtle);
+}
+
+.exam-switcher-popover__footer-link {
+  display: inline-flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast),
+    border-color var(--duration-fast);
+}
+
+.exam-switcher-popover__footer-link:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-subtle);
+}
+
+.exam-switcher-popover__footer-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* 顶栏已精简：≥901px 仅保留跳过链接与可选的工作台子导航；≤900px 为移动顶栏 */
+.app-topbar {
+  position: relative;
+  z-index: var(--shell-topbar-z-index);
+  grid-area: topbar;
+  min-width: 0;
+}
+
+.app-topbar--with-tabs {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 6px var(--space-5);
+  border-block-end: var(--border-width) solid var(--border);
+  background: var(--color-bg-surface);
+}
+
+.app-topbar__page {
+  display: none;
+}
+
 .app-topbar__workspace-navigation {
   display: flex;
-  grid-area: workspace-navigation;
   min-width: 0;
   justify-content: flex-end;
 }
@@ -455,19 +772,11 @@
   transform: translateY(0);
 }
 
-.app-topbar__page {
-  display: flex;
-  grid-area: page;
-  min-width: 0;
-  align-items: center;
-  gap: var(--space-3);
-}
-
 .app-topbar__navigation-toggle {
   display: none !important;
 }
 
-/* 顶栏内图标按钮统一为 34px 控件高度，与同排选择器对齐；
+/* 移动顶栏内图标按钮统一为 34px 控件高度；
  * 需压过 shadcn Button size-9（36px）的未分层工具类，故用双类具体度。 */
 .app-topbar .app-icon-button {
   width: var(--control-height-default);
@@ -499,53 +808,6 @@
   font-size: var(--font-size-caption);
 }
 
-.app-topbar__session {
-  display: grid;
-  grid-area: session;
-  min-width: 0;
-  grid-template-columns: auto minmax(150px, 1fr) auto auto;
-  align-items: center;
-  justify-content: end;
-  gap: var(--space-2);
-}
-
-.app-topbar__session label {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-caption);
-  white-space: nowrap;
-}
-
-.app-topbar__session select {
-  min-width: 0;
-  min-height: var(--control-height-default);
-  padding: 0 30px 0 10px;
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  text-overflow: ellipsis;
-}
-
-.app-topbar__session select:hover:not(:disabled) {
-  border-color: var(--color-border-strong);
-}
-
-.app-topbar__session select:disabled {
-  cursor: not-allowed;
-  opacity: var(--opacity-disabled);
-}
-
-.app-topbar__other-sessions {
-  min-height: var(--control-height-default);
-  padding-inline: var(--space-2);
-  border: 0;
-  background: transparent;
-  color: var(--color-accent-active);
-  font-size: var(--font-size-caption);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
 .quick-archive-button {
   color: var(--color-text-secondary);
 }
@@ -557,20 +819,6 @@
 .quick-archive-button--compact {
   align-self: start;
   margin: var(--space-2);
-}
-
-.app-topbar__status {
-  display: flex;
-  grid-area: status;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-caption);
-}
-
-.app-topbar__status[role='alert'] {
-  color: var(--color-danger);
 }
 
 .main-workspace {
@@ -758,33 +1006,23 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  /* ≤900px：顶栏显示为移动栏（导航开关 + 页面标题），子导航可横滑 */
   .app-topbar {
-    grid-template-columns: minmax(0, 1fr) minmax(250px, 360px) auto;
-    padding-inline: var(--space-4);
+    display: flex;
+    min-height: 52px;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 8px var(--space-4);
+    border-block-end: var(--border-width) solid var(--border);
+    background: var(--color-bg-surface);
   }
 
-  .app-topbar--workspace-context:has(.app-topbar__workspace-navigation:not(:empty)) {
-    grid-template-areas:
-      "page tasks"
-      "workspace-navigation workspace-navigation";
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .app-topbar--curriculum-context:not(.app-topbar--workspace-context) {
-    grid-template-areas:
-      "page tasks"
-      "curriculum session"
-      "status status"
-      "curriculum-status curriculum-status";
-    grid-template-columns: minmax(0, 1fr) minmax(250px, 360px);
-  }
-
-  .app-topbar--workspace-context.app-topbar--curriculum-context:has(.app-topbar__workspace-navigation:not(:empty)) {
-    grid-template-areas:
-      "page tasks"
-      "workspace-navigation workspace-navigation"
-      "curriculum curriculum";
-    grid-template-columns: minmax(0, 1fr) auto;
+  .app-topbar__page {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: center;
+    gap: var(--space-3);
   }
 
   .app-topbar__workspace-navigation {
@@ -811,62 +1049,8 @@
   }
 
   .app-topbar {
-    grid-template-areas:
-      "page tasks"
-      "session session"
-      "status status";
-    grid-template-columns: minmax(0, 1fr) auto;
     gap: var(--space-2);
     padding: var(--space-3);
-  }
-
-  .app-topbar--curriculum-context,
-  .app-topbar--curriculum-context:not(.app-topbar--workspace-context),
-  .app-topbar--workspace-context.app-topbar--curriculum-context:has(.app-topbar__workspace-navigation:not(:empty)) {
-    grid-template-areas:
-      "page tasks"
-      "curriculum curriculum"
-      "session session"
-      "status status"
-      "curriculum-status curriculum-status";
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .app-topbar--workspace-context:has(.app-topbar__workspace-navigation:not(:empty)) {
-    grid-template-areas:
-      "page tasks"
-      "workspace-navigation workspace-navigation";
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .app-topbar--workspace-context.app-topbar--curriculum-context:has(.app-topbar__workspace-navigation:not(:empty)) {
-    grid-template-areas:
-      "page tasks"
-      "workspace-navigation workspace-navigation"
-      "curriculum curriculum"
-      "curriculum-status curriculum-status";
-  }
-
-  .app-topbar__curriculum {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .app-topbar__curriculum select {
-    width: 100%;
-  }
-
-  .app-topbar__session {
-    grid-template-columns: minmax(0, 1fr);
-    justify-content: stretch;
-  }
-
-  .app-topbar__session select {
-    width: 100%;
-  }
-
-  .app-topbar__status {
-    align-items: flex-start;
-    justify-content: flex-start;
   }
 
   .app-topbar__page-copy span {

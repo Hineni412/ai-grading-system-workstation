@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { Bell } from '@lucide/vue'
 
 import { useWorkspaceAITaskStore } from './store'
 import { useJobStore } from '../../../stores/jobs'
@@ -223,11 +224,13 @@ function toggleDrawer(): void {
       aria-controls="workspace-ai-task-drawer"
       @click="toggleDrawer"
     >
-      任务中心
-      <span v-if="attentionCount">{{ attentionCount }}</span>
+      <Bell :size="18" :stroke-width="1.8" aria-hidden="true" />
+      <span class="workspace-ai-drawer-toggle__label">任务中心</span>
+      <span v-if="attentionCount" class="workspace-ai-drawer-toggle__badge">{{ attentionCount }}</span>
       <small v-if="livePercent !== null">{{ livePercent }}%</small>
     </button>
 
+    <Teleport to="body">
     <aside
       v-if="peekOpen && (peekTask || peekJob)"
       class="workspace-ai-task-peek"
@@ -359,47 +362,104 @@ function toggleDrawer(): void {
         </ul>
       </details>
     </aside>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 .workspace-ai-drawer-host {
-  position: relative;
-  display: flex;
-  justify-content: flex-end;
+  display: block;
 }
 
+/* 侧栏行样式：与 app-shell.css 中 app-sidebar__link 同一形态（深色底） */
 .workspace-ai-drawer-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 0 13px;
-  border: 1px solid var(--primary);
-  border-radius: 999px;
-  background: var(--primary);
-  color: var(--primary-foreground);
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--sidebar-ink-2);
   font: inherit;
-  font-weight: 700;
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-medium);
+  text-align: start;
   white-space: nowrap;
   cursor: pointer;
+  transition:
+    background-color var(--duration-fast),
+    border-color var(--duration-fast),
+    color var(--duration-fast);
 }
 
-.workspace-ai-drawer-toggle span {
+.workspace-ai-drawer-toggle:hover {
+  border-color: transparent;
+  background: var(--sidebar-hover);
+  color: var(--sidebar-ink-1);
+}
+
+.workspace-ai-drawer-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--sidebar-focus-ring);
+}
+
+.workspace-ai-drawer-toggle__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-ai-drawer-toggle__badge {
   display: grid;
   place-items: center;
-  min-width: 22px;
-  height: 22px;
-  padding: 0 6px;
+  min-width: 18px;
+  height: 18px;
+  margin-inline-start: auto;
+  padding: 0 5px;
   border-radius: 999px;
-  background: var(--card);
-  color: var(--primary);
+  background: var(--sidebar-status-attention);
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
 }
 
 .workspace-ai-drawer-toggle small {
-  font-size: 12px;
-  font-weight: 600;
-  opacity: 0.92;
+  color: var(--sidebar-ink-3);
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+}
+
+/* 图标轨：只留图标与计数徽标 */
+.app-shell--rail .workspace-ai-drawer-toggle {
+  justify-content: flex-start;
+  padding-inline: var(--sidebar-icon-inset, 9px);
+}
+
+.app-shell--rail .workspace-ai-drawer-toggle__label,
+.app-shell--rail .workspace-ai-drawer-toggle small {
+  width: 0;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity var(--duration-base) var(--ease-out);
+}
+
+.app-shell--rail .app-sidebar:hover .workspace-ai-drawer-toggle__label,
+.app-shell--rail .app-sidebar:hover .workspace-ai-drawer-toggle small,
+.app-shell--rail .app-sidebar:focus-within .workspace-ai-drawer-toggle__label,
+.app-shell--rail .app-sidebar:focus-within .workspace-ai-drawer-toggle small {
+  width: auto;
+  max-width: 100%;
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transition-delay: 60ms;
 }
 
 .workspace-ai-task-drawer-backdrop {
@@ -409,11 +469,13 @@ function toggleDrawer(): void {
   background: transparent;
 }
 
+/* 贴住侧栏右侧（--shell-sidebar-offset 由 AppShell 按展开/图标轨/抽屉写入），
+   避免遮挡工作区右下角的保存等主操作 */
 .workspace-ai-task-peek {
-  position: absolute;
+  position: fixed;
   z-index: 72;
-  inset-block-start: calc(100% + 12px);
-  inset-inline-end: 0;
+  inset-block-end: 16px;
+  inset-inline-start: calc(var(--shell-sidebar-offset, 0px) + 16px);
   display: grid;
   width: min(340px, calc(100vw - 24px));
   gap: 10px;
@@ -462,13 +524,13 @@ function toggleDrawer(): void {
 
 .workspace-ai-task-drawer {
   position: fixed;
-  top: calc(var(--shell-topbar-height, 68px) + 8px);
+  top: 12px;
   right: 12px;
   z-index: 70;
   display: grid;
   align-content: start;
   width: min(320px, calc(100vw - 24px));
-  max-height: min(70vh, calc(100vh - var(--shell-topbar-height, 68px) - 24px));
+  max-height: min(70vh, calc(100vh - 24px));
   overflow: auto;
   padding: 14px;
   border: 1px solid var(--border);
