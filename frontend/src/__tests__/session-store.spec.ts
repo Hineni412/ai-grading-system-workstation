@@ -134,6 +134,59 @@ describe('session Store', () => {
     expect(store.selectedSessionId).toBeNull()
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull()
   })
+
+  /* 注意：store 会把列表原数组写回，这里用副本避免夹具被跨测试污染 */
+  it('renames a non-selected session without touching the selection', async () => {
+    const store = useSessionStore()
+    await store.initialize(async () => sessions.map(item => ({ ...item })))
+    store.selectSession(7)
+    const renamed = { ...sessions[1]!, name: '改名后的考试' }
+    const renamer = vi.fn(async () => renamed)
+
+    await expect(store.renameSessionById(9, ' 改名后的考试 ', renamer)).resolves.toEqual(renamed)
+    expect(renamer).toHaveBeenCalledWith(9, '改名后的考试')
+    expect(store.sessions.find(session => session.id === 9)?.name).toBe('改名后的考试')
+    expect(store.selectedSessionId).toBe(7)
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBe('7')
+  })
+
+  it('reconciles an ambiguous rename of a non-selected session from the list', async () => {
+    const store = useSessionStore()
+    await store.initialize(async () => sessions.map(item => ({ ...item })))
+    store.selectSession(7)
+    const renamed = { ...sessions[1]!, name: '改名后的考试' }
+    const renamer = vi.fn(async () => {
+      throw new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+        message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    })
+    const loader = vi.fn(async () => [{ ...sessions[0]! }, renamed])
+
+    await expect(store.renameSessionById(9, '改名后的考试', renamer, loader)).resolves.toEqual(renamed)
+    expect(loader).toHaveBeenCalledTimes(1)
+    expect(store.sessions.find(session => session.id === 9)?.name).toBe('改名后的考试')
+    expect(store.selectedSessionId).toBe(7)
+  })
+
+  it('rethrows an ambiguous rename when the list does not confirm it', async () => {
+    const store = useSessionStore()
+    await store.initialize(async () => sessions.map(item => ({ ...item })))
+    const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
+      message: 'timeout', details: {}, requestId: 'safe', retryable: false })
+    const renamer = vi.fn(async () => { throw timeout })
+    const loader = vi.fn(async () => sessions.map(item => ({ ...item })))
+
+    await expect(store.renameSessionById(9, '改名后的考试', renamer, loader)).rejects.toBe(timeout)
+    expect(store.sessions.find(session => session.id === 9)?.name).toBe(sessions[1]!.name)
+  })
+
+  it('rejects empty names for renameSessionById like renameSelected', async () => {
+    const store = useSessionStore()
+    await store.initialize(async () => sessions)
+    await expect(store.renameSessionById(9, '   ')).rejects.toThrow('考试名称不能为空')
+    await expect(store.renameSelected('   ')).rejects.toThrow('请先选择考试')
+    store.selectSession(7)
+    await expect(store.renameSelected('   ')).rejects.toThrow('考试名称不能为空')
+  })
 })
 
 describe('sessions adapter', () => {

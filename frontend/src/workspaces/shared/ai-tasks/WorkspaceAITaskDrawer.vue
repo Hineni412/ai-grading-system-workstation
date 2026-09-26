@@ -378,7 +378,7 @@ function toggleDrawer(): void {
   gap: 10px;
   width: 100%;
   min-height: 36px;
-  padding: 0 10px;
+  padding-inline: var(--sidebar-icon-inset, 9px);
   border: var(--border-width) solid transparent;
   border-radius: var(--radius-control);
   background: transparent;
@@ -433,10 +433,23 @@ function toggleDrawer(): void {
   font-weight: var(--font-weight-medium);
 }
 
-/* 图标轨：只留图标与计数徽标 */
+/* 图标轨：只留图标，计数徽标改为右上角小圆点，保持图标居中于 36px 列 */
 .app-shell--rail .workspace-ai-drawer-toggle {
+  position: relative;
   justify-content: flex-start;
   padding-inline: var(--sidebar-icon-inset, 9px);
+}
+
+.app-shell--rail .workspace-ai-drawer-toggle__badge {
+  position: absolute;
+  inset-block-start: 3px;
+  inset-inline-end: 3px;
+  min-width: 14px;
+  height: 14px;
+  margin-inline-start: 0;
+  padding: 0 4px;
+  font-size: 9px;
+  line-height: 14px;
 }
 
 .app-shell--rail .workspace-ai-drawer-toggle__label,
@@ -460,6 +473,17 @@ function toggleDrawer(): void {
   pointer-events: auto;
   visibility: visible;
   transition-delay: 60ms;
+}
+
+.app-shell--rail .app-sidebar:hover .workspace-ai-drawer-toggle__badge,
+.app-shell--rail .app-sidebar:focus-within .workspace-ai-drawer-toggle__badge {
+  position: static;
+  min-width: 18px;
+  height: 18px;
+  margin-inline-start: auto;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 18px;
 }
 
 .workspace-ai-task-drawer-backdrop {

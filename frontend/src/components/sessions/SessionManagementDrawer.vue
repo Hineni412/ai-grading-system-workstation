@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
-import SessionDeletionPanel from '../config/SessionDeletionPanel.vue'
+import { useSessionStore } from '../../stores/session'
+import SessionManager from './SessionManager.vue'
 
 const open = defineModel<boolean>('open', { default: false })
 const closeButton = ref<HTMLButtonElement | null>(null)
+const sessionStore = useSessionStore()
+const sessionCount = computed(() => sessionStore.sessions.length)
 
 function close(): void {
   open.value = false
@@ -29,11 +32,10 @@ watch(open, (value) => {
         aria-labelledby="session-management-title"
       >
         <header class="session-management-drawer__header">
-          <div>
-            <p>考试管理</p>
-            <h2 id="session-management-title">考试管理</h2>
-            <span>核对当前考试的影响后，可直接彻底删除。</span>
-          </div>
+          <h2 id="session-management-title">
+            考试管理
+            <span class="session-management-drawer__count">共 {{ sessionCount }} 场</span>
+          </h2>
           <button
             ref="closeButton"
             type="button"
@@ -42,7 +44,7 @@ watch(open, (value) => {
           >×</button>
         </header>
         <div class="session-management-drawer__body">
-          <SessionDeletionPanel />
+          <SessionManager @navigate="close" />
         </div>
       </aside>
     </div>
@@ -66,38 +68,31 @@ watch(open, (value) => {
   display: flex;
   flex-direction: column;
   max-width: 100%;
-  width: min(760px, 94vw);
+  width: min(560px, 100vw - 24px);
 }
 
 .session-management-drawer__header {
-  align-items: flex-start;
+  align-items: center;
   border-block-end: var(--border-width) solid var(--color-border-default);
   display: flex;
   gap: var(--space-4);
   justify-content: space-between;
-  padding: var(--space-5);
-}
-
-.session-management-drawer__header p,
-.session-management-drawer__header h2,
-.session-management-drawer__header span {
-  margin: 0;
-}
-
-.session-management-drawer__header p {
-  color: var(--color-accent);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
+  padding: var(--space-3) var(--space-4);
 }
 
 .session-management-drawer__header h2 {
-  font-size: var(--font-size-h2);
-  margin-block: var(--space-1);
+  align-items: baseline;
+  display: flex;
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-semibold);
+  gap: var(--space-2);
+  margin: 0;
 }
 
-.session-management-drawer__header span {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-dense);
+.session-management-drawer__count {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
 }
 
 .session-management-drawer__header button {
@@ -117,25 +112,8 @@ watch(open, (value) => {
 }
 
 .session-management-drawer__body {
+  min-height: 0;
   overflow: auto;
-  padding: 0 var(--space-5) var(--space-6);
-}
-
-.session-management-drawer__body :deep(.session-lifecycle) {
-  border-block-start: 0;
-  margin-block-start: 0;
-  padding-block-start: var(--space-5);
-}
-
-.session-management-drawer__body :deep(.session-lifecycle__intro) {
-  display: none;
-}
-
-.session-management-drawer__body :deep(.session-lifecycle__card) {
-  grid-template-columns: 1fr;
-}
-
-.session-management-drawer__body :deep(.session-lifecycle__impact-grid) {
-  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  padding: var(--space-3) var(--space-4) var(--space-6);
 }
 </style>

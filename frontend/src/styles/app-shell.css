@@ -344,9 +344,16 @@
   background: var(--sidebar-hover);
 }
 
-.exam-switcher__card:focus-visible,
+.exam-switcher__card:focus-visible {
+  outline: none;
+  box-shadow: var(--sidebar-focus-ring);
+}
+
 .exam-switcher__icon:focus-visible {
   outline: none;
+}
+
+.exam-switcher__icon:focus-visible .exam-switcher__icon-box {
   box-shadow: var(--sidebar-focus-ring);
 }
 
@@ -425,34 +432,49 @@
   color: var(--sidebar-status-attention);
 }
 
-/* 图标轨模式：36px 图标按钮与导航图标列对齐 */
+/* 图标轨模式：36×36 图标盒与导航图标列共用同一轴线，学期缩写置于盒下 */
 .exam-switcher--rail {
   display: flex;
-  padding-inline: var(--sidebar-icon-inset);
+  justify-content: center;
 }
 
 .exam-switcher__icon {
+  display: grid;
+  width: 100%;
+  justify-items: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--sidebar-ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.exam-switcher__icon-box {
   position: relative;
   display: grid;
   width: 36px;
   height: 36px;
-  flex: none;
   place-items: center;
-  border: var(--border-width) solid var(--sidebar-card-border);
+  border: var(--border-width) solid transparent;
   border-radius: var(--radius-control);
   background: var(--sidebar-card-bg);
-  color: var(--sidebar-ink-2);
-  cursor: pointer;
   transition:
     background-color var(--duration-fast),
-    border-color var(--duration-fast),
     color var(--duration-fast);
 }
 
-.exam-switcher__icon:hover {
-  border-color: var(--sidebar-card-border-strong);
+.exam-switcher__icon:hover .exam-switcher__icon-box {
   background: var(--sidebar-hover);
   color: var(--sidebar-ink-1);
+}
+
+.exam-switcher__term {
+  color: var(--sidebar-ink-2);
+  font-size: 10px;
+  font-weight: var(--font-weight-medium);
+  line-height: 1.2;
 }
 
 .exam-switcher__icon-dot {
@@ -901,12 +923,79 @@
     padding-inline: var(--sidebar-icon-inset);
   }
 
+  /* 图标轨：内边距收起/展开保持一致，图标锚点不动；只去间隙、图标不参与收缩，
+     否则 flex 间隙会在窄内容盒里把图标压没（快速跳转）或挤歪（任务中心徽标） */
+  .app-shell--rail .app-sidebar__link,
+  .app-shell--rail .workspace-ai-drawer-toggle {
+    gap: 0;
+  }
+
+  .app-shell--rail .app-sidebar__link > svg,
+  .app-shell--rail .workspace-ai-drawer-toggle > svg {
+    flex: none;
+  }
+
   /* 常驻展开模式：侧栏占满整列，标签始终可见 */
   .app-shell--expanded .app-sidebar {
     width: var(--shell-navigation-width);
   }
 
   /* 图标轨模式（901–1439px，或 ≥1440px 被折叠）：收起标签，悬停/聚焦时浮层展开 */
+
+  /* 细滚动条会占掉内容宽度，使滑动指示条比链接宽——图标轨下去掉轨道槽位 */
+  .app-shell--rail .app-sidebar__navigation {
+    scrollbar-width: none;
+    /* 向左借出侧栏内边距，让激活状态条能画到轨道最左缘而不被 overflow 裁掉 */
+    margin-inline-start: -10px;
+    padding-inline-start: 10px;
+  }
+
+  /* 隐藏的分组标题收缩为零高，非首组用一条居中短分隔线保持纵向节奏 */
+  .app-shell--rail .app-sidebar__group > p {
+    padding: 0;
+    font-size: 0;
+  }
+
+  .app-shell--rail .app-sidebar__group:not(:first-child)::before {
+    content: '';
+    justify-self: center;
+    width: 16px;
+    height: 1px;
+    margin-block: 2px;
+    background: var(--sidebar-shell-border);
+  }
+
+  /* 激活项：背景块仍居中于 36px 列，状态条单独贴轨道左缘 */
+  .app-shell--rail .app-sidebar__link[aria-current='page'],
+  .app-shell--rail .app-sidebar__indicator {
+    box-shadow: none;
+  }
+
+  .app-shell--rail .app-sidebar__navigation > .app-sidebar__indicator {
+    inset-inline: 10px 0;
+  }
+
+  .app-shell--rail .app-sidebar__link[aria-current='page']::before,
+  .app-shell--rail .app-sidebar__indicator::before {
+    content: '';
+    position: absolute;
+    inset-block: 7px;
+    inset-inline-start: -10px;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--sidebar-active-bar);
+  }
+
+  /* 设置区网格子项默认不小于 min-content，会把 36px 列撑成 ~48px——强制收缩 */
+  .app-shell--rail .app-sidebar__settings,
+  .app-shell--rail .app-sidebar__settings-links {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell--rail .app-sidebar__settings > * {
+    min-width: 0;
+  }
+
   .app-shell--rail .app-sidebar__brand-copy,
   .app-shell--rail .app-sidebar__link > span,
   .app-shell--rail .app-sidebar__settings-toggle > span,
@@ -915,6 +1004,9 @@
   .app-shell--rail .app-sidebar__command kbd {
     width: 0;
     max-width: 0;
+    /* border-box 下 width:0 的下限是 padding+border，kbd 要一并清零才真正收起 */
+    padding: 0;
+    border-width: 0;
     opacity: 0;
     overflow: hidden;
     pointer-events: none;
@@ -947,6 +1039,38 @@
     visibility: visible;
     /* 展开时标签淡入略滞后于宽度动画，避免展开过程中文字折行 */
     transition-delay: 60ms;
+  }
+
+  /* 悬停/聚焦展开后恢复行内间隙（内边距不动，图标锚点保持同一根轴） */
+  .app-shell--rail .app-sidebar:hover .app-sidebar__link,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__link,
+  .app-shell--rail .app-sidebar:hover .workspace-ai-drawer-toggle,
+  .app-shell--rail .app-sidebar:focus-within .workspace-ai-drawer-toggle {
+    gap: 10px;
+  }
+
+  /* 悬停展开后分组标题恢复文字形态，分隔线让位；kbd 恢复内边距与描边 */
+  .app-shell--rail .app-sidebar:hover .app-sidebar__group > p,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__group > p {
+    padding: 2px 10px 4px;
+    font-size: 10px;
+  }
+
+  /* kbd 的 margin-inline-start:auto 会吃掉全部自由空间、把图标挤到行首，收起时归零 */
+  .app-shell--rail .app-sidebar__command kbd {
+    margin-inline-start: 0;
+  }
+
+  .app-shell--rail .app-sidebar:hover .app-sidebar__command kbd,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__command kbd {
+    margin-inline-start: auto;
+    padding: 1px 5px;
+    border-width: var(--border-width);
+  }
+
+  .app-shell--rail .app-sidebar:hover .app-sidebar__group::before,
+  .app-shell--rail .app-sidebar:focus-within .app-sidebar__group::before {
+    content: none;
   }
 
   .app-shell--rail .app-sidebar:hover .app-sidebar__settings-chevron,

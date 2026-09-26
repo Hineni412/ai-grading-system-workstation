@@ -113,13 +113,13 @@ export const useSessionStore = defineStore('session', () => {
     return created
   }
 
-  async function renameSelected(
+  /* 对任意考试改名；写请求结果含糊时用权威列表核对，不重发请求 */
+  async function renameSessionById(
+    sessionId: number,
     name: string,
     renamer: SessionRenamer = renameSession,
     loader: SessionLoader = fetchSessions,
   ): Promise<SessionSummary> {
-    if (selectedSessionId.value === null) throw new Error('请先选择考试')
-    const sessionId = selectedSessionId.value
     const normalized = name.trim()
     if (!normalized) throw new Error('考试名称不能为空')
 
@@ -143,6 +143,15 @@ export const useSessionStore = defineStore('session', () => {
     const index = sessions.value.findIndex((session) => session.id === renamed.id)
     if (index >= 0) sessions.value[index] = renamed
     return renamed
+  }
+
+  async function renameSelected(
+    name: string,
+    renamer: SessionRenamer = renameSession,
+    loader: SessionLoader = fetchSessions,
+  ): Promise<SessionSummary> {
+    if (selectedSessionId.value === null) throw new Error('请先选择考试')
+    return renameSessionById(selectedSessionId.value, name, renamer, loader)
   }
 
   async function saveSelectedMetadata(
@@ -211,6 +220,7 @@ export const useSessionStore = defineStore('session', () => {
     initialize,
     createDraft,
     renameSelected,
+    renameSessionById,
     saveSelectedMetadata,
     selectSession,
     clearSelection,
