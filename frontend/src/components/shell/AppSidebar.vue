@@ -54,6 +54,7 @@ function completeNavigation(): void {
 /* 当前项滑动指示条：与顶栏 tp-workspace-tabs__pill 同法，
    量出 aria-current 链接的 offsetTop/offsetHeight 后由 CSS 过渡滑动；
    jsdom 无布局（offsetHeight 为 0）时不渲染，链接保留自身激活底色。 */
+const sidebarRef = ref<HTMLElement | null>(null)
 const navigationRef = ref<HTMLElement | null>(null)
 const settingsNavRef = ref<HTMLElement | null>(null)
 const navigationIndicator = ref<{ top: string; height: string } | null>(null)
@@ -73,19 +74,43 @@ async function updateIndicators(): Promise<void> {
   settingsIndicator.value = measureIndicator(settingsNavRef.value)
 }
 
+/* 指示条只跟随容器内部布局：悬停展开/宽度过渡会即时改导航内部行高，
+   分两步兜底——容器尺寸每帧变化都重测（ResizeObserver），
+   宽度/抽屉动画收尾再校一次（transitionend）；字体就绪也重测一次。 */
+function onSidebarTransitionEnd(event: Event): void {
+  const property = (event as TransitionEvent).propertyName
+  if (property === 'width' || property === 'max-height') {
+    void updateIndicators()
+  }
+}
+
+let indicatorObserver: ResizeObserver | null = null
+
 watch(() => route.fullPath, () => { void updateIndicators() })
 watch(() => props.mode, () => { void updateIndicators() })
+watch(() => sessionStore.selectedSessionId, () => { void updateIndicators() })
 onMounted(() => {
   void updateIndicators()
   window.addEventListener('resize', updateIndicators)
+  sidebarRef.value?.addEventListener('transitionend', onSidebarTransitionEnd)
+  if (typeof ResizeObserver !== 'undefined') {
+    indicatorObserver = new ResizeObserver(() => { void updateIndicators() })
+    if (navigationRef.value) indicatorObserver.observe(navigationRef.value)
+    if (settingsNavRef.value) indicatorObserver.observe(settingsNavRef.value)
+  }
+  void document.fonts?.ready.then(() => updateIndicators())
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateIndicators)
+  sidebarRef.value?.removeEventListener('transitionend', onSidebarTransitionEnd)
+  indicatorObserver?.disconnect()
+  indicatorObserver = null
 })
 </script>
 
 <template>
   <aside
+    ref="sidebarRef"
     id="application-sidebar"
     class="app-sidebar"
     :class="{ 'is-open': open }"

@@ -118,6 +118,12 @@ function chooseFile(): void {
   fileInput.value?.click()
 }
 
+function clearFile(): void {
+  selectedFile.value = null
+  if (fileInput.value) fileInput.value.value = ''
+  errorMessage.value = ''
+}
+
 async function submit(): Promise<void> {
   const file = selectedFile.value
   if (file === null || uploading.value || workspaceLocked.value) return
@@ -157,15 +163,14 @@ function formatBytes(bytes: number): string {
 </script>
 
 <template>
-  <section class="config-source" aria-labelledby="config-source-title">
-    <header class="config-section-heading">
-      <div>
-        <h2 id="config-source-title">上传与拆题</h2>
-        <p>更换试卷后会在本机重新拆题，当前核对结果不会静默覆盖。</p>
-      </div>
-    </header>
-
+  <section class="config-source" aria-label="上传与拆题">
     <div class="config-source__compact">
+      <span
+        v-if="source"
+        class="config-source__summary"
+        aria-label="当前试卷来源"
+        :title="source.safe_filename"
+      >{{ source.safe_filename }} · {{ formatBytes(source.size_bytes) }} · {{ source.questions.length }} 题</span>
       <form class="config-source__form" @submit.prevent="submit">
         <div class="config-source__picker">
           <span id="config-source-file-label" class="sr-only">选择 DOCX 或 PDF</span>
@@ -184,29 +189,27 @@ function formatBytes(bytes: number): string {
               class="config-source__choose"
               :disabled="uploading || workspaceLocked"
               @click="chooseFile"
-            >选择试卷</button>
-            <span
-              class="config-source__file-name"
-              :class="{ 'has-file': selectedFile !== null }"
-              :title="selectedFile?.name ?? ''"
-            >{{ selectedFileDescription }}</span>
+            >{{ source ? '更换试卷' : '选择试卷' }}</button>
+            <template v-if="selectedFile !== null">
+              <span
+                class="config-source__file-name has-file"
+                :title="selectedFile.name"
+              >{{ selectedFileDescription }}</span>
+              <button
+                type="submit"
+                class="config-source__submit"
+                :disabled="uploading || workspaceLocked || selectedFileInvalid"
+              >上传并拆题</button>
+              <button
+                type="button"
+                class="config-source__cancel"
+                :disabled="uploading"
+                @click="clearFile"
+              >取消</button>
+            </template>
           </div>
         </div>
-        <button
-          type="submit"
-          class="config-source__submit"
-          :disabled="uploading || workspaceLocked || selectedFileInvalid"
-        >上传并拆题</button>
       </form>
-
-      <dl v-if="source" class="config-source__summary" aria-label="当前试卷来源">
-        <div><dt>当前文件</dt><dd>{{ source.safe_filename }}</dd></div>
-        <div><dt>大小</dt><dd>{{ formatBytes(source.size_bytes) }}</dd></div>
-        <div><dt>拆题</dt><dd>{{ source.questions.length }} 题</dd></div>
-      </dl>
-      <p v-else class="config-source__summary config-source__summary--empty">
-        上传后，这里显示当前文件和拆题数量。
-      </p>
     </div>
 
     <div v-if="uploading" class="config-source__progress" role="status" aria-live="polite">

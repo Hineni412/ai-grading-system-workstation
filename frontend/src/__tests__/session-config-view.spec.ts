@@ -299,7 +299,9 @@ describe('SessionConfigView source replacement guard', () => {
 
     expect(host.querySelector<HTMLAnchorElement>('a[href="/sessions/7/regions"]')?.textContent)
       .toContain(action)
-    expect(host.textContent).toContain(fact)
+    const templateStage = [...host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
+      .find((button) => button.textContent?.includes('样卷题框'))
+    expect(templateStage?.getAttribute('aria-description')).toBe(fact)
     app.unmount()
   })
 

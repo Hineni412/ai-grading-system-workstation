@@ -72,10 +72,15 @@ describe('QuestionBlockReview', () => {
     })
     const q1 = mounted.host.querySelector<HTMLElement>('[data-question-row="Q1"]')!
     const q2 = mounted.host.querySelector<HTMLElement>('[data-question-row="Q2"]')!
-    expect(q1.classList.contains('is-collapsed')).toBe(false)
-    expect(q1.querySelector('.question-review__pair')).not.toBeNull()
+    expect(q1.querySelector('.question-review__dot')?.className).toContain('is-passed')
+    expect(q1.querySelector('.question-review__row-button')?.getAttribute('aria-selected')).toBe('true')
+    expect(mounted.host.querySelector('[data-question-panel="Q1"]'))
+      .not.toBeNull()
     expect(q2.classList.contains('is-exception')).toBe(true)
-    expect(q2.querySelector('.question-review__pair')).not.toBeNull()
+    q2.querySelector<HTMLButtonElement>('.question-review__row-button')!.click()
+    await nextTick()
+    expect(mounted.host.querySelector('[data-question-panel="Q2"]'))
+      .not.toBeNull()
   })
   it('shows preview only without question exclusion controls', async () => {
     const onUpdate = vi.fn()
@@ -105,7 +110,11 @@ describe('QuestionBlockReview', () => {
 
     expect(mounted.host.querySelector('[aria-label="Q-unknown 题型"]')).toBeNull()
     expect(mounted.host.textContent).not.toContain('本地判为')
-    expect(mounted.host.textContent).toContain('拿不准时会出现黄条')
+    expect(mounted.host.querySelector('.question-review__type-check select')).toBeNull()
+    expect(
+      mounted.host.querySelector('.question-review__detail-head .question-review__type-chip')
+        ?.textContent,
+    ).toContain('essay-from-parser')
   })
 
   it('asks for type confirmation only when the source reports a conflict', async () => {
@@ -164,7 +173,10 @@ describe('QuestionBlockReview', () => {
       }),
     })
 
-    expect(mounted.host.textContent).toContain('本地判为填空题（题面有填空位置 · 未经您确认）')
+    expect(
+      mounted.host.querySelector('.question-review__detail-head .question-review__type-chip')
+        ?.getAttribute('title'),
+    ).toContain('本地判为填空题（题面有填空位置 · 未经您确认）')
   })
 
   it('shows answer facts and builds assets only from semantic identifiers', async () => {
@@ -173,13 +185,19 @@ describe('QuestionBlockReview', () => {
       suffix: '.docx',
     }) })
     expect(mounted.host.textContent).toContain('答案已匹配')
-    expect(mounted.host.textContent).toContain('未识别到答案')
     const images = [...mounted.host.querySelectorAll<HTMLImageElement>('img')]
     expect(images.map((image) => [image.alt, image.getAttribute('src')])).toEqual([
       ['Q1 题目图 1', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/question`],
       ['Q1 答案图 1', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/answer`],
     ])
     expect(images.every((image) => !image.src.includes('path='))).toBe(true)
+    mounted.host.querySelector<HTMLButtonElement>('[data-question-row="Q2"] .question-review__row-button')!
+      .click()
+    await nextTick()
+    expect(
+      mounted.host.querySelector('[data-answer-panel="Q2"] .question-review__answer-status')
+        ?.textContent,
+    ).toContain('未识别到答案')
   })
 
   it('renders one adjacent-image candidate with only a reversible ignore control', async () => {
@@ -202,7 +220,7 @@ describe('QuestionBlockReview', () => {
     const mounted = await mountReview({ value: reviewSource, onAssetUpdate })
     const candidate = mounted.host.querySelector<HTMLElement>('.question-review__asset-between')!
 
-    expect(mounted.host.querySelectorAll('.question-review__asset-between')).toHaveLength(1)
+    expect(mounted.host.querySelectorAll('.question-review__list .question-review__asset-between')).toHaveLength(1)
     expect(candidate.textContent).toContain('Q1 / Q2')
     const buttons = candidate.querySelectorAll<HTMLButtonElement>('button')
     expect(buttons).toHaveLength(1)
@@ -237,11 +255,14 @@ describe('QuestionBlockReview', () => {
       ],
     })
 
-    const reminders = [...mounted.host.querySelectorAll<HTMLElement>('.question-review__asset-between')]
+    const reminders = [...mounted.host.querySelectorAll<HTMLElement>('.question-review__list .question-review__asset-between')]
     expect(reminders).toHaveLength(1)
     expect(reminders[0]!.textContent).toContain('疑难图片 · Q2 / Q3')
     expect(reminders[0]!.textContent).toContain('待归属')
 
+    mounted.host.querySelector<HTMLButtonElement>('[data-question-row="Q2"] .question-review__row-button')!
+      .click()
+    await nextTick()
     const bound = mounted.host.querySelectorAll('[data-asset-id="A1"]')
     expect(bound).toHaveLength(1)
     expect(mounted.host.querySelector('[data-question-panel="Q2"] .question-review__image-well [data-asset-id="A1"]'))
@@ -298,7 +319,7 @@ describe('QuestionBlockReview', () => {
       { candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question' },
     ])
     expect(host.querySelector('.question-review__ignored-tray')).toBeNull()
-    const reminders = [...host.querySelectorAll<HTMLElement>('.question-review__asset-between')]
+    const reminders = [...host.querySelectorAll<HTMLElement>('.question-review__list .question-review__asset-between')]
     expect(reminders).toHaveLength(1)
     expect(reminders[0]!.textContent).toContain('疑难图片 · Q2 / Q3')
     expect(reminders[0]!.textContent).toContain('待归属')
@@ -334,6 +355,9 @@ describe('QuestionBlockReview', () => {
     const dragStart = new Event('dragstart', { bubbles: true })
     Object.defineProperty(dragStart, 'dataTransfer', { value: dataTransfer })
     dragged.dispatchEvent(dragStart)
+    mounted.host.querySelector<HTMLButtonElement>('[data-question-row="Q2"] .question-review__row-button')!
+      .click()
+    await nextTick()
     const answerPanel = mounted.host.querySelector<HTMLElement>('[data-answer-panel="Q2"]')!
     const drop = new Event('drop', { bubbles: true, cancelable: true })
     Object.defineProperty(drop, 'dataTransfer', { value: dataTransfer })
@@ -374,7 +398,7 @@ describe('QuestionBlockReview', () => {
     }])
   })
 
-  it('keeps the full question beside a concise answer and opens the complete answer on demand', async () => {
+  it('keeps the full question beside a clamped full answer that expands in place', async () => {
     const onUpdate = vi.fn()
     const longQuestion = '完整题干不能折叠。'.repeat(30)
     const completeSolution = '完整解答第一步：由已知条件得到中间结论。'
@@ -411,11 +435,17 @@ describe('QuestionBlockReview', () => {
       .not.toContain('question-review__preview--clamped')
     expect(mounted.host.textContent).toContain(longQuestion)
     expect(mounted.host.textContent).toContain('结论成立')
-    expect(mounted.host.querySelector('[data-answer-content="Q1"]')?.textContent).toContain('结论成立')
-    expect(mounted.host.querySelector('[data-answer-content="Q1"]')?.textContent).not.toContain(completeSolution)
-    expect(mounted.host.textContent).toContain('查看完整答案')
+    const answerContent = mounted.host.querySelector<HTMLElement>('[data-answer-content="Q1"]')!
+    expect(answerContent.textContent).toContain('结论成立')
+    expect(answerContent.textContent).toContain(completeSolution)
+    expect(answerContent.classList).toContain('is-clamped')
     expect(mounted.host.querySelector('[data-question-panel="Q1"]')).not.toBeNull()
     expect(mounted.host.querySelector('[data-answer-panel="Q1"]')).not.toBeNull()
+    const expand = [...mounted.host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === '展开')!
+    expand.click()
+    await nextTick()
+    expect(answerContent.classList).not.toContain('is-clamped')
     const open = [...mounted.host.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent?.includes('查看完整答案'))!
     open.click()

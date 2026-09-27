@@ -536,7 +536,7 @@ describe('ConfigGenerationPanel', () => {
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel({ editorLoader: vi.fn(async () => editor()) })
 
-    expect(mounted.host.textContent).toContain('评分标准生成成功')
+    expect(mounted.host.textContent).toContain('评分依据已生成')
     expect(mounted.host.textContent).toContain('2 道题的知识标签需要稍后重试或人工归并')
     expect(mounted.host.textContent).toContain('未知词尚未写入正式标签')
     expect(mounted.host.textContent).not.toContain('失败 2 道题')
@@ -777,7 +777,7 @@ describe('ConfigGenerationPanel', () => {
 
   it.each([
     ['failed', {}, '生成失败'],
-    ['succeeded', { outcome: 'complete' }, '评分标准生成成功'],
+    ['succeeded', { outcome: 'complete' }, '评分依据已生成'],
     ['succeeded', {
       outcome: 'partial', total_questions: 5, generated_questions: 3,
       failed_count: 2, failed_question_ids: ['Q2', 'Q5'], retryable: true,
@@ -896,7 +896,7 @@ describe('ConfigGenerationPanel', () => {
     ['queued', '等待开始'],
     ['running', '正在生成'],
     ['paused', '生成已暂停'],
-    ['succeeded', '评分标准生成成功'],
+    ['succeeded', '评分依据已生成'],
     ['failed', '生成失败'],
     ['cancelled', '已取消'],
   ] as const)('shows the %s terminal state truthfully', async (status, copy) => {

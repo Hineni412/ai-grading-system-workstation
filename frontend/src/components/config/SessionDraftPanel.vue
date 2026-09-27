@@ -36,6 +36,13 @@ watch(
 
 const curriculumOptions = computed(() => curriculumScope.volumes)
 
+const isDirty = computed(() => {
+  const current = sessionStore.currentSession
+  if (!current) return true
+  return name.value !== current.name
+    || curriculumVolumeId.value !== current.curriculum_volume_id
+})
+
 function writeErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError && error.code === 'session_name_conflict') {
     return '已存在同名考试，请换一个名称。'
@@ -82,21 +89,27 @@ async function renameDraft(): Promise<void> {
 </script>
 
 <template>
-  <section class="session-draft-panel" aria-labelledby="session-draft-title">
-    <div>
-      <p class="session-draft-panel__eyebrow">第 1 阶段</p>
-      <h2 id="session-draft-title" tabindex="-1">考试草稿</h2>
-      <p>先保存考试名称，后续试卷来源与评分依据都会归入这场考试。</p>
-    </div>
-    <form @submit.prevent="sessionStore.currentSession ? renameDraft() : createDraft()">
-      <label for="session-draft-name">考试名称</label>
-      <div class="session-draft-panel__controls">
-        <input id="session-draft-name" v-model="name" :disabled="busy" required maxlength="200">
-        <button type="submit" :disabled="busy || !name.trim()">
-          {{ sessionStore.currentSession ? '保存名称' : '创建考试草稿' }}
-        </button>
-      </div>
-      <label for="session-draft-curriculum">所属教学学期</label>
+  <section
+    id="session-draft-title"
+    class="session-draft-panel"
+    tabindex="-1"
+    aria-label="考试草稿"
+  >
+    <form
+      class="session-draft-panel__form"
+      @submit.prevent="sessionStore.currentSession ? renameDraft() : createDraft()"
+    >
+      <label class="sr-only" for="session-draft-name">考试名称</label>
+      <input
+        id="session-draft-name"
+        v-model="name"
+        :disabled="busy"
+        required
+        maxlength="200"
+        placeholder="考试名称"
+        autocomplete="off"
+      >
+      <label class="sr-only" for="session-draft-curriculum">所属教学学期</label>
       <select
         id="session-draft-curriculum"
         v-model="curriculumVolumeId"
@@ -108,34 +121,14 @@ async function renameDraft(): Promise<void> {
           {{ volume.label }}
         </option>
       </select>
-      <p v-if="message" role="status">{{ message }}</p>
+      <button
+        v-if="isDirty"
+        type="submit"
+        :disabled="busy || !name.trim()"
+      >
+        {{ sessionStore.currentSession ? '保存' : '创建草稿' }}
+      </button>
+      <p v-if="message" class="session-draft-panel__message" role="status">{{ message }}</p>
     </form>
   </section>
 </template>
-
-<style scoped>
-.session-draft-panel {
-  display: grid;
-  grid-template-columns: minmax(260px, .8fr) minmax(360px, 1.2fr);
-  gap: var(--space-7);
-  padding-block: var(--space-6);
-  border-block-end: var(--border-width) solid var(--border);
-}
-.session-draft-panel h2,
-.session-draft-panel p { margin: 0; }
-.session-draft-panel h2 { margin-block-end: var(--space-2); font-size: var(--font-size-h2); }
-.session-draft-panel p { color: var(--color-text-secondary); }
-.session-draft-panel__eyebrow { margin-block-end: var(--space-1) !important; font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); }
-.session-draft-panel form { display: grid; align-content: start; gap: var(--space-2); }
-.session-draft-panel label { font-size: var(--font-size-dense); font-weight: var(--font-weight-medium); }
-.session-draft-panel__controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
-.session-draft-panel input,
-.session-draft-panel select,
-.session-draft-panel button { min-height: var(--control-height-large); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); }
-.session-draft-panel input,
-.session-draft-panel select { min-width: 0; padding-inline: var(--space-3); background: var(--card); }
-.session-draft-panel button { padding-inline: var(--space-4); border-color: var(--color-accent); background: var(--color-accent); color: var(--primary-foreground); font-weight: var(--font-weight-medium); cursor: pointer; }
-.session-draft-panel button:hover:not(:disabled) { background: var(--color-accent-hover); }
-.session-draft-panel button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
-@media (max-width: 1100px) { .session-draft-panel { grid-template-columns: 1fr; gap: var(--space-4); } }
-</style>
