@@ -255,7 +255,7 @@ describe('ConfigSourceUpload', () => {
     const mounted = await mountUpload({ accepted: source() })
 
     expect(mounted.host.querySelector<HTMLInputElement>('input[type="file"]')?.disabled).toBe(true)
-    expect(mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+    expect(mounted.host.querySelector<HTMLButtonElement>('.config-source__choose')?.disabled).toBe(true)
     expect(mounted.uploader).not.toHaveBeenCalled()
   })
 

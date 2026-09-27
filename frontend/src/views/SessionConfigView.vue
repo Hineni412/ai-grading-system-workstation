@@ -10,6 +10,7 @@ import RubricEditorTable from '../components/config/RubricEditorTable.vue'
 import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
 import AppButton from '../components/design-system/AppButton.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
 import { ApiError, isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../api/errors'
 import {
   abandonConfigGenerationRequest,
@@ -597,15 +598,24 @@ watch(
 
 <template>
   <article class="session-config-view config-workspace">
-    <header class="session-config-view__header">
-      <div>
-        <h1 tabindex="-1">考试配置</h1>
-        <p>从考试草稿开始，按阶段准备试卷来源和评分依据。</p>
-      </div>
-      <span v-if="sessionStore.currentSession" class="session-config-view__current">
-        当前考试：{{ sessionStore.currentSession.name }}
-      </span>
-    </header>
+    <PageHeader title="考试配置">
+      <template
+        v-if="sessionStore.loadState !== 'loading' && sessionStore.loadState !== 'error'"
+        #actions
+      >
+        <ConfigStageRail
+          :phase="configStore.phase"
+          :active-stage="activeStage"
+          :session-ready="sessionStore.currentSession !== null"
+          :source-ready="configStore.sourceId !== null && configStore.sourceRevision !== null"
+          :generation-submitted="configStore.jobId !== null"
+          :editor-ready="configStore.editor?.configured === true"
+          :template-present="templatePresent"
+          :template-ready="templateReady"
+          @select="selectStage"
+        />
+      </template>
+    </PageHeader>
 
     <div v-if="sessionStore.loadState === 'loading'" class="session-config-view__state" role="status">
       正在读取考试列表…
@@ -615,34 +625,24 @@ watch(
       <AppButton type="button" @click="sessionStore.initialize()">重新加载考试列表</AppButton>
     </div>
     <template v-else>
-      <ConfigStageRail
-        :phase="configStore.phase"
-        :active-stage="activeStage"
-        :session-ready="sessionStore.currentSession !== null"
-        :source-ready="configStore.sourceId !== null && configStore.sourceRevision !== null"
-        :generation-submitted="configStore.jobId !== null"
-        :editor-ready="configStore.editor?.configured === true"
-        :template-present="templatePresent"
-        :template-ready="templateReady"
-        @select="selectStage"
-      />
       <div id="config-intake-status-slot" />
       <p v-if="sessionStore.sessions.length === 0" class="session-config-view__empty">
-        还没有考试。创建草稿后，可以继续上传试卷并准备评分依据。
+        还没有考试，先创建草稿。
       </p>
       <Transition :name="transitionName" mode="out-in" @after-enter="focusPendingStage">
         <section v-if="activePanel === 'source'" key="source" class="config-workspace__panel" aria-label="试卷准备">
-          <SessionDraftPanel />
-          <template v-if="sessionStore.currentSession">
-            <div id="config-source-stage" tabindex="-1">
-              <div class="config-source-stage__dock" aria-label="试卷来源与生成设置">
-                <ConfigSourceUpload
-                  :session-id="sessionStore.currentSession.id"
-                  :source="configStore.source"
-                  :before-upload="confirmSourceUpload"
-                  @uploaded="configStore.acceptUploadedSource"
-                />
-              </div>
+          <div id="config-source-stage" tabindex="-1">
+            <div class="config-intake-bar">
+              <SessionDraftPanel />
+              <ConfigSourceUpload
+                v-if="sessionStore.currentSession"
+                :session-id="sessionStore.currentSession.id"
+                :source="configStore.source"
+                :before-upload="confirmSourceUpload"
+                @uploaded="configStore.acceptUploadedSource"
+              />
+            </div>
+            <template v-if="sessionStore.currentSession">
               <QuestionBlockReview
                 v-if="configStore.source"
                 :source="configStore.source"
@@ -653,18 +653,18 @@ watch(
                 @update:asset-decisions="configStore.updateAssetDecisions"
               />
               <div v-if="configStore.source" id="config-curriculum-volume-slot" />
-            </div>
-            <div
-              v-if="configStore.source || configStore.pendingJobRequestToken !== null || configStore.jobId !== null"
-              id="config-generation-stage"
-              tabindex="-1"
-            >
-              <ConfigGenerationPanel
-                :session-name="sessionStore.currentSession.name"
-                @continue="selectStage('editor')"
-              />
-            </div>
-          </template>
+            </template>
+          </div>
+          <div
+            v-if="sessionStore.currentSession && (configStore.source || configStore.pendingJobRequestToken !== null || configStore.jobId !== null)"
+            id="config-generation-stage"
+            tabindex="-1"
+          >
+            <ConfigGenerationPanel
+              :session-name="sessionStore.currentSession.name"
+              @continue="selectStage('editor')"
+            />
+          </div>
         </section>
         <section
           v-else-if="sessionStore.currentSession && configStore.editor?.configured"
@@ -716,24 +716,38 @@ watch(
               @command="queueCommand"
               @retry="regenerateSelectedScoringQuestion"
             />
-            <p class="config-editor__refine-note">AI 只重试当前选中的一道题，不会重做其他题；重试完成后必须由老师确认步骤并赋分。</p>
+            <p class="config-editor__refine-note">AI 只重试选中一题，完成后需重新确认赋分。</p>
             <p v-if="regenerationError" class="config-editor__refine-error" role="alert">{{ regenerationError }}</p>
           </details>
 
-          <div v-if="saveNeeded || saveBlocked || saving" class="config-editor__save-bar">
-            <div>
-              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改' : '需先处理阻断问题' }}</strong>
-              <span v-if="saveBlocked">请补全有效分值与评分结构后保存。</span>
-              <span v-else>保存时会一次提交全部行修改与评分单元命令。</span>
+          <div class="config-editor__save-bar">
+            <span v-if="saveBlocked" class="config-editor__save-state is-blocked">
+              需先处理阻断问题
+            </span>
+            <span v-else-if="saveNeeded" class="config-editor__save-state">
+              有未保存修改
+            </span>
+            <span v-else-if="saving" class="config-editor__save-state">正在保存…</span>
+            <div class="config-editor__save-actions">
+              <a
+                class="config-editor__next-link"
+                :href="`/sessions/${sessionStore.currentSession.id}/regions`"
+                :title="templateSummary"
+              >样卷题框 · {{ templateAction }} →</a>
+              <a
+                v-if="templateReady"
+                class="config-editor__next-link"
+                :href="`/sessions/${sessionStore.currentSession.id}/grading-run`"
+              >批改执行 →</a>
+              <AppButton
+                type="button"
+                variant="primary"
+                name="保存评分依据"
+                class="config-editor__save-primary"
+                :disabled="!saveNeeded || saveBlocked || saving || saveUnknown || configJobActive || submissionPending"
+                @click="saveEditor"
+              >{{ saving ? '正在保存…' : '保存评分依据' }}</AppButton>
             </div>
-            <AppButton
-              type="button"
-              variant="primary"
-              name="保存评分依据"
-              class="config-editor__save-primary"
-              :disabled="!saveNeeded || saveBlocked || saving || saveUnknown || configJobActive || submissionPending"
-              @click="saveEditor"
-            >{{ saving ? '正在保存…' : '保存评分依据' }}</AppButton>
           </div>
           <ConfigSaveResult
             :status="configStore.saveStatus === 'saving' ? 'idle' : configStore.saveStatus"
@@ -742,20 +756,6 @@ watch(
             :issues="configStore.serverIssues"
             @reload="reloadLatestEditor"
           />
-          <div class="config-template-entry">
-            <div>
-              <strong>下一步：样卷题框</strong>
-              <span>{{ templateSummary }}</span>
-            </div>
-            <a :href="`/sessions/${sessionStore.currentSession.id}/regions`">{{ templateAction }}</a>
-          </div>
-          <div class="config-template-entry">
-            <div>
-              <strong>批改执行</strong>
-              <span>{{ templateReady ? '样卷题框已确认，可以上传整班答卷并开始扫描预检。' : '完成样卷题框确认后即可开始整班批改。' }}</span>
-            </div>
-            <a v-if="templateReady" :href="`/sessions/${sessionStore.currentSession.id}/grading-run`">进入批改执行</a>
-          </div>
         </section>
       </Transition>
     </template>
@@ -763,20 +763,10 @@ watch(
 </template>
 
 <style scoped>
-.session-config-view__header { display: flex; align-items: end; justify-content: space-between; gap: var(--space-5); margin-block-end: var(--space-5); }
-.session-config-view h1,
 .session-config-view p { margin: 0; }
-.session-config-view h1 { font-size: var(--font-size-h1); line-height: var(--line-height-tight); }
-.session-config-view__header p { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
-.session-config-view__current { max-width: 45%; overflow: hidden; color: var(--color-text-secondary); font-size: var(--font-size-dense); text-overflow: ellipsis; white-space: nowrap; }
 .session-config-view__state,
-.session-config-view__empty { padding: var(--space-5); border-block: var(--border-width) solid var(--border); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
+.session-config-view__empty { padding: var(--space-3) var(--space-6); border-block-end: var(--border-width) solid var(--border); color: var(--color-text-secondary); }
 .session-config-view__state button { min-height: var(--control-height-default); margin-block-start: var(--space-3); }
-.session-config-view__empty { border-block-start: 0; }
-.config-template-entry { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-block-start: var(--space-5); padding: var(--space-4); border-block: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
-.config-template-entry strong, .config-template-entry span { display: block; }
-.config-template-entry span { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
-.config-template-entry a { min-height: var(--control-height-default); padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--primary); color: var(--primary-foreground); text-decoration: none; }
 .config-workspace__panel { min-width: 0; }
 .config-forward-enter-active,
 .config-forward-leave-active,

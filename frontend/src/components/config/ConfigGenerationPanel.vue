@@ -27,6 +27,7 @@ import {
 } from '../../stores/config-workspace'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useJobStore } from '../../stores/jobs'
+import { useConfigQuestionFocus } from '../../composables/useConfigQuestionFocus'
 
 const props = withDefaults(defineProps<{
   sessionName?: string
@@ -352,6 +353,8 @@ const terminal = computed(() => job.value !== null
 const waitingForCancel = computed(() => job.value?.cancel_requested === true
   && (job.value.status === 'queued' || job.value.status === 'running'))
 const refineJob = computed(() => job.value?.payload.mode === 'refine')
+const completeSuccess = computed(() => job.value !== null
+  && job.value.status === 'succeeded' && outcome.value === 'complete')
 const publishedConfigPresent = computed(() => configStore.editor?.configured === true)
 const sourceDiffersFromPublishedConfig = computed(() => {
   if (!publishedConfigPresent.value || configStore.source === null) return false
@@ -366,13 +369,13 @@ const safeDetail = computed(() => {
 const mappingNotice = computed(() => {
   if (job.value?.status !== 'succeeded' || outcome.value !== 'complete') return ''
   if (job.value.result.mapping_status === 'refreshed') {
-    return '评分依据已生成，样卷映射已刷新。'
+    return '样卷映射已刷新。'
   }
   if (job.value.result.mapping_status === 'reconfirm_required') {
-    return '评分依据已生成；样卷映射需要回到旧入口重新确认。'
+    return '样卷映射需要回到旧入口重新确认。'
   }
   if (job.value.result.mapping_status === 'not_present') {
-    return '评分依据已生成；当前考试没有样卷映射。'
+    return '当前考试没有样卷映射。'
   }
   return ''
 })
@@ -403,16 +406,17 @@ function statusCopy(value: JobResponse): string {
     return '部分题目等待处理'
   }
   if (value.status === 'failed') return '生成失败'
-  return outcome.value === 'partial' ? '评分标准生成失败' : '评分标准生成成功'
+  return outcome.value === 'partial' ? '评分标准生成失败' : '评分依据已生成'
 }
 
 function continueToEditor(): void {
   emit('continue')
 }
 
+const { requestQuestionFocus } = useConfigQuestionFocus()
+
 function locateQuestion(questionId: string): void {
-  document.querySelector<HTMLElement>(`[data-question-row="${CSS.escape(questionId)}"]`)
-    ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  requestQuestionFocus(questionId)
 }
 
 async function retryRedQuestions(): Promise<void> {
@@ -651,11 +655,8 @@ watch(
 
 <template>
   <section class="config-generation" aria-labelledby="config-generation-title">
-    <header class="config-section-heading">
-      <div>
-        <h2 id="config-generation-title">生成评分依据</h2>
-        <p>系统按题自动分析解题证据，完成后统一赋分；无需选择整卷或分批模式。</p>
-      </div>
+    <header class="config-generation__header">
+      <h2 id="config-generation-title" :class="{ 'sr-only': completeSuccess }">分析并入库</h2>
     </header>
 
     <p
@@ -663,14 +664,13 @@ watch(
       class="config-generation__candidate-note"
       role="status"
     >
-      <strong>{{ sourceDiffersFromPublishedConfig ? '当前上传的是新的候选试卷。' : '当前正式评分依据仍然有效。' }}</strong>
-      新一轮只有完整成功后才会替换正式版本；失败、取消或部分完成都保留旧版。
-      替换成功后，样卷题框和扫描预检需要重新确认，历史批改结果不会删除。
+      {{ sourceDiffersFromPublishedConfig ? '当前上传的是新的候选试卷。' : '当前正式评分依据仍然有效。' }}
+      新评分依据完整成功后才替换正式版；替换后需重新确认样卷题框和扫描预检。
     </p>
 
     <div v-if="job === null" class="config-generation__flow" role="note">
-      <strong>先分析并完整入库，再为本场赋分</strong>
-      <span>先核对拆题结果；系统会按题分析标签和详细判定点并写入题库。只有全部题目入库成功后，才会给本场考试挂分。入库失败时会留下失败类别和题号，不能跳过。</span>
+      <strong>先分析并完整入库，再为本场赋分。</strong>
+      <span>系统会按题分析标签和详细判定点并写入题库。只有全部题目入库成功后，才会给本场考试挂分。入库失败时会留下失败类别和题号。</span>
     </div>
 
     <Teleport :to="volumeTeleportTarget ?? 'body'" :disabled="volumeTeleportTarget === null">
@@ -688,17 +688,7 @@ watch(
             </option>
           </select>
         </label>
-        <nav v-if="configStore.source" class="config-generation__lights" aria-label="逐题生成状态">
-          <button
-            v-for="item in questionStates"
-            :key="item.question_id"
-            type="button"
-            :class="`is-${item.state}`"
-            :aria-label="`${item.question_id}：${item.state === 'passed' ? '结构通过' : ['blocked', 'failed'].includes(item.state) ? '需要处理' : '尚未返回'}`"
-            @click="locateQuestion(item.question_id)"
-          ><span aria-hidden="true">●</span>{{ item.question_id }}</button>
-        </nav>
-        <span class="config-generation__console-count">通过 {{ passedStateCount }} / 异常 {{ redStateCount }}</span>
+        <span class="config-generation__console-count">通过 {{ passedStateCount }} · 异常 {{ redStateCount }}</span>
         <button
           v-if="job === null"
           type="button"
@@ -718,7 +708,7 @@ watch(
     </Teleport>
 
     <p
-      v-if="job !== null && questionBankSyncCopy && !intakeBlocked"
+      v-if="job !== null && questionBankSyncCopy && !intakeBlocked && !completeSuccess"
       class="config-generation__retained"
       role="status"
     >
@@ -733,8 +723,21 @@ watch(
       >{{ generationBlockReason }}</p>
     </template>
 
-    <div v-else class="config-generation__job" aria-live="polite">
-      <div class="config-generation__status-line">
+    <div v-else class="config-generation__job" :class="{ 'config-generation__job--success': completeSuccess }" aria-live="polite">
+      <div v-if="completeSuccess" class="config-generation__success" role="status">
+        <span class="config-generation__success-icon" aria-hidden="true">✓</span>
+        <span class="config-generation__success-copy">
+          评分依据已生成 · {{ passedStateCount }} 通过 · {{ redStateCount }} 需处理
+        </span>
+        <button
+          v-if="!refineJob"
+          type="button"
+          name="进入评分标准编辑"
+          class="config-generation__primary"
+          @click="continueToEditor"
+        >检查本场赋分</button>
+      </div>
+      <div v-else class="config-generation__status-line">
         <strong>{{ statusCopy(job) }}</strong>
         <span>{{ passedStateCount }} 题通过 · {{ redStateCount }} 题需处理 · {{ questionStates.length - passedStateCount - redStateCount }} 题处理中</span>
       </div>
@@ -771,10 +774,6 @@ watch(
         当前恢复任务：{{ statusCopy(job) }}。
       </p>
 
-      <p v-if="terminal && outcome === 'complete'" class="config-generation__success">
-        <strong>分析入库与本场赋分已完成。</strong>
-        共 {{ totalQuestionCount || generatedCount }} 道题已写入题库判定点，并完成本场分值配置。
-      </p>
       <p
         v-if="terminal && outcome === 'complete' && taxonomyReviewCount > 0"
         class="config-generation__retained"
@@ -783,12 +782,12 @@ watch(
         其中 {{ taxonomyReviewCount }} 道题的知识标签需要稍后重试或人工归并；评分依据不受影响，未知词尚未写入正式标签。
       </p>
       <button
-        v-if="terminal && outcome === 'complete' && !refineJob"
+        v-if="terminal && outcome === 'complete' && !refineJob && !completeSuccess"
         type="button"
         name="进入评分标准编辑"
         class="config-generation__primary"
         @click="continueToEditor"
-      >进入下一步：检查本场赋分</button>
+      >检查本场赋分</button>
 
       <div
         v-if="terminal && outcome === 'partial' && uncertainQuestionIds.length > 0"
@@ -922,9 +921,11 @@ watch(
 </template>
 
 <style scoped>
-.config-generation { min-width: 0; margin-block-start: var(--space-6); border-block-start: var(--border-width) solid var(--color-border-default); }
-.config-generation__flow { display: grid; gap: var(--space-1); margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--color-border-default); border-inline-start: var(--border-selected-width) solid var(--color-accent); border-radius: var(--radius-control); background: var(--card); }
-.config-generation__flow span { color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
+.config-generation { min-width: 0; margin-block-start: var(--space-4); }
+.config-generation__header { display: flex; align-items: center; gap: var(--space-3); }
+.config-generation__header h2 { margin: 0; font-size: var(--font-size-h3); line-height: var(--line-height-tight); }
+.config-generation__flow { display: grid; gap: 2px; margin: var(--space-2) 0 0; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.config-generation__flow strong { color: var(--color-text-primary); font-weight: var(--font-weight-medium); }
 .config-generation__blocking-reason { margin: var(--space-2) 0 0; color: var(--color-warning); font-size: var(--font-size-caption); }
 .config-generation__volume,
 .config-generation__metadata { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); }
@@ -936,8 +937,7 @@ watch(
 .config-generation__metadata label { display: grid; gap: var(--space-1); }
 .config-generation__metadata select { min-height: var(--control-height-default); padding-inline: var(--space-2); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); color: var(--color-text-primary); }
 .config-generation__link { min-height: auto; padding: 0; border: 0; background: transparent; color: var(--color-accent); }
-.config-generation__candidate-note { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border-inline-start: var(--border-selected-width) solid var(--color-accent); border-radius: var(--radius-control); background: var(--color-accent-subtle); color: var(--color-text-secondary); }
-.config-generation__candidate-note strong { color: var(--color-text-primary); }
+.config-generation__candidate-note { margin: var(--space-2) 0 0; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
 .config-generation__failure-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .config-generation__primary,
 .config-generation__secondary,
@@ -948,16 +948,15 @@ watch(
 button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 .config-generation__job { padding: var(--space-4); border: var(--border-width) solid var(--border); border-inline-start: var(--border-selected-width) solid var(--color-accent); border-radius: var(--radius-control); background: var(--card); }
 .config-generation__status-line { display: flex; justify-content: space-between; gap: var(--space-3); }
-.config-generation__console { position: sticky; z-index: 7; top: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block: var(--space-3); padding: var(--space-2) var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent); box-shadow: 0 4px 16px color-mix(in srgb, var(--color-accent-active) 8%, transparent); backdrop-filter: blur(8px); }
+.config-generation__job--success { display: flex; align-items: center; padding: var(--space-2) var(--space-3); }
+.config-generation__success { display: flex; width: 100%; align-items: center; gap: var(--space-2); }
+.config-generation__success-icon { color: var(--color-success); font-weight: var(--font-weight-semibold); }
+.config-generation__success-copy { color: var(--color-text-primary); font-size: var(--font-size-dense); }
+.config-generation__success .config-generation__primary { margin-inline-start: auto; }
+.config-generation__console { position: sticky; z-index: 7; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block-start: var(--space-3); padding: var(--space-2) var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent); box-shadow: 0 -4px 16px color-mix(in srgb, var(--color-accent-active) 8%, transparent); backdrop-filter: blur(8px); }
 .config-generation__console-volume { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
 .config-generation__console-volume select { min-height: 34px; max-width: 180px; }
-.config-generation__lights { display: flex; min-width: 160px; flex: 1 1 280px; gap: 2px; overflow-x: auto; }
-.config-generation__lights button { display: inline-flex; min-height: 32px; align-items: center; gap: 3px; padding-inline: 6px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
-.config-generation__lights button span { color: var(--color-text-muted); }
-.config-generation__lights button.is-passed span { color: var(--color-success); }
-.config-generation__lights button.is-blocked span, .config-generation__lights button.is-failed span { color: var(--color-danger); }
-.config-generation__lights button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
-.config-generation__console-count { color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
+.config-generation__console-count { margin-inline-start: auto; color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
 .config-generation__job p { margin: 0 0 var(--space-3); color: var(--color-text-secondary); }
 .config-generation__job .config-generation__retained { padding: var(--space-3); border-radius: var(--radius-control); background: var(--color-success-subtle); color: var(--color-text-primary); }
 .config-generation__partial { padding-block: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-subtle); }

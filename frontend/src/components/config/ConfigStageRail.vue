@@ -36,30 +36,36 @@ const activeIndex = computed(() => Math.max(
   0,
   stages.value.findIndex((stage) => stage.id === currentStage.value),
 ))
+
+function itemState(index: number): 'done' | 'current' | 'pending' {
+  if (stages.value[index]!.id === currentStage.value) return 'current'
+  return index < activeIndex.value ? 'done' : 'pending'
+}
 </script>
 
 <template>
-  <ol
-    class="config-stage-rail"
-    aria-label="考试配置阶段"
-    :style="{ '--stage-index': activeIndex }"
-  >
+  <ol class="config-stage-rail" aria-label="考试配置阶段">
     <li
       v-for="(stage, index) in stages"
       :key="stage.id"
-      :class="{ 'config-stage-rail__item--active': currentStage === stage.id }"
+      :class="`config-stage-rail__item--${itemState(index)}`"
     >
       <button
         type="button"
         :disabled="!stage.available"
         :aria-current="currentStage === stage.id ? 'step' : undefined"
+        :aria-description="stage.fact"
+        :title="stage.fact"
         @click="emit('select', stage.id)"
       >
-        <span class="config-stage-rail__number">{{ index + 1 }}</span>
-        <span>
-          <strong>{{ stage.label }}</strong>
-          <small>{{ stage.fact }}</small>
+        <span class="config-stage-rail__mark" aria-hidden="true">
+          <svg v-if="itemState(index) === 'done'" viewBox="0 0 16 16" width="12" height="12">
+            <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor"
+              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <template v-else>{{ index + 1 }}</template>
         </span>
+        <span class="config-stage-rail__label">{{ stage.label }}</span>
       </button>
     </li>
   </ol>
@@ -67,78 +73,84 @@ const activeIndex = computed(() => Math.max(
 
 <style scoped>
 .config-stage-rail {
-  position: relative;
-  display: grid;
-  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
-  border-block: var(--border-width) solid var(--border);
-  grid-template-columns: repeat(5, minmax(0, 1fr));
   list-style: none;
-}
-
-.config-stage-rail::after {
-  position: absolute;
-  z-index: 2;
-  inset-block-end: 0;
-  inset-inline-start: 0;
-  width: 20%;
-  height: 3px;
-  background: var(--color-accent);
-  content: "";
-  pointer-events: none;
-  transform: translateX(calc(var(--stage-index) * 100%));
-  transition: transform 220ms cubic-bezier(.2, .75, .25, 1);
 }
 
 .config-stage-rail li {
   min-width: 0;
-  border-inline-end: var(--border-width) solid var(--color-border-subtle);
-}
-
-.config-stage-rail button {
   display: flex;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border: 0;
-  border-block-end: 3px solid transparent;
-  background: transparent;
+}
+
+.config-stage-rail__pill,
+.config-stage-rail button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: 999px;
+  background: var(--color-bg-surface);
   color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+  white-space: nowrap;
   cursor: pointer;
-  text-align: start;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  transition:
+    background-color var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out),
+    color var(--duration-base) var(--ease-out);
 }
 
-.config-stage-rail li:last-child { border-inline-end: 0; }
-.config-stage-rail__item--active button {
-  background: var(--color-accent-subtle);
+.config-stage-rail button:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-primary);
 }
-.config-stage-rail button:hover:not(:disabled) { background: var(--secondary); }
-.config-stage-rail button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
-.config-stage-rail button:disabled { cursor: not-allowed; opacity: .48; }
 
-.config-stage-rail__number {
-  display: grid;
-  width: var(--space-6);
-  height: var(--space-6);
-  flex: none;
-  place-items: center;
-  border: var(--border-width) solid var(--color-border-strong);
+.config-stage-rail button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.config-stage-rail button:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-disabled);
+}
+
+.config-stage-rail__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   border-radius: var(--radius-circle);
-  font-size: var(--font-size-caption);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
-.config-stage-rail strong,
-.config-stage-rail small { display: block; }
-.config-stage-rail strong { color: var(--color-text-primary); font-size: var(--font-size-dense); }
-.config-stage-rail small { margin-block-start: var(--space-1); font-size: var(--font-size-caption); }
+.config-stage-rail__item--done button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+}
 
-@media (prefers-reduced-motion: reduce) {
-  .config-stage-rail button { transition: none; }
-  .config-stage-rail::after { transition: none; }
+.config-stage-rail__item--done .config-stage-rail__mark {
+  color: var(--color-success);
+}
+
+.config-stage-rail__item--current button {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-bg-surface);
+  font-weight: var(--font-weight-medium);
+}
+
+.config-stage-rail__item--current button:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  color: var(--color-bg-surface);
 }
 </style>

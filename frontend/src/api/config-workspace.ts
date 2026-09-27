@@ -227,9 +227,11 @@ function isRichSegment(value: unknown): boolean {
 }
 
 function isRichBlock(value: unknown): boolean {
-  if (!isRecord(value) || !hasExactKeys(value, [
-    'kind', 'text', 'segments', 'rows', 'asset_indexes', 'asset_urls',
-  ]) || !['paragraph', 'table'].includes(String(value.kind)) || typeof value.text !== 'string'
+  const baseKeys = ['kind', 'text', 'segments', 'rows', 'asset_indexes', 'asset_urls']
+  if (!isRecord(value)
+    || !(hasExactKeys(value, baseKeys) || hasExactKeys(value, [...baseKeys, 'html']))
+    || !['paragraph', 'table'].includes(String(value.kind)) || typeof value.text !== 'string'
+    || (value.html !== undefined && typeof value.html !== 'string')
     || !Array.isArray(value.segments) || !value.segments.every(isRichSegment)
     || !Array.isArray(value.rows) || !Array.isArray(value.asset_indexes)
     || !value.asset_indexes.every((item) => Number.isSafeInteger(item) && Number(item) >= 0)

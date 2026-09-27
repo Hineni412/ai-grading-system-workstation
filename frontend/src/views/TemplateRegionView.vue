@@ -5,6 +5,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import TemplateRegionEditor from '../components/template-regions/TemplateRegionEditor.vue'
 import TemplateUploadPanel from '../components/template-regions/TemplateUploadPanel.vue'
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
 import { useTemplateRegionStore } from '../stores/template-regions'
 import type { PageRole } from '../api/template-regions'
 import '../styles/template-regions.css'
@@ -92,25 +93,22 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
 
 <template>
   <article class="template-regions-view" :class="{ 'is-focus-layout': focusLayout }">
-    <header class="template-regions-view__header">
-      <div>
-        <span class="template-regions__eyebrow">考试配置 · 第 5 步</span>
-        <h1>样卷题框标定</h1>
-        <p>在样卷原图上圈出每道题的作答区域，并绑定题号。</p>
-      </div>
-      <button type="button" class="secondary" @click="router.push('/sessions')">返回考试配置</button>
-    </header>
-    <ConfigStageRail
-      phase="editor"
-      active-stage="template"
-      :session-ready="true"
-      :source-ready="store.scoringConfigured"
-      :generation-submitted="store.scoringConfigured"
-      :editor-ready="store.scoringConfigured"
-      :template-present="store.workspace !== null"
-      :template-ready="store.workspace?.template_ready === true"
-      @select="selectStage"
-    />
+    <PageHeader title="样卷题框" class="template-regions-view__header">
+      <template #actions>
+        <ConfigStageRail
+          phase="editor"
+          active-stage="template"
+          :session-ready="true"
+          :source-ready="store.scoringConfigured"
+          :generation-submitted="store.scoringConfigured"
+          :editor-ready="store.scoringConfigured"
+          :template-present="store.workspace !== null"
+          :template-ready="store.workspace?.template_ready === true"
+          @select="selectStage"
+        />
+        <button type="button" class="secondary" @click="router.push('/sessions')">返回考试配置</button>
+      </template>
+    </PageHeader>
 
     <div v-if="store.loadState === 'loading'" class="template-regions-view__state" role="status">正在读取样卷工作区…</div>
     <div v-else-if="store.loadState === 'error'" class="template-regions-view__state" role="alert">

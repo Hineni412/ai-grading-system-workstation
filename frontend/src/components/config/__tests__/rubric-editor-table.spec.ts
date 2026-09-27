@@ -47,7 +47,7 @@ describe('RubricEditorTable', () => {
     expect(groups[0]?.querySelector('h3')?.textContent).toBe('Q12 第1问')
     expect(groups[0]?.querySelectorAll('.rubric-unit-card')).toHaveLength(2)
     expect(groups[0]?.querySelector('.rubric-part__rules')?.textContent).toContain('只有正确答案、无有效过程：1 分')
-    expect(groups[0]?.textContent).toContain('0—3 分，按目标完成程度给分')
+    expect(groups[0]?.querySelector('.rubric-part__mode')?.textContent).toContain('按完成程度给分')
     expect(groups[1]?.querySelector('.rubric-part__rules')?.textContent).toContain('各答案项分别给分')
     expect(groups[1]?.querySelector('.rubric-part__rules')?.textContent).toContain('限定方法')
     expect(groups[2]?.querySelector('.rubric-part__rules')?.textContent).toContain('答对得满分')

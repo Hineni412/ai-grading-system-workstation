@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { ConfigEditorEdit, ConfigEditorIssue, ConfigEditorRow } from '../../api/config-workspace'
 
@@ -291,6 +291,52 @@ const firstRowFields = new Set<RenderedEditField>([
   'final_answer_rule',
 ])
 
+// —— 左侧大纲：分区导航与滚动高亮 ——
+const issueRowIds = computed(() => new Set(
+  props.issues.map((issue) => issue.row_id).filter((id): id is string => id !== null),
+))
+const activePartKey = ref('')
+let partObserver: IntersectionObserver | undefined
+
+function partElements(): HTMLElement[] {
+  return [...(root.value?.querySelectorAll<HTMLElement>('[data-part-key]') ?? [])]
+}
+
+function scrollToGroup(key: string): void {
+  const target = partElements().find((el) => el.dataset.partKey === key)
+  target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  activePartKey.value = key
+}
+
+function groupHasIssue(group: { rows: ConfigEditorRow[] }): boolean {
+  return group.rows.some((row) => issueRowIds.value.has(row.row_id))
+}
+
+function observeParts(): void {
+  partObserver?.disconnect()
+  if (typeof IntersectionObserver === 'undefined') return
+  const elements = partElements()
+  if (elements.length === 0) return
+  partObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        activePartKey.value = (entry.target as HTMLElement).dataset.partKey ?? ''
+      }
+    }
+  }, { rootMargin: '-96px 0px -60% 0px', threshold: 0 })
+  elements.forEach((el) => partObserver!.observe(el))
+}
+
+onMounted(async () => {
+  await nextTick()
+  observeParts()
+})
+watch(scoringGroups, async () => {
+  await nextTick()
+  observeParts()
+})
+onBeforeUnmount(() => partObserver?.disconnect())
+
 async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
   if (issue.row_id === null) return
   const field = fieldForIssue(issue)
@@ -313,11 +359,34 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
 
 <template>
   <section ref="root" class="rubric-ledger" aria-labelledby="rubric-ledger-title">
-    <header class="config-section-heading rubric-ledger__heading">
-      <div>
-        <h2 id="rubric-ledger-title" tabindex="-1">编辑评分依据</h2>
-        <p>先看每小问的评分规则，再检查各块目标与最高分。点击卡片可编辑。</p>
-      </div>
+    <div class="rubric-ledger__layout">
+      <nav class="rubric-ledger__outline" aria-label="评分结构大纲">
+        <button
+          v-for="group in scoringGroups"
+          :key="group.key"
+          type="button"
+          :class="{ 'is-active': activePartKey === group.key }"
+          @click="scrollToGroup(group.key)"
+        >
+          <span class="rubric-ledger__outline-title">{{ group.title }}</span>
+          <span
+            v-if="groupHasIssue(group)"
+            class="rubric-ledger__outline-dot"
+            title="有需核对项"
+            aria-label="有需核对项"
+          >●</span>
+          <span class="rubric-ledger__outline-score">
+            {{ group.rows.reduce((sum, row) => sum + row.score, 0) }} 分
+          </span>
+        </button>
+      </nav>
+      <div class="rubric-ledger__main">
+    <header class="rubric-ledger__toolbar">
+      <h2 id="rubric-ledger-title" tabindex="-1">本场赋分</h2>
+      <strong
+        class="rubric-ledger__total"
+        :class="{ 'rubric-ledger__total--warning': totalWarning }"
+      >总分 {{ totalScore }} 分</strong>
       <div class="rubric-ledger__bulk-scores" aria-label="统一修改客观题分值">
         <label>
           <span>选择题每题</span>
@@ -334,10 +403,19 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
           </button>
         </label>
       </div>
-      <strong
-        class="rubric-ledger__total"
-        :class="{ 'rubric-ledger__total--warning': totalWarning }"
-      >总分 {{ totalScore }} 分</strong>
+      <details v-if="warningIssues.length" class="rubric-ledger__issues-toggle">
+        <summary>{{ warningIssues.length }} 项请核对（不影响人工保存）</summary>
+        <div class="rubric-ledger__issues rubric-ledger__issues--warning" role="status">
+          <button
+            v-for="issue in warningIssues"
+            :key="`${issue.code}:${issue.row_id}:${issue.field}`"
+            type="button"
+            :data-issue-row-id="issue.row_id ?? undefined"
+            :data-issue-field="issue.field"
+            @click="focusIssue(issue)"
+          >{{ issue.message }}</button>
+        </div>
+      </details>
     </header>
 
     <div v-if="blockingIssues.length" class="rubric-ledger__issues rubric-ledger__issues--blocking" role="alert">
@@ -357,7 +435,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
       >
         <div>
           <strong>如果问题来自 AI 生成结果</strong>
-          <p>可以只重新分析被拦题目；系统会复用其余已确认结果，再统一检查评分依据。当前正式版本会保留到新版本完整成功。操作会调用模型并可能产生费用。</p>
+          <p>只重新分析被拦题目；正式版本保留到新版本完整成功。操作会调用模型并可能产生费用。</p>
         </div>
         <div class="rubric-ledger__regeneration-actions">
           <button
@@ -379,43 +457,45 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
         </p>
       </div>
     </div>
-    <div v-if="warningIssues.length" class="rubric-ledger__issues rubric-ledger__issues--warning" role="status">
-      <strong>请核对（不影响人工保存）</strong>
-      <button
-        v-for="issue in warningIssues"
-        :key="`${issue.code}:${issue.row_id}:${issue.field}`"
-        type="button"
-        :data-issue-row-id="issue.row_id ?? undefined"
-        :data-issue-field="issue.field"
-        @click="focusIssue(issue)"
-      >{{ issue.message }}</button>
-    </div>
 
     <div class="rubric-ledger__cards" aria-label="评分依据评分点卡片">
-      <section v-for="group in scoringGroups" :key="group.key" class="rubric-part" :class="{ 'rubric-part--objective': group.objective }" :aria-label="`${group.title}评分标准`">
+      <section v-for="group in scoringGroups" :key="group.key" class="rubric-part" :class="{ 'rubric-part--objective': group.objective }" :aria-label="`${group.title}评分标准`" :data-part-key="group.key">
         <header class="rubric-part__heading">
           <h3>{{ group.title }}</h3>
-          <span>{{ group.objective ? `${group.rows.length} 个评分点` : `${group.rows.length} 个评分块` }}</span>
-          <strong>共 {{ group.rows.reduce((sum, row) => sum + row.score, 0) }} 分</strong>
+          <span>{{ group.objective ? `${group.rows.length} 题` : `${group.rows.length} 个评分点` }} · 共 {{ group.rows.reduce((sum, row) => sum + row.score, 0) }} 分</span>
+          <span v-if="!group.objective" class="rubric-part__mode">
+            {{ requiresProcess(group.rows[0]!) ? '按完成程度给分' : group.rows[0]!.response_mode === 'visual_construction' ? '按作图成果给分' : '按项给分' }}
+          </span>
         </header>
-        <div class="rubric-part__rules">
-          <template v-if="group.objective"><strong>答对得满分，答错得 0 分</strong><span>接受等价答案，不要求过程。</span></template>
-          <template v-else-if="requiresProcess(group.rows[0]!)">
-            <strong>按完成程度给整数分</strong>
-            <span>完整或等价完成得本块满分；部分完成保留有效成果，同一错误不重复扣分。</span>
-            <span class="rubric-part__answer-cap">本小问只有正确答案、无有效过程：{{ group.rows[0]!.answer_only_max_score ?? 1 }} 分</span>
-            <span>有有效过程或已完成的独立求值目标时，按对应块给分。</span>
-          </template>
-          <template v-else><strong>{{ group.rows[0]!.response_mode === 'visual_construction' ? '按作图成果评分' : '各答案项分别给分' }}</strong><span>不套用“仅答案 1 分”的过程题规则。</span></template>
-          <span v-if="!group.objective">{{ group.rows.every(row => row.allow_alternative_methods !== false) ? '允许其他正确解法。' : '部分评分块限定方法，同一方法的等价表达仍可得分。' }}</span>
+        <div v-if="group.objective" class="rubric-part__rules">
+          <strong>答对得满分，答错得 0 分</strong><span>接受等价答案，不要求过程。</span>
         </div>
-        <details v-if="!group.objective && (group.rows[0]!.standard_answer || group.rows[0]!.part_deduction_rules.length || group.rows[0]!.final_answer_rule)" class="rubric-part__reference">
-          <summary>参考解答与本小问补充规则</summary>
+        <details v-else class="rubric-part__reference">
+          <summary>参考解答与补充规则</summary>
+          <div class="rubric-part__rules">
+            <template v-if="requiresProcess(group.rows[0]!)">
+              <strong>按完成程度给整数分</strong>
+              <span>完整或等价完成得本块满分；部分完成保留有效成果，同一错误不重复扣分。</span>
+              <span class="rubric-part__answer-cap">本小问只有正确答案、无有效过程：{{ group.rows[0]!.answer_only_max_score ?? 1 }} 分</span>
+              <span>有有效过程或已完成的独立求值目标时，按对应块给分。</span>
+            </template>
+            <template v-else><strong>{{ group.rows[0]!.response_mode === 'visual_construction' ? '按作图成果评分' : '各答案项分别给分' }}</strong><span>不套用“仅答案 1 分”的过程题规则。</span></template>
+            <span>{{ group.rows.every(row => row.allow_alternative_methods !== false) ? '允许其他正确解法。' : '部分评分块限定方法，同一方法的等价表达仍可得分。' }}</span>
+          </div>
           <p v-if="group.rows[0]!.standard_answer"><strong>参考解答</strong>{{ group.rows[0]!.standard_answer }}</p>
           <p v-for="rule in group.rows[0]!.part_deduction_rules" :key="rule">{{ rule }}</p>
           <p v-if="group.rows[0]!.require_final_answer">{{ group.rows[0]!.final_answer_rule }}</p>
         </details>
         <div class="rubric-part__steps">
+      <div class="rubric-part__col-head" aria-hidden="true">
+        <span>{{ group.objective ? '题号' : '步骤' }}</span>
+        <span>目标</span>
+        <span v-if="group.objective">标准答案</span>
+        <span>{{ group.objective ? '接受答案' : '得分依据' }}</span>
+        <span v-if="!group.objective">具体扣分</span>
+        <span>等价达成</span>
+        <span>分值</span>
+      </div>
       <article
         v-for="row in group.rows"
         :key="row.row_id"
@@ -448,38 +528,35 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
           <span class="rubric-unit-card__preview-fields">
             <span
               v-if="group.objective && firstRowIds.has(row.row_id)"
-              class="rubric-unit-card__preview-field"
+              class="rubric-unit-card__preview-field rubric-field--answer"
             >
-              <span>标准答案</span>
+              <span class="sr-only">标准答案</span>
               <span :title="compactPreview(row.standard_answer)">{{ compactPreview(row.standard_answer) }}</span>
             </span>
-            <span class="rubric-unit-card__preview-field">
-              <span>{{ group.objective ? '接受答案' : '得分依据' }}</span>
+            <span class="rubric-unit-card__preview-field rubric-field--required">
+              <span class="sr-only">{{ group.objective ? '接受答案' : '得分依据' }}</span>
               <span :title="compactPreview(row.required_elements)">
                 {{ compactPreview(row.required_elements) }}
               </span>
             </span>
-            <span v-if="row.deduction_rules.length" class="rubric-unit-card__preview-field">
-              <span>具体扣分</span>
+            <span
+              v-if="!group.objective && row.deduction_rules.length"
+              class="rubric-unit-card__preview-field rubric-field--deduction"
+            >
+              <span class="sr-only">具体扣分</span>
               <span :title="compactPreview(row.deduction_rules)">
                 {{ compactPreview(row.deduction_rules) }}
               </span>
             </span>
             <span
               v-if="row.equivalent_rules?.length"
-              class="rubric-unit-card__preview-field"
+              class="rubric-unit-card__preview-field rubric-field--equiv"
             >
-              <span>等价达成</span>
+              <span class="sr-only">等价达成</span>
               <span :title="compactPreview(row.equivalent_rules ?? [])">
                 {{ compactPreview(row.equivalent_rules ?? []) }}
               </span>
             </span>
-          </span>
-          <span class="rubric-unit-card__preview-footer">
-            <span>
-              {{ group.objective ? `0 或 ${row.score} 分` : requiresProcess(row) ? `0—${row.score} 分，按目标完成程度给分` : '按本项成果给分' }}
-            </span>
-            <strong>点击编辑</strong>
           </span>
         </button>
 
@@ -631,6 +708,8 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
       </article>
         </div>
       </section>
+    </div>
+      </div>
     </div>
   </section>
 </template>
