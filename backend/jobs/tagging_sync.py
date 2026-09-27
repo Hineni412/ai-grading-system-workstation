@@ -9,9 +9,6 @@ from typing import Any
 from question_bank.database.schema import connect
 from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.models.tag_schema import TaggingContext
-from question_bank.relations.evidence_governance import (
-    EvidenceRelationGovernanceService,
-)
 from question_bank.services.ai_tagging_service import (
     AITaggingResult,
     AITaggingService,
@@ -81,13 +78,11 @@ def run_tagging_sync_job(
     batch_size: int = 20,
     data_root: Path | None = None,
 ) -> dict[str, object]:
+    if context.payload.get("retry_relation_question_ids"):
+        raise ValueError("knowledge relation generation has been retired")
     question_ids = _normalize_question_ids(context.payload.get("question_ids"))
     retry_evidence_question_ids = _normalize_retry_evidence_question_ids(
         context.payload.get("retry_evidence_question_ids"),
-        requested_ids=question_ids,
-    )
-    retry_relation_question_ids = _normalize_retry_evidence_question_ids(
-        context.payload.get("retry_relation_question_ids"),
         requested_ids=question_ids,
     )
     force_retag_question_ids = _normalize_retry_evidence_question_ids(
@@ -112,7 +107,6 @@ def run_tagging_sync_job(
             data_root=(None if data_root is None else Path(data_root)),
             question_ids=question_ids,
             retry_evidence_question_ids=retry_evidence_question_ids,
-            retry_relation_question_ids=retry_relation_question_ids,
             force_retag_question_ids=force_retag_question_ids,
             curriculum_volume_id=str(
                 context.payload.get("curriculum_volume_id") or ""
@@ -128,8 +122,7 @@ def _run_tagging_sync_job_locked(**kwargs: Any) -> dict[str, object]:
     )
     question_ids = kwargs["question_ids"]
     root = kwargs["data_root"]
-    # Relation replay is a separate operation on each saved observation.
-    if root is None or kwargs["retry_relation_question_ids"] or len(question_ids) < 2:
+    if root is None or len(question_ids) < 2:
         return _run_distinct_tagging_sync_job_locked(**kwargs)
     database = kwargs["question_bank_db_path"]
     with connect(database) as conn:
@@ -208,23 +201,12 @@ def _run_distinct_tagging_sync_job_locked(
     data_root: Path | None,
     question_ids: list[int],
     retry_evidence_question_ids: list[int],
-    retry_relation_question_ids: list[int],
     force_retag_question_ids: list[int],
     curriculum_volume_id: str,
 ) -> dict[str, object]:
     size = max(1, min(int(batch_size), 50))
     db_path = Path(question_bank_db_path)
     context.raise_if_cancelled()
-    if (
-        retry_relation_question_ids
-        and set(retry_relation_question_ids) == set(question_ids)
-        and not retry_evidence_question_ids
-    ):
-        return _replay_relation_governance(
-            context=context,
-            db_path=db_path,
-            question_ids=retry_relation_question_ids,
-        )
     try:
         analysis_gaps = _load_analysis_gaps(
             db_path,
@@ -367,7 +349,6 @@ def _run_distinct_tagging_sync_job_locked(
             knowledge_graph_release_id=knowledge_graph_release_id,
             requested_ids=question_ids,
             retry_evidence_question_ids=retry_evidence_question_ids,
-            retry_relation_question_ids=retry_relation_question_ids,
             taxonomy_governance=governance,
             analysis_gaps=analysis_gaps,
             curriculum_volume_id=curriculum_volume_id,
@@ -599,7 +580,6 @@ def _run_unified_tagging_analysis(
     knowledge_graph_release_id: str,
     requested_ids: list[int],
     retry_evidence_question_ids: list[int],
-    retry_relation_question_ids: list[int],
     taxonomy_governance: Any | None,
     analysis_gaps: Mapping[int, Mapping[str, bool]],
     curriculum_volume_id: str,
@@ -967,48 +947,11 @@ def _run_unified_tagging_analysis(
     } | set(evidence_failed) | set(criterion_failed)
     failed_ids = [item for item in requested_ids if item in failed_set]
     audits = dict(workflow.get("projection_audit") or {})
-    if retry_relation_question_ids:
-        audits["relation_hints"].extend(
-            SolutionEvidenceRepository(db_path).relation_hints(
-                retry_relation_question_ids,
-                operation_id=f"tagging-sync:{context.job_id}:relation-replay",
-            )
-        )
-    context.report(0.9, "tagging_sync", "正在整理知识关系与最终状态")
-    try:
-        relation_governance = EvidenceRelationGovernanceService(db_path).govern(
-            audits["relation_hints"],
-            operation_id=f"tagging-sync:{context.job_id}",
-        )
-        relation_governance["status"] = "complete"
-    except Exception as exc:
-        # Relation governance is a recoverable secondary projection. A graph
-        # write failure must never discard otherwise valid question tags or
-        # solution evidence.
-        relation_governance = {
-            "status": "failed",
-            "candidate_count": len(audits["relation_hints"]),
-            "auto_confirmed_count": 0,
-            "exception_count": 0,
-            "reused_count": 0,
-            "failed_count": len(audits["relation_hints"]),
-            "failed_question_ids": sorted({
-                int(item.get("question_id") or 0)
-                for item in audits["relation_hints"]
-                if int(item.get("question_id") or 0) > 0
-            }),
-            "error_type": type(exc).__name__,
-        }
-    relation_failed_ids = [
-        int(item)
-        for item in relation_governance.get("failed_question_ids", [])
-    ]
     if (
         failures
         or evidence_failed
         or criterion_failed
         or criterion_review
-        or relation_failed_ids
     ):
         outcome = "partial" if successful_ids or evidence_success else "failed"
     else:
@@ -1036,8 +979,6 @@ def _run_unified_tagging_analysis(
             if (proposal_id := _proposal_id(item))
         ],
         "evidence_secondary_match_count": len(audits["secondary_matches"]),
-        "relation_governance": relation_governance,
-        "relation_governance_failed_question_ids": relation_failed_ids,
         "evidence_succeeded_question_ids": evidence_success,
         "evidence_failed_question_ids": evidence_failed,
         "evidence_count": len(evidence_success),
@@ -1048,69 +989,8 @@ def _run_unified_tagging_analysis(
         "criteria_needs_review_count": len(criterion_review),
         "analysis_contract": "combined-v3",
         "retryable": bool(
-            failures or evidence_failed or criterion_failed or relation_failed_ids
+            failures or evidence_failed or criterion_failed
         ),
-    }
-
-
-def _replay_relation_governance(
-    *,
-    context: JobContext,
-    db_path: Path,
-    question_ids: list[int],
-) -> dict[str, object]:
-    """Retry the local graph projection from saved evidence without calling AI."""
-
-    context.report(0.1, "tagging_sync", "relation_replay")
-    hints = SolutionEvidenceRepository(db_path).relation_hints(
-        question_ids,
-        operation_id=f"tagging-sync:{context.job_id}:relation-replay",
-    )
-    try:
-        governance = EvidenceRelationGovernanceService(db_path).govern(
-            hints,
-            operation_id=f"tagging-sync:{context.job_id}:relation-replay",
-        )
-        governance["status"] = "complete"
-    except Exception as exc:
-        governance = {
-            "status": "failed",
-            "candidate_count": len(hints),
-            "auto_confirmed_count": 0,
-            "exception_count": 0,
-            "reused_count": 0,
-            "failed_count": len(hints),
-            "failed_question_ids": list(question_ids),
-            "error_type": type(exc).__name__,
-        }
-    failed_ids = [
-        int(item) for item in governance.get("failed_question_ids", [])
-    ]
-    outcome = "partial" if failed_ids else "complete"
-    context.report(1.0, "tagging_sync", outcome)
-    return {
-        "outcome": outcome,
-        "requested_count": len(question_ids),
-        "skipped_complete_count": len(question_ids),
-        "tagged_count": 0,
-        "failed_count": len(failed_ids),
-        "successful_question_ids": [
-            item for item in question_ids if item not in set(failed_ids)
-        ],
-        "failed_question_ids": failed_ids,
-        "failures": [],
-        "taxonomy_revision": 0,
-        "retrieval_miss_count": 0,
-        "retrieval_miss_question_ids": [],
-        "review_count": 0,
-        "review_question_ids": [],
-        "proposal_ids": [],
-        "evidence_succeeded_question_ids": [],
-        "evidence_failed_question_ids": [],
-        "relation_governance": governance,
-        "relation_governance_failed_question_ids": failed_ids,
-        "analysis_contract": "combined-v3-relation-replay",
-        "retryable": bool(failed_ids),
     }
 
 

@@ -129,6 +129,13 @@ export interface ClassAnalysisStudent {
   lost: ClassAnalysisLostItem[]
 }
 
+export interface ClassAnalysisSkipped {
+  class_name: string
+  student_code: string
+  student_name: string
+  reason: string
+}
+
 export interface ClassAnalysisData {
   exam: ClassAnalysisExam
   present: number
@@ -136,6 +143,7 @@ export interface ClassAnalysisData {
   score_distribution: ClassScoreDistribution
   questions: ClassAnalysisQuestion[]
   students: ClassAnalysisStudent[]
+  skipped: ClassAnalysisSkipped[]
 }
 
 export interface ClassNarrativeKeyFinding {
@@ -428,6 +436,23 @@ function decodeData(value: unknown): ClassAnalysisData {
     score_distribution: decodeScoreDistribution(value.score_distribution),
     questions: value.questions.map(decodeQuestion),
     students: value.students.map(decodeStudent),
+    skipped: Array.isArray(value.skipped)
+      ? value.skipped.map((item) => {
+        if (!isRecord(item)
+          || typeof item.class_name !== 'string'
+          || typeof item.student_code !== 'string'
+          || typeof item.student_name !== 'string'
+          || typeof item.reason !== 'string') {
+          throw new Error('Invalid class analysis skipped entry')
+        }
+        return {
+          class_name: item.class_name,
+          student_code: item.student_code,
+          student_name: item.student_name,
+          reason: item.reason,
+        }
+      })
+      : [],
   }
 }
 

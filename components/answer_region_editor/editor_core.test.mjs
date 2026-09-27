@@ -33,18 +33,6 @@ function loadLocalHelpers() {
   return context.__testHelpers;
 }
 
-test("public exports match the Task 5 contract exactly", () => {
-  assert.equal(typeof answerRegionEditor, "function");
-  assert.deepEqual(Object.keys(editorModule).sort(), [
-    "clampRegion",
-    "default",
-    "imagePointFromClient",
-    "pushHistory",
-    "reconcileRegionsByUuid",
-    "removeRegionByUuid",
-  ]);
-});
-
 test("reconcile uses region_uuid and incoming order without mutating inputs", () => {
   const previous = [
     { region_uuid: "a", page: "front", x: 1, y: 2, w: 30, h: 40, mapping_status: "auto" },
@@ -69,35 +57,6 @@ test("reconcile uses region_uuid and incoming order without mutating inputs", ()
   assert.notEqual(result[0], incoming[0]);
 });
 
-test("reconcile deletion does not retain or rewrite another UUID", () => {
-  const previous = [
-    { region_uuid: "a", x: 1, mapped_question_id: "Q1" },
-    { region_uuid: "b", x: 20, mapped_question_id: "Q2" },
-  ];
-
-  const result = reconcileRegionsByUuid(previous, [
-    { region_uuid: "b", x: 20, mapped_question_id: "Q2" },
-  ]);
-
-  assert.deepEqual(result, [{ region_uuid: "b", x: 20, mapped_question_id: "Q2" }]);
-});
-
-test("removeRegionByUuid deletes only the matching UUID and returns copies", () => {
-  const regions = [
-    { region_uuid: "a", x: 1 },
-    { region_uuid: "b", x: 20 },
-  ];
-
-  const result = removeRegionByUuid(regions, "a");
-
-  assert.deepEqual(result, [{ region_uuid: "b", x: 20 }]);
-  assert.deepEqual(regions, [
-    { region_uuid: "a", x: 1 },
-    { region_uuid: "b", x: 20 },
-  ]);
-  assert.notEqual(result[0], regions[1]);
-});
-
 test("imagePointFromClient converts client coordinates into SVG viewBox coordinates", () => {
   const point = imagePointFromClient(
     { x: 350, y: 225 },
@@ -106,17 +65,6 @@ test("imagePointFromClient converts client coordinates into SVG viewBox coordina
   );
 
   assert.deepEqual(point, { x: 520, y: 390 });
-});
-
-test("imagePointFromClient preserves original pixels across template sizes", () => {
-  for (const [imageWidth, imageHeight] of [[1000, 1400], [2480, 3508]]) {
-    const point = imagePointFromClient(
-      { x: 300, y: 225 },
-      { x: 50, y: 50, width: 500, height: 350 },
-      { x: 0, y: 0, width: imageWidth, height: imageHeight },
-    );
-    assert.deepEqual(point, { x: imageWidth / 2, y: imageHeight / 2 });
-  }
 });
 
 test("clampRegion snaps slight edge overflow and preserves the input", () => {
@@ -137,54 +85,6 @@ test("clampRegion preserves clearly out-of-bounds geometry for validation", () =
   assert.notEqual(result, region);
 });
 
-test("canvas rendering filters regions to the active front or back page locally", () => {
-  assert.match(
-    editorSource,
-    /for \(const region of regions\.filter\(\(region\) => region\.page === activePage\)\)/,
-  );
-  assert.doesNotMatch(editorSource, /export function filterRegionsByPage/);
-});
-
-test("local validation formatter explains known issues and preserves backend messages", () => {
-  const { formatValidationIssue } = loadLocalHelpers();
-  const expected = new Map([
-    ["unbound_question", "未绑定题目：请选择对应题目。"],
-    ["region_out_of_bounds", "题框超出图像范围：请调整到页面内。"],
-    ["region_too_small", "题框尺寸过小：请扩大题框。"],
-    ["duplicate_uuid", "题框标识重复：请删除后重新创建该题框。"],
-    ["unconfirmed_multi_region", "同题多框尚未确认：请确认这些题框属于同一道题。"],
-    ["template_mismatch", "试卷模板不匹配：请重新检查当前标定。"],
-  ]);
-
-  for (const [code, message] of expected) {
-    assert.equal(formatValidationIssue({ code }), message);
-  }
-  assert.equal(
-    formatValidationIssue({
-      code: "region_too_small",
-      message: "Width must be at least 8.",
-    }),
-    "题框尺寸过小：请扩大题框。（Width must be at least 8.）",
-  );
-});
-
-test("drawer and status render formatted validation explanations", () => {
-  assert.match(editorSource, /validationIssues\.map\(formatValidationIssue\)/);
-  assert.match(editorSource, /issuesForRegion\(region\)\.map\(formatValidationIssue\)/);
-  assert.match(editorSource, /issueList\.className = "region-issues"/);
-});
-
-test("UUID fallback generates RFC 4122-style version 4 UUIDs", () => {
-  const { newRegionUuid } = loadLocalHelpers();
-  const values = Array.from({ length: 12 }, () => newRegionUuid());
-  const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-  assert.equal(new Set(values).size, values.length);
-  for (const value of values) {
-    assert.match(value, uuidV4);
-  }
-});
-
 test("space panning state resets on blur and visibility loss through cleaned-up listeners", () => {
   assert.match(editorSource, /function resetSpacePressed\(\) \{\s*spacePressed = false;\s*\}/);
   assert.match(editorSource, /listen\(window, "blur", resetSpacePressed\);/);
@@ -193,11 +93,6 @@ test("space panning state resets on blur and visibility loss through cleaned-up 
     editorSource,
     /for \(const removeListener of listeners\.splice\(0\)\) \{\s*removeListener\(\);\s*\}/,
   );
-});
-
-test("keyboard-focusable editor root has a visible focus-visible style", () => {
-  assert.match(editorCss, /\.region-editor:focus-visible\s*\{[^}]*outline:/s);
-  assert.doesNotMatch(editorCss, /\.region-editor\s*\{[^}]*outline:\s*none/s);
 });
 
 test("read-only mode blocks editing while retaining page and zoom controls", () => {

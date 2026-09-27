@@ -1,13 +1,12 @@
-"""错因体系 P2/P3/P5：题目级“典型错法”候选库与确定性学生映射。
+"""题目级典型错法与学生实际作答的确定性映射。
 
-- 选择题（仅八上）：每题一次“选项分析”，产出 {选项字母: 错法}；
+- 选择题：优先使用题库已有的逐选项预测；缺项时再做选项分析，
+  产出 {选项字母: 错法}；
   学生识别到的选项字母直接对应，不做二次推理；未覆盖的选项记“原因未明”。
 - 填空题：学生作答规范化分组；库中已有的错误答案直接复用错法；
   整理阶段（v3）新归纳出的错法按规范化答案回写入库，供后续复用。
-- 候选同时保存在各场次 `.class_analysis` 状态文件与题库
-  ``question_error_patterns`` 表：P5 起整理结束自动回挂
-  （``sync_session_patterns_to_bank``，来源 ``ai_auto``），
-  不再要求教师确认；教师可事后修改（来源 ``teacher_edit``）。
+- 题目分析的预测与考后整理的结果写入题库 ``question_error_patterns``；
+  仅实际作答附出现记录。教师可事后修改（来源 ``teacher_edit``）。
 """
 
 from __future__ import annotations
@@ -45,7 +44,6 @@ def _parent_qid(question_id: str) -> str:
     return _parent_question_id(question_id)
 
 OPTION_ANALYSIS_VERSION = "option_analysis_v1"
-OPTION_ANALYSIS_VOLUMES = {"bnu24-math-g8-upper"}
 CHOICE_TYPES = {"choice", "single_choice"}
 FILL_TYPES = {"fill_blank", "fill_in_blank"}
 
@@ -265,7 +263,7 @@ def bank_question_row(
 def bank_confirmed_triggers(
     question_bank_path: Path | None, question_ids: Iterable[int],
 ) -> dict[int, list[dict[str, Any]]]:
-    """{题库题 id: confirmed 错法行}；表缺失（未迁移）时返回空。"""
+    """{题库题 id: 错法行}；含预测与驳回状态，供读取侧决定优先级。"""
     if question_bank_path is None or not Path(question_bank_path).exists():
         return {}
     from question_bank.database.schema import connect
@@ -276,7 +274,9 @@ def bank_confirmed_triggers(
         return {}
     try:
         with connect(Path(question_bank_path)) as conn:
-            return list_patterns(conn, ids, statuses=("confirmed",))
+            return list_patterns(
+                conn, ids, statuses=("confirmed", "candidate", "merged", "rejected")
+            )
     except Exception:
         return {}
 
@@ -614,16 +614,25 @@ def merge_bank_triggers_into_patterns(
     trigger_kind: str,
     sources: set[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """题库 confirmed 行 → {trigger_value: 合成用条目}。
+    """题库可用行 → {trigger_value: 合成用条目}，教师调整优先。
 
     sources 非空时只取对应来源的行（例如只让 teacher_edit 覆盖会话内
     已有的选项分析结果）。
     """
     merged: dict[str, dict[str, Any]] = {}
-    for row in confirmed_rows:
+    from question_bank.services.error_pattern_service import (
+        pattern_preference, preferred_active_patterns,
+    )
+
+    ordered = sorted(
+        preferred_active_patterns(
+            row for row in confirmed_rows
+            if sources is None or str(row.get("source") or "") in sources
+        ),
+        key=pattern_preference,
+    )
+    for row in ordered:
         if row.get("trigger_kind") != trigger_kind:
-            continue
-        if sources is not None and str(row.get("source") or "") not in sources:
             continue
         value = str(row.get("trigger_value") or "").strip()
         if not value or value in merged:
@@ -632,7 +641,7 @@ def merge_bank_triggers_into_patterns(
             "category": row.get("category"),
             "pattern": row.get("pattern"),
             "explanation": row.get("explanation") or "",
-            "status": "confirmed",
+            "status": str(row.get("status") or "candidate"),
         }
     return merged
 
@@ -662,22 +671,51 @@ def sync_session_patterns_to_bank(
         ctx = bank_context.get(_parent_qid(str(qid))) or {}
         return ctx if ctx.get("bank_id") else None
 
-    # 选项诊断：模型产出且未失败的条目，逐字母写 option 触发。
+    # 选项诊断写题目错法；只有实际选择该项的作答才附出现快照。
     for qid, entry in option_analysis_entries(state).items():
         ctx = ctx_for(qid)
         if ctx is None or not isinstance(entry, dict):
             continue
-        if entry.get("source") != "model" or entry.get("failed"):
+        if entry.get("failed"):
             continue
         analysis = entry.get("analysis")
         if not isinstance(analysis, dict):
             continue
+        saved = (((state.get("cause_analysis") or {}).get("questions") or {}).get(qid) or {})
+        saved_input = saved.get("input") or {}
         bank_id = int(entry.get("bank_question_id") or ctx["bank_id"])
+        bank_row = bank_question_row(question_bank_path, bank_id) or {}
+        current_text = str(saved_input.get("question_text") or "")
+        if len(parse_option_letters(current_text)) < 2:
+            current_text = str(bank_row.get("question_text") or "")
+        correct = normalize_option_answer(saved_input.get("canonical_answer")) or extract_canonical_option(
+            bank_row.get("answer_text")
+        )
+        if entry.get("input_fingerprint") != question_fingerprint(
+            current_text, correct
+        ):
+            continue
+        used_ids = {
+            str(evidence_id)
+            for group in ((saved.get("result") or {}).get("groups") or [])
+            for evidence_id in group.get("evidence_ids") or []
+        }
+        observed = {
+            normalize_option_answer(evidence.get("student_answer"))
+            for evidence in saved_input.get("evidence") or []
+            if str(evidence.get("id") or "") in used_ids
+        }
         for letter, item in analysis.items():
             if not isinstance(item, dict):
                 continue
             pattern = str(item.get("pattern") or "").strip()
             if not pattern:
+                continue
+            occurrence = (
+                {**occurrence_base, "question_id": str(qid)}
+                if str(letter).strip() in observed else None
+            )
+            if entry.get("source") != "model" and occurrence is None:
                 continue
             rows.append({
                 "question_id": bank_id,
@@ -687,7 +725,7 @@ def sync_session_patterns_to_bank(
                 "trigger_kind": "option",
                 "trigger_value": str(letter).strip(),
                 "source": "ai_auto",
-                "occurrence": {**occurrence_base, "question_id": str(qid)},
+                "occurrence": occurrence,
             })
 
     # 填空错误答案库：v3 归纳出的条目按规范化答案写 wrong_answer 触发。
@@ -730,6 +768,8 @@ def sync_session_patterns_to_bank(
                 continue
             if str(group.get("kind") or "") not in ("error", "process"):
                 continue
+            if not group.get("evidence_ids"):
+                continue
             category = normalize_cause_category(group.get("category"))
             reason = str(group.get("reason") or "").strip()
             if not category or not reason:
@@ -758,7 +798,6 @@ __all__ = [
     "FILL_TYPES",
     "OPTION_ANALYSIS_PROMPT",
     "OPTION_ANALYSIS_VERSION",
-    "OPTION_ANALYSIS_VOLUMES",
     "additions_from_v3_result",
     "answer_pattern_map",
     "bank_confirmed_triggers",

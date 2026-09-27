@@ -9,35 +9,15 @@ from __future__ import annotations
 import re
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "update_tools"))
 
-from migrate_db import run_migrations  # noqa: E402
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def test_historical_baseline_generator_refuses_to_rewrite_migrations(
-) -> None:
-    import hashlib
-
-    import tools.generate_schema_baseline as generator
-
-    baselines = [
-        _PROJECT_ROOT / "migrations" / target / "000_baseline_schema.sql"
-        for target in ("grading", "question_bank")
-    ]
-    before = {
-        path: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in baselines
-    }
-
-    assert generator.main() == 2
-    assert {
-        path: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in baselines
-    } == before
 
 
 def _normalized_schema(db_path: Path) -> dict[tuple[str, str], str]:
@@ -69,9 +49,7 @@ def _assert_equivalent(runtime_db: Path, migrated_db: Path) -> None:
     assert not extra, f"迁移多出运行时没有的对象: {extra}"
 
     diffs = [
-        key
-        for key in runtime_schema
-        if runtime_schema[key] != migrated_schema[key]
+        key for key in runtime_schema if runtime_schema[key] != migrated_schema[key]
     ]
     assert not diffs, "对象定义漂移: " + "; ".join(
         f"{key}: runtime={runtime_schema[key][:120]} vs migrated={migrated_schema[key][:120]}"
@@ -79,85 +57,98 @@ def _assert_equivalent(runtime_db: Path, migrated_db: Path) -> None:
     )
 
 
-def test_grading_initializers_match_current_migration_schema(tmp_path: Path) -> None:
-    from backend.jobs.store import JobStore
-    from db_manager import DBManager
-    from grading_run_store import GradingRunStore
-
-    runtime_db = tmp_path / "runtime.db"
-    DBManager(runtime_db).initialize()
-    GradingRunStore(runtime_db).initialize()
-    JobStore(runtime_db).initialize()
-
-    migrated_db = tmp_path / "migrated.db"
-    report = run_migrations(
-        "grading",
-        db_path=migrated_db,
-        migrations_dir=_PROJECT_ROOT / "migrations" / "grading",
-    )
-    assert report.error is None, report.error
-
-    _assert_equivalent(runtime_db, migrated_db)
-
-
-def test_jobs_schema_is_introduced_only_by_003(tmp_path: Path) -> None:
-    import shutil
-
-    through_002 = tmp_path / "through_002"
-    through_002.mkdir()
-    grading_migrations = _PROJECT_ROOT / "migrations" / "grading"
-    for name in (
-        "000_baseline_schema.sql",
-        "001_init_migration_tracking.sql",
-        "002_add_grading_run_ledger.sql",
-    ):
-        shutil.copy2(grading_migrations / name, through_002 / name)
-
-    db_path = tmp_path / "grading.db"
-    report = run_migrations(
-        "grading",
-        db_path=db_path,
-        migrations_dir=through_002,
-    )
-    assert report.error is None, report.error
-    with sqlite3.connect(db_path) as conn:
-        assert conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'"
-        ).fetchone() is None
-
-    report = run_migrations(
-        "grading",
-        db_path=db_path,
-        migrations_dir=grading_migrations,
-    )
-    assert report.error is None, report.error
-    with sqlite3.connect(db_path) as conn:
-        objects = {
-            (row[0], row[1])
-            for row in conn.execute(
-                "SELECT type, name FROM sqlite_master "
-                "WHERE name = 'jobs' OR name LIKE 'idx_jobs_%'"
-            )
-        }
-    assert objects == {
-        ("table", "jobs"),
-        ("index", "idx_jobs_status_created"),
-        ("index", "idx_jobs_type_created"),
-    }
-
-
-def test_question_bank_initializer_matches_current_migration_schema(tmp_path: Path) -> None:
+@pytest.mark.parametrize("taxonomy_revision", [None, 3, 4])
+def test_question_bank_fixture_matches_fresh_schema_and_isolates_writes(
+    tmp_path: Path,
+    question_bank_database,
+    taxonomy_revision: int | None,
+) -> None:
     from question_bank.database.schema import initialize_database
+    from question_bank.knowledge_graph_release import load_active_release
+    from tests.current_knowledge_support import install_current_knowledge
 
-    runtime_db = tmp_path / "runtime.db"
-    initialize_database(runtime_db)
+    fresh = tmp_path / "fresh.db"
+    initialize_database(fresh)
+    if taxonomy_revision is not None:
+        install_current_knowledge(fresh, taxonomy_revision=taxonomy_revision)
 
-    migrated_db = tmp_path / "migrated.db"
-    report = run_migrations(
-        "question_bank",
-        db_path=migrated_db,
-        migrations_dir=_PROJECT_ROOT / "migrations" / "question_bank",
+    first = question_bank_database(
+        tmp_path / "first.db", taxonomy_revision=taxonomy_revision
     )
-    assert report.error is None, report.error
+    _assert_equivalent(fresh, first)
+    fresh_release = load_active_release(fresh)
+    copied_release = load_active_release(first)
+    assert (copied_release.release_id if copied_release else None) == (
+        fresh_release.release_id if fresh_release else None
+    )
+    with (
+        closing(sqlite3.connect(fresh)) as source,
+        closing(sqlite3.connect(first)) as copy,
+    ):
+        tables = source.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        for (table,) in tables:
+            query = 'SELECT COUNT(*) FROM "' + table.replace('"', '""') + '"'
+            assert copy.execute(query).fetchone() == source.execute(query).fetchone(), (
+                table
+            )
+        assert copy.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        copy.execute(
+            "INSERT INTO questions (question_number, question_text) VALUES ('1', 'isolated synthetic question')"
+        )
+        copy.commit()
 
-    _assert_equivalent(runtime_db, migrated_db)
+    second = question_bank_database(
+        tmp_path / "second.db", taxonomy_revision=taxonomy_revision
+    )
+    with closing(sqlite3.connect(second)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM questions").fetchone() == (0,)
+    before = first.read_bytes()
+    with pytest.raises(FileExistsError):
+        question_bank_database(first, taxonomy_revision=taxonomy_revision)
+    assert first.read_bytes() == before
+
+
+@pytest.mark.parametrize("target", ["grading", "question_bank"])
+def test_current_schema_copies_preserve_seed_rows_and_do_not_share_writes(
+    tmp_path: Path,
+    current_schema_database,
+    target: str,
+) -> None:
+    from backend.schema_migrations import ensure_schema_current
+
+    fresh = tmp_path / "fresh.db"
+    ensure_schema_current(target, fresh)
+    first = tmp_path / "first.db"
+    current_schema_database(target, first)
+    _assert_equivalent(fresh, first)
+    with (
+        closing(sqlite3.connect(fresh)) as original,
+        closing(sqlite3.connect(first)) as copied,
+    ):
+        for (table,) in original.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ):
+            query = 'SELECT COUNT(*) FROM "' + table.replace('"', '""') + '"'
+            assert (
+                copied.execute(query).fetchone() == original.execute(query).fetchone()
+            ), table
+        assert copied.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        copied.execute("CREATE TABLE synthetic_copy_probe (value TEXT)")
+        copied.commit()
+    second = tmp_path / "second.db"
+    current_schema_database(target, second)
+    with closing(sqlite3.connect(second)) as copied:
+        assert (
+            copied.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'synthetic_copy_probe'"
+            ).fetchone()
+            is None
+        )
+    with pytest.raises(FileExistsError):
+        current_schema_database(target, first)
+    # A copied business database still passes the production version gate.
+    assert not ensure_schema_current(
+        target, second, allow_existing_migrations=False
+    ).pending

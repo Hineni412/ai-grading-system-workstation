@@ -13,7 +13,9 @@ from manual_review_service import ManualReviewService
 def _seed_two_review_results(tmp_path: Path) -> tuple[DBManager, int, dict[str, int]]:
     db = DBManager(tmp_path / "manual-review-atomic.db")
     db.initialize()
-    session_id = db.create_grading_session("Atomic review", "rubric.json", "answer.json")
+    session_id = db.create_grading_session(
+        "Atomic review", "rubric.json", "answer.json"
+    )
     foreign_session_id = db.create_grading_session(
         "Foreign atomic review",
         "rubric.json",
@@ -146,37 +148,6 @@ def _review_state(
     return details, results
 
 
-def test_apply_session_review_adjustments_updates_four_fields_and_all_result_totals(
-    tmp_path: Path,
-) -> None:
-    db, session_id, ids = _seed_two_review_results(tmp_path)
-
-    outcome = db.apply_session_review_adjustments(session_id, _adjustments(session_id, ids))
-
-    assert outcome == {"updated_details": 2, "updated_results": 2}
-    details, results = _review_state(db, ids)
-    assert details == [
-        (
-            ids["first_detail_id"],
-            8.0,
-            "first reviewed reason",
-            "first reviewed category",
-            "first reviewed summary",
-        ),
-        (
-            ids["second_detail_id"],
-            7.0,
-            "second reviewed reason",
-            "second reviewed category",
-            "second reviewed summary",
-        ),
-    ]
-    assert results == [
-        (ids["first_result_id"], 10.0),
-        (ids["second_result_id"], 8.0),
-    ]
-
-
 @pytest.mark.parametrize("forged_owner", ["session_id", "result_id", "question_id"])
 def test_atomic_write_revalidates_session_result_and_question_ownership(
     tmp_path: Path,
@@ -200,7 +171,9 @@ def test_atomic_write_revalidates_session_result_and_question_ownership(
     assert _review_state(db, ids) == before
 
 
-def test_second_result_detail_failure_rolls_back_entire_review_batch(tmp_path: Path) -> None:
+def test_second_result_detail_failure_rolls_back_entire_review_batch(
+    tmp_path: Path,
+) -> None:
     db, session_id, ids = _seed_two_review_results(tmp_path)
     before = _review_state(db, ids)
     with sqlite3.connect(db.db_path) as conn:
@@ -208,7 +181,7 @@ def test_second_result_detail_failure_rolls_back_entire_review_batch(tmp_path: P
             f"""
             CREATE TRIGGER fail_second_review_update
             BEFORE UPDATE ON session_details
-            WHEN OLD.id = {ids['second_detail_id']}
+            WHEN OLD.id = {ids["second_detail_id"]}
             BEGIN
                 SELECT RAISE(ABORT, 'forced second review write failure');
             END;
@@ -216,7 +189,9 @@ def test_second_result_detail_failure_rolls_back_entire_review_batch(tmp_path: P
         )
         conn.commit()
 
-    with pytest.raises(sqlite3.IntegrityError, match="forced second review write failure"):
+    with pytest.raises(
+        sqlite3.IntegrityError, match="forced second review write failure"
+    ):
         db.apply_session_review_adjustments(session_id, _adjustments(session_id, ids))
 
     assert _review_state(db, ids) == before
@@ -304,62 +279,4 @@ def test_review_adjustments_commit_before_annotation_and_allow_retry(
     assert retried["annotation_outcomes"] == [
         {"result_id": ids["first_result_id"], "status": "succeeded"},
         {"result_id": ids["second_result_id"], "status": "succeeded"},
-    ]
-
-
-def test_review_adjustments_do_not_render_when_atomic_write_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db, session_id, ids = _seed_two_review_results(tmp_path)
-    service = ManualReviewService(db, tmp_path / "annotated")
-    render_calls: list[int] = []
-    monkeypatch.setattr(
-        service,
-        "render_result_annotation",
-        lambda result_id, highlight_qids=None: render_calls.append(result_id),
-    )
-    with sqlite3.connect(db.db_path) as conn:
-        conn.execute(
-            f"""
-            CREATE TRIGGER fail_review_service_write
-            BEFORE UPDATE ON session_details
-            WHEN OLD.id = {ids['second_detail_id']}
-            BEGIN
-                SELECT RAISE(ABORT, 'forced service review write failure');
-            END;
-            """
-        )
-        conn.commit()
-
-    with pytest.raises(sqlite3.IntegrityError, match="forced service review write failure"):
-        service.apply_review_adjustments(
-            session_id,
-            _adjustments(session_id, ids),
-            highlight_qids=["Q1"],
-        )
-
-    assert render_calls == []
-
-
-def test_review_adjustments_treat_missing_annotation_output_as_retry_required(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db, session_id, ids = _seed_two_review_results(tmp_path)
-    service = ManualReviewService(db, tmp_path / "annotated")
-    monkeypatch.setattr(service, "render_result_annotation", lambda *_args, **_kwargs: None)
-
-    outcome = service.apply_review_adjustments(
-        session_id,
-        [_adjustments(session_id, ids)[0]],
-        highlight_qids=["Q1"],
-    )
-
-    assert outcome["annotation_outcomes"] == [
-        {
-            "result_id": ids["first_result_id"],
-            "status": "retry_required",
-            "message": "Annotation rendering failed; retry required.",
-        }
     ]

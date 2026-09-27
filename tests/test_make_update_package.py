@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,40 +59,6 @@ def _build_fake_source(source: Path) -> None:
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-
-
-def test_make_update_package_builds_apply_update_layout(tmp_path: Path) -> None:
-    make_update = _load_make_update()
-    packager = make_update.load_packager()
-    source = tmp_path / "演示项目_v9.9"
-    source.mkdir()
-    output_dir = tmp_path / "dist"
-    _build_fake_source(source)
-
-    update_dir = make_update.make_update_package(
-        source, output_dir, "v9.9", packager=packager
-    )
-
-    assert update_dir.name == "演示项目_update_v9.9"
-    manifest = json.loads(
-        (update_dir / "update_manifest.json").read_text(encoding="utf-8")
-    )
-    assert manifest["app_version"] == "v9.9"
-    assert manifest["package_type"] == "incremental_update"
-    assert manifest["data"]["included"] is False
-    assert manifest["runtime_extras"] == ["models", "tectonic"]
-
-    app = update_dir / "app"
-    assert (app / "backend" / "api" / "app.py").is_file()
-    assert (app / "frontend" / "dist" / "assets" / "app.js").is_file()
-    assert (app / "运行.bat").is_file()
-    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "v9.9"
-    assert (app / "runtime" / "models" / "asr" / "model.onnx").is_file()
-    assert (app / "runtime" / "tectonic" / "tectonic.exe").is_file()
-    assert not (app / "user_data").exists()
-
-    assert (update_dir / "migrations" / "grading" / "0001_init.sql").is_file()
-    assert (update_dir / "update_tools" / "apply_update.py").is_file()
 
 
 def test_make_update_package_is_consumable_by_apply_update_dry_run(

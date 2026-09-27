@@ -337,10 +337,31 @@ class QuestionRefListResponse(_QuestionBankModel):
     total_pages: int
 
 
+class QuestionErrorPattern(_QuestionBankModel):
+    id: int
+    category: str | None = None
+    pattern: str
+    explanation: str
+    trigger_kind: Literal["option", "wrong_answer", "step", "observation"]
+    trigger_value: str
+    status: Literal["candidate", "confirmed"]
+    source: str
+    has_evidence: bool
+
+
 class QuestionDetailResponse(QuestionListItem):
     page_range: str | None = None
     assets: list[QuestionAssetLink]
     previews: list[QuestionPreviewMetadata]
+    error_patterns: list[QuestionErrorPattern] = Field(default_factory=list)
+    wrong_option_letters: list[str] = Field(default_factory=list)
+
+
+class QuestionErrorPatternEditRequest(_QuestionBankModel):
+    action: Literal["edit", "reject"]
+    expected_pattern: str
+    pattern: str | None = None
+    category: str | None = None
 
 
 class QuestionSolutionEvidenceResponse(_QuestionBankModel):

@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
+  // Real persistence requires the isolated backend from playwright.review.config.ts.
+  testIgnore: 'review-scoring.spec.ts',
   timeout: 30_000,
   expect: { timeout: 5_000 },
   forbidOnly: Boolean(process.env.CI),

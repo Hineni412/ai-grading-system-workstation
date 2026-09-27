@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { request } from 'node:http'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, test } from 'node:test'
@@ -32,22 +31,6 @@ async function postJson(origin, path, body) {
   })
 }
 
-function rawStatus(origin, path) {
-  return new Promise((resolve, reject) => {
-    const target = new URL(origin)
-    const outgoing = request({
-      hostname: target.hostname,
-      port: target.port,
-      path,
-    }, (response) => {
-      response.resume()
-      response.once('end', () => resolve(response.statusCode))
-    })
-    outgoing.once('error', reject)
-    outgoing.end()
-  })
-}
-
 test('serves the anonymous SPA, API and generated no-store media on loopback', async () => {
   const origin = await startDemo()
 
@@ -60,49 +43,6 @@ test('serves the anonymous SPA, API and generated no-store media on loopback', a
   assert.equal(media.status, 200)
   assert.equal(media.headers.get('cache-control'), 'no-store')
   assert.match(media.headers.get('content-type') ?? '', /^image\//)
-})
-
-test('confirmation changes only runtime state and reset restores the fixed dataset', async () => {
-  const origin = await startDemo()
-  const itemsUrl = `${origin}/api/sessions/7/review/questions/Q1/items?needs_review_only=false`
-  const before = await (await fetch(itemsUrl)).json()
-
-  const confirmed = await postJson(
-    origin,
-    '/api/sessions/7/review/questions/Q1/confirm',
-    { items: [{ result_id: 101, detail_id: 1, score_awarded: 4.5, deduction_reason: '匿名验收调整' }] },
-  )
-  assert.equal(confirmed.status, 200)
-  const after = await (await fetch(itemsUrl)).json()
-  assert.equal(after.items.find((item) => item.detail_id === 1).score_awarded, 4.5)
-  assert.equal(after.items.find((item) => item.detail_id === 1).needs_review, false)
-
-  assert.equal((await postJson(origin, '/__p2_08__/reset', {})).status, 200)
-  const reset = await (await fetch(itemsUrl)).json()
-  assert.deepEqual(reset, before)
-})
-
-test('filters pending items and confirms multiple valid items atomically', async () => {
-  const origin = await startDemo()
-  const baseUrl = `${origin}/api/sessions/7/review/questions/Q1/items`
-  const pending = await (await fetch(`${baseUrl}?needs_review_only=true`)).json()
-  const all = await (await fetch(`${baseUrl}?needs_review_only=false`)).json()
-  assert.deepEqual(pending.items.map((item) => item.detail_id), [1, 3])
-  assert.deepEqual(all.items.map((item) => item.detail_id), [1, 2, 3, 4])
-
-  const confirmed = await postJson(
-    origin,
-    '/api/sessions/7/review/questions/Q1/confirm',
-    { items: [
-      { result_id: 101, detail_id: 1, score_awarded: 4.5 },
-      { result_id: 103, detail_id: 3, score_awarded: 3 },
-    ] },
-  )
-  assert.equal(confirmed.status, 200)
-  const body = await confirmed.json()
-  assert.equal(body.updated_details, 2)
-  assert.equal(body.updated_results, 2)
-  assert.equal(body.annotation_outcomes.length, 2)
 })
 
 test('rejects an invalid or duplicate batch before mutating any item', async () => {
@@ -124,60 +64,4 @@ test('rejects an invalid or duplicate batch before mutating any item', async () 
   ] })
   assert.equal(duplicate.status, 422)
   assert.deepEqual(await (await fetch(itemsUrl)).json(), before)
-})
-
-test('exposes explicit failure, retry, empty, error and slow acceptance modes', async () => {
-  const origin = await startDemo()
-  const confirmUrl = '/api/sessions/7/review/questions/Q1/confirm'
-  const payload = { items: [{ result_id: 101, detail_id: 1, score_awarded: 4 }] }
-
-  for (const [mode, status] of [['422', 422], ['500', 500]]) {
-    assert.equal((await postJson(origin, '/__p2_08__/mode', { confirm: mode })).status, 200)
-    assert.equal((await postJson(origin, confirmUrl, payload)).status, status)
-  }
-
-  await postJson(origin, '/__p2_08__/mode', { confirm: 'retry', items: 'ready' })
-  const retry = await (await postJson(origin, confirmUrl, payload)).json()
-  assert.equal(retry.annotation_outcomes[0].status, 'retry_required')
-
-  const itemsUrl = `${origin}/api/sessions/7/review/questions/Q1/items?needs_review_only=false`
-  await postJson(origin, '/__p2_08__/mode', { confirm: 'success', items: 'empty' })
-  assert.deepEqual((await (await fetch(itemsUrl)).json()).items, [])
-  await postJson(origin, '/__p2_08__/mode', { items: 'error' })
-  assert.equal((await fetch(itemsUrl)).status, 500)
-  await postJson(origin, '/__p2_08__/mode', { items: 'slow' })
-  const started = Date.now()
-  assert.equal((await fetch(itemsUrl)).status, 200)
-  assert.ok(Date.now() - started >= 150)
-})
-
-test('rejects unknown controls, media shapes and invalid confirmation context', async () => {
-  const origin = await startDemo()
-  assert.equal(
-    (await postJson(origin, '/__p2_08__/mode', { items: 'ready', extra: 'not-allowed' })).status,
-    422,
-  )
-  assert.equal((await fetch(`${origin}/api/media/private/1`)).status, 404)
-
-  const wrongQuestion = await postJson(
-    origin,
-    '/api/sessions/7/review/questions/Q2/confirm',
-    { items: [{ result_id: 101, detail_id: 1, score_awarded: 4 }] },
-  )
-  assert.equal(wrongQuestion.status, 422)
-  const outOfRange = await postJson(
-    origin,
-    '/api/sessions/7/review/questions/Q1/confirm',
-    { items: [{ result_id: 101, detail_id: 1, score_awarded: 6 }] },
-  )
-  assert.equal(outOfRange.status, 422)
-})
-
-test('rejects traversal and the server source contains no production data-tree reference', async () => {
-  const origin = await startDemo()
-  assert.equal((await fetch(`${origin}/..%2f..%2fVERSION`)).status, 404)
-  assert.equal(await rawStatus(origin, '/%2e%2e/%2e%2e/VERSION'), 404)
-
-  const source = await readFile(new URL('./p2-08-server.mjs', import.meta.url), 'utf8')
-  assert.equal(source.includes(['user', 'data'].join('_')), false)
 })

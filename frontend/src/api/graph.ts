@@ -139,41 +139,6 @@ export interface GraphEvidenceResponse {
   total_pages: number
 }
 
-export interface RelationReviewQueueItem {
-  relation_id: string
-  source_key: string
-  source_name: string
-  target_key: string
-  target_name: string
-  relation_type: GraphRelationType
-  source_kind: string
-  source_reference: string | null
-  rationale: string
-  model_name: string | null
-  model_version: string | null
-  prompt_version: string | null
-  confidence: number | null
-  conflict_codes: string[]
-  revision: number
-  updated_at: string
-}
-
-export interface RelationReviewQueueResponse {
-  status: 'suggested'
-  items: RelationReviewQueueItem[]
-  total: number
-  page: number
-  page_size: number
-  total_pages: number
-}
-
-export interface RelationBatchReviewResponse {
-  status: 'applied' | 'partial' | 'failed'
-  applied_count: number
-  failed_count: number
-  results: Array<Record<string, unknown>>
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value)
   return actual.length === keys.length && keys.every(
@@ -472,37 +437,6 @@ export function decodeGraphEvidenceResponse(
   return response
 }
 
-function isQueueItem(value: unknown): value is RelationReviewQueueItem {
-  return isRecord(value)
-    && typeof value.relation_id === 'string'
-    && isStableKey(value.source_key)
-    && typeof value.source_name === 'string'
-    && isStableKey(value.target_key)
-    && typeof value.target_name === 'string'
-    && isRelationType(value.relation_type)
-    && typeof value.source_kind === 'string'
-    && (value.source_reference === null || typeof value.source_reference === 'string')
-    && typeof value.rationale === 'string'
-    && (value.model_name === null || typeof value.model_name === 'string')
-    && (value.model_version === null || typeof value.model_version === 'string')
-    && (value.prompt_version === null || typeof value.prompt_version === 'string')
-    && (value.confidence === null || isRate(value.confidence))
-    && isStringArray(value.conflict_codes)
-    && isInteger(value.revision, true)
-    && typeof value.updated_at === 'string'
-}
-
-export function decodeRelationReviewQueue(value: unknown): RelationReviewQueueResponse {
-  if (!isRecord(value)
-    || value.status !== 'suggested'
-    || !Array.isArray(value.items) || !value.items.every(isQueueItem)
-    || !isInteger(value.total)
-    || !isInteger(value.page, true)
-    || !isInteger(value.page_size, true)
-    || !isInteger(value.total_pages, true)) throw new Error('Invalid relation review queue')
-  return value as unknown as RelationReviewQueueResponse
-}
-
 function normalizeStableKeys(values: string[]): string[] {
   const result: string[] = []
   for (const raw of values) {
@@ -550,43 +484,5 @@ export function fetchGraphEvidence(
       page: normalizedPage,
     }),
     signal,
-  })
-}
-
-export function fetchRelationReviewQueue(signal?: AbortSignal): Promise<RelationReviewQueueResponse> {
-  return apiClient.request('/api/graph/relations/review-queue?status=suggested&page=1&page_size=20', {
-    decode: decodeRelationReviewQueue,
-    signal,
-  })
-}
-
-function decodeRelationBatchReview(value: unknown): RelationBatchReviewResponse {
-  if (!isRecord(value)
-    || !['applied', 'partial', 'failed'].includes(String(value.status))
-    || !isInteger(value.applied_count)
-    || !isInteger(value.failed_count)
-    || !Array.isArray(value.results)
-    || !value.results.every(isRecord)) throw new Error('Invalid relation batch review response')
-  return value as unknown as RelationBatchReviewResponse
-}
-
-export function reviewRelationExceptions(input: {
-  items: RelationReviewQueueItem[]
-  action: 'confirm' | 'reject'
-}): Promise<RelationBatchReviewResponse> {
-  return apiClient.request('/api/graph/relations/review-batch', {
-    method: 'POST',
-    body: {
-      teacher_ref: 'teacher:local-workbench',
-      commands: input.items.map((item) => ({
-        relation_id: item.relation_id,
-        expected_revision: item.revision,
-        action: input.action,
-        reason: input.action === 'confirm'
-          ? '教师在异常队列中确认 AI 建议'
-          : '教师在异常队列中拒绝 AI 建议',
-      })),
-    },
-    decode: decodeRelationBatchReview,
   })
 }

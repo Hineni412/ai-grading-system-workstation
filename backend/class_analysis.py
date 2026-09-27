@@ -275,9 +275,11 @@ def known_cause_patterns(
         question_bank_path=question_bank_db_path,
         question_ids=sorted({bid for ctx in bank_context.values() for bid in ctx["bank_ids"]}),
     )
+    from question_bank.services.error_pattern_service import preferred_active_patterns
+
     for parent, ctx in bank_context.items():
         for bank_id in ctx["bank_ids"]:
-            for row in confirmed.get(bank_id) or []:
+            for row in preferred_active_patterns(confirmed.get(bank_id) or []):
                 collect(parent, row.get("pattern"), row.get("category"), "题库已有")
     for parent, links in _linked_question_sources(question_bank_db_path, session_id).items():
         for other_sid, other_parent in links:
@@ -688,27 +690,39 @@ def plan_cause_question(
         option = {"text": text, "letters": letters, "correct": correct,
                   "fingerprint": fingerprint, "patterns": None,
                   "patterns_source": None, "bank_id": int(ctx["bank_id"])}
+        bank_rows = _bank_pattern_rows(ctx, confirmed_by_bank)
+        blocked = {
+            str(row.get("trigger_value") or "").strip()
+            for row in bank_rows
+            if row.get("trigger_kind") == "option" and row.get("status") == "rejected"
+        }
+        available = merge_bank_triggers_into_patterns(
+            bank_rows, trigger_kind="option")
+        available = {key: value for key, value in available.items() if key not in blocked}
+        required = set(letters) - {correct} - blocked
+        option["required"] = sorted(required)
+        option["blocked"] = sorted(blocked)
         entry = find_option_analysis(
             store, session_id, parent, fingerprint, ctx.get("linked") or ())
         if entry and entry.get("analysis") and not entry.get("failed"):
-            option["patterns"] = {
+            saved_patterns = {
                 key: dict(value) for key, value in entry["analysis"].items()
-                if isinstance(value, dict)
+                if isinstance(value, dict) and key not in blocked
             }
-            # 教师在题库改过的错法覆盖会话内保存的诊断结果（仅 teacher_edit 来源）。
-            edited = merge_bank_triggers_into_patterns(
-                _bank_pattern_rows(ctx, confirmed_by_bank), trigger_kind="option",
-                sources={"teacher_edit", "teacher_confirm"})
-            option["patterns"].update(edited)
-            return {"path": "option", "needs_call": False, "option": option}
+            saved_patterns.update(available)
+            option["patterns"] = saved_patterns
+            if required.issubset(saved_patterns) or entry.get("source") == "model":
+                return {"path": "option", "needs_call": False, "option": option}
+            option["base_patterns"] = saved_patterns
+            option["patterns"] = None
+            return {"path": "option", "needs_call": True, "option": option}
         if entry and entry.get("failed") and not retry_failed:
             return {"path": "skip", "needs_call": False, "option": option}
-        confirmed = merge_bank_triggers_into_patterns(
-            _bank_pattern_rows(ctx, confirmed_by_bank), trigger_kind="option")
-        if confirmed:
-            option["patterns"] = confirmed
+        if required.issubset(available):
+            option["patterns"] = available
             option["patterns_source"] = "bank_confirmed"
             return {"path": "option", "needs_call": False, "option": option}
+        option["base_patterns"] = available
         return {"path": "option", "needs_call": True, "option": option}
     if qtype in FILL_TYPES:
         library = _fill_answer_library(
@@ -740,13 +754,23 @@ def _run_option_plan(
             raise ValueError("content generation model is not configured")
         call_input = build_option_analysis_input(
             plan["text"], plan["correct"], str(source.get("reference_analysis") or ""))
+        call_input["missing_options"] = [
+            letter for letter in plan["required"]
+            if letter not in plan.get("base_patterns", {})
+        ]
         try:
             payload = client.json_from_text(
                 OPTION_ANALYSIS_PROMPT + "\n" + json.dumps(call_input, ensure_ascii=False),
                 extra_kwargs={"temperature": 0.2, "max_tokens": 8000},
             )
-            patterns = normalize_option_analysis(
+            predicted = normalize_option_analysis(
                 payload, option_letters=plan["letters"], correct_option=plan["correct"])
+            blocked = set(plan.get("blocked") or ())
+            patterns = {
+                letter: item
+                for letter, item in {**predicted, **plan.get("base_patterns", {})}.items()
+                if letter not in blocked
+            }
         except Exception:
             save_option_analysis(store, session_id, source["question_id"], {
                 "version": OPTION_ANALYSIS_VERSION,
@@ -784,9 +808,15 @@ def _fill_answer_library(
 
     linked_ids = {sid for sid, _ in ctx.get("linked") or set()}
     library = find_answer_patterns(store, session_id, parent, linked_ids)
-    confirmed = merge_bank_triggers_into_patterns(
-        _bank_pattern_rows(ctx, confirmed_by_bank), trigger_kind="wrong_answer")
-    return {**library, **confirmed}
+    rows = _bank_pattern_rows(ctx, confirmed_by_bank)
+    blocked = {
+        str(row.get("trigger_value") or "").strip()
+        for row in rows
+        if row.get("trigger_kind") == "wrong_answer" and row.get("status") == "rejected"
+    }
+    confirmed = merge_bank_triggers_into_patterns(rows, trigger_kind="wrong_answer")
+    return {**{key: value for key, value in library.items() if key not in blocked},
+            **{key: value for key, value in confirmed.items() if key not in blocked}}
 
 
 def _organize_fill_question(
@@ -822,26 +852,20 @@ def run_cause_analysis(
     retry_failed=False 用于个人报告导出的前置阶段：整理失败的题不自动重发，
     报告照常生成、该题不显示错误类型；手动「整理错因」保持默认重发行为。
 
-    P2/P3 分流：八上已关联题库的选择题走“选项诊断→所选项映射”（每题至多
-    1 次模型调用，可跨场次复用）；填空题先查错误答案库，全覆盖零调用，
+    已关联题库的选择题先复用题库选项预测，缺项才补做选项诊断；填空题先查错误答案库，全覆盖零调用，
     否则走 v3 整理并把新错法按规范化答案回写候选库。
     """
     from analysis_report_exporter import _parent_question_id, _question_bank_db_path
     from backend.error_causes import CAUSE_KIND_CATEGORIES
     from backend.error_patterns import (
-        CHOICE_TYPES, FILL_TYPES, OPTION_ANALYSIS_VOLUMES,
+        CHOICE_TYPES, FILL_TYPES,
         additions_from_v3_result, bank_confirmed_triggers,
         record_answer_patterns, session_bank_context,
         sync_session_patterns_to_bank,
     )
 
     session_id = int(context.payload["session_id"])
-    repositories = as_grading_repositories(db)
-    session = repositories.sessions.get_grading_session(session_id) or {}
-    option_scope = (
-        str(session.get("curriculum_volume_id") or "").strip()
-        in OPTION_ANALYSIS_VOLUMES
-    )
+    option_scope = True
     question_bank_path = _question_bank_db_path(Path(db.db_path))
     bank_context = session_bank_context(question_bank_path, session_id)
     confirmed_by_bank = bank_confirmed_triggers(
@@ -1073,17 +1097,20 @@ def edit_cause_pattern(
 ) -> dict[str, Any]:
     """教师修改错法名称/大类（可选操作，非必经步骤）。
 
-    已关联题库时先把本场整理结果自动回挂（保证旧名行存在），再把该题
-    判重家族里同名 confirmed 行标记 merged、以 ``teacher_edit`` 来源写入
-    新名；未关联时仅改会话状态。会话内同步更新错因分组、物化错因记录、
+    已关联题库时先把本场整理结果回挂，再按选项/错误答案触发位或主观题
+    具体错法的改名记录找到当前条目；不能确定旧主观题错法的对应关系时
+    提示核对。未关联时仅改会话状态。会话内同步更新错因分组、物化记录、
     选项诊断与填空候选库中的同名条目，并标记 ``teacher_edited``。
     """
     from analysis_report_exporter import _parent_question_id
     from backend.error_causes import CAUSE_KIND_CATEGORIES, normalize_cause_category
     from backend.error_patterns import (
-        answer_pattern_map, option_analysis_entries, sync_session_patterns_to_bank,
+        answer_pattern_map, bank_confirmed_triggers, option_analysis_entries,
+        sync_session_patterns_to_bank,
     )
-    from question_bank.services.error_pattern_service import rename_patterns
+    from question_bank.services.error_pattern_service import (
+        current_pattern_for_snapshot, preferred_active_patterns, rename_patterns,
+    )
 
     question_id = str(question_id)
     kind = str(kind or "").strip()
@@ -1120,9 +1147,71 @@ def edit_cause_pattern(
     ctx = (bank_context or {}).get(parent) or {}
     if question_bank_path is not None and ctx.get("bank_ids"):
         sync_session_patterns_to_bank(store, session_id, question_bank_path, bank_context)
-        rename_patterns(
-            question_bank_path, question_ids=ctx["bank_ids"],
-            old_pattern=reason, new_pattern=new_reason, category=category)
+        triggers: set[tuple[str, str]] = set()
+        for qid, entry in option_analysis_entries(state).items():
+            if _parent_question_id(str(qid)) != parent or not isinstance(entry, dict):
+                continue
+            analysis = entry.get("analysis")
+            if not isinstance(analysis, dict):
+                continue
+            for letter, item in analysis.items():
+                if isinstance(item, dict) and str(item.get("pattern") or "").strip() == reason:
+                    triggers.add(("option", str(letter)))
+        for answer, item in (answer_pattern_map(state).get(parent) or {}).items():
+            if str(answer).startswith("_") or not isinstance(item, dict):
+                continue
+            if str(item.get("pattern") or "").strip() == reason[:40]:
+                triggers.add(("wrong_answer", str(answer)))
+        bank_rows = bank_confirmed_triggers(question_bank_path, ctx["bank_ids"])
+        current = preferred_active_patterns(
+            row for bank_id in ctx["bank_ids"] for row in bank_rows.get(bank_id) or []
+        )
+        targets = [
+            row for row in current
+            if (row["trigger_kind"], row["trigger_value"]) in triggers
+        ]
+        if not targets and not triggers:
+            from question_bank.database.schema import connect
+
+            step_id = str(group.get("step_id") or "").strip()
+            trigger_kind = "step" if step_id else "observation"
+            with connect(question_bank_path) as conn:
+                for bank_id in ctx["bank_ids"]:
+                    target = current_pattern_for_snapshot(
+                        conn, question_id=int(bank_id), old_pattern=reason,
+                        trigger_kind=trigger_kind, trigger_value=step_id,
+                    )
+                    if target is not None:
+                        targets.append(target)
+        if targets:
+            from question_bank.database.schema import connect
+
+            with connect(question_bank_path) as conn:
+                for row in targets:
+                    rename_patterns(
+                        question_bank_path, question_ids=[row["question_id"]],
+                        pattern_id=row["id"], old_pattern=row["pattern"],
+                        new_pattern=new_reason, category=category, connection=conn,
+                    )
+        else:
+            changed = rename_patterns(
+                question_bank_path, question_ids=ctx["bank_ids"],
+                old_pattern=reason, new_pattern=new_reason, category=category,
+            )
+            if not changed:
+                step_id = str(group.get("step_id") or "").strip()
+                trigger_kind = "step" if step_id else "observation"
+                archived = any(
+                    row["status"] == "merged" and row["pattern"] == reason
+                    and row["trigger_kind"] == trigger_kind
+                    and row["trigger_value"] == step_id
+                    for rows in bank_rows.values() for row in rows
+                )
+                if archived:
+                    raise CausePatternEditError(
+                        "cause_pattern_bank_changed",
+                        "题库错法已被调整，无法确定当前对应条目，请在题目详情核对后重试",
+                    )
 
     group["reason"] = new_reason
     group["category"] = category

@@ -32,7 +32,8 @@ LIST_FIELDS = (
 )
 MAX_TAG_LENGTH = 160
 MAX_ABILITY_TAGS = 2
-PREDICTED_PATTERN_MAX = 3
+PREDICTED_PATTERN_MAX = 6  # 选择题最多 A–F 六个选项；非选择题仍限 3 条。
+PREDICTED_GENERAL_MAX = 3
 PREDICTED_PATTERN_NAME_MAX = 80
 PREDICTED_PATTERN_TRIGGER_VALUE_MAX = 160
 PREDICTED_TRIGGER_KINDS = ("option", "wrong_answer", "step", "observation")
@@ -247,7 +248,13 @@ def _normalize_predicted_error_patterns(value: object) -> list[dict[str, str]]:
         return []
     patterns: list[dict[str, str]] = []
     seen: set[str] = set()
-    for item in value:
+    general_count = 0
+    ordered = sorted(
+        value,
+        key=lambda item: 0 if isinstance(item, dict)
+        and str(item.get("trigger_kind") or "").strip().casefold() == "option" else 1,
+    )
+    for item in ordered:
         if not isinstance(item, dict):
             continue
         category = normalize_predicted_category(item.get("category"))
@@ -264,6 +271,12 @@ def _normalize_predicted_error_patterns(value: object) -> list[dict[str, str]]:
         ]
         if trigger_kind == "observation":
             trigger_value = ""
+        if trigger_kind == "option":
+            trigger_value = trigger_value.upper()
+            if len(trigger_value) != 1 or trigger_value not in "ABCDEF":
+                continue
+        elif general_count >= PREDICTED_GENERAL_MAX:
+            continue
         key = f"{trigger_kind}|{trigger_value.casefold()}|{pattern.casefold()}"
         if key in seen:
             continue
@@ -272,10 +285,13 @@ def _normalize_predicted_error_patterns(value: object) -> list[dict[str, str]]:
             {
                 "category": category,
                 "pattern": pattern,
+                "explanation": _clean_text(item.get("explanation"))[:160],
                 "trigger_kind": trigger_kind,
                 "trigger_value": trigger_value,
             }
         )
+        if trigger_kind != "option":
+            general_count += 1
         if len(patterns) >= PREDICTED_PATTERN_MAX:
             break
     return patterns

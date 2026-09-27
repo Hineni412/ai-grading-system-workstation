@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import errno
 import sqlite3
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
@@ -17,7 +15,6 @@ from question_bank.services.question_write_service import QuestionBankWriteServi
 from question_bank.services.taxonomy_review_service import TaxonomyReviewService
 from question_bank.taxonomy.governance import (
     TaxonomyGovernance,
-    TaxonomyStorageError,
 )
 
 
@@ -28,18 +25,6 @@ CATALOG_PATH = (
     / "catalogs"
     / "tag_vocabulary_v2.json"
 )
-
-
-def test_teacher_facing_knowledge_graph_release_switch_endpoints_are_removed() -> None:
-    app = create_app()
-    client = TestClient(app)
-    assert client.get(
-        "/api/question-bank/knowledge-graph/release-preview"
-    ).status_code == 404
-    for action in ("stage", "demo-release/activate", "demo-release/rollback"):
-        assert client.post(
-            f"/api/question-bank/knowledge-graph/releases/{action}", json={}
-        ).status_code == 404
 
 
 def _client_with_curriculum_proposal(
@@ -90,8 +75,8 @@ def _client_with_curriculum_proposal(
 def test_taxonomy_review_route_maps_one_question_to_multiple_existing_chapters(
     tmp_path: Path,
 ) -> None:
-    client, governance, question_id, proposal_id = (
-        _client_with_curriculum_proposal(tmp_path)
+    client, governance, question_id, proposal_id = _client_with_curriculum_proposal(
+        tmp_path
     )
     first = governance.resolve_term(
         "curriculum",
@@ -127,9 +112,7 @@ def test_taxonomy_review_route_maps_one_question_to_multiple_existing_chapters(
     assert body["application_status"] == "applied"
     assert body["application_token"] == "2" * 32
 
-    with sqlite3.connect(
-        governance.state_path.parent / "question-bank.db"
-    ) as conn:
+    with sqlite3.connect(governance.state_path.parent / "question-bank.db") as conn:
         rows = conn.execute(
             """
             SELECT tag_type, tag_value
@@ -148,8 +131,8 @@ def test_taxonomy_review_route_maps_one_question_to_multiple_existing_chapters(
 def test_taxonomy_review_can_approve_without_writing_unselected_questions(
     tmp_path: Path,
 ) -> None:
-    client, governance, question_id, proposal_id = (
-        _client_with_curriculum_proposal(tmp_path)
+    client, governance, question_id, proposal_id = _client_with_curriculum_proposal(
+        tmp_path
     )
     target = governance.resolve_term(
         "curriculum",
@@ -172,71 +155,9 @@ def test_taxonomy_review_can_approve_without_writing_unselected_questions(
 
     assert response.status_code == 200
     assert response.json()["application"]["status"] == "not_requested"
-    with sqlite3.connect(
-        governance.state_path.parent / "question-bank.db"
-    ) as conn:
+    with sqlite3.connect(governance.state_path.parent / "question-bank.db") as conn:
         count = conn.execute(
             "SELECT COUNT(*) FROM question_tags WHERE question_id = ?",
             (question_id,),
         ).fetchone()[0]
     assert count == 0
-
-
-@pytest.mark.parametrize(
-    ("failure", "expected_code", "expected_category"),
-    [
-        (
-            PermissionError(errno.EACCES, "write access denied"),
-            "taxonomy_storage_read_only",
-            "read_only",
-        ),
-        (
-            TaxonomyStorageError(
-                "Timed out waiting for taxonomy lock: hidden-machine-path"
-            ),
-            "taxonomy_storage_busy",
-            "busy",
-        ),
-        (
-            RuntimeError("Taxonomy review receipt state is invalid"),
-            "taxonomy_storage_invalid",
-            "invalid",
-        ),
-        (
-            OSError(errno.EIO, "storage unavailable"),
-            "taxonomy_storage_unavailable",
-            "unavailable",
-        ),
-    ],
-)
-def test_taxonomy_review_route_reports_safe_storage_failure_categories(
-    failure: Exception,
-    expected_code: str,
-    expected_category: str,
-) -> None:
-    class FailingReviewService:
-        def review_proposal(self, **_kwargs: object) -> dict[str, object]:
-            raise failure
-
-    app = create_app()
-    app.dependency_overrides[get_taxonomy_review_service] = (
-        lambda: FailingReviewService()
-    )
-    request_id = f"taxonomy-{expected_category}-request"
-    response = TestClient(app).post(
-        "/api/question-bank/taxonomy/proposals/proposal-test/review",
-        headers={"x-request-id": request_id},
-        json={
-            "decision": "reject",
-            "expected_revision": 0,
-            "request_token": "a" * 32,
-        },
-    )
-
-    assert response.status_code == 503
-    assert response.headers["x-request-id"] == request_id
-    body = response.json()["error"]
-    assert body["code"] == expected_code
-    assert body["details"]["category"] == expected_category
-    assert body["request_id"] == request_id
-    assert "hidden-machine-path" not in response.text

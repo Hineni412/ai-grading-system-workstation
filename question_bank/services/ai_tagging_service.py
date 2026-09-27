@@ -849,11 +849,14 @@ def _system_prompt(
     - proposed_tags is always present, contains at most 1 item per question,
       and uses [] when every value is approved.
 
-    predicted_error_patterns 预测学生在本题最可能犯的 0–{PREDICTED_PATTERN_MAX}
-    种具体错法。每项字段：
+    predicted_error_patterns：选择题逐一分析题干真实出现的每个错误选项，
+    每个错误选项各写一条 option 触发，正确选项不写；非选择题保留 0–3
+    种最可能的具体错法。每项字段：
     - category：必须是这 7 个大类之一（{pattern_categories}）；
     - pattern：本题具体的错误做法名称（如“64 的平方根只写 8”），不要写
       “运算错误”这类泛词，也不要复述正确的完成步骤；
+    - explanation：一句话说明该选项或做法为何可能出错；这是预测，不代表
+      学生真实心理过程，也不计学生人数；
     - trigger_kind 与 trigger_value：错误最可能在什么位置被观察到。
       trigger_kind 只能是 {"、".join(PREDICTED_TRIGGER_KINDS)} 之一：
       option 表示选错某个选项（trigger_value 填选项字母），wrong_answer
@@ -907,6 +910,7 @@ def _plain_output_schema(taxonomy_revision: int = 0) -> dict[str, object]:
             {
                 "category": "",
                 "pattern": "",
+                "explanation": "",
                 "trigger_kind": "",
                 "trigger_value": "",
             }
@@ -1104,6 +1108,7 @@ def _predicted_pattern_response_schema() -> dict[str, Any]:
             else {"type": "string"}
         ),
         "pattern": {"type": "string"},
+        "explanation": {"type": "string"},
         "trigger_kind": {
             "type": "string",
             "enum": list(PREDICTED_TRIGGER_KINDS),
@@ -2590,9 +2595,10 @@ def _merge_agreed_analyses(primary: TagAnalysis, review: TagAnalysis) -> TagAnal
         "special_type_tags",
     ):
         payload[field_name] = _ordered_unique([*primary.to_dict().get(field_name, []), *review.to_dict().get(field_name, [])])
-    # 预测错法按名称合并去重；逐小问特征沿用主分析（不同分析的小问粒度可能不同，不能拼接）。
+    # 预测错法按触发位与名称合并；不同错误选项即使错法同名也必须各保留一条。
     seen_patterns = {
-        str(item.get("pattern") or "").casefold()
+        (str(item.get("trigger_kind") or ""), str(item.get("trigger_value") or ""),
+         str(item.get("pattern") or "").casefold())
         for item in primary.predicted_error_patterns
     }
     payload["predicted_error_patterns"] = [
@@ -2600,7 +2606,8 @@ def _merge_agreed_analyses(primary: TagAnalysis, review: TagAnalysis) -> TagAnal
         *[
             dict(item)
             for item in review.predicted_error_patterns
-            if str(item.get("pattern") or "").casefold() not in seen_patterns
+            if (str(item.get("trigger_kind") or ""), str(item.get("trigger_value") or ""),
+                str(item.get("pattern") or "").casefold()) not in seen_patterns
         ],
     ]
     payload["proposed_tags"] = [

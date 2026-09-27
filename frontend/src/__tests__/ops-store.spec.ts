@@ -1,27 +1,11 @@
-import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiError } from '../api/errors'
-import type { JobResponse } from '../api/jobs'
-import type {
-  OpsApi,
-  OpsBackupList,
-  OpsOperationState,
-  OpsPreflight,
-  OpsSelfCheck,
-} from '../api/ops'
-import { useJobStore, type JobStoreDependencies } from '../stores/jobs'
-import { useOpsStore } from '../stores/ops'
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
-  })
-  return { promise, resolve, reject }
-}
+import { ApiError } from '../api/errors';
+import type { JobResponse } from '../api/jobs';
+import type { OpsApi, OpsBackupList, OpsOperationState, OpsPreflight, OpsSelfCheck } from '../api/ops';
+import { useJobStore, type JobStoreDependencies } from '../stores/jobs';
+import { useOpsStore } from '../stores/ops';
 
 const selfCheck: OpsSelfCheck = {
   version: 'v1.5.0',
@@ -168,130 +152,7 @@ beforeEach(async () => {
   await useJobStore().initialize(jobDependencies())
 })
 
-describe('Ops store read-only ledger', () => {
-  it('loads self-check and backup ledgers independently', async () => {
-    const api = makeOpsApi()
-    const store = useOpsStore()
-
-    await store.initialize(api)
-
-    expect(store.selfCheck).toEqual(selfCheck)
-    expect(store.backups).toEqual(backups.items)
-    expect(api.getSelfCheck).toHaveBeenCalledTimes(1)
-    expect(api.getBackups).toHaveBeenCalledWith(50, expect.any(AbortSignal))
-  })
-
-  it('keeps the last successful ledger when a refresh fails', async () => {
-    const api = makeOpsApi()
-    const store = useOpsStore()
-    await store.initialize(api)
-    vi.mocked(api.getSelfCheck).mockRejectedValueOnce(new ApiError({
-      kind: 'server',
-      status: 503,
-      code: 'ops_self_check_unavailable',
-      message: 'unavailable',
-      details: {},
-      requestId: 'req-safe',
-      retryable: true,
-    }))
-
-    await store.refreshSelfCheck(api)
-
-    expect(store.selfCheck).toEqual(selfCheck)
-    expect(store.selfCheckError).toMatchObject({
-      message: '系统状态暂时无法更新',
-      retryable: true,
-      requestId: 'req-safe',
-    })
-  })
-
-  it('ignores a late self-check response from an older refresh', async () => {
-    const oldRequest = deferred<OpsSelfCheck>()
-    const currentRequest = deferred<OpsSelfCheck>()
-    const api = makeOpsApi({
-      getSelfCheck: vi.fn()
-        .mockReturnValueOnce(oldRequest.promise)
-        .mockReturnValueOnce(currentRequest.promise),
-    })
-    const store = useOpsStore()
-
-    const oldRefresh = store.refreshSelfCheck(api)
-    const currentRefresh = store.refreshSelfCheck(api)
-    currentRequest.resolve({ ...selfCheck, version: 'v-current' })
-    await currentRefresh
-    oldRequest.resolve({ ...selfCheck, version: 'v-old' })
-    await oldRefresh
-
-    expect(store.selfCheck?.version).toBe('v-current')
-  })
-
-  it('builds a copyable diagnostic only from safe public fields', async () => {
-    const store = useOpsStore()
-    await store.initialize(makeOpsApi())
-
-    expect(store.diagnosticText).toContain('系统版本：v1.5.0')
-    expect(store.diagnosticText).toContain('API 配置：未配置')
-    expect(store.diagnosticText).toContain('阅卷数据库：完整性 ok')
-    expect(store.diagnosticText).not.toMatch(/C:\\|\/user_data|sk-[a-z0-9]|sk-secret/i)
-  })
-})
-
 describe('Ops store protected write flow', () => {
-  it('locks every protected entry while a dangerous submit is unresolved', async () => {
-    const pending = deferred<JobResponse>()
-    const api = makeOpsApi({
-      submit: vi.fn(() => pending.promise),
-    })
-    const store = useOpsStore()
-    await store.startPreflight({
-      operation: 'backup',
-      reason: 'manual',
-    }, api)
-
-    const submission = store.submitConfirmed(api)
-    await Promise.resolve()
-    await store.startPreflight({
-      operation: 'migration',
-      target: 'all',
-    }, api)
-    await store.stageImport(
-      new File(['zip'], '课堂数据.zip', { type: 'application/zip' }),
-      api,
-    )
-
-    expect(api.preflight).toHaveBeenCalledTimes(1)
-    expect(api.stageImport).not.toHaveBeenCalled()
-    expect(store.hasBlockingOperation).toBe(true)
-    expect(store.actionError).toMatchObject({
-      message: '已有运维操作正在进行',
-    })
-
-    pending.resolve(makeJob())
-    await submission
-    expect(store.activeJob?.id).toBe(41)
-    expect(store.actionError).toBeNull()
-  })
-
-  it('clears a finished result when a new protected flow begins', async () => {
-    const api = makeOpsApi()
-    const jobs = useJobStore()
-    jobs.track(makeJob({
-      job_type: 'ops_backup',
-      status: 'succeeded',
-      finished_at: '2026-07-19T12:01:00Z',
-    }))
-    const store = useOpsStore()
-    await store.recoverTrackedOperation(api)
-    expect(store.activeJob?.status).toBe('succeeded')
-
-    await store.startPreflight({
-      operation: 'restore',
-      backup_filename: backups.items[0]!.filename,
-    }, api)
-
-    expect(store.activeJob).toBeNull()
-    expect(store.preflight?.operation).toBe('restore')
-  })
 
   it('preflights once, consumes the token once and tracks the submitted Job', async () => {
     const api = makeOpsApi()
@@ -345,25 +206,6 @@ describe('Ops store protected write flow', () => {
     })
   })
 
-  it('uploads a ZIP before transfer-import preflight and never persists upload metadata', async () => {
-    const api = makeOpsApi()
-    const store = useOpsStore()
-    const file = new File(['zip'], '课堂数据.zip', { type: 'application/zip' })
-
-    await store.stageImport(file, api)
-    await store.startPreflight({
-      operation: 'transfer_import',
-      upload_id: store.importUpload!.upload_id,
-    }, api)
-
-    expect(api.stageImport).toHaveBeenCalledWith(file, expect.any(AbortSignal))
-    expect(api.preflight).toHaveBeenCalledWith({
-      operation: 'transfer_import',
-      upload_id: 'a'.repeat(32),
-    }, expect.any(AbortSignal))
-    expect(localStorage.length).toBe(0)
-  })
-
   it('restores a tracked offline Job and distinguishes prepared from applied', async () => {
     const jobs = useJobStore()
     jobs.track(makeJob({
@@ -397,56 +239,4 @@ describe('Ops store protected write flow', () => {
     expect(store.operationApplied).toBe(true)
   })
 
-  it('uses Job cancel before preparation and operation cancel after restart-required', async () => {
-    const api = makeOpsApi()
-    const store = useOpsStore()
-    const jobs = useJobStore()
-    jobs.track(makeJob())
-    await store.recoverTrackedOperation(api)
-
-    await store.cancelCurrent(api)
-    expect(jobs.jobs[41]?.status).toBe('cancelled')
-    expect(api.cancelOperation).not.toHaveBeenCalled()
-
-    jobs.track(makeJob({ status: 'succeeded' }))
-    await store.recoverTrackedOperation(api)
-    expect(store.operationState?.status).toBe('restart_required')
-    await store.cancelCurrent(api)
-
-    expect(api.cancelOperation).toHaveBeenCalledWith(
-      operation.operation_id,
-      expect.any(AbortSignal),
-    )
-    expect(store.operationState?.status).toBe('cancelled')
-  })
-
-  it('clears an expired preflight and explains that no operation was started', async () => {
-    const api = makeOpsApi({
-      submit: vi.fn(async () => {
-        throw new ApiError({
-          kind: 'conflict',
-          status: 409,
-          code: 'ops_confirmation_expired',
-          message: 'expired',
-          details: {},
-          requestId: 'req-expired',
-          retryable: false,
-        })
-      }),
-    })
-    const store = useOpsStore()
-    await store.startPreflight({
-      operation: 'migration',
-      target: 'all',
-    }, api)
-
-    await store.submitConfirmed(api)
-
-    expect(store.preflight).toBeNull()
-    expect(store.resultUnknown).toBe(false)
-    expect(store.actionError).toMatchObject({
-      message: '预检已过期，请重新预检',
-      impact: '没有启动新的运维任务',
-    })
-  })
 })

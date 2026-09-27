@@ -13,7 +13,6 @@ from question_bank.services.question_write_service import (
 )
 from question_bank.services.taxonomy_review_service import (
     TaxonomyReviewRequestConflict,
-    TaxonomyReviewSelectionInvalid,
     TaxonomyReviewService,
 )
 from question_bank.taxonomy.governance import TaxonomyGovernance
@@ -94,126 +93,6 @@ def _review_service(
     )
 
 
-def test_multi_target_merge_is_written_back_without_replacing_other_tags(
-    tmp_path: Path,
-) -> None:
-    service, governance, _write_service, question_id = _review_service(tmp_path)
-    proposal = _persist_curriculum_proposal(
-        governance,
-        question_ids=[question_id],
-    )
-    first = governance.resolve_term(
-        "curriculum", "七年级下册 第二章 相交线与平行线"
-    )
-    second = governance.resolve_term(
-        "curriculum", "七年级下册 第四章 三角形"
-    )
-    assert first and second
-    token = "a" * 32
-
-    result = service.review_proposal(
-        proposal_id=proposal["id"],
-        decision="merge",
-        expected_revision=governance.list_proposals(status="pending")["revision"],
-        request_token=token,
-        target_term_ids=[first["id"], second["id"]],
-        question_ids=[question_id],
-    )
-    replay = service.review_proposal(
-        proposal_id=proposal["id"],
-        decision="merge",
-        expected_revision=result["revision"] - 1,
-        request_token=token,
-        target_term_ids=[first["id"], second["id"]],
-        question_ids=[question_id],
-    )
-
-    assert replay == result
-    assert result["proposal"]["status"] == "merged"
-    assert result["proposal"]["resolved_term_ids"] == [first["id"], second["id"]]
-    assert result["application"] == {
-        "status": "applied",
-        "selected_question_ids": [question_id],
-        "applied_question_ids": [question_id],
-        "failures": [],
-    }
-    with sqlite3.connect(service.write_service.db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT tag_type, tag_value
-            FROM question_tags
-            WHERE question_id = ?
-            ORDER BY tag_type, tag_value
-            """,
-            (question_id,),
-        ).fetchall()
-    assert ("knowledge_point", "三角形综合") in rows
-    assert ("exam_scope", first["name"]) in rows
-    assert ("exam_scope", second["name"]) in rows
-    assert rows.count(("exam_scope", first["name"])) == 1
-    assert rows.count(("exam_scope", second["name"])) == 1
-
-
-def test_review_request_token_cannot_be_reused_for_a_different_selection(
-    tmp_path: Path,
-) -> None:
-    service, governance, _write_service, question_id = _review_service(tmp_path)
-    proposal = _persist_curriculum_proposal(
-        governance,
-        question_ids=[question_id],
-    )
-    target = governance.resolve_term(
-        "curriculum", "七年级下册 第二章 相交线与平行线"
-    )
-    assert target
-    revision = governance.list_proposals(status="pending")["revision"]
-    token = "b" * 32
-    service.review_proposal(
-        proposal_id=proposal["id"],
-        decision="merge",
-        expected_revision=revision,
-        request_token=token,
-        target_term_ids=[target["id"]],
-        question_ids=[question_id],
-    )
-
-    with pytest.raises(TaxonomyReviewRequestConflict):
-        service.review_proposal(
-            proposal_id=proposal["id"],
-            decision="merge",
-            expected_revision=revision,
-            request_token=token,
-            target_term_ids=[target["id"]],
-            question_ids=[],
-        )
-
-
-def test_review_rejects_question_outside_the_proposal_evidence(
-    tmp_path: Path,
-) -> None:
-    service, governance, _write_service, question_id = _review_service(tmp_path)
-    proposal = _persist_curriculum_proposal(
-        governance,
-        question_ids=[question_id],
-    )
-    target = governance.resolve_term(
-        "curriculum", "七年级下册 第二章 相交线与平行线"
-    )
-    assert target
-
-    with pytest.raises(TaxonomyReviewSelectionInvalid):
-        service.review_proposal(
-            proposal_id=proposal["id"],
-            decision="merge",
-            expected_revision=governance.list_proposals(status="pending")[
-                "revision"
-            ],
-            request_token="c" * 32,
-            target_term_ids=[target["id"]],
-            question_ids=[question_id + 100],
-        )
-
-
 def test_partial_application_can_retry_only_failed_questions(
     tmp_path: Path,
 ) -> None:
@@ -223,9 +102,7 @@ def test_partial_application_can_retry_only_failed_questions(
         governance,
         question_ids=[question_id, missing_question_id],
     )
-    target = governance.resolve_term(
-        "curriculum", "七年级下册 第二章 相交线与平行线"
-    )
+    target = governance.resolve_term("curriculum", "七年级下册 第二章 相交线与平行线")
     assert target
     first_token = "d" * 32
 

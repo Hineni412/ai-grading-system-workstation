@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="a">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>人工复核 · 批量 · 界面改版样稿</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('proto-theme')||'a'}catch(e){document.documentElement.dataset.theme='a'}</script>
+<style>
+/* 题目条 */
+.qstrip { display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 8px; margin-bottom: 6px; scrollbar-width: thin; }
+.qchip {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; position: relative;
+  height: 40px; padding: 0 12px 0 10px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface); font-size: 13px; font-weight: 550; color: var(--ink-2);
+  transition: border-color var(--d-fast) ease, background var(--d-fast) ease, color var(--d-fast) ease;
+}
+.qchip:hover { border-color: var(--line-strong); color: var(--ink-1); }
+.qchip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+[data-theme="b"] .qchip.on { background: var(--b-grad); border-color: #2fa4b3; box-shadow: 0 3px 10px -2px rgba(34,153,171,0.45); }
+/* 进度改为 chip 底部细下划线；完成题显示对勾图标 */
+.qchip__prog { position: absolute; left: 10px; right: 10px; bottom: 4px; height: 2px; border-radius: 1px; background: var(--line); }
+.qchip__prog i { display: block; height: 100%; border-radius: 1px; background: var(--accent); }
+.qchip.on .qchip__prog { background: rgba(255,255,255,0.35); }
+.qchip.on .qchip__prog i { background: #fff; }
+.qchip__done { width: 14px; height: 14px; color: var(--st-done); flex: none; }
+.qchip.on .qchip__done { color: #fff; }
+.qchip .qbadge {
+  position: absolute; top: -6px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 8px; background: var(--st-bad); color: #fff; font-size: 10px; font-weight: 650;
+  display: grid; place-items: center; box-shadow: 0 0 0 2px var(--bg);
+}
+/* 工具条 */
+.rb-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.rb-toolbar .field { width: 230px; }
+.rb-toolbar .hint { margin-left: auto; font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
+.scope-seg button em { font-style: normal; font-weight: 650; }
+/* 答卷瓦片 */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; padding-bottom: 14px; }
+.tile { position: relative; padding: 11px 12px 12px; transition: border-color var(--d-fast) ease, box-shadow var(--d-base) var(--ease-out), transform var(--d-base) var(--ease-out); }
+.tile:hover { box-shadow: var(--shadow-floating); }
+.tile--focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.tile--att { border-color: color-mix(in srgb, var(--st-rev) 55%, var(--line)); }
+.tile--att::after { content: ""; position: absolute; top: 0; left: 12px; right: 12px; height: 2px; border-radius: 0 0 3px 3px; background: var(--st-rev); }
+.tile--mod { border-color: var(--accent); }
+.tile__head { display: flex; align-items: center; gap: 7px; }
+.tile__head b { font-size: 13.5px; }
+.tile__id { font-size: 11px; color: var(--ink-3); }
+.tile__tag { font-size: 10px; font-weight: 650; color: var(--st-rev); background: var(--rev-bg); padding: 1px 6px; border-radius: 4px; }
+.tile__tag--mod { color: var(--accent-ink); background: var(--accent-subtle); }
+.conf { margin-left: auto; font-size: 11px; font-weight: 650; padding: 1px 7px; border-radius: var(--r-pill); font-variant-numeric: tabular-nums; }
+.conf--hi { color: var(--st-done); background: var(--done-bg); }
+.conf--mid { color: var(--st-rev); background: var(--rev-bg); }
+.conf--low { color: var(--st-bad); background: var(--bad-bg); }
+.tile__scan { margin-top: 9px; height: 118px; border-radius: 7px; overflow: hidden; border: 1px solid var(--line-soft); }
+.tile__foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.seg--score { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); }
+.seg--score button { justify-content: center; min-width: 0; padding: 5px 0; font-variant-numeric: tabular-nums; font-weight: 600; }
+.seg--score button.on { background: var(--accent); color: #fff; }
+[data-theme="b"] .seg--score button.on { background: var(--b-grad); box-shadow: 0 1px 5px rgba(9,60,68,0.4); }
+.tile__one { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; color: var(--ink-3); border: 1px solid var(--line); transition: all var(--d-fast) ease; }
+.tile__one:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-subtle); }
+.tile__reason { margin-top: 7px; font-size: 11.5px; color: var(--ink-2); display: flex; gap: 5px; align-items: baseline; }
+.tile__reason .ic { width: 11px; height: 11px; color: var(--st-bad); flex: none; transform: translateY(1.5px); }
+/* 底部条 */
+.batchbar {
+  position: sticky; bottom: 12px; z-index: 15;
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px;
+  background: var(--ink-1); color: #fff; border-radius: 12px; box-shadow: var(--shadow-pop);
+}
+[data-theme="b"] .batchbar {
+  background: linear-gradient(135deg, #15323a, #0e2026);
+  border: 1px solid rgba(47,185,198,0.35);
+  box-shadow: 0 10px 28px -8px rgba(9,50,57,0.55);
+}
+.batchbar .txt { font-size: 13px; color: #c7d3d9; }
+.batchbar .txt b { color: #fff; font-variant-numeric: tabular-nums; }
+.batchbar .go { margin-left: auto; }
+</style>
+</head>
+<body>
+<div class="ribbon">
+  <span class="ribbon__tag"><i class="ic" data-icon="triangle-alert"></i><b>界面改版样稿</b><span>模拟数据 · 不连接真实接口</span></span>
+  <nav class="ribbon__links">
+    <a href="workbench.html">工作台</a>
+    <a href="no-exam.html">未选考试状态</a>
+    <a href="question-bank.html">题库</a>
+    <a class="on" href="review-batch.html">复核-批量</a>
+    <a href="review-single.html">复核-单份</a>
+  </nav>
+  <div class="theme-toggle">
+    <button data-set="a" class="on">风格 A 精致浅色</button>
+    <button data-set="b">风格 B 品牌感</button>
+  </div>
+</div>
+<div class="app">
+<aside class="sidebar">
+  <div class="sb-brand"><div class="brand-mark">知</div><div class="brand-text"><b>知衡</b><span>教师教学工作台</span></div></div>
+  <div class="sb-exam">
+    <button class="exam-card" id="examCard" aria-expanded="false" aria-haspopup="listbox">
+      <span class="exam-card__label">当前考试</span>
+      <span class="exam-card__name">第五周单元测验《实数》</span>
+      <span class="exam-card__meta"><span class="chip chip--rev">待复核 12</span></span>
+      <span class="exam-card__bar"><i style="width:100%"></i></span>
+      <span class="exam-card__sub">八年级上 · 90 份答卷</span>
+      <span class="exam-card__chev ic" data-icon="chevron-down"></span>
+    </button>
+    <div class="exam-pop" id="examPop" hidden role="listbox" aria-label="切换考试">
+      <div class="exam-pop__search"><i class="ic" data-icon="search"></i><input placeholder="搜索考试名称"></div>
+      <div class="exam-pop__chips"><button class="fchip on">全部</button><button class="fchip">八年级上</button><button class="fchip">八年级下</button></div>
+      <div class="exam-pop__list"></div>
+      <div class="exam-pop__foot">
+        <button class="btn btn--sm"><i class="ic" data-icon="plus"></i>新建考试</button>
+        <button class="btn btn--sm btn--ghost">管理全部考试</button>
+      </div>
+    </div>
+  </div>
+  <button class="sb-search" type="button"><i class="ic" data-icon="search"></i>快速跳转<kbd>Ctrl K</kbd></button>
+  <nav class="sb-nav" aria-label="主导航">
+    <a class="sb-link" href="workbench.html"><i class="ic" data-icon="layout-dashboard"></i>工作台</a>
+    <div class="sb-group">考试与阅卷</div>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="clipboard-list"></i>考试配置</span>
+    <a class="sb-link on" href="review-batch.html"><i class="ic" data-icon="square-pen"></i>考试批改</a>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="chart-column"></i>成绩中心</span>
+    <div class="sb-group">题库与组卷</div>
+    <a class="sb-link" href="question-bank.html"><i class="ic" data-icon="library-big"></i>题库管理</a>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="layers"></i>组卷工作台</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="pen-line"></i>命题练习</span>
+    <div class="sb-group">教学分析</div>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="network"></i>知识与训练</span>
+  </nav>
+  <div class="sb-foot">
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="users"></i>学生管理</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="file-clock"></i>调用记录</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="settings"></i>设置</span>
+    <div class="sb-user"><span class="avatar">王</span><span class="sb-user__name">王老师</span><button class="sb-bell" aria-label="任务中心，2 条待处理"><i class="ic" data-icon="bell"></i><i>2</i></button></div>
+  </div>
+</aside>
+<main class="main">
+  <header class="page-header">
+    <div>
+      <div class="ph-crumb"><b>考试批改</b><i class="ic" data-icon="chevron-right"></i><span>第五周单元测验《实数》</span></div>
+      <h1 class="ph-title">人工复核</h1>
+      <p class="ph-meta">高置信 AI 结果已通过，只需处理标黄的答卷</p>
+    </div>
+    <div class="ph-actions">
+      <div class="seg"><a class="on" href="review-batch.html">批量</a><a href="review-single.html">单份</a></div>
+      <button class="btn"><i class="ic" data-icon="circle-play"></i>批改执行</button>
+    </div>
+  </header>
+  <div class="page-content">
+    <div class="qstrip" id="qstrip"></div>
+    <div class="rb-toolbar">
+      <div class="field"><i class="ic" data-icon="search"></i><input placeholder="搜索学生姓名、学号或班级"></div>
+      <div class="seg scope-seg">
+        <button class="on">全部 <em>88</em></button>
+        <button>待处理 <em>3</em></button>
+        <button>AI 已评 <em>85</em></button>
+        <button>教师已定 <em>2</em></button>
+      </div>
+      <select class="field" style="height:30px" aria-label="排序"><option>风险优先</option><option>按学号</option><option>按得分</option></select>
+      <span class="hint"><i class="ic" data-icon="keyboard"></i>1–3 打分 · Enter 确认 · ←→ 切换</span>
+    </div>
+    <div class="tiles" id="tiles"></div>
+    <div class="batchbar">
+      <span class="txt">本题待处理 <b>3</b> 份 · 已修改 <b id="modN">0</b> 份</span>
+      <button class="btn btn--primary go"><i class="ic" data-icon="check"></i>保存本题并进入 Q2</button>
+    </div>
+  </div>
+</main>
+</div>
+<script src="proto.js"></script>
+<script>
+var QUESTIONS = [
+  { q: 'Q1', pend: 3, prog: 0.96 }, { q: 'Q2', pend: 0, prog: 1 }, { q: 'Q3', pend: 0, prog: 1 },
+  { q: 'Q4', pend: 1, prog: 0.94 }, { q: 'Q5', pend: 0, prog: 1 }, { q: 'Q6', pend: 0, prog: 1 },
+  { q: 'Q7', pend: 0, prog: 1 }, { q: 'Q8', pend: 0, prog: 1 }, { q: 'Q9', pend: 2, prog: 0.9 },
+  { q: 'Q10', pend: 0, prog: 1 }, { q: 'Q11', pend: 0, prog: 1 }, { q: 'Q12', pend: 0, prog: 1 },
+  { q: 'Q13', pend: 0, prog: 1 }, { q: 'Q14', pend: 6, prog: 0.82 },
+];
+var TILES = [
+  { n: '林晓雨', c: '八（3）· 04', conf: 62, letter: 'B', score: 0, att: 1, reason: '识别为 B，正确答案为 C' },
+  { n: '周子航', c: '八（5）· 11', conf: 58, letter: 'D', score: 0, att: 1, reason: '识别为 D，正确答案为 C' },
+  { n: '陈雨桐', c: '八（3）· 17', conf: 71, letter: 'A', score: 1, att: 1, reason: '作答涂改，按步骤给 1 分' },
+  { n: '王子墨', c: '八（3）· 22', conf: 92, letter: 'C', score: 3 },
+  { n: '李思远', c: '八（5）· 03', conf: 88, letter: 'C', score: 3 },
+  { n: '赵雨欣', c: '八（3）· 09', conf: 95, letter: 'C', score: 3 },
+  { n: '孙浩然', c: '八（5）· 27', conf: 87, letter: 'C', score: 3 },
+  { n: '吴雅静', c: '八（3）· 31', conf: 90, letter: 'C', score: 3 },
+  { n: '郑凯文', c: '八（5）· 08', conf: 85, letter: 'C', score: 3 },
+  { n: '刘依诺', c: '八（3）· 15', conf: 91, letter: 'C', score: 3 },
+  { n: '张梓萱', c: '八（5）· 19', conf: 89, letter: 'C', score: 3 },
+  { n: '杨俊杰', c: '八（3）· 36', conf: 86, letter: 'C', score: 3 },
+  { n: '黄诗涵', c: '八（5）· 24', conf: 93, letter: 'C', score: 3 },
+  { n: '徐子豪', c: '八（3）· 02', conf: 85, letter: 'C', score: 3 },
+  { n: '何梦瑶', c: '八（5）· 30', conf: 96, letter: 'C', score: 3 },
+];
+function confCls(c) { return c >= 85 ? 'conf--hi' : c >= 60 ? 'conf--mid' : 'conf--low'; }
+function renderStrip() {
+  document.getElementById('qstrip').innerHTML = QUESTIONS.map(function (q, i) {
+    var ind = q.prog >= 1
+      ? '<i class="ic qchip__done" data-icon="check"></i>'
+      : '<span class="qchip__prog"><i style="width:' + Math.round(q.prog * 100) + '%"></i></span>';
+    return '<button class="qchip' + (i === 0 ? ' on' : '') + '">'
+      + ind + q.q + (q.pend ? '<span class="qbadge">' + q.pend + '</span>' : '') + '</button>';
+  }).join('');
+  document.querySelectorAll('.qchip').forEach(function (ch) {
+    ch.addEventListener('click', function () {
+      document.querySelectorAll('.qchip').forEach(function (c) { c.classList.remove('on'); });
+      ch.classList.add('on');
+    });
+  });
+}
+function renderTiles() {
+  document.getElementById('tiles').innerHTML = TILES.map(function (t, i) {
+    return '<div class="card tile' + (t.att ? ' tile--att' : '') + '" data-i="' + i + '" tabindex="0">'
+      + '<div class="tile__head"><b>' + t.n + '</b><span class="tile__id">' + t.c + '</span>'
+      + (t.att ? '<span class="tile__tag">需确认</span>' : '')
+      + '<span class="conf ' + confCls(t.conf) + '">' + t.conf + '%</span></div>'
+      + '<div class="tile__scan" data-letter="' + t.letter + '" data-k="' + i + '"></div>'
+      + '<div class="tile__foot"><div class="seg seg--score">'
+      + [0, 1, 2, 3].map(function (s) { return '<button data-s="' + s + '"' + (s === t.score ? ' class="on"' : '') + '>' + s + '</button>'; }).join('')
+      + '</div><a class="tile__one" href="review-single.html" title="单份查看"><i class="ic" data-icon="eye"></i></a></div>'
+      + (t.reason ? '<div class="tile__reason"><i class="ic" data-icon="circle-alert"></i>' + t.reason + '</div>' : '')
+      + '</div>';
+  }).join('');
+  document.querySelectorAll('.tile__scan').forEach(function (el) {
+    var k = Number(el.getAttribute('data-k'));
+    el.innerHTML = scanSVG({ w: 220, h: 118, letter: el.getAttribute('data-letter'), rx: 18 + (k % 3) * 10, rw: 150, rh: 52 });
+  });
+  document.querySelectorAll('.tile').forEach(function (tile) {
+    tile.querySelectorAll('.seg--score button').forEach(function (btn) {
+      btn.addEventListener('click', function () { setScore(tile, Number(btn.getAttribute('data-s'))); });
+    });
+    tile.addEventListener('focus', function () {
+      document.querySelectorAll('.tile--focus').forEach(function (t) { t.classList.remove('tile--focus'); });
+      tile.classList.add('tile--focus');
+    });
+  });
+}
+function setScore(tile, s) {
+  tile.querySelectorAll('.seg--score button').forEach(function (b) {
+    b.classList.toggle('on', Number(b.getAttribute('data-s')) === s);
+  });
+  var was = tile.classList.contains('tile--mod');
+  var orig = Number(tile.getAttribute('data-i'));
+  if (TILES[orig].score !== s && !was) {
+    tile.classList.add('tile--mod');
+    var tag = document.createElement('span');
+    tag.className = 'tile__tag tile__tag--mod';
+    tag.textContent = '已修改';
+    tile.querySelector('.tile__head').insertBefore(tag, tile.querySelector('.conf'));
+  } else if (TILES[orig].score === s && was) {
+    tile.classList.remove('tile--mod');
+    var mt = tile.querySelector('.tile__tag--mod');
+    if (mt) mt.remove();
+  }
+  syncMod();
+}
+function syncMod() {
+  document.getElementById('modN').textContent = document.querySelectorAll('.tile--mod').length;
+}
+document.addEventListener('DOMContentLoaded', function () {
+  renderStrip();
+  renderTiles();
+  injectIcons();
+  var tiles = Array.prototype.slice.call(document.querySelectorAll('.tile'));
+  document.addEventListener('keydown', function (e) {
+    if (e.target.matches('input, select, textarea')) return;
+    var focused = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('tile') ? document.activeElement : null;
+    var idx = focused ? tiles.indexOf(focused) : -1;
+    var cols = Math.max(1, Math.round(document.getElementById('tiles').offsetWidth / (tiles[0] ? tiles[0].offsetWidth + 12 : 300)));
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowDown' ? cols : -cols;
+      var ni = idx === -1 ? 0 : Math.min(tiles.length - 1, Math.max(0, idx + d));
+      tiles[ni].focus();
+    } else if (/^[0-3]$/.test(e.key) && idx !== -1) {
+      setScore(focused, Number(e.key));
+    }
+  });
+});
+</script>
+</body>
+</html>

@@ -1285,7 +1285,7 @@ def build_hybrid_major_prompt(
         "8.c) 看到旧答案被涂抹、划掉、打叉时，设置 smudged_or_crossed_out=true；仅当全部作答已作废且没有有效答案或步骤时，设置 answer_discarded_by_smudge=true。存在清晰替代答案或有效步骤时，该字段必须为 false；"
         "observed_answer 只能填写未被涂抹/作废区域中的有效答案。若未涂抹区域另有有效答案，仍按该答案评分；若只有涂抹/作废区域有答案，score_awarded=0、error_category=作废答案。\n"
         "9) 若无法辨认或存在争议会影响给分，应设置 needs_human_review=true，在 deduction_reason 中说明会改变哪些评分点，并降低 confidence_score。不同合理读法均得同分时，不仅因字迹模糊要求复核。\n"
-        "10) 不要输出知识点或技能字段；优先从 QUESTION_TAG_CONTEXT 的 error_type 原值中选择错因，候选不符时使用“其他”。\n\n"
+        "10) 不要输出知识点或技能字段；根据本次实际作答和扣分证据选择 error_category、写具体错因。QUESTION_TAG_CONTEXT 的旧 error_type 标签仅作背景，不能限制本次判断；只有确实无法归入上述错误类型时才使用“其他”。\n\n"
         "证明义务与防作弊原则：\n"
         "- 每个评分步骤表示数学目标及最高分，而不是必须照抄的参考答案行。每个步骤是一个判定点，只判有/无：达成给该步满分，未达成 0 分，不给步骤内部分分。同一错误不重复扣。\n"
         "- proof_obligations 是必须完成的证明责任，不是必须照抄的参考答案步骤。\n"

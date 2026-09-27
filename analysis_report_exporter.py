@@ -4217,7 +4217,7 @@ def build_analysis_preflight(
         estimated_tokens += estimate_prompt_tokens(prompt) + max_tokens
 
     # 错因整理是报告导出的前置阶段：与实际任务同口径估算——已整理且输入未变
-    # 的题与整理失败且输入未变的题都不重复调用。八上选择题走选项诊断
+    # 的题与整理失败且输入未变的题都不重复调用。已关联题库的选择题走选项诊断
     # （可复用，未复用时也只计 1 次）；填空题错误答案库全覆盖时零调用。
     cause_call_count = 0
     cause_total_questions = 0
@@ -4235,7 +4235,6 @@ def build_analysis_preflight(
         )
         from backend.error_patterns import (
             OPTION_ANALYSIS_PROMPT,
-            OPTION_ANALYSIS_VOLUMES,
             bank_confirmed_triggers,
             build_option_analysis_input,
             session_bank_context,
@@ -4252,11 +4251,7 @@ def build_analysis_preflight(
         )
         cause_total_questions = len(sources)
         qb_path = _question_bank_db_path(repositories.db_path)
-        session_row = repositories.sessions.get_grading_session(int(session_id)) or {}
-        option_scope = (
-            str(session_row.get("curriculum_volume_id") or "").strip()
-            in OPTION_ANALYSIS_VOLUMES
-        )
+        option_scope = True
         bank_context = session_bank_context(qb_path, int(session_id))
         confirmed_by_bank = bank_confirmed_triggers(
             qb_path,

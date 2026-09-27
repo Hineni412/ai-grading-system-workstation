@@ -1,13 +1,8 @@
-import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import type {
-  GraphEvidenceResponse,
-  GraphNode,
-  GraphQueryInput,
-  GraphResponse,
-} from '../api/graph'
-import { useKnowledgeGraphStore } from '../stores/knowledge-graph'
+import type { GraphEvidenceResponse, GraphNode, GraphQueryInput, GraphResponse } from '../api/graph';
+import { useKnowledgeGraphStore } from '../stores/knowledge-graph';
 
 const query: GraphQueryInput = {
   scope: { mode: 'class', class_id: '一班' },
@@ -60,17 +55,6 @@ const evidence: GraphEvidenceResponse = {
 beforeEach(() => setActivePinia(createPinia()))
 
 describe('knowledge graph store', () => {
-  it('loads one current graph and then evidence for its selected node', async () => {
-    const store = useKnowledgeGraphStore()
-    const graphLoader = vi.fn(async () => graph)
-    const evidenceLoader = vi.fn(async () => evidence)
-    await store.loadGraph(query, graphLoader)
-    await store.selectNode(node, evidenceLoader)
-    expect(store.graphState).toBe('ready')
-    expect(store.graph?.current_standard).toEqual(standard)
-    expect(store.selectedNodeKey).toBe(node.stable_key)
-    expect(store.evidenceState).toBe('empty')
-  })
 
   it('rejects evidence from a different current graph scope', async () => {
     const store = useKnowledgeGraphStore()

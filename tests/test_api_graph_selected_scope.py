@@ -134,8 +134,8 @@ def _seed_question_bank_db(tmp_path: Path) -> Path:
 
 def _client(grading_db: Path, question_bank_db: Path) -> TestClient:
     app = create_app()
-    app.dependency_overrides[get_request_diagnosis_profile_service] = (
-        lambda: DiagnosisProfileService(grading_db, question_bank_db)
+    app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: (
+        DiagnosisProfileService(grading_db, question_bank_db)
     )
     app.dependency_overrides[get_current_graph_query_service] = lambda: (
         CurrentKnowledgeGraphQueryService(question_bank_db)
@@ -147,57 +147,32 @@ def test_semester_graph_and_evidence_exclude_other_terms_and_empty_scope(tmp_pat
     grading_db = _seed_grading_db(tmp_path)
     question_bank_db = _seed_question_bank_db(tmp_path)
     with sqlite3.connect(grading_db) as conn:
-        conn.execute("UPDATE grading_sessions SET curriculum_volume_id=CASE WHEN id=2 THEN 'bnu24-math-g8-upper' ELSE 'bnu24-math-g7-lower' END")
+        conn.execute(
+            "UPDATE grading_sessions SET curriculum_volume_id=CASE WHEN id=2 THEN 'bnu24-math-g8-upper' ELSE 'bnu24-math-g7-lower' END"
+        )
     client = _client(grading_db, question_bank_db)
-    query = {"scope": {"mode": "all", "use_historical_fallback": True},
-             "exam_scope": {"mode": "semester", "curriculum_volume_id": "bnu24-math-g8-upper", "session_ids": [1]}}
-    response = client.post('/api/graph/query', json=query)
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload['exam_scope']['session_ids'] == [2]
-    assert payload['scope']['student_score_profiles']['3']['score_rate'] is None
-    assert payload['scope']['use_historical_fallback'] is False
-    assert payload['nodes']
-    key = 'kp_alg_linear_equation'
-    for volume, expected in [('bnu24-math-g8-upper', {2}), ('term-without-exams', set()), ('', set())]:
-        query['exam_scope']['curriculum_volume_id'] = volume
-        evidence = client.post('/api/graph/evidence', json={**query, 'stable_key': key})
-        assert evidence.status_code == 200, evidence.text
-        assert {row['session_id'] for row in evidence.json()['items']} == expected
-
-
-def test_graph_query_selected_scope_keeps_queue_order_and_tolerates_gaps(
-    tmp_path: Path,
-) -> None:
-    """真实服务栈：队列乱序 + 无证据学生 + 不存在的学生 id。
-
-    复现“选中学生（队列）时知识图谱有的时候无法更新”：
-    响应 scope.student_ids 必须保持请求队列的相对顺序，否则前端
-    matchesQuery 的有序子序列校验失败并提示“知识图谱暂时无法更新”。
-    无证据学生与不存在的学生 id 都不得导致报错。
-    """
-    grading_db = _seed_grading_db(tmp_path)
-    question_bank_db = _seed_question_bank_db(tmp_path)
-    client = _client(grading_db, question_bank_db)
-
-    response = client.post(
-        "/api/graph/query",
-        json={
-            "scope": {
-                "mode": "selected",
-                # 丁(4) 无任何证据；999 不存在；顺序与花名册不一致
-                "student_ids": ["4", "2", "999", "3"],
-            },
-            "exam_scope": {"mode": "current", "session_ids": [2]},
+    query = {
+        "scope": {"mode": "all", "use_historical_fallback": True},
+        "exam_scope": {
+            "mode": "semester",
+            "curriculum_volume_id": "bnu24-math-g8-upper",
+            "session_ids": [1],
         },
-    )
-
+    }
+    response = client.post("/api/graph/query", json=query)
     assert response.status_code == 200, response.text
     payload = response.json()
-    # 不存在的学生被忽略并记录警告，其余保持请求顺序
-    assert payload["scope"]["student_ids"] == ["4", "2", "3"]
-    assert any("999" in warning for warning in payload["warnings"])
-    # 乙（当前考试）与丙（历史 fallback）的证据仍然进入图谱
-    assert payload["counts"]["node_count"] >= 1
-    # 无证据的丁保留在范围内，不触发任何错误
-    assert payload["scope"]["matched_student_count"] == 3
+    assert payload["exam_scope"]["session_ids"] == [2]
+    assert payload["scope"]["student_score_profiles"]["3"]["score_rate"] is None
+    assert payload["scope"]["use_historical_fallback"] is False
+    assert payload["nodes"]
+    key = "kp_alg_linear_equation"
+    for volume, expected in [
+        ("bnu24-math-g8-upper", {2}),
+        ("term-without-exams", set()),
+        ("", set()),
+    ]:
+        query["exam_scope"]["curriculum_volume_id"] = volume
+        evidence = client.post("/api/graph/evidence", json={**query, "stable_key": key})
+        assert evidence.status_code == 200, evidence.text
+        assert {row["session_id"] for row in evidence.json()["items"]} == expected

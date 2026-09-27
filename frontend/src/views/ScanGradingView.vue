@@ -14,6 +14,7 @@ import type {
   SelectableGradingMode,
 } from '../api/scan-grading'
 import AppButton from '../components/design-system/AppButton.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
 import StudentMatchSelect from '../components/scan-grading/StudentMatchSelect.vue'
 import { BorderBeam } from '@/components/ui/border-beam'
 import { useScanGradingStore } from '../stores/scan-grading'
@@ -27,6 +28,20 @@ const confirmPending = ref(false)
 const selectedStudents = ref<Record<string, number | undefined>>({})
 const gradingSubmissionPending = ref(false)
 const runSection = ref<HTMLElement | null>(null)
+const uploadSection = ref<HTMLElement | null>(null)
+const preflightSection = ref<HTMLElement | null>(null)
+const startSection = ref<HTMLElement | null>(null)
+const interventionSection = ref<HTMLElement | null>(null)
+const stageSteps: { label: string; target: { value: HTMLElement | null } }[] = [
+  { label: '上传答卷', target: uploadSection },
+  { label: '扫描预检', target: preflightSection },
+  { label: '开始批改', target: startSection },
+  { label: '运行与补批', target: runSection },
+  { label: '人工干预', target: interventionSection },
+]
+function scrollToStage(target: { value: HTMLElement | null }): void {
+  target.value?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+}
 const interventionQuestions = ref<ReviewQuestionSummary[]>([])
 const interventionState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const viewerTargetKey = ref<string | null>(null)
@@ -47,6 +62,7 @@ const gradingCompletedWithoutRun = computed(() => !store.gradingRun
   && store.workspace?.grading_job?.status === 'succeeded'
   && store.workspace.grading_job.scan_batch_id === store.uploadBatch?.batch_id)
 const editableUploadBatch = computed(() => store.replacementBatch ?? store.uploadBatch)
+const uploadFrozen = computed(() => store.uploadBatch?.state === 'frozen' && !store.replacementBatch)
 const preflightActive = computed(() => Boolean(
   store.preflightJob && !TERMINAL_JOB_STATUSES.has(store.preflightJob.status),
 ))
@@ -65,7 +81,6 @@ interface GradingModeOption {
   mode: SelectableGradingMode
   label: string
   title: string
-  description: string
   note: string
 }
 
@@ -74,14 +89,12 @@ const gradingModes: GradingModeOption[] = [
     mode: 'ai',
     label: 'AI 批改',
     title: '整页原图，按题批改',
-    description: '每位考生的客观题整区一次识别；每道解答题单独一次请求，送整页原图并标注目标题位置，不裁切。',
     note: '会调用 AI · 执行前显示请求估算',
   },
   {
     mode: 'manual',
     label: '人工批改',
     title: '直接进入按题评分',
-    description: '不调用 AI，使用现有评分工作台逐题查看全班答题区域。',
     note: 'AI 请求 0 · 教师分数为最终结果',
   },
 ]
@@ -145,6 +158,20 @@ interface ReviewRow {
 }
 
 const showOnlyPending = ref(false)
+const expandedBuckets = ref<Record<string, boolean>>({})
+function isBucketExpanded(bucket: { key: ReviewRow['bucket']; rows: ReviewRow[] }): boolean {
+  const expanded = expandedBuckets.value[bucket.key]
+    ?? (bucket.key === 'conflict' || bucket.key === 'unmatched')
+  // 折叠的分组里若有已选学生的答卷，强制展开，避免待保存的选择消失。
+  if (expanded) return true
+  return bucket.rows.some((row) => Boolean(selectedStudents.value[String(row.item.id)]))
+}
+function toggleBucket(bucket: { key: ReviewRow['bucket']; rows: ReviewRow[] }): void {
+  expandedBuckets.value = {
+    ...expandedBuckets.value,
+    [bucket.key]: !isBucketExpanded(bucket),
+  }
+}
 
 const decisionMap = computed(() => new Map(
   (store.preflight?.decisions ?? []).map((item) => [`${item.target_type}:${item.target_id}`, item]),
@@ -169,7 +196,7 @@ const assignedByStudent = computed(() => {
     add(studentId, {
       targetType: 'group',
       targetId,
-      label: String(group.source_label || group.student_name || group.detected_name || '答卷'),
+      label: displaySourceLabel(String(group.source_label || group.student_name || group.detected_name || '答卷')),
     })
   }
   const issuesById = new Map(
@@ -182,7 +209,7 @@ const assignedByStudent = computed(() => {
     add(decision.student_id, {
       targetType: 'issue',
       targetId: decision.target_id,
-      label: String(issue.source_label || issue.detected_name || '异常答卷'),
+      label: displaySourceLabel(String(issue.source_label || issue.detected_name || '异常答卷')),
     })
   }
   return map
@@ -273,6 +300,7 @@ interface ConflictTarget {
   targetId: string
   item?: Record<string, unknown>
   label: string
+  rawLabel: string
   owner: string
 }
 
@@ -281,11 +309,15 @@ const conflictCards = computed(() => reviewMatchConflicts.value.map((conflict) =
   const targets: ConflictTarget[] = conflict.targets.map((target) => {
     const item = preflightItem(target.target_type, target.target_id)
     const decision = decisionMap.value.get(`${target.target_type}:${target.target_id}`)
+    const rawLabel = String(
+      item?.source_label || item?.student_name || item?.detected_name || target.target_id,
+    )
     return {
       targetType: target.target_type,
       targetId: target.target_id,
       item,
-      label: String(item?.source_label || item?.student_name || item?.detected_name || target.target_id),
+      label: displaySourceLabel(rawLabel),
+      rawLabel,
       owner: decision
         ? { match: '已手动指定', invalid: '已标无效', pending: '已转待处理' }[decision.action]
         : '自动匹配',
@@ -469,7 +501,7 @@ function viewerTarget(
     key: `${targetType}:${targetId}`,
     targetType,
     targetId,
-    title: itemText(item, 'source_label') || (targetType === 'group' ? '自动匹配答卷' : '异常答卷'),
+    title: itemSourceLabel(item) || (targetType === 'group' ? '自动匹配答卷' : '异常答卷'),
     detectedName: itemText(item, 'student_name') || itemText(item, 'detected_name') || '未识别姓名',
     frontUrl,
     backUrl: itemText(item, 'back_media_url') || null,
@@ -582,6 +614,27 @@ function planNumber(source: GradingPlanMetrics | undefined, keys: string[]): num
     if (Number.isFinite(value) && value >= 0) return value
   }
   return null
+}
+function formatBytes(bytes: number): string {
+  const kb = bytes / 1024
+  if (kb < 1024) return `${Math.ceil(kb)} KB`
+  return `${(kb / 1024).toFixed(1)} MB`
+}
+// 仅展示用：把 64 位 sha256 文件名换回上传文件名（匹配 sha256_prefix 前 12 位），否则缩写成前 8 位哈希。
+function displaySourceLabel(label: string): string {
+  const match = /^([0-9a-f]{64})\.(pdf|png|jpe?g)/i.exec(label)
+  if (!match) return label
+  const hash = match[1]!.toLowerCase()
+  const file = [
+    ...(store.uploadBatch?.files ?? []),
+    ...(store.replacementBatch?.files ?? []),
+  ].find((item) => Boolean(item.sha256_prefix)
+    && hash.startsWith(item.sha256_prefix!.toLowerCase()))
+  const head = file ? file.name : `${hash.slice(0, 8)}….${match[2]}`
+  return `${head}${label.slice(match[0].length)}`
+}
+function itemSourceLabel(item: Record<string, unknown>): string {
+  return displaySourceLabel(itemText(item, 'source_label'))
 }
 function formatPlanNumber(source: GradingPlanMetrics | undefined, keys: string[]): string {
   const value = planNumber(source, keys)
@@ -746,6 +799,7 @@ onBeforeUnmount(() => {
 })
 watch(sessionId, () => {
   selectedStudents.value = {}
+  expandedBuckets.value = {}
   decisionNotice.value = ''
   gradingSubmissionPending.value = false
   closeViewer()
@@ -786,39 +840,56 @@ watch(
 
 <template>
   <article class="scan-grading">
-    <header class="scan-grading__header">
-      <div>
-        <span class="scan-grading__eyebrow">批改执行 · 考试会话 {{ sessionId }}</span>
-        <h1>整班答卷批改</h1>
-        <p>从答卷入库到异常核对，再到正式批改与补批，状态都保存在本机服务中。</p>
-      </div>
-      <div class="scan-grading__header-actions">
-        <button type="button" class="secondary" @click="router.push('/sessions')">返回考试配置</button>
-      </div>
-    </header>
+    <PageHeader title="考试批改">
+      <template #actions>
+        <ol class="scan-run-rail" aria-label="批改执行阶段">
+          <li v-for="(step, index) in stageSteps" :key="step.label"
+            :data-state="stage > index + 1 ? 'complete' : stage === index + 1 ? 'current' : 'waiting'">
+            <button type="button" :disabled="!store.workspace"
+              :aria-current="stage === index + 1 ? 'step' : undefined"
+              @click="scrollToStage(step.target)">
+              <span class="scan-run-rail__mark" aria-hidden="true">
+                <svg v-if="stage > index + 1" viewBox="0 0 16 16" width="12" height="12">
+                  <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor"
+                    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <template v-else>{{ index + 1 }}</template>
+              </span>
+              <span class="scan-run-rail__label">{{ step.label }}</span>
+            </button>
+          </li>
+        </ol>
+      </template>
+    </PageHeader>
 
     <div class="scan-grading__body">
-      <ol class="scan-run-rail" aria-label="批改执行阶段">
-        <li v-for="(label, index) in ['上传答卷', '扫描预检', '开始批改', '运行与补批', '人工干预']" :key="label"
-          :data-state="stage > index + 1 ? 'complete' : stage === index + 1 ? 'current' : 'waiting'">
-          <span>{{ index + 1 }}</span><strong>{{ label }}</strong>
-        </li>
-      </ol>
       <main class="scan-grading__main">
 
     <p v-if="store.errorMessage" class="scan-grading__notice" role="alert">{{ store.errorMessage }}</p>
     <p v-if="store.loadState === 'loading'" class="scan-grading__notice" role="status">正在恢复本次批改工作区…</p>
 
     <template v-if="store.workspace">
-      <section class="scan-stage" aria-labelledby="upload-title">
+      <section ref="uploadSection" class="scan-stage" aria-labelledby="upload-title">
         <div class="scan-stage__heading">
-          <div><span>01</span><h2 id="upload-title">上传答卷</h2></div>
-          <strong>{{ editableUploadBatch?.file_count ?? 0 }} 个文件 · {{ Math.ceil((editableUploadBatch?.total_bytes ?? 0) / 1024) }} KB</strong>
+          <h2 id="upload-title">上传答卷</h2>
+          <strong>{{ editableUploadBatch?.file_count ?? 0 }} 个文件 · {{ formatBytes(editableUploadBatch?.total_bytes ?? 0) }}</strong>
         </div>
         <p v-if="store.replacementBatch" class="scan-warning">
           <strong>正在准备替换答卷。</strong>旧答卷和已有成果目前仍然保留；只有点击“确认替换并开始预检”后才会永久清除。
         </p>
-        <label class="scan-drop" :data-disabled="Boolean(store.busyAction)">
+        <div v-if="uploadFrozen" class="scan-upload-summary">
+          <div class="scan-upload-summary__files">
+            <span v-for="file in editableUploadBatch?.files ?? []" :key="file.id" class="scan-upload-summary__file">
+              <strong>{{ file.name }}</strong><small>{{ formatBytes(file.size_bytes) }}</small>
+            </span>
+          </div>
+          <label class="scan-upload-summary__action" :data-disabled="Boolean(store.busyAction)">
+            重新上传答卷
+            <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+              :disabled="Boolean(store.busyAction)" @change="chooseFiles">
+          </label>
+        </div>
+        <label v-else class="scan-drop" :data-disabled="Boolean(store.busyAction)">
           <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
             :disabled="Boolean(store.busyAction)" @change="chooseFiles">
           <span class="scan-drop__icon" aria-hidden="true">
@@ -827,12 +898,12 @@ watch(
               <path d="M3.75 15.75v1.5A2.25 2.25 0 0 0 6 19.5h12a2.25 2.25 0 0 0 2.25-2.25v-1.5" />
             </svg>
           </span>
-          <strong>{{ store.uploadBatch?.state === 'frozen' && !store.replacementBatch ? '重新上传答卷' : '选择或继续添加答卷' }}</strong>
+          <strong>选择或继续添加答卷</strong>
           <span>支持 PDF、JPG、PNG；重复内容会自动跳过。</span>
         </label>
-        <div v-if="editableUploadBatch?.files.length" class="scan-file-list">
+        <div v-if="!uploadFrozen && editableUploadBatch?.files.length" class="scan-file-list">
           <div v-for="file in editableUploadBatch.files" :key="file.id">
-            <span><strong>{{ file.name }}</strong><small>{{ file.sha256_prefix }} · {{ Math.ceil(file.size_bytes / 1024) }} KB</small></span>
+            <span><strong>{{ file.name }}</strong><small>{{ file.sha256_prefix }} · {{ formatBytes(file.size_bytes) }}</small></span>
             <button v-if="editableUploadBatch.state === 'draft'" type="button" class="text-button" @click="store.remove(file.id)">移除</button>
           </div>
         </div>
@@ -847,9 +918,9 @@ watch(
         </div>
       </section>
 
-      <section class="scan-stage" aria-labelledby="preflight-title">
+      <section ref="preflightSection" class="scan-stage" aria-labelledby="preflight-title">
         <div class="scan-stage__heading">
-          <div><span>02</span><h2 id="preflight-title">扫描预检</h2></div>
+          <h2 id="preflight-title">扫描预检</h2>
           <strong v-if="store.preflight">自动匹配 {{ store.preflight.summary.auto_matched ?? 0 }} · 异常 {{ store.preflight.summary.issues ?? 0 }}</strong>
         </div>
         <div v-if="preflightActive" class="scan-progress" role="status" aria-live="polite">
@@ -870,23 +941,22 @@ watch(
           <button v-if="store.uploadBatch?.state === 'frozen' && !store.preflightJobId" data-action="retry-preflight" type="button" class="secondary" @click="store.analyze">运行或重新运行预检</button>
         </div>
         <template v-else>
-          <p class="scan-page-assignment">
-            本次预检按样卷页序识别：
-            <strong>PDF 第 1 页为{{ preflightPageAssignment.first_page_role === 'front' ? '正面' : '反面' }}</strong>
-            （正面位于{{ preflightPageAssignment.front_page_parity === 'odd' ? '奇数页' : '偶数页' }}）。
-          </p>
-          <p class="scan-start-summary" data-scan-reconciliation>
-            扫描 {{ store.preflight.summary.scanned_papers ?? 0 }} 份 · 已匹配 {{ store.preflight.summary.matched_papers ?? 0 }} 份 ·
-            对应 {{ store.preflight.summary.unique_students ?? 0 }} 名学生 · 有效可批改 {{ store.preflight.summary.ready_to_grade ?? 0 }} 份 ·
-            未决 {{ pendingCount }} 份 · 无效 {{ invalidCount }} 份
-          </p>
+          <div class="scan-stats" data-scan-reconciliation>
+            <span>扫描 <strong>{{ store.preflight.summary.scanned_papers ?? 0 }}</strong> 份</span>
+            <span>已匹配 <strong>{{ store.preflight.summary.matched_papers ?? 0 }}</strong> 份</span>
+            <span>对应 <strong>{{ store.preflight.summary.unique_students ?? 0 }}</strong> 名学生</span>
+            <span>有效可批改 <strong>{{ store.preflight.summary.ready_to_grade ?? 0 }}</strong> 份</span>
+            <span>未决 <strong>{{ pendingCount }}</strong> 份</span>
+            <span>无效 <strong>{{ invalidCount }}</strong> 份</span>
+            <span class="scan-stats__note">PDF 第 1 页为{{ preflightPageAssignment.first_page_role === 'front' ? '正面' : '反面' }}（正面在{{ preflightPageAssignment.front_page_parity === 'odd' ? '奇数页' : '偶数页' }}）</span>
+          </div>
           <p v-if="matchConflicts.length" class="scan-warning" role="alert">存在答卷归属冲突，请处理下方标出的答卷后再开始批改。可以更正归属，或将重复扫描标为无效。</p>
           <p v-else-if="pendingCount" class="scan-warning"><strong>仍有 {{ pendingCount }} 份异常答卷待处理</strong>。确认跳过后，可以先批改其余学生。</p>
-          <div class="scan-stage__actions scan-match-actions">
+          <div v-if="selectedMatches.length || store.busyAction === 'decisions'" class="scan-stage__actions scan-match-actions">
             <button type="button" class="secondary" data-match-selected :disabled="!selectedMatches.length || Boolean(store.busyAction)" @click="submitDecisions(selectedMatches, true)">
               {{ store.busyAction === 'decisions' ? '正在保存…' : `一键匹配（${selectedMatches.length} 项）` }}
             </button>
-            <span>保存已选好学生的完整答卷；重复归属的项目保留待处理，其余正常保存。</span>
+            <span>重复归属的项会保留待处理</span>
           </div>
           <p v-if="savingDecisionCount" class="scan-decision-state" role="status">正在保存 {{ savingDecisionCount }} 项，请稍候…</p>
           <p v-else-if="decisionNotice" data-match-result :class="decisionFailed ? 'scan-match-conflict' : 'scan-decision-state'" :role="decisionFailed ? 'alert' : 'status'">{{ decisionNotice }}</p>
@@ -903,7 +973,7 @@ watch(
                   <span>查看正面</span>
                 </button>
                 <span class="scan-conflict-card__label">
-                  <strong>{{ target.label }}</strong>
+                  <strong :title="target.rawLabel">{{ target.label }}</strong>
                   <small>{{ target.owner }}</small>
                 </span>
                 <span class="scan-conflict-card__actions">
@@ -917,33 +987,43 @@ watch(
               </div>
             </div>
           </div>
-          <label v-if="reviewRows.length" class="scan-filter">
-            <input v-model="showOnlyPending" type="checkbox" data-filter-pending>
-            只看未处理
-          </label>
+          <div v-if="reviewRows.length" class="scan-review-toolbar">
+            <label class="scan-filter">
+              <input v-model="showOnlyPending" type="checkbox" data-filter-pending>
+              只看未处理
+            </label>
+          </div>
           <div v-for="bucket in reviewBuckets" :key="bucket.key" class="scan-issue-list" :aria-label="bucket.title">
-            <h3 class="scan-issue-list__title">{{ bucket.title }}（{{ bucket.rows.length }}）</h3>
+            <h3 class="scan-issue-list__title">
+              <button type="button" class="scan-issue-list__toggle" :aria-expanded="isBucketExpanded(bucket)" @click="toggleBucket(bucket)">
+                <svg class="scan-issue-list__chevron" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <path d="M4.5 6.5l3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                {{ bucket.title }}（{{ bucket.rows.length }}）
+              </button>
+            </h3>
+            <template v-if="isBucketExpanded(bucket)">
             <div v-for="row in bucket.rows" :key="row.key" class="scan-issue-row" :data-bucket="row.bucket">
-              <div class="scan-evidence" :aria-label="`${row.item.source_label || (row.targetType === 'group' ? '答卷' : '异常答卷')}正反面证据`">
+              <div class="scan-evidence" :aria-label="`${itemSourceLabel(row.item) || (row.targetType === 'group' ? '答卷' : '异常答卷')}正反面证据`">
                 <button v-if="row.item.front_media_url" type="button" class="scan-evidence__thumb"
-                  :aria-label="`查看${row.item.source_label || '答卷'}正面大图`"
+                  :aria-label="`查看${itemSourceLabel(row.item) || '答卷'}正面大图`"
                   @click="openViewer(row.targetType, row.item, 'front')">
                   <img :src="String(row.item.front_media_url)"
-                    :alt="`${row.item.source_label || '答卷'}正面`" loading="lazy" decoding="async">
+                    :alt="`${itemSourceLabel(row.item) || '答卷'}正面`" loading="lazy" decoding="async">
                   <span>查看正面</span>
                 </button>
                 <button v-if="row.item.back_media_url" type="button" class="scan-evidence__thumb"
-                  :aria-label="`查看${row.item.source_label || '答卷'}反面大图`"
+                  :aria-label="`查看${itemSourceLabel(row.item) || '答卷'}反面大图`"
                   @click="openViewer(row.targetType, row.item, 'back')">
                   <img :src="String(row.item.back_media_url)"
-                    :alt="`${row.item.source_label || '答卷'}反面`" loading="lazy" decoding="async">
+                    :alt="`${itemSourceLabel(row.item) || '答卷'}反面`" loading="lazy" decoding="async">
                   <span>查看反面</span>
                 </button>
                 <span v-else class="scan-evidence__missing">无反面</span>
               </div>
               <span class="scan-item-copy">
                 <strong>{{ row.item.student_name || row.item.detected_name || '待核对姓名' }}</strong>
-                <small>{{ row.item.source_label || (row.targetType === 'group' ? '答卷' : '异常答卷') }}<template v-if="row.targetType === 'group'"> · {{ matchMethodLabel(row.item) }}</template></small>
+                <small :title="itemText(row.item, 'source_label') || undefined">{{ itemSourceLabel(row.item) || (row.targetType === 'group' ? '答卷' : '异常答卷') }}<template v-if="row.targetType === 'group'"> · {{ matchMethodLabel(row.item) }}</template></small>
                 <small v-if="row.item.detected_name && (row.targetType === 'issue' || row.item.student_name)">识别姓名：{{ row.item.detected_name }}</small>
                 <small v-if="row.item.issue_type === 'ambiguous_name'">名单中有重名，请按学号和班级选择。</small>
                 <small v-if="row.targetType === 'issue' && !row.item.back_media_url" class="scan-match-conflict">缺反面，不能直接归属；可标无效或稍后处理。</small>
@@ -982,13 +1062,14 @@ watch(
               </div>
               </div>
             </div>
+            </template>
           </div>
 
         </template>
       </section>
 
-      <section class="scan-stage" aria-labelledby="start-title">
-        <div class="scan-stage__heading"><div><span>03</span><h2 id="start-title">开始批改</h2></div></div>
+      <section ref="startSection" class="scan-stage" aria-labelledby="start-title">
+        <div class="scan-stage__heading"><h2 id="start-title">开始批改</h2></div>
         <label v-if="pendingCount" class="scan-confirm">
           <input v-model="confirmPending" data-confirm-pending type="checkbox">
           我已知晓：{{ pendingCount }} 份异常答卷本轮会跳过，之后可继续匹配和补批。
@@ -1004,7 +1085,6 @@ watch(
             @click="chooseMode(option.mode)">
             <span>{{ option.label }}</span>
             <strong>{{ option.title }}</strong>
-            <small>{{ option.description }}</small>
             <em>{{ option.note }}</em>
           </button>
         </div>
@@ -1066,12 +1146,9 @@ watch(
               人工模式不会调用模型。进入后按题查看全班答题区域，教师保存的分数作为最终结果。
             </p>
             <p v-else class="grading-plan__batching">
-              客观题整区 {{ formatPlanNumber(store.gradingPlan.requests, ['objective_sheet', 'objective_requests']) }} 次；
+              客观题整区 {{ formatPlanNumber(store.gradingPlan.requests, ['objective_sheet', 'objective_requests']) }} 次 ·
               解答题 {{ formatPlanNumber(store.gradingPlan.requests, ['subjective_batches', 'subjective_requests']) }} 次
-              （每位考生每道解答题一次，整页原图）。
-            </p>
-            <p v-if="store.selectedMode !== 'manual'" class="grading-plan__batching" data-teacher-score-priority-note>
-              已人工确认的分数始终有效：AI 会照常批改所有题目，但不会替代人工分。
+              （每位考生每道解答题一次，整页原图）。<span data-teacher-score-priority-note>已人工确认的分数始终有效，AI 不会替代人工分。</span>
             </p>
 
             <ul v-if="store.gradingPlan.warnings.length" class="grading-plan__issues grading-plan__issues--warning">
@@ -1108,7 +1185,7 @@ watch(
       </section>
 
       <section ref="runSection" class="scan-stage" aria-labelledby="run-title">
-        <div class="scan-stage__heading"><div><span>04</span><h2 id="run-title">运行与补批</h2></div><strong v-if="store.gradingRun">{{ runStateLabel }}</strong><strong v-else-if="gradingCompletedWithoutRun">批改处理已结束</strong></div>
+        <div class="scan-stage__heading"><h2 id="run-title">运行与补批</h2><strong v-if="store.gradingRun">{{ runStateLabel }}</strong><strong v-else-if="gradingCompletedWithoutRun">批改处理已结束</strong></div>
         <div v-if="store.gradingRun" class="run-console">
           <div class="scan-progress scan-progress--run" role="status" aria-live="polite">
             <BorderBeam v-if="gradingRunActive" :size="120" :duration="4" />
@@ -1131,7 +1208,7 @@ watch(
             aria-label="AI 批改统计"
           >
             <header>
-              <div><strong>AI 批改流水</strong><span>客观题先识别，解答题再按题批改，最后集中交给老师复核。</span></div>
+              <strong>AI 批改流水</strong>
               <b>{{ runStateLabel }}</b>
             </header>
             <ol class="hybrid-run-board__phases">
@@ -1140,9 +1217,9 @@ watch(
               </li>
             </ol>
             <div class="hybrid-run-board__metrics">
-              <div><span>本轮答卷</span><strong>{{ store.gradingRun.counts.total }}</strong><small>已进入队列</small></div>
-              <div><span>批改单元</span><strong>已完成 {{ store.gradingRun.counts.graded }}</strong><small>已保存，可随时查看</small></div>
-              <div><span>等待 AI</span><strong>{{ hybridAiPending }}</strong><small>未评分或处理失败</small></div>
+              <span>本轮答卷 <strong>{{ store.gradingRun.counts.total }}</strong></span>
+              <span>已完成 <strong>{{ store.gradingRun.counts.graded }}</strong> 个批改单元</span>
+              <span>等待 AI <strong>{{ hybridAiPending }}</strong></span>
             </div>
           </section>
           <div v-else class="run-counts">
@@ -1158,21 +1235,12 @@ watch(
             data-incomplete-warning
           >
             <strong>有 {{ store.gradingRun.incomplete_item_count }} 个小题没有 AI 评分结果。</strong>
-            AI 返回的内容未通过校验或缺失，这些题已按「未评分」保留，不会自动给分。可以点「仅重试失败项」让 AI 只重跑受影响的题目，也可以到下方「人工干预」直接评分。
+            这些题保留为未评分，不会自动给分；可「仅重试失败项」或在下方人工干预中评分。
           </div>
-          <div
+          <p
             v-if="store.gradingRun.allowed_actions.includes('pause') || store.gradingRun.allowed_actions.includes('cancel')"
             class="run-control-help"
-          >
-            <p>
-              <strong>安全暂停（可继续）</strong>
-              停止领取新答卷；正在处理的几份先安全收尾。已保存成绩保留，之后可从剩余答卷继续。
-            </p>
-            <p>
-              <strong>取消本次运行（不可继续）</strong>
-              终结这一轮；已正式保存的成绩保留，尚未完成的答卷需要重新发起批改。两种操作都可能需要短暂等待。
-            </p>
-          </div>
+          >安全暂停后可继续；取消后未完成的答卷需重新发起。已保存的成绩都会保留。</p>
           <div class="scan-stage__actions">
             <button v-if="store.gradingRun.allowed_actions.includes('pause')" data-action="pause" type="button" @click="store.control('pause')">安全暂停（可继续）</button>
             <button v-if="store.gradingRun.allowed_actions.includes('resume')" data-action="resume" type="button" @click="store.control('resume')">继续本次运行</button>
@@ -1193,22 +1261,19 @@ watch(
         <p v-else class="scan-empty">尚未开始批改。启动后，刷新页面仍可恢复这里的运行状态。</p>
       </section>
 
-      <section class="scan-stage scan-stage--intervention" aria-labelledby="intervention-title">
+      <section ref="interventionSection" class="scan-stage" aria-labelledby="intervention-title">
         <div class="scan-stage__heading">
-          <div><span>05</span><h2 id="intervention-title">人工干预</h2></div>
+          <h2 id="intervention-title">人工干预</h2>
           <strong v-if="interventionState === 'ready'">
             需处理 {{ interventionSummary.ungraded + interventionSummary.failed + interventionSummary.review }} 项
           </strong>
         </div>
-        <p class="intervention-intro">
-          没有 AI 结果时，可以在这里直接人工评分；已有 AI 结果时，未评分、失败和待复核答卷会排在前面，高置信结果仍可查看和修改。
-        </p>
         <div v-if="interventionState === 'ready' && interventionSummary.total > 0" class="intervention-ledger">
-          <span><strong>{{ interventionSummary.ungraded }}</strong>未评分</span>
-          <span><strong>{{ interventionSummary.failed }}</strong>处理失败</span>
-          <span><strong>{{ interventionSummary.review }}</strong>AI 待复核</span>
-          <span><strong>{{ interventionSummary.aiReady }}</strong>AI 已完成</span>
-          <span><strong>{{ interventionSummary.teacher }}</strong>教师已确认</span>
+          <span><strong>{{ interventionSummary.ungraded }}</strong> 未评分</span>
+          <span><strong>{{ interventionSummary.failed }}</strong> 处理失败</span>
+          <span><strong>{{ interventionSummary.review }}</strong> AI 待复核</span>
+          <span><strong>{{ interventionSummary.aiReady }}</strong> AI 已完成</span>
+          <span><strong>{{ interventionSummary.teacher }}</strong> 教师已确认</span>
         </div>
         <p v-else-if="interventionState === 'loading'" class="scan-empty">正在读取人工干预摘要…</p>
         <p v-else-if="interventionState === 'error'" class="scan-empty">摘要暂时无法读取，仍可进入工作台查看完整队列。</p>

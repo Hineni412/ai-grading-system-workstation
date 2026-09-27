@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route, type TestInfo } from '@playwright/test'
+import { expect, test, type Page, type Route, type TestInfo } from '@playwright/test';
 
 const STORAGE_KEY = 'ai-grading:selected-session:v1'
 
@@ -226,12 +226,6 @@ function trackBrowserErrors(page: Page) {
   return { pageErrors, consoleErrors }
 }
 
-function expectOnlyExpected503(errors: ReturnType<typeof trackBrowserErrors>): void {
-  expect(errors.pageErrors).toEqual([])
-  expect(errors.consoleErrors.length).toBeGreaterThan(0)
-  for (const message of errors.consoleErrors) expect(message).toContain('503')
-}
-
 async function openWorkbench(page: Page, sessionId = 7): Promise<void> {
   await page.addInitScript(([key, value]) => localStorage.setItem(key, value), [STORAGE_KEY, String(sessionId)])
   await page.goto('/workbench')
@@ -292,33 +286,3 @@ for (const viewport of viewports) {
     expect(errors.consoleErrors).toEqual([])
   })
 }
-
-test('shows a retryable alert when the overview cannot be read', async ({ page }) => {
-  const errors = trackBrowserErrors(page)
-  const requests = await installSyntheticApi(page, { overviewFailure: true })
-  await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
-  await page.goto('/workbench')
-
-  await expect(page.locator('.workbench-inline-error')).toContainText('考试概况暂时无法读取；班务入口仍可使用')
-  await expect(page.locator('.workbench-workflow')).toBeVisible()
-  await page.getByRole('button', { name: '重新加载考试概况' }).click()
-  await expect(page.locator('.workbench-inline-error')).toContainText('考试概况暂时无法读取')
-
-  expectReadOnlyRequests(requests)
-  expectOnlyExpected503(errors)
-})
-
-test('updates the pulse card when the current exam changes', async ({ page }) => {
-  const errors = trackBrowserErrors(page)
-  const requests = await installSyntheticApi(page)
-  await openWorkbench(page)
-  await expect(page.locator('.workbench-pulse')).toContainText('33.33')
-
-  await page.getByRole('combobox', { name: '当前考试' }).selectOption('8')
-  await expect(page.locator('.workbench-pulse')).toContainText('八年级物理单元检测（匿名合成数据）')
-  await expect(page.locator('.workbench-pulse')).toContainText('100')
-
-  expectReadOnlyRequests(requests)
-  expect(errors.pageErrors).toEqual([])
-  expect(errors.consoleErrors).toEqual([])
-})

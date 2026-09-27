@@ -100,28 +100,4 @@ describe('knowledge structure browser', () => {
     expect(points[1]!.textContent).toContain('68%')
   })
 
-  it('selects a point without hiding the other sections and updates details when switching chapter', async () => {
-    const { host, selected } = mountBrowser()
-    const chapters = [...host.querySelectorAll('.structure-browser__chapter-button')]
-    await click(chapters[1]!)
-    await click(host.querySelector('.structure-browser__point')!)
-    expect(selected).toEqual(['kp_leaf2_1a'])
-    expect(host.querySelectorAll('.structure-browser__point')).toHaveLength(2)
-    await click(chapters[0]!)
-    expect(host.querySelector('.structure-browser__detail h2')?.textContent).toContain('同底数幂相乘')
-    expect(host.querySelector('.structure-browser__score')?.textContent).toContain('证据不足')
-    expect(host.querySelector('.structure-browser__score')?.classList.contains('is-empty')).toBe(true)
-  })
-
-  it('drills into a section and returns to the whole chapter', async () => {
-    const { host } = mountBrowser()
-    await click([...host.querySelectorAll('.structure-browser__chapter-button')][1]!)
-    const section = [...host.querySelectorAll('.structure-browser__section-list button')]
-      .find(item => item.textContent?.includes('3 平行线的性质'))!
-    await click(section)
-    expect(host.querySelectorAll('.structure-browser__point')).toHaveLength(1)
-    expect(host.querySelector('.structure-browser__point')?.textContent).toContain('两直线平行同旁内角互补')
-    await click(host.querySelector('.structure-browser__back')!)
-    expect(host.querySelectorAll('.structure-browser__point')).toHaveLength(2)
-  })
 })

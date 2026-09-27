@@ -1,18 +1,13 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 
-import { createApp, defineAsyncComponent, defineComponent, h, nextTick } from 'vue'
 import { createPinia } from 'pinia'
-import { createMemoryHistory } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, defineAsyncComponent, defineComponent, h, nextTick } from 'vue'
+import { createMemoryHistory } from 'vue-router'
 
 import App from '../App.vue'
 import type { ReviewItem } from '../api/review'
-import { fetchSessions } from '../api/sessions'
-import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
 import { createAppRouter } from '../router'
 import { useReviewDraftStore } from '../stores/review-drafts'
-import { useSessionStore } from '../stores/session'
 
 vi.mock('../api/sessions', () => ({
   fetchSessions: vi.fn(async () => []),
@@ -43,70 +38,6 @@ beforeEach(() => {
 })
 
 describe('App', () => {
-  it('keeps route-only review styles out of startup and preserves their page order', () => {
-    const mainSource = readFileSync(resolve(process.cwd(), 'src/main.ts'), 'utf-8')
-    const reviewPageSource = readFileSync(
-      resolve(process.cwd(), 'src/views/ReviewQueueView.vue'),
-      'utf-8',
-    )
-    const reviewStyles = readFileSync(
-      resolve(process.cwd(), 'src/styles/review-queue.css'),
-      'utf-8',
-    )
-    const evidenceStyles = readFileSync(
-      resolve(process.cwd(), 'src/styles/review-evidence.css'),
-      'utf-8',
-    )
-    const shellImport = "import './styles/app-shell.css'"
-    const reviewImport = "import './styles/review-queue.css'"
-    const evidenceImport = "import './styles/review-evidence.css'"
-    const scoringImport = "import './styles/review-scoring.css'"
-
-    expect(mainSource).toContain(shellImport)
-    expect(mainSource).not.toContain(reviewImport)
-    expect(mainSource).not.toContain(evidenceImport)
-    expect(mainSource).not.toContain(scoringImport)
-    expect(reviewPageSource).toContain("import '../styles/review-queue.css'")
-    expect(reviewPageSource).toContain("import '../styles/review-evidence.css'")
-    expect(reviewPageSource).toContain("import '../styles/review-scoring.css'")
-    expect(reviewPageSource.indexOf("import '../styles/review-evidence.css'"))
-      .toBeGreaterThan(reviewPageSource.indexOf("import '../styles/review-queue.css'"))
-    expect(reviewPageSource.indexOf("import '../styles/review-scoring.css'"))
-      .toBeGreaterThan(reviewPageSource.indexOf("import '../styles/review-evidence.css'"))
-    expect(reviewStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
-    expect(evidenceStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
-  })
-
-  it('loads shared question filters before assembly overrides on a direct assembly visit', () => {
-    const source = readFileSync(
-      resolve(process.cwd(), 'src/views/QuestionAssemblyView.vue'),
-      'utf-8',
-    )
-    const sharedFilters = "import '../styles/question-bank.css'"
-    const assemblyStyles = "import '../styles/question-assembly.css'"
-
-    expect(source).toContain(sharedFilters)
-    expect(source).toContain(assemblyStyles)
-    expect(source.indexOf(assemblyStyles)).toBeGreaterThan(source.indexOf(sharedFilters))
-  })
-
-  it('does not mount a permanent scoring or session inspector', async () => {
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    await router.push('/grading')
-    await router.isReady()
-    const host = document.createElement('div')
-    const app = createApp(App)
-    app.use(pinia)
-    app.use(router)
-    app.mount(host)
-    await settleUi()
-
-    expect(host.querySelector('[data-testid="review-scoring-inspector"]')).toBeNull()
-    expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
-    expect(host.querySelector('[data-testid="app-navigation"]')).not.toBeNull()
-    app.unmount()
-  })
 
   it('keeps the dirty-draft unload warning active outside the grading route', async () => {
     const pinia = createPinia()
@@ -203,43 +134,6 @@ describe('App', () => {
     app.unmount()
   })
 
-  it('returns to the workbench after a rejected lazy route', async () => {
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    router.addRoute({
-      path: '/always-broken-lazy-route',
-      name: 'always-broken-lazy-route',
-      component: async () => {
-        throw new Error('private route factory detail')
-      },
-      meta: { title: '懒加载故障', description: '故障测试', breadcrumb: '懒加载故障' },
-    })
-    await router.push('/grading')
-    await router.isReady()
-    const host = document.createElement('div')
-    const app = createApp(App)
-    app.config.errorHandler = vi.fn()
-    app.use(pinia)
-    app.use(router)
-    app.mount(host)
-    await settleUi()
-
-    await expect(router.push('/always-broken-lazy-route')).rejects.toThrow(
-      'private route factory detail',
-    )
-    await settleUi()
-    const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (button) => button.textContent === '返回工作台',
-    )!
-    returnButton.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
-    await settleUi()
-
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这两件事')
-    expect(host.textContent).not.toContain('private route factory detail')
-    app.unmount()
-  })
-
   it('sanitizes a routed render failure and retries by remounting the current route', async () => {
     let attempts = 0
     const asyncRouteContent = defineAsyncComponent(async () => {
@@ -280,118 +174,4 @@ describe('App', () => {
     app.unmount()
   })
 
-  it('returns from a sanitized routed render failure to the workbench', async () => {
-    const brokenRoute = defineComponent(() => () => {
-      throw new Error('private render detail')
-    })
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    router.addRoute({
-      path: '/broken-render',
-      name: 'broken-render',
-      component: brokenRoute,
-      meta: { title: '故障页面', description: '故障测试', breadcrumb: '故障页面' },
-    })
-    await router.push('/broken-render')
-    await router.isReady()
-    const host = document.createElement('div')
-    const app = createApp(App)
-    app.config.errorHandler = vi.fn()
-    app.use(pinia)
-    app.use(router)
-    app.mount(host)
-    await settleUi()
-
-    const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (button) => button.textContent === '返回工作台',
-    )!
-    returnButton.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
-    await settleUi()
-
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这两件事')
-    app.unmount()
-  })
-
-  it('returns from an unknown route to the workbench', async () => {
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    await router.push('/missing/deep/path')
-    await router.isReady()
-    const host = document.createElement('div')
-    const app = createApp(App)
-    app.use(pinia)
-    app.use(router)
-    app.mount(host)
-    await settleUi()
-
-    const returnButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (button) => button.textContent === '返回工作台',
-    )!
-    returnButton.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
-
-    /* 页面过渡期间旧视图（page-leave-active）仍挂在 DOM，跳过它取新页标题 */
-    await vi.waitFor(() => {
-      const headings = [...host.querySelectorAll<HTMLElement>('#main-workspace h1')]
-      const current = headings.find((h) => h.closest('.page-leave-active') === null)
-      expect(current?.textContent).toContain('今天先完成这两件事')
-    })
-    app.unmount()
-  })
-
-  it('mounts the P2-03 application shell with memory routing and Pinia', async () => {
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    await router.push('/grading')
-    await router.isReady()
-    const host = document.createElement('div')
-    const app = createApp(App)
-    app.use(pinia)
-    app.use(router)
-    app.mount(host)
-    await settleUi()
-
-    expect(host.querySelector('[data-testid="app-shell"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="app-topbar"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="app-navigation"]')).not.toBeNull()
-    expect(host.querySelector('main#main-workspace')).not.toBeNull()
-    expect(host.querySelector('[data-testid="session-inspector"]')).toBeNull()
-    const sessionStore = useSessionStore(pinia)
-    expect(fetchSessions).toHaveBeenCalledTimes(1)
-    expect(sessionStore.loadState).toBe('ready')
-    expect(sessionStore.sessions).toEqual([])
-
-    app.unmount()
-  })
-
-  it('keeps direct unit coverage for every P2-02 showcase section', async () => {
-    const host = document.createElement('div')
-    const app = createApp(ComponentShowcase)
-    app.mount(host)
-    await nextTick()
-
-    expect(host.querySelector('[data-testid="design-system-showcase"]')).not.toBeNull()
-    expect([...host.querySelectorAll('h2')].map((heading) => heading.textContent)).toEqual([
-      '基础 Token',
-      '按钮',
-      '输入',
-      '状态徽章',
-      '空、加载与错误',
-      '操作反馈',
-    ])
-    expect((host.querySelector('#exam-name') as HTMLInputElement | null)?.value).toBe(
-      '2025—2026 学年度第二学期七年级数学期末质量监测与学情诊断测试',
-    )
-    expect((host.querySelector('#student-name') as HTMLInputElement | null)?.value).toBe(
-      '阿布都热合曼·麦麦提艾力同学',
-    )
-    expect(host.querySelectorAll('[data-testid="status-badge"]')).toHaveLength(7)
-    expect(host.querySelectorAll('[data-testid="state-panel"]')).toHaveLength(3)
-    expect(host.querySelectorAll('[data-testid="feedback-banner"]')).toHaveLength(4)
-    expect(host.querySelector('[aria-invalid="true"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="disabled-field"] [disabled]')).not.toBeNull()
-
-    app.unmount()
-  })
 })

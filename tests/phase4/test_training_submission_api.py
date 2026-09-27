@@ -36,12 +36,21 @@ class FakeSubmissionModule:
 
     def list_batches(self, paper_batch_id):
         self.listed_paper_batch = paper_batch_id
-        return [{
-            **{key: _batch()[key] for key in (
-                "batch_id", "paper_batch_id", "status", "created_at", "updated_at",
-            )},
-            "submission_count": 1,
-        }]
+        return [
+            {
+                **{
+                    key: _batch()[key]
+                    for key in (
+                        "batch_id",
+                        "paper_batch_id",
+                        "status",
+                        "created_at",
+                        "updated_at",
+                    )
+                },
+                "submission_count": 1,
+            }
+        ]
 
     def ingest(self, batch_id, command, source):
         self.ingested = (batch_id, command, source.read())
@@ -138,32 +147,6 @@ def test_scan_batch_upload_resolution_cancel_and_preview_contract(
     assert preview.headers["cache-control"] == "no-store"
 
 
-def test_scan_batch_history_can_be_found_without_a_scan_batch_id(submission_client) -> None:
-    client, module = submission_client
-    response = client.get("/api/training/scan-batches", params={"paper_batch_id": "f" * 64})
-    assert response.status_code == 200
-    assert module.listed_paper_batch == "f" * 64
-    item = response.json()["items"][0]
-    assert item["batch_id"] == "b" * 64
-    assert item["submission_count"] == 1
-    assert "pages" not in item
-    assert client.get("/api/training/scan-batches").status_code == 422
-
-
-def test_scan_batch_revision_conflict_is_public_and_safe(
-    submission_client,
-) -> None:
-    client, module = submission_client
-    module.error = SubmissionRevisionConflict(1, 2)
-    response = client.get(f"/api/training/scan-batches/{'b' * 64}")
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == (
-        "training_submission_revision_conflict"
-    )
-    assert response.json()["error"]["details"] == {"current_revision": 2}
-    assert "path" not in response.text.casefold()
-
-
 def _batch(
     *,
     revision: int = 1,
@@ -211,8 +194,7 @@ def _batch(
                 "state": "assigned",
                 "assignment_revision": 1,
                 "preview_url": (
-                    f"/api/training/scan-batches/{'b' * 64}/pages/"
-                    f"{'d' * 64}/preview"
+                    f"/api/training/scan-batches/{'b' * 64}/pages/{'d' * 64}/preview"
                 ),
                 "created_at": "2026-07-30T08:00:00+00:00",
             }

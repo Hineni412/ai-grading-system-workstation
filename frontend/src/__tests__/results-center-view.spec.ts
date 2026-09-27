@@ -13,6 +13,19 @@ vi.mock('../api/results-center', async (original) => ({
   fetchResultsCenter: vi.fn(),
 }))
 
+const classAnalysisMock = vi.hoisted(() => ({
+  getClassAnalysis: vi.fn(),
+  updateSettings: vi.fn(),
+  regenerate: vi.fn(),
+  getQuestionPreview: vi.fn(),
+  editCausePattern: vi.fn(),
+}))
+
+vi.mock('../api/class-analysis', async (original) => ({
+  ...await original<typeof import('../api/class-analysis')>(),
+  classAnalysisApi: classAnalysisMock,
+}))
+
 function item(studentId: number, questionId: string, score: number | null, status: ResultsCenterItem['score_status'] = 'ai_ready'): ResultsCenterItem {
   return {
     review_item_id: `detail:${studentId}${questionId.slice(1)}`, question_id: questionId,
@@ -49,9 +62,10 @@ function fixture(): ResultsCenterResponse {
 
 let app: App | null = null
 
-async function mountView(tab = 'details') {
+async function mountView(tab: string | null = 'details') {
   localStorage.clear()
   vi.mocked(fetchResultsCenter).mockReset().mockResolvedValue(fixture())
+  classAnalysisMock.getClassAnalysis.mockReset().mockRejectedValue(new Error('合成环境不读班级分析'))
   const pinia = createPinia()
   setActivePinia(pinia)
   useSessionStore().$patch({ selectedSessionId: 7, loadState: 'ready', sessions: [{ id: 7, name: '合成成绩验证', status: 'grading', is_deleted: false, deleted_at: null, created_at: null, updated_at: null }] })
@@ -59,13 +73,14 @@ async function mountView(tab = 'details') {
     { path: '/results', component: ResultsCenterView },
     { path: '/grading', component: { render: () => h('div', '合成作答页面') } },
   ] })
-  await router.push(`/results?tab=${tab}&session=7`)
+  await router.push(tab === null ? '/results?session=7' : `/results?tab=${tab}&session=7`)
   await router.isReady()
   const host = document.createElement('div')
   document.body.append(host)
   app = createApp({ render: () => h('main', { id: 'main-workspace' }, [h(RouterView)]) })
   app.use(pinia).use(router).mount(host)
-  await vi.waitFor(() => expect(host.querySelector('.results-conclusion')).not.toBeNull())
+  const ready = tab === null || tab === 'overview' ? '[data-testid="results-overview"]' : '.results-conclusion'
+  await vi.waitFor(() => expect(host.querySelector(ready)).not.toBeNull())
   return { host, router }
 }
 
@@ -74,8 +89,8 @@ function input(element: HTMLInputElement | HTMLSelectElement, value: string): vo
   element.dispatchEvent(new Event(element.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }))
 }
 
-function conclusionCard(host: HTMLElement, label: string): HTMLButtonElement {
-  return [...host.querySelectorAll<HTMLButtonElement>('.results-conclusion__strip button')]
+function conclusionChip(host: HTMLElement, label: string): HTMLButtonElement {
+  return [...host.querySelectorAll<HTMLButtonElement>('.results-conclusion__line button')]
     .find((button) => button.textContent?.includes(label))!
 }
 
@@ -86,94 +101,32 @@ afterEach(() => {
 })
 
 describe('results center class filtering and return position', () => {
-  it('shows the score matrix by default and keeps the overview panels collapsed', async () => {
-    const { host } = await mountView()
-    expect(host.textContent).not.toContain('逐人查看')
-    expect(host.querySelector('.results-matrix')).not.toBeNull()
-    const extra = host.querySelector('details.results-extra')
-    expect(extra).not.toBeNull()
-    expect(extra!.hasAttribute('open')).toBe(false)
-    expect(host.querySelector('#score-distribution-title')).not.toBeNull()
-    expect(host.querySelector('#question-insights-title')).not.toBeNull()
-    expect(host.textContent).not.toContain('全部学生')
-  })
 
   it('uses the visible class, status and search scope without averaging incomplete scores as zero', async () => {
     const { host } = await mountView()
     input(host.querySelector<HTMLSelectElement>('[aria-label="成绩明细班级"]')!, '一班')
     await nextTick()
-    const cards = () => host.querySelectorAll('.results-conclusion__strip button')
-    expect(cards()[0]!.textContent).toContain('2 / 3 人')
-    expect(cards()[1]!.textContent?.replace(/\s+/g, ' ')).toContain('7 / 10')
-    expect(cards()[1]!.textContent).toContain('计入 2 人')
+    const line = () => host.querySelector('.results-conclusion__line')!
+    expect(line().textContent?.replace(/\s+/g, '')).toContain('成绩完整2/3人')
+    expect(line().textContent).toContain('平均 7')
+    expect(line().textContent).toContain('最高 8')
+    expect(line().textContent).toContain('最低 6')
     expect(host.querySelectorAll('.results-matrix tbody tr')).toHaveLength(3)
     expect(host.querySelectorAll('.results-matrix thead th')[3]!.textContent?.replace(/\s+/g, ' ')).toContain('4.5 / 5')
-    conclusionCard(host, '未评分').click()
-    await vi.waitFor(() => expect(cards()[0]!.textContent).toContain('0 / 1 人'))
-    expect(cards()[1]!.textContent?.replace(/\s+/g, ' ')).toContain('— / 10')
+    conclusionChip(host, '未评分').click()
+    await vi.waitFor(() => expect(line().textContent?.replace(/\s+/g, '')).toContain('成绩完整0/1人'))
+    expect(line().textContent).toContain('平均 —')
     input(host.querySelector<HTMLInputElement>('input[type="search"]')!, '没有这个学生')
     await nextTick()
-    expect(cards()[0]!.textContent).toContain('0 / 0 人')
+    expect(line().textContent?.replace(/\s+/g, '')).toContain('成绩完整0/0人')
     expect(host.textContent).toContain('没有符合当前筛选条件的学生')
-  })
-
-  it('matches students by pinyin full spelling and surname initials', async () => {
-    const { host } = await mountView()
-    const search = host.querySelector<HTMLInputElement>('input[type="search"]')!
-    const names = () => [...host.querySelectorAll('.results-matrix tbody tr')]
-      .map((row) => row.textContent ?? '')
-    input(search, 'hechengyi')
-    await nextTick()
-    expect(names()).toHaveLength(1)
-    expect(names()[0]).toContain('合成乙')
-    input(search, 'hcb')
-    await nextTick()
-    expect(names()).toHaveLength(1)
-    expect(names()[0]).toContain('合成丙')
-    input(search, 'hc')
-    await nextTick()
-    expect(names()).toHaveLength(4)
-    input(search, 'A02')
-    await nextTick()
-    expect(names()).toHaveLength(1)
-    expect(names()[0]).toContain('合成乙')
-    input(search, '二班')
-    await nextTick()
-    expect(names()).toHaveLength(1)
-    expect(names()[0]).toContain('合成丁')
-  })
-
-  it('shows the class rank in the student column and skips incomplete students', async () => {
-    const { host } = await mountView()
-    input(host.querySelector<HTMLSelectElement>('[aria-label="成绩明细班级"]')!, '一班')
-    await nextTick()
-    const rows = [...host.querySelectorAll('.results-matrix tbody tr')]
-    expect(rows[0]!.textContent).toContain('合成甲')
-    expect(rows[0]!.textContent).toContain('班内第 1 名')
-    expect(rows[1]!.textContent).toContain('合成乙')
-    expect(rows[1]!.textContent).toContain('班内第 2 名')
-    expect(rows[2]!.textContent).toContain('合成丙')
-    expect(rows[2]!.textContent).not.toContain('班内第')
-  })
-
-  it('keeps only students needing attention when the toggle is pressed', async () => {
-    const { host } = await mountView()
-    const toggle = [...host.querySelectorAll<HTMLButtonElement>('.results-filter-bar button')]
-      .find((button) => button.textContent?.includes('只看待处理学生'))!
-    toggle.click()
-    await vi.waitFor(() => expect(host.querySelectorAll('.results-matrix tbody tr')).toHaveLength(2))
-    const names = [...host.querySelectorAll('.results-matrix tbody tr')].map((row) => row.textContent ?? '')
-    expect(names.join(' ')).toContain('合成乙')
-    expect(names.join(' ')).toContain('合成丙')
-    expect(names.join(' ')).not.toContain('合成甲')
-    expect(names.join(' ')).not.toContain('合成丁')
   })
 
   it('restores filters, sorting and both scroll containers after viewing an answer', async () => {
     const { host, router } = await mountView()
     input(host.querySelector<HTMLSelectElement>('[aria-label="成绩明细班级"]')!, '一班')
     input(host.querySelector<HTMLInputElement>('input[type="search"]')!, '合成')
-    conclusionCard(host, '成绩完整').click()
+    conclusionChip(host, '成绩完整').click()
     await vi.waitFor(() => expect(router.currentRoute.value.query.filter).toBe('complete'))
     host.querySelector<HTMLButtonElement>('.results-matrix__total .results-matrix__sort')!.click()
     await nextTick()

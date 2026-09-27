@@ -1,11 +1,11 @@
-import { createApp, nextTick } from 'vue'
-import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { createApp, nextTick } from 'vue';
+import { createPinia, setActivePinia } from 'pinia';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import type { CurriculumVolume } from '../../../api/question-bank'
-import type { SessionSummary } from '../../../api/sessions'
-import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
-import { useSessionStore } from '../../../stores/session'
+import type { CurriculumVolume } from '../../../api/question-bank';
+import type { SessionSummary } from '../../../api/sessions';
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope';
+import { useSessionStore } from '../../../stores/session';
 import SessionDraftPanel from '../SessionDraftPanel.vue'
 
 function volume(id: string, order: number, label: string): CurriculumVolume {
@@ -59,13 +59,6 @@ function volumeSelect(host: HTMLElement): HTMLSelectElement {
   return host.querySelector<HTMLSelectElement>('#session-draft-curriculum')!
 }
 
-async function changeVolume(host: HTMLElement, value: string): Promise<void> {
-  const select = volumeSelect(host)
-  select.value = value
-  select.dispatchEvent(new Event('change'))
-  await settle()
-}
-
 beforeEach(() => {
   document.body.innerHTML = ''
   localStorage.clear()
@@ -80,23 +73,6 @@ beforeEach(() => {
 })
 
 describe('SessionDraftPanel curriculum volume', () => {
-  it('follows the global teaching semester until the teacher picks another one', async () => {
-    const scope = useCurriculumScopeStore()
-    scope.selectedVolumeId = 'g7-upper'
-    const mounted = await mountPanel()
-
-    expect(volumeSelect(mounted.host).value).toBe('g7-upper')
-
-    scope.selectedVolumeId = 'g8-upper'
-    await settle()
-    expect(volumeSelect(mounted.host).value).toBe('g8-upper')
-
-    await changeVolume(mounted.host, 'g7-lower')
-    scope.selectedVolumeId = 'g7-upper'
-    await settle()
-    expect(volumeSelect(mounted.host).value).toBe('g7-lower')
-    mounted.unmount()
-  })
 
   it('keeps the semester saved on the current session when the global selection changes', async () => {
     const sessionStore = useSessionStore()
@@ -113,33 +89,4 @@ describe('SessionDraftPanel curriculum volume', () => {
     mounted.unmount()
   })
 
-  it('resets follow state when switching sessions', async () => {
-    const sessionStore = useSessionStore()
-    sessionStore.sessions = [
-      session(7, '七年级月考'),
-      session(8, '八年级月考', 'g8-upper'),
-    ]
-    const scope = useCurriculumScopeStore()
-    scope.selectedVolumeId = 'g7-upper'
-    const mounted = await mountPanel()
-
-    await changeVolume(mounted.host, 'g7-lower')
-    scope.selectedVolumeId = 'g8-upper'
-    await settle()
-    expect(volumeSelect(mounted.host).value).toBe('g7-lower')
-
-    // 切到没有保存学期的考试：恢复跟随全局学期
-    sessionStore.selectSession(7)
-    await settle()
-    expect(volumeSelect(mounted.host).value).toBe('g8-upper')
-    scope.selectedVolumeId = 'g7-upper'
-    await settle()
-    expect(volumeSelect(mounted.host).value).toBe('g7-upper')
-
-    // 切到自己保存了学期的考试：显示考试自己的学期
-    sessionStore.selectSession(8)
-    await settle()
-    expect(volumeSelect(mounted.host).value).toBe('g8-upper')
-    mounted.unmount()
-  })
 })

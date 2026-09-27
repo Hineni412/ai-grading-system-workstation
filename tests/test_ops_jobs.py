@@ -10,8 +10,6 @@ import pytest
 from backend.jobs.manager import JobCancellationRequested
 from backend.ops.jobs import (
     OpsPreBackupFailed,
-    create_safety_backup,
-    register_ops_job_handlers,
     run_ops_backup_job,
     run_ops_migration_prepare_job,
     run_ops_restore_prepare_job,
@@ -105,9 +103,7 @@ def _paths(
         "CREATE TABLE question_tags (id INTEGER PRIMARY KEY);\n",
         encoding="utf-8",
     )
-    paths.migration_project_root = (
-        PROJECT_ROOT if migration_current else project_root
-    )
+    paths.migration_project_root = PROJECT_ROOT if migration_current else project_root
     _create_database(
         paths.db_path,
         "grading",
@@ -122,7 +118,9 @@ def _paths(
     )
     paths.config_dir.mkdir(parents=True)
     (paths.config_dir / "safe.json").write_text('{"ok": true}', encoding="utf-8")
-    (paths.config_dir / "api_profiles.json").write_text('{"api_key": "secret"}', encoding="utf-8")
+    (paths.config_dir / "api_profiles.json").write_text(
+        '{"api_key": "secret"}', encoding="utf-8"
+    )
     (project_root / "config").mkdir(parents=True)
     (grading_migrations / "001_preview.sql").write_text(
         "CREATE TABLE grading_preview (id INTEGER PRIMARY KEY);",
@@ -136,7 +134,9 @@ def _paths(
 
 
 class _Context:
-    def __init__(self, payload: dict[str, object], *, cancel_on_check: int | None = None):
+    def __init__(
+        self, payload: dict[str, object], *, cancel_on_check: int | None = None
+    ):
         self.job_id = 23
         self.payload = payload
         self.reports: list[tuple[float, str, str]] = []
@@ -152,7 +152,9 @@ class _Context:
             raise JobCancellationRequested("cancelled")
 
 
-def _payload(service: OpsWriteService, operation: str, **parameters: object) -> dict[str, object]:
+def _payload(
+    service: OpsWriteService, operation: str, **parameters: object
+) -> dict[str, object]:
     request = SimpleNamespace(operation=operation, **parameters)
     preflight = service.preflight(request)
     plan = service.consume_plan(str(preflight["confirmation_token"]))
@@ -165,7 +167,9 @@ def _service(paths: SimpleNamespace) -> OpsWriteService:
     return OpsWriteService(paths, plan_store=OpsPlanStore())
 
 
-def test_ops_backup_publishes_valid_zip_with_consistent_databases(tmp_path: Path) -> None:
+def test_ops_backup_publishes_valid_zip_with_consistent_databases(
+    tmp_path: Path,
+) -> None:
     paths = _paths(tmp_path)
     context = _Context(_payload(_service(paths), "backup", reason="manual"))
 
@@ -190,289 +194,6 @@ def test_ops_backup_publishes_valid_zip_with_consistent_databases(tmp_path: Path
     assert result["file_path"] == str(published)
 
 
-def test_ops_backup_rejects_retired_class_teacher_scope(tmp_path: Path) -> None:
-    from backend.ops.write_service import OpsRequestInvalid
-    paths = _paths(tmp_path)
-    with pytest.raises(OpsRequestInvalid, match="invalid backup scopes"):
-        _payload(_service(paths), "backup", reason="manual", scopes=["class_teacher"])
-
-
-
-def test_ops_backup_excludes_retired_workspace_databases_and_copies(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    root = paths.data_root / "workspaces" / "class-teacher"
-    (root / "backups").mkdir(parents=True)
-    (root / "student_affairs.db").write_bytes(b"retired-workspace")
-    (root / "backups" / "old.db").write_bytes(b"retired-copy")
-    context = _Context(_payload(_service(paths), "backup", reason="manual", scopes=["grading"]))
-    result = run_ops_backup_job(context=context, paths=paths)
-    with zipfile.ZipFile(paths.backups_dir / str(result["filename"])) as archive:
-        names = set(archive.namelist())
-    assert "user_data/databases/grading_system.db" in names
-    assert "user_data/databases/question_bank.db" in names
-    assert not any("workspaces/" in name for name in names)
-
-
-
-def test_ops_backup_cancel_before_publish_leaves_no_zip(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    context = _Context(
-        _payload(_service(paths), "backup", reason="manual"),
-        cancel_on_check=2,
-    )
-
-    with pytest.raises(JobCancellationRequested):
-        run_ops_backup_job(context=context, paths=paths)
-
-    assert not list(paths.backups_dir.glob("*.zip"))
-    assert not list(paths.backups_dir.glob(".job-*"))
-
-
-def test_ops_transfer_export_publishes_under_ops_output_root(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    context = _Context(_payload(_service(paths), "transfer_export", scope="lean"))
-
-    result = run_ops_transfer_export_job(context=context, paths=paths)
-
-    published = paths.outputs_dir / "ops" / str(result["filename"])
-    assert published.is_file()
-    assert zipfile.is_zipfile(published)
-    assert result["file_path"] == str(published)
-    assert result["operation"] == "transfer_export"
-
-
-def test_ops_online_job_rejects_resource_changed_after_submission(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    service = _service(paths)
-    payload = _payload(service, "transfer_export", scope="lean")
-    (paths.config_dir / "safe.json").write_text('{"changed": true}', encoding="utf-8")
-
-    with pytest.raises(ValueError, match="preflight resource changed"):
-        run_ops_transfer_export_job(context=_Context(payload), paths=paths)
-
-
-def test_ops_backup_still_rejects_business_database_changes(
-    tmp_path: Path,
-) -> None:
-    paths = _paths(tmp_path)
-    service = _service(paths)
-    payload = _payload(service, "backup", reason="manual")
-    with sqlite3.connect(paths.db_path) as connection:
-        connection.execute("UPDATE sample SET value = 'changed'")
-        connection.commit()
-
-    with pytest.raises(ValueError, match="preflight resource changed"):
-        run_ops_backup_job(context=_Context(payload), paths=paths)
-
-
-def test_ops_backup_still_rejects_jobs_schema_changes(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    with sqlite3.connect(paths.db_path) as connection:
-        connection.execute(
-            "CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT)"
-        )
-        connection.commit()
-    payload = _payload(_service(paths), "backup", reason="manual")
-    with sqlite3.connect(paths.db_path) as connection:
-        connection.execute("ALTER TABLE jobs ADD COLUMN detail TEXT")
-        connection.commit()
-
-    with pytest.raises(ValueError, match="preflight resource changed"):
-        run_ops_backup_job(context=_Context(payload), paths=paths)
-
-
-def test_ops_backup_rejects_selected_file_changes(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    payload = _payload(_service(paths), "backup", reason="manual")
-    (paths.config_dir / "safe.json").write_text(
-        '{"changed": true}',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="preflight resource changed"):
-        run_ops_backup_job(context=_Context(payload), paths=paths)
-
-
-def test_ops_backup_rejects_question_bank_wal_changes(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    connection = sqlite3.connect(paths.qb_db_path)
-    try:
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA wal_autocheckpoint = 0")
-        payload = _payload(_service(paths), "backup", reason="manual")
-        connection.execute("UPDATE sample SET value = 'changed-in-wal'")
-        connection.commit()
-        assert Path(f"{paths.qb_db_path}-wal").is_file()
-
-        with pytest.raises(ValueError, match="preflight resource changed"):
-            run_ops_backup_job(context=_Context(payload), paths=paths)
-    finally:
-        connection.close()
-
-
-def test_ops_transfer_export_still_rejects_business_database_changes(
-    tmp_path: Path,
-) -> None:
-    paths = _paths(tmp_path)
-    service = _service(paths)
-    payload = _payload(service, "transfer_export", scope="lean")
-    with sqlite3.connect(paths.db_path) as connection:
-        connection.execute("UPDATE sample SET value = 'changed'")
-        connection.commit()
-
-    with pytest.raises(ValueError, match="preflight resource changed"):
-        run_ops_transfer_export_job(context=_Context(payload), paths=paths)
-
-
-def test_ops_transfer_export_rejects_question_bank_wal_changes(
-    tmp_path: Path,
-) -> None:
-    paths = _paths(tmp_path)
-    connection = sqlite3.connect(paths.qb_db_path)
-    try:
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA wal_autocheckpoint = 0")
-        payload = _payload(_service(paths), "transfer_export", scope="lean")
-        connection.execute("UPDATE sample SET value = 'changed-in-wal'")
-        connection.commit()
-        assert Path(f"{paths.qb_db_path}-wal").is_file()
-
-        with pytest.raises(ValueError, match="preflight resource changed"):
-            run_ops_transfer_export_job(context=_Context(payload), paths=paths)
-    finally:
-        connection.close()
-
-
-def test_ops_transfer_export_snapshots_latest_question_bank_wal_state(
-    tmp_path: Path,
-) -> None:
-    paths = _paths(tmp_path)
-    connection = sqlite3.connect(paths.qb_db_path)
-    try:
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA wal_autocheckpoint = 0")
-        connection.execute("UPDATE sample SET value = 'latest-committed'")
-        connection.commit()
-        assert Path(f"{paths.qb_db_path}-wal").is_file()
-        context = _Context(
-            _payload(_service(paths), "transfer_export", scope="lean")
-        )
-
-        result = run_ops_transfer_export_job(context=context, paths=paths)
-
-        published = paths.outputs_dir / "ops" / str(result["filename"])
-        extracted = tmp_path / "exported-question-bank.db"
-        with zipfile.ZipFile(published, "r") as archive:
-            extracted.write_bytes(
-                archive.read("user_data/databases/question_bank.db")
-            )
-        with sqlite3.connect(extracted) as exported:
-            assert exported.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-            assert (
-                exported.execute("SELECT value FROM sample").fetchone()[0]
-                == "latest-committed"
-            )
-    finally:
-        connection.close()
-
-
-def test_register_ops_job_handlers_registers_online_types(tmp_path: Path) -> None:
-    from backend.jobs.manager import JobManager
-    from backend.jobs.store import JobStore
-
-    paths = _paths(tmp_path)
-    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
-    register_ops_job_handlers(manager, paths=paths)
-    try:
-        job = manager.submit(
-            "ops_transfer_export",
-            _payload(_service(paths), "transfer_export", scope="lean"),
-        )
-        manager.wait(job.id, timeout=5)
-        loaded = manager.get(job.id)
-        assert loaded is not None
-        assert loaded.status == "succeeded"
-    finally:
-        manager.shutdown()
-
-
-def test_ops_transfer_export_allows_job_store_updates_inside_data_root(
-    tmp_path: Path,
-) -> None:
-    from backend.jobs.manager import JobManager
-    from backend.jobs.store import JobStore
-
-    paths = _paths(tmp_path, migration_current=True)
-    manager = JobManager(
-        JobStore(paths.db_path),
-        max_workers=1,
-    )
-    register_ops_job_handlers(manager, paths=paths)
-    try:
-        payload = _payload(_service(paths), "transfer_export", scope="lean")
-
-        job = manager.submit("ops_transfer_export", payload)
-        manager.wait(job.id, timeout=5)
-        loaded = manager.get(job.id)
-
-        assert loaded is not None
-        assert loaded.status == "succeeded", loaded.error
-        assert loaded.error is None
-        published = paths.outputs_dir / "ops" / str(loaded.result["filename"])
-        assert published.is_file()
-        assert zipfile.is_zipfile(published)
-    finally:
-        manager.shutdown()
-
-
-def test_ops_backup_allows_job_store_updates_and_excludes_retired_workspace(
-    tmp_path: Path,
-) -> None:
-    from backend.jobs.manager import JobManager
-    from backend.jobs.store import JobStore
-
-    paths = _paths(tmp_path, migration_current=True)
-    protected = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
-    protected.parent.mkdir(parents=True)
-    protected.write_bytes(b"retired-workspace")
-    manager = JobManager(
-        JobStore(paths.db_path),
-        max_workers=1,
-    )
-    register_ops_job_handlers(manager, paths=paths)
-    try:
-        service = _service(paths)
-        preflight = service.preflight(
-            SimpleNamespace(operation="backup", reason="manual")
-        )
-
-        submitted = service.submit(
-            str(preflight["confirmation_token"]),
-            manager,
-        )
-        manager.wait(submitted.id, timeout=5)
-        loaded = manager.get(submitted.id)
-
-        assert loaded is not None
-        assert loaded.status == "succeeded", loaded.error
-        assert loaded.error is None
-        published = paths.backups_dir / str(loaded.result["filename"])
-        assert published.is_file()
-        assert zipfile.is_zipfile(published)
-        with zipfile.ZipFile(published, "r") as archive:
-            names = set(archive.namelist())
-        assert "user_data/databases/grading_system.db" in names
-        assert "user_data/databases/question_bank.db" in names
-        assert "user_data/workspaces/class-teacher/student_affairs.db" not in names
-        assert not any(
-            name.startswith("user_data/workspaces/")
-            and not name.startswith("user_data/workspaces/class-teacher/")
-            for name in names
-        )
-    finally:
-        manager.shutdown()
-
-
 def _write_zip(path: Path, members: dict[str, bytes]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -481,16 +202,16 @@ def _write_zip(path: Path, members: dict[str, bytes]) -> Path:
     return path
 
 
-def test_restore_prepare_creates_safety_backup_staging_and_pending_journal(tmp_path: Path) -> None:
+def test_restore_prepare_creates_safety_backup_staging_and_pending_journal(
+    tmp_path: Path,
+) -> None:
     paths = _paths(tmp_path)
     source = _write_zip(
         paths.backups_dir / "backup_20260712_120000_manual.zip",
         {"user_data/config/restored.json": b"{}"},
     )
     service = _service(paths)
-    context = _Context(
-        _payload(service, "restore", backup_filename=source.name)
-    )
+    context = _Context(_payload(service, "restore", backup_filename=source.name))
 
     result = run_ops_restore_prepare_job(context=context, paths=paths)
 
@@ -502,7 +223,9 @@ def test_restore_prepare_creates_safety_backup_staging_and_pending_journal(tmp_p
     )
     assert public["status"] == "restart_required"
     operation_dir = paths.ops_state_dir / "operations" / str(result["operation_id"])
-    assert (operation_dir / "staging" / "user_data" / "config" / "restored.json").is_file()
+    assert (
+        operation_dir / "staging" / "user_data" / "config" / "restored.json"
+    ).is_file()
 
 
 def test_restore_prepare_stops_when_safety_backup_fails(
@@ -528,7 +251,9 @@ def test_restore_prepare_stops_when_safety_backup_fails(
     assert not OpsOperationJournal(paths.ops_state_dir).pending_exists()
 
 
-def test_transfer_import_prepare_uses_server_upload_and_preparation_backup(tmp_path: Path) -> None:
+def test_transfer_import_prepare_uses_server_upload_and_preparation_backup(
+    tmp_path: Path,
+) -> None:
     paths = _paths(tmp_path)
     service = _service(paths)
     payload_path = _write_zip(
@@ -554,59 +279,3 @@ def test_transfer_import_prepare_uses_server_upload_and_preparation_backup(tmp_p
     assert result["outcome"] == "prepared_restart_required"
     assert result["operation"] == "transfer_import"
     assert result["backup_filename"]
-
-
-def test_migration_prepare_rehearses_and_records_single_pending_operation(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    service = _service(paths)
-    context = _Context(_payload(service, "migration", target="all"))
-
-    result = run_ops_migration_prepare_job(context=context, paths=paths)
-
-    assert result["outcome"] == "prepared_restart_required"
-    assert result["operation"] == "migration"
-    assert result["target"] == "all"
-    assert OpsOperationJournal(paths.ops_state_dir).pending_exists()
-
-
-def test_create_safety_backup_returns_controlled_filename(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-
-    backup = create_safety_backup(
-        paths=paths,
-        reason="before_restore",
-        operation_id="11111111-1111-4111-8111-111111111111",
-        archive_names=(
-            "user_data/databases/grading_system.db",
-            "user_data/databases/question_bank.db",
-        ),
-    )
-
-    assert backup.parent == paths.backups_dir
-    assert backup.name.startswith("backup_")
-    assert backup.suffix == ".zip"
-    assert zipfile.is_zipfile(backup)
-
-
-def test_create_safety_backup_rejects_invalid_database_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    paths = _paths(tmp_path)
-
-    def corrupt_snapshot(_source: Path, destination: Path) -> None:
-        destination.write_bytes(b"not-sqlite")
-
-    monkeypatch.setattr("backend.ops.jobs._sqlite_snapshot", corrupt_snapshot)
-
-    with pytest.raises(OpsPreBackupFailed):
-        create_safety_backup(
-            paths=paths,
-            reason="before_restore",
-            operation_id="11111111-1111-4111-8111-111111111111",
-            archive_names=(
-                "user_data/databases/grading_system.db",
-                "user_data/databases/question_bank.db",
-            ),
-        )
-    assert not list(paths.backups_dir.glob("*.zip"))

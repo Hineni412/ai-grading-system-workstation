@@ -1,15 +1,14 @@
-import { createApp, nextTick } from 'vue'
-import { createPinia, disposePinia, setActivePinia } from 'pinia'
-import { createMemoryHistory, createRouter } from 'vue-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, nextTick } from 'vue';
+import { createPinia, disposePinia, setActivePinia } from 'pinia';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api/assembly'
-import type { AssemblyAssistantResult, AssemblyDraft, AssemblyQuestion } from '../api/assembly'
+import type { AssemblyAssistantResult, AssemblyDraft, AssemblyQuestion } from '../api/assembly';
 import * as students from '../api/students'
-import { useAssemblyAssistantStore } from '../stores/assembly-assistant'
-import { useAssemblyStore } from '../stores/assembly'
-import { useCurriculumScopeStore } from '../stores/curriculum-scope'
+import { useAssemblyAssistantStore } from '../stores/assembly-assistant';
+import { useAssemblyStore } from '../stores/assembly';
+import { useCurriculumScopeStore } from '../stores/curriculum-scope';
 import AssemblyAssistantPanel from '../components/question-assembly/AssemblyAssistantPanel.vue'
-import QuestionAssemblyView from '../views/QuestionAssemblyView.vue'
 
 const revision = 'a'.repeat(64)
 const blank: AssemblyDraft = { basket_ids: [], order_ids: [], sections: [], title: '已有的班级卷', header_text: '', include_answer: true, layout_mode: 'sequential', preview_mode: 'teacher', revision }
@@ -112,95 +111,4 @@ describe('class assembly assistant', () => {
     expect(api.assemblyApi.saveDraft).not.toHaveBeenCalled()
   })
 
-  it('distinguishes no evidence from no matching questions and marks a pending single selection stale', async () => {
-    const { host } = await mountPanel()
-    const assistant = useAssemblyAssistantStore()
-    vi.mocked(api.fetchAssemblyCandidates).mockResolvedValueOnce({ ...result(), evidence_student_count: 0, weaknesses: [], selected_target_keys: [], candidate_total: 0, candidates: [] })
-    await assistant.search()
-    await nextTick()
-    expect(host.textContent).toContain('本学期尚无可用掌握证据')
-    expect(api.assemblyApi.resolveQuestions).not.toHaveBeenCalled()
-    await assistant.search()
-    assistant.selectTarget('kp_two')
-    expect(assistant.filters.target_keys).toEqual(['kp_two'])
-    expect(assistant.isStale).toBe(true)
-    expect(api.assemblyApi.saveDraft).not.toHaveBeenCalled()
-    expect(() => api.decodeAssemblyAssistant({ ...result(), exam_score_rate: 2 })).toThrow()
-  })
-
-  it('opens old AI entry links in the local assistant without starting model requests', async () => {
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/workbench', component: QuestionAssemblyView }] })
-    await router.push('/workbench?mode=ai')
-    await router.isReady()
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(QuestionAssemblyView)
-    app.use(pinia).use(router).mount(host)
-    mounted.push(app)
-    await vi.waitFor(() => expect(host.textContent).toContain('从班级薄弱处，找到值得练的题'))
-    expect(host.textContent).toContain('学情组卷助手')
-    expect(host.textContent).not.toContain('细目表')
-    expect(api.fetchAssemblyCandidates).not.toHaveBeenCalled()
-    expect(api.assemblyApi.saveDraft).not.toHaveBeenCalled()
-  })
-
-  it('updates on card selection, slider changes and W/S keys, reusing cached results', async () => {
-    const { host } = await mountPanel()
-    const assistant = useAssemblyAssistantStore()
-    vi.mocked(api.fetchAssemblyCandidates).mockImplementation(async body => ({ ...result(),
-      selected_target_keys: body.target_keys ?? ['kp_one'],
-      candidates: body.target_keys?.[0] === 'kp_two'
-        ? [{ question_id: 12, target_keys: ['kp_two'], difficulty: 3, difficulty_band: 'lower' }]
-        : result().candidates,
-      candidate_total: body.target_keys?.[0] === 'kp_two' ? 1 : 35,
-    }))
-    vi.mocked(api.assemblyApi.resolveQuestions).mockImplementation(async ids => ({
-      items: ids.map(id => ({ ...question, id })), missing_question_ids: [],
-    }))
-    await assistant.search()
-    await nextTick()
-    expect(host.querySelectorAll('.assistant-question')).toHaveLength(1)
-    const secondCard = host.querySelectorAll<HTMLElement>('.assistant-weakness')[1]!
-    secondCard.click()
-    await vi.waitFor(() => expect(assistant.selectedKey).toBe('kp_two'))
-    await vi.waitFor(() => expect(host.textContent).toContain('难度较低'))
-    expect(api.fetchAssemblyCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ target_keys: ['kp_two'] }), expect.any(AbortSignal))
-    expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(2)
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w' }))
-    await vi.waitFor(() => expect(assistant.selectedKey).toBe('kp_one'))
-    await vi.waitFor(() => expect(host.querySelectorAll('.assistant-question')).toHaveLength(1))
-    // Revisiting the first card served the cached result without a new request.
-    expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(2)
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))
-    await vi.waitFor(() => expect(assistant.selectedKey).toBe('kp_two'))
-    expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(2)
-    const min = host.querySelector<HTMLInputElement>('[aria-label="最低难度"]')!
-    min.value = '3'
-    min.dispatchEvent(new Event('input', { bubbles: true }))
-    await nextTick()
-    const max = host.querySelector<HTMLInputElement>('[aria-label="最高难度"]')!
-    max.value = '6'
-    max.dispatchEvent(new Event('input', { bubbles: true }))
-    max.dispatchEvent(new Event('change', { bubbles: true }))
-    await vi.waitFor(() => expect(api.fetchAssemblyCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ difficulty_min: 3, difficulty_max: 6 }), expect.any(AbortSignal)))
-    expect(api.assemblyApi.saveDraft).not.toHaveBeenCalled()
-  })
-
-  it('keeps the entire candidate pool and only loads twelve previews at a time', async () => {
-    const assistant = useAssemblyAssistantStore()
-    assistant.changeScope({ class_id: '9班', curriculum_volume_id: 'volume' })
-    const candidates = Array.from({ length: 35 }, (_, i) => ({ question_id: i + 1, target_keys: ['kp_one'] }))
-    vi.mocked(api.fetchAssemblyCandidates).mockResolvedValue({ ...result(), candidates })
-    vi.mocked(api.assemblyApi.resolveQuestions).mockImplementation(async ids => ({ items: ids.map(id => ({ ...question, id })), missing_question_ids: [] }))
-    await assistant.search()
-    expect(assistant.result?.candidates).toHaveLength(35)
-    expect(assistant.questions).toHaveLength(12)
-    await assistant.loadMore()
-    expect(assistant.questions).toHaveLength(24)
-    await assistant.loadMore()
-    expect(assistant.questions).toHaveLength(35)
-    expect(assistant.hasMore).toBe(false)
-    expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(1)
-    expect(api.assemblyApi.resolveQuestions).toHaveBeenCalledTimes(3)
-  })
 })

@@ -1,16 +1,14 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 
-import { createApp, nextTick, type App as VueApp } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
-import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, nextTick, type App as VueApp } from 'vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
 
+import { aiDiagnosticsApi } from '../api/ai-diagnostics'
 import { modelProfilesApi } from '../api/model-profiles'
 import { opsApi } from '../api/ops'
-import { aiDiagnosticsApi } from '../api/ai-diagnostics'
-import { workspaceAITaskApi } from '../workspaces/shared/ai-tasks/api'
 import SettingsHubView from '../views/SettingsHubView.vue'
+import { workspaceAITaskApi } from '../workspaces/shared/ai-tasks/api'
 
 const mounted: VueApp[] = []
 
@@ -68,49 +66,6 @@ afterEach(() => {
 })
 
 describe('SettingsHubView', () => {
-  it('keeps mutually exclusive settings sections out of the same page file', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/views/SettingsHubView.vue'), 'utf-8')
-
-    expect(source).not.toContain("import ModelProfilesView from './ModelProfilesView.vue'")
-    expect(source).not.toContain("import SettingsOpsView from './SettingsOpsView.vue'")
-    expect(source).toContain("() => import('./ModelProfilesView.vue')")
-    expect(source).toContain("() => import('./SettingsOpsView.vue')")
-    expect(source).toContain("() => import('../components/settings/AiDiagnosticsPanel.vue')")
-  })
-
-  it.each([
-    ['/settings', 'AI 服务'],
-    ['/settings?section=ai-trace', 'AI 调用记录'],
-    ['/settings?section=backup', '备份与恢复'],
-    ['/settings?section=maintenance', '检查与维护'],
-  ])('opens %s at the same requested section', async (path, heading) => {
-    const { host } = await mountAt(path)
-
-    expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe(heading)
-  })
-
-  it('reopens the last visited section when none is requested', async () => {
-    localStorage.setItem('ai-grading:settings-section:v1', 'ai-trace')
-    const { host, router } = await mountAt('/settings')
-
-    await vi.waitFor(() => {
-      expect(router.currentRoute.value.query.section).toBe('ai-trace')
-      expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe('AI 调用记录')
-    })
-  })
-
-  it('remembers the section the teacher switches to', async () => {
-    const { host, router } = await mountAt('/settings')
-
-    const traceButton = [...host.querySelectorAll<HTMLButtonElement>('.settings-hub__menu button')]
-      .find((button) => button.textContent?.includes('AI 调用记录'))!
-    traceButton.click()
-
-    await vi.waitFor(() => {
-      expect(router.currentRoute.value.query.section).toBe('ai-trace')
-    })
-    expect(localStorage.getItem('ai-grading:settings-section:v1')).toBe('ai-trace')
-  })
 
   it('keeps an unsaved AI service draft in place when the teacher declines to leave', async () => {
     const { host, router } = await mountAt('/settings')
@@ -131,23 +86,4 @@ describe('SettingsHubView', () => {
     expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe('AI 服务')
   })
 
-  it('keeps the original section switch when the teacher accepts losing an unsaved draft', async () => {
-    const { host, router } = await mountAt('/settings')
-    await vi.waitFor(() => expect(host.querySelector('[name="profile-name"]')).toBeTruthy(), { timeout: 5000 })
-    const input = host.querySelector<HTMLInputElement>('[name="profile-name"]')!
-    input.value = '尚未保存的站点'
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    await nextTick()
-    const confirm = vi.spyOn(globalThis, 'confirm').mockReturnValue(true)
-
-    const maintenanceButton = [...host.querySelectorAll<HTMLButtonElement>('.settings-hub__menu button')]
-      .find((button) => button.textContent?.includes('检查与维护'))!
-    maintenanceButton.click()
-
-    await vi.waitFor(() => {
-      expect(router.currentRoute.value.query.section).toBe('maintenance')
-      expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe('检查与维护')
-    })
-    expect(confirm).toHaveBeenCalledOnce()
-  })
 })

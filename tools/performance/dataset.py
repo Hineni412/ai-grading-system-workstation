@@ -117,6 +117,10 @@ class BenchmarkPaths:
         return self.config_dir / "generated-api-profiles.json"
 
     @property
+    def taxonomy_state_path(self) -> Path:
+        return self.config_dir / "generated-taxonomy-state.json"
+
+    @property
     def ops_state_dir(self) -> Path:
         return self.data_root / "generated-ops"
 

@@ -329,9 +329,9 @@ exam_structure = 将复用结果与新结果按原卷题号组合
 | 阶段 | 优先复用的测试文件 |
 |---|---|
 | A | `tests/phase4/test_solution_evidence_normalization.py`、`tests/phase4/test_solution_evidence_semantics.py`、`tests/phase4/test_combined_question_analysis.py`、`tests/test_config_generation_contract.py` |
-| B | `tests/test_question_import_duplicates.py`、`tests/test_question_import_job.py`、`tests/test_source_question_link_service.py`、`tests/test_question_bank_paper_trash.py` |
+| B | `tests/test_question_import_duplicates.py`、`tests/test_question_import_job.py`、`tests/test_question_bank_paper_trash.py` |
 | C | `tests/test_session_question_bank_sync_job.py`、`tests/test_config_generation_job.py`、`tests/test_config_generation_score_consistency.py`、`tests/test_grading_config_generation_policy.py` |
-| D/E | `tests/test_solution_answer_guard.py`、`tests/test_grading_tag_context_and_errors.py`、`tests/test_hybrid_grading_regressions.py`、`tests/test_manual_review_atomic.py`、`tests/test_api_review_routes.py` |
+| D/E | `tests/test_solution_answer_guard.py`、`tests/test_hybrid_grading_regressions.py`、`tests/test_manual_review_atomic.py`、`tests/test_api_review_routes.py` |
 
 例如 C 阶段针对性命令：
 

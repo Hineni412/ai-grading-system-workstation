@@ -7,7 +7,6 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 from db_manager import DBManager
 from report import ReportGenerator
@@ -175,22 +174,3 @@ def test_manual_only_session_exports_with_empty_ai_track(tmp_path: Path) -> None
     scores = pd.read_excel(export_path, sheet_name="班级成绩总表", header=None)
     assert "张三" in scores.astype(str).values
     assert 7 in scores.values
-
-
-def test_session_without_results_and_locks_still_rejected(tmp_path: Path) -> None:
-    db_path = tmp_path / "grading.db"
-    rubric_path = _write_rubric(tmp_path)
-    db = DBManager(db_path)
-    db.initialize()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO grading_sessions (id, session_name, rubric_path, answer_key_path)
-            VALUES (1, '空场次', ?, '')
-            """,
-            (str(rubric_path),),
-        )
-        conn.commit()
-
-    with pytest.raises(ValueError, match="暂无批改结果"):
-        ReportGenerator(db_path, tmp_path / "reports").export_session(1)

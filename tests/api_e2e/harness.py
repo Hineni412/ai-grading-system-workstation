@@ -51,6 +51,7 @@ class E2EControls:
     scanner_analyze_calls: int = 0
     fake_llm_calls: list[str] = field(default_factory=list)
     grading_qbank_paths: list[Path | None] = field(default_factory=list)
+    uploaded_scan_paths: dict[str, Path] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record_fake_llm_call(self, call: str) -> None:
@@ -269,8 +270,12 @@ class SyntheticScanner:
             student = students_by_code[student_code]
             groups.append(
                 ExamPaperGroup(
-                    front_image=self.paths.exams_dir / f"{student_code}_front.png",
-                    back_image=self.paths.exams_dir / f"{student_code}_back.png",
+                    front_image=self.controls.uploaded_scan_paths.get(
+                        f"{student_code}_front.png", self.paths.exams_dir / f"{student_code}_front.png",
+                    ),
+                    back_image=self.controls.uploaded_scan_paths.get(
+                        f"{student_code}_back.png", self.paths.exams_dir / f"{student_code}_back.png",
+                    ),
                     student_name=str(student["name"]),
                     student_id=int(student["id"]),
                     detected_name=str(student["name"]),
@@ -862,3 +867,103 @@ def install_dependency_overrides(
             get_ops_write_service: lambda: inert_ops_service,
         }
     )
+
+
+def serve_browser_review() -> None:
+    """Serve the existing synthetic API harness for the focused browser check."""
+    import argparse
+    import hashlib
+    import os
+
+    import path_manager
+    import uvicorn
+    from backend.api.app import create_app
+    from db_manager import DBManager, StudentRecord
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+    from question_bank.database.schema import initialize_database
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, required=True)
+    args = parser.parse_args()
+    # The suite supplies a fresh sandbox and removes real model configuration.
+    sandbox = Path(os.environ["AI_GRADING_WORKTREE_DATA_DIR"])
+    paths = build_paths(sandbox)
+    application_paths = path_manager.get_path_manager()
+    application_paths._data_root = paths.data_root
+    application_paths._logs_root = sandbox / "logs"
+    db = DBManager(paths.db_path)
+    db.initialize()
+    initialize_database(paths.qb_db_path)
+    db.upsert_students([
+        StudentRecord("SYN-001", "Synthetic Student A", "Synthetic Class"),
+        StudentRecord("SYN-002", "Synthetic Student B", "Synthetic Class"),
+    ])
+    controls = E2EControls()
+    manager = build_job_manager(paths, controls=controls)
+    try:
+        app = create_app(path_manager=application_paths)
+        install_dependency_overrides(app, db=db, manager=manager, paths=paths)
+        with TestClient(app) as client:
+            harness = ApiE2EHarness(client, db, manager, paths, controls)
+            session_id = harness.create_configured_session()
+            # Use the current frozen upload batch, not the legacy no-batch API path.
+            workspace = ScanGradingWorkspace(
+                exams_root=paths.exams_dir, templates_root=paths.templates_dir,
+                grading_db_path=paths.db_path,
+            )
+            uploaded: dict[str, str] = {}
+            for index, source in enumerate(sorted(paths.exams_dir.glob("SYN-*.png"))):
+                with Image.open(source) as scan:
+                    scan.putpixel((0, 0), (index, 0, 0))
+                    scan.save(source)
+                content = source.read_bytes()
+                digest = hashlib.sha256(content).hexdigest()
+                response = client.post(
+                    f"/api/sessions/{session_id}/scan-uploads", content=content,
+                    headers={"content-type": "image/png", "x-upload-filename": source.name,
+                             "x-content-sha256": digest},
+                )
+                assert response.status_code == 201, response.text
+                uploaded[source.name] = digest
+            frozen = client.post(
+                f"/api/sessions/{session_id}/scan-uploads/freeze",
+                json={"expected_revision": len(uploaded)},
+            )
+            assert frozen.status_code == 200, frozen.text
+            scan_dir = workspace.frozen_scan_dir(session_id)
+            controls.uploaded_scan_paths = {
+                name: scan_dir / f"{digest}.png" for name, digest in uploaded.items()
+            }
+            harness.scan(session_id)
+            preflight = client.get(f"/api/sessions/{session_id}/scan/preflight")
+            assert preflight.status_code == 200, preflight.text
+            # Seed known AI results; this acceptance starts at teacher review.
+            # All saves under test subsequently go through the real browser/API.
+            db.try_start_session_run(session_id)
+            for student, scores in zip(db.list_students(), (
+                [12, 17, 17, 16, 16, 7], [10, 12, 12, 12, 11, 13],
+            ), strict=True):
+                code = student["student_code"]
+                paper_id = db.create_exam_paper(
+                    session_id=session_id,
+                    front_image=str(controls.uploaded_scan_paths[f"{code}_front.png"]),
+                    back_image=str(controls.uploaded_scan_paths[f"{code}_back.png"]),
+                    ocr_name=student["name"], student_id=student["id"],
+                    match_status="matched", processing_status="graded",
+                )
+                db.result_repository.save_session_result(
+                    session_id, student["id"], paper_id,
+                    _synthetic_grading_result(
+                        student_name=student["name"], scores=scores,
+                        needs_human_review=code == "SYN-001",
+                    ),
+                    scan_batch_id=frozen.json()["batch_id"],
+                )
+            db.finish_session_run(session_id, "completed")
+        uvicorn.run(app, host="127.0.0.1", port=args.port)
+    finally:
+        manager.shutdown()
+
+
+if __name__ == "__main__":
+    serve_browser_review()

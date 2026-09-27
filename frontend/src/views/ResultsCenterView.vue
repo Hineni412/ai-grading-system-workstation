@@ -4,20 +4,21 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 
 import type {
   ResultsCenterItem,
-  ResultsCenterQuestion,
   ResultsCenterStudent,
   ResultsScoreStatus,
   ResultsStudentStatus,
 } from '../api/results-center'
 import ClassAnalysisPanel from '../components/results-center/ClassAnalysisPanel.vue'
+import ResultsOverviewPanel from '../components/results-center/ResultsOverviewPanel.vue'
 import AppButton from '../components/design-system/AppButton.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
 import { Input } from '../components/ui/input'
 import { useResultsCenterStore, type ResultsViewState } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
 import { translateGradingReason } from '../utils/grading-reasons'
 import FileCenterView from './FileCenterView.vue'
 
-type ResultsTab = 'details' | 'analysis' | 'exports'
+type ResultsTab = 'overview' | 'details' | 'analysis' | 'exports'
 type DetailFilter = 'all' | 'attention' | ResultsStudentStatus
 type MatrixSortKey = 'student' | 'total' | 'question'
 type SortDirection = 'ascending' | 'descending'
@@ -46,8 +47,9 @@ const drawerCloseButton = ref<HTMLButtonElement | null>(null)
 let drawerTrigger: HTMLElement | null = null
 
 const tabs: Array<{ id: ResultsTab; label: string }> = [
+  { id: 'overview', label: '考情总览' },
   { id: 'details', label: '成绩明细' },
-  { id: 'analysis', label: '班级分析' },
+  { id: 'analysis', label: '试题诊断' },
   { id: 'exports', label: '导出文件' },
 ]
 
@@ -72,8 +74,19 @@ function positiveIntegerQuery(value: unknown): number | null {
 
 const activeTab = computed<ResultsTab>(() => {
   const candidate = stringQuery(route.query.tab)
-  return candidate === 'analysis' || candidate === 'exports' ? candidate : 'details'
+  return candidate === 'details' || candidate === 'analysis' || candidate === 'exports'
+    ? candidate
+    : 'overview'
 })
+
+const analysisFocusQuestion = computed(() => (
+  activeTab.value === 'analysis' ? stringQuery(route.query.question) : null
+))
+const analysisInitialClass = computed(() => (
+  activeTab.value === 'analysis' ? stringQuery(route.query.class) : null
+))
+// 总览范围与诊断页共用 class 参数：从诊断返回时总览保持同一班级。
+const overviewScope = computed(() => stringQuery(route.query.class))
 
 const activeFilter = computed<DetailFilter>(() => {
   const candidate = stringQuery(route.query.filter)
@@ -190,42 +203,6 @@ const matrixQuestions = computed(() => (results.value?.questions ?? []).map((que
     .map((item) => item!.score_awarded!)
   return { ...question, average_score: scores.length ? scores.reduce((total, score) => total + score, 0) / scores.length : null }
 }))
-
-const scoreBands = computed(() => {
-  const bands = [
-    { id: 'excellent', label: '90–100%', minimum: 0.9, maximum: 1 },
-    { id: 'good', label: '80–89%', minimum: 0.8, maximum: 0.9 },
-    { id: 'middle', label: '70–79%', minimum: 0.7, maximum: 0.8 },
-    { id: 'pass', label: '60–69%', minimum: 0.6, maximum: 0.7 },
-    { id: 'low', label: '低于 60%', minimum: 0, maximum: 0.6 },
-  ]
-  const complete = (results.value?.students ?? []).filter(
-    (student) => student.ungraded_count === 0
-      && student.failed_count === 0
-      && student.max_score > 0,
-  )
-  const resolved = bands.map((band) => ({
-    ...band,
-    count: complete.filter((student) => {
-      const rate = student.current_score / student.max_score
-      return rate >= band.minimum
-        && (band.maximum === 1 ? rate <= 1 : rate < band.maximum)
-    }).length,
-  }))
-  const largest = Math.max(1, ...resolved.map((band) => band.count))
-  return resolved.map((band) => ({
-    ...band,
-    width: `${Math.round((band.count / largest) * 100)}%`,
-  }))
-})
-
-const questionInsights = computed(() => [...(results.value?.questions ?? [])].sort(
-  (left, right) => (
-    questionRiskCount(right) - questionRiskCount(left)
-    || questionScoreRate(left) - questionScoreRate(right)
-    || left.question_id.localeCompare(right.question_id, 'zh-CN')
-  ),
-))
 
 const orderedDrawerItems = computed(() => {
   if (!selectedStudent.value || !results.value) return []
@@ -404,23 +381,6 @@ function studentIssueText(student: ResultsCenterStudent): string {
   return issues.length > 0 ? issues.join(' · ') : '全部题目已有成绩'
 }
 
-function questionRiskCount(question: ResultsCenterQuestion): number {
-  return question.failed_count + question.ungraded_count + question.needs_review_count
-}
-
-function questionScoreRate(question: ResultsCenterQuestion): number {
-  if (question.average_score === null || question.max_score <= 0) return 1
-  return question.average_score / question.max_score
-}
-
-function questionIssueText(question: ResultsCenterQuestion): string {
-  const issues: string[] = []
-  if (question.failed_count > 0) issues.push(`失败 ${question.failed_count}`)
-  if (question.ungraded_count > 0) issues.push(`未评 ${question.ungraded_count}`)
-  if (question.needs_review_count > 0) issues.push(`复核 ${question.needs_review_count}`)
-  return issues.length > 0 ? issues.join(' · ') : '无需额外处理'
-}
-
 function currentTotalPrefix(student: ResultsCenterStudent): string {
   return student.ungraded_count > 0 || student.failed_count > 0 ? '当前 ' : ''
 }
@@ -562,29 +522,48 @@ function navigateToReview(item: ResultsCenterItem, student: ResultsCenterStudent
   })
 }
 
-function navigateQuestionToReview(questionId: string): void {
-  const sessionId = sessionStore.selectedSessionId
-  if (sessionId === null) return
-  void router.push({
-    path: '/grading',
-    query: {
-      session: String(sessionId),
-      scope: 'all',
-      question: questionId,
-      entry: 'results',
-    },
-  })
-}
-
 function openStudentDrawer(
   student: ResultsCenterStudent,
-  event: MouseEvent,
+  event?: MouseEvent,
 ): void {
-  drawerTrigger = event.currentTarget instanceof HTMLElement
+  drawerTrigger = event?.currentTarget instanceof HTMLElement
     ? event.currentTarget
     : null
   selectedStudent.value = student
   void nextTick(() => drawerCloseButton.value?.focus())
+}
+
+function openStudentById(studentId: number): void {
+  const student = results.value?.students.find(
+    (entry) => entry.student_id === studentId,
+  )
+  if (student) openStudentDrawer(student)
+}
+
+function openQuestionInAnalysis(
+  questionId: string,
+  className: string | null,
+): void {
+  const query: Record<string, string> = {
+    tab: 'analysis',
+    ...selectedSessionQuery(),
+  }
+  if (questionId) query.question = questionId
+  if (className) query.class = className
+  void router.replace({ path: '/results', query })
+}
+
+function openAttentionFilter(): void {
+  selectDetailFilter('attention')
+}
+
+function setOverviewScope(className: string | null): void {
+  const query: Record<string, string> = {
+    tab: 'overview',
+    ...selectedSessionQuery(),
+    ...(className ? { class: className } : {}),
+  }
+  void router.replace({ path: '/results', query })
 }
 
 function closeStudentDrawer(restoreFocus = true): void {
@@ -620,24 +599,22 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
 
 <template>
   <section ref="resultsPage" class="results-center" aria-labelledby="results-center-title">
-    <header class="results-center__hero">
-      <div>
-        <p class="results-center__eyebrow">当前考试 · 成绩与出件</p>
-        <h1 id="results-center-title" tabindex="-1">成绩中心</h1>
-        <p>集中查看班级成绩、定位需要处理的题目，并导出正式文件。</p>
-      </div>
-      <div
-        v-if="activeTab === 'details'"
-        class="results-center__hero-actions"
-      >
+    <PageHeader title="成绩中心" title-id="results-center-title">
+      <template #meta>
+        <span v-if="results">{{ results.session_name }}</span>
         <span v-if="resultsStore.updatedAt">
           已更新 {{ resultsStore.updatedAt.replace('T', ' ').slice(0, 19) }}
         </span>
+      </template>
+      <template
+        v-if="activeTab === 'overview' || activeTab === 'details'"
+        #actions
+      >
         <AppButton class="results-button results-button--secondary" @click="refresh">
           刷新成绩
         </AppButton>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
     <nav class="results-tabs" aria-label="成绩中心页面">
       <button
@@ -657,6 +634,8 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
     <ClassAnalysisPanel
       v-else-if="activeTab === 'analysis'"
       :session-id="sessionStore.selectedSessionId"
+      :focus-question="analysisFocusQuestion"
+      :initial-class="analysisInitialClass"
     />
 
     <template v-else>
@@ -696,79 +675,75 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           <button type="button" @click="refresh">重新加载</button>
         </div>
 
-        <section class="results-conclusion" aria-labelledby="results-conclusion-title">
-          <div class="results-conclusion__heading">
-            <div>
-              <p class="results-center__eyebrow">阅卷结论<template v-if="activeTab === 'details'"> · {{ selectedClass === null ? '全部班级' : selectedClass || '未填写班级' }} · 当前筛选</template></p>
-              <h2 id="results-conclusion-title">{{ results.session_name }}</h2>
-            </div>
-            <span>点击任一数字查看对应学生</span>
-          </div>
-          <div class="results-conclusion__strip">
-            <button
-              type="button"
-              :aria-pressed="activeFilter === 'complete'"
-              @click="selectDetailFilter('complete')"
-            >
-              <span>成绩完整</span>
-              <strong>{{ summary?.complete_student_count }}<small> / {{ summary?.student_count }} 人</small></strong>
-              <em>所有题目均已有成绩</em>
-            </button>
-            <button
-              type="button"
-              :aria-pressed="activeFilter === 'complete'"
-              @click="selectDetailFilter('complete')"
-            >
-              <span>当前平均分</span>
-              <strong>
-                {{ formatScore(summary?.average_score ?? null) }}
-                <small> / {{ formatScore(summary?.max_score ?? null) }}</small>
-              </strong>
-              <em>
-                最高 {{ formatScore(summary?.highest_score ?? null) }} ·
-                最低 {{ formatScore(summary?.lowest_score ?? null) }} ·
-                计入 {{ summary?.average_sample_count }} 人
-              </em>
-            </button>
-            <button
-              type="button"
-              class="results-conclusion__risk"
-              :aria-pressed="activeFilter === 'needs_review'"
-              @click="selectDetailFilter('needs_review')"
-            >
-              <span>待复核</span>
-              <strong>{{ summary?.needs_review_item_count }}<small> 题</small></strong>
-              <em>AI 已给分，建议教师核对</em>
-            </button>
-            <button
-              type="button"
-              class="results-conclusion__pending"
-              :aria-pressed="activeFilter === 'incomplete'"
-              @click="selectDetailFilter('incomplete')"
-            >
-              <span>未评分</span>
-              <strong>{{ summary?.ungraded_item_count }}<small> 题</small></strong>
-              <em>不计入当前总分与平均分</em>
-            </button>
-            <button
-              type="button"
-              class="results-conclusion__danger"
-              :aria-pressed="activeFilter === 'failed'"
-              @click="selectDetailFilter('failed')"
-            >
-              <span>处理失败</span>
-              <strong>{{ summary?.failed_item_count }}<small> 题</small></strong>
-              <em>需要重新处理或人工评分</em>
-            </button>
-          </div>
-        </section>
-
         <div v-if="results.students.length === 0" class="results-state-panel">
           <strong>当前考试还没有可展示的成绩</strong>
           <span>开始批改或人工评分后，成绩会出现在这里。</span>
         </div>
 
+        <ResultsOverviewPanel
+          v-else-if="activeTab === 'overview'"
+          :results="results"
+          :session-id="results.session_id"
+          :scope="overviewScope"
+          @open-student="openStudentById"
+          @open-question="openQuestionInAnalysis"
+          @open-filter="openAttentionFilter"
+          @update:scope="setOverviewScope"
+        />
+
         <template v-else>
+        <section class="results-conclusion" aria-label="成绩概况">
+          <div class="results-conclusion__line">
+            <button
+              type="button"
+              class="results-chip"
+              :aria-pressed="activeFilter === 'complete'"
+              @click="selectDetailFilter('complete')"
+            >
+              成绩完整 {{ summary?.complete_student_count }}/{{ summary?.student_count }} 人
+            </button>
+            <span class="results-conclusion__stats">
+              平均 {{ formatScore(summary?.average_score ?? null) }} ·
+              最高 {{ formatScore(summary?.highest_score ?? null) }} ·
+              最低 {{ formatScore(summary?.lowest_score ?? null) }}
+            </span>
+            <template
+              v-if="(summary?.needs_review_item_count ?? 0)
+                + (summary?.ungraded_item_count ?? 0)
+                + (summary?.failed_item_count ?? 0) > 0"
+            >
+              <button
+                v-if="(summary?.needs_review_item_count ?? 0) > 0"
+                type="button"
+                class="results-chip results-chip--warning"
+                :aria-pressed="activeFilter === 'needs_review'"
+                @click="selectDetailFilter('needs_review')"
+              >
+                待复核 {{ summary?.needs_review_item_count }} 题
+              </button>
+              <button
+                v-if="(summary?.ungraded_item_count ?? 0) > 0"
+                type="button"
+                class="results-chip results-chip--info"
+                :aria-pressed="activeFilter === 'incomplete'"
+                @click="selectDetailFilter('incomplete')"
+              >
+                未评分 {{ summary?.ungraded_item_count }} 题
+              </button>
+              <button
+                v-if="(summary?.failed_item_count ?? 0) > 0"
+                type="button"
+                class="results-chip results-chip--danger"
+                :aria-pressed="activeFilter === 'failed'"
+                @click="selectDetailFilter('failed')"
+              >
+                处理失败 {{ summary?.failed_item_count }} 题
+              </button>
+            </template>
+            <span v-else class="results-conclusion__done">阅卷已全部完成</span>
+          </div>
+        </section>
+
         <section
           class="results-panel results-panel--matrix"
           aria-labelledby="score-matrix-title"
@@ -908,61 +883,6 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             没有符合当前筛选条件的学生。
           </p>
         </section>
-
-        <details class="results-extra">
-          <summary>
-            分数分布与题目情况
-            <span>原成绩总览内容，点击展开</span>
-          </summary>
-          <div class="results-overview-insights">
-            <section class="results-insight" aria-labelledby="score-distribution-title">
-              <div class="results-insight__heading">
-                <div>
-                  <p class="results-center__eyebrow">分数分布</p>
-                  <h2 id="score-distribution-title">完整成绩样本</h2>
-                </div>
-                <span>{{ summary?.average_sample_count }} 人</span>
-              </div>
-              <div class="results-distribution">
-                <div v-for="band in scoreBands" :key="band.id">
-                  <span>{{ band.label }}</span>
-                  <div aria-hidden="true">
-                    <i :style="{ width: band.width }"></i>
-                  </div>
-                  <strong>{{ band.count }} 人</strong>
-                </div>
-              </div>
-            </section>
-
-            <section class="results-insight" aria-labelledby="question-insights-title">
-              <div class="results-insight__heading">
-                <div>
-                  <p class="results-center__eyebrow">题目情况</p>
-                  <h2 id="question-insights-title">需处理题目优先</h2>
-                </div>
-                <span>{{ results.questions.length }} 题</span>
-              </div>
-              <div class="results-question-insights">
-                <button
-                  v-for="question in questionInsights"
-                  :key="question.question_id"
-                  type="button"
-                  @click="navigateQuestionToReview(question.question_id)"
-                >
-                  <strong>{{ question.question_id }}</strong>
-                  <span>
-                    均分 {{ formatScore(question.average_score) }}
-                    / {{ formatScore(question.max_score) }}
-                  </span>
-                  <em :class="{ 'has-risk': questionRiskCount(question) > 0 }">
-                    {{ questionIssueText(question) }}
-                  </em>
-                  <span aria-hidden="true">›</span>
-                </button>
-              </div>
-            </section>
-          </div>
-        </details>
         </template>
       </template>
     </template>
