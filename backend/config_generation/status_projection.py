@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Sequence
 
 
@@ -23,7 +24,10 @@ def project_question_states(
             qid = str(raw.get("question_id") or "").strip()
             state = str(raw.get("state") or "").strip()
             if qid and state in {"pending", "running", "passed", "blocked", "failed"}:
-                by_id[qid] = _public_state(qid, state, raw.get("reason"), raw.get("retryable"))
+                by_id[qid] = _public_state(
+                    qid, state, raw.get("reason"), raw.get("retryable"),
+                    category=raw.get("category"),
+                )
 
     batches = meta.get("batches") if isinstance(meta, Mapping) else None
     if isinstance(batches, list):
@@ -36,7 +40,10 @@ def project_question_states(
             for qid in batch.get("question_ids") or []:
                 clean = str(qid).strip()
                 if clean:
-                    by_id[clean] = _public_state(clean, state, reason, state == "failed")
+                    by_id[clean] = _public_state(
+                        clean, state, reason, state == "failed",
+                        category=batch.get("category"),
+                    )
 
     failed = set(str(item).strip() for item in meta.get("failed_question_ids", []) if str(item).strip()) if isinstance(meta, Mapping) else set()
     for qid in failed:
@@ -63,12 +70,23 @@ def project_question_states(
     return [by_id.get(qid, _public_state(qid, default_state, "", default_state == "failed")) for qid in ordered]
 
 
-def _public_state(question_id: str, state: str, reason: object, retryable: object) -> dict[str, Any]:
+def _public_state(
+    question_id: str,
+    state: str,
+    reason: object,
+    retryable: object,
+    *,
+    category: object = "",
+) -> dict[str, Any]:
+    clean_category = str(category or "")[:80]
+    if not re.fullmatch(r"[a-z_]*", clean_category):
+        clean_category = ""
     return {
         "question_id": question_id,
         "state": state,
         "reason": str(reason or "")[:160],
         "retryable": bool(retryable),
+        "category": clean_category,
     }
 
 

@@ -153,6 +153,37 @@ class ConfigSourceSubmissionResponse(BaseModel):
     source: ConfigSourceResponse | None = None
 
 
+class ConfigSourceDuplicateItemResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    kind: Literal[
+        "exact_reusable",
+        "exact_needs_analysis",
+        "image_uncertain",
+        "answer_conflict",
+        "variant",
+        "suspected",
+        "same_session",
+    ]
+    matched_question_id: int = Field(gt=0)
+    matched_paper_title: str = Field(max_length=500)
+    matched_question_number: str = Field(default="", max_length=100)
+    similarity: float = Field(ge=0.0, le=1.0)
+    matched_question_excerpt: str = Field(max_length=200)
+    bank_answer_text: str | None = Field(default=None, max_length=20_000)
+    suggested_answer_override: str | None = Field(default=None, max_length=20_000)
+    reason: str = Field(max_length=300)
+
+
+class ConfigSourceDuplicatesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    source_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    items: list[ConfigSourceDuplicateItemResponse] = Field(max_length=500)
+
+
 class ConfigQuestionGenerationStateResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -160,6 +191,7 @@ class ConfigQuestionGenerationStateResponse(BaseModel):
     state: Literal["pending", "running", "passed", "blocked", "failed"]
     reason: str = Field(default="", max_length=160)
     retryable: bool
+    category: str = Field(default="", pattern=r"^[a-z_]{0,80}$")
 
 
 class ConfigGenerationQuestionStatesResponse(BaseModel):
@@ -183,6 +215,8 @@ class ConfigSourceQuestionDecisionRequest(BaseModel):
     excluded: bool
     answer_confirmed: bool = False
     answer_override: str | None = Field(default=None, max_length=20_000)
+    bank_match: Literal["same", "different", "reanalyze"] | None = None
+    bank_question_id: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _validate_answer_override(self) -> "ConfigSourceQuestionDecisionRequest":
@@ -192,6 +226,8 @@ class ConfigSourceQuestionDecisionRequest(BaseModel):
                 raise ValueError("answer_override must be nonblank")
             if not self.answer_confirmed:
                 raise ValueError("answer_override requires answer_confirmed=true")
+        if self.bank_match == "same" and self.bank_question_id is None:
+            raise ValueError("bank_match='same' requires bank_question_id")
         return self
 
 

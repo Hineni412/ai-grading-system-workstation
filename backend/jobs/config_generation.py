@@ -603,6 +603,7 @@ def _run_config_generation_job_impl(
     if bool(source_id) != bool(source_revision):
         raise ValueError("config source identity is incomplete")
     source_service: ConfigSourceService | None = None
+    decisions: list[QuestionDecision] = []
     if source_id:
         if (
             source_id != str(inputs.get("source_id") or "").strip()
@@ -618,9 +619,22 @@ def _run_config_generation_job_impl(
         raw_decisions = inputs.get("decisions")
         if not isinstance(raw_decisions, list):
             raise ValueError("config source decisions are invalid")
-        decisions: list[QuestionDecision] = []
         for item in raw_decisions:
             if not isinstance(item, dict):
+                raise ValueError("config source decisions are invalid")
+            bank_match = item.get("bank_match")
+            if bank_match is not None and bank_match not in {
+                "same", "different", "reanalyze",
+            }:
+                raise ValueError("config source decisions are invalid")
+            bank_question_id = item.get("bank_question_id")
+            if bank_question_id is not None and (
+                not isinstance(bank_question_id, int)
+                or isinstance(bank_question_id, bool)
+                or bank_question_id <= 0
+            ):
+                raise ValueError("config source decisions are invalid")
+            if bank_match == "same" and bank_question_id is None:
                 raise ValueError("config source decisions are invalid")
             decisions.append(
                 QuestionDecision(
@@ -637,6 +651,8 @@ def _run_config_generation_job_impl(
                         if item.get("answer_override") is not None
                         else None
                     ),
+                    bank_match=bank_match,
+                    bank_question_id=bank_question_id,
                 )
             )
         raw_asset_decisions = inputs.get("asset_decisions", [])
@@ -850,6 +866,7 @@ def _run_config_generation_job_impl(
                     ),
                     sources=sources,
                     operation_id=f"config:{session_id}:{analysis_artifact_id}",
+                    decisions=decisions,
                 ),
                 checkpoint=evidence_checkpoint,
             )
@@ -912,6 +929,11 @@ def _run_config_generation_job_impl(
         )
         evidence_artifact_hash = artifact.content_hash
         analysis_artifact = artifact
+        analysis_reused_refs = [
+            item.source_question_ref
+            for item in analysis_bundle.items
+            if item.reused_from_question_id is not None
+        ]
         if analysis_bundle.status != "succeeded":
             payload = _deferred_analysis_draft(
                 analysis_bundle,
@@ -922,6 +944,11 @@ def _run_config_generation_job_impl(
             structure = analysis_bundle.compose_generated_config(
                 exam_title=str(session.get("name") or "待命名试卷"),
             )
+            structure_meta = structure.setdefault("meta", {})
+            if isinstance(structure_meta, dict):
+                structure_meta["analysis_reused_question_ids"] = list(
+                    analysis_reused_refs
+                )
             normalize_new_generated_config_payload(structure)
             refresh_generated_config_quality_warnings(structure)
             if blocking_quality_question_ids(structure):
@@ -948,6 +975,7 @@ def _run_config_generation_job_impl(
                         source_service=source_service,
                         asset_decisions=asset_decisions,
                         type_overrides=_intake_type_overrides(confirmed_blocks),
+                        confirmed_duplicates=_intake_confirmed_duplicates(decisions),
                     )
                 if intake_classified is not None and not intake_classified["complete"]:
                     payload = structure
@@ -1100,6 +1128,7 @@ def _run_config_generation_job_impl(
         local_structure_repairs=_local_structure_repairs(payload),
         **score_allocation,
         retryable_mode=generation_mode == "batched",
+        analysis_reused_question_ids=_analysis_reused_question_ids(payload),
     )
     summary["questions"] = project_question_states(
         [
@@ -1194,6 +1223,7 @@ def _run_config_generation_job_impl(
                         taxonomy_governance=taxonomy_governance,
                         asset_overrides=intake_asset_overrides,
                         type_overrides=_intake_type_overrides(confirmed_blocks),
+                        confirmed_duplicates=_intake_confirmed_duplicates(decisions),
                     )
                 except JobCancellationRequested:
                     raise
@@ -1458,6 +1488,25 @@ def _resolve_intake_asset_overrides(
     )
 
 
+def _intake_confirmed_duplicates(
+    decisions: Sequence[QuestionDecision],
+) -> dict[str, int]:
+    """Map teacher-confirmed same-question decisions onto bank question ids.
+
+    Keyed by normalized question number so the importer's per-question loop
+    can record an occurrence against the confirmed canonical row instead of
+    inserting a second copy.
+    """
+    confirmed: dict[str, int] = {}
+    for decision in decisions or ():
+        if decision.bank_match != "same" or not decision.bank_question_id:
+            continue
+        number = _normalize_question_number(decision.question_id)
+        if number:
+            confirmed[number] = int(decision.bank_question_id)
+    return confirmed
+
+
 def _intake_type_overrides(
     confirmed_blocks: list[dict[str, Any]],
 ) -> dict[str, str]:
@@ -1493,6 +1542,7 @@ def _run_exam_paper_intake(
     source_service: ConfigSourceService | None = None,
     asset_decisions: Sequence[AmbiguousAssetDecision] = (),
     type_overrides: Mapping[str, str] | None = None,
+    confirmed_duplicates: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     if (
         analysis_artifact is None
@@ -1552,6 +1602,7 @@ def _run_exam_paper_intake(
             taxonomy_governance=taxonomy_governance,
             asset_overrides=asset_overrides,
             type_overrides=type_overrides,
+            confirmed_duplicates=confirmed_duplicates,
         )
     except JobCancellationRequested:
         raise
@@ -1963,6 +2014,7 @@ def _reused_analysis_items(
     data_root: Path,
     sources: tuple[ConfigQuestionAnalysisSource, ...],
     operation_id: str,
+    decisions: Sequence[QuestionDecision] = (),
 ) -> dict[str, DeferredCombinedAnalysisItem | DeferredAnalysisFailure]:
     """Match parsed sources to canonical bank questions before model calls.
 
@@ -1970,14 +2022,69 @@ def _reused_analysis_items(
     canonical's stored analysis into the bundle, so a fully duplicated paper
     issues no model request at all. Missing stored analysis remains a local
     pending item; neither a lookup error nor a reuse error authorizes a call.
+
+    Teacher duplicate decisions are honored here: ``different``/``reanalyze``
+    skip matching entirely (normal model analysis), while ``same`` reuses the
+    confirmed bank question's analysis even when the exact key cannot prove
+    identity on its own.
     """
     if not sources or question_bank_db_path is None:
         return {}
     bank_path = Path(question_bank_db_path)
     if not bank_path.is_file():
         return {}
-    keys: dict[str, str] = {}
+    decision_by_ref = {
+        str(item.question_id): item for item in decisions
+    }
+    confirmed_same = {
+        reference: int(decision.bank_question_id)
+        for reference, decision in decision_by_ref.items()
+        if decision.bank_match == "same" and decision.bank_question_id
+    }
+    matched_sources = tuple(
+        source for source in sources
+        if decision_by_ref.get(source.source_question_ref) is None
+        or decision_by_ref[source.source_question_ref].bank_match is None
+    )
+    result: dict[str, DeferredCombinedAnalysisItem | DeferredAnalysisFailure] = {}
     for source in sources:
+        bank_id = confirmed_same.get(source.source_question_ref)
+        if bank_id is None:
+            continue
+        reference = source.source_question_ref
+        try:
+            reused = reusable_analysis(
+                bank_path,
+                bank_question_id=bank_id,
+                target_question=source.question,
+                data_root=data_root,
+                teacher_confirmed_same=True,
+            )
+            if reused is None:
+                raise ValueError("duplicate analysis unavailable")
+            result[reference] = reused_analysis_item(
+                source=source,
+                bank_question_id=bank_id,
+                evidence=reused["evidence"],
+                evidence_payload=reused["evidence_payload"],
+                model_name=str(reused["model_name"] or "question-bank-reuse"),
+                fine_term_links=tuple(reused["fine_term_links"]),
+                operation_id=operation_id,
+            )
+        except Exception:  # noqa: BLE001 - preserve a local pending item, never call the model
+            local_id = hashlib.sha256(
+                f"{operation_id}:reuse:{reference}:{bank_id}".encode()
+            ).hexdigest()
+            result[reference] = DeferredAnalysisFailure(
+                source_question_ref=reference,
+                analysis_question_id=int(source.question.question_id),
+                request_id=local_id,
+                batch_hash=local_id,
+                category="duplicate_analysis_missing",
+                validation_error="题库已存在相同题目，但已存分析缺失、失效或无法复用。请先在题库处理该题，再重新生成评分依据；本题未调用模型。",
+            )
+    keys: dict[str, str] = {}
+    for source in matched_sources:
         try:
             key = analysis_source_exact_key(
                 source.question,
@@ -1992,7 +2099,7 @@ def _reused_analysis_items(
         if key:
             keys[source.source_question_ref] = key
     if not keys:
-        return {}
+        return result
     try:
         from question_bank.database.schema import initialize_database
 
@@ -2000,15 +2107,14 @@ def _reused_analysis_items(
         with connect(bank_path) as conn:
             ensure_content_index(conn, data_root=data_root)
             matches = content_index_lookup(conn, list(keys.values()))
-            uncertain_images = uncertain_image_candidates(conn, tuple(source for source in sources
+            uncertain_images = uncertain_image_candidates(conn, tuple(source for source in matched_sources
                 if keys.get(source.source_question_ref) not in matches))
     except Exception:  # noqa: BLE001
         LOGGER.exception("exact-duplicate index lookup failed")
         raise ValueError("题库查重索引暂不可用；尚未调用模型") from None
     if not matches and not uncertain_images:
-        return {}
-    result: dict[str, DeferredCombinedAnalysisItem | DeferredAnalysisFailure] = {}
-    for source in sources:
+        return result
+    for source in matched_sources:
         uncertain = source.source_question_ref in uncertain_images
         bank_id = matches.get(keys.get(source.source_question_ref, ""), uncertain_images.get(source.source_question_ref))
         if bank_id is None:
@@ -2048,14 +2154,15 @@ def _reused_analysis_items(
     return result
 
 
-def _config_analysis_sources(
-    confirmed_blocks: list[dict[str, Any]],
+def config_analysis_source_questions(
+    confirmed_blocks: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     question_images: dict[str, Any],
     *,
     curriculum_volume_id: str,
-    tagging_service: Any,
     volume: dict[str, Any],
-) -> tuple[ConfigQuestionAnalysisSource, ...]:
+) -> tuple[tuple[ConfigQuestionAnalysisSource, ...], tuple[dict[str, Any], ...]]:
+    """Build the provisional analysis sources shared by generation and the
+    duplicate pre-check (normalized blocks returned aligned by index)."""
     provisional: list[ConfigQuestionAnalysisSource] = []
     normalized_blocks: list[dict[str, Any]] = []
     for index, raw_block in enumerate(confirmed_blocks, start=1):
@@ -2088,6 +2195,23 @@ def _config_analysis_sources(
         provisional.append(ConfigQuestionAnalysisSource(source_ref, question))
     if len({item.source_question_ref for item in provisional}) != len(provisional):
         raise ValueError("confirmed question ids are duplicated")
+    return tuple(provisional), tuple(normalized_blocks)
+
+
+def _config_analysis_sources(
+    confirmed_blocks: list[dict[str, Any]],
+    question_images: dict[str, Any],
+    *,
+    curriculum_volume_id: str,
+    tagging_service: Any,
+    volume: dict[str, Any],
+) -> tuple[ConfigQuestionAnalysisSource, ...]:
+    provisional, normalized_blocks = config_analysis_source_questions(
+        confirmed_blocks,
+        question_images,
+        curriculum_volume_id=curriculum_volume_id,
+        volume=volume,
+    )
     contracts = tagging_service.taxonomy_contracts(
         {item.question.question_id: item.question.tagging_context for item in provisional}
     )
@@ -2247,6 +2371,14 @@ def _deferred_analysis_draft(
             "local_validation",
             "题目分析未完成且没有出站请求记录，可以安全重试。",
         ),
+        "duplicate_content_uncertain": (
+            "duplicate_content_uncertain",
+            "题库中存在相同题干的带图题，但图片内容尚不能确定相同，需先在题库中核对后再生成。",
+        ),
+        "duplicate_analysis_missing": (
+            "duplicate_analysis_missing",
+            "题库已存在相同题目，但已存分析缺失、失效或无法复用，本次未入库。",
+        ),
     }
     failed_batches = []
     for index, ((internal_category, detail), question_ids) in enumerate(
@@ -2303,6 +2435,7 @@ def _deferred_analysis_draft(
             "state": state,
             "reason": reason,
             "retryable": retryable,
+            "category": failure.category if failure is not None else "",
         })
     return {
         "rubric": {
@@ -2327,6 +2460,11 @@ def _deferred_analysis_draft(
             "taxonomy_review_count": len(taxonomy_review_refs),
             "score_allocation_pending": False,
             "question_states": question_states,
+            "analysis_reused_question_ids": [
+                item.source_question_ref
+                for item in bundle.items
+                if item.reused_from_question_id is not None
+            ],
         },
     }
 
@@ -2692,6 +2830,7 @@ def _summary(
     score_allocation_error: str = "",
     score_allocation_failure_category: str = "",
     retryable_mode: bool = True,
+    analysis_reused_question_ids: Sequence[str] | None = None,
 ) -> dict[str, object]:
     failed_count = len(failed_ids)
     clean_uncertain = list(uncertain_ids or [])
@@ -2722,6 +2861,11 @@ def _summary(
             retryable_mode and (failed_count or score_allocation_pending)
         ),
         "uncertain_retry_available": bool(retryable_mode and clean_uncertain),
+        "analysis_reused_question_ids": [
+            str(question_id)
+            for question_id in (analysis_reused_question_ids or [])
+            if str(question_id)
+        ],
     }
     if clean_uncertain:
         result.update(
@@ -2732,6 +2876,17 @@ def _summary(
             }
         )
     return result
+
+
+def _analysis_reused_question_ids(payload: dict[str, Any]) -> list[str]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    if not isinstance(meta, dict):
+        return []
+    return [
+        str(value).strip()
+        for value in (meta.get("analysis_reused_question_ids") or [])
+        if str(value).strip()
+    ]
 
 
 def _score_allocation_summary(payload: dict[str, Any]) -> dict[str, object]:
@@ -2840,6 +2995,7 @@ def _summary_from_batch_draft(
         local_structure_repairs=_local_structure_repairs(payload),
         **_score_allocation_summary(payload),
         retryable_mode=True,
+        analysis_reused_question_ids=_analysis_reused_question_ids(payload),
     )
     question_ids = [
         str(item.get("question_id") or "").strip()

@@ -16,6 +16,9 @@ export interface QuestionDecision {
   question_type?: QuestionType
   answer_confirmed?: boolean
   answer_override?: string | null
+  /** Teacher's call on a duplicate match against the question bank. */
+  bank_match?: 'same' | 'different' | 'reanalyze' | null
+  bank_question_id?: number | null
 }
 
 export interface ConfigAmbiguousAsset {
@@ -86,6 +89,45 @@ export interface ConfigQuestionGenerationState {
   state: 'pending' | 'running' | 'passed' | 'blocked' | 'failed'
   reason: string
   retryable: boolean
+  category?: string
+}
+
+export type ConfigSourceDuplicateKind =
+  | 'exact_reusable'
+  | 'exact_needs_analysis'
+  | 'image_uncertain'
+  | 'answer_conflict'
+  | 'variant'
+  | 'suspected'
+  | 'same_session'
+
+export const CONFIG_SOURCE_DUPLICATE_KINDS: readonly ConfigSourceDuplicateKind[] = [
+  'exact_reusable',
+  'exact_needs_analysis',
+  'image_uncertain',
+  'answer_conflict',
+  'variant',
+  'suspected',
+  'same_session',
+]
+
+export interface ConfigSourceDuplicateItem {
+  question_id: string
+  kind: ConfigSourceDuplicateKind
+  matched_question_id: number
+  matched_paper_title: string
+  matched_question_number: string
+  similarity: number
+  matched_question_excerpt: string
+  bank_answer_text?: string
+  suggested_answer_override?: string
+  reason: string
+}
+
+export interface ConfigSourceDuplicates {
+  source_id: string
+  source_revision: string
+  items: ConfigSourceDuplicateItem[]
 }
 
 export interface ConfigGenerationRequest {
@@ -493,6 +535,63 @@ export async function fetchActiveConfigSource(sessionId: number): Promise<Config
   })
 }
 
+function isDuplicateItem(value: unknown): value is ConfigSourceDuplicateItem {
+  const baseKeys = [
+    'question_id', 'kind', 'matched_question_id', 'matched_paper_title',
+    'matched_question_number', 'similarity', 'matched_question_excerpt', 'reason',
+  ]
+  if (!isRecord(value)) return false
+  const allowedKeys = new Set([...baseKeys, 'bank_answer_text', 'suggested_answer_override'])
+  if (baseKeys.some((key) => !(key in value))
+    || Object.keys(value).some((key) => !allowedKeys.has(key))) return false
+  return typeof value.question_id === 'string'
+    && /^[A-Za-z0-9_-]{1,100}$/.test(value.question_id)
+    && CONFIG_SOURCE_DUPLICATE_KINDS.includes(
+      value.kind as ConfigSourceDuplicateKind,
+    )
+    && isPositiveInteger(value.matched_question_id)
+    && typeof value.matched_paper_title === 'string'
+    && typeof value.matched_question_number === 'string'
+    && isFiniteNumber(value.similarity)
+    && typeof value.matched_question_excerpt === 'string'
+    && (value.bank_answer_text === undefined
+      || value.bank_answer_text === null
+      || typeof value.bank_answer_text === 'string')
+    && (value.suggested_answer_override === undefined
+      || value.suggested_answer_override === null
+      || typeof value.suggested_answer_override === 'string')
+    && typeof value.reason === 'string'
+}
+
+function decodeConfigSourceDuplicates(value: unknown): ConfigSourceDuplicates {
+  assertNoPathLikeKeys(value)
+  if (!isRecord(value)
+    || !hasExactKeys(value, ['source_id', 'source_revision', 'items'])
+    || !validDuplicateSourceId(value.source_id)
+    || typeof value.source_revision !== 'string'
+    || !/^[0-9a-f]{64}$/.test(value.source_revision)
+    || !Array.isArray(value.items)
+    || !value.items.every(isDuplicateItem)) {
+    throw new Error('Invalid config source duplicates response')
+  }
+  return value as unknown as ConfigSourceDuplicates
+}
+
+function validDuplicateSourceId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{32}$/.test(value)
+}
+
+export async function fetchActiveSourceDuplicates(
+  sessionId: number,
+  signal?: AbortSignal,
+): Promise<ConfigSourceDuplicates> {
+  const id = requireSessionId(sessionId)
+  return apiClient.request(`/api/sessions/${id}/config/sources/active/duplicates`, {
+    decode: decodeConfigSourceDuplicates,
+    signal,
+  })
+}
+
 export async function fetchLatestConfigGenerationJob(
   sessionId: number,
   request: ConfigGenerationRequest,
@@ -530,10 +629,14 @@ export async function fetchConfigGenerationQuestionStates(
         }
         const questions = value.questions
         if (!questions.every((item) => isRecord(item)
-          && hasExactKeys(item, ['question_id', 'state', 'reason', 'retryable'])
+          && hasExactKeys(item, [
+            'question_id', 'state', 'reason', 'retryable',
+            ...('category' in item ? ['category'] : []),
+          ])
           && typeof item.question_id === 'string'
           && ['pending', 'running', 'passed', 'blocked', 'failed'].includes(String(item.state))
-          && typeof item.reason === 'string' && typeof item.retryable === 'boolean')) {
+          && typeof item.reason === 'string' && typeof item.retryable === 'boolean'
+          && (item.category === undefined || typeof item.category === 'string'))) {
           throw new Error('Invalid config question states response')
         }
         return questions as ConfigQuestionGenerationState[]

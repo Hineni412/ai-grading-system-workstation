@@ -92,6 +92,17 @@ def _run_question_import_job_locked(
         if isinstance(raw_type_overrides, dict)
         else None
     )
+    raw_confirmed = context.payload.get("confirmed_duplicates")
+    confirmed_duplicates = (
+        {
+            str(number): int(bank_id)
+            for number, bank_id in raw_confirmed.items()
+            if str(number).strip() and str(bank_id).strip().isdigit()
+            and int(bank_id) > 0
+        }
+        if isinstance(raw_confirmed, dict)
+        else None
+    )
     importer_kwargs: dict[str, object] = {}
     if document_pipeline is not None:
         importer_kwargs["document_pipeline"] = document_pipeline
@@ -109,6 +120,7 @@ def _run_question_import_job_locked(
             data_root=Path(data_root),
             asset_overrides=asset_overrides,
             type_overrides=type_overrides,
+            confirmed_duplicates=confirmed_duplicates,
             **importer_kwargs,
         )
     except Exception:

@@ -326,6 +326,8 @@ class QuestionDecision:
     ] | None = None
     answer_confirmed: bool = False
     answer_override: str | None = None
+    bank_match: Literal["same", "different", "reanalyze"] | None = None
+    bank_question_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1107,6 +1109,18 @@ class ConfigSourceService:
                 and decision.question_type not in _ALLOWED_QUESTION_TYPES
             ):
                 raise ValueError("unsupported question type")
+            if decision.bank_match is not None and decision.bank_match not in {
+                "same",
+                "different",
+                "reanalyze",
+            }:
+                raise ValueError("unsupported bank match decision")
+            if decision.bank_match == "same" and (
+                not isinstance(decision.bank_question_id, int)
+                or isinstance(decision.bank_question_id, bool)
+                or decision.bank_question_id <= 0
+            ):
+                raise ValueError("bank decision requires a bank question")
             by_id[question_id] = decision
 
         ambiguous_candidates = {

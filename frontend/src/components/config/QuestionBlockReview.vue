@@ -7,23 +7,36 @@ import {
   type ConfigAmbiguousAssetDecision,
   type ConfigSource,
   type ConfigSourceAsset,
+  type ConfigSourceDuplicateItem,
   type QuestionDecision,
   type QuestionType,
 } from '../../api/config-workspace'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
+import DuplicateCompareDialog from './DuplicateCompareDialog.vue'
 import type { ConfigQuestionGenerationState } from '../../api/config-workspace'
 import { useConfigQuestionFocus } from '../../composables/useConfigQuestionFocus'
-import { configQuestionFlags } from './config-question-flags'
+import {
+  BANK_DUPLICATE_KINDS,
+  REVIEW_DUPLICATE_KINDS,
+  configQuestionFlags,
+  configSourceDuplicateTag,
+  duplicateDecisionRecorded,
+  type ConfigQuestionFlag,
+} from './config-question-flags'
 
 const props = withDefaults(defineProps<{
   source: ConfigSource
   decisions?: QuestionDecision[]
   assetDecisions?: ConfigAmbiguousAssetDecision[]
   questionStates?: ConfigQuestionGenerationState[]
+  duplicates?: ConfigSourceDuplicateItem[]
+  duplicatesUnavailable?: boolean
 }>(), {
   decisions: () => [],
   assetDecisions: () => [],
   questionStates: () => [],
+  duplicates: () => [],
+  duplicatesUnavailable: false,
 })
 
 const emit = defineEmits<{
@@ -279,23 +292,134 @@ const expandedAnswer = computed(() => (
   ?? null
 ))
 
-watch(() => props.source.source_revision, (_revision, previous) => {
-  if (previous !== undefined || props.decisions.length > 0) emit('update:decisions', [])
-}, { immediate: true })
+// 来源被替换（revision 变化）时清空题目决定；首次挂载不清空——store 从
+// 持久化索引恢复的决定本就属于当前 revision，挂载时清空会让决定无法跨刷新保留。
+watch(() => props.source.source_revision, (revision, previous) => {
+  if (previous !== undefined && previous !== revision) emit('update:decisions', [])
+})
 
 // —— 左侧题目目录 + 右侧整卷连续预览 ——
 const { focusedQuestionId, focusRequestToken } = useConfigQuestionFocus()
 const selectedQuestionId = ref('')
-const activeFilter = ref<'all' | 'attention' | 'failed'>('all')
+const activeFilter = ref<'all' | 'attention' | 'failed' | 'bank'>('all')
 const listRef = ref<HTMLElement | null>(null)
 const streamRef = ref<HTMLElement | null>(null)
 const expandedAnswerIds = ref(new Set<string>())
+const compareQuestionId = ref<string | null>(null)
+
+/** Questions with a visible duplicate tag, in paper order — the dialog's nav list. */
+const compareItems = computed(() => (
+  props.source.questions.filter((question) => duplicateById.value.has(question.question_id))
+))
+const compareIndex = computed(() => (
+  compareItems.value.findIndex((question) => question.question_id === compareQuestionId.value)
+))
+const compareQuestion = computed(() => (
+  compareItems.value[compareIndex.value] ?? null
+))
+const compareItem = computed(() => (
+  compareQuestionId.value === null
+    ? null
+    : duplicateById.value.get(compareQuestionId.value) ?? null
+))
+
+const duplicateById = computed(() => {
+  const map = new Map<string, ConfigSourceDuplicateItem>()
+  for (const item of props.duplicates) {
+    // same_session 是本卷自身入库的正常回链；variant 按产品要求不展示。
+    if (item.kind !== 'same_session' && item.kind !== 'variant'
+      && !map.has(item.question_id)) {
+      map.set(item.question_id, item)
+    }
+  }
+  return map
+})
+
+function duplicateFor(questionId: string): ConfigSourceDuplicateItem | undefined {
+  return duplicateById.value.get(questionId)
+}
 
 function questionFlags(question: ConfigQuestionPreview) {
-  return configQuestionFlags(
-    question,
-    generationStateOf(question.question_id),
+  const flags = [
+    ...configQuestionFlags(question, generationStateOf(question.question_id)),
+  ]
+  const dup = duplicateFor(question.question_id)
+  if (dup && REVIEW_DUPLICATE_KINDS.has(dup.kind)
+    && !duplicateDecisionRecorded(decisionFor(question.question_id))) {
+    const tag = configSourceDuplicateTag(dup)
+    if (tag) flags.push(tag)
+  }
+  return flags
+}
+
+/** Display tags: review-worthy duplicates merge into flags; informational tags prepended. */
+function questionTags(question: ConfigQuestionPreview): ConfigQuestionFlag[] {
+  const dup = duplicateFor(question.question_id)
+  const decision = decisionFor(question.question_id)
+  const tag = dup && (duplicateDecisionRecorded(decision)
+    || !REVIEW_DUPLICATE_KINDS.has(dup.kind))
+    ? configSourceDuplicateTag(dup, decision)
+    : null
+  const flags = questionFlags(question)
+  return tag ? [tag, ...flags] : flags
+}
+
+/** Card header flags: the duplicate line below carries its own tag. */
+function cardFlags(question: ConfigQuestionPreview): ConfigQuestionFlag[] {
+  return configQuestionFlags(question, generationStateOf(question.question_id))
+}
+
+function isBankDuplicate(question: ConfigQuestionPreview): boolean {
+  const dup = duplicateFor(question.question_id)
+  return dup !== undefined && BANK_DUPLICATE_KINDS.has(dup.kind)
+}
+
+function openDuplicateCompare(questionId: string): void {
+  compareQuestionId.value = questionId
+}
+
+function closeDuplicateCompare(): void {
+  compareQuestionId.value = null
+}
+
+function stepDuplicateCompare(delta: -1 | 1): void {
+  const next = compareItems.value[compareIndex.value + delta]
+  if (next) compareQuestionId.value = next.question_id
+}
+
+function applyDuplicateDecision(decision: QuestionDecision): void {
+  const retained = props.decisions.filter(
+    (item) => item.question_id !== decision.question_id,
   )
+  const current = decisionFor(decision.question_id)
+  const base: QuestionDecision = {
+    ...(current ?? { question_id: decision.question_id, excluded: false }),
+  }
+  delete base.bank_match
+  delete base.bank_question_id
+  delete base.answer_confirmed
+  delete base.answer_override
+  emit('update:decisions', [...retained, { ...base, ...decision }])
+}
+
+function resetDuplicateDecision(questionId: string): void {
+  const current = decisionFor(questionId)
+  const retained = props.decisions.filter(
+    (item) => item.question_id !== questionId,
+  )
+  if (!current) {
+    if (props.decisions.length !== retained.length) emit('update:decisions', retained)
+    return
+  }
+  const next: QuestionDecision = {
+    question_id: questionId,
+    excluded: current.excluded,
+  }
+  if (current.question_type !== undefined) next.question_type = current.question_type
+  emit('update:decisions', [
+    ...retained,
+    ...(current.excluded || next.question_type !== undefined ? [next] : []),
+  ])
 }
 
 function needsAttention(question: ConfigQuestionPreview): boolean {
@@ -311,10 +435,13 @@ const attentionCount = computed(() =>
   props.source.questions.filter(needsAttention).length)
 const failedCount = computed(() =>
   props.source.questions.filter(isFailedState).length)
+const bankCount = computed(() =>
+  props.source.questions.filter(isBankDuplicate).length)
 
 const visibleQuestions = computed(() => props.source.questions.filter((question) => {
   if (activeFilter.value === 'attention') return needsAttention(question)
   if (activeFilter.value === 'failed') return isFailedState(question)
+  if (activeFilter.value === 'bank') return isBankDuplicate(question)
   return true
 }))
 
@@ -471,7 +598,17 @@ function assetCountFor(question: ConfigQuestionPreview): number {
           :aria-pressed="activeFilter === 'failed'"
           @click="activeFilter = 'failed'"
         >入库异常 {{ failedCount }}</button>
+        <button
+          type="button"
+          :class="{ 'is-active': activeFilter === 'bank' }"
+          :aria-pressed="activeFilter === 'bank'"
+          @click="activeFilter = 'bank'"
+        >题库已有 {{ bankCount }}</button>
       </div>
+      <span
+        v-if="duplicatesUnavailable"
+        class="question-review__dup-offline"
+      >查重暂不可用</span>
       <div v-if="ignoredAssets.length" class="question-review__ignored-tray">
         <button
           type="button"
@@ -554,16 +691,17 @@ function assetCountFor(question: ConfigQuestionPreview): number {
               <span class="question-review__stem" :title="stemLine(question)">{{ stemLine(question) }}</span>
               <span class="question-review__answer-mini" :title="question.answer_preview">{{ question.answer_preview }}</span>
               <span
-                v-for="flag in questionFlags(question).slice(0, 1)"
+                v-for="flag in questionTags(question).slice(0, 1)"
                 :key="flag.label"
                 class="question-review__flag"
+                :class="flag.tone ? `question-review__flag--${flag.tone}` : ''"
                 :title="flag.title"
               >{{ flag.label }}</span>
               <span
-                v-if="questionFlags(question).length > 1"
+                v-if="questionTags(question).length > 1"
                 class="question-review__flag-more"
-                :title="questionFlags(question).slice(1).map((flag) => `${flag.label}：${flag.title}`).join('\n')"
-              >+{{ questionFlags(question).length - 1 }}</span>
+                :title="questionTags(question).slice(1).map((flag) => `${flag.label}：${flag.title}`).join('\n')"
+              >+{{ questionTags(question).length - 1 }}</span>
               <span
                 v-if="assetCountFor(question) > 0"
                 class="question-review__asset-count"
@@ -606,17 +744,37 @@ function assetCountFor(question: ConfigQuestionPreview): number {
                 {{ localTypeNote(question) }}
               </span>
               <span
-                v-for="flag in questionFlags(question).slice(0, 1)"
+                v-for="flag in cardFlags(question).slice(0, 1)"
                 :key="flag.label"
                 class="question-review__flag"
+                :class="flag.tone ? `question-review__flag--${flag.tone}` : ''"
                 :title="flag.title"
               >{{ flag.label }}</span>
               <span
-                v-if="questionFlags(question).length > 1"
+                v-if="cardFlags(question).length > 1"
                 class="question-review__flag-more"
-                :title="questionFlags(question).slice(1).map((flag) => `${flag.label}：${flag.title}`).join('\n')"
-              >+{{ questionFlags(question).length - 1 }}</span>
+                :title="cardFlags(question).slice(1).map((flag) => `${flag.label}：${flag.title}`).join('\n')"
+              >+{{ cardFlags(question).length - 1 }}</span>
             </header>
+            <div
+              v-if="duplicateFor(question.question_id)"
+              class="question-review__dup-line"
+            >
+              <span
+                class="question-review__flag"
+                :class="`question-review__flag--${configSourceDuplicateTag(duplicateFor(question.question_id)!, decisionFor(question.question_id))?.tone ?? 'warning'}`"
+                :title="configSourceDuplicateTag(duplicateFor(question.question_id)!, decisionFor(question.question_id))?.title"
+              >{{ configSourceDuplicateTag(duplicateFor(question.question_id)!, decisionFor(question.question_id))?.label }}</span>
+              <span
+                class="question-review__dup-meta"
+                :title="`《${duplicateFor(question.question_id)!.matched_paper_title}》${duplicateFor(question.question_id)!.matched_question_number ? `第${duplicateFor(question.question_id)!.matched_question_number}题` : ''}`"
+              >《{{ duplicateFor(question.question_id)!.matched_paper_title }}》<template v-if="duplicateFor(question.question_id)!.matched_question_number">第{{ duplicateFor(question.question_id)!.matched_question_number }}题</template></span>
+              <button
+                type="button"
+                class="question-review__dup-compare"
+                @click="openDuplicateCompare(question.question_id)"
+              >对照</button>
+            </div>
             <p v-if="intakeFailed(question.question_id)" class="question-review__type-check" role="alert">
               <strong>本题入库未完成：</strong>AI 分析已保留，请核对题目边界和配图归属；完整入库后才能赋分。
             </p>
@@ -774,6 +932,23 @@ function assetCountFor(question: ConfigQuestionPreview): number {
         </aside>
       </div>
     </Teleport>
+
+    <DuplicateCompareDialog
+      :item="compareItem"
+      :question="compareQuestion"
+      :question-blocks="compareQuestion ? textBlocks(compareQuestion, 'question') : []"
+      :question-assets="compareQuestion ? placedAssets(compareQuestion.question_id, 'question') : []"
+      :answer-assets="compareQuestion ? placedAssets(compareQuestion.question_id, 'answer') : []"
+      :answer-blocks="compareQuestion ? textBlocks(compareQuestion, 'answer') : []"
+      :decision="compareQuestion ? decisionFor(compareQuestion.question_id) : undefined"
+      :index="Math.max(compareIndex, 0)"
+      :total="compareItems.length"
+      @close="closeDuplicateCompare"
+      @prev="stepDuplicateCompare(-1)"
+      @next="stepDuplicateCompare(1)"
+      @decide="applyDuplicateDecision"
+      @reset="compareQuestion && resetDuplicateDecision(compareQuestion.question_id)"
+    />
   </section>
 </template>
 
@@ -987,6 +1162,52 @@ function assetCountFor(question: ConfigQuestionPreview): number {
   flex: 0 0 auto;
   color: var(--color-warning);
   font-size: 11px;
+}
+
+.question-review__dup-offline {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.question-review__flag--neutral {
+  border-color: var(--color-border-default);
+  background: var(--secondary);
+  color: var(--color-text-secondary);
+}
+
+.question-review__flag--info {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+.question-review__dup-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-block-start: var(--space-1);
+  font-size: var(--font-size-caption);
+}
+
+.question-review__dup-meta {
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.question-review__dup-compare {
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+.question-review__dup-compare:hover { text-decoration: underline; }
+.question-review__dup-compare:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
 .question-review__stream {

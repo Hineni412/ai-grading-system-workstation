@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -12,8 +13,10 @@ from fastapi import APIRouter, Depends, Request, Response
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
     get_config_source_service,
+    get_data_root,
     get_grading_db,
     get_job_manager,
+    get_question_bank_db_path,
     get_upload_config_dir,
     get_config_mapping_output_dir,
 )
@@ -23,6 +26,7 @@ from backend.api.schemas.config import (
     ConfigGenerationRequest,
     ConfigGenerationRetryRequest,
     ConfigSourceGenerationRequest,
+    ConfigSourceDuplicatesResponse,
     ConfigSourceResponse,
     ConfigSourceSubmissionResponse,
     ConfigGenerationQuestionStatesResponse,
@@ -96,6 +100,8 @@ from backend.config_workspace.publish import (
 )
 from backend.config_workspace.locks import session_config_lock
 
+
+LOGGER = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["config"])
 
@@ -325,6 +331,45 @@ def get_active_config_source(
         return source_service.load_active_public(session_id=session_id)
     except ConfigSourceError as exc:
         raise _source_api_error(exc) from None
+
+
+@router.get(
+    "/sessions/{session_id}/config/sources/active/duplicates",
+    response_model=ConfigSourceDuplicatesResponse,
+    responses={
+        **CONFIG_SOURCE_ERROR_RESPONSES,
+        503: {"model": ErrorResponse, "description": "Duplicate check unavailable"},
+    },
+)
+def get_active_config_source_duplicates(
+    session_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+    data_root: Path = Depends(get_data_root),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+) -> dict[str, Any]:
+    from backend.config_workspace.duplicates import source_duplicate_preview
+
+    session = _require_session(db, session_id)
+    try:
+        return source_duplicate_preview(
+            service=source_service,
+            session_id=int(session_id),
+            session_name=str(session.get("name") or ""),
+            question_bank_db_path=Path(question_bank_db_path),
+            data_root=Path(data_root),
+        )
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+    except ValueError as exc:
+        raise ApiError(422, "config_source_invalid", str(exc)) from None
+    except Exception:
+        LOGGER.exception("config source duplicate check failed")
+        raise ApiError(
+            503,
+            "config_duplicates_unavailable",
+            "题库查重暂不可用，不影响试卷配置，可以稍后刷新重试。",
+        ) from None
 
 
 @router.get(
