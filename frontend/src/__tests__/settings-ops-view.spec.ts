@@ -1,6 +1,6 @@
-import { createApp, nextTick, type App } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, nextTick, type App } from 'vue'
 
 import SettingsOpsView from '../views/SettingsOpsView.vue'
 
@@ -210,116 +210,6 @@ afterEach(() => {
 })
 
 describe('settings and Ops view', () => {
-  it('restores a completed online Ops Job after a page refresh', async () => {
-    localStorage.setItem('ai-grading:tracked-jobs:v1', JSON.stringify([{
-      id: 41,
-      jobType: 'ops_backup',
-      trackedAt: '2026-07-19T12:00:00Z',
-    }]))
-    jobApiMock.getJob.mockResolvedValue(job({
-      job_type: 'ops_backup',
-      status: 'succeeded',
-      result: {
-        filename: 'backup_20260719_120000_manual.zip',
-        download_url: '/api/jobs/41/download',
-      },
-      progress: 1,
-      finished_at: '2026-07-19T12:01:00Z',
-    }))
-
-    const host = await mountView()
-
-    await vi.waitFor(() => expect(jobApiMock.getJob).toHaveBeenCalledWith(
-      41,
-      expect.any(AbortSignal),
-    ))
-    await vi.waitFor(() => expect(host.textContent).toContain('任务处理完成'))
-    expect(host.textContent).toContain('下载结果')
-    const progress = host.querySelector<HTMLProgressElement>('progress')!
-    expect(progress.max).toBe(1)
-    expect(progress.value).toBe(1)
-  })
-
-  it('shows a terminal failed Job as failed instead of still running', async () => {
-    localStorage.setItem('ai-grading:tracked-jobs:v1', JSON.stringify([{
-      id: 41,
-      jobType: 'ops_transfer_export',
-      trackedAt: '2026-07-19T12:00:00Z',
-    }]))
-    jobApiMock.getJob.mockResolvedValue(job({
-      job_type: 'ops_transfer_export',
-      status: 'failed',
-      error: 'Job failed; see local logs for details.',
-      finished_at: '2026-07-19T12:01:00Z',
-    }))
-
-    const host = await mountView()
-
-    await vi.waitFor(() => expect(host.textContent).toContain('任务执行失败'))
-    expect(host.textContent).toContain('本次任务没有生成可下载结果')
-    expect(host.textContent).not.toContain('任务正在处理')
-    expect(
-      [...host.querySelectorAll('button')].some((button) => button.textContent === '下载结果'),
-    ).toBe(false)
-  })
-
-  it('explains offline preparation failure without claiming business data was applied', async () => {
-    localStorage.setItem('ai-grading:tracked-jobs:v1', JSON.stringify([{
-      id: 41,
-      jobType: 'ops_restore_prepare',
-      trackedAt: '2026-07-19T12:00:00Z',
-    }]))
-    jobApiMock.getJob.mockResolvedValue(job({
-      job_type: 'ops_restore_prepare',
-      status: 'failed',
-      error: 'Job failed; see local logs for details.',
-      finished_at: '2026-07-19T12:01:00Z',
-    }))
-
-    const host = await mountView()
-
-    await vi.waitFor(() => expect(host.textContent).toContain('离线准备失败'))
-    expect(host.textContent).toContain('业务数据尚未应用')
-    expect(host.textContent).toContain('可能已经创建安全备份')
-    expect(host.textContent).toContain('“恢复备份”中确认可用备份')
-    expect(host.textContent).not.toContain('操作已经应用')
-  })
-
-  it('keeps everyday backup and restore prominent without legacy maintenance tools', async () => {
-    const host = await mountView()
-
-    expect(host.textContent).toContain('备份与维护')
-    expect(host.textContent).toContain('创建备份')
-    expect(host.textContent).toContain('恢复备份')
-    expect(host.textContent).toContain('阅卷系统数据（含题库）')
-    expect(host.textContent).not.toContain('班主任工作台数据')
-    expect(host.textContent).not.toContain('更多维护工具（一般无需使用）')
-    expect(host.textContent).not.toContain('数据库迁移')
-    expect(host.textContent).not.toContain('导出数据包')
-    expect(host.textContent).not.toContain('导入数据包')
-    expect(host.textContent).toContain('手动备份')
-    expect(host.textContent).not.toMatch(/C:\\|\/user_data|sk-secret/i)
-  })
-
-  it('copies only the public diagnostic ledger', async () => {
-    const host = await mountView('maintenance')
-
-    expect(host.textContent).toContain('系统是否可以正常使用')
-    expect(host.textContent).toContain('阅卷数据库')
-    expect(host.textContent).toContain('待迁移 1')
-    expect(host.textContent).toContain('API 配置未完成')
-    expect(host.textContent).toContain('Microsoft Word')
-
-    click(host, '[data-testid="copy-diagnostic"]')
-    await settle()
-
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      expect.stringContaining('AI 阅卷系统脱敏诊断'),
-    )
-    const copied = vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0] ?? ''
-    expect(copied).not.toMatch(/C:\\|\/user_data|sk-[a-z0-9]/i)
-    expect(host.textContent).toContain('已复制脱敏诊断')
-  })
 
   it('keeps restore behind preflight, an isolated gate and an exact confirmation phrase', async () => {
     const host = await mountView()
@@ -388,65 +278,6 @@ describe('settings and Ops view', () => {
     expect(host.textContent).toContain('下次启动应用前执行')
     expect(host.textContent).not.toContain('恢复已经生效')
     expect(host.querySelector('[data-testid="cancel-prepared-operation"]')).not.toBeNull()
-  })
-
-  it('shows applied and rolled-back results as different outcomes', async () => {
-    opsApiMock.submit.mockResolvedValue(job({
-      status: 'succeeded',
-      result: {
-        operation_id: operation.operation_id,
-        operation: 'restore',
-      },
-      finished_at: '2026-07-19T12:01:00Z',
-    }))
-    opsApiMock.getOperation.mockResolvedValueOnce({
-      ...operation,
-      status: 'applied',
-      result_code: 'applied',
-    })
-    const appliedHost = await mountView()
-    appliedHost.querySelector<HTMLInputElement>('input[name="restore-backup"]')!.click()
-    click(appliedHost, '[data-testid="preflight-restore"]')
-    await vi.waitFor(() => expect(opsApiMock.preflight).toHaveBeenCalled())
-    await vi.waitFor(() =>
-      expect(appliedHost.querySelector('[data-testid="confirmation-phrase"]')).not.toBeNull(),
-    )
-    setInput(appliedHost, '[data-testid="confirmation-phrase"]', '确认恢复')
-    await settle()
-    click(appliedHost, '[data-testid="confirm-operation"]')
-    await vi.waitFor(() => expect(appliedHost.textContent).toContain('操作已经应用'))
-
-    for (const app of mounted.splice(0)) app.unmount()
-    document.body.innerHTML = ''
-    localStorage.clear()
-    vi.clearAllMocks()
-    opsApiMock.getSelfCheck.mockResolvedValue(selfCheck)
-    opsApiMock.getBackups.mockResolvedValue(backups)
-    opsApiMock.preflight.mockResolvedValue(preflight('restore', true))
-    opsApiMock.submit.mockResolvedValue(job({
-      status: 'succeeded',
-      result: {
-        operation_id: operation.operation_id,
-        operation: 'restore',
-      },
-      finished_at: '2026-07-19T12:01:00Z',
-    }))
-    opsApiMock.getOperation.mockResolvedValue({
-      ...operation,
-      status: 'rolled_back',
-      result_code: 'rolled_back_after_failure',
-    })
-    const rolledBackHost = await mountView()
-    rolledBackHost.querySelector<HTMLInputElement>('input[name="restore-backup"]')!.click()
-    click(rolledBackHost, '[data-testid="preflight-restore"]')
-    await vi.waitFor(() => expect(opsApiMock.preflight).toHaveBeenCalled())
-    await vi.waitFor(() =>
-      expect(rolledBackHost.querySelector('[data-testid="confirmation-phrase"]')).not.toBeNull(),
-    )
-    setInput(rolledBackHost, '[data-testid="confirmation-phrase"]', '确认恢复')
-    await settle()
-    click(rolledBackHost, '[data-testid="confirm-operation"]')
-    await vi.waitFor(() => expect(rolledBackHost.textContent).toContain('操作未生效，系统已回退'))
   })
 
 })

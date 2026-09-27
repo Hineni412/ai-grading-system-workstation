@@ -31,7 +31,7 @@
 | F04 | 真正走查重、读取已存分析、组成考试分析结果：排版变体可复用，结果不含本次模型请求。旧分析缺失或不可用保留待处理，不进入普通模型重试。 | `tests/test_question_dedup_acceptance.py` 的实际复用、缺分析案例；`tests/test_config_generation_job.py`；`tests/test_session_question_bank_sync_job.py` |
 | F05–F06 | 分值前缀、全半角、等价减号、公式格式及布尔属性写法归一；根指数、运算符与图中内容不同不能直接复用。能证明像素相同的整数倍缩放可复用；压缩或插值等不确定图片进入核对提示，考试入口不自动调用模型。题面、富内容和图片修订会刷新索引，未改图片不重新解码。 | `tests/test_question_dedup_acceptance.py` 的文本、根式、图形、修订及不确定图片案例 |
 | F07–F08 | 同一道规范题在同卷出现两次可正常导入并保留两个题号。删除原宿主卷时保留其出现关系，恢复后题目仍在，另一卷也保留自己的题号。 | `tests/test_question_dedup_acceptance.py`；`tests/test_question_import_duplicates.py`；`tests/test_question_bank_paper_trash.py` |
-| F09–F10 | 教师最终分独立生效，仍可查看 AI 原分及原步骤依据；没有旧步骤时明确显示暂无依据。历史教师 4.5 分在新 AI 4 分保存后仍为最终 4.5 分，AI 原分与步骤正文回读保持。非法新成绩不会覆盖原结果。 | `tests/test_flexible_grading_acceptance.py`；`tests/test_report_ai_teacher_comparison.py`；`tests/test_review_application_service.py`；独立页面 P3/P4 复验通过 |
+| F09–F10 | 教师最终分独立生效，仍可查看 AI 原分及原步骤依据；没有旧步骤时明确显示暂无依据。历史教师 4.5 分在新 AI 4 分保存后仍为最终 4.5 分，AI 原分与步骤正文回读保持。非法新成绩不会覆盖原结果。 | `tests/test_flexible_grading_acceptance.py`；`tests/test_report_ai_teacher_comparison.py`；独立页面 P3/P4 复验通过 |
 | F11 | 带空格的函数、下标和图号括号不再制造小问；真正换行小问仍保留。 | `tests/test_question_dedup_acceptance.py` |
 | F12 | 卡片按实际小问归组，显示小问总分和共同规则，各块明确“最高分”、得分依据和等价达成；客观题与直接作答/作图采用对应说明。沿用现有编辑与保存入口，整数编辑、统一分配、分值错误提示和总分检查接通。 | `frontend/src/components/config/__tests__/rubric-editor-table.spec.ts`；配置编辑接口/仓库测试；桌面及 390px 宽度实际浏览器检查 |
 

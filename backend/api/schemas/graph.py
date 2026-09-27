@@ -22,89 +22,6 @@ class GraphQueryRequest(_GraphModel):
     exam_scope: TrainingExamScopeRequest
 
 
-class RelationShape(_GraphModel):
-    source_key: str = Field(
-        pattern=r"^(?:kp_[a-z0-9_]+|sk_[a-z0-9_]+|ki_[0-9a-f]{32})$"
-    )
-    target_key: str = Field(
-        pattern=r"^(?:kp_[a-z0-9_]+|sk_[a-z0-9_]+|ki_[0-9a-f]{32})$"
-    )
-    relation_type: Literal["prerequisite", "parent", "related"]
-
-
-class RelationImpactRequest(_GraphModel):
-    action: Literal["confirm", "reject", "retire", "restore", "amend"]
-    amended_relation: RelationShape | None = None
-
-    @field_validator("amended_relation")
-    @classmethod
-    def validate_amendment(cls, value: RelationShape | None, info):
-        action = str(info.data.get("action") or "")
-        if action == "amend" and value is None:
-            raise ValueError("amended_relation is required for amend")
-        if action != "amend" and value is not None:
-            raise ValueError("amended_relation is only allowed for amend")
-        return value
-
-
-class RelationReviewRequest(RelationImpactRequest):
-    expected_revision: int = Field(ge=1)
-    teacher_ref: str = Field(min_length=1, max_length=120)
-    reason: str = Field(min_length=1, max_length=500)
-
-
-class RelationBatchCommand(_GraphModel):
-    relation_id: str = Field(min_length=1, max_length=80)
-    expected_revision: int = Field(ge=1)
-    action: Literal["confirm", "reject", "retire", "restore"]
-    reason: str = Field(min_length=1, max_length=500)
-
-
-class RelationBatchReviewRequest(_GraphModel):
-    teacher_ref: str = Field(min_length=1, max_length=120)
-    commands: list[RelationBatchCommand] = Field(min_length=1, max_length=20)
-
-
-class RelationReviewQueueResponse(_GraphModel):
-    status: Literal["suggested", "confirmed", "rejected", "retired"]
-    items: list[dict[str, Any]]
-    total: int = Field(ge=0)
-    page: int = Field(ge=1)
-    page_size: int = Field(ge=1, le=100)
-    total_pages: int = Field(ge=1)
-
-
-class RelationImpactResponse(_GraphModel):
-    relation_id: str
-    current_status: Literal["suggested", "confirmed", "rejected", "retired"]
-    action: Literal["confirm", "reject", "retire", "restore", "amend"]
-    target_status: (
-        Literal["suggested", "confirmed", "rejected", "retired"] | None
-    )
-    can_apply: bool
-    conflict_codes: list[str]
-    activity_effect: str
-    recommendation_effect: str
-    revision: int = Field(ge=1)
-
-
-class RelationReviewResponse(_GraphModel):
-    relation: dict[str, Any]
-    timeline: list[dict[str, Any]]
-
-
-class RelationBatchReviewResponse(_GraphModel):
-    status: Literal["applied", "partial", "failed"]
-    applied_count: int = Field(ge=0)
-    failed_count: int = Field(ge=0)
-    results: list[dict[str, Any]]
-
-
-class RelationTimelineResponse(_GraphModel):
-    relation_id: str
-    timeline: list[dict[str, Any]]
-
-
 class CurrentGraphQueryRequest(GraphQueryRequest):
     knowledge_keys: list[str] = Field(
         default_factory=list,
@@ -227,14 +144,4 @@ __all__ = [
     "CurrentGraphQueryRequest",
     "CurrentGraphResponse",
     "CurrentGraphStandard",
-    "RelationBatchCommand",
-    "RelationBatchReviewRequest",
-    "RelationBatchReviewResponse",
-    "RelationImpactRequest",
-    "RelationImpactResponse",
-    "RelationReviewQueueResponse",
-    "RelationReviewRequest",
-    "RelationReviewResponse",
-    "RelationShape",
-    "RelationTimelineResponse",
 ]

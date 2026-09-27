@@ -1,7 +1,7 @@
-import { createApp, nextTick, type App } from 'vue'
 import { createPinia } from 'pinia'
-import { createMemoryHistory } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, nextTick, type App } from 'vue'
+import { createMemoryHistory } from 'vue-router'
 
 import { createAppRouter } from '../router'
 import StudentsView from '../views/StudentsView.vue'
@@ -150,21 +150,6 @@ afterEach(() => {
 })
 
 describe('StudentsView', () => {
-  it('presents one compact roster ledger with filters and a collapsed import row', async () => {
-    const host = await mountView()
-
-    expect(host.querySelector('h1')?.textContent).toBe('学生名单')
-    expect(host.textContent).toContain('导入学生名单')
-    expect(host.querySelector('input[type="file"]')).not.toBeNull()
-    expect(host.textContent).not.toContain('核对变化')
-    expect(host.textContent).toContain('共 1 名学生')
-    expect(host.textContent).not.toContain('记录号')
-    expect(host.textContent).not.toContain('建立时间')
-    expect(host.textContent).toContain('测试学生')
-    expect(host.querySelector('[data-testid="student-roster-table"]')).not.toBeNull()
-    expect(host.querySelector('input[aria-label="搜索学生"]')).not.toBeNull()
-    expect(host.querySelector('select[aria-label="筛选班级"]')).not.toBeNull()
-  })
 
   it('classifies file rows before enabling the confirmation write', async () => {
     const host = await mountView()

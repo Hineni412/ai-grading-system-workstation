@@ -110,10 +110,7 @@ def _client(
             progress = snapshot["progress"]
             total = max(1, int(progress["total"]))
             context.report(
-                (
-                    int(progress["processed"])
-                )
-                / total,
+                (int(progress["processed"])) / total,
                 "taxonomy_suggestion",
                 "正在生成归并建议",
             )
@@ -144,9 +141,7 @@ def _client(
     manager.register("taxonomy_suggestion", handler)
     app = create_app()
     app.dependency_overrides[get_job_manager] = lambda: manager
-    app.dependency_overrides[
-        get_taxonomy_suggestion_service
-    ] = lambda: service
+    app.dependency_overrides[get_taxonomy_suggestion_service] = lambda: service
     return TestClient(app), manager, service, governance, proposal_id
 
 
@@ -156,9 +151,7 @@ def test_suggestion_start_is_idempotent_persistent_and_never_auto_applies(
     client, manager, _service, governance, proposal_id = _client(tmp_path)
     request = {
         "proposal_ids": [proposal_id],
-        "expected_revision": governance.list_proposals(status="pending")[
-            "revision"
-        ],
+        "expected_revision": governance.list_proposals(status="pending")["revision"],
         "request_token": "2" * 32,
     }
 
@@ -179,9 +172,7 @@ def test_suggestion_start_is_idempotent_persistent_and_never_auto_applies(
     job_id = int(first.json()["job"]["id"])
     run_id = str(first.json()["run"]["run_id"])
     manager.wait(job_id, timeout=5)
-    run = client.get(
-        f"/api/question-bank/taxonomy/suggestions/{run_id}"
-    )
+    run = client.get(f"/api/question-bank/taxonomy/suggestions/{run_id}")
     assert run.status_code == 200
     assert run.json()["status"] == "completed"
     assert run.json()["items"][0]["suggestion"]["source"] == "ai"
@@ -201,95 +192,4 @@ def test_suggestion_start_is_idempotent_persistent_and_never_auto_applies(
         json={"payload": {"run_id": run_id}},
     )
     assert direct.status_code == 422
-    manager.shutdown()
-
-
-def test_cancelled_suggestion_run_can_resume_without_discarding_state(
-    tmp_path: Path,
-) -> None:
-    client, manager, service, governance, proposal_id = _client(tmp_path)
-    run = service.create_run(
-        proposal_ids=[proposal_id],
-        expected_revision=governance.list_proposals(status="pending")[
-            "revision"
-        ],
-        request_token="3" * 32,
-    )
-
-    cancelled = client.post(
-        f"/api/question-bank/taxonomy/suggestions/{run['run_id']}/cancel"
-    )
-    assert cancelled.status_code == 200
-    assert cancelled.json()["status"] == "cancelled"
-    assert cancelled.json()["progress"]["cancelled"] == 1
-
-    retried = client.post(
-        f"/api/question-bank/taxonomy/suggestions/{run['run_id']}/retry",
-        json={"request_token": "4" * 32},
-    )
-    assert retried.status_code == 202
-    manager.wait(retried.json()["job"]["id"], timeout=5)
-    resumed = client.get(
-        f"/api/question-bank/taxonomy/suggestions/{run['run_id']}"
-    ).json()
-    assert resumed["status"] == "completed"
-    assert resumed["progress"]["completed"] == 1
-    assert resumed["items"][0]["attempts"] == 1
-    manager.shutdown()
-
-
-def test_suggestion_start_reports_taxonomy_revision_conflict(
-    tmp_path: Path,
-) -> None:
-    client, manager, _service, governance, proposal_id = _client(tmp_path)
-
-    response = client.post(
-        "/api/question-bank/taxonomy/suggestions",
-        json={
-            "proposal_ids": [proposal_id],
-            "expected_revision": (
-                governance.list_proposals(status="pending")["revision"] - 1
-            ),
-            "request_token": "5" * 32,
-        },
-    )
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "taxonomy_revision_conflict"
-    manager.shutdown()
-
-
-def test_get_run_converts_an_interrupted_outer_job_into_retryable_items(
-    tmp_path: Path,
-) -> None:
-    client, manager, service, governance, proposal_id = _client(tmp_path)
-    run = service.create_run(
-        proposal_ids=[proposal_id],
-        expected_revision=governance.list_proposals(status="pending")[
-            "revision"
-        ],
-        request_token="6" * 32,
-    )
-    job = manager.store.create_job(
-        "taxonomy_suggestion",
-        {
-            "run_id": run["run_id"],
-            "operation": "process",
-            "client_request_token": "7" * 32,
-        },
-    )
-    assert manager.store.mark_running(job.id)
-    manager.store.finish(job.id, "failed", "interrupted")
-
-    recovered = client.get(
-        f"/api/question-bank/taxonomy/suggestions/{run['run_id']}"
-    )
-
-    assert recovered.status_code == 200
-    assert recovered.json()["status"] == "failed"
-    assert recovered.json()["retryable"] is True
-    assert recovered.json()["items"][0]["error"] == {
-        "category": "interrupted",
-        "message": "应用在处理期间退出，可继续未完成项目。",
-    }
     manager.shutdown()

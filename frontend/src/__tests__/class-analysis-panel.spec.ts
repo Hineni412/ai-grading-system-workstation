@@ -80,6 +80,7 @@ function makeAnalysis(
       },
       present: 4,
       roster_absent: ['王五'],
+      skipped: [],
       score_distribution: {
         avg: 54.75,
         median: 55.5,
@@ -165,7 +166,10 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-async function mountPanel(sessionId: number | null = 7): Promise<{ host: HTMLElement; router: Router }> {
+async function mountPanel(
+  sessionId: number | null = 7,
+  props: { focusQuestion?: string | null; initialClass?: string | null } = {},
+): Promise<{ host: HTMLElement; router: Router }> {
   const pinia = createPinia()
   setActivePinia(pinia)
   const router = createRouter({
@@ -179,7 +183,7 @@ async function mountPanel(sessionId: number | null = 7): Promise<{ host: HTMLEle
   await router.isReady()
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(ClassAnalysisPanel, { sessionId })
+  const app = createApp(ClassAnalysisPanel, { sessionId, ...props })
   app.use(pinia)
   app.use(router)
   app.mount(host)
@@ -329,12 +333,22 @@ describe('class analysis panel', () => {
     await vi.waitFor(() => expect(apiMock.regenerate).toHaveBeenCalledWith(7, undefined, 'causes'))
   })
 
-  it('shows statistics while AI generation is still running', async () => {
+  it('shows diagnostics while AI generation is still running', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({ status: 'generating', active_job_id: 91 }))
     const { host } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('平均分'))
+    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
     expect(host.textContent).toContain('试题诊断')
     expect(host.querySelector('[data-testid="class-analysis-generating"]')).toBeNull()
+  })
+
+  it('scrolls to and highlights the question row named by focusQuestion', async () => {
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(() => undefined)
+    const { host } = await mountPanel(7, { focusQuestion: '12(3)' })
+    await vi.waitFor(() => expect(
+      host.querySelector('tr.is-focused[data-question-id="12(3)"]'),
+    ).not.toBeNull())
+    expect(scrollSpy).toHaveBeenCalled()
   })
 
   it('loads original questions only when opened and reuses the preview', async () => {
@@ -418,8 +432,6 @@ describe('class analysis panel', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
     expect(apiMock.getClassAnalysis).toHaveBeenCalledTimes(1)
     expect(apiMock.getClassAnalysis).toHaveBeenCalledWith(7, expect.any(AbortSignal), '', 'summary')
-    expect(host.textContent).toContain('平均分')
-    expect(host.textContent).toContain('及格率')
     expect(host.querySelector('.class-analysis__score-list')).toBeNull()
     host.querySelector<HTMLButtonElement>('.class-analysis__score-band-toggle:not(:disabled)')!.click()
     await settle()

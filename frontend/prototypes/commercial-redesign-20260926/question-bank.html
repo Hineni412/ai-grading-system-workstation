@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="a">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>题库管理 · 界面改版样稿</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('proto-theme')||'a'}catch(e){document.documentElement.dataset.theme='a'}</script>
+<style>
+.main { display: flex; flex-direction: column; overflow: hidden; }
+.qb { flex: 1; min-height: 0; display: grid; grid-template-columns: 240px minmax(0, 1fr) 420px; gap: 14px; padding: 14px 24px 18px; overflow: hidden; }
+/* 左：筛选面 */
+.qb-facets { overflow-y: auto; min-height: 0; }
+.qb-facets .card { padding: 12px; }
+.facet-head { display: flex; align-items: center; margin-bottom: 10px; }
+.facet-head b { font-size: 13px; }
+.facet-head button { margin-left: auto; font-size: 12px; color: var(--accent); }
+.facet-sec { border-top: 1px solid var(--line-soft); padding: 10px 0 4px; }
+.facet-sec:first-of-type { border-top: none; }
+.facet-sec > h4 { margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; color: var(--ink-3); }
+.facet-item { display: flex; align-items: center; gap: 7px; width: 100%; padding: 4px 4px; border-radius: 6px; font-size: 12.5px; color: var(--ink-2); text-align: left; }
+.facet-item:hover { background: var(--surface-hover); color: var(--ink-1); }
+.facet-item .n { margin-left: auto; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.facet-item input[type="checkbox"] { accent-color: var(--accent); }
+.facet-item .ic { width: 12px; height: 12px; color: var(--ink-3); }
+.facet-sub { padding-left: 20px; }
+/* 中：列表 */
+.qb-mid { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.qb-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.qb-toolbar .count { margin-left: auto; font-size: 12px; color: var(--ink-3); }
+.qb-rows { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
+.prow {
+  position: relative; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 4px 10px;
+  align-items: center; padding: 9px 12px 9px 14px; cursor: pointer;
+  transition: border-color var(--d-fast) ease, background var(--d-fast) ease, box-shadow var(--d-base) var(--ease-out);
+}
+.prow::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: transparent; }
+.prow:hover { border-color: var(--line-strong); }
+.prow.sel { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--accent-subtle); }
+.prow.sel::before { background: var(--accent); }
+.prow__cb { opacity: 0; transition: opacity var(--d-fast) ease; }
+.prow:hover .prow__cb, .prow.chk .prow__cb { opacity: 1; }
+.prow__cb input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+.fmt { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 6px; border-radius: 4px; }
+.fmt--doc { color: #2f6ea5; background: #e9f1f9; }
+.fmt--pdf { color: #b04444; background: #faecec; }
+.prow__main { min-width: 0; }
+.prow__title { font-size: 13px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prow__meta { margin-top: 2px; font-size: 11.5px; color: var(--ink-3); display: flex; gap: 8px; align-items: center; }
+.prow__meta span { white-space: nowrap; }
+.prow__right { text-align: right; display: flex; flex-direction: column; gap: 5px; align-items: flex-end; }
+.prow__tagline { font-size: 11px; color: var(--ink-2); display: flex; align-items: center; gap: 7px; }
+.prow__tagline .bar { width: 64px; height: 4px; }
+.prow__tagline .full { color: var(--st-done); font-weight: 550; }
+.prow__qs { font-size: 11.5px; color: var(--ink-3); }
+/* 右：预览 */
+.qb-preview { overflow-y: auto; min-height: 0; }
+.qb-preview .card { padding: 16px; }
+.pv-title { font-size: 16px; font-weight: 650; line-height: 1.35; margin: 0; }
+.pv-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 12px; }
+.pv-top { display: flex; align-items: center; gap: 14px; }
+.pv-ring { position: relative; width: 56px; height: 56px; flex: none; }
+.pv-ring svg { width: 56px; height: 56px; }
+.pv-ring .track { fill: none; stroke: var(--line-soft); stroke-width: 5; }
+.pv-ring .val { fill: none; stroke: var(--st-done); stroke-width: 5; stroke-linecap: round; transform: rotate(-90deg); transform-origin: center; }
+.pv-ring span { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; font-weight: 650; }
+.pv-top .txt { font-size: 12px; color: var(--ink-2); line-height: 1.5; }
+.pv-actions { display: flex; gap: 8px; margin: 14px 0; }
+.pv-qh { display: flex; align-items: center; margin: 6px 0 8px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.pv-qh span { margin-left: auto; font-weight: 400; font-size: 11.5px; color: var(--ink-3); }
+.qcard { border: 1px solid var(--line-soft); border-radius: 9px; padding: 9px 11px; margin-bottom: 8px; transition: border-color var(--d-fast) ease; }
+.qcard:hover { border-color: var(--line-strong); }
+.qcard__top { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+.qcard__no { font-size: 12px; font-weight: 650; }
+.qcard__stem { font-size: 12.5px; line-height: 1.5; color: var(--ink-1); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.qcard__kps { display: flex; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
+.kp { font-size: 10.5px; padding: 1px 7px; border-radius: var(--r-pill); background: var(--surface-muted); border: 1px solid var(--line-soft); color: var(--ink-2); }
+/* 批量条 */
+.bulkbar {
+  position: fixed; left: calc(50% + 112px); bottom: 20px; transform: translateX(-50%); z-index: 90;
+  display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+  background: var(--ink-1); color: #fff; border-radius: 12px; box-shadow: var(--shadow-pop);
+  animation: bulkIn 220ms var(--ease-drawer) both;
+}
+[data-theme="b"] .bulkbar {
+  background: linear-gradient(135deg, #15323a, #0e2026);
+  border: 1px solid rgba(47,185,198,0.35);
+  box-shadow: 0 10px 28px -8px rgba(9,50,57,0.55);
+}
+.bulkbar .n { font-size: 13px; font-weight: 600; padding: 0 8px; white-space: nowrap; }
+.bulkbar button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px; border-radius: 8px; font-size: 12.5px; color: #dfe7ea; }
+.bulkbar button:hover { background: rgba(255,255,255,0.10); color: #fff; }
+.bulkbar button.danger:hover { background: rgba(224,121,121,0.18); color: #f0a9a9; }
+.bulkbar[hidden] { display: none; }
+.bulkbar .ic { width: 14px; height: 14px; }
+.bulkbar .sep { width: 1px; height: 18px; background: rgba(255,255,255,0.16); margin: 0 4px; }
+</style>
+</head>
+<body>
+<div class="ribbon">
+  <span class="ribbon__tag"><i class="ic" data-icon="triangle-alert"></i><b>界面改版样稿</b><span>模拟数据 · 不连接真实接口</span></span>
+  <nav class="ribbon__links">
+    <a href="workbench.html">工作台</a>
+    <a href="no-exam.html">未选考试状态</a>
+    <a class="on" href="question-bank.html">题库</a>
+    <a href="review-batch.html">复核-批量</a>
+    <a href="review-single.html">复核-单份</a>
+  </nav>
+  <div class="theme-toggle">
+    <button data-set="a" class="on">风格 A 精致浅色</button>
+    <button data-set="b">风格 B 品牌感</button>
+  </div>
+</div>
+<div class="app">
+<aside class="sidebar">
+  <div class="sb-brand"><div class="brand-mark">知</div><div class="brand-text"><b>知衡</b><span>教师教学工作台</span></div></div>
+  <div class="sb-exam">
+    <button class="exam-card" id="examCard" aria-expanded="false" aria-haspopup="listbox">
+      <span class="exam-card__label">当前考试</span>
+      <span class="exam-card__name">第五周单元测验《实数》</span>
+      <span class="exam-card__meta"><span class="chip chip--rev">待复核 12</span></span>
+      <span class="exam-card__bar"><i style="width:100%"></i></span>
+      <span class="exam-card__sub">八年级上 · 90 份答卷</span>
+      <span class="exam-card__chev ic" data-icon="chevron-down"></span>
+    </button>
+    <div class="exam-pop" id="examPop" hidden role="listbox" aria-label="切换考试">
+      <div class="exam-pop__search"><i class="ic" data-icon="search"></i><input placeholder="搜索考试名称"></div>
+      <div class="exam-pop__chips"><button class="fchip on">全部</button><button class="fchip">八年级上</button><button class="fchip">八年级下</button></div>
+      <div class="exam-pop__list"></div>
+      <div class="exam-pop__foot">
+        <button class="btn btn--sm"><i class="ic" data-icon="plus"></i>新建考试</button>
+        <button class="btn btn--sm btn--ghost">管理全部考试</button>
+      </div>
+    </div>
+  </div>
+  <button class="sb-search" type="button"><i class="ic" data-icon="search"></i>快速跳转<kbd>Ctrl K</kbd></button>
+  <nav class="sb-nav" aria-label="主导航">
+    <a class="sb-link" href="workbench.html"><i class="ic" data-icon="layout-dashboard"></i>工作台</a>
+    <div class="sb-group">考试与阅卷</div>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="clipboard-list"></i>考试配置</span>
+    <a class="sb-link" href="review-batch.html"><i class="ic" data-icon="square-pen"></i>考试批改</a>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="chart-column"></i>成绩中心</span>
+    <div class="sb-group">题库与组卷</div>
+    <a class="sb-link on" href="question-bank.html"><i class="ic" data-icon="library-big"></i>题库管理</a>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="layers"></i>组卷工作台</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="pen-line"></i>命题练习</span>
+    <div class="sb-group">教学分析</div>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="network"></i>知识与训练</span>
+  </nav>
+  <div class="sb-foot">
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="users"></i>学生管理</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="file-clock"></i>调用记录</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="settings"></i>设置</span>
+    <div class="sb-user"><span class="avatar">王</span><span class="sb-user__name">王老师</span><button class="sb-bell" aria-label="任务中心，2 条待处理"><i class="ic" data-icon="bell"></i><i>2</i></button></div>
+  </div>
+</aside>
+<main class="main">
+  <header class="page-header">
+    <div>
+      <div class="ph-crumb"><b>题库与组卷</b><i class="ic" data-icon="chevron-right"></i><b>题库管理</b></div>
+      <h1 class="ph-title">题库管理 <span class="chip chip--rev" style="vertical-align:middle;margin-left:6px">15 个新词待审核</span></h1>
+      <p class="ph-meta">73 份试卷 · 1446 道题 · 联合分析完整 1446</p>
+    </div>
+    <div class="ph-actions" style="position:relative">
+      <button class="btn" id="moreBtn" aria-expanded="false"><i class="ic" data-icon="ellipsis"></i>更多</button>
+      <div class="menu" id="moreMenu" hidden style="top:calc(100% + 4px);right:0">
+        <button><i class="ic" data-icon="refresh-cw"></i>全库重新打标签</button>
+        <button><i class="ic" data-icon="circle-play"></i>继续完成未完成题目</button>
+      </div>
+      <button class="btn btn--primary"><i class="ic" data-icon="upload"></i>上传试卷</button>
+    </div>
+  </header>
+  <div class="qb">
+    <aside class="qb-facets">
+      <div class="card">
+        <div class="facet-head"><b>筛选</b><button type="button">清除全部</button></div>
+        <div class="field" style="margin-bottom:4px"><i class="ic" data-icon="search"></i><input placeholder="搜索题干或试卷名"></div>
+        <div class="facet-sec">
+          <h4>学期</h4>
+          <button class="facet-item"><i class="ic" data-icon="chevron-down"></i>八年级上册<span class="n">67</span></button>
+          <button class="facet-item"><i class="ic" data-icon="chevron-right"></i>八年级下册<span class="n">6</span></button>
+        </div>
+        <div class="facet-sec">
+          <h4>年份</h4>
+          <label class="facet-item"><input type="checkbox" checked>2026<span class="n">58</span></label>
+          <label class="facet-item"><input type="checkbox">2025<span class="n">15</span></label>
+        </div>
+        <div class="facet-sec">
+          <h4>试卷类型</h4>
+          <button class="facet-item">阶段练习<span class="n">41</span></button>
+          <button class="facet-item">月考<span class="n">12</span></button>
+          <button class="facet-item">单元测验<span class="n">12</span></button>
+          <button class="facet-item">期末<span class="n">8</span></button>
+        </div>
+        <div class="facet-sec">
+          <h4>标注进度</h4>
+          <button class="facet-item"><span class="chip chip--done" style="height:16px;padding:0 6px;font-size:10px">完整</span><span class="n">52</span></button>
+          <button class="facet-item"><span class="chip chip--rev" style="height:16px;padding:0 6px;font-size:10px">部分</span><span class="n">15</span></button>
+          <button class="facet-item"><span class="chip chip--plain" style="height:16px;padding:0 6px;font-size:10px">未开始</span><span class="n">6</span></button>
+        </div>
+        <div class="facet-sec">
+          <h4>知识章节</h4>
+          <button class="facet-item"><i class="ic" data-icon="chevron-down"></i>第二章 实数<span class="n">14</span></button>
+          <div class="facet-sub">
+            <button class="facet-item">2.1 认识无理数<span class="n">6</span></button>
+            <button class="facet-item">2.2 平方根<span class="n">5</span></button>
+            <button class="facet-item">2.7 二次根式<span class="n">3</span></button>
+          </div>
+          <button class="facet-item"><i class="ic" data-icon="chevron-right"></i>第一章 勾股定理<span class="n">12</span></button>
+          <button class="facet-item"><i class="ic" data-icon="chevron-right"></i>第四章 一次函数<span class="n">18</span></button>
+          <button class="facet-item"><i class="ic" data-icon="chevron-right"></i>第五章 二元一次方程组<span class="n">9</span></button>
+        </div>
+      </div>
+    </aside>
+
+    <section class="qb-mid">
+      <div class="qb-toolbar">
+        <div class="seg"><button class="on">试卷</button><button>试题</button></div>
+        <select class="field" style="height:30px" aria-label="排序"><option>按更新时间</option><option>按题数</option><option>按名称</option></select>
+        <span class="count">14 / 73 份</span>
+      </div>
+      <div class="qb-rows" id="qbRows"></div>
+    </section>
+
+    <aside class="qb-preview">
+      <div class="card" id="pvCard"></div>
+    </aside>
+  </div>
+</main>
+</div>
+<div class="bulkbar" id="bulkbar" hidden>
+  <span class="n" id="bulkCount">已选 0 份</span><span class="sep"></span>
+  <button><i class="ic" data-icon="tag"></i>重新打标签</button>
+  <button><i class="ic" data-icon="sparkles"></i>AI 补答案</button>
+  <button class="danger"><i class="ic" data-icon="trash-2"></i>删除</button>
+  <span class="sep"></span>
+  <button id="bulkCancel"><i class="ic" data-icon="x"></i>取消</button>
+</div>
+<script src="proto.js"></script>
+<script>
+var PAPERS = [
+  { t: '2026 八年级上册第二章实数练习 A 卷', fmt: 'doc', region: '本校', year: '2026', type: '阶段练习', qs: 20, done: 20, up: '9 月 25 日' },
+  { t: '第五周单元测验《实数》原卷', fmt: 'doc', region: '本校', year: '2026', type: '单元测验', qs: 14, done: 14, up: '9 月 24 日' },
+  { t: '八年级上学期第三章勾股定理测验', fmt: 'pdf', region: '海淀区', year: '2026', type: '单元测验', qs: 16, done: 16, up: '9 月 18 日' },
+  { t: '九月月考数学试卷（八年级）', fmt: 'pdf', region: '本校', year: '2026', type: '月考', qs: 22, done: 22, up: '9 月 11 日' },
+  { t: '二次根式专项训练卷（基础版）', fmt: 'doc', region: '西城区', year: '2026', type: '阶段练习', qs: 18, done: 15, up: '9 月 8 日' },
+  { t: '八年级上册期中复习综合卷', fmt: 'pdf', region: '东城区', year: '2026', type: '期末', qs: 24, done: 18, up: '9 月 6 日' },
+  { t: '一次函数图像与性质练习卷', fmt: 'doc', region: '本校', year: '2026', type: '阶段练习', qs: 15, done: 15, up: '9 月 3 日' },
+  { t: '八下预习摸底测验卷', fmt: 'doc', region: '本校', year: '2026', type: '单元测验', qs: 18, done: 18, up: '8 月 30 日' },
+  { t: '勾股定理逆定理专题卷', fmt: 'pdf', region: '朝阳区', year: '2026', type: '阶段练习', qs: 12, done: 12, up: '8 月 28 日' },
+  { t: '二元一次方程组应用题专练', fmt: 'doc', region: '海淀区', year: '2025', type: '阶段练习', qs: 16, done: 16, up: '8 月 25 日' },
+  { t: '2025 八年级下学期期末数学卷', fmt: 'pdf', region: '西城区', year: '2025', type: '期末', qs: 26, done: 26, up: '8 月 20 日' },
+  { t: '实数与数轴随堂检测', fmt: 'doc', region: '本校', year: '2025', type: '单元测验', qs: 10, done: 7, up: '8 月 15 日' },
+  { t: '算术平方根易错题汇编', fmt: 'doc', region: '东城区', year: '2025', type: '阶段练习', qs: 14, done: 14, up: '8 月 12 日' },
+  { t: '开学衔接八上预备练习', fmt: 'pdf', region: '本校', year: '2025', type: '阶段练习', qs: 20, done: 0, up: '8 月 8 日' },
+];
+var QTYPE = ['选择题', '填空题', '解答题'];
+var STEMS = [
+  '若 <span class="math">√<span class="sqrt">x − 2</span></span> 有意义，则 x 的取值范围是（　　）',
+  '下列各数中，是无理数的是（　　）',
+  '计算：<span class="math">√18 − √<span class="frac"><i>1</i><b>2</b></span></span> 的结果是（　　）',
+  '已知直角三角形两条直角边分别为 3 和 4，则斜边长为（　　）',
+  '估算 <span class="math">√37</span> 的值应在（　　）之间',
+  '比较大小：<span class="math">3√2</span> ______ <span class="math">2√3</span>（填“＞”“＜”或“＝”）',
+  '实数 <span class="math">−√7，<span class="frac"><i>π</i><b>3</b></span>，0.41，<span class="frac"><i>22</i><b>7</b></span></span> 中无理数有 ____ 个',
+  '如图，在 Rt△ABC 中，∠C＝90°，AC＝5，BC＝12，则 AB＝（　　）',
+];
+var KPS = [['无理数', '实数概念'], ['二次根式', '化简求值'], ['勾股定理', '几何计算'], ['估算', '数感'], ['平方根', '算术平方根'], ['实数运算', '混合运算']];
+
+function ringHtml(pct, size) {
+  var r = 20, c = 2 * Math.PI * r;
+  var off = c * (1 - pct / 100);
+  return '<div class="pv-ring"><svg viewBox="0 0 56 56"><circle class="track" cx="28" cy="28" r="' + r + '"/><circle class="val" cx="28" cy="28" r="' + r + '" stroke-dasharray="' + c.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"/></svg><span>' + pct + '%</span></div>';
+}
+function renderRows() {
+  var box = document.getElementById('qbRows');
+  box.innerHTML = PAPERS.map(function (p, i) {
+    var pct = Math.round(p.done / p.qs * 100);
+    return '<div class="card prow" data-i="' + i + '" role="button" tabindex="0">'
+      + '<span class="prow__cb"><input type="checkbox" data-cb="' + i + '" aria-label="选择 ' + p.t + '"></span>'
+      + '<span class="fmt fmt--' + p.fmt + '">' + (p.fmt === 'doc' ? 'WORD' : 'PDF') + '</span>'
+      + '<span class="prow__main"><span class="prow__title">' + p.t + '</span>'
+      + '<span class="prow__meta"><span>' + p.region + '</span><span>·</span><span>' + p.year + '</span><span>·</span><span>' + p.type + '</span><span>·</span><span>更新 ' + p.up + '</span></span></span>'
+      + '<span class="prow__right"><span class="prow__tagline">' + (pct === 100 ? '<span class="full">标注完整</span>' : '标注 ' + p.done + '/' + p.qs) + '<span class="bar' + (pct === 100 ? ' bar--done' : ' bar--rev') + '"><i style="width:' + pct + '%"></i></span></span>'
+      + '<span class="prow__qs">' + p.qs + ' 题</span></span></div>';
+  }).join('');
+  box.querySelectorAll('.prow').forEach(function (row) {
+    row.addEventListener('click', function (e) {
+      if (e.target.closest('.prow__cb')) return;
+      selectPaper(Number(row.getAttribute('data-i')));
+    });
+    row.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.target.closest('.prow__cb')) selectPaper(Number(row.getAttribute('data-i')));
+    });
+  });
+  box.querySelectorAll('input[data-cb]').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      cb.closest('.prow').classList.toggle('chk', cb.checked);
+      syncBulk();
+    });
+  });
+}
+var selected = 1;
+function selectPaper(i) {
+  selected = i;
+  document.querySelectorAll('.prow').forEach(function (r) { r.classList.toggle('sel', Number(r.getAttribute('data-i')) === i); });
+  renderPreview(i);
+}
+function renderPreview(i) {
+  var p = PAPERS[i];
+  var pct = Math.round(p.done / p.qs * 100);
+  var qcards = '';
+  for (var q = 0; q < 6; q++) {
+    var kps = KPS[(i + q) % KPS.length];
+    qcards += '<div class="qcard"><div class="qcard__top"><span class="qcard__no">第 ' + (q + 1) + ' 题</span>'
+      + '<span class="chip chip--plain" style="height:17px;font-size:10px;padding:0 6px">' + QTYPE[q % 3] + '</span>'
+      + '<span class="chip chip--ai" style="height:17px;font-size:10px;padding:0 6px">难度 ' + (1.0 + ((i + q) % 8) * 0.6).toFixed(1) + '</span></div>'
+      + '<div class="qcard__stem">' + STEMS[(i + q) % STEMS.length] + '</div>'
+      + '<div class="qcard__kps">' + kps.map(function (k) { return '<span class="kp">' + k + '</span>'; }).join('') + '</div></div>';
+  }
+  document.getElementById('pvCard').innerHTML =
+    '<h3 class="pv-title">' + p.t + '</h3>'
+    + '<div class="pv-chips"><span class="chip chip--plain">' + p.region + '</span><span class="chip chip--plain">' + p.year + '</span><span class="chip chip--plain">' + p.type + '</span><span class="chip chip--plain">' + p.qs + ' 题</span></div>'
+    + '<div class="pv-top">' + ringHtml(pct)
+    + '<div class="txt"><b style="color:var(--ink-1)">联合分析 ' + p.done + ' / ' + p.qs + '</b><br>' + (pct === 100 ? '标签、判定点与标准答案均已确认，可直接用于组卷与训练。' : '部分题目缺少标签或判定点，补齐后计入完整进度。') + '</div></div>'
+    + '<div class="pv-actions"><button class="btn btn--primary" style="flex:1"><i class="ic" data-icon="book-open"></i>打开试卷</button><button class="btn"><i class="ic" data-icon="plus"></i>加入试卷篮</button></div>'
+    + '<div class="pv-qh">试题预览<span>前 6 题</span></div>' + qcards;
+  injectIcons(document.getElementById('pvCard'));
+}
+function syncBulk() {
+  var n = document.querySelectorAll('#qbRows input[data-cb]:checked').length;
+  document.getElementById('bulkCount').textContent = '已选 ' + n + ' 份';
+  document.getElementById('bulkbar').hidden = n === 0;
+}
+document.addEventListener('DOMContentLoaded', function () {
+  renderRows();
+  selectPaper(selected);
+  document.getElementById('bulkCancel').addEventListener('click', function () {
+    document.querySelectorAll('#qbRows input[data-cb]:checked').forEach(function (cb) { cb.checked = false; cb.closest('.prow').classList.remove('chk'); });
+    syncBulk();
+  });
+  initDropdown('moreBtn', 'moreMenu');
+});
+</script>
+</body>
+</html>

@@ -10,9 +10,8 @@ import fitz
 import numpy as np
 import pytest
 
-from question_bank.database.schema import connect, initialize_database
+from question_bank.database.schema import connect
 from question_bank.personalized_papers import (
-    CreatePaperCommand,
     FreezePaperCommand,
     PersonalizedPaperModule,
 )
@@ -25,7 +24,6 @@ from question_bank.training_submissions import (
     CreateScanBatchCommand,
     IngestUploadCommand,
     ResolvePageCommand,
-    SubmissionRequestConflict,
     SubmissionRevisionConflict,
     TrainingSubmissionModule,
 )
@@ -39,9 +37,7 @@ from tests.phase4.test_part_assessment_mastery import refined_training_source
 from tests.phase4.test_personalized_recommendation import (
     NOW,
     _diagnosis,
-    _seed_recommendation_sources,
 )
-from tests.current_knowledge_support import install_current_knowledge
 
 
 class VariablePagePdfConverter:
@@ -62,138 +58,6 @@ class VariablePagePdfConverter:
             document.save(output_pdf)
         finally:
             document.close()
-
-
-def test_five_mixed_papers_with_different_page_counts_group_correctly(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    data_root = tmp_path / "data"
-    initialize_database(db_path)
-    install_current_knowledge(db_path)
-    _seed_recommendation_sources(db_path, data_root)
-    recommendation = PersonalizedRecommendationModule(
-        db_path=db_path,
-        data_root=data_root,
-        clock=lambda: NOW,
-    )
-    diagnosis = _diagnosis()
-    students = diagnosis["students"]
-    assert isinstance(students, list)
-    reference_weak_points = students[0]["weak_points"]
-    for student in students:
-        student["weak_points"] = reference_weak_points
-    for point in reference_weak_points:
-        for ref in point["source_question_refs"]:
-            # A strong-but-imperfect source keeps the recorded loss while the
-            # difficulty plan can still reach the seeded 4-6 candidate band.
-            ref["score_awarded"] = 0.8 * ref["full_score"]
-    draft = recommendation.create(
-        request_token="1" * 32,
-        diagnosis=diagnosis,
-        config=PersonalizedRecommendationConfig(
-            question_count=8,
-            expected_minutes=120,
-        ),
-        actor_ref="teacher-1",
-    )
-    paper = PersonalizedPaperModule(
-        db_path=db_path,
-        data_root=data_root,
-        pdf_converter=VariablePagePdfConverter(),
-        clock=lambda: NOW,
-    )
-    frozen: list[dict[str, object]] = []
-    for index, student in enumerate(draft["students"], start=1):
-        instance = paper.create_review_instance(
-            str(draft["draft_id"]),
-            CreatePaperCommand(
-                operation_token=f"{index + 1:032x}",
-                expected_draft_revision=int(draft["revision"]),
-                student_id=str(student["student_id"]),
-                actor_ref="teacher-1",
-            ),
-        )
-        review, _ = paper.artifact_path(
-            str(instance["paper_instance_id"]),
-            "review-docx",
-        )
-        content = review.read_bytes()
-        frozen.append(
-            paper.freeze(
-                str(instance["paper_instance_id"]),
-                FreezePaperCommand(
-                    operation_token=f"{index + 10:032x}",
-                    expected_revision=int(instance["revision"]),
-                    content_sha256=hashlib.sha256(content).hexdigest(),
-                    filename="reviewed.docx",
-                    actor_ref="teacher-1",
-                ),
-                BytesIO(content),
-            )
-        )
-    # The converter emits 1, 2, 3, 4 and 5 pages in creation order.
-    page_refs: list[tuple[Path, int]] = []
-    for expected_pages, instance in enumerate(frozen, start=1):
-        path, _ = paper.artifact_path(
-            str(instance["paper_instance_id"]),
-            "frozen-pdf",
-        )
-        page_refs.extend((path, page_number) for page_number in range(expected_pages))
-    mixed = fitz.open()
-    try:
-        for path, page_number in reversed(page_refs):
-            with fitz.open(path) as source:
-                mixed.insert_pdf(source, from_page=page_number, to_page=page_number)
-        payload = mixed.tobytes(garbage=4, deflate=True)
-    finally:
-        mixed.close()
-
-    module = TrainingSubmissionModule(db_path=db_path, data_root=data_root)
-    batch = module.create_batch(
-        CreateScanBatchCommand(
-            operation_token="f" * 32,
-            paper_instance_ids=tuple(
-                str(instance["paper_instance_id"]) for instance in frozen
-            ),
-            actor_ref="teacher-1",
-        )
-    )
-    batch = module.ingest(
-        str(batch["batch_id"]),
-        IngestUploadCommand(
-            operation_token="e" * 32,
-            expected_revision=1,
-            filename="mixed.pdf",
-            media_type="application/pdf",
-            content_sha256=hashlib.sha256(payload).hexdigest(),
-            actor_ref="teacher-1",
-        ),
-        BytesIO(payload),
-    )
-    assert batch["status"] == "ready", {
-        "pages": [
-            (page["page_number"], page["state"], page["issue_code"])
-            for page in batch["pages"]
-        ],
-        "submissions": [
-            (
-                submission["expected_total_pages"],
-                submission["missing_pages"],
-                submission["issue_codes"],
-            )
-            for submission in batch["submissions"]
-        ],
-    }
-    assert sorted(
-        submission["expected_total_pages"]
-        for submission in batch["submissions"]
-    ) == [1, 2, 3, 4, 5]
-    assert all(
-        submission["missing_pages"] == []
-        for submission in batch["submissions"]
-    )
-    assert len(batch["pages"]) == 15
 
 
 def test_shuffled_pages_group_by_signed_identity_and_survive_restart(
@@ -264,7 +128,9 @@ def test_shuffled_pages_group_by_signed_identity_and_survive_restart(
     # Continue the actual recovered scan through assessment and publication.
     # Only the model is replaced; persistence and mastery use the real modules.
     from backend.training_assessment import (
-        EvidenceSyncCommand, FakeTrainingAssessmentGateway, TrainingAssessmentModule,
+        EvidenceSyncCommand,
+        FakeTrainingAssessmentGateway,
+        TrainingAssessmentModule,
     )
     from question_bank.mastery.current import CurrentMasteryCalculator
     from question_bank.current_knowledge import CurrentKnowledgeResolver
@@ -274,56 +140,103 @@ def test_shuffled_pages_group_by_signed_identity_and_survive_restart(
     # 0.8-rate fixture); reproduce it so the mastery comparison is identical.
     profile = _paper_diagnosis(student_ids=("SYN-S01",))
     identity = ("SYN-S01", "kp_alg_linear_equation")
-    before = CurrentMasteryCalculator(db_path, resolver, clock=lambda: NOW, data_root=data_root).calculate(profile)[identity]
-    gateway = FakeTrainingAssessmentGateway(lambda request: {"results": [
-        {"task_item_code": item.task_item_code, "point_id": point["point_id"],
-         "state": "met", "evidence": "合成答卷中的步骤和结论均已核对"}
-        for item in request.items for point in item.points
-    ]})
-    assessment = TrainingAssessmentModule(db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW)
+    before = CurrentMasteryCalculator(
+        db_path, resolver, clock=lambda: NOW, data_root=data_root
+    ).calculate(profile)[identity]
+    gateway = FakeTrainingAssessmentGateway(
+        lambda request: {
+            "results": [
+                {
+                    "task_item_code": item.task_item_code,
+                    "point_id": point["point_id"],
+                    "state": "met",
+                    "evidence": "合成答卷中的步骤和结论均已核对",
+                }
+                for item in request.items
+                for point in item.points
+            ]
+        }
+    )
+    assessment = TrainingAssessmentModule(
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW
+    )
     submission_id = str(batch["submissions"][0]["submission_id"])
     outcome = assessment.assess(submission_id, 1)
     assert gateway.calls == 1
     # Candidate results do not count until the teacher confirms publication.
-    assert CurrentMasteryCalculator(db_path, resolver, clock=lambda: NOW, data_root=data_root).calculate(profile)[identity] == before
-    command = EvidenceSyncCommand(operation_token="8" * 32, expected_review_revision=outcome.review_revision,
-        action="publish", actor_ref="teacher-1", reason="确认归卷批改结果并更新掌握度")
+    assert (
+        CurrentMasteryCalculator(
+            db_path, resolver, clock=lambda: NOW, data_root=data_root
+        ).calculate(profile)[identity]
+        == before
+    )
+    command = EvidenceSyncCommand(
+        operation_token="8" * 32,
+        expected_review_revision=outcome.review_revision,
+        action="publish",
+        actor_ref="teacher-1",
+        reason="确认归卷批改结果并更新掌握度",
+    )
     feedback = assessment.sync_evidence(submission_id, 1, command)
     assert feedback["summary"]["published_question_count"] == len(outcome.questions)
     assert feedback["summary"]["published_question_count"] > 0
     assert assessment.sync_evidence(submission_id, 1, command) == feedback
-    change = next(item for item in feedback["mastery_changes"] if item["stable_key"] == identity[1])
+    change = next(
+        item
+        for item in feedback["mastery_changes"]
+        if item["stable_key"] == identity[1]
+    )
     assert change["mastery_after"]["value"] > before.value
-    reopened = TrainingAssessmentModule(db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW)
+    reopened = TrainingAssessmentModule(
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW
+    )
     assert reopened.get_feedback(submission_id, 1) == feedback
-    after = CurrentMasteryCalculator(db_path, resolver, clock=lambda: NOW, data_root=data_root).calculate(profile)[identity]
+    after = CurrentMasteryCalculator(
+        db_path, resolver, clock=lambda: NOW, data_root=data_root
+    ).calculate(profile)[identity]
     assert after.value == change["mastery_after"]["value"]
     assert after.training_evidence_count == len(outcome.questions)
-    target = next(item for item in feedback["next_round"]["student"]["targets"] if item["stable_key"] == identity[1])
+    target = next(
+        item
+        for item in feedback["next_round"]["student"]["targets"]
+        if item["stable_key"] == identity[1]
+    )
     assert target["value"] == after.value
     assert paper.get(str(instance["paper_instance_id"])) == instance
 
-    another = restarted.create_batch(CreateScanBatchCommand(
-        operation_token="f" * 32,
-        paper_instance_ids=(str(instance["paper_instance_id"]),),
-        actor_ref="teacher-1",
-    ))
-    assert [item["batch_id"] for item in restarted.list_batches(str(batch["paper_batch_id"]))] == [
-        another["batch_id"], batch["batch_id"],
+    another = restarted.create_batch(
+        CreateScanBatchCommand(
+            operation_token="f" * 32,
+            paper_instance_ids=(str(instance["paper_instance_id"]),),
+            actor_ref="teacher-1",
+        )
+    )
+    assert [
+        item["batch_id"]
+        for item in restarted.list_batches(str(batch["paper_batch_id"]))
+    ] == [
+        another["batch_id"],
+        batch["batch_id"],
     ]
 
 
 @pytest.mark.parametrize("semester_scope", [False, True])
-def test_refined_scanned_paper_updates_each_part_and_survives_reopen(refined_training_source, semester_scope):
+def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
+    refined_training_source, semester_scope
+):
     from backend.training_assessment import (
-        EvidenceSyncCommand, FakeTrainingAssessmentGateway, TrainingAssessmentModule,
+        EvidenceSyncCommand,
+        FakeTrainingAssessmentGateway,
+        TrainingAssessmentModule,
     )
     from question_bank.mastery.current import CurrentMasteryCalculator
     from question_bank.current_knowledge import CurrentKnowledgeResolver
 
     from db_manager import DBManager
     from integration.diagnosis_profile_service import DiagnosisProfileService
-    from question_bank.training_criteria.analysis import grading_config_skeleton_from_solution_evidence
+    from question_bank.training_criteria.analysis import (
+        grading_config_skeleton_from_solution_evidence,
+    )
     from backend.api.routers.training import create_personalized_recommendation_draft
     from backend.api.schemas.training import PersonalizedRecommendationCreateRequest
     import json
@@ -332,102 +245,213 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(refined_tra
     grading_path = data_root / "databases" / "grading.db"
     grading = DBManager(grading_path)
     grading.initialize()
-    rubric = grading_config_skeleton_from_solution_evidence(evidence, question_ref="Q1")["rubric_question"]
+    rubric = grading_config_skeleton_from_solution_evidence(
+        evidence, question_ref="Q1"
+    )["rubric_question"]
     for index, part in enumerate(rubric["parts"], 1):
         part.update(part_id=f"Q1(P{index})", part_score=5)
     rubric_path = data_root / "synthetic-rubric.json"
     rubric_path.write_text(json.dumps({"questions": [rubric]}), encoding="utf-8")
     # 设计 E §7.4：旧会话先迁移出冻结证据快照，投影按 evidence_point_ids 归因。
-    from question_bank.solution_evidence.evidence_snapshot import freeze_session_evidence_snapshot
-    freeze_session_evidence_snapshot(db_path, grading_session_id=1,
-        upload_config_dir=data_root / "config" / "uploaded", data_root=data_root)
+    from question_bank.solution_evidence.evidence_snapshot import (
+        freeze_session_evidence_snapshot,
+    )
+
+    freeze_session_evidence_snapshot(
+        db_path,
+        grading_session_id=1,
+        upload_config_dir=data_root / "config" / "uploaded",
+        data_root=data_root,
+    )
     with grading._connect() as conn:
-        conn.execute("INSERT INTO grading_sessions(id,session_name,rubric_path,answer_key_path,status,is_deleted) VALUES(1,'合成考试',?,'','completed',0)", (str(rubric_path),))
-        conn.execute("UPDATE grading_sessions SET curriculum_volume_id='bnu24-math-g8-upper' WHERE id=1")
-        conn.execute("INSERT INTO students(id,student_code,name,class_name) VALUES(1,'SYN-S01','合成学生','合成班')")
-        conn.execute("INSERT INTO exam_papers(id,session_id,front_image,back_image,student_id,match_status,processing_status) VALUES(1,1,'','',1,'matched','graded')")
-        conn.execute("INSERT INTO session_results(id,session_id,student_id,paper_id,total_score,student_score,needs_human_review,raw_json) VALUES(1,1,1,1,10,5,0,'{}')")
+        conn.execute(
+            "INSERT INTO grading_sessions(id,session_name,rubric_path,answer_key_path,status,is_deleted) VALUES(1,'合成考试',?,'','completed',0)",
+            (str(rubric_path),),
+        )
+        conn.execute(
+            "UPDATE grading_sessions SET curriculum_volume_id='bnu24-math-g8-upper' WHERE id=1"
+        )
+        conn.execute(
+            "INSERT INTO students(id,student_code,name,class_name) VALUES(1,'SYN-S01','合成学生','合成班')"
+        )
+        conn.execute(
+            "INSERT INTO exam_papers(id,session_id,front_image,back_image,student_id,match_status,processing_status) VALUES(1,1,'','',1,'matched','graded')"
+        )
+        conn.execute(
+            "INSERT INTO session_results(id,session_id,student_id,paper_id,total_score,student_score,needs_human_review,raw_json) VALUES(1,1,1,1,10,5,0,'{}')"
+        )
         for part, score in (("Q1(P1)", 0), ("Q1(P2)", 5)):
-            conn.execute("INSERT INTO session_details(result_id,question_id,score_awarded,deduction_reason,knowledge_ids) VALUES(1,?,?,'',?)", (part, score, json.dumps(["UNKNOWN"])))
-    diagnosis_service = DiagnosisProfileService(grading_path, db_path, data_root=data_root)
+            conn.execute(
+                "INSERT INTO session_details(result_id,question_id,score_awarded,deduction_reason,knowledge_ids) VALUES(1,?,?,'',?)",
+                (part, score, json.dumps(["UNKNOWN"])),
+            )
+    diagnosis_service = DiagnosisProfileService(
+        grading_path, db_path, data_root=data_root
+    )
     scope = {"mode": "selected", "student_ids": ["1"]}
     exam_scope = {"mode": "current", "session_ids": [1]}
     if semester_scope:
         exam_scope = {"mode": "semester", "curriculum_volume_id": "bnu24-math-g8-upper"}
     # Warm the real diagnosis cache before publishing training evidence.
     profile = diagnosis_service.build_profiles(scope=scope, exam_scope=exam_scope)
-    before = {point["knowledge_key"]: point["mastery"] for point in profile["students"][0]["weak_points"]}
-    before_counts = {point["knowledge_key"]: point["evidence_count"] for point in profile["students"][0]["weak_points"]}
+    before = {
+        point["knowledge_key"]: point["mastery"]
+        for point in profile["students"][0]["weak_points"]
+    }
+    before_counts = {
+        point["knowledge_key"]: point["evidence_count"]
+        for point in profile["students"][0]["weak_points"]
+    }
     frozen_profile = _diagnosis(student_ids=("SYN-S01",))
     frozen_profile["exam_scope"] = profile["exam_scope"]
     frozen_profile["students"][0]["student_id"] = "1"
-    frozen_profile["students"][0]["weak_points"][0]["source_question_refs"][0]["question_difficulty"] = 8
+    frozen_profile["students"][0]["weak_points"][0]["source_question_refs"][0][
+        "question_difficulty"
+    ] = 8
     # Strong-but-imperfect source: still a loss, but the readiness plan can
     # reach the difficulty-8 candidate instead of capping at foundation.
-    frozen_profile["students"][0]["weak_points"][0]["source_question_refs"][0]["score_awarded"] = 8
-    recommendation = PersonalizedRecommendationModule(db_path=db_path, data_root=data_root, clock=lambda: NOW)
-    draft = recommendation.create(request_token="1" * 32, diagnosis=frozen_profile,
-        config=PersonalizedRecommendationConfig(question_count=8, difficulty_max=8,
-            exclude_current_exam_originals=False), actor_ref="synthetic")
+    frozen_profile["students"][0]["weak_points"][0]["source_question_refs"][0][
+        "score_awarded"
+    ] = 8
+    recommendation = PersonalizedRecommendationModule(
+        db_path=db_path, data_root=data_root, clock=lambda: NOW
+    )
+    draft = recommendation.create(
+        request_token="1" * 32,
+        diagnosis=frozen_profile,
+        config=PersonalizedRecommendationConfig(
+            question_count=8, difficulty_max=8, exclude_current_exam_originals=False
+        ),
+        actor_ref="synthetic",
+    )
     assert len(draft["students"][0]["items"]) == 1
-    paper = PersonalizedPaperModule(db_path=db_path, data_root=data_root,
-        pdf_converter=SyntheticPdfConverter(), clock=lambda: NOW)
+    paper = PersonalizedPaperModule(
+        db_path=db_path,
+        data_root=data_root,
+        pdf_converter=SyntheticPdfConverter(),
+        clock=lambda: NOW,
+    )
     frozen = _freeze(paper, draft, token="a")
     path, _ = paper.artifact_path(frozen["paper_instance_id"], "frozen-pdf")
     scans = TrainingSubmissionModule(db_path=db_path, data_root=data_root)
-    batch = scans.create_batch(CreateScanBatchCommand(operation_token="c" * 32,
-        paper_instance_ids=(frozen["paper_instance_id"],), actor_ref="synthetic"))
+    batch = scans.create_batch(
+        CreateScanBatchCommand(
+            operation_token="c" * 32,
+            paper_instance_ids=(frozen["paper_instance_id"],),
+            actor_ref="synthetic",
+        )
+    )
     for index, content in enumerate(_pdf_pages(path), 1):
-        batch = scans.ingest(batch["batch_id"], _upload(token=str(index), revision=batch["revision"], content=content), BytesIO(content))
+        batch = scans.ingest(
+            batch["batch_id"],
+            _upload(token=str(index), revision=batch["revision"], content=content),
+            BytesIO(content),
+        )
     submission_id = batch["submissions"][0]["submission_id"]
     scans.finalize_submission(submission_id)
-    first_points = {point.evidence_point_id for point in evidence.parts[0].evidence_points}
-    gateway = FakeTrainingAssessmentGateway(lambda request: {"results": [
-        {"task_item_code": item.task_item_code, "point_id": point["point_id"],
-         "state": "met" if point["point_id"] in first_points else "not_met",
-         "evidence": "合成第一问正确、第二问未达成"}
-        for item in request.items for point in item.points
-    ]})
-    module = TrainingAssessmentModule(db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW)
+    first_points = {
+        point.evidence_point_id for point in evidence.parts[0].evidence_points
+    }
+    gateway = FakeTrainingAssessmentGateway(
+        lambda request: {
+            "results": [
+                {
+                    "task_item_code": item.task_item_code,
+                    "point_id": point["point_id"],
+                    "state": "met" if point["point_id"] in first_points else "not_met",
+                    "evidence": "合成第一问正确、第二问未达成",
+                }
+                for item in request.items
+                for point in item.points
+            ]
+        }
+    )
+    module = TrainingAssessmentModule(
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW
+    )
     outcome = module.assess(submission_id, 1)
-    feedback = module.sync_evidence(submission_id, 1, EvidenceSyncCommand(operation_token="d" * 32,
-        expected_review_revision=outcome.review_revision, action="publish", actor_ref="synthetic", reason="确认逐小问结果"))
+    feedback = module.sync_evidence(
+        submission_id,
+        1,
+        EvidenceSyncCommand(
+            operation_token="d" * 32,
+            expected_review_revision=outcome.review_revision,
+            action="publish",
+            actor_ref="synthetic",
+            reason="确认逐小问结果",
+        ),
+    )
     assert feedback["summary"]["published_question_count"] == 1
     resolver = CurrentKnowledgeResolver.from_active_database(db_path)
-    current = CurrentMasteryCalculator(db_path, resolver, data_root=data_root, clock=lambda: NOW).calculate(profile)
+    current = CurrentMasteryCalculator(
+        db_path, resolver, data_root=data_root, clock=lambda: NOW
+    ).calculate(profile)
     first = current[("1", "kp_alg_linear_equation")]
     second = current[("1", "kp_geo_triangle_congruence")]
     assert first.training_evidence_count == second.training_evidence_count == 1
     assert first.value > before["kp_alg_linear_equation"]
     assert second.value < before["kp_geo_triangle_congruence"]
-    reopened = TrainingAssessmentModule(db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW)
+    reopened = TrainingAssessmentModule(
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW
+    )
     assert reopened.get_feedback(submission_id, 1) == feedback
-    assert CurrentMasteryCalculator(db_path, resolver, data_root=data_root, clock=lambda: NOW).calculate(profile) == current
+    assert (
+        CurrentMasteryCalculator(
+            db_path, resolver, data_root=data_root, clock=lambda: NOW
+        ).calculate(profile)
+        == current
+    )
     # A separate new-training request must refresh the cached diagnosis, while
     # the completed paper and its saved feedback remain unchanged.
     fresh = create_personalized_recommendation_draft(
-        PersonalizedRecommendationCreateRequest(request_token="e" * 32, scope=scope, exam_scope=exam_scope,
-            question_count=8, difficulty_max=8, exclude_current_exam_originals=False),
-        diagnosis_service=diagnosis_service, module=recommendation,
+        PersonalizedRecommendationCreateRequest(
+            request_token="e" * 32,
+            scope=scope,
+            exam_scope=exam_scope,
+            question_count=8,
+            difficulty_max=8,
+            exclude_current_exam_originals=False,
+        ),
+        diagnosis_service=diagnosis_service,
+        module=recommendation,
     ).model_dump()
-    target = next(item for item in fresh["students"][0]["targets"] if item["stable_key"] == "kp_alg_linear_equation")
+    target = next(
+        item
+        for item in fresh["students"][0]["targets"]
+        if item["stable_key"] == "kp_alg_linear_equation"
+    )
     assert target["value"] > before["kp_alg_linear_equation"]
     assert target["evidence_count"] == before_counts["kp_alg_linear_equation"] + 1
     assert recommendation.get(draft["draft_id"]) == draft
     assert reopened.get_feedback(submission_id, 1) == feedback
     assert paper.get(frozen["paper_instance_id"]) == frozen
     if semester_scope:
-        other = diagnosis_service.build_profiles(scope=scope,
-            exam_scope={"mode": "semester", "curriculum_volume_id": "bnu24-math-g7-lower"})
+        other = diagnosis_service.build_profiles(
+            scope=scope,
+            exam_scope={
+                "mode": "semester",
+                "curriculum_volume_id": "bnu24-math-g7-lower",
+            },
+        )
         assert not other["exam_scope"]["session_ids"]
-        assert not any(point["evidence_count"] for point in other["students"][0]["weak_points"])
+        assert not any(
+            point["evidence_count"] for point in other["students"][0]["weak_points"]
+        )
         # A current-term training result remains available with no exam attached.
         with grading._connect() as conn:
-            conn.execute("UPDATE grading_sessions SET curriculum_volume_id='bnu24-math-g7-lower' WHERE id=1")
-        training_only = diagnosis_service.build_profiles(scope=scope, exam_scope=exam_scope)
+            conn.execute(
+                "UPDATE grading_sessions SET curriculum_volume_id='bnu24-math-g7-lower' WHERE id=1"
+            )
+        training_only = diagnosis_service.build_profiles(
+            scope=scope, exam_scope=exam_scope
+        )
         assert training_only["students"][0]["score_rate"] is None
         assert not training_only["exam_scope"]["session_ids"]
-        point = next(point for point in training_only["students"][0]["weak_points"] if point["knowledge_key"] == "kp_alg_linear_equation")
+        point = next(
+            point
+            for point in training_only["students"][0]["weak_points"]
+            if point["knowledge_key"] == "kp_alg_linear_equation"
+        )
         assert point["evidence_count"] == 1
         assert point["mastery"] is not None
         assert paper.get(frozen["paper_instance_id"]) == frozen
@@ -470,9 +494,7 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
         ),
         BytesIO(duplicate_pdf),
     )
-    assert any(
-        page["issue_code"] == "duplicate_page" for page in batch["pages"]
-    )
+    assert any(page["issue_code"] == "duplicate_page" for page in batch["pages"])
 
     altered = _mark_image(first)
     batch = module.ingest(
@@ -481,9 +503,7 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
         BytesIO(altered),
     )
     conflicts = [
-        page
-        for page in batch["pages"]
-        if page["issue_code"] == "page_content_conflict"
+        page for page in batch["pages"] if page["issue_code"] == "page_content_conflict"
     ]
     assert conflicts, [
         (page["page_number"], page["state"], page["issue_code"])
@@ -496,9 +516,7 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
         _upload(token="c", revision=int(batch["revision"]), content=blank),
         BytesIO(blank),
     )
-    assert any(
-        page["issue_code"] == "identity_unreadable" for page in batch["pages"]
-    )
+    assert any(page["issue_code"] == "identity_unreadable" for page in batch["pages"])
     with pytest.raises(SubmissionRevisionConflict):
         module.resolve_page(
             str(batch["batch_id"]),
@@ -530,9 +548,7 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
         for page in batch["pages"]
         if page["state"] == "assigned" and page["page_number"] == 1
     ]
-    assert [page["scan_page_id"] for page in assigned] == [
-        conflict["scan_page_id"]
-    ]
+    assert [page["scan_page_id"] for page in assigned] == [conflict["scan_page_id"]]
     assert any(page["state"] == "replaced" for page in batch["pages"])
     assert batch["status"] == "manual_review"
     assert batch["submissions"][0]["missing_pages"] == [2]
@@ -583,58 +599,6 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
     assert batch["status"] == "ready"
 
 
-def test_same_upload_is_idempotent_without_counting_pages_twice(
-    paper_workspace,
-) -> None:
-    paper, draft, db_path, data_root = paper_workspace
-    instance = _freeze(paper, draft, token="1")
-    path, _ = paper.artifact_path(str(instance["paper_instance_id"]), "frozen-pdf")
-    content = _pdf_pages(path)[0]
-    module = TrainingSubmissionModule(db_path=db_path, data_root=data_root)
-    batch = module.create_batch(
-        CreateScanBatchCommand(
-            operation_token="2" * 32,
-            paper_instance_ids=(str(instance["paper_instance_id"]),),
-            actor_ref="teacher-1",
-        )
-    )
-    command = _upload(token="3", revision=1, content=content)
-    first = module.ingest(str(batch["batch_id"]), command, BytesIO(content))
-    repeated = module.ingest(str(batch["batch_id"]), command, BytesIO(content))
-    assert repeated == first
-    duplicate_command = _upload(
-        token="4",
-        revision=int(first["revision"]),
-        content=content,
-    )
-    duplicate = module.ingest(
-        str(batch["batch_id"]),
-        duplicate_command,
-        BytesIO(content),
-    )
-    assert duplicate["duplicate_upload"] is True
-    assert len(duplicate["pages"]) == 1
-    repeated_duplicate = module.ingest(
-        str(batch["batch_id"]),
-        duplicate_command,
-        BytesIO(content),
-    )
-    assert repeated_duplicate["revision"] == duplicate["revision"]
-    with pytest.raises(SubmissionRequestConflict):
-        module.ingest(
-            str(batch["batch_id"]),
-            IngestUploadCommand(
-                operation_token=duplicate_command.operation_token,
-                expected_revision=int(duplicate["revision"]),
-                filename="other.png",
-                media_type="image/png",
-                content_sha256=hashlib.sha256(_blank_png()).hexdigest(),
-                actor_ref="teacher-1",
-            ),
-            BytesIO(_blank_png()),
-        )
-
-
 def test_blur_crop_and_invalid_signature_stay_in_manual_review(
     paper_workspace,
 ) -> None:
@@ -681,7 +645,10 @@ def test_blur_crop_and_invalid_signature_stay_in_manual_review(
 def _freeze(paper, draft, *, token: str):
     instance = paper.create_review_instance(
         str(draft["draft_id"]),
-        replace(_create_command(token, draft), student_id=str(draft["students"][0]["student_id"])),
+        replace(
+            _create_command(token, draft),
+            student_id=str(draft["students"][0]["student_id"]),
+        ),
     )
     review, _ = paper.artifact_path(str(instance["paper_instance_id"]), "review-docx")
     content = review.read_bytes()

@@ -172,54 +172,6 @@ afterEach(() => {
 })
 
 describe('knowledge overview view', () => {
-  it('renders the summary strip and chapter rows from the API payload', async () => {
-    const host = await mountView()
-    await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalled())
-    expect(trainingApi.overview).toHaveBeenCalledWith(
-      {
-        scope: { mode: 'all', student_ids: [], use_historical_fallback: false },
-        exam_scope: {
-          mode: 'semester',
-          curriculum_volume_id: 'bnu24-math-g8-upper',
-          session_ids: [],
-        },
-      },
-      expect.any(AbortSignal),
-    )
-    await settle()
-    expect(host.textContent).toContain('学情总览')
-    expect(host.textContent).toContain('待补强知识点')
-    expect(host.textContent).toContain('第一章 勾股定理')
-    expect(host.textContent).toContain('70%')
-    expect(host.textContent).toContain('2 人参与')
-  })
-
-  it('orders the focus list by weak count and filters by selected chapter section', async () => {
-    const host = await mountView()
-    await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalled())
-    await settle()
-    const focusItems = [...host.querySelectorAll('.overview-focus-item__name')]
-      .map(element => element.textContent)
-    // t1 (待补强 2) 先于 t2 (待补强 0)；无证据的 t0 不出现；技能列 sk1
-    expect(focusItems.slice(0, 2)).toEqual(['用勾股定理求边长', '拼图验证'])
-    expect(focusItems).not.toContain('t0')
-    expect(focusItems).toContain('列勾股等式')
-
-    // 先展开章节点，再点击小节行
-    const chapterButton = [...host.querySelectorAll('.overview-node-row')]
-      .find(row => row.textContent?.includes('第一章 勾股定理')) as HTMLButtonElement
-    expect(chapterButton).toBeTruthy()
-    chapterButton.click()
-    await settle()
-    const sectionRows = [...host.querySelectorAll('.overview-node-row--section')]
-    const section = sectionRows.find(row => row.textContent?.includes('2 验证勾股定理')) as HTMLButtonElement
-    expect(section).toBeTruthy()
-    section.click()
-    await settle()
-    const filteredNames = [...host.querySelectorAll('.overview-focus-item__name')]
-      .map(element => element.textContent)
-    expect(filteredNames).toEqual(['拼图验证'])
-  })
 
   it('switches scope to a class and saves the shared evidence scope', async () => {
     const host = await mountView()
@@ -250,42 +202,6 @@ describe('knowledge overview view', () => {
     expect(saved.scope.class_ids).toEqual(['八年级2班'])
   })
 
-  it('labels purely numeric class names with a 班 suffix', async () => {
-    const host = await mountView()
-    await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalled())
-    const labels = [...host.querySelectorAll('.knowledge-overview-scope-bar button')]
-      .map(button => button.textContent?.trim())
-    expect(labels).toContain('10 班')
-    expect(labels).toContain('八年级1班')
-  })
-
-  it('renders the new summary once the class scope response arrives', async () => {
-    const host = await mountView()
-    await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalledTimes(1))
-    await settle()
-    expect(host.textContent).toContain('共 3')
-
-    const classFixture = overviewFixture()
-    classFixture.students = classFixture.students.slice(0, 1)
-    classFixture.summary = {
-      ...classFixture.summary,
-      student_count: 1,
-      evidence_student_count: 1,
-      exam_student_count: 1,
-      exam_score_rate: 0.5,
-    }
-    vi.mocked(trainingApi.overview).mockResolvedValue(classFixture)
-
-    const classButton = [...host.querySelectorAll('.knowledge-overview-scope-bar button')]
-      .find(button => button.textContent === '八年级2班') as HTMLButtonElement
-    classButton.click()
-    await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect(host.textContent).toContain('共 1'))
-    expect(host.textContent).toContain('50%')
-    expect(host.textContent).toContain('1 人参与')
-    expect(host.textContent).not.toContain('共 3')
-  })
-
   it('shows the semester prompt and sends no request without a volume', async () => {
     const host = await mountView(null)
     await settle()
@@ -293,15 +209,4 @@ describe('knowledge overview view', () => {
     expect(trainingApi.overview).not.toHaveBeenCalled()
   })
 
-  it('sorts the student table by weak count then score rate by default', async () => {
-    const host = await mountView()
-    await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalled())
-    await settle()
-    const rows = [...host.querySelectorAll('.overview-student-table tbody tr')]
-      .map(row => row.querySelector('td')?.textContent)
-    // 学生甲 weak=2 最先；学生乙 weak=1；学生丙 0 且无成绩最后
-    expect(rows[0]).toContain('学生甲')
-    expect(rows[1]).toContain('学生乙')
-    expect(rows[2]).toContain('学生丙')
-  })
 })

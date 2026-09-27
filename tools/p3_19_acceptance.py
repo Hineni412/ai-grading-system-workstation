@@ -176,10 +176,11 @@ def _build_historical_version(
 def run_historical_version_matrix(*, work_dir: Path) -> dict[str, object]:
     """Upgrade an empty database and every migration prefix to current.
 
-    Each source version and every migration write live under ``work_dir``.
-    Results expose only logical target/version names and path-free statuses.
+    Each version owns a temporary directory under ``work_dir`` and releases it
+    before the next version. Results retain logical names and statuses only.
     """
     targets: list[dict[str, object]] = []
+    work_dir.mkdir(parents=True, exist_ok=True)
     for target in ("grading", "question_bank"):
         migration_files = _migration_files(target)
         versions: list[dict[str, str]] = []
@@ -190,23 +191,22 @@ def run_historical_version_matrix(*, work_dir: Path) -> dict[str, object]:
                 else migration_files[version_index - 1].stem
             )
             try:
-                source_db, version_name = _build_historical_version(
-                    target=target,
-                    version_index=version_index,
-                    migration_files=migration_files,
-                    work_dir=work_dir / "s",
-                )
-                result = rehearse_database(
-                    target,
-                    source_db=source_db,
-                    migrations_dir=_default_migrations_dir(target),
-                    mode="execute",
-                    work_dir=work_dir
-                    / "r"
-                    / ("g" if target == "grading" else "q")
-                    / f"{version_index:02d}",
-                )
-                status = str(assess_rehearsal_result(result)["status"])
+                with tempfile.TemporaryDirectory(prefix="v_", dir=work_dir) as version_root:
+                    version_path = Path(version_root)
+                    source_db, version_name = _build_historical_version(
+                        target=target,
+                        version_index=version_index,
+                        migration_files=migration_files,
+                        work_dir=version_path / "s",
+                    )
+                    result = rehearse_database(
+                        target,
+                        source_db=source_db,
+                        migrations_dir=_default_migrations_dir(target),
+                        mode="execute",
+                        work_dir=version_path / "r",
+                    )
+                    status = str(assess_rehearsal_result(result)["status"])
             except Exception:
                 status = "failed"
             versions.append(

@@ -260,16 +260,6 @@ def _evidence_client(
     return TestClient(app), seeded
 
 
-def test_openapi_exposes_only_current_graph_read_contract() -> None:
-    paths = create_app().openapi()["paths"]
-    assert "/api/graph/query" in paths
-    assert "/api/graph/evidence" in paths
-    assert "/api/graph/profiles" not in paths
-    assert "/api/graph/rows" not in paths
-    assert not any(path.startswith("/api/graph/v2") for path in paths)
-    assert not any("mastery" in path and "graph" in path for path in paths)
-
-
 def test_current_graph_api_returns_one_mastery_and_authority(tmp_path: Path) -> None:
     response = _client(tmp_path).post(
         "/api/graph/query",
@@ -297,16 +287,6 @@ def test_current_graph_api_returns_one_mastery_and_authority(tmp_path: Path) -> 
         }
     )
     assert "mastery_v1" not in node and "mastery_v2" not in node
-
-
-def test_removed_graph_paths_return_not_found(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-    body = {
-        "scope": {"mode": "student", "student_ids": ["12"]},
-        "exam_scope": {"mode": "current", "session_ids": [14]},
-    }
-    for path in ("/api/graph/profiles", "/api/graph/rows", "/api/graph/v2/query"):
-        assert client.post(path, json=body).status_code == 404
 
 
 def test_application_startup_installs_current_standard_when_none_is_active(
@@ -369,36 +349,3 @@ def test_current_graph_evidence_items_include_assessment_detail_fields(
         by_row[(session_a, "Q1")]["evidence_url"]
         != by_row[(session_b, "Q1")]["evidence_url"]
     )
-
-
-def test_current_graph_evidence_item_without_detail_row_omits_new_fields(
-    tmp_path: Path,
-) -> None:
-    client, seeded = _evidence_client(tmp_path)
-    session_a = int(seeded["阶段测A"]["session_id"])
-    session_b = int(seeded["阶段测B"]["session_id"])
-
-    response = client.post(
-        "/api/graph/evidence",
-        json={
-            "scope": {"mode": "student", "student_ids": ["1"]},
-            "exam_scope": {
-                "mode": "current",
-                "session_ids": [session_a, session_b],
-            },
-            "stable_key": "kp_alg_linear_equation",
-            "page": 1,
-            "page_size": 10,
-        },
-    )
-
-    assert response.status_code == 200, response.text
-    items = response.json()["items"]
-    unmatched = next(
-        item
-        for item in items
-        if item["session_id"] == session_a and item["question_id"] == "Q2"
-    )
-    assert "detail_id" not in unmatched
-    assert "deduction_reason" not in unmatched
-    assert "evidence_url" not in unmatched

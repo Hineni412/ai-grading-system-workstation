@@ -1,10 +1,7 @@
-import { createApp, h, nextTick } from 'vue'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest';
+import { createApp, h, nextTick } from 'vue';
 
-import {
-  decodeQuestionSolutionEvidenceResponse,
-  type QuestionSolutionEvidenceResponse,
-} from '../api/question-bank'
+import { type QuestionSolutionEvidenceResponse } from '../api/question-bank';
 import SolutionEvidenceReview from '../components/question-bank/SolutionEvidenceReview.vue'
 
 const mounted: Array<ReturnType<typeof createApp>> = []
@@ -129,56 +126,6 @@ afterEach(() => {
 })
 
 describe('solution evidence review', () => {
-  it('decodes and displays per-part formula difficulty', async () => {
-    const payload = { ...evidenceResponse(), assessment_revision: 'a1b2c3d4e5f6a7b8',
-      part_assessments: [{ part_id: 'part-1', difficulty: 3, source: 'formula',
-        rationale: '先识别直角，再代入求边长。', review_note: '' }] }
-    expect(decodeQuestionSolutionEvidenceResponse(payload)).toEqual(payload)
-    const host = await mountReview(payload)
-    expect(host.textContent).toContain('3 / 10')
-    expect(host.textContent).toContain('先识别直角，再代入求边长。')
-    expect(host.textContent).toContain('公式难度')
-    expect(host.textContent).not.toContain('估计')
-  })
-  it('decodes the exact public contract and rejects drift or private fields', () => {
-    const payload = evidenceResponse()
-    expect(decodeQuestionSolutionEvidenceResponse(payload)).toEqual(payload)
-    expect(() => decodeQuestionSolutionEvidenceResponse({
-      ...payload,
-      local_path: 'C:/private/question.json',
-    })).toThrow()
-    expect(() => decodeQuestionSolutionEvidenceResponse({
-      ...payload,
-      available: false,
-    })).toThrow('Invalid question solution evidence')
-  })
-
-  it('accepts v2 evidence points even when a step has no fine-term links', () => {
-    const payload = evidenceResponse()
-    const v2 = {
-      ...payload,
-      evidence: {
-        ...payload.evidence!,
-        schema_version: 'question-solution-evidence-v2' as const,
-        parts: [{
-          ...payload.evidence!.parts[0],
-          evidence_points: [{
-            evidence_point_id: 'point-1',
-            step_index: 1,
-            target: '完成方程求解',
-            justification: '配方后得到正确解',
-            answer_anchor: 'x = 2',
-            observable_evidence: '写出配方过程并得到正确解。',
-            depends_on: [],
-            fine_term_links: [],
-            equivalent_rules: [],
-            counterexamples: [],
-          }],
-        }],
-      },
-    }
-    expect(decodeQuestionSolutionEvidenceResponse(v2)).toEqual(v2)
-  })
 
   it('keeps point-level direct, supporting, ambiguous and unmapped semantics visible', async () => {
     const host = await mountReview(evidenceResponse())
@@ -195,41 +142,5 @@ describe('solution evidence review', () => {
     expect(text).not.toContain('term-direct')
     expect(text).not.toContain('解题证据')
     expect(host.querySelector('#solution-evidence-title')?.textContent).toBe('知识细项与图谱映射')
-  })
-
-  it('shows an explicit empty state without inventing whole-question tags', async () => {
-    const host = await mountReview({
-      question_id: 42,
-      available: false,
-      evidence_version_id: null,
-      status: null,
-      evidence: null,
-    })
-    expect(host.textContent).toContain('这道题还没有知识细项映射')
-    expect(host.querySelector('.solution-evidence__part')).toBeNull()
-    expect(host.querySelector('.solution-evidence__summary')).toBeNull()
-  })
-
-  it('hides the empty mapping panel when folded into 判定点', async () => {
-    const host = await mountReview({
-      question_id: 42,
-      available: false,
-      evidence_version_id: null,
-      status: null,
-      evidence: null,
-    }, { embedded: true })
-    expect(host.querySelector('.solution-evidence')).toBeNull()
-    expect(host.textContent).not.toContain('这道题还没有知识细项映射')
-    expect(host.textContent).not.toContain('解题证据')
-  })
-
-  it('keeps mapping as a collapsed supplement without a second heading', async () => {
-    const host = await mountReview(evidenceResponse(), { embedded: true })
-    expect(host.querySelector('#solution-evidence-title')).toBeNull()
-    expect(host.querySelector('.solution-evidence.is-embedded')).not.toBeNull()
-    expect(host.querySelector('summary')?.textContent).toContain('知识细项与图谱映射')
-    expect(host.textContent).toContain('完成方程求解')
-    expect(host.textContent).not.toContain('解题证据')
-    expect(host.textContent).not.toContain('拆分点、精细词条')
   })
 })

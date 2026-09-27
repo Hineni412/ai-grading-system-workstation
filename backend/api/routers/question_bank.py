@@ -24,6 +24,7 @@ from backend.api.schemas.question_bank import (
     AnswerDraftJobRequest,
     CurriculumCatalog,
     QuestionDetailResponse,
+    QuestionErrorPatternEditRequest,
     QuestionFacetsResponse,
     QuestionListItem,
     QuestionListResponse,
@@ -1173,13 +1174,12 @@ def retry_tagging_sync_job(
     )
     if source.status in {"failed", "cancelled"}:
         available = _unique_positive_ids(source.payload.get("question_ids", []))
-    elif source.status == "succeeded" and bool(source.result.get("retryable")):
-        available = _unique_positive_ids(
-            [
-                *source.result.get("failed_question_ids", []),
-                *source.result.get("relation_governance_failed_question_ids", []),
-            ]
-        )
+    elif (
+        source.status == "succeeded"
+        and bool(source.result.get("retryable"))
+        and source.result.get("failed_question_ids")
+    ):
+        available = _unique_positive_ids(source.result["failed_question_ids"])
     else:
         available = []
     if not available:
@@ -1223,19 +1223,6 @@ def retry_tagging_sync_job(
     ]
     if retry_evidence_ids:
         payload["retry_evidence_question_ids"] = retry_evidence_ids
-    raw_relation_failed = source.result.get(
-        "relation_governance_failed_question_ids"
-    )
-    relation_failed = (
-        set(_unique_positive_ids(raw_relation_failed))
-        if raw_relation_failed
-        else set()
-    )
-    retry_relation_ids = [
-        question_id for question_id in selected if question_id in relation_failed
-    ]
-    if retry_relation_ids:
-        payload["retry_relation_question_ids"] = retry_relation_ids
     if source.payload.get("source_job_id") is not None:
         payload["source_job_id"] = int(source.payload["source_job_id"])
     return _submit_question_bank_job(manager, "tagging_sync", payload)
@@ -2302,6 +2289,56 @@ def get_question(
             {"question_id": int(question_id)},
         )
     return QuestionDetailResponse(**item)
+
+
+@router.patch(
+    "/questions/{question_id}/error-patterns/{pattern_id}",
+    response_model=QuestionDetailResponse,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+def edit_question_error_pattern(
+    question_id: int,
+    pattern_id: int,
+    body: QuestionErrorPatternEditRequest,
+    db_path: Path = Depends(get_question_bank_db_path),
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+) -> QuestionDetailResponse:
+    from backend.error_causes import CAUSE_CATEGORIES
+    from question_bank.database.schema import connect
+    from question_bank.services.error_pattern_service import reject_pattern, rename_patterns
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT question_id, pattern, status FROM question_error_patterns WHERE id=?",
+            (int(pattern_id),),
+        ).fetchone()
+        if row is None or int(row["question_id"]) != int(question_id):
+            raise ApiError(404, "error_pattern_not_found", "Typical error not found")
+        if row["status"] not in ("confirmed", "candidate") or (
+            str(row["pattern"]) != body.expected_pattern
+        ):
+            raise ApiError(409, "error_pattern_changed", "Typical error has changed")
+        if body.action == "reject":
+            changed = reject_pattern(
+                db_path, pattern_id=pattern_id, question_id=question_id,
+                connection=conn,
+            )
+        else:
+            name = str(body.pattern or "").strip()
+            category = str(body.category or "").strip()
+            if not name or len(name) > 80 or category not in CAUSE_CATEGORIES[:-1]:
+                raise ApiError(422, "error_pattern_invalid", "Typical error name or category is invalid")
+            try:
+                changed = rename_patterns(
+                    db_path, question_ids=[question_id], pattern_id=pattern_id,
+                    old_pattern=body.expected_pattern, new_pattern=name,
+                    category=category, connection=conn,
+                ) > 0
+            except ValueError as exc:
+                raise ApiError(409, "error_pattern_conflict", str(exc)) from exc
+        if not changed:
+            raise ApiError(409, "error_pattern_changed", "Typical error has changed")
+    return get_question(question_id, service)
 
 
 @router.get(

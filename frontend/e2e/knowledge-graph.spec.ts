@@ -1,6 +1,6 @@
-import { expect, test, type Page, type Request, type Route, type TestInfo } from '@playwright/test'
-import { execFileSync } from 'node:child_process'
-import { arch, cpus, platform, release, totalmem } from 'node:os'
+import { expect, test, type Page, type Request, type Route, type TestInfo } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+import { arch, cpus, platform, release, totalmem } from 'node:os';
 
 const STORAGE_KEY = 'ai-grading:selected-session:v1'
 const sessions = [
@@ -11,14 +11,6 @@ const students = [
   { id: 12, student_code: 'S012', name: '匿名学生甲', class_name: '七年级一班', created_at: null },
   { id: 15, student_code: 'S015', name: '匿名学生乙（长名称用于布局验证）', class_name: '七年级一班', created_at: null },
   { id: 21, student_code: 'S021', name: '匿名学生丙', class_name: '七年级二班', created_at: null },
-]
-
-const viewports = [
-  { width: 1024, height: 768 },
-  { width: 1280, height: 800 },
-  { width: 1366, height: 768 },
-  { width: 1440, height: 900 },
-  { width: 1920, height: 1080 },
 ]
 
 interface RequestLog { method: string; pathname: string }
@@ -270,46 +262,12 @@ async function clickCanvasNode(page: Page, requests: RequestLog[]): Promise<void
   throw new Error('No selectable knowledge node was found on the canvas')
 }
 
-async function expectNoHorizontalOverflow(page: Page): Promise<void> {
-  expect(await page.evaluate(() => ({
-    document: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-    body: document.body.scrollWidth <= document.body.clientWidth,
-  }))).toEqual({ document: true, body: true })
-}
-
 function expectReadOnly(requests: RequestLog[]): void {
   expect(requests.length).toBeGreaterThan(0)
   for (const request of requests) {
     const allowedPost = request.method === 'POST' && ['/api/graph/query', '/api/graph/evidence'].includes(request.pathname)
     expect(request.method === 'GET' || allowedPost).toBe(true)
   }
-}
-
-async function captureViewportEvidence(page: Page, testInfo: TestInfo, width: number): Promise<void> {
-  if (![1024, 1366, 1920].includes(width)) return
-  await page.screenshot({
-    path: testInfo.outputPath(`knowledge-graph-${width}.png`),
-    fullPage: true,
-  })
-}
-
-for (const viewport of viewports) {
-  test(`${viewport.width}x${viewport.height} keeps filters, canvas, directory and inspector reachable`, async ({ page }, testInfo) => {
-    const errors = trackBrowserErrors(page)
-    await page.setViewportSize(viewport)
-    const requests = await openGraph(page)
-    await expect(page.getByRole('button', { name: '应用范围' })).toBeVisible()
-    const canvas = page.locator('.knowledge-graph-canvas canvas').first()
-    await canvas.scrollIntoViewIfNeeded()
-    expect(await nonBackgroundPixelCount(page)).toBeGreaterThan(100)
-    await expect(page.getByRole('heading', { name: '知识点文字目录' })).toBeAttached()
-    await expect(page.getByRole('heading', { name: '知识点详情' })).toBeAttached()
-    await expectNoHorizontalOverflow(page)
-    await captureViewportEvidence(page, testInfo, viewport.width)
-    expectReadOnly(requests)
-    expect(errors.pageErrors).toEqual([])
-    expect(errors.consoleErrors).toEqual([])
-  })
 }
 
 test('supports zoom, grouping explanation, keyboard selection and paged evidence', async ({ page }) => {

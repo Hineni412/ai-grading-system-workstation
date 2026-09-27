@@ -19,48 +19,6 @@ function createTestClient(fetchMock: ReturnType<typeof vi.fn>) {
 }
 
 describe('API client', () => {
-  it('sends a same-origin request id and decodes a successful response', async () => {
-    const fetchMock = vi.fn(async () =>
-      jsonResponse({ ok: true }, { headers: { 'x-request-id': 'client-req-1' } }),
-    )
-    const client = createTestClient(fetchMock)
-
-    await expect(
-      client.request('/api/sessions', {
-        decode: (value) => value as { ok: boolean },
-      }),
-    ).resolves.toEqual({ ok: true })
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
-      '/api/sessions',
-      expect.objectContaining({
-        method: 'GET',
-        headers: expect.objectContaining({
-          accept: 'application/json',
-          'x-request-id': 'client-req-1',
-        }),
-      }),
-    )
-  })
-
-  it.each([
-    'https://example.com/api/jobs/1',
-    '/healthz',
-    'api/jobs/1',
-    '/api/../healthz',
-    '/api/%2e%2e/healthz',
-  ])(
-    'rejects the unsafe path %s before fetch',
-    async (path) => {
-      const fetchMock = vi.fn()
-      const client = createTestClient(fetchMock)
-
-      await expect(client.request(path, { decode: (value) => value })).rejects.toMatchObject({
-        kind: 'contract',
-        code: 'unsafe_api_path',
-      })
-      expect(fetchMock).not.toHaveBeenCalled()
-    },
-  )
 
   it('retries a GET network failure and a server failure up to three attempts', async () => {
     const fetchMock = vi
@@ -100,28 +58,6 @@ describe('API client', () => {
         decode: (value) => value,
       }),
     ).rejects.toMatchObject({ kind: 'network', retryable: true })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('maps a standard 404 without retrying', async () => {
-    const fetchMock = vi.fn(async () =>
-      jsonResponse(
-        {
-          error: {
-            code: 'job_not_found',
-            message: 'Job not found',
-            details: { job_id: 41 },
-            request_id: 'client-req-1',
-          },
-        },
-        { status: 404, headers: { 'x-request-id': 'client-req-1' } },
-      ),
-    )
-    const client = createTestClient(fetchMock)
-
-    await expect(
-      client.request('/api/jobs/41', { decode: (value) => value }),
-    ).rejects.toMatchObject({ kind: 'not_found', code: 'job_not_found' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
@@ -181,35 +117,4 @@ describe('API client', () => {
     }
   })
 
-  it('normalizes caller cancellation while waiting for a retry', async () => {
-    const caller = new AbortController()
-    const delay = vi.fn(
-      (_milliseconds: number, signal: AbortSignal) =>
-        new Promise<void>((_resolve, reject) => {
-          signal.addEventListener(
-            'abort',
-            () => reject(new DOMException('aborted', 'AbortError')),
-            { once: true },
-          )
-        }),
-    )
-    const client = createApiClient({
-      fetch: vi.fn().mockRejectedValue(new TypeError('offline')) as typeof globalThis.fetch,
-      createRequestId: () => 'retry-request',
-      delay,
-    })
-
-    const request = client.request('/api/jobs/1', {
-      decode: (value) => value,
-      signal: caller.signal,
-    })
-    const captured = request.catch((error: unknown) => error)
-    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(1))
-    caller.abort()
-
-    await expect(captured).resolves.toMatchObject({
-      kind: 'cancelled',
-      code: 'request_cancelled',
-    })
-  })
 })

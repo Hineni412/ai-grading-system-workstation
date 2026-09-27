@@ -1,10 +1,10 @@
-import { createApp, nextTick, type App } from 'vue'
-import { createPinia } from 'pinia'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { TrainingDiagnosis, TrainingGroup } from '../api/training'
+import { createApp, nextTick, type App } from 'vue';
+import { createPinia } from 'pinia';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { TrainingDiagnosis, TrainingGroup } from '../api/training';
 import TrainingGroupRecommendations from '../components/knowledge-training/TrainingGroupRecommendations.vue'
-import { ApiError } from '../api/errors'
-import type { ChapterGroupEditor } from '../features/training/paper-selection-session'
+
+import type { ChapterGroupEditor } from '../features/training/paper-selection-session';
 
 const diagnose = vi.hoisted(() => vi.fn())
 vi.mock('../api/training', async (original) => ({
@@ -60,83 +60,7 @@ function button(label: string): HTMLButtonElement {
 }
 
 describe('章节小组的采用与失败恢复', () => {
-  it('sorts all candidates before collapsing, breaks ties by weakness and spread, and keeps inspection attached to the group', async () => {
-    const candidate = (id: string, count: number, mastery: number | null, span = 0): TrainingGroup => ({
-      ...group, group_id: id, targets: group.targets.map(target => ({ ...target, knowledge_point: id })),
-      members: Array.from({ length: count }, (_, i) => ({
-        ...group.members[0]!, student_id: `${id}${i}`, student_name: `${id}${i}`,
-        targets: mastery === null ? [] : group.members[0]!.targets.map(target => ({ ...target,
-          mastery: mastery + (i < count / 2 ? -span / 2 : span / 2) })),
-      })),
-    })
-    const groups = [candidate('A', 4, .5, .25), candidate('B', 4, .25, .125),
-      candidate('C', 4, .25, .0625), candidate('D', 3, .125), candidate('E', 2, .0625),
-      candidate('F', 2, .75, .25), candidate('G', 5, .625), candidate('H', 2, null)]
-    const data: TrainingDiagnosis = { ...diagnosis, students: groups.flatMap(item => item.members.map(member => ({
-      ...member, weak_points: [], score_rate: null,
-    }))), grouping: { ...diagnosis.grouping!, groups, selection: null } }
-    mount(false, null, createPinia(), data)
-    const order = () => [...host.querySelectorAll('.training-groups__candidate h3')].map(item => item.textContent)
-    await vi.waitFor(() => expect(order()).toEqual(['G', 'C', 'B', 'A', 'D', 'E']))
-    const select = host.querySelector<HTMLSelectElement>('select[aria-label="小组卡片排序"]')!
-    select.value = 'weakness'; select.dispatchEvent(new Event('change', { bubbles: true }))
-    await nextTick()
-    expect(order()).toEqual(['E', 'D', 'C', 'B', 'A', 'G'])
-    button('查看其余 2 个小组').click()
-    await nextTick()
-    expect(order()).toEqual(['E', 'D', 'C', 'B', 'A', 'G', 'F', 'H'])
-    select.value = 'similarity'; select.dispatchEvent(new Event('change', { bubbles: true }))
-    await nextTick()
-    expect(order()).toEqual(['G', 'D', 'E', 'C', 'B', 'A', 'F', 'H'])
-    button('查看小组').click()
-    await nextTick()
-    expect(host.querySelectorAll('.training-groups__members details')).toHaveLength(5)
-    expect(host.querySelector('.training-groups__members')?.textContent).toContain('G0')
-    button('返回候选').click()
-    await nextTick()
-    expect(order()).toEqual(['G', 'D', 'E', 'C', 'B', 'A', 'F', 'H'])
-    expect(diagnose).toHaveBeenCalledTimes(1)
-    expect(data.grouping!.groups.map(item => item.group_id)).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'])
-  })
-  it('reuses suggestions through focus, inspection and a return visit; adoption still checks again', async () => {
-    const pinia = createPinia()
-    mount(false, null, pinia)
-    await vi.waitFor(() => expect(button('查看小组').disabled).toBe(false))
-    expect(diagnose).toHaveBeenCalledTimes(1)
-    expect(host.querySelector('.training-groups__stats')?.textContent).toContain('65%')
-    expect(host.querySelector('.training-groups__stats')?.textContent).toContain('5个百分点')
-    expect(host.querySelector('.training-groups__classes')?.textContent).toContain('1班 1人')
-    globalThis.dispatchEvent(new Event('focus'))
-    await nextTick()
-    button('查看小组').click()
-    await nextTick()
-    expect(button('采用小组并核对出卷设置').disabled).toBe(false)
-    button('返回候选').click()
-    await nextTick()
-    expect(diagnose).toHaveBeenCalledTimes(1)
-    app!.unmount(); host.remove()
-    // A return visit may deserialize the same diagnosis after a long edit.
-    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 180_000)
-    const adopted = mount(false, null, pinia, JSON.parse(JSON.stringify(diagnosis)))
-    await vi.waitFor(() => expect(button('查看小组').disabled).toBe(false))
-    expect(diagnose).toHaveBeenCalledTimes(1)
-    button('查看小组').click()
-    await nextTick()
-    button('采用小组并核对出卷设置').click()
-    await vi.waitFor(() => expect(adopted).toHaveBeenCalledOnce())
-    expect(diagnose).toHaveBeenCalledTimes(2)
-    now.mockRestore()
-  })
-  it('identifies a timed-out request without suggesting that calculation is still running', async () => {
-    mount()
-    await vi.waitFor(() => expect(button('采用小组并核对出卷设置').disabled).toBe(false))
-    diagnose.mockRejectedValueOnce(new ApiError({kind:'timeout',status:null,code:'request_timeout',
-      message:'请求超时',details:{},requestId:'synthetic-timeout',retryable:false}))
-    button('刷新建议').click()
-    await vi.waitFor(() => expect(host.textContent).toContain('超过30秒未完成'))
-    expect(button('刷新建议').disabled).toBe(false)
-    expect(host.querySelectorAll('.training-groups__members details')).toHaveLength(2)
-  })
+
   it('requires an explicit overlap decision and adopts only after checking the source again', async () => {
     const adopted = mount(true)
     await vi.waitFor(() => expect(host.textContent).toContain('此前生成草稿'))

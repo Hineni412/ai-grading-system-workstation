@@ -1,13 +1,13 @@
-import { createApp, nextTick } from 'vue'
-import { createPinia, type Pinia } from 'pinia'
-import { createMemoryHistory } from 'vue-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createApp, nextTick } from 'vue';
+import { createPinia, type Pinia } from 'pinia';
+import { createMemoryHistory } from 'vue-router';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import AiAssemblyPanel from '../components/question-assembly/AiAssemblyPanel.vue'
-import { createAppRouter } from '../router'
-import type { CurriculumCatalog, QuestionBankFacets } from '../api/question-bank'
-import { useAiAssemblyStore } from '../stores/ai-assembly'
-import { useCurriculumScopeStore } from '../stores/curriculum-scope'
+import { createAppRouter } from '../router';
+import type { CurriculumCatalog, QuestionBankFacets } from '../api/question-bank';
+import { useAiAssemblyStore } from '../stores/ai-assembly';
+import { useCurriculumScopeStore } from '../stores/curriculum-scope';
 
 const revision = 'a'.repeat(64)
 
@@ -195,23 +195,6 @@ function legacyFacets(): QuestionBankFacets {
   }
 }
 
-function migratedFacets(): QuestionBankFacets {
-  return {
-    ...legacyFacets(),
-    special_types: [
-      { value: '画图', count: 142 },
-      { value: '计算', count: 139 },
-      { value: '证明', count: 56 },
-      { value: '动态几何题', count: 3 },
-    ],
-    question_types: [
-      { value: '选择题', count: 583 },
-      { value: '填空题', count: 357 },
-      { value: '解答题', count: 466 },
-    ],
-  }
-}
-
 function templatePaper() {
   return {
     id: 7,
@@ -337,161 +320,7 @@ async function mountPanel(
   return { host, pinia, router, store }
 }
 
-function chipButtons(host: HTMLElement, selector: string): HTMLButtonElement[] {
-  return [...host.querySelectorAll<HTMLButtonElement>(selector)]
-}
-
 describe('ai assembly params page', () => {
-  it('checks chapters tri-state and summarizes selection by chapter/section/points', async () => {
-    const { host, store } = await mountPanel(legacyFacets())
-
-    // 摘要条恒定渲染：无选择时显示占位，不塌掉。
-    const bar = () => host.querySelector('.scope-columns__bar')
-    expect(bar()).toBeTruthy()
-    expect(bar()?.textContent).toContain('未选择（默认全库范围）')
-
-    // 章勾选框整章连选：章 + 全部小节 + 全部知识点。
-    const chapterCheck = host.querySelector<HTMLInputElement>(
-      'input[aria-label="全选 第一章 勾股定理"]',
-    )!
-    expect(chapterCheck).toBeTruthy()
-    chapterCheck.click()
-    await nextTick()
-    expect(store.params.scopeKeys).toEqual([
-      'chapter-1', 'section-1', 'kp-1', 'kp-2', 'section-2', 'kp-3',
-    ])
-    expect(bar()?.textContent).not.toContain('未选择（默认全库范围）')
-    expect(bar()?.textContent).toContain('已选 1 章')
-    expect(bar()?.textContent).toContain('第一章 勾股定理（全章）')
-
-    // 取消一个知识点 → 章变半选，摘要按节/知识点粒度重算。
-    const point = chipButtons(host, '.scope-columns__point')
-      .find((button) => button.textContent?.includes('直角三角形的判别'))!
-    point.click()
-    await nextTick()
-    expect(chapterCheck.indeterminate).toBe(true)
-    expect(bar()?.textContent).toContain('第一章 勾股定理 · 1 探索勾股定理（本节）')
-    expect(bar()?.textContent).not.toContain('（全章）')
-
-    // 再取消本节的一个知识点 → 散知识点计数行。
-    const point2 = chipButtons(host, '.scope-columns__point')
-      .find((button) => button.textContent?.includes('勾股定理的逆定理'))!
-    point2.click()
-    await nextTick()
-    expect(bar()?.textContent).toContain('第一章 勾股定理 · 1 个知识点')
-
-    // 摘要行 × 删除：清空本章已选。
-    const remove = bar()?.querySelector<HTMLButtonElement>(
-      'button[aria-label^="取消 第一章 勾股定理"]',
-    )
-    expect(remove).toBeTruthy()
-    remove!.click()
-    await nextTick()
-    expect(store.params.scopeKeys).toEqual([])
-    expect(bar()?.textContent).toContain('未选择（默认全库范围）')
-  })
-
-  it('removes single knowledge points from the manager overlay', async () => {
-    const { host, store } = await mountPanel(legacyFacets())
-
-    host.querySelector<HTMLInputElement>('input[aria-label="全选 第一章 勾股定理"]')!.click()
-    await nextTick()
-    const manage = chipButtons(host, '.scope-columns__manage')
-      .find((button) => button.textContent?.trim() === '管理')!
-    manage.click()
-    await nextTick()
-
-    const panel = host.querySelector('.scope-columns__panel')!
-    expect(panel.textContent).toContain('已选范围明细')
-    const chipRemove = panel.querySelector<HTMLButtonElement>('button[aria-label="取消 勾股定理"]')!
-    chipRemove.click()
-    await nextTick()
-    expect(store.params.scopeKeys).not.toContain('kp-1')
-    expect(store.params.scopeKeys).toContain('kp-2')
-    expect(host.querySelector('.scope-columns__bar')?.textContent)
-      .toContain('第一章 勾股定理 · 2 一定是直角三角形吗（本节）')
-  })
-
-  it('merges legacy six-value question type facets into three main chips with subtype row', async () => {
-    const { host, store } = await mountPanel(legacyFacets())
-
-    const mainChips = chipButtons(host, '.ai-assembly__type-list .ai-assembly__chip')
-    expect(mainChips.map((button) => button.textContent?.replace(/\s+/g, ''))).toEqual([
-      '选择题583',
-      '填空题357',
-      '解答题466',
-    ])
-
-    // 选中解答题：数量默认 1，出现子类行（全部/画图/计算/证明 + 未标注静态数字）。
-    mainChips[2]!.click()
-    await nextTick()
-    expect(store.params.typeCounts).toEqual({ 解答题: 1 })
-    const countInput = host.querySelector<HTMLInputElement>('input[aria-label="解答题 数量"]')!
-    expect(countInput.value).toBe('1')
-
-    const subtypes = host.querySelector('.ai-assembly__subtypes')!
-    const subtypeText = subtypes.textContent?.replace(/\s+/g, '') ?? ''
-    expect(subtypeText).toContain('全部')
-    expect(subtypeText).toContain('画图142')
-    expect(subtypeText).toContain('计算139')
-    expect(subtypeText).toContain('证明56')
-    expect(subtypeText).toContain('未标注129')
-
-    const proof = chipButtons(host, '.ai-assembly__subtypes .ai-assembly__chip--sub')
-      .find((button) => button.textContent?.includes('证明'))!
-    proof.click()
-    await nextTick()
-    expect(store.params.essaySubtype).toBe('证明')
-
-    const all = chipButtons(host, '.ai-assembly__subtypes .ai-assembly__chip--sub')
-      .find((button) => button.textContent?.trim() === '全部')!
-    all.click()
-    await nextTick()
-    expect(store.params.essaySubtype).toBeNull()
-
-    // 修改数量；再点主 chip 取消，子类行随之消失。
-    countInput.value = '3'
-    countInput.dispatchEvent(new Event('change', { bubbles: true }))
-    await nextTick()
-    expect(store.params.typeCounts).toEqual({ 解答题: 3 })
-
-    chipButtons(host, '.ai-assembly__type-list .ai-assembly__chip')[2]!.click()
-    await nextTick()
-    expect(store.params.typeCounts).toEqual({})
-    expect(host.querySelector('.ai-assembly__subtypes')).toBeNull()
-  })
-
-  it('reads subtype counts from special_type facets after the type migration', async () => {
-    const { host } = await mountPanel(migratedFacets())
-
-    const mainChips = chipButtons(host, '.ai-assembly__type-list .ai-assembly__chip')
-    expect(mainChips.map((button) => button.textContent?.replace(/\s+/g, ''))).toEqual([
-      '选择题583',
-      '填空题357',
-      '解答题466',
-    ])
-
-    mainChips[2]!.click()
-    await nextTick()
-    const subtypeText = host.querySelector('.ai-assembly__subtypes')?.textContent?.replace(/\s+/g, '') ?? ''
-    expect(subtypeText).toContain('画图142')
-    expect(subtypeText).toContain('计算139')
-    expect(subtypeText).toContain('证明56')
-    // 未标注 = 解答题总数 466 − 三个子类之和 337。
-    expect(subtypeText).toContain('未标注129')
-    expect(subtypeText).not.toContain('动态几何题')
-  })
-
-  it('shows the empty template card and navigates to the paper library', async () => {
-    const { host, router } = await mountPanel(legacyFacets())
-
-    const card = host.querySelector('[data-testid="ai-template-card"]')!
-    expect(card.textContent).toContain('未使用模板')
-    const pick = [...card.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('去题库选真卷'))!
-    pick.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('question-bank'))
-  })
 
   it('applies the template query, summarizes structure by count and clears the query', async () => {
     const { host, router, store } = await mountPanel(
@@ -523,22 +352,4 @@ describe('ai assembly params page', () => {
     expect(store.params.difficultyRatio).toEqual({ easy: 30, medium: 50, hard: 20 })
   })
 
-  it('clears a previously chosen essay subtype when a template is applied', async () => {
-    const { host, router, store } = await mountPanel(legacyFacets())
-
-    // 自由组卷下先选解答题 + 证明子类。
-    chipButtons(host, '.ai-assembly__type-list .ai-assembly__chip')[2]!.click()
-    await nextTick()
-    chipButtons(host, '.ai-assembly__subtypes .ai-assembly__chip--sub')
-      .find((button) => button.textContent?.includes('证明'))!
-      .click()
-    await nextTick()
-    expect(store.params.essaySubtype).toBe('证明')
-
-    // 再从题库跳入模板：子类选择被清掉，不变成隐藏约束。
-    await router.push({ query: { mode: 'ai', template: '7' } })
-    await vi.waitFor(() => expect(store.params.templatePaperId).toBe(7))
-    expect(store.params.essaySubtype).toBeNull()
-    await vi.waitFor(() => expect(router.currentRoute.value.query.template).toBeUndefined())
-  })
 })

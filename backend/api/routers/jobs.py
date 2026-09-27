@@ -206,7 +206,6 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "retryable",
             "restore_required",
             "restore_paper_id",
-            "relation_governance_failed_question_ids",
             "exact_duplicate_count",
             "analysis_reused_count",
             "near_duplicate_hints",
@@ -415,7 +414,6 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
             "source_job_id",
             "retry_of_job_id",
             "retry_evidence_question_ids",
-            "retry_relation_question_ids",
             "force_retag_question_ids",
             "client_request_token",
         )

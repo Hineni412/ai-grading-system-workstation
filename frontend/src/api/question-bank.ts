@@ -428,6 +428,20 @@ export interface QuestionBankDetail extends QuestionBankListItem {
   assets: QuestionBankAssetLink[]
   rich_content: QuestionBankRichContent
   previews: QuestionBankPreview[]
+  error_patterns?: QuestionErrorPattern[]
+  wrong_option_letters?: string[]
+}
+
+export interface QuestionErrorPattern {
+  id: number
+  category: string | null
+  pattern: string
+  explanation: string
+  trigger_kind: 'option' | 'wrong_answer' | 'step' | 'observation'
+  trigger_value: string
+  status: 'candidate' | 'confirmed'
+  source: string
+  has_evidence: boolean
 }
 
 export type CoreResolutionStatus = 'resolved' | 'ambiguous' | 'unmapped'
@@ -1505,21 +1519,46 @@ export function decodeQuestionSolutionEvidenceResponse(
 }
 
 export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail {
+  const detailKeys = [
+    ...QUESTION_LIST_KEYS,
+    'page_range',
+    'assets',
+    'previews',
+  ]
   if (
     !isRecord(value) ||
-    !hasExactQuestionKeys(value, [
-      ...QUESTION_LIST_KEYS,
-      'page_range',
-      'assets',
-      'previews',
-    ]) ||
+    !(hasExactQuestionKeys(value, detailKeys)
+      || hasExactQuestionKeys(value, [...detailKeys, 'error_patterns', 'wrong_option_letters'])) ||
     !hasQuestionBankListFields(value) ||
     !isNullableString(value.page_range) ||
     !Array.isArray(value.assets) ||
     !value.assets.every(isAssetLink) ||
     !isQuestionBankRichContent(value.rich_content) ||
     !Array.isArray(value.previews) ||
-    !value.previews.every(isPreview)
+    !value.previews.every(isPreview) ||
+    (value.error_patterns !== undefined && (
+      !Array.isArray(value.error_patterns) ||
+      !value.error_patterns.every((item) => (
+        isRecord(item) &&
+        hasExactKeys(item, [
+          'id', 'category', 'pattern', 'explanation', 'trigger_kind',
+          'trigger_value', 'status', 'source', 'has_evidence',
+        ]) &&
+        isPositiveInteger(item.id) &&
+        isNullableString(item.category) &&
+        typeof item.pattern === 'string' &&
+        typeof item.explanation === 'string' &&
+        ['option', 'wrong_answer', 'step', 'observation'].includes(String(item.trigger_kind)) &&
+        typeof item.trigger_value === 'string' &&
+        (item.status === 'candidate' || item.status === 'confirmed') &&
+        typeof item.source === 'string' &&
+        typeof item.has_evidence === 'boolean'
+      ))
+    )) ||
+    (value.wrong_option_letters !== undefined && (
+      !Array.isArray(value.wrong_option_letters) ||
+      !value.wrong_option_letters.every((letter) => typeof letter === 'string' && /^[A-F]$/.test(letter))
+    ))
   ) {
     throw new Error('Invalid question bank detail')
   }
@@ -1896,6 +1935,24 @@ export const questionBankApi = {
       decode: decodeQuestionDetailResponse,
       signal,
     })
+  },
+
+  editErrorPattern(
+    questionId: number,
+    pattern: QuestionErrorPattern,
+    change: { action: 'edit'; pattern: string; category: string } | { action: 'reject' },
+  ): Promise<QuestionBankDetail> {
+    if (!isPositiveInteger(questionId) || !isPositiveInteger(pattern.id)) {
+      throw new Error('Invalid typical error target')
+    }
+    return apiClient.request(
+      `/api/question-bank/questions/${questionId}/error-patterns/${pattern.id}`,
+      {
+        method: 'PATCH',
+        body: { expected_pattern: pattern.pattern, ...change },
+        decode: decodeQuestionDetailResponse,
+      },
+    )
   },
 
   getSolutionEvidence(

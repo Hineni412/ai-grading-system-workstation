@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="a">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>选择考试 · 界面改版样稿</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('proto-theme')||'a'}catch(e){document.documentElement.dataset.theme='a'}</script>
+<style>
+.exam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.exam-tile {
+  display: block; padding: 15px 16px 14px; position: relative;
+  transition: transform var(--d-base) var(--ease-out), box-shadow var(--d-base) var(--ease-out), border-color var(--d-fast) ease;
+}
+.exam-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-floating); border-color: var(--line-strong); }
+/* B 主题：卡片顶部按状态显示一条渐变色边 */
+.exam-tile::before { content: ""; position: absolute; top: 0; left: 14px; right: 14px; height: 2px; border-radius: 0 0 3px 3px; opacity: 0; }
+[data-theme="b"] .exam-tile::before { opacity: 1; background: linear-gradient(90deg, var(--edge, transparent), color-mix(in srgb, var(--edge, transparent) 35%, transparent) 75%, transparent); }
+[data-theme="b"] .exam-tile.st-done { --edge: #5ad0a2; }
+[data-theme="b"] .exam-tile.st-rev { --edge: #eebd63; }
+[data-theme="b"] .exam-tile.st-run { --edge: #6ab5ec; }
+[data-theme="b"] .exam-tile--new::before { display: none; }
+.exam-tile__top { display: flex; align-items: flex-start; gap: 8px; }
+.exam-tile__top h3 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; min-width: 0; }
+.exam-tile__date { margin-top: 4px; font-size: 12px; color: var(--ink-3); }
+.exam-tile__classes { display: flex; gap: 6px; margin-top: 9px; flex-wrap: wrap; }
+.exam-tile__stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; padding: 9px 0 10px; border-top: 1px solid var(--line-soft); }
+.exam-tile__stats div { display: flex; flex-direction: column; gap: 1px; }
+.exam-tile__stats b { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.exam-tile__stats span { font-size: 11px; color: var(--ink-3); }
+.exam-tile__stats .warn b { color: var(--st-rev); }
+.exam-tile__bar { display: flex; align-items: center; gap: 9px; margin-top: 2px; }
+.exam-tile__bar .bar { flex: 1; }
+.exam-tile__bar span { font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.exam-tile--new {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  min-height: 190px; border-style: dashed; border-color: var(--line-strong);
+  color: var(--ink-3); background: transparent; box-shadow: none;
+}
+.exam-tile--new:hover { color: var(--accent); border-color: var(--accent); transform: none; box-shadow: none; background: var(--accent-subtle); }
+.exam-tile--new .ic { width: 22px; height: 22px; }
+.exam-tile--new b { font-size: 14px; }
+.exam-tile--new span { font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="ribbon">
+  <span class="ribbon__tag"><i class="ic" data-icon="triangle-alert"></i><b>界面改版样稿</b><span>模拟数据 · 不连接真实接口</span></span>
+  <nav class="ribbon__links">
+    <a href="workbench.html">工作台</a>
+    <a class="on" href="no-exam.html">未选考试状态</a>
+    <a href="question-bank.html">题库</a>
+    <a href="review-batch.html">复核-批量</a>
+    <a href="review-single.html">复核-单份</a>
+  </nav>
+  <div class="theme-toggle">
+    <button data-set="a" class="on">风格 A 精致浅色</button>
+    <button data-set="b">风格 B 品牌感</button>
+  </div>
+</div>
+<div class="app">
+<aside class="sidebar">
+  <div class="sb-brand"><div class="brand-mark">知</div><div class="brand-text"><b>知衡</b><span>教师教学工作台</span></div></div>
+  <div class="sb-exam">
+    <button class="exam-card exam-card--empty" id="examCard" aria-expanded="false" aria-haspopup="listbox">
+      <span class="exam-card__label">当前考试</span>
+      <span class="exam-card__name">未选择考试</span>
+      <span class="exam-card__meta"><span class="chip chip--rev">需要选择</span></span>
+      <span class="exam-card__sub">选择后开始批改 · 复核 · 出分</span>
+      <span class="exam-card__chev ic" data-icon="chevron-down"></span>
+    </button>
+    <div class="exam-pop" id="examPop" hidden role="listbox" aria-label="切换考试">
+      <div class="exam-pop__search"><i class="ic" data-icon="search"></i><input placeholder="搜索考试名称"></div>
+      <div class="exam-pop__chips"><button class="fchip on">全部</button><button class="fchip">八年级上</button><button class="fchip">八年级下</button></div>
+      <div class="exam-pop__list"></div>
+      <div class="exam-pop__foot">
+        <button class="btn btn--sm"><i class="ic" data-icon="plus"></i>新建考试</button>
+        <button class="btn btn--sm btn--ghost">管理全部考试</button>
+      </div>
+    </div>
+  </div>
+  <button class="sb-search" type="button"><i class="ic" data-icon="search"></i>快速跳转<kbd>Ctrl K</kbd></button>
+  <nav class="sb-nav" aria-label="主导航">
+    <a class="sb-link" href="workbench.html"><i class="ic" data-icon="layout-dashboard"></i>工作台</a>
+    <div class="sb-group">考试与阅卷</div>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="clipboard-list"></i>考试配置</span>
+    <a class="sb-link on" href="no-exam.html"><i class="ic" data-icon="square-pen"></i>考试批改</a>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="chart-column"></i>成绩中心</span>
+    <div class="sb-group">题库与组卷</div>
+    <a class="sb-link" href="question-bank.html"><i class="ic" data-icon="library-big"></i>题库管理</a>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="layers"></i>组卷工作台</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="pen-line"></i>命题练习</span>
+    <div class="sb-group">教学分析</div>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="network"></i>知识与训练</span>
+  </nav>
+  <div class="sb-foot">
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="users"></i>学生管理</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="file-clock"></i>调用记录</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="settings"></i>设置</span>
+    <div class="sb-user"><span class="avatar">王</span><span class="sb-user__name">王老师</span><button class="sb-bell" aria-label="任务中心，2 条待处理"><i class="ic" data-icon="bell"></i><i>2</i></button></div>
+  </div>
+</aside>
+<main class="main">
+  <header class="page-header">
+    <div>
+      <div class="ph-crumb"><b>考试批改</b></div>
+      <h1 class="ph-title">选择要处理的考试</h1>
+      <p class="ph-meta">批改、复核和成绩都按考试进行；选择后进入对应工作区</p>
+    </div>
+    <div class="ph-actions">
+      <button class="btn btn--primary"><i class="ic" data-icon="plus"></i>新建考试</button>
+    </div>
+  </header>
+  <div class="page-content">
+    <div class="exam-grid stagger">
+      <a class="card exam-tile st-rev" href="review-batch.html">
+        <div class="exam-tile__top"><h3>第五周单元测验《实数》</h3><span class="chip chip--rev">待复核</span></div>
+        <div class="exam-tile__date">9 月 26 日 · 八年级上</div>
+        <div class="exam-tile__classes"><span class="chip chip--plain">八年级（3）班</span><span class="chip chip--plain">八年级（5）班</span></div>
+        <div class="exam-tile__stats"><div><b>90 / 90</b><span>已批改</span></div><div class="warn"><b>12</b><span>待复核</span></div><div><b>65.2</b><span>当前均分</span></div></div>
+        <div class="exam-tile__bar"><span class="bar bar--done"><i style="width:100%"></i></span><span>100%</span></div>
+      </a>
+      <a class="card exam-tile st-done" href="review-batch.html">
+        <div class="exam-tile__top"><h3>第三章勾股定理测验</h3><span class="chip chip--done">批改完成</span></div>
+        <div class="exam-tile__date">9 月 19 日 · 八年级上</div>
+        <div class="exam-tile__classes"><span class="chip chip--plain">八年级（3）班</span><span class="chip chip--plain">八年级（5）班</span></div>
+        <div class="exam-tile__stats"><div><b>88 / 88</b><span>已批改</span></div><div><b>0</b><span>待复核</span></div><div><b>71.5</b><span>当前均分</span></div></div>
+        <div class="exam-tile__bar"><span class="bar bar--done"><i style="width:100%"></i></span><span>100%</span></div>
+      </a>
+      <a class="card exam-tile st-done" href="review-batch.html">
+        <div class="exam-tile__top"><h3>九月月考</h3><span class="chip chip--done">批改完成</span></div>
+        <div class="exam-tile__date">9 月 12 日 · 八年级上</div>
+        <div class="exam-tile__classes"><span class="chip chip--plain">八年级（3）班</span><span class="chip chip--plain">八年级（5）班</span></div>
+        <div class="exam-tile__stats"><div><b>87 / 87</b><span>已批改</span></div><div><b>0</b><span>待复核</span></div><div><b>68.4</b><span>当前均分</span></div></div>
+        <div class="exam-tile__bar"><span class="bar bar--done"><i style="width:100%"></i></span><span>100%</span></div>
+      </a>
+      <a class="card exam-tile st-run" href="review-batch.html">
+        <div class="exam-tile__top"><h3>期中复习模拟卷</h3><span class="chip chip--run">批改中</span></div>
+        <div class="exam-tile__date">9 月 8 日 · 八年级上</div>
+        <div class="exam-tile__classes"><span class="chip chip--plain">八年级（3）班</span><span class="chip chip--plain">八年级（5）班</span></div>
+        <div class="exam-tile__stats"><div><b>30 / 89</b><span>已批改</span></div><div><b>—</b><span>待复核</span></div><div><b>—</b><span>当前均分</span></div></div>
+        <div class="exam-tile__bar"><span class="bar bar--run"><i style="width:34%"></i></span><span>34%</span></div>
+      </a>
+      <a class="card exam-tile st-run" href="review-batch.html">
+        <div class="exam-tile__top"><h3>第二章实数强化练习</h3><span class="chip chip--run">批改中</span></div>
+        <div class="exam-tile__date">9 月 5 日 · 八年级上</div>
+        <div class="exam-tile__classes"><span class="chip chip--plain">八年级（3）班</span></div>
+        <div class="exam-tile__stats"><div><b>55 / 89</b><span>已批改</span></div><div><b>—</b><span>待复核</span></div><div><b>—</b><span>当前均分</span></div></div>
+        <div class="exam-tile__bar"><span class="bar bar--run"><i style="width:62%"></i></span><span>62%</span></div>
+      </a>
+      <a class="card exam-tile st-done" href="review-batch.html">
+        <div class="exam-tile__top"><h3>八下预习摸底测验</h3><span class="chip chip--done">批改完成</span></div>
+        <div class="exam-tile__date">9 月 2 日 · 八年级下</div>
+        <div class="exam-tile__classes"><span class="chip chip--plain">八年级（5）班</span></div>
+        <div class="exam-tile__stats"><div><b>45 / 45</b><span>已批改</span></div><div><b>0</b><span>待复核</span></div><div><b>63.8</b><span>当前均分</span></div></div>
+        <div class="exam-tile__bar"><span class="bar bar--done"><i style="width:100%"></i></span><span>100%</span></div>
+      </a>
+      <a class="card exam-tile exam-tile--new" href="#">
+        <i class="ic" data-icon="plus"></i><b>新建考试</b><span>创建试卷配置并上传答卷</span>
+      </a>
+    </div>
+  </div>
+</main>
+</div>
+<script src="proto.js"></script>
+</body>
+</html>

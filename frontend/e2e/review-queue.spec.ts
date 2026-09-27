@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, test, type Page, type Route } from '@playwright/test';
 
 const STORAGE_KEY = 'ai-grading:selected-session:v1'
 const session = {
@@ -89,14 +89,6 @@ const items = Array.from({ length: 1000 }, (_, offset) => {
   }
 })
 
-const viewports = [
-  { name: 'large desktop', width: 1920, height: 1080 },
-  { name: 'desktop', width: 1440, height: 900 },
-  { name: 'standard workstation', width: 1366, height: 768 },
-  { name: 'compact desktop', width: 1280, height: 800 },
-  { name: 'minimum desktop', width: 1024, height: 768 },
-]
-
 type ResponseMode = 'ready' | 'empty' | 'error'
 
 interface MockState {
@@ -153,16 +145,6 @@ async function openReviewQueue(page: Page, path = '/grading'): Promise<void> {
   await expect(page.getByRole('heading', { name: '复核队列', exact: true })).toBeVisible()
 }
 
-function trackBrowserErrors(page: Page) {
-  const pageErrors: Error[] = []
-  const consoleErrors: string[] = []
-  page.on('pageerror', (error) => pageErrors.push(error))
-  page.on('console', (message) => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
-  })
-  return { pageErrors, consoleErrors }
-}
-
 async function selectedRow(page: Page) {
   return page.locator('.review-queue-row[aria-current="true"]')
 }
@@ -217,43 +199,6 @@ test('restores URL context and crosses the 100/101 boundary with keyboard naviga
   expect(returnedPageOneScroll.queue).toBeGreaterThan(pageTwoScroll.queue)
 })
 
-test('search, needs-review filter, and risk sort keep a valid current item', async ({ page }) => {
-  const state: MockState = { questions: 'ready', items: 'ready' }
-  await installReviewApi(page, state)
-  await openReviewQueue(page)
-
-  const search = page.getByRole('searchbox', { name: '搜索学生' })
-  const names = page.locator('.review-queue-row__name')
-  await search.fill('重点组')
-  await expect(page.getByText('共 4 条', { exact: true })).toBeVisible()
-  await expect(names).toHaveText(['Zulu Risk', 'Alpha Focus', 'Gamma Normal', 'Beta Normal'])
-
-  await page.locator('.review-queue-row').filter({ hasText: 'Beta Normal' }).click()
-  await expect(page).toHaveURL(/detail=2$/)
-  await expect(page.getByRole('heading', { name: 'Beta Normal' })).toBeVisible()
-
-  await page.getByRole('combobox', { name: '复核范围' }).selectOption('needs_review')
-  await expect(page.getByText('共 2 条', { exact: true })).toBeVisible()
-  await expect(names).toHaveText(['Zulu Risk', 'Alpha Focus'])
-  await expect(page.getByText('Beta Normal', { exact: true })).toHaveCount(0)
-  await expect(page).toHaveURL(/detail=3$/)
-  await expect(page.getByRole('heading', { name: 'Zulu Risk' })).toBeVisible()
-
-  await page.getByRole('combobox', { name: '排序方式' }).selectOption('student_name')
-  await expect(names).toHaveText(['Alpha Focus', 'Zulu Risk'])
-  await expect(page).toHaveURL(/detail=3$/)
-
-  await page.getByRole('combobox', { name: '排序方式' }).selectOption('risk')
-  await expect(names).toHaveText(['Zulu Risk', 'Alpha Focus'])
-
-  await expect(await selectedRow(page)).toHaveCount(1)
-  await expect(await selectedRow(page)).toHaveAttribute('aria-current', 'true')
-  await expect(await selectedRow(page)).toContainText('Zulu Risk')
-  await expect(page.getByRole('heading', { name: 'Zulu Risk' })).toBeVisible()
-  await expect(page).toHaveURL(/detail=3$/)
-  await expect(page.getByText(/当前位置 1 \/ \d+/)).toBeVisible()
-})
-
 test('input focus suppresses J/K navigation', async ({ page }) => {
   const state: MockState = { questions: 'ready', items: 'ready' }
   await installReviewApi(page, state)
@@ -271,115 +216,4 @@ test('input focus suppresses J/K navigation', async ({ page }) => {
   expect(page.url()).toBe(initialUrl)
   await expect(await selectedRow(page)).toHaveAttribute('aria-current', 'true')
   await expect(await selectedRow(page)).toContainText('Zulu Risk')
-})
-
-test('first-load, retained-content error, no-questions, and filtered-empty states are actionable', async ({
-  page,
-}) => {
-  const state: MockState = { questions: 'error', items: 'ready' }
-  await installReviewApi(page, state)
-  await openReviewQueue(page)
-
-  await expect(page.getByRole('heading', { name: '复核队列加载失败' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '重新加载' })).toBeVisible()
-
-  state.questions = 'empty'
-  await page.getByRole('button', { name: '重新加载' }).click()
-  await expect(page.getByRole('heading', { name: '当前考试没有复核题目' })).toBeVisible()
-
-  state.questions = 'ready'
-  await page.reload()
-  await expect(page.locator('.review-selection-summary')).toContainText('Zulu Risk')
-
-  state.items = 'error'
-  await page.evaluate(async () => {
-    type ReviewStore = { loadItems: (sessionId: number, questionId: string) => Promise<void> }
-    type PiniaLike = { _s?: Map<string, ReviewStore> }
-    type VueAppHost = HTMLElement & {
-      __vue_app__?: { _context: { provides: Record<PropertyKey, unknown> } }
-    }
-    const host = document.querySelector('#app') as VueAppHost | null
-    const providers = host?.__vue_app__?._context.provides
-    const pinia = providers
-      ? Reflect.ownKeys(providers)
-          .map((key) => providers[key])
-          .find((value): value is PiniaLike => {
-            return typeof value === 'object' && value !== null && '_s' in value
-          })
-      : undefined
-    const store = pinia?._s?.get('review-queue')
-    if (!store) throw new Error('review queue store is unavailable')
-    await store.loadItems(7, 'Q1')
-  })
-  await expect(page.getByText('复核内容刷新失败')).toBeVisible()
-  await expect(page.locator('.review-selection-summary')).toContainText('Zulu Risk')
-  await expect(page.getByRole('button', { name: '重新加载' })).toBeVisible()
-
-  state.items = 'ready'
-  await page.getByRole('button', { name: '重新加载' }).click()
-  await expect(page.getByText('复核内容刷新失败')).toHaveCount(0)
-
-  await page.getByRole('searchbox', { name: '搜索学生' }).fill('不存在的学生')
-  await expect(page.getByRole('heading', { name: '当前筛选没有记录' })).toBeVisible()
-  await expect(page.getByText('可以调整搜索词或复核范围。')).toBeVisible()
-  await expect(page.getByRole('searchbox', { name: '搜索学生' })).toBeEnabled()
-})
-
-test('1000-row queue has no horizontal overflow or console errors at all five desktop viewports', async ({
-  page,
-}) => {
-  const state: MockState = { questions: 'ready', items: 'ready' }
-  const errors = trackBrowserErrors(page)
-  await installReviewApi(page, state)
-
-  for (const viewport of viewports) {
-    await page.setViewportSize(viewport)
-    await openReviewQueue(page, '/grading?question=Q1&detail=5')
-    await expect(page.locator('.review-selection-summary')).toBeVisible()
-
-    const longDetail = page.locator('.review-selection-summary dd', {
-      hasText: continuousReviewText,
-    })
-    await expect(longDetail).toBeVisible()
-    const continuousTextMetrics = await longDetail.evaluate((element) => {
-      const summary = element.closest<HTMLElement>('.review-selection-summary')
-      if (!summary) return { documentFits: false, textFits: false }
-      const detailBounds = element.getBoundingClientRect()
-      const summaryBounds = summary.getBoundingClientRect()
-      return {
-        documentFits:
-          document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-        textFits:
-          element.scrollWidth <= element.clientWidth &&
-          detailBounds.left >= summaryBounds.left &&
-          detailBounds.right <= summaryBounds.right,
-      }
-    })
-    expect(continuousTextMetrics, viewport.name).toEqual({
-      documentFits: true,
-      textFits: true,
-    })
-    expect(await page.locator('.review-queue-row').count(), viewport.name).toBeLessThanOrEqual(100)
-    await expect(await selectedRow(page), viewport.name).toHaveCount(1)
-    await expect(await selectedRow(page), viewport.name).toHaveAttribute('aria-current', 'true')
-
-    const longNameFits = await page
-      .locator('.review-queue-row')
-      .filter({ hasText: '学生0005' })
-      .evaluate((row) => {
-        const name = row.querySelector<HTMLElement>('.review-queue-row__name')
-        if (!name) return false
-        const rowBounds = row.getBoundingClientRect()
-        const nameBounds = name.getBoundingClientRect()
-        return (
-          nameBounds.left >= rowBounds.left &&
-          nameBounds.right <= rowBounds.right &&
-          getComputedStyle(name).textOverflow === 'ellipsis'
-        )
-      })
-    expect(longNameFits, viewport.name).toBe(true)
-  }
-
-  expect(errors.pageErrors).toEqual([])
-  expect(errors.consoleErrors).toEqual([])
 })

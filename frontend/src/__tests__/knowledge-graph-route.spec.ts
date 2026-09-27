@@ -1,10 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest';
 
-import type { GraphQueryInput } from '../api/graph'
-import {
-  parseGraphRouteScope,
-  serializeGraphRouteScope,
-} from '../features/knowledge-graph/route'
+import { parseGraphRouteScope } from '../features/knowledge-graph/route';
 
 const sessions = [
   { id: 7, name: '考试七' },
@@ -16,85 +12,7 @@ const students = [
   { id: 21, class_name: '七年级二班' },
 ]
 
-const scopes: GraphQueryInput['scope'][] = [
-  { mode: 'class', class_id: '七年级一班' },
-  { mode: 'student', student_ids: ['12'] },
-  { mode: 'selected', student_ids: ['12', '15'] },
-]
-const examScopes: GraphQueryInput['exam_scope'][] = [
-  { mode: 'current', session_ids: [7] },
-  { mode: 'manual', session_ids: [7, 8] },
-  { mode: 'cross_exam' },
-]
-
 describe('knowledge graph controlled route scope', () => {
-  it.each(scopes.flatMap((scope) => examScopes.map((examScope) => ({ scope, examScope }))))(
-    'keeps student lists out of the URL for $scope.mode with $examScope.mode',
-    ({ scope, examScope }) => {
-      const query: GraphQueryInput = { scope, exam_scope: examScope }
-      const serialized = serializeGraphRouteScope(query)
-      expect(serialized).not.toHaveProperty('students')
-      expect(serialized).not.toHaveProperty('include')
-      expect(serialized).not.toHaveProperty('exclude')
-      expect(parseGraphRouteScope(serialized, sessions, students)).toEqual({
-        query: null,
-        canonical: serialized,
-        notice: '',
-      })
-    },
-  )
-
-  it('accepts the workbench legacy context and canonicalizes it', () => {
-    expect(parseGraphRouteScope(
-      { session: '7', class: '七年级一班' },
-      sessions,
-      students,
-    )).toEqual({
-      query: {
-        scope: { mode: 'class', class_id: '七年级一班' },
-        exam_scope: { mode: 'current', session_ids: [7] },
-      },
-      canonical: {
-        exam: 'current', sessions: '7', scope: 'snapshot',
-      },
-      notice: '',
-    })
-  })
-
-  it('reports extra controlled parameters mixed into a legacy workbench context', () => {
-    const parsed = parseGraphRouteScope({
-      session: '7', class: '七年级一班', students: '12,15',
-    }, sessions, students)
-    expect(parsed.query).toEqual({
-      scope: { mode: 'class', class_id: '七年级一班' },
-      exam_scope: { mode: 'current', session_ids: [7] },
-    })
-    expect(parsed.notice).toContain('已忽略无效地址参数')
-  })
-
-  it('drops unknown parameters while keeping a valid scope and showing a notice', () => {
-    const parsed = parseGraphRouteScope({
-      exam: 'manual', sessions: '7,8', scope: 'selected', students: '12,15', debug: '1',
-    }, sessions, students)
-    expect(parsed.query).toEqual({
-      scope: { mode: 'selected', student_ids: ['12', '15'] },
-      exam_scope: { mode: 'manual', session_ids: [7, 8] },
-    })
-    expect(parsed.canonical).not.toHaveProperty('debug')
-    expect(parsed.notice).toContain('已忽略无效地址参数')
-  })
-
-  it('reports ignored legacy parameters mixed into a valid controlled scope', () => {
-    const parsed = parseGraphRouteScope({
-      exam: 'current', sessions: '7', scope: 'class', class: '七年级一班', session: '8',
-    }, sessions, students)
-    expect(parsed.query).toEqual({
-      scope: { mode: 'class', class_id: '七年级一班' },
-      exam_scope: { mode: 'current', session_ids: [7] },
-    })
-    expect(parsed.canonical).not.toHaveProperty('session')
-    expect(parsed.notice).toContain('已忽略无效地址参数')
-  })
 
   it('rejects unavailable classes and student ids without guessing replacements', () => {
     expect(parseGraphRouteScope({

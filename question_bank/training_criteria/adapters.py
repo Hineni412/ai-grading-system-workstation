@@ -14,7 +14,6 @@ from backend.llm.policy import policy_from_profile
 from question_bank.database.schema import connect
 from question_bank.models.tag_schema import (
     DIFFICULTY_SCALE_GUIDANCE,
-    PREDICTED_PATTERN_MAX,
     TagAnalysis,
     TaggingContext,
     predicted_pattern_categories,
@@ -827,11 +826,13 @@ def _combined_prompt(
         "解答题的 special_type 子类（画图/计算/证明）按题目要求学生产出的形式"
         "重新判定，不因题干出现“求证”等字样就标“证明”；并判断是否属于"
         "“综合与实践”考法。"
-        f"tag_analysis.predicted_error_patterns 预测本题 0–{PREDICTED_PATTERN_MAX} "
-        "种最可能的具体错法：category 只能取 7 个错误大类之一"
+        "tag_analysis.predicted_error_patterns：选择题必须逐一分析题干真实出现的每个"
+        "错误选项，每个错误选项各写一条 option 触发，正确选项不写；非选择题预测"
+        "0–3 种最可能的具体错法。category 只能取 7 个错误大类之一"
         f"（{'、'.join(predicted_pattern_categories())}）；"
         "pattern 是本题具体错法名（如“64 的平方根只写 8”），不写“运算错误”"
-        "这类泛词；trigger_kind 只能取 option、wrong_answer、step、observation，"
+        "这类泛词；explanation 用一句话说明选项或做法为何可能出错，不能当作"
+        "学生真实心理过程或人数；trigger_kind 只能取 option、wrong_answer、step、observation，"
         "trigger_value 对应填选项字母、错误答案、出错判定点的 evidence_point_id "
         "或空串（observation 时留空）。拿不准就留空，不要硬凑。"
         f"tag_analysis.part_features 逐小问评估难度特征：part_id 必须与 "

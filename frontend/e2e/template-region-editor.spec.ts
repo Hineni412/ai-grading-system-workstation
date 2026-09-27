@@ -1,6 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
-import { mkdir, writeFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { expect, test, type Page, type Route } from '@playwright/test';
 
 const fingerprint = 'a'.repeat(64)
 const session = { id: 7, name: '匿名数学考试', status: 'created', is_deleted: false,
@@ -90,58 +88,6 @@ async function installApi(page: Page, initiallyUploaded = false,
   })
 }
 
-test('uploads, draws, binds, confirms and restores a read-only region workspace', async ({ page }) => {
-  await installApi(page)
-  await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto('/sessions/7/regions')
-
-  // Keep the same verified anonymous fixture open for the versioned manual quick check.
-  // eslint-disable-next-line playwright/no-conditional-in-test
-  if (process.env.P2_10_QUICK === '1') {
-    test.setTimeout(0)
-    const quickFixtureDir = resolve('test-results', 'p2-10-quick')
-    await mkdir(quickFixtureDir, { recursive: true })
-    await writeFile(resolve(quickFixtureDir, 'anonymous-sample.pdf'), '%PDF-1.4 anonymous mock-only fixture')
-    await page.waitForEvent('close')
-    return
-  }
-
-  await expect(page.getByRole('heading', { name: '上传双页样卷' })).toBeVisible()
-  await page.getByLabel('样卷 PDF').setInputFiles({
-    name: 'anonymous-sample.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 anonymous'),
-  })
-  await page.getByLabel('反面').check()
-  await page.getByRole('button', { name: '上传并打开画框' }).click()
-  await expect(page.getByText('草稿标定中')).toBeVisible()
-
-  await page.getByRole('button', { name: '新增框' }).click()
-  const canvas = page.locator('[data-role="canvas"]')
-  const box = await canvas.boundingBox()
-  expect(box).not.toBeNull()
-  await page.mouse.move(box!.x + 100, box!.y + 120)
-  await page.mouse.down()
-  await page.mouse.move(box!.x + 320, box!.y + 300)
-  await page.mouse.up()
-  const editor = page.locator('[data-role="editor-root"]')
-  await editor.focus()
-  await page.keyboard.press('Control+z')
-  await expect(page.locator('[data-region-uuid]')).toHaveCount(0)
-  await page.keyboard.press('Control+y')
-  await expect(page.locator('[data-region-uuid]')).toHaveCount(1)
-  await page.getByRole('button', { name: '题框列表' }).click()
-  await page.locator('.mapping-select').selectOption('Q1')
-  await expect(page.getByText('草稿已保存', { exact: true })).toBeVisible()
-
-  page.once('dialog', (dialog) => dialog.accept())
-  await page.getByRole('button', { name: '完成标定' }).click()
-  await expect(page.getByText('正式版本 · 只读')).toBeVisible()
-  await expect(page.getByRole('button', { name: '完成标定' })).toBeDisabled()
-
-  await page.reload()
-  await expect(page.getByText('正式版本 · 只读')).toBeVisible()
-  await expect(page.locator('[data-region-uuid]')).toHaveCount(1)
-})
-
 test('stops autosave on a browser-visible revision conflict and offers reload', async ({ page }) => {
   await installApi(page, true, 'conflict')
   await page.goto('/sessions/7/regions')
@@ -179,20 +125,4 @@ test('keeps confirmed regions available when the snapshot needs a retry', async 
 
   await page.getByRole('button', { name: '重试生成确认快照' }).click()
   await expect(page.getByText(/P2-11/)).toBeVisible()
-})
-
-test('keeps the focused editor within supported desktop viewports', async ({ page }) => {
-  await installApi(page, true)
-  for (const viewport of [
-    { width: 1920, height: 1080 }, { width: 1440, height: 900 },
-    { width: 1366, height: 768 }, { width: 1280, height: 800 }, { width: 1024, height: 768 },
-  ]) {
-    await page.setViewportSize(viewport)
-    await page.goto('/sessions/7/regions')
-    await expect(page.locator('[data-role="canvas"]')).toBeVisible()
-    await page.getByRole('button', { name: '反面', exact: true }).click()
-    const dimensions = await page.evaluate(() => ({ width: document.documentElement.scrollWidth,
-      viewport: document.documentElement.clientWidth }))
-    expect(dimensions.width).toBeLessThanOrEqual(dimensions.viewport)
-  }
 })

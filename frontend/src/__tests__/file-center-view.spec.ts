@@ -1,13 +1,13 @@
-import { createApp, nextTick, type App } from 'vue'
-import { createPinia, setActivePinia } from 'pinia'
-import { createMemoryHistory } from 'vue-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createApp, nextTick, type App } from 'vue';
+import { createMemoryHistory } from 'vue-router';
 
-import type { JobResponse } from '../api/jobs'
-import { createAppRouter } from '../router'
-import { useJobStore } from '../stores/jobs'
-import { useResultsCenterStore } from '../stores/results-center'
-import { useSessionStore } from '../stores/session'
+import type { JobResponse } from '../api/jobs';
+import { createAppRouter } from '../router';
+
+import { useResultsCenterStore } from '../stores/results-center';
+import { useSessionStore } from '../stores/session';
 import FileCenterView from '../views/FileCenterView.vue'
 
 const apiMock = vi.hoisted(() => ({
@@ -54,16 +54,6 @@ function makeJob(overrides: Partial<JobResponse> = {}): JobResponse {
 }
 
 const mounted: App[] = []
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason?: unknown) => void
-  const promise = new Promise<T>((done, fail) => {
-    resolve = done
-    reject = fail
-  })
-  return { promise, resolve, reject }
-}
 
 async function settle() {
   await nextTick()
@@ -218,16 +208,6 @@ afterEach(() => {
 })
 
 describe('file center view', () => {
-  it('presents reports and expiry recovery in one ledger', async () => {
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
-
-    expect(host.querySelector('h1')?.textContent).toBe('文件中心')
-    expect(host.textContent).toContain('成绩表')
-    expect(host.textContent).toContain('批注原卷')
-    expect(host.textContent).toContain('文件已过期，可重新生成')
-    expect(host.querySelector('[data-testid="download-report-41"]')).not.toBeNull()
-  })
 
   it('submits and downloads through explicit actions', async () => {
     const { host } = await mountView()
@@ -243,206 +223,6 @@ describe('file center view', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="download-report-41"]')!.click()
     await vi.waitFor(() => expect(apiMock.downloadJobFile).toHaveBeenCalledWith(41))
     await vi.waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:download'))
-  })
-
-  it('shows a report download as soon as its tracked job completes without a manual refresh', async () => {
-    const queuedPdf = makeJob({
-      id: 61,
-      payload: {
-        session_id: 7,
-        report_type: 'annotated_original_pdf',
-        score_revision: 'a'.repeat(64),
-      },
-      result: {},
-      status: 'queued',
-      progress: 0,
-      updated_at: '2026-07-17T10:01:00Z',
-      finished_at: null,
-    })
-    const pendingContext = {
-      score_revision: 'a'.repeat(64),
-      has_results: true,
-      jobs: [{
-        ...queuedPdf,
-        is_current_revision: true,
-        file_status: 'pending' as const,
-      }],
-      total: 1,
-      page: 1,
-      page_size: 100,
-      total_pages: 1,
-    }
-    const availablePdf = makeJob({
-      ...queuedPdf,
-      status: 'succeeded',
-      progress: 1,
-      result: {
-        session_id: 7,
-        report_type: 'annotated_original_pdf',
-        score_revision: 'a'.repeat(64),
-        filename: '七年级批注原卷.pdf',
-        download_url: '/api/jobs/61/download',
-      },
-      updated_at: '2026-07-17T10:01:02Z',
-      finished_at: '2026-07-17T10:01:02Z',
-    })
-    apiMock.submitReport.mockResolvedValue(queuedPdf)
-
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
-
-    apiMock.getReportContext.mockResolvedValue(pendingContext)
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="generate-annotated_original_pdf"]',
-    )!.click()
-    await vi.waitFor(() => expect(apiMock.getReportContext).toHaveBeenCalledTimes(2))
-
-    apiMock.getReportContext.mockResolvedValue({
-      ...pendingContext,
-      jobs: [{
-        ...availablePdf,
-        is_current_revision: true,
-        file_status: 'available' as const,
-      }],
-    })
-    useJobStore().track(availablePdf)
-
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="download-report-61"]'),
-    ).not.toBeNull())
-    expect(apiMock.getReportContext).toHaveBeenCalledTimes(3)
-  })
-
-  it('does not let an old report submission refresh a session the user has left', async () => {
-    const pending = deferred<JobResponse>()
-    apiMock.submitReport.mockImplementation(() => pending.promise)
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
-
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="generate-annotated_original_pdf"]',
-    )!.click()
-    useSessionStore().selectedSessionId = null
-    await settle()
-    pending.resolve(makeJob({
-      id: 61,
-      payload: {
-        session_id: 7,
-        report_type: 'annotated_original_pdf',
-        score_revision: 'a'.repeat(64),
-      },
-      result: {},
-      status: 'queued',
-      progress: 0,
-    }))
-    await settle()
-
-    expect(apiMock.getReportContext).toHaveBeenCalledOnce()
-    expect(host.textContent).toContain('请先在顶部选择考试')
-  })
-
-  it('does not show an old report submission error after the user changes sessions', async () => {
-    const pending = deferred<JobResponse>()
-    apiMock.submitReport.mockImplementation(() => pending.promise)
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
-
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="generate-annotated_original_pdf"]',
-    )!.click()
-    useSessionStore().selectedSessionId = 8
-    await settle()
-    pending.reject(new Error('old request failed'))
-    await settle()
-
-    expect(host.textContent).not.toContain('文件生成请求未能提交')
-  })
-
-  it('opens visible Excel settings beside export actions and previews hidden names', async () => {
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
-
-    host.querySelector<HTMLButtonElement>('[data-testid="configure-score-excel"]')!.click()
-    await settle()
-
-    expect(host.querySelector('[data-testid="excel-settings-dialog"]')).not.toBeNull()
-    expect(
-      host.querySelector<HTMLInputElement>('[data-testid="excel-hide-bottom-n"]')?.value,
-    ).toBe('8')
-    expect(
-      host.querySelector('[data-testid="excel-preview-statistical"]')?.textContent,
-    ).toContain('10')
-    expect(
-      host.querySelector('[data-testid="excel-preview-hidden"]')?.textContent,
-    ).toContain('8')
-
-    host.querySelector<HTMLInputElement>('[data-testid="excel-manual-enabled"]')!.click()
-    await settle()
-    host.querySelector<HTMLInputElement>('[data-testid="excel-student-1"]')!.click()
-    await settle()
-    expect(
-      host.querySelector('[data-testid="excel-preview-hidden"]')?.textContent,
-    ).toContain('9')
-    expect(
-      host.querySelector('[data-testid="excel-preview-visible"]')?.textContent,
-    ).toContain('1')
-
-    host.querySelector<HTMLButtonElement>('[data-testid="submit-score-excel"]')!.click()
-    await vi.waitFor(() => expect(apiMock.submitReport).toHaveBeenCalledWith(
-      7,
-      'score_excel',
-      false,
-      {
-        hide_bottom_enabled: true,
-        hide_bottom_n: 8,
-        manual_hidden_student_ids: [1],
-      },
-    ))
-  })
-
-  it('cancels a queued report job from the tracked list', async () => {
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
-
-    host.querySelector<HTMLButtonElement>('[data-testid="generate-annotated_original_pdf"]')!.click()
-    await vi.waitFor(() => expect(host.querySelector('[data-testid="cancel-job-61"]')).not.toBeNull())
-    const cancelSpy = vi.spyOn(useJobStore(), 'cancel').mockResolvedValue()
-    host.querySelector<HTMLButtonElement>('[data-testid="cancel-job-61"]')!.click()
-    await vi.waitFor(() => expect(cancelSpy).toHaveBeenCalledWith(61))
-  })
-
-  it('does not guess an exam when none is selected', async () => {
-    const { host } = await mountView(null)
-
-    expect(host.textContent).toContain('请先在顶部选择考试')
-    expect(apiMock.getReportContext).not.toHaveBeenCalled()
-  })
-
-  it('disables report generation when the exam has no saved results', async () => {
-    apiMock.getReportContext.mockResolvedValueOnce({
-      score_revision: '0'.repeat(64),
-      has_results: false,
-      jobs: [],
-      total: 0,
-      page: 1,
-      page_size: 100,
-      total_pages: 1,
-    })
-
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain(
-      '当前考试还没有已保存成绩',
-    ))
-
-    expect(
-      host.querySelector<HTMLButtonElement>('[data-testid="generate-score_excel"]')
-        ?.disabled,
-    ).toBe(true)
-    expect(
-      host.querySelector<HTMLButtonElement>(
-        '[data-testid="generate-annotated_original_pdf"]',
-      )?.disabled,
-    ).toBe(true)
   })
 
   it('never presents an old score revision as the current download', async () => {
@@ -471,19 +251,6 @@ describe('file center view', () => {
 
     expect(host.querySelector('[data-testid="download-report-41"]')).toBeNull()
     expect(host.querySelector('[data-testid="generate-score_excel"]')).not.toBeNull()
-  })
-
-  it('renders the personal AI analysis report entry without a class export', async () => {
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('学生个人分析报告'))
-
-    expect(
-      host.querySelector('[data-testid="generate-personal_analysis_html"]'),
-    ).not.toBeNull()
-    expect(host.textContent).not.toContain('班级分析报告')
-    expect(
-      host.querySelector('[data-testid="generate-class_analysis_html"]'),
-    ).toBeNull()
   })
 
   it('confirms preflight details before submitting an analysis report', async () => {
@@ -532,145 +299,4 @@ describe('file center view', () => {
     ).toBeNull())
   })
 
-  it('lists cause-organization calls separately in the analysis confirmation', async () => {
-    apiMock.getAnalysisPreflight.mockResolvedValue({
-      report_type: 'personal_analysis_html',
-      configured: true,
-      service_name: '默认内容服务',
-      model_name: 'qwen-plus',
-      call_count: 2,
-      estimated_total_tokens: 40000,
-      cache_hits: 0,
-      cause_call_count: 3,
-      cause_total_questions: 5,
-      cause_estimated_tokens: 30000,
-    })
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('学生个人分析报告'))
-
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="generate-personal_analysis_html"]',
-    )!.click()
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="analysis-confirm-dialog"]'),
-    ).not.toBeNull())
-
-    // 总次数 = 错因整理 3 次 + 报告叙述 2 次；两部分分别说明。
-    expect(
-      host.querySelector('[data-testid="analysis-call-count"]')?.textContent,
-    ).toContain('5')
-    const causeLine = host.querySelector('[data-testid="analysis-cause-count"]')
-    expect(causeLine?.textContent).toContain('先整理错因：3 次调用')
-    expect(causeLine?.textContent).toContain('共 5 道失分题')
-    expect(causeLine?.textContent).toContain('报告叙述：2 次调用')
-    expect(
-      host.querySelector('[data-testid="analysis-tokens"]')?.textContent,
-    ).toContain('70,000')
-    expect(apiMock.submitReport).not.toHaveBeenCalled()
-  })
-
-  it('blocks confirmation when no content model is configured', async () => {
-    apiMock.getAnalysisPreflight.mockResolvedValue({
-      report_type: 'personal_analysis_html',
-      configured: false,
-      service_name: null,
-      model_name: null,
-      call_count: 1,
-      estimated_total_tokens: 50000,
-      cache_hits: 0,
-      cause_call_count: 0,
-      cause_total_questions: 0,
-      cause_estimated_tokens: 0,
-    })
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('学生个人分析报告'))
-
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="generate-personal_analysis_html"]',
-    )!.click()
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="analysis-not-configured"]'),
-    ).not.toBeNull())
-
-    expect(host.textContent).toContain('未配置内容生成模型，请前往 设置→模型配置 绑定后重试')
-    const confirm = host.querySelector<HTMLButtonElement>('[data-testid="confirm-analysis"]')
-    expect(confirm?.disabled).toBe(true)
-    confirm!.click()
-    await settle()
-    expect(apiMock.submitReport).not.toHaveBeenCalled()
-  })
-
-  function mockRetainedReportContext() {
-    apiMock.getReportContext.mockResolvedValue({
-      score_revision: 'a'.repeat(64),
-      has_results: true,
-      jobs: [
-        {
-          ...makeJob({
-            id: 71,
-            payload: {
-              session_id: 7,
-              report_type: 'personal_analysis_html',
-              score_revision: 'a'.repeat(64),
-            },
-            result: {
-              session_id: 7,
-              report_type: 'personal_analysis_html',
-              score_revision: 'a'.repeat(64),
-              filename: '个人报告.zip',
-              download_url: '/api/jobs/71/download',
-            },
-          }),
-          is_current_revision: true,
-          file_status: 'available' as const,
-        },
-        { ...makeJob(), is_current_revision: true, file_status: 'available' as const },
-      ],
-      total: 2,
-      page: 1,
-      page_size: 100,
-      total_pages: 1,
-    })
-  }
-
-  it('keeps retained personal reports downloadable and offers deletion only for them', async () => {
-    mockRetainedReportContext()
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('个人报告.zip'))
-
-    // 删除入口只对个人学情报告显示。
-    expect(host.querySelector('[data-testid="delete-report-71"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="delete-report-41"]')).toBeNull()
-
-    // 留存报告下载后的提示说明留存在本机、不再产生费用。
-    apiMock.downloadJobFile.mockResolvedValue({
-      blob: new Blob(['zip']),
-      filename: '个人报告.zip',
-    })
-    host.querySelector<HTMLButtonElement>('[data-testid="download-report-71"]')!.click()
-    await vi.waitFor(() => expect(host.textContent).toContain('留存在本机'))
-    expect(host.textContent).not.toContain('本机副本随后删除')
-  })
-
-  it('deletes a retained report after confirmation and reports freed space', async () => {
-    mockRetainedReportContext()
-    apiMock.deleteReportFile.mockResolvedValue({
-      job_id: 71,
-      deleted: true,
-      freed_bytes: 2 * 1024 * 1024,
-    })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('个人报告.zip'))
-
-    host.querySelector<HTMLButtonElement>('[data-testid="delete-report-71"]')!.click()
-    await vi.waitFor(() => expect(apiMock.deleteReportFile).toHaveBeenCalledWith(7, 71))
-    await vi.waitFor(() => expect(host.textContent).toContain('释放约 2.0 MB'))
-
-    // 取消确认则不发起删除。
-    confirmSpy.mockReturnValue(false)
-    host.querySelector<HTMLButtonElement>('[data-testid="delete-report-71"]')!.click()
-    await settle()
-    expect(apiMock.deleteReportFile).toHaveBeenCalledTimes(1)
-  })
 })

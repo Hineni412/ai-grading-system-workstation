@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="a">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>人工复核 · 单份 · 界面改版样稿</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('proto-theme')||'a'}catch(e){document.documentElement.dataset.theme='a'}</script>
+<style>
+.main { display: flex; flex-direction: column; overflow: hidden; }
+.subnav {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 6px 24px; border-bottom: 1px solid var(--line-soft); background: var(--surface);
+}
+.subnav .navbtn { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border-radius: 7px; font-size: 12.5px; color: var(--ink-2); }
+.subnav .navbtn:hover { background: var(--surface-hover); color: var(--ink-1); }
+.subnav .who { font-size: 12.5px; color: var(--ink-2); }
+.subnav .who b { color: var(--ink-1); font-weight: 600; }
+.subnav .who .cnt { font-variant-numeric: tabular-nums; color: var(--ink-3); margin-left: 6px; }
+.subnav .seg { margin-left: auto; }
+.rs { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 380px; }
+/* 画布 */
+.canvas { position: relative; background: #131b21; overflow: hidden; display: grid; place-items: center; }
+.canvas::before { content: ""; position: absolute; inset: 0; background: radial-gradient(120% 90% at 50% 30%, rgba(255,255,255,0.05), transparent 60%); }
+.canvas__img { width: min(72%, 640px); border-radius: 4px; box-shadow: 0 18px 50px -12px rgba(0,0,0,0.55); position: relative; z-index: 1; }
+.toolpill {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 2;
+  display: flex; align-items: center; gap: 2px; padding: 5px;
+  background: rgba(18, 27, 33, 0.88); border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.toolpill button {
+  display: inline-flex; align-items: center; gap: 5px; min-width: 32px; height: 30px;
+  padding: 0 9px; border-radius: 8px; font-size: 12px; color: #b8c6cc;
+  transition: background var(--d-fast) ease, color var(--d-fast) ease;
+}
+.toolpill button:hover { background: rgba(255,255,255,0.10); color: #fff; }
+.toolpill .ic { width: 15px; height: 15px; }
+.toolpill .zoom { min-width: 44px; justify-content: center; font-variant-numeric: tabular-nums; color: #e6eef0; }
+.toolpill .sep { width: 1px; height: 16px; background: rgba(255,255,255,0.14); margin: 0 3px; }
+/* 评分面板 */
+.score-panel { overflow-y: auto; min-height: 0; background: var(--bg); border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+.sp-body { flex: 1; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.sp-card { padding: 13px 14px; }
+.sp-card h4 { margin: 0 0 8px; font-size: 12px; font-weight: 650; letter-spacing: 0.04em; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
+.sp-card h4 .ic { width: 13px; height: 13px; }
+.qmeta { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; }
+.crit { margin-top: 10px; border: 1px solid var(--line-soft); border-radius: 8px; padding: 9px 11px; font-size: 12.5px; }
+.crit__t { display: flex; justify-content: space-between; font-weight: 600; }
+.crit__s { font-variant-numeric: tabular-nums; color: var(--accent-ink); font-weight: 650; }
+.crit dl { margin: 6px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; color: var(--ink-2); }
+.crit dt { color: var(--ink-3); } .crit dd { margin: 0; }
+.ai-score { display: flex; align-items: baseline; gap: 8px; }
+.ai-score b { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.ai-score span { font-size: 13px; color: var(--ink-3); }
+.ai-conf { margin-top: 8px; display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--ink-2); }
+.ai-conf .bar { flex: 1; }
+.ai-reason { margin-top: 9px; font-size: 12.5px; color: var(--ink-2); display: flex; gap: 6px; align-items: baseline; padding: 8px 10px; background: var(--bad-bg); border-radius: 7px; }
+.ai-reason .ic { width: 13px; height: 13px; color: var(--st-bad); flex: none; transform: translateY(2px); }
+.err-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.final-score { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.final-score button {
+  height: 44px; border-radius: 10px; border: 1.5px solid var(--line); font-size: 17px; font-weight: 650;
+  font-variant-numeric: tabular-nums; color: var(--ink-2); background: var(--surface);
+  transition: all var(--d-fast) var(--ease-out);
+}
+.final-score button:hover { border-color: var(--accent); color: var(--accent-ink); }
+.final-score button.on { border-color: var(--accent); background: var(--accent); color: #fff; box-shadow: 0 3px 10px -2px rgba(19, 94, 107, 0.5); }
+[data-theme="b"] .final-score button.on { background: var(--b-grad); border-color: #2fa4b3; box-shadow: 0 3px 10px -2px rgba(34, 153, 171, 0.5); }
+.sp-foot { position: sticky; bottom: 0; padding: 10px 14px 14px; background: linear-gradient(180deg, transparent, var(--bg) 30%); }
+.sp-foot .btn { width: 100%; height: 38px; font-size: 14px; }
+.sp-foot .hint { display: flex; justify-content: center; gap: 4px; margin-top: 7px; font-size: 11px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="ribbon">
+  <span class="ribbon__tag"><i class="ic" data-icon="triangle-alert"></i><b>界面改版样稿</b><span>模拟数据 · 不连接真实接口</span></span>
+  <nav class="ribbon__links">
+    <a href="workbench.html">工作台</a>
+    <a href="no-exam.html">未选考试状态</a>
+    <a href="question-bank.html">题库</a>
+    <a href="review-batch.html">复核-批量</a>
+    <a class="on" href="review-single.html">复核-单份</a>
+  </nav>
+  <div class="theme-toggle">
+    <button data-set="a" class="on">风格 A 精致浅色</button>
+    <button data-set="b">风格 B 品牌感</button>
+  </div>
+</div>
+<div class="app">
+<aside class="sidebar">
+  <div class="sb-brand"><div class="brand-mark">知</div><div class="brand-text"><b>知衡</b><span>教师教学工作台</span></div></div>
+  <div class="sb-exam">
+    <button class="exam-card" id="examCard" aria-expanded="false" aria-haspopup="listbox">
+      <span class="exam-card__label">当前考试</span>
+      <span class="exam-card__name">第五周单元测验《实数》</span>
+      <span class="exam-card__meta"><span class="chip chip--rev">待复核 12</span></span>
+      <span class="exam-card__bar"><i style="width:100%"></i></span>
+      <span class="exam-card__sub">八年级上 · 90 份答卷</span>
+      <span class="exam-card__chev ic" data-icon="chevron-down"></span>
+    </button>
+    <div class="exam-pop" id="examPop" hidden role="listbox" aria-label="切换考试">
+      <div class="exam-pop__search"><i class="ic" data-icon="search"></i><input placeholder="搜索考试名称"></div>
+      <div class="exam-pop__chips"><button class="fchip on">全部</button><button class="fchip">八年级上</button><button class="fchip">八年级下</button></div>
+      <div class="exam-pop__list"></div>
+      <div class="exam-pop__foot">
+        <button class="btn btn--sm"><i class="ic" data-icon="plus"></i>新建考试</button>
+        <button class="btn btn--sm btn--ghost">管理全部考试</button>
+      </div>
+    </div>
+  </div>
+  <button class="sb-search" type="button"><i class="ic" data-icon="search"></i>快速跳转<kbd>Ctrl K</kbd></button>
+  <nav class="sb-nav" aria-label="主导航">
+    <a class="sb-link" href="workbench.html"><i class="ic" data-icon="layout-dashboard"></i>工作台</a>
+    <div class="sb-group">考试与阅卷</div>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="clipboard-list"></i>考试配置</span>
+    <a class="sb-link on" href="review-batch.html"><i class="ic" data-icon="square-pen"></i>考试批改</a>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="chart-column"></i>成绩中心</span>
+    <div class="sb-group">题库与组卷</div>
+    <a class="sb-link" href="question-bank.html"><i class="ic" data-icon="library-big"></i>题库管理</a>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="layers"></i>组卷工作台</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="pen-line"></i>命题练习</span>
+    <div class="sb-group">教学分析</div>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="network"></i>知识与训练</span>
+  </nav>
+  <div class="sb-foot">
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="users"></i>学生管理</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="file-clock"></i>调用记录</span>
+    <span class="sb-link is-disabled" aria-disabled="true"><i class="ic" data-icon="settings"></i>设置</span>
+    <div class="sb-user"><span class="avatar">王</span><span class="sb-user__name">王老师</span><button class="sb-bell" aria-label="任务中心，2 条待处理"><i class="ic" data-icon="bell"></i><i>2</i></button></div>
+  </div>
+</aside>
+<main class="main">
+  <header class="page-header">
+    <div>
+      <div class="ph-crumb"><b>考试批改</b><i class="ic" data-icon="chevron-right"></i><span>第五周单元测验《实数》</span></div>
+      <h1 class="ph-title">人工复核</h1>
+      <p class="ph-meta">单份深查 · 返回后保留批量进度</p>
+    </div>
+    <div class="ph-actions">
+      <div class="seg"><a href="review-batch.html">批量</a><a class="on" href="review-single.html">单份</a></div>
+      <button class="btn"><i class="ic" data-icon="circle-play"></i>批改执行</button>
+    </div>
+  </header>
+  <div class="subnav">
+    <button class="navbtn"><i class="ic" data-icon="chevron-left"></i>上一份</button>
+    <span class="who"><b id="stuName">林晓雨</b> · 八年级（3）班<span class="cnt" id="stuCnt">12 / 88</span></span>
+    <button class="navbtn">下一份<i class="ic" data-icon="chevron-right"></i></button>
+    <div class="seg">
+      <button class="on">裁剪证据</button><button>原卷正面</button><button>原卷反面</button><button>标注</button><button>对比</button>
+    </div>
+  </div>
+  <div class="rs">
+    <div class="canvas">
+      <div class="canvas__img" id="scanBox"></div>
+      <div class="toolpill">
+        <button title="适应宽度"><i class="ic" data-icon="frame"></i>适应宽度</button>
+        <button title="原始比例"><i class="ic" data-icon="scan"></i>1:1</button>
+        <span class="sep"></span>
+        <button title="缩小"><i class="ic" data-icon="minus"></i></button>
+        <button class="zoom" title="缩放比例">100%</button>
+        <button title="放大"><i class="ic" data-icon="plus"></i></button>
+        <span class="sep"></span>
+        <button title="向左旋转"><i class="ic" data-icon="rotate-ccw"></i></button>
+        <button title="向右旋转"><i class="ic" data-icon="rotate-cw"></i></button>
+        <span class="sep"></span>
+        <button title="弹窗放大"><i class="ic" data-icon="maximize-2"></i></button>
+      </div>
+    </div>
+    <aside class="score-panel">
+      <div class="sp-body">
+        <div class="card sp-card">
+          <h4><i class="ic" data-icon="list-checks"></i>评分标准</h4>
+          <div class="qmeta"><span>Q1 · 3 分</span><span class="chip chip--plain" style="height:18px;font-size:10.5px">选择题</span><span class="chip chip--done" style="height:18px;font-size:10.5px">标准答案 C</span></div>
+          <div class="crit">
+            <div class="crit__t"><span>选择正确的选项</span><span class="crit__s">3 分</span></div>
+            <dl><dt>标准答案</dt><dd>C</dd><dt>等价答案</dt><dd>C</dd><dt>证据要求</dt><dd>C</dd></dl>
+          </div>
+        </div>
+        <div class="card sp-card">
+          <h4><i class="ic" data-icon="sparkles"></i>AI 初评<span class="chip chip--ai" style="margin-left:auto;height:18px;font-size:10.5px">AI 已完成</span></h4>
+          <div class="ai-score"><b>0</b><span>/ 3 分</span></div>
+          <div class="ai-conf"><span>置信度</span><span class="bar"><i style="width:82%"></i></span><b>82%</b></div>
+          <div class="ai-reason"><i class="ic" data-icon="circle-alert"></i><span>识别为 B，正确答案为 C；字迹清晰但选项不符。</span></div>
+        </div>
+        <div class="card sp-card">
+          <h4><i class="ic" data-icon="tag"></i>错因</h4>
+          <div class="err-chips">
+            <span class="chip chip--bad">概念辨析错误</span>
+            <span class="chip chip--plain">无理数识别</span>
+            <span class="chip chip--plain">实数分类</span>
+          </div>
+        </div>
+        <div class="card sp-card">
+          <h4><i class="ic" data-icon="square-pen"></i>教师最终分</h4>
+          <div class="final-score" id="finalScore">
+            <button class="on" data-s="0">0</button><button data-s="1">1</button><button data-s="2">2</button><button data-s="3">3</button>
+          </div>
+          <p style="margin:8px 0 0;font-size:11.5px;color:var(--ink-3)">教师最终分独立生效；仅改总分会跳过小问证据。</p>
+        </div>
+      </div>
+      <div class="sp-foot">
+        <button class="btn btn--primary" id="confirmBtn"><i class="ic" data-icon="check"></i>确认并下一份</button>
+        <div class="hint"><kbd class="kb">0–3</kbd> 打分 <kbd class="kb">Enter</kbd> 确认 <kbd class="kb">←→</kbd> 切换答卷</div>
+      </div>
+    </aside>
+  </div>
+</main>
+</div>
+<script src="proto.js"></script>
+<script>
+var STUDENTS = [['林晓雨', '八年级（3）班', 12], ['周子航', '八年级（5）班', 13], ['陈雨桐', '八年级（3）班', 14]];
+var cur = 0;
+document.addEventListener('DOMContentLoaded', function () {
+  document.getElementById('scanBox').innerHTML = scanSVG({
+    w: 560, h: 400, letter: 'B',
+    caption: '2．下列各数中，是无理数的是（　　）',
+    foot: 'A．3.14　　B．22/7　　C．√2　　D．0.41',
+    rx: 60, ry: 120, rw: 320, rh: 200,
+    marks: '<circle class="region" cx="430" cy="150" r="16" stroke-width="1.6" opacity="0.85"/>'
+  });
+  document.getElementById('finalScore').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-s]');
+    if (!b) return;
+    setFinal(Number(b.getAttribute('data-s')));
+  });
+  function setFinal(s) {
+    document.querySelectorAll('#finalScore button').forEach(function (b) {
+      b.classList.toggle('on', Number(b.getAttribute('data-s')) === s);
+    });
+  }
+  function confirmNext() {
+    cur = (cur + 1) % STUDENTS.length;
+    var s = STUDENTS[cur];
+    document.getElementById('stuName').textContent = s[0];
+    document.getElementById('stuCnt').textContent = s[2] + ' / 88';
+    showToast('已确认，进入下一份');
+  }
+  document.getElementById('confirmBtn').addEventListener('click', confirmNext);
+  document.addEventListener('keydown', function (e) {
+    if (e.target.matches('input, select, textarea')) return;
+    if (/^[0-3]$/.test(e.key)) setFinal(Number(e.key));
+    else if (e.key === 'Enter') { e.preventDefault(); confirmNext(); }
+  });
+});
+</script>
+</body>
+</html>

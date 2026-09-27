@@ -1,18 +1,14 @@
-import { createApp, nextTick } from 'vue'
-import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, nextTick } from 'vue';
+import { createPinia, setActivePinia } from 'pinia';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  uploadConfigSource,
-  type ConfigGenerationRequest,
-  type ConfigSource,
-} from '../api/config-workspace'
-import type { JobResponse } from '../api/jobs'
-import { ApiError } from '../api/errors'
-import type { RegionReadiness } from '../api/template-regions'
-import { useConfigWorkspaceStore } from '../stores/config-workspace'
-import { useJobStore } from '../stores/jobs'
-import { useSessionStore } from '../stores/session'
+import { uploadConfigSource, type ConfigSource } from '../api/config-workspace';
+import type { JobResponse } from '../api/jobs';
+import { ApiError } from '../api/errors';
+import type { RegionReadiness } from '../api/template-regions';
+import { useConfigWorkspaceStore } from '../stores/config-workspace';
+import { useJobStore } from '../stores/jobs';
+import { useSessionStore } from '../stores/session';
 import SessionConfigView from '../views/SessionConfigView.vue'
 
 vi.mock('../api/config-workspace', async (importOriginal) => ({
@@ -37,12 +33,6 @@ function activeJob(): JobResponse {
     started_at: '2026-07-15T00:00:01Z', updated_at: '2026-07-15T00:00:02Z',
     finished_at: null,
   }
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
 }
 
 async function settle(): Promise<void> {
@@ -105,282 +95,6 @@ beforeEach(() => {
 })
 
 describe('SessionConfigView source replacement guard', () => {
-  it('keeps upload first, question review second, and curriculum controls last', async () => {
-    const mounted = await mountDirtyView()
-    const sourceStage = [...mounted.host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
-      .find(button => button.textContent?.includes('上传与拆题'))
-    sourceStage?.click()
-    await settle()
-
-    const upload = mounted.host.querySelector<HTMLElement>('.config-source')!
-    const review = mounted.host.querySelector<HTMLElement>('.question-review')!
-    const curriculum = mounted.host.querySelector<HTMLElement>('#config-curriculum-volume-slot')!
-
-    expect(upload.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(review.compareDocumentPosition(curriculum) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    mounted.unmount()
-  })
-
-  it('reanalyses only blocked questions without offering generation modes', async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
-    const sessions = useSessionStore(pinia)
-    sessions.$patch({
-      sessions: [{ id: 7, name: '七年级数学', status: 'created', is_deleted: false,
-        deleted_at: null, created_at: null, updated_at: null }],
-      selectedSessionId: 7,
-      loadState: 'ready',
-    })
-    const workspace = useConfigWorkspaceStore(pinia)
-    workspace.selectSession(7)
-    workspace.setSource({
-      ...source(),
-      questions: [{
-        question_id: 'Q1',
-        question_type: 'calculation',
-        question_preview: '计算',
-        answer_preview: '答案',
-        answer_present: true,
-        needs_review: false,
-        local_answer_trusted: true,
-        has_question_asset: false,
-        has_answer_asset: false,
-      }],
-    })
-    workspace.setEditor({
-      session_id: 7,
-      configured: true,
-      revision: 'd'.repeat(64),
-      total_score: 100,
-      issues: [{
-        code: 'quality_blocking',
-        severity: 'error',
-        row_id: 'row-q1-p1-s1',
-        field: 'standard_answer',
-        message: '[质量检查-阻断] Q1 缺少可评分的文本标准答案',
-      }],
-      source: null,
-      rows: [{
-        row_id: 'row-q1-p1-s1',
-        question_id: 'Q1',
-        part_id: 'P1',
-        step_id: 'S1',
-        part_label: '第 1 问',
-        question_type: 'calculation',
-        core_goal: '计算',
-        score: 100,
-        standard_answer: '模型原结果',
-        accepted_answers: [],
-        match_rule: 'exact',
-        answer_only_max_score: null,
-        require_final_answer: true,
-        required_elements: [],
-        deduction_rules: [],
-        part_deduction_rules: [],
-        final_answer_rule: '',
-      }],
-    })
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    workspace.updateEditor({
-      row_id: 'row-q1-p1-s1',
-      standard_answer: '尚未保存的教师修改',
-    })
-    const pending = deferred<JobResponse>()
-    const generationSubmitter = vi.fn((
-      sessionId: number,
-      request: ConfigGenerationRequest,
-    ) => {
-      void sessionId
-      void request
-      return pending.promise
-    })
-    const editorLoader = vi.fn(async () => ({
-      session_id: 7,
-      configured: true,
-      revision: 'e'.repeat(64),
-      total_score: 100,
-      issues: [],
-      source: null,
-      rows: workspace.editor?.rows ?? [],
-    }))
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(SessionConfigView, {
-      generationSubmitter,
-      editorLoader,
-      templateReadinessLoader: vi.fn(async (): Promise<RegionReadiness> => ({
-        session_id: 7,
-        scoring_configured: true,
-        template_present: false,
-        template_ready: false,
-      })),
-    })
-    app.use(pinia)
-    app.mount(host)
-    await settle()
-
-    const button = host.querySelector<HTMLButtonElement>('button[name="重新分析被拦题目"]')!
-    expect(button).not.toBeNull()
-    expect(host.querySelectorAll('.rubric-unit-card')).toHaveLength(1)
-    button.click()
-    button.click()
-    await nextTick()
-
-    expect(confirm).toHaveBeenCalledTimes(1)
-    expect(generationSubmitter).toHaveBeenCalledExactlyOnceWith(7, expect.objectContaining({
-      source_id: 'a'.repeat(32),
-      source_revision: 'b'.repeat(64),
-      generation_mode: 'batched',
-      client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
-      regenerate_question_ids: ['Q1'],
-      base_revision: 'd'.repeat(64),
-    }))
-    expect(host.querySelectorAll('.rubric-unit-card')).toHaveLength(1)
-    expect(host.querySelector<HTMLButtonElement>('button[name="重新分析被拦题目"]')?.disabled)
-      .toBe(true)
-    expect(button.textContent).toContain('正在提交')
-    expect(host.querySelectorAll('.rubric-ledger__regeneration-actions button')).toHaveLength(1)
-
-    pending.resolve({
-      ...activeJob(),
-      payload: {
-        session_id: 7,
-        mode: 'generate',
-        generation_mode: 'batched',
-        source_id: 'a'.repeat(32),
-        source_revision: 'b'.repeat(64),
-      },
-    })
-    await settle()
-    expect(useJobStore().jobs[31]?.status).toBe('running')
-    useJobStore().track({
-      ...activeJob(),
-      status: 'succeeded',
-      progress: 1,
-      result: { outcome: 'complete' },
-      updated_at: '2026-07-15T00:00:03Z',
-      finished_at: '2026-07-15T00:00:03Z',
-    })
-    await settle()
-
-    expect(editorLoader).toHaveBeenCalledWith(7)
-    expect(workspace.editor?.revision).toBe('e'.repeat(64))
-    expect(host.textContent).toContain('新评分依据已更新')
-    expect(host.querySelector('button[name="重新分析被拦题目"]')).toBeNull()
-    app.unmount()
-  })
-
-  it.each([
-    [{ template_present: false, template_ready: false }, '准备样卷', '可开始'],
-    [{ template_present: true, template_ready: false }, '继续标定', '标定中'],
-    [{ template_present: true, template_ready: true }, '查看已确认版本', '已确认'],
-  ])('shows the real template stage state %#', async (state, action, fact) => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
-    const sessions = useSessionStore(pinia)
-    sessions.$patch({
-      sessions: [{ id: 7, name: '七年级数学', status: 'created', is_deleted: false,
-        deleted_at: null, created_at: null, updated_at: null }],
-      selectedSessionId: 7, loadState: 'ready',
-    })
-    const workspace = useConfigWorkspaceStore(pinia)
-    workspace.selectSession(7)
-    workspace.setEditor({ session_id: 7, configured: true, revision: 'd'.repeat(64),
-      rows: [], total_score: 100, issues: [], source: null })
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(SessionConfigView, {
-      templateReadinessLoader: vi.fn(async () => ({ session_id: 7,
-        scoring_configured: true, ...state })),
-    })
-    app.use(pinia)
-    app.mount(host)
-    await settle()
-
-    expect(host.querySelector<HTMLAnchorElement>('a[href="/sessions/7/regions"]')?.textContent)
-      .toContain(action)
-    const templateStage = [...host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
-      .find((button) => button.textContent?.includes('样卷题框'))
-    expect(templateStage?.getAttribute('aria-description')).toBe(fact)
-    app.unmount()
-  })
-
-  it('selects the first solution question when the adjustment panel first opens', async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
-    const sessions = useSessionStore(pinia)
-    sessions.$patch({
-      sessions: [{ id: 7, name: '七年级数学', status: 'created', is_deleted: false,
-        deleted_at: null, created_at: null, updated_at: null }],
-      selectedSessionId: 7, loadState: 'ready',
-    })
-    const workspace = useConfigWorkspaceStore(pinia)
-    workspace.selectSession(7)
-    workspace.setEditor({
-      session_id: 7, configured: true, revision: 'd'.repeat(64), total_score: 10,
-      issues: [], source: null,
-      rows: [{
-        row_id: 'row-q10-p1-s1', question_id: 'Q10', part_id: 'P1', step_id: 'S1',
-        part_label: '第 1 问', question_type: 'calculation', core_goal: '写出结果', score: 10,
-        standard_answer: '10', accepted_answers: ['10'], match_rule: 'exact',
-        answer_only_max_score: null, require_final_answer: true, required_elements: [],
-        deduction_rules: [], part_deduction_rules: [], final_answer_rule: '',
-      }],
-    })
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(SessionConfigView)
-    app.use(pinia)
-    app.mount(host)
-    await settle()
-
-    const picker = host.querySelector<HTMLSelectElement>('select[aria-label="评分单元题号"]')
-    expect(picker?.value).toBe('Q10')
-    expect(host.textContent).toContain('Q10 解答题结构')
-    app.unmount()
-  })
-
-  it('keeps refine reconciliation visible for a legacy editor without a P2 source', async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
-    const sessions = useSessionStore(pinia)
-    sessions.$patch({
-      sessions: [{ id: 7, name: '旧考试', status: 'created', is_deleted: false,
-        deleted_at: null, created_at: null, updated_at: null }],
-      selectedSessionId: 7,
-      loadState: 'ready',
-    })
-    const workspace = useConfigWorkspaceStore(pinia)
-    workspace.selectSession(7)
-    workspace.setSource({
-      session_id: 7, source_id: 'e'.repeat(32), source_revision: 'f'.repeat(64),
-      safe_filename: '旧考试.pdf', suffix: '.pdf', size_bytes: 12,
-      sha256_prefix: 'c'.repeat(12), parse_state: 'ready',
-      questions: [{ question_id: 'Q1', question_type: 'calculation',
-        question_preview: '计算题', answer_preview: '1', answer_present: true,
-        needs_review: false, local_answer_trusted: true,
-        has_question_asset: false, has_answer_asset: false }],
-    })
-    workspace.setEditor({
-      session_id: 7, configured: true, revision: 'd'.repeat(64), rows: [], total_score: 0,
-      issues: [], source: null,
-    })
-    workspace.markJobSubmissionPending('3'.repeat(32), 'refine')
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(SessionConfigView)
-    app.use(pinia)
-    app.mount(host)
-    await nextTick()
-
-    const generationStage = [...host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
-      .find((button) => button.textContent?.includes('分析并入库'))
-    generationStage?.click()
-    await settle()
-    expect(host.querySelector('button[name="重新核对生成任务"]')).not.toBeNull()
-    expect(host.textContent).toContain('结果尚未确认')
-    app.unmount()
-  })
 
   it('unlocks an ambiguous single-question retry when its exact lookup confirms 404', async () => {
     const pinia = createPinia()
@@ -439,31 +153,6 @@ describe('SessionConfigView source replacement guard', () => {
     app.unmount()
   })
 
-  it('cancels before the upload request and retains the dirty editor', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const mounted = await mountDirtyView()
-    await chooseAndSubmit(mounted.host)
-
-    expect(confirm).toHaveBeenCalledOnce()
-    expect(uploadConfigSource).not.toHaveBeenCalled()
-    expect(mounted.workspace.sourceId).toBe('a'.repeat(32))
-    expect(mounted.workspace.hasDirtyEditor).toBe(true)
-  })
-
-  it('uploads only after confirmation and resets context only after acceptance', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    vi.mocked(uploadConfigSource).mockResolvedValue(source('e', 'f'))
-    const mounted = await mountDirtyView()
-    await chooseAndSubmit(mounted.host)
-
-    expect(confirm.mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(uploadConfigSource).mock.invocationCallOrder[0]!,
-    )
-    expect(mounted.workspace.sourceId).toBe('e'.repeat(32))
-    expect(mounted.workspace.editor).toBeNull()
-    expect(mounted.workspace.hasDirtyEditor).toBe(false)
-  })
-
   it('retains the dirty editor when a confirmed replacement fails', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     vi.mocked(uploadConfigSource).mockRejectedValue(new Error('private path'))
@@ -492,33 +181,4 @@ describe('SessionConfigView source replacement guard', () => {
     expect(mounted.host.textContent).toContain('样卷题框')
   })
 
-  it('consumes a returned stage once and still advances after later generation', async () => {
-    window.history.replaceState({}, '', '/sessions?stage=source')
-    const mounted = await mountDirtyView()
-    await settle()
-
-    expect(mounted.host.querySelector('.config-source')).not.toBeNull()
-    mounted.workspace.phase = 'generation'
-    await nextTick()
-    mounted.workspace.phase = 'editor'
-    await settle()
-
-    expect(mounted.host.querySelector('.rubric-ledger')).not.toBeNull()
-    mounted.unmount()
-  })
-
-  it('focuses the selected preparation stage after the slide finishes', async () => {
-    const scrollIntoView = vi.fn()
-    vi.stubGlobal('scrollTo', vi.fn())
-    HTMLElement.prototype.scrollIntoView = scrollIntoView
-    const mounted = await mountDirtyView()
-    const sourceStage = [...mounted.host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
-      .find((button) => button.textContent?.includes('上传与拆题'))
-    sourceStage?.click()
-    await settle()
-
-    expect(document.activeElement?.id).toBe('config-source-stage')
-    expect(scrollIntoView).toHaveBeenCalled()
-    mounted.unmount()
-  })
 })

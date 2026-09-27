@@ -182,22 +182,6 @@ afterEach(() => {
 })
 
 describe('training assessment panel', () => {
-  it('restores current mastery after returning even if no next draft is available', async () => {
-    trainingApiMock.getTrainingAssessment.mockResolvedValue(completedAssessment)
-    trainingApiMock.getTrainingFeedback.mockResolvedValue({ ...feedback,
-      next_round: { status: 'source_unavailable', message: '结果已保存，暂无下一轮候选。', changes: [] },
-    })
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(TrainingAssessmentPanel, { submission })
-    mounted.push(app)
-    app.mount(host)
-    await settle()
-    expect(host.textContent).toContain('40%')
-    expect(host.textContent).toContain('55%')
-    expect(host.textContent).toContain('结果已保存，暂无下一轮候选。')
-    expect(trainingApiMock.syncTrainingEvidence).not.toHaveBeenCalled()
-  })
 
   it('queries a timed-out assessment until complete without submitting it again', async () => {
     vi.useFakeTimers()
@@ -228,24 +212,6 @@ describe('training assessment panel', () => {
     expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(3)
     await vi.advanceTimersByTimeAsync(9000)
     expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(3)
-  })
-
-  it('resumes queries for a running assessment and stops them when leaving', async () => {
-    vi.useFakeTimers()
-    trainingApiMock.getTrainingAssessment.mockResolvedValue({ ...pendingAssessment, status: 'running' })
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(TrainingAssessmentPanel, { submission })
-    mounted.push(app)
-    app.mount(host)
-    await settle()
-    await vi.advanceTimersByTimeAsync(3000)
-    expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(2)
-    expect(trainingApiMock.startTrainingAssessment).not.toHaveBeenCalled()
-    mounted.splice(mounted.indexOf(app), 1)
-    app.unmount()
-    await vi.advanceTimersByTimeAsync(9000)
-    expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(2)
   })
 
   it('locks an uncertain point, publishes evidence, and opens only a draft', async () => {

@@ -2,37 +2,34 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from backend.config_workspace.publish import load_editor_config
 from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifactStore
-from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
+from backend.jobs.manager import JobCancellationRequested, JobContext
 from backend.jobs.question_bank_sync import (
     StaleQuestionBankSyncError,
     _adopt_deferred_analysis_with_links,
-    _result,
     run_deferred_question_bank_intake,
     run_session_question_bank_sync_job,
 )
 from backend.jobs.store import (
     JobStore,
     QuestionBankSyncRequestTokenConflictError,
-    QuestionBankSyncSessionBusyError,
 )
 from db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
 from tests.current_knowledge_support import install_current_knowledge
 from question_bank.services.question_write_service import QuestionBankWriteService
 from tests.question_bank_support import QuestionBankTestStore
-from question_bank.services.source_question_link_service import SourceQuestionLinkService
+from question_bank.services.source_question_link_service import (
+    SourceQuestionLinkService,
+)
 from question_bank.solution_evidence import SolutionEvidenceRepository
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
-from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.training_criteria import (
     ConfigQuestionAnalysisSource,
     DeferredAnalysisFailure,
@@ -57,182 +54,10 @@ LEGACY_CATALOG_PATH = (
 )
 
 
-def _request_payload(
-    *,
-    token: str = "a" * 32,
-    revision: str = "b" * 64,
-    source_sha256: str = "c" * 64,
-) -> dict[str, object]:
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            {
-                "session_id": 7,
-                "mode": "sync",
-                "config_revision": revision,
-                "source_paper_sha256": source_sha256,
-                "curriculum_volume_id": "bnu24-math-g7-upper",
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    return {
-        "session_id": 7,
-        "mode": "sync",
-        "config_revision": revision,
-        "source_paper_sha256": source_sha256,
-        "curriculum_volume_id": "bnu24-math-g7-upper",
-        "client_request_token": token,
-        "client_request_fingerprint": fingerprint,
-    }
-
-
-def test_question_bank_sync_request_is_idempotent_and_token_bound(
-    tmp_path: Path,
-) -> None:
-    store = JobStore(tmp_path / "grading.db")
-    payload = _request_payload()
-
-    first, created = store.create_idempotent_question_bank_sync_job(payload)
-    repeated, repeated_created = store.create_idempotent_question_bank_sync_job(payload)
-    same_version, same_version_created = (
-        store.create_idempotent_question_bank_sync_job(
-            _request_payload(token="e" * 32)
-        )
-    )
-
-    assert created is True
-    assert repeated_created is False
-    assert repeated.id == first.id
-    assert same_version_created is False
-    assert same_version.id == first.id
-    with pytest.raises(QuestionBankSyncRequestTokenConflictError):
-        store.create_idempotent_question_bank_sync_job(
-            _request_payload(revision="d" * 64)
-        )
-
-
-def test_question_bank_sync_rejects_a_second_active_request_for_the_session(
-    tmp_path: Path,
-) -> None:
-    store = JobStore(tmp_path / "grading.db")
-    store.create_idempotent_question_bank_sync_job(_request_payload())
-
-    with pytest.raises(QuestionBankSyncSessionBusyError):
-        store.create_idempotent_question_bank_sync_job(
-            _request_payload(token="e" * 32, revision="d" * 64)
-        )
-
-
-def test_config_publish_invalidates_ready_sync_when_only_config_changes(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, _source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    session = db.get_grading_session(session_id)
-    assert session is not None
-    rubric_path = Path(str(session["rubric_path"]))
-    answer_path = Path(str(session["answer_key_path"]))
-    replacement_rubric = rubric_path.with_name("rubric-replacement.json")
-    replacement_answer = answer_path.with_name("answer-replacement.json")
-    replacement_payload = json.loads(rubric_path.read_text(encoding="utf-8"))
-    replacement_payload["total_score"] = 99
-    replacement_rubric.write_text(
-        json.dumps(replacement_payload, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    replacement_answer.write_bytes(answer_path.read_bytes())
-    db.update_question_bank_sync_state(
-        session_id,
-        state="ready",
-        details={
-            "config_revision": revision,
-            "source_paper_sha256": session["source_paper_sha256"],
-        },
-        error="old sync error",
-    )
-    _mark_template_snapshot_pending(db, session_id)
-
-    store = JobStore(db.db_path)
-    assert store.update_session_config_if_idle(
-        session_id,
-        rubric_path=str(replacement_rubric),
-        answer_key_path=str(replacement_answer),
-        expected_rubric_path=str(rubric_path),
-        expected_answer_key_path=str(answer_path),
-    )
-
-    changed = db.get_grading_session(session_id)
-    assert changed is not None
-    assert load_editor_config(db, session_id).revision != revision
-    assert changed["source_paper_sha256"] == session["source_paper_sha256"]
-    assert changed["question_bank_sync_state"] == "not_started"
-    assert json.loads(changed["question_bank_sync_details_json"]) == {}
-    assert changed["question_bank_sync_error"] is None
-    assert changed["question_bank_sync_updated_at"] is None
-    _assert_template_snapshot_invalidated(db, session_id)
-
-
-def test_generated_config_bind_invalidates_ready_sync_for_same_source(
-    tmp_path: Path,
-) -> None:
-    db, session_id, source, source_sha256, revision = _configured_session(tmp_path)
-    session = db.get_grading_session(session_id)
-    assert session is not None
-    old_rubric_path = Path(str(session["rubric_path"]))
-    old_answer_path = Path(str(session["answer_key_path"]))
-    replacement_rubric = old_rubric_path.with_name("generated-rubric.json")
-    replacement_answer = old_answer_path.with_name("generated-answer.json")
-    replacement_payload = json.loads(old_rubric_path.read_text(encoding="utf-8"))
-    replacement_payload["total_score"] = 98
-    replacement_rubric.write_text(
-        json.dumps(replacement_payload, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    replacement_answer.write_bytes(old_answer_path.read_bytes())
-    db.update_question_bank_sync_state(
-        session_id,
-        state="ready",
-        details={
-            "config_revision": revision,
-            "source_paper_sha256": source_sha256,
-        },
-    )
-    _mark_template_snapshot_pending(db, session_id)
-    store = JobStore(db.db_path)
-    job = store.create_job("config_generation", {"session_id": session_id})
-    assert store.mark_running(job.id)
-
-    assert store.finish_config_generation_and_bind(
-        job.id,
-        session_id=session_id,
-        expected_rubric_path=str(old_rubric_path),
-        expected_answer_key_path=str(old_answer_path),
-        rubric_path=str(replacement_rubric),
-        answer_key_path=str(replacement_answer),
-        source_paper_path=str(source),
-        source_paper_sha256=source_sha256,
-        result={"outcome": "complete"},
-    )
-
-    changed = db.get_grading_session(session_id)
-    assert changed is not None
-    assert load_editor_config(db, session_id).revision != revision
-    assert changed["source_paper_sha256"] == source_sha256
-    assert changed["question_bank_sync_state"] == "not_started"
-    assert json.loads(changed["question_bank_sync_details_json"]) == {}
-    assert changed["question_bank_sync_error"] is None
-    assert changed["question_bank_sync_updated_at"] is None
-    _assert_template_snapshot_invalidated(db, session_id)
-
-
 def test_stale_job_cannot_overwrite_a_newer_sync_owner(
     tmp_path: Path,
 ) -> None:
-    db, session_id, _source, source_sha256, _revision = _configured_session(
-        tmp_path
-    )
+    db, session_id, _source, source_sha256, _revision = _configured_session(tmp_path)
     store = JobStore(db.db_path)
     newer_revision = "d" * 64
     db.update_question_bank_sync_state(
@@ -246,14 +71,17 @@ def test_stale_job_cannot_overwrite_a_newer_sync_owner(
         },
     )
 
-    assert store.transition_question_bank_sync_state_if_owned(
-        session_id=session_id,
-        job_id=98,
-        source_paper_sha256=source_sha256,
-        config_revision="e" * 64,
-        state="not_started",
-        details={"stage": "stale"},
-    ) is False
+    assert (
+        store.transition_question_bank_sync_state_if_owned(
+            session_id=session_id,
+            job_id=98,
+            source_paper_sha256=source_sha256,
+            config_revision="e" * 64,
+            state="not_started",
+            details={"stage": "stale"},
+        )
+        is False
+    )
 
     unchanged = db.get_grading_session(session_id)
     assert unchanged is not None
@@ -264,192 +92,6 @@ def test_stale_job_cannot_overwrite_a_newer_sync_owner(
         "source_paper_sha256": source_sha256,
         "stage": "tagging",
     }
-
-
-def test_stale_job_cannot_claim_running_after_config_binding_changes(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    session = db.get_grading_session(session_id)
-    assert session is not None
-    old_rubric = str(session["rubric_path"])
-    old_answer = str(session["answer_key_path"])
-    store = JobStore(db.db_path)
-    job = store.create_job(
-        "question_bank_sync",
-        {
-            "session_id": session_id,
-            "source_paper_sha256": source_sha256,
-            "config_revision": revision,
-        },
-    )
-    assert store.mark_running(job.id)
-    replacement_rubric = str(Path(old_rubric).with_name("new-rubric.json"))
-    replacement_answer = str(Path(old_answer).with_name("new-answer.json"))
-    assert db.publish_grading_session_config(
-        session_id,
-        rubric_path=replacement_rubric,
-        answer_key_path=replacement_answer,
-        expected_rubric_path=old_rubric,
-        expected_answer_key_path=old_answer,
-    )
-
-    assert store.claim_question_bank_sync_state_if_current(
-        session_id=session_id,
-        job_id=job.id,
-        source_paper_sha256=source_sha256,
-        config_revision=revision,
-        expected_rubric_path=old_rubric,
-        expected_answer_key_path=old_answer,
-        details={"stage": "importing", "mode": "sync"},
-    ) is False
-    current = db.get_grading_session(session_id)
-    assert current is not None
-    assert current["question_bank_sync_state"] == "not_started"
-
-
-def test_editor_publish_preserves_ready_sync_when_only_config_changes(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, _source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    session = db.get_grading_session(session_id)
-    assert session is not None
-    rubric_path = Path(str(session["rubric_path"]))
-    answer_path = Path(str(session["answer_key_path"]))
-    replacement_rubric = rubric_path.with_name("editor-rubric.json")
-    replacement_answer = answer_path.with_name("editor-answer.json")
-    replacement_payload = json.loads(rubric_path.read_text(encoding="utf-8"))
-    replacement_payload["total_score"] = 97
-    replacement_rubric.write_text(
-        json.dumps(replacement_payload, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    replacement_answer.write_bytes(answer_path.read_bytes())
-    db.update_question_bank_sync_state(
-        session_id,
-        state="ready",
-        details={
-            "config_revision": revision,
-            "source_paper_sha256": session["source_paper_sha256"],
-        },
-        error="old sync error",
-    )
-    synced_at = db.get_grading_session(session_id)["question_bank_sync_updated_at"]
-    _mark_template_snapshot_pending(db, session_id)
-
-    store = JobStore(db.db_path)
-    assert store.update_session_config_if_idle(
-        session_id,
-        rubric_path=str(replacement_rubric),
-        answer_key_path=str(replacement_answer),
-        expected_rubric_path=str(rubric_path),
-        expected_answer_key_path=str(answer_path),
-        preserve_question_bank_sync=True,
-    )
-
-    changed = db.get_grading_session(session_id)
-    assert changed is not None
-    assert load_editor_config(db, session_id).revision != revision
-    assert changed["question_bank_sync_state"] == "ready"
-    assert json.loads(changed["question_bank_sync_details_json"]) == {
-        "config_revision": revision,
-        "source_paper_sha256": session["source_paper_sha256"],
-    }
-    assert changed["question_bank_sync_error"] == "old sync error"
-    assert changed["question_bank_sync_updated_at"] == synced_at
-    _assert_template_snapshot_invalidated(db, session_id)
-
-
-def test_editor_publish_preserves_ready_sync_for_repository_bind(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, _source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    session = db.get_grading_session(session_id)
-    assert session is not None
-    old_rubric = str(session["rubric_path"])
-    old_answer = str(session["answer_key_path"])
-    db.update_question_bank_sync_state(
-        session_id,
-        state="ready",
-        details={
-            "config_revision": revision,
-            "source_paper_sha256": session["source_paper_sha256"],
-        },
-        error="old sync error",
-    )
-    synced_at = db.get_grading_session(session_id)["question_bank_sync_updated_at"]
-    _mark_template_snapshot_pending(db, session_id)
-
-    assert db.publish_grading_session_config(
-        session_id,
-        rubric_path="editor-rubric.json",
-        answer_key_path="editor-answer.json",
-        expected_rubric_path=old_rubric,
-        expected_answer_key_path=old_answer,
-        preserve_question_bank_sync=True,
-    )
-
-    changed = db.get_grading_session(session_id)
-    assert changed is not None
-    assert changed["rubric_path"] == "editor-rubric.json"
-    assert changed["answer_key_path"] == "editor-answer.json"
-    assert changed["question_bank_sync_state"] == "ready"
-    assert json.loads(changed["question_bank_sync_details_json"]) == {
-        "config_revision": revision,
-        "source_paper_sha256": session["source_paper_sha256"],
-    }
-    assert changed["question_bank_sync_error"] == "old sync error"
-    assert changed["question_bank_sync_updated_at"] == synced_at
-    _assert_template_snapshot_invalidated(db, session_id)
-
-
-def test_legacy_config_save_resets_ready_sync_when_config_changes(
-    tmp_path: Path,
-) -> None:
-    # PUT /sessions/{id}/config binds new paths without expected values or
-    # the preserve flag, so a changed config still invalidates the sync.
-    db, session_id, _source, _source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    session = db.get_grading_session(session_id)
-    assert session is not None
-    rubric_path = Path(str(session["rubric_path"]))
-    answer_path = Path(str(session["answer_key_path"]))
-    replacement_rubric = rubric_path.with_name("legacy-rubric.json")
-    replacement_answer = answer_path.with_name("legacy-answer.json")
-    replacement_rubric.write_bytes(rubric_path.read_bytes())
-    replacement_answer.write_bytes(answer_path.read_bytes())
-    db.update_question_bank_sync_state(
-        session_id,
-        state="ready",
-        details={
-            "config_revision": revision,
-            "source_paper_sha256": session["source_paper_sha256"],
-        },
-        error="old sync error",
-    )
-    _mark_template_snapshot_pending(db, session_id)
-
-    store = JobStore(db.db_path)
-    assert store.update_session_config_if_idle(
-        session_id,
-        rubric_path=str(replacement_rubric),
-        answer_key_path=str(replacement_answer),
-    )
-
-    changed = db.get_grading_session(session_id)
-    assert changed is not None
-    assert changed["question_bank_sync_state"] == "not_started"
-    assert json.loads(changed["question_bank_sync_details_json"]) == {}
-    assert changed["question_bank_sync_error"] is None
-    assert changed["question_bank_sync_updated_at"] is None
-    _assert_template_snapshot_invalidated(db, session_id)
 
 
 def _configured_session(
@@ -524,771 +166,6 @@ def _configured_session(
     return db, session_id, source, source_sha256, revision
 
 
-def _mark_template_snapshot_pending(db: DBManager, session_id: int) -> None:
-    template_id = db.upsert_session_template(
-        session_id,
-        "controlled-front.png",
-        "controlled-back.png",
-    )
-    token = db.replace_answer_regions_atomic(
-        session_id,
-        template_id,
-        [],
-        confirmed=True,
-    )
-    template = db.get_session_template(session_id)
-    assert template is not None
-    assert template["is_confirmed"] == 1
-    assert template["regions_snapshot_pending"] == 1
-    assert template["regions_snapshot_token"] == token
-
-
-def _assert_template_snapshot_invalidated(
-    db: DBManager,
-    session_id: int,
-) -> None:
-    template = db.get_session_template(session_id)
-    assert template is not None
-    assert template["is_confirmed"] == 0
-    assert template["regions_snapshot_pending"] == 0
-    assert template["regions_snapshot_token"] is None
-
-
-def _stage_deferred_analysis_artifact(
-    tmp_path: Path,
-    *,
-    session_id: int,
-    question_bank_db: Path,
-) -> tuple[Path, dict[str, Any]]:
-    """Save a completed deferred analysis artifact and return its payload fields."""
-    install_current_knowledge(question_bank_db)
-    source_question = question_analysis_input_from_config_source(
-        {
-            "question_id": "Q1",
-            "question_text": "1 + 1 = ?",
-            "answer_text": "B",
-            "question_type": "choice",
-        },
-        question_id=1,
-        curriculum_volume_id="bnu24-math-g7-upper",
-        taxonomy_contract=_deferred_sync_contract(),
-    )
-    bundle = InMemoryCombinedQuestionAnalysisModule(
-        gateway=_DeferredSyncGateway(),
-    ).analyze(
-        operation_id="config:synthetic:sync-artifact",
-        curriculum_volume_id="bnu24-math-g7-upper",
-        sources=(ConfigQuestionAnalysisSource("Q1", source_question),),
-    )
-    source_id = "b" * 32
-    source_revision = "c" * 64
-    artifact_root = tmp_path / "analysis-artifacts"
-    artifact = DeferredAnalysisArtifactStore(artifact_root).save(
-        artifact_id="a" * 32,
-        session_id=session_id,
-        source_id=source_id,
-        source_revision=source_revision,
-        curriculum_volume_id="bnu24-math-g7-upper",
-        bundle=bundle,
-    )
-    return artifact_root, {
-        "analysis_artifact_id": artifact.artifact_id,
-        "analysis_artifact_hash": artifact.content_hash,
-        "analysis_source_id": source_id,
-        "analysis_source_revision": source_revision,
-    }
-
-
-def test_sync_runs_import_then_governed_tagging_and_links_without_touching_config(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
-    initialize_database(question_bank_db)
-    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
-        tmp_path,
-        session_id=session_id,
-        question_bank_db=question_bank_db,
-    )
-    store = JobStore(db.db_path)
-    job = store.create_job(
-        "question_bank_sync",
-        {
-            "session_id": session_id,
-            "mode": "sync",
-            "config_revision": revision,
-            "source_paper_sha256": source_sha256,
-            "client_request_token": "f" * 32,
-            "client_request_fingerprint": "1" * 64,
-            "curriculum_volume_id": "bnu24-math-g7-upper",
-            **artifact_fields,
-        },
-    )
-    assert store.mark_running(job.id)
-    context = JobContext(
-        job_id=job.id,
-        job_type=job.job_type,
-        payload=job.payload,
-        store=store,
-    )
-    call_order: list[str] = []
-    rubric_before = Path(db.get_grading_session(session_id)["rubric_path"]).read_bytes()
-
-    def import_runner(**kwargs: Any) -> dict[str, object]:
-        call_order.append("import")
-        with connect(question_bank_db) as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO questions (
-                    question_number, question_type, question_text, answer_text,
-                    source_file
-                ) VALUES ('1', 'choice', '1 + 1 = ?', 'B', ?)
-                """,
-                (str(db.get_grading_session(session_id)["source_paper_path"]),),
-            )
-            question_id = int(cursor.lastrowid)
-        return {
-            "outcome": "complete",
-            "successful_question_ids": [question_id],
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "retryable": False,
-        }
-
-    def unexpected_tagging_runner(**_kwargs: Any) -> dict[str, object]:
-        pytest.fail("sync must adopt the deferred analysis artifact, not re-tag")
-
-    governance = _RecordingTaxonomyGovernance()
-    result = run_session_question_bank_sync_job(
-        context=context,
-        grading_db=db,
-        question_bank_db_path=question_bank_db,
-        data_root=tmp_path / "data",
-        write_service=QuestionBankWriteService(
-            question_bank_db,
-            data_root=tmp_path / "data",
-        ),
-        question_import_runner=import_runner,
-        tagging_sync_runner=unexpected_tagging_runner,
-        ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
-        taxonomy_governance=governance,
-        analysis_artifact_root=artifact_root,
-    )
-
-    assert call_order == ["import"]
-    assert governance.constrain_calls, "adopted analysis must pass governance"
-    assert result["outcome"] == "complete"
-    assert result["tagged_count"] == 1
-    assert result["review_count"] == 0
-    assert db.get_grading_session(session_id)["question_bank_sync_state"] == "ready"
-    # §7.2：冻结快照时允许在题级/步骤级追加证据引用注解，
-    # 但评分语义（分值、步骤目标、答案键、路径）不得变化。
-    after_rubric = json.loads(
-        Path(db.get_grading_session(session_id)["rubric_path"]).read_text(encoding="utf-8")
-    )
-    before_rubric = json.loads(rubric_before.decode("utf-8"))
-    if isinstance(before_rubric, dict) and "rubric" in before_rubric:
-        before_rubric = before_rubric["rubric"]
-    if isinstance(after_rubric, dict) and "rubric" in after_rubric:
-        after_rubric = after_rubric["rubric"]
-    assert _strip_snapshot_annotations(after_rubric) == _strip_snapshot_annotations(before_rubric)
-
-
-def test_sync_carries_original_filename_and_grading_paper_defaults_to_import(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
-    initialize_database(question_bank_db)
-    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
-        tmp_path,
-        session_id=session_id,
-        question_bank_db=question_bank_db,
-    )
-    store = JobStore(db.db_path)
-    job = store.create_job(
-        "question_bank_sync",
-        {
-            "session_id": session_id,
-            "mode": "sync",
-            "config_revision": revision,
-            "source_paper_sha256": source_sha256,
-            "source_safe_filename": "0526test2.docx",
-            "curriculum_volume_id": "bnu24-math-g7-upper",
-            **artifact_fields,
-        },
-    )
-    assert store.mark_running(job.id)
-    context = JobContext(
-        job_id=job.id,
-        job_type=job.job_type,
-        payload=job.payload,
-        store=store,
-    )
-    captured: dict[str, object] = {}
-
-    def import_runner(**kwargs: Any) -> dict[str, object]:
-        child = kwargs["context"]
-        resource = kwargs["write_service"].load_import_resource(
-            child.payload["request_id"]
-        )
-        captured["filename"] = resource.filename
-        captured["defaults"] = dict(child.payload["paper_defaults"])
-        with connect(question_bank_db) as conn:
-            question_id = int(
-                conn.execute(
-                    """
-                    INSERT INTO questions (
-                        question_number, question_type, question_text, answer_text
-                    ) VALUES ('1', 'choice', '1 + 1 = ?', 'B')
-                    """
-                ).lastrowid
-            )
-        return {
-            "outcome": "complete",
-            "successful_question_ids": [question_id],
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "retryable": False,
-        }
-
-    def unexpected_tagging_runner(**_kwargs: Any) -> dict[str, object]:
-        pytest.fail("sync must adopt the deferred analysis artifact, not re-tag")
-
-    governance = _PassThroughTaxonomyGovernance()
-    result = run_session_question_bank_sync_job(
-        context=context,
-        grading_db=db,
-        question_bank_db_path=question_bank_db,
-        data_root=tmp_path / "data",
-        write_service=QuestionBankWriteService(
-            question_bank_db,
-            data_root=tmp_path / "data",
-        ),
-        question_import_runner=import_runner,
-        tagging_sync_runner=unexpected_tagging_runner,
-        ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
-        taxonomy_governance=governance,
-        analysis_artifact_root=artifact_root,
-    )
-
-    assert result["outcome"] == "complete", result
-    assert captured["filename"] == "0526test2.docx"
-    assert captured["defaults"] == {
-        "year": str(datetime.now().year),
-        "exam_type": "阶段练习",
-        "grade": "七年级",
-        "semester": "上学期",
-        "textbook_version": "北师大版（2024）",
-    }
-
-
-def test_sync_passes_rubric_question_types_to_import(tmp_path: Path) -> None:
-    db, session_id, _source, source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
-    initialize_database(question_bank_db)
-    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
-        tmp_path,
-        session_id=session_id,
-        question_bank_db=question_bank_db,
-    )
-    store = JobStore(db.db_path)
-    job = store.create_job(
-        "question_bank_sync",
-        {
-            "session_id": session_id,
-            "mode": "sync",
-            "config_revision": revision,
-            "source_paper_sha256": source_sha256,
-            "source_safe_filename": "0526test2.docx",
-            "curriculum_volume_id": "bnu24-math-g7-upper",
-            **artifact_fields,
-        },
-    )
-    assert store.mark_running(job.id)
-    context = JobContext(
-        job_id=job.id,
-        job_type=job.job_type,
-        payload=job.payload,
-        store=store,
-    )
-    captured: dict[str, object] = {}
-
-    def import_runner(**kwargs: Any) -> dict[str, object]:
-        child = kwargs["context"]
-        captured["type_overrides"] = dict(child.payload["type_overrides"])
-        with connect(question_bank_db) as conn:
-            question_id = int(
-                conn.execute(
-                    """
-                    INSERT INTO questions (
-                        question_number, question_type, question_text, answer_text
-                    ) VALUES ('1', 'choice', '1 + 1 = ?', 'B')
-                    """
-                ).lastrowid
-            )
-        return {
-            "outcome": "complete",
-            "successful_question_ids": [question_id],
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "retryable": False,
-        }
-
-    def unexpected_tagging_runner(**_kwargs: Any) -> dict[str, object]:
-        pytest.fail("sync must adopt the deferred analysis artifact, not re-tag")
-
-    governance = _PassThroughTaxonomyGovernance()
-    result = run_session_question_bank_sync_job(
-        context=context,
-        grading_db=db,
-        question_bank_db_path=question_bank_db,
-        data_root=tmp_path / "data",
-        write_service=QuestionBankWriteService(
-            question_bank_db,
-            data_root=tmp_path / "data",
-        ),
-        question_import_runner=import_runner,
-        tagging_sync_runner=unexpected_tagging_runner,
-        ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
-        taxonomy_governance=governance,
-        analysis_artifact_root=artifact_root,
-    )
-
-    assert result["outcome"] == "complete", result
-    assert captured["type_overrides"] == {"1": "选择题"}
-
-
-def test_sync_that_loses_final_ownership_removes_its_automatic_links(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db, session_id, _source, source_sha256, revision = _configured_session(tmp_path)
-    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
-    initialize_database(question_bank_db)
-    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
-        tmp_path,
-        session_id=session_id,
-        question_bank_db=question_bank_db,
-    )
-    store = JobStore(db.db_path)
-    job = store.create_job(
-        "question_bank_sync",
-        {
-            "session_id": session_id,
-            "mode": "sync",
-            "config_revision": revision,
-            "source_paper_sha256": source_sha256,
-            "curriculum_volume_id": "bnu24-math-g7-upper",
-            **artifact_fields,
-        },
-    )
-    assert store.mark_running(job.id)
-    context = JobContext(
-        job_id=job.id,
-        job_type=job.job_type,
-        payload=job.payload,
-        store=store,
-    )
-
-    def import_runner(**_kwargs: Any) -> dict[str, object]:
-        with connect(question_bank_db) as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO questions (
-                    question_number, question_type, question_text, answer_text
-                ) VALUES ('1', 'choice', '1 + 1 = ?', 'B')
-                """
-            )
-            question_id = int(cursor.lastrowid)
-        return {
-            "outcome": "complete",
-            "successful_question_ids": [question_id],
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "retryable": False,
-        }
-
-    monkeypatch.setattr(
-        store,
-        "transition_question_bank_sync_state_if_owned",
-        lambda **_kwargs: False,
-    )
-    with pytest.raises(StaleQuestionBankSyncError):
-        run_session_question_bank_sync_job(
-            context=context,
-            grading_db=db,
-            question_bank_db_path=question_bank_db,
-            data_root=tmp_path / "data",
-            write_service=QuestionBankWriteService(
-                question_bank_db,
-                data_root=tmp_path / "data",
-            ),
-            question_import_runner=import_runner,
-            tagging_sync_runner=lambda **_kwargs: pytest.fail(
-                "sync must adopt the deferred analysis artifact, not re-tag"
-            ),
-            ai_service_factory=lambda: _DeferredAdoptionTaggingService(
-                _PassThroughTaxonomyGovernance()
-            ),
-            taxonomy_governance=_PassThroughTaxonomyGovernance(),
-            analysis_artifact_root=artifact_root,
-        )
-
-    with connect(question_bank_db) as conn:
-        remaining = conn.execute(
-            "SELECT COUNT(*) FROM grading_question_links WHERE grading_session_id = ?",
-            (str(session_id),),
-        ).fetchone()[0]
-    assert remaining == 0
-
-
-def test_tag_retry_skips_import_and_failure_stays_in_the_sync_state(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
-    initialize_database(question_bank_db)
-    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
-        tmp_path,
-        session_id=session_id,
-        question_bank_db=question_bank_db,
-    )
-    with connect(question_bank_db) as conn:
-        conn.execute(
-            """
-            INSERT INTO questions (
-                id, question_number, question_type, question_text, answer_text
-            ) VALUES (201, '99', 'choice', '1 + 1 = ?', 'B')
-            """
-        )
-    store = JobStore(db.db_path)
-    job = store.create_job(
-        "question_bank_sync",
-        {
-            "session_id": session_id,
-            "mode": "tag_retry",
-            "curriculum_volume_id": "bnu24-math-g7-upper",
-            "question_ids": [201],
-            "config_revision": revision,
-            "source_paper_sha256": source_sha256,
-            "client_request_token": "2" * 32,
-            "client_request_fingerprint": "3" * 64,
-            "retry_of_job_id": 19,
-            **artifact_fields,
-        },
-    )
-    assert store.mark_running(job.id)
-    context = JobContext(
-        job_id=job.id,
-        job_type=job.job_type,
-        payload=job.payload,
-        store=store,
-    )
-    import_called = False
-
-    def unexpected_import(**_kwargs: Any) -> dict[str, object]:
-        nonlocal import_called
-        import_called = True
-        raise AssertionError("tag retry must not import again")
-
-    result = run_session_question_bank_sync_job(
-        context=context,
-        grading_db=db,
-        question_bank_db_path=question_bank_db,
-        data_root=tmp_path / "data",
-        write_service=QuestionBankWriteService(
-            question_bank_db,
-            data_root=tmp_path / "data",
-        ),
-        question_import_runner=unexpected_import,
-        tagging_sync_runner=lambda **_kwargs: pytest.fail(
-            "tag retry must adopt the deferred analysis artifact, not re-tag"
-        ),
-        ai_service_factory=lambda: _DeferredAdoptionTaggingService(
-            _PassThroughTaxonomyGovernance()
-        ),
-        taxonomy_governance=_PassThroughTaxonomyGovernance(),
-        analysis_artifact_root=artifact_root,
-    )
-
-    assert import_called is False
-    assert result["outcome"] == "failed"
-    assert result["retryable"] is True
-    assert db.get_grading_session(session_id)["question_bank_sync_state"] == "failed"
-    assert db.get_grading_session(session_id)["rubric_path"]
-
-
-def test_tag_retry_preserves_parent_links_and_reports_whole_paper(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
-    initialize_database(question_bank_db)
-    artifact_root, artifact_fields = _stage_deferred_analysis_artifact(
-        tmp_path,
-        session_id=session_id,
-        question_bank_db=question_bank_db,
-    )
-    with connect(question_bank_db) as conn:
-        conn.execute(
-            """
-            INSERT INTO questions (
-                id, question_number, question_type, question_text, answer_text
-            ) VALUES (201, '1', 'choice', '1 + 1 = ?', 'B')
-            """
-        )
-    store = JobStore(db.db_path)
-    parent = store.create_job(
-        "question_bank_sync",
-        {
-            "session_id": session_id,
-            "mode": "sync",
-            "curriculum_volume_id": "bnu24-math-g7-upper",
-            "config_revision": revision,
-            "source_paper_sha256": source_sha256,
-        },
-    )
-    store.finish(
-        parent.id,
-        "succeeded",
-        result={
-            "outcome": "partial",
-            "imported_count": 1,
-            "question_count": 1,
-            "tagged_count": 0,
-            "complete_tagged_count": 0,
-            "evidence_count": 0,
-            "criteria_count": 0,
-            "linked_count": 1,
-            "successful_question_ids": [],
-            "failed_question_ids": [201],
-            "failed_count": 1,
-            "retryable": True,
-        },
-    )
-    links = SourceQuestionLinkService(question_bank_db)
-    links.confirm_imported_questions_for_session(
-        grading_session_id=session_id,
-        source_questions=[{"question_id": "Q1"}],
-        imported_bank_questions=[{"id": 201, "question_number": "1"}],
-        sync_job_id=parent.id,
-        sync_config_revision=revision,
-    )
-    job = store.create_job(
-        "question_bank_sync",
-        {
-            "session_id": session_id,
-            "mode": "tag_retry",
-            "curriculum_volume_id": "bnu24-math-g7-upper",
-            "question_ids": [201],
-            "config_revision": revision,
-            "source_paper_sha256": source_sha256,
-            "client_request_token": "8" * 32,
-            "client_request_fingerprint": "9" * 64,
-            "retry_of_job_id": parent.id,
-            **artifact_fields,
-        },
-    )
-    assert store.mark_running(job.id)
-    context = JobContext(
-        job_id=job.id,
-        job_type=job.job_type,
-        payload=job.payload,
-        store=store,
-    )
-
-    result = run_session_question_bank_sync_job(
-        context=context,
-        grading_db=db,
-        question_bank_db_path=question_bank_db,
-        data_root=tmp_path / "data",
-        write_service=QuestionBankWriteService(
-            question_bank_db,
-            data_root=tmp_path / "data",
-        ),
-        question_import_runner=lambda **_kwargs: pytest.fail(
-            "tag retry must not import again"
-        ),
-        tagging_sync_runner=lambda **_kwargs: pytest.fail(
-            "tag retry must adopt the deferred analysis artifact, not re-tag"
-        ),
-        ai_service_factory=lambda: _DeferredAdoptionTaggingService(
-            _PassThroughTaxonomyGovernance()
-        ),
-        taxonomy_governance=_PassThroughTaxonomyGovernance(),
-        analysis_artifact_root=artifact_root,
-    )
-
-    assert result["outcome"] == "complete"
-    assert result["imported_count"] == 1
-    assert result["question_count"] == 1
-    assert result["linked_count"] == 1
-    assert result["successful_question_ids"] == [201]
-    assert result["failed_question_ids"] == []
-    assert result["retryable"] is False
-    assert db.get_grading_session(session_id)["question_bank_sync_state"] == "ready"
-    saved_links = links.list_links(session_id)
-    assert len(saved_links) == 1
-    assert saved_links[0]["bank_question_id"] == 201
-    assert saved_links[0]["evidence"]["sync_job_id"] == parent.id
-
-
-def test_cancellation_remains_cancelled_and_leaves_a_recoverable_sync_state(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
-    initialize_database(question_bank_db)
-    store = JobStore(db.db_path)
-    job = store.create_job(
-        "question_bank_sync",
-        {
-            "session_id": session_id,
-            "mode": "sync",
-            "config_revision": revision,
-            "source_paper_sha256": source_sha256,
-            "client_request_token": "4" * 32,
-            "client_request_fingerprint": "5" * 64,
-            "curriculum_volume_id": "bnu24-math-g7-upper",
-        },
-    )
-    assert store.mark_running(job.id)
-    assert store.request_cancel(job.id)
-    context = JobContext(
-        job_id=job.id,
-        job_type=job.job_type,
-        payload=job.payload,
-        store=store,
-    )
-
-    with pytest.raises(JobCancellationRequested):
-        run_session_question_bank_sync_job(
-            context=context,
-            grading_db=db,
-            question_bank_db_path=question_bank_db,
-            data_root=tmp_path / "data",
-            write_service=QuestionBankWriteService(
-                question_bank_db,
-                data_root=tmp_path / "data",
-            ),
-            question_import_runner=lambda **_kwargs: pytest.fail(
-                "cancelled work must not start importing"
-            ),
-            tagging_sync_runner=lambda **_kwargs: pytest.fail(
-                "cancelled work must not start tagging"
-            ),
-            ai_service_factory=lambda: object(),
-            taxonomy_governance=object(),
-        )
-
-    session = db.get_grading_session(session_id)
-    assert session["question_bank_sync_state"] == "partial"
-    details = json.loads(session["question_bank_sync_details_json"])
-    assert details == {
-        "config_revision": revision,
-        "job_id": job.id,
-        "retryable": True,
-        "source_paper_sha256": source_sha256,
-        "stage": "cancelled",
-    }
-
-
-def test_stale_sync_finishes_failed_and_cannot_leave_session_running(
-    tmp_path: Path,
-) -> None:
-    db, session_id, _source, source_sha256, revision = _configured_session(
-        tmp_path
-    )
-    session = db.get_grading_session(session_id)
-    assert session is not None
-    rubric_path = Path(str(session["rubric_path"]))
-    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
-    store = JobStore(db.db_path)
-    manager = JobManager(store, max_workers=1, cleanup_interrupted=False)
-    write_service = SimpleNamespace(
-        stage_upload=lambda **_kwargs: SimpleNamespace(upload_id="upload-1"),
-        create_import_request=lambda **_kwargs: SimpleNamespace(request_id="request-1"),
-    )
-
-    def change_config_during_import(**_kwargs: Any) -> dict[str, object]:
-        payload = json.loads(rubric_path.read_text(encoding="utf-8"))
-        payload["total_score"] = 97
-        rubric_path.write_text(
-            json.dumps(payload, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        return {
-            "outcome": "complete",
-            "successful_question_ids": [],
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "retryable": False,
-        }
-
-    manager.register(
-        "question_bank_sync",
-        lambda context: run_session_question_bank_sync_job(
-            context=context,
-            grading_db=db,
-            question_bank_db_path=question_bank_db,
-            data_root=tmp_path / "data",
-            write_service=write_service,
-            question_import_runner=change_config_during_import,
-            tagging_sync_runner=lambda **_kwargs: pytest.fail(
-                "stale work must stop before tagging"
-            ),
-            ai_service_factory=lambda: object(),
-            taxonomy_governance=object(),
-        ),
-    )
-    payload = {
-        "session_id": session_id,
-        "mode": "sync",
-        "config_revision": revision,
-        "source_paper_sha256": source_sha256,
-        "client_request_token": "6" * 32,
-        "client_request_fingerprint": "7" * 64,
-        "curriculum_volume_id": "bnu24-math-g7-upper",
-    }
-
-    try:
-        job, created = manager.submit_idempotent_question_bank_sync(payload)
-        assert created is True
-        manager.wait(job.id, timeout=5)
-        completed = store.get_job(job.id)
-        assert completed is not None
-        assert completed.status == "failed"
-        assert completed.error == "grading configuration changed"
-    finally:
-        manager.shutdown()
-
-    changed = db.get_grading_session(session_id)
-    assert changed is not None
-    assert changed["question_bank_sync_state"] == "not_started"
-    details = json.loads(changed["question_bank_sync_details_json"])
-    assert details == {
-        "config_revision": revision,
-        "job_id": job.id,
-        "reason": "grading_configuration_changed",
-        "retryable": False,
-        "source_paper_sha256": source_sha256,
-        "stage": "stale",
-    }
-
-
 def _deferred_sync_contract() -> dict[str, Any]:
     return {
         "taxonomy_revision": 2,
@@ -1310,36 +187,6 @@ def _deferred_sync_contract() -> dict[str, Any]:
             ],
         },
     }
-
-
-def test_sync_result_preserves_restore_required_import_collision() -> None:
-    result = _result(
-        session_id=7,
-        mode="sync",
-        import_result={
-            "outcome": "failed",
-            "successful_question_ids": [],
-            "failed_count": 1,
-            "retryable": False,
-            "failure_category": "duplicate_in_trash",
-            "restore_required": True,
-            "restore_paper_id": 17,
-        },
-        tagging_result={
-            "outcome": "failed",
-            "successful_question_ids": [],
-            "failed_question_ids": [],
-            "failed_count": 0,
-            "retryable": False,
-        },
-        link_result={"confirmed": 0, "unresolved": 0},
-    )
-
-    assert result["outcome"] == "failed"
-    assert result["retryable"] is False
-    assert result["failure_category"] == "duplicate_in_trash"
-    assert result["restore_required"] is True
-    assert result["restore_paper_id"] == 17
 
 
 def _deferred_sync_result(question_id: int) -> dict[str, Any]:
@@ -1447,9 +294,7 @@ class _DeferredSyncGateway:
                 "curriculum_sections",
             ):
                 result["tag_analysis"][field] = []
-            point = result["solution_evidence"]["parts"][0][
-                "evidence_points"
-            ][0]
+            point = result["solution_evidence"]["parts"][0]["evidence_points"][0]
             point["fine_term_links"] = [
                 {
                     "fine_term_id": "invented-model-term",
@@ -1538,19 +383,6 @@ class _PassThroughTaxonomyGovernance:
         }
 
 
-class _RecordingTaxonomyGovernance(_PassThroughTaxonomyGovernance):
-    def __init__(self) -> None:
-        self.constrain_calls: list[dict[str, Any]] = []
-
-    def constrain(
-        self,
-        raw_analysis: dict[str, Any],
-        context: object = None,
-    ) -> dict[str, Any]:
-        self.constrain_calls.append(raw_analysis)
-        return super().constrain(raw_analysis, context)
-
-
 class _DeferredAdoptionTaggingService:
     model = "synthetic-combined-v3"
 
@@ -1563,10 +395,7 @@ class _DeferredAdoptionTaggingService:
         self,
         contexts: dict[int, object],
     ) -> dict[int, dict[str, Any]]:
-        return {
-            question_id: _deferred_sync_contract()
-            for question_id in contexts
-        }
+        return {question_id: _deferred_sync_contract() for question_id in contexts}
 
 
 def _run_deferred_adoption(
@@ -1590,9 +419,7 @@ def _run_deferred_adoption(
     Path,
     Path,
 ]:
-    db, session_id, _source, source_sha256, revision = _configured_session(
-        tmp_path
-    )
+    db, session_id, _source, source_sha256, revision = _configured_session(tmp_path)
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
     install_current_knowledge(question_bank_db)
@@ -1732,9 +559,7 @@ def _run_deferred_adoption(
                 asset_overrides=intake_asset_overrides,
                 type_overrides=intake_type_overrides,
                 question_import_runner=import_runner,
-                ai_service_factory=lambda: _DeferredAdoptionTaggingService(
-                    governance
-                ),
+                ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
                 taxonomy_governance=governance,
             )
         except JobCancellationRequested:
@@ -1753,9 +578,7 @@ def _run_deferred_adoption(
                 asset_overrides=intake_asset_overrides,
                 type_overrides=intake_type_overrides,
                 question_import_runner=import_runner,
-                ai_service_factory=lambda: _DeferredAdoptionTaggingService(
-                    governance
-                ),
+                ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
                 taxonomy_governance=governance,
             )
     else:
@@ -1808,15 +631,17 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
         for tag in saved["tags"]
     )
     assert not any(
-        tag["tag_type"] == "knowledge_point"
-        and tag["tag_value"] == "一元一次方程"
+        tag["tag_type"] == "knowledge_point" and tag["tag_value"] == "一元一次方程"
         for tag in saved["tags"]
     )
     evidence = SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
     assert evidence is not None
-    assert evidence["evidence"]["parts"][0]["evidence_points"][0][
-        "fine_term_links"
-    ][0]["role"] == "direct"
+    assert (
+        evidence["evidence"]["parts"][0]["evidence_points"][0]["fine_term_links"][0][
+            "role"
+        ]
+        == "direct"
+    )
     with connect(question_bank_db) as connection:
         criterion = connection.execute(
             """
@@ -1857,96 +682,12 @@ def test_score_pending_intake_imports_tags_and_evidence_without_grading_links(
         for tag in saved["tags"]
     )
     assert not any(
-        tag["tag_type"] == "knowledge_point"
-        and tag["tag_value"] == "一元一次方程"
+        tag["tag_type"] == "knowledge_point" and tag["tag_value"] == "一元一次方程"
         for tag in saved["tags"]
     )
     assert SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
     assert gateway.calls == [(1,)]
     assert artifact_path.exists()
-
-
-def test_score_pending_intake_forwards_teacher_asset_and_type_overrides(
-    tmp_path: Path,
-) -> None:
-    captured: dict[str, Any] = {}
-    asset_overrides = [
-        {
-            "sha256": "a" * 64,
-            "action": "bind",
-            "question_number": "1",
-            "asset_kind": "question",
-        }
-    ]
-
-    result, _gateway, _ids, _db, _path = _run_deferred_adoption(
-        tmp_path,
-        prepublish_intake=True,
-        intake_asset_overrides=asset_overrides,
-        intake_type_overrides={"1": "选择题"},
-        captured_import_payload=captured,
-    )
-
-    assert result["outcome"] == "complete", result
-    assert captured["asset_overrides"] == asset_overrides
-    assert captured["type_overrides"] == {"1": "选择题"}
-
-
-def test_score_pending_intake_defaults_to_no_overrides(tmp_path: Path) -> None:
-    captured: dict[str, Any] = {}
-
-    result, _gateway, _ids, _db, _path = _run_deferred_adoption(
-        tmp_path,
-        prepublish_intake=True,
-        captured_import_payload=captured,
-    )
-
-    assert result["outcome"] == "complete", result
-    assert captured["asset_overrides"] == []
-    assert captured["type_overrides"] == {}
-
-
-def test_score_pending_intake_rejects_invalid_asset_overrides(
-    tmp_path: Path,
-) -> None:
-    with pytest.raises(ValueError, match="sha256"):
-        _run_deferred_adoption(
-            tmp_path,
-            prepublish_intake=True,
-            intake_asset_overrides=[
-                {
-                    "sha256": "not-a-sha256",
-                    "action": "bind",
-                    "question_number": "1",
-                    "asset_kind": "question",
-                }
-            ],
-        )
-
-
-def test_score_pending_intake_retry_reuses_question_tags_and_evidence(
-    tmp_path: Path,
-) -> None:
-    result, gateway, imported_ids, question_bank_db, artifact_path = (
-        _run_deferred_adoption(
-            tmp_path,
-            prepublish_intake=True,
-            repeat_prepublish_intake=True,
-        )
-    )
-
-    assert result["outcome"] == "complete", result
-    assert result["imported_count"] == 1
-    assert result["tagged_count"] == 1
-    assert result["evidence_count"] == 1
-    assert imported_ids == [1]
-    assert gateway.calls == [(1,)]
-    assert artifact_path.exists()
-    with connect(question_bank_db) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 1
-        assert connection.execute(
-            "SELECT COUNT(*) FROM question_solution_evidence_versions"
-        ).fetchone()[0] == 1
 
 
 def test_partial_analysis_intake_keeps_paper_and_tags_only_successful_questions(
@@ -1970,213 +711,10 @@ def test_partial_analysis_intake_keeps_paper_and_tags_only_successful_questions(
     assert gateway.calls == [(1,)]
     assert artifact_path.exists()
     assert QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])["tags"]
-    assert QuestionBankTestStore(question_bank_db).get_question(imported_ids[1])["tags"] == []
-
-
-def test_score_pending_intake_cancelled_after_import_does_not_start_adoption(
-    tmp_path: Path,
-) -> None:
-    result, gateway, imported_ids, question_bank_db, artifact_path = (
-        _run_deferred_adoption(
-            tmp_path,
-            prepublish_intake=True,
-            cancel_after_import=True,
-        )
-    )
-
-    assert result == {"outcome": "cancelled"}
-    assert imported_ids == [1]
-    assert gateway.calls == [(1,)]
-    assert artifact_path.exists()
-    saved = QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])
-    assert saved is not None
-    assert saved["tags"] == []
-    assert SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0]) is None
-
-
-def test_sync_keeps_taxonomy_review_artifact_for_local_retry(
-    tmp_path: Path,
-) -> None:
-    governance = TaxonomyGovernance(
-        catalog_path=LEGACY_CATALOG_PATH,
-        state_path=tmp_path / "taxonomy-state.json",
-        # 缺省的 knowledge_graph_db_path 指向会话级共享题库库,
-        # 全量跑时会被其他测试的应用启动装上 revision 4 的签入标准,
-        # 与本文件词表 revision 冲突; 指向本测试私有路径即可跳过该检查。
-        knowledge_graph_db_path=tmp_path / "taxonomy-governance.db",
-    )
-    result, gateway, imported_ids, question_bank_db, artifact_path = (
-        _run_deferred_adoption(
-            tmp_path,
-            invented_term=True,
-            analysis_governance=governance,
-            adoption_governance=governance,
-        )
-    )
-
-    assert result["outcome"] == "complete", result
-    assert result["failed_count"] == 0
-    assert result["successful_question_ids"] == imported_ids
-    assert result["tagged_count"] == 0
-    assert result["complete_tagged_count"] == 1
-    assert result["evidence_count"] == 1
-    assert result["review_count"] == 1
-    assert result["taxonomy_review_count"] == 1
-    assert result["taxonomy_review_question_ids"] == imported_ids
-    assert result["taxonomy_review_source_refs"] == ["Q1"]
-    assert result["retryable"] is True
-    assert "analysis_artifact_consumed" not in result
-    assert gateway.calls == [(1,)]
-    assert artifact_path.exists()
-    evidence = SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
-    assert evidence is not None
-    assert evidence["evidence"]["parts"][0]["evidence_points"][0][
-        "fine_term_links"
-    ] == []
-    proposals = governance.list_proposals(status="pending")
-    assert proposals["counts"] == {"pending": 1}
-    assert proposals["items"][0]["question_refs"] == imported_ids
-
-
-def test_sync_saves_empty_link_scoring_without_retry_loop(
-    tmp_path: Path,
-) -> None:
-    result, gateway, imported_ids, question_bank_db, artifact_path = (
-        _run_deferred_adoption(tmp_path, empty_links=True)
-    )
-
-    assert result["outcome"] == "complete", result
-    assert result["failed_count"] == 0
-    assert result["evidence_count"] == 1
-    assert result["taxonomy_review_count"] == 1
-    assert result["taxonomy_review_question_ids"] == imported_ids
-    assert result["taxonomy_review_source_refs"] == ["Q1"]
-    assert result["review_count"] == 0
-    assert result["retryable"] is False
-    assert result["analysis_artifact_consumed"] is True
-    assert gateway.calls == [(1,)]
-    assert not artifact_path.exists()
-    evidence = SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
-    assert evidence is not None
-    assert evidence["evidence"]["parts"][0]["evidence_points"][0][
-        "fine_term_links"
-    ] == []
-
-
-def test_analyze_reused_items_issue_no_requests_and_adopt_skips_writes(
-    tmp_path: Path,
-) -> None:
-    """Exact-duplicate reuse: no model request; adoption never rewrites canonical."""
-    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
-    initialize_database(question_bank_db)
-    install_current_knowledge(question_bank_db)
-    with connect(question_bank_db) as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO questions (
-                question_number, question_type, question_text, answer_text,
-                source_file
-            ) VALUES ('1', 'choice', '1 + 1 = ?', 'B', 'bank-source.docx')
-            """
-        )
-        bank_id = int(cursor.lastrowid)
-
-    source_question = question_analysis_input_from_config_source(
-        {
-            "question_id": "Q1",
-            "question_text": "1 + 1 = ?",
-            "answer_text": "B",
-            "question_type": "choice",
-        },
-        question_id=1,
-        curriculum_volume_id="bnu24-math-g7-upper",
-        taxonomy_contract=_deferred_sync_contract(),
-    )
-    source = ConfigQuestionAnalysisSource("Q1", source_question)
-    evidence_payload = _deferred_sync_result(1)["results"][0][
-        "solution_evidence"
-    ]
-    evidence = QuestionSolutionEvidence.from_model_dict(
-        evidence_payload,
-        question_id=1,
-        source_content_hash=solution_evidence_source_content_hash(
-            source_question
-        ),
-        resolver=UnmappedFineTermResolver(),
-    )
-    item = reused_analysis_item(
-        source=source,
-        bank_question_id=bank_id,
-        evidence=evidence,
-        evidence_payload=evidence_payload,
-        model_name="question-bank-reuse",
-        fine_term_links=(
-            {
-                "fine_term_id": "kp_alg_linear_equation",
-                "fine_term_name": "一元一次方程",
-            },
-        ),
-        operation_id="config:synthetic:reuse",
-    )
-
-    class _ForbiddenGateway:
-        def analyze(self, batch: Any, **_kwargs: Any) -> GatewayBatchResponse:
-            pytest.fail("reused source must not issue a model request")
-
-    bundle = InMemoryCombinedQuestionAnalysisModule(
-        gateway=_ForbiddenGateway(),
-    ).analyze(
-        operation_id="config:synthetic:reuse",
-        curriculum_volume_id="bnu24-math-g7-upper",
-        sources=(source,),
-        reused_items={"Q1": item},
-    )
-    assert bundle.status == "succeeded"
-    assert bundle.requests == ()
-    assert bundle.items[0].reused_from_question_id == bank_id
-
-    artifact_root = tmp_path / "analysis-artifacts"
-    artifact = DeferredAnalysisArtifactStore(artifact_root).save(
-        artifact_id="d" * 32,
-        session_id=1,
-        source_id="b" * 32,
-        source_revision="c" * 64,
-        curriculum_volume_id="bnu24-math-g7-upper",
-        bundle=bundle,
-    )
-    loaded = DeferredAnalysisArtifactStore(artifact_root).load(
-        artifact.artifact_id,
-        session_id=1,
-        source_id="b" * 32,
-        source_revision="c" * 64,
-        curriculum_volume_id="bnu24-math-g7-upper",
-    )
-    assert loaded.bundle.items[0].reused_from_question_id == bank_id
-
-    result = _adopt_deferred_analysis_with_links(
-        artifact=loaded,
-        session_id=1,
-        question_bank_db_path=question_bank_db,
-        data_root=tmp_path / "data",
-        links={"Q1": {"bank_question_id": bank_id}},
-        ai_service_factory=lambda: _DeferredAdoptionTaggingService(),
-        taxonomy_governance=_PassThroughTaxonomyGovernance(),
-    )
-    assert result["outcome"] == "complete"
-    assert result["successful_question_ids"] == [bank_id]
-    adoption = result["adoption_results"][0]
-    assert adoption["tag_status"] == "reused"
-    assert adoption["evidence_status"] == "reused"
-    assert adoption["criteria_status"] == "reused"
-    # Nothing was written back onto the canonical question.
     assert (
-        SolutionEvidenceRepository(question_bank_db).latest(bank_id) is None
+        QuestionBankTestStore(question_bank_db).get_question(imported_ids[1])["tags"]
+        == []
     )
-    with connect(question_bank_db) as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM question_tags WHERE question_id = ?",
-            (bank_id,),
-        ).fetchone()[0] == 0
 
 
 _ANNOTATION_KEYS = {

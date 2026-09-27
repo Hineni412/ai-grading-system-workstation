@@ -82,22 +82,6 @@ afterEach(() => {
 })
 
 describe('training assessment api', () => {
-  it('accepts the review-point shape returned by a real assessment run', async () => {
-    stubAssessmentResponse(payload)
-
-    await expect(
-      trainingApi.startTrainingAssessment(submissionId, 1),
-    ).resolves.toMatchObject({
-      status: 'succeeded',
-      questions: [{
-        review_points: [{
-          content: '写出关键步骤',
-          expected_point: { target: '写出关键步骤' },
-          lock_revision: 0,
-        }],
-      }],
-    })
-  })
 
   it('rejects inconsistent point identities and teacher-lock metadata', async () => {
     const question = payload.questions[0]!

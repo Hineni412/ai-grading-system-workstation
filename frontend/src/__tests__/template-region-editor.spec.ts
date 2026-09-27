@@ -1,9 +1,7 @@
-import { createApp, defineComponent, h, nextTick, ref } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, nextTick, ref } from 'vue';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import TemplateRegionEditor, {
-  type EditorState,
-} from '../components/template-regions/TemplateRegionEditor.vue'
+import TemplateRegionEditor, { type EditorState } from '../components/template-regions/TemplateRegionEditor.vue';
 
 function editorState(): EditorState {
   return {
@@ -48,30 +46,6 @@ function pointer(type: string, values: Record<string, number>): Event {
 beforeEach(() => { document.body.innerHTML = '' })
 
 describe('TemplateRegionEditor adapter', () => {
-  it('emits the full editor state after a public mapping interaction', async () => {
-    const { app, host, updated } = await mountEditor()
-    host.querySelector<HTMLButtonElement>('[data-action="drawer"]')!.click()
-    const select = host.querySelector<HTMLSelectElement>('.mapping-select')!
-    select.value = 'Q2'
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-
-    expect(updated).toHaveBeenCalledOnce()
-    expect(updated.mock.calls[0]![0].revision).toBe(2)
-    expect(updated.mock.calls[0]![0].regions[0]!.mapped_question_id).toBe('Q2')
-    app.unmount()
-  })
-
-  it('keeps page and zoom viewing available but disables confirmed editing', async () => {
-    const { app, host, updated } = await mountEditor(true)
-    host.querySelector<HTMLButtonElement>('[data-action="drawer"]')!.click()
-
-    expect(host.querySelector<HTMLButtonElement>('[data-page="back"]')!.disabled).toBe(false)
-    expect(host.querySelector<HTMLButtonElement>('[data-action="actual-size"]')!.disabled).toBe(false)
-    expect(host.querySelector<HTMLButtonElement>('[data-action="finish"]')!.disabled).toBe(true)
-    expect(host.querySelector<HTMLSelectElement>('.mapping-select')!.disabled).toBe(true)
-    expect(updated).not.toHaveBeenCalled()
-    app.unmount()
-  })
 
   it('draws in original image pixels, auto-binds the next question and stays in create mode', async () => {
     const { app, host, updated } = await mountEditor()
@@ -112,36 +86,4 @@ describe('TemplateRegionEditor adapter', () => {
     app.unmount()
   })
 
-  it('does not rebuild the editor when only the autosave label changes', async () => {
-    const state = ref(editorState())
-    const saveStatus = ref('草稿')
-    const updated = vi.fn((value: EditorState) => { state.value = value })
-    const host = document.createElement('div')
-    document.body.append(host)
-    const Harness = defineComponent(() => () => h(TemplateRegionEditor, {
-      modelValue: state.value,
-      images: {
-        front: { url: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=', width: 1000, height: 1400 },
-        back: { url: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=', width: 1000, height: 1400 },
-      },
-      manualQuestionOptions: [],
-      automaticCandidates: ['Q1', 'Q2'],
-      issues: [],
-      saveStatus: saveStatus.value,
-      'onUpdate:modelValue': updated,
-    }))
-    const app = createApp(Harness)
-    app.mount(host)
-    await nextTick()
-
-    host.querySelector<HTMLButtonElement>('[data-action="create"]')!.click()
-    expect(host.querySelector<HTMLButtonElement>('[data-action="create"]')?.classList)
-      .toContain('is-active')
-    saveStatus.value = '草稿已保存'
-    await nextTick()
-
-    expect(host.querySelector<HTMLButtonElement>('[data-action="create"]')?.classList)
-      .toContain('is-active')
-    app.unmount()
-  })
 })

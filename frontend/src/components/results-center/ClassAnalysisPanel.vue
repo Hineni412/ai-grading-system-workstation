@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { DialogClose, DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 
@@ -25,12 +25,17 @@ import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vu
 
 const props = defineProps<{
   sessionId: number | null
+  focusQuestion?: string | null
+  initialClass?: string | null
 }>()
 
 const router = useRouter()
 const jobStore = useJobStore()
 const analysis = ref<ClassAnalysisResponse | null>(null)
-const selectedClass = ref('')
+const selectedClass = ref(props.initialClass ?? '')
+const panelRoot = ref<HTMLElement | null>(null)
+const focusedQuestion = ref<string | null>(null)
+let focusTimer: ReturnType<typeof setTimeout> | undefined
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const errorMessage = ref('')
 const confirmOpen = ref(false)
@@ -132,29 +137,47 @@ const diagnosticQuestions = computed(() => [...(data.value?.questions ?? [])]
     }
   }))
 
-const bandEntries = computed(() => {
-  const bands = data.value?.score_distribution.bands ?? {}
-  const entries = Object.entries(bands)
-  const largest = Math.max(1, ...entries.map(([, count]) => count))
-  return entries.map(([label, count]) => ({
-    label,
-    count,
-    width: `${Math.round((count / largest) * 100)}%`,
-  }))
-})
-
 watch(
   () => props.sessionId,
   () => {
     closeConfirm()
     closePreview()
     previewCache.clear()
-    selectedClass.value = ''
+    selectedClass.value = props.initialClass ?? ''
     analysis.value = null
     void load()
   },
   { immediate: true },
 )
+
+watch(
+  () => props.initialClass,
+  (value) => {
+    const next = value ?? ''
+    if (next === selectedClass.value) return
+    selectedClass.value = next
+    void load()
+  },
+)
+
+watch(
+  () => props.focusQuestion,
+  () => { void applyFocusQuestion() },
+)
+
+async function applyFocusQuestion(): Promise<void> {
+  const target = props.focusQuestion
+  focusedQuestion.value = null
+  if (!target || loadState.value !== 'ready') return
+  await nextTick()
+  const row = [...(panelRoot.value?.querySelectorAll<HTMLElement>('[data-question-id]') ?? [])]
+    .find((element) => element.dataset.questionId === target)
+  if (!row) return
+  focusedQuestion.value = target
+  row.scrollIntoView({ block: 'center' })
+  window.clearTimeout(focusTimer)
+  focusTimer = setTimeout(() => { focusedQuestion.value = null }, 2000)
+}
 
 watch(
   () => activeJob.value?.status,
@@ -185,6 +208,7 @@ async function load(): Promise<void> {
     selectedClass.value = next.selected_class ?? ''
     loadState.value = 'ready'
     void ensureTracked(next.active_job_id)
+    void applyFocusQuestion()
   } catch {
     if (generation !== loadGeneration || props.sessionId !== sessionId) return
     loadState.value = 'error'
@@ -242,6 +266,7 @@ onBeforeUnmount(() => {
   loadGeneration += 1
   loadController?.abort()
   previewController?.abort()
+  window.clearTimeout(focusTimer)
 })
 
 async function ensureTracked(id: number | null): Promise<void> {
@@ -406,7 +431,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
 
 
 <template>
-  <section class="class-analysis" aria-label="班级分析">
+  <section ref="panelRoot" class="class-analysis" aria-label="试题诊断">
       <div v-if="props.sessionId === null" class="results-state-panel">
         <strong>请先在顶部选择考试</strong>
         <span>选择后，这里会显示该考试的班级整体分析。</span>
@@ -458,22 +483,6 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
             <p v-if="analysis.small_sample" class="class-analysis__note" data-testid="small-sample-note">
               当前范围参考人数较少，比率指标解读需谨慎。
             </p>
-            <div class="class-analysis__stats">
-              <div class="class-analysis__stat"><strong>{{ formatScore(data.score_distribution.avg) }}</strong><span>平均分</span></div>
-              <div class="class-analysis__stat"><strong>{{ formatScore(data.score_distribution.median) }}</strong><span>中位数</span></div>
-              <div class="class-analysis__stat">
-                <strong>{{ formatScore(data.score_distribution.max) }} <small>/ {{ formatScore(data.score_distribution.min) }}</small></strong>
-                <span>最高 / 最低</span>
-              </div>
-              <div class="class-analysis__stat"><strong>{{ formatPercent(data.score_distribution.pass_rate) }}</strong><span>及格率</span></div>
-            </div>
-            <div class="class-analysis__bands" aria-label="分数段分布">
-              <div v-for="band in bandEntries" :key="band.label" class="class-analysis__band">
-                <span>{{ band.label }}</span>
-                <div aria-hidden="true"><i :style="{ width: band.width }"></i></div>
-                <strong>{{ band.count }} 人</strong>
-              </div>
-            </div>
           </section>
           <section class="class-analysis__section" aria-labelledby="class-analysis-questions-title">
             <div class="class-analysis__section-heading">
@@ -503,7 +512,12 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                   <tr><th scope="col">题目</th><th scope="col">满分</th><th scope="col">得分率</th><th scope="col">失分同学 · 本题得分</th><th scope="col">错因与作答情况</th></tr>
                 </thead>
                 <tbody>
-                  <tr v-for="question in diagnosticQuestions" :key="question.question_id">
+                  <tr
+                    v-for="question in diagnosticQuestions"
+                    :key="question.question_id"
+                    :data-question-id="question.question_id"
+                    :class="{ 'is-focused': focusedQuestion === question.question_id }"
+                  >
                     <th scope="row">
                       <strong>{{ question.question_id }}</strong>
                       <span v-if="question.stem_summary" class="class-analysis__stem">{{ question.stem_summary }}</span>

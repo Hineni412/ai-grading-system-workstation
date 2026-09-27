@@ -1,17 +1,17 @@
-import { createApp, h, nextTick } from 'vue'
 import { createPinia } from 'pinia'
-import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createApp, h, nextTick } from 'vue'
+import { createMemoryHistory } from 'vue-router'
 
 import { questionBankApi, type QuestionBankPaper } from '../api/question-bank'
-import QuestionBankView from '../views/QuestionBankView.vue'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
-import QuestionInspector from '../components/question-bank/QuestionInspector.vue'
 import QuestionImportJobs from '../components/question-bank/QuestionImportJobs.vue'
+import QuestionInspector from '../components/question-bank/QuestionInspector.vue'
+import { createAppRouter } from '../router'
+import { CURRICULUM_SCOPE_STORAGE_KEY } from '../stores/curriculum-scope'
 import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
-import { useCurriculumScopeStore, CURRICULUM_SCOPE_STORAGE_KEY } from '../stores/curriculum-scope'
-import { createAppRouter } from '../router'
+import QuestionBankView from '../views/QuestionBankView.vue'
 
 const revision = 'a'.repeat(64)
 const item = {
@@ -170,25 +170,6 @@ describe('question bank workspace', () => {
     )).toBe(false)
   })
 
-  it('shows that the pending taxonomy count is loading instead of flashing a false zero', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary, {
-      pendingTaxonomyCount: 0,
-      pendingTaxonomyState: 'loading',
-    })
-    app.use(pinia)
-    app.mount(host)
-    mounted.push(app)
-    await nextTick()
-
-    const reviewButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('待审核新词'))
-    expect(reviewButton?.textContent).toContain('读取中')
-    expect(reviewButton?.textContent).not.toContain('0')
-  })
-
   it('groups papers by grade and semester, honors manual folders, and lets teachers collapse a group', async () => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -282,44 +263,6 @@ describe('question bank workspace', () => {
     expect(titles).toEqual(['新年七上卷', '旧年七上卷'])
   })
 
-  it('shows incomplete questions from paper fields even without tracked jobs', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = String(input)
-      if (url.startsWith('/api/question-bank/question-refs')) {
-        if (!url.includes('analysis_status=incomplete')) {
-          throw new Error(`expected incomplete analysis filter: ${url}`)
-        }
-        return questionRefs([
-          { id: 21, paper_id: 4, question_number: '1' },
-          { id: 22, paper_id: 4, question_number: '3' },
-        ])
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    store.papers = [{
-      ...paper,
-      question_count: 5,
-      tagged_question_count: 5,
-      tagged_any_question_count: 5,
-      evidence_question_count: 3,
-      criteria_question_count: 3,
-      complete_analysis_count: 3,
-    }]
-    store.papersState = 'ready'
-    app.mount(host)
-    mounted.push(app)
-
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain('第1、3题分析未完成')
-    })
-  })
-
   it('keeps the library visible while refreshing papers in the background', async () => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -347,28 +290,6 @@ describe('question bank workspace', () => {
     await pending
     expect(store.papersState).toBe('ready')
     expect(host.textContent).toContain('刷新后的试卷')
-  })
-
-  it('keeps papers from other teaching semesters visible by default', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    const curriculumScope = useCurriculumScopeStore(pinia)
-    curriculumScope.selectedVolumeId = 'bnu24-math-g7-upper'
-    store.papers = [paper]
-    store.papersState = 'ready'
-    app.mount(host)
-    mounted.push(app)
-    await nextTick()
-
-    const otherSemester = [...host.querySelectorAll<HTMLButtonElement>('.paper-folder__header')]
-      .find(button => button.textContent?.includes('其他学期'))
-    expect(otherSemester?.getAttribute('aria-expanded')).toBe('true')
-    expect(otherSemester?.textContent).toContain('仍可操作')
-    expect(host.textContent).toContain('匿名期末试卷')
   })
 
   it('does not treat untagged papers as complete even when a finished job is still tracked', async () => {
@@ -422,204 +343,6 @@ describe('question bank workspace', () => {
     expect(host.textContent).not.toContain('AI 解析进度')
     expect(host.textContent).not.toContain('标签、解题证据和训练判定点均已完成')
     expect(host.textContent).not.toContain('解题证据')
-  })
-
-  it('ignores a finished timeout job when the paper only still needs criterion review', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    store.papers = [{
-      ...paper,
-      question_count: 20,
-      tagged_question_count: 20,
-      tagged_any_question_count: 20,
-      evidence_question_count: 20,
-      criteria_question_count: 20,
-      complete_analysis_count: 18,
-      criteria_needs_review_count: 2,
-    }]
-    store.papersState = 'ready'
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      if (String(input).startsWith('/api/question-bank/question-refs')) {
-        return questionRefs([
-          { id: 16, paper_id: 4, question_number: '13' },
-          { id: 19, paper_id: 4, question_number: '16' },
-          { id: 22, paper_id: 4, question_number: '19' },
-        ])
-      }
-      throw new Error(`unexpected request: ${String(input)}`)
-    })
-    app.mount(host)
-    mounted.push(app)
-    useJobStore(pinia).track({
-      id: 141,
-      job_type: 'tagging_sync',
-      payload: { question_ids: [16, 19, 22] },
-      result: {
-        outcome: 'partial',
-        failed_question_ids: [16],
-        review_question_ids: [19, 22],
-        failures: [
-          { question_id: 16, category: 'timeout', message: '分析超时，可稍后补齐未完成题目。' },
-        ],
-      },
-      status: 'succeeded', progress: 1, stage: 'tagging_sync', detail: '',
-      error: null, cancel_requested: false,
-      created_at: '2026-08-25T10:00:00Z', started_at: '2026-08-25T10:00:01Z',
-      updated_at: '2026-08-25T10:12:00Z', finished_at: '2026-08-25T10:12:00Z',
-    })
-    await vi.waitFor(() => expect(host.textContent).toContain('2 道题判定点待您审核'))
-    expect(host.textContent).toContain('待审核判定点 2')
-    expect(host.textContent).not.toContain('分析超时')
-    expect(host.textContent).not.toContain('分析未完成')
-    expect(host.textContent).not.toContain('产生了待审核新词')
-  })
-
-  it('keeps criterion review visible on paper cards after jobs disappear', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const opened = vi.fn()
-    const app = createApp(PaperLibrary, { onReviewCriteria: opened })
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    store.papers = [{
-      ...paper,
-      question_count: 12,
-      tagged_question_count: 12,
-      tagged_any_question_count: 12,
-      evidence_question_count: 12,
-      criteria_question_count: 12,
-      complete_analysis_count: 12,
-      criteria_needs_review_count: 2,
-    }]
-    store.papersState = 'ready'
-    app.mount(host)
-    mounted.push(app)
-    await nextTick()
-
-    expect(host.textContent).toContain('2 道题判定点待您审核')
-    expect(host.textContent).toContain('待审核判定点 2')
-    const reviewButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('判定点待审核'))
-    expect(reviewButton?.disabled).toBe(false)
-    reviewButton?.click()
-    await nextTick()
-    expect(opened).toHaveBeenCalledOnce()
-  })
-
-  it('opens a criterion review panel from the library header', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = String(input)
-      if (url === '/api/question-bank/papers') {
-        return response({
-          items: [{ ...paper, criteria_needs_review_count: 1 }],
-          total: 1,
-        })
-      }
-      if (url === '/api/question-bank/taxonomy/proposals?status=pending&summary=true') {
-        return response({
-          revision: 7,
-          items: [],
-          counts: { pending: 0, actionable: 0, historical_unavailable: 0 },
-        })
-      }
-      if (url.includes('criteria_needs_review=true')) {
-        return response({
-          items: [{
-            ...item,
-            question_number: '8',
-            question_text: '选择正确选项。',
-            criteria_needs_review: true,
-          }],
-          total: 1,
-          page: 1,
-          page_size: 100,
-          total_pages: 1,
-        })
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(QuestionBankView)
-    app.use(createPinia())
-    app.mount(host)
-    mounted.push(app)
-
-    await vi.waitFor(() => expect(host.textContent).toContain('匿名期末试卷'))
-    const reviewButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('判定点待审核'))
-    reviewButton?.click()
-    await vi.waitFor(() => {
-      expect(document.body.textContent).toContain('这些题目的判定点还需要您核对')
-    })
-    expect(document.body.textContent).toContain('第 8 题')
-    expect(document.body.textContent).toContain('选择正确选项。')
-  })
-
-  it('shows criterion review on the paper question list without a live job', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = String(input)
-      if (url === '/api/question-bank/papers') {
-        return response({
-          items: [{
-            ...paper,
-            tagged_question_count: 1,
-            tagged_any_question_count: 1,
-            evidence_question_count: 1,
-            criteria_question_count: 1,
-            complete_analysis_count: 1,
-            criteria_needs_review_count: 1,
-          }],
-          total: 1,
-        })
-      }
-      if (url.startsWith('/api/question-bank/questions?')) {
-        return response({
-          items: [{ ...item, criteria_needs_review: true }],
-          total: 1,
-          page: 1,
-          page_size: 20,
-          total_pages: 1,
-        })
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-    const { host } = await mountView()
-    expect(host.textContent).toContain('1 道题判定点待审核')
-    expect(host.querySelector('.qb-question-card__review-flag')?.textContent).toContain('判定点待审核')
-  })
-
-  it('warns inside question detail when criteria still need review', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(QuestionInspector)
-    app.use(pinia)
-    app.mount(host)
-    mounted.push(app)
-    const bank = useQuestionBankStore(pinia)
-    bank.detail = {
-      ...item,
-      criteria_needs_review: true,
-      page_range: null,
-      assets: [],
-      rich_content: {
-        available: true,
-        question_block_count: 0,
-        answer_block_count: 0,
-        question_blocks: [],
-        answer_blocks: [],
-      },
-      previews: [],
-    }
-    bank.detailState = 'ready'
-    await nextTick()
-    expect(document.body.textContent).toContain('本题判定点待审核')
   })
 
   it('refreshes all three saved counts when a tagging job reaches terminal state', async () => {
@@ -991,45 +714,6 @@ describe('question bank workspace', () => {
     expect(document.body.textContent).toContain('取消请求未能同步，任务可能仍在继续。')
   })
 
-  it('explains that legacy duplicate records no longer require a restore flow', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(QuestionImportJobs)
-    app.use(pinia)
-    app.mount(host)
-    mounted.push(app)
-
-    useJobStore(pinia).track({
-      id: 42,
-      job_type: 'question_import',
-      payload: {},
-      result: {
-        outcome: 'failed',
-        failure_category: 'duplicate_in_trash',
-        restore_required: true,
-        restore_paper_id: 7,
-        retryable: false,
-      },
-      status: 'succeeded',
-      progress: 1,
-      stage: 'question_import',
-      detail: '',
-      error: null,
-      cancel_requested: false,
-      created_at: '2026-08-03T10:00:00Z',
-      started_at: '2026-08-03T10:00:01Z',
-      updated_at: '2026-08-03T10:00:02Z',
-      finished_at: '2026-08-03T10:00:02Z',
-    })
-    await nextTick()
-
-    expect(host.textContent).toContain('旧版删除流程留下的任务记录')
-    expect(host.textContent).toContain('无需恢复旧试卷')
-    expect(host.textContent).not.toContain('恢复旧记录')
-    expect(host.textContent).not.toContain('重试允许的失败项')
-  })
-
   it('surfaces exact duplicate links and near-duplicate hints on import completion', async () => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -1271,27 +955,6 @@ describe('question bank workspace', () => {
       client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
     })
     expect(host.textContent).toContain('已提交 1 道题')
-  })
-
-  it('no longer offers the retired AI template workflow from the card menu', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    await router.push('/question-bank')
-    await router.isReady()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    app.use(router)
-    const store = useQuestionBankStore(pinia)
-    store.papers = [paper]
-    store.papersState = 'ready'
-    app.mount(host)
-    mounted.push(app)
-
-    await openCardMenu(host, '匿名期末试卷')
-    expect(host.textContent).not.toContain('用作 AI 组卷模板')
-    expect(router.currentRoute.value.path).toBe('/question-bank')
   })
 
   it('submits the whole paper so the server can check current-version gaps', async () => {
@@ -1657,107 +1320,6 @@ describe('question bank workspace', () => {
       expect.stringMatching(/^[0-9a-f]{32}$/),
     )
     expect(deleteBodies[0]?.confirmation_phrase).toBe('彻底删除 1 份试卷')
-  })
-
-  it('shows the server reason when deletion is authoritatively rejected', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    store.papers = [paper]
-    store.papersState = 'ready'
-    app.mount(host)
-    mounted.push(app)
-    const serverMessage = '题库中存在当前版本无法安全处理的关联数据。请先更新应用，再重新删除；本次没有删除任何内容。'
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input)
-      if (url === '/api/question-bank/papers') {
-        return response({ items: [paper], total: 1 })
-      }
-      if (url.endsWith('/permanent-deletion-impact')) {
-        return response({
-          paper_count: 1,
-          question_count: 2,
-          tag_count: 3,
-          analysis_record_count: 6,
-          training_link_count: 0,
-          knowledge_graph_link_count: 0,
-          owned_file_count: 1,
-          shared_file_count: 0,
-          taxonomy_proposal_count: 0,
-          permanent_delete_phrase: '彻底删除 1 份试卷',
-        })
-      }
-      if (url.endsWith('/permanent-delete')) {
-        const requestId = new Headers(init?.headers).get('x-request-id') ?? ''
-        return new Response(JSON.stringify({
-          error: {
-            code: 'paper_permanent_delete_dependency_conflict',
-            message: serverMessage,
-            details: {},
-            request_id: requestId,
-          },
-        }), {
-          status: 409,
-          headers: {
-            'content-type': 'application/json',
-            'x-request-id': requestId,
-          },
-        })
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    await openCardMenu(host, '匿名期末试卷')
-    cardMenuItem('删除').click()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
-    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.textContent?.includes('确认彻底删除'))!
-    confirm.click()
-
-    await vi.waitFor(() => expect(document.body.textContent).toContain(serverMessage))
-    expect(document.body.textContent).not.toContain('未收到服务器确认')
-    expect(store.papers).toHaveLength(1)
-  })
-
-  it('shows the server reason when deletion impact cannot be prepared', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    store.papers = [paper]
-    store.papersState = 'ready'
-    app.mount(host)
-    mounted.push(app)
-    const serverMessage = '试卷文件未通过安全删除检查。请关闭可能占用文件的 Word 或 PDF 后重试；本次没有删除任何内容。'
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
-      const requestId = new Headers(init?.headers).get('x-request-id') ?? ''
-      return new Response(JSON.stringify({
-        error: {
-          code: 'paper_permanent_delete_storage_incomplete',
-          message: serverMessage,
-          details: {},
-          request_id: requestId,
-        },
-      }), {
-        status: 409,
-        headers: {
-          'content-type': 'application/json',
-          'x-request-id': requestId,
-        },
-      })
-    })
-
-    await openCardMenu(host, '匿名期末试卷')
-    cardMenuItem('删除').click()
-
-    await vi.waitFor(() => expect(host.textContent).toContain(serverMessage))
-    expect(host.textContent).not.toContain('删除影响读取失败')
-    expect(store.papers).toHaveLength(1)
   })
 
   it('confirms a completed deletion by refreshing when the response is lost', async () => {

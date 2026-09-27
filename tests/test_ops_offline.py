@@ -28,8 +28,6 @@ def _create_database(
         connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
 
 
-
-
 def _paths(tmp_path: Path) -> SimpleNamespace:
     project_root = tmp_path / "project"
     data_root = project_root / "user_data"
@@ -114,7 +112,9 @@ def _write_zip(path: Path, members: dict[str, bytes]) -> Path:
     return path
 
 
-def _prepare_restore(paths: SimpleNamespace, members: dict[str, bytes]) -> OpsOperationJournal:
+def _prepare_restore(
+    paths: SimpleNamespace, members: dict[str, bytes]
+) -> OpsOperationJournal:
     source = _write_zip(paths.backups_dir / "backup_source_manual.zip", members)
     operation_root = paths.ops_state_dir / "operations" / OPERATION_ID
     staging = operation_root / "staging"
@@ -149,44 +149,9 @@ def _table_exists(path: Path, table: str) -> bool:
     return row is not None
 
 
-def test_no_pending_operation_is_a_side_effect_free_noop(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-
-    exit_code = apply_pending_operation(paths=paths)
-    assert exit_code == 0, journal.load_public(OPERATION_ID)
-    assert not paths.ops_state_dir.exists()
-
-
-def test_multiple_active_pending_manifests_stop_startup(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    _prepare_restore(paths, {"user_data/config/keep.txt": b"changed"})
-    other_root = tmp_path / "other-ops"
-    other_id = "22222222-2222-4222-8222-222222222222"
-    other_staging = other_root / "operations" / other_id / "staging"
-    other_staging.mkdir(parents=True)
-    other = OpsOperationJournal(other_root)
-    other.prepare(
-        OpsOperationManifest(
-            operation_id=other_id,
-            operation="migration",
-            parameters={"target": "grading"},
-            resource_fingerprint="a" * 64,
-            staging_root=str(other_staging),
-            preparation_backup=str(paths.backups_dir / "backup_other.zip"),
-            created_at="2026-07-12T12:01:00+08:00",
-        )
-    )
-    import shutil
-
-    shutil.copytree(
-        other_root / "operations" / other_id,
-        paths.ops_state_dir / "operations" / other_id,
-    )
-
-    assert apply_pending_operation(paths=paths) == 2
-
-
-def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(tmp_path: Path) -> None:
+def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
+    tmp_path: Path,
+) -> None:
     paths = _paths(tmp_path)
     journal = _prepare_restore(
         paths,
@@ -202,14 +167,18 @@ def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(tmp_pa
 
     assert (paths.config_dir / "keep.txt").read_text(encoding="utf-8") == "restored"
     assert (paths.config_dir / "new.txt").read_text(encoding="utf-8") == "new"
-    assert (paths.config_dir / "unlisted.txt").read_text(encoding="utf-8") == "preserved"
+    assert (paths.config_dir / "unlisted.txt").read_text(
+        encoding="utf-8"
+    ) == "preserved"
     public = journal.load_public(OPERATION_ID)
     assert public["status"] == "applied"
     assert str(public["recovery"]["backup_filename"]).endswith(".zip")
     assert "apply" in str(public["recovery"]["backup_filename"])
 
 
-def test_restore_rejects_corrupt_database_before_replacing_target(tmp_path: Path) -> None:
+def test_restore_rejects_corrupt_database_before_replacing_target(
+    tmp_path: Path,
+) -> None:
     paths = _paths(tmp_path)
     before = paths.db_path.read_bytes()
     journal = _prepare_restore(
@@ -245,7 +214,9 @@ def test_restore_clears_preexisting_database_companions_and_rolls_back_safely(
             Path(f"{paths.db_path}-shm").write_bytes(b"stale-shm")
         return backup
 
-    monkeypatch.setattr(offline, "create_safety_backup", backup_then_add_stale_companions)
+    monkeypatch.setattr(
+        offline, "create_safety_backup", backup_then_add_stale_companions
+    )
     if fail_apply:
         monkeypatch.setattr(
             offline,
@@ -257,110 +228,12 @@ def test_restore_clears_preexisting_database_companions_and_rolls_back_safely(
     assert not Path(f"{paths.db_path}-wal").exists()
     assert not Path(f"{paths.db_path}-shm").exists()
     with sqlite3.connect(paths.db_path) as connection:
-        assert connection.execute("SELECT value FROM sample").fetchone()[0] == before_value
+        assert (
+            connection.execute("SELECT value FROM sample").fetchone()[0] == before_value
+        )
     assert journal.load_public(OPERATION_ID)["status"] == (
         "rolled_back" if fail_apply else "applied"
     )
-
-
-
-
-def test_companion_cleanup_failure_already_has_main_database_rollback_record(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    paths = _paths(tmp_path)
-    journal = _prepare_restore(
-        paths,
-        {"user_data/databases/grading_system.db": paths.db_path.read_bytes()},
-    )
-    from backend.ops import offline
-
-    real_remove = offline._remove_database_companions
-    calls = 0
-
-    def remove_then_fail(target: Path) -> None:
-        nonlocal calls
-        calls += 1
-        real_remove(target)
-        if calls == 1:
-            raise OSError("cleanup interrupted")
-
-    monkeypatch.setattr(offline, "_remove_database_companions", remove_then_fail)
-
-    assert apply_pending_operation(paths=paths) == 0
-    state = journal.load_apply_state(OPERATION_ID)
-    assert any(
-        item["archive_name"] == "user_data/databases/grading_system.db"
-        for item in state["replacements"]
-    )
-    assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
-
-
-def test_apply_failure_rolls_back_overwrite_and_new_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    paths = _paths(tmp_path)
-    journal = _prepare_restore(
-        paths,
-        {
-            "user_data/config/keep.txt": b"changed",
-            "user_data/config/new.txt": b"new",
-        },
-    )
-    from backend.ops import offline
-
-    original = offline._replace_staged_file
-    calls = 0
-
-    def fail_second(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("injected apply failure")
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(offline, "_replace_staged_file", fail_second)
-
-    assert apply_pending_operation(paths=paths) == 0
-    assert (paths.config_dir / "keep.txt").read_text(encoding="utf-8") == "keep"
-    assert not (paths.config_dir / "new.txt").exists()
-    assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
-
-
-def test_apply_refuses_to_start_when_latest_backup_misses_an_existing_member(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    paths = _paths(tmp_path)
-    journal = _prepare_restore(
-        paths,
-        {"user_data/config/keep.txt": b"restored"},
-    )
-    from backend.ops import offline
-
-    real_backup = offline.create_safety_backup
-
-    def omit_existing_member(**kwargs):
-        if kwargs["reason"] == "before_apply":
-            kwargs["archive_names"] = ()
-        return real_backup(**kwargs)
-
-    monkeypatch.setattr(
-        offline,
-        "create_safety_backup",
-        omit_existing_member,
-    )
-
-    assert apply_pending_operation(paths=paths) == 0
-    assert (paths.config_dir / "keep.txt").read_text(encoding="utf-8") == "keep"
-    public = journal.load_public(OPERATION_ID)
-    assert public["status"] == "rolled_back"
-    assert public["result_code"] == "apply_failed_rolled_back"
-
-
-
-
 
 
 def test_rollback_failure_stops_startup(

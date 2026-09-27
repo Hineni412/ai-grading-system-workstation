@@ -54,7 +54,7 @@
 
 ## 6. 验证
 
-- 相关测试：`tests/test_retag_contract.py`、`tests/phase4/`（derived_ownership、combined_question_analysis、solution_evidence_semantics、evidence_point_knowledge_links）、`tests/phase7/`、`tests/test_question_bank_ai_tagging_quality.py`、`tests/test_tagging_batch_attempts.py`、`tests/test_tagging_sync_job.py`、`tests/test_taxonomy_governance.py`、`tests/test_session_question_bank_sync_job.py`、`tests/test_api_question_bank_routes.py`、个性化推荐与组卷相关测试。
+- 相关测试：`tests/test_retag_contract.py`、`tests/phase4/`（combined_question_analysis、solution_evidence_semantics）、`tests/phase7/`、`tests/test_tagging_sync_job.py`、`tests/test_session_question_bank_sync_job.py`、`tests/test_api_question_bank_routes.py`、个性化推荐与组卷相关测试。
 - 已知与本方案无关的既有失败：`tests/phase4/test_part_assessment_mastery.py::test_real_diagnosis_dependency_path_keeps_original_assets_and_forms_groups`；`tests/test_question_bank_paper_trash.py::test_permanent_delete_handles_every_current_fk_child_of_a_complete_analysis`（迁移 042 新增的外键子表未列入该测试白名单，属错因改造一侧）。
 
 ## 7. 并行与授权提醒

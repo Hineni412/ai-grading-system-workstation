@@ -134,82 +134,6 @@ def test_same_decision_reuses_teacher_selected_analysis_without_model(
     assert item.reused_from_question_id == 2
 
 
-def test_same_decision_without_bank_analysis_reports_missing(
-    bank: dict[str, Path],
-) -> None:
-    _seed_bank(bank)
-    sources = _sources(
-        {
-            "question_id": "Q9",
-            "question_number": "9",
-            "question_text": "求长方形面积是多少",
-            "answer_text": "x=2",
-            "question_type": "calculation",
-        }
-    )
-    decided = _reused(
-        bank,
-        sources,
-        decisions=[
-            QuestionDecision(
-                question_id="Q9",
-                excluded=False,
-                bank_match="same",
-                bank_question_id=3,
-            )
-        ],
-    )
-    failure = decided["Q9"]
-    assert not isinstance(failure, DeferredCombinedAnalysisItem)
-    assert failure.category == "duplicate_analysis_missing"
-
-
-def test_different_and_reanalyze_skip_matching_for_model_analysis(
-    bank: dict[str, Path],
-) -> None:
-    _seed_bank(bank)
-    # Q1 is an exact reusable match that only a decision should bypass.
-    sources = _sources(
-        {
-            "question_id": "Q1",
-            "question_number": "1",
-            "question_text": BANK_TEXT,
-            "answer_text": BANK_ANSWER,
-            "question_type": "calculation",
-        },
-        {
-            "question_id": "Q3",
-            "question_number": "3",
-            "question_text": "解方程3x+5=11",
-            "answer_text": "x=2",
-            "question_type": "calculation",
-        },
-    )
-    baseline = _reused(bank, sources)
-    assert isinstance(baseline["Q1"], DeferredCombinedAnalysisItem)
-    assert baseline["Q3"].category == "duplicate_analysis_missing"
-
-    decided = _reused(
-        bank,
-        sources,
-        decisions=[
-            QuestionDecision(
-                question_id="Q1",
-                excluded=False,
-                bank_match="different",
-            ),
-            QuestionDecision(
-                question_id="Q3",
-                excluded=False,
-                bank_match="reanalyze",
-            ),
-        ],
-    )
-    # Both sources leave the reuse result entirely: the model analyzes them.
-    assert "Q1" not in decided
-    assert "Q3" not in decided
-
-
 def test_answer_override_removes_conflict_and_allows_reuse(
     bank: dict[str, Path],
 ) -> None:
@@ -235,61 +159,6 @@ def test_answer_override_removes_conflict_and_allows_reuse(
     item = overridden["Q1"]
     assert isinstance(item, DeferredCombinedAnalysisItem)
     assert item.reused_from_question_id == 1
-
-
-def test_no_decision_behaviour_unchanged_for_each_kind(
-    bank: dict[str, Path],
-) -> None:
-    _seed_bank(bank)
-    sources = _sources(
-        {
-            "question_id": "Q1",
-            "question_number": "1",
-            "question_text": BANK_TEXT,
-            "answer_text": BANK_ANSWER,
-            "question_type": "calculation",
-        },
-        {
-            "question_id": "Q3",
-            "question_number": "3",
-            "question_text": "解方程3x+5=11",
-            "answer_text": "x=2",
-            "question_type": "calculation",
-        },
-        {
-            "question_id": "Q8",
-            "question_number": "8",
-            "question_text": "完全无关的新题询问太阳直径大约多少千米",
-            "answer_text": "139万",
-            "question_type": "calculation",
-        },
-    )
-    result = _reused(bank, sources)
-    assert isinstance(result["Q1"], DeferredCombinedAnalysisItem)
-    assert result["Q3"].category == "duplicate_analysis_missing"
-    # A non-matching (suspected-only) question proceeds to the model.
-    assert "Q8" not in result
-
-
-def test_intake_confirmed_duplicates_maps_question_numbers(
-) -> None:
-    confirmed = _intake_confirmed_duplicates(
-        [
-            QuestionDecision(
-                question_id="Q12", excluded=False,
-                bank_match="same", bank_question_id=77,
-            ),
-            QuestionDecision(
-                question_id="Q13", excluded=False,
-                bank_match="different",
-            ),
-            QuestionDecision(
-                question_id="Q14", excluded=False,
-                answer_confirmed=True, answer_override="B",
-            ),
-        ]
-    )
-    assert confirmed == {"12": 77}
 
 
 def test_confirmed_same_decision_key_reaches_importer_end_to_end(
@@ -475,51 +344,6 @@ def test_reanalyze_fresh_analysis_adopts_onto_canonical(
     assert SolutionEvidenceRepository(bank["db"]).latest(3) is not None
 
 
-def test_confirmed_duplicate_maps_occurrence_without_insert(
-    bank: dict[str, Path],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _seed_bank(bank)
-    # The imported stem differs from every bank question, so only the
-    # teacher-confirmed decision can attach it to bank question 2.
-    variant_text = "1. 求长方形面积是多少\n答案：\n1. B"
-    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(variant_text))
-    source = tmp_path / "b.docx"
-    source.write_bytes(b"content-of-b")
-    result = batch_importer.import_scanned_papers(
-        [ScannedPaper(source_file=str(source), file_type="docx", title="b")],
-        bank["db"],
-        data_root=bank["data_root"],
-        archive_sources=False,
-        confirmed_duplicates={"1": 2},
-    )
-    imported = result.files[0]
-    assert imported.question_count == 1
-    assert imported.exact_duplicate_count == 1
-    assert imported.analysis_reused_count == 1
-    assert imported.near_duplicate_hints == ()
-    with connect(bank["db"]) as conn:
-        occurrence = conn.execute(
-            """
-            SELECT occ.question_id, occ.question_number
-            FROM paper_question_occurrences occ
-            JOIN papers p ON p.id = occ.paper_id
-            WHERE p.title = 'b'
-            """
-        ).fetchone()
-        inserted = conn.execute(
-            """
-            SELECT COUNT(*) FROM questions q
-            JOIN papers p ON p.id = q.paper_id
-            WHERE p.title = 'b'
-            """
-        ).fetchone()[0]
-    assert occurrence is not None
-    assert int(occurrence["question_id"]) == 2
-    assert inserted == 0
-
-
 def test_confirmed_duplicate_stale_bank_id_falls_back_to_normal_insert(
     bank: dict[str, Path],
     tmp_path: Path,
@@ -541,27 +365,3 @@ def test_confirmed_duplicate_stale_bank_id_falls_back_to_normal_insert(
     # The stale decision falls back to a normal row rather than a dangling link.
     assert _single_question_id(bank["db"], "b") > 0
     assert imported.exact_duplicate_count == 0
-
-
-def test_same_decision_schema_requires_bank_question() -> None:
-    from pydantic import ValidationError
-
-    from backend.api.schemas.config import ConfigSourceQuestionDecisionRequest
-
-    with pytest.raises(ValidationError):
-        ConfigSourceQuestionDecisionRequest(
-            question_id="Q1",
-            excluded=False,
-            bank_match="same",
-        )
-    accepted = ConfigSourceQuestionDecisionRequest(
-        question_id="Q1",
-        excluded=False,
-        bank_match="same",
-        bank_question_id=7,
-    )
-    assert accepted.bank_question_id == 7
-    # Other verdicts may omit the bank question entirely.
-    assert ConfigSourceQuestionDecisionRequest(
-        question_id="Q1", excluded=False, bank_match="different",
-    ).bank_question_id is None

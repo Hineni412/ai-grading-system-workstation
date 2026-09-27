@@ -2041,6 +2041,13 @@ class QuestionBankReadService:
             previews = _load_question_previews(conn, int(question_id))
             revision = question_revision(conn, int(question_id))
             review_ids = _load_criteria_needs_review_ids(conn, [int(question_id)])
+            from question_bank.services.error_pattern_service import (
+                list_patterns, preferred_active_patterns,
+            )
+
+            pattern_rows = preferred_active_patterns(list_patterns(
+                conn, [int(question_id)], statuses=("confirmed", "candidate")
+            )[int(question_id)])
 
         item = self._public_question_with_rich_content(
             row,
@@ -2048,6 +2055,33 @@ class QuestionBankReadService:
             revision=revision,
         )
         item["criteria_needs_review"] = int(question_id) in review_ids
+        item["error_patterns"] = [
+            {
+                "id": int(pattern["id"]),
+                "category": pattern["category"],
+                "pattern": pattern["pattern"],
+                "explanation": pattern["explanation"],
+                "trigger_kind": pattern["trigger_kind"],
+                "trigger_value": pattern["trigger_value"],
+                "status": pattern["status"],
+                "source": pattern["source"],
+                "has_evidence": bool(pattern["occurrences"]),
+            }
+            for pattern in pattern_rows if pattern.get("id") is not None
+        ]
+        from backend.error_patterns import (
+            extract_canonical_option, normalize_option_answer, parse_option_letters,
+        )
+
+        correct = normalize_option_answer(row["answer_text"]) or extract_canonical_option(
+            row["answer_text"]
+        )
+        item["wrong_option_letters"] = (
+            [letter for letter in parse_option_letters(row["question_text"]) if letter != correct]
+            if str(row["question_type"] or "").strip() in {
+                "choice", "single_choice", "选择题", "单选题",
+            } else []
+        )
         item["page_range"] = row["page_range"]
         item["assets"] = [
             {

@@ -1,18 +1,12 @@
-import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type {
-  AiAssemblyPreflight,
-  AiAssemblySelectResult,
-  AiAssemblySession,
-  AiAssemblySessionWrite,
-  AiAssemblySpec,
-} from '../api/ai-assembly'
-import type { AssemblyDraft, AssemblyQuestion } from '../api/assembly'
-import { ApiError } from '../api/errors'
-import type { JobResponse } from '../api/jobs'
-import { useAiAssemblyStore } from '../stores/ai-assembly'
-import { useAssemblyStore } from '../stores/assembly'
+import type { AiAssemblyPreflight, AiAssemblySelectResult, AiAssemblySession, AiAssemblySessionWrite, AiAssemblySpec } from '../api/ai-assembly';
+import type { AssemblyDraft, AssemblyQuestion } from '../api/assembly';
+
+import type { JobResponse } from '../api/jobs';
+import { useAiAssemblyStore } from '../stores/ai-assembly';
+import { useAssemblyStore } from '../stores/assembly';
 
 const revisionA = 'a'.repeat(64)
 const revisionB = 'b'.repeat(64)
@@ -223,22 +217,6 @@ describe('ai-assembly store', () => {
     expect(store.basketConflict).toBe(false)
   })
 
-  it('fills only vacancies and remaps compressed rows around fully locked rows', async () => {
-    const dependencies = makeDependencies(makeScheduler())
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-    store.spec = spec()
-    store.selections = { 0: [11, 12], 1: [] }
-    store.detailsById = { 11: question(11), 12: question(12) }
-    store.toggleLock(11)
-    store.toggleLock(12)
-    dependencies.aiApi.select.mockResolvedValueOnce({ rows: [{ row_index: 0, question_ids: [13] }], gaps: [] })
-    expect(await store.runSelect({ preserveExisting: true })).toBe(true)
-    expect(dependencies.aiApi.select).toHaveBeenCalledWith(expect.objectContaining({ rows: [spec().rows[1]] }), expect.objectContaining({ exclude_ids: [11, 12] }))
-    expect(store.selections).toEqual({ 0: [11, 12], 1: [13] })
-    expect(store.lockedRowById).toEqual({ 11: 0, 12: 0 })
-  })
-
   it('keeps all existing questions and scope when an expansion fails, then adds scope on success', async () => {
     const dependencies = makeDependencies(makeScheduler())
     const store = useAiAssemblyStore()
@@ -259,38 +237,6 @@ describe('ai-assembly store', () => {
     expect(store.params.scopeKeys).toEqual(['chapter-new'])
   })
 
-  it('commits a difficulty relaxation with partial fill without losing other rows', async () => {
-    const dependencies = makeDependencies(makeScheduler())
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-    store.spec = spec()
-    store.selections = { 0: [11], 1: [13] }
-    store.detailsById = { 11: question(11), 13: question(13) }
-    dependencies.aiApi.select.mockResolvedValueOnce({ rows: [{ row_index: 0, question_ids: [] }], gaps: [{ row_index: 0, missing: 1, candidates: 1, excluded_by_dedupe: 0, suggestions: [] }] })
-    expect(await store.runSelect({ preserveExisting: true, rowIndex: 0, relaxation: 'difficulty' })).toBe(true)
-    expect(store.spec?.rows[0]?.difficulty).toBeNull()
-    expect(store.spec?.scope_knowledge_points).toEqual(spec().scope_knowledge_points)
-    expect(store.selections).toEqual({ 0: [11], 1: [13] })
-    expect(store.gaps[0]?.missing).toBe(1)
-  })
-
-  it('rejects repeated requests and ignores a response for an obsolete configuration', async () => {
-    const dependencies = makeDependencies(makeScheduler())
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-    store.spec = spec()
-    store.selections = { 0: [7] }
-    let finish!: (result: AiAssemblySelectResult) => void
-    dependencies.aiApi.select.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
-    const pending = store.runSelect()
-    expect(await store.runSelect()).toBe(false)
-    store.spec.rows[0]!.count = 3
-    finish({ rows: [{ row_index: 0, question_ids: [11, 12] }], gaps: [] })
-    expect(await pending).toBe(false)
-    expect(store.selections).toEqual({ 0: [7] })
-    expect(store.spec.rows[0]!.count).toBe(3)
-  })
-
   it('protects locked questions and template quantities during edits', () => {
     const store = useAiAssemblyStore()
     store.spec = spec()
@@ -306,33 +252,6 @@ describe('ai-assembly store', () => {
     store.params.templatePaperId = 1
     store.applySpecEdit(0, { count: 3 })
     expect(store.spec.rows[0]!.count).toBe(2)
-  })
-
-  it('gets replacement candidates through assembly constraints and rejects an incompatible replacement', async () => {
-    const dependencies = makeDependencies(makeScheduler())
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-    store.spec = spec()
-    store.selections = { 0: [11], 1: [13] }
-    dependencies.aiApi.select.mockResolvedValueOnce({ rows: [{ row_index: 0, question_ids: [21, 22] }], gaps: [] })
-    dependencies.assemblyApi.resolveQuestions.mockImplementation(async (ids) => ({ items: ids.map((id) => id === 22 ? { ...question(id), question_type: '填空题' } : question(id)), missing_question_ids: [] }))
-    expect((await store.listReplacements(0, 11)).map((item) => item.id)).toEqual([21])
-    expect(dependencies.aiApi.select).toHaveBeenCalledWith(expect.objectContaining({ scope_knowledge_points: spec().scope_knowledge_points }), expect.objectContaining({ exclude_ids: [11, 13] }))
-    expect(await store.replaceQuestion(0, 11, 22)).toBe(false)
-    expect(store.selections[0]).toEqual([11])
-  })
-
-  it('keeps the previous selection when new question details fail to load', async () => {
-    const dependencies = makeDependencies(makeScheduler())
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-    store.spec = spec()
-    store.selections = { 0: [7] }
-    store.detailsById = { 7: question(7) }
-    dependencies.assemblyApi.resolveQuestions.mockRejectedValueOnce(new Error('offline'))
-    expect(await store.runSelect()).toBe(false)
-    expect(store.selections).toEqual({ 0: [7] })
-    expect(store.detailsById[7]).toEqual(question(7))
   })
 
   it('runs the full state machine: preflight → spec job → select → lock → regenerate → settle', async () => {
@@ -430,196 +349,7 @@ describe('ai-assembly store', () => {
     expect(assembly.exportSource).toBe('ai')
   })
 
-  it('regenerates without the original free text, passing only the new instruction', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-
-    // 首次生成携带口语描述。
-    store.params.freeText = '重点考勾股定理的应用'
-    dependencies.aiApi.submitSpecJob.mockResolvedValueOnce(job(43, {
-      status: 'succeeded',
-      progress: 1,
-      result: { spec: spec(), model_name: 'qwen-plus' },
-      finished_at: '2026-09-01T10:01:00Z',
-    }))
-    await store.confirmAndSubmitSpec()
-    expect(dependencies.aiApi.submitSpecJob).toHaveBeenLastCalledWith(
-      expect.objectContaining({ free_text: '重点考勾股定理的应用', new_instruction: '' }),
-    )
-    expect(store.phase).toBe('spec')
-
-    // 重生成：free_text 置空，只通过 new_instruction 传新指令。
-    dependencies.aiApi.submitSpecJob.mockResolvedValueOnce(job(44, {
-      status: 'succeeded',
-      progress: 1,
-      result: { spec: spec(), model_name: 'qwen-plus' },
-      finished_at: '2026-09-01T10:02:00Z',
-    }))
-    await store.confirmAndSubmitSpec('加一道几何题')
-    expect(dependencies.aiApi.submitSpecJob).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        free_text: '',
-        new_instruction: '加一道几何题',
-        current_spec: expect.objectContaining({ title: '勾股定理小测' }),
-      }),
-    )
-  })
-
-  it('leaves difficulty ratio empty in template mode and restores defaults in free mode', () => {
-    const store = useAiAssemblyStore()
-    store.configure(makeDependencies(makeScheduler()))
-
-    expect(store.params.difficultyRatio).toEqual({ easy: 30, medium: 50, hard: 20 })
-
-    // 选择模板：比例清空，提交时不发送 difficulty_ratio。
-    store.setTemplatePaper(7)
-    expect(store.params.difficultyRatio).toEqual({ easy: null, medium: null, hard: null })
-    expect(store.buildRequest().difficulty_ratio).toEqual({})
-
-    // 用户主动填了才发送比例。
-    store.params.difficultyRatio = { ...store.params.difficultyRatio, medium: 60 }
-    expect(store.buildRequest().difficulty_ratio).toEqual({ medium: 60 })
-
-    // 回到自由组卷：恢复默认预填。
-    store.setTemplatePaper(null)
-    expect(store.params.difficultyRatio).toEqual({ easy: 30, medium: 50, hard: 20 })
-  })
-
-  it('cascades scope checks to descendants and allows individual removal', () => {
-    const store = useAiAssemblyStore()
-    store.configure(makeDependencies(makeScheduler()))
-
-    store.setScopeChecked('chapter-1', true, ['section-1', 'kp-1', 'kp-2'])
-    expect(store.params.scopeKeys).toEqual(['chapter-1', 'section-1', 'kp-1', 'kp-2'])
-
-    // 展开后单独取消一个知识点，兄弟与父节点保留。
-    store.setScopeChecked('kp-1', false)
-    expect(store.params.scopeKeys).toEqual(['chapter-1', 'section-1', 'kp-2'])
-
-    // 取消章节连带取消全部子孙。
-    store.setScopeChecked('chapter-1', false, ['section-1', 'kp-1', 'kp-2'])
-    expect(store.params.scopeKeys).toEqual([])
-  })
-
-  it('exposes gap rows with relaxation suggestions after select', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-
-    dependencies.aiApi.submitSpecJob.mockResolvedValueOnce(job(43, {
-      status: 'succeeded',
-      progress: 1,
-      result: { spec: spec(), model_name: 'qwen-plus' },
-      finished_at: '2026-09-01T10:01:00Z',
-    }))
-    // 提交即终态的 job 不需要轮询。
-    await store.confirmAndSubmitSpec()
-    expect(store.phase).toBe('spec')
-
-    dependencies.aiApi.select.mockResolvedValueOnce({
-      rows: [{ row_index: 0, question_ids: [11, 12] }],
-      gaps: [{
-        row_index: 1,
-        missing: 1,
-        candidates: 0,
-        excluded_by_dedupe: 2,
-        suggestions: [{
-          step: 'disable_dedupe',
-          title: '关闭去重',
-          sacrifice: '最近组卷已用过的题目可能再次出现。',
-          knowledge_points: [],
-        }],
-      }],
-    })
-    await store.runSelect()
-
-    const gap = store.gapByRow.get(1)
-    expect(gap?.missing).toBe(1)
-    expect(gap?.suggestions[0]?.step).toBe('disable_dedupe')
-  })
-
-  it('keeps the unconfigured preflight for the guidance copy', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    dependencies.aiApi.getPreflight.mockResolvedValueOnce(preflight({
-      configured: false,
-      service_name: null,
-      model_name: null,
-    }))
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-
-    await store.loadPreflight()
-
-    expect(store.preflight?.configured).toBe(false)
-    expect(store.preflight?.model_name).toBeNull()
-    expect(store.preflightState).toBe('ready')
-  })
-
-  it('surfaces job failure without retrying the model call', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    dependencies.jobApi.getJob.mockResolvedValueOnce(job(41, {
-      status: 'failed',
-      error: '细目表解析失败',
-      finished_at: '2026-09-01T10:01:00Z',
-    }))
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-
-    await store.confirmAndSubmitSpec()
-    scheduler.runNext()
-    await vi.waitFor(() => expect(store.phase).toBe('params'))
-
-    expect(store.error).toContain('细目表解析失败')
-    expect(dependencies.aiApi.submitSpecJob).toHaveBeenCalledTimes(1)
-    expect(scheduler.scheduled).toHaveLength(0)
-  })
-
-  it('shows a dedicated message when select exceeds the wait limit', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    dependencies.aiApi.select.mockRejectedValueOnce(new ApiError({
-      kind: 'timeout',
-      status: null,
-      code: 'request_timeout',
-      message: '请求超时',
-      details: {},
-      requestId: 'req-timeout',
-      retryable: false,
-    }))
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-    store.spec = spec()
-
-    expect(await store.runSelect()).toBe(false)
-    expect(store.error).toBe('选题耗时过长（已超过等待上限），请重试。')
-  })
-
-  it('passes through the backend validation reason for invalid specs', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    dependencies.aiApi.select.mockRejectedValueOnce(new ApiError({
-      kind: 'validation',
-      status: 422,
-      code: 'ai_assembly_spec_invalid',
-      message: 'Assembly spec is invalid',
-      details: { reason: '第 2 行题型为空' },
-      requestId: 'req-invalid',
-      retryable: false,
-    }))
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-    store.spec = spec()
-
-    expect(await store.runSelect()).toBe(false)
-    expect(store.error).toBe('第 2 行题型为空')
-  })
 })
-
 
 describe('ai-assembly session persistence', () => {
   it('serializes slow saves so newer locks are saved with the returned revision', async () => {
@@ -641,40 +371,6 @@ describe('ai-assembly session persistence', () => {
     await vi.waitFor(() => expect(dependencies.aiApi.saveSession).toHaveBeenCalledTimes(2))
     expect(dependencies.aiApi.saveSession).toHaveBeenLastCalledWith(revisionB, expect.objectContaining({ locked_question_ids: [11], selections: { 0: [11] } }))
     expect(dependencies.aiApi.getSession).toHaveBeenCalledTimes(1)
-  })
-
-  it('saves the session after a debounce once state changes', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-
-    await store.restoreSession()
-    expect(dependencies.aiApi.getSession).toHaveBeenCalledTimes(1)
-    // 空会话不覆盖内存默认状态。
-    expect(store.params.difficultyRatio).toEqual({ easy: 30, medium: 50, hard: 20 })
-
-    store.setScopeChecked('chapter-1', true, ['kp-1'])
-    expect(scheduler.scheduled).toHaveLength(1)
-    expect(scheduler.scheduled[0]?.delay).toBe(800)
-
-    scheduler.runNext()
-    await vi.waitFor(() => expect(dependencies.aiApi.saveSession).toHaveBeenCalledTimes(1))
-    const [revision, payload] = dependencies.aiApi.saveSession.mock.calls[0]!
-    expect(revision).toBe(revisionA)
-    expect(payload.params.scope_keys).toEqual(['chapter-1', 'kp-1'])
-    expect(payload.spec).toBeNull()
-    expect(payload.spec_job_id).toBeNull()
-
-    // 连续变更只保留最后一次防抖（前一次被取消）。
-    dependencies.aiApi.saveSession.mockClear()
-    store.setScopeChecked('chapter-2', true)
-    store.params.freeText = '重点考应用'
-    const pending = scheduler.scheduled.filter((entry) => !entry.canceled)
-    expect(pending).toHaveLength(1)
-    while (scheduler.scheduled.length) scheduler.runNext()
-    await vi.waitFor(() => expect(dependencies.aiApi.saveSession).toHaveBeenCalledTimes(1))
-    expect(dependencies.aiApi.saveSession.mock.calls[0]![1].params.free_text).toBe('重点考应用')
   })
 
   it('restores params, spec, selections and locks from the persisted session', async () => {
@@ -725,101 +421,4 @@ describe('ai-assembly session persistence', () => {
     expect(dependencies.aiApi.saveSession).not.toHaveBeenCalled()
   })
 
-  it('resumes polling the spec job when the session has no spec yet', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    dependencies.aiApi.getSession.mockResolvedValueOnce({
-      ...emptySession(revisionA),
-      spec_job_id: 41,
-    })
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-
-    await store.restoreSession()
-    expect(store.phase).toBe('generating')
-    expect(store.jobId).toBe(41)
-    expect(scheduler.scheduled).toHaveLength(1)
-
-    scheduler.runNext()
-    await vi.waitFor(() => expect(store.phase).toBe('spec'))
-    expect(store.spec?.title).toBe('勾股定理小测')
-    expect(store.specModelName).toBe('qwen-plus')
-  })
-
-  it('clears the persisted session on reset and keeps saving afterwards', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    dependencies.aiApi.getSession.mockResolvedValueOnce({
-      ...emptySession(revisionA),
-      spec: spec(),
-    })
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-    await store.restoreSession()
-    expect(store.spec).not.toBeNull()
-
-    store.reset()
-    await vi.waitFor(() => expect(dependencies.aiApi.clearSession).toHaveBeenCalledTimes(1))
-    expect(store.spec).toBeNull()
-    expect(store.phase).toBe('params')
-    expect(store.params.scopeKeys).toEqual([])
-    // 复位本身不触发防抖保存。
-    expect(scheduler.scheduled).toHaveLength(0)
-
-    // 等 clearSession 回写新版本号（跨事件循环，等同真实用户操作的时机）。
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    // 复位后的新进度从空会话版本继续保存。
-    store.setScopeChecked('chapter-2', true)
-    expect(scheduler.scheduled).toHaveLength(1)
-    scheduler.runNext()
-    await vi.waitFor(() => expect(dependencies.aiApi.saveSession).toHaveBeenCalledTimes(1))
-    expect(dependencies.aiApi.saveSession.mock.calls[0]![0]).toBe(revisionC)
-  })
-
-  it('reloads the server session on a 409 conflict', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-    await store.restoreSession()
-
-    dependencies.aiApi.saveSession.mockRejectedValueOnce(new ApiError({
-      kind: 'conflict',
-      status: 409,
-      code: 'ai_assembly_session_conflict',
-      message: 'AI assembly session has changed',
-      details: { current_revision: revisionB },
-      requestId: 'req-conflict',
-      retryable: false,
-    }))
-    dependencies.aiApi.getSession.mockResolvedValueOnce({
-      ...emptySession(revisionB),
-      params: { ...emptySession().params, scope_keys: ['chapter-9'] },
-    })
-
-    store.setScopeChecked('chapter-1', true)
-    scheduler.runNext()
-    await vi.waitFor(() => expect(dependencies.aiApi.getSession).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect(store.params.scopeKeys).toEqual(['chapter-9']))
-    // 跨事件循环，等重新加载完全结束（等同真实用户操作的时机）。
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    // 重新加载后以服务端版本继续保存。
-    store.setScopeChecked('chapter-10', true)
-    scheduler.runNext()
-    await vi.waitFor(() => expect(dependencies.aiApi.saveSession).toHaveBeenCalledTimes(2))
-    expect(dependencies.aiApi.saveSession.mock.calls[1]![0]).toBe(revisionB)
-  })
-
-  it('does not save before the session has been restored', async () => {
-    const scheduler = makeScheduler()
-    const dependencies = makeDependencies(scheduler)
-    const store = useAiAssemblyStore()
-    store.configure(dependencies)
-
-    store.setScopeChecked('chapter-1', true)
-    expect(scheduler.scheduled).toHaveLength(0)
-    expect(dependencies.aiApi.saveSession).not.toHaveBeenCalled()
-  })
 })

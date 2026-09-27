@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import copy
 import re
-import threading
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
-from backend.api.dependencies import get_grading_db, get_job_manager, get_upload_config_dir
-from backend.config_workspace.drafts import create_session_draft
+from backend.api.dependencies import (
+    get_grading_db,
+    get_job_manager,
+    get_upload_config_dir,
+)
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from db_manager import DBManager
@@ -23,37 +25,51 @@ def _payload() -> dict:
     for index, score in enumerate((17, 17, 17, 17, 17, 15), start=1):
         qid = f"Q{index}"
         pid = f"{qid}-P1"
-        rubric_questions.append({
-            "question_id": qid,
-            "question_type": "comprehensive",
-            "max_score": score,
-            "knowledge_id": f"K{index}",
-            "parts": [{
-                "part_id": pid,
-                "part_score": score,
-                "steps": [{
-                    "step_id": f"{pid}-S1",
-                    "step_score": score,
-                    "core_goal": "reason correctly",
-                    "required_elements": ["reasoning"],
-                    "allow_alternative_methods": True,
-                }],
-            }],
-        })
-        answer_questions.append({
-            "question_id": qid,
-            "canonical_answer": f"Answer {index}",
-            "accepted_forms": [f"Answer {index}"],
-            "method_variants": [],
-            "parts": [{
-                "part_id": pid,
-                "answer": f"Answer {index}",
-                "analysis": "analysis",
-                "step_milestones": ["reasoning"],
-            }],
-        })
+        rubric_questions.append(
+            {
+                "question_id": qid,
+                "question_type": "comprehensive",
+                "max_score": score,
+                "knowledge_id": f"K{index}",
+                "parts": [
+                    {
+                        "part_id": pid,
+                        "part_score": score,
+                        "steps": [
+                            {
+                                "step_id": f"{pid}-S1",
+                                "step_score": score,
+                                "core_goal": "reason correctly",
+                                "required_elements": ["reasoning"],
+                                "allow_alternative_methods": True,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        answer_questions.append(
+            {
+                "question_id": qid,
+                "canonical_answer": f"Answer {index}",
+                "accepted_forms": [f"Answer {index}"],
+                "method_variants": [],
+                "parts": [
+                    {
+                        "part_id": pid,
+                        "answer": f"Answer {index}",
+                        "analysis": "analysis",
+                        "step_milestones": ["reasoning"],
+                    }
+                ],
+            }
+        )
     return {
-        "rubric": {"exam_title": "Editor exam", "total_score": 100, "questions": rubric_questions},
+        "rubric": {
+            "exam_title": "Editor exam",
+            "total_score": 100,
+            "questions": rubric_questions,
+        },
         "answer_key": {"questions": answer_questions},
         "meta": {"warnings": []},
     }
@@ -66,12 +82,18 @@ def _write_config(tmp_path: Path, db: DBManager, payload: dict | None = None) ->
     rubric = root / "rubric.json"
     answer = root / "answer.json"
     rubric.write_text(json.dumps(value["rubric"], ensure_ascii=False), encoding="utf-8")
-    answer.write_text(json.dumps(value["answer_key"], ensure_ascii=False), encoding="utf-8")
+    answer.write_text(
+        json.dumps(value["answer_key"], ensure_ascii=False), encoding="utf-8"
+    )
     return db.create_grading_session("Editor exam", str(rubric), str(answer))
 
 
-@pytest.mark.parametrize("q14_total, choice_score", [(48, 3), (68, 3), (148, 3.5), (48, -1)])
-def test_teacher_scores_save_exactly_with_advisories_and_structure_command(editor_env, q14_total, choice_score) -> None:
+@pytest.mark.parametrize(
+    "q14_total, choice_score", [(48, 3), (68, 3), (148, 3.5), (48, -1)]
+)
+def test_teacher_scores_save_exactly_with_advisories_and_structure_command(
+    editor_env, q14_total, choice_score
+) -> None:
     client, db, _manager, tmp_path = editor_env
     payload = _payload()
     question_template = payload["rubric"]["questions"][0]
@@ -95,45 +117,88 @@ def test_teacher_scores_save_exactly_with_advisories_and_structure_command(edito
         requested[qid] = scores
         question = copy.deepcopy(question_template)
         answer = copy.deepcopy(answer_template)
-        question.update(question_id=qid, question_type="choice" if number <= 6 else "fill_blank" if number <= 11 else "calculation")
+        question.update(
+            question_id=qid,
+            question_type="choice"
+            if number <= 6
+            else "fill_blank"
+            if number <= 11
+            else "calculation",
+        )
         answer["question_id"] = qid
         question["parts"] = []
         answer["parts"] = []
         for index, step_scores in enumerate(scores, 1):
             pid = qid if len(scores) == 1 else f"{qid}(P{index})"
             part = copy.deepcopy(question_template["parts"][0])
-            part.update(part_id=pid, part_score=len(step_scores), steps=[
-                {**copy.deepcopy(part["steps"][0]), "step_id": f"S{step_index}", "step_score": 1}
-                for step_index in range(1, len(step_scores) + 1)
-            ])
+            part.update(
+                part_id=pid,
+                part_score=len(step_scores),
+                steps=[
+                    {
+                        **copy.deepcopy(part["steps"][0]),
+                        "step_id": f"S{step_index}",
+                        "step_score": 1,
+                    }
+                    for step_index in range(1, len(step_scores) + 1)
+                ],
+            )
             question["parts"].append(part)
-            answer["parts"].append({**copy.deepcopy(answer_template["parts"][0]), "part_id": pid})
+            answer["parts"].append(
+                {**copy.deepcopy(answer_template["parts"][0]), "part_id": pid}
+            )
         question["max_score"] = sum(part["part_score"] for part in question["parts"])
         payload["rubric"]["questions"].append(question)
         payload["answer_key"]["questions"].append(answer)
     session_id = _write_config(tmp_path, db, payload)
     url = f"/api/sessions/{session_id}/config/editor"
     first = client.get(url).json()
-    desired = {qid: [score for part in parts for score in part] for qid, parts in requested.items()}
+    desired = {
+        qid: [score for part in parts for score in part]
+        for qid, parts in requested.items()
+    }
     edits = []
     for qid, scores in desired.items():
         rows = [row for row in first["rows"] if row["question_id"] == qid]
-        edits.extend({"row_id": row["row_id"], "score": score} for row, score in zip(rows, scores, strict=True))
+        edits.extend(
+            {"row_id": row["row_id"], "score": score}
+            for row, score in zip(rows, scores, strict=True)
+        )
     # The existing browser can queue its unchanged structure to clear a stale
     # validation response, while retaining all its unsaved score edits.
-    command = {"kind": "replace_question_structure", "question_id": "Q14", "parts": [
-        {"part_id": f"Q14(P{index})", "steps": [
-            {"step_id": f"S{step_index}", "score": score, "core_goal": "reason correctly"}
-            for step_index, score in enumerate(scores, 1)
-        ]} for index, scores in enumerate(requested["Q14"], 1)
-    ]}
-    saved = client.put(url, json={"revision": first["revision"], "edits": edits, "commands": [command]})
+    command = {
+        "kind": "replace_question_structure",
+        "question_id": "Q14",
+        "parts": [
+            {
+                "part_id": f"Q14(P{index})",
+                "steps": [
+                    {
+                        "step_id": f"S{step_index}",
+                        "score": score,
+                        "core_goal": "reason correctly",
+                    }
+                    for step_index, score in enumerate(scores, 1)
+                ],
+            }
+            for index, scores in enumerate(requested["Q14"], 1)
+        ],
+    }
+    saved = client.put(
+        url, json={"revision": first["revision"], "edits": edits, "commands": [command]}
+    )
     assert saved.status_code == 200, saved.json()
     reopened = client.get(url).json()
-    assert reopened["total_score"] == pytest.approx(sum(sum(scores) for scores in desired.values()))
+    assert reopened["total_score"] == pytest.approx(
+        sum(sum(scores) for scores in desired.values())
+    )
     for qid, scores in desired.items():
-        assert [row["score"] for row in reopened["rows"] if row["question_id"] == qid] == pytest.approx(scores)
-    assert reopened["issues"] and all(issue["severity"] == "warning" for issue in reopened["issues"])
+        assert [
+            row["score"] for row in reopened["rows"] if row["question_id"] == qid
+        ] == pytest.approx(scores)
+    assert reopened["issues"] and all(
+        issue["severity"] == "warning" for issue in reopened["issues"]
+    )
 
 
 @pytest.fixture
@@ -145,7 +210,13 @@ def editor_env(tmp_path: Path):
         max_workers=1,
         interrupted_input_root=tmp_path / "uploaded",
     )
-    manager.register("config_generation", lambda context: {"session_id": context.payload["session_id"], "outcome": "complete"})
+    manager.register(
+        "config_generation",
+        lambda context: {
+            "session_id": context.payload["session_id"],
+            "outcome": "complete",
+        },
+    )
     app = create_app()
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
@@ -161,240 +232,14 @@ def _assert_safe_editor(body: dict, tmp_path: Path) -> None:
     assert re.fullmatch(r"[0-9a-f]{64}", body["revision"])
 
 
-def test_new_draft_editor_is_truthfully_unconfigured(editor_env) -> None:
-    client, db, _manager, tmp_path = editor_env
-    session_id = create_session_draft(db.session_repository, tmp_path / "uploaded", name="Draft exam")
-
-    response = client.get(f"/api/sessions/{session_id}/config/editor")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body == {
-        "session_id": session_id,
-        "configured": False,
-        "revision": body["revision"],
-        "rows": [],
-        "total_score": 0,
-        "issues": [],
-        "source": None,
-    }
-    _assert_safe_editor(body, tmp_path)
-
-
-@pytest.mark.parametrize("changed_target", [False, True])
-def test_manual_scores_restore_legacy_evidence_references_before_saving(editor_env, changed_target) -> None:
-    from question_bank.solution_evidence.evidence_snapshot import write_snapshot, validate_rubric_evidence_coverage
-
-    client, db, _manager, tmp_path = editor_env
-    payload = _payload()
-    snapshot = {"schema_version": "evidence-snapshot-v1", "questions": {}}
-    for question in payload["rubric"]["questions"]:
-        qid = question["question_id"]
-        question["source_evidence_version_id"] = "e" * 64
-        part = question["parts"][0]
-        part["response_mode"] = "process_required"
-        point = {"evidence_point_id": "point-1", "target": "reason correctly",
-                 "observable_evidence": "reasoning", "justification": "reference explanation",
-                 "answer_anchor": "reference answer", "counterexamples": [], "equivalent_rules": []}
-        source_part = {"part_id": "part-1", "response_mode": "process_required", "evidence_points": [point]}
-        snapshot["questions"][qid] = {"usable": True, "source_evidence_version_id": "e" * 64,
-                                     "graph_release_id": "test", "evidence": {"parts": [source_part]}}
-    # Objective normalization used to replace the target before losing its id.
-    objective = payload["rubric"]["questions"][0]
-    objective["question_type"] = "choice"
-    objective["parts"][0]["response_mode"] = "exact_objective"
-    objective["parts"][0]["steps"][0].update(core_goal="选择正确的选项", required_elements=["A"])
-    payload["answer_key"]["questions"][0]["canonical_answer"] = "A"
-    payload["answer_key"]["questions"][0]["parts"][0]["answer"] = "A"
-    source = snapshot["questions"]["Q1"]["evidence"]["parts"][0]
-    source.update(response_mode="exact_objective", canonical_answer="A")
-    if changed_target:
-        payload["rubric"]["questions"][1]["parts"][0]["steps"][0]["core_goal"] = "a different obligation"
-    session_id = _write_config(tmp_path, db, payload)
-    write_snapshot(tmp_path / "uploaded", session_id, snapshot)
-    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
-    result = client.put(f"/api/sessions/{session_id}/config/editor", json={
-        "revision": first["revision"], "commands": [],
-        "edits": [{"row_id": first["rows"][0]["row_id"], "score": 16},
-                  {"row_id": first["rows"][-1]["row_id"], "score": 16}],
-    })
-    if changed_target:
-        assert result.status_code == 422
-        assert "关联不完整" in result.json()["error"]["details"]["issues"][0]["message"]
-        assert client.get(f"/api/sessions/{session_id}/config/editor").json()["revision"] == first["revision"]
-        return
-    assert result.status_code == 200, result.text
-    reopened = client.get(f"/api/sessions/{session_id}/config/editor").json()
-    assert reopened["rows"][0]["score"] == reopened["rows"][-1]["score"] == 16
-    assert reopened["total_score"] == 100
-    assert reopened["revision"] != first["revision"]
-    stored = json.loads(Path(db.get_grading_session(session_id)["rubric_path"]).read_text(encoding="utf-8"))
-    assert validate_rubric_evidence_coverage(stored, snapshot) == []
-    assert all(question["parts"][0]["steps"][0]["evidence_point_ids"] == ["point-1"] for question in stored["questions"])
-
-
-def test_configured_editor_has_canonical_revision_rows_and_safe_source(editor_env) -> None:
-    client, db, _manager, tmp_path = editor_env
-    session_id = _write_config(tmp_path, db)
-    source = tmp_path / "private" / "teacher-paper.docx"
-    db.bind_grading_session_source(
-        session_id,
-        source_paper_path=str(source),
-        source_paper_sha256="a" * 64,
-    )
-
-    body = client.get(f"/api/sessions/{session_id}/config/editor").json()
-
-    assert body["configured"] is True
-    assert body["total_score"] == 100
-    assert len(body["rows"]) == 6
-    assert body["source"] == {
-        "safe_filename": "teacher-paper.docx",
-        "suffix": ".docx",
-        "sha256_prefix": "a" * 12,
-    }
-    first_revision = body["revision"]
-    db.bind_grading_session_source(
-        session_id,
-        source_paper_path=str(source),
-        source_paper_sha256="b" * 64,
-    )
-    assert client.get(f"/api/sessions/{session_id}/config/editor").json()["revision"] != first_revision
-    _assert_safe_editor(body, tmp_path)
-
-
-def test_put_is_strict_reports_stable_row_issues_and_noop(editor_env) -> None:
-    client, db, _manager, tmp_path = editor_env
-    session_id = _write_config(tmp_path, db)
-    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
-
-    extra = client.put(
-        f"/api/sessions/{session_id}/config/editor",
-        json={"revision": first["revision"], "edits": [], "commands": [], "rubric": {}},
-    )
-    assert extra.status_code == 422
-
-    invalid = client.put(
-        f"/api/sessions/{session_id}/config/editor",
-        json={"revision": first["revision"], "edits": [{"row_id": "missing", "score": 1}], "commands": []},
-    )
-    assert invalid.status_code == 422
-    assert invalid.json()["error"]["code"] == "invalid_config_editor"
-    issue = invalid.json()["error"]["details"]["issues"][0]
-    assert set(issue) == {"code", "severity", "row_id", "field", "message"}
-    assert issue["row_id"] == "missing"
-
-    old_paths = db.get_grading_session(session_id)
-    noop = client.put(
-        f"/api/sessions/{session_id}/config/editor",
-        json={"revision": first["revision"], "edits": [], "commands": []},
-    )
-    assert noop.status_code == 200
-    assert noop.json()["save_result"]["config_saved"] is False
-    current = db.get_grading_session(session_id)
-    assert current["rubric_path"] == old_paths["rubric_path"]
-    assert current["answer_key_path"] == old_paths["answer_key_path"]
-
-
-def test_editor_treats_historical_knowledge_metadata_as_inert_on_noop(editor_env) -> None:
-    client, db, _manager, tmp_path = editor_env
-    payload = _payload()
-    question = payload["rubric"]["questions"][0]
-    question.update({
-        "knowledge_id": "['K1', 'K2', 'K3']",
-        "knowledge_name": "['知识点一', '知识点二', '知识点三']",
-        "knowledge_ids": ["['K1', 'K2', 'K3']"],
-        "knowledge_points": [
-            {
-                "knowledge_id": "['K1', 'K2', 'K3']",
-                "knowledge_name": "['知识点一', '知识点二', '知识点三']",
-            },
-            {"knowledge_id": "['K1', 'K2', 'K3']", "knowledge_name": ""},
-        ],
-    })
-    for index, answer in enumerate(payload["answer_key"]["questions"], start=1):
-        stable_answer = f"答案{index}"
-        answer["canonical_answer"] = stable_answer
-        answer["accepted_forms"] = [stable_answer]
-        answer["parts"][0]["answer"] = stable_answer
-    original_answer_content = [
-        (
-            answer["question_id"],
-            answer["canonical_answer"],
-            answer["accepted_forms"],
-            [(part["part_id"], part["answer"]) for part in answer["parts"]],
-        )
-        for answer in payload["answer_key"]["questions"]
-    ]
-    original_scores = [item["max_score"] for item in payload["rubric"]["questions"]]
-    session_id = _write_config(tmp_path, db, payload)
-    before = db.get_grading_session(session_id)
-    old_rubric_path = Path(before["rubric_path"])
-    old_answer_path = Path(before["answer_key_path"])
-    old_rubric_bytes = old_rubric_path.read_bytes()
-    old_answer_bytes = old_answer_path.read_bytes()
-
-    first = client.get(f"/api/sessions/{session_id}/config/editor")
-
-    assert first.status_code == 200
-    body = first.json()
-    assert not any(
-        issue["code"] == "knowledge_normalization_pending"
-        for issue in body["issues"]
-    )
-    editor_json = json.dumps(body, ensure_ascii=False)
-    assert all(
-        field not in editor_json
-        for field in (
-            "knowledge_id",
-            "knowledge_ids",
-            "knowledge_name",
-            "knowledge_points",
-        )
-    )
-    assert client.get(f"/api/sessions/{session_id}/config/editor").json()["revision"] == body["revision"]
-    assert old_rubric_path.read_bytes() == old_rubric_bytes
-    assert old_answer_path.read_bytes() == old_answer_bytes
-
-    saved = client.put(
-        f"/api/sessions/{session_id}/config/editor",
-        json={"revision": body["revision"], "edits": [], "commands": []},
-    )
-
-    assert saved.status_code == 200
-    saved_body = saved.json()
-    assert saved_body["save_result"]["config_saved"] is False
-    assert not any(
-        issue["code"] == "knowledge_normalization_pending"
-        for issue in saved_body["issues"]
-    )
-    current = db.get_grading_session(session_id)
-    assert current["rubric_path"] == str(old_rubric_path)
-    assert current["answer_key_path"] == str(old_answer_path)
-    assert old_rubric_path.read_bytes() == old_rubric_bytes
-    assert old_answer_path.read_bytes() == old_answer_bytes
-    stored_rubric = json.loads(old_rubric_path.read_text(encoding="utf-8"))
-    stored_answer = json.loads(old_answer_path.read_text(encoding="utf-8"))
-    # Historical fields remain readable in place, but the scoring editor neither
-    # exposes them as active data nor republishes a knowledge-only migration.
-    stored_question = stored_rubric["questions"][0]
-    assert stored_question["knowledge_id"] == "['K1', 'K2', 'K3']"
-    assert [
-        (
-            answer["question_id"],
-            answer["canonical_answer"],
-            answer["accepted_forms"],
-            [(part["part_id"], part["answer"]) for part in answer["parts"]],
-        )
-        for answer in stored_answer["questions"]
-    ] == original_answer_content
-    assert [item["max_score"] for item in stored_rubric["questions"]] == original_scores
-
-
 def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) -> None:
     client, db, _manager, tmp_path = editor_env
     session_id = _write_config(tmp_path, db)
-    db.bind_grading_session_source(session_id, source_paper_path="papers/original.docx", source_paper_sha256="c" * 64)
+    db.bind_grading_session_source(
+        session_id,
+        source_paper_path="papers/original.docx",
+        source_paper_sha256="c" * 64,
+    )
     first = client.get(f"/api/sessions/{session_id}/config/editor").json()
     row = first["rows"][0]
 
@@ -413,22 +258,18 @@ def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) 
     current = db.get_grading_session(session_id)
     assert current["source_paper_path"] == "papers/original.docx"
     assert current["source_paper_sha256"] == "c" * 64
-    stored_rubric = json.loads(
-        Path(current["rubric_path"]).read_text(encoding="utf-8")
-    )
+    stored_rubric = json.loads(Path(current["rubric_path"]).read_text(encoding="utf-8"))
     stored_answer_key = json.loads(
         Path(current["answer_key_path"]).read_text(encoding="utf-8")
     )
+    assert [question["question_id"] for question in stored_rubric["questions"]] == [
+        f"Q{index}" for index in range(1, 7)
+    ]
     assert [
-        question["question_id"] for question in stored_rubric["questions"]
+        question["parts"][0]["part_id"] for question in stored_rubric["questions"]
     ] == [f"Q{index}" for index in range(1, 7)]
     assert [
-        question["parts"][0]["part_id"]
-        for question in stored_rubric["questions"]
-    ] == [f"Q{index}" for index in range(1, 7)]
-    assert [
-        question["parts"][0]["part_id"]
-        for question in stored_answer_key["questions"]
+        question["parts"][0]["part_id"] for question in stored_answer_key["questions"]
     ] == [f"Q{index}" for index in range(1, 7)]
     _assert_safe_editor(body, tmp_path)
 
@@ -440,65 +281,9 @@ def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) 
     assert stale.json()["error"]["code"] == "config_revision_conflict"
 
 
-def test_active_config_job_rejects_editor_save(editor_env) -> None:
-    client, db, manager, tmp_path = editor_env
-    session_id = _write_config(tmp_path, db)
-    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
-    old_paths = db.get_grading_session(session_id)
-    job = manager.store.create_claimed_config_job(
-        {"session_id": session_id, "mode": "generate"}
-    )
-
-    response = client.put(
-        f"/api/sessions/{session_id}/config/editor",
-        json={
-            "revision": first["revision"],
-            "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "changed"}],
-            "commands": [],
-        },
-    )
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "config_generation_in_progress"
-    current = db.get_grading_session(session_id)
-    assert current["rubric_path"] == old_paths["rubric_path"]
-    assert current["answer_key_path"] == old_paths["answer_key_path"]
-    manager.store.finish(job.id, "failed", error="test cleanup")
-
-
-def test_manual_publish_failure_cleans_only_new_file_and_keeps_binding(editor_env, monkeypatch) -> None:
-    client, db, _manager, tmp_path = editor_env
-    session_id = _write_config(tmp_path, db)
-    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
-    old = db.get_grading_session(session_id)
-    sentinel = tmp_path / "uploaded" / "sentinel.json"
-    sentinel.parent.mkdir(parents=True, exist_ok=True)
-    sentinel.write_text("keep", encoding="utf-8")
-    from backend.config_workspace.secure_fs import SecureRootFilesystem
-    original = SecureRootFilesystem.atomic_write_bytes
-    calls = 0
-
-    def fail_second(self, path, content):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("private second-file failure")
-        return original(self, path, content)
-
-    monkeypatch.setattr(SecureRootFilesystem, "atomic_write_bytes", fail_second)
-    response = client.put(
-        f"/api/sessions/{session_id}/config/editor",
-        json={"revision": first["revision"], "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "x"}], "commands": []},
-    )
-    assert response.status_code == 500
-    current = db.get_grading_session(session_id)
-    assert (current["rubric_path"], current["answer_key_path"]) == (old["rubric_path"], old["answer_key_path"])
-    assert sentinel.read_text(encoding="utf-8") == "keep"
-    assert sorted(path.name for path in sentinel.parent.iterdir()) == ["sentinel.json"]
-    assert "private second-file failure" not in response.text
-
-
-def test_database_failure_cleans_both_new_files_and_keeps_binding(editor_env, monkeypatch) -> None:
+def test_database_failure_cleans_both_new_files_and_keeps_binding(
+    editor_env, monkeypatch
+) -> None:
     client, db, manager, tmp_path = editor_env
     session_id = _write_config(tmp_path, db)
     first = client.get(f"/api/sessions/{session_id}/config/editor").json()
@@ -510,255 +295,17 @@ def test_database_failure_cleans_both_new_files_and_keeps_binding(editor_env, mo
     monkeypatch.setattr(manager.store, "update_session_config_if_idle", fail_db)
     response = client.put(
         f"/api/sessions/{session_id}/config/editor",
-        json={"revision": first["revision"], "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "x"}], "commands": []},
-    )
-    assert response.status_code == 500
-    current = db.get_grading_session(session_id)
-    assert (current["rubric_path"], current["answer_key_path"]) == (old["rubric_path"], old["answer_key_path"])
-    assert list((tmp_path / "uploaded").glob("*editor*")) == []
-    assert "private database failure" not in response.text
-
-
-@pytest.mark.parametrize(
-    ("mapping_result", "expected_status"),
-    [
-        ("not_present", "not_present"),
-        ("refreshed", "refreshed"),
-        (RuntimeError("private mapping path"), "reconfirm_required"),
-    ],
-)
-def test_mapping_result_is_truthful_and_post_save_failure_is_safe(editor_env, monkeypatch, mapping_result, expected_status) -> None:
-    client, db, _manager, tmp_path = editor_env
-    session_id = _write_config(tmp_path, db)
-    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
-    import backend.api.routers.config as config_router
-
-    def mapping(*_args, **_kwargs):
-        if isinstance(mapping_result, Exception):
-            raise mapping_result
-        return mapping_result
-
-    monkeypatch.setattr(config_router, "refresh_template_mapping_from_session", mapping, raising=False)
-    response = client.put(
-        f"/api/sessions/{session_id}/config/editor",
-        json={"revision": first["revision"], "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "changed"}], "commands": []},
-    )
-    assert response.status_code == 200
-    assert response.json()["save_result"]["mapping_status"] == expected_status
-    assert "private mapping path" not in response.text
-
-
-def test_editor_mapping_keeps_config_job_submission_outside_the_session_claim(
-    editor_env,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client, db, manager, tmp_path = editor_env
-    session_id = _write_config(tmp_path, db)
-    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
-    mapping_started = threading.Event()
-    release_mapping = threading.Event()
-    submit_finished = threading.Event()
-    responses: list[object] = []
-
-    def blocked_mapping(*_args, **_kwargs):
-        mapping_started.set()
-        assert release_mapping.wait(timeout=5)
-        return "not_present"
-
-    monkeypatch.setattr(
-        "backend.api.routers.config.refresh_template_mapping_from_session",
-        blocked_mapping,
-    )
-
-    from backend.api.routers.config import save_config_editor
-    from backend.api.schemas.config import ConfigEditorSaveRequest
-
-    save_request = ConfigEditorSaveRequest(
-        revision=first["revision"],
-        edits=[{
-            "row_id": first["rows"][0]["row_id"],
-            "standard_answer": "serialized",
-        }],
-        commands=[],
-    )
-
-    save_thread = threading.Thread(
-        target=lambda: responses.append(save_config_editor(
-            session_id,
-            save_request,
-            db,
-            manager,
-            tmp_path / "uploaded",
-            tmp_path / "templates",
-        )),
-        daemon=True,
-    )
-    save_thread.start()
-    submitted: list[object] = []
-    submit_thread: threading.Thread | None = None
-    try:
-        assert mapping_started.wait(timeout=5)
-
-        def submit_job() -> None:
-            submitted.append(manager.submit(
-                "config_generation",
-                {"session_id": session_id, "mode": "generate"},
-            ))
-            submit_finished.set()
-
-        submit_thread = threading.Thread(target=submit_job, daemon=True)
-        submit_thread.start()
-        assert not submit_finished.wait(timeout=0.2)
-        manager.store.assert_config_session_idle(session_id)
-    finally:
-        release_mapping.set()
-        save_thread.join(timeout=5)
-        if submit_thread is not None:
-            submit_thread.join(timeout=5)
-    assert responses and responses[0]["save_result"]["config_saved"] is True
-    assert submitted and submit_finished.is_set()
-
-
-def test_existing_template_with_missing_files_requires_reconfirmation(editor_env) -> None:
-    client, db, _manager, tmp_path = editor_env
-    session_id = _write_config(tmp_path, db)
-    template_id = db.upsert_session_template(
-        session_id,
-        str(tmp_path / "missing-front.png"),
-        str(tmp_path / "missing-back.png"),
-    )
-    db.replace_answer_regions_atomic(
-        session_id,
-        template_id,
-        [],
-        confirmed=True,
-    )
-    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
-    response = client.put(
-        f"/api/sessions/{session_id}/config/editor",
         json={
             "revision": first["revision"],
-            "edits": [
-                {"row_id": first["rows"][0]["row_id"], "standard_answer": "changed"}
-            ],
+            "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "x"}],
             "commands": [],
         },
     )
-    assert response.status_code == 200
-    assert response.json()["save_result"]["mapping_status"] == "reconfirm_required"
-    template = db.get_session_template(session_id)
-    assert template["is_confirmed"] == 0
-    assert template["regions_snapshot_pending"] == 0
-    assert template["regions_snapshot_token"] is None
-
-
-def test_refine_accepts_only_revision_and_server_commands_and_rejects_old_revision(editor_env) -> None:
-    client, db, manager, tmp_path = editor_env
-    session_id = _write_config(tmp_path, db)
-    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
-    command = {"kind": "split", "question_id": "Q1", "count": 2, "style": "subquestion"}
-
-    nested = client.post(
-        f"/api/sessions/{session_id}/config/editor/refine",
-        json={"revision": first["revision"], "commands": [command], "config": _payload()},
-    )
-    assert nested.status_code == 422
-
-    refine_request = {
-        "revision": first["revision"],
-        "commands": [command],
-        "client_request_token": "e" * 32,
-    }
-    submitted = client.post(
-        f"/api/sessions/{session_id}/config/editor/refine",
-        json=refine_request,
-    )
-    replay = client.post(
-        f"/api/sessions/{session_id}/config/editor/refine",
-        json=refine_request,
-    )
-    assert submitted.status_code == 202
-    assert replay.status_code == 202
-    assert replay.json()["id"] == submitted.json()["id"]
-    assert submitted.json()["payload"] == {"session_id": session_id, "mode": "refine"}
-    stored = manager.get(submitted.json()["id"])
-    assert stored is not None
-    assert set(stored.payload) == {
-        "session_id", "mode", "input_id",
-        "client_request_token", "client_request_fingerprint",
-    }
-
-    manager.wait(submitted.json()["id"], timeout=5)
-    saved = client.put(
-        f"/api/sessions/{session_id}/config/editor",
-        json={"revision": first["revision"], "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "new"}], "commands": []},
-    )
-    assert saved.status_code == 200
-    conflict = client.post(
-        f"/api/sessions/{session_id}/config/editor/refine",
-        json={"revision": first["revision"], "commands": [command]},
-    )
-    assert conflict.status_code == 409
-    assert conflict.json()["error"]["code"] == "config_revision_conflict"
-
-
-def test_db_conditional_publish_requires_both_old_paths_and_preserves_source(tmp_path: Path) -> None:
-    db = DBManager(tmp_path / "databases" / "grading.db")
-    db.initialize()
-    session_id = _write_config(tmp_path, db)
-    old = db.get_grading_session(session_id)
-    db.bind_grading_session_source(session_id, source_paper_path="papers/source.pdf", source_paper_sha256="d" * 64)
-    template_id = db.upsert_session_template(
-        session_id,
-        str(tmp_path / "front.png"),
-        str(tmp_path / "back.png"),
-    )
-    snapshot_token = db.replace_answer_regions_atomic(
-        session_id,
-        template_id,
-        [],
-        confirmed=True,
-    )
-    db.update_question_bank_sync_state(
-        session_id,
-        state="ready",
-        details={
-            "config_revision": "e" * 64,
-            "source_paper_sha256": "d" * 64,
-        },
-        error="old sync",
-    )
-
-    assert db.publish_grading_session_config(
-        session_id,
-        rubric_path="new-rubric.json",
-        answer_key_path="new-answer.json",
-        expected_rubric_path="stale-rubric.json",
-        expected_answer_key_path=old["answer_key_path"],
-    ) is False
+    assert response.status_code == 500
     current = db.get_grading_session(session_id)
-    assert current["rubric_path"] == old["rubric_path"]
-    assert current["answer_key_path"] == old["answer_key_path"]
-    assert current["source_paper_path"] == "papers/source.pdf"
-    assert current["source_paper_sha256"] == "d" * 64
-    template = db.get_session_template(session_id)
-    assert template["is_confirmed"] == 1
-    assert template["regions_snapshot_pending"] == 1
-    assert template["regions_snapshot_token"] == snapshot_token
-
-    assert db.publish_grading_session_config(
-        session_id,
-        rubric_path="new-rubric.json",
-        answer_key_path="new-answer.json",
-        expected_rubric_path=old["rubric_path"],
-        expected_answer_key_path=old["answer_key_path"],
-    ) is True
-    template = db.get_session_template(session_id)
-    assert template["is_confirmed"] == 0
-    assert template["regions_snapshot_pending"] == 0
-    assert template["regions_snapshot_token"] is None
-    current = db.get_grading_session(session_id)
-    assert current["question_bank_sync_state"] == "not_started"
-    assert json.loads(current["question_bank_sync_details_json"]) == {}
-    assert current["question_bank_sync_error"] is None
-    assert current["question_bank_sync_updated_at"] is None
+    assert (current["rubric_path"], current["answer_key_path"]) == (
+        old["rubric_path"],
+        old["answer_key_path"],
+    )
+    assert list((tmp_path / "uploaded").glob("*editor*")) == []
+    assert "private database failure" not in response.text

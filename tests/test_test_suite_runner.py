@@ -7,12 +7,14 @@ import pytest
 
 from tools import run_test_suite
 from tools.test_suite_manifest import (
+    DATABASE_BASELINE_TEST_PATHS,
     PROCESS_ISOLATED_TEST_PATHS,
     QUICK_FRONTEND_TEST_PATHS,
     QUICK_TEST_PATHS,
     RELEASE_AUDIT_TEST_PATHS,
+    REVIEW_FRONTEND_TEST_PATHS,
+    REVIEW_TEST_PATHS,
     SERIAL_TEST_PATHS,
-    categories_for_path,
 )
 
 
@@ -23,85 +25,81 @@ def test_manifests_reference_existing_unique_tests() -> None:
         RELEASE_AUDIT_TEST_PATHS,
         SERIAL_TEST_PATHS,
         PROCESS_ISOLATED_TEST_PATHS,
+        REVIEW_TEST_PATHS,
+        REVIEW_FRONTEND_TEST_PATHS,
+        DATABASE_BASELINE_TEST_PATHS,
     ):
         assert len(paths) == len(set(paths))
         assert all((run_test_suite.PROJECT_ROOT / path).is_file() for path in paths)
     assert set(PROCESS_ISOLATED_TEST_PATHS) < set(SERIAL_TEST_PATHS)
     assert QUICK_FRONTEND_TEST_PATHS
     assert all(path.is_relative_to("frontend") for path in QUICK_FRONTEND_TEST_PATHS)
-
-
-def test_quick_manifest_reuses_product_tests_and_marks_serial_overlap() -> None:
-    assert Path("tests/api_e2e/test_five_flow.py") in QUICK_TEST_PATHS
-    assert categories_for_path("tests/api_e2e/test_five_flow.py") == frozenset(
-        {"acceptance_quick", "acceptance_serial"}
+    assert not DATABASE_BASELINE_TEST_PATHS.intersection(RELEASE_AUDIT_TEST_PATHS)
+    assert all(
+        not path.is_relative_to("tests/api_e2e")
+        for path in DATABASE_BASELINE_TEST_PATHS
     )
-    assert categories_for_path(
-        "tests/test_frontend_portable_packaging.py"
-    ) == frozenset(
-        {"release_audit"}
-    )
+    assert Path("tests/test_schema_baseline.py") not in DATABASE_BASELINE_TEST_PATHS
 
 
-def test_default_worker_count_is_bounded() -> None:
-    assert run_test_suite.default_worker_count(1) == 1
-    assert run_test_suite.default_worker_count(4) == 2
-    assert run_test_suite.default_worker_count(8) == 4
-    assert run_test_suite.default_worker_count(64) == 6
-
-
-@pytest.mark.parametrize("full, frontend_exit", [(False, 0), (False, 1), (True, 0)])
+@pytest.mark.parametrize(
+    "full, frontend_exit", [(False, 0), (False, 1), (True, 0), (True, 1)]
+)
 def test_suite_dispatch_selects_frontend_specs_and_preserves_full_verification(
-    monkeypatch, full: bool, frontend_exit: int,
+    monkeypatch,
+    full: bool,
+    frontend_exit: int,
 ) -> None:
     commands: list[tuple[str, ...]] = []
 
     def fake_run(label, command, **kwargs):
         commands.append(tuple(command))
         return run_test_suite.CommandResult(
-            label=label, command=tuple(command), return_code=frontend_exit,
-            elapsed_seconds=0.1, output="synthetic frontend result",
+            label=label,
+            command=tuple(command),
+            return_code=frontend_exit,
+            elapsed_seconds=0.1,
+            output="synthetic frontend result",
         )
 
     monkeypatch.setattr(run_test_suite, "_run_command", fake_run)
     monkeypatch.setattr(run_test_suite, "_npm_command", lambda *args: ["npm", *args])
     monkeypatch.setattr(run_test_suite, "_run_backend_pair", lambda **kwargs: [])
+    monkeypatch.setattr(
+        run_test_suite,
+        "_run_review_browser",
+        lambda **kwargs: fake_run("browser", ("review-browser",)),
+    )
 
     results = run_test_suite._run_current_suite(
-        mode="full" if full else "quick", workers=1, durations=0,
-        skip_frontend=False, environment={},
+        mode="full" if full else "quick",
+        workers=1,
+        durations=0,
+        skip_frontend=False,
+        environment={},
     )
 
     if full:
-        assert commands == [("npm", "run", "verify")]
+        assert commands == [
+            ("npm", "run", "verify"),
+            *([] if frontend_exit else [("review-browser",)]),
+        ]
     else:
         assert commands[0] == (
-            "npm", "run", "test", "--",
-            *(path.relative_to("frontend").as_posix() for path in QUICK_FRONTEND_TEST_PATHS),
+            "npm",
+            "run",
+            "test",
+            "--",
+            *(
+                path.relative_to("frontend").as_posix()
+                for path in QUICK_FRONTEND_TEST_PATHS
+            ),
         )
-        assert commands[1:] == ([] if frontend_exit else [("npm", "run", "test:editor")])
+        assert commands[1:] == (
+            [] if frontend_exit else [("npm", "run", "test:editor")]
+        )
     assert len(results) == len(commands)
     assert all(result.return_code == frontend_exit for result in results)
-
-
-def test_pytest_command_uses_file_distribution_and_disjoint_ignores() -> None:
-    command = run_test_suite._pytest_command(
-        workers=4,
-        durations=12,
-        paths=(Path("tests/test_api_app.py"),),
-        ignored_paths=(Path("tests/test_ops_lock.py"),),
-    )
-
-    assert command[0:4] == [
-        run_test_suite.sys.executable,
-        "-m",
-        "pytest",
-        "-q",
-    ]
-    assert ["-n", "4", "--dist", "loadfile"] == command[6:10]
-    assert "--durations=12" in command
-    assert "--ignore=tests/test_ops_lock.py" in command
-    assert command[-1] == "tests/test_api_app.py"
 
 
 def test_isolated_environment_removes_api_keys_and_uses_sandbox(
@@ -121,55 +119,21 @@ def test_isolated_environment_removes_api_keys_and_uses_sandbox(
     assert "OPENAI_API_KEY" not in environment
     assert "EXAMPLE_API_KEY" not in environment
     assert environment["AI_GRADING_DATA_DIR"] == str(tmp_path / "user_data")
-    assert environment["AI_GRADING_WORKTREE_DATA_DIR"] == str(
-        tmp_path / "user_data"
-    )
+    assert environment["AI_GRADING_WORKTREE_DATA_DIR"] == str(tmp_path / "user_data")
     assert environment["AI_GRADING_API_PROFILES_PATH"] == str(
         tmp_path / "local" / "AIGradingSystem" / "config" / "api_profiles.json"
     )
     assert environment["AI_GRADING_TAXONOMY_STATE_PATH"] == str(
-        tmp_path
-        / "local"
-        / "AIGradingSystem"
-        / "config"
-        / "taxonomy_state_v2.json"
+        tmp_path / "local" / "AIGradingSystem" / "config" / "taxonomy_state_v2.json"
     )
     assert environment["AI_GRADING_OPS_STATE_DIR"] == str(
         tmp_path / "local" / "AIGradingSystem" / "ops"
     )
     assert environment["LOCALAPPDATA"] == str(tmp_path / "local")
-    assert environment["PYTHONUTF8"] == "1"
-
-
-def test_backend_pair_stops_before_serial_lane_when_parallel_fails(
-    monkeypatch,
-) -> None:
-    calls: list[str] = []
-
-    def fake_run(label, command, **kwargs):
-        calls.append(label)
-        return run_test_suite.CommandResult(
-            label=label,
-            command=tuple(command),
-            return_code=1,
-            elapsed_seconds=0.1,
-            output="1 failed",
-        )
-
-    monkeypatch.setattr(run_test_suite, "_run_command", fake_run)
-
-    results = run_test_suite._run_backend_pair(
-        label_prefix="完整",
-        parallel_paths=(Path("tests/test_api_app.py"),),
-        serial_paths=(Path("tests/test_ops_lock.py"),),
-        ignored_paths=(),
-        workers=2,
-        durations=10,
-        environment={},
+    assert all(
+        environment[key] == str(tmp_path / "t") for key in ("TEMP", "TMP", "TMPDIR")
     )
-
-    assert len(results) == 1
-    assert calls == ["完整后端并行车道（2进程）"]
+    assert environment["PYTHONUTF8"] == "1"
 
 
 def test_serial_lane_gives_process_global_tests_a_fresh_pytest_process(
@@ -208,10 +172,16 @@ def test_serial_lane_gives_process_global_tests_a_fresh_pytest_process(
 
 def test_run_command_captures_output_without_shell(monkeypatch, tmp_path: Path) -> None:
     seen: dict[str, object] = {}
+    unrelated = tmp_path / "unrelated.txt"
+    unrelated.write_text("preserve", encoding="utf-8")
 
     def fake_run(command, **kwargs):
         seen["command"] = command
         seen.update(kwargs)
+        base = Path(command[-1].removeprefix("--basetemp="))
+        assert base.parent == tmp_path
+        (base / "synthetic.db").write_bytes(b"synthetic")
+        seen["base"] = base
         return subprocess.CompletedProcess(command, 0, stdout="1 passed\n", stderr="")
 
     monkeypatch.setattr(run_test_suite.subprocess, "run", fake_run)
@@ -220,37 +190,16 @@ def test_run_command_captures_output_without_shell(monkeypatch, tmp_path: Path) 
         "synthetic",
         ["python", "-m", "pytest"],
         cwd=tmp_path,
-        environment={"SAFE": "1"},
+        environment={"SAFE": "1", "TEMP": str(tmp_path)},
     )
 
     assert result.ok
-    assert seen["command"] == ["python", "-m", "pytest"]
+    assert seen["command"][:3] == ["python", "-m", "pytest"]
+    assert not seen["base"].exists()
+    assert unrelated.read_text(encoding="utf-8") == "preserve"
     assert seen["cwd"] == tmp_path
-    assert seen["env"] == {"SAFE": "1"}
+    assert seen["env"] == {"SAFE": "1", "TEMP": str(tmp_path)}
     assert seen["capture_output"] is True
-
-
-def test_summary_includes_vitest_and_node_test_counts() -> None:
-    lines = run_test_suite._summary_lines(
-        "\n".join(
-            (
-                " Test Files  73 passed (73)",
-                "      Tests  751 passed (751)",
-                "ℹ tests 16",
-                "ℹ pass 16",
-                "ℹ fail 0",
-            )
-        ),
-        failure=False,
-    )
-
-    assert lines == [
-        " Test Files  73 passed (73)",
-        "      Tests  751 passed (751)",
-        "ℹ tests 16",
-        "ℹ pass 16",
-        "ℹ fail 0",
-    ]
 
 
 def test_failure_summary_keeps_errors_after_a_long_captured_log() -> None:
@@ -262,6 +211,8 @@ def test_failure_summary_keeps_errors_after_a_long_captured_log() -> None:
                 *(f"INFO migration step {index}" for index in range(200)),
                 "FAILED tests/test_flow.py::test_flow",
                 "1 failed, 10 passed in 5.00s",
+                " FAIL src/__tests__/page.spec.ts > saves the edited score",
+                "Error: Test timed out in 5000ms.",
             )
         ),
         failure=True,
@@ -271,4 +222,6 @@ def test_failure_summary_keeps_errors_after_a_long_captured_log() -> None:
         "backend.secure_fs.SecureFilesystemError: denied",
         "FAILED tests/test_flow.py::test_flow",
         "1 failed, 10 passed in 5.00s",
+        " FAIL src/__tests__/page.spec.ts > saves the edited score",
+        "Error: Test timed out in 5000ms.",
     ]

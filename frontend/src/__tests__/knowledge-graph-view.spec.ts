@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   fetchGraph,
-  fetchRelationReviewQueue,
   type GraphResponse,
 } from '../api/graph'
 import { fetchStudents } from '../api/students'
@@ -22,7 +21,6 @@ vi.mock('../api/graph', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/graph')>(),
   fetchGraph: vi.fn(),
   fetchGraphEvidence: vi.fn(),
-  fetchRelationReviewQueue: vi.fn(),
 }))
 const fakeChart = vi.hoisted(() => ({
   setOption: vi.fn(), on: vi.fn(), off: vi.fn(), resize: vi.fn(), dispose: vi.fn(), dispatchAction: vi.fn(),
@@ -96,9 +94,6 @@ beforeEach(() => {
   vi.stubGlobal('cancelAnimationFrame', vi.fn())
   vi.mocked(fetchStudents).mockResolvedValue(students)
   vi.mocked(fetchGraph).mockImplementation(async () => responseFor())
-  vi.mocked(fetchRelationReviewQueue).mockResolvedValue({
-    status: 'suggested', items: [], total: 0, page: 1, page_size: 20, total_pages: 1,
-  })
 })
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount()

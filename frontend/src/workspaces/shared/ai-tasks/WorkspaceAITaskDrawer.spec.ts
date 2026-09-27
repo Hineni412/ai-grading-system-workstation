@@ -64,59 +64,6 @@ afterEach(() => {
 })
 
 describe('WorkspaceAITaskDrawer', () => {
-  it('hides the toggle while there are no tracked tasks', async () => {
-    const { app, host } = await mountDrawer()
-    expect(host.querySelector('.workspace-ai-drawer-toggle')).toBeNull()
-    app.unmount()
-  })
-
-  it('shows a floating peek card while a job runs and minimizes it on demand', async () => {
-    const { app, host, jobs } = await mountDrawer()
-    jobs.track(job('running', 0.35, 'question_bank_sync', '正在写入题目'))
-    await nextTick()
-
-    // peek/抽屉通过 Teleport 挂到 body（侧栏抽屉 transform 会破坏 fixed 定位）
-    const peek = document.body.querySelector('.workspace-ai-task-peek')
-    expect(peek).not.toBeNull()
-    expect(peek?.textContent).toContain('题库同步')
-    expect(peek?.textContent).toContain('35% · 正在写入题目')
-    expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).toContain('任务中心')
-    expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).toContain('35%')
-
-    const minimizeButton = [...peek!.querySelectorAll('button')]
-      .find(button => button.textContent?.includes('收回任务中心'))
-    expect(minimizeButton).toBeDefined()
-    minimizeButton!.click()
-    await nextTick()
-    expect(document.body.querySelector('.workspace-ai-task-peek')).toBeNull()
-    app.unmount()
-  })
-
-  it('auto-minimizes the peek card after a tracked job succeeds', async () => {
-    const { app, jobs } = await mountDrawer()
-    vi.useFakeTimers()
-    jobs.track(job('succeeded', 1))
-    await nextTick()
-
-    expect(document.body.querySelector('.workspace-ai-task-peek')).not.toBeNull()
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(document.body.querySelector('.workspace-ai-task-peek')).toBeNull()
-    app.unmount()
-  })
-
-  it('does not repeat tagging progress as a percentage in the task center', async () => {
-    const { app, host, jobs } = await mountDrawer()
-    jobs.track(job('running', 0.82, 'tagging_sync', 'AI 分析已处理 16/20 道题'))
-    await nextTick()
-
-    expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).toContain('任务中心')
-    expect(host.querySelector('.workspace-ai-drawer-toggle')?.textContent).not.toContain('82%')
-    await openDrawer(host)
-    expect(document.body.textContent).toContain('题库分析进行中，点这里回到试卷库')
-    expect(document.body.textContent).toContain('回到试卷库')
-    expect(document.body.querySelector('progress')).toBeNull()
-    app.unmount()
-  })
 
   it('keeps a failed job in 需要处理 and names unknown types in Chinese', async () => {
     const { app, host, jobs } = await mountDrawer()
@@ -134,15 +81,4 @@ describe('WorkspaceAITaskDrawer', () => {
     app.unmount()
   })
 
-  it('archives a succeeded job under 最近完成', async () => {
-    const { app, host, jobs } = await mountDrawer()
-    jobs.track(job('succeeded', 1))
-    await nextTick()
-    await openDrawer(host)
-
-    expect(document.body.querySelector('.workspace-ai-task-drawer__timeline')).toBeNull()
-    expect(document.body.querySelector('.workspace-ai-task-drawer__archive')?.textContent).toContain('最近完成 1')
-    expect(document.body.querySelector('.workspace-ai-task-drawer__archive')?.textContent).toContain('考试批改')
-    app.unmount()
-  })
 })

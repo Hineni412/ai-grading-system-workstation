@@ -236,21 +236,38 @@ def _build_app(
 @contextmanager
 def _temporary_path_provider(paths: BenchmarkPaths) -> Iterator[None]:
     import path_manager
+    from question_bank.taxonomy import governance
 
     with _PATH_CONTEXT_LOCK:
         original = path_manager.get_path_manager
+        original_taxonomy_paths = governance.get_path_manager
+        original_taxonomy_database = governance.question_bank_db_path
 
         def scoped_path_provider():
             explicit = _EXPLICIT_PATHS.get()
             return explicit if explicit is not None else original()
 
+        def scoped_taxonomy_paths():
+            explicit = _EXPLICIT_PATHS.get()
+            return explicit if explicit is not None else original_taxonomy_paths()
+
+        def scoped_taxonomy_database(project_root=None):
+            explicit = _EXPLICIT_PATHS.get()
+            if explicit is not None and project_root is None:
+                return explicit.qb_db_path
+            return original_taxonomy_database(project_root)
+
         path_manager.get_path_manager = scoped_path_provider
+        governance.get_path_manager = scoped_taxonomy_paths
+        governance.question_bank_db_path = scoped_taxonomy_database
         token = _EXPLICIT_PATHS.set(paths)
         try:
             yield
         finally:
             _EXPLICIT_PATHS.reset(token)
             path_manager.get_path_manager = original
+            governance.get_path_manager = original_taxonomy_paths
+            governance.question_bank_db_path = original_taxonomy_database
 
 
 def _request_id(

@@ -4,6 +4,7 @@ import argparse
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,8 @@ from tools.test_suite_manifest import (  # noqa: E402
     QUICK_FRONTEND_TEST_PATHS,
     QUICK_TEST_PATHS,
     RELEASE_AUDIT_TEST_PATHS,
+    REVIEW_FRONTEND_TEST_PATHS,
+    REVIEW_TEST_PATHS,
     SERIAL_TEST_PATHS,
 )
 
@@ -36,6 +39,7 @@ _SUMMARY_PATTERNS = (
     re.compile(r"^   Duration "),
     re.compile(r"^ℹ (?:tests|pass|fail|duration_ms) "),
 )
+_DURATION_PATTERN = re.compile(r"^\s*\d+(?:\.\d+)?s\s+(?:setup|call|teardown)\s+")
 
 
 @dataclass(frozen=True)
@@ -88,10 +92,14 @@ def _isolated_environment(sandbox_root: Path) -> dict[str, str]:
             environment.pop(key, None)
     data_root = sandbox_root / "user_data"
     local_root = sandbox_root / "local"
+    temporary_root = sandbox_root / "t"
     config_root = local_root / "AIGradingSystem" / "config"
     ops_root = local_root / "AIGradingSystem" / "ops"
     data_root.mkdir(parents=True, exist_ok=True)
     local_root.mkdir(parents=True, exist_ok=True)
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    for variable in ("TEMP", "TMP", "TMPDIR"):
+        environment[variable] = str(temporary_root)
     environment["AI_GRADING_DATA_DIR"] = str(data_root)
     environment["AI_GRADING_WORKTREE_DATA_DIR"] = str(data_root)
     environment["AI_GRADING_API_PROFILES_PATH"] = str(
@@ -115,16 +123,31 @@ def _run_command(
     environment: dict[str, str],
 ) -> CommandResult:
     print(f"[开始] {label}", flush=True)
+    command = [str(part) for part in command]
+    temporary_base = None
+    if command[1:3] == ["-m", "pytest"] and environment.get("TEMP"):
+        # Short, unique paths avoid SQLite's Windows filename limit. Nested test
+        # processes inherit TEMP, not this pytest instance's destructive basetemp.
+        temporary_base = tempfile.TemporaryDirectory(
+            prefix="p_", dir=environment["TEMP"], ignore_cleanup_errors=True,
+        )
+        command.append(f"--basetemp={temporary_base.name}")
     started = time.perf_counter()
-    completed = subprocess.run(
-        [str(part) for part in command],
-        cwd=cwd,
-        env=environment,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    finally:
+        # A finished subprocess has released Windows handles. Remove its files
+        # before the next lane instead of accumulating every lane's databases.
+        if temporary_base is not None:
+            temporary_base.cleanup()
     elapsed = time.perf_counter() - started
     output = "\n".join(
         part for part in (completed.stdout, completed.stderr) if part
@@ -151,8 +174,9 @@ def _pytest_command(
         "pytest",
         "-q",
         "--strict-markers",
-        f"--durations={durations}",
     ]
+    if durations:
+        command.append(f"--durations={durations}")
     if workers > 1:
         command.extend(["-n", str(workers), "--dist", "loadfile"])
     command.extend(f"--ignore={path.as_posix()}" for path in ignored_paths)
@@ -253,12 +277,15 @@ def _run_frontend(
     environment: dict[str, str],
 ) -> list[CommandResult]:
     if full:
-        return [_run_command(
+        verification = _run_command(
             "前端静态检查、单元测试与构建",
             _npm_command("run", "verify"),
             cwd=FRONTEND_ROOT,
             environment=environment,
-        )]
+        )
+        if not verification.ok:
+            return [verification]
+        return [verification, _run_review_browser(environment=environment)]
     selected_paths = tuple(
         (PROJECT_ROOT / path).relative_to(FRONTEND_ROOT).as_posix()
         for path in QUICK_FRONTEND_TEST_PATHS
@@ -286,6 +313,63 @@ def _split_paths(
     parallel = tuple(path for path in paths if path.as_posix() not in serial_keys)
     serial = tuple(path for path in paths if path.as_posix() in serial_keys)
     return parallel, serial
+
+
+def _run_review_suite(
+    *, workers: int, durations: int, environment: dict[str, str],
+) -> list[CommandResult]:
+    results = [_run_command(
+        "复核保存规则与原子写入",
+        _pytest_command(workers=workers, durations=durations, paths=REVIEW_TEST_PATHS),
+        cwd=PROJECT_ROOT, environment=environment,
+    )]
+    if not results[-1].ok:
+        return results
+    results.append(_run_command(
+        "复核页面草稿、确认与失败处理",
+        _npm_command("run", "test", "--", *(
+            path.relative_to("frontend").as_posix()
+            for path in REVIEW_FRONTEND_TEST_PATHS
+        )),
+        cwd=FRONTEND_ROOT, environment=environment,
+    ))
+    if not results[-1].ok:
+        return results
+
+    results.append(_run_review_browser(environment=environment))
+    return results
+
+
+def _run_review_browser(*, environment: dict[str, str]) -> CommandResult:
+    output_root = PROJECT_ROOT / "output"
+    output_root.mkdir(exist_ok=True)
+    artifacts = Path(tempfile.mkdtemp(prefix="review_browser_", dir=output_root))
+    browser_environment = environment.copy()
+    with socket.socket() as api_socket, socket.socket() as web_socket:
+        api_socket.bind(("127.0.0.1", 0))
+        web_socket.bind(("127.0.0.1", 0))
+        browser_environment["AI_GRADING_REVIEW_API_PORT"] = str(api_socket.getsockname()[1])
+        browser_environment["AI_GRADING_REVIEW_WEB_PORT"] = str(web_socket.getsockname()[1])
+    browser_environment["AI_GRADING_REVIEW_PYTHON"] = sys.executable
+    browser_environment["AI_GRADING_REVIEW_ARTIFACTS"] = str(artifacts)
+    # The test data use an isolated LOCALAPPDATA; the installed browser is read-only.
+    browser_environment["PLAYWRIGHT_BROWSERS_PATH"] = os.environ.get(
+        "PLAYWRIGHT_BROWSERS_PATH",
+        str(Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".cache"))) / "ms-playwright"),
+    )
+    # Full runs this beside backend tests, so the browser must own its data root.
+    sandbox_parent = PROJECT_ROOT / ".test-runs"
+    sandbox_parent.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="web_", dir=sandbox_parent, ignore_cleanup_errors=True) as sandbox:
+        browser_environment.update(_isolated_environment(Path(sandbox)))
+        result = _run_command(
+            "浏览器改分、重进、冲突保护与成绩一致性",
+            _npm_command("exec", "--no", "--", "playwright", "test", "--config", "playwright.review.config.ts"),
+            cwd=FRONTEND_ROOT, environment=browser_environment,
+        )
+    (artifacts / "run.log").write_text(result.output, encoding="utf-8")
+    print(f"浏览器验收截图与日志：{artifacts}", flush=True)
+    return result
 
 
 def _run_current_suite(
@@ -361,15 +445,16 @@ def _run_release_audit(
 
 def _summary_lines(output: str, *, failure: bool) -> list[str]:
     lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+    durations = [line for line in lines if _DURATION_PATTERN.match(line)]
     if failure:
         highlights: list[str] = []
         for line in lines:
             stripped = line.strip()
             if (
-                re.match(r"^(?:FAILED|ERROR)(?:\s|$)", stripped)
+                re.match(r"^(?:FAILED|FAIL|ERROR)(?:\s|$)", stripped)
                 or re.match(r"^E\s+", stripped)
                 or re.search(
-                    r"\b(?:AssertionError|[A-Za-z_][\w.]*Error|"
+                    r"\b(?:Error|AssertionError|[A-Za-z_][\w.]*Error|"
                     r"[A-Za-z_][\w.]*Exception)(?::|$)",
                     stripped,
                 )
@@ -377,13 +462,17 @@ def _summary_lines(output: str, *, failure: bool) -> list[str]:
             ):
                 if line not in highlights:
                     highlights.append(line)
-        return highlights[-120:] or lines[-120:]
+        if highlights:
+            return [*highlights[-120:], *durations]
+        return lines[-120:]
     summaries = [
         line
         for line in lines
         if any(pattern.search(line) for pattern in _SUMMARY_PATTERNS)
     ]
-    return summaries[-12:] or lines[-8:]
+    if summaries or durations:
+        return [*summaries[-12:], *durations]
+    return lines[-8:]
 
 
 def _print_results(results: Sequence[CommandResult], elapsed_seconds: float) -> None:
@@ -401,10 +490,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="AI 阅卷系统分层验收测试")
     parser.add_argument(
         "mode",
-        choices=("quick", "full", "serial", "release"),
+        choices=("quick", "full", "serial", "release", "review"),
         nargs="?",
         default="quick",
-        help="quick=日常快速；full=合并验收；serial=隔离组；release=含历史发布证据",
+        help="quick=日常快速；full=合并验收；serial=隔离组；release=含历史发布证据；review=复核保存浏览器验收",
     )
     parser.add_argument(
         "--workers",
@@ -416,7 +505,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--durations",
         type=int,
         default=10,
-        help="每条车道输出最慢用例数量，默认 10。",
+        help="每条车道输出最慢用例数量，默认 10；0 关闭耗时明细。",
     )
     parser.add_argument(
         "--skip-frontend",
@@ -428,6 +517,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--workers 必须至少为 1")
     if args.durations < 0:
         parser.error("--durations 不能为负数")
+    if args.mode == "review" and args.skip_frontend:
+        parser.error("review 包含真实浏览器操作，不能使用 --skip-frontend")
 
     _validate_paths(
         tuple(dict.fromkeys((
@@ -435,15 +526,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             *QUICK_FRONTEND_TEST_PATHS,
             *SERIAL_TEST_PATHS,
             *RELEASE_AUDIT_TEST_PATHS,
+            *REVIEW_TEST_PATHS,
+            *REVIEW_FRONTEND_TEST_PATHS,
         )))
     )
     started = time.perf_counter()
+    sandbox_parent = PROJECT_ROOT / ".test-runs"
+    sandbox_parent.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix="ai_grading_acceptance_",
+        prefix="run_",
+        dir=sandbox_parent,
         ignore_cleanup_errors=True,
     ) as sandbox_name:
         environment = _isolated_environment(Path(sandbox_name))
-        if args.mode == "serial":
+        if args.mode == "review":
+            results = _run_review_suite(
+                workers=args.workers, durations=args.durations, environment=environment,
+            )
+        elif args.mode == "serial":
             results = _run_serial_paths(
                 label="后端隔离车道",
                 paths=SERIAL_TEST_PATHS,

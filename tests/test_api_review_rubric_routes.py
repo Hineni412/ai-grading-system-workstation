@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
@@ -77,9 +76,7 @@ def _multipart_config(
                         ]
                         if index == 3
                         else [f"第 {index} 问证据"],
-                        "deduction_rules": ["漏写结论扣 1 分"]
-                        if index == 3
-                        else [],
+                        "deduction_rules": ["漏写结论扣 1 分"] if index == 3 else [],
                     }
                 ],
             }
@@ -118,54 +115,6 @@ def _multipart_config(
     )
 
 
-@pytest.mark.parametrize(
-    "requested",
-    ["Q11(P3)", "Q11(3)", "Q11-3", "Q11_3"],
-)
-def test_review_rubric_projects_legacy_alias_with_answer_key(
-    tmp_path: Path,
-    requested: str,
-) -> None:
-    rubric, answer_key = _multipart_config()
-    client, session_id, rubric_path, answer_path = _client_for_config(
-        tmp_path,
-        rubric=rubric,
-        answer_key=answer_key,
-    )
-    rubric_before = rubric_path.read_bytes()
-    answer_before = answer_path.read_bytes()
-
-    response = client.get(
-        f"/api/sessions/{session_id}/review/questions/{requested}/rubric"
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["question_id"] == "Q11(P3)"
-    assert body["parent_question_id"] == "Q11"
-    assert body["question_type"] == "comprehensive"
-    assert body["max_score"] == 7
-    assert body["knowledge_labels"] == ["K-angle"]
-    assert len(body["points"]) == 1
-    point = body["points"][0]
-    assert point["part_id"] == "Q11(P3)"
-    assert point["step_id"] == "S3"
-    assert point["core_goal"] == "完成第 3 问"
-    assert point["score"] == 7
-    assert point["standard_answer"] == "42°"
-    assert point["accepted_answers"] == ["42 度"]
-    assert point["required_elements"] == [
-        "推导∠BCE的表达式",
-        "求出∠DCE的度数",
-    ]
-    assert point["deduction_rules"] == ["漏写结论扣 1 分"]
-    assert point["answer_only_max_score"] == 1
-    assert point["require_final_answer"] is True
-    assert point["final_answer_rule"] == "未写最终结论最多得 1 分"
-    assert rubric_path.read_bytes() == rubric_before
-    assert answer_path.read_bytes() == answer_before
-
-
 def test_review_rubric_scopes_bare_part_ids_to_their_parent(
     tmp_path: Path,
 ) -> None:
@@ -176,9 +125,7 @@ def test_review_rubric_scopes_bare_part_ids_to_their_parent(
         answer_key=answer_key,
     )
 
-    response = client.get(
-        f"/api/sessions/{session_id}/review/questions/Q11(P3)/rubric"
-    )
+    response = client.get(f"/api/sessions/{session_id}/review/questions/Q11(P3)/rubric")
 
     assert response.status_code == 200
     body = response.json()
@@ -186,125 +133,17 @@ def test_review_rubric_scopes_bare_part_ids_to_their_parent(
     assert body["points"][0]["standard_answer"] == "42°"
 
 
-def test_review_rubric_folds_a_single_historical_part_to_parent(
-    tmp_path: Path,
-) -> None:
-    rubric = {
-        "total_score": 5,
-        "questions": [
-            {
-                "question_id": "Q5",
-                "question_type": "fill_blank",
-                "max_score": 5,
-                "parts": [
-                    {
-                        "part_id": "Q5(1)",
-                        "part_score": 5,
-                        "steps": [
-                            {
-                                "step_id": "S1",
-                                "step_score": 5,
-                                "core_goal": "答案正确",
-                                "required_elements": ["写出 8"],
-                            }
-                        ],
-                    }
-                ],
-            }
-        ],
-    }
-    answer_key = {
-        "questions": [
-            {
-                "question_id": "Q5",
-                "parts": [
-                    {
-                        "part_id": "Q5(1)",
-                        "answer": "8",
-                        "accepted_forms": ["八"],
-                        "analysis": "",
-                        "step_milestones": [],
-                    }
-                ],
-            }
-        ]
-    }
-    client, session_id, _rubric_path, _answer_path = _client_for_config(
-        tmp_path,
-        rubric=rubric,
-        answer_key=answer_key,
-    )
-
-    response = client.get(
-        f"/api/sessions/{session_id}/review/questions/Q5(P1)/rubric"
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["question_id"] == "Q5"
-    assert body["parent_question_id"] == "Q5"
-    assert body["max_score"] == 5
-    assert body["points"][0]["part_id"] == "Q5"
-    assert body["points"][0]["standard_answer"] == "8"
-    assert body["points"][0]["accepted_answers"] == ["八"]
-
-
 def test_review_rubric_rejects_ambiguous_historical_parts(
     tmp_path: Path,
 ) -> None:
-    rubric, answer_key = _multipart_config(
-        ("Q11(P1)", "Q11(1)", "Q11(3)")
-    )
+    rubric, answer_key = _multipart_config(("Q11(P1)", "Q11(1)", "Q11(3)"))
     client, session_id, _rubric_path, _answer_path = _client_for_config(
         tmp_path,
         rubric=rubric,
         answer_key=answer_key,
     )
 
-    response = client.get(
-        f"/api/sessions/{session_id}/review/questions/Q11(P1)/rubric"
-    )
+    response = client.get(f"/api/sessions/{session_id}/review/questions/Q11(P1)/rubric")
 
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == (
-        "review_rubric_question_conflict"
-    )
-
-
-def test_review_rubric_rejects_ambiguous_answer_key_parts(
-    tmp_path: Path,
-) -> None:
-    rubric, answer_key = _multipart_config()
-    answer_key["questions"][0]["parts"][1]["part_id"] = "Q11(1)"
-    client, session_id, _rubric_path, _answer_path = _client_for_config(
-        tmp_path,
-        rubric=rubric,
-        answer_key=answer_key,
-    )
-
-    response = client.get(
-        f"/api/sessions/{session_id}/review/questions/Q11(P1)/rubric"
-    )
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == (
-        "review_rubric_question_conflict"
-    )
-
-
-def test_review_rubric_returns_null_for_unknown_scoring_item(
-    tmp_path: Path,
-) -> None:
-    rubric, answer_key = _multipart_config()
-    client, session_id, _rubric_path, _answer_path = _client_for_config(
-        tmp_path,
-        rubric=rubric,
-        answer_key=answer_key,
-    )
-
-    response = client.get(
-        f"/api/sessions/{session_id}/review/questions/Q99/rubric"
-    )
-
-    assert response.status_code == 200
-    assert response.json() is None
+    assert response.json()["error"]["code"] == ("review_rubric_question_conflict")

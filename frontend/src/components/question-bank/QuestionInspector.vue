@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import {
   knowledgeLeafLabel,
@@ -7,8 +7,10 @@ import {
   questionBankApi,
   questionTypeWithSubtype,
   type CurriculumCatalog,
+  type QuestionErrorPattern,
   type QuestionBankTag,
 } from '../../api/question-bank'
+import { CAUSE_CATEGORIES } from '../../api/class-analysis'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
@@ -16,6 +18,82 @@ import TrainingCriterionReview from './TrainingCriterionReview.vue'
 
 const store = useQuestionBankStore()
 const curriculum = ref<CurriculumCatalog | null>(null)
+const patternEdit = ref<QuestionErrorPattern | null>(null)
+const patternName = ref('')
+const patternCategory = ref('')
+const patternSaving = ref(false)
+const patternError = ref('')
+const patternMessage = ref('')
+watch(() => store.selectedQuestionId, () => {
+  patternEdit.value = null
+  patternName.value = ''
+  patternCategory.value = ''
+  patternError.value = ''
+  patternMessage.value = ''
+})
+const availableCategories = CAUSE_CATEGORIES.filter((category) => category !== '未作答')
+const wrongOptionRows = computed(() => {
+  const patterns = store.detail?.error_patterns ?? []
+  const letters = new Set([
+    ...(store.detail?.wrong_option_letters ?? []),
+    ...patterns.filter((item) => item.trigger_kind === 'option').map((item) => item.trigger_value),
+  ])
+  return [...letters].sort().map((letter) => ({
+    letter,
+    patterns: patterns.filter((item) => item.trigger_kind === 'option' && item.trigger_value === letter),
+  }))
+})
+const otherPatterns = computed(() => (
+  (store.detail?.error_patterns ?? []).filter((item) => item.trigger_kind !== 'option')
+))
+
+function patternSource(source: string): string {
+  if (source === 'teacher_edit' || source === 'teacher_confirm') return '教师调整'
+  if (source === 'ai_predicted') return '题目预测'
+  if (source === 'ai_pre_analysis') return '选项预分析'
+  if (source === 'ai_auto') return '考后整理'
+  return '已有资料'
+}
+
+function patternTrigger(item: QuestionErrorPattern): string {
+  if (item.trigger_kind === 'wrong_answer') return `错误答案：${item.trigger_value}`
+  if (item.trigger_kind === 'step') return `判定点：${item.trigger_value}`
+  return '本题常见表现'
+}
+
+function beginPatternEdit(item: QuestionErrorPattern): void {
+  patternEdit.value = item
+  patternName.value = item.pattern
+  patternCategory.value = item.category ?? ''
+  patternError.value = ''
+  patternMessage.value = ''
+}
+
+async function changePattern(item: QuestionErrorPattern, action: 'edit' | 'reject'): Promise<void> {
+  const questionId = store.detail?.id
+  if (!questionId || patternSaving.value) return
+  if (action === 'reject' && !window.confirm(`驳回“${item.pattern}”这条典型错法？`)) return
+  if (action === 'edit' && (!patternName.value.trim() || !patternCategory.value)) return
+  patternSaving.value = true
+  patternError.value = ''
+  patternMessage.value = ''
+  try {
+    const detail = await questionBankApi.editErrorPattern(
+      questionId,
+      item,
+      action === 'edit'
+        ? { action, pattern: patternName.value.trim(), category: patternCategory.value }
+        : { action },
+    )
+    if (store.selectedQuestionId === questionId) store.detail = detail
+    patternEdit.value = null
+    patternMessage.value = action === 'edit' ? '典型错法已保存。' : '典型错法已驳回。'
+  } catch {
+    patternError.value = '保存失败，资料可能已变化，请重新打开题目后再试。'
+  } finally {
+    patternSaving.value = false
+  }
+}
 // 教材小节不单独成行显示：位置信息统一由下方"精确标定教材小节"选择器呈现，
 // 选择器会同时校准教材章节（exam_scope），标签区不再重复出现两个位置标签。
 // 技能（skill）由判定点归属产生、不参与手输编辑，在下方判定点区块只读展示。
@@ -368,6 +446,58 @@ async function removeCurrent(): Promise<void> {
             :question-id="store.detail.id"
             :skill-labels="skillLabels"
           />
+
+          <section class="qb-paper-section qb-patterns" aria-labelledby="qb-patterns-title">
+            <header class="qb-section-heading">
+              <div>
+                <p class="qb-eyebrow">TYPICAL ERRORS</p>
+                <h3 id="qb-patterns-title">本题典型错法</h3>
+              </div>
+            </header>
+            <p class="qb-help">预测可用于提醒和讲评；只有结合实际作答，才算学生出现。这里的调整不会自动改写已有考试成绩、历史报告或学生错因记录。</p>
+            <div v-if="wrongOptionRows.length" class="qb-patterns__group">
+              <h4>错误选项</h4>
+              <div v-for="row in wrongOptionRows" :key="row.letter" class="qb-patterns__option">
+                <strong class="qb-patterns__letter">{{ row.letter }}</strong>
+                <div class="qb-patterns__content">
+                  <p v-if="!row.patterns.length" class="qb-help">暂无该选项的错法说明</p>
+                  <div v-for="item in row.patterns" :key="item.id" class="qb-patterns__item">
+                    <strong>{{ item.pattern }}</strong>
+                    <p v-if="item.explanation">{{ item.explanation }}</p>
+                    <p class="qb-patterns__meta">{{ item.category || '未分类' }} · {{ patternSource(item.source) }} · {{ item.has_evidence ? '已有实际作答记录' : '尚无实际作答记录' }}</p>
+                    <div class="qb-patterns__actions">
+                      <button type="button" class="qb-link" @click="beginPatternEdit(item)">调整</button>
+                      <button type="button" class="qb-link" :disabled="patternSaving" @click="changePattern(item, 'reject')">驳回</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="otherPatterns.length" class="qb-patterns__group">
+              <h4>其他典型错法</h4>
+              <div v-for="item in otherPatterns" :key="item.id" class="qb-patterns__item">
+                <strong>{{ item.pattern }}</strong>
+                <p v-if="item.explanation">{{ item.explanation }}</p>
+                <p class="qb-patterns__meta">{{ item.category || '未分类' }} · {{ patternTrigger(item) }} · {{ patternSource(item.source) }} · {{ item.has_evidence ? '已有实际作答记录' : '尚无实际作答记录' }}</p>
+                <div class="qb-patterns__actions">
+                  <button type="button" class="qb-link" @click="beginPatternEdit(item)">调整</button>
+                  <button type="button" class="qb-link" :disabled="patternSaving" @click="changePattern(item, 'reject')">驳回</button>
+                </div>
+              </div>
+            </div>
+            <p v-if="!wrongOptionRows.length && !otherPatterns.length" class="qb-help">本题暂无典型错法。</p>
+            <div v-if="patternEdit" class="qb-patterns__editor">
+              <h4>调整典型错法</h4>
+              <label>错法名称<input v-model="patternName" maxlength="80"></label>
+              <label>错误大类<select v-model="patternCategory"><option value="">请选择</option><option v-for="category in availableCategories" :key="category" :value="category">{{ category }}</option></select></label>
+              <div class="qb-patterns__actions">
+                <button type="button" class="qb-link" @click="patternEdit = null">取消</button>
+                <AppButton variant="primary" :disabled="patternSaving || !patternName.trim() || !patternCategory" @click="changePattern(patternEdit, 'edit')">{{ patternSaving ? '正在保存…' : '保存错法' }}</AppButton>
+              </div>
+            </div>
+            <p v-if="patternError" class="qb-feedback is-error" role="alert">{{ patternError }}</p>
+            <p v-if="patternMessage" class="qb-feedback" role="status">{{ patternMessage }}</p>
+          </section>
 
           <dl class="qb-facts">
             <div><dt>题型</dt><dd>{{ questionTypeWithSubtype(store.detail.question_type, store.detail.tags) }}</dd></div>

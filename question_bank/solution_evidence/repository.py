@@ -532,44 +532,6 @@ class SolutionEvidenceRepository:
             resolver=resolver,
         )
 
-    def relation_hints(
-        self,
-        question_ids: Sequence[int],
-        *,
-        operation_id: str,
-    ) -> list[dict[str, Any]]:
-        """Rebuild relation projection inputs from saved evidence without AI."""
-
-        hints: list[dict[str, Any]] = []
-        with connect(self.db_path) as connection:
-            for question_id in dict.fromkeys(int(item) for item in question_ids):
-                row = connection.execute(
-                    """
-                    SELECT evidence_json, created_by
-                    FROM question_solution_evidence_versions
-                    WHERE question_id = ?
-                      AND status IN ('proposed', 'approved')
-                    ORDER BY created_at DESC, evidence_version_id DESC
-                    LIMIT 1
-                    """,
-                    (question_id,),
-                ).fetchone()
-                if row is None:
-                    continue
-                payload = json.loads(str(row["evidence_json"]))
-                created_by = str(row["created_by"] or "")
-                model_name = (
-                    created_by.removeprefix("model:").strip() or "stored-evidence"
-                )
-                hints.extend(
-                    _relation_hints_from_payload(
-                        payload,
-                        question_id=question_id,
-                        model_name=model_name,
-                        operation_id=operation_id,
-                    )
-                )
-        return hints
 
 
 class SolutionEvidenceProjectionWriter:
@@ -670,14 +632,6 @@ class SolutionEvidenceProjectionWriter:
             question.taxonomy_snapshot,
             additional_allowed_term_ids=additional_allowed,
         )
-        with self._audit_lock:
-            audit = dict(self._audits.get(audit_key) or {})
-            audit["relation_hints"] = _relation_hints_from_evidence(
-                evidence,
-                model_name=model_name,
-                operation_id=operation_id,
-            )
-            self._audits[(str(operation_id), question.question_id)] = audit
         requested_graph_release_id = (
             question.taxonomy_snapshot.knowledge_graph_release_id
         )
@@ -718,7 +672,6 @@ class SolutionEvidenceProjectionWriter:
         secondary_matches: list[dict[str, Any]] = []
         unresolved_links: list[dict[str, Any]] = []
         missing_link_points: list[dict[str, Any]] = []
-        relation_hints: list[dict[str, Any]] = []
         retrieval_question_ids: list[int] = []
         proposal_question_ids: list[int] = []
         with self._audit_lock:
@@ -759,11 +712,6 @@ class SolutionEvidenceProjectionWriter:
                 for item in audit.get("missing_link_points", [])
                 if isinstance(item, Mapping)
             )
-            relation_hints.extend(
-                dict(item)
-                for item in audit.get("relation_hints", [])
-                if isinstance(item, Mapping)
-            )
             if misses:
                 retrieval_question_ids.append(question_id)
             if observed:
@@ -774,7 +722,6 @@ class SolutionEvidenceProjectionWriter:
             "secondary_matches": secondary_matches,
             "unresolved_links": unresolved_links,
             "missing_link_points": missing_link_points,
-            "relation_hints": relation_hints,
             "retrieval_miss_question_ids": retrieval_question_ids,
             "proposal_question_ids": proposal_question_ids,
         }
@@ -844,79 +791,6 @@ def load_evidence_parts_for_tagging(
             )
         result[int(row["question_id"])] = parts
     return result
-
-
-def _relation_hints_from_evidence(
-    evidence: QuestionSolutionEvidence,
-    *,
-    model_name: str,
-    operation_id: str,
-) -> list[dict[str, Any]]:
-    return _relation_hints_from_payload(
-        evidence.to_dict(),
-        question_id=evidence.question_id,
-        model_name=model_name,
-        operation_id=operation_id,
-    )
-
-
-def _relation_hints_from_payload(
-    payload: Mapping[str, Any],
-    *,
-    question_id: int,
-    model_name: str,
-    operation_id: str,
-) -> list[dict[str, Any]]:
-    hints: list[dict[str, Any]] = []
-    for part in payload.get("parts", []):
-        if not isinstance(part, Mapping):
-            continue
-        for point in part.get("evidence_points", []):
-            if not isinstance(point, Mapping):
-                continue
-            direct_keys: list[str] = []
-            supporting_keys: list[str] = []
-            for link in point.get("fine_term_links", []):
-                if not isinstance(link, Mapping):
-                    continue
-                resolution = link.get("core_resolution")
-                if not isinstance(resolution, Mapping):
-                    continue
-                if str(resolution.get("status") or "") != "resolved":
-                    continue
-                target = (
-                    direct_keys
-                    if str(link.get("role") or "") == "direct"
-                    else supporting_keys
-                )
-                for raw_key in resolution.get("stable_keys", []):
-                    key = str(raw_key or "").strip().casefold()
-                    if key not in target:
-                        target.append(key)
-            if direct_keys and supporting_keys:
-                hints.append(
-                    {
-                        "question_id": int(question_id),
-                        "part_id": str(part.get("part_id") or ""),
-                        "evidence_point_id": str(
-                            point.get("evidence_point_id") or ""
-                        ),
-                        "source_keys": direct_keys,
-                        "target_keys": supporting_keys,
-                        "confidence": _stored_confidence(payload.get("confidence")),
-                        "model_name": str(model_name or "unknown").strip(),
-                        "operation_id": str(operation_id),
-                    }
-                )
-    return hints
-
-
-def _stored_confidence(value: object) -> float:
-    try:
-        confidence = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return confidence if 0.0 <= confidence <= 1.0 else 0.0
 
 
 def _source_kind(value: object) -> str:

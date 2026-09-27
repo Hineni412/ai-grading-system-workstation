@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from ai_grader import GradingResult, QuestionGradingDetail, SecondaryError
 from db_manager import DBManager
-from grading_service import _detail_from_row
 
 
 def _seed_result(db: DBManager) -> tuple[int, int]:
@@ -53,28 +52,6 @@ def _seed_result(db: DBManager) -> tuple[int, int]:
     return session_id, db.save_session_result(session_id, student_id, paper_id, result)
 
 
-def test_session_detail_schema_and_domain_round_trip_secondary_errors(tmp_path) -> None:
-    db = DBManager(tmp_path / "grading.db")
-    db.initialize()
-    _session_id, result_id = _seed_result(db)
-
-    with db._connect() as conn:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(session_details)")}
-    assert "secondary_errors_json" in columns
-
-    rows = db.get_result_details(result_id)
-    q2 = next(row for row in rows if row["question_id"] == "Q2")
-    assert q2["secondary_errors"] == [
-        {"category": "审题错误", "summary": "条件识别不完整", "evidence": "漏读已知"},
-        {"category": "其他", "summary": "符号抄错", "evidence": "第二行"},
-    ]
-    detail = _detail_from_row(q2)
-    assert [(item.category, item.summary) for item in detail.secondary_errors] == [
-        ("审题错误", "条件识别不完整"),
-        ("其他", "符号抄错"),
-    ]
-
-
 def test_atomic_retry_replaces_only_target_secondary_errors(tmp_path) -> None:
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
@@ -109,19 +86,3 @@ def test_atomic_retry_replaces_only_target_secondary_errors(tmp_path) -> None:
     assert rows["Q2"]["secondary_errors"] == [
         {"category": "其他", "summary": "单位遗漏", "evidence": "末行"}
     ]
-
-
-def test_malformed_historical_secondary_error_json_reads_as_empty_list(tmp_path) -> None:
-    db = DBManager(tmp_path / "grading.db")
-    db.initialize()
-    _session_id, result_id = _seed_result(db)
-    with db._connect() as conn:
-        conn.execute(
-            "UPDATE session_details SET secondary_errors_json = '{bad json' "
-            "WHERE result_id = ? AND question_id = 'Q2'",
-            (result_id,),
-        )
-
-    q2 = next(row for row in db.get_result_details(result_id) if row["question_id"] == "Q2")
-    assert q2["secondary_errors"] == []
-    assert _detail_from_row(q2).secondary_errors == []

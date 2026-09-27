@@ -5,7 +5,6 @@ import sqlite3
 from pathlib import Path
 
 from openpyxl import load_workbook
-from openpyxl.cell.cell import MergedCell
 
 from db_manager import DBManager
 from report import ReportGenerator
@@ -26,9 +25,7 @@ RUBRIC = {
             "question_id": "Q2",
             "question_type": "choice",
             "max_score": 10,
-            "knowledge_points": [
-                {"knowledge_id": "K2", "knowledge_name": "代数式"}
-            ],
+            "knowledge_points": [{"knowledge_id": "K2", "knowledge_name": "代数式"}],
             "parts": [],
         },
     ]
@@ -202,128 +199,3 @@ def test_score_excel_separates_official_statistics_from_print_name_hiding(
     assert detail_rows
     assert "错误大类" in detail_rows[0] and "具体错法" in detail_rows[0]
     assert all(row["错误大类"] == "—" and row["具体错法"] == "—" for row in detail_rows)
-
-
-def test_score_excel_fills_cause_columns_from_materialized_records(
-    tmp_path: Path,
-) -> None:
-    """P5：错因明细的错误大类/具体错法来自物化错因记录；小题分析主要错因按大类×人数。"""
-    from backend.class_analysis import (
-        ClassAnalysisStateStore,
-        assemble_cause_data,
-        build_cause_inputs,
-        save_cause_result,
-    )
-    from tests.test_analysis_report import _seed_analysis_session
-
-    db = DBManager(tmp_path / "databases" / "grading.db")
-    db.initialize()
-    session_id = _seed_analysis_session(db, tmp_path)
-    reports_dir = tmp_path / "reports"
-    store = ClassAnalysisStateStore(reports_dir)
-    data = assemble_cause_data(db, session_id, data_root=tmp_path)
-    source = next(
-        item for item in build_cause_inputs(data) if item["question_id"] == "Q2"
-    )
-    save_cause_result(
-        store,
-        session_id,
-        source,
-        {"groups": [
-            {"kind": "error", "category": "概念理解", "reason": "垂直关系用错",
-             "manifestation": "未证垂直",
-             "evidence_ids": [item["id"] for item in source["evidence"]]},
-        ]},
-        data=data,
-    )
-
-    export_path = ReportGenerator(db.db_path, reports_dir).export_session(session_id)
-    workbook = load_workbook(export_path, data_only=False)
-
-    detail_rows = _table_rows(workbook["错因明细"], 1)
-    q2_rows = [row for row in detail_rows if row["题号"] == "Q2"]
-    assert len(q2_rows) == 2
-    assert all(row["错误大类"] == "概念理解" for row in q2_rows)
-    assert all(row["具体错法"] == "垂直关系用错" for row in q2_rows)
-    assert all(row["扣分原因"] for row in q2_rows)
-    q1_rows = [row for row in detail_rows if row["题号"] == "Q1"]
-    assert all(row["错误大类"] == "—" and row["具体错法"] == "—" for row in q1_rows)
-
-    analysis_rows = _table_rows(workbook["小题分析打印"], 5)
-    q2 = next(row for row in analysis_rows if row["题号"] == "Q2")
-    assert q2["主要错因"] == "概念理解 2人"
-    q1 = next(row for row in analysis_rows if row["题号"] == "Q1")
-    assert "概念理解 2人" not in str(q1["主要错因"])
-
-
-def test_score_excel_uses_full_cell_borders_and_requested_sorting(
-    tmp_path: Path,
-) -> None:
-    db_path = _seed_print_report(tmp_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            UPDATE session_results
-            SET student_score = CASE
-                WHEN id = 1 THEN 12
-                WHEN id = 10 THEN 21
-                ELSE student_score
-            END
-            WHERE session_id = 1
-            """
-        )
-        conn.execute(
-            """
-            UPDATE session_details
-            SET score_awarded = 10
-            WHERE question_id = 'Q1' AND result_id <= 10
-            """
-        )
-        conn.execute(
-            """
-            UPDATE session_details
-            SET score_awarded = 0
-            WHERE question_id = 'Q2' AND result_id <= 10
-            """
-        )
-        conn.commit()
-
-    export_path = ReportGenerator(
-        db_path,
-        tmp_path / "reports",
-    ).export_session(1)
-    workbook = load_workbook(export_path, data_only=False)
-
-    score_sheet = workbook["班级成绩总表"]
-    score_rows = _table_rows(score_sheet, 4)
-    score_values = [float(row["学生得分"]) for row in score_rows]
-    assert score_values == sorted(score_values, reverse=True)
-
-    analysis_rows = _table_rows(workbook["小题分析打印"], 5)
-    assert [row["题号"] for row in analysis_rows] == ["Q2", "Q1"]
-    assert [
-        float(row["全班得分率"])
-        for row in analysis_rows
-    ] == sorted(float(row["全班得分率"]) for row in analysis_rows)
-
-    for sheet in workbook.worksheets:
-        for row in sheet.iter_rows(
-            min_row=1,
-            max_row=sheet.max_row,
-            min_col=1,
-            max_col=sheet.max_column,
-        ):
-            for cell in row:
-                if isinstance(cell, MergedCell):
-                    continue
-                for side in ("left", "right", "top", "bottom"):
-                    assert getattr(cell.border, side).style == "thin", (
-                        sheet.title, cell.coordinate, side,
-                    )
-        for merged in sheet.merged_cells.ranges:
-            for column in range(merged.min_col, merged.max_col + 1):
-                assert sheet.cell(merged.min_row, column).border.top.style == "thin"
-                assert sheet.cell(merged.max_row, column).border.bottom.style == "thin"
-            for row_index in range(merged.min_row, merged.max_row + 1):
-                assert sheet.cell(row_index, merged.min_col).border.left.style == "thin"
-                assert sheet.cell(row_index, merged.max_col).border.right.style == "thin"

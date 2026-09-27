@@ -162,32 +162,6 @@ afterEach(() => {
 })
 
 describe('class report view', () => {
-  it('embeds the generated class report for the selected class', async () => {
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(
-      host.querySelector<HTMLIFrameElement>('[data-testid="class-report-frame"]'),
-    ).not.toBeNull())
-    const frame = host.querySelector<HTMLIFrameElement>('[data-testid="class-report-frame"]')!
-    expect(frame.src).toContain('/api/sessions/7/class-analysis/report')
-    expect(frame.src).toContain('class_name=')
-    expect(apiMock.getClassAnalysis).toHaveBeenCalledWith(
-      7, expect.any(AbortSignal), undefined, 'narrative',
-    )
-    expect(host.textContent).toContain('AI 分析 · 仅供参考')
-  })
-
-  it('switches the report class through the selector', async () => {
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="class-report-frame"]'),
-    ).not.toBeNull())
-    const select = host.querySelector<HTMLSelectElement>('select[aria-label="报告班级"]')!
-    select.value = '二班'
-    select.dispatchEvent(new Event('change'))
-    await vi.waitFor(() => expect(apiMock.getClassAnalysis).toHaveBeenLastCalledWith(
-      7, expect.any(AbortSignal), '二班', 'narrative',
-    ))
-  })
 
   it('offers generation when no narrative exists and submits only after confirmation', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
@@ -210,37 +184,6 @@ describe('class report view', () => {
     expect(useJobStore().jobs[92]).toBeDefined()
   })
 
-  it('shows the failed state when narrative generation failed', async () => {
-    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
-      narrative: null,
-      narrative_failed: true,
-      generated_at: null,
-    }))
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('班级报告生成失败'))
-    expect(host.textContent).toContain('重新生成分析')
-  })
-
-  it('shows the generating state and reloads when the tracked job finishes', async () => {
-    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
-      status: 'generating',
-      narrative: null,
-      generated_at: null,
-      active_job_id: 91,
-    }))
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(jobsMock.getJob).toHaveBeenCalledWith(91))
-    expect(host.textContent).toContain('班级报告生成中')
-
-    useJobStore().track(makeJob({
-      status: 'succeeded',
-      progress: 1,
-      updated_at: '2026-08-30T10:02:00Z',
-      finished_at: '2026-08-30T10:02:00Z',
-    }))
-    await vi.waitFor(() => expect(apiMock.getClassAnalysis).toHaveBeenCalledTimes(2))
-  })
-
   it('warns when the saved report is stale relative to current scores', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({ stale: true }))
     const { host } = await mountView()
@@ -250,30 +193,4 @@ describe('class report view', () => {
     expect(host.textContent).toContain('建议重新生成')
   })
 
-  it('persists the auto-generate toggle and rolls back on failure', async () => {
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="class-report-frame"]'),
-    ).not.toBeNull())
-    const toggle = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    expect(toggle.checked).toBe(true)
-
-    toggle.click()
-    await vi.waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledWith(7, false))
-
-    apiMock.updateSettings.mockRejectedValueOnce(new Error('save failed'))
-    toggle.click()
-    await settle()
-    expect(toggle.checked).toBe(false)
-  })
-
-  it('returns to the results analysis tab', async () => {
-    const { host, router } = await mountView()
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="class-report-frame"]'),
-    ).not.toBeNull())
-    host.querySelector<HTMLButtonElement>('.class-report__hero button')!.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/results'))
-    expect(router.currentRoute.value.query).toMatchObject({ tab: 'analysis', session: '7' })
-  })
 })

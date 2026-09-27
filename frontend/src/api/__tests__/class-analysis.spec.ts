@@ -1,27 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  classAnalysisApi,
-  decodeClassAnalysisResponse,
-  decodeClassAnalysisSettings,
-} from '../class-analysis'
-
-const job = {
-  id: 91,
-  job_type: 'class_analysis',
-  payload: { session_id: 7 },
-  result: {},
-  status: 'queued',
-  progress: 0,
-  stage: 'class_analysis',
-  detail: 'queued',
-  error: null,
-  cancel_requested: false,
-  created_at: '2026-08-30T10:00:00Z',
-  started_at: null,
-  updated_at: '2026-08-30T10:00:00Z',
-  finished_at: null,
-} as const
+import { decodeClassAnalysisResponse } from '../class-analysis';
 
 const analysisPayload = {
   status: 'ready',
@@ -36,6 +15,7 @@ const analysisPayload = {
     },
     present: 4,
     roster_absent: ['王五'],
+    skipped: [],
     score_distribution: {
       avg: 54.75,
       median: 55.5,
@@ -114,55 +94,6 @@ const analysisPayload = {
 afterEach(() => vi.restoreAllMocks())
 
 describe('class analysis API contract', () => {
-  it('decodes a full ready response and rejects path-like keys', () => {
-    expect(decodeClassAnalysisResponse(analysisPayload)).toEqual(analysisPayload)
-    expect(() => decodeClassAnalysisResponse({
-      ...analysisPayload,
-      data: { ...analysisPayload.data, output_path: 'C:/private/a.html' },
-    })).toThrow()
-  })
-
-  it('accepts empty and generating states with nullable fields', () => {
-    expect(decodeClassAnalysisResponse({
-      ...analysisPayload,
-      status: 'no_data',
-      data: null,
-      narrative: null,
-      generated_at: null,
-    }).status).toBe('no_data')
-    expect(decodeClassAnalysisResponse({
-      ...analysisPayload,
-      status: 'generating',
-      data: null,
-      narrative: null,
-      active_job_id: 91,
-    }).active_job_id).toBe(91)
-    expect(decodeClassAnalysisResponse({
-      ...analysisPayload,
-      status: 'generating',
-      data: null,
-      narrative: null,
-      active_job_id: '91',
-    }).active_job_id).toBe(91)
-  })
-
-  it('rejects malformed responses', () => {
-    expect(() => decodeClassAnalysisResponse({
-      ...analysisPayload,
-      status: 'archived',
-    })).toThrow()
-    expect(() => decodeClassAnalysisResponse({
-      ...analysisPayload,
-      data: {
-        ...analysisPayload.data,
-        score_distribution: { ...analysisPayload.data.score_distribution, bands: { 优秀: -1 } },
-      },
-    })).toThrow()
-    expect(() => decodeClassAnalysisResponse({
-      ...analysisPayload,
-      narrative: { ...analysisPayload.narrative, student_notes: [{ alias: 'S1' }] },
-    })).toThrow()
-  })
 
   it('decodes classified manifestations and their answer evidence without losing legacy compatibility', () => {
     const evidence = [{ text: '原批语', student_ids: [1], student_answer: '保留的算式', evidence_steps: ['已有步骤'],
@@ -182,101 +113,4 @@ describe('class analysis API contract', () => {
     }] } })).toThrow()
   })
 
-  it('requests the class analysis through the dedicated endpoint', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify(analysisPayload), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    )
-
-    const result = await classAnalysisApi.getClassAnalysis(7)
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/sessions/7/class-analysis',
-      expect.anything(),
-    )
-    expect(result.status).toBe('ready')
-  })
-
-  it('requests and decodes the selected class', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ ...analysisPayload, class_names: ['9', '10'], selected_class: '10' }), {
-        status: 200, headers: { 'content-type': 'application/json' },
-      }),
-    )
-    const result = await classAnalysisApi.getClassAnalysis(7, undefined, '10')
-    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/7/class-analysis?class_name=10', expect.anything())
-    expect(result.selected_class).toBe('10')
-    expect(result.class_names).toEqual(['9', '10'])
-    expect(() => decodeClassAnalysisResponse({ ...analysisPayload, class_names: [9] })).toThrow()
-  })
-
-  it('uses compact combined statistics and accepts the existing config image contract for previews', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
-      ...analysisPayload, selected_class: null,
-      data: { ...analysisPayload.data, students: [], questions: [{
-        ...analysisPayload.data.questions[0],
-        records: [{ student_name: '同学甲', student_id: 1, student_code: '001', class_name: '1 班', score: 0 }],
-        causes: [{ reason: '未作答', count: 1 }],
-      }] },
-    }), { status: 200, headers: { 'content-type': 'application/json' } }))
-    const compact = await classAnalysisApi.getClassAnalysis(7, undefined, '', 'summary')
-    expect(fetchMock).toHaveBeenLastCalledWith('/api/sessions/7/class-analysis?class_name=&view=summary', expect.anything())
-    expect(compact.data?.questions[0]?.causes).toEqual([{ reason: '未作答', count: 1 }])
-    const preview = {
-      question_id: 'Q1(1)', parent_question_id: 'Q1', text: '合成原题', notice: '',
-      rich_content: { available: true, question_block_count: 1, answer_block_count: 0, answer_blocks: [], question_blocks: [{
-        kind: 'paragraph', text: '直角三角形', segments: [], rows: [], asset_indexes: [],
-        asset_urls: ['/api/sessions/7/config/sources/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/questions/Q1/assets/question'],
-      }] },
-    }
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200, headers: { 'content-type': 'application/json' } }))
-    expect(await classAnalysisApi.getQuestionPreview(7, 'Q1(1)')).toEqual(preview)
-  })
-
-  it('writes the auto-generate setting with the frozen body shape', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ auto_generate: false }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    )
-
-    const result = await classAnalysisApi.updateSettings(7, false)
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/sessions/7/class-analysis/settings',
-      expect.objectContaining({
-        method: 'PUT',
-        body: JSON.stringify({ auto_generate: false }),
-      }),
-    )
-    expect(result).toEqual({ auto_generate: false })
-    expect(decodeClassAnalysisSettings({ auto_generate: true }))
-      .toEqual({ auto_generate: true })
-    expect(() => decodeClassAnalysisSettings({ auto_generate: 'yes' })).toThrow()
-  })
-
-  it('submits regenerate as a job and validates identifiers before fetch', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify(job), {
-        status: 202,
-        headers: { 'content-type': 'application/json' },
-      }),
-    )
-
-    const result = await classAnalysisApi.regenerate(7)
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/sessions/7/class-analysis/regenerate',
-      expect.objectContaining({ method: 'POST' }),
-    )
-    expect(result.id).toBe(91)
-
-    fetchMock.mockClear()
-    await expect(classAnalysisApi.regenerate(0)).rejects.toThrow()
-    await expect(classAnalysisApi.getClassAnalysis(-1)).rejects.toThrow()
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
 })

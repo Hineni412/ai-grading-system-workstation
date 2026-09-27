@@ -3023,6 +3023,7 @@ def _predicted_error_pattern_schema() -> dict[str, Any]:
             else {"type": "string"}
         ),
         "pattern": {"type": "string"},
+        "explanation": {"type": "string"},
         "trigger_kind": {
             "type": "string",
             "enum": list(PREDICTED_TRIGGER_KINDS),
@@ -3767,7 +3768,6 @@ def _merge_projection_audits(
         "retrieval_misses",
         "proposals",
         "secondary_matches",
-        "relation_hints",
     )
     merged: dict[str, list[Any]] = {field_name: [] for field_name in list_fields}
     seen: dict[str, set[str]] = {field_name: set() for field_name in list_fields}

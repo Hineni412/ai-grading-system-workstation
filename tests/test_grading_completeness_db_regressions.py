@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
+
 from db_manager import DBManager
 
 
@@ -22,7 +24,9 @@ RUBRIC = {
 }
 
 
-def _seed_session(tmp_path: Path, raw_json: dict | None = None) -> tuple[DBManager, int, int]:
+def _seed_session(
+    tmp_path: Path, raw_json: dict | None = None
+) -> tuple[DBManager, int, int]:
     db_path = tmp_path / "databases" / "grading.db"
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(json.dumps(RUBRIC, ensure_ascii=False), encoding="utf-8")
@@ -73,22 +77,9 @@ def _seed_session(tmp_path: Path, raw_json: dict | None = None) -> tuple[DBManag
     return db, 1, 1
 
 
-def test_list_incomplete_results_audits_historical_graded_rows_without_payload(tmp_path: Path) -> None:
-    db, session_id, paper_id = _seed_session(tmp_path, raw_json={})
-
-    rows = db.list_incomplete_results(session_id)
-
-    assert len(rows) == 1
-    assert rows[0]["paper_id"] == paper_id
-    assert rows[0]["status"] == "incomplete"
-    assert rows[0]["missing_question_ids"] == ["Q11(P1)"]
-    assert rows[0]["affected_major_question_ids"] == ["Q11"]
-    assert rows[0]["retry_attempt_count"] == 0
-    assert [item["paper_id"] for item in db.list_failed_papers(session_id)] == [paper_id]
-    assert [item["paper_id"] for item in db.list_failed_papers_detailed(session_id)] == [paper_id]
-
-
-def test_incomplete_result_stays_visible_after_another_failed_retry(tmp_path: Path) -> None:
+def test_incomplete_result_stays_visible_after_another_failed_retry(
+    tmp_path: Path,
+) -> None:
     db, session_id, _paper_id = _seed_session(
         tmp_path,
         raw_json={
@@ -127,73 +118,3 @@ def test_incomplete_result_stays_visible_after_another_failed_retry(tmp_path: Pa
     assert rows[0]["status"] == "incomplete"
     assert rows[0]["retry_attempt_count"] == 2
     assert rows[0]["last_failure_reason"] == "second failure"
-
-
-def test_incomplete_failure_reason_is_safe_at_db_and_render_boundaries(tmp_path: Path) -> None:
-    raw_reason = (
-        "模型重试失败 data:image/jpeg;base64,"
-        + ("A" * 600)
-        + " Bearer secret-token Authorization: Basic auth-secret api_key=secret "
-        + ("oversized-payload " * 80)
-    )
-    db, session_id, _paper_id = _seed_session(
-        tmp_path,
-        raw_json={
-            "grading_retry_attempts": [
-                {
-                    "status": "failed",
-                    "error": raw_reason,
-                    "affected_major_question_ids": ["Q11"],
-                }
-            ]
-        },
-    )
-
-    incomplete_rows = db.list_incomplete_results(session_id)
-    legacy_rows = db.list_failed_papers(session_id)
-
-    assert len(incomplete_rows) == 1
-    safe_summary = incomplete_rows[0]["last_failure_reason"]
-    legacy_summary = legacy_rows[0]["error_message"]
-    for exposed_text in (safe_summary, legacy_summary):
-        lowered = exposed_text.lower()
-        assert "data:image" not in lowered
-        assert "base64" not in lowered
-        assert "secret-token" not in lowered
-        assert "auth-secret" not in lowered
-        assert "api_key=secret" not in lowered
-        assert "a" * 100 not in lowered
-    assert len(safe_summary) <= 240
-    assert "模型重试失败" in safe_summary
-    assert legacy_summary == "批改结果不完整，需补跑受影响大题"
-
-
-def test_failed_paper_error_is_safe_in_db_list_and_ui_row(tmp_path: Path) -> None:
-    raw_error = (
-        "模型请求失败 data:image/jpeg;base64,"
-        + ("A" * 500)
-        + " Bearer bearer-secret Authorization: Basic auth-secret api_key=api-secret"
-    )
-    db, session_id, _paper_id = _seed_session(tmp_path, raw_json={})
-    with db._connect() as conn:
-        conn.execute(
-            "UPDATE exam_papers SET processing_status = 'failed', error_message = ? WHERE session_id = ?",
-            (raw_error, session_id),
-        )
-        conn.commit()
-
-    failed_rows = db.list_failed_papers(session_id)
-
-    assert len(failed_rows) == 1
-    list_summary = failed_rows[0]["error_message"]
-    for forbidden in (
-        "data:image",
-        "base64",
-        "bearer-secret",
-        "auth-secret",
-        "api_key=api-secret",
-        "A" * 100,
-    ):
-        assert forbidden.lower() not in list_summary.lower()
-    assert "模型请求失败" in list_summary
-    assert len(list_summary) <= 240

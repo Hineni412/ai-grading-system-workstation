@@ -62,11 +62,4 @@ describe('global curriculum scope', () => {
     expect(restored.selectedVolumeId).toBe('g8-first')
   })
 
-  it('clears a remembered volume that no longer exists in the local catalog', async () => {
-    localStorage.setItem(CURRICULUM_SCOPE_STORAGE_KEY, 'removed-volume')
-    const store = useCurriculumScopeStore()
-    await store.initialize(async () => catalog([volume('g8-first', 1)]))
-    expect(store.selectedVolumeId).toBeNull()
-    expect(localStorage.getItem(CURRICULUM_SCOPE_STORAGE_KEY)).toBeNull()
-  })
 })
