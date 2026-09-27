@@ -265,6 +265,36 @@ def test_extract_template_structure_orders_by_question_number(
     assert all(entry.score is None for entry in structure.entries)
 
 
+def test_template_entries_merge_by_nearest_level_and_keep_decimals(
+    tmp_path: Path,
+) -> None:
+    """单行保留一位小数；同档合并行难度记为档位。"""
+    store = _make_store(tmp_path)
+    _insert_paper(store, 1, "2025 期中真卷")
+    _add_question(
+        store, number="1", question_type="选择题", difficulty="6.5",
+        paper_id=1,
+    )
+    _add_question(
+        store, number="2", question_type="选择题", difficulty="7.4",
+        paper_id=1,
+    )
+    _add_question(
+        store, number="3", question_type="填空题", difficulty="8.8",
+        paper_id=1,
+    )
+
+    structure = extract_template_structure(store.reader, 1)
+
+    assert [
+        (entry.question_number, entry.question_type, entry.difficulty, entry.count)
+        for entry in structure.entries
+    ] == [
+        ("1-2", "选择题", 7.0, 2),
+        ("3", "填空题", 8.8, 1),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 细目表校验
 # ---------------------------------------------------------------------------
@@ -291,7 +321,7 @@ def test_validate_spec_rejects_illegal_rows() -> None:
         validate_spec(
             AssemblySpec(
                 title="x",
-                rows=(SpecRow(question_type="选择题", count=1, difficulty=10),),
+                rows=(SpecRow(question_type="选择题", count=1, difficulty=11),),
             )
         )
     with pytest.raises(AssemblySpecError):
@@ -301,6 +331,15 @@ def test_validate_spec_rejects_illegal_rows() -> None:
                 rows=(SpecRow(question_type="选择题", count=1, score=0),),
             )
         )
+
+
+def test_validate_spec_accepts_difficulty_ten() -> None:
+    """难度档上限是 10（最难小问公式分的整数档）。"""
+    spec = AssemblySpec(
+        title="x",
+        rows=(SpecRow(question_type="选择题", count=1, difficulty=10),),
+    )
+    validate_spec(spec)
 
 
 def test_spec_payload_roundtrip() -> None:
@@ -453,6 +492,87 @@ def test_select_questions_difficulty_tolerance_band(tmp_path: Path) -> None:
     assert ids_by_difficulty[7] not in picked
     assert result.gaps[0].missing == 7
     assert result.gaps[0].candidates == 3
+
+
+def test_select_questions_difficulty_band_includes_decimal_edges(
+    tmp_path: Path,
+) -> None:
+    """目标 5 的 ±1 区间是原始小数闭区间：4.0–6.0 命中，6.1/3.9 排除。"""
+    store = _make_store(tmp_path)
+    ids_by_difficulty = {
+        difficulty: _add_question(
+            store,
+            number=str(difficulty),
+            difficulty=str(difficulty),
+            knowledge_points=(_KP_A1,),
+        )
+        for difficulty in ("3.9", "4.0", "4.5", "6.0", "6.1")
+    }
+
+    spec = AssemblySpec(
+        title="小数难度带",
+        rows=(
+            SpecRow(
+                question_type="选择题",
+                count=10,
+                knowledge_points=(_KP_A1,),
+                difficulty=5,
+            ),
+        ),
+    )
+    result = select_questions(spec, store.reader)
+
+    picked = set(result.rows[0].question_ids)
+    assert picked == {
+        ids_by_difficulty["4.0"],
+        ids_by_difficulty["4.5"],
+        ids_by_difficulty["6.0"],
+    }
+    assert ids_by_difficulty["3.9"] not in picked
+    assert ids_by_difficulty["6.1"] not in picked
+
+
+def test_select_questions_difficulty_band_reaches_ten(
+    tmp_path: Path,
+) -> None:
+    """9.7 的题对目标 9 与目标 10 都在 ±1 闭区间内；10.0 行可命中。"""
+    store = _make_store(tmp_path)
+    ids_by_difficulty = {
+        difficulty: _add_question(
+            store,
+            number=f"e{difficulty}",
+            difficulty=str(difficulty),
+            knowledge_points=(_KP_A1,),
+        )
+        for difficulty in ("8.9", "9.7", "10.0")
+    }
+
+    for target in (9, 10):
+        spec = AssemblySpec(
+            title="满难度带",
+            rows=(
+                SpecRow(
+                    question_type="选择题",
+                    count=5,
+                    knowledge_points=(_KP_A1,),
+                    difficulty=target,
+                ),
+            ),
+        )
+        picked = set(select_questions(spec, store.reader).rows[0].question_ids)
+        assert ids_by_difficulty["9.7"] in picked
+        assert ids_by_difficulty["10.0"] in picked
+        # 目标 9 的带是 [8,10]，8.9 命中；目标 10 的带是 [9,10]，8.9 排除。
+        assert (ids_by_difficulty["8.9"] in picked) is (target == 9)
+
+
+def test_difficulty_band_uses_nearest_level() -> None:
+    """分布统计按最近整数档：6.5 归入 7 档。"""
+    from question_bank.services.ai_assembly_service import _difficulty_band
+
+    assert _difficulty_band("6.5") == "7"
+    assert _difficulty_band("6.4") == "6"
+    assert _difficulty_band("bad") == "未知"
 
 
 def test_select_questions_frequency_weight_changes_ranking(

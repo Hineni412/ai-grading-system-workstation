@@ -225,11 +225,6 @@ describe('personalized training API', () => {
       expected_minutes: 45,
       difficulty_min: 2,
       difficulty_max: 8,
-      stage_ratios: {
-        direct: 0.6,
-        prerequisite: 0.3,
-        transfer: 0.1,
-      },
       target_names: ['一元一次方程'],
       exclude_current_exam_originals: true,
     })

@@ -42,6 +42,43 @@ class ReportGenerator:
         self.db_path = self.repositories.db_path
         self.reports_dir = Path(reports_dir)
 
+    def _class_analysis_reports_dir(self) -> Path:
+        """.class_analysis 状态所在的受控 reports 根目录。
+
+        生产导出时 self.reports_dir 是 reports 根下的临时 staging 目录
+        （.job-*），状态文件固定在根目录；直接传入根目录的调用也兼容。
+        """
+        if (self.reports_dir / ".class_analysis").is_dir():
+            return self.reports_dir
+        parent = self.reports_dir.parent
+        if (parent / ".class_analysis").is_dir():
+            return parent
+        return self.reports_dir
+
+    def _session_error_records(
+        self,
+        session_id: int,
+        score_map: dict[str, float],
+    ) -> dict[int, dict[str, list[dict[str, Any]]]]:
+        """本场物化错因记录（题号统一到 score_map 口径）；任何失败按无记录。"""
+        try:
+            from backend.class_analysis import session_error_records
+
+            raw = session_error_records(
+                self.repositories,
+                int(session_id),
+                self._class_analysis_reports_dir(),
+            )
+        except Exception:
+            return {}
+        return {
+            int(student_id): {
+                _canonical_question_id_for_score(str(qid), score_map): rows
+                for qid, rows in (by_question or {}).items()
+            }
+            for student_id, by_question in (raw or {}).items()
+        }
+
     def export_session(
         self,
         session_id: int,
@@ -157,16 +194,19 @@ class ReportGenerator:
             rubric=rubric,
             eligible_result_ids=eligible_result_ids,
         )
+        error_records = self._session_error_records(int(session_id), score_map)
         question_print = self._build_question_print_analysis(
             eligible_details,
             score_map,
             type_map,
             hidden_student_ids,
             answer_map,
+            error_records=error_records,
         )
         error_detail = self._build_error_detail_sheet(
             eligible_details,
             score_map,
+            error_records=error_records,
         )
         ai_teacher_compare = self._build_ai_teacher_comparison_sheet(
             df_details,
@@ -354,6 +394,7 @@ class ReportGenerator:
         type_map: dict[str, str],
         hidden_student_ids: set[int],
         answer_map: dict[str, str] | None = None,
+        error_records: dict[int, dict[str, list[dict[str, Any]]]] | None = None,
     ) -> pd.DataFrame:
         columns = [
             "班级",
@@ -379,6 +420,12 @@ class ReportGenerator:
             return pd.DataFrame(columns=columns)
         work_df = pd.DataFrame(records)
         answer_map = answer_map or {}
+        error_records = error_records or {}
+        count_categories = None
+        if error_records:
+            from backend.class_analysis import question_category_counts
+
+            count_categories = question_category_counts
         objective_types = {
             "choice",
             "single_choice",
@@ -450,12 +497,15 @@ class ReportGenerator:
                             if displayed
                             else ("姓名已隐藏" if lost else "无")
                         ),
-                        "主要错因": _summarize_error_categories(
-                            qdf.to_dict(orient="records"),
+                        "主要错因": self._question_cause_text(
+                            qid,
+                            qdf,
+                            count_categories,
+                            error_records,
                             full_score,
-                            canonical_answer=answer_map.get(qid, ""),
-                            is_objective=str(type_map.get(qid) or "")
-                            in objective_types,
+                            answer_map,
+                            type_map,
+                            objective_types,
                         ),
                     }
                 )
@@ -470,10 +520,43 @@ class ReportGenerator:
             .reset_index(drop=True)
         )
 
+    @staticmethod
+    def _question_cause_text(
+        qid: str,
+        qdf: pd.DataFrame,
+        count_categories: Any,
+        error_records: dict[int, dict[str, list[dict[str, Any]]]],
+        full_score: float,
+        answer_map: dict[str, str],
+        type_map: dict[str, str],
+        objective_types: set[str],
+    ) -> str:
+        """有物化错因记录时按大类×人数汇总；否则退回批改字段归纳。"""
+        if count_categories is not None:
+            counts = count_categories(
+                error_records,
+                student_ids=[
+                    int(value)
+                    for value in qdf["student_id"].tolist()
+                    if value is not None
+                ],
+            ).get(qid) or []
+            if counts:
+                return "；".join(
+                    f"{category} {count}人" for category, count in counts
+                )
+        return _summarize_error_categories(
+            qdf.to_dict(orient="records"),
+            full_score,
+            canonical_answer=answer_map.get(qid, ""),
+            is_objective=str(type_map.get(qid) or "") in objective_types,
+        )
+
     def _build_error_detail_sheet(
         self,
         df_details: pd.DataFrame,
         score_map: dict[str, float],
+        error_records: dict[int, dict[str, list[dict[str, Any]]]] | None = None,
     ) -> pd.DataFrame:
         columns = [
             "班级",
@@ -484,8 +567,8 @@ class ReportGenerator:
             "满分",
             "扣分",
             "扣分原因",
-            "错误类别",
-            "错误摘要",
+            "错误大类",
+            "具体错法",
         ]
         if df_details.empty:
             return pd.DataFrame(columns=columns)
@@ -493,6 +576,7 @@ class ReportGenerator:
             df_details.to_dict(orient="records"),
             score_map,
         )
+        error_records = error_records or {}
         rows: list[dict[str, object]] = []
         for item in records:
             qid = str(item.get("question_id") or "")
@@ -500,6 +584,15 @@ class ReportGenerator:
             awarded = float(item.get("score_awarded") or 0)
             if full_score <= 0 or awarded >= full_score - 1e-6:
                 continue
+            try:
+                student_id = int(item.get("student_id"))
+            except (TypeError, ValueError):
+                student_id = None
+            cause_rows = (
+                (error_records.get(student_id) or {}).get(qid) or []
+                if student_id is not None
+                else []
+            )
             deduction_reason = _translate_deduction_reason(
                 item.get("deduction_reason"),
                 fallback="AI 未提供明确扣分依据，建议教师复核",
@@ -514,14 +607,24 @@ class ReportGenerator:
                     "满分": full_score,
                     "扣分": full_score - awarded,
                     "扣分原因": deduction_reason,
-                    "错误类别": (
-                        _public_grading_reason(item.get("error_category"))
-                        or "—"
-                    ),
-                    "错误摘要": (
-                        _public_grading_reason(item.get("error_summary"))
-                        or "—"
-                    ),
+                    "错误大类": "；".join(
+                        _unique_texts(
+                            [
+                                row.get("category")
+                                for row in cause_rows
+                            ]
+                        )
+                    )
+                    or "—",
+                    "具体错法": "；".join(
+                        _unique_texts(
+                            [
+                                row.get("pattern")
+                                for row in cause_rows
+                            ]
+                        )
+                    )
+                    or "—",
                 }
             )
         qid_order = {
@@ -1003,8 +1106,8 @@ class ReportGenerator:
                             "学生姓名",
                             "缺失题目",
                             "扣分原因",
-                            "错误类别",
-                            "错误摘要",
+                            "错误大类",
+                            "具体错法",
                             "知识点",
                             "涉及题目",
                             "说明",

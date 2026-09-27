@@ -1170,7 +1170,7 @@ def test_recent_exact_duplicate_is_excluded_for_the_student(direct_module):
 
 
 def test_direct_scope_does_not_expand_confirmed_or_textbook_neighbours(direct_module):
-    draft = _make_direct(direct_module, direct_ratio=0, prerequisite_ratio=.5, transfer_ratio=.5)
+    draft = _make_direct(direct_module)
     assert draft["students"][0]["items"]
     assert all(q["stage"] == "direct" for q in draft["students"][0]["items"])
     assert all(q["matched_key"] == BNU_TARGET for q in draft["students"][0]["items"] if q["selection_kind"] == "direct")

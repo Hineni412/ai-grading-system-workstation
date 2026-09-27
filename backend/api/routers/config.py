@@ -40,6 +40,7 @@ from backend.config_workspace.sources import (
     ConfigSourceActivationBusyError,
     ConfigSourceError,
     ConfigSourceInvalidError,
+    ConfigSourceParseError,
     ConfigSourceNotFoundError,
     ConfigSourceService,
     ConfigSourceSubmissionConflictError,
@@ -124,6 +125,8 @@ CONFIG_SOURCE_ERROR_RESPONSES = {
 
 
 def _source_api_error(exc: ConfigSourceError) -> ApiError:
+    if isinstance(exc, ConfigSourceParseError):
+        return ApiError(422, "config_source_invalid", str(exc))
     if isinstance(exc, ConfigSourceTooLargeError):
         return ApiError(413, "config_source_too_large", "Config source is too large")
     if isinstance(exc, ConfigSourceTypeUnsupportedError):

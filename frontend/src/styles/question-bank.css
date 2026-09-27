@@ -496,7 +496,7 @@
 .difficulty-range__bands {
   display: grid;
   gap: 3px;
-  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-template-columns: repeat(90, minmax(0, 1fr));
   margin: 1px 24px 0;
 }
 

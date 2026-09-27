@@ -13,7 +13,6 @@ export const JOB_TITLE_BY_TYPE: Record<string, string> = {
   scan_analysis: '答卷扫描预检',
   grading_run: '考试批改',
   question_bank_sync: '题库同步',
-  training_export: '导出训练材料',
   assembly_export: '导出组卷',
   criterion_backfill: '补齐评分依据',
   report_export: '导出成绩报告',
@@ -51,7 +50,6 @@ export function jobLocation(job: JobResponse): string {
     'criterion_backfill',
   ].includes(job.job_type)) return '/question-bank'
   if (['scan_analysis', 'grading_run'].includes(job.job_type)) return '/grading'
-  if (job.job_type === 'training_export') return '/training'
   if (job.job_type === 'assembly_export') return '/question-assembly'
   if (job.job_type === 'report_export') return '/results'
   return '/workbench'

@@ -11,6 +11,7 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.question_write_service import (
     QuestionBankWriteService,
+    refresh_derived_ownership_tags,
 )
 from tests.current_knowledge_support import install_current_knowledge
 
@@ -107,18 +108,14 @@ def _seed_question(
 
 def _analysis(**overrides) -> TagAnalysis:
     payload = {
-        "knowledge_points": [],
         "method_tags": ["合成方法"],
         "thought_tags": [],
         "ability_tags": [],
         "math_model_tags": [],
         "special_type_tags": [],
         "difficulty": 3,
-        "error_prone_points": [],
-        "prerequisite_points": [],
-        "textbook_chapters": ["七年级下册 第九章 不等式"],
-        "curriculum_sections": ["fake-section-id"],
-        "canonical_knowledge_id": "kp_bnu24_math_g7_lower_9_1_1",
+        "predicted_error_patterns": [],
+        "part_features": [],
         "reason": "合成分析",
         "confidence": 0.8,
     }
@@ -155,7 +152,7 @@ def test_direct_skill_link_derives_section_and_chapter(tmp_path: Path) -> None:
     assert _values(rows, "exam_scope") == [_CHAPTER_SCOPE]
     assert _values(rows, "curriculum_section") == [_SECTION_ID]
     assert _SKILL_KEY in _values(rows, "knowledge_point")
-    # 模型给的章/节值被忽略，canonical_knowledge_id 停写。
+    # 归属只来自链接派生，canonical_knowledge_id 停写。
     assert "七年级下册 第九章 不等式" not in _values(rows, "exam_scope")
     assert "fake-section-id" not in _values(rows, "curriculum_section")
     assert _values(rows, "canonical_knowledge_id") == []
@@ -230,14 +227,15 @@ def test_prerequisite_only_links_mark_pending(tmp_path: Path) -> None:
     assert writer.save_tag_analysis(1, _analysis())
 
     rows = _tags(db_path)
-    # 无 direct 链接：模型值照常写入并加 derived_pending 标记。
-    assert _values(rows, "exam_scope") == ["七年级下册 第九章 不等式"]
-    assert _values(rows, "curriculum_section") == ["fake-section-id"]
+    # 无 direct 链接：旧的非人工归属值被清掉，模型不再提供归属值，
+    # 只加 derived_pending 标记等待判定点关联。
+    assert _values(rows, "exam_scope") == []
+    assert _values(rows, "curriculum_section") == []
     assert _values(rows, "tag_status") == ["derived_pending"]
     assert _LEAF_KEY not in _values(rows, "knowledge_point")
 
 
-def test_missing_evidence_keeps_model_values_and_marks_pending(
+def test_missing_evidence_clears_ownership_and_marks_pending(
     tmp_path: Path,
 ) -> None:
     db_path, _release_id, writer = _setup(tmp_path)
@@ -246,8 +244,8 @@ def test_missing_evidence_keeps_model_values_and_marks_pending(
     assert writer.save_tag_analysis(1, _analysis())
 
     rows = _tags(db_path)
-    assert _values(rows, "exam_scope") == ["七年级下册 第九章 不等式"]
-    assert _values(rows, "curriculum_section") == ["fake-section-id"]
+    assert _values(rows, "exam_scope") == []
+    assert _values(rows, "curriculum_section") == []
     assert _values(rows, "tag_status") == ["derived_pending"]
 
 
@@ -260,7 +258,7 @@ def test_unresolved_direct_link_marks_pending(tmp_path: Path) -> None:
     assert writer.save_tag_analysis(1, _analysis())
 
     rows = _tags(db_path)
-    assert _values(rows, "exam_scope") == ["七年级下册 第九章 不等式"]
+    assert _values(rows, "exam_scope") == []
     assert _values(rows, "tag_status") == ["derived_pending"]
 
 
@@ -296,3 +294,32 @@ def test_rewrite_is_idempotent(tmp_path: Path) -> None:
     assert _values(rows, "curriculum_section") == [_SECTION_ID]
     keys = [(row["tag_type"], row["tag_value"]) for row in rows]
     assert len(set(keys)) == len(rows)
+
+
+def test_refresh_keeps_protected_knowledge_point_sources(
+    tmp_path: Path,
+) -> None:
+    db_path, release_id, _writer = _setup(tmp_path)
+    _seed_question(
+        db_path, release_id, [("p1", "direct", _SKILL_KEY, "resolved")]
+    )
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO question_tags(question_id, tag_type, tag_value, source)
+            VALUES (1, 'knowledge_point', 'kp_stale_not_linked', 'taxonomy'),
+                   (1, 'knowledge_point', 'kp_codex_keep', 'codex_self'),
+                   (1, 'knowledge_point', 'kp_manual_keep', 'manual')
+            """
+        )
+
+    with connect(db_path) as connection:
+        assert refresh_derived_ownership_tags(connection, 1)
+
+    rows = _tags(db_path)
+    values = _values(rows, "knowledge_point")
+    # 过期 taxonomy 派生行被清掉重建；ai/codex_self/manual 等非派生行保留。
+    assert "kp_stale_not_linked" not in values
+    assert "kp_codex_keep" in values
+    assert "kp_manual_keep" in values
+    assert _SKILL_KEY in values

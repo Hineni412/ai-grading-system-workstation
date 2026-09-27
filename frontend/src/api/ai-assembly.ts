@@ -151,7 +151,7 @@ function isSpecRow(value: unknown): value is AiAssemblySpecRow {
     (value.difficulty === null || (
       Number.isSafeInteger(value.difficulty) &&
       Number(value.difficulty) >= 1 &&
-      Number(value.difficulty) <= 9
+      Number(value.difficulty) <= 10
     )) &&
     (value.score === null || (
       typeof value.score === 'number' &&
@@ -261,7 +261,12 @@ function decodeTemplateStructure(value: unknown): AiAssemblyTemplateStructure {
       isRecord(entry) &&
       typeof entry.question_number === 'string' &&
       typeof entry.question_type === 'string' &&
-      (entry.difficulty === null || Number.isSafeInteger(entry.difficulty)) &&
+      (entry.difficulty === null || (
+        typeof entry.difficulty === 'number' &&
+        Number.isFinite(entry.difficulty) &&
+        entry.difficulty >= 1 &&
+        entry.difficulty <= 10
+      )) &&
       (entry.score === null || typeof entry.score === 'number') &&
       Number.isSafeInteger(entry.count) &&
       Number(entry.count) >= 1

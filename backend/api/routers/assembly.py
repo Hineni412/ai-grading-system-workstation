@@ -101,8 +101,8 @@ def compute_assistant_candidates(
     chapter_id: str = "",
     target_keys: list[str] | None = None,
     question_type: str = "",
-    difficulty_min: int = 1,
-    difficulty_max: int = 10,
+    difficulty_min: float = 1,
+    difficulty_max: float = 10,
     exclude_exam_originals: bool = True,
     exclude_recent: bool = True,
 ) -> dict:

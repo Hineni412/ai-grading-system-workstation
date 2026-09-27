@@ -22,3 +22,5 @@ class ExtractedDocument:
     document_snapshot: "DocumentSnapshot | None" = None
     # 提取阶段推断出的题型覆盖（如彩色答案层），题号 → 题型。
     type_overrides: dict[str, str] = field(default_factory=dict)
+    # 本次提取的定位信息；不持久化正文，供考试入口复用同一次本地识别。
+    pdf_layout: dict = field(default_factory=dict)

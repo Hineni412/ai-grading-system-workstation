@@ -30,9 +30,6 @@ export interface PaperSelectionSession {
   trainingIntent?: 'remediation' | 'challenge'
   teachingProgressChapterId?: string
   excludeCurrentOriginals: boolean
-  directRatio?: number
-  prerequisiteRatio?: number
-  transferRatio?: number
   paperMode: 'individual' | 'shared'
   chapterKey?: string
   sectionKey?: string

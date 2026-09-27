@@ -47,6 +47,7 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/sessions/{session_id}/class-analysis"),
     ("PUT", "/api/sessions/{session_id}/class-analysis/settings"),
     ("POST", "/api/sessions/{session_id}/class-analysis/regenerate"),
+    ("POST", "/api/sessions/{session_id}/class-analysis/causes/edit"),
     ("POST", "/api/sessions/{session_id}/scan/analyze"),
     ("POST", "/api/sessions/{session_id}/grading/run"),
     ("GET", "/api/sessions/{session_id}/review/questions"),
@@ -67,12 +68,6 @@ EXPECTED_OPERATIONS = {
     ("POST", "/api/question-bank/import-requests"),
     ("POST", "/api/training/diagnosis"),
     ("POST", "/api/training/overview"),
-    ("POST", "/api/training/plans/preview"),
-    ("POST", "/api/training/tasks"),
-    ("GET", "/api/training/tasks"),
-    ("GET", "/api/training/tasks/{task_id}"),
-    ("POST", "/api/training/tasks/{task_id}/exports"),
-    ("POST", "/api/training/exports/jobs/{job_id}/retry"),
     ("POST", "/api/graph/query"),
     ("POST", "/api/graph/evidence"),
     ("GET", "/api/ops/self-check"),
@@ -82,6 +77,13 @@ EXPECTED_OPERATIONS = {
     ("POST", "/api/ops/jobs"),
     ("GET", "/api/ops/operations/{operation_id}"),
     ("POST", "/api/ops/operations/{operation_id}/cancel"),
+    ("GET", "/api/authoring/task-cards"),
+    ("GET", "/api/authoring/works"),
+    ("POST", "/api/authoring/works"),
+    ("GET", "/api/authoring/works/{work_id}"),
+    ("DELETE", "/api/authoring/works/{work_id}"),
+    ("POST", "/api/authoring/works/{work_id}/versions"),
+    ("GET", "/api/authoring/works/{work_id}/versions/{version_no}"),
 }
 
 
@@ -315,39 +317,6 @@ def test_config_editor_openapi_forbids_nested_unknown_request_fields() -> None:
         assert not ({"rubric", "answer_key", "config", "path"} & set(request_schema["properties"]))
 
 
-def test_training_export_openapi_declares_dedicated_safe_operations() -> None:
-    from backend.api.app import create_app
-
-    schema = create_app().openapi()
-    expected_errors = {
-        "/api/training/tasks/{task_id}/exports": {404, 422, 503},
-        "/api/training/exports/jobs/{job_id}/retry": {404, 409, 503},
-    }
-    forbidden = {
-        "api_key",
-        "token",
-        "secret",
-        "password",
-        "path",
-        "destination",
-        "student_name",
-        "question_text",
-    }
-    for path, statuses in expected_errors.items():
-        operation = schema["paths"][path]["post"]
-        responses = operation["responses"]
-        assert statuses <= {int(status) for status in responses}
-        for status in statuses:
-            assert responses[str(status)]["content"]["application/json"]["schema"] == {
-                "$ref": "#/components/schemas/ErrorResponse"
-            }
-    submit = schema["paths"]["/api/training/tasks/{task_id}/exports"]["post"]
-    request_ref = submit["requestBody"]["content"]["application/json"]["schema"]["$ref"]
-    request_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
-    assert request_schema["additionalProperties"] is False
-    assert not (forbidden & set(request_schema.get("properties", {})))
-
-
 def test_report_export_openapi_declares_strict_requests_and_pdf_download() -> None:
     from backend.api.app import create_app
 
@@ -439,7 +408,6 @@ def test_training_openapi_declares_strict_safe_requests_and_stable_errors() -> N
     schema = create_app().openapi()
     expected_errors = {
         ("post", "/api/training/diagnosis"): {422, 503},
-        ("post", "/api/training/plans/preview"): {422, 503},
         ("post", "/api/training/personalized-drafts"): {409, 422, 503},
         ("get", "/api/training/personalized-drafts/{draft_id}"): {
             404,
@@ -452,9 +420,6 @@ def test_training_openapi_declares_strict_safe_requests_and_stable_errors() -> N
             422,
             503,
         },
-        ("post", "/api/training/tasks"): {409, 422, 503},
-        ("get", "/api/training/tasks"): {422, 503},
-        ("get", "/api/training/tasks/{task_id}"): {404, 422, 503},
     }
     forbidden = {
         "api_key",
@@ -490,7 +455,7 @@ def test_training_openapi_does_not_offer_legacy_or_broad_recommendation_controls
     from backend.api.app import create_app
 
     schema = create_app().openapi()
-    for path in ("/api/training/plans/preview", "/api/training/tasks"):
+    for path in ("/api/training/personalized-drafts",):
         operation = schema["paths"][path]["post"]
         request_ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
         properties = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]][

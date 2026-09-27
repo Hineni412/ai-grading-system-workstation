@@ -13,7 +13,10 @@ from question_bank.importers.batch_importer import (
     import_scanned_papers,
     infer_metadata_from_filename,
 )
-from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
+from question_bank.models.question import (
+    DERIVED_PENDING_STATUS,
+    analysis_ownership_satisfied,
+)
 from question_bank.models.tag_schema import TaggingContext
 from question_bank.services.ai_tagging_service import (
     AITaggingService,
@@ -354,6 +357,7 @@ def _questions_needing_complete_tags(
     placeholders = ",".join("?" for _ in question_ids)
     with connect(db_path) as conn:
         tag_types_by_question: dict[int, set[str]] = {}
+        derived_pending: set[int] = set()
         for row in conn.execute(
             f"""
             SELECT question_id, tag_type, tag_value FROM question_tags
@@ -364,12 +368,22 @@ def _questions_needing_complete_tags(
             question_ids,
         ).fetchall():
             question_id = int(row["question_id"])
-            tag_types_by_question.setdefault(question_id, set()).add(str(row["tag_type"]))
-    required = set(CORE_ANALYSIS_TAG_TYPES)
+            tag_type = str(row["tag_type"])
+            tag_types_by_question.setdefault(question_id, set()).add(tag_type)
+            if (
+                tag_type == "tag_status"
+                and str(row["tag_value"] or "").strip() == DERIVED_PENDING_STATUS
+            ):
+                derived_pending.add(question_id)
     pending: list[dict[str, Any]] = []
     for item in questions:
         question_id = int(item["id"])
-        if required.issubset(tag_types_by_question.get(question_id, set())):
+        seen = tag_types_by_question.get(question_id, set())
+        # 新口径：能力标签在位 + 归属就绪（判定点关联派生或 derived_pending 标记）。
+        if "ability" in seen and analysis_ownership_satisfied(
+            seen,
+            derived_pending=question_id in derived_pending,
+        ):
             continue
         candidate = dict(item)
         pending.append(candidate)

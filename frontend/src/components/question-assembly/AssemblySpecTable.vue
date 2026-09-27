@@ -220,7 +220,7 @@ function onScore(rowIndex: number, event: Event): void {
               @change="onDifficulty(rowIndex, $event)"
             >
               <option value="">不限</option>
-              <option v-for="level in 9" :key="level" :value="String(level)">{{ level }}</option>
+              <option v-for="level in 10" :key="level" :value="String(level)">{{ level }}</option>
             </select>
           </td>
           <td>

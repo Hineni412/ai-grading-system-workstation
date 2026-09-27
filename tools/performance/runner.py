@@ -13,11 +13,8 @@ from fastapi.testclient import TestClient
 from backend.api.app import create_app
 from backend.api.dependencies import (
     get_diagnosis_profile_service,
-    get_practice_plan_service,
     get_question_bank_read_service,
     get_request_diagnosis_profile_service,
-    get_request_practice_plan_service,
-    get_training_task_service,
 )
 from backend.api.routers.graph import get_current_graph_query_service
 from backend.performance.metrics import (
@@ -26,10 +23,8 @@ from backend.performance.metrics import (
 )
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from path_manager import get_path_manager
-from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.relations.query_service import CurrentKnowledgeGraphQueryService
 from question_bank.services.question_read_service import QuestionBankReadService
-from question_bank.services.training_task_service import TrainingTaskService
 from tools.performance.dataset import BenchmarkDataset, BenchmarkPaths, DatasetManifest
 from tools.performance.scenarios import BenchmarkScenario, build_scenarios
 
@@ -229,21 +224,12 @@ def _build_app(
             dataset.paths.qb_db_path,
         )
     )
-    app.dependency_overrides[get_practice_plan_service] = lambda: PracticePlanService(
-        dataset.paths.qb_db_path
-    )
-    app.dependency_overrides[get_training_task_service] = lambda: TrainingTaskService(
-        dataset.paths.qb_db_path
-    )
     graph_service = CurrentKnowledgeGraphQueryService(dataset.paths.qb_db_path)
     app.dependency_overrides[get_current_graph_query_service] = lambda: graph_service
     if connection_mode == LEGACY_PER_CALL_MODE:
         app.dependency_overrides[
             get_request_diagnosis_profile_service
         ] = app.dependency_overrides[get_diagnosis_profile_service]
-        app.dependency_overrides[
-            get_request_practice_plan_service
-        ] = app.dependency_overrides[get_practice_plan_service]
     return app
 
 

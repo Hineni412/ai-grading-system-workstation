@@ -13,7 +13,6 @@ from question_bank.current_knowledge import (
     CurrentKnowledgeUnavailable,
 )
 from question_bank.database.schema import connect, initialize_database
-from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
 
 
 FINGERPRINT_VERSION = 6
@@ -1216,15 +1215,25 @@ def _style_fit_score(
 
 
 def _complete_tag_sql(question_id_expr: str) -> str:
-    return " AND ".join(
-        f"""EXISTS (
+    # 与 has_complete_analysis_tags 同口径：能力标签在位，且归属已就绪
+    # （判定点关联派生出知识点+章/小节，或已标记 derived_pending）。
+    def exists(tag_types: str, extra: str = "") -> str:
+        return f"""EXISTS (
             SELECT 1 FROM question_tags ct
             WHERE ct.question_id = {question_id_expr}
-              AND ct.tag_type = '{tag_type}'
+              AND ct.tag_type IN ({tag_types})
               AND COALESCE(ct.tag_value, '') <> ''
+              {extra}
         )"""
-        for tag_type in CORE_ANALYSIS_TAG_TYPES
+
+    ability = exists("'ability'")
+    knowledge = exists("'knowledge_point'")
+    scope = exists("'exam_scope', 'curriculum_section'")
+    pending = exists(
+        "'tag_status'",
+        "AND ct.tag_value = 'derived_pending'",
     )
+    return f"{ability} AND (({knowledge} AND {scope}) OR {pending})"
 
 
 def _cache_fingerprint(conn, question_id: int, fingerprint: str, style_features: dict[str, Any]) -> None:

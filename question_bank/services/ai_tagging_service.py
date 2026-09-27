@@ -24,17 +24,26 @@ from llm_client import (
     LLMSettings,
     normalize_openai_base_url,
 )
-from question_bank.models.tag_schema import DIFFICULTY_SCALE_GUIDANCE, ERROR_PRONE_CATEGORIES, TagAnalysis, TaggingContext
+from question_bank.models.tag_schema import (
+    DIFFICULTY_SCALE_GUIDANCE,
+    MAX_ABILITY_TAGS,
+    PART_CONTEXT_KINDS,
+    PART_FEATURE_ORDER,
+    PART_FEATURE_RANGES,
+    PREDICTED_PATTERN_MAX,
+    PREDICTED_TRIGGER_KINDS,
+    TagAnalysis,
+    TaggingContext,
+    predicted_pattern_categories,
+)
 from question_bank.services.taxonomy_review_suggestions import (
     TaxonomySuggestionModelResponseError,
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
-from question_bank.taxonomy.curriculum_catalog import curriculum_volume_contract
 from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
 
 DEFAULT_TAGGING_MODEL = "gpt-4o"
-STUDENT_LEVELS = ("入门补缺", "基础巩固", "中档提升", "综合突破", "压轴拔高")
 _TAGGING_REASONING_INSTRUCTION = (
     "Use deliberate reasoning before selecting tags. First read the question and "
     "reference answer carefully. Analyze the underlying junior-middle-school "
@@ -255,10 +264,12 @@ class AITaggingService:
         context: TaggingContext,
         *,
         taxonomy_contract: Mapping[str, Any] | None = None,
+        images: Sequence[Any] = (),
     ) -> AITaggingResult:
         taxonomy_contract = dict(
             taxonomy_contract or self.taxonomy_contract(context)
         )
+        images = _normalize_question_images(images)
         if self.mock_mode:
             return _with_quality(
                 AITaggingResult(
@@ -274,15 +285,30 @@ class AITaggingService:
             if self.llm_client is not None:
                 thinking_enabled = os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1"
                 extra_kwargs = {"thinking": True} if thinking_enabled else None
-                payload = _json_from_text_compat(
-                    self.llm_client,
-                    _prompt_text(context, taxonomy_contract),
-                    model=_model_for_llm_client(self.llm_client, self.model),
-                    extra_kwargs=extra_kwargs,
-                    response_format=_chat_response_format(
-                        _tag_analysis_response_format(taxonomy_contract)
-                    ),
+                response_format = _chat_response_format(
+                    _tag_analysis_response_format(taxonomy_contract)
                 )
+                if images:
+                    payload = _json_from_images_compat(
+                        self.llm_client,
+                        _prompt_text(context, taxonomy_contract),
+                        [image.content for image in images],
+                        model=_model_for_llm_client(
+                            self.llm_client, self.model
+                        ),
+                        extra_kwargs=extra_kwargs,
+                        response_format=response_format,
+                    )
+                else:
+                    payload = _json_from_text_compat(
+                        self.llm_client,
+                        _prompt_text(context, taxonomy_contract),
+                        model=_model_for_llm_client(
+                            self.llm_client, self.model
+                        ),
+                        extra_kwargs=extra_kwargs,
+                        response_format=response_format,
+                    )
                 result = AITaggingResult(
                     ok=True,
                     mock_mode=False,
@@ -304,7 +330,9 @@ class AITaggingService:
                             taxonomy_contract
                         )
                     },
-                    "input": _prompt_input(context, taxonomy_contract),
+                    "input": _prompt_input(
+                        context, taxonomy_contract, images=images
+                    ),
                 },
             )
             output_text = str(getattr(response, "output_text", "") or "").strip()
@@ -398,6 +426,7 @@ class AITaggingService:
         context: TaggingContext,
         *,
         taxonomy_contract: Mapping[str, Any] | None = None,
+        images: Sequence[Any] = (),
     ) -> AITaggingResult:
         if not self.review_configured:
             return AITaggingResult(ok=False, mock_mode=False, error="未配置低置信度复核模型", model_name=self.review_model or None, quality_status="invalid")
@@ -406,11 +435,30 @@ class AITaggingService:
             taxonomy_contract = dict(
                 taxonomy_contract or self.taxonomy_contract(context)
             )
-            payload = _json_from_text_compat(
-                self.review_llm_client,
-                _prompt_text(context, taxonomy_contract),
-                model=_model_for_llm_client(self.review_llm_client, self.review_model),
-            )
+            images = _normalize_question_images(images)
+            if images:
+                payload = _json_from_images_compat(
+                    self.review_llm_client,
+                    _prompt_text(context, taxonomy_contract),
+                    [image.content for image in images],
+                    model=_model_for_llm_client(
+                        self.review_llm_client, self.review_model
+                    ),
+                    response_format=_chat_response_format(
+                        _tag_analysis_response_format(taxonomy_contract)
+                    ),
+                )
+            else:
+                payload = _json_from_text_compat(
+                    self.review_llm_client,
+                    _prompt_text(context, taxonomy_contract),
+                    model=_model_for_llm_client(
+                        self.review_llm_client, self.review_model
+                    ),
+                    response_format=_chat_response_format(
+                        _tag_analysis_response_format(taxonomy_contract)
+                    ),
+                )
             result = AITaggingResult(
                 ok=True,
                 mock_mode=False,
@@ -465,6 +513,7 @@ class AITaggingService:
         allow_batch_fallback: bool = True,
         quality_retry_limit: int = 1,
         enable_review: bool = True,
+        images: Mapping[int, Sequence[Any]] | None = None,
     ) -> dict[int, AITaggingResult]:
         items = list(contexts.items())
         if not items:
@@ -531,6 +580,7 @@ class AITaggingService:
                         question_id: question_contracts[question_id]
                         for question_id, _context in batch
                     },
+                    images,
                 ): batch
                 for batch in batches
             }
@@ -586,30 +636,38 @@ class AITaggingService:
 
 
 def _mock_analysis(context: TaggingContext) -> TagAnalysis:
-    volume = curriculum_volume_contract(context.curriculum_volume_id)
-    first_section = (
-        str(volume["sections"][0]["id"])
-        if volume is not None and volume["sections"]
-        else ""
-    )
     payload = {
-        "knowledge_points": ["几何综合"],
         "method_tags": ["角度转化法"] if "角" in context.question_text else [],
         "thought_tags": [] if "角" in context.question_text else ["方程思想"],
-        "ability_tags": ["推理能力"] if context.has_answer else ["阅读理解"],
+        "ability_tags": ["推理能力"] if context.has_answer else ["运算能力"],
         "math_model_tags": ["三平行模型"] if "平行" in context.question_text else [],
         "special_type_tags": [],
         "difficulty": 3 if context.has_answer else 2,
-        "error_prone_points": ["条件转化不完整"],
-        "prerequisite_points": [],
-        "textbook_chapters": [
-            "八年级上册 第七章 平行线的证明"
-            if "平行" in context.question_text
-            else "九年级上册 第四章 图形的相似"
+        "predicted_error_patterns": [
+            {
+                "category": "审题与条件",
+                "pattern": "漏用题干给出的条件",
+                "trigger_kind": "observation",
+                "trigger_value": "",
+            }
         ],
-        "curriculum_sections": [first_section] if first_section else [],
-        "suitable_student_level": "",
-        "canonical_knowledge_id": "kp_geo_comprehensive",
+        "part_features": [
+            {
+                "part_id": "p1",
+                "part_label": "",
+                "solo": 2,
+                "reasoning": 1,
+                "computation": 1,
+                "context": 0,
+                "context_kind": "无情境",
+                "hidden": 0,
+                "cases": 0,
+                "param_dynamic": 0,
+                "trap": 0,
+                "knowledge": 1,
+                "evidence": "模拟评估：常规单问解答。",
+            }
+        ],
         "taxonomy_revision": 0,
         "proposed_tags": [],
         "reason": "Mock mode uses stable middle-school math tags for page testing.",
@@ -673,6 +731,34 @@ def _coerce_nonnegative_int(value: object, *, fallback: int) -> int:
         return max(0, int(fallback))
 
 
+def _normalize_question_images(images: Sequence[Any] | None) -> list[Any]:
+    """只接受带有字节内容与 data_url() 的题图对象（QuestionAnalysisImage）。
+
+    大小上限与 MIME 白名单由 QuestionAnalysisImage 构造时保证；这里
+    仅做调用方防错，最多携带 8 张。
+    """
+
+    result: list[Any] = []
+    for image in images or ():
+        content = getattr(image, "content", None)
+        data_url = getattr(image, "data_url", None)
+        if not isinstance(content, (bytes, bytearray)) or not content:
+            continue
+        if not callable(data_url):
+            continue
+        result.append(image)
+        if len(result) >= 8:
+            break
+    return result
+
+
+def _image_content_parts(images: Sequence[Any]) -> list[dict[str, Any]]:
+    return [
+        {"type": "input_image", "image_url": image.data_url()}
+        for image in images
+    ]
+
+
 def _prompt_text(
     context: TaggingContext,
     taxonomy_contract: Mapping[str, Any] | None = None,
@@ -691,7 +777,9 @@ def _prompt_text(
 def _prompt_input(
     context: TaggingContext,
     taxonomy_contract: Mapping[str, Any] | None = None,
-) -> list[dict[str, str]]:
+    *,
+    images: Sequence[Any] = (),
+) -> list[dict[str, Any]]:
     contract = _resolve_prompt_contract(taxonomy_contract, context)
     user_payload = {
         "task": "Tag this question for a local junior math question bank.",
@@ -700,9 +788,25 @@ def _prompt_input(
     }
     if os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1":
         user_payload["reasoning_instruction"] = _TAGGING_REASONING_INSTRUCTION
+    text = json.dumps(user_payload, ensure_ascii=False)
+    if not images:
+        return [
+            {"role": "system", "content": _system_prompt(contract)},
+            {"role": "user", "content": text},
+        ]
     return [
         {"role": "system", "content": _system_prompt(contract)},
-        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": text},
+                {
+                    "type": "input_text",
+                    "text": f"本题附带 {len(images)} 张题图，随后按顺序给出。",
+                },
+                *_image_content_parts(images),
+            ],
+        },
     ]
 
 
@@ -711,38 +815,30 @@ def _system_prompt(
 ) -> str:
     contract = _resolve_prompt_contract(taxonomy_contract)
     contract_json = json.dumps(contract, ensure_ascii=False, separators=(",", ":"))
+    pattern_categories = ", ".join(predicted_pattern_categories())
     return f"""
     你负责分析初中数学题。只返回符合指定结构的一个 JSON 对象。
     除公式、数学变量、选项字母、机器标识和原答案片段外，所有可供教师阅读的自由文本字段必须使用简体中文，不得返回英文说明。
     当知识候选包含教材目录树时，该列表已经是所选册别及以前册别的完整“章—小节—细分知识点”树；必须先在整棵树中按稳定 ID 选择最准确节点，不能因为题干用词不同就新造近义标签。
-    The local taxonomy contract below is the only source for curriculum,
-    knowledge, ability, method, thought, model, and special-type tags:
+    The local taxonomy contract below is the only source for ability, method,
+    thought, model and special-type tags:
     {contract_json}
-
-    Allowed student levels (choose exactly one): {", ".join(STUDENT_LEVELS)}
-
-    Error-prone options (choose relevant): {", ".join(ERROR_PRONE_CATEGORIES)}
 
     Controlled output rules:
     - taxonomy_revision must exactly echo {int(_taxonomy_revision(contract))}.
-    - knowledge_points and prerequisite_points may contain only exact approved
-      names from shared_knowledge_catalog when it is present, otherwise from
-      the knowledge candidates. The other controlled fields may contain only
-      exact approved names from their matching contract dimension. Never place
-      a newly coined or approximate term there.
+    - method_tags, thought_tags, ability_tags, math_model_tags and
+      special_type_tags may contain only exact approved names from their
+      matching contract dimension. Never place a newly coined or approximate
+      term there. 整题知识点与前置知识不再由本结构输出，全部由判定点关联派生。
+    - ability_tags 只标主要考查的 1–2 项，最多 2 项。
     - method_tags answers "what concrete procedure was used"; thought_tags
       answers "what reusable reasoning strategy guided the solution";
       math_model_tags names a stable structure whose defining relations are
       actually present. Never copy a term across these three fields.
-    - textbook_chapters, curriculum_sections and canonical_knowledge_id are
-      retained only for response compatibility. The server derives chapter and
-      section ownership from evidence-point knowledge links and ignores any
-      value returned there; leave them as [] and "".
-    - A shared knowledge entry marked usage=do_not_use_as_knowledge describes a
-      method, ability or question style that was historically put in the wrong
-      dimension; never select it as a knowledge point. An entry marked
-      retrieval_only may describe the question for search, but cannot be the
-      canonical_knowledge_id used for mastery.
+    - 解答题（input.question_type 为“解答题”）若在候选中存在子类词
+      （如“计算”“画图”“证明”），special_type_tags 必须重判并给出最准确
+      的一个子类；依据是本题要求学生产出的形式，不要因为题干出现
+      “求证”等字样就标“证明”。
     - Only when no approved knowledge term accurately fits may you add one
       knowledge item to proposed_tags. Method, thought, model, ability,
       curriculum and special-type fields are closed vocabularies: leave an
@@ -752,36 +848,86 @@ def _system_prompt(
       unapproved value out of every normal field.
     - proposed_tags is always present, contains at most 1 item per question,
       and uses [] when every value is approved.
-    - Do not output teaching_stage, sub_skills, measured_skills, or supporting_skills.
 
-    Error-prone points must be broad, reusable categories for statistics, not question-specific step descriptions. Prefer the provided error_prone_options such as 条件识别不完整, 图形关系识别错误, 辅助线思路缺失, 公式/定理误用, 运算化简错误, 书写依据不完整. Do not write labels like “第一问证明某三角形全等时漏找某条件”.
-    Choose the smallest accurate approved knowledge point.
+    predicted_error_patterns 预测学生在本题最可能犯的 0–{PREDICTED_PATTERN_MAX}
+    种具体错法。每项字段：
+    - category：必须是这 7 个大类之一（{pattern_categories}）；
+    - pattern：本题具体的错误做法名称（如“64 的平方根只写 8”），不要写
+      “运算错误”这类泛词，也不要复述正确的完成步骤；
+    - trigger_kind 与 trigger_value：错误最可能在什么位置被观察到。
+      trigger_kind 只能是 {"、".join(PREDICTED_TRIGGER_KINDS)} 之一：
+      option 表示选错某个选项（trigger_value 填选项字母），wrong_answer
+      表示给出某个具体错误答案（trigger_value 填该答案），step 表示在解答
+      某个判定点处出错（trigger_value 填该判定点 id，见 input.evidence_parts
+      内的判定点），observation 表示无确定位置（trigger_value 留空）。
+      拿不准就留空，不要硬凑。
+
+    part_features 对每个小问分别评估，part_id 必须取 input.evidence_parts 中
+    给出的小问标识；未提供小问列表时只有一问，part_id 填 "p1"。
+    每个小问字段含义：
+    - solo：1 单点 / 2 多点 / 3 关联 / 4 拓展抽象；
+    - reasoning：0 直接识别或代公式 / 1 三步以内推理或转化 / 2 超过三步或
+      多次连续转化；
+    - computation：0 无或口算 / 1 常规数值或简单符号运算 / 2 复杂符号运算
+      （根式分式综合、方程组、含参、多次平方开方）；
+    - context：0 无情境 / 1 熟悉生活情境 / 2 陌生、科学跨学科、数学文化或
+      新定义情境；
+    - context_kind：情境类别，只能是 {"、".join(PART_CONTEXT_KINDS)} 之一；
+    - hidden：0 条件直接给出 / 1 一次转化或一个隐含条件 / 2 需辅助构造或
+      多个隐含条件；
+    - cases：0 不分类 / 1 两种情况 / 2 三种及以上或需判断存在性；
+    - param_dynamic：0 否 / 1 含参数或动点；
+    - trap：0 / 1；
+    - knowledge：0 一个知识点 / 1 两个 / 2 三个及以上；
+    - evidence：一句依据。
+    多小问逐问评估，不把一问难度复制给其余问；评估不得使用考试分值、学生
+    得分率、小问数量、题干长短或是否含根式。
+
     Difficulty must be an integer from 1 to 10.
     {DIFFICULTY_SCALE_GUIDANCE}
-    input.has_images is metadata only: it tells you the stored question contains images, but no image body is included in this tagging request.
+    input.has_images indicates the stored question has images; when present,
+    the image bodies are attached to this request — always use them before
+    judging a figure-dependent question.
     Historical saved tags are intentionally absent from the input and must not
     be inferred or preserved. Judge this question from its current content and
     the current taxonomy contract only.
-    confidence must be a number from 0 to 1 for your overall confidence in the tag set. Lower it when the image is essential, the answer is missing, or the core knowledge point is uncertain.
-    suitable_student_level is retained only for response compatibility and must be "".
+    confidence must be a number from 0 to 1 for your overall confidence in the tag set. Lower it when the image is essential, the answer is missing, or the key solution step is uncertain.
     """.strip()
 
 
 def _plain_output_schema(taxonomy_revision: int = 0) -> dict[str, object]:
     return {
-        "knowledge_points": [],
         "method_tags": [],
         "thought_tags": [],
         "ability_tags": [],
         "math_model_tags": [],
         "special_type_tags": [],
         "difficulty": 1,
-        "error_prone_points": [],
-        "prerequisite_points": [],
-        "textbook_chapters": [],
-        "curriculum_sections": [],
-        "suitable_student_level": "",
-        "canonical_knowledge_id": "",
+        "predicted_error_patterns": [
+            {
+                "category": "",
+                "pattern": "",
+                "trigger_kind": "",
+                "trigger_value": "",
+            }
+        ],
+        "part_features": [
+            {
+                "part_id": "",
+                "part_label": "",
+                "solo": 1,
+                "reasoning": 0,
+                "computation": 0,
+                "context": 0,
+                "context_kind": "",
+                "hidden": 0,
+                "cases": 0,
+                "param_dynamic": 0,
+                "trap": 0,
+                "knowledge": 1,
+                "evidence": "",
+            }
+        ],
         "taxonomy_revision": int(taxonomy_revision),
         "proposed_tags": [
             {
@@ -877,55 +1023,12 @@ def _controlled_array_schema(
     }
 
 
-def _curriculum_section_ids(
-    contract: Mapping[str, Any] | None,
-) -> list[str]:
-    if contract is None:
-        return []
-    volume = contract.get("curriculum_volume")
-    if not isinstance(volume, Mapping):
-        return []
-    sections = volume.get("sections")
-    if not isinstance(sections, Sequence) or isinstance(
-        sections, (str, bytes, bytearray)
-    ):
-        return []
-    return _ordered_unique(
-        [
-            str(item.get("id") or "").strip()
-            for item in sections
-            if isinstance(item, Mapping)
-        ]
-    )
-
-
-def _controlled_section_schema(
-    contract: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    if contract is None:
-        return {"type": "array", "items": {"type": "string"}}
-    section_ids = _curriculum_section_ids(contract)
-    if not section_ids:
-        return {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 0,
-        }
-    return {
-        "type": "array",
-        "items": {"type": "string", "enum": section_ids},
-    }
-
-
 _CONTROLLED_ID_FIELD_DIMENSIONS = {
-    "knowledge_points": "knowledge",
-    "prerequisite_points": "knowledge",
     "method_tags": "method",
     "thought_tags": "thought",
     "ability_tags": "ability",
     "math_model_tags": "model",
     "special_type_tags": "special_type",
-    "textbook_chapters": "curriculum",
 }
 
 
@@ -974,8 +1077,6 @@ def _controlled_field_violation_notes(
     if not isinstance(contract.get("candidates"), Mapping):
         return []
     field_dimensions = {
-        "knowledge_points": "knowledge",
-        "prerequisite_points": "knowledge",
         "method_tags": "method",
         "ability_tags": "ability",
         "math_model_tags": "model",
@@ -994,39 +1095,78 @@ def _controlled_field_violation_notes(
     return notes
 
 
+def _predicted_pattern_response_schema() -> dict[str, Any]:
+    categories = list(predicted_pattern_categories())
+    properties = {
+        "category": (
+            {"type": "string", "enum": categories}
+            if categories
+            else {"type": "string"}
+        ),
+        "pattern": {"type": "string"},
+        "trigger_kind": {
+            "type": "string",
+            "enum": list(PREDICTED_TRIGGER_KINDS),
+        },
+        "trigger_value": {"type": "string"},
+    }
+    return {
+        "type": "array",
+        "maxItems": PREDICTED_PATTERN_MAX,
+        "items": {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        },
+    }
+
+
+def _part_features_response_schema() -> dict[str, Any]:
+    def ranged(name: str) -> dict[str, Any]:
+        minimum, maximum = PART_FEATURE_RANGES[name]
+        return {"type": "integer", "minimum": minimum, "maximum": maximum}
+
+    properties: dict[str, Any] = {
+        "part_id": {"type": "string"},
+        "part_label": {"type": "string"},
+        **{name: ranged(name) for name in PART_FEATURE_ORDER},
+        "context_kind": {
+            "type": "string",
+            "enum": list(PART_CONTEXT_KINDS),
+        },
+        "evidence": {"type": "string"},
+    }
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 8,
+        "items": {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        },
+    }
+
+
 def _tag_analysis_response_format(
     taxonomy_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    array_field = {"type": "array", "items": {"type": "string"}}
     score_field = {"type": "integer", "minimum": 1, "maximum": 10}
     text_field = {"type": "string"}
-    knowledge_candidates = _contract_candidates(
-        taxonomy_contract, "knowledge"
+    ability_schema = dict(
+        _controlled_array_schema(taxonomy_contract, "ability")
     )
-    canonical_ids = [
-        "",
-        *_ordered_unique(
-            [
-                item["id"]
-                for item in knowledge_candidates
-                if item.get("usage")
-                not in {"do_not_use_as_knowledge", "retrieval_only"}
-            ]
-        ),
-    ]
+    ability_schema["maxItems"] = MAX_ABILITY_TAGS
     properties = {
-        "knowledge_points": _controlled_array_schema(
-            taxonomy_contract, "knowledge"
-        ),
         "method_tags": _controlled_array_schema(
             taxonomy_contract, "method"
         ),
         "thought_tags": _controlled_array_schema(
             taxonomy_contract, "thought"
         ),
-        "ability_tags": _controlled_array_schema(
-            taxonomy_contract, "ability"
-        ),
+        "ability_tags": ability_schema,
         "math_model_tags": _controlled_array_schema(
             taxonomy_contract, "model"
         ),
@@ -1034,22 +1174,8 @@ def _tag_analysis_response_format(
             taxonomy_contract, "special_type"
         ),
         "difficulty": score_field,
-        "error_prone_points": array_field,
-        "prerequisite_points": _controlled_array_schema(
-            taxonomy_contract, "knowledge"
-        ),
-        "textbook_chapters": _controlled_array_schema(
-            taxonomy_contract, "curriculum"
-        ),
-        "curriculum_sections": _controlled_section_schema(
-            taxonomy_contract
-        ),
-        "suitable_student_level": text_field,
-        "canonical_knowledge_id": (
-            {"type": "string", "enum": canonical_ids}
-            if taxonomy_contract is not None
-            else text_field
-        ),
+        "predicted_error_patterns": _predicted_pattern_response_schema(),
+        "part_features": _part_features_response_schema(),
         "taxonomy_revision": {"type": "integer"},
         "proposed_tags": _proposal_response_schema(),
         "reason": text_field,
@@ -1359,6 +1485,52 @@ def _json_from_text_compat(
         return llm_client.json_from_text(prompt, **call_kwargs)
 
 
+def _json_from_images_compat(
+    llm_client: Any,
+    prompt: str,
+    image_blobs: list[bytes],
+    *,
+    model: str | None = None,
+    extra_kwargs: dict[str, Any] | None = None,
+    response_format: Mapping[str, Any] | None = None,
+) -> Any:
+    """题图走 chat 图像接口；兼容没有 response_format 形参的替身实现。"""
+
+    method = getattr(llm_client, "json_from_images_with_options", None)
+    if not callable(method):
+        raise RuntimeError("题图打标需要支持图像的模型客户端")
+    call_kwargs: dict[str, Any] = {
+        "model": model,
+        "request_kind": LLMRequestKind.TAGGING,
+        "response_format": response_format,
+    }
+    if extra_kwargs is not None:
+        call_kwargs["extra_kwargs"] = extra_kwargs
+    try:
+        return method(prompt, image_blobs, **call_kwargs)
+    except TypeError as exc:
+        message = str(exc)
+        for name in ("request_kind", "response_format", "extra_kwargs"):
+            if name in message:
+                call_kwargs.pop(name, None)
+                break
+        else:
+            raise
+    for _ in range(len(call_kwargs)):
+        try:
+            return method(prompt, image_blobs, **call_kwargs)
+        except TypeError as exc:
+            matched = False
+            for name in ("request_kind", "response_format", "extra_kwargs"):
+                if name in str(exc) and name in call_kwargs:
+                    call_kwargs.pop(name, None)
+                    matched = True
+                    break
+            if not matched:
+                raise
+    return method(prompt, image_blobs, **call_kwargs)
+
+
 def _json_from_text_once_compat(
     llm_client: Any,
     prompt: str,
@@ -1397,11 +1569,14 @@ def _analyze_question_with_contract(
     service: AITaggingService,
     context: TaggingContext,
     taxonomy_contract: Mapping[str, Any],
+    *,
+    images: Sequence[Any] = (),
 ) -> AITaggingResult:
     try:
         return service.analyze_question(
             context,
             taxonomy_contract=taxonomy_contract,
+            images=images,
         )
     except TypeError as exc:
         if "taxonomy_contract" not in str(exc):
@@ -1416,11 +1591,14 @@ def _analyze_review_with_contract(
     service: AITaggingService,
     context: TaggingContext,
     taxonomy_contract: Mapping[str, Any],
+    *,
+    images: Sequence[Any] = (),
 ) -> AITaggingResult:
     try:
         return service.analyze_review_question(
             context,
             taxonomy_contract=taxonomy_contract,
+            images=images,
         )
     except TypeError as exc:
         if "taxonomy_contract" not in str(exc):
@@ -1535,14 +1713,30 @@ def _batch_prompt_input(
     taxonomy_contracts: Mapping[int, Mapping[str, Any]]
     | Mapping[str, Any]
     | None = None,
-) -> list[dict[str, str]]:
+    images: Mapping[int, Sequence[Any]] | None = None,
+) -> list[dict[str, Any]]:
     taxonomy_contracts = _normalize_batch_contracts(
         batch_contexts,
         taxonomy_contracts,
     )
     contract = _batch_shared_contract(batch_contexts, taxonomy_contracts)
     input_payloads = []
+    image_manifest: list[dict[str, Any]] = []
     for question_id, context in batch_contexts:
+        question_images = _normalize_question_images(
+            (images or {}).get(question_id, ())
+        )
+        if question_images:
+            image_manifest.append(
+                {
+                    "question_id": question_id,
+                    "image_count": len(question_images),
+                    "sha256": [
+                        str(getattr(image, "sha256", "") or "")
+                        for image in question_images
+                    ],
+                }
+            )
         input_payloads.append({
             "question_id": question_id,
             "input": _prompt_question_input(context),
@@ -1550,7 +1744,7 @@ def _batch_prompt_input(
                 taxonomy_contracts[question_id]
             ),
         })
-        
+
     user_payload = {
         "task": "Analyze and tag this batch of junior middle-school math questions.",
         "batch_inputs": input_payloads,
@@ -1563,12 +1757,38 @@ def _batch_prompt_input(
             ]
         },
     }
+    if image_manifest:
+        user_payload["question_images"] = image_manifest
     if os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1":
         user_payload["reasoning_instruction"] = _TAGGING_REASONING_INSTRUCTION
-    
+
+    if not image_manifest:
+        return [
+            {"role": "system", "content": _batch_system_prompt(contract)},
+            {
+                "role": "user",
+                "content": json.dumps(user_payload, ensure_ascii=False),
+            },
+        ]
+    user_content: list[dict[str, Any]] = [
+        {"type": "input_text", "text": json.dumps(user_payload, ensure_ascii=False)}
+    ]
+    for question_id, _context in batch_contexts:
+        question_images = _normalize_question_images(
+            (images or {}).get(question_id, ())
+        )
+        if not question_images:
+            continue
+        user_content.append(
+            {
+                "type": "input_text",
+                "text": f"question_id={question_id} 的题图，共 {len(question_images)} 张：",
+            }
+        )
+        user_content.extend(_image_content_parts(question_images))
     return [
         {"role": "system", "content": _batch_system_prompt(contract)},
-        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        {"role": "user", "content": user_content},
     ]
 
 
@@ -1609,18 +1829,7 @@ def _batch_contract_union(
                 seen.add(key)
                 items.append(item)
         merged_candidates[dimension] = items
-    sections: list[dict[str, str]] = []
-    seen_sections: set[str] = set()
-    for contract in contracts:
-        for section_id in _curriculum_section_ids(contract):
-            if section_id in seen_sections:
-                continue
-            seen_sections.add(section_id)
-            sections.append({"id": section_id})
-    result: dict[str, Any] = {"candidates": merged_candidates}
-    if sections:
-        result["curriculum_volume"] = {"sections": sections}
-    return result
+    return {"candidates": merged_candidates}
 
 
 def _batch_tag_analysis_response_format(
@@ -1710,6 +1919,7 @@ def _analyze_one_batch(
     quality_retry_limit: int,
     enable_review: bool,
     taxonomy_contracts: Mapping[int, Mapping[str, Any]] | None = None,
+    images: Mapping[int, Sequence[Any]] | None = None,
 ) -> dict[int, AITaggingResult]:
     taxonomy_contracts = _normalize_batch_contracts(
         batch_items,
@@ -1719,12 +1929,18 @@ def _analyze_one_batch(
         batch_items,
         taxonomy_contracts,
     )
+    batch_images = {
+        qid: _normalize_question_images((images or {}).get(qid, ()))
+        for qid, _context in batch_items
+    }
+    has_any_images = any(batch_images.values())
     if service.mock_mode:
         return _finalize_batch_results(
             service,
             batch_items,
             _mock_batch_analysis(batch_items),
             taxonomy_contracts=taxonomy_contracts,
+            images=batch_images,
         )
 
     _batch_started = request_controller.begin("batch", tuple(qid for qid, _context in batch_items))
@@ -1756,6 +1972,23 @@ def _analyze_one_batch(
                     ]
                 },
             }
+            image_blobs: list[bytes] = []
+            if has_any_images:
+                image_manifest = []
+                for qid, _ctx in batch_items:
+                    question_images = batch_images.get(qid) or []
+                    if not question_images:
+                        continue
+                    image_manifest.append(
+                        {
+                            "question_id": qid,
+                            "image_count": len(question_images),
+                        }
+                    )
+                    image_blobs.extend(
+                        image.content for image in question_images
+                    )
+                user_payload["question_images"] = image_manifest
             if os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1":
                 user_payload["reasoning_instruction"] = (
                     _TAGGING_REASONING_INSTRUCTION
@@ -1764,19 +1997,38 @@ def _analyze_one_batch(
                 f"{_batch_system_prompt(taxonomy_contract)}\n\n"
                 f"{json.dumps(user_payload, ensure_ascii=False)}"
             )
-            
+            if image_blobs:
+                prompt += (
+                    "\n\n题图按 question_images 中 question_id 的顺序随请求附带，"
+                    "请结合题图判断。"
+                )
+
             thinking_enabled = os.getenv("QUESTION_BANK_TAGGING_THINKING") == "1"
             extra_kwargs = {"thinking": True} if thinking_enabled else None
-            
-            payload = _json_from_text_compat(
-                service.llm_client,
-                prompt,
-                model=_model_for_llm_client(service.llm_client, service.model),
-                extra_kwargs=extra_kwargs,
-                response_format=_chat_response_format(
-                    _batch_tag_analysis_response_format(taxonomy_contracts)
-                ),
+            response_format = _chat_response_format(
+                _batch_tag_analysis_response_format(taxonomy_contracts)
             )
+            if image_blobs:
+                payload = _json_from_images_compat(
+                    service.llm_client,
+                    prompt,
+                    image_blobs,
+                    model=_model_for_llm_client(
+                        service.llm_client, service.model
+                    ),
+                    extra_kwargs=extra_kwargs,
+                    response_format=response_format,
+                )
+            else:
+                payload = _json_from_text_compat(
+                    service.llm_client,
+                    prompt,
+                    model=_model_for_llm_client(
+                        service.llm_client, service.model
+                    ),
+                    extra_kwargs=extra_kwargs,
+                    response_format=response_format,
+                )
             if not isinstance(payload.get("results"), list):
                 raise ValueError("LLM response did not include a batch results list")
             results = {}
@@ -1803,6 +2055,7 @@ def _analyze_one_batch(
                 quality_retry_limit=quality_retry_limit,
                 enable_review=enable_review,
                 taxonomy_contracts=taxonomy_contracts,
+                images=batch_images,
             )
 
         # Standard OpenAI-style / Google Responses API client
@@ -1815,7 +2068,9 @@ def _analyze_one_batch(
                         taxonomy_contracts
                     )
                 },
-                "input": _batch_prompt_input(batch_items, taxonomy_contracts),
+                "input": _batch_prompt_input(
+                    batch_items, taxonomy_contracts, images=batch_images
+                ),
             },
         )
         output_text = str(getattr(response, "output_text", "") or "").strip()
@@ -1844,6 +2099,7 @@ def _analyze_one_batch(
             quality_retry_limit=quality_retry_limit,
             enable_review=enable_review,
             taxonomy_contracts=taxonomy_contracts,
+            images=batch_images,
         )
     except Exception as exc:
         request_controller.finish(_batch_started, "failed", exc, model_name=service.model)
@@ -1941,6 +2197,7 @@ def _finalize_batch_results(
     quality_retry_limit: int = 1,
     enable_review: bool = True,
     taxonomy_contracts: Mapping[int, Mapping[str, Any]] | None = None,
+    images: Mapping[int, Sequence[Any]] | None = None,
 ) -> dict[int, AITaggingResult]:
     contexts = dict(batch_items)
     resolved_contracts = (
@@ -1951,6 +2208,7 @@ def _finalize_batch_results(
             for question_id, context in batch_items
         }
     )
+    question_images = dict(images or {})
     final: dict[int, AITaggingResult] = {}
     for qid, context in contexts.items():
         taxonomy_contract = resolved_contracts[qid]
@@ -1978,6 +2236,7 @@ def _finalize_batch_results(
                     service,
                     context,
                     taxonomy_contract,
+                    images=question_images.get(qid, ()),
                 ),
                 context,
                 governance=service.taxonomy_governance,
@@ -1999,6 +2258,7 @@ def _finalize_batch_results(
                 request_controller=request_controller,
                 question_id=qid,
                 taxonomy_contract=taxonomy_contract,
+                images=question_images.get(qid, ()),
             )
         final[qid] = result
     return final
@@ -2036,11 +2296,7 @@ def _with_quality(
         resolved_analysis,
         contract,
     )
-    scoped_analysis, curriculum_notes = _normalize_scoped_curriculum(
-        resolved_analysis,
-        contract,
-    )
-    raw_payload = scoped_analysis.to_dict()
+    raw_payload = resolved_analysis.to_dict()
     if result.proposals:
         raw_payload["proposed_tags"] = [
             *raw_payload.get("proposed_tags", []),
@@ -2062,14 +2318,13 @@ def _with_quality(
     )
     normalized_analysis, proposals, governance_status, governance_notes = (
         _analysis_from_constraint(
-            scoped_analysis,
+            resolved_analysis,
             constrained,
             fallback_revision=revision,
         )
     )
     governance_notes = [
         *violation_notes,
-        *curriculum_notes,
         *governance_notes,
     ]
     status, notes, confidence = _evaluate_analysis_quality(
@@ -2134,75 +2389,6 @@ def converge_tag_analysis(
     )
 
 
-def _normalize_scoped_curriculum(
-    analysis: TagAnalysis,
-    contract: Mapping[str, Any],
-) -> tuple[TagAnalysis, list[str]]:
-    volume = contract.get("curriculum_volume")
-    if not isinstance(volume, Mapping):
-        return analysis, []
-    raw_sections = volume.get("sections")
-    section_rows = (
-        [item for item in raw_sections if isinstance(item, Mapping)]
-        if isinstance(raw_sections, list)
-        else []
-    )
-    by_id = {
-        str(item.get("id") or "").strip(): item
-        for item in section_rows
-        if str(item.get("id") or "").strip()
-    }
-    ids_by_display_key: dict[str, list[str]] = {}
-    for section_id, item in by_id.items():
-        name = str(item.get("name") or "").strip()
-        chapter_name = str(item.get("chapter_name") or "").strip()
-        for alias in (name, f"{chapter_name} {name}".strip()):
-            key = _curriculum_display_key(alias)
-            if key:
-                ids_by_display_key.setdefault(key, []).append(section_id)
-    selected_ids: list[str] = []
-    invalid_ids: list[str] = []
-    for raw in analysis.curriculum_sections:
-        section_id = str(raw or "").strip()
-        if not section_id or section_id in selected_ids:
-            continue
-        resolved_id = section_id
-        if resolved_id not in by_id:
-            matches = ids_by_display_key.get(
-                _curriculum_display_key(section_id), []
-            )
-            if len(matches) != 1:
-                invalid_ids.append(section_id)
-                continue
-            resolved_id = matches[0]
-        if resolved_id not in selected_ids:
-            selected_ids.append(resolved_id)
-    if invalid_ids:
-        selected_ids = []
-    chapters: list[str] = []
-    for section_id in selected_ids:
-        chapter_name = str(by_id[section_id].get("chapter_name") or "").strip()
-        if chapter_name and chapter_name not in chapters:
-            chapters.append(chapter_name)
-    payload = analysis.to_dict()
-    payload["curriculum_sections"] = selected_ids
-    payload["textbook_chapters"] = chapters
-    payload["textbook_chapter"] = chapters[0] if chapters else ""
-    notes: list[str] = []
-    if invalid_ids:
-        notes.append(
-            "教材小节超出老师确认的册别范围："
-            + "、".join(invalid_ids[:3])
-        )
-    if not selected_ids:
-        notes.append("未返回当前册别中的教材小节")
-    return TagAnalysis.from_dict(payload), notes
-
-
-def _curriculum_display_key(value: object) -> str:
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").casefold())
-
-
 def _evaluate_analysis_quality(
     analysis: TagAnalysis,
     context: TaggingContext,
@@ -2219,22 +2405,21 @@ def _evaluate_analysis_quality(
         if isinstance(item, Mapping)
     }
     missing = []
-    if not analysis.knowledge_points and "knowledge" not in proposal_dimensions:
-        missing.append("缺少知识点")
     if not analysis.ability_tags and "ability" not in proposal_dimensions:
         missing.append("缺少能力标签")
-    if not analysis.textbook_chapters and "curriculum" not in proposal_dimensions:
-        missing.append("缺少教材章节")
-    if context.curriculum_volume_id and not analysis.curriculum_sections:
-        missing.append("缺少教材小节")
     if analysis.difficulty is None:
         missing.append("难度必须是 1 至 10 的整数")
+    if not analysis.part_features:
+        missing.append("缺少逐小问难度特征")
+    elif context.evidence_parts:
+        expected = [str(item.get("part_id") or "").strip() for item in context.evidence_parts if isinstance(item, Mapping)]
+        actual = [str(item.get("part_id") or "").strip() for item in analysis.part_features]
+        if not all(expected) or len(actual) != len(set(actual)) or set(actual) != set(expected):
+            missing.append("逐小问难度特征与当前判定点小问不完整对应（缺问、错号或重复号）")
     confidence = float(analysis.confidence)
     if context.has_images or "[[IMAGE:" in str(context.question_text or ""):
         confidence *= 0.95
         notes.append("图片依赖题已轻微降权")
-    rule_conflict_notes = _rule_conflict_notes(context, analysis)
-    notes.extend(rule_conflict_notes)
     if missing:
         notes.extend(missing)
         return "invalid", notes, round(min(confidence * 0.4, REVIEW_CONFIDENCE_THRESHOLD - 0.01), 4)
@@ -2244,20 +2429,14 @@ def _evaluate_analysis_quality(
             min(confidence * 0.4, REVIEW_CONFIDENCE_THRESHOLD - 0.01),
             4,
         )
-    if confidence < REVIEW_CONFIDENCE_THRESHOLD:
-        notes.append("AI 自评置信度过低")
-        return "invalid", notes, round(confidence, 4)
-    if rule_conflict_notes:
-        return "conflict", notes, round(min(confidence * 0.75, COMPLETE_CONFIDENCE_THRESHOLD - 0.03), 4)
+    # 置信度只记录不拦截：低置信与图片降权均不影响保存，只有结构性缺失
+    # （能力/难度/逐小问特征）或词表治理 invalid 才判 invalid。
     if pending_proposals or governance_status == "needs_review":
         notes.append("包含未入词表的新标签，已转入人工审核")
         return "needs_review", _ordered_unique(notes), round(
             min(1.0, confidence),
             4,
         )
-    if confidence < COMPLETE_CONFIDENCE_THRESHOLD:
-        notes.append("置信度低，需复核或人工确认")
-        return "low_confidence", notes, round(confidence, 4)
     return "complete", notes, round(min(1.0, confidence), 4)
 
 
@@ -2268,97 +2447,11 @@ def _analysis_from_constraint(
     fallback_revision: int,
 ) -> tuple[TagAnalysis, list[dict[str, Any]], str, list[str]]:
     payload = original.to_dict()
-    requested_canonical_id = str(original.canonical_knowledge_id or "").strip()
     accepted_fields = constrained.get("accepted_fields")
     if isinstance(accepted_fields, Mapping):
-        for field_name in (
-            "knowledge_points",
-            "prerequisite_points",
-            "method_tags",
-            "thought_tags",
-            "ability_tags",
-            "math_model_tags",
-            "special_type_tags",
-        ):
+        for field_name in _CONTROLLED_ID_FIELD_DIMENSIONS:
             values = accepted_fields.get(field_name)
             payload[field_name] = list(values) if isinstance(values, list) else []
-        curriculum_values = (
-            accepted_fields.get("textbook_chapters")
-            or accepted_fields.get("textbook_chapter")
-        )
-        payload["textbook_chapters"] = (
-            list(curriculum_values) if isinstance(curriculum_values, list) else []
-        )
-    else:
-        accepted = constrained.get("accepted_analysis")
-        if isinstance(accepted, Mapping):
-            field_by_dimension = {
-                "knowledge": "knowledge_points",
-                "method": "method_tags",
-                "thought": "thought_tags",
-                "ability": "ability_tags",
-                "model": "math_model_tags",
-                "special_type": "special_type_tags",
-                "curriculum": "textbook_chapters",
-            }
-            for dimension, field_name in field_by_dimension.items():
-                values = accepted.get(dimension)
-                payload[field_name] = list(values) if isinstance(values, list) else []
-        else:
-            payload["knowledge_points"] = []
-            payload["method_tags"] = []
-            payload["thought_tags"] = []
-            payload["ability_tags"] = []
-            payload["math_model_tags"] = []
-            payload["special_type_tags"] = []
-            payload["textbook_chapters"] = []
-        payload["prerequisite_points"] = []
-    payload["canonical_knowledge_id"] = ""
-    accepted_terms = constrained.get("accepted_terms")
-    knowledge_values = payload.get("knowledge_points")
-    if (
-        isinstance(accepted_terms, Mapping)
-        and isinstance(knowledge_values, list)
-        and knowledge_values
-    ):
-        knowledge_terms = accepted_terms.get("knowledge")
-        if isinstance(knowledge_terms, list):
-            requested_primary = next(
-                (
-                    item
-                    for item in knowledge_terms
-                    if isinstance(item, Mapping)
-                    and str(item.get("id") or "").strip()
-                    == requested_canonical_id
-                ),
-                None,
-            )
-            if isinstance(requested_primary, Mapping):
-                requested_name = str(requested_primary.get("name") or "").strip()
-                if requested_name in knowledge_values:
-                    payload["knowledge_points"] = [
-                        requested_name,
-                        *[
-                            value
-                            for value in knowledge_values
-                            if value != requested_name
-                        ],
-                    ]
-                    knowledge_values = payload["knowledge_points"]
-            primary_name = str(knowledge_values[0] or "").strip()
-            primary_term = next(
-                (
-                    item
-                    for item in knowledge_terms
-                    if isinstance(item, Mapping)
-                    and str(item.get("name") or "").strip() == primary_name
-                ),
-                None,
-            )
-            if isinstance(primary_term, Mapping):
-                payload["canonical_knowledge_id"] = str(
-                    primary_term.get("id") or ""
-                ).strip()
     proposals = [
         dict(item)
         for item in constrained.get("proposals", [])
@@ -2370,10 +2463,6 @@ def _analysis_from_constraint(
     )
     payload["taxonomy_revision"] = revision
     payload["proposed_tags"] = proposals
-    payload["teaching_stage"] = ""
-    payload["sub_skills"] = []
-    payload["measured_skills"] = []
-    payload["supporting_skills"] = []
     analysis = TagAnalysis.from_dict(payload)
     status = str(constrained.get("status") or "complete").strip().casefold()
     raw_notes = constrained.get("notes") or constrained.get("conflicts") or []
@@ -2385,58 +2474,6 @@ def _analysis_from_constraint(
     return analysis, proposals, status, notes
 
 
-_QUOTED_TERM_SPAN_RE = re.compile(r"[“「](?P<term>[^”」]{1,30})[”」]")
-_DEFINITION_INTRO_RE = re.compile(
-    r"(?:称为|定义为|记为|称[^“”「」]{0,10}为|定义[:：])"
-)
-
-
-def _is_only_custom_defined_term(text: str, term: str) -> bool:
-    """命中词只出现在引号包裹的新定义名词里时视为自定义用语。
-
-    例如新定义题把“角平分线点”定义为自定义名词，题干从未在引号外
-    使用“角平分线”本身，此时不应按角平分线性质题处理。
-    """
-
-    occurrences = [match.start() for match in re.finditer(re.escape(term), text)]
-    if not occurrences:
-        return False
-    spans = [
-        (match.start("term"), match.end("term"))
-        for match in _QUOTED_TERM_SPAN_RE.finditer(text)
-    ]
-    for position in occurrences:
-        if not any(start <= position < end for start, end in spans):
-            return False
-    for match in _QUOTED_TERM_SPAN_RE.finditer(text):
-        if term not in match.group("term"):
-            continue
-        window = text[max(0, match.start() - 16):match.start()]
-        if _DEFINITION_INTRO_RE.search(window):
-            return True
-    return False
-
-
-def _rule_conflict_notes(context: TaggingContext, analysis: TagAnalysis) -> list[str]:
-    raw_text = str(context.question_text or "")
-    text = _compact(raw_text)
-    knowledge = _compact(" ".join(analysis.knowledge_points))
-    notes: list[str] = []
-    if ("科学记数法" in text or re.search(r"0\.0{3,}\d", text)) and "有理数" not in knowledge and "科学记数法" not in knowledge:
-        notes.append("疑似科学记数法题，主知识点未指向有理数/科学记数法")
-    if ("第三边" in text or "两条边" in text) and "三角形全等" in knowledge and "三边" not in knowledge:
-        notes.append("疑似三角形三边关系题，不应泛化为三角形全等")
-    if ("角平分线" in text or "平分∠" in text) and "角平分线" not in knowledge and "轴对称" not in knowledge:
-        custom_defined_only = (
-            "角平分线" in text
-            and "平分∠" not in text
-            and _is_only_custom_defined_term(raw_text, "角平分线")
-        )
-        if not custom_defined_only:
-            notes.append("疑似角平分线性质题，知识点可能偏泛")
-    return notes
-
-
 def _review_low_confidence_result(
     service: AITaggingService,
     context: TaggingContext,
@@ -2445,6 +2482,7 @@ def _review_low_confidence_result(
     request_controller: "_TaggingRequestController | None" = None,
     question_id: int | None = None,
     taxonomy_contract: Mapping[str, Any] | None = None,
+    images: Sequence[Any] = (),
 ) -> AITaggingResult:
     if not service.review_configured:
         return primary
@@ -2452,7 +2490,7 @@ def _review_low_confidence_result(
         request_controller.begin("review", (question_id,))
     contract = dict(taxonomy_contract or service.taxonomy_contract(context))
     review = _with_quality(
-        _analyze_review_with_contract(service, context, contract),
+        _analyze_review_with_contract(service, context, contract, images=images),
         context,
         governance=service.taxonomy_governance,
         taxonomy_contract=contract,
@@ -2516,37 +2554,55 @@ def _review_low_confidence_result(
 
 
 def _analyses_agree(left: TagAnalysis, right: TagAnalysis) -> bool:
-    left_knowledge = {_compact(item) for item in left.knowledge_points if _compact(item)}
-    right_knowledge = {_compact(item) for item in right.knowledge_points if _compact(item)}
-    if not left_knowledge.intersection(right_knowledge):
-        return False
-    left_chapters = {
-        _compact(item) for item in left.textbook_chapters if _compact(item)
-    }
-    right_chapters = {
-        _compact(item) for item in right.textbook_chapters if _compact(item)
-    }
-    return (
-        not left_chapters
-        or not right_chapters
-        or bool(left_chapters.intersection(right_chapters))
-    )
+    def core_tags(analysis: TagAnalysis) -> set[str]:
+        return {
+            _compact(value)
+            for field_name in (
+                "method_tags",
+                "thought_tags",
+                "ability_tags",
+                "math_model_tags",
+                "special_type_tags",
+            )
+            for value in getattr(analysis, field_name, [])
+            if _compact(value)
+        }
+
+    left_core, right_core = core_tags(left), core_tags(right)
+    shared = left_core & right_core
+    if shared:
+        return True
+    # 两份分析都没有任何受控标签时，按难度差判定是否一致。
+    if not left_core and not right_core:
+        if left.difficulty is None or right.difficulty is None:
+            return False
+        return abs(left.difficulty - right.difficulty) <= 2
+    return False
 
 
 def _merge_agreed_analyses(primary: TagAnalysis, review: TagAnalysis) -> TagAnalysis:
     payload = primary.to_dict()
     for field_name in (
-        "knowledge_points",
         "method_tags",
         "thought_tags",
         "ability_tags",
         "math_model_tags",
         "special_type_tags",
-        "error_prone_points",
-        "prerequisite_points",
-        "textbook_chapters",
     ):
         payload[field_name] = _ordered_unique([*primary.to_dict().get(field_name, []), *review.to_dict().get(field_name, [])])
+    # 预测错法按名称合并去重；逐小问特征沿用主分析（不同分析的小问粒度可能不同，不能拼接）。
+    seen_patterns = {
+        str(item.get("pattern") or "").casefold()
+        for item in primary.predicted_error_patterns
+    }
+    payload["predicted_error_patterns"] = [
+        *primary.predicted_error_patterns,
+        *[
+            dict(item)
+            for item in review.predicted_error_patterns
+            if str(item.get("pattern") or "").casefold() not in seen_patterns
+        ],
+    ]
     payload["proposed_tags"] = [
         *primary.proposed_tags,
         *review.proposed_tags,

@@ -158,7 +158,6 @@ def test_intake_reuses_one_taxonomy_contract_for_analysis_and_proposals(
             "special_type_tags": [],
             "difficulty": 1,
             "error_prone_points": [],
-            "prerequisite_points": [],
             "textbook_chapters": [],
             "reason": "合成结果",
             "confidence": 0.9,

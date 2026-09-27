@@ -11,7 +11,18 @@ from dataclasses import dataclass, field, replace as dataclass_replace
 from collections.abc import Iterable
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
-from question_bank.models.tag_schema import TagAnalysis, TaggingContext
+from question_bank.models.tag_schema import (
+    MAX_ABILITY_TAGS,
+    PART_CONTEXT_KINDS,
+    PART_FEATURE_ORDER,
+    PART_FEATURE_RANGES,
+    PART_FEATURES_MAX_PARTS,
+    PREDICTED_PATTERN_MAX,
+    PREDICTED_TRIGGER_KINDS,
+    TagAnalysis,
+    TaggingContext,
+    predicted_pattern_categories,
+)
 from question_bank.parsers.type_detector import (
     ESSAY_SUBTYPES,
     QUESTION_TYPES,
@@ -147,8 +158,13 @@ class QuestionAnalysisInput:
     )
     reference_solution: Mapping[str, Any] = field(default_factory=dict)
     repair_context: Mapping[str, Any] = field(default_factory=dict)
+    semantic_source: str = "text"
 
     def __post_init__(self) -> None:
+        if self.semantic_source not in {"text", "images"}:
+            raise ValueError("question semantic source is invalid")
+        if self.semantic_source == "images" and not any(image.role == "question" for image in self.images):
+            raise ValueError("PDF 题目缺少题干裁图，不能用识别文字代替完整题面分析")
         if isinstance(self.question_id, bool) or int(self.question_id) <= 0:
             raise ValueError("question_id must be positive")
         if not str(self.tagging_context.question_text or "").strip():
@@ -273,11 +289,19 @@ class QuestionAnalysisInput:
         # 词表/知识标准状态绝不进入指纹——它是逐题的"题变了才重做"开关，
         # 词表版本是全局的；一旦嵌入，教师确认一个新词就会让全库已保存的
         # 标签整体过期。需要按新词表刷新时，用显式的"重新打标签"提交。
+        # evidence_parts 是判定点保存后的派生状态而非题目内容：纳入会让
+        # 每次保存判定点后全题被视为"题变了"而反复重打。
+        context = {
+            key: value
+            for key, value in self.tagging_context.to_dict().items()
+            if key != "evidence_parts"
+        }
         return _hash_payload(
             {
                 "question_id": self.question_id,
-                "tagging_context": self.tagging_context.to_dict(),
+                "tagging_context": context,
                 "question_type_confirmed": self.question_type_confirmed,
+                **({"semantic_source": "images"} if self.semantic_source == "images" else {}),
                 "explicit_part_labels": list(self.explicit_part_labels),
                 "rich_question_blocks": self.rich_question_blocks,
                 "rich_answer_blocks": self.rich_answer_blocks,
@@ -303,6 +327,7 @@ class QuestionAnalysisInput:
                 "answer_text": context.answer_text,
                 "question_type": context.question_type,
                 "question_type_confirmed": self.question_type_confirmed,
+                **({"semantic_source": "images"} if self.semantic_source == "images" else {}),
                 "explicit_part_labels": list(self.explicit_part_labels),
                 "has_images": context.has_images,
                 "rich_question_blocks": self.rich_question_blocks,
@@ -1695,8 +1720,15 @@ class CombinedQuestionAnalysisModule:
             )
             return "响应缺少 tag_analysis 对象。"
         try:
+            tag_question = question
+            evidence_payload = raw.get("solution_evidence")
+            if isinstance(evidence_payload, Mapping) and isinstance(evidence_payload.get("parts"), list):
+                tag_question = dataclass_replace(question, tagging_context=dataclass_replace(
+                    question.tagging_context,
+                    evidence_parts=[{"part_id": str(part.get("part_id") or "")} for part in evidence_payload["parts"] if isinstance(part, Mapping)],
+                ))
             normalized = self.tag_writer.write(
-                question,
+                tag_question,
                 payload,
                 model_name=model_name,
                 operation_id=operation_id,
@@ -1717,12 +1749,49 @@ class CombinedQuestionAnalysisModule:
                 error_category="tag_validation",
             )
             return detail
+        # 仅打标签流程：题型建议只有在建议题型与本地题型一致时才落库
+        # （此时只会写 special_type 子类标签，不会改 question_type，
+        # 因为判定点未重新生成）；题型不一致只登记说明。
+        suggestion = self._question_type_suggestion(
+            operation_id,
+            question,
+            raw,
+        )
+        type_audit: dict[str, Any] | None = None
+        if suggestion is not None:
+            local_type = str(
+                question.tagging_context.question_type or ""
+            ).strip()
+            if suggestion.question_type == local_type:
+                type_audit = self._apply_question_type_suggestion(
+                    operation_id,
+                    question,
+                    suggestion,
+                    model_name=model_name,
+                )
+            else:
+                self._record_projection_note(
+                    operation_id,
+                    question.question_id,
+                    "question_type_suggestion_note",
+                    f"模型建议题型“{suggestion.question_type}”与本地题型"
+                    f"“{local_type}”不一致；仅打标签流程不改动题型。",
+                )
+        tag_payload: Any = (
+            {**dict(normalized)} if isinstance(normalized, Mapping)
+            else normalized
+        )
+        if type_audit is not None and isinstance(tag_payload, dict):
+            tag_payload = {
+                **tag_payload,
+                "question_type_suggestion": type_audit,
+            }
         self.repository.save_projection(
             operation_id=operation_id,
             question_id=question.question_id,
             projection="tag",
             status="succeeded",
-            payload=normalized,
+            payload=tag_payload,
         )
         return None
 
@@ -1778,7 +1847,6 @@ class CombinedQuestionAnalysisModule:
                     model_name=model_name,
                     operation_id=operation_id,
                     objective_response_shape=effective_shape,
-                    **({"part_assessments": raw["part_assessments"]} if "part_assessments" in raw else {}),
                 )
                 draft = training_criteria_from_solution_evidence(
                     evidence,
@@ -1889,16 +1957,13 @@ class CombinedQuestionAnalysisModule:
         if suggestion is None:
             return None
         local_type = str(question.tagging_context.question_type or "").strip()
-        local_subtypes = (
-            question.tagging_context.existing_tags_by_dimension.get("special_type")
-            or ()
-        )
+        # 注意：save_tag_analysis 已先清掉非手工的 special_type 行。若模型给出
+        # 与旧值相同的子类，这里不能按旧快照提前返回——否则刚被清掉的子类
+        # 不会重新写入。子类已确定时一律交给写服务幂等落库（手工子类在写服务
+        # 内按 existing_kept 保留）。
         if (
             suggestion.question_type == local_type
-            and (
-                suggestion.essay_subtype is None
-                or suggestion.essay_subtype in local_subtypes
-            )
+            and suggestion.essay_subtype is None
         ):
             return None
         audit: dict[str, Any] = {
@@ -2860,14 +2925,6 @@ def combined_response_format(
     if "tag" in selected:
         item_properties["tag_analysis"] = _tag_schema(ids, defs=defs)
     if "training_criteria" in selected:
-        item_properties["part_assessments"] = {
-            "type": "array",
-            "items": {"type": "object", "additionalProperties": False,
-                      "properties": {"part_id": {"type": "string"},
-                                     "difficulty": {"type": "number", "minimum": 1, "maximum": 10},
-                                     "rationale": {"type": "string"}},
-                      "required": ["part_id", "difficulty", "rationale"]},
-        }
         item_properties["solution_evidence"] = _solution_evidence_schema(
             knowledge_ids=ids.get("knowledge") or (),
             defs=defs,
@@ -2911,15 +2968,15 @@ def _tag_schema(
 ) -> dict[str, Any]:
     ids = dict(allowed_term_ids or {})
     shared_defs = defs if defs is not None else {}
-    knowledge = ids.get("knowledge") or ()
-    array = {"type": "array", "items": {"type": "string"}}
     text = {"type": "string"}
+    ability_schema = _enum_array_schema(
+        ids.get("ability") or (),
+        defs=shared_defs,
+        ref_name="ability_id",
+    )
+    if ability_schema.get("type") == "array":
+        ability_schema["maxItems"] = MAX_ABILITY_TAGS
     properties: dict[str, Any] = {
-        "knowledge_points": _enum_array_schema(
-            knowledge,
-            defs=shared_defs,
-            ref_name="knowledge_id",
-        ),
         "method_tags": _enum_array_schema(
             ids.get("method") or (),
             defs=shared_defs,
@@ -2930,11 +2987,7 @@ def _tag_schema(
             defs=shared_defs,
             ref_name="thought_id",
         ),
-        "ability_tags": _enum_array_schema(
-            ids.get("ability") or (),
-            defs=shared_defs,
-            ref_name="ability_id",
-        ),
+        "ability_tags": ability_schema,
         "math_model_tags": _enum_array_schema(
             ids.get("model") or (),
             defs=shared_defs,
@@ -2946,29 +2999,8 @@ def _tag_schema(
             ref_name="special_type_id",
         ),
         "difficulty": {"type": "integer", "minimum": 1, "maximum": 10},
-        "error_prone_points": array,
-        "prerequisite_points": _enum_array_schema(
-            knowledge,
-            defs=shared_defs,
-            ref_name="knowledge_id",
-        ),
-        "textbook_chapters": _enum_array_schema(
-            ids.get("curriculum") or (),
-            defs=shared_defs,
-            ref_name="curriculum_id",
-        ),
-        "curriculum_sections": _enum_array_schema(
-            ids.get("curriculum_sections") or (),
-            defs=shared_defs,
-            ref_name="curriculum_section_id",
-        ),
-        "suitable_student_level": text,
-        "canonical_knowledge_id": _enum_ref(
-            shared_defs,
-            "knowledge_id_or_empty",
-            knowledge,
-            include_empty=True,
-        ),
+        "predicted_error_patterns": _predicted_error_pattern_schema(),
+        "part_features": _part_features_schema(),
         "taxonomy_revision": {"type": "integer"},
         "proposed_tags": _proposal_schema(),
         "reason": text,
@@ -2979,6 +3011,61 @@ def _tag_schema(
         "properties": properties,
         "required": list(properties),
         "additionalProperties": False,
+    }
+
+
+def _predicted_error_pattern_schema() -> dict[str, Any]:
+    categories = list(predicted_pattern_categories())
+    properties = {
+        "category": (
+            {"type": "string", "enum": categories}
+            if categories
+            else {"type": "string"}
+        ),
+        "pattern": {"type": "string"},
+        "trigger_kind": {
+            "type": "string",
+            "enum": list(PREDICTED_TRIGGER_KINDS),
+        },
+        "trigger_value": {"type": "string"},
+    }
+    return {
+        "type": "array",
+        "maxItems": PREDICTED_PATTERN_MAX,
+        "items": {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        },
+    }
+
+
+def _part_features_schema() -> dict[str, Any]:
+    def ranged(name: str) -> dict[str, Any]:
+        minimum, maximum = PART_FEATURE_RANGES[name]
+        return {"type": "integer", "minimum": minimum, "maximum": maximum}
+
+    properties: dict[str, Any] = {
+        "part_id": {"type": "string"},
+        "part_label": {"type": "string"},
+        **{name: ranged(name) for name in PART_FEATURE_ORDER},
+        "context_kind": {
+            "type": "string",
+            "enum": list(PART_CONTEXT_KINDS),
+        },
+        "evidence": {"type": "string"},
+    }
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": PART_FEATURES_MAX_PARTS,
+        "items": {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        },
     }
 
 
@@ -3194,19 +3281,13 @@ class _DuplicateMergeUnsafeError(Exception):
 
 
 _TAG_ANALYSIS_LIST_FIELDS = (
-    "knowledge_points",
-    "prerequisite_points",
     "method_tags",
     "thought_tags",
     "ability_tags",
     "math_model_tags",
     "special_type_tags",
-    "error_prone_points",
-    "textbook_chapters",
-    "curriculum_sections",
-    "sub_skills",
-    "measured_skills",
-    "supporting_skills",
+    "predicted_error_patterns",
+    "part_features",
     "proposed_tags",
 )
 _REFERENCE_ASSESSMENT_SEVERITY = {

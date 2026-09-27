@@ -373,8 +373,6 @@ def load_question_bank_part_context(
         return {}, {}
     try:
         with reading(question_bank_path) as connection:
-            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='question_part_assessment_profiles'").fetchone() is None:
-                return {}, {}
             overrides = {
                 str(row[0]): [] for row in connection.execute(
                     """SELECT link.source_question_id FROM grading_question_links link

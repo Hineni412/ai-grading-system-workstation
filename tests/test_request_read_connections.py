@@ -374,7 +374,6 @@ def test_request_read_context_opens_each_database_once_and_cleans_success(
         assert context.grading_db._external_connection is connections[0]
         assert context.diagnosis_service.db is context.grading_db
         assert context.diagnosis_service.question_bank_connection is connections[1]
-        assert context.practice_service.external_connection is connections[1]
         assert all(candidate.exists() for candidate in candidates)
 
     assert not candidates[0].exists()

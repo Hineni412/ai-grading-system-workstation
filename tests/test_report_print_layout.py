@@ -197,6 +197,64 @@ def test_score_excel_separates_official_statistics_from_print_name_hiding(
     assert "学生11" in exception_values
     assert "批改不完整" in exception_values
 
+    # 无 .class_analysis 状态：错因明细新列照常导出，值为占位符。
+    detail_rows = _table_rows(workbook["错因明细"], 1)
+    assert detail_rows
+    assert "错误大类" in detail_rows[0] and "具体错法" in detail_rows[0]
+    assert all(row["错误大类"] == "—" and row["具体错法"] == "—" for row in detail_rows)
+
+
+def test_score_excel_fills_cause_columns_from_materialized_records(
+    tmp_path: Path,
+) -> None:
+    """P5：错因明细的错误大类/具体错法来自物化错因记录；小题分析主要错因按大类×人数。"""
+    from backend.class_analysis import (
+        ClassAnalysisStateStore,
+        assemble_cause_data,
+        build_cause_inputs,
+        save_cause_result,
+    )
+    from tests.test_analysis_report import _seed_analysis_session
+
+    db = DBManager(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    session_id = _seed_analysis_session(db, tmp_path)
+    reports_dir = tmp_path / "reports"
+    store = ClassAnalysisStateStore(reports_dir)
+    data = assemble_cause_data(db, session_id, data_root=tmp_path)
+    source = next(
+        item for item in build_cause_inputs(data) if item["question_id"] == "Q2"
+    )
+    save_cause_result(
+        store,
+        session_id,
+        source,
+        {"groups": [
+            {"kind": "error", "category": "概念理解", "reason": "垂直关系用错",
+             "manifestation": "未证垂直",
+             "evidence_ids": [item["id"] for item in source["evidence"]]},
+        ]},
+        data=data,
+    )
+
+    export_path = ReportGenerator(db.db_path, reports_dir).export_session(session_id)
+    workbook = load_workbook(export_path, data_only=False)
+
+    detail_rows = _table_rows(workbook["错因明细"], 1)
+    q2_rows = [row for row in detail_rows if row["题号"] == "Q2"]
+    assert len(q2_rows) == 2
+    assert all(row["错误大类"] == "概念理解" for row in q2_rows)
+    assert all(row["具体错法"] == "垂直关系用错" for row in q2_rows)
+    assert all(row["扣分原因"] for row in q2_rows)
+    q1_rows = [row for row in detail_rows if row["题号"] == "Q1"]
+    assert all(row["错误大类"] == "—" and row["具体错法"] == "—" for row in q1_rows)
+
+    analysis_rows = _table_rows(workbook["小题分析打印"], 5)
+    q2 = next(row for row in analysis_rows if row["题号"] == "Q2")
+    assert q2["主要错因"] == "概念理解 2人"
+    q1 = next(row for row in analysis_rows if row["题号"] == "Q1")
+    assert "概念理解 2人" not in str(q1["主要错因"])
+
 
 def test_score_excel_uses_full_cell_borders_and_requested_sorting(
     tmp_path: Path,

@@ -161,14 +161,16 @@ def wording_similarity_upper_bound(
         return 0.0
     if left.normalized == right.normalized:
         return 1.0
-    shared = sum((left.char_counts & right.char_counts).values())
+    smaller, larger = (left.char_counts, right.char_counts) if len(left.char_counts) <= len(right.char_counts) else (right.char_counts, left.char_counts)
+    shared = sum(min(count, larger.get(char, 0)) for char, count in smaller.items())
     sequence_bound = (2.0 * shared) / (len(left.normalized) + len(right.normalized))
     return max(sequence_bound, _ngram_jaccard(left, right))
 
 
 def _ngram_jaccard(left: QuestionTextProfile, right: QuestionTextProfile) -> float:
     if left.ngrams and right.ngrams:
-        return len(left.ngrams & right.ngrams) / len(left.ngrams | right.ngrams)
+        shared = len(left.ngrams & right.ngrams)
+        return shared / (len(left.ngrams) + len(right.ngrams) - shared)
     return 0.0
 
 

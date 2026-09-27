@@ -92,24 +92,23 @@ class ClassAnalysisResponse(BaseModel):
     cause_analysis: dict[str, Any] | None = None
 
 
-class CausePatternConfirmRequest(BaseModel):
-    """把班级分析页的一条错法确认写入题库（错因体系 P4）。"""
+class CausePatternEditRequest(BaseModel):
+    """教师可选地修改一条错法的名称/大类（错因体系 P5，非必经步骤）。"""
 
     model_config = ConfigDict(extra="forbid")
 
     question_id: str = Field(min_length=1, max_length=40)
     kind: str = Field(min_length=1, max_length=30)
-    category: str | None = Field(default=None, max_length=20)
     reason: str = Field(min_length=1, max_length=80)
-    manifestation: str | None = Field(default=None, max_length=200)
+    new_reason: str = Field(min_length=1, max_length=40)
+    category: str | None = Field(default=None, max_length=20)
     operation_token: str | None = Field(default=None, max_length=80)
 
 
-class CausePatternConfirmResponse(BaseModel):
+class CausePatternEditResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ok: bool
-    pattern: dict[str, Any]
 
 
 class ClassAnalysisSettingsRequest(BaseModel):

@@ -51,6 +51,7 @@ const analysisPayload = {
         class_rate: 0.25,
         stem_summary: '证明',
         canonical_answer: 'AB＝BD＋DH',
+        cause_category_counts: [],
         records: [
           {
             student_name: '钱肖白',

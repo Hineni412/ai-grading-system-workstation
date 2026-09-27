@@ -151,22 +151,6 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
                 result["filename"] = filename
             result["download_url"] = f"/api/jobs/{job.id}/download"
         return sanitize_public_mapping(result)
-    if job.job_type == "training_export":
-        result: dict[str, Any] = {}
-        for key in ("task_id", "variant_id", "export_ids"):
-            if job.result.get(key) is not None:
-                result[key] = job.result[key]
-        if (
-            job.status == "succeeded"
-            and str(job.result.get("file_path") or "").strip()
-        ):
-            filename = _safe_filename(
-                job.result.get("filename") or job.result.get("file_path")
-            )
-            if filename:
-                result["filename"] = filename
-            result["download_url"] = f"/api/jobs/{job.id}/download"
-        return sanitize_public_mapping(result)
     if job.job_type == "assembly_export":
         result = {
             key: job.result[key]
@@ -379,17 +363,6 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
-    if job.job_type == "training_export":
-        allowed = (
-            "task_id",
-            "variant_id",
-            "format",
-            "audience",
-            "retry_of_job_id",
-        )
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
     if job.job_type == "assembly_export":
         allowed = (
             "draft_revision",
@@ -577,7 +550,6 @@ def submit_job(
         "question_bank_sync",
         "tagging_sync",
         "taxonomy_suggestion",
-        "training_export",
         "assembly_export",
         "ai_assembly_spec",
         "ops_backup",

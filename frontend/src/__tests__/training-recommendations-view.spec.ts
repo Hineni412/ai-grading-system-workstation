@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   PersonalizedRecommendationDraft,
   TrainingDiagnosis,
-  TrainingPlanResponse,
 } from '../api/training'
 import { createAppRouter } from '../router'
 import { useSessionStore } from '../stores/session'
@@ -17,8 +16,6 @@ import TrainingRecommendationsView from '../views/TrainingRecommendationsView.vu
 
 const trainingApiMock = vi.hoisted(() => ({
   diagnose: vi.fn(),
-  preview: vi.fn(),
-  confirm: vi.fn(),
   createPersonalizedDraft: vi.fn(),
   getPersonalizedDraft: vi.fn(),
   editPersonalizedDraft: vi.fn(),
@@ -26,24 +23,11 @@ const trainingApiMock = vi.hoisted(() => ({
   listPaperBatches: vi.fn(),
 }))
 
-const exportsApiMock = vi.hoisted(() => ({
-  listTrainingTasks: vi.fn(),
-  getTrainingTask: vi.fn(),
-  submitTrainingExport: vi.fn(),
-  retryTrainingExport: vi.fn(),
-  downloadJobFile: vi.fn(),
-}))
-
 const fetchStudentsMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../api/training', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/training')>(),
   trainingApi: trainingApiMock,
-}))
-
-vi.mock('../api/exports', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../api/exports')>(),
-  exportsApi: exportsApiMock,
 }))
 
 vi.mock('../api/students', async (importOriginal) => ({
@@ -166,83 +150,6 @@ const diagnosis = {
   diagnosis_identity: 'question_tag',
 } satisfies TrainingDiagnosis
 
-const plan = {
-  plan_revision: 'a'.repeat(64),
-  plan: {
-    scope_snapshot: diagnosis.scope,
-    exam_scope: diagnosis.exam_scope,
-    diagnosis_snapshot: diagnosis,
-    generation_config: {},
-    variant_mode: 'individual',
-    variants: [{
-      variant_key: 'student-12',
-      variant_type: 'individual',
-      student_ids: ['12'],
-      grouping_reason: { rule: 'individual' },
-      diagnosis_snapshot: diagnosis,
-      items: [{
-        question_id: 201,
-        item_order: 1,
-        stage: 'direct',
-        knowledge_key: 'knowledge_point:三角形全等',
-        knowledge_point: '三角形全等',
-        match_kind: 'exact',
-        reason: '与薄弱知识点标签完全相同',
-        recommend_score: 0.91,
-        score_components: {},
-        tag_matches: {},
-        tags: { knowledge_point: ['三角形全等'] },
-        warnings: [],
-        question_fingerprint: 'fixture-201',
-        question_text: '利用边角关系证明两个三角形全等',
-        question_number: '11',
-        difficulty: 5,
-        source_paper: '合成练习',
-        frequency: {},
-      }],
-      stage_counts: { direct: 1, prerequisite: 0, transfer: 0 },
-      shortages: [{
-        stage: 'transfer',
-        requested_count: 1,
-        selected_count: 0,
-        missing_count: 1,
-      }],
-      warnings: ['transfer 阶段缺少 1 道精确标签候选题。'],
-      dedupe_summary: { removed_count: 0, reason_counts: {} },
-      generation_config: {},
-    }],
-    warnings: ['transfer 阶段缺少 1 道精确标签候选题。'],
-    ungrouped_students: [],
-    teacher_override: {
-      allowed: true,
-      applied: false,
-      assignments: {},
-    },
-  },
-} satisfies TrainingPlanResponse
-
-const task = {
-  id: 31,
-  task_code: 'TRN-CFM-12345678123456781234567812345678',
-  created_by: 'teacher',
-  scope_snapshot: diagnosis.scope,
-  exam_scope: diagnosis.exam_scope,
-  generation_config: { plan_revision: plan.plan_revision },
-  warnings: [],
-  status: 'ready' as const,
-  created_at: '2026-07-19T01:30:00Z',
-  updated_at: '2026-07-19T01:30:00Z',
-  diagnosis_snapshot: diagnosis,
-  variants: [{
-    id: 301,
-    variant_key: 'student-12',
-    variant_type: 'individual',
-    students: [{ student_id: '12', student_name: '匿名学生甲' }],
-    items: plan.plan.variants[0]!.items,
-  }],
-  exports: [],
-}
-
 const paperDraft = {
   draft_id: 'd'.repeat(64),
   status: 'draft',
@@ -348,35 +255,9 @@ beforeEach(() => {
     },
   ])
   trainingApiMock.diagnose.mockResolvedValue(diagnosis)
-  trainingApiMock.preview.mockResolvedValue(plan)
-  trainingApiMock.confirm.mockResolvedValue(task)
   trainingApiMock.createPersonalizedDraft.mockResolvedValue(paperDraft)
   trainingApiMock.listPaperInstances.mockResolvedValue([])
   trainingApiMock.listPaperBatches.mockResolvedValue([])
-  exportsApiMock.listTrainingTasks.mockResolvedValue({
-    items: [task],
-    total: 1,
-    page: 1,
-    page_size: 20,
-    total_pages: 1,
-  })
-  exportsApiMock.getTrainingTask.mockResolvedValue(task)
-  exportsApiMock.submitTrainingExport.mockResolvedValue({
-    id: 51,
-    job_type: 'training_export',
-    payload: { task_id: 31, format: 'docx' },
-    result: {},
-    status: 'queued',
-    progress: 0,
-    stage: 'queued',
-    detail: '',
-    error: null,
-    cancel_requested: false,
-    created_at: '2026-07-19T01:31:00Z',
-    started_at: null,
-    updated_at: '2026-07-19T01:31:00Z',
-    finished_at: null,
-  })
 })
 
 afterEach(() => {

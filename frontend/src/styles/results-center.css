@@ -1677,10 +1677,17 @@
   background: var(--color-warning-subtle);
 }
 
-.class-analysis__cause-tag--bank {
+.class-analysis__cause-tag--edited {
   color: var(--color-success);
   border-color: var(--color-success);
   background: var(--color-success-subtle);
+}
+
+.class-analysis__cause-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  margin-bottom: 0.4rem;
 }
 
 .class-analysis__cause-confirm {

@@ -15,12 +15,6 @@ const apiMock = vi.hoisted(() => ({
   submitReport: vi.fn(),
   getAnalysisPreflight: vi.fn(),
   deleteReportFile: vi.fn(),
-  listTrainingTasks: vi.fn(),
-  getTrainingTask: vi.fn(),
-  submitTrainingExport: vi.fn(),
-  retryTrainingExport: vi.fn(),
-  listTrainingExportJobs: vi.fn(),
-  getJob: vi.fn(),
   downloadJobFile: vi.fn(),
 }))
 
@@ -180,71 +174,6 @@ beforeEach(() => {
     page_size: 100,
     total_pages: 1,
   })
-  apiMock.listTrainingTasks.mockResolvedValue({
-    items: [{
-      id: 12,
-      task_code: 'TRAIN-12',
-      created_by: 'teacher',
-      scope_snapshot: { mode: 'class' },
-      exam_scope: { mode: 'current', session_ids: [7] },
-      generation_config: { variant_mode: 'individual' },
-      warnings: [],
-      status: 'ready',
-      created_at: '2026-07-17T09:00:00Z',
-      updated_at: '2026-07-17T09:01:00Z',
-    }],
-    total: 1,
-    page: 1,
-    page_size: 20,
-    total_pages: 1,
-  })
-  apiMock.listTrainingExportJobs.mockResolvedValue({
-    items: [{
-      id: 51,
-      job_type: 'training_export',
-      status: 'failed',
-      progress: 0.4,
-      stage: 'training_export',
-      detail: 'failed',
-      created_at: '2026-07-17T09:05:00Z',
-      started_at: '2026-07-17T09:05:00Z',
-      updated_at: '2026-07-17T09:05:01Z',
-      finished_at: '2026-07-17T09:05:01Z',
-    }],
-    total: 1,
-    page: 1,
-    page_size: 20,
-    total_pages: 1,
-  })
-  apiMock.getJob.mockResolvedValue(makeJob({
-    id: 51,
-    job_type: 'training_export',
-    payload: { task_id: 12, format: 'docx' },
-    result: { task_id: 12 },
-    status: 'failed',
-    error: 'Job failed; see local logs for details.',
-  }))
-  apiMock.getTrainingTask.mockResolvedValue({
-    id: 12,
-    task_code: 'TRAIN-12',
-    created_by: 'teacher',
-    scope_snapshot: { mode: 'class' },
-    exam_scope: { mode: 'current', session_ids: [7] },
-    generation_config: { variant_mode: 'individual' },
-    warnings: [],
-    status: 'ready',
-    created_at: '2026-07-17T09:00:00Z',
-    updated_at: '2026-07-17T09:01:00Z',
-    diagnosis_snapshot: {},
-    variants: [{
-      id: 3,
-      variant_key: 'group-a',
-      variant_type: 'individual',
-      students: [],
-      items: [],
-    }],
-    exports: [],
-  })
   apiMock.submitReport.mockResolvedValue(makeJob({
     id: 61,
     status: 'queued',
@@ -262,20 +191,6 @@ beforeEach(() => {
     cause_total_questions: 0,
     cause_estimated_tokens: 0,
   })
-  apiMock.submitTrainingExport.mockResolvedValue(makeJob({
-    id: 62,
-    job_type: 'training_export',
-    payload: { task_id: 12, format: 'docx' },
-    result: {},
-    status: 'queued',
-  }))
-  apiMock.retryTrainingExport.mockResolvedValue(makeJob({
-    id: 63,
-    job_type: 'training_export',
-    payload: { task_id: 12, format: 'docx', retry_of_job_id: 51 },
-    result: {},
-    status: 'queued',
-  }))
   apiMock.downloadJobFile.mockResolvedValue({
     blob: new Blob(['report']),
     filename: '七年级成绩.xlsx',
@@ -303,7 +218,7 @@ afterEach(() => {
 })
 
 describe('file center view', () => {
-  it('presents reports, expiry recovery and training materials in one ledger', async () => {
+  it('presents reports and expiry recovery in one ledger', async () => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
 
@@ -311,13 +226,10 @@ describe('file center view', () => {
     expect(host.textContent).toContain('成绩表')
     expect(host.textContent).toContain('批注原卷')
     expect(host.textContent).toContain('文件已过期，可重新生成')
-    expect(host.textContent).toContain('TRAIN-12')
-    expect(host.textContent).toContain('生成失败')
     expect(host.querySelector('[data-testid="download-report-41"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="retry-training-51"]')).not.toBeNull()
   })
 
-  it('submits, retries and downloads through explicit actions', async () => {
+  it('submits and downloads through explicit actions', async () => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
 
@@ -327,12 +239,6 @@ describe('file center view', () => {
       'annotated_original_pdf',
       false,
     ))
-
-    host.querySelector<HTMLButtonElement>('[data-testid="export-training-12"]')!.click()
-    await vi.waitFor(() => expect(apiMock.submitTrainingExport).toHaveBeenCalled())
-
-    host.querySelector<HTMLButtonElement>('[data-testid="retry-training-51"]')!.click()
-    await vi.waitFor(() => expect(apiMock.retryTrainingExport).toHaveBeenCalledWith(51))
 
     host.querySelector<HTMLButtonElement>('[data-testid="download-report-41"]')!.click()
     await vi.waitFor(() => expect(apiMock.downloadJobFile).toHaveBeenCalledWith(41))
@@ -494,34 +400,9 @@ describe('file center view', () => {
     ))
   })
 
-  it('exports a selected training variant and cancels a queued job', async () => {
+  it('cancels a queued report job from the tracked list', async () => {
     const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('TRAIN-12'))
-
-    host.querySelector<HTMLButtonElement>('[data-testid="configure-training-12"]')!.click()
-    await vi.waitFor(() => expect(apiMock.getTrainingTask).toHaveBeenCalledWith(
-      12,
-      expect.any(AbortSignal),
-    ))
-    await vi.waitFor(() => expect(host.querySelector('[data-testid="training-export-form"]')).not.toBeNull())
-
-    const mode = host.querySelector<HTMLSelectElement>('[data-testid="training-mode"]')!
-    mode.value = 'variant'
-    mode.dispatchEvent(new Event('change', { bubbles: true }))
-    await settle()
-    const format = host.querySelector<HTMLSelectElement>('[data-testid="training-format"]')!
-    format.value = 'markdown'
-    format.dispatchEvent(new Event('change', { bubbles: true }))
-    const audience = host.querySelector<HTMLSelectElement>('[data-testid="training-audience"]')!
-    audience.value = 'teacher'
-    audience.dispatchEvent(new Event('change', { bubbles: true }))
-    host.querySelector<HTMLButtonElement>('[data-testid="submit-training-choice"]')!.click()
-
-    await vi.waitFor(() => expect(apiMock.submitTrainingExport).toHaveBeenCalledWith(12, {
-      variant_id: 3,
-      format: 'markdown',
-      audience: 'teacher',
-    }))
+    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
 
     host.querySelector<HTMLButtonElement>('[data-testid="generate-annotated_original_pdf"]')!.click()
     await vi.waitFor(() => expect(host.querySelector('[data-testid="cancel-job-61"]')).not.toBeNull())

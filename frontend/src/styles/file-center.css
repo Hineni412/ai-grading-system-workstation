@@ -12,7 +12,6 @@
 .file-center__hero,
 .file-section__heading,
 .file-product__topline,
-.training-task,
 .file-ledger__list li {
   display: flex;
   align-items: center;
@@ -29,8 +28,7 @@
 .file-center__hero h1,
 .file-section h2,
 .file-section h3,
-.file-product h3,
-.training-task h3 {
+.file-product h3 {
   margin: 0;
   color: var(--color-text-primary);
 }
@@ -47,8 +45,7 @@
 }
 
 .file-center__eyebrow,
-.file-product__topline > span:first-child,
-.training-task__code {
+.file-product__topline > span:first-child {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-caption);
@@ -88,15 +85,16 @@
   font-size: var(--font-size-dense);
 }
 
-.file-product-grid,
-.training-task-grid {
+.file-product-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-4);
 }
 
-.file-product,
-.training-task {
+.file-product {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
   min-width: 0;
   padding: var(--space-4);
   border: var(--border-width) solid var(--border);
@@ -104,19 +102,7 @@
   background: var(--color-bg-subtle);
 }
 
-.training-task > div:first-child {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.file-product {
-  display: grid;
-  align-content: start;
-  gap: var(--space-3);
-}
-
-.file-product > p,
-.training-task p {
+.file-product > p {
   margin: 0;
   color: var(--color-text-secondary);
 }
@@ -430,57 +416,6 @@
   border-radius: var(--radius-control);
 }
 
-.training-export-form {
-  display: grid;
-  gap: var(--space-4);
-  padding: var(--space-4);
-  border: var(--border-width) solid var(--color-accent);
-  border-radius: var(--radius);
-  background: var(--color-accent-subtle);
-}
-
-.training-export-form__heading,
-.training-export-form__actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-}
-
-.training-export-form__fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-
-.training-export-form label {
-  display: grid;
-  gap: var(--space-2);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-dense);
-}
-
-.training-export-form select {
-  width: 100%;
-  min-height: var(--control-height-default);
-  padding: 0 var(--space-3);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  font: inherit;
-}
-
-.training-export-form select:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: var(--focus-offset);
-}
-
-.training-export-form__actions span {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-dense);
-}
-
 .file-center__notice {
   background: var(--color-success-subtle);
   color: var(--color-success);
@@ -511,8 +446,6 @@
   }
 
   .file-product-grid,
-  .training-task-grid,
-  .training-export-form__fields,
   .excel-settings-preview,
   .excel-settings-students {
     grid-template-columns: minmax(0, 1fr);
@@ -520,7 +453,6 @@
 }
 
 @media (max-width: 640px) {
-  .training-task,
   .file-ledger__list li {
     align-items: flex-start;
     flex-direction: column;
@@ -531,8 +463,6 @@
     flex-direction: column;
   }
 
-  .training-export-form__heading,
-  .training-export-form__actions,
   .excel-settings-dialog__heading,
   .excel-settings-dialog__actions {
     align-items: flex-start;

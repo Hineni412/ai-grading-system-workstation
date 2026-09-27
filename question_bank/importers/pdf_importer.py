@@ -21,6 +21,12 @@ if TYPE_CHECKING:
     from question_bank.document_pipeline.pipeline import QuestionDocumentPipeline
 
 
+def embedded_text_usable(text: str) -> bool:
+    """A nonempty font map may still yield punctuation garbage instead of text."""
+    chars = [char for char in text if not char.isspace()]
+    return bool(chars) and sum(char.isalnum() for char in chars) / len(chars) >= 0.4
+
+
 def import_pdf(
     source_file: str | Path,
     *,

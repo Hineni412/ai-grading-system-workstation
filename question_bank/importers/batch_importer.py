@@ -19,21 +19,28 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.document_pipeline.contracts import TextLayerState
 from question_bank.importers.docx_importer import import_docx
 from question_bank.importers.mineru_parse import parse_pdf_full
-from question_bank.importers.pdf_importer import import_pdf
+from question_bank.importers.pdf_importer import import_pdf, embedded_text_usable
 from question_bank.importers.types import ExtractedDocument
 from question_bank.services.duplicate_analysis_copy_service import (
     ensure_content_index,
+    content_index_lookup,
+    answers_conflict,
     exact_question_key,
     record_paper_occurrence,
     upsert_content_index,
 )
-from question_bank.services.similarity_service import text_similarity
+from question_bank.services.similarity_service import (
+    question_text_profile, profiled_text_similarity,
+    wording_similarity_upper_bound,
+)
 from question_bank.services.source_paper_archive_service import archive_source_paper
 from question_bank.services.rich_content_service import save_question_rich_content
 from question_bank.parsers.type_detector import (
     detect_essay_subtype,
     detect_question_type,
+    question_section_type,
     split_legacy_question_type,
+    validate_section_numbering,
 )
 
 
@@ -49,7 +56,6 @@ _ANSWER_HEADING = re.compile(
 _NUMBERED_LINE_PREFIX = r"(?m)^[ \t]*(?P<leading_images>(?:\[\[IMAGE:[^\r\n]+?\]\][ \t]*)*)"
 _MAIN_QUESTION_MARKER = re.compile(_NUMBERED_LINE_PREFIX + r"(?P<number>\d{1,3})[ \t]*[.．、][ \t]*")
 _PAREN_QUESTION_MARKER = re.compile(_NUMBERED_LINE_PREFIX + r"[（(][ \t]*(?P<number>\d{1,3})[ \t]*[）)][ \t]*")
-_SECTION_HEADING = re.compile(r"^[一二三四五六七八九十百]+[、.．][ \t]*\S+")
 _IMAGE_MARKER = re.compile(
     r"\[\[IMAGE:(?P<path>[^\]|]+?)(?:\|caption=(?P<caption>[^\]]*))?\]\]"
 )
@@ -90,7 +96,6 @@ _BARE_LATEX_CJK_LIMIT = 4
 
 # 文字层可读字符占比阈值：自定义字体映射的"伪文字层"（提取出 "!"#$% 类
 # 乱码）通常在 20% 左右，正常中英文排版远高于此。
-_EMBEDDED_TEXT_USABLE_RATIO = 0.4
 
 # MinerU Markdown 中的图片引用：![](data:image/…;base64,…) 或 ![](文件路径)。
 _MARKDOWN_IMAGE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<src>[^)\s]+)\)")
@@ -106,11 +111,7 @@ _DATA_URI_MIME_EXT = {
 
 def _embedded_text_usable(text: str) -> bool:
     """False 表示没有文字层，或文字层是乱码映射（需要走 OCR）。"""
-    chars = [c for c in text if not c.isspace()]
-    if not chars:
-        return False
-    meaningful = sum(1 for c in chars if c.isalnum())
-    return meaningful / len(chars) >= _EMBEDDED_TEXT_USABLE_RATIO
+    return embedded_text_usable(text)
 
 
 def _materialize_markdown_images(
@@ -453,6 +454,7 @@ class _DuplicateIndex:
             {
                 "id": int(question_id),
                 "question_text": str(question_text or ""),
+                "profile": question_text_profile(question_text),
                 "question_type": str(question_type or ""),
                 "paper_title": str(paper_title or ""),
             }
@@ -467,9 +469,7 @@ def _load_duplicate_index(db_path: Path, *, data_root: Path | None = None, conne
         ensure_content_index(conn, data_root=root)
         key_rows = conn.execute(
             """
-            SELECT idx.content_key AS content_key, idx.question_id AS question_id,
-                   (SELECT COUNT(DISTINCT tag_type) FROM question_tags t
-                     WHERE t.question_id = idx.question_id) AS tag_count
+            SELECT idx.content_key AS content_key, idx.question_id AS question_id
             FROM question_content_index idx
             JOIN questions q ON q.id = idx.question_id
             LEFT JOIN papers p ON p.id = q.paper_id
@@ -488,18 +488,14 @@ def _load_duplicate_index(db_path: Path, *, data_root: Path | None = None, conne
             ORDER BY q.id
             """
         ).fetchall()
+        canonical = content_index_lookup(conn, {str(row["content_key"]) for row in key_rows})
     index = _DuplicateIndex(data_root=root)
-    best: dict[str, tuple[int, int]] = {}
-    for row in key_rows:
-        key = str(row["content_key"])
-        rank = (-int(row["tag_count"] or 0), int(row["question_id"]))
-        if key not in best or rank < best[key]:
-            best[key] = rank
-    index.exact = {key: rank[1] for key, rank in best.items()}
+    index.exact = canonical
     index.questions = [
         {
             "id": int(row["id"]),
             "question_text": str(row["question_text"] or ""),
+            "profile": question_text_profile(row["question_text"]),
             "question_type": str(row["question_type"] or ""),
             "paper_title": str(row["paper_title"] or ""),
         }
@@ -517,27 +513,40 @@ def _near_duplicate_hint(
         return None
     new_type = str(question.question_type or "")
     best: dict[str, Any] | None = None
+    profile = question_text_profile(text)
     for candidate in index.questions:
         candidate_type = str(candidate["question_type"])
-        if new_type and candidate_type and candidate_type != new_type:
-            continue
         candidate_text = str(candidate["question_text"])
-        shorter = min(len(text), len(candidate_text))
-        longer = max(len(text), len(candidate_text))
-        if not shorter or shorter / longer < 0.6:
+        other = candidate.get("profile")
+        if other is None:
+            other = candidate["profile"] = question_text_profile(candidate_text)
+        threshold = max(0.7, float(best["similarity"]) if best else 0.7)
+        lengths = (len(profile.normalized), len(other.normalized))
+        grams = (len(profile.ngrams), len(other.ngrams))
+        if not min(lengths):
             continue
-        score = text_similarity(text, candidate_text)
+        length_bound = max(2 * min(lengths) / sum(lengths), min(grams) / max(grams) if max(grams) else 0)
+        if length_bound < threshold - 0.00005:
+            continue
+        if wording_similarity_upper_bound(profile, other) < threshold - 0.00005:
+            continue
+        score = profiled_text_similarity(profile, other)
         if score < 0.7:
             continue
         if best is None or score > float(best["similarity"]):
+            math_tokens = lambda value: re.findall(r"\d+(?:\.\d+)?|[+\-−×÷=<>≤≥≠]", re.sub(r"\[\[IMAGE:.*?\]\]", "", value))
+            changed_conditions = math_tokens(text) != math_tokens(candidate_text)
             best = {
                 "question_number": question.question_number,
                 "matched_question_id": int(candidate["id"]),
                 "matched_paper_title": str(candidate["paper_title"]),
                 "similarity": score,
                 "high": score >= 0.9,
+                "match_kind": "variant" if changed_conditions else "suspected",
+                "requires_review": True,
+                "reason": ("数字或运算条件不同，保留为不同题目" if changed_conditions else "题面相似，需核对条件、选项及图片") + ("；题型标注不同" if new_type and candidate_type != new_type else ""),
             }
-        if score >= 0.98:
+        if score == 1.0:
             break
     return best
 
@@ -559,6 +568,7 @@ def parse_paper_text(
     # question now uses only the images extracted for that numbered block.
     _ = (has_images, image_paths)
     question_text, answer_text = _split_answer_text(text)
+    validate_section_numbering(question_text)
     doc_title = _document_title_hint(str(text or "").splitlines())
     answers = _answer_map(answer_text, source_file=source_file, doc_title=doc_title)
     range_filter = _parse_numeric_range(question_range)
@@ -600,9 +610,9 @@ def parse_paper_text(
         override_type, override_subtype = split_legacy_question_type(
             (type_overrides or {}).get(block.number)
         )
-        q_type = override_type or detect_question_type(block.text)
-        if ocr_noise and block.section_hint:
-            q_type = _section_hinted_type(block.section_hint, block.text, q_type)
+        q_type = override_type or detect_question_type(
+            block.text, section_type=question_section_type(block.section_hint) if block.section_hint else None,
+        )
         question_text = block.text
         if ocr_noise and q_type == "选择题":
             # 教辅括号里的红色答案字母被擦除后留下 "（____"，选择题恢复成空括号。
@@ -886,6 +896,7 @@ def _import_scanned_paper(
         duplicate_index = _load_duplicate_index(db_path, data_root=(rich_content_root or _rich_content_root_for_database(db_path)).parent.parent)
     exact_keys: dict[str, str] = {}
     near_hints: list[dict[str, Any]] = []
+    answer_conflict_review_count = 0
     for item in parsed.questions:
         key = exact_question_key(asdict(item), data_root=duplicate_index.data_root, rich_content={
             "question_blocks": rich_content["question"].get(item.question_number, []),
@@ -924,7 +935,14 @@ def _import_scanned_paper(
                 paper_id=paper_id,
                 message="paper already imported",
             )
-        duplicate_index = _load_duplicate_index(db_path, data_root=duplicate_index.data_root, connection=conn)
+        # The batch has already refreshed the index. Recheck only matching
+        # candidates under the write lock; concurrent imports remain visible.
+        refreshed_matches = content_index_lookup(
+            conn, set(exact_keys.values()), data_root=duplicate_index.data_root,
+        )
+        for key in exact_keys.values():
+            duplicate_index.exact.pop(key, None)
+        duplicate_index.exact.update(refreshed_matches)
         paper_cursor = conn.execute(
             """
             INSERT INTO papers (
@@ -951,9 +969,25 @@ def _import_scanned_paper(
         for item in parsed.questions:
             key = exact_keys[item.question_number]
             source_id = duplicate_index.exact.get(key) if key else None
+            answer_conflict = False
+            if source_id is not None and item.answer_text:
+                source_answer = conn.execute("SELECT answer_text FROM questions WHERE id=?", (source_id,)).fetchone()
+                if source_answer and answers_conflict(source_answer[0], item.answer_text, data_root=duplicate_index.data_root):
+                    answer_conflict = True
+                    answer_conflict_review_count += int(not item.needs_review)
+                    near_hints.append({
+                        "question_number": item.question_number,
+                        "matched_question_id": source_id,
+                        "matched_paper_title": "",
+                        "similarity": 1.0, "high": True,
+                        "match_kind": "answer_conflict", "requires_review": True,
+                        "reason": "题面相同但答案文本不同，保留两个来源并等待核对",
+                    })
+                    source_id = None
             if source_id is not None:
                 # Determined reuse: keep this paper's number as an occurrence
                 # record instead of inserting a second canonical question row.
+                near_hints[:] = [hint for hint in near_hints if hint["question_number"] != item.question_number]
                 record_paper_occurrence(
                     conn,
                     paper_id=paper_id,
@@ -979,7 +1013,7 @@ def _import_scanned_paper(
                     item.source_file,
                     item.page_range,
                     json.dumps(item.image_paths, ensure_ascii=False),
-                    int(item.needs_review),
+                    int(item.needs_review or answer_conflict),
                     int(item.has_images),
                     int(item.needs_image_review),
                 ),
@@ -1001,7 +1035,7 @@ def _import_scanned_paper(
                 # New canonical question: persist its identity key so later
                 # batches match it without recomputing image content.
                 upsert_content_index(conn, question_id=question_id, key=key)
-                duplicate_index.exact[key] = question_id
+                duplicate_index.exact.setdefault(key, question_id)
             question_blocks = rich_content["question"].get(item.question_number, [])
             answer_blocks = rich_content["answer"].get(item.question_number, [])
             if question_blocks or answer_blocks:
@@ -1059,7 +1093,7 @@ def _import_scanned_paper(
         paper_id=paper_id,
         question_count=len(parsed.questions),
         answer_match_count=parsed.answer_match_count,
-        review_count=parsed.review_count,
+        review_count=parsed.review_count + answer_conflict_review_count,
         exact_duplicate_count=len(pending_analysis_reuse),
         analysis_reused_count=analysis_reused_count,
         near_duplicate_hints=tuple(near_hints),
@@ -1119,24 +1153,24 @@ def _extract_paper(
 ):
     if path.suffix.lower() == ".pdf":
         extracted = import_pdf(path)
-        if not _embedded_text_usable(extracted.text):
+        layout: dict = {}
+        image_dir = None
+        if asset_root is not None:
+            digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:10]
+            image_dir = asset_root / f"{path.stem}_{digest}"
+        markdown = None
+        extracted_type_overrides: dict[str, str] = {}
+        if full_parser is None:
+            markdown, extracted_type_overrides = _extract_with_colored_layers(
+                path, image_dir=image_dir, layout_out=layout,
+            )
+        if markdown or not _embedded_text_usable(extracted.text):
             # 无文字层或文字层乱码（自定义字体映射出 "!"#$% 类字符）的 PDF
             # 先走 MinerU 完整解析（版面+公式识别+OCR），输出带 LaTeX 的
             # Markdown；不可用或为空再退回行级 OCR 管线。
             parser = parse_pdf_full if full_parser is None else full_parser
-            markdown = None
-            extracted_type_overrides: dict[str, str] = {}
-            image_dir: Path | None = None
-            if asset_root is not None:
-                digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:10]
-                image_dir = asset_root / f"{path.stem}_{digest}"
-            # 教辅彩色答案层：拆出学生版/答案版两份 PDF 分别解析。
-            if full_parser is None:
-                markdown, extracted_type_overrides = _extract_with_colored_layers(
-                    path, image_dir=image_dir
-                )
             if markdown is None:
-                markdown = parser(path)
+                markdown = parser(path, layout_out=layout) if full_parser is None else parser(path)
             if markdown:
                 # MinerU 标题（## 参考答案）会挡住答案区切分，先还原成普通行。
                 normalized = _MARKDOWN_HEADING.sub("", markdown)
@@ -1154,6 +1188,7 @@ def _extract_paper(
                     has_images=bool(saved_images) or extracted.has_images,
                     image_paths=[*extracted.image_paths, *saved_images],
                     type_overrides=extracted_type_overrides,
+                    pdf_layout=layout,
                 )
             if document_pipeline is not None and operation_id:
                 # 重算 needs_ocr：OCR 产出文本后不再按"待 OCR"处理。
@@ -1170,14 +1205,21 @@ def _extract_paper(
                 )
             elif not extracted.needs_ocr:
                 extracted = replace(extracted, needs_ocr=True)
-        return extracted
+        if extracted.document_snapshot:
+            layout["pages"] = {
+                page.page_number - 1: [
+                    {"text": block.text, "bbox": block.region.bbox}
+                    for block in page.blocks if block.text
+                ] for page in extracted.document_snapshot.pages
+            }
+        return replace(extracted, pdf_layout=layout)
     extracted = import_docx(path, asset_root=asset_root)
     paragraphs = split_inline_main_question_paragraphs(extracted.rich_paragraphs)
     return replace(extracted, rich_paragraphs=paragraphs, text="\n".join(str(p["text"]) for p in paragraphs))
 
 
 def _extract_with_colored_layers(
-    path: Path, *, image_dir: Path | None
+    path: Path, *, image_dir: Path | None, layout_out: dict | None = None,
 ) -> tuple[str | None, dict[str, str]]:
     """彩色答案层路径：拆分 student/answers 双 PDF 并各自跑 MinerU。
 
@@ -1201,11 +1243,15 @@ def _extract_with_colored_layers(
             return None, {}
         if layers is None:
             return None, {}
+        kwargs = {"layout_out": layout_out} if layout_out is not None else {}
         parsed = parse_pdf_full_with_answers(
-            layers.student_pdf, layers.answers_pdf, regions=layers.regions
+            layers.student_pdf, layers.answers_pdf, regions=layers.regions, **kwargs
         )
         if parsed is None:
             return None, {}
+        if layout_out is not None:
+            layout_out["question_pdf"] = layers.student_pdf.read_bytes()
+            layout_out["answer_pdf"] = layers.answers_pdf.read_bytes()
         markdown, answers, types = parsed
         if answers:
             lines = ["参考答案"]
@@ -1798,7 +1844,7 @@ def partition_ambiguous_floating_images(
 
     for index, paragraph in enumerate(rich_paragraphs):
         text = str(paragraph.get("text") or "").strip()
-        if _SECTION_HEADING.match(_boundary_text(text)) and _IMAGE_MARKER.search(text):
+        if question_section_type(_boundary_text(text)) is not None and _IMAGE_MARKER.search(text):
             # Word often anchors the preceding diagram to the next section
             # heading. Remove the heading text, then review the image between
             # its real neighbouring questions instead of deleting the drawing.
@@ -1827,7 +1873,7 @@ def partition_ambiguous_floating_images(
                     if next_section != section:
                         next_number = None
                     break
-                if _IMAGE_MARKER.sub("", following_text).strip() and not _SECTION_HEADING.match(following_text):
+                if _IMAGE_MARKER.sub("", following_text).strip() and question_section_type(following_text) is None:
                     # More text/subparts belonging to this question follows the
                     # drawing. This is not an image between two questions.
                     break
@@ -1898,7 +1944,7 @@ def _section_rich_paragraphs(
         if _ANSWER_HEADING.search(_boundary_text(text)):
             section = "answer"
             continue
-        if _SECTION_HEADING.match(_boundary_text(text)):
+        if question_section_type(_boundary_text(text)) is not None:
             image_text = "\n".join(match.group(0) for match in _IMAGE_MARKER.finditer(text))
             if not image_text:
                 continue
@@ -1948,7 +1994,7 @@ def _document_title_hint(lines: list[str]) -> str | None:
             return None
         if _MAIN_QUESTION_MARKER.match(line) or _PAREN_QUESTION_MARKER.match(line):
             return None
-        if _SECTION_HEADING.match(line):
+        if question_section_type(line) is not None:
             return None
         return line
     return None
@@ -2079,39 +2125,15 @@ def _split_numbered_blocks(
     return blocks
 
 
-# 节标题行：以"一、/二、…"开头且含题类关键词的短行（剥离前用于题型推断）。
-# "第二部分"以"第"开头、"19.（本题10分）综合与实践"是题号行，均不匹配。
-_SECTION_HINT_LINE = re.compile(r"^#{0,6}\s*[一二三四五六七八九十]+\s*[、．.]")
-_SECTION_HINT_KEYWORD = re.compile(r"填空|选择|解答|计算|证明|简答|综合")
-
-
 def _last_section_hint(prefix: str) -> str | None:
     for line in reversed(prefix.splitlines()):
         stripped = line.strip()
         if not stripped:
             continue
-        if len(stripped) <= 40 and _SECTION_HINT_LINE.match(stripped) and _SECTION_HINT_KEYWORD.search(stripped):
-            return stripped.lstrip("#").strip()
+        kind = question_section_type(stripped)
+        if kind is not None:
+            return stripped if kind else None
     return None
-
-
-# 选项标签粗查：探测器没判选择题时的兜底"有没有选项"。
-_SECTION_OPTION_LABEL = re.compile(r"(?<![A-Za-z])[A-D](?:[.．、\)]|）)")
-
-
-def _section_hinted_type(section_hint: str, question_text: str, detected: str) -> str:
-    """节标题与探测器冲突时按标题纠正题型（仅 OCR 路径调用）。"""
-    has_options = len(_SECTION_OPTION_LABEL.findall(question_text)) >= 3
-    if "填空" in section_hint:
-        if not has_options and detected != "填空题":
-            return "填空题"
-    elif "选择" in section_hint:
-        if has_options and detected not in ("选择题", "多选题"):
-            return "选择题"
-    elif re.search(r"解答|计算|证明|简答|综合", section_hint):
-        if not has_options and detected != "填空题":
-            return "解答题"
-    return detected
 
 
 def _clean_block(
@@ -2148,7 +2170,7 @@ def _clean_block(
                 pass
             else:
                 continue
-        if _SECTION_HEADING.match(line_clean):
+        if question_section_type(line_clean) is not None:
             continue
         if len(line_clean) <= 120 and _PAPER_TITLE_NOISE.search(line_clean):
             continue

@@ -20,6 +20,7 @@ from question_bank.current_knowledge import (
     CurrentKnowledgeUnavailable,
 )
 from question_bank.database.schema import connect
+from question_bank.services import standard_difficulty
 from question_bank.services.duplicate_analysis_copy_service import exact_question_key, exact_identity_map, exam_original_key, exam_original_text_key
 from question_bank.recommendation.recommendation_engine import text_similarity
 from question_bank.recommendation.target_matching import (
@@ -88,9 +89,6 @@ class PersonalizedRecommendationConfig:
     expected_minutes: int = 45
     difficulty_min: int = 1
     difficulty_max: int = 7
-    direct_ratio: float = 0.6
-    prerequisite_ratio: float = 0.3
-    transfer_ratio: float = 0.1
     target_keys: tuple[str, ...] = ()
     scope_keys: tuple[str, ...] = ()
     exclude_current_exam_originals: bool = True
@@ -150,7 +148,7 @@ class PersonalizedRecommendationConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             **{key: value for key, value in asdict(self).items()
-               if key not in {"expected_minutes", "difficulty_min", "direct_ratio", "prerequisite_ratio", "transfer_ratio", "training_intent"}},
+               if key not in {"expected_minutes", "difficulty_min", "training_intent"}},
             "target_keys": list(self.target_keys),
             "scope_keys": list(self.scope_keys),
             "group_scope_keys": list(self.group_scope_keys),
@@ -462,13 +460,14 @@ def _difficulty_plan(ref: Mapping[str, Any], score_rate: object, cap: int,
     readiness = local_rate if context is None else weight * local_rate + (1 - weight) * context
     basis += "；相关章节作答" if len(chapter_rates) >= 2 else "；整体成绩辅助" if overall is not None else "；整体成绩缺失"
     level = "foundation" if readiness < .45 else "developing" if readiness < .75 else "secure"
+    original_level = standard_difficulty.difficulty_level(original)
     if level == "foundation":
         starter = min(cap, max(1, math.ceil(original * .5)))
-        consolidation = min(cap, starter + 1, int(original))
+        consolidation = min(cap, starter + 1, original_level)
         maximum = consolidation
         ratios = {"starter": .7, "consolidation": .3, "stretch": 0.}
     else:
-        consolidation = min(cap, max(1, math.ceil(original * .75) if level == "developing" else int(original)))
+        consolidation = min(cap, max(1, math.ceil(original * .75) if level == "developing" else original_level))
         starter = max(1, consolidation - 1)
         maximum = min(cap, consolidation + 1)
         ratios = {"starter": .3 if level == "developing" else .2,
@@ -487,8 +486,9 @@ def _loss_difficulty(ref: Mapping[str, Any], score_rate: object, cap: int) -> fl
 def _loss_difficulty_fits(candidate: Mapping[str, Any], ref: Mapping[str, Any], cap: int,
                           score_rate: object = None) -> bool:
     plan = _difficulty_plan(ref, score_rate, cap)
-    return bool(plan and candidate.get("difficulty") is not None
-                and plan["minimum"] <= float(candidate["difficulty"]) <= plan["maximum"])
+    level = standard_difficulty.difficulty_level(candidate.get("difficulty"))
+    return bool(plan and level is not None
+                and plan["minimum"] <= level <= plan["maximum"])
 
 
 def _direct_fit(candidate: Mapping[str, Any], key: str, ref: Mapping[str, Any]) -> bool:
@@ -531,7 +531,7 @@ def _practice_template(text: str) -> str:
 
 
 def _basic_judgement_family(candidate: Mapping[str, Any]) -> str:
-    if float(candidate.get("difficulty") or 10) > 4:
+    if (standard_difficulty.difficulty_level(candidate.get("difficulty")) or 10) > 4:
         return ""
     text = str(candidate.get("question_text") or "")
     if "勾股数" in text or ("直角三角形" in text and any(word in text for word in (
@@ -607,7 +607,9 @@ def _difficulty_band(entry: Mapping[str, Any]) -> str:
     plan = entry["target"].get("difficulty_plan")
     if not plan:
         return "consolidation"
-    difficulty = float(entry["candidate"]["difficulty"])
+    difficulty = standard_difficulty.difficulty_level(entry["candidate"]["difficulty"])
+    if difficulty is None:
+        return "consolidation"
     if difficulty <= plan["starter"] and plan["starter"] < plan["consolidation"]:
         return "starter"
     return "consolidation" if difficulty <= plan["consolidation"] else "stretch"
@@ -1016,7 +1018,7 @@ class PersonalizedRecommendationModule:
                         used=set(), recent=set(), excluded=excluded, config=config, allowed_keys=allowed,
                         paper_level_max=level, difficulty_targets={key: aim})
                     for candidate in eligible:
-                        if not plan["minimum"] <= candidate["difficulty"] <= plan["maximum"] or not _direct_fit(candidate, key, ref):
+                        if not plan["minimum"] <= (standard_difficulty.difficulty_level(candidate["difficulty"]) or -1) <= plan["maximum"] or not _direct_fit(candidate, key, ref):
                             continue
                         qid = candidate["question_id"]
                         if qid in recent.get(sid, set()):
@@ -1688,7 +1690,7 @@ class PersonalizedRecommendationModule:
                                     "difficulty_plan": plan,
                                     "training_tasks": _training_tasks({"stable_key": key, "source_question_refs": [ref]})}
                 for candidate in eligible:
-                    if not plan["minimum"] <= float(candidate["difficulty"]) <= plan["maximum"]:
+                    if not plan["minimum"] <= (standard_difficulty.difficulty_level(candidate["difficulty"]) or -1) <= plan["maximum"]:
                         continue
                     source_facets = ref.get("target_facets") or []
                     if not source_facets and key in facets_index:
@@ -1872,7 +1874,7 @@ class PersonalizedRecommendationModule:
                 or question_id in excluded
                 or difficulty is None
                 or not config.difficulty_min
-                <= int(difficulty)
+                <= float(difficulty)
                 <= config.difficulty_max
             ):
                 continue
@@ -2239,9 +2241,12 @@ class PersonalizedRecommendationModule:
                     ]
                     # A recommendation prints the whole question. Its hardest
                     # part must respect the student's difficulty ceiling.
-                    if any(part["difficulty"] is None for part in parts):
+                    if parts and not any(part["difficulty"] is None for part in parts):
+                        difficulty = float(max(part["difficulty"] for part in parts))
+                    elif any(part["difficulty"] is not None for part in parts):
                         continue
-                    difficulty = math.ceil(max(part["difficulty"] for part in parts))
+                    # else: 没有任何有效逐小问特征时回退到整题难度，
+                    # parts 里的 None 让前端仍显示"需重评"。
                     assessment = {"profile_revision": profile["revision"],
                                   "evidence_version_id": profile["evidence_version_id"],
                                   "selection_basis": "hardest_part", "parts": parts}
@@ -2409,9 +2414,9 @@ class PersonalizedRecommendationModule:
 
     def _current_mastery_version(self) -> dict[str, Any]:
         with connect(self.db_path) as connection:
-            profile_revisions = [tuple(row) for row in connection.execute(
-                "SELECT question_id,revision,status,current_source_content_hash FROM question_part_assessment_profiles ORDER BY question_id,revision"
-            )] if connection.execute("SELECT 1 FROM sqlite_master WHERE name='question_part_assessment_profiles'").fetchone() else []
+            feature_rows = [tuple(row) for row in connection.execute(
+                "SELECT question_id,part_id,formula_difficulty,source_content_hash FROM question_part_difficulty_features WHERE is_active=1 ORDER BY question_id,part_id"
+            )] if connection.execute("SELECT 1 FROM sqlite_master WHERE name='question_part_difficulty_features'").fetchone() else []
             evidence_rows = [
                 (
                     str(row["evidence_id"]),
@@ -2433,7 +2438,7 @@ class PersonalizedRecommendationModule:
             "parameter_version": CURRENT_MASTERY_PARAMETERS.version,
             "graph_release_id": self.current_knowledge.release_id,
             "training_evidence_version": _hash_payload(evidence_rows),
-            "part_assessment_version": _hash_payload(profile_revisions),
+            "part_assessment_version": _hash_payload(feature_rows),
         }
 
     def _recent_question_ids(
@@ -2759,8 +2764,10 @@ def _group_needs(diagnosis: Mapping[str, Any], leaves: Sequence[str]) -> dict[st
                 continue
             difficulties = [float(ref["assessment"]["part_difficulty"]) for ref in losses
                             if ref["assessment"].get("part_difficulty") is not None]
-            kind = ("basic" if any(d <= 4 for d in difficulties)
-                    else "application" if difficulties and len(difficulties) == len(losses) and min(difficulties) >= 7
+            levels = [standard_difficulty.difficulty_level(d) for d in difficulties]
+            known_levels = [level for level in levels if level is not None]
+            kind = ("basic" if any(level is not None and level <= 4 for level in levels)
+                    else "application" if known_levels and len(known_levels) == len(losses) and min(known_levels) >= 7
                     else "unspecified")
             count = len(direct) + training_count
             needs[key] = {"knowledge_key": key, "knowledge_point": str(point.get("knowledge_point") or key),
@@ -2840,7 +2847,7 @@ def _text_fingerprint(text: object) -> str:
 
 def _similarity_profile(
     *,
-    difficulty: int | None,
+    difficulty: float | None,
     stable_keys: Sequence[str],
     method_tags: Sequence[str],
     model_tags: Sequence[str],
@@ -2954,14 +2961,15 @@ def _draft_item(
     }
 
 
-def _difficulty(value: object) -> int | None:
+def _difficulty(value: object) -> float | None:
     try:
         parsed = float(value)
     except (TypeError, ValueError):
         return None
     if not math.isfinite(parsed) or not 1 <= parsed <= 10:
         return None
-    return int(round(parsed))
+    # 原始小数难度原样保留；归入哪一档由 standard_difficulty.difficulty_level 决定。
+    return parsed
 
 
 def _rate(value: object) -> float | None:
@@ -3041,28 +3049,12 @@ def _add_edit_shortage(student: dict[str, Any], stage: str) -> None:
 
 
 def _config_constructor(value: Mapping[str, Any]) -> dict[str, Any]:
-    ratios = value.get("stage_ratios")
     return {
         "paper_mode": value.get("paper_mode", "individual"),
         "question_count": value["question_count"],
         "expected_minutes": value.get("expected_minutes", 45),
         "difficulty_min": value.get("difficulty_min", 1),
         "difficulty_max": value.get("difficulty_max", 7),
-        "direct_ratio": (
-            ratios["direct"]
-            if isinstance(ratios, Mapping)
-            else value.get("direct_ratio", 1)
-        ),
-        "prerequisite_ratio": (
-            ratios["prerequisite"]
-            if isinstance(ratios, Mapping)
-            else value.get("prerequisite_ratio", 0)
-        ),
-        "transfer_ratio": (
-            ratios["transfer"]
-            if isinstance(ratios, Mapping)
-            else value.get("transfer_ratio", 0)
-        ),
         "target_keys": tuple(value.get("target_keys") or ()),
         "scope_keys": tuple(value.get("scope_keys") or ()),
         "exclude_current_exam_originals": bool(

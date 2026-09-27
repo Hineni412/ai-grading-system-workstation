@@ -287,222 +287,118 @@ def _make_divider_banner(width_px: int, label: str = "[ 答案与解析 ]") -> "
 
 
 def extract_pdf_question_images(
-    pdf_bytes: bytes,
-    question_blocks: list,
-    *,
-    scale: float = 2.0,
-    top_padding_pt: float = 6.0,
-    bottom_padding_pt: float = 10.0,
-    jpeg_quality: int = 88,
-    include_answer: bool = True,
-) -> dict[str, bytes]:
-    """Crop a JPEG image for each question from a PDF using bbox detection.
+    pdf_bytes: bytes, question_blocks: list, *, scale: float = 2.0,
+    top_padding_pt: float = 6.0, bottom_padding_pt: float = 10.0,
+    jpeg_quality: int = 88, include_answer: bool = True,
+    layout_pages: dict | None = None,
+) -> dict[str, dict[str, bytes | None]]:
+    """Crop in page/column reading order, using embedded or existing OCR boxes.
 
-    Each output image contains:
-    - The question stem (and diagrams / options) from the question section
-    - [if a separate answer section is found] A divider banner + the answer/
-      solution text from the answer section
-
-    When the document uses inline answers (【答案】/【解析】 markers within the
-    question text), the answer is already part of the question crop and no
-    separate answer section is expected.
-
-    Algorithm (Plan B):
-    1. Search for the answer-section heading (参考答案 / Solutions / …).
-    2. For every question block, locate its number marker in the question
-       section (before the answer-section heading).
-    3. Crop the question region (marker y → next marker y or answer-section
-       start).
-    4. If an answer section was found, locate each question's answer marker
-       inside that section and crop the corresponding answer region.
-    5. Stack [question crop] + [divider] + [answer crop] vertically.
-
-    Args:
-        pdf_bytes:         Raw PDF bytes.
-        question_blocks:   Output of preview_question_blocks_from_docx_text.
-        scale:             Render DPI multiplier (2.0 ≈ 150 dpi).
-        top_padding_pt:    Extra space added above each question marker.
-        bottom_padding_pt: Extra space added below each crop boundary.
-        jpeg_quality:      JPEG compression quality (0–95).
-        include_answer:    If False, only crop question regions (no answer).
-
-    Returns:
-        dict mapping question_id → JPEG bytes.  Questions whose marker could
-        not be located in the question section are omitted.
+    OCR text locates regions only. Every returned semantic asset comes from the
+    original page pixels. Missing/ambiguous markers are omitted for the caller
+    to reject instead of silently analysing an incomplete question.
     """
-    import fitz
+    import re
 
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    n_pages = len(doc)
-    mat = fitz.Matrix(scale, scale)
+    ids = {str(b.get("question_id") or "").lstrip("Qq"): str(b.get("question_id"))
+           for b in question_blocks if b.get("question_id")}
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        if not len(doc):
+            return {}
+        records = []
+        for pg, page in enumerate(doc):
+            supplied = (layout_pages or {}).get(pg, (layout_pages or {}).get(str(pg)))
+            if supplied:
+                for item in supplied:
+                    box = tuple(float(v) for v in item.get("bbox", ()))
+                    if len(box) != 4:
+                        continue
+                    if max(box) <= 1.01:
+                        box = (box[0]*page.rect.width, box[1]*page.rect.height,
+                               box[2]*page.rect.width, box[3]*page.rect.height)
+                    records.append((pg, box, str(item.get("text") or "").strip()))
+            else:
+                for block in page.get_text("dict")["blocks"]:
+                    for line in block.get("lines", []):
+                        records.append((pg, tuple(line["bbox"]),
+                                        "".join(s["text"] for s in line["spans"]).strip()))
 
-    # ── 1. Find the answer section boundary ───────────────────────────────
-    ans_section = _find_answer_section_start(doc, n_pages) if include_answer else None
-    # ans_section: (page_idx, y0) or None
-
-    # Upper search limit for question markers: stop just before answer section
-    q_search_limit_page = ans_section[0] if ans_section else n_pages - 1
-    q_search_limit_y = ans_section[1] if ans_section else float("inf")
-
-    # ── 2. Locate every question marker (question section only) ───────────
-    # Each entry: (qid, page_idx, y0_pt)
-    q_markers: list[tuple[str, int, float]] = []
-    q_missing: list[str] = []
-
-    for block in question_blocks:
-        qid = str(block.get("question_id") or "").strip()
-        if not qid:
-            continue
-        num = qid.lstrip("Q").lstrip("q")
-        found = _find_question_marker(doc, num, n_pages)
-        if found is None:
-            q_missing.append(qid)
-            continue
-        pg, y = found
-        # Discard hits that are inside the answer section
-        if ans_section and (pg > q_search_limit_page or
-                            (pg == q_search_limit_page and y >= q_search_limit_y)):
-            q_missing.append(qid)
-            continue
-        q_markers.append((qid, pg, y))
-
-    q_markers.sort(key=lambda m: (m[1], m[2]))
-
-    # ── 3. Locate every answer marker (answer section only) ───────────────
-    # Each entry: (qid, page_idx, y0_pt)
-    a_markers: list[tuple[str, int, float]] = []
-
-    if ans_section and include_answer:
-        a_sec_page, a_sec_y = ans_section
-        for block in question_blocks:
-            qid = str(block.get("question_id") or "").strip()
-            if not qid:
+        marker = re.compile(r"^\s*(\d{1,3})\s*[.．、)）](?!\d)")
+        raw_markers = [(pg, box, m.group(1)) for pg, box, value in records
+                       if (m := marker.match(value)) and m.group(1) in ids]
+        # Main-number anchors on both sides are stronger evidence of columns
+        # than illustrations or a wide table. Keep each page's own layout.
+        splits = {}
+        for pg, page in enumerate(doc):
+            boxes = [b for p, b, _ in raw_markers if p == pg]
+            left = [b for b in boxes if b[0] < page.rect.width * .35]
+            right = [b for b in boxes if b[0] > page.rect.width * .45]
+            if left and right:
+                right_start = min(b[0] for b in right)
+                left_lines = [b[2] for p, b, _ in records if p == pg and
+                              b[0] < page.rect.width * .35 and b[2] < right_start]
+                left_end = max(left_lines, default=page.rect.width * .45)
+                splits[pg] = min(right_start - 3, max(page.rect.width * .4,
+                                                    (left_end + right_start) / 2))
+        # Continue a two-column question over a marker-free following page only
+        # when the page has the same visible gutter (no line bridges the middle).
+        for pg, page in enumerate(doc):
+            if pg in splits or pg - 1 not in splits:
                 continue
-            num = qid.lstrip("Q").lstrip("q")
-            found = _find_question_marker(
-                doc, num, n_pages,
-                after_page=a_sec_page,
-                after_y=a_sec_y,
-            )
-            if found:
-                a_markers.append((qid, found[0], found[1]))
+            boxes = [b for p, b, _ in records if p == pg]
+            mid = page.rect.width / 2
+            if (any(b[0] > mid for b in boxes) and any(b[2] < mid for b in boxes)
+                    and not any(b[0] < mid - 15 and b[2] > mid + 15 for b in boxes)):
+                splits[pg] = mid
 
-        a_markers.sort(key=lambda m: (m[1], m[2]))
+        def position(pg, box):
+            return (pg, int(pg in splits and box[0] >= splits[pg]), box[1])
 
-    # Build answer-marker lookup: qid → index in a_markers
-    a_marker_index: dict[str, int] = {qid: i for i, (qid, _, _) in enumerate(a_markers)}
+        headings = [position(pg, box) for pg, box, value in records
+                    if any(value.casefold().startswith(h.casefold())
+                           for h in _ANSWER_SECTION_HEADINGS)
+                    and len(value) < 45]
+        answer_start = min(headings) if headings else None
+        end = (len(doc)-1, int(len(doc)-1 in splits), doc[-1].rect.height)
+        question_end = answer_start or end
+        q_marks, a_marks = [], []
+        for pg, box, number in raw_markers:
+            pos = position(pg, box)
+            (a_marks if answer_start and pos > answer_start else q_marks).append((pos, ids[number]))
+        q_marks.sort()
+        a_marks.sort()
 
-    # ── 4. Crop question + answer regions and combine ─────────────────────
-    result: dict[str, bytes] = {}
+        def crops(start, stop):
+            images = []
+            for pg in range(start[0], stop[0]+1):
+                page = doc[pg]
+                bounds = (0, splits[pg], page.rect.width) if pg in splits else (0, page.rect.width)
+                for col in range(len(bounds)-1):
+                    if (pg, col) < start[:2] or (pg, col) > stop[:2]:
+                        continue
+                    y0 = max(0, start[2] - top_padding_pt) if (pg, col) == start[:2] else 0
+                    y1 = max(0, stop[2] - top_padding_pt) if (pg, col) == stop[:2] and stop != end else page.rect.height
+                    if y1 <= y0:
+                        continue
+                    clip = fitz.Rect(bounds[col], y0, bounds[col+1], y1)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
+                    picture = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    from PIL import ImageChops
+                    if ImageChops.difference(picture, Image.new("RGB", picture.size, "white")).getbbox():
+                        images.append(picture)
+            if not images:
+                return None
+            output = io.BytesIO()
+            _stack_images(images).save(output, format="JPEG", quality=jpeg_quality)
+            return output.getvalue()
 
-    for i, (qid, q_page, q_y_top) in enumerate(q_markers):
-        page = doc[q_page]
-        page_w = page.rect.width
-        page_h = page.rect.height
+        def collect(marks, stop):
+            from collections import Counter
+            counts = Counter(qid for _, qid in marks)
+            return {qid: crops(pos, marks[i+1][0] if i+1 < len(marks) else stop)
+                    for i, (pos, qid) in enumerate(marks) if counts[qid] == 1}
 
-        # ── 4a. Question crop boundary ────────────────────────────────────
-        # Bottom = next question marker (or answer section start, or page bottom)
-        if i + 1 < len(q_markers):
-            _, nxt_page, nxt_y = q_markers[i + 1]
-            nxt_padding = 0.0  # Do not add extra bottom padding when ending at a next question marker
-        elif ans_section:
-            nxt_page, nxt_y = ans_section
-            nxt_padding = bottom_padding_pt
-        else:
-            nxt_page, nxt_y = q_page, page_h
-            nxt_padding = bottom_padding_pt
-
-        q_segments: list[tuple[int, float, float]] = []
-        if nxt_page == q_page:
-            q_segments.append((q_page,
-                                max(0.0, q_y_top - top_padding_pt),
-                                min(page_h, nxt_y + nxt_padding)))
-        else:
-            q_segments.append((q_page,
-                                max(0.0, q_y_top - top_padding_pt),
-                                page_h))
-            for mid in range(q_page + 1, nxt_page):
-                q_segments.append((mid, 0.0, doc[mid].rect.height))
-            # Only crop the top of nxt_page if the next question starts sufficiently down the page
-            if nxt_y >= 80.0:
-                q_segments.append((nxt_page,
-                                    0.0,
-                                    min(doc[nxt_page].rect.height,
-                                        nxt_y + nxt_padding)))
-
-        q_imgs = _crop_segments(doc, q_segments, page_w, mat)
-        if not q_imgs:
-            continue
-        q_combined = _stack_images(q_imgs)
-
-        # ── 4b. Answer crop (only when separate answer section exists) ────
-        a_combined: Image.Image | None = None
-
-        if ans_section and include_answer and qid in a_marker_index:
-            ai = a_marker_index[qid]
-            _, a_page, a_y_top = a_markers[ai]
-            a_page_doc = doc[a_page]
-            a_page_w = a_page_doc.rect.width
-            a_page_h = a_page_doc.rect.height
-
-            # Answer bottom = next answer marker
-            if ai + 1 < len(a_markers):
-                _, an_page, an_y = a_markers[ai + 1]
-                an_padding = 0.0  # Do not add extra bottom padding when ending at a next answer marker
-            else:
-                an_page = n_pages - 1
-                an_y = doc[n_pages - 1].rect.height
-                an_padding = bottom_padding_pt
-
-            a_segments: list[tuple[int, float, float]] = []
-            if an_page == a_page:
-                a_segments.append((a_page,
-                                   max(0.0, a_y_top - top_padding_pt),
-                                   min(a_page_h, an_y + an_padding)))
-            else:
-                a_segments.append((a_page,
-                                   max(0.0, a_y_top - top_padding_pt),
-                                   a_page_h))
-                for mid in range(a_page + 1, an_page):
-                    a_segments.append((mid, 0.0, doc[mid].rect.height))
-                # Only crop the top of an_page if the next answer starts sufficiently down the page,
-                # or if it is the last page (end of PDF).
-                if an_y >= 80.0 or an_page == n_pages - 1:
-                    a_segments.append((an_page,
-                                       0.0,
-                                       min(doc[an_page].rect.height,
-                                           an_y + an_padding)))
-
-            a_imgs = _crop_segments(doc, a_segments, a_page_w, mat)
-            if a_imgs:
-                a_combined = _stack_images(a_imgs)
-
-        # ── 4c. Save question and answer images separately ────────────────
-        buf_q = io.BytesIO()
-        q_combined.save(buf_q, format="JPEG", quality=jpeg_quality)
-        q_bytes = buf_q.getvalue()
-
-        a_bytes = None
-        if a_combined is not None:
-            buf_a = io.BytesIO()
-            a_combined.save(buf_a, format="JPEG", quality=jpeg_quality)
-            a_bytes = buf_a.getvalue()
-
-        result[qid] = {
-            "question": q_bytes,
-            "answer": a_bytes
-        }
-
-    doc.close()
-
-    all_missing = q_missing
-    if all_missing:
-        import warnings as _warnings
-        _warnings.warn(
-            f"extract_pdf_question_images: could not locate question markers for: "
-            f"{', '.join(all_missing)}",
-            stacklevel=2,
-        )
-
-    return result
-
+        questions = collect(q_marks, question_end)
+        answers = collect(a_marks, end) if include_answer else {}
+        return {qid: {"question": content, "answer": answers.get(qid)}
+                for qid, content in questions.items() if content}

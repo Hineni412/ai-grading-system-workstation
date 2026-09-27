@@ -1348,19 +1348,30 @@ def _deferred_sync_result(question_id: int) -> dict[str, Any]:
             {
                 "question_id": question_id,
                 "tag_analysis": {
-                    "knowledge_points": ["一元一次方程"],
                     "method_tags": [],
                     "thought_tags": ["方程思想"],
                     "ability_tags": ["运算能力"],
                     "math_model_tags": [],
                     "special_type_tags": [],
                     "difficulty": 3,
-                    "error_prone_points": ["运算化简错误"],
-                    "prerequisite_points": [],
-                    "textbook_chapters": ["一元一次方程"],
-                    "curriculum_sections": ["synthetic-section"],
-                    "suitable_student_level": "",
-                    "canonical_knowledge_id": "kp_alg_linear_equation",
+                    "predicted_error_patterns": [],
+                    "part_features": [
+                        {
+                            "part_id": "part-1",
+                            "part_label": "第1题",
+                            "solo": 1,
+                            "reasoning": 0,
+                            "computation": 1,
+                            "context": 0,
+                            "hidden": 0,
+                            "cases": 0,
+                            "param_dynamic": 0,
+                            "trap": 0,
+                            "knowledge": 0,
+                            "context_kind": "无情境",
+                            "evidence": "合成逐小问特征。",
+                        }
+                    ],
                     "taxonomy_revision": 2,
                     "proposed_tags": [],
                     "reason": "合成延期标签。",
@@ -1432,7 +1443,6 @@ class _DeferredSyncGateway:
                 "ability_tags",
                 "math_model_tags",
                 "special_type_tags",
-                "prerequisite_points",
                 "textbook_chapters",
                 "curriculum_sections",
             ):
@@ -1502,7 +1512,6 @@ class _PassThroughTaxonomyGovernance:
             field: list(raw_analysis.get(field) or [])
             for field in (
                 "knowledge_points",
-                "prerequisite_points",
                 "method_tags",
                 "thought_tags",
                 "ability_tags",
@@ -1793,7 +1802,12 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
     assert gateway.calls == [(1,)]
     saved = QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])
     assert saved is not None
+    # 整题知识点改由判定点关联派生，模型标签只带能力等维度。
     assert any(
+        tag["tag_type"] == "ability" and tag["tag_value"] == "运算能力"
+        for tag in saved["tags"]
+    )
+    assert not any(
         tag["tag_type"] == "knowledge_point"
         and tag["tag_value"] == "一元一次方程"
         for tag in saved["tags"]
@@ -1837,7 +1851,12 @@ def test_score_pending_intake_imports_tags_and_evidence_without_grading_links(
     assert SourceQuestionLinkService(question_bank_db).list_links() == []
     saved = QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])
     assert saved is not None
+    # 整题知识点改由判定点关联派生，模型标签只带能力等维度。
     assert any(
+        tag["tag_type"] == "ability" and tag["tag_value"] == "运算能力"
+        for tag in saved["tags"]
+    )
+    assert not any(
         tag["tag_type"] == "knowledge_point"
         and tag["tag_value"] == "一元一次方程"
         for tag in saved["tags"]

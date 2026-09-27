@@ -2,6 +2,7 @@ from .ai_assembly import router as ai_assembly_router
 from .ai_diagnostics import router as ai_diagnostics_router
 from .analytics import router as analytics_router
 from .assembly import router as assembly_router
+from .authoring import router as authoring_router
 from .config import router as config_router
 from .files import router as files_router
 from .grading import router as grading_router
@@ -27,6 +28,7 @@ __all__ = [
     "ai_diagnostics_router",
     "analytics_router",
     "assembly_router",
+    "authoring_router",
     "config_router",
     "files_router",
     "grading_router",

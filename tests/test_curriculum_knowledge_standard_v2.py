@@ -143,9 +143,10 @@ def test_full_curriculum_path_survives_tag_analysis_normalization() -> None:
     leaf = curriculum_knowledge_node("kp_bnu24_math_g7_lower_4_3_7")
     assert leaf is not None
 
+    # 知识点不再由 TagAnalysis 携带（由判定点关联派生）；旧字段作为兼容输入被忽略。
     analysis = TagAnalysis.from_dict({"knowledge_points": [leaf["name"]]})
 
-    assert analysis.knowledge_points == [leaf["name"]]
+    assert "knowledge_points" not in analysis.to_dict()
     assert QuestionTagWriteItem(
         tag_type="knowledge_point",
         tag_value=leaf["name"],

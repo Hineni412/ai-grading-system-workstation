@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -8,13 +9,33 @@ from question_bank.solution_evidence.knowledge_links import links_from_embedded
 from question_bank.solution_evidence.part_assessments import direct_targets, match_rubric_parts
 
 
+def _insert_feature_rows(conn, question_id, parts, *, fingerprint=None):
+    """Write active formula difficulty rows: [(part_id, difficulty), ...]."""
+    from question_bank.services.standard_difficulty import question_content_fingerprint
+    if fingerprint is None:
+        row = conn.execute(
+            "SELECT * FROM questions WHERE id=?", (int(question_id),)
+        ).fetchone()
+        fingerprint = question_content_fingerprint(dict(row))
+    for part_id, difficulty in parts:
+        conn.execute(
+            """INSERT INTO question_part_difficulty_features
+               (question_id, part_id, features_json, formula_difficulty,
+                formula_version, source_content_hash, is_active)
+               VALUES (?,?,?,?,?,?,1)""",
+            (int(question_id), str(part_id),
+             json.dumps({"evidence": "合成难度依据"}),
+             float(difficulty), "std-difficulty-v1", fingerprint),
+        )
+
+
 @pytest.fixture()
 def refined_training_source(tmp_path):
     from copy import deepcopy
     from question_bank.database.schema import initialize_database, connect
     from question_bank.solution_evidence.contracts import CoreResolution, QuestionSolutionEvidence
     from question_bank.solution_evidence.repository import SolutionEvidenceRepository
-    from question_bank.solution_evidence.part_assessments import save_profile, load_profiles
+    from question_bank.solution_evidence.part_assessments import load_profiles
     from question_bank.training_criteria import QuestionAnalysisInputLoader, TrainingCriterionModule
     from question_bank.training_criteria.analysis import solution_evidence_source_content_hash, training_criteria_from_solution_evidence
     from tests.current_knowledge_support import install_current_knowledge
@@ -52,9 +73,8 @@ def refined_training_source(tmp_path):
     old_version = criteria.read(question)['current_version']['version_id']
     evidence = make(raw)
     version = SolutionEvidenceRepository(path).save(evidence,source_kind='backfill',source_reference='synthetic-refined',created_by='test')
-    save_profile(path,question_id=1,evidence_version_id=version,created_by='test',parts=[
-        {'part_id':part,'difficulty':difficulty,'source':'teacher','rationale':'合成难度依据'}
-        for part,difficulty in [('part-1',2),('part-2',8)]])
+    with connect(path) as conn:
+        _insert_feature_rows(conn, 1, [('part-1', 2), ('part-2', 8)])
     return path,root,question,evidence,load_profiles(path,[1])[1],old_version
 
 
@@ -106,8 +126,11 @@ def test_real_diagnosis_dependency_path_keeps_original_assets_and_forms_groups(r
     paths = SimpleNamespace(db_path=grading_path,qb_db_path=path,data_root=root)
     with request_read_context(paths) as context:
         assert context.diagnosis_service.data_root == root
-        # This reproduces the former mistake without touching any real data.
-        assert not load_profiles(context.question_bank_candidate,[1],connection=context.question_bank_connection)[1]['available']
+        # The question bank is read directly, so the candidate path already
+        # resolves to the real data root; the former mistake is reproduced by
+        # passing a foreign data_root instead of omitting it.
+        foreign_root = root / 'foreign-data'
+        assert not load_profiles(context.question_bank_candidate,[1],connection=context.question_bank_connection,data_root=foreign_root)[1]['available']
         assert load_profiles(context.question_bank_candidate,[1],connection=context.question_bank_connection,data_root=root)[1]['available']
     app = create_app()
     original_paths = dependencies.get_path_manager
@@ -174,7 +197,7 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
     draft = module.create(request_token='a'*32, actor_ref='test',
         diagnosis=diagnosis,
         config=PersonalizedRecommendationConfig(question_count=8,expected_minutes=45,
-            direct_ratio=1,prerequisite_ratio=0,transfer_ratio=0,difficulty_min=8,difficulty_max=8,training_intent="challenge",
+            difficulty_min=8,difficulty_max=8,training_intent="challenge",
             target_keys=('kp_alg_linear_equation',),exclude_current_exam_originals=False))
     reopened = module.get(draft['draft_id'])
     assert len(reopened['students'][0]['items']) == 1
@@ -201,7 +224,6 @@ def test_paper_freeze_accepts_verified_type_rename_only(refined_training_source)
     from question_bank.training_criteria import TrainingCriterionModule, CriterionReviewCommand
     from question_bank.training_criteria.analysis import solution_evidence_source_content_hash, training_criteria_from_solution_evidence
     from question_bank.solution_evidence.repository import SolutionEvidenceRepository
-    from question_bank.solution_evidence.part_assessments import save_profile
     from question_bank.personalized_papers.module import PersonalizedPaperModule, PaperSourceChanged
     from question_bank.database.schema import connect
     path,root,question,evidence,profile,_ = refined_training_source
@@ -213,8 +235,7 @@ def test_paper_freeze_accepts_verified_type_rename_only(refined_training_source)
     version = workspace['current_version']['version_id']
     module.review(CriterionReviewCommand(question_id=1,version_id=version,expected_revision=workspace['revision'],
         action='approve',actor_ref='teacher',reason='合成教师决定'),question=legacy)
-    evidence_id = SolutionEvidenceRepository(path).save(old_evidence,source_kind='backfill',source_reference='synthetic-old-type',created_by='test')
-    save_profile(path,question_id=1,evidence_version_id=evidence_id,created_by='test',parts=profile['parts'])
+    SolutionEvidenceRepository(path).save(old_evidence,source_kind='backfill',source_reference='synthetic-old-type',created_by='test')
     papers = PersonalizedPaperModule(db_path=path,data_root=root)
     student = {'items':[{'question_id':1,'criterion_version_id':version}]}
     assert papers._prepare_items(student,paper_instance_id='b'*32)[0]['criterion_version_id'] == version
@@ -229,7 +250,7 @@ def test_report_and_heatmap_share_exact_part_targets_and_revision(refined_traini
     from integration.question_tag_projection_service import QuestionTagProjectionService
     from backend.repositories.reporting import load_question_bank_part_context
     from backend.report_exports import _question_bank_report_source
-    from question_bank.solution_evidence.part_assessments import save_profile
+    from question_bank.database.schema import connect
     from report import _knowledge_bucket_labels
     path,root,question,evidence,profile,_ = refined_training_source
     rubric_question = grading_config_skeleton_from_solution_evidence(evidence,question_ref='Q1')['rubric_question']
@@ -252,7 +273,8 @@ def test_report_and_heatmap_share_exact_part_targets_and_revision(refined_traini
     assert assessments['Q1(P2)']['part_difficulty'] == 8
     assert _knowledge_bucket_labels({'question_id':'Q1(P1)','knowledge_ids':['old']},{'old':'旧整题知识'},backfill) == [(backfill['Q1(P1)'][0]['path'],backfill['Q1(P1)'][0]['label'])]
     revision = _question_bank_report_source(root/'databases'/'grading.db',1)
-    save_profile(path,question_id=1,evidence_version_id=profile['evidence_version_id'],created_by='test',parts=[dict(p,difficulty=3) for p in profile['parts']])
+    with connect(path) as conn:
+        conn.execute("UPDATE question_part_difficulty_features SET formula_difficulty=3 WHERE question_id=1 AND is_active=1")
     assert _question_bank_report_source(root/'databases'/'grading.db',1) != revision
     rubric_question['parts'][0]['steps'][0]['core_goal'] = '历史题目不匹配'
     # §7.3：措辞漂移不再破坏归因——步骤按 evidence_point_ids 对位。
@@ -260,6 +282,58 @@ def test_report_and_heatmap_share_exact_part_targets_and_revision(refined_traini
     assert [entry['stable_key'] for entry in still_attributed['Q1(P1)']] == ['kp_alg_linear_equation']
     assert load_question_bank_part_context(path,1,{}) == ({'Q1':[]},{})
     assert _knowledge_bucket_labels({'question_id':'Q1(P1)','knowledge_ids':['old']},{'old':'旧整题知识'},{'Q1':[]}) == [('未命名知识点','未命名知识点')]
+
+
+def test_load_profiles_reads_formula_difficulty_and_marks_stale(refined_training_source):
+    from question_bank.database.schema import connect
+    from question_bank.solution_evidence.part_assessments import load_profiles
+    path, root, question, evidence, profile, _ = refined_training_source
+    assert [p['difficulty'] for p in profile['parts']] == [2, 8]
+    assert all(p['source'] == 'formula' for p in profile['parts'])
+    assert all(p['rationale'] == '合成难度依据' for p in profile['parts'])
+    assert isinstance(profile['revision'], str) and len(profile['revision']) == 16
+    # A stale feature fingerprint must not leak an outdated difficulty.
+    with connect(path) as conn:
+        conn.execute(
+            "UPDATE question_part_difficulty_features SET source_content_hash='stale' "
+            "WHERE question_id=1 AND part_id='part-1'")
+    stale = load_profiles(path, [1])[1]
+    assert [p['difficulty'] for p in stale['parts']] == [None, 8]
+    # No feature rows at all: parts still exist, difficulty is None.
+    with connect(path) as conn:
+        conn.execute("UPDATE question_part_difficulty_features SET is_active=0 WHERE question_id=1")
+    without = load_profiles(path, [1])[1]
+    assert [p['difficulty'] for p in without['parts']] == [None, None]
+
+
+def test_recommendation_falls_back_to_question_difficulty_without_features(refined_training_source):
+    from question_bank.database.schema import connect
+    from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+    path, root, question, evidence, profile, _ = refined_training_source
+    with connect(path) as conn:
+        conn.execute("UPDATE question_part_difficulty_features SET is_active=0 WHERE question_id=1")
+    module = PersonalizedRecommendationModule(db_path=path, data_root=root)
+    candidates, _, _ = module._source_snapshot(prepare_refinements=True)
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    # 没有任何有效逐小问特征时回退到整题难度；parts 保留 None。
+    assert candidate['difficulty'] == 2
+    assert [p['difficulty'] for p in candidate['part_assessment']['parts']] == [None, None]
+
+
+def test_snapshot_part_estimate_unknown_when_feature_parts_mismatch():
+    from integration.question_tag_projection_service import _snapshot_part_estimate
+    snapshot = {"evidence": {"parts": [{"part_id": "part-1"}, {"part_id": "part-2"}]}}
+    # Partial feature coverage cannot be trusted for a frozen snapshot.
+    partial = {"part-1": {"difficulty": 2, "rationale": "x"}}
+    assert _snapshot_part_estimate(snapshot, "part-1", partial) == {
+        "difficulty": None, "source": "unknown", "rationale": ""}
+    matched = {"part-1": {"difficulty": 2, "rationale": "x"},
+               "part-2": {"difficulty": 8, "rationale": "y"}}
+    assert _snapshot_part_estimate(snapshot, "part-2", matched) == {
+        "difficulty": 8, "source": "formula", "rationale": "y"}
+    assert _snapshot_part_estimate(snapshot, "part-1", {}) == {
+        "difficulty": None, "source": "unknown", "rationale": ""}
 
 
 @pytest.mark.parametrize('difficulty,score,expected', [(1, 0, .4), (10, 0, 1.3/2.75), (1, 1, 2.05/2.75), (10, 1, 2.55/3.25)])
@@ -272,65 +346,6 @@ def test_difficulty_changes_positive_and_negative_evidence(difficulty, score, ex
     correction = compute_mastery_v2(stable_key='kp_test', as_of=now, exam_evidence=(corrected,), parameters=MasteryV2Parameters(formula_version='mastery-v2-formula-v2'))
     assert correction.contributions[0].teacher_corrected
     assert correction.contributions[0].effective_value == 1-score
-
-
-@pytest.mark.parametrize('invalid', [None, 'source', 'parts'])
-def test_bank_refinement_replacement_validates_before_write_and_reopens(tmp_path, monkeypatch, invalid):
-    import copy
-    import json
-    from question_bank.database.schema import initialize_database, connect
-    from question_bank.solution_evidence import part_assessments as profiles
-    from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
-    from question_bank.solution_evidence.repository import SolutionEvidenceRepository
-    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
-    from tests.phase4.test_solution_evidence_semantics import _question, _evidence_payload, Resolver
-    from tools.refine_question_mastery import import_profiles
-
-    data = tmp_path / 'data'
-    path = data / 'databases' / 'question_bank.db'
-    output = data / 'reports' / 'refinement'
-    output.mkdir(parents=True)
-    initialize_database(path)
-    question = _question(1)
-    monkeypatch.setattr(profiles, 'current_inputs', lambda *args, **kwargs: {1: question})
-    with connect(path) as conn:
-        conn.execute("INSERT INTO questions(id,question_number,question_text) VALUES(1,'1','synthetic')")
-        conn.execute("INSERT OR IGNORE INTO knowledge_tag_identities(stable_key,display_name,origin) VALUES('kp_alg_linear_equation','synthetic','local')")
-    payload = _evidence_payload(1)
-    payload['parts'][0]['evidence_points'][0]['fine_term_links'] = payload['parts'][0]['evidence_points'][0]['fine_term_links'][:1]
-    evidence = QuestionSolutionEvidence.from_model_dict(payload, question_id=1, source_content_hash='c'*64, resolver=Resolver())
-    version = SolutionEvidenceRepository(path).save(evidence, source_kind='backfill', source_reference='old', created_by='test')
-    with connect(path) as conn:
-        stored = conn.execute('SELECT evidence_json FROM question_solution_evidence_versions WHERE evidence_version_id=?', (version,)).fetchone()[0]
-    replacement = copy.deepcopy(payload)
-    replacement['parts'][0]['full_answer'] = 'A reviewed synthetic answer'
-    entry = {'review_id': 'synthetic', 'replacement_evidence': replacement, 'replacement_reason': 'Synthetic stale source correction',
-             'reviewed_source_hash': solution_evidence_source_content_hash(question),
-             'parts': [{'part_id': 'part-1', 'difficulty': 4, 'source': 'codex_self', 'rationale': 'Synthetic estimate'}]}
-    if invalid == 'source':
-        entry['reviewed_source_hash'] = 'd'*64
-    elif invalid == 'parts':
-        entry['parts'][0]['part_id'] = 'unknown-part'
-    corpus = [{'question': {'id': 1}, 'evidence_versions': [{'evidence_version_id': version,
-               'source_content_hash': 'c'*64, 'evidence': json.loads(stored)}]}]
-    for name, value in [('bank_scope.json', {'essay_scope': [{'id': 1}]}),
-                        ('question_inputs.json', corpus), ('reviewed_part_profiles.json', {'1': entry})]:
-        (output / name).write_text(json.dumps(value), encoding='utf-8')
-    if invalid:
-        with pytest.raises(ValueError, match='Replacement requires' if invalid == 'source' else 'unknown part'):
-            import_profiles(data, output)
-        with connect(path) as conn:
-            assert conn.execute('SELECT COUNT(*) FROM question_solution_evidence_versions').fetchone()[0] == 1
-            assert conn.execute('SELECT COUNT(*) FROM question_part_assessment_profiles').fetchone()[0] == 0
-    else:
-        assert import_profiles(data, output)['questions'] == 1
-        loaded = profiles.load_profiles(path, [1])[1]
-        assert loaded['available'] and loaded['parts'][0]['difficulty'] == 4
-        assert loaded['evidence']['parts'][0]['full_answer'] == 'A reviewed synthetic answer'
-        assert import_profiles(data, output)['unchanged'] == 1
-        with connect(path) as conn:
-            assert conn.execute('SELECT COUNT(*) FROM question_solution_evidence_versions').fetchone()[0] == 2
-            assert conn.execute('SELECT evidence_json FROM question_solution_evidence_versions WHERE evidence_version_id=?', (version,)).fetchone()[0] == stored
 
 
 def _part(name, key):
@@ -352,7 +367,7 @@ def test_part_mapping_uses_obligations_not_order_or_counts():
     assert match_rubric_parts(rubric, {'parts': parts}) == {}
 
 
-def test_profiles_save_reopen_idempotency_and_source_change(tmp_path, monkeypatch):
+def test_profiles_read_formula_difficulty_and_source_change(tmp_path, monkeypatch):
     import json
     from question_bank.database.schema import initialize_database, connect
     from question_bank.solution_evidence import part_assessments as module
@@ -366,12 +381,18 @@ def test_profiles_save_reopen_idempotency_and_source_change(tmp_path, monkeypatc
     with connect(path) as conn:
         conn.execute("INSERT INTO questions(id,question_number,question_text) VALUES(1,'1','synthetic')")
         conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,source_kind,source_reference,created_by) VALUES(?,1,?,'question-solution-evidence-v2',?,?,'backfill','synthetic','test')", ('a'*64, source, 'b'*64, json.dumps({'parts': [_part('first','kp_a'),_part('second','kp_b')]})))
-    values = [{'part_id': name, 'difficulty': difficulty, 'source': 'codex_self', 'rationale': 'synthetic estimate'} for name,difficulty in [('first',2),('second',8)]]
-    assert module.save_profile(path,question_id=1,evidence_version_id='a'*64,parts=values,created_by='test')['revision'] == 1
-    assert module.save_profile(path,question_id=1,evidence_version_id='a'*64,parts=values,created_by='test')['unchanged']
-    assert [p['difficulty'] for p in module.load_profiles(path,[1])[1]['parts']] == [2,8]
-    with pytest.raises(ValueError,match='Whole-question'):
-        module.save_profile(path,question_id=1,evidence_version_id='a'*64,parts=[dict(v,source='whole_question') for v in values],created_by='test')
+        _insert_feature_rows(conn, 1, [('first', 2), ('second', 8)])
+    loaded = module.load_profiles(path, [1])[1]
+    assert [p['difficulty'] for p in loaded['parts']] == [2, 8]
+    # The revision token is derived: identical inputs give the same token and a
+    # difficulty change produces a new one.
+    assert module.load_profiles(path, [1])[1]['revision'] == loaded['revision']
+    with connect(path) as conn:
+        conn.execute("UPDATE question_part_difficulty_features SET formula_difficulty=3 "
+                     "WHERE question_id=1 AND part_id='second'")
+    changed = module.load_profiles(path, [1])[1]
+    assert [p['difficulty'] for p in changed['parts']] == [2, 3]
+    assert changed['revision'] != loaded['revision']
     question = _question(1, text='changed source')
     assert module.load_profiles(path,[1])[1]['available'] is False
 
@@ -443,7 +464,7 @@ def test_parent_receives_one_observation_with_all_target_shares(tmp_path):
     assert parent.value == pytest.approx(.6)
 
 
-def test_new_analysis_estimates_survive_checkpoint_and_linked_adoption(tmp_path, monkeypatch):
+def test_new_analysis_survives_checkpoint_and_linked_adoption(tmp_path, monkeypatch):
     from question_bank.solution_evidence import part_assessments as profiles
     from tests.phase4.test_solution_evidence_semantics import (
         _question, _combined_payload, QueueGateway, Resolver, VOLUME_ID,
@@ -456,6 +477,8 @@ def test_new_analysis_estimates_survive_checkpoint_and_linked_adoption(tmp_path,
     question = _question(1, source_ref='Q1')
     payload = _combined_payload(1)
     raw = payload['results'][0]
+    # Legacy model payloads may still carry part_assessments; the key is
+    # accepted and ignored — per-part difficulty now comes from formula rows.
     raw['part_assessments'] = [{'part_id': p['part_id'], 'difficulty': 3,
                                 'rationale': 'synthetic reasoning demand'} for p in raw['solution_evidence']['parts']]
     bundle = InMemoryCombinedQuestionAnalysisModule(gateway=QueueGateway([payload]),resolver=Resolver()).analyze(
@@ -463,13 +486,27 @@ def test_new_analysis_estimates_survive_checkpoint_and_linked_adoption(tmp_path,
         sources=(ConfigQuestionAnalysisSource('Q1',question),))
     assert bundle.status == 'succeeded'
     checkpoint = bundle.to_dict()
-    assert checkpoint['items'][0]['schema_version'] == 'deferred-combined-analysis-item-v5'
+    assert checkpoint['items'][0]['schema_version'] == 'deferred-combined-analysis-item-v4'
+    assert 'part_assessments' not in checkpoint['items'][0]
     restored = DeferredCombinedAnalysisBundle.from_dict(checkpoint,resolver=Resolver())
     assert restored.to_dict() == checkpoint
+    # A stored v5 checkpoint that still carries part_assessments loads cleanly.
+    from question_bank.training_criteria.in_memory import _hash_payload
+    legacy_item = {k: v for k, v in checkpoint['items'][0].items() if k != 'content_hash'}
+    legacy_item['schema_version'] = 'deferred-combined-analysis-item-v5'
+    legacy_item['part_assessments'] = raw['part_assessments']
+    legacy_item['content_hash'] = _hash_payload(legacy_item)
+    legacy_bundle = {k: v for k, v in checkpoint.items() if k != 'content_hash'}
+    legacy_bundle['items'] = [legacy_item]
+    legacy_bundle['content_hash'] = _hash_payload(legacy_bundle)
+    legacy_restored = DeferredCombinedAnalysisBundle.from_dict(
+        legacy_bundle, resolver=Resolver())
+    assert 'part_assessments' not in legacy_restored.to_dict()['items'][0]
     path = tmp_path/'question_bank.db'
     initialize_database(path)
     with connect(path) as conn:
         conn.execute("INSERT INTO questions(id,question_number,question_text) VALUES(1,'1','synthetic')")
+        _insert_feature_rows(conn, 1, [(p['part_id'], 3) for p in raw['solution_evidence']['parts']])
     monkeypatch.setattr(profiles,'current_inputs',lambda *args,**kwargs:{1:question})
     writer = DeferredCombinedProjectionWriter(tag_writer=SuccessfulTagWriter(),
         mapping_repository=FineTermCoreMappingRepository(path), evidence_repository=SolutionEvidenceRepository(path))
@@ -479,10 +516,9 @@ def test_new_analysis_estimates_survive_checkpoint_and_linked_adoption(tmp_path,
     saved = profiles.load_profiles(path,[1])[1]
     assert saved['available']
     assert saved['parts'][0]['difficulty'] == 3
-    assert saved['parts'][0]['source'] == 'model'
+    assert saved['parts'][0]['source'] == 'formula'
     assert saved['evidence_version_id'] == result['source_evidence_version_id']
     from question_bank.solution_evidence.repository import SolutionEvidenceProjectionWriter
     direct_writer = SolutionEvidenceProjectionWriter(mapping_repository=Resolver(),evidence_repository=SolutionEvidenceRepository(path))
-    direct_writer.write(question,raw['solution_evidence'],model_name='synthetic',operation_id='direct-parts',
-                        part_assessments=raw['part_assessments'])
+    direct_writer.write(question,raw['solution_evidence'],model_name='synthetic',operation_id='direct-parts')
     assert profiles.load_profiles(path,[1])[1]['parts'][0]['difficulty'] == 3

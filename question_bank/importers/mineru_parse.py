@@ -75,11 +75,13 @@ def _run_mineru(path: Path):
         return None
 
 
-def parse_pdf_full(path: Path) -> str | None:
+def parse_pdf_full(path: Path, *, layout_out: dict | None = None) -> str | None:
     """Parse a scanned PDF into Markdown with LaTeX, or None when unavailable."""
     result = _run_mineru(path)
     if result is None:
         return None
+    if layout_out is not None:
+        _copy_layout(result, layout_out)
     try:
         structured = _render_structured(result)
         if structured:
@@ -167,6 +169,16 @@ def _bbox(block: object) -> tuple[float, float, float, float] | None:
     if raw is None or len(raw) != 4:
         return None
     return tuple(float(v) for v in raw)
+
+
+def _copy_layout(result: object, target: dict) -> None:
+    pages: dict[int, list[dict]] = {}
+    for record in _collect_records(result):
+        if record.bbox and record.text:
+            pages.setdefault(record.page_idx, []).append({
+                "text": record.text, "bbox": record.bbox,
+            })
+    target["pages"] = pages
 
 
 def _collect_records(result: object) -> list[_Record]:
@@ -1074,7 +1086,8 @@ def _inject_inline_blanks(
 
 
 def parse_pdf_full_with_answers(
-    student_pdf: Path, answers_pdf: Path, regions: list | None = None
+    student_pdf: Path, answers_pdf: Path, regions: list | None = None,
+    *, layout_out: dict | None = None,
 ) -> tuple[str, dict[int, str], dict[int, str]] | None:
     """解析彩色答案层拆分出的两份 PDF。
 
@@ -1086,6 +1099,8 @@ def parse_pdf_full_with_answers(
     student_result = _run_mineru(student_pdf)
     if student_result is None:
         return None
+    if layout_out is not None:
+        _copy_layout(student_result, layout_out)
     try:
         preamble, questions = _analyze(student_result)
     except Exception:  # noqa: BLE001

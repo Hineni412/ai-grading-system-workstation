@@ -211,6 +211,14 @@ def test_extract_paper_appends_reference_answers(monkeypatch, tmp_path: Path) ->
     doc.save(blank)
     doc.close()
 
+    # 拆分结果会作为 bytes 读取进 layout_out，stub 路径需要真实文件。
+    for name in ("s.pdf", "a.pdf"):
+        layer_pdf = tmp_path / name
+        layer_doc = fitz.open()
+        layer_doc.new_page()
+        layer_doc.save(layer_pdf)
+        layer_doc.close()
+
     fake_layers = type(
         "L",
         (),

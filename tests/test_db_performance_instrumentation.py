@@ -12,7 +12,6 @@ from question_bank.database.schema import connect
 from question_bank.services.question_read_service import (
     captured_sqlite_read_connection,
 )
-from question_bank.services import training_task_service
 from update_tools import migrate_db
 
 
@@ -105,24 +104,32 @@ def test_captured_snapshot_counts_validation_and_service_select_without_source_w
         writer.close()
 
 
-def test_training_read_connection_counts_select_and_rejects_writes(
+def test_direct_read_connection_counts_select_and_rejects_writes(
     tmp_path: Path,
 ) -> None:
+    from backend.api.read_connections import _direct_question_bank_read
+
     db_path = tmp_path / "question-bank.db"
     with sqlite3.connect(db_path) as seed:
-        seed.execute("CREATE TABLE training_tasks(id INTEGER PRIMARY KEY)")
-        seed.execute("INSERT INTO training_tasks(id) VALUES (1)")
+        seed.execute("CREATE TABLE items(id INTEGER PRIMARY KEY)")
+        seed.execute("INSERT INTO items(id) VALUES (1)")
 
     def action() -> None:
-        with training_task_service._read_connection(db_path) as conn:
-            row = conn.execute("SELECT id FROM training_tasks").fetchone()
+        with _direct_question_bank_read(
+            db_path,
+            required_tables=frozenset({"items"}),
+        ) as conn:
+            row = conn.execute("SELECT id FROM items").fetchone()
             assert conn.row_factory is sqlite3.Row
             assert row["id"] == 1
 
-    assert measured_counts(action) == (1, 1)
-    with training_task_service._read_connection(db_path) as conn:
+    assert measured_counts(action) == (5, 2)
+    with _direct_question_bank_read(
+        db_path,
+        required_tables=frozenset({"items"}),
+    ) as conn:
         with pytest.raises(sqlite3.OperationalError):
-            conn.execute("INSERT INTO training_tasks(id) VALUES (2)")
+            conn.execute("INSERT INTO items(id) VALUES (2)")
 
 
 def test_migration_status_counts_schema_read_without_retaining_candidate_path(

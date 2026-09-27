@@ -30,12 +30,16 @@ function railDistanceFromRight(value: number): string {
 }
 
 const bands = [
-  { range: '1–2', label: '入门补缺', span: 2 },
-  { range: '3–4', label: '基础巩固', span: 2 },
-  { range: '5–6', label: '中档提升', span: 2 },
-  { range: '7', label: '综合突破', span: 1 },
-  { range: '8–10', label: '压轴拔高', span: 3 },
+  { range: '1.0–2.4', label: '入门补缺', span: 15 },
+  { range: '2.5–4.4', label: '基础巩固', span: 20 },
+  { range: '4.5–6.4', label: '中档提升', span: 20 },
+  { range: '6.5–7.4', label: '综合突破', span: 10 },
+  { range: '7.5–10', label: '压轴拔高', span: 25 },
 ]
+
+function formatLevel(value: number): string {
+  return value.toFixed(1)
+}
 
 function updateMin(value: string): void {
   emit('update:min', Math.min(Number(value), props.max))
@@ -69,10 +73,10 @@ function keyboardValue(
   upper: number,
 ): number | null {
   if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
-    return Math.max(lower, current - 1)
+    return Math.max(lower, Math.round((current - 0.5) * 10) / 10)
   }
   if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
-    return Math.min(upper, current + 1)
+    return Math.min(upper, Math.round((current + 0.5) * 10) / 10)
   }
   if (event.key === 'Home') return lower
   if (event.key === 'End') return upper
@@ -102,10 +106,10 @@ function updateMaxFromKeyboard(event: KeyboardEvent): void {
   <fieldset class="difficulty-range" :class="{ 'is-compact': compact }">
     <legend>
       <span>难度区间</span>
-      <strong>{{ min }}–{{ max }}</strong>
+      <strong>{{ formatLevel(min) }}–{{ formatLevel(max) }}</strong>
     </legend>
     <p :id="summaryId" class="difficulty-range__summary">
-      难度使用 1 到 10 的整数刻度，压轴拔高为 8 到 10，当前选择 {{ min }} 到 {{ max }}。
+      难度使用 1 到 10 的刻度，可按 0.5 微调，压轴拔高为 7.5 到 10，当前选择 {{ formatLevel(min) }} 到 {{ formatLevel(max) }}。
     </p>
     <div class="difficulty-range__rail">
       <div class="difficulty-range__track" />
@@ -134,9 +138,9 @@ function updateMaxFromKeyboard(event: KeyboardEvent): void {
         type="range"
         min="1"
         max="10"
-        step="1"
+        step="0.5"
         aria-label="最低难度"
-        :aria-valuetext="`最低难度 ${min}`"
+        :aria-valuetext="`最低难度 ${formatLevel(min)}`"
         :aria-describedby="summaryId"
         :style="{ zIndex: thumbLayer('min') }"
         @input="updateMin(($event.currentTarget as HTMLInputElement).value)"
@@ -151,9 +155,9 @@ function updateMaxFromKeyboard(event: KeyboardEvent): void {
         type="range"
         min="1"
         max="10"
-        step="1"
+        step="0.5"
         aria-label="最高难度"
-        :aria-valuetext="`最高难度 ${max}`"
+        :aria-valuetext="`最高难度 ${formatLevel(max)}`"
         :aria-describedby="summaryId"
         :style="{ zIndex: thumbLayer('max') }"
         @input="updateMax(($event.currentTarget as HTMLInputElement).value)"

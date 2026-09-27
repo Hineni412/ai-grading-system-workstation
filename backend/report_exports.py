@@ -99,7 +99,7 @@ def _question_bank_report_source(grading_path: Path, session_id: int) -> dict[st
             marks = ','.join('?' for _ in ids)
             source: dict[str, object] = {"links": links}
             for table, order in (("questions", "id"), ("question_tags", "id"),
-                                 ("question_part_assessment_profiles", "profile_id")):
+                                 ("question_part_difficulty_features", "id")):
                 if table in tables:
                     key = "id" if table == "questions" else "question_id"
                     source[table] = [dict(row) for row in connection.execute(

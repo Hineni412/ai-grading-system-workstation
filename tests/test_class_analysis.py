@@ -1189,10 +1189,10 @@ def test_known_cause_patterns_reuse_and_retry_disabled_skips_failed(
     assert failing.calls == 2
 
 
-def test_choice_question_option_path_and_teacher_confirm(
+def test_choice_question_option_path_auto_bank_write_and_edit(
     class_analysis_api_client, tmp_path: Path,
 ) -> None:
-    """P2 端到端：八上选择题走选项诊断；学生选项直接映射；教师确认写题库。"""
+    """P2+P5 端到端：选项诊断直映射；整理产出自动回挂题库；教师可修改。"""
     from question_bank.database.schema import connect, initialize_database
 
     client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
@@ -1208,9 +1208,15 @@ def test_choice_question_option_path_and_teacher_confirm(
         )
         bank_id = int(conn.execute("SELECT id FROM questions").fetchone()[0])
         conn.execute(
+            "INSERT INTO questions (question_number, question_text, answer_text, question_type)"
+            " VALUES ('2', '证明题题干', 'AB=BD+DH', '解答题')"
+        )
+        bank_id2 = int(conn.execute("SELECT id FROM questions WHERE question_number='2'").fetchone()[0])
+        conn.execute(
             "INSERT INTO grading_question_links (grading_session_id, source_question_id,"
-            " bank_question_id, link_method, status) VALUES (?, 'Q1', ?, 'manual', 'confirmed')",
-            (str(sid), bank_id),
+            " bank_question_id, link_method, status) VALUES (?, 'Q1', ?, 'manual', 'confirmed'),"
+            " (?, 'Q2', ?, 'manual', 'confirmed')",
+            (str(sid), bank_id, str(sid), bank_id2),
         )
     with sqlite3.connect(db.db_path) as conn:
         conn.execute(
@@ -1257,32 +1263,266 @@ def test_choice_question_option_path_and_teacher_confirm(
     assert group["category"] == "概念理解"
     assert state["option_analysis"]["Q1"]["analysis"]["C"]["pattern"] == "误认梯形为轴对称"
 
-    # 再次整理：选项分析按题目指纹复用、Q2 结果仍新鲜 → 零新调用。
+    # P5：整理结束自动回挂题库 —— 选项行 ai_auto + v3 观察行。
+    from question_bank.services.error_pattern_service import list_patterns
+
+    with connect(qb_path) as conn:
+        q1_rows = list_patterns(conn, [bank_id])[bank_id]
+        q2_rows = list_patterns(conn, [bank_id2])[bank_id2]
+    options = {row["trigger_value"]: row for row in q1_rows if row["trigger_kind"] == "option"}
+    assert options["C"]["pattern"] == "误认梯形为轴对称"
+    assert options["C"]["source"] == "ai_auto"
+    assert options["C"]["occurrences"] == [{"session_id": sid, "question_id": "Q1"}]
+    assert {row["pattern"] for row in q2_rows} == {"缺少直角依据"}
+    assert q2_rows[0]["trigger_kind"] == "observation"
+    assert q2_rows[0]["source"] == "ai_auto"
+
+    # 再次整理：选项分析按题目指纹复用、Q2 结果仍新鲜 → 零新调用、零新增题库行。
     job2 = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
     manager.wait(job2["id"], timeout=10)
     assert manager.get(job2["id"]).status == "succeeded"
     assert len(fake.calls) == 2
+    with connect(qb_path) as conn:
+        total = conn.execute("SELECT COUNT(*) FROM question_error_patterns").fetchone()[0]
+    assert total == len(q1_rows) + len(q2_rows)
 
-    # 教师确认入库：触发条件推导为 option/C；重复提交幂等。
-    payload = {
-        "question_id": "Q1", "kind": "error", "category": "概念理解",
-        "reason": "误认梯形为轴对称", "manifestation": "选了 C",
+    # 教师可选修改错法名/大类：旧行 merged，新名 teacher_edit；会话内同步改名。
+    resp = client.post(f"/api/sessions/{sid}/class-analysis/causes/edit", json={
+        "question_id": "Q1", "kind": "error", "reason": "误认梯形为轴对称",
+        "new_reason": "误认等腰梯形", "category": "审题与条件",
         "operation_token": "op-1",
-    }
-    resp = client.post(f"/api/sessions/{sid}/class-analysis/causes/confirm", json=payload)
+    })
     assert resp.status_code == 200, resp.text
-    row = resp.json()["pattern"]
-    assert row["question_id"] == bank_id
-    assert row["trigger_kind"] == "option" and row["trigger_value"] == "C"
-    resp2 = client.post(
-        f"/api/sessions/{sid}/class-analysis/causes/confirm",
-        json={**payload, "operation_token": "op-2"},
-    )
-    assert resp2.status_code == 200
-    assert resp2.json()["pattern"]["id"] == row["id"]
+    assert resp.json() == {"ok": True}
+    with connect(qb_path) as conn:
+        rows = conn.execute(
+            "SELECT pattern, status, source, trigger_kind, trigger_value, category"
+            " FROM question_error_patterns WHERE question_id=? ORDER BY id",
+            (bank_id,),
+        ).fetchall()
+    old = next(row for row in rows if row[0] == "误认梯形为轴对称")
+    assert old[1] == "merged"
+    edited = next(row for row in rows if row[0] == "误认等腰梯形")
+    assert edited[1:] == ("confirmed", "teacher_edit", "option", "C", "审题与条件")
 
-    # 页面 GET 标注该错法已入库。
+    state = ClassAnalysisStateStore(reports_dir).load(sid)
+    q1 = state["cause_analysis"]["questions"]["Q1"]
+    group = next(g for g in q1["result"]["groups"] if g["reason"] == "误认等腰梯形")
+    assert group["category"] == "审题与条件" and group["teacher_edited"] is True
+    assert state["option_analysis"]["Q1"]["analysis"]["C"]["pattern"] == "误认等腰梯形"
+    assert state["error_records"]["Q1"]["records"]
+    assert all(
+        row["pattern"] == "误认等腰梯形" and row["category"] == "审题与条件"
+        for row in state["error_records"]["Q1"]["records"]
+    )
+
+    # 页面 GET：错法名已更新，带 teacher_edited 标记与错误大类人数。
     page = client.get(f"/api/sessions/{sid}/class-analysis?view=summary&class_name=").json()
     q1_page = next(q for q in page["data"]["questions"] if q["question_id"] == "Q1")
-    cause = next(c for c in q1_page["causes"] if c["reason"] == "误认梯形为轴对称")
-    assert cause["bank_confirmed"] is True
+    cause = next(c for c in q1_page["causes"] if c["reason"] == "误认等腰梯形")
+    assert cause["teacher_edited"] is True
+    assert {item["category"]: item["count"] for item in q1_page["cause_category_counts"]} == {
+        "审题与条件": 1,
+    }
+
+    # 题库侧教师修改（其他场次/途径改名）：重新合成时教师改过的名称覆盖
+    # 会话内保存的同名选项诊断。删除已保存结果迫使重新合成。
+    from question_bank.services.error_pattern_service import rename_patterns
+
+    rename_patterns(
+        qb_path, question_ids=[bank_id],
+        old_pattern="误认等腰梯形", new_pattern="图形限定误用", category="审题与条件")
+    store = ClassAnalysisStateStore(reports_dir)
+    state = store.load(sid)
+    questions = dict(state["cause_analysis"]["questions"])
+    questions.pop("Q1")
+    store.save(sid, cause_analysis={"questions": questions})
+    job3 = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job3["id"], timeout=10)
+    assert manager.get(job3["id"]).status == "succeeded"
+    assert len(fake.calls) == 2  # 选项诊断与会话结果均复用，无新调用
+    state = store.load(sid)
+    reasons = {
+        g["reason"]
+        for g in state["cause_analysis"]["questions"]["Q1"]["result"]["groups"]
+    }
+    assert "图形限定误用" in reasons and "误认等腰梯形" not in reasons
+
+
+def test_cause_edit_api_validation_and_unlinked_state_only(
+    class_analysis_api_client, tmp_path: Path,
+) -> None:
+    """未关联题库的题目：修改只更新会话状态；校验失败返回 409/422。"""
+    from backend.class_analysis import ClassAnalysisStateStore
+
+    client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
+    _patch_configured(monkeypatch, True)
+
+    class CauseClient:
+        def json_from_text(self, prompt, **kwargs):
+            source = json.loads(prompt.rsplit("\n", 1)[1])
+            ids = [item["id"] for item in source["evidence"]]
+            return {"groups": [
+                {"kind": "process", "category": "过程与依据", "reason": "缺少直角依据",
+                 "manifestation": "未写明直角条件", "evidence_ids": ids},
+                {"kind": "review", "reason": "过程原因待核",
+                 "manifestation": "依据不足", "evidence_ids": ids[:1]},
+            ]}
+
+    holder["client"] = CauseClient()
+    job = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job["id"], timeout=10)
+    assert manager.get(job["id"]).status == "succeeded"
+    url = f"/api/sessions/{sid}/class-analysis/causes/edit"
+
+    resp = client.post(url, json={
+        "question_id": "Q9", "kind": "error", "reason": "任意",
+        "new_reason": "新名", "category": "概念理解",
+    })
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "cause_pattern_not_ready"
+
+    resp = client.post(url, json={
+        "question_id": "Q2", "kind": "process", "reason": "不存在的错法",
+        "new_reason": "新名", "category": "过程与依据",
+    })
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "cause_pattern_group_missing"
+
+    resp = client.post(url, json={
+        "question_id": "Q2", "kind": "process", "reason": "缺少直角依据",
+        "new_reason": "新名", "category": "概念理解",
+    })
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "cause_pattern_category_invalid"
+
+    # review / response_state 等结构分组不支持修改。
+    resp = client.post(url, json={
+        "question_id": "Q2", "kind": "review", "reason": "过程原因待核",
+        "new_reason": "新名", "category": None,
+    })
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "cause_pattern_category_invalid"
+
+    # 未关联题库（本题库文件不存在）：仅更新会话状态，不落库也不报错。
+    resp = client.post(url, json={
+        "question_id": "Q2", "kind": "process", "reason": "缺少直角依据",
+        "new_reason": "直角条件未写", "category": "书写与规范",
+    })
+    assert resp.status_code == 200, resp.text
+    state = ClassAnalysisStateStore(reports_dir).load(sid)
+    group = next(
+        g for g in state["cause_analysis"]["questions"]["Q2"]["result"]["groups"]
+        if g["reason"] == "直角条件未写"
+    )
+    assert group["category"] == "书写与规范" and group["teacher_edited"] is True
+    assert state["error_records"]["Q2"]["records"]
+    assert all(
+        row["pattern"] == "直角条件未写"
+        for row in state["error_records"]["Q2"]["records"]
+        if row["kind"] == "process"
+    )
+    assert not (tmp_path / "databases" / "question_bank.db").exists()
+
+
+def test_cause_analysis_survives_bank_without_pattern_table(
+    class_analysis_api_client, tmp_path: Path,
+) -> None:
+    """题库库表未升级（无 question_error_patterns）：整理照常完成、不写行。"""
+    client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
+    _patch_configured(monkeypatch, True)
+
+    qb_path = tmp_path / "databases" / "question_bank.db"
+    conn = sqlite3.connect(qb_path)
+    conn.executescript(
+        """
+        CREATE TABLE questions (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question_text TEXT, answer_text TEXT, question_type TEXT);
+        CREATE TABLE grading_question_links (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            grading_session_id TEXT NOT NULL, source_question_id TEXT NOT NULL,
+            bank_question_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed');
+        """
+    )
+    conn.execute("INSERT INTO questions (question_text) VALUES ('题干')")
+    bank_id = int(conn.execute("SELECT id FROM questions").fetchone()[0])
+    conn.execute(
+        "INSERT INTO grading_question_links (grading_session_id, source_question_id,"
+        " bank_question_id, status) VALUES (?, 'Q2', ?, 'confirmed')",
+        (str(sid), bank_id),
+    )
+    conn.commit()
+    conn.close()
+
+    class CauseClient:
+        def json_from_text(self, prompt, **kwargs):
+            source = json.loads(prompt.rsplit("\n", 1)[1])
+            return {"groups": [{
+                "kind": "process", "category": "过程与依据", "reason": "缺少直角依据",
+                "manifestation": "未写明直角条件",
+                "evidence_ids": [item["id"] for item in source["evidence"]],
+            }]}
+
+    holder["client"] = CauseClient()
+    job = client.post(f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes").json()
+    manager.wait(job["id"], timeout=10)
+    record = manager.get(job["id"])
+    assert record.status == "succeeded"
+    assert record.result["status"] == "ready"
+    assert record.result["bank_patterns_written"] == 0
+
+
+def test_session_error_records_and_category_counts(tmp_path: Path) -> None:
+    """物化错因记录：按学生×题读取、按大类去重计数、班级过滤；无状态返回空。"""
+    import backend.jobs
+    from backend.class_analysis import (
+        ClassAnalysisStateStore,
+        apply_cause_results,
+        assemble_cause_data,
+        build_cause_inputs,
+        question_category_counts,
+        save_cause_result,
+        session_error_records,
+    )
+    from analysis_report_exporter import build_class_page_data
+    from db_manager import DBManager
+
+    db = DBManager(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_analysis_session(db, tmp_path)
+    reports_dir = tmp_path / "reports"
+    store = ClassAnalysisStateStore(reports_dir)
+    assert session_error_records(db, sid, reports_dir) == {}
+
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+    source = _cause_source(data, "Q2")
+    ids = [item["id"] for item in source["evidence"]]
+    save_cause_result(
+        store, sid, source,
+        {"groups": [
+            {"kind": "error", "category": "概念理解", "reason": "垂直关系用错",
+             "manifestation": "未证垂直", "evidence_ids": ids},
+        ]},
+        data=data,
+    )
+    state = store.load(sid)
+    # 教师修改标记透传到页面输出。
+    state["cause_analysis"]["questions"]["Q2"]["result"]["groups"][0]["teacher_edited"] = True
+    store.save(sid, cause_analysis=state["cause_analysis"])
+
+    records = session_error_records(db, sid, reports_dir)
+    student_ids = {
+        student.student_id for student in data.students
+        if any(r.question_id == "Q2" and r.lost for r in student.records)
+    }
+    assert set(records) == student_ids
+    assert all("Q2" in by_question for by_question in records.values())
+    counts = question_category_counts(records)
+    assert counts["Q2"] == [("概念理解", len(student_ids))]
+    one = sorted(student_ids)[:1]
+    assert question_category_counts(records, student_ids=one)["Q2"] == [("概念理解", 1)]
+
+    page = build_class_page_data(data, compact=True)
+    apply_cause_results(page, data, build_cause_inputs(data), store.load(sid))
+    q2 = next(q for q in page["questions"] if q["question_id"] == "Q2")
+    assert q2["causes"][0]["teacher_edited"] is True
+    assert q2["cause_category_counts"] == [{"category": "概念理解", "count": len(student_ids)}]

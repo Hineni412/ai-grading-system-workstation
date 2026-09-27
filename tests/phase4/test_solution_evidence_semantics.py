@@ -173,19 +173,30 @@ def _evidence_payload(
 
 def _tag_payload() -> dict[str, Any]:
     return {
-        "knowledge_points": ["一元一次方程"],
         "method_tags": [],
         "thought_tags": ["方程思想"],
         "ability_tags": ["运算能力"],
         "math_model_tags": [],
         "special_type_tags": [],
         "difficulty": 3,
-        "error_prone_points": ["移项符号错误"],
-        "prerequisite_points": [],
-        "textbook_chapters": [],
-        "curriculum_sections": [],
-        "suitable_student_level": "基础巩固",
-        "canonical_knowledge_id": "kp_alg_linear_equation",
+        "predicted_error_patterns": [],
+        "part_features": [
+            {
+                "part_id": "part-1",
+                "part_label": "第1问",
+                "solo": 1,
+                "reasoning": 0,
+                "computation": 1,
+                "context": 0,
+                "context_kind": "无情境",
+                "hidden": 0,
+                "cases": 0,
+                "param_dynamic": 0,
+                "trap": 0,
+                "knowledge": 1,
+                "evidence": "一步方程即可求出未知数",
+            }
+        ],
         "taxonomy_revision": 2,
         "proposed_tags": [],
         "reason": "考查解方程。",
@@ -1787,10 +1798,10 @@ def test_in_memory_empty_shortlist_uses_full_vocabulary_without_blocking(
     assert gateway.calls == [(1,)]
     assert bundle.status == "succeeded"
     assert bundle.failed_source_refs == ()
-    assert bundle.taxonomy_review_source_refs == ("Q1",)
+    assert bundle.taxonomy_review_source_refs == ()
     audit = bundle.get("Q1").taxonomy_audit
-    assert audit["status"] == "needs_review"
-    assert audit["tag_quality_status"] != "complete"
+    assert audit["status"] == "accepted"
+    assert audit["tag_quality_status"] == "complete"
     assert {
         item["canonical_id"]
         for item in audit["retrieval_misses"]
@@ -1905,7 +1916,7 @@ def test_in_memory_malformed_tags_do_not_block_sound_scoring_evidence(
     ]["questions"]
 
 
-def test_in_memory_structured_low_quality_tags_stay_visible_for_review(
+def test_in_memory_low_confidence_tags_do_not_gate_quality(
     tmp_path: Path,
 ) -> None:
     payload = _combined_payload(1)
@@ -1928,12 +1939,8 @@ def test_in_memory_structured_low_quality_tags_stay_visible_for_review(
     assert bundle.taxonomy_review_source_refs == ("Q1",)
     audit = bundle.get("Q1").taxonomy_audit
     assert audit["status"] == "needs_review"
-    assert audit["tag_quality_status"] in {
-        "invalid",
-        "low_confidence",
-        "conflict",
-        "needs_review",
-    }
+    # 自评置信度只记录不拦截：标签质量本身判为 complete。
+    assert audit["tag_quality_status"] == "complete"
 
 
 def test_in_memory_bundle_checkpoints_round_trips_and_retries_only_failed() -> None:

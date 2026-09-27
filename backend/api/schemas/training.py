@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from typing import Any, Literal
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -86,9 +85,6 @@ class TrainingGroupingRequest(_TrainingModel):
     curriculum_volume_id: str = ""
     training_intent: Literal["remediation", "challenge"] = "remediation"
     teaching_progress_chapter_id: str = Field(default="", max_length=100)
-    direct_ratio: float = Field(default=.6, ge=0, le=1)
-    prerequisite_ratio: float = Field(default=.3, ge=0, le=1)
-    transfer_ratio: float = Field(default=.1, ge=0, le=1)
 
 
 class TrainingDiagnosisRequest(_TrainingModel):
@@ -102,69 +98,12 @@ class TrainingOverviewRequest(_TrainingModel):
     exam_scope: TrainingExamScopeRequest
 
 
-class TrainingStageRatios(_TrainingModel):
-    direct: float = Field(default=0.6, ge=0.0, le=1.0)
-    prerequisite: float = Field(default=0.3, ge=0.0, le=1.0)
-    transfer: float = Field(default=0.1, ge=0.0, le=1.0)
-
-    @model_validator(mode="after")
-    def ratios_sum_to_one(self) -> "TrainingStageRatios":
-        if abs(self.direct + self.prerequisite + self.transfer - 1.0) > 1e-9:
-            raise ValueError("stage ratios must sum to 1")
-        return self
-
-
-class TrainingPlanRequest(TrainingDiagnosisRequest):
-    variant_mode: Literal["individual", "auto_group"] = "individual"
-    teacher_groups: dict[str, list[str]] | None = Field(
-        default=None,
-        max_length=100,
-    )
-    question_count: int = Field(default=10, ge=8, le=12)
-    stage_ratios: TrainingStageRatios = Field(default_factory=TrainingStageRatios)
-    exclude_current_exam_originals: bool = True
-
-    @field_validator("teacher_groups")
-    @classmethod
-    def normalize_teacher_groups(
-        cls,
-        groups: dict[str, list[str]] | None,
-    ) -> dict[str, list[str]] | None:
-        if groups is None:
-            return None
-        normalized: dict[str, list[str]] = {}
-        for raw_name, raw_members in groups.items():
-            name = str(raw_name).strip()
-            if not name or len(name) > 100:
-                raise ValueError("teacher group names must be 1-100 characters")
-            if len(raw_members) > 500:
-                raise ValueError("teacher groups contain too many students")
-            members = TrainingScopeRequest.normalize_student_ids(raw_members)
-            if not members:
-                raise ValueError("teacher groups must not be empty")
-            normalized[name] = members
-        return normalized
-
-
-class TrainingPlanResponse(_TrainingModel):
-    plan_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
-    plan: dict[str, Any]
-
-
-class TrainingTaskConfirmRequest(TrainingPlanRequest):
-    confirmation_id: UUID
-    expected_plan_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
 class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
     request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     question_count: int = Field(default=10, ge=8, le=12)
     expected_minutes: int = 45  # 兼容输入，不参与推荐
     difficulty_min: int = Field(default=1, ge=1, le=10)
     difficulty_max: int = Field(default=7, ge=1, le=10)
-    stage_ratios: TrainingStageRatios = Field(
-        default_factory=TrainingStageRatios
-    )
     paper_mode: Literal["individual", "shared"] = "individual"
     target_keys: list[str] = Field(default_factory=list, max_length=50)
     scope_keys: list[str] = Field(default_factory=list, max_length=50)
@@ -484,54 +423,6 @@ class TrainingEvidenceReplayResponse(_TrainingModel):
     feedbacks: list[dict[str, Any]]
 
 
-class TrainingExportSubmitRequest(_TrainingModel):
-    variant_id: int | None = Field(default=None, ge=1)
-    format: Literal["docx", "markdown"] = "docx"
-    audience: Literal["student", "teacher"] | None = None
-
-    @model_validator(mode="after")
-    def validate_export_mode(self) -> "TrainingExportSubmitRequest":
-        if self.variant_id is None and self.audience is not None:
-            raise ValueError("task bundle export does not accept audience")
-        if self.variant_id is not None and self.audience is None:
-            raise ValueError("variant export requires audience")
-        return self
-
-
-class TrainingTaskSummary(_TrainingModel):
-    id: int
-    task_code: str
-    created_by: str | None = None
-    scope_snapshot: dict[str, Any]
-    exam_scope: dict[str, Any]
-    generation_config: dict[str, Any]
-    warnings: list[str]
-    status: Literal[
-        "draft",
-        "ready",
-        "exporting",
-        "completed",
-        "cancelled",
-        "failed",
-    ]
-    created_at: str
-    updated_at: str
-
-
-class TrainingTaskDetail(TrainingTaskSummary):
-    diagnosis_snapshot: dict[str, Any]
-    variants: list[dict[str, Any]]
-    exports: list[dict[str, Any]]
-
-
-class TrainingTaskListResponse(_TrainingModel):
-    items: list[TrainingTaskSummary]
-    total: int
-    page: int
-    page_size: int
-    total_pages: int
-
-
 class TrainingEvidenceReference(_TrainingModel):
     session_id: int
     session_name: str
@@ -710,13 +601,5 @@ __all__ = [
     "TrainingExamScopeRequest",
     "TrainingOverviewRequest",
     "TrainingOverviewResponse",
-    "TrainingExportSubmitRequest",
-    "TrainingPlanRequest",
-    "TrainingPlanResponse",
     "TrainingScopeRequest",
-    "TrainingStageRatios",
-    "TrainingTaskConfirmRequest",
-    "TrainingTaskDetail",
-    "TrainingTaskListResponse",
-    "TrainingTaskSummary",
 ]

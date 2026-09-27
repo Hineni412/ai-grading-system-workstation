@@ -65,114 +65,41 @@ def _pin_historical_taxonomy_for_legacy_gateway_tests(
     )
 
 
+def _part_feature(**overrides) -> dict[str, object]:
+    part = {
+        "part_id": "part-1",
+        "part_label": "第1问",
+        "solo": 1,
+        "reasoning": 0,
+        "computation": 1,
+        "context": 0,
+        "context_kind": "无情境",
+        "hidden": 0,
+        "cases": 0,
+        "param_dynamic": 0,
+        "trap": 0,
+        "knowledge": 1,
+        "evidence": "常规运算",
+    }
+    part.update(overrides)
+    return part
+
+
 def _analysis(**overrides) -> TagAnalysis:
     payload = {
-        "knowledge_points": ["整式运算"],
         "method_tags": [],
         "thought_tags": ["整体思想"],
         "ability_tags": ["运算能力"],
         "math_model_tags": [],
+        "special_type_tags": [],
         "difficulty": 4,
-        "error_prone_points": ["运算化简错误"],
-        "prerequisite_points": ["整数指数幂"],
-        "textbook_chapter": "七年级下册 第一章 整式的乘除",
-        "teaching_stage": "",
-        "suitable_student_level": "基础巩固",
-        "canonical_knowledge_id": "kp_alg_polynomial",
+        "predicted_error_patterns": [],
+        "part_features": [_part_feature()],
         "reason": "考查幂运算和整式化简。",
         "confidence": 0.86,
-        "measured_skills": [],
-        "supporting_skills": [],
     }
     payload.update(overrides)
     return TagAnalysis.from_dict(payload)
-
-
-def test_scoped_curriculum_uses_section_id_and_derives_chapter_locally() -> None:
-    analysis = _analysis(
-        textbook_chapters=["八年级下册 第一章 三角形的证明"],
-        curriculum_sections=["bnu24-math-g7-lower-c04-s01"],
-    )
-    contract = {
-        "curriculum_volume": {
-            "sections": [
-                {
-                    "id": "bnu24-math-g7-lower-c04-s01",
-                    "name": "1 认识三角形",
-                    "chapter_id": "bnu24-math-g7-lower-c04",
-                    "chapter_name": "七年级下册 第四章 三角形",
-                }
-            ]
-        }
-    }
-
-    normalized, notes = ai_tagging_module._normalize_scoped_curriculum(
-        analysis,
-        contract,
-    )
-
-    assert notes == []
-    assert normalized.curriculum_sections == [
-        "bnu24-math-g7-lower-c04-s01"
-    ]
-    assert normalized.textbook_chapters == ["七年级下册 第四章 三角形"]
-
-
-def test_scoped_curriculum_resolves_one_unique_display_path_locally() -> None:
-    analysis = _analysis(
-        textbook_chapters=["七年级下册 第五章 图形的轴对称"],
-        curriculum_sections=[
-            "七年级下册 第五章 图形的轴对称 1 轴对称及其性质"
-        ],
-    )
-    contract = {
-        "curriculum_volume": {
-            "sections": [
-                {
-                    "id": "bnu24-math-g7-lower-c05-s01",
-                    "name": "1 轴对称及其性质",
-                    "chapter_id": "bnu24-math-g7-lower-c05",
-                    "chapter_name": "七年级下册 第五章 图形的轴对称",
-                }
-            ]
-        }
-    }
-
-    normalized, notes = ai_tagging_module._normalize_scoped_curriculum(
-        analysis,
-        contract,
-    )
-
-    assert notes == []
-    assert normalized.curriculum_sections == [
-        "bnu24-math-g7-lower-c05-s01"
-    ]
-    assert normalized.textbook_chapters == [
-        "七年级下册 第五章 图形的轴对称"
-    ]
-
-
-def test_scoped_curriculum_rejects_section_outside_selected_volume() -> None:
-    analysis = _analysis(
-        curriculum_sections=["bnu24-math-g8-lower-c01-s01"],
-    )
-    normalized, notes = ai_tagging_module._normalize_scoped_curriculum(
-        analysis,
-        {
-            "curriculum_volume": {
-                "sections": [
-                    {
-                        "id": "bnu24-math-g7-lower-c04-s01",
-                        "chapter_name": "七年级下册 第四章 三角形",
-                    }
-                ]
-            }
-        },
-    )
-
-    assert normalized.curriculum_sections == []
-    assert normalized.textbook_chapters == []
-    assert any("超出老师确认的册别范围" in item for item in notes)
 
 
 def _install_isolated_real_adapter(monkeypatch, *, init_calls, adapter_calls) -> None:
@@ -367,25 +294,17 @@ def test_tagging_schema_limits_controlled_fields_to_contract_candidates() -> Non
         {1: first_contract, 2: second_contract}
     )["schema"]["properties"]["results"]["items"]["properties"]
 
-    assert single["knowledge_points"]["items"]["enum"] == [
-        "等腰三角形"
-    ]
-    assert single["prerequisite_points"]["items"]["enum"] == [
-        "等腰三角形"
-    ]
+    assert "knowledge_points" not in single
+    assert "canonical_knowledge_id" not in single
+    # 前置知识由判定点链接推导，不再出现在打标输出契约里
+    assert "prerequisite_points" not in single
+    assert "prerequisite_points" not in batch
     assert single["method_tags"]["items"]["enum"] == ["分类讨论"]
-    assert single["canonical_knowledge_id"]["enum"] == [
-        "",
-        "knowledge-1",
-    ]
-    assert batch["knowledge_points"]["items"]["enum"] == [
-        "等腰三角形",
-        "轴对称",
-    ]
+    assert single["special_type_tags"]["items"]["enum"] == ["新定义题"]
     assert single["proposed_tags"]["maxItems"] == 1
 
 
-def test_governed_knowledge_catalog_accepts_standard_term(
+def test_governed_catalog_accepts_standard_ability_term(
     tmp_path: Path,
 ) -> None:
     # knowledge_graph_db_path 缺省会指向会话级共享题库库;全量跑时其他测试的应用启动
@@ -404,48 +323,15 @@ def test_governed_knowledge_catalog_accepts_standard_term(
     contract = governance.prompt_contract()
 
     result = converge_tag_analysis(
-        _analysis(knowledge_points=["轴对称的性质"]),
+        _analysis(ability_tags=["推理能力"]),
         context,
         governance=governance,
         taxonomy_contract=contract,
     )
 
-    assert "controlled_field_violation:knowledge_points" not in result.quality_notes
+    assert "controlled_field_violation:ability_tags" not in result.quality_notes
     assert result.analysis is not None
-    assert result.analysis.knowledge_points == ["轴对称的性质"]
-
-
-def test_tagging_schema_preserves_multiple_textbook_chapters() -> None:
-    single_schema = _tag_analysis_response_format()["schema"]["properties"]
-    batch_schema = _batch_tag_analysis_response_format()["schema"]["properties"][
-        "results"
-    ]["items"]["properties"]
-    chapters = [
-        "七年级下册 第二章 相交线与平行线",
-        "七年级下册 第四章 三角形",
-    ]
-
-    analysis = TagAnalysis.from_dict({"textbook_chapters": chapters})
-
-    assert analysis.textbook_chapters == chapters
-    assert analysis.textbook_chapter == chapters[0]
-    assert analysis.to_dict()["textbook_chapters"] == chapters
-    assert "textbook_chapters" in single_schema
-    assert "textbook_chapter" not in single_schema
-    assert single_schema["textbook_chapters"]["type"] == "array"
-    assert "textbook_chapters" in batch_schema
-    assert "textbook_chapter" not in batch_schema
-
-
-def test_legacy_single_textbook_chapter_is_promoted_to_the_plural_contract() -> None:
-    analysis = TagAnalysis.from_dict(
-        {"textbook_chapter": "七年级上册 第二章 有理数及其运算"}
-    )
-
-    assert analysis.textbook_chapters == [
-        "七年级上册 第二章 有理数及其运算"
-    ]
-    assert analysis.textbook_chapter == "七年级上册 第二章 有理数及其运算"
+    assert result.analysis.ability_tags == ["推理能力"]
 
 
 def test_batch_prompt_sends_full_knowledge_once_and_keeps_other_contracts_isolated() -> None:
@@ -610,7 +496,8 @@ def test_single_responses_uses_tagging_gateway_with_raw_client(monkeypatch) -> N
             },
             "input": _prompt_input(context, taxonomy_contract),
             "model": "fake-tagging-model",
-            "timeout": 480.0,
+            "timeout": 480.0,
+
         }
     ]
     assert math.isfinite(provider_calls[0]["timeout"])
@@ -624,8 +511,7 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
     init_calls = []
     first_analysis = _analysis()
     second_analysis = _analysis(
-        knowledge_points=["概率初步"],
-        canonical_knowledge_id="kp_probability",
+        ability_tags=["数据观念"],
         reason="考查古典概型。",
     )
 
@@ -707,7 +593,8 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
             },
             "input": _prompt_input(contexts[1], single_contract),
             "model": "fake-tagging-model",
-            "timeout": 480.0,
+            "timeout": 480.0,
+
         },
         {
             "text": {
@@ -715,7 +602,8 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
             },
             "input": _batch_prompt_input(batch_items, batch_contracts),
             "model": "fake-tagging-model",
-            "timeout": 480.0,
+            "timeout": 480.0,
+
         }
     ]
     assert all(math.isfinite(call["timeout"]) for call in provider_calls)
@@ -904,31 +792,22 @@ def test_taxonomy_review_suggestions_do_not_fake_ai_in_mock_mode(
 def test_tag_analysis_normalizes_confidence_and_string_list_fields() -> None:
     analysis = TagAnalysis.from_dict(
         {
-            "knowledge_points": "科学记数法",
             "method_tags": "数形结合",
             "ability_tags": "运算能力",
             "math_model_tags": "",
             "difficulty": 4,
-            "error_prone_points": "运算化简错误",
-            "prerequisite_points": "有理数运算",
-            "textbook_chapter": ["七年级上册 第二章 有理数及其运算"],
-            "teaching_stage": "期末复习",
-            "suitable_student_level": "基础巩固",
+            "thought_tags": "数形结合思想",
+            "special_type_tags": "",
             "reason": "可直接判断。",
             "confidence": 1.8,
-            "measured_skills": "科学记数法表示",
-            "supporting_skills": "实数分类",
         }
     )
 
-    assert analysis.knowledge_points == ["科学记数法"]
     assert analysis.method_tags == ["数形结合"]
     assert analysis.math_model_tags == []
-    assert analysis.error_prone_points == ["运算化简错误"]
-    assert analysis.textbook_chapter == "七年级上册 第二章 有理数及其运算"
+    assert analysis.thought_tags == ["数形结合思想"]
+    assert analysis.special_type_tags == []
     assert analysis.confidence == 1.0
-    assert analysis.measured_skills == ["科学记数法表示"]
-    assert analysis.supporting_skills == ["实数分类"]
 
 
 def test_save_tag_analysis_persists_model_name_and_confidence(tmp_path: Path) -> None:
@@ -992,7 +871,7 @@ def test_exact_duplicate_complete_tags_can_be_reused_with_confidence_cap(tmp_pat
 
     assert duplicate is not None
     analysis, model_name = duplicate
-    assert analysis.knowledge_points == ["整式运算"]
+    assert analysis.thought_tags == ["整体思想"]
     assert analysis.confidence == 0.9
     assert model_name == "doubao-main"
 
@@ -1015,14 +894,26 @@ class _FakeTaggingService(AITaggingService):
     def mock_mode(self) -> bool:
         return False
 
-    def analyze_question(self, context: TaggingContext) -> AITaggingResult:
+    def analyze_question(
+        self,
+        context: TaggingContext,
+        *,
+        taxonomy_contract=None,
+        images=(),
+    ) -> AITaggingResult:
         qid = int(context.question_number or 0)
         self.primary_calls.append(qid)
         items = self.primary[qid]
         analysis = items.pop(0) if len(items) > 1 else items[0]
         return AITaggingResult(ok=True, mock_mode=False, analysis=analysis, model_name=self.model)
 
-    def analyze_review_question(self, context: TaggingContext) -> AITaggingResult:
+    def analyze_review_question(
+        self,
+        context: TaggingContext,
+        *,
+        taxonomy_contract=None,
+        images=(),
+    ) -> AITaggingResult:
         qid = int(context.question_number or 0)
         self.review_calls.append(qid)
         analysis = self.review[qid]
@@ -1034,8 +925,8 @@ def test_batch_incomplete_single_question_retries_without_affecting_neighbors() 
         primary={
             1: [_analysis()],
             2: [
-                _analysis(knowledge_points=[], ability_tags=[], confidence=0.91),
-                _analysis(knowledge_points=["概率初步"], ability_tags=["数据观念"], confidence=0.88),
+                _analysis(ability_tags=[], confidence=0.91),
+                _analysis(ability_tags=["数据观念"], confidence=0.88),
             ],
         }
     )
@@ -1094,9 +985,10 @@ def test_failed_batch_does_not_fan_out_when_fallback_is_disabled() -> None:
     assert failed[0].request_kind == "batch"
 
 
-def test_low_confidence_uses_review_model_when_agreement_is_found() -> None:
-    primary = _analysis(knowledge_points=["概率初步"], confidence=0.55)
-    review = _analysis(knowledge_points=["概率初步"], confidence=0.9)
+def test_low_confidence_is_saved_without_blocking_or_review() -> None:
+    # 置信度只记录不拦截：低置信结果照常判 complete，不再触发复核模型。
+    primary = _analysis(confidence=0.3)
+    review = _analysis(confidence=0.9)
     service = _FakeTaggingService(primary={1: [primary]}, review={1: review})
     contexts = {
         1: TaggingContext(question_text="随机抽取一个球，求概率。", question_number="1", question_type="选择题")
@@ -1110,27 +1002,33 @@ def test_low_confidence_uses_review_model_when_agreement_is_found() -> None:
     )
 
     assert results[1].quality_status == "complete"
-    assert results[1].model_name == "doubao-main+deepseek-review"
-    assert results[1].analysis is not None
-    assert results[1].analysis.confidence >= 0.72
-    assert service.review_calls == [1]
+    assert results[1].model_name == "doubao-main"
+    assert service.review_calls == []
     started = [event for event in events if event.phase == "started"]
     assert [event.request_kind for event in started] == [
         "batch",
         "single_fallback",
-        "review",
     ]
 
 
-def test_low_confidence_without_review_stays_pending() -> None:
-    service = _FakeTaggingService(primary={1: [_analysis(confidence=0.55)]})
+def test_low_confidence_image_question_is_saved() -> None:
+    # 图片降权只产生提示与置信度调整，不阻止保存。
+    service = _FakeTaggingService(primary={1: [_analysis(confidence=0.3)]})
     contexts = {
-        1: TaggingContext(question_text="随机抽取一个球，求概率。", question_number="1", question_type="选择题")
+        1: TaggingContext(
+            question_text="随机抽取一个球，求概率。",
+            question_number="1",
+            question_type="选择题",
+            has_images=True,
+        )
     }
 
     results = service.analyze_questions(contexts, max_workers=1)
 
-    assert results[1].quality_status == "low_confidence"
+    assert results[1].quality_status == "complete"
+    assert results[1].analysis is not None
+    assert results[1].analysis.confidence < 0.3
+    assert "图片依赖题已轻微降权" in results[1].quality_notes
     assert service.review_calls == []
 
 
@@ -1154,28 +1052,28 @@ def test_adaptive_batches_keep_simple_questions_together_and_complex_questions_s
 def test_resolve_controlled_ids_translates_candidate_ids_to_names() -> None:
     contract = {
         "candidates": {
-            "knowledge": [{"id": "kp-1", "name": "知识点甲"}],
+            "ability": [{"id": "ab-1", "name": "推理能力"}],
             "method": [{"id": "m-1", "name": "方法甲"}],
         }
     }
     analysis = _analysis(
-        knowledge_points=["kp-1", "不在词表的词"],
+        ability_tags=["ab-1", "不在词表的词"],
         method_tags=["m-1"],
     )
 
     resolved = ai_tagging_module._resolve_controlled_ids(analysis, contract)
 
-    assert resolved.knowledge_points == ["知识点甲", "不在词表的词"]
+    assert resolved.ability_tags == ["推理能力", "不在词表的词"]
     assert resolved.method_tags == ["方法甲"]
 
 
 def test_resolve_controlled_ids_ignores_contract_without_candidates() -> None:
-    analysis = _analysis(knowledge_points=["kp-1"])
+    analysis = _analysis(ability_tags=["ab-1"])
 
     assert ai_tagging_module._resolve_controlled_ids(analysis, {}) is analysis
 
 
-def test_governed_knowledge_catalog_accepts_candidate_id(
+def test_governed_catalog_accepts_ability_candidate_id(
     tmp_path: Path,
 ) -> None:
     # knowledge_graph_db_path 缺省会指向会话级共享题库库;全量跑时其他测试的应用启动
@@ -1194,15 +1092,15 @@ def test_governed_knowledge_catalog_accepts_candidate_id(
     contract = governance.prompt_contract()
 
     result = converge_tag_analysis(
-        _analysis(knowledge_points=["xkw-knowledge-b65b770612ee3878"]),
+        _analysis(ability_tags=["ability-3754929ccf87379a"]),
         context,
         governance=governance,
         taxonomy_contract=contract,
     )
 
-    assert "controlled_field_violation:knowledge_points" not in result.quality_notes
+    assert "controlled_field_violation:ability_tags" not in result.quality_notes
     assert result.analysis is not None
-    assert result.analysis.knowledge_points == ["轴对称的性质"]
+    assert result.analysis.ability_tags == ["推理能力"]
 
 
 def test_loads_model_json_tolerates_fences_and_surrounding_junk() -> None:

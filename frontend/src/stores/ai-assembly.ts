@@ -343,7 +343,7 @@ export const useAiAssemblyStore = defineStore('ai-assembly', () => {
     if (patch.difficulty !== undefined) {
       row.difficulty = patch.difficulty === null
         ? null
-        : Math.max(1, Math.min(9, Math.round(patch.difficulty)))
+        : Math.max(1, Math.min(10, Math.round(patch.difficulty)))
     }
     if (patch.score !== undefined) {
       row.score = patch.score === null

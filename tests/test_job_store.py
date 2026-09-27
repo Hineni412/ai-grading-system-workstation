@@ -345,7 +345,7 @@ def test_job_store_marks_interrupted_queued_and_running_jobs_failed(tmp_path) ->
     queued = store.create_job("config_generation", {})
     running = store.create_job("report_export", {})
     store.mark_running(running.id)
-    done = store.create_job("training_export", {})
+    done = store.create_job("assembly_export", {})
     store.finish(done.id, "succeeded")
 
     assert store.fail_interrupted_jobs() == 2

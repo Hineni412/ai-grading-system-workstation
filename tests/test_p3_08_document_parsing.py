@@ -407,6 +407,40 @@ def test_root_arguments_and_comparisons_do_not_become_subquestions_or_html():
     assert rich_text_for_model('<sup> </sup>√(5) + x<sup>2</sup>') == '√(5) + x^(2)'
 
 
+def test_word_underline_split_into_underscore_runs_is_one_blank() -> None:
+    from backend.document_parsing.question_blocks import (
+        _has_multiple_required_answers,
+    )
+    assert _has_multiple_required_answers('结果为 ____　      　____。') is False
+    assert _has_multiple_required_answers('结果为 <u>　      　</u>。') is False
+    assert _has_multiple_required_answers(
+        '甲为 ____，乙为 ____。'
+    ) is True
+    assert _has_multiple_required_answers('（1）____ （2）____') is True
+    assert _has_multiple_required_answers('结果为 ____。') is False
+
+
+def test_fill_blank_option_letter_canonical_is_not_trusted() -> None:
+    from backend.document_parsing.question_blocks import _is_local_answer_trusted
+
+    kwargs = dict(
+        qtype="fill_blank",
+        question_text="4的平方根是____。",
+        answer_text="B",
+        explicitly_mapped=True,
+    )
+    assert _is_local_answer_trusted(canonical_answer="B", **kwargs) is False
+    assert _is_local_answer_trusted(canonical_answer="b.", **kwargs) is False
+    assert _is_local_answer_trusted(canonical_answer="±2", **kwargs) is True
+    assert _is_local_answer_trusted(canonical_answer="7", **kwargs) is True
+    letter_kwargs = dict(
+        kwargs,
+        question_text="其中____组有可能是青年组．（填‘A”或“B”）",
+        answer_text="A",
+    )
+    assert _is_local_answer_trusted(canonical_answer="A", **letter_kwargs) is True
+
+
 def test_inline_pictures_stay_on_both_sides_of_a_same_paragraph_question_boundary(tmp_path):
     document = Document()
     document.add_paragraph('1. 第一题的题干。')

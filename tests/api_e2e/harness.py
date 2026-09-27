@@ -821,7 +821,6 @@ def build_job_manager(paths: E2EPaths, *, controls: E2EControls) -> JobManager:
             data_root=paths.data_root,
             question_bank_db_path=paths.qb_db_path,
             upload_config_dir=paths.upload_config_dir,
-            training_output_root=paths.outputs_dir / "training",
             report_generator_factory=ReportGenerator,
             scan_runner=make_scan_runner(paths, controls),
             grading_runner=make_grading_runner(controls),
@@ -843,7 +842,6 @@ def install_dependency_overrides(
 ) -> None:
     job_files = JobFileService(
         paths.reports_dir,
-        training_outputs_dir=paths.outputs_dir / "training",
         backups_dir=paths.backups_dir,
         ops_outputs_dir=paths.outputs_dir / "ops",
     )

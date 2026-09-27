@@ -11,11 +11,11 @@ import {
   type TrainingEvidenceReference,
   type TrainingExamScopeRequest,
   type TrainingStage,
-  type TrainingStageRatios,
   type TrainingStudentScopeRequest,
 } from '../../api/training'
 import { knowledgeLeafLabel } from '../../api/question-bank'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
+import { difficultyLevel } from '../../lib/utils'
 import TrainingScanBatchPanel from './TrainingScanBatchPanel.vue'
 import QuestionPreviewDialog from './QuestionPreviewDialog.vue'
 import {
@@ -29,7 +29,6 @@ const props = defineProps<{
   scope: TrainingStudentScopeRequest
   examScope: TrainingExamScopeRequest
   questionCount: number
-  stageRatios?: TrainingStageRatios
   excludeCurrentExamOriginals: boolean
   paperMode?: 'individual' | 'shared'
   targetKeys?: string[]
@@ -268,9 +267,10 @@ function itemLabel(item: PersonalizedRecommendationItem): string {
 }
 
 function difficultySummary(items: PersonalizedRecommendationItem[]): string {
-  const basic = items.filter(item => item.difficulty <= 5).length
-  const six = items.filter(item => item.difficulty === 6).length
-  const challenge = items.filter(item => item.difficulty >= 7).length
+  const levels = items.map(item => difficultyLevel(item.difficulty) ?? 0)
+  const basic = levels.filter(level => level >= 1 && level <= 5).length
+  const six = levels.filter(level => level === 6).length
+  const challenge = levels.filter(level => level >= 7).length
   return `1–5级 ${basic}题 · 6级 ${six}题 · 7级及以上 ${challenge}题 · 最高 ${Math.max(0, ...items.map(item => item.difficulty))}级`
 }
 
@@ -910,7 +910,7 @@ async function editItem(
                   {{ item.criterion_point_count }} 个判定点 · 来源：{{ item.source_paper }}
                 </small>
                 <small v-if="item.part_assessment" class="personalized-match__meta">
-                  小问预估难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。
+                  小问公式难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty ?? '暂无'}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。
                 </small>
                 <small v-if="item.relation">
                   已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：
@@ -982,7 +982,7 @@ async function editItem(
                 {{ item.criterion_point_count }} 个判定点
               </small>
               <small v-if="item.part_assessment">
-                小问预估难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。
+                小问公式难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty ?? '暂无'}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。
               </small>
               <small v-if="item.relation">
                 已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：

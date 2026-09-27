@@ -223,7 +223,7 @@ def test_image_markers_do_not_defeat_exact_duplicate_linking(
     first_text = (
         f"1. {QUESTION_TEXT}"
         "[[IMAGE:question_bank/extracted_images/a/q1.png]]\n"
-        f"答案：\n1. {ANSWER_TEXT}"
+        f"答案：\n1. {ANSWER_TEXT}[[IMAGE:question_bank/extracted_images/b/a1.png]]"
     )
     monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(first_text))
     _import_paper(tmp_path, bank["db"], bank["data_root"], name="a.docx", text=first_text)
@@ -332,7 +332,7 @@ def test_exact_duplicate_links_and_reuses_analysis(
     assert gaps[source_id] == {"evidence_ready": True, "criteria_ready": True}
 
 
-def test_identical_question_reuses_labels_and_shared_answer(
+def test_identical_stem_with_different_answer_preserves_both_sources_for_review(
     bank: dict[str, Path],
     tmp_path: Path,
     monkeypatch,
@@ -347,7 +347,8 @@ def test_identical_question_reuses_labels_and_shared_answer(
     second = _import_paper(tmp_path, bank["db"], bank["data_root"], name="b.docx", text=changed)
 
     assert second.question_count == 1
-    assert second.exact_duplicate_count == 1
+    assert second.exact_duplicate_count == 0
+    assert second.near_duplicate_hints[0]["match_kind"] == "answer_conflict"
     with connect(bank["db"]) as conn:
         occurrence = conn.execute(
             """
@@ -361,12 +362,13 @@ def test_identical_question_reuses_labels_and_shared_answer(
             "SELECT COUNT(*) AS n FROM question_tags WHERE question_id = ?",
             (source_id,),
         ).fetchone()
-    # 答案按查重身份属于规范题；完全重复题共享旧答案，不再产生第二行。
-    assert occurrence is not None
-    assert int(occurrence["question_id"]) == source_id
+    # 答案冲突不能悄悄用旧答案覆盖新来源，也不能传播尚未核对的分析。
+    assert occurrence is None
     assert int(tags["n"]) == 3
     with connect(bank["db"]) as conn:
         assert conn.execute("SELECT answer_text FROM questions WHERE id=?", (source_id,)).fetchone()[0] == "42"
+        imported = conn.execute("SELECT q.answer_text,q.needs_review FROM questions q JOIN papers p ON q.paper_id=p.id WHERE p.title='b'").fetchone()
+        assert tuple(imported) == ("43", 1)
 
 
 def test_near_variant_imports_normally_with_hint_only(
@@ -495,12 +497,24 @@ def test_manual_add_reuses_existing_labels_without_changing_source_occurrence(ba
     service = QuestionBankWriteService(bank["db"], data_root=bank["data_root"])
     source = service.add_question(QuestionCreate(question_number="1",question_text="解方程3x+5=11",answer_text="x=2",difficulty="5",
         tags=[TagCreate("knowledge_point","一元一次方程"),TagCreate("method","等式变形")]))
-    target = service.add_question(QuestionCreate(question_number="19",question_text="解方程3x+5=11",answer_text="移项得3x=6，故x=2"))
+    target = service.add_question(QuestionCreate(question_number="19",question_text="解方程3x+5=11",answer_text="x=2"))
     with connect(bank["db"]) as conn:
         assert conn.execute("SELECT duplicate_of_question_id FROM question_duplicate_links WHERE question_id=?",(target,)).fetchone()[0] == source
         assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE question_id=?",(target,)).fetchone()[0] == 2
         row=conn.execute("SELECT question_number,difficulty,answer_text FROM questions WHERE id=?",(target,)).fetchone()
-        assert tuple(row) == ("19","5","移项得3x=6，故x=2")
+        assert tuple(row) == ("19","5","x=2")
+    conflict = service.add_question(QuestionCreate(question_number="20",question_text="解方程3x+5=11",answer_text="x=3"))
+    with connect(bank["db"]) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE question_id=?",(conflict,)).fetchone()[0] == 0
+        assert conn.execute("SELECT needs_review FROM questions WHERE id=?",(conflict,)).fetchone()[0] == 1
+    manual = service.add_question(QuestionCreate(question_number="21",question_text="解方程3x+5=11",answer_text="x=2",difficulty="3",
+        tags=[TagCreate("method","人工选择的方法")]))
+    with connect(bank["db"]) as conn:
+        assert conn.execute("SELECT difficulty FROM questions WHERE id=?",(manual,)).fetchone()[0] == "3"
+        assert conn.execute("SELECT needs_review FROM questions WHERE id=?",(manual,)).fetchone()[0] == 1
+        assert [row[0] for row in conn.execute("SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='method'",(manual,))] == ["人工选择的方法"]
+    from question_bank.services.duplicate_analysis_copy_service import copy_duplicate_analysis
+    assert copy_duplicate_analysis(bank["db"], source_question_id=source, target_question_id=manual, data_root=bank["data_root"]) == {"evidence":False,"criteria":False}
 
 
 def test_current_filter_keeps_its_duplicate_occurrence_when_source_is_outside(bank):

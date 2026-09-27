@@ -502,8 +502,8 @@ export interface QuestionSolutionEvidenceResponse {
   evidence_version_id: string | null
   status: 'proposed' | 'approved' | 'rejected' | 'superseded' | 'stale' | null
   evidence: QuestionSolutionEvidence | null
-  part_assessments?: Array<{ part_id: string; difficulty: number | null; source: string; rationale: string; review_note?: string }>
-  assessment_revision?: number | null
+  part_assessments?: Array<{ part_id: string; difficulty: number | null; source: string; rationale: string; formula_version?: string; review_note?: string }>
+  assessment_revision?: string | null
 }
 
 export type QuestionBankTagStatus = 'all' | 'tagged' | 'untagged'
@@ -1484,7 +1484,7 @@ export function decodeQuestionSolutionEvidenceResponse(
       ...('part_assessments' in value ? ['part_assessments'] : []),
       ...('assessment_revision' in value ? ['assessment_revision'] : []),
     ])
-    || !(value.assessment_revision === undefined || value.assessment_revision === null || isPositiveInteger(value.assessment_revision))
+    || !(value.assessment_revision === undefined || value.assessment_revision === null || typeof value.assessment_revision === 'string')
     || !(value.part_assessments === undefined || (Array.isArray(value.part_assessments)
       && value.part_assessments.every(part => isRecord(part)
         && typeof part.part_id === 'string' && typeof part.source === 'string'
@@ -1633,8 +1633,9 @@ function questionListPath(filters: QuestionBankFilters): string {
   const hasDifficulty = filters.difficultyMin !== undefined || filters.difficultyMax !== undefined
   if (hasDifficulty) {
     if (
-      !isPositiveInteger(filters.difficultyMin) ||
-      !isPositiveInteger(filters.difficultyMax) ||
+      !isFiniteNumber(filters.difficultyMin) ||
+      !isFiniteNumber(filters.difficultyMax) ||
+      Number(filters.difficultyMin) < 1 ||
       Number(filters.difficultyMin) > Number(filters.difficultyMax) ||
       Number(filters.difficultyMax) > 10
     ) {

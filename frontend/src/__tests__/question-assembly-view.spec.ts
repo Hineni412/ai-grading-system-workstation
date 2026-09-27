@@ -362,7 +362,7 @@ describe('question assembly view', () => {
 
     try {
       expect(host.querySelector('.difficulty-range')).toBeTruthy()
-      expect(host.querySelector('.difficulty-range legend strong')?.textContent).toBe('3–10')
+      expect(host.querySelector('.difficulty-range legend strong')?.textContent).toBe('3.0–10.0')
       expect(host.textContent).not.toContain('正在读取筛选标签…')
     } finally {
       slowFacets.resolve(await json(questionFacets()))

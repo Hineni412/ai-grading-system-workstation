@@ -9,7 +9,6 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis
-from question_bank.solution_evidence.part_assessments import model_part_estimates, save_profile
 from question_bank.services.ai_tagging_service import converge_tag_analysis
 from question_bank.solution_evidence.convergence import converge_evidence_terms
 from question_bank.solution_evidence.contracts import (
@@ -175,7 +174,6 @@ class DeferredCombinedAnalysisItem:
     operation_id: str
     reference_assessment: str = "insufficient"
     reference_assessment_reason: str = ""
-    part_assessments: tuple[Mapping[str, Any], ...] = ()
     question_type_suggestion: Mapping[str, Any] | None = None
     # Exact-duplicate reuse: the source was matched to this canonical bank
     # question before any model call, so the item carries the canonical's
@@ -183,8 +181,6 @@ class DeferredCombinedAnalysisItem:
     reused_from_question_id: int | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "part_assessments", model_part_estimates(
-            self.part_assessments or None, self.solution_evidence.to_dict()))
         reference = str(self.source_question_ref or "").strip()
         operation = str(self.operation_id or "").strip()
         model = str(self.model_name or "").strip()
@@ -415,9 +411,6 @@ class DeferredCombinedAnalysisItem:
             "model_name": self.model_name,
             "operation_id": self.operation_id,
         }
-        if self.part_assessments:
-            payload["schema_version"] = "deferred-combined-analysis-item-v5"
-            payload["part_assessments"] = [dict(item) for item in self.part_assessments]
         if self.question_type_suggestion is not None:
             payload["schema_version"] = "deferred-combined-analysis-item-v6"
             payload["question_type_suggestion"] = dict(
@@ -573,7 +566,6 @@ class DeferredCombinedAnalysisItem:
                 else ""
             ),
             model_name=str(payload.get("model_name") or ""),
-            part_assessments=tuple(payload.get("part_assessments") or ()),
             question_type_suggestion=(
                 dict(payload["question_type_suggestion"])
                 if isinstance(payload.get("question_type_suggestion"), Mapping)
@@ -1850,7 +1842,6 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 model_name=response.model_name,
                                 operation_id=operation_id,
                             )
-                            estimates = model_part_estimates(raw.get("part_assessments"), evidence.to_dict())
                         except Exception as exc:
                             if isinstance(exc, _DeferredAnalysisValidationError):
                                 validation_category = exc.category
@@ -1887,7 +1878,6 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 taxonomy_audit=taxonomy_audit,
                                 reference_assessment=reference_assessment,
                                 reference_assessment_reason=reference_assessment_reason,
-                                part_assessments=estimates,
                                 question_type_suggestion=suggestion_audit,
                                 model_name=response.model_name,
                                 operation_id=operation_id,
@@ -1900,7 +1890,6 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 "solution_evidence": normalized_evidence,
                                 "reference_assessment": reference_assessment,
                                 "reference_assessment_reason": reference_assessment_reason,
-                                **({"part_assessments": list(estimates)} if estimates else {}),
                             }
                         )
                         parsed_count += 1
@@ -2123,10 +2112,6 @@ class DeferredCombinedProjectionWriter:
                 ),
                 created_by=f"model:{item.model_name or 'unknown'}",
             )
-            if item.part_assessments:
-                save_profile(self.evidence_repository.db_path, question_id=question.question_id,
-                             evidence_version_id=evidence_version_id, parts=item.part_assessments,
-                             created_by=f"model:{item.model_name}")
         except Exception:
             evidence_error = "evidence_validation"
         else:
@@ -2265,10 +2250,6 @@ class DeferredCombinedProjectionWriter:
                     f"linked-by:{link.confirmed_by}"
                 ),
             )
-            if item.part_assessments:
-                save_profile(self.evidence_repository.db_path, question_id=question.question_id,
-                             evidence_version_id=evidence_version_id, parts=item.part_assessments,
-                             created_by=f"model:{item.model_name}")
         except Exception:
             evidence_error = "evidence_validation"
         else:
@@ -2836,19 +2817,14 @@ def _audit_mapping_list(value: object) -> list[dict[str, Any]]:
 
 _MODEL_TAG_PAYLOAD_FIELDS = frozenset(
     {
-        "knowledge_points",
         "method_tags",
         "thought_tags",
         "ability_tags",
         "math_model_tags",
         "special_type_tags",
         "difficulty",
-        "error_prone_points",
-        "prerequisite_points",
-        "textbook_chapters",
-        "curriculum_sections",
-        "suitable_student_level",
-        "canonical_knowledge_id",
+        "predicted_error_patterns",
+        "part_features",
         "taxonomy_revision",
         "proposed_tags",
         "reason",
@@ -3224,6 +3200,11 @@ def _govern_deferred_analysis_item(
         additional_allowed_term_ids=additional_allowed,
     )
     candidates = _governed_candidate_snapshot(canonical_terms, evidence)
+    expected_parts = {part.part_id for part in evidence.parts}
+    feature_parts = [str(part.get("part_id") or "") for part in normalized_tag_analysis.part_features]
+    if set(feature_parts) != expected_parts or len(feature_parts) != len(set(feature_parts)):
+        tag_quality_status = "invalid"
+        tag_quality_notes.append("逐小问难度特征与解题依据的小问不完整对应（缺问、错号或重复号）。")
     proposals = _merge_taxonomy_proposals(tag_proposals, evidence_proposals)
     tag_payload = normalized_tag_analysis.to_dict()
     tag_payload["proposed_tags"] = proposals

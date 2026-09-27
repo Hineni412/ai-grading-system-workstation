@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,13 +37,6 @@ JOB_FILE_RULES = {
         data_root_depth=1,
         consume_after_download=True,
     ),
-    "training_export": JobFileRule(
-        result_field="file_path",
-        allowed_suffixes=frozenset({".docx", ".md", ".zip"}),
-        root_name="training_outputs_dir",
-        data_root_depth=2,
-        consume_after_download=True,
-    ),
     "assembly_export": JobFileRule(
         result_field="file_path",
         allowed_suffixes=frozenset({".docx", ".md"}),
@@ -71,15 +63,11 @@ class JobFileService:
         self,
         reports_dir: Path,
         *,
-        training_outputs_dir: Path | None = None,
         assembly_outputs_dir: Path | None = None,
         backups_dir: Path | None = None,
         ops_outputs_dir: Path | None = None,
     ) -> None:
         self.reports_dir = Path(reports_dir)
-        self.training_outputs_dir = (
-            Path(training_outputs_dir) if training_outputs_dir is not None else None
-        )
         self.assembly_outputs_dir = (
             Path(assembly_outputs_dir) if assembly_outputs_dir is not None else None
         )
@@ -154,20 +142,7 @@ class JobFileService:
         if not self.should_consume(job):
             return
         self._unlink_quietly(resolved.path)
-        self._cleanup_training_job_dir(job, resolved.path)
         store.clear_downloadable_file(job.id)
-
-    def _cleanup_training_job_dir(self, job: JobRecord, file_path: Path) -> None:
-        if job.job_type != "training_export" or self.training_outputs_dir is None:
-            return
-        parent = file_path.parent
-        if parent.name != f"job-{int(job.id)}":
-            return
-        try:
-            parent.resolve().relative_to(self.training_outputs_dir.resolve())
-        except ValueError:
-            return
-        shutil.rmtree(parent, ignore_errors=True)
 
     @staticmethod
     def _unlink_quietly(path: Path) -> None:

@@ -39,23 +39,37 @@ if TYPE_CHECKING:
 
 _REQUEST_LOCKS_GUARD = threading.Lock()
 _REQUEST_LOCKS: dict[str, threading.Lock] = {}
+# 八上重打方案：模型输出只剩这些整题维度。知识点、章与小节归属全部由
+# 判定点关联派生；error_type、学生层次、教学阶段、canonical_knowledge_id
+# 等旧维度不再写入，重打时按下方 _RETIRED_ANALYSIS_TAG_TYPES 清理。
 _TAG_ANALYSIS_MAP = {
-    "knowledge_points": "knowledge_point",
     "method_tags": "method",
     "thought_tags": "thought",
     "ability_tags": "ability",
     "math_model_tags": "model",
     "special_type_tags": "special_type",
-    "error_prone_points": "error_type",
-    "prerequisite_points": "prerequisite",
-    "textbook_chapters": "exam_scope",
-    "curriculum_sections": "curriculum_section",
 }
-# 服务端忽略的模型字段：归属（章/节）改由证据链接派生，模型值只作无链接时的既有保留值。
-_MODEL_IGNORED_ANALYSIS_FIELDS = frozenset(
-    {"textbook_chapters", "curriculum_sections"}
+# 重打时一并清除的停用维度（仅限 ai/taxonomy 等非手工来源）。
+_RETIRED_ANALYSIS_TAG_TYPES = (
+    "knowledge_point",
+    "exam_scope",
+    "curriculum_section",
+    "error_type",
+    "canonical_knowledge_id",
+    "student_level",
+    "teaching_stage",
+    "sub_skill",
+    "measured_skill_name",
+    "supporting_skill_name",
 )
-_OWNERSHIP_TAG_TYPES = ("exam_scope", "curriculum_section")
+# 历史自动来源：重打时与 ai/taxonomy 一起覆盖，保证全库口径统一。
+_NON_MANUAL_TAG_SOURCES = (
+    "ai",
+    "taxonomy",
+    "question_type_migration",
+    "question_type_suggestion",
+    "type_detector",
+)
 _TAG_STATUS_TYPE = "tag_status"
 _DERIVED_PENDING_STATUS = "derived_pending"
 _ANSWERED_AI_CONFIDENCE = 0.8
@@ -419,10 +433,10 @@ class QuestionBankWriteService:
                 ),
             )
             question_id = int(cursor.lastrowid)
+            # Explicit input takes precedence over labels inherited from an
+            # identical older question. The duplicate helper fills empty types.
+            _insert_imported_tags(conn, question_id, question.tags)
             source_id = link_new_question_duplicate(conn, question_id=question_id, data_root=self.data_root)
-            reused_types = {str(row["tag_type"]) for row in conn.execute(
-                "SELECT DISTINCT tag_type FROM question_tags WHERE question_id=?", (question_id,)).fetchall()}
-            _insert_imported_tags(conn, question_id, [tag for tag in question.tags if tag.tag_type not in reused_types])
         if source_id is not None:
             copy_duplicate_analysis(self.db_path, source_question_id=source_id,
                                     target_question_id=question_id, data_root=self.data_root)
@@ -491,7 +505,11 @@ class QuestionBankWriteService:
     ) -> bool:
         with connect(self.db_path) as conn:
             question = conn.execute(
-                "SELECT id, answer_text FROM questions WHERE id = ? AND is_deleted = 0",
+                """
+                SELECT id, answer_text, question_text, question_type,
+                       has_images, image_paths
+                FROM questions WHERE id = ? AND is_deleted = 0
+                """,
                 (int(question_id),),
             ).fetchone()
             if question is None:
@@ -501,19 +519,28 @@ class QuestionBankWriteService:
                 self.db_path,
                 int(question_id),
             )
+            # prerequisite 也属派生维度（来自 supporting_prerequisite 关联），
+            # 重打时同样清理非手工旧值后由 _derived_ownership 重写。
             covered = tuple(_TAG_ANALYSIS_MAP.values()) + (
-                "canonical_knowledge_id",
+                *_RETIRED_ANALYSIS_TAG_TYPES,
+                "prerequisite",
                 _TAG_STATUS_TYPE,
             )
             placeholders = ", ".join("?" for _ in covered)
+            source_placeholders = ", ".join("?" for _ in _NON_MANUAL_TAG_SOURCES)
             conn.execute(
                 f"""
                 DELETE FROM question_tags
                 WHERE question_id = ?
                   AND tag_type IN ({placeholders})
-                  AND (source IN ('ai', 'taxonomy') OR ? = 1)
+                  AND (source IN ({source_placeholders}) OR ? = 1)
                 """,
-                (int(question_id), *covered, int(overwrite_manual)),
+                (
+                    int(question_id),
+                    *covered,
+                    *_NON_MANUAL_TAG_SOURCES,
+                    int(overwrite_manual),
+                ),
             )
             fallback = (
                 _ANSWERED_AI_CONFIDENCE
@@ -531,10 +558,6 @@ class QuestionBankWriteService:
                 confidence=resolved_confidence,
                 edited_fields=edited_fields or set(),
                 model_name=_clean_optional(model_name),
-                resolver=resolver,
-                taxonomy_governance=taxonomy_governance,
-                # 无可用链接时模型章/节值作为临时值照常写入（derived_pending 标记）。
-                include_ownership_fields=derived is None,
             )
             if derived is not None:
                 rows.extend(
@@ -550,10 +573,13 @@ class QuestionBankWriteService:
                         ("exam_scope", derived["exam_scope"]),
                         ("curriculum_section", derived["curriculum_section"]),
                         ("knowledge_point", derived["direct_keys"]),
+                        ("prerequisite", derived["prerequisite_keys"]),
                     )
                     for value in values
                 )
-            else:
+            if derived is None or not (
+                derived["exam_scope"] or derived["curriculum_section"]
+            ):
                 rows.append(
                     (
                         int(question_id),
@@ -574,6 +600,23 @@ class QuestionBankWriteService:
                 """,
                 rows,
             )
+            # 整题难度：有逐小问特征时按公式取最难小问的一位小数分数
+            # （如 8.8），限幅到 1.0—10.0；无特征时回退到模型给的整题难度。
+            difficulty_value = analysis.difficulty
+            part_records: list[dict[str, Any]] = []
+            if analysis.part_features:
+                from question_bank.services import standard_difficulty
+
+                part_records = standard_difficulty.build_part_records(
+                    analysis.part_features
+                )
+                if part_records:
+                    max_formula = max(
+                        float(part["formula"]) for part in part_records
+                    )
+                    difficulty_value = (
+                        f"{max(1.0, min(10.0, max_formula)):.1f}"
+                    )
             conn.execute(
                 """
                 UPDATE questions
@@ -583,14 +626,37 @@ class QuestionBankWriteService:
                 """,
                 (
                     (
-                        str(analysis.difficulty)
-                        if analysis.difficulty is not None
+                        str(difficulty_value)
+                        if difficulty_value is not None
                         else None
                     ),
                     _clean_optional(analysis.reason),
                     int(question_id),
                 ),
             )
+            # 预测典型错法：写入典型错法表（仅预测候选项），不再是 error_type 标签。
+            from question_bank.services.predicted_error_patterns import (
+                record_predicted_patterns,
+            )
+
+            record_predicted_patterns(
+                conn,
+                int(question_id),
+                analysis.predicted_error_patterns,
+            )
+            # 标准难度：独立表存储特征与公式版本。
+            if part_records:
+                from question_bank.services import standard_difficulty
+
+                standard_difficulty.save_assessment(
+                    conn,
+                    question_id=int(question_id),
+                    part_features=analysis.part_features,
+                    content_fingerprint=standard_difficulty.question_content_fingerprint(
+                        dict(question)
+                    ),
+                    model_name=_clean_optional(model_name),
+                )
         return True
 
     def _refresh_tag_analysis_frequencies(
@@ -672,31 +738,44 @@ class QuestionBankWriteService:
                     )
                     audit["action"] = "applied"
                 if subtype is not None:
-                    cursor = conn.execute(
+                    manual_subtype = conn.execute(
                         """
-                        INSERT INTO question_tags (
-                            question_id, tag_type, tag_value,
-                            confidence, source, model_name
-                        )
-                        SELECT ?, 'special_type', ?, 0.8,
-                               'question_type_suggestion', ?
-                        WHERE NOT EXISTS (
-                            SELECT 1 FROM question_tags
+                        SELECT 1 FROM question_tags
+                        WHERE question_id = ?
+                          AND tag_type = 'special_type'
+                          AND tag_value IN ('画图', '计算', '证明')
+                          AND source = 'manual'
+                        """,
+                        (question_id,),
+                    ).fetchone()
+                    if manual_subtype is not None:
+                        audit["subtype_action"] = "existing_kept"
+                    else:
+                        # 重打后模型重判的子类替代早期迁移/建议来源，仅保留手工标注。
+                        conn.execute(
+                            """
+                            DELETE FROM question_tags
                             WHERE question_id = ?
                               AND tag_type = 'special_type'
                               AND tag_value IN ('画图', '计算', '证明')
+                            """,
+                            (question_id,),
                         )
-                        """,
-                        (
-                            question_id,
-                            subtype,
-                            str(model_name or "").strip() or None,
-                            question_id,
-                        ),
-                    )
-                    audit["subtype_action"] = (
-                        "applied" if cursor.rowcount else "existing_kept"
-                    )
+                        conn.execute(
+                            """
+                            INSERT INTO question_tags (
+                                question_id, tag_type, tag_value,
+                                confidence, source, model_name
+                            ) VALUES (?, 'special_type', ?, 0.8,
+                                      'question_type_suggestion', ?)
+                            """,
+                            (
+                                question_id,
+                                subtype,
+                                str(model_name or "").strip() or None,
+                            ),
+                        )
+                        audit["subtype_action"] = "applied"
         return audit
 
     def save_question_preview(
@@ -2801,39 +2880,14 @@ def _tag_analysis_rows(
     confidence: float,
     edited_fields: set[str],
     model_name: str | None,
-    resolver: CurrentKnowledgeResolver,
-    taxonomy_governance: object | None,
-    include_ownership_fields: bool = False,
 ) -> list[tuple[int, str, str, float, str, str | None]]:
     rows: list[tuple[int, str, str, float, str, str | None]] = []
     payload = analysis.to_dict()
     for field_name, tag_type in _TAG_ANALYSIS_MAP.items():
-        if (
-            not include_ownership_fields
-            and field_name in _MODEL_IGNORED_ANALYSIS_FIELDS
-        ):
-            continue
         source = "manual" if field_name in edited_fields else "ai"
         values = payload.get(field_name)
         if isinstance(values, str):
             values = [values] if values.strip() else []
-        if field_name == "knowledge_points":
-            governed_values: list[str] = []
-            for value in values or []:
-                term = resolver.canonical_term(value)
-                if term is not None:
-                    governed_values.append(term[1])
-                    continue
-                resolve_teacher_term = getattr(
-                    taxonomy_governance,
-                    "resolve_teacher_term",
-                    None,
-                )
-                if callable(resolve_teacher_term):
-                    approved = resolve_teacher_term("knowledge", value)
-                    if approved is not None:
-                        governed_values.append(str(approved["name"]))
-            values = list(dict.fromkeys(governed_values))
         rows.extend(
             (
                 question_id,
@@ -2869,10 +2923,11 @@ def refresh_derived_ownership_tags(conn: sqlite3.Connection, question_id: int) -
     derived = _derived_ownership(conn, Path('.'), qid)
     if derived is None:
         return False
-    conn.execute("DELETE FROM question_tags WHERE question_id=? AND (tag_type IN ('exam_scope','curriculum_section','canonical_knowledge_id') OR (tag_type='tag_status' AND tag_value='derived_pending') OR (tag_type='knowledge_point' AND tag_value LIKE 'sk_%'))", (qid,))
+    conn.execute("DELETE FROM question_tags WHERE question_id=? AND (tag_type IN ('exam_scope','curriculum_section','canonical_knowledge_id') OR (tag_type='tag_status' AND tag_value='derived_pending') OR (tag_type='knowledge_point' AND (tag_value LIKE 'sk_%' OR source='taxonomy')) OR (tag_type='prerequisite' AND COALESCE(source,'') <> 'manual'))", (qid,))
     for kind, values in [('exam_scope', derived['exam_scope']),
                          ('curriculum_section', derived['curriculum_section']),
-                         ('knowledge_point', derived['direct_keys'])]:
+                         ('knowledge_point', derived['direct_keys']),
+                         ('prerequisite', derived['prerequisite_keys'])]:
         for value in values:
             conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,confidence,source) SELECT ?,?,?,1.0,'taxonomy' WHERE NOT EXISTS(SELECT 1 FROM question_tags WHERE question_id=? AND tag_type=? AND tag_value=?)",
                          (qid, kind, value, qid, kind, value))
@@ -2926,26 +2981,62 @@ def _derived_ownership(
     direct_keys = [
         key for key in dict.fromkeys(direct_keys) if key.strip()
     ]
-    if not direct_keys:
+    # 前置知识标签同口径派生：resolved supporting_prerequisite 关联的稳定键。
+    prerequisite_keys = [
+        key
+        for key in dict.fromkeys(
+            str(link.stable_key or link.term_id)
+            for links in grouped.get(version_id, {}).values()
+            for link in links
+            if link.role == "supporting_prerequisite"
+            and link.resolution_status == "resolved"
+        )
+        if key.strip()
+    ]
+    if not direct_keys and not prerequisite_keys:
         return None
     section_ids, scope_values = _catalog_ownership_indexes()
-    anchors = resolve_anchor_keys(conn, direct_keys, preferred_release_id=release_id)
+    key_anchors = {
+        key: resolve_anchor_keys(
+            conn, [key], preferred_release_id=release_id
+        )
+        for key in direct_keys
+    }
+    anchor_sections = list(
+        dict.fromkeys(
+            section
+            for key in direct_keys
+            for section in key_anchors[key]["sections"]
+        )
+    )
+    # 章归属只统计能落到小节的键：只挂章级锚点的跨章节技能词（如挂在
+    # 综合与实践章的新定义技能）不产生考试范围归属，但仍保留为
+    # knowledge_point 直接键。
+    anchor_chapters = list(
+        dict.fromkeys(
+            chapter
+            for key in direct_keys
+            if key_anchors[key]["sections"]
+            for chapter in key_anchors[key]["chapters"]
+        )
+    )
     exam_scope = [
         scope_values[key]
-        for key in anchors["chapters"]
+        for key in anchor_chapters
         if key in scope_values
     ]
     curriculum_sections = [
         section_ids[key]
-        for key in anchors["sections"]
+        for key in anchor_sections
         if key in section_ids
     ]
-    if not exam_scope and not curriculum_sections:
+    if not exam_scope and not curriculum_sections and not prerequisite_keys:
         return None
     return {
         "exam_scope": exam_scope,
         "curriculum_section": curriculum_sections,
         "direct_keys": direct_keys,
+        "prerequisite_keys": prerequisite_keys,
     }
 
 

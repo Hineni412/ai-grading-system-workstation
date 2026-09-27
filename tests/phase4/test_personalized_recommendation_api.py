@@ -216,11 +216,6 @@ def _create_body() -> dict[str, object]:
         "expected_minutes": 50,
         "difficulty_min": 3,
         "difficulty_max": 8,
-        "stage_ratios": {
-            "direct": 0.5,
-            "prerequisite": 0.25,
-            "transfer": 0.25,
-        },
         "target_names": ["一元一次方程"],
         "scope_keys": ["kp_chapter_scope"],
         "exclude_current_exam_originals": True,

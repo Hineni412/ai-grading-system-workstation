@@ -184,6 +184,7 @@ class LLMClient:
         allow_gateway_retry: bool = False,
         request_kind: LLMRequestKind | None = None,
         image_compression_memo: dict[str, bytes] | None = None,
+        response_format: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         active_client = self.config_client if use_config_client else self.client
         default_model = self.settings.config_model if use_config_client else self.settings.grading_model
@@ -236,6 +237,7 @@ class LLMClient:
             expect_json=True,
             usage_callback=usage_callback,
             extra_kwargs=extra_kwargs,
+            response_format=response_format,
             allow_parameter_fallback=False,
             request_kind=effective_request_kind,
             single_request=True,

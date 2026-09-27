@@ -30,14 +30,17 @@ afterEach(() => {
 })
 
 describe('difficulty range filter', () => {
-  it('shows every numeric tick and marks 8–10 as the final-exam challenge band', () => {
+  it('shows every numeric tick and marks 7.5–10 as the final-exam challenge band', () => {
     const { host } = mountFilter()
-    expect(host.querySelector('legend')?.textContent).toContain('难度区间1–8')
+    expect(host.querySelector('legend')?.textContent).toContain('难度区间1.0–8.0')
     expect([...host.querySelectorAll('.difficulty-range__ticks b')].map(node => node.textContent))
       .toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'])
     expect([...host.querySelectorAll('.difficulty-range__bands span')].map(node => node.textContent?.trim()))
-      .toEqual(['1–2入门补缺', '3–4基础巩固', '5–6中档提升', '7综合突破', '8–10压轴拔高'])
-    expect(host.textContent).toContain('压轴拔高为 8 到 10')
+      .toEqual(['1.0–2.4入门补缺', '2.5–4.4基础巩固', '4.5–6.4中档提升', '6.5–7.4综合突破', '7.5–10压轴拔高'])
+    expect(host.textContent).toContain('压轴拔高为 7.5 到 10')
+    for (const input of host.querySelectorAll<HTMLInputElement>('input[type="range"]')) {
+      expect(input.step).toBe('0.5')
+    }
   })
 
   it('keeps the lower and upper thumbs from crossing', async () => {
@@ -84,7 +87,7 @@ describe('difficulty range filter', () => {
     expect(upperHome.defaultPrevented).toBe(true)
     expect(upperEnd.defaultPrevented).toBe(true)
     expect(updates).toEqual([
-      ['min', 5],
+      ['min', 4.5],
       ['max', 4],
       ['max', 10],
     ])

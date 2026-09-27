@@ -16,7 +16,7 @@ from backend.document_parsing.question_blocks import (
     split_inline_main_question_paragraphs,
     image_paths_from_rich_text,
 )
-from question_bank.parsers.type_detector import subq_mark_labels
+from question_bank.parsers.type_detector import RepeatedQuestionNumberError, subq_mark_labels, validate_section_numbering
 
 
 class ControlledDocxWriteError(RuntimeError):
@@ -31,8 +31,10 @@ def parse_docx_question_blocks(
     asset_root: str | Path | None = None,
     register_created_file: Callable[[Path], None] | None = None,
     write_created_file: Callable[[Path, bytes], None] | None = None,
+    document_text_out: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     rich_failed = False
+    parsed_text: list[str] = []
     try:
         rich_blocks = _extract_rich_question_blocks(
             file_bytes,
@@ -40,15 +42,24 @@ def parse_docx_question_blocks(
             asset_root=asset_root,
             register_created_file=register_created_file,
             write_created_file=write_created_file,
+            document_text_out=parsed_text,
         )
-    except ControlledDocxWriteError:
+    except (ControlledDocxWriteError, RepeatedQuestionNumberError):
         raise
     except Exception:
         rich_blocks = None
         rich_failed = True
+    if document_text_out is not None:
+        document_text_out.extend(parsed_text)
     if rich_blocks:
         return rich_blocks
-    blocks = parse_plain_question_blocks(fallback_doc_text or "")
+    text = fallback_doc_text or "\n".join(parsed_text)
+    if not text:
+        from backend.document_parsing.text import extract_docx_text
+        text = extract_docx_text(file_bytes)
+        if document_text_out is not None:
+            document_text_out.append(text)
+    blocks = parse_plain_question_blocks(text)
     if rich_failed:
         for block in blocks:
             block.setdefault("parse_warnings", []).append("Word 图文结构未能完整读取，当前为文字提取结果；请核对配图、公式与题目边界。")
@@ -64,6 +75,7 @@ def _extract_rich_question_blocks(
     asset_root: str | Path | None = None,
     register_created_file: Callable[[Path], None] | None = None,
     write_created_file: Callable[[Path, bytes], None] | None = None,
+    document_text_out: list[str] | None = None,
 ) -> list[dict[str, Any]] | None:
     from question_bank.importers.batch_importer import (
         map_rich_content_by_number,
@@ -92,6 +104,11 @@ def _extract_rich_question_blocks(
             controlled_writer if write_created_file is not None else None
         ),
     )
+    if document_text_out is not None:
+        document_text_out.append(rich_blocks_plain_text(extracted.rich_paragraphs))
+    from question_bank.importers.batch_importer import _split_answer_text
+    question_text, _ = _split_answer_text(extracted.text)
+    validate_section_numbering(question_text)
     normalized_paragraphs, ambiguous_assets = partition_ambiguous_floating_images(
         split_inline_main_question_paragraphs(extracted.rich_paragraphs)
     )

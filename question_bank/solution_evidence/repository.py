@@ -612,7 +612,6 @@ class SolutionEvidenceProjectionWriter:
         model_name: str,
         operation_id: str,
         objective_response_shape: str | None = None,
-        part_assessments: Sequence[Mapping[str, Any]] | None = None,
     ) -> QuestionSolutionEvidence:
         from question_bank.training_criteria.analysis import (
             solution_evidence_source_content_hash,
@@ -687,9 +686,7 @@ class SolutionEvidenceProjectionWriter:
             db_path = getattr(self.evidence_repository, "db_path", None)
             if db_path is not None:
                 active_graph_release_id = active_release_id(Path(db_path)) or ""
-        from question_bank.solution_evidence.part_assessments import model_part_estimates, save_profile
-        estimates = model_part_estimates(part_assessments, evidence.to_dict())
-        saved_version_id = self.evidence_repository.save(
+        self.evidence_repository.save(
             evidence,
             source_kind="combined_model",
             source_reference=f"analysis:{operation_id}:{question.question_id}",
@@ -700,10 +697,6 @@ class SolutionEvidenceProjectionWriter:
                 else None
             ),
         )
-        if estimates:
-            save_profile(self.evidence_repository.db_path, question_id=question.question_id,
-                         evidence_version_id=saved_version_id, parts=estimates,
-                         created_by=f"model:{model_name}")
         return evidence
 
     def criterion_review_required(
@@ -785,6 +778,72 @@ class SolutionEvidenceProjectionWriter:
             "retrieval_miss_question_ids": retrieval_question_ids,
             "proposal_question_ids": proposal_question_ids,
         }
+
+
+def load_evidence_parts_for_tagging(
+    db_path: Path,
+    question_ids: Sequence[int],
+    *,
+    connection: Any = None,
+) -> dict[int, list[dict[str, Any]]]:
+    """每题最新可用判定点版本的小问清单（供整题打标签的 part_features 定位）。
+
+    返回 {question_id: [{"part_id", "part_label", "evidence_point_ids"}]}；
+    与写侧派生归属使用同一"最新 proposed/approved 版本"口径。
+    """
+
+    ids = sorted({int(question_id) for question_id in question_ids if question_id})
+    result: dict[int, list[dict[str, Any]]] = {qid: [] for qid in ids}
+    if not ids:
+        return result
+    placeholders = ",".join("?" for _ in ids)
+    query = f"""
+        SELECT v.question_id, v.evidence_json
+        FROM question_solution_evidence_versions v
+        JOIN (
+            SELECT question_id, MAX(created_at) AS max_created
+            FROM question_solution_evidence_versions
+            WHERE status IN ('proposed', 'approved')
+            GROUP BY question_id
+        ) m
+          ON m.question_id = v.question_id
+         AND m.max_created = v.created_at
+        WHERE v.question_id IN ({placeholders})
+          AND v.status IN ('proposed', 'approved')
+        """
+    if connection is not None:
+        rows = connection.execute(query, tuple(ids)).fetchall()
+    else:
+        with connect(Path(db_path)) as conn:
+            rows = conn.execute(query, tuple(ids)).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(str(row["evidence_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        parts: list[dict[str, Any]] = []
+        for part in payload.get("parts", []) or []:
+            if not isinstance(part, Mapping):
+                continue
+            part_id = str(part.get("part_id") or "").strip()
+            if not part_id:
+                continue
+            parts.append(
+                {
+                    "part_id": part_id,
+                    "part_label": str(part.get("label") or "").strip(),
+                    "evidence_point_ids": [
+                        str(point.get("evidence_point_id") or "").strip()
+                        for point in part.get("evidence_points", []) or []
+                        if isinstance(point, Mapping)
+                        and str(point.get("evidence_point_id") or "").strip()
+                    ],
+                }
+            )
+        result[int(row["question_id"])] = parts
+    return result
 
 
 def _relation_hints_from_evidence(

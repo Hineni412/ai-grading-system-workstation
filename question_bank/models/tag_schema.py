@@ -5,35 +5,42 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from question_bank.taxonomy.registry import canonicalize_error_type
 
-
-DIFFICULTY_SCALE_VERSION = "junior-remediation-2026-09-v1"
+DIFFICULTY_SCALE_VERSION = "junior-full-range-2026-09-v2"
 DIFFICULTY_SCALE_GUIDANCE = (
-    "难度使用统一教学标尺 junior-remediation-2026-09-v1：1—2为识别概念、直接代入或单步基本运算；"
+    "难度使用统一教学标尺 junior-full-range-2026-09-v2，1—10覆盖初中从识别概念到中考压轴的完整跨度，"
+    "9—10应当用于真正的压轴难题，不因其少见而回避：1—2为识别概念、直接代入或单步基本运算；"
     "3为熟悉情境下独立完成基本关系与计算；4—5为常规应用、若干相连步骤或一次常见转化；"
-    "6已经偏难，需要不直接给出的关键条件、辅助构造或较强综合推理；"
-    "7—8只属于少数学生的专题挑战，需要连续关键转化、非常规构造或较复杂分类讨论。"
-    "9—10为超出常规训练的极高挑战，不作为普通补弱题。"
+    "6为偏难，需要不直接给出的关键条件、辅助构造或较强综合推理；"
+    "7—8为综合挑战，需要连续关键转化、非常规构造或较复杂分类讨论；"
+    "9—10为压轴最后一问一级，多重关键转化、完整分类讨论与含参或动态分析同时出现。"
     "锚点示例：已知两直角边直接求斜边通常2—3；熟悉的折断或高差模型列式求解通常3—5；"
     "需自行作辅助线并串联多个几何关系才求出未知量可评6；"
-    "旋转、折叠、剪拼中多种情况与连续构造结合可评7—8。例子仅作锚点，须以实际推理要求说明理由。"
+    "旋转、折叠、剪拼中多种情况与连续构造结合可评7—8；"
+    "新定义或含参动点与多段分类讨论、最值比较结合的压轴小问可评9—10。例子仅作锚点，须以实际推理要求说明理由。"
     "不按考试分值、学生得分率、小问数量、题干长短或是否含根式直接定级；多小问题逐问估计，"
     "整题按最难小问检查，不取平均，也不把一问难度复制给其余问。"
 )
 
 
 LIST_FIELDS = (
-    "knowledge_points",
     "method_tags",
     "thought_tags",
     "ability_tags",
     "math_model_tags",
     "special_type_tags",
-    "error_prone_points",
-    "prerequisite_points",
 )
 MAX_TAG_LENGTH = 160
+MAX_ABILITY_TAGS = 2
+PREDICTED_PATTERN_MAX = 3
+PREDICTED_PATTERN_NAME_MAX = 80
+PREDICTED_PATTERN_TRIGGER_VALUE_MAX = 160
+PREDICTED_TRIGGER_KINDS = ("option", "wrong_answer", "step", "observation")
+PART_FEATURES_MAX_PARTS = 8
+PART_FEATURE_EVIDENCE_MAX = 240
+PART_FEATURE_PART_LABEL_MAX = 24
+# 情境类别（方案 4 节 context 数值之外另存的筛选维度）。
+PART_CONTEXT_KINDS = ("无情境", "生活情境", "科学跨学科", "数学文化", "新定义")
 PROPOSABLE_TAG_DIMENSIONS = (
     "curriculum",
     "knowledge",
@@ -43,7 +50,23 @@ PROPOSABLE_TAG_DIMENSIONS = (
     "model",
     "special_type",
 )
-STUDENT_LEVELS = ("入门补缺", "基础巩固", "中档提升", "综合突破", "压轴拔高")
+
+# 标准难度逐小问特征取值范围（docs/requests/2026-09-25-g8-upper-retagging-plan.md 第 4 节）。
+PART_FEATURE_RANGES: dict[str, tuple[int, int]] = {
+    "solo": (1, 4),
+    "reasoning": (0, 2),
+    "computation": (0, 2),
+    "context": (0, 2),
+    "hidden": (0, 2),
+    "cases": (0, 2),
+    "param_dynamic": (0, 1),
+    "trap": (0, 1),
+    "knowledge": (0, 2),
+}
+PART_FEATURE_ORDER = tuple(PART_FEATURE_RANGES)
+
+# 兼容读取：历史 error_type 标签的固定类别集合，只用于题库筛选面等读取侧，
+# 新打标不再生成 error_type 标签（改为 question_error_patterns 的预测错法）。
 ERROR_PRONE_CATEGORIES = (
     "条件识别不完整",
     "概念理解不清",
@@ -57,23 +80,6 @@ ERROR_PRONE_CATEGORIES = (
     "书写依据不完整",
     "单位/符号错误",
     "综合建模困难",
-)
-
-# 子技能提炼维度（半受控引导）：AI 在产出 sub_skills 时按这些维度提炼，
-# 不强制封闭词表，但禁止复读知识点原词。用于贯穿打标侧与薄弱点侧，让推荐 boost 真正生效。
-SUB_SKILL_DIMENSIONS = (
-    "判定法",      # SAS判定 / SSS判定 / AAS判定 / HL判定 / 平行线判定
-    "作法构造",    # 尺规作图 / 辅助线构造 / 角平分线作法 / 中点作法
-    "计算类型",    # 面积计算 / 角度计算 / 和差计算 / 求值 / 化简
-    "数学模型",    # 手拉手模型 / 半角模型 / 将军饮马模型 / 一线三等角
-    "性质应用",    # 等边对等角 / 三线合一 / 垂径定理应用 / 切线性质
-)
-SUB_SKILL_KEYWORD_HINTS = (
-    "SAS判定", "SSS判定", "AAS判定", "ASA判定", "HL判定",
-    "尺规作图", "辅助线构造", "角平分线作法", "中点作法",
-    "面积计算", "角度计算", "和差计算", "求值", "化简",
-    "手拉手模型", "半角模型", "将军饮马模型", "一线三等角", "旋转模型", "折叠模型",
-    "等边对等角", "三线合一", "垂径定理", "切线性质",
 )
 
 
@@ -93,6 +99,9 @@ class TaggingContext:
     corpus_stats: dict[str, Any] = field(default_factory=dict)
     existing_tags: list[str] = field(default_factory=list)
     existing_tags_by_dimension: dict[str, list[str]] = field(default_factory=dict)
+    # 当前判定点（解答依据）版本的小问与判定点标识；part_features.part_id 与
+    # predicted_error_patterns 的 step 触发值必须从这里取。
+    evidence_parts: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def has_answer(self) -> bool:
@@ -120,91 +129,104 @@ class TaggingContext:
             }
             if isinstance(self.existing_tags_by_dimension, dict)
             else {},
+            "evidence_parts": [
+                {
+                    "part_id": _clean_text(item.get("part_id")),
+                    "part_label": _clean_text(item.get("part_label")),
+                    "evidence_point_ids": [
+                        _clean_text(point)
+                        for point in _coerce_sequence(
+                            item.get("evidence_point_ids")
+                        )
+                        if _clean_text(point)
+                    ],
+                }
+                for item in self.evidence_parts
+                if isinstance(item, dict) and _clean_text(item.get("part_id"))
+            ],
         }
 
 
 @dataclass(frozen=True)
 class TagAnalysis:
-    knowledge_points: list[str]
+    """整题打标签结果（八上重打方案版）。
+
+    知识点、前置知识、章与小节归属不再由本结构携带，全部由判定点关联
+    （evidence_point_knowledge_links）派生；error_type、学生层次、
+    教学阶段、canonical_knowledge_id 等旧维度同样不再生成。
+    """
+
     method_tags: list[str]
     thought_tags: list[str]
     ability_tags: list[str]
     math_model_tags: list[str]
     difficulty: int | None
-    error_prone_points: list[str]
-    prerequisite_points: list[str]
-    textbook_chapter: str
-    teaching_stage: str
-    suitable_student_level: str
     reason: str
     confidence: float = 0.8
     taxonomy_revision: int = 0
     proposed_tags: list[dict[str, str]] = field(default_factory=list)
     special_type_tags: list[str] = field(default_factory=list)
-    textbook_chapters: list[str] = field(default_factory=list)
-    curriculum_sections: list[str] = field(default_factory=list)
-    # 主知识点稳定编码（受控，须来自 registry 的 KP_* 候选表）。
-    canonical_knowledge_id: str = ""
-    # 仅用于读取历史数据。P3.5 起 AI 不再生成或保存这些自由词字段。
-    sub_skills: list[str] = field(default_factory=list)
-    measured_skills: list[str] = field(default_factory=list)
-    supporting_skills: list[str] = field(default_factory=list)
+    predicted_error_patterns: list[dict[str, str]] = field(default_factory=list)
+    part_features: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TagAnalysis":
-        textbook_chapters = _normalize_tags(payload.get("textbook_chapters"))
-        if not textbook_chapters:
-            textbook_chapters = _normalize_tags(payload.get("textbook_chapter"))
+        if not isinstance(payload, dict):
+            payload = {}
         return cls(
-            knowledge_points=_normalize_tags(payload.get("knowledge_points")),
             method_tags=_normalize_tags(payload.get("method_tags")),
             thought_tags=_normalize_tags(payload.get("thought_tags")),
-            ability_tags=_normalize_tags(payload.get("ability_tags")),
+            ability_tags=_normalize_tags(payload.get("ability_tags"))[:MAX_ABILITY_TAGS],
             math_model_tags=_normalize_tags(payload.get("math_model_tags")),
             difficulty=_normalize_score(payload.get("difficulty")),
-            error_prone_points=_normalize_error_tags(payload.get("error_prone_points")),
-            prerequisite_points=_normalize_tags(payload.get("prerequisite_points")),
-            textbook_chapter=textbook_chapters[0] if textbook_chapters else "",
-            teaching_stage=_normalize_text_value(payload.get("teaching_stage")),
-            suitable_student_level=_normalize_student_level(payload.get("suitable_student_level")),
             reason=_normalize_text_value(payload.get("reason")),
             confidence=_normalize_confidence(payload.get("confidence")),
             taxonomy_revision=_normalize_revision(payload.get("taxonomy_revision")),
             proposed_tags=_normalize_proposed_tags(payload.get("proposed_tags")),
             special_type_tags=_normalize_tags(payload.get("special_type_tags")),
-            textbook_chapters=textbook_chapters,
-            curriculum_sections=_normalize_tags(payload.get("curriculum_sections")),
-            canonical_knowledge_id=_normalize_canonical_id(payload.get("canonical_knowledge_id")),
-            sub_skills=_normalize_tags(payload.get("sub_skills")),
-            measured_skills=_normalize_tags(payload.get("measured_skills")),
-            supporting_skills=_normalize_tags(payload.get("supporting_skills")),
+            predicted_error_patterns=_normalize_predicted_error_patterns(
+                payload.get("predicted_error_patterns")
+            ),
+            part_features=_normalize_part_features(
+                payload.get("part_features")
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "knowledge_points": self.knowledge_points,
             "method_tags": self.method_tags,
             "thought_tags": self.thought_tags,
             "ability_tags": self.ability_tags,
             "math_model_tags": self.math_model_tags,
+            "special_type_tags": self.special_type_tags,
             "difficulty": self.difficulty,
-            "error_prone_points": self.error_prone_points,
-            "prerequisite_points": self.prerequisite_points,
-            "textbook_chapter": self.textbook_chapter,
-            "textbook_chapters": self.textbook_chapters,
-            "curriculum_sections": self.curriculum_sections,
-            "teaching_stage": self.teaching_stage,
-            "suitable_student_level": self.suitable_student_level,
-            "reason": self.reason,
-            "confidence": self.confidence,
+            "predicted_error_patterns": self.predicted_error_patterns,
+            "part_features": self.part_features,
             "taxonomy_revision": self.taxonomy_revision,
             "proposed_tags": self.proposed_tags,
-            "special_type_tags": self.special_type_tags,
-            "canonical_knowledge_id": self.canonical_knowledge_id,
-            "sub_skills": self.sub_skills,
-            "measured_skills": self.measured_skills,
-            "supporting_skills": self.supporting_skills,
+            "reason": self.reason,
+            "confidence": self.confidence,
         }
+
+
+def predicted_pattern_categories() -> tuple[str, ...]:
+    """预测典型错法允许的大类（沿用错因体系 7 类；滞后导入避免环）。"""
+
+    try:
+        from backend.error_causes import CAUSE_CATEGORIES
+    except ImportError:
+        return ()
+    return tuple(CAUSE_CATEGORIES)
+
+
+def normalize_predicted_category(value: object) -> str:
+    """预测错法大类归一到 7 类固定词表；无法归类返回空串。"""
+
+    try:
+        from backend.error_causes import normalize_cause_category
+    except ImportError:
+        return ""
+    return str(normalize_cause_category(value) or "")
 
 
 def _normalize_tags(value: object) -> list[str]:
@@ -220,61 +242,107 @@ def _normalize_tags(value: object) -> list[str]:
     return tags
 
 
-def _normalize_canonical_id(value: object) -> str:
-    """对 AI 产出的 canonical_knowledge_id 做基本清洗与大小写归一。
-
-    严格校验（是否在 registry 中）由 service 层负责；此处只做格式规范，
-    统一转为小写 kp_* 形式，避免大小写不一致导致的隐性依赖。
-    """
-    text = _clean_text(value)
-    if not text:
-        return ""
-    lower = text.casefold().strip()
-    if lower.startswith("kp_"):
-        return lower
-    # 兼容 AI 偶尔返回纯编码前缀（如 geo_line_angle）的情况
-    return lower
-
-
-def _normalize_error_tags(value: object) -> list[str]:
-    values = _coerce_sequence(value)
-    tags: list[str] = []
+def _normalize_predicted_error_patterns(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    patterns: list[dict[str, str]] = []
     seen: set[str] = set()
-    for item in values:
-        tag = _map_error_tag(_clean_text(item))
-        if not tag or tag in seen:
+    for item in value:
+        if not isinstance(item, dict):
             continue
-        tags.append(tag)
-        seen.add(tag)
-    return tags
+        category = normalize_predicted_category(item.get("category"))
+        pattern = _clean_text(item.get("pattern") or item.get("name"))
+        if not category or not pattern:
+            continue
+        if len(pattern) > PREDICTED_PATTERN_NAME_MAX:
+            continue
+        trigger_kind = _clean_text(item.get("trigger_kind")).casefold()
+        if trigger_kind not in PREDICTED_TRIGGER_KINDS:
+            trigger_kind = "observation"
+        trigger_value = _clean_text(item.get("trigger_value"))[
+            :PREDICTED_PATTERN_TRIGGER_VALUE_MAX
+        ]
+        if trigger_kind == "observation":
+            trigger_value = ""
+        key = f"{trigger_kind}|{trigger_value.casefold()}|{pattern.casefold()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        patterns.append(
+            {
+                "category": category,
+                "pattern": pattern,
+                "trigger_kind": trigger_kind,
+                "trigger_value": trigger_value,
+            }
+        )
+        if len(patterns) >= PREDICTED_PATTERN_MAX:
+            break
+    return patterns
 
 
-def _map_error_tag(text: str) -> str:
-    if not text:
-        return ""
-    canonical = canonicalize_error_type(text)
-    if canonical and canonical != text:
-        return canonical
-    if text in ERROR_PRONE_CATEGORIES:
-        return text
-    keyword_categories = (
-        ("图形关系识别错误", ("读图", "图像", "图形", "角关系", "对应角", "内错角", "同位角", "折叠前后", "位置关系")),
-        ("条件识别不完整", ("条件", "对应", "漏找", "漏用", "已知", "无法推导", "未识别")),
-        ("概念理解不清", ("概念", "定义", "本质", "混淆")),
-        ("公式/定理误用", ("公式", "定理", "性质", "判定", "误用")),
-        ("运算化简错误", ("运算", "计算", "化简", "代换", "求值")),
-        ("辅助线思路缺失", ("辅助线", "构造")),
-        ("分类讨论遗漏", ("分类", "讨论", "遗漏")),
-        ("数形转化困难", ("数形", "转化", "坐标")),
-        ("题意阅读偏差", ("题意", "阅读", "审题")),
-        ("书写依据不完整", ("依据", "书写", "证明", "逻辑")),
-        ("单位/符号错误", ("单位", "符号")),
-        ("综合建模困难", ("建模", "模型", "综合")),
-    )
-    for category, keywords in keyword_categories:
-        if any(keyword in text for keyword in keywords):
-            return category
-    return text if len(text) <= MAX_TAG_LENGTH else ""
+def _normalize_feature_int(value: object, field_name: str) -> int | None:
+    minimum, maximum = PART_FEATURE_RANGES[field_name]
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return number if minimum <= number <= maximum else None
+
+
+def _normalize_context_kind(value: object, context_score: int) -> str:
+    """情境类别词校验：必须是 5 个固定值之一；context=0 时兜底无情境。"""
+
+    kind = _clean_text(value)
+    if kind in PART_CONTEXT_KINDS:
+        return kind
+    return "无情境" if context_score == 0 else ""
+
+
+def _normalize_part_features(value: object) -> list[dict[str, Any]]:
+    """逐小问特征归一；part_id 缺失或任一必填特征非法则丢弃该小问。"""
+
+    if not isinstance(value, (list, tuple)):
+        return []
+    parts: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        part_id = _clean_text(item.get("part_id"))
+        if not part_id:
+            continue
+        if part_id.casefold() in seen_ids:
+            continue
+        features = {
+            name: _normalize_feature_int(item.get(name), name)
+            for name in PART_FEATURE_ORDER
+        }
+        if any(features[name] is None for name in PART_FEATURE_ORDER):
+            continue
+        context_kind = _normalize_context_kind(
+            item.get("context_kind"),
+            int(features["context"]),
+        )
+        if not context_kind:
+            continue
+        seen_ids.add(part_id.casefold())
+        parts.append(
+            {
+                "part_id": part_id,
+                "part_label": _clean_text(item.get("part_label"))[
+                    :PART_FEATURE_PART_LABEL_MAX
+                ],
+                **{name: int(features[name]) for name in PART_FEATURE_ORDER},
+                "context_kind": context_kind,
+                "evidence": _clean_text(item.get("evidence"))[
+                    :PART_FEATURE_EVIDENCE_MAX
+                ],
+            }
+        )
+        if len(parts) >= PART_FEATURES_MAX_PARTS:
+            break
+    return parts
 
 
 def _normalize_score(value: object) -> int | None:
@@ -332,24 +400,6 @@ def _normalize_proposed_tags(value: object) -> list[dict[str, str]]:
         if len(normalized) >= 2:
             break
     return normalized
-
-
-def _normalize_student_level(value: object) -> str:
-    text = _clean_text(value)
-    if text in STUDENT_LEVELS:
-        return text
-    aliases = {
-        "入门": "入门补缺",
-        "基础": "基础巩固",
-        "中等": "中档提升",
-        "提高": "综合突破",
-        "拔高": "压轴拔高",
-        "压轴": "压轴拔高",
-    }
-    for token, normalized in aliases.items():
-        if token in text:
-            return normalized
-    return ""
 
 
 def _clean_optional(value: object) -> str | None:

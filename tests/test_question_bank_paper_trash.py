@@ -42,9 +42,10 @@ _CURRENT_PAPER_QUESTION_FK_CHILDREN = {
     ("question_document_publications", "papers", "paper_id"),
     ("question_duplicate_links", "questions", "question_id"),
     ("question_duplicate_links", "questions", "duplicate_of_question_id"),
+    ("question_error_patterns", "questions", "question_id"),
     ("question_fingerprints", "questions", "question_id"),
     ("question_frequency_cache", "questions", "question_id"),
-    ("question_part_assessment_profiles", "questions", "question_id"),
+    ("question_part_difficulty_features", "questions", "question_id"),
     ("question_previews", "questions", "question_id"),
     ("question_scope_summary", "questions", "question_id"),
     ("question_solution_evidence_versions", "questions", "question_id"),
@@ -331,12 +332,12 @@ def _seed_complete_analysis_dependencies(
     )
     conn.execute(
         """
-        INSERT INTO question_part_assessment_profiles (
-            question_id, evidence_version_id, current_source_content_hash,
-            parts_json, revision, created_by
-        ) VALUES (?, ?, ?, '[]', 1, 'test')
+        INSERT INTO question_part_difficulty_features (
+            question_id, part_id, features_json, formula_difficulty,
+            formula_version, source_content_hash
+        ) VALUES (?, 'part-1', '{}', 3.0, 'std-difficulty-v1', 'synthetic')
         """,
-        (question_id, "2" * 64, "3" * 64),
+        (question_id,),
     )
     kept_question_id = int(conn.execute(
         "INSERT INTO questions (question_number, question_text) "
@@ -730,7 +731,7 @@ def test_permanent_delete_handles_every_current_fk_child_of_a_complete_analysis(
             "WHERE operation_id = 'delete-document-publication'"
         ).fetchone()[0] is None
         assert conn.execute(
-            "SELECT COUNT(*) FROM question_part_assessment_profiles"
+            "SELECT COUNT(*) FROM question_part_difficulty_features"
         ).fetchone()[0] == 0
         assert conn.execute(
             "SELECT COUNT(*) FROM question_duplicate_links"

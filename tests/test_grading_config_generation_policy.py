@@ -162,8 +162,8 @@ def test_plain_text_inline_answers_still_split_consecutive_main_question() -> No
     assert [block["question_id"] for block in blocks] == ["Q10", "Q11", "Q12"]
     by_id = {block["question_id"]: block for block in blocks}
     assert "Eleventh question" in by_id["Q11"]["question_text"]
-    assert by_id["Q11"]["canonical_answer"] == "B"
-    assert by_id["Q12"]["canonical_answer"] == "C"
+    assert by_id["Q11"]["answer_text"] == "B"
+    assert by_id["Q12"]["answer_text"] == "C"
 
 
 @pytest.mark.parametrize(

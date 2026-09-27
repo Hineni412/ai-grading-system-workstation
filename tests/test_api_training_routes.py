@@ -3,10 +3,8 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from types import SimpleNamespace
-from uuid import UUID
 import warnings
 from pathlib import Path
 
@@ -23,17 +21,11 @@ from fastapi.testclient import TestClient
 from db_manager import DBManager
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.database.schema import connect, initialize_database
-from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
-from question_bank.services.training_task_service import TrainingTaskService
 
 
 @pytest.fixture
-def training_services(tmp_path: Path) -> tuple[
-    DiagnosisProfileService,
-    PracticePlanService,
-    TrainingTaskService,
-]:
+def training_services(tmp_path: Path) -> DiagnosisProfileService:
     # db 必须放在名为 "databases" 的目录下,生产代码据此把 tmp_path 推断为
     # data root(受控根),否则 resolve_stored_file_path 会拒绝 tmp_path 下的
     # rubric.json 等存储路径。
@@ -169,11 +161,7 @@ def training_services(tmp_path: Path) -> tuple[
         link_method="paper_question_number",
     )
 
-    return (
-        DiagnosisProfileService(grading_db_path, question_bank_db_path),
-        PracticePlanService(question_bank_db_path),
-        TrainingTaskService(question_bank_db_path),
-    )
+    return DiagnosisProfileService(grading_db_path, question_bank_db_path)
 
 
 @pytest.fixture
@@ -181,82 +169,16 @@ def training_client(training_services) -> TestClient:
     from backend.api.app import create_app
     from backend.api.dependencies import (
         get_diagnosis_profile_service,
-        get_practice_plan_service,
         get_request_diagnosis_profile_service,
-        get_request_practice_plan_service,
-        get_training_task_service,
     )
 
-    diagnosis, practice, tasks = training_services
+    diagnosis = training_services
     app = create_app()
     app.dependency_overrides[get_diagnosis_profile_service] = lambda: diagnosis
-    app.dependency_overrides[get_practice_plan_service] = lambda: practice
     app.dependency_overrides[get_request_diagnosis_profile_service] = (
         lambda: diagnosis
     )
-    app.dependency_overrides[get_request_practice_plan_service] = lambda: practice
-    app.dependency_overrides[get_training_task_service] = lambda: tasks
     return TestClient(app)
-
-
-def test_training_preview_resolves_services_from_one_cached_request_context(
-    training_services,
-) -> None:
-    from backend.api.app import create_app
-    from backend.api.dependencies import (
-        get_diagnosis_profile_service,
-        get_practice_plan_service,
-        get_request_read_context,
-    )
-
-    diagnosis, practice, _tasks = training_services
-    calls = 0
-
-    def provide_context():
-        nonlocal calls
-        calls += 1
-        return SimpleNamespace(
-            diagnosis_service=diagnosis,
-            practice_service=practice,
-        )
-
-    app = create_app()
-    app.dependency_overrides[get_request_read_context] = provide_context
-    app.dependency_overrides[get_diagnosis_profile_service] = lambda: diagnosis
-    app.dependency_overrides[get_practice_plan_service] = lambda: practice
-
-    response = TestClient(app).post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    )
-
-    assert response.status_code == 200
-    assert calls == 1
-
-
-def test_training_task_confirmation_keeps_legacy_services_and_writes_temp_db(
-    training_client: TestClient,
-) -> None:
-    from backend.api.dependencies import get_request_read_context
-
-    preview = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-
-    def reject_read_context():
-        pytest.fail("training task writes must not create the readonly context")
-
-    training_client.app.dependency_overrides[get_request_read_context] = (
-        reject_read_context
-    )
-    response = training_client.post(
-        "/api/training/tasks",
-        json=_confirmation_request(preview),
-    )
-
-    assert response.status_code == 201
-    assert training_client.get("/api/training/tasks").json()["total"] == 1
 
 
 def test_training_second_snapshot_failure_is_sanitized_and_cleans_first(
@@ -270,7 +192,7 @@ def test_training_second_snapshot_failure_is_sanitized_and_cleans_first(
         QuestionBankSnapshotUnavailable,
     )
 
-    diagnosis, _practice, _tasks = training_services
+    diagnosis = training_services
     paths = SimpleNamespace(
         db_path=diagnosis.db.db_path,
         qb_db_path=diagnosis.question_bank_db_path,
@@ -380,7 +302,7 @@ def test_training_diagnosis_accepts_cause_fields_in_weak_points(
     training_services,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    diagnosis, _practice, _tasks = training_services
+    diagnosis = training_services
     real_build_profiles = diagnosis.build_profiles
 
     def build_profiles_with_causes(**kwargs):
@@ -424,7 +346,7 @@ def test_training_diagnosis_caches_identical_grouping_requests(
 
     from backend.api.routers import training as training_router
 
-    diagnosis, _practice, _tasks = training_services
+    diagnosis = training_services
     training_router._GROUPING_RESULT_CACHE.clear()
 
     calls: list[dict] = []
@@ -614,7 +536,7 @@ def test_training_overview_returns_tier_distribution(
     training_services,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    diagnosis, _practice, _tasks = training_services
+    diagnosis = training_services
     monkeypatch.setattr(
         diagnosis, "build_profiles", lambda **_kwargs: _overview_stub_diagnosis()
     )
@@ -654,7 +576,7 @@ def test_training_overview_passes_class_scope_to_build_profiles(
     training_services,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    diagnosis, _practice, _tasks = training_services
+    diagnosis = training_services
     captured: dict[str, object] = {}
 
     def fake_build_profiles(**kwargs):
@@ -716,329 +638,3 @@ def test_training_overview_rejects_empty_volume(
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "training_scope_invalid"
 
-
-def _preview_request() -> dict[str, object]:
-    return {
-        "scope": {"mode": "student", "student_ids": ["12"]},
-        "exam_scope": {"mode": "current", "session_ids": [14]},
-        "variant_mode": "individual",
-        "question_count": 8,
-        "stage_ratios": {
-            "direct": 0.6,
-            "prerequisite": 0.3,
-            "transfer": 0.1,
-        },
-        "exclude_current_exam_originals": True,
-    }
-
-
-def test_training_plan_preview_uses_exact_tags_and_excludes_current_questions(
-    training_client: TestClient,
-) -> None:
-    response = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert re.fullmatch(r"[0-9a-f]{64}", payload["plan_revision"])
-    plan = payload["plan"]
-    assert plan["diagnosis_snapshot"]["diagnosis_identity"] == "question_tag"
-    items = [item for variant in plan["variants"] for item in variant["items"]]
-    assert len(items) == 8
-    assert {item["question_id"] for item in items} == set(range(201, 209))
-    assert all(item["match_kind"] == "exact" for item in items)
-    assert all(item["knowledge_point"] == "三角形全等" for item in items)
-    assert "C:/private" not in response.text
-
-
-def test_training_plan_preview_reports_missing_tag_empty_state(
-    training_client: TestClient,
-    training_services,
-) -> None:
-    diagnosis, _practice, _tasks = training_services
-    with connect(diagnosis.question_bank_db_path) as conn:
-        conn.execute(
-            "DELETE FROM question_tags WHERE question_id IN (101, 102) "
-            "AND tag_type = 'knowledge_point'"
-        )
-
-    response = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    )
-
-    assert response.status_code == 200
-    plan = response.json()["plan"]
-    assert plan["variants"][0]["items"] == []
-    assert any("没有可用于推荐" in item for item in plan["warnings"])
-    assert any("没有已关联" in item for item in plan["diagnosis_snapshot"]["warnings"])
-
-
-def test_training_plan_preview_accepts_bounded_teacher_groups(
-    training_client: TestClient,
-) -> None:
-    body = _preview_request()
-    body["variant_mode"] = "auto_group"
-    body["teacher_groups"] = {"重点巩固组": ["12"]}
-
-    response = training_client.post("/api/training/plans/preview", json=body)
-
-    assert response.status_code == 200
-    plan = response.json()["plan"]
-    assert plan["teacher_override"] == {
-        "allowed": True,
-        "applied": True,
-        "assignments": {"重点巩固组": ["12"]},
-    }
-    assert plan["variants"][0]["student_ids"] == ["12"]
-
-
-def test_training_plan_preview_rejects_invalid_stage_ratios(
-    training_client: TestClient,
-) -> None:
-    body = _preview_request()
-    body["stage_ratios"] = {
-        "direct": 0.8,
-        "prerequisite": 0.3,
-        "transfer": 0.1,
-    }
-
-    response = training_client.post("/api/training/plans/preview", json=body)
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
-
-
-@pytest.mark.parametrize("forbidden_field", ["allow_broad_fallback", "read_mode"])
-def test_training_plan_preview_rejects_legacy_or_broad_controls(
-    training_client: TestClient,
-    forbidden_field: str,
-) -> None:
-    body = _preview_request()
-    body[forbidden_field] = True if forbidden_field == "allow_broad_fallback" else "skill"
-
-    response = training_client.post("/api/training/plans/preview", json=body)
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
-
-
-def _confirmation_request(preview: dict[str, object]) -> dict[str, object]:
-    return {
-        **_preview_request(),
-        "confirmation_id": "12345678-1234-5678-1234-567812345678",
-        "expected_plan_revision": preview["plan_revision"],
-    }
-
-
-def test_training_task_confirmation_is_idempotent_and_teacher_owned(
-    training_client: TestClient,
-) -> None:
-    preview = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-    body = _confirmation_request(preview)
-
-    first = training_client.post("/api/training/tasks", json=body)
-    second = training_client.post("/api/training/tasks", json=body)
-
-    assert first.status_code == second.status_code == 201
-    assert first.json()["id"] == second.json()["id"]
-    assert first.json()["task_code"] == second.json()["task_code"]
-    assert first.json()["created_by"] == "teacher"
-    assert UUID(str(body["confirmation_id"])).hex.upper() in first.json()["task_code"]
-    assert "source_file" not in first.text
-    assert "C:/private" not in first.text
-
-    listing = training_client.get("/api/training/tasks", params={"page_size": 1})
-    assert listing.status_code == 200
-    assert listing.json()["total"] == 1
-    assert listing.json()["page"] == 1
-    assert listing.json()["total_pages"] == 1
-    task_id = first.json()["id"]
-    detail = training_client.get(f"/api/training/tasks/{task_id}")
-    assert detail.status_code == 200
-    assert detail.json()["id"] == task_id
-
-
-def test_concurrent_training_task_confirmation_creates_one_task(
-    training_client: TestClient,
-) -> None:
-    preview = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-    body = _confirmation_request(preview)
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        responses = list(
-            executor.map(
-                lambda _index: training_client.post("/api/training/tasks", json=body),
-                range(2),
-            )
-        )
-
-    assert [response.status_code for response in responses] == [201, 201]
-    assert len({response.json()["id"] for response in responses}) == 1
-    assert training_client.get("/api/training/tasks").json()["total"] == 1
-
-
-def test_training_task_confirmation_detects_plan_revision_change(
-    training_client: TestClient,
-    training_services,
-) -> None:
-    original = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-    body = _confirmation_request(original)
-    assert training_client.post("/api/training/tasks", json=body).status_code == 201
-
-    diagnosis, _practice, _tasks = training_services
-    with connect(diagnosis.question_bank_db_path) as conn:
-        conn.execute(
-            "UPDATE questions SET question_text = '候选题内容已经改变' WHERE id = 201"
-        )
-    changed = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-    changed_body = _confirmation_request(changed)
-
-    response = training_client.post("/api/training/tasks", json=changed_body)
-
-    assert changed["plan_revision"] != original["plan_revision"]
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "training_confirmation_conflict"
-
-
-def test_training_task_confirmation_rejects_stale_preview(
-    training_client: TestClient,
-) -> None:
-    preview = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-    body = _confirmation_request(preview)
-    body["expected_plan_revision"] = "0" * 64
-
-    response = training_client.post("/api/training/tasks", json=body)
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "training_confirmation_conflict"
-
-
-def test_training_task_confirmation_rejects_empty_plan(
-    training_client: TestClient,
-    training_services,
-) -> None:
-    diagnosis, _practice, _tasks = training_services
-    with connect(diagnosis.question_bank_db_path) as conn:
-        conn.execute("DELETE FROM question_tags WHERE tag_type = 'knowledge_point'")
-    preview = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-
-    response = training_client.post(
-        "/api/training/tasks",
-        json=_confirmation_request(preview),
-    )
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "training_plan_invalid"
-
-
-def test_training_task_routes_return_sanitized_not_found(
-    training_client: TestClient,
-) -> None:
-    response = training_client.get(
-        "/api/training/tasks/999",
-        headers={"x-request-id": "rid-training-task"},
-    )
-
-    assert response.status_code == 404
-    assert response.json() == {
-        "error": {
-            "code": "training_task_not_found",
-            "message": "Training task not found",
-            "details": {"task_id": 999},
-            "request_id": "rid-training-task",
-        }
-    }
-
-
-def test_training_task_detail_does_not_publish_export_storage_or_raw_errors(
-    training_client: TestClient,
-    training_services,
-) -> None:
-    preview = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-    created = training_client.post(
-        "/api/training/tasks",
-        json=_confirmation_request(preview),
-    ).json()
-    _diagnosis, _practice, tasks = training_services
-    with connect(tasks.db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO training_exports (
-                task_id, audience, export_format, output_path, status, error_message
-            ) VALUES (?, 'teacher', 'docx', 'C:/private/export.docx', 'failed', ?)
-            """,
-            (created["id"], "private parser stack detail"),
-        )
-
-    response = training_client.get(f"/api/training/tasks/{created['id']}")
-
-    assert response.status_code == 200
-    assert "output_path" not in response.text
-    assert "error_message" not in response.text
-    assert "private parser stack detail" not in response.text
-
-
-def test_training_task_confirmation_does_not_accept_created_by(
-    training_client: TestClient,
-) -> None:
-    preview = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-    body = _confirmation_request(preview)
-    body["created_by"] = "administrator"
-
-    response = training_client.post("/api/training/tasks", json=body)
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
-
-
-def test_training_task_confirmation_maps_prelookup_database_failure_to_503(
-    training_client: TestClient,
-    training_services,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    preview = training_client.post(
-        "/api/training/plans/preview",
-        json=_preview_request(),
-    ).json()
-    _diagnosis, _practice, tasks = training_services
-
-    def fail_lookup(_task_code: str):
-        raise sqlite3.OperationalError("C:/private/question_bank.db unavailable")
-
-    monkeypatch.setattr(tasks, "get_task_by_code", fail_lookup)
-
-    response = training_client.post(
-        "/api/training/tasks",
-        json=_confirmation_request(preview),
-    )
-
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "training_database_unavailable"
-    assert "C:/private" not in response.text

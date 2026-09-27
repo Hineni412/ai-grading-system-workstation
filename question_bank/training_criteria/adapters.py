@@ -12,7 +12,13 @@ from typing import Any, Mapping, Sequence
 from backend.llm import LLMRequestKind, usage_fields
 from backend.llm.policy import policy_from_profile
 from question_bank.database.schema import connect
-from question_bank.models.tag_schema import DIFFICULTY_SCALE_GUIDANCE, TagAnalysis, TaggingContext
+from question_bank.models.tag_schema import (
+    DIFFICULTY_SCALE_GUIDANCE,
+    PREDICTED_PATTERN_MAX,
+    TagAnalysis,
+    TaggingContext,
+    predicted_pattern_categories,
+)
 from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
 from question_bank.services.ai_tagging_service import (
     AITaggingResult,
@@ -27,6 +33,9 @@ from question_bank.services.file_cache import cached_file_bytes
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.rich_content_service import (
     load_question_rich_content,
+)
+from question_bank.solution_evidence.repository import (
+    load_evidence_parts_for_tagging,
 )
 from backend.llm.json_repair import parse_json_object_locally
 from question_bank.training_criteria.analysis import (
@@ -44,7 +53,7 @@ from question_bank.training_criteria.analysis import (
 )
 
 
-_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>[^\]]+)\]\]")
+_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>[^\]|]+)(?:\|[^\]]*)?\]\]")
 _SOURCE_SECTION_HEADING = re.compile(
     r"^\s*[一二三四五六七八九十百]+[、.．]\s*"
     r"(?:单项选择题|选择题|填空题|解答题|计算题|证明题|作图题|综合题|判断题|简答题)"
@@ -149,7 +158,18 @@ class ExistingTagProjectionWriter:
             taxonomy_governance=self.tagging_service.taxonomy_governance,
         ):
             raise RuntimeError("tag projection could not be saved")
-        placeholders = ", ".join("?" for _ in CORE_ANALYSIS_TAG_TYPES)
+        # 新口径下整题知识点/章归属由判定点关联派生：有可派生链接时写入
+        # taxonomy 行，无链接时写入 tag_status='derived_pending' 标记。
+        # 持久化校验只要求模型维度（能力）+难度在位，归属按两种落库形态检查。
+        checked_types = (
+            "ability",
+            "knowledge_point",
+            "prerequisite",
+            "exam_scope",
+            "curriculum_section",
+            "tag_status",
+        )
+        placeholders = ", ".join("?" for _ in checked_types)
         with connect(self.write_service.db_path) as connection:
             stored_question = connection.execute(
                 "SELECT difficulty FROM questions WHERE id = ? AND is_deleted = 0",
@@ -165,18 +185,36 @@ class ExistingTagProjectionWriter:
                       AND tag_type IN ({placeholders})
                       AND TRIM(tag_value) <> ''
                     """,
-                    (int(question.question_id), *CORE_ANALYSIS_TAG_TYPES),
+                    (int(question.question_id), *checked_types),
                 ).fetchall()
             }
+            derived_pending = connection.execute(
+                """
+                SELECT 1 FROM question_tags
+                WHERE question_id = ? AND tag_type = 'tag_status'
+                  AND tag_value = 'derived_pending'
+                """,
+                (int(question.question_id),),
+            ).fetchone() is not None
         try:
             stored_difficulty = float(
                 stored_question["difficulty"] if stored_question else 0
             )
         except (TypeError, ValueError):
             stored_difficulty = 0
+        ownership_ok = derived_pending or bool(
+            stored_types
+            & {
+                "knowledge_point",
+                "prerequisite",
+                "exam_scope",
+                "curriculum_section",
+            }
+        )
         if (
             stored_question is None
-            or not set(CORE_ANALYSIS_TAG_TYPES).issubset(stored_types)
+            or "ability" not in stored_types
+            or not ownership_ok
             or not 1 <= stored_difficulty <= 10
         ):
             if persisted_proposals:
@@ -445,6 +483,10 @@ class QuestionAnalysisInputLoader:
             tag_value = str(tag_row["tag_value"] or "").strip()
             if tag_value and tag_value not in bucket:
                 bucket.append(tag_value)
+        # 新口径的整题 part_features 必须用当前判定点版本的 part_id。
+        evidence_parts_by_id = load_evidence_parts_for_tagging(
+            self.db_path, ids
+        )
         by_id = {int(row["id"]): row for row in rows}
         result: list[QuestionAnalysisInput] = []
         for question_id in ids:
@@ -525,6 +567,9 @@ class QuestionAnalysisInputLoader:
                             if question_id in special_types_by_id
                             else {}
                         ),
+                        evidence_parts=tuple(
+                            evidence_parts_by_id.get(question_id, ())
+                        ),
                     ),
                     rich_question_blocks=tuple(
                         _public_block(item) for item in question_blocks
@@ -597,7 +642,19 @@ def question_analysis_input_from_config_source(
     images: Sequence[QuestionAnalysisImage] = (),
 ) -> QuestionAnalysisInput:
     """Adapt an in-memory config question/answer block without writing it first."""
-
+    image_semantics = source.get("semantic_source") == "images"
+    if image_semantics:
+        if not any(image.role == "question" for image in images):
+            raise ValueError("PDF 题目缺少题干裁图，不能用识别文字代替完整题面分析")
+        source = {
+            **source,
+            "question_text": "题目内容以随附的题干图像为准，请从图像读取完整题目、选项、公式与小问。",
+            "answer_text": "参考答案以随附答案图像为准。" if any(image.role == "answer" for image in images) else "",
+            "text": "", "content": "", "stem": "",
+            "reference_answer": "", "answer": "", "canonical_answer": "",
+            "rich_question_blocks": (), "question_blocks": (),
+            "rich_answer_blocks": (), "answer_blocks": (), "reference_solution": {},
+        }
     question_text = _first_source_text(
         source,
         "question_text",
@@ -629,6 +686,7 @@ def question_analysis_input_from_config_source(
         raise ValueError("curriculum_volume_id must be selected before analysis")
     return QuestionAnalysisInput(
         question_id=int(question_id),
+        semantic_source="images" if image_semantics else "text",
         question_type_confirmed=(
             source.get("question_type_confirmed") is True
         ),
@@ -677,7 +735,18 @@ def question_analysis_input_from_config_source(
     )
 
 
-def _prompt_candidate_contract(contract: Mapping[str, Any]) -> dict[str, Any]:
+def _prompt_candidate_contract(
+    contract: Mapping[str, Any],
+    *,
+    include_knowledge: bool = True,
+) -> dict[str, Any]:
+    """Shrink a taxonomy contract for the prompt.
+
+    ``include_knowledge=False`` (tag-only projection) drops the knowledge
+    candidate tree and curriculum volume: the tag analysis no longer emits
+    prerequisite/knowledge fields, so the catalog would only inflate the
+    request. Combined projections keep them for ``fine_term_links``.
+    """
     compact: dict[str, Any] = {}
     for key in (
         "schema_version",
@@ -701,8 +770,11 @@ def _prompt_candidate_contract(contract: Mapping[str, Any]) -> dict[str, Any]:
             ]
             for dimension, items in candidates.items()
             if isinstance(items, list)
+            and (include_knowledge or str(dimension) != "knowledge")
         }
     volume = contract.get("curriculum_volume")
+    if not include_knowledge:
+        volume = None
     if isinstance(volume, Mapping):
         sections: list[dict[str, str]] = []
         raw_sections = volume.get("sections")
@@ -734,19 +806,68 @@ def _combined_prompt(
     batch: PlannedAnalysisBatch,
     projection: AnalysisProjection,
 ) -> list[dict[str, Any]]:
+    # 仅打标签投影不带判定点候选与解题证据规则：tag_analysis 已不输出
+    # prerequisite/知识点字段，前置知识由判定点关联派生。
+    include_evidence = str(projection) != "tag"
+    part_id_source = (
+        "solution_evidence.parts" if include_evidence else "question.evidence_parts"
+    )
     instructions = (
         "只分析列出的初中数学题。每个列出的 question_id 必须恰好返回一条结果，"
-        "并把该整数原样写入 result 与 solution_evidence，不得串题或混用候选。"
-        "一道题只返回一份 result；多问大题的小问只能拆在该结果内部的 "
-        "solution_evidence.parts 里，禁止按小问拆成多条 result。"
+        "并把该整数原样写入 result，不得串题或混用候选。"
+        "一道题只返回一份 result，禁止按小问拆成多条 result。"
         "除公式、变量、选项字母、机器标识和原答案片段外，所有教师可见自由文本"
         "必须使用简体中文；返回英文说明即为失败。"
+        "tag_analysis 的 method_tags、thought_tags、ability_tags、"
+        "math_model_tags、special_type_tags "
+        "只能逐字照抄该题 candidate_contract 中对应维度候选条的 id，不得填写名称、"
+        "改写或自造；ability_tags 只标主要考查的 1–2 项。"
+        "不再输出整题知识点、前置知识、易错点、章与小节归属、学生层次、教学阶段与 "
+        "canonical_knowledge_id：题目知识点与前置知识归属全部由判定点关联派生。"
+        "解答题的 special_type 子类（画图/计算/证明）按题目要求学生产出的形式"
+        "重新判定，不因题干出现“求证”等字样就标“证明”；并判断是否属于"
+        "“综合与实践”考法。"
+        f"tag_analysis.predicted_error_patterns 预测本题 0–{PREDICTED_PATTERN_MAX} "
+        "种最可能的具体错法：category 只能取 7 个错误大类之一"
+        f"（{'、'.join(predicted_pattern_categories())}）；"
+        "pattern 是本题具体错法名（如“64 的平方根只写 8”），不写“运算错误”"
+        "这类泛词；trigger_kind 只能取 option、wrong_answer、step、observation，"
+        "trigger_value 对应填选项字母、错误答案、出错判定点的 evidence_point_id "
+        "或空串（observation 时留空）。拿不准就留空，不要硬凑。"
+        f"tag_analysis.part_features 逐小问评估难度特征：part_id 必须与 "
+        f"{part_id_source} 的 part_id 完全一致；每问按序给 solo"
+        "（1 单点/2 多点/3 关联/4 拓展抽象）、reasoning（0 直接识别或代公式/"
+        "1 三步以内推理或转化/2 超过三步或多次连续转化）、computation"
+        "（0 无或口算/1 常规数值或简单符号运算/2 复杂符号运算）、context"
+        "（0 无情境/1 熟悉生活情境/2 陌生、科学跨学科、数学文化或新定义情境）、"
+        "context_kind（无情境/生活情境/科学跨学科/数学文化/新定义）、hidden"
+        "（0 条件直接给出/1 一次转化或一个隐含条件/2 需辅助构造或多个隐含条件）、"
+        "cases（0 不分类/1 两种情况/2 三种及以上或需判断存在性）、param_dynamic"
+        "（0 否/1 含参数或动点）、trap（0/1）、knowledge（0 一个知识点/1 两个/"
+        "2 三个及以上），全部给完后给一句 evidence。"
+        "多小问逐问评估，不把一问难度复制给其余问。"
+        "按 trust_level 对待 reference_solution：teacher_confirmed 是教师确认依据；"
+        "source_extracted 是未确认参考，可能不完整或自相矛盾，应以题干、配图和数学推理"
+        "为准，不得机械抄写；absent 表示没有参考。reference_assessment 只能是 "
+        "consistent、conflict 或 insufficient，并给一句简短 reference_assessment_reason。"
+        "conflict 只是教师警告，不得作为省略可用评分结构的理由。"
+        "不得编造被缺失配图挡住的内容。出现 repair_context 时，这是教师授权的定向修复："
+        "使用其中的 validation_error、validation_issues、allowed_changes、"
+        "immutable_fields 和 previous_result；按路径逐项修复已列出问题，保留已经正确的"
+        "内容，不得改 immutable 字段，并返回该投影的完整替换结果。"
+        "question_type_confirmed=false 的本地题型只是预览提示，不是评分事实。"
+        "每题必须返回 question_type_suggestion（question_type 与 reason）："
+        "question_type 只能取 选择题、多选题、填空题、解答题；认可本地题型时"
+        "原样返回对应值，认为本地题型有误时返回真实题型并在 reason 写一句依据。"
+        "question_type_confirmed=true 的题型是教师确认事实，question_type_suggestion "
+        "必须与之一致。题型为解答题时可附 essay_subtype（只能取 画图、计算、证明"
+        "或 null），只在能从题干确定子类时给出，拿不准返回 null。"
+        f"{DIFFICULTY_SCALE_GUIDANCE}"
+    )
+    evidence_instructions = (
         "候选知识表是所选册别及以前册别的完整教材目录树，必须先在整棵树中按稳定 ID 选择，"
         "不得因题干措辞不同而新造近义知识词。"
-        "tag_analysis 的 knowledge_points、prerequisite_points、method_tags、"
-        "thought_tags、ability_tags、math_model_tags、special_type_tags "
-        "只能逐字照抄该题 candidate_contract 中对应维度候选条的 id，不得填写名称、"
-        "改写或自造；curriculum_sections 只填 curriculum_volume 中的小节 id。"
+        "多问大题的小问只能拆在该结果内部的 solution_evidence.parts 里。"
         "解题证据使用 question-solution-evidence-v2，并拆成 question parts。"
         "每个独立可评分的数学台阶对应恰好一个 evidence point；推导中有多个有意义"
         "中间结果时，每个结果各占一个 evidence point，不得把整段推导塞进同一个 "
@@ -782,6 +903,12 @@ def _combined_prompt(
         "且必须把同一候选条的 id 与 name "
         "成对原样照抄；不得用其他维度、拟议标签、改写或自造词。没有完全匹配的受控知识时"
         "返回空数组，真正新词只放在 tag_analysis.proposed_tags 供人工审核。"
+        "fine_term_links 只挂该步骤解题真正必须用到的知识：学生用更早学过的内容"
+        "就能完成的操作不挂到更晚章节的词条（例如完全平方数开方这类已会操作，"
+        "不得因为式子里出现 √ 就挂到更晚章节的开平方词条）；"
+        "supporting_prerequisite 不得来自比本题主考章节更晚的章节。"
+        "更早册别的小节候选只用于标记“用到的前置知识”，只能标 "
+        "supporting_prerequisite，不得标 direct。"
         "每个链接标注 direct 或 supporting_prerequisite，同一 (id, role) 不得在一个 "
         "evidence point 内重复。不要推断或返回核心图谱映射。"
         "每个 part 还要返回 response_mode、canonical_answer、full_answer、accepted_forms、"
@@ -798,30 +925,10 @@ def _combined_prompt(
         "target 与 observable_evidence 不得为空。exact_objective 时 canonical_answer "
         "不得为空；其他 response_mode 时 full_answer 不得为空。类型专用列表即使为空"
         "也要保留键。解题证据不得含分值字段。"
-        "按 trust_level 对待 reference_solution：teacher_confirmed 是教师确认依据；"
-        "source_extracted 是未确认参考，可能不完整或自相矛盾，应以题干、配图和数学推理"
-        "为准，不得机械抄写；absent 表示没有参考。reference_assessment 只能是 "
-        "consistent、conflict 或 insufficient，并给一句简短 reference_assessment_reason。"
-        "conflict 只是教师警告，不得作为省略可用评分结构的理由。"
-        "不得编造被缺失配图挡住的内容。出现 repair_context 时，这是教师授权的定向修复："
-        "使用其中的 validation_error、validation_issues、allowed_changes、"
-        "immutable_fields 和 previous_result；按路径逐项修复已列出问题，保留已经正确的"
-        "内容，不得改 immutable 字段，并返回该投影的完整替换结果。"
         "expected_projection 为 training_criteria 时只返回 solution_evidence，应用会保留"
         "已接受的 tag_analysis。不要盲目复制被拒绝的结构。"
         "若只能确认一个台阶，改用匹配的非过程 response_mode，不得为凑数量发明步骤。"
         "不要从标点、等式、角符号或连接词推断证据点个数。"
-        "question_type_confirmed=false 的本地题型只是预览提示，不是评分事实。"
-        "每题必须返回 question_type_suggestion（question_type 与 reason）："
-        "question_type 只能取 选择题、多选题、填空题、解答题；认可本地题型时"
-        "原样返回对应值，认为本地题型有误时返回真实题型并在 reason 写一句依据。"
-        "question_type_confirmed=true 的题型是教师确认事实，question_type_suggestion "
-        "必须与之一致。题型为解答题时可附 essay_subtype（只能取 画图、计算、证明"
-        "或 null），只在能从题干确定子类时给出，拿不准返回 null。"
-        "在 solution_evidence 同级返回 part_assessments 数组，逐小问提供相同 part_id、"
-        "difficulty（1—10）和 rationale（一句基于该问推理要求的理由）。多小问难度必须"
-        "分别估计，不复制整题难度，不按步骤数量或题号推断，也不含考试分值。"
-        f"{DIFFICULTY_SCALE_GUIDANCE}"
         "每个 part 的 response_mode 必须根据题目、完整答案和解析单独判定。"
         "第(1)问的一个填空位不得把后续过程问压成整题填空。出现 expected_part_count 时，"
         "必须按给定顺序返回恰好那么多 part。"
@@ -831,6 +938,8 @@ def _combined_prompt(
         "改成客观题形态。仅当 question_type_suggestion 返回了与本地不同的真实题型时，"
         "才按该真实题型组织 solution_evidence（例如把误判为填空的解答题改按过程题拆分）。"
     )
+    if include_evidence:
+        instructions += evidence_instructions
     questions = []
     for item in batch.questions:
         context = item.tagging_context.to_dict()
@@ -838,6 +947,7 @@ def _combined_prompt(
         context.pop("existing_tags_by_dimension", None)
         question_payload = {
             "question_id": item.question_id,
+            "semantic_source": item.semantic_source,
             "question": context,
             "rich_question_blocks": list(
                 item.rich_question_blocks
@@ -846,7 +956,8 @@ def _combined_prompt(
                 item.rich_answer_blocks
             ),
             "candidate_contract": _prompt_candidate_contract(
-                item.taxonomy_contract
+                item.taxonomy_contract,
+                include_knowledge=include_evidence,
             ),
             "reference_solution": dict(item.reference_solution),
             "question_type_confirmed": item.question_type_confirmed,
@@ -862,18 +973,17 @@ def _combined_prompt(
         if item.repair_context:
             question_payload["repair_context"] = dict(item.repair_context)
         questions.append(question_payload)
+    task_payload: dict[str, Any] = {
+        "task": "初中数学题联合分析（标签、解题证据与训练判定点）",
+        "rules": instructions,
+        "questions": questions,
+    }
+    if include_evidence:
+        task_payload["evidence_examples"] = _combined_evidence_examples()
     content: list[dict[str, Any]] = [
         {
             "type": "input_text",
-            "text": json.dumps(
-                {
-                    "task": "初中数学题联合分析（标签、解题证据与训练判定点）",
-                    "rules": instructions,
-                    "evidence_examples": _combined_evidence_examples(),
-                    "questions": questions,
-                },
-                ensure_ascii=False,
-            ),
+            "text": json.dumps(task_payload, ensure_ascii=False),
         }
     ]
     for item in batch.questions:

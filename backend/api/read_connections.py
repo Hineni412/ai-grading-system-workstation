@@ -12,7 +12,6 @@ from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.compat import open_grading_repositories
 from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
-from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.services.question_read_service import (
     QuestionBankSnapshotBusy,
     QuestionBankSnapshotUnavailable,
@@ -55,7 +54,6 @@ class RequestReadContext:
     question_bank_connection: sqlite3.Connection
     grading_db: GradingRepositoryAccess
     diagnosis_service: DiagnosisProfileService
-    practice_service: PracticePlanService
 
 
 @contextmanager
@@ -100,10 +98,6 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
                 *_database_generation(Path(paths.qb_db_path)),
             ),
         )
-        practice_service = PracticePlanService(
-            question_bank_candidate,
-            external_connection=question_bank_connection,
-        )
         yield RequestReadContext(
             grading_candidate=grading_candidate,
             question_bank_candidate=question_bank_candidate,
@@ -111,7 +105,6 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
             question_bank_connection=question_bank_connection,
             grading_db=grading_db,
             diagnosis_service=diagnosis_service,
-            practice_service=practice_service,
         )
     except BaseException as exc:
         primary_error = exc

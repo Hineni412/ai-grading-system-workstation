@@ -173,6 +173,9 @@ def _run_question_import_job_locked(
                 "matched_paper_title": str(hint.get("matched_paper_title") or ""),
                 "similarity": float(hint.get("similarity") or 0),
                 "high": bool(hint.get("high")),
+                "match_kind": str(hint.get("match_kind") or "suspected"),
+                "requires_review": True,
+                "reason": str(hint.get("reason") or "题面相似，需要核对"),
             }
             for hint in result.near_duplicate_hints
         ],

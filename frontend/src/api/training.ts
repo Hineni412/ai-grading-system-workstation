@@ -1,13 +1,8 @@
 import { apiClient } from './client'
-import {
-  decodeTrainingTaskDetail,
-  type TrainingTaskDetail,
-} from './exports'
 import { assertNoPathLikeKeys, isRecord } from './validation'
 
 export type TrainingStudentScopeMode = 'all' | 'student' | 'selected' | 'class'
 export type TrainingExamScopeMode = 'current' | 'manual' | 'cross_exam' | 'semester'
-export type TrainingVariantMode = 'individual' | 'auto_group'
 export type TrainingStage = 'direct' | 'prerequisite' | 'transfer'
 
 export interface TrainingStudentScopeRequest {
@@ -42,9 +37,6 @@ export interface TrainingGroupingRequest {
   expected_minutes?: number
   difficulty_min?: number
   difficulty_max: number
-  direct_ratio?: number
-  prerequisite_ratio?: number
-  transfer_ratio?: number
   exclude_current_exam_originals: boolean
   curriculum_volume_id: string
   training_intent?: 'remediation' | 'challenge'
@@ -89,25 +81,6 @@ export interface TrainingGrouping {
   warnings: string[]
 }
 
-export interface TrainingStageRatios {
-  direct: number
-  prerequisite: number
-  transfer: number
-}
-
-export interface TrainingPlanRequest extends TrainingDiagnosisRequest {
-  variant_mode: TrainingVariantMode
-  teacher_groups?: Record<string, string[]>
-  question_count: number
-  stage_ratios: TrainingStageRatios
-  exclude_current_exam_originals: boolean
-}
-
-export interface TrainingTaskConfirmRequest extends TrainingPlanRequest {
-  confirmation_id: string
-  expected_plan_revision: string
-}
-
 export interface PersonalizedRecommendationCreateRequest
   extends TrainingDiagnosisRequest {
   request_token: string
@@ -115,7 +88,6 @@ export interface PersonalizedRecommendationCreateRequest
   expected_minutes?: number
   difficulty_min?: number
   difficulty_max: number
-  stage_ratios?: TrainingStageRatios
   paper_mode?: 'individual' | 'shared'
   target_keys?: string[]
   scope_keys?: string[]
@@ -171,10 +143,10 @@ export interface PersonalizedRecommendationItem {
   difficulty_band?: 'starter' | 'consolidation' | 'stretch'
   practice_role?: 'step_practice' | 'full_response' | 'supplement'
   part_assessment?: {
-    profile_revision: number
+    profile_revision: string | number
     evidence_version_id: string
     selection_basis: 'hardest_part'
-    parts: Array<{ part_id: string; label?: string; difficulty: number; source: string; rationale: string; direct_keys: string[] }>
+    parts: Array<{ part_id: string; label?: string; difficulty: number | null; source: string; rationale: string; direct_keys: string[] }>
   } | null
   estimated_minutes?: number
   source_paper: string
@@ -614,74 +586,6 @@ export interface TrainingOverview {
   summary: TrainingOverviewSummary
 }
 
-export interface TrainingPlanItem {
-  question_id: number
-  item_order: number
-  stage: TrainingStage
-  knowledge_key: string
-  knowledge_point: string
-  match_kind: 'exact'
-  reason: string
-  recommend_score: number
-  score_components: Record<string, number>
-  tag_matches: Record<string, string[]>
-  tags: Record<string, string[]>
-  warnings: string[]
-  question_fingerprint: string
-  question_text: string
-  question_number: string
-  difficulty: number | string | null
-  source_paper: string
-  frequency: Record<string, unknown>
-}
-
-export interface TrainingPlanShortage {
-  stage: TrainingStage
-  requested_count: number
-  selected_count: number
-  missing_count: number
-  decision_required?: boolean
-  knowledge_points?: string[]
-}
-
-export interface TrainingPlanVariant {
-  variant_key: string
-  variant_type: 'individual' | 'group'
-  student_ids: string[]
-  grouping_reason: Record<string, unknown>
-  diagnosis_snapshot: Record<string, unknown>
-  items: TrainingPlanItem[]
-  stage_counts: Record<TrainingStage, number>
-  shortages: TrainingPlanShortage[]
-  warnings: string[]
-  dedupe_summary: {
-    removed_count: number
-    reason_counts: Record<string, number>
-  }
-  generation_config: Record<string, unknown>
-}
-
-export interface TrainingPlan {
-  scope_snapshot: Record<string, unknown>
-  exam_scope: Record<string, unknown>
-  diagnosis_snapshot: Record<string, unknown>
-  generation_config: Record<string, unknown>
-  variant_mode: TrainingVariantMode
-  variants: TrainingPlanVariant[]
-  warnings: string[]
-  ungrouped_students: string[]
-  teacher_override: {
-    allowed: boolean
-    applied: boolean
-    assignments: Record<string, string[]>
-  }
-}
-
-export interface TrainingPlanResponse {
-  plan_revision: string
-  plan: TrainingPlan
-}
-
 function isInteger(value: unknown, minimum = 0): value is number {
   return Number.isSafeInteger(value) && Number(value) >= minimum
 }
@@ -977,123 +881,6 @@ export function decodeTrainingOverview(value: unknown): TrainingOverview {
   return value as unknown as TrainingOverview
 }
 
-function isPlanItem(value: unknown): value is TrainingPlanItem {
-  return (
-    isRecord(value)
-    && isInteger(value.question_id, 1)
-    && isInteger(value.item_order, 1)
-    && isStage(value.stage)
-    && isNonEmptyString(value.knowledge_key)
-    && isNonEmptyString(value.knowledge_point)
-    && value.match_kind === 'exact'
-    && isNonEmptyString(value.reason)
-    && isFiniteNumber(value.recommend_score)
-    && isRecord(value.score_components)
-    && Object.values(value.score_components).every(isFiniteNumber)
-    && isStringListRecord(value.tag_matches)
-    && isStringListRecord(value.tags)
-    && isStringArray(value.warnings)
-    && typeof value.question_fingerprint === 'string'
-    && typeof value.question_text === 'string'
-    && typeof value.question_number === 'string'
-    && (
-      value.difficulty === null
-      || value.difficulty === undefined
-      || isFiniteNumber(value.difficulty)
-      || typeof value.difficulty === 'string'
-    )
-    && typeof value.source_paper === 'string'
-    && isRecord(value.frequency)
-  )
-}
-
-function isShortage(value: unknown): value is TrainingPlanShortage {
-  return (
-    isRecord(value)
-    && isStage(value.stage)
-    && isInteger(value.requested_count)
-    && isInteger(value.selected_count)
-    && isInteger(value.missing_count)
-    && value.selected_count + value.missing_count === value.requested_count
-    && (
-      value.decision_required === undefined
-      || typeof value.decision_required === 'boolean'
-    )
-    && (
-      value.knowledge_points === undefined
-      || isStringArray(value.knowledge_points)
-    )
-  )
-}
-
-function isStageCounts(value: unknown): value is Record<TrainingStage, number> {
-  return (
-    isRecord(value)
-    && isInteger(value.direct)
-    && isInteger(value.prerequisite)
-    && isInteger(value.transfer)
-  )
-}
-
-function isPlanVariant(value: unknown): value is TrainingPlanVariant {
-  return (
-    isRecord(value)
-    && isNonEmptyString(value.variant_key)
-    && (value.variant_type === 'individual' || value.variant_type === 'group')
-    && isStringArray(value.student_ids)
-    && isRecord(value.grouping_reason)
-    && isRecord(value.diagnosis_snapshot)
-    && Array.isArray(value.items)
-    && value.items.every(isPlanItem)
-    && isStageCounts(value.stage_counts)
-    && Array.isArray(value.shortages)
-    && value.shortages.every(isShortage)
-    && isStringArray(value.warnings)
-    && isRecord(value.dedupe_summary)
-    && isInteger(value.dedupe_summary.removed_count)
-    && isCountRecord(value.dedupe_summary.reason_counts)
-    && isRecord(value.generation_config)
-  )
-}
-
-function isTeacherOverride(
-  value: unknown,
-): value is TrainingPlan['teacher_override'] {
-  return (
-    isRecord(value)
-    && typeof value.allowed === 'boolean'
-    && typeof value.applied === 'boolean'
-    && isStringListRecord(value.assignments)
-  )
-}
-
-export function decodeTrainingPlanResponse(value: unknown): TrainingPlanResponse {
-  assertNoPathLikeKeys(value)
-  if (
-    !isRecord(value)
-    || typeof value.plan_revision !== 'string'
-    || !/^[0-9a-f]{64}$/.test(value.plan_revision)
-    || !isRecord(value.plan)
-    || !isRecord(value.plan.scope_snapshot)
-    || !isRecord(value.plan.exam_scope)
-    || !isRecord(value.plan.diagnosis_snapshot)
-    || value.plan.diagnosis_snapshot.diagnosis_identity !== 'question_tag'
-    || !isRecord(value.plan.generation_config)
-    || (
-      value.plan.variant_mode !== 'individual'
-      && value.plan.variant_mode !== 'auto_group'
-    )
-    || !Array.isArray(value.plan.variants)
-    || !value.plan.variants.every(isPlanVariant)
-    || !isStringArray(value.plan.warnings)
-    || !isStringArray(value.plan.ungrouped_students)
-    || !isTeacherOverride(value.plan.teacher_override)
-  ) {
-    throw new Error('Invalid training plan')
-  }
-  return value as unknown as TrainingPlanResponse
-}
-
 function isRecommendationRelation(
   value: unknown,
 ): value is PersonalizedRecommendationRelation {
@@ -1131,20 +918,23 @@ function isRecommendationItem(
     )
     && /^[0-9a-f]{64}$/.test(String(value.criterion_version_id || ''))
     && isInteger(value.criterion_point_count, 1)
-    && isInteger(value.difficulty, 1)
+    && isFiniteNumber(value.difficulty)
+    && value.difficulty >= 1
     && value.difficulty <= 10
     && (
       value.part_assessment === undefined || value.part_assessment === null
       || (isRecord(value.part_assessment)
-        && isInteger(value.part_assessment.profile_revision, 1)
+        && (isNonEmptyString(value.part_assessment.profile_revision)
+          || isInteger(value.part_assessment.profile_revision, 1))
         && isNonEmptyString(value.part_assessment.evidence_version_id)
         && value.part_assessment.selection_basis === 'hardest_part'
         && Array.isArray(value.part_assessment.parts)
         && value.part_assessment.parts.length > 0
         && value.part_assessment.parts.every(part => isRecord(part)
-          && isNonEmptyString(part.part_id) && typeof part.difficulty === 'number'
+          && isNonEmptyString(part.part_id)
+          && (part.difficulty === null || (typeof part.difficulty === 'number'
+            && part.difficulty >= 1 && part.difficulty <= 10))
           && (part.label === undefined || typeof part.label === 'string')
-          && part.difficulty >= 1 && part.difficulty <= 10
           && typeof part.source === 'string' && typeof part.rationale === 'string'
           && isStringArray(part.direct_keys)))
     )
@@ -1620,32 +1410,6 @@ export const trainingApi = {
       method: 'POST',
       body,
       decode: decodeTrainingDiagnosis,
-      signal,
-      timeoutMs: 30_000,
-    })
-  },
-
-  preview(
-    body: TrainingPlanRequest,
-    signal?: AbortSignal,
-  ): Promise<TrainingPlanResponse> {
-    return apiClient.request('/api/training/plans/preview', {
-      method: 'POST',
-      body,
-      decode: decodeTrainingPlanResponse,
-      signal,
-      timeoutMs: 30_000,
-    })
-  },
-
-  confirm(
-    body: TrainingTaskConfirmRequest,
-    signal?: AbortSignal,
-  ): Promise<TrainingTaskDetail> {
-    return apiClient.request('/api/training/tasks', {
-      method: 'POST',
-      body,
-      decode: decodeTrainingTaskDetail,
       signal,
       timeoutMs: 30_000,
     })

@@ -132,12 +132,11 @@ onBeforeUnmount(() => controller?.abort())
             <small>{{ ({ exact_objective: '核对答案', short_answer_points: '按要点判定', process_required: '需展示过程', visual_construction: '需作图' })[part.response_mode] }}</small>
           </header>
           <p v-if="assessments[part.part_id]" class="solution-evidence__help">
-            小问难度：{{ assessments[part.part_id]?.difficulty == null ? '尚未细分' : `${assessments[part.part_id]?.difficulty} / 10` }}
-            · {{ assessments[part.part_id]?.source === 'whole_question' ? '单问复用整题估计' : assessments[part.part_id]?.source === 'teacher' ? '教师估计' : 'AI 估计，非实测难度' }}
-            <br>{{ assessments[part.part_id]?.rationale }}
+            小问公式难度：{{ assessments[part.part_id]?.difficulty == null ? '暂无' : `${assessments[part.part_id]?.difficulty} / 10` }}
+            <template v-if="assessments[part.part_id]?.rationale"><br>{{ assessments[part.part_id]?.rationale }}</template>
             <template v-if="assessments[part.part_id]?.review_note"><br>{{ assessments[part.part_id]?.review_note }}</template>
           </p>
-          <p v-else class="solution-evidence__help">小问难度尚未细分，当前计算使用中性系数。</p>
+          <p v-else class="solution-evidence__help">小问公式难度暂无，当前计算使用中性系数。</p>
           <div class="solution-evidence__points">
             <section v-for="(point, pointIndex) in part.evidence_points" :key="point.evidence_point_id" class="solution-evidence__point">
               <div class="solution-evidence__point-title">
