@@ -699,6 +699,7 @@ def import_scanned_papers(
     archive_sources: bool = True,
     asset_overrides: list[dict[str, Any]] | None = None,
     type_overrides: Mapping[str, str] | None = None,
+    confirmed_duplicates: Mapping[str, int] | None = None,
     document_pipeline: "QuestionDocumentPipeline | None" = None,
     full_parser: Callable[[Path], str | None] | None = None,
 ) -> BatchImportResult:
@@ -748,6 +749,7 @@ def import_scanned_papers(
                     asset_root=asset_directory,
                     asset_overrides=asset_overrides,
                     type_overrides=type_overrides,
+                    confirmed_duplicates=confirmed_duplicates,
                     duplicate_index=duplicate_index,
                     document_pipeline=document_pipeline,
                     full_parser=full_parser,
@@ -812,6 +814,7 @@ def _import_scanned_paper(
     asset_root: Path | None = None,
     asset_overrides: list[dict[str, Any]] | None = None,
     type_overrides: Mapping[str, str] | None = None,
+    confirmed_duplicates: Mapping[str, int] | None = None,
     duplicate_index: _DuplicateIndex | None = None,
     document_pipeline: "QuestionDocumentPipeline | None" = None,
     full_parser: Callable[[Path], str | None] | None = None,
@@ -906,6 +909,10 @@ def _import_scanned_paper(
         source_id = duplicate_index.exact.get(key) if key else None
         if source_id is not None:
             continue
+        if confirmed_duplicates and item.question_number in confirmed_duplicates:
+            # Teacher already confirmed this duplicate; the insert loop maps
+            # the occurrence directly and it must not surface as a hint.
+            continue
         hint = _near_duplicate_hint(item, duplicate_index)
         if hint is not None:
             near_hints.append(hint)
@@ -968,6 +975,35 @@ def _import_scanned_paper(
         paper_id = int(paper_cursor.lastrowid)
         for item in parsed.questions:
             key = exact_keys[item.question_number]
+            confirmed_bank_id: int | None = None
+            if confirmed_duplicates:
+                raw_confirmed = confirmed_duplicates.get(item.question_number)
+                if raw_confirmed is not None:
+                    try:
+                        confirmed_bank_id = int(raw_confirmed)
+                    except (TypeError, ValueError):
+                        confirmed_bank_id = None
+                    if confirmed_bank_id is not None and conn.execute(
+                        "SELECT 1 FROM questions WHERE id=? AND COALESCE(is_deleted,0)=0",
+                        (confirmed_bank_id,),
+                    ).fetchone() is None:
+                        # A stale decision must not create a dangling link;
+                        # fall back to the normal match-and-insert path.
+                        confirmed_bank_id = None
+            if confirmed_bank_id is not None:
+                near_hints[:] = [
+                    hint for hint in near_hints
+                    if hint["question_number"] != item.question_number
+                ]
+                record_paper_occurrence(
+                    conn,
+                    paper_id=paper_id,
+                    question_id=confirmed_bank_id,
+                    question_number=item.question_number,
+                    signature=key,
+                )
+                pending_analysis_reuse.append((confirmed_bank_id, item.question_number))
+                continue
             source_id = duplicate_index.exact.get(key) if key else None
             answer_conflict = False
             if source_id is not None and item.answer_text:

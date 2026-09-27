@@ -69,10 +69,61 @@ def exam_original_key(question: Mapping[str, Any], *, data_root: Path,
                                  image_cache=image_cache, exam_printing=True)
 
 
+_OPTION_CHARACTERS = frozenset("ABCDEFGH")
+_OPTION_SEQUENCE = r"[A-Ha-h](?:\s*[,，、]?\s*[A-Ha-h])*"
+# Whole-answer form: optional 答案/【答案】/答 prefix, then only option letters.
+_BARE_OPTION_ANSWER = re.compile(
+    rf"^\s*(?:(?:【\s*答\s*案\s*】)|答\s*案|答)?\s*[:：]?\s*({_OPTION_SEQUENCE})\s*[。．.；;]?\s*$"
+)
+# Explicit final-choice marker inside a longer analysis: last occurrence wins.
+_FINAL_CHOICE_MARKER = re.compile(
+    rf"(?:故\s*选|选|【\s*答\s*案\s*】|答\s*案\s*(?:是|为|选)?|答)\s*[:：]?\s*({_OPTION_SEQUENCE})"
+)
+
+
+def _option_letter_set(sequence: str) -> frozenset[str]:
+    return frozenset(char.upper() for char in sequence if char.upper() in _OPTION_CHARACTERS)
+
+
+def _bare_option_letters(value: object) -> frozenset[str] | None:
+    match = _BARE_OPTION_ANSWER.match(normalize_identity_text(value))
+    return _option_letter_set(match.group(1)) if match else None
+
+
+def _final_choice_letters(value: object) -> frozenset[str] | None:
+    letters = [
+        _option_letter_set(match.group(1))
+        for match in _FINAL_CHOICE_MARKER.finditer(normalize_identity_text(value))
+    ]
+    return letters[-1] if letters else None
+
+
+def _option_letter_conflict(left: object, right: object) -> bool | None:
+    """Compare a bare option answer against a marked final choice.
+
+    Returns ``None`` when the special case does not apply so callers can keep
+    the generic comparison; two bare answers deliberately fall through.
+    """
+    left_bare = _bare_option_letters(left)
+    right_bare = _bare_option_letters(right)
+    if left_bare is not None and right_bare is not None:
+        return None
+    for bare, other in ((left_bare, right), (right_bare, left)):
+        if bare is None:
+            continue
+        marked = _final_choice_letters(other)
+        if marked is not None:
+            return bare != marked
+    return None
+
+
 def answers_conflict(left: object, right: object, *, data_root: Path) -> bool:
     """Different nonempty answers require review; equivalent image paths do not."""
     if not str(left or "").strip() or not str(right or "").strip():
         return False
+    letter_verdict = _option_letter_conflict(left, right)
+    if letter_verdict is not None:
+        return letter_verdict
     if normalize_identity_text(left) == normalize_identity_text(right):
         return False
     first = exact_question_key({"question_text": str(left)}, data_root=data_root, rich_content={})
@@ -602,6 +653,7 @@ def reusable_analysis(
     bank_question_id: int,
     target_question: Any,
     data_root: str | Path,
+    teacher_confirmed_same: bool = False,
 ) -> dict[str, Any] | None:
     """Return the canonical question's usable analysis re-anchored to a source.
 
@@ -609,6 +661,10 @@ def reusable_analysis(
     deferred analysis bundle can carry the stored products instead of issuing
     a new model request. Returns ``None`` when the canonical has no usable
     evidence for the identical content, or when re-anchoring fails.
+
+    ``teacher_confirmed_same`` skips only the exact-key equality check — the
+    teacher already identified the same question in review — while usable
+    status, canonical content hash and answer-conflict checks still apply.
     """
     database = Path(db_path)
     repository = SolutionEvidenceRepository(database)
@@ -622,9 +678,10 @@ def reusable_analysis(
                         target_question.tagging_context.answer_text, data_root=Path(data_root)):
         return None
     # 相同题面的排版变体允许重新锚定，但旧证据仍须对应规范题当前内容。
-    canonical_key = analysis_source_exact_key(canonical[0], data_root=Path(data_root))
-    if not canonical_key or canonical_key != analysis_source_exact_key(target_question, data_root=Path(data_root)):
-        return None
+    if not teacher_confirmed_same:
+        canonical_key = analysis_source_exact_key(canonical[0], data_root=Path(data_root))
+        if not canonical_key or canonical_key != analysis_source_exact_key(target_question, data_root=Path(data_root)):
+            return None
     source_hash = solution_evidence_source_content_hash(target_question)
     payload = latest.get("evidence")
     if not isinstance(payload, dict):

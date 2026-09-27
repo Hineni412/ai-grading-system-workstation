@@ -1237,6 +1237,7 @@ def run_deferred_question_bank_intake(
     taxonomy_governance: Any,
     asset_overrides: list[dict[str, Any]] | None = None,
     type_overrides: Mapping[str, str] | None = None,
+    confirmed_duplicates: Mapping[str, int] | None = None,
     question_import_runner: QuestionImportRunner = run_question_import_job,
 ) -> dict[str, object]:
     """Import and adopt completed analysis before score publication, without grading links.
@@ -1262,6 +1263,12 @@ def run_deferred_question_bank_intake(
         for number, question_type in dict(type_overrides or {}).items()
         if str(number).strip() and str(question_type).strip()
     }
+    clean_confirmed_duplicates = {
+        str(number).strip(): int(bank_id)
+        for number, bank_id in dict(confirmed_duplicates or {}).items()
+        if str(number).strip() and str(bank_id).strip().lstrip("-").isdigit()
+        and int(bank_id) > 0
+    }
 
     write_service = QuestionBankWriteService(
         Path(question_bank_db_path),
@@ -1282,6 +1289,7 @@ def run_deferred_question_bank_intake(
             },
             "asset_overrides": validated_asset_overrides,
             "type_overrides": clean_type_overrides,
+            "confirmed_duplicates": clean_confirmed_duplicates,
         },
         progress_start=0.91,
         progress_end=0.95,

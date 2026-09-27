@@ -4,10 +4,12 @@ import { defineStore } from 'pinia'
 import { ApiError } from '../api/errors'
 import {
   fetchActiveConfigSource,
+  fetchActiveSourceDuplicates,
   fetchConfigEditor,
   fetchConfigSource,
   fetchLatestConfigGenerationJob,
   type ConfigGenerationRequest,
+  type ConfigSourceDuplicateItem,
   type GenerationMode,
   type ConfigEditorCommand,
   type ConfigEditorEdit,
@@ -93,6 +95,8 @@ function validDecision(value: unknown): value is QuestionDecision {
     'question_type',
     'answer_confirmed',
     'answer_override',
+    'bank_match',
+    'bank_question_id',
   ])
   if (Object.keys(item).some((key) => !allowedKeys.has(key))) return false
   if (item.question_type !== undefined
@@ -101,15 +105,27 @@ function validDecision(value: unknown): value is QuestionDecision {
   if (item.answer_confirmed !== undefined && typeof item.answer_confirmed !== 'boolean') return false
   if (item.answer_override !== undefined && item.answer_override !== null
     && typeof item.answer_override !== 'string') return false
+  if (item.bank_match !== undefined && item.bank_match !== null
+    && !['same', 'different', 'reanalyze'].includes(String(item.bank_match))) return false
+  if (item.bank_question_id !== undefined && item.bank_question_id !== null
+    && (!Number.isInteger(item.bank_question_id)
+      || (item.bank_question_id as number) <= 0)) return false
+  if (item.bank_match === 'same'
+    && (!Number.isInteger(item.bank_question_id)
+      || (item.bank_question_id as number) <= 0)) return false
   return typeof item.question_id === 'string'
     && typeof item.excluded === 'boolean'
 }
 
 function safePersistedDecision(decision: QuestionDecision): QuestionDecision {
+  // Legacy answer/type fields stay transient (they carry answer text); the
+  // bank-match verdict is metadata and safe to persist across reload.
   const safe: QuestionDecision = {
     question_id: decision.question_id,
     excluded: decision.excluded,
   }
+  if (decision.bank_match !== undefined) safe.bank_match = decision.bank_match
+  if (decision.bank_question_id !== undefined) safe.bank_question_id = decision.bank_question_id
   return safe
 }
 
@@ -247,6 +263,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const pendingUploadRequestToken = ref<string | null>(null)
   const sourceLoading = ref(false)
   const sourceError = ref('')
+  const sourceDuplicates = ref<ConfigSourceDuplicateItem[]>([])
+  const duplicatesUnavailable = ref(false)
+  let duplicatesRequest = 0
   let sourceLoadGeneration = 0
   let hydrationRequest = 0
   let generationContext = 0
@@ -344,6 +363,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     mappingStatus.value = null
     sourceLoading.value = false
     sourceError.value = ''
+    sourceDuplicates.value = []
+    duplicatesUnavailable.value = false
+    duplicatesRequest += 1
     requestedSourceId = null
     sourceLoadGeneration += 1
   }
@@ -421,6 +443,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     editorCommands.value = []
     editorDirty.value = false
     phase.value = 'draft'
+    sourceDuplicates.value = []
+    duplicatesUnavailable.value = false
+    duplicatesRequest += 1
     persistSafeIndex()
     return true
   }
@@ -446,10 +471,13 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceId.value = value.source_id
     sourceRevision.value = value.source_revision
     source.value = value
+    sourceDuplicates.value = []
+    duplicatesUnavailable.value = false
     generationSummary.value = null
     phase.value = derivePhase()
     sourceError.value = ''
     persistSafeIndex()
+    void loadSourceDuplicates()
   }
 
   function acceptUploadedSource(value: ConfigSource): void {
@@ -476,8 +504,39 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     editorDirty.value = false
     sourceLoading.value = false
     sourceError.value = ''
+    sourceDuplicates.value = []
+    duplicatesUnavailable.value = false
     phase.value = 'source'
     persistSafeIndex()
+    void loadSourceDuplicates()
+  }
+
+  // 查重只是提示信息：失败时记为暂不可用，不阻断页面任何操作。
+  async function loadSourceDuplicates(
+    loader: typeof fetchActiveSourceDuplicates = fetchActiveSourceDuplicates,
+  ): Promise<void> {
+    const expectedSessionId = sessionId.value
+    const expectedSourceId = sourceId.value
+    const expectedRevision = sourceRevision.value
+    if (expectedSessionId === null || expectedSourceId === null
+      || expectedRevision === null) return
+    const request = ++duplicatesRequest
+    try {
+      const result = await loader(expectedSessionId)
+      if (request !== duplicatesRequest || sessionId.value !== expectedSessionId
+        || sourceId.value !== expectedSourceId
+        || sourceRevision.value !== expectedRevision) return
+      if (result.source_id !== expectedSourceId
+        || result.source_revision !== expectedRevision) return
+      sourceDuplicates.value = result.items
+      duplicatesUnavailable.value = false
+    } catch {
+      if (request !== duplicatesRequest || sessionId.value !== expectedSessionId
+        || sourceId.value !== expectedSourceId
+        || sourceRevision.value !== expectedRevision) return
+      sourceDuplicates.value = []
+      duplicatesUnavailable.value = true
+    }
   }
 
   function updateDecisions(value: QuestionDecision[]): void {
@@ -693,10 +752,14 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       source.value = sourceResult.value
       sourceId.value = sourceResult.value.source_id
       sourceRevision.value = sourceResult.value.source_revision
+      void loadSourceDuplicates()
     } else if (sourceResult.status === 'rejected' && isNotFound(sourceResult.reason)) {
       source.value = null
       sourceId.value = null
       sourceRevision.value = null
+      sourceDuplicates.value = []
+      duplicatesUnavailable.value = false
+      duplicatesRequest += 1
     }
     if (editorResult.status === 'fulfilled'
       && editorResult.value.session_id === expectedSessionId) {
@@ -831,6 +894,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
         source.value = loaded
         sourceId.value = loaded.source_id
         sourceRevision.value = loaded.source_revision
+        void loadSourceDuplicates()
         decisions.value = sourceWasReplaced || candidate.sourceId === null
           ? []
           : candidate.decisions.map((item) => ({ ...item }))
@@ -1021,6 +1085,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     source, questionStates, editor, editorEdits, editorCommands, serverIssues, generationSummary,
     pendingGenerationMode, pendingJobRequestToken, pendingJobRequestKind,
     pendingUploadRequestToken, sourceLoading, sourceError,
+    sourceDuplicates, duplicatesUnavailable, loadSourceDuplicates,
     saveStatus, mappingStatus, hasDirtyEditor, hasPendingSubmission,
     effectiveEditorRows, effectiveTotalScore,
     canGenerate, canGenerateWholeDocument, hydrateSafeIndex, persistSafeIndex, clearWorkspace,

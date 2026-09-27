@@ -189,6 +189,60 @@ describe('configuration workspace Store', () => {
     expect(persisted).not.toContain('72°')
   })
 
+  it('persists and restores bank-match decisions across a reload', async () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setSource({
+      ...source('d'.repeat(32)),
+      questions: [{
+        question_id: 'Q5', question_type: 'fill_blank', question_preview: '',
+        answer_preview: '70°', answer_present: true, needs_review: false,
+        local_answer_trusted: false, has_question_asset: false, has_answer_asset: false,
+      }],
+    })
+    store.updateDecisions([{
+      question_id: 'Q5', excluded: false, bank_match: 'same', bank_question_id: 1425,
+    }])
+
+    const saved = localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!
+    expect(JSON.parse(saved).decisions).toEqual([{
+      question_id: 'Q5', excluded: false, bank_match: 'same', bank_question_id: 1425,
+    }])
+
+    setActivePinia(createPinia())
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, saved)
+    const restored = useConfigWorkspaceStore()
+    await restored.hydrateSafeIndex([7], 7, {
+      loadSource: async () => source('d'.repeat(32)),
+      loadEditor: async () => ({ ...editor(''), configured: false, rows: [] }),
+    })
+
+    expect(restored.decisions).toEqual([{
+      question_id: 'Q5', excluded: false, bank_match: 'same', bank_question_id: 1425,
+    }])
+  })
+
+  it('drops persisted bank-match decisions when the source revision changed', async () => {
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify({
+      sessionId: 7, phase: 'source', sourceId: 'd'.repeat(32),
+      sourceRevision: 'b'.repeat(64), jobId: null,
+      decisions: [{
+        question_id: 'Q5', excluded: false, bank_match: 'same', bank_question_id: 1425,
+      }],
+    }))
+    const store = useConfigWorkspaceStore()
+    await store.hydrateSafeIndex([7], 7, {
+      loadSource: async () => ({
+        ...source('d'.repeat(32)), source_revision: 'e'.repeat(64),
+      }),
+      loadEditor: async () => ({ ...editor(''), configured: false, rows: [] }),
+    })
+
+    expect(store.decisions).toEqual([])
+    expect(JSON.parse(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!).decisions)
+      .toEqual([])
+  })
+
   it('requires every uncertain image to be resolved before the whole paper can generate', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)

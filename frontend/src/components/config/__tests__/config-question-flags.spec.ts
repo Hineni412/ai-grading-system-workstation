@@ -3,8 +3,12 @@ import { describe, expect, it } from 'vitest'
 import type {
   ConfigQuestionGenerationState,
   ConfigQuestionPreview,
+  ConfigSourceDuplicateItem,
 } from '../../../api/config-workspace'
-import { configQuestionFlags } from '../config-question-flags'
+import {
+  configQuestionFlags,
+  configSourceDuplicateTag,
+} from '../config-question-flags'
 
 function question(overrides: Partial<ConfigQuestionPreview> = {}): ConfigQuestionPreview {
   return {
@@ -107,5 +111,87 @@ describe('configQuestionFlags', () => {
   it('produces no flag for a clean question', () => {
     expect(configQuestionFlags(question())).toEqual([])
     expect(configQuestionFlags(question({ needs_review: true }))).toEqual([])
+  })
+
+  it('maps duplicate-specific failure categories to specific labels', () => {
+    const uncertain: ConfigQuestionGenerationState = {
+      question_id: 'Q1', state: 'blocked', retryable: false,
+      reason: '题库存在相同题干的带图题，图片内容需先在题库核对。',
+      category: 'duplicate_content_uncertain',
+    }
+    const missing: ConfigQuestionGenerationState = {
+      question_id: 'Q1', state: 'failed', retryable: true,
+      reason: '题库已存在相同题目，但已存分析缺失或无法复用。',
+      category: 'duplicate_analysis_missing',
+    }
+
+    expect(configQuestionFlags(question(), uncertain)[0]?.label).toBe('图片待确认')
+    expect(configQuestionFlags(question(), uncertain)[0]?.title)
+      .toContain('图片内容需先在题库核对')
+    expect(configQuestionFlags(question(), missing)[0]?.label).toBe('题库已有·分析缺失')
+    expect(configQuestionFlags(question(), missing)[0]?.title)
+      .toContain('分析缺失或无法复用')
+  })
+})
+
+describe('configSourceDuplicateTag', () => {
+  function duplicate(
+    kind: ConfigSourceDuplicateItem['kind'],
+  ): ConfigSourceDuplicateItem {
+    return {
+      question_id: 'Q1', kind, matched_question_id: 12,
+      matched_paper_title: '样卷', matched_question_number: '3',
+      similarity: 1, matched_question_excerpt: '题干节选', reason: '题库已有相同题目',
+    }
+  }
+
+  it('maps each duplicate kind to its compact label and hides variant and same_session', () => {
+    const cases: Array<[ConfigSourceDuplicateItem['kind'], string | null]> = [
+      ['exact_reusable', '题库已有'],
+      ['exact_needs_analysis', '题库已有·需补分析'],
+      ['image_uncertain', '图片待确认'],
+      ['answer_conflict', '答案与题库不同'],
+      ['variant', null],
+      ['suspected', '相似'],
+      ['same_session', null],
+    ]
+    for (const [kind, label] of cases) {
+      expect(configSourceDuplicateTag(duplicate(kind))?.label ?? null).toBe(label)
+    }
+    expect(configSourceDuplicateTag(duplicate('exact_reusable'))?.title)
+      .toBe('题库已有相同题目')
+  })
+
+  it('uses neutral or info tones for non-warning kinds and warning for review kinds', () => {
+    expect(configSourceDuplicateTag(duplicate('exact_reusable'))?.tone).toBe('neutral')
+    expect(configSourceDuplicateTag(duplicate('exact_needs_analysis'))?.tone).toBe('neutral')
+    expect(configSourceDuplicateTag(duplicate('suspected'))?.tone).toBe('info')
+    expect(configSourceDuplicateTag(duplicate('answer_conflict'))?.tone ?? 'warning')
+      .toBe('warning')
+    expect(configSourceDuplicateTag(duplicate('image_uncertain'))?.tone ?? 'warning')
+      .toBe('warning')
+  })
+
+  it('relabels tags once a teacher decision is recorded', () => {
+    expect(configSourceDuplicateTag(duplicate('suspected'), {
+      question_id: 'Q1', excluded: false, bank_match: 'same', bank_question_id: 12,
+    })?.label).toBe('已确认同一题')
+    expect(configSourceDuplicateTag(duplicate('suspected'), {
+      question_id: 'Q1', excluded: false, bank_match: 'different',
+    })?.label).toBe('按新题处理')
+    expect(configSourceDuplicateTag(duplicate('answer_conflict'), {
+      question_id: 'Q1', excluded: false, bank_match: 'different',
+    })?.label).toBe('以本卷答案为准')
+    expect(configSourceDuplicateTag(duplicate('exact_needs_analysis'), {
+      question_id: 'Q1', excluded: false, bank_match: 'reanalyze',
+    })?.label).toBe('将重新分析')
+    expect(configSourceDuplicateTag(duplicate('answer_conflict'), {
+      question_id: 'Q1', excluded: false, answer_confirmed: true, answer_override: 'B',
+    })?.label).toBe('已改用题库答案')
+  })
+
+  it('falls back to the reuse hint when exact_reusable has no reason', () => {
+    const item = { ...duplicate('exact_reusable'), reason: '' }
+    expect(configSourceDuplicateTag(item)?.title).toBe('复用已有分析，不调用 AI')
   })
 })

@@ -259,6 +259,29 @@ const intakeBlocked = computed(() =>
   job.value?.result.exam_intake_complete === false
   || ['partial', 'failed', 'intake_failed'].includes(questionBankSyncState.value),
 )
+const analysisReusedIds = computed(() => {
+  const raw = job.value?.result.analysis_reused_question_ids
+  if (!Array.isArray(raw)) return []
+  return [...new Set(raw.filter(
+    (item): item is string => typeof item === 'string' && /^Q\d+$/.test(item),
+  ))]
+})
+const reusablePreviewCount = computed(() => {
+  const excluded = new Set(
+    configStore.decisions
+      .filter((decision) => decision.excluded)
+      .map((decision) => decision.question_id),
+  )
+  return new Set(configStore.sourceDuplicates
+    .filter((item) => item.kind === 'exact_reusable' && !excluded.has(item.question_id))
+    .map((item) => item.question_id)).size
+})
+const intakeSummaryCopy = computed(() => {
+  const reused = analysisReusedIds.value.length
+  const imported = safeCount(job.value?.result.question_bank_imported_count)
+  if (reused === 0 && imported === 0) return ''
+  return `复用 ${reused} 题 · 新入库 ${imported} 题`
+})
 const intakeQuestionIds = computed(() => {
   const value = job.value?.result.exam_intake_failed_question_ids
   return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && /^Q\d+$/.test(id)) : []
@@ -390,6 +413,8 @@ function failureCategoryCopy(category: string): string {
   if (category === 'model_output_contract') return '模型已返回，但题目结构不符合约定'
   if (category === 'evidence_granularity_insufficient') return '模型已返回，但评分点粒度不足'
   if (category === 'local_validation') return '模型已返回，但本地业务校验未通过'
+  if (category === 'duplicate_content_uncertain') return '题库存在相同题干的带图题，图片内容需人工核对'
+  if (category === 'duplicate_analysis_missing') return '题库已有相同题目，但已存分析缺失或无法复用'
   return '模型请求或结果处理失败'
 }
 
@@ -689,6 +714,10 @@ watch(
           </select>
         </label>
         <span class="config-generation__console-count">通过 {{ passedStateCount }} · 异常 {{ redStateCount }}</span>
+        <span
+          v-if="job === null && reusablePreviewCount > 0"
+          class="config-generation__console-reuse"
+        >{{ reusablePreviewCount }} 题复用题库分析</span>
         <button
           v-if="job === null"
           type="button"
@@ -727,7 +756,7 @@ watch(
       <div v-if="completeSuccess" class="config-generation__success" role="status">
         <span class="config-generation__success-icon" aria-hidden="true">✓</span>
         <span class="config-generation__success-copy">
-          评分依据已生成 · {{ passedStateCount }} 通过 · {{ redStateCount }} 需处理
+          评分依据已生成<template v-if="intakeSummaryCopy"> · {{ intakeSummaryCopy }}</template> · {{ passedStateCount }} 通过 · {{ redStateCount }} 需处理
         </span>
         <button
           v-if="!refineJob"
@@ -957,6 +986,7 @@ button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 .config-generation__console-volume { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
 .config-generation__console-volume select { min-height: 34px; max-width: 180px; }
 .config-generation__console-count { margin-inline-start: auto; color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
+.config-generation__console-reuse { color: var(--color-accent); font-size: var(--font-size-caption); white-space: nowrap; }
 .config-generation__job p { margin: 0 0 var(--space-3); color: var(--color-text-secondary); }
 .config-generation__job .config-generation__retained { padding: var(--space-3); border-radius: var(--radius-control); background: var(--color-success-subtle); color: var(--color-text-primary); }
 .config-generation__partial { padding-block: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-subtle); }

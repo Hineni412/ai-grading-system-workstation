@@ -1,12 +1,22 @@
 import { createApp, nextTick, reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const questionBankApiMock = vi.hoisted(() => ({
+  getQuestion: vi.fn(),
+}))
+vi.mock('../../../api/question-bank', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../../api/question-bank')>()
+  return { ...original, questionBankApi: questionBankApiMock }
+})
+
 import type {
   ConfigAmbiguousAssetDecision,
   ConfigQuestionGenerationState,
   ConfigSource,
+  ConfigSourceDuplicateItem,
   QuestionDecision,
 } from '../../../api/config-workspace'
+import type { QuestionBankDetail } from '../../../api/question-bank'
 import QuestionBlockReview from '../QuestionBlockReview.vue'
 
 function source(overrides: Partial<ConfigSource> = {}): ConfigSource {
@@ -39,6 +49,8 @@ async function mountReview(options: {
   onUpdate?: (value: QuestionDecision[]) => void
   onAssetUpdate?: (value: ConfigAmbiguousAssetDecision[]) => void
   questionStates?: ConfigQuestionGenerationState[]
+  duplicates?: ConfigSourceDuplicateItem[]
+  duplicatesUnavailable?: boolean
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -52,15 +64,30 @@ async function mountReview(options: {
       decisions: options.decisions ?? [],
       assetDecisions: options.assetDecisions ?? [],
       questionStates: options.questionStates ?? [],
+      duplicates: options.duplicates ?? [],
+      duplicatesUnavailable: options.duplicatesUnavailable ?? false,
     }),
-    template: '<QuestionBlockReview :source="state.value" :decisions="decisions" :asset-decisions="assetDecisions" :question-states="questionStates" @update:decisions="onUpdate" @update:asset-decisions="onAssetUpdate" />',
+    template: '<QuestionBlockReview :source="state.value" :decisions="decisions" :asset-decisions="assetDecisions" :question-states="questionStates" :duplicates="duplicates" :duplicates-unavailable="duplicatesUnavailable" @update:decisions="onUpdate" @update:asset-decisions="onAssetUpdate" />',
   })
   app.mount(host)
   await nextTick()
   return { host, state, onUpdate, onAssetUpdate, unmount: () => app.unmount() }
 }
 
-beforeEach(() => { document.body.innerHTML = '' })
+beforeEach(() => {
+  document.body.innerHTML = ''
+  questionBankApiMock.getQuestion.mockReset()
+  questionBankApiMock.getQuestion.mockResolvedValue({
+    id: 42,
+    question_text: '题库题干全文',
+    answer_text: 'C',
+    rich_content: {
+      available: true, question_block_count: 0, answer_block_count: 0,
+      question_blocks: [], answer_blocks: [],
+    },
+    assets: [], previews: [], tags: [],
+  } as unknown as QuestionBankDetail)
+})
 
 describe('QuestionBlockReview', () => {
   it('keeps passed questions and exceptions fully expanded', async () => {
@@ -92,6 +119,12 @@ describe('QuestionBlockReview', () => {
       onUpdate,
     })
     expect(mounted.host.querySelector<HTMLInputElement>('[aria-label="排除 Q3"]')).toBeNull()
+    // Decisions survive a remount while the source revision is unchanged —
+    // the store owns clearing on source replacement; only a live revision
+    // change still clears.
+    expect(onUpdate).not.toHaveBeenCalled()
+    mounted.state.value = source({ source_revision: 'f'.repeat(64) })
+    await nextTick()
     expect(onUpdate).toHaveBeenLastCalledWith([])
     expect(mounted.host.querySelector('[aria-label="Q2 题型"]')).toBeNull()
     expect(mounted.host.textContent).not.toContain('确认用于生成')
@@ -460,6 +493,173 @@ describe('QuestionBlockReview', () => {
 
     expect(onUpdate).toHaveBeenLastCalledWith([])
     expect(mounted.host.textContent).toContain('查看完整答案')
+  })
+
+  it('tags bank duplicates, hides variant, filters them, and opens the compare dialog', async () => {
+    const mounted = await mountReview({
+      duplicates: [
+        { question_id: 'Q1', kind: 'exact_reusable', matched_question_id: 41,
+          matched_paper_title: '八上月考卷', matched_question_number: '3',
+          similarity: 1, matched_question_excerpt: '题库中的相同题干节选',
+          reason: '题库已有相同题目，可复用分析' },
+        { question_id: 'Q2', kind: 'answer_conflict', matched_question_id: 42,
+          matched_paper_title: '八上期中卷', matched_question_number: '7',
+          similarity: 1, matched_question_excerpt: '相同题干但答案不同',
+          bank_answer_text: 'C', suggested_answer_override: 'C',
+          reason: '题库答案与本卷不一致' },
+        { question_id: 'Q3', kind: 'same_session', matched_question_id: 43,
+          matched_paper_title: '本场上次导入', matched_question_number: '1',
+          similarity: 1, matched_question_excerpt: '', reason: '本卷此前已入库' },
+        { question_id: 'Q1', kind: 'variant', matched_question_id: 44,
+          matched_paper_title: '变式卷', matched_question_number: '9',
+          similarity: 0.8, matched_question_excerpt: '变式节选', reason: '疑似变式' },
+      ],
+    })
+
+    // same_session and variant show nothing; Q1 keeps the informational bank tag.
+    const q1Row = mounted.host.querySelector<HTMLElement>('[data-question-row="Q1"]')!
+    expect(q1Row.querySelector('.question-review__flag')?.textContent).toBe('题库已有')
+    expect(mounted.host.textContent).not.toContain('变式')
+    const q3Row = mounted.host.querySelector<HTMLElement>('[data-question-row="Q3"]')!
+    expect(q3Row.querySelector('.question-review__flag')).toBeNull()
+
+    // answer_conflict counts toward 需核对；exact_reusable does not.
+    const chips = [...mounted.host.querySelectorAll<HTMLButtonElement>(
+      '.question-review__filters button',
+    )].map((button) => button.textContent?.trim())
+    expect(chips).toContain('需核对 1')
+    expect(chips).toContain('题库已有 1')
+
+    // 对照 opens the modal with header, counter and answer side-by-side.
+    const card = mounted.host.querySelector<HTMLElement>('[data-question-card="Q2"]')!
+    const dupLine = card.querySelector<HTMLElement>('.question-review__dup-line')!
+    expect(dupLine.textContent).toContain('《八上期中卷》第7题')
+    expect(dupLine.textContent).toContain('答案与题库不同')
+    card.querySelector<HTMLButtonElement>('.question-review__dup-compare')!.click()
+    await nextTick()
+    const dialog = document.body.querySelector<HTMLElement>('[data-testid="dup-compare-dialog"]')!
+    expect(dialog).toBeTruthy()
+    expect(dialog.textContent).toContain('《八上期中卷》第7题')
+    expect(dialog.textContent).toContain('2/2')
+    expect(dialog.textContent).toContain('本卷答案')
+    expect(dialog.textContent).toContain('题库答案')
+    expect(dialog.textContent).toContain('本卷答案正确')
+    expect(dialog.textContent).toContain('题库答案正确')
+
+    // Arrow keys navigate; ← stays on the first item boundary.
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="dup-compare-dialog"]')!.textContent)
+      .toContain('1/2')
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="dup-compare-dialog"]')!.textContent)
+      .toContain('2/2')
+
+    // Esc closes (the node lingers for the exit animation in jsdom).
+    document.body.querySelector<HTMLElement>('[data-testid="dup-compare-dialog"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+    await nextTick()
+    const closedDialog = document.body.querySelector('[data-testid="dup-compare-dialog"]')
+    expect(closedDialog === null
+      || closedDialog.getAttribute('data-state') === 'closed').toBe(true)
+
+    // 题库已有 filter keeps only exact matches.
+    const bankChip = [...mounted.host.querySelectorAll<HTMLButtonElement>(
+      '.question-review__filters button',
+    )].find((button) => button.textContent?.includes('题库已有'))!
+    bankChip.click()
+    await nextTick()
+    const rows = mounted.host.querySelectorAll('.question-review__list > .question-review__row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.getAttribute('data-question-row')).toBe('Q1')
+  })
+
+  it('emits bank decisions from the dialog, relabels the tag, drops 需核对, and undoes', async () => {
+    const decisionsRef = reactive<QuestionDecision[]>([])
+    const onUpdate = vi.fn((next: QuestionDecision[]) => {
+      decisionsRef.splice(0, decisionsRef.length, ...next)
+    })
+    const mounted = await mountReview({
+      decisions: decisionsRef,
+      onUpdate,
+      duplicates: [
+        { question_id: 'Q2', kind: 'suspected', matched_question_id: 42,
+          matched_paper_title: '八上期中卷', matched_question_number: '7',
+          similarity: 0.92, matched_question_excerpt: '相似题干节选',
+          reason: '题干高度相似' },
+      ],
+    })
+
+    mounted.host.querySelector<HTMLElement>('[data-question-card="Q2"]')!
+      .querySelector<HTMLButtonElement>('.question-review__dup-compare')!.click()
+    await nextTick()
+    const dialog = document.body.querySelector<HTMLElement>('[data-testid="dup-compare-dialog"]')!
+    expect(dialog.textContent).toContain('相似')
+    expect(dialog.textContent).toContain('1/1')
+    const sameButton = [...dialog.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '是同一题')!
+    sameButton.click()
+    await nextTick()
+
+    expect(onUpdate).toHaveBeenCalledWith([
+      { question_id: 'Q2', excluded: false, bank_match: 'same', bank_question_id: 42 },
+    ])
+    expect(dialog.querySelector('[data-testid="dup-compare-decided"]')!.textContent)
+      .toContain('已确认同一题')
+    expect(mounted.host.textContent).toContain('已确认同一题')
+
+    // 撤销 removes the decision and restores the original tag.
+    dialog.querySelector<HTMLButtonElement>('.dup-compare__undo')!.click()
+    await nextTick()
+    expect(onUpdate).toHaveBeenLastCalledWith([])
+    expect(mounted.host.textContent).toContain('相似')
+    expect(mounted.host.textContent).not.toContain('已确认同一题')
+  })
+
+  it('counts undecided conflict questions toward 需核对 and un-counts them after a decision', async () => {
+    const decisionsRef = reactive<QuestionDecision[]>([])
+    const onUpdate = vi.fn((next: QuestionDecision[]) => {
+      decisionsRef.splice(0, decisionsRef.length, ...next)
+    })
+    const mounted = await mountReview({
+      decisions: decisionsRef,
+      onUpdate,
+      duplicates: [
+        { question_id: 'Q2', kind: 'answer_conflict', matched_question_id: 42,
+          matched_paper_title: '八上期中卷', matched_question_number: '7',
+          similarity: 1, matched_question_excerpt: '相同题干',
+          bank_answer_text: 'C', suggested_answer_override: 'C',
+          reason: '题库答案与本卷不一致' },
+      ],
+    })
+    const chipText = () => [...mounted.host.querySelectorAll<HTMLButtonElement>(
+      '.question-review__filters button',
+    )].map((button) => button.textContent?.trim())
+    expect(chipText()).toContain('需核对 1')
+
+    mounted.host.querySelector<HTMLElement>('[data-question-card="Q2"]')!
+      .querySelector<HTMLButtonElement>('.question-review__dup-compare')!.click()
+    await nextTick()
+    const dialog = document.body.querySelector<HTMLElement>('[data-testid="dup-compare-dialog"]')!
+    const bankButton = [...dialog.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '题库答案正确')!
+    bankButton.click()
+    await nextTick()
+
+    expect(onUpdate).toHaveBeenCalledWith([
+      { question_id: 'Q2', excluded: false, answer_confirmed: true, answer_override: 'C' },
+    ])
+    expect(mounted.host.textContent).toContain('已改用题库答案')
+    expect(chipText()).not.toContain('需核对 1')
+  })
+
+  it('shows a non-blocking notice when the duplicate check is unavailable', async () => {
+    const mounted = await mountReview({ duplicatesUnavailable: true })
+    expect(mounted.host.textContent).toContain('查重暂不可用')
+    expect(mounted.host.querySelectorAll('.question-review__list > .question-review__row'))
+      .toHaveLength(3)
   })
 
   it('renders a continuous list and an explicit zero-question state', async () => {

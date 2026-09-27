@@ -649,6 +649,8 @@ watch(
                 :decisions="configStore.decisions"
                 :asset-decisions="configStore.assetDecisions"
                 :question-states="configStore.questionStates"
+                :duplicates="configStore.sourceDuplicates"
+                :duplicates-unavailable="configStore.duplicatesUnavailable"
                 @update:decisions="configStore.updateDecisions"
                 @update:asset-decisions="configStore.updateAssetDecisions"
               />
