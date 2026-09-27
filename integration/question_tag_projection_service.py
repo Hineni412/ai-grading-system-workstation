@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import sqlite3
 from typing import Any, Mapping
@@ -97,6 +98,7 @@ class QuestionTagProjectionService:
             if parent_ref in confirmed_links
         }
         questions, tags_by_question = self._load_questions_and_tags(bank_question_ids)
+        feature_difficulties = self._active_feature_difficulties(bank_question_ids)
         from question_bank.solution_evidence.evidence_snapshot import (
             load_snapshot,
             resolved_direct_keys,
@@ -174,6 +176,7 @@ class QuestionTagProjectionService:
                 estimate = _snapshot_part_estimate(
                     snapshot_question,
                     evidence_part_id,
+                    feature_difficulties.get(bank_question_id) or {},
                 )
                 missing_reason = (
                     "part_evidence_point_ids_missing"
@@ -319,6 +322,44 @@ class QuestionTagProjectionService:
         }
         return questions, tags_by_question
 
+    def _active_feature_difficulties(
+        self,
+        question_ids: set[int],
+    ) -> dict[int, dict[str, dict[str, Any]]]:
+        """当前有效的逐小问公式难度，按 (question_id, part_id) 组织。"""
+        if not question_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in question_ids)
+        with connect(
+            self.db_path,
+            external_connection=self.external_connection,
+        ) as conn:
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='question_part_difficulty_features'"
+            ).fetchone() is None:
+                return {}
+            rows = conn.execute(
+                f"""
+                SELECT question_id, part_id, features_json, formula_difficulty
+                FROM question_part_difficulty_features
+                WHERE is_active = 1 AND question_id IN ({placeholders})
+                """,
+                sorted(question_ids),
+            ).fetchall()
+        result: dict[int, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            try:
+                payload = json.loads(str(row["features_json"] or "{}"))
+            except (TypeError, ValueError):
+                payload = {}
+            result.setdefault(int(row["question_id"]), {})[str(row["part_id"])] = {
+                "difficulty": row["formula_difficulty"],
+                "rationale": str(payload.get("evidence") or "")
+                if isinstance(payload, Mapping) else "",
+            }
+        return result
+
 
 def _covered_point_ids(
     item: Mapping[str, Any],
@@ -349,11 +390,27 @@ def _covered_point_ids(
 def _snapshot_part_estimate(
     snapshot_question: Mapping[str, Any],
     part_id: str,
+    features: Mapping[str, Mapping[str, Any]],
 ) -> Mapping[str, Any]:
-    for part in snapshot_question.get("parts") or ():
-        if isinstance(part, Mapping) and str(part.get("part_id") or "") == part_id:
-            return part
-    return {}
+    """历史考试的小问难度读当前公式分，不写回已冻结的快照。
+
+    只有当该题当前有效的特征 part_id 集合与快照证据的 part_id 集合
+    完全一致时才采用公式难度；否则按未知处理。
+    """
+    evidence_part_ids = {
+        str(part.get("part_id") or "")
+        for part in (snapshot_question.get("evidence") or {}).get("parts", ())
+        if isinstance(part, Mapping)
+    }
+    if features and set(features) == evidence_part_ids:
+        feature = features.get(part_id)
+        if feature is not None:
+            return {
+                "difficulty": feature.get("difficulty"),
+                "source": "formula",
+                "rationale": str(feature.get("rationale") or ""),
+            }
+    return {"difficulty": None, "source": "unknown", "rationale": ""}
 
 
 __all__ = [

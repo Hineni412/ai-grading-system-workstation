@@ -7,7 +7,6 @@ import type {
   ReportHistoryJob,
   ReportType,
   ScoreExcelOptions,
-  TrainingExportRequest,
 } from '../api/exports'
 import { exportsApi } from '../api/exports'
 import {
@@ -39,11 +38,6 @@ const hideBottomN = ref(8)
 const manualHideEnabled = ref(false)
 const manualHiddenStudentIds = ref<number[]>([])
 const manualStudentSearch = ref('')
-const trainingPanelOpen = ref(false)
-const trainingMode = ref<'bundle' | 'variant'>('bundle')
-const trainingVariantId = ref('')
-const trainingFormat = ref<'docx' | 'markdown'>('docx')
-const trainingAudience = ref<'student' | 'teacher'>('student')
 const analysisConfirmOpen = ref(false)
 const analysisPreflight = ref<AnalysisPreflight | null>(null)
 const analysisPreflightLoading = ref(false)
@@ -137,7 +131,7 @@ const reportDefinitions: Array<{
 ]
 
 const liveJobs = computed(() => Object.values(jobStore.jobs)
-  .filter((job) => job.job_type === 'report_export' || job.job_type === 'training_export')
+  .filter((job) => job.job_type === 'report_export')
   .sort((left, right) => right.id - left.id))
 const pendingReportStatusSignal = computed(() => (
   fileCenter.reportContext?.jobs ?? []
@@ -398,70 +392,6 @@ async function submitConfiguredScoreExcel(): Promise<void> {
   }
 }
 
-async function exportTraining(taskId: number): Promise<void> {
-  actionError.value = ''
-  actionMessage.value = ''
-  try {
-    await fileCenter.submitTrainingBundle(taskId)
-    actionMessage.value = '训练材料已加入生成队列。'
-  } catch {
-    actionError.value = '训练材料生成请求未能提交，请稍后重试。'
-  }
-}
-
-async function configureTraining(taskId: number): Promise<void> {
-  actionError.value = ''
-  try {
-    const detail = await fileCenter.loadTrainingTask(taskId)
-    if (!detail || fileCenter.selectedTrainingTask?.id !== taskId) return
-    trainingPanelOpen.value = true
-    trainingMode.value = 'bundle'
-    trainingFormat.value = 'docx'
-    trainingAudience.value = 'student'
-    trainingVariantId.value = String(detail.variants[0]?.id ?? '')
-  } catch {
-    actionError.value = '训练任务详情暂时无法读取，请稍后重试。'
-  }
-}
-
-async function submitTrainingChoice(): Promise<void> {
-  const task = fileCenter.selectedTrainingTask
-  if (!task) return
-  const body: TrainingExportRequest = {
-    format: trainingFormat.value,
-  }
-  if (trainingMode.value === 'variant') {
-    const variantId = Number(trainingVariantId.value)
-    if (!Number.isSafeInteger(variantId) || variantId <= 0) {
-      actionError.value = '请选择一个训练版本。'
-      return
-    }
-    body.variant_id = variantId
-    body.audience = trainingAudience.value
-  }
-  actionError.value = ''
-  actionMessage.value = ''
-  try {
-    await fileCenter.submitTraining(task.id, body)
-    actionMessage.value = trainingMode.value === 'bundle'
-      ? '整任务训练材料已加入生成队列。'
-      : '所选训练版本已加入生成队列。'
-  } catch {
-    actionError.value = '训练材料生成请求未能提交，请稍后重试。'
-  }
-}
-
-async function retryTraining(jobId: number): Promise<void> {
-  actionError.value = ''
-  actionMessage.value = ''
-  try {
-    await fileCenter.retryTrainingExport(jobId)
-    actionMessage.value = '训练材料已重新加入生成队列。'
-  } catch {
-    actionError.value = '该训练材料暂时无法重试，请刷新登记簿后再试。'
-  }
-}
-
 function isRetainedReport(job: JobResponse): boolean {
   return job.payload.report_type === 'personal_analysis_html'
 }
@@ -528,10 +458,6 @@ function refresh(): void {
   if (sessionId !== null) void fileCenter.load(sessionId)
 }
 
-function isTrainingDownloadable(job: JobResponse): boolean {
-  return job.status === 'succeeded'
-    && typeof job.result.download_url === 'string'
-}
 </script>
 
 <template>
@@ -985,147 +911,6 @@ function isTrainingDownloadable(job: JobResponse): boolean {
         </div>
       </section>
 
-      <section class="file-section" aria-labelledby="training-files-title">
-        <div class="file-section__heading">
-          <div>
-            <p class="file-center__eyebrow">练习与讲评</p>
-            <h2 id="training-files-title">训练材料</h2>
-          </div>
-          <span class="file-section__context">默认生成 Word 文件包</span>
-        </div>
-
-        <div v-if="!fileCenter.trainingTasks.length" class="file-ledger__empty">
-          暂无可出件的训练任务。
-        </div>
-        <div v-else class="training-task-grid">
-          <article v-for="task in fileCenter.trainingTasks" :key="task.id" class="training-task">
-            <div>
-              <span class="training-task__code">{{ task.task_code }}</span>
-              <h3>训练任务 #{{ task.id }}</h3>
-              <p>状态：{{ task.status }}</p>
-            </div>
-            <button
-              type="button"
-              class="file-button file-button--secondary"
-              :data-testid="`export-training-${task.id}`"
-              :disabled="fileCenter.submittingKey === `training:${task.id}`"
-              @click="exportTraining(task.id)"
-            >
-              整任务打包
-            </button>
-            <button
-              type="button"
-              class="file-button file-button--primary"
-              :data-testid="`configure-training-${task.id}`"
-              @click="configureTraining(task.id)"
-            >
-              选择版本与格式
-            </button>
-          </article>
-        </div>
-
-        <form
-          v-if="trainingPanelOpen && fileCenter.selectedTrainingTask"
-          class="training-export-form"
-          data-testid="training-export-form"
-          @submit.prevent="submitTrainingChoice"
-        >
-          <div class="training-export-form__heading">
-            <div>
-              <p class="file-center__eyebrow">出件设置</p>
-              <h3>{{ fileCenter.selectedTrainingTask.task_code }}</h3>
-            </div>
-            <button type="button" class="file-link-button" @click="trainingPanelOpen = false">
-              收起
-            </button>
-          </div>
-          <div class="training-export-form__fields">
-            <label>
-              <span>出件范围</span>
-              <select v-model="trainingMode" data-testid="training-mode">
-                <option value="bundle">整任务材料包</option>
-                <option value="variant">指定训练版本</option>
-              </select>
-            </label>
-            <label v-if="trainingMode === 'variant'">
-              <span>训练版本</span>
-              <select v-model="trainingVariantId" data-testid="training-variant">
-                <option
-                  v-for="variant in fileCenter.selectedTrainingTask.variants"
-                  :key="variant.id"
-                  :value="String(variant.id)"
-                >
-                  {{ variant.variant_key }}（#{{ variant.id }}）
-                </option>
-              </select>
-            </label>
-            <label>
-              <span>文件格式</span>
-              <select v-model="trainingFormat" data-testid="training-format">
-                <option value="docx">Word（DOCX）</option>
-                <option value="markdown">Markdown</option>
-              </select>
-            </label>
-            <label v-if="trainingMode === 'variant'">
-              <span>使用版本</span>
-              <select v-model="trainingAudience" data-testid="training-audience">
-                <option value="student">学生版</option>
-                <option value="teacher">教师版</option>
-              </select>
-            </label>
-          </div>
-          <div class="training-export-form__actions">
-            <span>
-              {{ trainingMode === 'bundle' ? '整任务会生成一个材料包。' : '指定版本需同时选择学生版或教师版。' }}
-            </span>
-            <button
-              type="submit"
-              class="file-button file-button--primary"
-              data-testid="submit-training-choice"
-              :disabled="fileCenter.submittingKey === `training:${fileCenter.selectedTrainingTask.id}`"
-            >
-              开始生成
-            </button>
-          </div>
-        </form>
-
-        <div class="file-ledger">
-          <h3>训练材料记录</h3>
-          <div v-if="!fileCenter.trainingJobs.length" class="file-ledger__empty">
-            还没有训练材料生成记录。
-          </div>
-          <ul v-else class="file-ledger__list">
-            <li v-for="job in fileCenter.trainingJobs" :key="job.id">
-              <div>
-                <strong>训练任务 #{{ job.payload.task_id }}</strong>
-                <span>{{ formatTime(job.created_at) }} · 任务 #{{ job.id }}</span>
-              </div>
-              <span class="file-status" :class="`file-status--${statusTone(job.status)}`">
-                {{ statusLabel(job.status) }}
-              </span>
-              <button
-                v-if="isTrainingDownloadable(job)"
-                type="button"
-                class="file-link-button"
-                :data-testid="`download-training-${job.id}`"
-                @click="download(job)"
-              >
-                下载
-              </button>
-              <button
-                v-else-if="job.status === 'failed' || job.status === 'cancelled'"
-                type="button"
-                class="file-link-button"
-                :data-testid="`retry-training-${job.id}`"
-                @click="retryTraining(job.id)"
-              >
-                重试
-              </button>
-            </li>
-          </ul>
-        </div>
-      </section>
-
       <section v-if="liveJobs.length" class="file-section file-section--compact" aria-labelledby="live-jobs-title">
         <div class="file-section__heading">
           <div>
@@ -1136,7 +921,7 @@ function isTrainingDownloadable(job: JobResponse): boolean {
         <ul class="file-ledger__list">
           <li v-for="job in liveJobs" :key="job.id">
             <div>
-              <strong>{{ job.job_type === 'report_export' ? reportTypeLabel(job.payload.report_type) : '训练材料' }}</strong>
+              <strong>{{ reportTypeLabel(job.payload.report_type) }}</strong>
               <span>任务 #{{ job.id }} · {{ Math.round(job.progress * 100) }}%</span>
             </div>
             <span class="file-status" :class="`file-status--${statusTone(job.status)}`">

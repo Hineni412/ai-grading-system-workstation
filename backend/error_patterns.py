@@ -1,11 +1,13 @@
-"""错因体系 P2/P3：题目级“典型错法”候选库与确定性学生映射。
+"""错因体系 P2/P3/P5：题目级“典型错法”候选库与确定性学生映射。
 
 - 选择题（仅八上）：每题一次“选项分析”，产出 {选项字母: 错法}；
   学生识别到的选项字母直接对应，不做二次推理；未覆盖的选项记“原因未明”。
 - 填空题：学生作答规范化分组；库中已有的错误答案直接复用错法；
   整理阶段（v3）新归纳出的错法按规范化答案回写入库，供后续复用。
-- 全部候选只保存在各场次 `.class_analysis` 状态文件；写题库必须
-  经教师确认，走 ``question_error_patterns`` 表（P4）。
+- 候选同时保存在各场次 `.class_analysis` 状态文件与题库
+  ``question_error_patterns`` 表：P5 起整理结束自动回挂
+  （``sync_session_patterns_to_bank``，来源 ``ai_auto``），
+  不再要求教师确认；教师可事后修改（来源 ``teacher_edit``）。
 """
 
 from __future__ import annotations
@@ -163,6 +165,28 @@ def session_bank_context(
         ).fetchall()
         if not own:
             return {}
+        graph: dict[int, set[int]] = {}
+        if "question_duplicate_links" in tables and "questions" in tables:
+            for qid, dup_of in connection.execute(
+                "SELECT question_id, duplicate_of_question_id FROM question_duplicate_links WHERE match_kind='exact'"
+            ):
+                graph.setdefault(int(qid), set()).add(int(dup_of))
+                graph.setdefault(int(dup_of), set()).add(int(qid))
+        candidate_ids = {int(bank_id) for _, bank_id in own}
+        frontier = list(candidate_ids)
+        while frontier:
+            for linked_id in graph.get(frontier.pop(), ()):
+                if linked_id not in candidate_ids:
+                    candidate_ids.add(linked_id)
+                    frontier.append(linked_id)
+        identities = {}
+        if graph:
+            from question_bank.services.duplicate_analysis_copy_service import exact_identity_map
+            # The existing connection stays read-only; no index repair here.
+            connection.row_factory = sqlite3.Row
+            identities = exact_identity_map(connection, data_root=path.parent.parent,
+                question_ids=sorted(candidate_ids), persist=False)
+            connection.row_factory = None
         own_parent: dict[int, set[str]] = {}
         families: dict[int, set[int]] = {}
         for source_qid, bank_id in own:
@@ -171,13 +195,9 @@ def session_bank_context(
             if bank_id in families:
                 continue
             family = {bank_id}
-            if "question_duplicate_links" in tables:
-                for qid, dup_of in connection.execute(
-                    "SELECT question_id, duplicate_of_question_id FROM question_duplicate_links"
-                    " WHERE question_id=? OR duplicate_of_question_id=?",
-                    (bank_id, bank_id),
-                ):
-                    family.update((int(qid), int(dup_of)))
+            key = identities.get(bank_id)
+            if key:
+                family.update(qid for qid, other_key in identities.items() if key == other_key)
             families[bank_id] = family
         all_ids = sorted({bid for family in families.values() for bid in family})
         marks = ",".join("?" * len(all_ids))
@@ -592,11 +612,18 @@ def merge_bank_triggers_into_patterns(
     confirmed_rows: list[dict[str, Any]],
     *,
     trigger_kind: str,
+    sources: set[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """题库 confirmed 行 → {trigger_value: 合成用条目}。"""
+    """题库 confirmed 行 → {trigger_value: 合成用条目}。
+
+    sources 非空时只取对应来源的行（例如只让 teacher_edit 覆盖会话内
+    已有的选项分析结果）。
+    """
     merged: dict[str, dict[str, Any]] = {}
     for row in confirmed_rows:
         if row.get("trigger_kind") != trigger_kind:
+            continue
+        if sources is not None and str(row.get("source") or "") not in sources:
             continue
         value = str(row.get("trigger_value") or "").strip()
         if not value or value in merged:
@@ -608,6 +635,122 @@ def merge_bank_triggers_into_patterns(
             "status": "confirmed",
         }
     return merged
+
+
+def sync_session_patterns_to_bank(
+    store: Any,
+    session_id: int,
+    question_bank_path: Path | None,
+    bank_context: dict[str, dict[str, Any]],
+) -> int:
+    """把本场整理出的典型错法自动回挂题库（source='ai_auto'）；返回新增行数。
+
+    扫描整场状态文件，按 (题, 触发, 触发值[, 错法名]) 幂等：重复运行只补
+    出现快照、不重复建行。只写 bank_context 中已关联的题（写 ctx["bank_id"]，
+    判重家族成员经 bank_ids 读取侧覆盖）；表缺失/未关联直接跳过。
+    """
+    from backend.class_analysis import CAUSE_ANALYSIS_VERSION
+    from question_bank.services.error_pattern_service import record_auto_patterns
+
+    if question_bank_path is None or not bank_context:
+        return 0
+    state = store.load(session_id) or {}
+    occurrence_base = {"session_id": int(session_id)}
+    rows: list[dict[str, Any]] = []
+
+    def ctx_for(qid: str) -> dict[str, Any] | None:
+        ctx = bank_context.get(_parent_qid(str(qid))) or {}
+        return ctx if ctx.get("bank_id") else None
+
+    # 选项诊断：模型产出且未失败的条目，逐字母写 option 触发。
+    for qid, entry in option_analysis_entries(state).items():
+        ctx = ctx_for(qid)
+        if ctx is None or not isinstance(entry, dict):
+            continue
+        if entry.get("source") != "model" or entry.get("failed"):
+            continue
+        analysis = entry.get("analysis")
+        if not isinstance(analysis, dict):
+            continue
+        bank_id = int(entry.get("bank_question_id") or ctx["bank_id"])
+        for letter, item in analysis.items():
+            if not isinstance(item, dict):
+                continue
+            pattern = str(item.get("pattern") or "").strip()
+            if not pattern:
+                continue
+            rows.append({
+                "question_id": bank_id,
+                "category": normalize_cause_category(item.get("category")),
+                "pattern": pattern,
+                "explanation": str(item.get("explanation") or "").strip(),
+                "trigger_kind": "option",
+                "trigger_value": str(letter).strip(),
+                "source": "ai_auto",
+                "occurrence": {**occurrence_base, "question_id": str(qid)},
+            })
+
+    # 填空错误答案库：v3 归纳出的条目按规范化答案写 wrong_answer 触发。
+    for parent, bucket in answer_pattern_map(state).items():
+        ctx = ctx_for(parent)
+        if ctx is None:
+            continue
+        for answer, item in bucket.items():
+            if str(answer).startswith("_") or not isinstance(item, dict):
+                continue
+            if str(item.get("source") or "") != "cause_v3":
+                continue
+            pattern = str(item.get("pattern") or "").strip()
+            if not pattern:
+                continue
+            rows.append({
+                "question_id": int(ctx["bank_id"]),
+                "category": normalize_cause_category(item.get("category")),
+                "pattern": pattern,
+                "explanation": str(item.get("explanation") or "").strip(),
+                "trigger_kind": "wrong_answer",
+                "trigger_value": str(answer),
+                "source": "ai_auto",
+                "occurrence": {**occurrence_base, "question_id": str(parent)},
+            })
+
+    # v3 整题整理：error/process 组写 step（可定位判定点）或 observation。
+    questions = ((state.get("cause_analysis") or {}).get("questions")) or {}
+    for qid, entry in questions.items():
+        ctx = ctx_for(qid)
+        if ctx is None or not isinstance(entry, dict):
+            continue
+        if entry.get("version") != CAUSE_ANALYSIS_VERSION or entry.get("origin") != "model":
+            continue
+        result = entry.get("result")
+        if not isinstance(result, dict):
+            continue
+        for group in result.get("groups") or []:
+            if not isinstance(group, dict):
+                continue
+            if str(group.get("kind") or "") not in ("error", "process"):
+                continue
+            category = normalize_cause_category(group.get("category"))
+            reason = str(group.get("reason") or "").strip()
+            if not category or not reason:
+                continue
+            step_id = str(group.get("step_id") or "").strip()
+            explanation = "；".join(
+                str(item.get("description") or "")
+                for item in group.get("manifestations") or []
+                if item.get("description")
+            )[:200]
+            rows.append({
+                "question_id": int(ctx["bank_id"]),
+                "category": category,
+                "pattern": reason,
+                "explanation": explanation,
+                "trigger_kind": "step" if step_id else "observation",
+                "trigger_value": step_id,
+                "source": "ai_auto",
+                "occurrence": {**occurrence_base, "question_id": str(qid)},
+            })
+    return record_auto_patterns(Path(question_bank_path), rows)
 
 
 __all__ = [
@@ -637,6 +780,7 @@ __all__ = [
     "save_option_analysis",
     "session_bank_context",
     "session_bank_map",
+    "sync_session_patterns_to_bank",
     "synthesize_answer_result",
     "synthesize_option_result",
 ]

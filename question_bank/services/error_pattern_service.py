@@ -1,8 +1,11 @@
 """题目典型错法（question_error_patterns）读写服务。
 
-错因体系改造 P4：本表只存教师确认后的条目；考试侧候选项留在
-`.class_analysis` 状态文件中。读取侧的 ``list_patterns`` 附带把旧
-``error_type`` 标签换算为“仅预测”候选展示，不写回标签数据。
+错因体系改造 P5：AI 整理/预分析产出的典型错法由考试侧自动写入本表
+（``record_auto_patterns``，来源 ``ai_auto``/``ai_pre_analysis`` 等），
+教师无需确认；教师可事后用 ``rename_patterns`` 修改错法名/大类
+（来源 ``teacher_edit``）。merged/rejected 条目永不复活。
+读取侧的 ``list_patterns`` 附带把旧 ``error_type`` 标签换算为
+“仅预测”候选展示，不写回标签数据。
 """
 
 from __future__ import annotations
@@ -104,77 +107,168 @@ def _legacy_tag_patterns(
     return out
 
 
-def confirm_pattern(
+def _append_occurrence(
+    conn: sqlite3.Connection,
+    existing: sqlite3.Row,
+    occurrence: dict[str, Any] | None,
+) -> None:
+    """把出现快照追加到既有行；不改动状态、来源、大类与错法名。"""
+    if not occurrence:
+        return
+    row = _row_to_dict(existing)
+    occurrences = list(row["occurrences"])
+    if occurrence in occurrences:
+        return
+    occurrences.append(occurrence)
+    conn.execute(
+        f"UPDATE {_PATTERN_TABLE} SET occurrences_json=?,"
+        " updated_at=datetime('now','localtime') WHERE id=?",
+        (json.dumps(occurrences, ensure_ascii=False), int(row["id"])),
+    )
+
+
+def record_auto_patterns(
     db_path: Path,
+    rows: Iterable[dict[str, Any]],
     *,
-    question_id: int,
-    category: str | None,
-    pattern: str,
-    explanation: str = "",
-    trigger_kind: str = "observation",
-    trigger_value: str = "",
-    source: str = "teacher_confirm",
-    occurrence: dict[str, Any] | None = None,
-    confirm_token: str | None = None,
-    confirmed_by: str = "",
     connection: sqlite3.Connection | None = None,
-) -> dict[str, Any]:
-    """教师确认写入题库；按 (题, 触发, 错法名) 幂等，重复提交不重复建行。
+) -> int:
+    """AI 产出错法自动回挂题库（P5）；只增不改，返回新增行数。
 
-    同一身份再次确认时更新大类/说明/来源快照并追加出现记录；
-    operation_token 仅作审计留痕，幂等由唯一键保证。
+    每条 row：{question_id, category, pattern, explanation, trigger_kind,
+    trigger_value, source, occurrence}。
+    - option / wrong_answer：同 (题, 触发, 触发值) 已有任意状态行时不插行，
+      仅向该行追加 occurrence（confirmed 行优先，否则最小 id）。
+    - step / observation：同 (题, 触发, 触发值, 错法名) 已有任意状态行时
+      同样不插行、只追加 occurrence。
+    - merged / rejected 行不会被复活；表缺失返回 0。
     """
-    pattern_text = str(pattern or "").strip()
-    if not pattern_text:
-        raise ValueError("pattern must not be blank")
-    if trigger_kind not in ("option", "wrong_answer", "step", "observation"):
-        raise ValueError("invalid trigger_kind")
+    batch = [row for row in rows or [] if str(row.get("pattern") or "").strip()]
+    if not batch:
+        return 0
 
-    def work(conn: sqlite3.Connection) -> dict[str, Any]:
+    def work(conn: sqlite3.Connection) -> int:
         if not _table_exists(conn):
-            raise RuntimeError("question_error_patterns table is missing")
-        existing = conn.execute(
-            f"SELECT * FROM {_PATTERN_TABLE} WHERE question_id=? AND trigger_kind=?"
-            " AND trigger_value=? AND pattern=?",
-            (int(question_id), trigger_kind, str(trigger_value or ""), pattern_text),
-        ).fetchone()
-        if existing is not None:
-            row = _row_to_dict(existing)
-            occurrences = list(row["occurrences"])
-            if occurrence and occurrence not in occurrences:
-                occurrences.append(occurrence)
+            return 0
+        inserted = 0
+        for item in batch:
+            question_id = int(item["question_id"])
+            trigger_kind = str(item.get("trigger_kind") or "observation")
+            trigger_value = str(item.get("trigger_value") or "")
+            pattern = str(item["pattern"]).strip()
+            occurrence = item.get("occurrence")
+            if trigger_kind in ("option", "wrong_answer"):
+                # 触发相同即视为同一错法位：教师改名后的行优先承接出现记录。
+                existing = conn.execute(
+                    f"SELECT * FROM {_PATTERN_TABLE} WHERE question_id=?"
+                    " AND trigger_kind=? AND trigger_value=?"
+                    " ORDER BY CASE WHEN status='confirmed' THEN 0 ELSE 1 END, id",
+                    (question_id, trigger_kind, trigger_value),
+                ).fetchone()
+            else:
+                existing = conn.execute(
+                    f"SELECT * FROM {_PATTERN_TABLE} WHERE question_id=?"
+                    " AND trigger_kind=? AND trigger_value=? AND pattern=?"
+                    " ORDER BY CASE WHEN status='confirmed' THEN 0 ELSE 1 END, id",
+                    (question_id, trigger_kind, trigger_value, pattern),
+                ).fetchone()
+            if existing is not None:
+                _append_occurrence(conn, existing, occurrence)
+                continue
+            occurrences = [occurrence] if occurrence else []
             conn.execute(
-                f"UPDATE {_PATTERN_TABLE} SET category=?, explanation=?, status='confirmed',"
-                " source=?, occurrences_json=?, confirm_token=COALESCE(?, confirm_token),"
-                " confirmed_by=CASE WHEN ?<>'' THEN ? ELSE confirmed_by END,"
-                " confirmed_at=COALESCE(confirmed_at, datetime('now','localtime')),"
-                " updated_at=datetime('now','localtime') WHERE id=?",
+                f"INSERT INTO {_PATTERN_TABLE} (question_id, category, pattern,"
+                " explanation, trigger_kind, trigger_value, status, source,"
+                " occurrences_json, confirm_token, confirmed_by, confirmed_at)"
+                " VALUES (?,?,?,?,?,?,'confirmed',?,?,NULL,'',datetime('now','localtime'))",
                 (
-                    category, str(explanation or ""), source,
+                    question_id,
+                    item.get("category"),
+                    pattern,
+                    str(item.get("explanation") or ""),
+                    trigger_kind,
+                    trigger_value,
+                    str(item.get("source") or "ai_auto"),
                     json.dumps(occurrences, ensure_ascii=False),
-                    confirm_token, confirmed_by, confirmed_by,
-                    int(row["id"]),
                 ),
             )
-            return _row_to_dict(conn.execute(
-                f"SELECT * FROM {_PATTERN_TABLE} WHERE id=?", (int(row["id"]),),
-            ).fetchone())
-        occurrences = [occurrence] if occurrence else []
-        cursor = conn.execute(
-            f"INSERT INTO {_PATTERN_TABLE} (question_id, category, pattern, explanation,"
-            " trigger_kind, trigger_value, status, source, occurrences_json,"
-            " confirm_token, confirmed_by, confirmed_at)"
-            " VALUES (?,?,?,?,?,?,'confirmed',?,?,?,?,datetime('now','localtime'))",
-            (
-                int(question_id), category, pattern_text, str(explanation or ""),
-                trigger_kind, str(trigger_value or ""), source,
-                json.dumps(occurrences, ensure_ascii=False),
-                confirm_token, confirmed_by,
-            ),
-        )
-        return _row_to_dict(conn.execute(
-            f"SELECT * FROM {_PATTERN_TABLE} WHERE id=?", (int(cursor.lastrowid),),
-        ).fetchone())
+            inserted += 1
+        return inserted
+
+    if connection is not None:
+        return work(connection)
+    with connect(Path(db_path)) as conn:
+        return work(conn)
+
+
+def rename_patterns(
+    db_path: Path,
+    *,
+    question_ids: Iterable[int],
+    old_pattern: str,
+    new_pattern: str,
+    category: str | None = None,
+    connection: sqlite3.Connection | None = None,
+) -> int:
+    """教师修改错法：旧行标记 merged，新名以 ``teacher_edit`` 来源生效。
+
+    ``new_pattern == old_pattern`` 时仅在原行上更新大类与来源，不新建行。
+    返回处理的旧行数；表缺失或无匹配返回 0。
+    """
+    old = str(old_pattern or "").strip()
+    new = str(new_pattern or "").strip()
+    if not old or not new:
+        raise ValueError("pattern must not be blank")
+    ids = sorted({int(qid) for qid in question_ids if qid})
+    if not ids:
+        return 0
+
+    def work(conn: sqlite3.Connection) -> int:
+        if not _table_exists(conn):
+            return 0
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT * FROM {_PATTERN_TABLE} WHERE question_id IN ({marks})"
+            " AND pattern=? AND status='confirmed' ORDER BY id",
+            (*ids, old),
+        ).fetchall()
+        for row in rows:
+            data = _row_to_dict(row)
+            if new == old:
+                conn.execute(
+                    f"UPDATE {_PATTERN_TABLE} SET category=COALESCE(?, category),"
+                    " source='teacher_edit', updated_at=datetime('now','localtime')"
+                    " WHERE id=?",
+                    (category, int(data["id"])),
+                )
+                continue
+            conn.execute(
+                f"UPDATE {_PATTERN_TABLE} SET status='merged',"
+                " updated_at=datetime('now','localtime') WHERE id=?",
+                (int(data["id"]),),
+            )
+            conn.execute(
+                f"INSERT INTO {_PATTERN_TABLE} (question_id, category, pattern,"
+                " explanation, trigger_kind, trigger_value, status, source,"
+                " occurrences_json, confirm_token, confirmed_by, confirmed_at)"
+                " VALUES (?,?,?,?,?,?,'confirmed','teacher_edit',?,NULL,'',"
+                "datetime('now','localtime'))"
+                " ON CONFLICT(question_id, trigger_kind, trigger_value, pattern)"
+                " DO UPDATE SET status='confirmed', category=excluded.category,"
+                " explanation=excluded.explanation, source='teacher_edit',"
+                " occurrences_json=excluded.occurrences_json,"
+                " updated_at=datetime('now','localtime')",
+                (
+                    int(data["question_id"]),
+                    category if category is not None else data["category"],
+                    new,
+                    data["explanation"],
+                    data["trigger_kind"],
+                    data["trigger_value"],
+                    json.dumps(data["occurrences"], ensure_ascii=False),
+                ),
+            )
+        return len(rows)
 
     if connection is not None:
         return work(connection)
@@ -218,8 +312,9 @@ def confirmed_index(
 
 
 __all__ = [
-    "confirm_pattern",
     "confirmed_index",
     "list_patterns",
+    "record_auto_patterns",
     "reject_pattern",
+    "rename_patterns",
 ]

@@ -48,17 +48,30 @@ LEGACY_CATALOG_PATH = (
 def _analysis(*, confidence: float = 0.88) -> TagAnalysis:
     return TagAnalysis.from_dict(
         {
-            "knowledge_points": ["整式运算"],
             "method_tags": [],
             "thought_tags": ["整体思想"],
             "ability_tags": ["运算能力"],
             "math_model_tags": [],
+            "special_type_tags": [],
             "difficulty": 3,
-            "error_prone_points": ["符号错误"],
-            "prerequisite_points": ["有理数运算"],
-            "textbook_chapter": "七年级下册 第一章 整式的乘除",
-            "teaching_stage": "期末复习",
-            "suitable_student_level": "基础巩固",
+            "predicted_error_patterns": [],
+            "part_features": [
+                {
+                    "part_id": "part-1",
+                    "part_label": "整题",
+                    "solo": 1,
+                    "reasoning": 0,
+                    "computation": 1,
+                    "context": 0,
+                    "context_kind": "无情境",
+                    "hidden": 0,
+                    "cases": 0,
+                    "param_dynamic": 0,
+                    "trap": 0,
+                    "knowledge": 1,
+                    "evidence": "常规运算",
+                }
+            ],
             "reason": "考查整式运算。",
             "confidence": confidence,
         }
@@ -449,17 +462,12 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
                 if item["name"] == "整式运算"
             )
             ability = candidates["ability"][0]
-            curriculum = candidates["curriculum"][0]
             tag_payload = _analysis().to_dict()
             tag_payload.update(
                 {
-                    "knowledge_points": [knowledge["name"]],
                     "ability_tags": [ability["name"]],
                     "method_tags": [],
                     "thought_tags": [],
-                    "textbook_chapter": curriculum["name"],
-                    "textbook_chapters": [curriculum["name"]],
-                    "canonical_knowledge_id": knowledge["id"],
                     "reason": "按动态候选识别整式运算。",
                     "confidence": 0.92,
                 }

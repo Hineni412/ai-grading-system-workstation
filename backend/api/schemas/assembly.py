@@ -102,8 +102,8 @@ class AssemblyAssistantRequest(_AssemblyModel):
     chapter_id: str = Field(default="", max_length=100)
     target_keys: list[str] | None = Field(default=None, max_length=100)
     question_type: Literal["", "选择题", "多选题", "填空题", "解答题"] = ""
-    difficulty_min: int = Field(default=1, ge=1, le=10)
-    difficulty_max: int = Field(default=10, ge=1, le=10)
+    difficulty_min: float = Field(default=1, ge=1, le=10)
+    difficulty_max: float = Field(default=10, ge=1, le=10)
     exclude_exam_originals: bool = True
     exclude_recent: bool = True
 

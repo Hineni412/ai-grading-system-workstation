@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -283,6 +285,120 @@ def _iter_embedded_links(
     return rows
 
 
+@lru_cache(maxsize=1)
+def _curriculum_chapter_maps() -> tuple[
+    dict[str, str], dict[str, tuple[int, int]], list[tuple[str, str]]
+]:
+    """term stable key -> chapter key; chapter key -> (volume, chapter) order.
+
+    The third element is a longest-first (section/chapter key, chapter key)
+    prefix table for terms that are not leaf ids themselves.
+    """
+    from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
+
+    term_chapter: dict[str, str] = {}
+    chapter_order: dict[str, tuple[int, int]] = {}
+    prefixes: list[tuple[str, str]] = []
+    for volume in load_curriculum_catalog()["volumes"]:
+        volume_order = int(volume["order"])
+        for chapter in volume["chapters"]:
+            chapter_id = str(chapter["knowledge_id"])
+            chapter_order[chapter_id] = (volume_order, int(chapter["order"]))
+            term_chapter.setdefault(chapter_id, chapter_id)
+            prefixes.append((chapter_id, chapter_id))
+            for section in chapter["sections"]:
+                section_id = str(section["knowledge_id"])
+                term_chapter.setdefault(section_id, chapter_id)
+                prefixes.append((section_id, chapter_id))
+                for point in section.get("knowledge_points", []):
+                    term_chapter.setdefault(str(point["id"]), chapter_id)
+    prefixes.sort(key=lambda item: len(item[0]), reverse=True)
+    return term_chapter, chapter_order, prefixes
+
+
+def _chapter_of_term(term_key: object, maps: tuple[Any, Any, Any]) -> str:
+    term_chapter, _order, prefixes = maps
+    key = str(term_key or "").strip()
+    if not key:
+        return ""
+    hit = term_chapter.get(key)
+    if hit:
+        return hit
+    for prefix, chapter_id in prefixes:
+        if key.startswith(f"{prefix}_"):
+            return chapter_id
+    return ""
+
+
+def drop_later_chapter_supporting_links(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Drop supporting links from chapters later than the primary chapter.
+
+    ``rows`` are flat link dicts carrying ``role``, ``term_id``/``stable_key``,
+    ``evidence_point_id`` and optionally ``weight`` (missing direct weights
+    default to ``1 / direct-count`` of their point, matching the write path).
+    The primary chapter is the chapter with the largest summed direct-link
+    weight; ties resolve to the earliest curriculum order. Terms that cannot
+    be placed in the bundled catalog are kept. Returns ``(kept, dropped)``;
+    dropped rows gain ``drop_reason`` and ``primary_chapter``.
+    """
+    term_chapter, chapter_order, prefixes = _curriculum_chapter_maps()
+    maps = (term_chapter, chapter_order, prefixes)
+    direct_counts = Counter(
+        str(row.get("evidence_point_id") or "")
+        for row in rows
+        if str(row.get("role") or "") == "direct"
+    )
+
+    def _weight(row: Mapping[str, Any]) -> float:
+        raw = row.get("weight")
+        if raw is not None:
+            return float(raw)
+        point_id = str(row.get("evidence_point_id") or "")
+        count = direct_counts.get(point_id, 0)
+        return 1.0 / count if count else 1.0
+
+    chapter_weight: dict[str, float] = {}
+    for row in rows:
+        if str(row.get("role") or "") != "direct":
+            continue
+        chapter = _chapter_of_term(
+            row.get("stable_key") or row.get("term_id"), maps
+        )
+        if chapter:
+            chapter_weight[chapter] = chapter_weight.get(chapter, 0.0) + _weight(row)
+    if not chapter_weight:
+        return [dict(row) for row in rows], []
+    primary = max(
+        chapter_weight,
+        key=lambda chapter: (
+            chapter_weight[chapter],
+            -chapter_order[chapter][0],
+            -chapter_order[chapter][1],
+        ),
+    )
+    primary_order = chapter_order[primary]
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("role") or "") == "supporting_prerequisite":
+            chapter = _chapter_of_term(
+                row.get("stable_key") or row.get("term_id"), maps
+            )
+            if chapter and chapter_order[chapter] > primary_order:
+                dropped.append(
+                    {
+                        **dict(row),
+                        "drop_reason": "later_than_primary_chapter",
+                        "primary_chapter": primary,
+                    }
+                )
+                continue
+        kept.append(dict(row))
+    return kept, dropped
+
+
 def links_from_embedded(
     payload: Mapping[str, Any],
 ) -> dict[str, tuple[KnowledgeLink, ...]]:
@@ -365,12 +481,7 @@ def refresh_question_scope_summary(
                 )
             elif link.role == "supporting_prerequisite":
                 supporting_keys.append(link.stable_key)
-    primary_key = (
-        max(direct_weight.items(), key=lambda item: (item[1], item[0]))[0]
-        if direct_weight
-        else ""
-    )
-    if not primary_key:
+    if not direct_weight:
         # No resolved direct links: drop the row so scope filters fall back
         # to the question's model-derived ownership tags.
         connection.execute(
@@ -382,24 +493,30 @@ def refresh_question_scope_summary(
         curriculum_knowledge_node,
     )
 
-    direct_anchors = (
-        resolve_anchor_keys(
+    direct_anchors = resolve_anchor_keys(
+        connection,
+        list(direct_weight),
+        preferred_release_id=release_id or None,
+    )
+    key_anchors = {
+        key: resolve_anchor_keys(
             connection,
-            list(direct_weight),
+            [key],
             preferred_release_id=release_id or None,
         )
-        if direct_weight
-        else {"sections": [], "chapters": []}
+        for key in direct_weight
+    }
+    # 主小节只在能解析出小节的 direct 键中选：跨章节技能词（如只挂到
+    # 综合与实践章、没有小节锚点的 sk_*）权重再高也不占主小节位置；
+    # 没有任何键能解析出小节时退回原有全量选主逻辑。
+    sectioned_keys = [
+        key for key in direct_weight if key_anchors[key]["sections"]
+    ]
+    primary_key = max(
+        sectioned_keys or list(direct_weight),
+        key=lambda key: (direct_weight[key], key),
     )
-    primary_anchors = (
-        resolve_anchor_keys(
-            connection,
-            [primary_key],
-            preferred_release_id=release_id or None,
-        )
-        if primary_key
-        else {"sections": [], "chapters": []}
-    )
+    primary_anchors = key_anchors[primary_key]
     supporting_orders = [
         int(node["volume_order"])
         for key in dict.fromkeys(supporting_keys)
@@ -517,8 +634,11 @@ def project_embedded_links(
         fallback = _active_release_id(connection) or ""
     if not fallback:
         return 0
+    projected, _dropped = drop_later_chapter_supporting_links(
+        _iter_embedded_links(evidence_payload)
+    )
     inserted = 0
-    for item in _iter_embedded_links(evidence_payload):
+    for item in projected:
         if not item["term_id"]:
             continue
         release = item["release_hint"]
@@ -740,6 +860,7 @@ __all__ = [
     "load_point_links",
     "direct_links_for_part",
     "direct_targets_for_part",
+    "drop_later_chapter_supporting_links",
     "links_from_embedded",
     "project_embedded_links",
     "replace_point_links",

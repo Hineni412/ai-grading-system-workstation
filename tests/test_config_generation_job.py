@@ -2592,7 +2592,6 @@ def _deferred_combined_item(question_id: int) -> dict[str, Any]:
             "special_type_tags": [],
             "difficulty": 3,
             "error_prone_points": ["运算化简错误"],
-            "prerequisite_points": [],
             "textbook_chapters": [],
             "curriculum_sections": ["synthetic-linear-equation-section"],
             "suitable_student_level": "",

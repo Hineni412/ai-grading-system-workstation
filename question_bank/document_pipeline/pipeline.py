@@ -386,6 +386,7 @@ class QuestionDocumentPipeline:
             return None
 
     def _prepare_pdf(self, command: PrepareSourceCommand) -> tuple[PageSnapshot, ...]:
+        from question_bank.importers.pdf_importer import embedded_text_usable
         try:
             document = fitz.open(stream=command.source.content, filetype="pdf")
         except Exception as exc:
@@ -399,7 +400,7 @@ class QuestionDocumentPipeline:
                 asset = self._page_asset_path(command.operation_id, page_number)
                 self._write_content_addressed(asset, png_bytes)
                 raw_blocks = self._embedded_blocks(page, page_number)
-                if raw_blocks:
+                if raw_blocks and embedded_text_usable("\n".join(str(block.get("text") or "") for block in raw_blocks)):
                     blocks = self._ordered_blocks(raw_blocks, page_number)
                     layer = TextLayerState.EMBEDDED
                 else:

@@ -1974,8 +1974,8 @@ def list_question_facets(
     student_levels: Annotated[list[str] | None, Query()] = None,
     teaching_stages: Annotated[list[str] | None, Query()] = None,
     sub_skills: Annotated[list[str] | None, Query()] = None,
-    difficulty_min: Annotated[int | None, Query(ge=1, le=10)] = None,
-    difficulty_max: Annotated[int | None, Query(ge=1, le=10)] = None,
+    difficulty_min: Annotated[float | None, Query(ge=1, le=10)] = None,
+    difficulty_max: Annotated[float | None, Query(ge=1, le=10)] = None,
     question_types: Annotated[list[str] | None, Query()] = None,
     paper_ids: Annotated[list[int] | None, Query()] = None,
     years: Annotated[list[str] | None, Query()] = None,
@@ -2051,8 +2051,8 @@ def list_questions(
     student_levels: Annotated[list[str] | None, Query()] = None,
     teaching_stages: Annotated[list[str] | None, Query()] = None,
     sub_skills: Annotated[list[str] | None, Query()] = None,
-    difficulty_min: Annotated[int | None, Query(ge=1, le=10)] = None,
-    difficulty_max: Annotated[int | None, Query(ge=1, le=10)] = None,
+    difficulty_min: Annotated[float | None, Query(ge=1, le=10)] = None,
+    difficulty_max: Annotated[float | None, Query(ge=1, le=10)] = None,
     question_types: Annotated[list[str] | None, Query()] = None,
     paper_ids: Annotated[list[int] | None, Query()] = None,
     years: Annotated[list[str] | None, Query()] = None,
@@ -2445,8 +2445,8 @@ def _raise_taxonomy_storage_api_error(exc: Exception) -> NoReturn:
 
 
 def _validate_difficulty_range(
-    difficulty_min: int | None,
-    difficulty_max: int | None,
+    difficulty_min: float | None,
+    difficulty_max: float | None,
 ) -> None:
     if (difficulty_min is None) != (difficulty_max is None):
         raise ApiError(

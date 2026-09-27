@@ -16,7 +16,7 @@ const apiMock = vi.hoisted(() => ({
   updateSettings: vi.fn(),
   regenerate: vi.fn(),
   getQuestionPreview: vi.fn(),
-  confirmCausePattern: vi.fn(),
+  editCausePattern: vi.fn(),
 }))
 
 const modelProfilesMock = vi.hoisted(() => ({
@@ -522,7 +522,7 @@ describe('class analysis panel', () => {
     expect(apiMock.regenerate).toHaveBeenCalledTimes(1)
   })
 
-  it('confirms a candidate cause pattern into the question bank', async () => {
+  it('edits a cause name and category via the optional 修改 dialog', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       cause_analysis: { status: 'ready', pending_questions: 0, total_questions: 1,
         failed_questions: 0, stale: false, generated_at: '2026-08-30T10:00:00Z', origin: 'assistant' },
@@ -535,13 +535,15 @@ describe('class analysis panel', () => {
           stem_summary: '轴对称图形识别',
           canonical_answer: 'B',
           bank_question_id: 101,
+          cause_category_counts: [
+            { category: '概念理解', count: 2 },
+            { category: '审题与条件', count: 1 },
+          ],
           causes: [{
             reason: '误认梯形为轴对称',
             count: 1,
             kind: 'error',
             category: '概念理解',
-            bank_confirmed: false,
-            pattern_status: 'candidate',
             evidence: [{ text: '识别为C', student_ids: [1], student_answer: 'C' }],
             manifestations: [{ description: '选了 C', source_question_id: null,
               evidence: [{ text: '识别为C', student_ids: [1], student_answer: 'C' }] }],
@@ -553,18 +555,40 @@ describe('class analysis panel', () => {
         }],
       },
     }))
-    apiMock.confirmCausePattern.mockResolvedValue({ ok: true, pattern: { id: 5 } })
+    apiMock.editCausePattern.mockResolvedValue({ ok: true })
     const { host } = await mountPanel()
     await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
 
-    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="cause-confirm"]')
+    // 大类统计行按人数渲染。
+    expect(host.querySelector('[data-testid="cause-category-chips"]')!.textContent)
+      .toContain('概念理解 2人')
+    expect(host.querySelector('[data-testid="cause-category-chips"]')!.textContent)
+      .toContain('审题与条件 1人')
+    // 自动归并结果不再有“写入题库/已入库”流程。
+    expect(host.textContent).not.toContain('写入题库')
+    expect(host.textContent).not.toContain('已入库')
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="cause-edit"]')
     expect(trigger).not.toBeNull()
     trigger!.click()
     await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="cause-confirm-dialog"]'),
+      document.body.querySelector('[data-testid="cause-edit-dialog"]'),
     ).not.toBeNull())
+    const nameInput = document.body.querySelector<HTMLInputElement>(
+      '[data-testid="cause-edit-reason"]',
+    )!
+    expect(nameInput.value).toBe('误认梯形为轴对称')
+    nameInput.value = '误认等腰梯形'
+    nameInput.dispatchEvent(new Event('input'))
+    const categorySelect = document.body.querySelector<HTMLSelectElement>(
+      '[data-testid="cause-edit-category"]',
+    )!
+    const options = [...categorySelect.options].map((option) => option.value)
+    expect(options).toEqual(['概念理解', '计算与化简', '审题与条件', '方法与思路'])
+    categorySelect.value = '审题与条件'
+    categorySelect.dispatchEvent(new Event('change'))
 
-    // 确认成功后页面会重新加载；先把下一次 GET 改成“已入库”结果。
+    // 提交成功后页面重新加载；先把下一次 GET 改成“老师改过”结果。
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       data: {
         ...makeAnalysis().data!,
@@ -575,30 +599,32 @@ describe('class analysis panel', () => {
           stem_summary: '轴对称图形识别',
           canonical_answer: 'B',
           bank_question_id: 101,
-          causes: [{ reason: '误认梯形为轴对称', count: 1, kind: 'error' as const,
-            category: '概念理解', bank_confirmed: true }],
+          causes: [{ reason: '误认等腰梯形', count: 1, kind: 'error' as const,
+            category: '审题与条件', teacher_edited: true }],
           records: [],
         }],
       },
     }))
-    document.body.querySelector<HTMLButtonElement>('[data-testid="cause-confirm-submit"]')!.click()
-    await vi.waitFor(() => expect(apiMock.confirmCausePattern).toHaveBeenCalledTimes(1))
-    const call = apiMock.confirmCausePattern.mock.calls[0]!
-    const [sessionId, payload] = call
+    document.body.querySelector<HTMLButtonElement>('[data-testid="cause-edit-submit"]')!.click()
+    await vi.waitFor(() => expect(apiMock.editCausePattern).toHaveBeenCalledTimes(1))
+    const [sessionId, payload] = apiMock.editCausePattern.mock.calls[0]!
     expect(sessionId).toBe(7)
     expect(payload).toMatchObject({
       question_id: '1',
       kind: 'error',
-      category: '概念理解',
+      category: '审题与条件',
       reason: '误认梯形为轴对称',
+      new_reason: '误认等腰梯形',
     })
-    // 已入库的错法不再显示“写入题库”按钮。
+    expect(payload.operation_token).toBeTruthy()
     await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="cause-confirm-dialog"]'),
+      document.body.querySelector('[data-testid="cause-edit-dialog"]'),
     ).toBeNull())
     await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="cause-bank-confirmed"]'),
+      host.querySelector('[data-testid="cause-teacher-edited"]'),
     ).not.toBeNull())
-    expect(host.querySelector('[data-testid="cause-confirm"]')).toBeNull()
+    expect(host.querySelector('[data-testid="cause-teacher-edited"]')!.textContent)
+      .toContain('老师改过')
+    expect(host.textContent).toContain('误认等腰梯形')
   })
 })

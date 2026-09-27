@@ -165,19 +165,12 @@ def _question(
 
 def _tag_payload() -> dict[str, Any]:
     return {
-        "knowledge_points": ["一元一次方程"],
         "method_tags": [],
         "thought_tags": ["方程思想"],
         "ability_tags": ["运算能力"],
         "math_model_tags": [],
         "special_type_tags": [],
         "difficulty": 3,
-        "error_prone_points": ["运算化简错误"],
-        "prerequisite_points": [],
-        "textbook_chapters": [],
-        "curriculum_sections": [],
-        "suitable_student_level": "",
-        "canonical_knowledge_id": "kp_alg_linear_equation",
         "taxonomy_revision": 7,
         "proposed_tags": [],
         "reason": "合成标签理由",

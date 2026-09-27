@@ -36,7 +36,6 @@ from .question_bank_sync import run_session_question_bank_sync_job
 from .scan_analysis import run_scan_analysis
 from .tagging_sync import run_tagging_sync_job
 from .taxonomy_suggestions import run_taxonomy_suggestion_job
-from .training_export import run_training_export_job
 
 
 class ReportGeneratorFactory(Protocol):
@@ -89,7 +88,6 @@ def register_default_job_handlers(
     data_root: Path | None = None,
     question_bank_db_path: Path | None = None,
     upload_config_dir: Path | None = None,
-    training_output_root: Path | None = None,
     report_generator_factory: ReportGeneratorFactory = ReportGenerator,
     original_paper_exporter_factory: OriginalPaperExporterFactory = OriginalPaperExporter,
     analysis_report_exporter_factory: AnalysisReportExporterFactory = AnalysisReportGenerator,
@@ -106,7 +104,6 @@ def register_default_job_handlers(
     taxonomy_suggestion_runner: Callable[
         ..., dict[str, object]
     ] = run_taxonomy_suggestion_job,
-    training_export_runner: Callable[..., dict[str, object]] = run_training_export_job,
     assembly_export_runner: Callable[..., dict[str, object]] = run_assembly_export_job,
     ai_assembly_spec_runner: Callable[
         ..., dict[str, object]
@@ -293,18 +290,6 @@ def register_default_job_handlers(
         ),
     )
     manager.register(
-        "training_export",
-        _build_training_export_handler(
-            question_bank_db_path=resolved_question_bank_db,
-            output_root=(
-                Path(training_output_root)
-                if training_output_root is not None
-                else base_data_root / "outputs" / "training"
-            ),
-            training_export_runner=training_export_runner,
-        ),
-    )
-    manager.register(
         "assembly_export",
         _build_assembly_export_handler(
             question_bank_db_path=resolved_question_bank_db,
@@ -383,22 +368,6 @@ def _build_assembly_export_handler(
             context=context,
             question_bank_db_path=question_bank_db_path,
             data_root=data_root,
-        )
-
-    return handler
-
-
-def _build_training_export_handler(
-    *,
-    question_bank_db_path: Path,
-    output_root: Path,
-    training_export_runner: Callable[..., dict[str, object]],
-):
-    def handler(context: JobContext) -> dict[str, object]:
-        return training_export_runner(
-            context=context,
-            question_bank_db_path=question_bank_db_path,
-            output_root=output_root,
         )
 
     return handler

@@ -265,7 +265,7 @@ def _public_assessment(reference: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping) or not value:
         return {}
     return {"assessment": {key: value[key] for key in (
-        "granularity", "part_id", "profile_id", "revision", "part_difficulty",
+        "granularity", "part_id", "part_difficulty",
         "difficulty_source", "evidence_weight", "reason",
     ) if key in value}}
 

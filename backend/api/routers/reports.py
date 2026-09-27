@@ -20,8 +20,8 @@ from backend.api.routers.sessions import _require_session
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.reports import (
     AnalysisPreflightResponse,
-    CausePatternConfirmRequest,
-    CausePatternConfirmResponse,
+    CausePatternEditRequest,
+    CausePatternEditResponse,
     ClassAnalysisResponse,
     ClassAnalysisSettingsRequest,
     ClassAnalysisSettingsResponse,
@@ -313,114 +313,36 @@ def get_class_analysis(
 
 
 @router.post(
-    "/sessions/{session_id}/class-analysis/causes/confirm",
-    response_model=CausePatternConfirmResponse,
+    "/sessions/{session_id}/class-analysis/causes/edit",
+    response_model=CausePatternEditResponse,
 )
-def confirm_cause_pattern(
+def edit_cause_pattern(
     session_id: int,
-    request: CausePatternConfirmRequest,
+    request: CausePatternEditRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     reports_dir: Path = Depends(get_reports_dir),
-) -> CausePatternConfirmResponse:
-    """教师确认后把错法写入题库典型错法表；幂等，重复提交不产生重复行。"""
+) -> CausePatternEditResponse:
+    """教师可选修改错法名称/大类：已关联题库时同步改写题库行，未关联只改本场。"""
     from analysis_report_exporter import _question_bank_db_path
-    from backend.class_analysis import CAUSE_ANALYSIS_VERSION
-    from backend.error_causes import CAUSE_KIND_CATEGORIES, normalize_cause_category
-    from backend.error_patterns import (
-        CHOICE_TYPES, FILL_TYPES, normalize_option_answer, normalize_wrong_answer,
-        session_bank_map,
+    from backend.class_analysis import (
+        CausePatternEditError, edit_cause_pattern as apply_cause_edit,
     )
-    from question_bank.services.error_pattern_service import confirm_pattern
+    from backend.error_patterns import session_bank_context
 
-    session = _require_session(db, session_id)
-    store = ClassAnalysisStateStore(reports_dir)
-    saved = (
-        ((store.load(session_id) or {}).get("cause_analysis") or {})
-        .get("questions") or {}
-    ).get(str(request.question_id)) or {}
-    if saved.get("version") != CAUSE_ANALYSIS_VERSION or not isinstance(saved.get("result"), dict):
-        raise ApiError(409, "cause_pattern_not_ready",
-                       "该题尚未完成新版错因整理，不能确认入库")
-    group = next(
-        (item for item in saved["result"].get("groups") or []
-         if isinstance(item, dict)
-         and str(item.get("reason") or "").strip() == request.reason.strip()
-         and str(item.get("kind") or "") == request.kind.strip()),
-        None,
-    )
-    if group is None:
-        raise ApiError(409, "cause_pattern_group_missing",
-                       "未找到对应的错因分组，请先重新整理错因")
-    kind = request.kind.strip()
-    category = normalize_cause_category(request.category)
-    if kind in CAUSE_KIND_CATEGORIES:
-        if category is None or category not in CAUSE_KIND_CATEGORIES[kind]:
-            raise ApiError(422, "cause_pattern_category_invalid",
-                           "错误大类与分组类型不匹配")
-    else:
-        category = None
-    parent = str(saved.get("input", {}).get("question_id") or request.question_id)
-    from analysis_report_exporter import _parent_question_id
-
-    bank_map = session_bank_map(_question_bank_db_path(Path(db.db_path)), int(session_id))
-    bank_id = bank_map.get(_parent_question_id(parent))
-    if not bank_id:
-        raise ApiError(422, "cause_pattern_unlinked",
-                       "该题未关联题库题目，无法写入题库")
-
-    # 触发条件由证据形态推导：选择题全组同一选项字母 → option；
-    # 填空题全组同一答案 → wrong_answer；否则按观察级错法记录。
-    trigger_kind, trigger_value = "observation", ""
-    qtype = ""
+    _require_session(db, session_id)
+    question_bank_path = _question_bank_db_path(Path(db.db_path))
     try:
-        from analysis_report_exporter import _infer_data_root
-        from backend.analytics.service import load_session_score_type_maps
-
-        _scores, type_map = load_session_score_type_maps(
-            session, data_root=_infer_data_root(Path(db.db_path)),
+        apply_cause_edit(
+            ClassAnalysisStateStore(reports_dir), session_id,
+            question_id=str(request.question_id), kind=str(request.kind),
+            reason=str(request.reason), new_reason=str(request.new_reason),
+            category=request.category,
+            question_bank_path=question_bank_path,
+            bank_context=session_bank_context(question_bank_path, int(session_id)),
         )
-        qtype = type_map.get(str(request.question_id), "")
-    except Exception:
-        qtype = ""
-    evidence = {
-        str(item.get("id") or ""): item
-        for item in (saved.get("input") or {}).get("evidence") or []
-        if isinstance(item, dict)
-    }
-    answers = {
-        str((evidence.get(str(eid)) or {}).get("student_answer") or "").strip()
-        for eid in group.get("evidence_ids") or []
-    }
-    answers.discard("")
-    if kind in CAUSE_KIND_CATEGORIES and answers:
-        if qtype in CHOICE_TYPES:
-            letters = {normalize_option_answer(value) for value in answers}
-            letters.discard("")
-            if len(letters) == 1:
-                trigger_kind, trigger_value = "option", sorted(letters)[0]
-        elif qtype in FILL_TYPES:
-            normalized = {normalize_wrong_answer(value) for value in answers}
-            normalized.discard("")
-            if len(normalized) == 1:
-                trigger_kind, trigger_value = "wrong_answer", sorted(normalized)[0]
-    row = confirm_pattern(
-        _question_bank_db_path(Path(db.db_path)),
-        question_id=int(bank_id),
-        category=category,
-        pattern=request.reason.strip(),
-        explanation=str(request.manifestation or "").strip(),
-        trigger_kind=trigger_kind,
-        trigger_value=trigger_value,
-        source="teacher_confirm",
-        occurrence={
-            "session_id": int(session_id),
-            "question_id": str(request.question_id),
-            "kind": kind,
-        },
-        confirm_token=str(request.operation_token or "").strip() or None,
-        confirmed_by="local_teacher",
-    )
-    return CausePatternConfirmResponse(ok=True, pattern=row)
+    except CausePatternEditError as exc:
+        raise ApiError(exc.status, exc.code, str(exc)) from exc
+    return CausePatternEditResponse(ok=True)
 
 
 @router.get(
@@ -456,6 +378,7 @@ def get_class_analysis_report(
         _render_class_html, split_session_analysis_by_class, assemble_session_analysis,
         _enrich_personal_knowledge,
     )
+    from backend.class_analysis import question_category_counts, session_error_records
 
     _require_session(db, session_id)
     data = assemble_session_analysis(db, int(session_id), page_only=True, include_knowledge=True)
@@ -479,7 +402,12 @@ def get_class_analysis_report(
         )
     selected = groups[selected_class]
     _enrich_personal_knowledge(db, selected, None)
-    return HTMLResponse(_render_class_html(selected, entry["narrative"]))
+    cause_counts = question_category_counts(
+        session_error_records(db, session_id, reports_dir),
+        student_ids=[student.student_id for student in selected.students],
+    )
+    return HTMLResponse(
+        _render_class_html(selected, entry["narrative"], cause_counts=cause_counts))
 
 
 @router.get("/sessions/{session_id}/class-analysis/questions/{question_id}/preview")

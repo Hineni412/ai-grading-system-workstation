@@ -7,6 +7,7 @@ import {
   studentsRouteDefinition,
   questionBankRouteDefinition,
   questionAssemblyRouteDefinition,
+  authoringRouteDefinition,
   trainingRouteDefinition,
   filesRouteDefinition,
   resultsRouteDefinition,
@@ -78,6 +79,16 @@ const routes: RouteRecordRaw[] = [
       title: questionAssemblyRouteDefinition.title,
       description: questionAssemblyRouteDefinition.description,
       breadcrumb: questionAssemblyRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: authoringRouteDefinition.path,
+    name: authoringRouteDefinition.id,
+    component: () => import('../views/AuthoringPracticeView.vue'),
+    meta: {
+      title: authoringRouteDefinition.title,
+      description: authoringRouteDefinition.description,
+      breadcrumb: authoringRouteDefinition.breadcrumb,
     },
   },
   {

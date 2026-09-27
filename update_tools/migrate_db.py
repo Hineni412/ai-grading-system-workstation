@@ -154,6 +154,9 @@ _APPROVED_TABLE_DROPS = {
             "daily_tables",
         }
     ),
+    "044_drop_part_assessment_profiles": frozenset(
+        {"question_part_assessment_profiles"}
+    ),
 }
 
 # "duplicate column" 错误消息模式

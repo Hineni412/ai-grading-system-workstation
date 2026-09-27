@@ -36,6 +36,7 @@ _RELEASE_PATHS_BY_TAXONOMY_REVISION = {
     6: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v4.json'),
     7: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v5.json'),
     8: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v6.json'),
+    9: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v7.json'),
 }
 _TAXONOMY_PATHS_BY_REVISION = {
     3: (
@@ -54,6 +55,7 @@ _TAXONOMY_PATHS_BY_REVISION = {
     6: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v5.json'),
     7: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v6.json'),
     8: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v7.json'),
+    9: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v8.json'),
 }
 
 

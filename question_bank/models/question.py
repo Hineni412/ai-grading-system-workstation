@@ -27,9 +27,34 @@ ALLOWED_TAG_TYPES = {
 
 CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope")
 
+# 八上重打方案：整题知识点与章归属改由判定点关联派生；写入侧在无可用链接时
+# 落下 tag_status='derived_pending' 标记。归属"已就绪" = 已派生出
+# 知识点+章/小节行，或已明确标记为待派生（打标本身已完成、等判定点关联）。
+# 派生也可能只产出前置知识行（全为 supporting_prerequisite 关联）或只挂
+# 无小节锚点的跨章节技能键——这两种落库形态同样算归属就绪。
+DERIVED_PENDING_STATUS = "derived_pending"
+OWNERSHIP_TAG_TYPES = ("knowledge_point", "exam_scope", "curriculum_section")
+
+
+def analysis_ownership_satisfied(
+    tag_types: object,
+    *,
+    derived_pending: bool = False,
+) -> bool:
+    seen = {str(tag_type).strip() for tag_type in tag_types or ()}
+    derived = (
+        "knowledge_point" in seen
+        and bool(seen & {"exam_scope", "curriculum_section"})
+    ) or "prerequisite" in seen
+    return derived or derived_pending
+
 # Exact identity keeps each image's position; similarity search has a separate,
 # deliberately looser text comparison.
-_IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:(.*?)\]\]", re.IGNORECASE | re.DOTALL)
+_IMAGE_MARKER_PATTERN = re.compile(
+    r"\[\[IMAGE:([^\]|]*?)(?:\|[^\]]*)?\]\]",
+    re.IGNORECASE | re.DOTALL,
+)
+EXACT_QUESTION_KEY_PREFIX = "exact-v4:"
 
 
 def normalize_identity_text(value: object) -> str:
@@ -63,7 +88,7 @@ def duplicate_question_key(question: Mapping[str, object]) -> str:
     text = normalize_identity_text(text)
     if not text or (question.get("visual_evidence_missing")):
         return ""
-    return "exact-v3:" + json.dumps({"text": text, "options": question.get("options") or [],
+    return EXACT_QUESTION_KEY_PREFIX + json.dumps({"text": text, "options": question.get("options") or [],
                                      "formulas": question.get("formula_content") or [],
                                      "images": pictures or []}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -76,12 +101,19 @@ def has_complete_analysis_tags(question: Mapping[str, object]) -> bool:
         for tag in tags
         if isinstance(tag, Mapping) and str(tag.get("tag_value") or "").strip()
     }
+    derived_pending = any(
+        isinstance(tag, Mapping)
+        and str(tag.get("tag_type") or "").strip() == "tag_status"
+        and str(tag.get("tag_value") or "").strip() == DERIVED_PENDING_STATUS
+        for tag in tags
+    )
     try:
         difficulty = float(question.get("difficulty") or 0)
     except (TypeError, ValueError):
         difficulty = 0
     return (
-        all(tag_type in seen for tag_type in CORE_ANALYSIS_TAG_TYPES)
+        "ability" in seen
+        and analysis_ownership_satisfied(seen, derived_pending=derived_pending)
         and 1 <= difficulty <= 10
     )
 

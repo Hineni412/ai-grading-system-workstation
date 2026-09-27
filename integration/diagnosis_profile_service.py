@@ -150,7 +150,7 @@ class DiagnosisProfileService:
         )
         return (
             "\u0000".join(source_identity),
-            "tag-profile-part-v6-error-causes",
+            "tag-profile-part-v7-error-causes",
             str(self.data_root),
             json.dumps(scope, ensure_ascii=False, sort_keys=True, default=str),
             json.dumps(exam_scope, ensure_ascii=False, sort_keys=True, default=str),

@@ -149,7 +149,6 @@ def test_analysis_write_preserves_manual_tags_and_records_model(
             "special_type_tags": [],
             "difficulty": 4,
             "error_prone_points": [],
-            "prerequisite_points": [],
             "textbook_chapters": ["七年级上册"],
             "curriculum_sections": [],
             "teaching_stage": "",

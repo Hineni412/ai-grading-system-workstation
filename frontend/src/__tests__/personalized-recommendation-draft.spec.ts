@@ -299,11 +299,6 @@ describe('personalized recommendation draft', () => {
       questionCount: 8,
       trainingIntent: 'challenge',
       teachingProgressChapterId: 'bnu24-math-g8-upper-c02',
-      stageRatios: {
-        direct: 0.6,
-        prerequisite: 0.3,
-        transfer: 0.1,
-      },
       excludeCurrentExamOriginals: true,
     })
     app.mount(host)
@@ -388,11 +383,6 @@ describe('personalized recommendation draft', () => {
       scope: { mode: 'student', student_ids: ['SYN-S01'] },
       examScope: { mode: 'current', session_ids: [7] },
       questionCount: 8,
-      stageRatios: {
-        direct: 0.6,
-        prerequisite: 0.3,
-        transfer: 0.1,
-      },
       excludeCurrentExamOriginals: true,
       targetKeys: ['knowledge_point:一元一次方程'],
     })
@@ -445,11 +435,6 @@ describe('personalized recommendation draft', () => {
     scope: { mode: 'student', student_ids: ['SYN-S01'] },
     examScope: { mode: 'current', session_ids: [7] },
     questionCount: 8,
-    stageRatios: {
-      direct: 0.6,
-      prerequisite: 0.3,
-      transfer: 0.1,
-    },
     excludeCurrentExamOriginals: true,
     targetKeys: ['knowledge_point:一元一次方程'],
   }

@@ -400,14 +400,31 @@ def test_solution_evidence_route_returns_latest_point_level_union(
     assert union["resolved_core_node_ids"] == ["kp_equation"]
     assert union["unmapped_fine_term_ids"] == ["fine-support"]
 
-    from question_bank.solution_evidence.part_assessments import save_profile
-    save_profile(db_path, question_id=1, evidence_version_id=version_id,
-                 parts=[{"part_id": part["part_id"], "difficulty": 3, "source": "model",
-                         "rationale": "synthetic estimate"} for part in evidence.to_dict()["parts"]],
-                 created_by="test")
+    from question_bank.services import standard_difficulty
+    with sqlite3.connect(db_path) as conn:
+        question_row = conn.execute(
+            "SELECT * FROM questions WHERE id = 1"
+        ).fetchone()
+        columns = [item[1] for item in conn.execute("PRAGMA table_info(questions)")]
+        conn.execute(
+            """
+            INSERT INTO question_part_difficulty_features (
+                question_id, part_id, features_json, formula_difficulty,
+                formula_version, source_content_hash, is_active
+            ) VALUES (1, 'part-1', '{"evidence":"synthetic estimate"}', 3,
+                      'std-difficulty-v1', ?, 1)
+            """,
+            (
+                standard_difficulty.question_content_fingerprint(
+                    dict(zip(columns, question_row))
+                ),
+            ),
+        )
     supplemented = client.get("/api/question-bank/questions/1/solution-evidence").json()
     assert supplemented["part_assessments"][0]["difficulty"] == 3
-    assert supplemented["assessment_revision"] == 1
+    assert supplemented["part_assessments"][0]["source"] == "formula"
+    assert isinstance(supplemented["assessment_revision"], str)
+    assert supplemented["assessment_revision"]
 
     with sqlite3.connect(db_path) as conn:
         if changed_content == "stem":

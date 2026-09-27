@@ -18,7 +18,10 @@ from question_bank.services.ai_tagging_service import (
     classify_tagging_error,
     is_auto_saveable_result,
 )
-from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
+from question_bank.models.question import (
+    DERIVED_PENDING_STATUS,
+    analysis_ownership_satisfied,
+)
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.solution_evidence import (
     SolutionEvidenceProjectionWriter,
@@ -1202,10 +1205,24 @@ def _load_tagging_candidates(
         ).fetchall()
     rows_by_id = {int(row["id"]): row for row in rows}
     tag_types: dict[int, set[str]] = {}
+    derived_pending: set[int] = set()
     for row in tag_rows:
         question_id = int(row["question_id"])
-        tag_types.setdefault(question_id, set()).add(str(row["tag_type"]))
-    required = set(CORE_ANALYSIS_TAG_TYPES)
+        tag_type = str(row["tag_type"])
+        tag_types.setdefault(question_id, set()).add(tag_type)
+        if (
+            tag_type == "tag_status"
+            and str(row["tag_value"] or "").strip() == DERIVED_PENDING_STATUS
+        ):
+            derived_pending.add(question_id)
+    from question_bank.solution_evidence.repository import (
+        load_evidence_parts_for_tagging,
+    )
+
+    evidence_parts_by_question = load_evidence_parts_for_tagging(
+        db_path,
+        [qid for qid in question_ids if qid in rows_by_id],
+    )
     contexts: dict[int, TaggingContext] = {}
     complete: list[int] = []
     unavailable: list[int] = []
@@ -1215,7 +1232,12 @@ def _load_tagging_candidates(
         if row is None or bool(row["is_deleted"]):
             unavailable.append(question_id)
             continue
-        if required.issubset(tag_types.get(question_id, set())):
+        seen = tag_types.get(question_id, set())
+        # 新口径：能力标签在位 + 归属就绪（判定点关联派生或 derived_pending 标记）。
+        if "ability" in seen and analysis_ownership_satisfied(
+            seen,
+            derived_pending=question_id in derived_pending,
+        ):
             complete.append(question_id)
             if question_id not in forced and not include_complete_contexts:
                 continue
@@ -1231,6 +1253,7 @@ def _load_tagging_candidates(
             exam_type=str(row["exam_type"] or ""),
             district=str(row["district"] or ""),
             has_images=bool(row["has_images"]),
+            evidence_parts=evidence_parts_by_question.get(question_id, []),
         )
     return contexts, complete, unavailable
 

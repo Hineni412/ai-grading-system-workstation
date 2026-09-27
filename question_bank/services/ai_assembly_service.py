@@ -29,6 +29,7 @@ from question_bank.services.ai_assembly_prompts import (
     build_spec_prompt,
 )
 
+from question_bank.services import standard_difficulty
 from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
 from question_bank.services.question_frequency_service import (
     QuestionFrequencyService,
@@ -40,9 +41,9 @@ from question_bank.services.question_read_service import (
 )
 from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
 
-# 难度档取值范围（questions.difficulty 为 "1"-"9" 文本）。
+# 难度档取值范围（questions.difficulty 为 1.0–10.0 小数，即最难小问的公式分）。
 MIN_DIFFICULTY = 1
-MAX_DIFFICULTY = 9
+MAX_DIFFICULTY = 10
 # 选题硬过滤允许难度偏离目标档的档数。
 DIFFICULTY_TOLERANCE = 1
 # 单行候选分页大小；题库为单机单用户规模，翻页取全量候选即可。
@@ -105,7 +106,7 @@ class BankProfile:
 class TemplateEntry:
     question_number: str
     question_type: str
-    difficulty: int | None
+    difficulty: float | None
     score: float | None = None
     # 同题型同难度的连续题目合并为一行，count 记录合并的题数。
     count: int = 1
@@ -244,7 +245,7 @@ def _parse_difficulty(raw: object) -> float | None:
         value = float(str(raw or "").strip())
     except (TypeError, ValueError):
         return None
-    if not (MIN_DIFFICULTY <= value <= MAX_DIFFICULTY + 1):
+    if not (MIN_DIFFICULTY <= value <= MAX_DIFFICULTY):
         return None
     return value
 
@@ -253,7 +254,8 @@ def _difficulty_band(raw: object) -> str:
     value = _parse_difficulty(raw)
     if value is None:
         return "未知"
-    return str(int(value))
+    level = standard_difficulty.difficulty_level(value)
+    return str(level) if level is not None else "未知"
 
 
 # ---------------------------------------------------------------------------
@@ -505,9 +507,10 @@ def extract_template_structure(
         for item in result.items:
             paper_title = paper_title or str(item.get("paper_title") or "")
             raw_difficulty = _parse_difficulty(item.get("difficulty"))
-            difficulty = (
-                int(raw_difficulty) if raw_difficulty is not None else None
-            )
+            # 模板难度原样透传一位小数（如 8.8）；合行只按整数档判同，
+            # 合并后的行难度记为该档位。
+            difficulty = raw_difficulty
+            level = standard_difficulty.difficulty_level(raw_difficulty)
             base_type, _legacy_subtype = split_legacy_question_type(
                 item.get("question_type")
             )
@@ -517,7 +520,8 @@ def extract_template_structure(
             if (
                 previous is not None
                 and previous.question_type == question_type
-                and previous.difficulty == difficulty
+                and standard_difficulty.difficulty_level(previous.difficulty)
+                == level
             ):
                 first_number = previous.question_number.split("-", 1)[0]
                 entries[-1] = replace(
@@ -526,6 +530,9 @@ def extract_template_structure(
                         f"{first_number}-{number}"
                         if number and number != first_number
                         else previous.question_number
+                    ),
+                    difficulty=(
+                        float(level) if level is not None else difficulty
                     ),
                     count=previous.count + 1,
                 )
@@ -683,8 +690,8 @@ def _paged_candidates(
     *,
     question_types: tuple[str, ...],
     special_types: tuple[str, ...] = (),
-    difficulty_min: int | None,
-    difficulty_max: int | None,
+    difficulty_min: float | None,
+    difficulty_max: float | None,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     page = 1

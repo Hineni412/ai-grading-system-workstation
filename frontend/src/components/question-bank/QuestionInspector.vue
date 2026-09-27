@@ -226,6 +226,12 @@ async function removeCurrent(): Promise<void> {
                 第 {{ store.detail.question_number || store.detail.id }} 题
               </h2>
               <p>{{ store.detail.paper_title || '未命名试卷' }}</p>
+              <RouterLink
+                class="qb-link"
+                :to="{ path: '/authoring', query: { source: store.detail.id } }"
+              >
+                用这道题练习
+              </RouterLink>
             </div>
             <button type="button" class="qb-drawer-close" aria-label="关闭题目详情" @click="store.selectQuestion(null)">×</button>
           </header>

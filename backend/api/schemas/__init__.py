@@ -120,15 +120,7 @@ from .training import (
     TrainingDiagnosisRequest,
     TrainingDiagnosisResponse,
     TrainingExamScopeRequest,
-    TrainingExportSubmitRequest,
-    TrainingPlanRequest,
-    TrainingPlanResponse,
     TrainingScopeRequest,
-    TrainingStageRatios,
-    TrainingTaskConfirmRequest,
-    TrainingTaskDetail,
-    TrainingTaskListResponse,
-    TrainingTaskSummary,
 )
 
 __all__ = [
@@ -236,13 +228,5 @@ __all__ = [
     "TrainingDiagnosisRequest",
     "TrainingDiagnosisResponse",
     "TrainingExamScopeRequest",
-    "TrainingExportSubmitRequest",
-    "TrainingPlanRequest",
-    "TrainingPlanResponse",
     "TrainingScopeRequest",
-    "TrainingStageRatios",
-    "TrainingTaskConfirmRequest",
-    "TrainingTaskDetail",
-    "TrainingTaskListResponse",
-    "TrainingTaskSummary",
 ]

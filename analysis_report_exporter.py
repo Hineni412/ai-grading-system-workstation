@@ -1366,7 +1366,7 @@ def build_personal_payload(
             "small_sample": data.small_sample,
         },
         "questions": questions,
-        "knowledge_statistics_note": "知识点按可匹配的小问直接考查范围统计；小问难度是题目预估，得分率是本次考试表现，均不能直接当作当前掌握度。综合小问的失分不能推断为其中每个知识点或步骤都不会。",
+        "knowledge_statistics_note": "知识点按可匹配的小问直接考查范围统计；小问难度是公式难度，得分率是本次考试表现，均不能直接当作当前掌握度。综合小问的失分不能推断为其中每个知识点或步骤都不会。",
     }
 
 
@@ -3666,7 +3666,11 @@ def _render_personal_html(
 # ---------------------------------------------------------------------------
 
 
-def _render_class_html(data: _SessionAnalysisData, narrative: dict[str, Any] | None) -> str:
+def _render_class_html(
+    data: _SessionAnalysisData,
+    narrative: dict[str, Any] | None,
+    cause_counts: dict[str, list[tuple[str, int]]] | None = None,
+) -> str:
     page = build_class_page_data(data)
     class_name = data.class_name or "未分班"
     class_label = class_name if class_name.endswith("班") else f"{class_name}班"
@@ -3692,11 +3696,16 @@ def _render_class_html(data: _SessionAnalysisData, narrative: dict[str, Any] | N
     bands = ''.join(f'<div class="band"><span>{_esc(label)}</span><div class="track">'
                     f'<i style="width:{count/max(1,analyzed)*100:.2f}%"></i></div><b>{count}人</b></div>'
                     for label, count in stats['bands'].items())
+    def _cause_text(question_id: str) -> str:
+        counts = (cause_counts or {}).get(str(question_id)) or []
+        return '；'.join(f'{category} {count}人' for category, count in counts[:3]) or '—'
+
     questions = ''.join(
         f'<tr class="qrow" id="score-{_esc(q["question_id"])}"><td>{_question_display_label(q["question_id"])}</td>'
         f'<td>{fmt(q["max_score"])}</td><td>{fmt(q["class_avg"])}</td>'
         f'<td><div class="rate"><i style="width:{q["class_rate"]*100:.2f}%"></i>'
         f'<span>{q["class_rate"]*100:.1f}%</span></div></td><td>{len(q["records"])}人</td>'
+        f'<td>{_esc(_cause_text(q["question_id"]))}</td>'
         + (f'<td class="answer"><details><summary>查看答案</summary><div>{math_text(q["canonical_answer"])}</div></details></td></tr>'
            if q['canonical_answer'] else '<td class="answer">—</td></tr>')
         for q in page['questions'] if q['class_avg'] is not None)
@@ -3745,7 +3754,7 @@ def _render_class_html(data: _SessionAnalysisData, narrative: dict[str, Any] | N
         f'<div class="metrics">{metric_html}</div><section><h2>本次最值得关注的结果</h2>{findings}</section>'
         f'<section><h2>分数分布</h2>{bands}<p class="muted">各分数段互不重叠，参与统计{analyzed}人。</p></section>'
         '<section><h2>逐题得分</h2><div class="table-wrap"><table><thead><tr><th>题目</th><th>满分</th><th>均分</th>'
-        f'<th>得分率</th><th>未得满分</th><th>参考答案</th></tr></thead><tbody>{questions}</tbody></table></div></section>'
+        f'<th>得分率</th><th>未得满分</th><th>主要错误</th><th>参考答案</th></tr></thead><tbody>{questions}</tbody></table></div></section>'
         f'{knowledge_html}<section><h2>下一节讲评课</h2>{issues}<h3>分层安排</h3>{_report_paragraphs(narrative.get("grouping_advice", ""))}</section>'
         f'<section><h2>个别跟进</h2>{notes}</section><section><details><summary>全班成绩与失分题目（{analyzed}人）</summary>'
         '<div class="table-wrap"><table class="roster"><thead><tr><th>名次</th><th>姓名</th><th>成绩</th><th>失分题目</th></tr></thead>'
@@ -3817,7 +3826,9 @@ class AnalysisReportGenerator:
         score_revision: str = "",
     ) -> list[Path]:
         """以班级页面相同的数据、提示词和缓存规则批量导出自包含 HTML。"""
-        from backend.class_analysis import _class_narrative
+        from backend.class_analysis import (
+            _class_narrative, question_category_counts, session_error_records,
+        )
         from analysis_report_prompts import CLASS_SYSTEM_PROMPT
 
         data = assemble_session_analysis(self.repositories, session_id, data_root=self.data_root)
@@ -3825,6 +3836,13 @@ class AnalysisReportGenerator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         cache = self.cache or AnalysisNarrativeCache(self.output_dir / ".analysis_narrative_cache")
         _enrich_personal_knowledge(self.repositories, data, self.data_root)
+        # 错因记录按整场装配（指纹口径），再按各班学生过滤统计；状态缺失时为空。
+        error_records = (
+            session_error_records(
+                self.repositories, session_id, self.reports_dir, data_root=self.data_root,
+            )
+            if self.reports_dir is not None else {}
+        )
         client = self._client()
         files = []
         for name, group in split_session_analysis_by_class(data).items():
@@ -3834,8 +3852,12 @@ class AnalysisReportGenerator:
                 client=client, cache=cache, session_id=session_id, revision=revision,
                 class_name=name, prompt=build_report_prompt(CLASS_SYSTEM_PROMPT, build_class_payload(group)),
             )
+            cause_counts = question_category_counts(
+                error_records, student_ids=[s.student_id for s in group.students])
             target = self.output_dir / f"{safe_filename_fragment(name, '未分班')}_班级报告.html"
-            target.write_text(_render_class_html(group, narrative), encoding="utf-8")
+            target.write_text(
+                _render_class_html(group, narrative, cause_counts=cause_counts),
+                encoding="utf-8")
             files.append(target)
         return files
 

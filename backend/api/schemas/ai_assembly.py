@@ -89,7 +89,7 @@ class AiAssemblySelectResponse(_AiAssemblyModel):
 class AiAssemblyTemplateEntryResponse(_AiAssemblyModel):
     question_number: str
     question_type: str
-    difficulty: int | None = None
+    difficulty: float | None = None
     score: float | None = None
     # 同题型同难度的连续行合并数；未合并为 1。
     count: int = Field(default=1, ge=1)

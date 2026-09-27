@@ -301,6 +301,7 @@ def create_app(
         ai_diagnostics_router,
         analytics_router,
         assembly_router,
+        authoring_router,
         config_router,
         files_router,
         grading_router,
@@ -326,6 +327,7 @@ def create_app(
     api.include_router(ai_diagnostics_router)
     api.include_router(analytics_router)
     api.include_router(assembly_router)
+    api.include_router(authoring_router)
     api.include_router(config_router)
     api.include_router(files_router)
     api.include_router(grading_router)

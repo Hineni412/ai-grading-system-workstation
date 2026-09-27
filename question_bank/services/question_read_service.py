@@ -32,7 +32,6 @@ from question_bank.current_knowledge import (
 )
 from question_bank.models.question import (
     ALLOWED_TAG_TYPES,
-    CORE_ANALYSIS_TAG_TYPES,
     has_complete_analysis_tags,
 )
 from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, TagAnalysis
@@ -60,6 +59,7 @@ from question_bank.taxonomy.curriculum_catalog import (
     load_curriculum_catalog,
     teaching_progress_allowed_exam_scope_values,
     teaching_progress_allowed_prefixes,
+    teaching_progress_allowed_stable_keys,
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
 
@@ -92,7 +92,7 @@ EXISTS (
 """
 
 _IMAGE_MARKER_PATTERN = re.compile(
-    r"\[\[IMAGE:(?P<path>.*?)\]\]",
+    r"\[\[IMAGE:(?P<path>[^\]|]*?)(?:\|[^\]]*)?\]\]",
     re.DOTALL | re.IGNORECASE,
 )
 _RICH_INLINE_TOKEN_PATTERN = re.compile(
@@ -126,6 +126,24 @@ _TAG_STATUS_MAP = {
     "untagged": "未打标签",
 }
 
+# 归属就绪：判定点关联已派生出知识点+章/小节标签，或写入侧已标记
+# derived_pending（打标完成、等判定点关联）。与 models/question.py
+# 的 analysis_ownership_satisfied 同口径：只有前置知识行（全部
+# supporting_prerequisite 关联）也算归属就绪。
+_OWNERSHIP_READY_SQL = """
+    (
+        EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
+                AND t.tag_type = 'knowledge_point' AND COALESCE(t.tag_value, '') <> '')
+        AND EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
+                AND t.tag_type IN ('exam_scope', 'curriculum_section')
+                AND COALESCE(t.tag_value, '') <> '')
+    )
+    OR EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
+               AND t.tag_type = 'prerequisite' AND COALESCE(t.tag_value, '') <> '')
+    OR EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
+               AND t.tag_type = 'tag_status' AND t.tag_value = 'derived_pending')
+"""
+
 
 def build_question_filter_query(
     *,
@@ -133,7 +151,7 @@ def build_question_filter_query(
     keyword: str | None = None,
     knowledge_point: str | None = None,
     difficulty: str | None = None,
-    difficulty_range: tuple[int, int] | None = None,
+    difficulty_range: tuple[float, float] | None = None,
     question_types: list[str] | None = None,
     paper_ids: list[int] | None = None,
     years: list[str] | None = None,
@@ -185,10 +203,25 @@ def build_question_filter_query(
         where.append("(q.question_text LIKE ? OR COALESCE(q.answer_text, '') LIKE ?)")
         params.extend([f"%{clean}%", f"%{clean}%"])
     if clean := _filter_text(difficulty):
-        where.append("q.difficulty = ?")
-        params.append(clean)
+        # 精确难度是档位语义：数值输入匹配最近整数档（7 命中 6.5–7.4）；
+        # 非数值输入沿用原文精确匹配。
+        try:
+            level = float(clean)
+        except (TypeError, ValueError):
+            where.append("q.difficulty = ?")
+            params.append(clean)
+        else:
+            where.append(
+                "CAST(q.difficulty AS REAL) >= ? "
+                "AND CAST(q.difficulty AS REAL) < ?"
+            )
+            params.extend([level - 0.5, level + 0.5])
     if difficulty_range is not None:
-        first, second = (int(difficulty_range[0]), int(difficulty_range[1]))
+        first, second = (
+            float(difficulty_range[0]),
+            float(difficulty_range[1]),
+        )
+        # 闭区间：两端都含（[4,6] 含 4.0 与 6.0，不含 3.9 与 6.1）。
         where.append("CAST(q.difficulty AS REAL) BETWEEN ? AND ?")
         params.extend([min(first, second), max(first, second)])
     for column, values in (
@@ -258,13 +291,10 @@ def build_question_filter_query(
             )
             params.extend([tag_type, *cleaned])
     if (clean := _filter_text(tag_status)) and clean != "全部":
-        complete = """
+        complete = f"""
             EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
-                    AND t.tag_type = 'knowledge_point' AND COALESCE(t.tag_value, '') <> '')
-            AND EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
                     AND t.tag_type = 'ability' AND COALESCE(t.tag_value, '') <> '')
-            AND EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
-                    AND t.tag_type = 'exam_scope' AND COALESCE(t.tag_value, '') <> '')
+            AND ({_OWNERSHIP_READY_SQL})
             AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
         """
         if clean == "已打标签":
@@ -401,7 +431,6 @@ _FREQUENCY_SORTS = {
 _RETIRED_PUBLIC_TAG_TYPES = {
     "canonical_knowledge_id",
     "measured_skill_name",
-    "prerequisite",
     "sub_skill",
     "supporting_skill_name",
     "teaching_stage",
@@ -511,8 +540,8 @@ class QuestionReadFilters:
     student_levels: tuple[str, ...] = ()
     teaching_stages: tuple[str, ...] = ()
     sub_skills: tuple[str, ...] = ()
-    difficulty_min: int | None = None
-    difficulty_max: int | None = None
+    difficulty_min: float | None = None
+    difficulty_max: float | None = None
     question_types: tuple[str, ...] = ()
     paper_ids: tuple[int, ...] = ()
     years: tuple[str, ...] = ()
@@ -1080,7 +1109,11 @@ class QuestionBankReadService:
         return items
 
     def _list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
-        tag_placeholders = ", ".join("?" for _ in ANALYSIS_TAG_TYPES)
+        paper_tag_types = ANALYSIS_TAG_TYPES + (
+            "curriculum_section",
+            "tag_status",
+        )
+        tag_placeholders = ", ".join("?" for _ in paper_tag_types)
         visible_question_sql = (
             """
             q.id IS NOT NULL
@@ -1109,14 +1142,24 @@ class QuestionBankReadService:
                     SELECT
                         question_id,
                         1 AS has_analysis_tag,
-                        COUNT(DISTINCT CASE
+                        MAX(CASE
+                            WHEN tag_type = 'ability' THEN 1 ELSE 0
+                        END) AS has_ability,
+                        MAX(CASE
+                            WHEN tag_type = 'knowledge_point' THEN 1 ELSE 0
+                        END) AS has_knowledge,
+                        MAX(CASE
                             WHEN tag_type IN (
-                                'knowledge_point',
-                                'ability',
-                                'exam_scope'
+                                'exam_scope',
+                                'curriculum_section'
                             )
-                            THEN tag_type
-                        END) AS core_tag_count
+                            THEN 1 ELSE 0
+                        END) AS has_scope,
+                        MAX(CASE
+                            WHEN tag_type = 'tag_status'
+                             AND tag_value = 'derived_pending'
+                            THEN 1 ELSE 0
+                        END) AS derived_pending
                     FROM question_tags
                     WHERE tag_type IN ({tag_placeholders})
                       AND COALESCE(tag_value, '') <> ''
@@ -1149,7 +1192,14 @@ class QuestionBankReadService:
                     END) AS tagged_any_question_count,
                     COUNT(CASE
                         WHEN {visible_question_sql}
-                         AND ts.core_tag_count = 3
+                         AND (
+                            (
+                                ts.has_ability = 1
+                                AND ts.has_knowledge = 1
+                                AND ts.has_scope = 1
+                            )
+                            OR ts.derived_pending = 1
+                         )
                          AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
                         THEN 1
                     END) AS tagged_question_count,
@@ -1182,7 +1232,14 @@ class QuestionBankReadService:
                     END) AS criteria_needs_review_count,
                     COUNT(CASE
                         WHEN {visible_question_sql}
-                         AND ts.core_tag_count = 3
+                         AND (
+                            (
+                                ts.has_ability = 1
+                                AND ts.has_knowledge = 1
+                                AND ts.has_scope = 1
+                            )
+                            OR ts.derived_pending = 1
+                         )
                          AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
                          AND EXISTS (
                             SELECT 1
@@ -1214,7 +1271,7 @@ class QuestionBankReadService:
                 GROUP BY p.id
                 ORDER BY {order_sql}
                 """,
-                ANALYSIS_TAG_TYPES,
+                paper_tag_types,
             ).fetchall()
         items: list[dict[str, Any]] = []
         for row in rows:
@@ -1254,7 +1311,6 @@ class QuestionBankReadService:
     ) -> dict[str, Any]:
         """Return the current saved projections for a grading session's linked questions."""
 
-        placeholders = ", ".join("?" for _ in CORE_ANALYSIS_TAG_TYPES)
         with _read_connection(self.db_path) as conn:
             rows = conn.execute(
                 f"""
@@ -1263,12 +1319,12 @@ class QuestionBankReadService:
                     q.question_number,
                     CAST(q.difficulty AS REAL) BETWEEN 1 AND 10 AS difficulty_ready,
                     (
-                        SELECT COUNT(DISTINCT qt.tag_type)
-                        FROM question_tags qt
-                        WHERE qt.question_id = q.id
-                          AND qt.tag_type IN ({placeholders})
-                          AND COALESCE(qt.tag_value, '') <> ''
-                    ) = {len(CORE_ANALYSIS_TAG_TYPES)} AS tags_ready,
+                        EXISTS (SELECT 1 FROM question_tags qt
+                                WHERE qt.question_id = q.id
+                                  AND qt.tag_type = 'ability'
+                                  AND COALESCE(qt.tag_value, '') <> '')
+                        AND ({_OWNERSHIP_READY_SQL})
+                    ) AS tags_ready,
                     EXISTS (
                         SELECT 1
                         FROM question_solution_evidence_versions evidence
@@ -1290,7 +1346,7 @@ class QuestionBankReadService:
                   AND COALESCE(q.is_deleted, 0) = 0
                 ORDER BY q.id
                 """,
-                [*CORE_ANALYSIS_TAG_TYPES, str(int(grading_session_id))],
+                [str(int(grading_session_id))],
             ).fetchall()
         items = [dict(row) for row in rows]
         incomplete = [
@@ -1322,15 +1378,16 @@ class QuestionBankReadService:
     def _read_filter_parts(self, filters: QuestionReadFilters, *, taxonomy_expansions: dict[str, tuple[str, ...]] | None = None):
         joins, where, params = _question_filter_parts(filters, current_knowledge=self.current_knowledge, taxonomy_expansions=taxonomy_expansions)
         if filters.collapse_duplicates:
-            from question_bank.services.duplicate_analysis_copy_service import exact_identity_map
+            from question_bank.services.duplicate_analysis_copy_service import exact_identity_map, canonical_question_ranks
             with _read_connection(self.db_path) as conn:
                 ids = [int(row[0]) for row in conn.execute(" ".join([
                     "SELECT DISTINCT q.id FROM questions q", *joins,
                     "WHERE " + " AND ".join(where), "ORDER BY q.id"]), params).fetchall()]
-                identities = exact_identity_map(conn, data_root=self.data_root or self.db_path.parent.parent)
+                identities = exact_identity_map(conn, data_root=self.data_root or self.db_path.parent.parent, question_ids=ids)
+                ranks = canonical_question_ranks(conn, ids)
             seen = set()
             hidden = []
-            for qid in ids:
+            for qid in sorted(ids, key=lambda qid: ranks[qid]):
                 key = identities.get(qid)
                 if key and key in seen:
                     hidden.append(qid)
@@ -2223,7 +2280,19 @@ class QuestionBankReadService:
                     source_tags = {(str(tag["tag_type"]), str(tag["tag_value"])) for tag in conn.execute(
                         "SELECT tag_type,tag_value FROM question_tags WHERE question_id=?", (int(source["id"]),)).fetchall()}
                     target_tags = {(str(tag["tag_type"]), str(tag["tag_value"])) for tag in tags}
-                    item["duplicate_labels_reused"] = bool(source_tags) and source_tags <= target_tags and str(row["difficulty"] or "") == str(source["difficulty"] or "")
+                    # 难度可能是小数（如 8.8）；按数值比较，"8" 与 "8.0" 视为相同。
+                    def _difficulty_number(value: Any) -> float | None:
+                        try:
+                            number = float(str(value or "").strip())
+                        except (TypeError, ValueError):
+                            return None
+                        return number
+                    item["duplicate_labels_reused"] = (
+                        bool(source_tags)
+                        and source_tags <= target_tags
+                        and _difficulty_number(row["difficulty"])
+                        == _difficulty_number(source["difficulty"])
+                    )
         return item
 
     def resolve_asset(self, question_id: int, asset_index: int) -> ResolvedFile:
@@ -2682,17 +2751,14 @@ def _question_filter_parts(
     if requested_knowledge and not expanded_knowledge:
         where.append("1 = 0")
     if filters.analysis_status in {"complete", "incomplete"}:
-        core_placeholders = ", ".join("?" for _ in CORE_ANALYSIS_TAG_TYPES)
         complete_sql = f"""
             (
                 CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
-                AND (
-                    SELECT COUNT(DISTINCT qt.tag_type)
-                    FROM question_tags qt
-                    WHERE qt.question_id = q.id
-                      AND qt.tag_type IN ({core_placeholders})
-                      AND COALESCE(qt.tag_value, '') <> ''
-                ) = {len(CORE_ANALYSIS_TAG_TYPES)}
+                AND EXISTS (SELECT 1 FROM question_tags qt
+                            WHERE qt.question_id = q.id
+                              AND qt.tag_type = 'ability'
+                              AND COALESCE(qt.tag_value, '') <> '')
+                AND ({_OWNERSHIP_READY_SQL})
                 AND EXISTS (
                     SELECT 1
                     FROM question_solution_evidence_versions evidence
@@ -2714,7 +2780,6 @@ def _question_filter_parts(
             if filters.analysis_status == "complete"
             else f"NOT {complete_sql}"
         )
-        params.extend(CORE_ANALYSIS_TAG_TYPES)
     if filters.criteria_needs_review:
         where.append(_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id"))
     if filters.teaching_progress_chapter.strip():
@@ -2728,12 +2793,29 @@ def _question_filter_parts(
             # 无法解析进度上限时失败关闭，不静默放行。
             where.append("1 = 0")
         else:
-            prefix_clauses = " OR ".join(
-                "tp.tag_value LIKE ?" for _ in allowed_prefixes
+            allowed_keys = teaching_progress_allowed_stable_keys(
+                filters.teaching_progress_chapter
             )
+            exact_keys, key_prefixes = (
+                allowed_keys if allowed_keys is not None else ((), ())
+            )
+            allowed_clauses = [
+                "tp.tag_value LIKE ?" for _ in allowed_prefixes
+            ]
+            allowed_clauses.extend(
+                "tp.tag_value LIKE ?" for _ in key_prefixes
+            )
+            if exact_keys:
+                allowed_clauses.append(
+                    "tp.tag_value IN ("
+                    + ", ".join("?" for _ in exact_keys)
+                    + ")"
+                )
+            allowed_sql = " OR ".join(allowed_clauses)
             scope_placeholders = ", ".join("?" for _ in allowed_scope_values)
-            # knowledge_point 与 prerequisite 均为层级路径，须落在已学前缀内；
-            # exam_scope 为空格分隔值，须整体落在已学 exam_scope 值集合内。
+            # knowledge_point 与 prerequisite 可为层级路径或稳定键，
+            # 须落在已学范围内；exam_scope 为空格分隔值，须整体落在
+            # 已学 exam_scope 值集合内。
             where.append(
                 "NOT EXISTS ("
                 "SELECT 1 FROM question_tags tp "
@@ -2741,13 +2823,15 @@ def _question_filter_parts(
                 "AND COALESCE(tp.tag_value, '') <> '' "
                 "AND ("
                 "(tp.tag_type IN ('knowledge_point', 'prerequisite') "
-                f"AND NOT ({prefix_clauses})) "
+                f"AND NOT ({allowed_sql})) "
                 "OR (tp.tag_type = 'exam_scope' "
                 f"AND tp.tag_value NOT IN ({scope_placeholders}))"
                 ")"
                 ")"
             )
             params.extend(f"{prefix}%" for prefix in allowed_prefixes)
+            params.extend(f"{prefix}%" for prefix in key_prefixes)
+            params.extend(exact_keys)
             params.extend(allowed_scope_values)
     if scope_clause is not None:
         where.append(scope_clause[0])
@@ -3280,14 +3364,15 @@ def _resolve_public_tag(
     tag_value = _public_tag_value(raw_value)
     if tag_value is None:
         return None
-    if tag_type == "knowledge_point":
+    if tag_type in {"knowledge_point", "prerequisite"}:
         if current_knowledge is None:
             return None
         term = current_knowledge.canonical_term(tag_value)
         if term is not None and current_knowledge.resolve(term[0]):
             tag_value = term[1]
-            if term[0].startswith("sk_"):
-                # 技能节点在存储层与知识点同列，对外读取单列成 skill。
+            if tag_type == "knowledge_point" and term[0].startswith("sk_"):
+                # 技能节点在存储层与知识点同列，对外读取单列成 skill；
+                # prerequisite 保持原类型（前置技能仍是前置知识）。
                 tag_type = "skill"
         else:
             teacher_name = teacher_lookup["knowledge"].get(

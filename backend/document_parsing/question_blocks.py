@@ -5,7 +5,13 @@ import re
 from typing import Any
 
 from equivalence_engine import merge_equivalent_forms
-from question_bank.parsers.type_detector import subq_mark_labels
+from question_bank.parsers.type_detector import (
+    detect_grading_question_type,
+    explicit_choice_labels,
+    question_section_type,
+    subq_mark_labels,
+    validate_section_numbering,
+)
 from question_bank.importers.batch_importer import (
     _extract_question_marker_number,
     _looks_like_answer_section_heading,
@@ -34,6 +40,8 @@ _DRAWING_MARKERS = ("作图", "作出", "画出", "保留作图痕迹")
 
 
 def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
+    question_text, _ = _split_local_question_answer_text(doc_text)
+    validate_section_numbering(question_text)
     normalized_doc_text = "\n".join(_normalize_inline_main_question_lines(doc_text))
     inline_blocks = _parse_inline_answer_blocks(normalized_doc_text)
     if inline_blocks:
@@ -132,7 +140,7 @@ def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                     "canonical_answer": canonical,
                     "accepted_forms": _local_accepted_forms(canonical, qtype),
                     "local_answer_trusted": local_answer_trusted,
-                    "needs_review": not local_answer_trusted,
+                    "needs_review": not bool(raw_answer or canonical),
                 }
             )
     else:
@@ -174,7 +182,7 @@ def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                     "canonical_answer": canonical,
                     "accepted_forms": _local_accepted_forms(canonical, qtype),
                     "local_answer_trusted": local_answer_trusted,
-                    "needs_review": not local_answer_trusted,
+                    "needs_review": not bool(raw_answer or canonical),
                 }
             )
             blocks.append(block)
@@ -240,18 +248,15 @@ def _parse_inline_segment(
             continue
         if line.startswith("[公式:") or line.startswith("[公式："):
             continue
-        if "【答案】" in line:
-            bucket = "answer"
-            after = line.split("【答案】", 1)[1].strip()
-            if after:
-                answer_lines.append(after)
-            continue
-        if ("【解析】" in line) or ("【点睛】" in line):
-            bucket = "analysis"
-            marker = "【解析】" if "【解析】" in line else "【点睛】"
-            after = line.split(marker, 1)[1].strip()
-            if after:
-                analysis_lines.append(after)
+        if re.search(r"【(?:答案|解析|分析|解答|点睛|点评)】", line):
+            pieces = re.split(r"(【(?:答案|解析|分析|解答|点睛|点评)】)", line)
+            for piece in pieces:
+                if piece == "【答案】":
+                    bucket = "answer"
+                elif re.fullmatch(r"【(?:解析|分析|解答|点睛|点评)】", piece):
+                    bucket = "analysis"
+                elif piece.strip():
+                    {"stem": stem_lines, "answer": answer_lines, "analysis": analysis_lines}[bucket].append(piece.strip())
             continue
         if line.startswith("【") and "】" in line:
             bucket = "analysis"
@@ -303,7 +308,7 @@ def _parse_inline_segment(
         "canonical_answer": canonical,
         "accepted_forms": _local_accepted_forms(canonical, qtype),
         "local_answer_trusted": local_answer_trusted,
-        "needs_review": not local_answer_trusted,
+        "needs_review": not bool(answer_raw or analysis_raw or canonical),
     }
 
 
@@ -331,26 +336,13 @@ def _question_type_hints_from_section_headings(doc_text: str) -> dict[str, str]:
     hints: dict[str, str] = {}
     for line in question_text.splitlines():
         value = str(line or "").strip()
-        is_heading = re.match(r"^(?:[一二三四五六七八九十]+|\d+)\s*[、.．]\s*(?:选择|填空|证明|计算|解答)题", value)
-        if not is_heading:
+        heading_type = question_section_type(value)
+        if heading_type is None:
             number = _extract_question_marker_number(value)
             if number is not None and current_type:
                 hints.setdefault(str(number), current_type)
             continue
-        if "选择题" in value:
-            current_type = "choice"
-            continue
-        if "填空题" in value:
-            current_type = "fill_blank"
-            continue
-        if "证明题" in value:
-            current_type = "proof"
-            continue
-        if "解答题" in value:
-            current_type = "comprehensive"
-            continue
-        if "计算题" in value:
-            current_type = "calculation"
+        current_type = heading_type
     return hints
 
 
@@ -532,14 +524,7 @@ def has_explicit_choice_options(value: str) -> bool:
 
 def _explicit_option_labels(value: str) -> set[str]:
     """Return option letters only when they carry visible option punctuation."""
-    return {
-        match.group(1).upper()
-        for match in re.finditer(
-            r"(?:^|[\s;；])([A-Da-d])\s*(?:[.．、:：)）])",
-            str(value or ""),
-            flags=re.MULTILINE,
-        )
-    }
+    return explicit_choice_labels(value)
 
 
 def _infer_local_question_type(
@@ -549,33 +534,7 @@ def _infer_local_question_type(
     *,
     section_type: str = "",
 ) -> str:
-    value = str(question_text or "")
-    normalized_section_type = str(section_type or "").strip()
-    if normalized_section_type in {
-        "choice",
-        "fill_blank",
-        "proof",
-    }:
-        return normalized_section_type
-    if has_explicit_choice_options(value):
-        return "choice"
-    if _choice_answer_from_text(answer_text):
-        return "choice"
-    # A blank inside a multi-subpart question is just one subquestion's answer
-    # slot; the subparts make it a worked-solution question, not a fill-in.
-    # Data-table cells also look like blanks, but they are not a single fill-in.
-    labeled_subparts = has_visible_subparts(value)
-    if not labeled_subparts and has_visible_stem_fill_blank_mark(value):
-        return "fill_blank"
-    if any(token in value for token in _DRAWING_MARKERS):
-        return "comprehensive"
-    if any(token in value for token in _EXPLICIT_PROOF_MARKERS):
-        return "proof"
-    if labeled_subparts:
-        return "comprehensive"
-    if normalized_section_type in {"calculation", "comprehensive"}:
-        return normalized_section_type
-    return infer_question_type_from_text(question_text)
+    return detect_grading_question_type(question_text, section_type=section_type)
 
 
 def _extract_canonical_answer_for_local_question(
@@ -667,8 +626,45 @@ def _has_multiple_required_answers(question_text: str) -> bool:
     text = str(question_text or "")
     if len(subq_mark_labels(text)) >= 2:
         return True
-    blank_count = len(re.findall(r"_{2,}|＿{2,}|　{2,}", text))
-    return blank_count >= 2
+    return _required_blank_group_count(text) >= 2
+
+
+def _required_blank_group_count(text: str) -> int:
+    """Count distinct blank groups, not blank-character runs.
+
+    A single Word underline can be stored as several underscore/space runs
+    (``____　      　____``) or as ``<u>　      　</u>`` — both are one blank.
+    """
+    group_count = 0
+
+    def _underlined(match: re.Match[str]) -> str:
+        nonlocal group_count
+        inner = _strip_inline_html(match.group("inner"))
+        if _BLANK_CHAR.search(inner) and not _NON_BLANK_TEXT.search(inner):
+            group_count += 1
+            return ""
+        return inner
+
+    remaining = _UNDERLINED_SPAN.sub(_underlined, text)
+    group_count += sum(
+        1
+        for run in _BLANK_GROUP_RUN.findall(remaining)
+        if len(_BLANK_CHAR.findall(run)) >= 2
+    )
+    return group_count
+
+
+_UNDERLINED_SPAN = re.compile(
+    r"<u\b[^>]*>(?P<inner>.*?)</u>",
+    re.IGNORECASE | re.DOTALL,
+)
+_BLANK_GROUP_RUN = re.compile(r"[_＿\s]+")
+_BLANK_CHAR = re.compile(r"[_＿ 　]")
+_NON_BLANK_TEXT = re.compile(r"[^_＿ 　\s]")
+
+
+_SINGLE_OPTION_LETTER = re.compile(r"[A-Da-d][.．、。]?")
+_FILL_LETTER_HINT = re.compile(r"填[‘'\"“”’(\（\s]{0,3}[A-Da-d]")
 
 
 def _is_local_answer_trusted(
@@ -686,6 +682,10 @@ def _is_local_answer_trusted(
     if qtype == "choice":
         return re.fullmatch(r"[A-D]", canonical.upper()) is not None
     if qtype == "fill_blank":
+        if _SINGLE_OPTION_LETTER.fullmatch(canonical) and not _FILL_LETTER_HINT.search(
+            question_text
+        ):
+            return False
         return not _has_multiple_required_answers(question_text)
     return False
 
@@ -755,19 +755,7 @@ def _normalize_inline_main_question_lines(doc_text: str) -> list[str]:
 
 
 def infer_question_type_from_text(text: str) -> str:
-    value = str(text or "")
-    if has_explicit_choice_options(value):
-        return "choice"
-    if has_visible_subparts(value):
-        return "comprehensive"
-    stem = _stem_without_data_tables(value)
-    if has_visible_fill_blank_mark(stem) or re.search(r"[ \t]{3,}", stem):
-        return "fill_blank"
-    if any(token in value for token in _DRAWING_MARKERS):
-        return "comprehensive"
-    if any(token in value for token in _EXPLICIT_PROOF_MARKERS):
-        return "proof"
-    return "comprehensive"
+    return detect_grading_question_type(text)
 
 
 def flatten_answer_blocks(answer_map: Any) -> list[dict[str, Any]]:
@@ -950,18 +938,15 @@ def parse_rich_question_blocks(
         line = str(raw or "").strip()
         if not line:
             continue
-        if "【答案】" in line:
-            bucket = "answer"
-            after = line.split("【答案】", 1)[1].strip()
-            if after:
-                answer_lines.append(after)
-            continue
-        if ("【解析】" in line) or ("【点睛】" in line):
-            bucket = "analysis"
-            marker = "【解析】" if "【解析】" in line else "【点睛】"
-            after = line.split(marker, 1)[1].strip()
-            if after:
-                analysis_lines.append(after)
+        if re.search(r"【(?:答案|解析|分析|解答|点睛|点评)】", line):
+            pieces = re.split(r"(【(?:答案|解析|分析|解答|点睛|点评)】)", line)
+            for piece in pieces:
+                if piece == "【答案】":
+                    bucket = "answer"
+                elif re.fullmatch(r"【(?:解析|分析|解答|点睛|点评)】", piece):
+                    bucket = "analysis"
+                elif piece.strip():
+                    {"stem": stem_lines, "answer": answer_lines, "analysis": analysis_lines}[bucket].append(piece.strip())
             continue
         if line.startswith("【") and "】" in line:
             bucket = "analysis"
@@ -1034,5 +1019,5 @@ def parse_rich_question_blocks(
         "canonical_answer": canonical,
         "accepted_forms": _local_accepted_forms(canonical, qtype),
         "local_answer_trusted": local_answer_trusted,
-        "needs_review": not local_answer_trusted,
+        "needs_review": not bool(answer_text or analysis_html or canonical),
     }

@@ -540,6 +540,73 @@ def teaching_progress_allowed_prefixes(chapter_id: object) -> tuple[str, ...] | 
     return None
 
 
+def _volume_key_stem(volume: Mapping[str, Any]) -> str:
+    """册的稳定键主干（如 bnu24_math_g8_upper），由第一章 knowledge_id 派生。"""
+
+    for chapter in volume["chapters"]:
+        match = re.match(
+            r"^kp_([A-Za-z0-9]+_[A-Za-z0-9]+_g\d+_(?:upper|lower))_\d+$",
+            str(chapter.get("knowledge_id") or ""),
+        )
+        if match:
+            return match.group(1)
+    return ""
+
+
+def teaching_progress_allowed_stable_keys(
+    chapter_id: object,
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """返回已学范围允许的稳定键：(精确匹配集合, LIKE 前缀集合)。
+
+    与 teaching_progress_allowed_prefixes 同一口径，但针对新口径写入的
+    稳定键标签值（kp_…/sk_…）：册序更小的册整册允许，本册章序不超过
+    该章的章内全部节点键允许。章节 ID 无法解析时返回 None。
+    """
+
+    clean_id = str(chapter_id or "").strip()
+    if not clean_id:
+        return None
+    for volume in load_curriculum_catalog()["volumes"]:
+        chapter = next(
+            (item for item in volume["chapters"] if item["id"] == clean_id),
+            None,
+        )
+        if chapter is None:
+            continue
+        volume_order = int(volume["order"])
+        chapter_order = int(chapter["order"])
+        exact: list[str] = []
+        prefixes: list[str] = []
+        for item in load_curriculum_catalog()["volumes"]:
+            if int(item["order"]) >= volume_order:
+                continue
+            stem = _volume_key_stem(item)
+            if not stem:
+                continue
+            # 更早册别整册允许：覆盖该册全部 kp_/sk_ 稳定键。
+            exact.append(f"kp_{stem}")
+            prefixes.append(f"kp_{stem}_")
+            prefixes.append(f"sk_{stem}_")
+        stem = _volume_key_stem(volume)
+        for item in volume["chapters"]:
+            if int(item["order"]) > chapter_order:
+                # 综合与实践（activity）章下的技能是跨章节考法技能（如运用题设
+                # 新定义），不随章序解锁；该章自身的活动小节仍按章序。
+                if stem and str(item.get("kind") or "") == "activity":
+                    chapter_number = str(item["knowledge_id"]).rsplit("_", 1)[-1]
+                    prefixes.append(f"sk_{stem}_{chapter_number}_")
+                continue
+            knowledge_id = str(item["knowledge_id"])
+            exact.append(knowledge_id)
+            # 章内小节/词条/技能键都以“章号_”为下一段。
+            prefixes.append(f"{knowledge_id}_")
+            if stem:
+                chapter_number = knowledge_id.rsplit("_", 1)[-1]
+                prefixes.append(f"sk_{stem}_{chapter_number}_")
+        return tuple(dict.fromkeys(exact)), tuple(dict.fromkeys(prefixes))
+    return None
+
+
 def teaching_progress_allowed_exam_scope_values(
     chapter_id: object,
 ) -> tuple[str, ...] | None:

@@ -1445,11 +1445,11 @@ def test_parse_paper_text_section_hint_fill_blank() -> None:
     assert by_number["9"].question_type == "填空题"
     assert by_number["10"].question_type == "填空题"
 
-    # 非 OCR 路径不受节标题影响。
+    # Word 与 OCR 路径共享分节规则。
     parsed_plain = parse_paper_text(
         text,
         source_file="regular_paper.docx",
         page_range="document",
     )
     by_number = {q.question_number: q for q in parsed_plain.questions}
-    assert by_number["9"].question_type == "解答题"
+    assert by_number["9"].question_type == "填空题"

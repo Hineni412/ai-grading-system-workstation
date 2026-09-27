@@ -7,13 +7,15 @@ import hashlib
 import html
 import io
 import json
+import tempfile
 import os
 import re
 import stat
 import threading
 import uuid
 import zipfile
-from collections.abc import AsyncIterator, Collection, Sequence
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Literal
@@ -21,6 +23,10 @@ from urllib.parse import unquote
 
 from PIL import Image
 
+from backend.config_workspace.formula_preview import (
+    paragraph_xml_index,
+    preview_html_for_text,
+)
 from backend.config_workspace.locks import session_config_lock
 from backend.config_workspace.secure_fs import (
     SecureFilesystemError,
@@ -120,6 +126,17 @@ class ConfigSourceInvalidError(ConfigSourceError):
         super().__init__("config source is invalid")
 
 
+class ConfigSourceParseError(ConfigSourceInvalidError):
+    """A known, actionable parsing failure with a fixed public explanation."""
+
+    def __init__(self, reason: Literal["repeated_numbering", "no_questions", "missing_crops"]) -> None:
+        ConfigSourceError.__init__(self, {
+            "repeated_numbering": "试卷各分节重复使用大题编号，无法可靠对应答案。请将整卷大题改为连续编号后重新上传。",
+            "no_questions": "未识别到可用题目。请检查原卷清晰度及本地 PDF 识别是否可用，再重新上传。",
+            "missing_crops": "部分题目缺少完整题干裁图，无法用于分析。请核对原卷题号和版面。",
+        }[reason])
+
+
 class ConfigSourceNotFoundError(ConfigSourceError):
     def __init__(self) -> None:
         super().__init__("config source was not found")
@@ -188,7 +205,9 @@ class ConfigSourceRecord:
                 self.private_blocks,
                 session_id=self.session_id,
                 source_id=self.source_id,
+                source_revision=self.source_revision,
                 source_suffix=self.suffix,
+                source_docx=self.private_source_bytes,
             ),
             "ambiguous_assets": _public_ambiguous_assets(
                 self.private_blocks,
@@ -222,8 +241,13 @@ class _ConfigSourceMetadata:
     private_document_text: str
     asset_files: dict[str, dict[str, str | None]]
     whole_page_files: tuple[str, ...]
+    stored_questions: tuple[ConfigQuestionPreview, ...] | None = None
 
-    def public_snapshot(self) -> dict[str, Any]:
+    def public_snapshot(
+        self,
+        *,
+        source_bytes: bytes | None = None,
+    ) -> dict[str, Any]:
         return {
             "session_id": self.session_id,
             "source_id": self.source_id,
@@ -238,7 +262,9 @@ class _ConfigSourceMetadata:
                 self.private_blocks,
                 session_id=self.session_id,
                 source_id=self.source_id,
+                source_revision=self.source_revision,
                 source_suffix=self.suffix,
+                source_docx=source_bytes,
             ),
             "ambiguous_assets": _public_ambiguous_assets(
                 self.private_blocks,
@@ -354,6 +380,8 @@ class ConfigSourceService:
         self.max_total_image_bytes = int(max_total_image_bytes)
         self.max_total_image_pixels = int(max_total_image_pixels)
         self.max_manifest_bytes = int(max_manifest_bytes)
+        self._metadata_cache: OrderedDict[Path, tuple[dict[str, Any], _ConfigSourceMetadata]] = OrderedDict()
+        self._metadata_cache_lock = threading.Lock()
         if min(
             self.max_upload_bytes,
             self.max_docx_member_bytes,
@@ -775,9 +803,17 @@ class ConfigSourceService:
         with _PARSE_LOCKS_GUARD:
             parse_lock = _PARSE_LOCKS.setdefault(key, threading.Lock())
         with parse_lock:
-            if suffix == ".docx":
-                return self._parse_docx(source_path, source_dir, registry)
-            return self._parse_pdf(source_path, source_dir, registry)
+            from question_bank.parsers.type_detector import RepeatedQuestionNumberError
+            try:
+                if suffix == ".docx":
+                    result = self._parse_docx(source_path, source_dir, registry)
+                else:
+                    result = self._parse_pdf(source_path, source_dir, registry)
+            except RepeatedQuestionNumberError:
+                raise ConfigSourceParseError("repeated_numbering") from None
+            if not result[0]:
+                raise ConfigSourceParseError("no_questions")
+            return result
 
     def _enforce_asset_budget(
         self,
@@ -848,11 +884,14 @@ class ConfigSourceService:
         source_id: str,
         require_active: bool = True,
     ) -> dict[str, Any]:
-        return self._load_metadata(
+        metadata = self._load_metadata(
             session_id=session_id,
             source_id=source_id,
             require_active=require_active,
-        ).public_snapshot()
+        )
+        return metadata.public_snapshot(
+            source_bytes=self._snapshot_source_bytes(metadata),
+        )
 
     def load_active_public(self, *, session_id: int) -> dict[str, Any]:
         clean_session_id = _positive_session_id(session_id)
@@ -869,7 +908,20 @@ class ConfigSourceService:
             raise ConfigSourceInvalidError() from None
         if metadata.source_revision != source_revision:
             raise ConfigSourceChangedError()
-        return metadata.public_snapshot()
+        return metadata.public_snapshot(
+            source_bytes=self._snapshot_source_bytes(metadata),
+        )
+
+    def _snapshot_source_bytes(
+        self,
+        metadata: _ConfigSourceMetadata,
+    ) -> bytes | None:
+        if metadata.suffix != ".docx":
+            return None
+        try:
+            return self._files.read_bytes(metadata.source_path)
+        except SecureFilesystemError:
+            return None
 
     def load_active_record(self, *, session_id: int) -> ConfigSourceRecord:
         clean_session_id = _positive_session_id(session_id)
@@ -899,7 +951,22 @@ class ConfigSourceService:
                 raise ConfigSourceNotFoundError()
             self._assert_controlled_directory(source_dir)
             manifest = self._read_json_object(manifest_path)
-            metadata = self._metadata_from_manifest(manifest_path, manifest)
+            with self._metadata_cache_lock:
+                cached = self._metadata_cache.get(manifest_path)
+                metadata = cached[1] if cached is not None and cached[0] == manifest else None
+            if metadata is None:
+                metadata = self._metadata_from_manifest(manifest_path, manifest)
+                with self._metadata_cache_lock:
+                    self._metadata_cache[manifest_path] = (copy.deepcopy(manifest), metadata)
+                    self._metadata_cache.move_to_end(manifest_path)
+                    while len(self._metadata_cache) > 8:
+                        self._metadata_cache.popitem(last=False)
+            else:
+                # Cached parsing never bypasses the existing controlled-path
+                # and missing-file checks; actual file bodies are checked when read.
+                for name in metadata.owned_names:
+                    if not self._owned_path(source_dir, name).is_file():
+                        raise ConfigSourceInvalidError()
         except ConfigSourceError:
             raise
         except Exception:
@@ -1424,15 +1491,16 @@ class ConfigSourceService:
             self._files.atomic_write_bytes(path, content)
 
         try:
-            document_text = extract_docx_text(file_bytes)
+            document_text_parts: list[str] = []
             blocks = parse_docx_question_blocks(
                 file_bytes,
-                fallback_doc_text=document_text,
                 temporary_root=parser_io_root,
                 asset_root=parser_io_root / "assets",
                 register_created_file=parser_registry.register,
                 write_created_file=write_parser_asset,
+                document_text_out=document_text_parts,
             )
+            document_text = "\n".join(document_text_parts)
             for block in blocks:
                 if isinstance(block, dict):
                     block.setdefault("semantic_source", "text")
@@ -1479,12 +1547,34 @@ class ConfigSourceService:
             extract_pdf_question_images,
         )
 
-        document_text = extract_pdf_text(file_bytes)
+        from question_bank.importers.batch_importer import _extract_paper
+        from question_bank.document_pipeline.pipeline import QuestionDocumentPipeline
+
+        # Reuse the bank's local PDF extraction, including layout coordinates.
+        # Temporary OCR assets never become persistent source references.
+        with tempfile.TemporaryDirectory(prefix="config-pdf-") as workdir:
+            extracted = _extract_paper(
+                source_path, asset_root=Path(workdir) / "images",
+                document_pipeline=QuestionDocumentPipeline(Path(workdir) / "ocr"),
+                operation_id="config-source",
+            )
+            document_text = extracted.text
+            layout = extracted.pdf_layout
         blocks = parse_plain_question_blocks(document_text)
         for block in blocks:
             if isinstance(block, dict):
                 block["semantic_source"] = "images"
-        raw_assets = extract_pdf_question_images(file_bytes, blocks) if blocks else {}
+        crop_options = {"layout_pages": layout["pages"]} if layout.get("pages") else {}
+        question_pdf = layout.get("question_pdf", file_bytes)
+        if layout.get("answer_pdf"):
+            raw_assets = extract_pdf_question_images(question_pdf, blocks, include_answer=False, **crop_options)
+            answer_assets = extract_pdf_question_images(layout["answer_pdf"], blocks, include_answer=False, **crop_options)
+            for qid, values in raw_assets.items():
+                values["answer"] = answer_assets.get(qid, {}).get("question")
+        else:
+            raw_assets = extract_pdf_question_images(file_bytes, blocks, **crop_options) if blocks else {}
+        if any(not raw_assets.get(str(block.get("question_id")), {}).get("question") for block in blocks):
+            raise ConfigSourceParseError("missing_crops")
         raw_pages = extract_pdf_images(file_bytes)
         asset_files: dict[str, dict[str, str | None]] = {}
         known_ids = {str(block.get("question_id") or "") for block in blocks}
@@ -1661,7 +1751,16 @@ class ConfigSourceService:
             normalized_questions,
             private_blocks,
         ):
-            raise ConfigSourceInvalidError()
+            stored_ids = [question.question_id for question in questions]
+            recomputed_ids = [
+                question.question_id for question in normalized_questions
+            ]
+            if stored_ids != recomputed_ids:
+                raise ConfigSourceInvalidError()
+        # Stored previews may predate current preview rules; the manifest and
+        # its revision are still validated against the stored values below,
+        # while the loaded record serves the recomputed ones.
+        current_questions = normalized_questions
 
         expected_roles = _expected_inventory_roles(
             source_dir=manifest_path.parent,
@@ -1734,7 +1833,7 @@ class ConfigSourceService:
             suffix=suffix,
             size_bytes=size_bytes,
             sha256=sha256,
-            questions=questions,
+            questions=current_questions,
             manifest_path=manifest_path,
             source_path=source_path,
             owned_names=owned,
@@ -1743,6 +1842,7 @@ class ConfigSourceService:
             private_document_text=document_text,
             asset_files=normalized_assets,
             whole_page_files=tuple(normalized_whole_pages),
+            stored_questions=questions,
         )
 
     def _record_from_metadata(
@@ -2054,7 +2154,7 @@ def _metadata_manifest(metadata: _ConfigSourceMetadata) -> dict[str, Any]:
         "source_file": metadata.source_path.name,
         "owned_files": sorted(metadata.owned_names),
         "file_inventory": copy.deepcopy(metadata.file_inventory),
-        "questions": [asdict(question) for question in metadata.questions],
+        "questions": [asdict(question) for question in (metadata.stored_questions if metadata.stored_questions is not None else metadata.questions)],
         "private_blocks": copy.deepcopy(list(metadata.private_blocks)),
         "private_document_text": metadata.private_document_text,
         "asset_files": copy.deepcopy(metadata.asset_files),
@@ -2479,8 +2579,21 @@ def _public_questions_with_rich_content(
     *,
     session_id: int,
     source_id: str,
+    source_revision: str = "",
     source_suffix: Literal[".docx", ".pdf"],
+    source_docx: bytes | None = None,
 ) -> list[dict[str, Any]]:
+    formula_index: Mapping[str, str] | None = None
+    if source_suffix == ".docx" and source_docx:
+        try:
+            formula_index = paragraph_xml_index(
+                session_id,
+                source_id,
+                source_revision,
+                source_docx,
+            )
+        except Exception:
+            formula_index = None
     blocks_by_id = {
         str(block.get("question_id") or "").strip(): block
         for block in private_blocks
@@ -2507,7 +2620,7 @@ def _public_questions_with_rich_content(
                     "question_preview": "",
                     "answer_preview": "",
                     "answer_present": question.has_answer_asset,
-                    "needs_review": True,
+                    "needs_review": bool(question.needs_review or not question.has_question_asset),
                     "local_answer_trusted": False,
                 }
             )
@@ -2554,6 +2667,7 @@ def _public_questions_with_rich_content(
             has_question_asset=question.has_question_asset,
             has_answer_asset=question.has_answer_asset,
             force_image_semantics=image_semantic_source,
+            formula_index=formula_index,
         )
         result.append(payload)
     return result
@@ -2568,6 +2682,7 @@ def _config_rich_content(
     has_question_asset: bool,
     has_answer_asset: bool,
     force_image_semantics: bool = False,
+    formula_index: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     image_semantic_source = force_image_semantics or (
         isinstance(block, dict)
@@ -2577,24 +2692,29 @@ def _config_rich_content(
         question_blocks: list[dict[str, Any]] = []
         answer_blocks: list[dict[str, Any]] = []
     else:
-        question_blocks = _project_config_rich_blocks(_strip_leading_question_number(
-            question_id.removeprefix("Q"),
-            block.get("question_html")
-            or block.get("question_text")
-            or block.get("text")
-            or ""
-        ))
+        question_blocks = _project_config_rich_blocks(
+            _strip_leading_question_number(
+                question_id.removeprefix("Q"),
+                block.get("question_html")
+                or block.get("question_text")
+                or block.get("text")
+                or ""
+            ),
+            formula_index=formula_index,
+        )
         answer_blocks = _deduplicate_config_rich_blocks(
             _project_config_rich_blocks(
                 block.get("answer_html")
                 or block.get("answer_text")
                 or block.get("canonical_answer")
-                or ""
+                or "",
+                formula_index=formula_index,
             ),
             _project_config_rich_blocks(
                 block.get("analysis_html")
                 or block.get("analysis")
-                or ""
+                or "",
+                formula_index=formula_index,
             ),
         )
     question_blocks = _append_config_asset_block(
@@ -2663,6 +2783,7 @@ def _append_config_asset_block(
             "text": "",
             "segments": [],
             "rows": [],
+            "html": "",
             "asset_indexes": list(range(len(asset_urls))),
             "asset_urls": list(asset_urls),
         }
@@ -2670,7 +2791,11 @@ def _append_config_asset_block(
     return result
 
 
-def _project_config_rich_blocks(value: Any) -> list[dict[str, Any]]:
+def _project_config_rich_blocks(
+    value: Any,
+    *,
+    formula_index: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
     source = _IMAGE_PATH_MARKER.sub("", str(value or ""))
     if not source.strip():
         return []
@@ -2700,6 +2825,7 @@ def _project_config_rich_blocks(value: Any) -> list[dict[str, Any]]:
                 "text": chunk,
                 "segments": structured["segments"],
                 "rows": structured["rows"],
+                "html": preview_html_for_text(formula_index, chunk),
                 "asset_indexes": [],
                 "asset_urls": [],
             }
@@ -2851,7 +2977,7 @@ def _question_previews(
                         or assets.get("answer")
                     )
                 ),
-                needs_review=bool(block.get("needs_review")) or image_semantic_source,
+                needs_review=bool(block.get("needs_review")) or bool(type_review_reason) or (image_semantic_source and not assets.get("question")),
                 question_type_review_required=bool(type_review_reason),
                 question_type_review_reason=type_review_reason,
                 local_answer_trusted=(

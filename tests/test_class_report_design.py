@@ -78,6 +78,31 @@ def test_class_math_covers_titles_narratives_answers_and_display_mode(analysis_d
     assert 'displayMode:el.dataset.display' in soup.select('script')[-1].string
 
 
+def test_class_report_question_table_shows_cause_counts(analysis_db):
+    """逐题得分表「主要错误」列：有错因记录显示大类×人数（前 3），无记录为 —。"""
+    from analysis_report_exporter import assemble_session_analysis, _render_class_html
+    db, session, root = analysis_db
+    data = assemble_session_analysis(db, session, data_root=root)
+
+    counts = {"Q2": [("计算与化简", 5), ("审题与条件", 3), ("概念理解", 1), ("过程与依据", 1)]}
+    soup = BeautifulSoup(
+        _render_class_html(data, CLASS_NARRATIVE, cause_counts=counts), 'html.parser')
+    headers = [cell.get_text(strip=True) for cell in soup.select('table thead th')]
+    assert '主要错误' in headers
+    q2 = soup.select_one('#score-Q2')
+    assert '计算与化简 5人' in q2.get_text()
+    assert '审题与条件 3人' in q2.get_text()
+    assert '概念理解 1人' in q2.get_text()
+    assert '过程与依据' not in q2.get_text()  # 只显示前 3 类
+    q1 = soup.select_one('#score-Q1')
+    assert '—' in q1.get_text()
+
+    # 不提供 counts 的旧调用方：列仍在，值为 —。
+    soup = BeautifulSoup(_render_class_html(data, CLASS_NARRATIVE), 'html.parser')
+    assert '主要错误' in [cell.get_text(strip=True) for cell in soup.select('table thead th')]
+    assert '—' in soup.select_one('#score-Q2').get_text()
+
+
 def test_existing_route_enriches_only_selected_class(class_analysis_api_client):
     from tests.test_class_analysis import _patch_configured, _generate_via_api
     client, db, session, _reports, manager, _holder, monkeypatch = class_analysis_api_client

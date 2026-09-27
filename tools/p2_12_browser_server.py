@@ -52,9 +52,8 @@ def _prepare_paths(data_root: Path):
     return paths
 
 
-def _seed_business_data(paths) -> tuple[int, int]:
+def _seed_business_data(paths) -> int:
     from db_manager import DBManager, StudentRecord
-    from question_bank.services.training_task_service import TrainingTaskService
 
     db = DBManager(paths.db_path)
     db.initialize()
@@ -119,26 +118,7 @@ def _seed_business_data(paths) -> tuple[int, int]:
         )
         conn.commit()
 
-    task = TrainingTaskService(paths.qb_db_path).create_task(
-        {
-            "scope_snapshot": {"mode": "class", "class_id": "测试班"},
-            "exam_scope": {"mode": "current", "session_ids": [session_id]},
-            "diagnosis_snapshot": {"students": []},
-            "generation_config": {"variant_mode": "individual"},
-            "warnings": [],
-            "variants": [
-                {
-                    "variant_key": "anonymous-class",
-                    "variant_type": "individual",
-                    "student_ids": [],
-                    "items": [],
-                }
-            ],
-        },
-        created_by="teacher",
-        task_code="TRAIN-ANON-001",
-    )
-    return session_id, task.id
+    return session_id
 
 
 def _finish(store, job_type: str, payload: dict, *, status: str, result=None, error=None):
@@ -152,7 +132,7 @@ def _finish(store, job_type: str, payload: dict, *, status: str, result=None, er
     return loaded
 
 
-def _seed_jobs(paths, store, session_id: int, task_id: int) -> None:
+def _seed_jobs(paths, store, session_id: int) -> None:
     from backend.report_exports import score_revision
     from db_manager import DBManager
 
@@ -216,14 +196,6 @@ def _seed_jobs(paths, store, session_id: int, task_id: int) -> None:
             "filename": available_report.name,
         },
     )
-    _finish(
-        store,
-        "training_export",
-        {"task_id": task_id, "format": "docx"},
-        status="failed",
-        error="anonymous fixture failure",
-        result={"task_id": task_id},
-    )
 
 
 def _report_handler(paths):
@@ -245,28 +217,13 @@ def _report_handler(paths):
     return handler
 
 
-def _training_handler(paths):
-    def handler(context):
-        target = paths.outputs_dir / "training" / "匿名训练材料.zip"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"PK anonymous training fixture")
-        context.report(1, "training_export", "complete")
-        return {
-            "task_id": int(context.payload["task_id"]),
-            "file_path": str(target),
-            "filename": target.name,
-        }
-
-    return handler
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     paths = _prepare_paths(args.data_root)
-    session_id, task_id = _seed_business_data(paths)
+    session_id = _seed_business_data(paths)
 
     from backend.api.app import create_app
     from backend.api.dependencies import get_job_manager
@@ -277,8 +234,7 @@ def main() -> None:
     store = JobStore(paths.db_path)
     manager = JobManager(store, max_workers=2)
     manager.register("report_export", _report_handler(paths))
-    manager.register("training_export", _training_handler(paths))
-    _seed_jobs(paths, store, session_id, task_id)
+    _seed_jobs(paths, store, session_id)
 
     app = create_app(path_manager=paths)
     app.dependency_overrides[get_job_manager] = lambda: manager

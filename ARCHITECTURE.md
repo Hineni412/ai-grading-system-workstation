@@ -44,7 +44,7 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 
 姓名预检、原卷得分标注与文档准备中的本地文字识别共用 `local_ocr.py` 的 MinerU PP-OCRv6 ONNX 实例，首次使用时加载模型，使用 CPU，不调用远程模型。姓名仍沿用名册匹配规则，无法匹配时才调用所选服务补充识别。整页 OCR 提供文字与位置，不等于完整 PDF 题目、公式和答案解析。
 
-本地文字模型放在 `runtime/models/mineru/MinerU-4_models_onnx/OCR/paddleocr/`，包含 `ch_PP-OCRv6_tiny_det_infer.onnx` 与 `ch_PP-OCRv6_small_rec_infer.onnx`；与运行环境一起预置，识别过程中不下载。现有完整打包入口会复制 `runtime/models`。缺少依赖或模型时，姓名走原有远程兜底、得分标注沿用题框位置，文档管线保留空文字页和待复核状态。
+本地文字模型放在 `runtime/models/mineru/MinerU-4_models_onnx/OCR/paddleocr/`，包含 `ch_PP-OCRv6_tiny_det_infer.onnx` 与 `ch_PP-OCRv6_small_rec_infer.onnx`；与运行环境一起预置，识别过程中不下载。现有完整打包入口会复制 `runtime/models`。缺少依赖或模型时，姓名走原有远程兜底、得分标注沿用题框位置，文档管线保留空文字页和待复核状态。完整解析另需 `Layout/PP-DocLayoutV2` 与 `MFR/PP-FormulaNet_plus-M` 模型；导入扫描卷时优先走 `mineru.parse(tier='basic')` 输出带 LaTeX 公式的文本，缺文件时回退行级 OCR。
 
 模型配置保存本机服务目标、密钥和执行参数。请求种类、超时、限速与有限重试的代码权威为 `backend/llm/policy.py`；不同业务的逻辑调用次数不能当成统一的物理请求次数。
 

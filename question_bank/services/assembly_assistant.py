@@ -11,6 +11,7 @@ from integration.result_cache import ResultCache
 from question_bank.database.schema import connect
 from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.recommendation.recommendation_engine import normalize_question_text, text_similarity
+from question_bank.services import standard_difficulty
 from question_bank.services.duplicate_analysis_copy_service import exact_identity_map
 from question_bank.services.question_read_service import QuestionBankReadService, QuestionReadFilters
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
@@ -104,8 +105,8 @@ def _context_key(
     volume_id: str,
     chapter_id: str,
     question_type: str,
-    difficulty_min: int,
-    difficulty_max: int,
+    difficulty_min: float,
+    difficulty_max: float,
 ) -> tuple[Any, ...]:
     return (
         "assistant-context-v1",
@@ -126,8 +127,8 @@ def _build_context(
     resolver: Any,
     volume_id: str,
     question_type: str,
-    difficulty_min: int,
-    difficulty_max: int,
+    difficulty_min: float,
+    difficulty_max: float,
 ) -> dict[str, Any]:
     """Pool-invariant reads: eligible ids and question facets.
 
@@ -197,7 +198,7 @@ def _key_pool(
     index: Mapping[str, Any],
     eligible_ids: Sequence[int],
     allowed_chapters: set[str],
-    difficulty_max: int,
+    difficulty_max: float,
 ) -> tuple[list[int], dict[tuple[str, int], dict[str, Any]], float | None]:
     pool = _question_ids(
         read_service,
@@ -275,7 +276,7 @@ def _key_pool(
 def shortlist_candidates(
     *, diagnosis: Mapping[str, Any], read_service: QuestionBankReadService,
     volume_id: str, chapter_id: str, target_keys: list[str] | None,
-    question_type: str, difficulty_min: int, difficulty_max: int,
+    question_type: str, difficulty_min: float, difficulty_max: float,
     excluded_question_ids: set[int], limit: int | None = None,
     cache_scope: object = None,
 ) -> dict[str, Any]:
@@ -402,7 +403,7 @@ def shortlist_candidates(
         if len(chosen) == before:
             break
     def foundation(qid: int) -> bool:
-        return difficulties.get(qid, 10) <= 4 or all(by_key[key]["mastery"] >= .8 for key in matches[qid])
+        return (standard_difficulty.difficulty_level(difficulties.get(qid)) or 10) <= 4 or all(by_key[key]["mastery"] >= .8 for key in matches[qid])
     def match_details(qid: int) -> dict[str, Any]:
         options = [details[key, qid] for key in matches[qid] if (key, qid) in details]
         return min(options, key=lambda item: (item.get("selection_kind") == "supplement", item["match_level"])) if options else {}
@@ -459,7 +460,7 @@ def _fold_similar(chosen: Sequence[int], *, bands: Mapping[int, tuple[str, Any]]
     for qid in chosen:
         facet = facets.get(qid, {})
         buckets.setdefault((bands[qid][0], texts.get(qid, ("", ""))[1],
-                            int(difficulties.get(qid) or 0),
+                            standard_difficulty.difficulty_level(difficulties.get(qid)),
                             tuple(facet.get("skill_keys") or ()),
                             tuple(facet.get("topic_keys") or ())), []).append(qid)
     members: dict[int, list[int]] = {}

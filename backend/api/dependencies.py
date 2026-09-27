@@ -45,7 +45,6 @@ from template_upload_service import TemplateUploadService
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
 from integration.diagnosis_profile_service import DiagnosisProfileService
-from question_bank.recommendation.practice_plan_service import PracticePlanService
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationModule,
 )
@@ -55,7 +54,6 @@ from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_read_service import (
     QuestionBankSnapshotError,
 )
-from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.taxonomy_review_service import TaxonomyReviewService
@@ -241,6 +239,13 @@ def get_training_criterion_module() -> TrainingCriterionModule:
     return TrainingCriterionModule(get_path_manager().qb_db_path)
 
 
+def get_authoring_service() -> "AuthoringService":
+    from question_bank.authoring import AuthoringService
+
+    paths = get_path_manager()
+    return AuthoringService(paths.qb_db_path, data_root=paths.data_root)
+
+
 def get_taxonomy_review_service() -> TaxonomyReviewService:
     paths = get_path_manager()
     return TaxonomyReviewService(
@@ -321,15 +326,6 @@ def get_request_diagnosis_profile_service(
     return context.diagnosis_service
 
 
-def get_request_practice_plan_service(
-    context: RequestReadContext = Depends(
-        get_request_read_context,
-        scope="function",
-    ),
-) -> PracticePlanService:
-    return context.practice_service
-
-
 def get_graph_diagnosis_profile_service(
     context: RequestReadContext = Depends(
         get_request_read_context,
@@ -338,14 +334,6 @@ def get_graph_diagnosis_profile_service(
 ) -> DiagnosisProfileService:
     """Compatibility dependency retained for existing benchmark callers."""
     return context.diagnosis_service
-
-
-def get_practice_plan_service() -> PracticePlanService:
-    return PracticePlanService(get_path_manager().qb_db_path)
-
-
-def get_training_task_service() -> TrainingTaskService:
-    return TrainingTaskService(get_path_manager().qb_db_path)
 
 
 def get_personalized_recommendation_module(
@@ -389,7 +377,6 @@ def get_job_file_service(
 ) -> JobFileService:
     return JobFileService(
         reports_dir,
-        training_outputs_dir=outputs_dir / "training",
         assembly_outputs_dir=get_path_manager().data_root
         / "question_bank"
         / "assembly_exports",
@@ -470,12 +457,6 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
             data_root=paths.data_root,
             question_bank_db_path=question_bank_db_path,
             upload_config_dir=upload_config_dir,
-            training_output_root=getattr(
-                paths,
-                "outputs_dir",
-                Path(paths.data_root) / "outputs",
-            )
-            / "training",
             taxonomy_governance=TaxonomyGovernance(
                 state_path=Path(taxonomy_state_path),
                 knowledge_graph_db_path=Path(question_bank_db_path),

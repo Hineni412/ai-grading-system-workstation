@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from httpx import Response
 
@@ -55,7 +54,6 @@ def build_scenarios(
     dataset: BenchmarkDataset,
 ) -> tuple[BenchmarkScenario, ...]:
     question_id = dataset.representative_question_id
-    task_id = dataset.representative_task_id
     training_body = _training_body()
     scenarios = (
         BenchmarkScenario(
@@ -143,36 +141,6 @@ def build_scenarios(
             "students",
         ),
         BenchmarkScenario(
-            "training.plan.preview",
-            "POST",
-            "/api/training/plans/preview",
-            lambda _dataset: ScenarioRequest(
-                "/api/training/plans/preview",
-                json_body=dict(training_body),
-            ),
-            lambda response: _nested_collection(response, "plan", "variants"),
-            "students",
-        ),
-        BenchmarkScenario(
-            "training.tasks",
-            "GET",
-            "/api/training/tasks",
-            lambda _dataset: ScenarioRequest(
-                "/api/training/tasks",
-                params=(("page_size", "100"),),
-            ),
-            _collection("items"),
-            "training_tasks",
-        ),
-        BenchmarkScenario(
-            "training.task.detail",
-            "GET",
-            "/api/training/tasks/{task_id}",
-            lambda _dataset: ScenarioRequest(f"/api/training/tasks/{task_id}"),
-            _single,
-            "training_tasks",
-        ),
-        BenchmarkScenario(
             "graph.query",
             "POST",
             "/api/graph/query",
@@ -220,16 +188,6 @@ def build_scenarios(
         ),
     )
     return scenarios
-
-
-def _nested_collection(response: Response, parent: str, child: str) -> int:
-    payload: Any = response.json()
-    if not isinstance(payload, dict):
-        raise ValueError("response object is missing")
-    nested = payload.get(parent)
-    if not isinstance(nested, dict) or not isinstance(nested.get(child), list):
-        raise ValueError("response collection is missing")
-    return len(nested[child])
 
 
 __all__ = [

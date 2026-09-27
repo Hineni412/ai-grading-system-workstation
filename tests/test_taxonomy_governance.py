@@ -408,24 +408,17 @@ def test_curriculum_leaf_label_resolves_to_scoped_stable_term(
     assert constrained["proposals"] == []
 
 
-def test_requested_canonical_id_orders_the_accepted_primary_knowledge() -> None:
+def test_constraint_echoes_accepted_controlled_fields() -> None:
     original = TagAnalysis.from_dict(
         {
-            "knowledge_points": ["知识点甲", "知识点乙"],
-            "canonical_knowledge_id": "kp-b",
+            "method_tags": ["方法甲", "方法乙"],
             "difficulty": 3,
             "confidence": 0.98,
         }
     )
     constrained = {
         "accepted_fields": {
-            "knowledge_points": ["完整路径甲", "完整路径乙"],
-        },
-        "accepted_terms": {
-            "knowledge": [
-                {"id": "kp-a", "name": "完整路径甲"},
-                {"id": "kp-b", "name": "完整路径乙"},
-            ]
+            "method_tags": ["规范方法甲", "规范方法乙"],
         },
         "proposals": [],
         "status": "complete",
@@ -438,8 +431,7 @@ def test_requested_canonical_id_orders_the_accepted_primary_knowledge() -> None:
         fallback_revision=4,
     )
 
-    assert normalized.knowledge_points == ["完整路径乙", "完整路径甲"]
-    assert normalized.canonical_knowledge_id == "kp-b"
+    assert normalized.method_tags == ["规范方法甲", "规范方法乙"]
     assert proposals == []
     assert status == "complete"
 
@@ -953,16 +945,10 @@ def test_unknown_formal_value_is_removed_before_analysis_can_be_saved(
 ) -> None:
     original = TagAnalysis.from_dict(
         {
-            "knowledge_points": ["AI自由造的知识点"],
-            "method_tags": ["倍长中线"],
+            "method_tags": ["AI自由造的方法", "倍长中线"],
             "ability_tags": ["推理能力"],
             "math_model_tags": [],
             "difficulty": 5,
-            "error_prone_points": [],
-            "prerequisite_points": [],
-            "textbook_chapter": "七年级上册 第一章 丰富的图形世界",
-            "suitable_student_level": "中档提升",
-            "canonical_knowledge_id": "ai_free_term",
             "reason": "隔离回归",
             "confidence": 0.9,
         }
@@ -976,9 +962,7 @@ def test_unknown_formal_value_is_removed_before_analysis_can_be_saved(
     )
 
     assert status == "needs_review"
-    assert proposals[0]["proposed_name"] == "AI自由造的知识点"
-    assert normalized.knowledge_points == []
-    assert normalized.canonical_knowledge_id == ""
+    assert proposals[0]["proposed_name"] == "AI自由造的方法"
     assert normalized.method_tags == ["构造辅助线法"]
     assert normalized.ability_tags == ["推理能力"]
 

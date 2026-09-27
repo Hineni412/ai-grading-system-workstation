@@ -353,7 +353,7 @@ class QuestionSolutionEvidenceResponse(_QuestionBankModel):
     status: Literal["proposed", "approved", "rejected", "superseded", "stale"] | None = None
     evidence: dict[str, Any] | None = None
     part_assessments: list[dict[str, Any]] = Field(default_factory=list)
-    assessment_revision: int | None = None
+    assessment_revision: str | None = None
 
 
 class QuestionFacetItem(_QuestionBankModel):

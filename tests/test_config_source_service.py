@@ -11,7 +11,7 @@ import re
 import subprocess
 import threading
 import zipfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,6 +26,7 @@ from backend.config_workspace.sources import (
     ConfigAssetNotFoundError,
     ConfigSourceChangedError,
     ConfigSourceInvalidError,
+    ConfigSourceParseError,
     ConfigSourceNotFoundError,
     ConfigSourceService,
     ConfigSourceTooLargeError,
@@ -406,6 +407,96 @@ def test_load_accepts_v2_manifest_with_legacy_answer_preview(tmp_path: Path) -> 
 
     public_question = loaded.public_snapshot()["questions"][0]
     assert public_question["answer_preview"] == "答案 C"
+
+
+def _rewrite_manifest_questions(
+    record,
+    mutate: Callable[[list[dict[str, Any]]], None],
+) -> None:
+    import backend.config_workspace.sources as sources_module
+
+    manifest = json.loads(record.manifest_path.read_text(encoding="utf-8"))
+    mutate(manifest["questions"])
+    revision = sources_module._canonical_source_revision(manifest)
+    manifest["source_revision"] = revision
+    record.manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (record.manifest_path.parent.parent / "active.json").write_text(
+        json.dumps({"source_id": record.source_id, "source_revision": revision}),
+        encoding="utf-8",
+    )
+
+
+def test_load_accepts_manifest_with_stale_preview_fields(tmp_path: Path) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="stale-preview.docx",
+            chunks=chunks(_docx_with_multiline_proof_answer()),
+        )
+    )
+    fresh_question = record.public_snapshot()["questions"][0]
+
+    def mutate(questions: list[dict[str, Any]]) -> None:
+        questions[0]["question_preview"] = "旧版本写入的过期预览"
+        questions[0]["question_type_review_required"] = True
+        questions[0]["question_type_review_reason"] = "旧规则要求复核题型。"
+
+    _rewrite_manifest_questions(record, mutate)
+
+    snapshot = source_service.load_active_public(session_id=7)
+
+    loaded_question = snapshot["questions"][0]
+    assert loaded_question["question_preview"] == fresh_question["question_preview"]
+    assert loaded_question["question_type_review_required"] == (
+        fresh_question["question_type_review_required"]
+    )
+    assert loaded_question["question_type_review_reason"] == (
+        fresh_question["question_type_review_reason"]
+    )
+
+
+def test_load_rejects_manifest_with_changed_question_id_sequence(
+    tmp_path: Path,
+) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="tampered-ids.docx",
+            chunks=chunks(_docx_with_multiline_proof_answer()),
+        )
+    )
+
+    def mutate(questions: list[dict[str, Any]]) -> None:
+        questions[0]["question_id"] = "Q9"
+
+    _rewrite_manifest_questions(record, mutate)
+
+    with pytest.raises(ConfigSourceInvalidError):
+        source_service.load_active_public(session_id=7)
+
+
+def test_load_rejects_manifest_with_dropped_question(tmp_path: Path) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="dropped-question.docx",
+            chunks=chunks(_docx_with_multiline_proof_answer()),
+        )
+    )
+
+    def mutate(questions: list[dict[str, Any]]) -> None:
+        questions.clear()
+
+    _rewrite_manifest_questions(record, mutate)
+
+    with pytest.raises(ConfigSourceInvalidError):
+        source_service.load_active_public(session_id=7)
 
 
 def test_whole_document_preparation_cleans_embedded_next_section_heading(
@@ -801,7 +892,7 @@ def test_pdf_public_preview_and_generation_keep_ocr_text_internal(
     assert prepared.question_images["Q1"]["answer"]
 
 
-def test_pdf_missing_crop_stays_image_semantic_without_text_fallback(
+def test_pdf_missing_crop_is_rejected_without_text_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -835,24 +926,10 @@ def test_pdf_missing_crop_stays_image_semantic_without_text_fallback(
     )
 
     source_service = service(tmp_path)
-    record = asyncio.run(
-        source_service.stage_and_parse(
-            session_id=7,
-            filename="missing-crop.pdf",
-            chunks=chunks(_pdf_bytes()),
-        )
-    )
-
-    question = record.public_snapshot()["questions"][0]
-    prepared = source_service.apply_teacher_decisions(record, [])
-
-    assert question["question_preview"] == ""
-    assert question["answer_preview"] == ""
-    assert question["answer_present"] is False
-    assert question["rich_content"]["question_blocks"] == []
-    assert question["rich_content"]["answer_blocks"] == []
-    assert prepared.confirmed_blocks[0]["semantic_source"] == "images"
-    assert prepared.question_images == {}
+    with pytest.raises(ConfigSourceParseError, match="裁图"):
+        asyncio.run(source_service.stage_and_parse(
+            session_id=7, filename="missing-crop.pdf", chunks=chunks(_pdf_bytes()),
+        ))
 
 
 def test_docx_public_preview_and_generation_keep_text_semantics(
@@ -1135,18 +1212,13 @@ def test_public_preview_strips_html_image_markers_and_caps_long_text(tmp_path: P
     assert "private" not in preview
 
 
-def test_no_detected_questions_is_a_reloadable_ready_source(tmp_path: Path) -> None:
-    record = asyncio.run(
-        service(tmp_path).stage_and_parse(
+def test_no_detected_questions_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ConfigSourceParseError, match="未识别到可用题目"):
+        asyncio.run(service(tmp_path).stage_and_parse(
             session_id=7,
             filename="cover.pdf",
             chunks=chunks(_pdf_bytes(question=False, answer=False)),
-        )
-    )
-
-    assert record.questions == ()
-    assert record.public_snapshot()["parse_state"] == "ready"
-    assert service(tmp_path).load(session_id=7, source_id=record.source_id).questions == ()
+        ))
 
 
 def test_malformed_docx_and_mismatched_magic_are_rejected(tmp_path: Path) -> None:

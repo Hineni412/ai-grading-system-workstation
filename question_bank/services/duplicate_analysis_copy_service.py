@@ -15,7 +15,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from question_bank.models.question import duplicate_question_key, normalize_identity_text
+from question_bank.models.question import duplicate_question_key, normalize_identity_text, EXACT_QUESTION_KEY_PREFIX
 
 from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.database.schema import connect
@@ -69,6 +69,17 @@ def exam_original_key(question: Mapping[str, Any], *, data_root: Path,
                                  image_cache=image_cache, exam_printing=True)
 
 
+def answers_conflict(left: object, right: object, *, data_root: Path) -> bool:
+    """Different nonempty answers require review; equivalent image paths do not."""
+    if not str(left or "").strip() or not str(right or "").strip():
+        return False
+    if normalize_identity_text(left) == normalize_identity_text(right):
+        return False
+    first = exact_question_key({"question_text": str(left)}, data_root=data_root, rich_content={})
+    second = exact_question_key({"question_text": str(right)}, data_root=data_root, rich_content={})
+    return not first or not second or first != second
+
+
 def _exam_original_text(question: Mapping[str, Any]) -> str:
     text = str(question.get("question_text") or "").strip()
     number = str(question.get("question_number") or "").strip()
@@ -100,7 +111,7 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
         if rich_content is None and value.get("id"):
             rich_content = load_question_rich_content(int(value["id"]), data_root / "question_bank" / "rich_content")
         rich = rich_content or {}
-        marker = re.compile(r"\[\[IMAGE:(.*?)\]\]", re.I | re.S)
+        marker = re.compile(r"\[\[IMAGE:([^\]|]*?)(?:\|[^\]]*)?\]\]", re.I | re.S)
         stem_paths = marker.findall(str(value.get("question_text") or ""))
         answer_paths = set(marker.findall(str(value.get("answer_text") or "")))
         paths = value.get("image_paths", value.get("_image_paths")) or []
@@ -108,6 +119,7 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
             paths = json.loads(paths)
         paths = list(dict.fromkeys([*stem_paths, *(str(path) for path in paths if path not in answer_paths)]))
         formulas = []
+        math_nodes = []
         for block in rich.get("question_blocks", []):
             for path in (block.get("image_relationships") or {}).values():
                 if str(path) not in paths:
@@ -116,8 +128,7 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
                 import xml.etree.ElementTree as ET
                 try:
                     root = ET.fromstring(str(block["xml"]))
-                    formulas.extend(_formula_identity(item) for item in root.iter(
-                        "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath"))
+                    math_nodes.extend(root.iter("{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath"))
                 except ET.ParseError:
                     return ""
         def pixels(stored: str, polygon=None) -> str:
@@ -164,6 +175,9 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
                     )
             if images:
                 value["has_images"] = True
+        value["question_text"], formulas = _normalize_formula_content(
+            str(value.get("question_text") or ""), math_nodes,
+        )
         value.update(image_paths=paths, image_content_keys=images, source_regions=regions,
                      image_marker_keys={path: pixels(path) for path in stem_paths},
                      formula_content=[*formulas, *(str(item.get("restricted_latex") or item.get("semantic_mathml") or item.get("omml") or "")
@@ -210,6 +224,51 @@ def _formula_identity(element: Any) -> str:
     return json.dumps(node(element), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _normalize_formula_content(text: str, nodes: list) -> tuple[str, list[str]]:
+    """Share a lossless subset of Word/LaTeX structure; retain unknown math.
+
+    Positions are part of the stem identity. This does not simplify expressions,
+    reorder operands, or discard unrecognised formula structures.
+    """
+    import xml.etree.ElementTree as ET
+    from lxml import etree
+    from question_bank.document_pipeline.math_omml import restricted_latex_to_omml, RestrictedMathError
+    from question_bank.importers.docx_importer import _math_text
+
+    def identity(node):
+        # Default property containers carry no mathematical distinction.
+        for parent in node.iter():
+            for child in list(parent):
+                if child.tag.rsplit("}", 1)[-1].endswith("Pr") and not list(child) and not child.attrib:
+                    parent.remove(child)
+        return _formula_identity(node)
+
+    residual = []
+    cursor = 0
+    for node in nodes:
+        xml = ET.tostring(node, encoding="unicode")
+        visible = _math_text(etree.fromstring(xml.encode("utf-8")))
+        token = "[[MATH:" + identity(node) + "]]"
+        position = text.find(visible, cursor) if visible else -1
+        if position < 0:
+            residual.append(_formula_identity(node))
+        else:
+            text = text[:position] + token + text[position+len(visible):]
+            cursor = position + len(token)
+
+    def latex(match):
+        source = match.group(1) or match.group(2)
+        # The display converter tolerates matrix flattening; identity must not.
+        if any(part in source for part in ("\\begin", "\\end", "&", "\\\\")):
+            return match.group(0)
+        try:
+            return "[[MATH:" + identity(ET.fromstring(restricted_latex_to_omml(source))) + "]]"
+        except (ValueError, ET.ParseError, RestrictedMathError):
+            return match.group(0)
+    text = re.sub(r"(?<!\\)\$([^$]+)\$|\\\((.*?)\\\)", latex, text, flags=re.S)
+    return text, residual
+
+
 def _exact_resized_figure(picture):
     """Remove provable uniform pixel replication, never blur away labels.
 
@@ -234,13 +293,13 @@ def _content_revision(question: Mapping[str, Any], data_root: Path) -> str:
     """Cheap change detection; stat assets without decoding their pixels."""
     from question_bank.services.asset_path_service import resolve_question_bank_asset_path
     from question_bank.services.rich_content_service import rich_content_path
-    fields = {key: question.get(key) for key in ("question_text", "question_number", "image_paths", "has_images", "options")}
+    fields = {key: question.get(key) for key in ("question_text", "answer_text", "question_number", "image_paths", "has_images", "options")}
     sidecar = rich_content_path(int(question["id"]), data_root / "question_bank" / "rich_content")
     paths = question.get("image_paths") or []
     if isinstance(paths, str):
         paths = json.loads(paths)
     paths = set(str(path) for path in paths)
-    paths.update(re.findall(r"\[\[IMAGE:(.*?)\]\]", str(question.get("question_text") or ""), re.I | re.S))
+    paths.update(re.findall(r"\[\[IMAGE:([^\]|]*?)(?:\|[^\]]*)?\]\]", str(question.get("question_text") or ""), re.I | re.S))
     if sidecar.is_file():
         rich = cached_parsed_file(
             sidecar, lambda p: json.loads(p.read_text(encoding="utf-8"))
@@ -302,7 +361,8 @@ def _exam_printed_figure(picture):
 
 
 def exact_identity_map(conn: Any, *, data_root: Path,
-                       question_ids: Sequence[int] | None = None) -> dict[int, str]:
+                       question_ids: Sequence[int] | None = None,
+                       persist: bool = True) -> dict[int, str]:
     # A filtered shortlist only needs its own identities and explicit exclusions.
     # Existing callers retain the full-bank comparison with identical semantics.
     ids = list(dict.fromkeys(question_ids)) if question_ids is not None else None
@@ -326,7 +386,7 @@ def exact_identity_map(conn: Any, *, data_root: Path,
         question = dict(row)
         indexed_key = str(question.pop("indexed_key", None) or "")
         indexed_revision = str(question.pop("indexed_revision", None) or "")
-        if indexed_key.startswith("exact-v3:") and indexed_revision:
+        if indexed_key.startswith(EXACT_QUESTION_KEY_PREFIX) and indexed_revision:
             try:
                 # A matching stat-based revision means the indexed key is the
                 # identity exact_question_key would recompute; skip decoding.
@@ -344,7 +404,8 @@ def exact_identity_map(conn: Any, *, data_root: Path,
         try:
             # Self-heal: older or missing index rows get the current key format
             # once, so later lookups skip decoding entirely.
-            upsert_content_index(conn, question_id=int(question["id"]), key=key, source_revision=revision)
+            if persist:
+                upsert_content_index(conn, question_id=int(question["id"]), key=key, source_revision=revision)
         except sqlite3.OperationalError:
             pass
     return result
@@ -375,7 +436,7 @@ def ensure_content_index(conn: Any, *, data_root: Path) -> None:
         except (OSError, ValueError, TypeError):
             upsert_content_index(conn, question_id=int(row["id"]), key="")
             continue
-        if row["indexed_revision"] == revision and str(row["indexed_key"] or "").startswith("exact-v3:"):
+        if row["indexed_revision"] == revision and str(row["indexed_key"] or "").startswith(EXACT_QUESTION_KEY_PREFIX):
             continue
         key = exact_question_key(question, data_root=data_root, image_cache=cache)
         upsert_content_index(conn, question_id=int(row["id"]), key=key, source_revision=revision)
@@ -413,7 +474,32 @@ def upsert_content_index(conn: Any, *, question_id: int, key: str, source_revisi
     )
 
 
-def content_index_lookup(conn: Any, keys: list[str] | tuple[str, ...] | set[str]) -> dict[str, int]:
+def canonical_question_ranks(conn: Any, question_ids: Sequence[int]) -> dict[int, tuple]:
+    """Prefer reviewed evidence, then manual labels, then usable labels and id."""
+    ranks = {int(qid): (0, 0, 0, int(qid)) for qid in question_ids}
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for offset in range(0, len(question_ids), 400):
+        ids = list(question_ids[offset:offset+400])
+        marks = ",".join("?" for _ in ids)
+        approved = set()
+        if "question_solution_evidence_versions" in tables:
+            approved = {int(row[0]) for row in conn.execute(
+                f"SELECT question_id FROM question_solution_evidence_versions v WHERE question_id IN ({marks}) "
+                "AND status='approved' AND rowid=(SELECT v2.rowid FROM question_solution_evidence_versions v2 "
+                "WHERE v2.question_id=v.question_id ORDER BY v2.created_at DESC, v2.rowid DESC LIMIT 1)", ids)}
+        if "question_tags" in tables:
+            for row in conn.execute(
+                f"SELECT question_id, COUNT(DISTINCT tag_type), MAX(CASE WHEN source IN ('manual','teacher') THEN 1 ELSE 0 END) "
+                f"FROM question_tags WHERE question_id IN ({marks}) GROUP BY question_id", ids):
+                qid = int(row[0])
+                ranks[qid] = (-int(qid in approved), -int(row[2] or 0), -int(row[1] or 0), qid)
+        for qid in approved:
+            ranks[qid] = (-1, *ranks[qid][1:])
+    return ranks
+
+
+def content_index_lookup(conn: Any, keys: list[str] | tuple[str, ...] | set[str],
+                         *, data_root: Path | None = None) -> dict[str, int]:
     """Map exact identity keys to canonical bank question ids.
 
     Several historical rows may share one key; per the dedup contract the
@@ -425,9 +511,7 @@ def content_index_lookup(conn: Any, keys: list[str] | tuple[str, ...] | set[str]
         return {}
     placeholders = ",".join("?" for _ in wanted)
     rows = conn.execute(
-        f"""SELECT idx.content_key AS content_key, idx.question_id AS question_id,
-                   (SELECT COUNT(DISTINCT tag_type) FROM question_tags t
-                     WHERE t.question_id = idx.question_id) AS tag_count
+        f"""SELECT idx.content_key AS content_key, idx.question_id AS question_id
             FROM question_content_index idx
             JOIN questions q ON q.id = idx.question_id
             LEFT JOIN papers p ON p.id = q.paper_id
@@ -436,14 +520,19 @@ def content_index_lookup(conn: Any, keys: list[str] | tuple[str, ...] | set[str]
               AND COALESCE(p.import_status, '') <> 'deleted'""",
         wanted,
     ).fetchall()
-    best: dict[str, tuple[int, int]] = {}
+    current = exact_identity_map(conn, data_root=data_root,
+        question_ids=[int(row["question_id"]) for row in rows]) if data_root is not None else None
+    ranks = canonical_question_ranks(conn, [int(row["question_id"]) for row in rows])
+    best: dict[str, tuple] = {}
     for row in rows:
         key = str(row["content_key"])
         qid = int(row["question_id"])
-        rank = (-int(row["tag_count"] or 0), qid)
+        if current is not None and current.get(qid) != key:
+            continue
+        rank = ranks[qid]
         if key not in best or rank < best[key]:
             best[key] = rank
-    return {key: rank[1] for key, rank in best.items()}
+    return {key: rank[-1] for key, rank in best.items()}
 
 
 def analysis_source_exact_key(question: Any, *, data_root: Path) -> str:
@@ -528,6 +617,9 @@ def reusable_analysis(
         return None
     canonical = QuestionAnalysisInputLoader(db_path=database, data_root=Path(data_root)).load((int(bank_question_id),))
     if not canonical or str(latest.get("source_content_hash") or "") != solution_evidence_source_content_hash(canonical[0]):
+        return None
+    if answers_conflict(canonical[0].tagging_context.answer_text,
+                        target_question.tagging_context.answer_text, data_root=Path(data_root)):
         return None
     # 相同题面的排版变体允许重新锚定，但旧证据仍须对应规范题当前内容。
     canonical_key = analysis_source_exact_key(canonical[0], data_root=Path(data_root))
@@ -621,13 +713,15 @@ def link_exact_duplicate(conn: Any, *, question_id: int, source_id: int, signatu
                  (question_id, source_id, signature))
     if not copy_tags:
         return
-    conn.execute("""INSERT INTO question_tags(question_id,tag_type,tag_value,confidence,source,model_name)
+    occupied = tuple(row[0] for row in conn.execute(
+        "SELECT DISTINCT tag_type FROM question_tags WHERE question_id=?", (question_id,)))
+    omitted_types = " AND source.tag_type NOT IN (" + ",".join("?" for _ in occupied) + ")" if occupied else ""
+    conn.execute(f"""INSERT INTO question_tags(question_id,tag_type,tag_value,confidence,source,model_name)
                     SELECT ?,tag_type,tag_value,confidence,source,model_name FROM question_tags source
-                    WHERE question_id=? AND NOT EXISTS (SELECT 1 FROM question_tags target
-                    WHERE target.question_id=? AND target.tag_type=source.tag_type AND target.tag_value=source.tag_value)""",
-                 (question_id, source_id, question_id))
-    conn.execute("""UPDATE questions SET difficulty=COALESCE((SELECT NULLIF(difficulty,'') FROM questions WHERE id=?),difficulty),
-                    reason=COALESCE((SELECT NULLIF(reason,'') FROM questions WHERE id=?),reason) WHERE id=?""", (source_id, source_id, question_id))
+                    WHERE question_id=? {omitted_types}""",
+                 (question_id, source_id, *occupied))
+    conn.execute("""UPDATE questions SET difficulty=COALESCE(NULLIF(difficulty,''),(SELECT NULLIF(difficulty,'') FROM questions WHERE id=?)),
+                    reason=COALESCE(NULLIF(reason,''),(SELECT NULLIF(reason,'') FROM questions WHERE id=?)) WHERE id=?""", (source_id, source_id, question_id))
 
 
 def link_new_question_duplicate(conn: Any, *, question_id: int, data_root: Path,
@@ -640,11 +734,16 @@ def link_new_question_duplicate(conn: Any, *, question_id: int, data_root: Path,
     if not sources:
         return None
     # Prefer a labelled source; use a stable id to break ties.
-    def rank(qid):
-        count = conn.execute("SELECT COUNT(DISTINCT tag_type) FROM question_tags WHERE question_id=?", (qid,)).fetchone()[0]
-        return (-int(count), qid)
-    source_id = min(sources, key=rank)
-    link_exact_duplicate(conn, question_id=question_id, source_id=source_id, signature=key)
+    ranks = canonical_question_ranks(conn, sources)
+    source_id = min(sources, key=lambda qid: ranks[qid])
+    answer_rows = conn.execute("SELECT answer_text,difficulty FROM questions WHERE id IN (?,?) ORDER BY id", (question_id, source_id)).fetchall()
+    conflict = len(answer_rows) == 2 and answers_conflict(answer_rows[0][0], answer_rows[1][0], data_root=data_root)
+    if len(answer_rows) == 2 and all(str(row[1] or "").strip() for row in answer_rows):
+        conflict = conflict or str(answer_rows[0][1]) != str(answer_rows[1][1])
+    link_exact_duplicate(conn, question_id=question_id, source_id=source_id, signature=key, copy_tags=not conflict)
+    if conflict:
+        conn.execute("UPDATE questions SET needs_review=1 WHERE id=?", (question_id,))
+        return None
     return source_id
 
 
@@ -666,6 +765,10 @@ def copy_duplicate_analysis(
         rows = conn.execute("SELECT * FROM questions WHERE id IN (?,?)", (source_question_id, target_question_id)).fetchall()
     keys = [exact_question_key(dict(row), data_root=Path(data_root)) for row in rows]
     if len(keys) != 2 or not keys[0] or keys[0] != keys[1]:
+        return {"evidence": False, "criteria": False}
+    if answers_conflict(rows[0]["answer_text"], rows[1]["answer_text"], data_root=Path(data_root)):
+        return {"evidence": False, "criteria": False}
+    if all(str(row["difficulty"] or "").strip() for row in rows) and str(rows[0]["difficulty"]) != str(rows[1]["difficulty"]):
         return {"evidence": False, "criteria": False}
     loader = QuestionAnalysisInputLoader(
         db_path=database,
@@ -689,14 +792,39 @@ def copy_duplicate_analysis(
             target_input=target_input,
         )
         if result["evidence"]:
-            from question_bank.solution_evidence.part_assessments import load_profiles, save_profile
-            profiles = load_profiles(database, [source_question_id], data_root=Path(data_root))
-            profile = profiles.get(source_question_id)
-            latest = SolutionEvidenceRepository(database).latest(target_question_id)
-            if profile and profile["available"] and latest:
-                save_profile(database, question_id=target_question_id,
-                             evidence_version_id=latest["evidence_version_id"], parts=profile["parts"],
-                             created_by="duplicate-import")
+            # 逐小问难度特征不随标签复制（标签复制不写该表），这里按行照搬；
+            # 完全重复题的内容指纹相同，有效行可直接换到目标题。
+            from question_bank.services import standard_difficulty
+            with connect(database) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                feature_rows = (
+                    conn.execute(
+                        """SELECT part_id, features_json, model_name
+                           FROM question_part_difficulty_features
+                           WHERE question_id=? AND is_active=1""",
+                        (int(source_question_id),),
+                    ).fetchall()
+                    if standard_difficulty.table_exists(conn)
+                    else []
+                )
+                target_row = conn.execute(
+                    "SELECT * FROM questions WHERE id=? AND is_deleted=0",
+                    (int(target_question_id),),
+                ).fetchone()
+                if feature_rows and target_row is not None:
+                    standard_difficulty.save_assessment(
+                        conn,
+                        question_id=int(target_question_id),
+                        part_features=[
+                            {**json.loads(str(row["features_json"])),
+                             "part_id": str(row["part_id"])}
+                            for row in feature_rows
+                        ],
+                        content_fingerprint=standard_difficulty.question_content_fingerprint(
+                            dict(target_row)
+                        ),
+                        model_name=str(feature_rows[0]["model_name"] or "") or None,
+                    )
     except Exception:  # noqa: BLE001 - reuse must never break an import
         LOGGER.exception(
             "duplicate evidence copy failed: %s -> %s",

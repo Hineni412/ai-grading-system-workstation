@@ -35,7 +35,7 @@ from question_bank.training_criteria import (
     criteria_from_confirmed_rubric,
     plan_analysis_batches,
 )
-from question_bank.services.ai_tagging_service import _rule_conflict_notes
+
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.training_criteria.analysis import _response_items
 from tests.current_knowledge_support import install_current_knowledge
@@ -68,7 +68,7 @@ class FakeTagWriter:
         operation_id: str,
     ) -> Mapping[str, Any]:
         analysis = TagAnalysis.from_dict(dict(payload))
-        if not analysis.knowledge_points:
+        if not analysis.reason:
             raise ValueError("synthetic tag projection is incomplete")
         self.calls.append((question.question_id, operation_id))
         return {
@@ -174,14 +174,26 @@ def _question(
         images=images,
         taxonomy_contract={
             "taxonomy_revision": 7,
-            "allowed_dimensions": ["knowledge"],
+            "allowed_dimensions": ["knowledge", "thought", "ability"],
             "candidates": {
                 "knowledge": [
                     {
                         "id": "kp_alg_linear_equation",
                         "name": "一元一次方程",
                     }
-                ]
+                ],
+                "thought": [
+                    {
+                        "id": "thought_equation",
+                        "name": "方程思想",
+                    }
+                ],
+                "ability": [
+                    {
+                        "id": "ability_calculation",
+                        "name": "运算能力",
+                    }
+                ],
             },
         },
     )
@@ -189,19 +201,30 @@ def _question(
 
 def _tag_payload() -> dict[str, Any]:
     return {
-        "knowledge_points": ["一元一次方程"],
         "method_tags": [],
         "thought_tags": ["方程思想"],
         "ability_tags": ["运算能力"],
         "math_model_tags": [],
         "special_type_tags": [],
         "difficulty": 3,
-        "error_prone_points": ["运算化简错误"],
-        "prerequisite_points": [],
-        "textbook_chapters": [],
-        "curriculum_sections": [],
-        "suitable_student_level": "",
-        "canonical_knowledge_id": "kp_alg_linear_equation",
+        "predicted_error_patterns": [],
+        "part_features": [
+            {
+                "part_id": "part-1",
+                "part_label": "第1问",
+                "solo": 1,
+                "reasoning": 0,
+                "computation": 1,
+                "context": 0,
+                "context_kind": "无情境",
+                "hidden": 0,
+                "cases": 0,
+                "param_dynamic": 0,
+                "trap": 0,
+                "knowledge": 1,
+                "evidence": "一步方程即可求出未知数",
+            }
+        ],
         "taxonomy_revision": 7,
         "proposed_tags": [],
         "reason": "合成标签理由",
@@ -887,7 +910,6 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
         "question_type_suggestion",
         "tag_analysis",
         "solution_evidence",
-        "part_assessments",
     }
     assert "score" not in json.dumps(schema)
     proposal = item["properties"]["tag_analysis"]["properties"][
@@ -918,9 +940,11 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
     ]
     assert link["properties"]["fine_term_id"]["minLength"] == 1
     assert link["properties"]["fine_term_name"]["minLength"] == 1
-    assert "enum" not in item["properties"]["tag_analysis"]["properties"][
-        "knowledge_points"
-    ]["items"]
+    tag_properties = item["properties"]["tag_analysis"]["properties"]
+    assert "knowledge_points" not in tag_properties
+    assert "enum" not in tag_properties["part_features"]["items"]["properties"][
+        "evidence"
+    ]
     assert part["properties"]["deduction_policy"]["items"]["minLength"] == 1
 
     @dataclass
@@ -943,10 +967,7 @@ def test_combined_schema_locks_controlled_fields_to_batch_ids() -> None:
         allowed_term_ids={"knowledge": ["kp_alg_linear_equation"]},
     )
     item = schema["schema"]["properties"]["results"]["items"]
-    knowledge_items = _schema_node(
-        schema["schema"],
-        item["properties"]["tag_analysis"]["properties"]["knowledge_points"]["items"],
-    )
+    tag_properties = item["properties"]["tag_analysis"]["properties"]
     fine_term_id = _schema_node(
         schema["schema"],
         item["properties"]["solution_evidence"]["properties"]["parts"]["items"][
@@ -956,7 +977,9 @@ def test_combined_schema_locks_controlled_fields_to_batch_ids() -> None:
         ]["fine_term_id"],
     )
 
-    assert knowledge_items["enum"] == ["kp_alg_linear_equation"]
+    # 前置知识不再由模型输出：词表候选只约束判定点 fine_term_links。
+    assert "prerequisite_points" not in tag_properties
+    assert "knowledge_points" not in tag_properties
     assert fine_term_id["enum"] == ["kp_alg_linear_equation"]
     assert schema["schema"]["$defs"]["knowledge_id"]["enum"] == [
         "kp_alg_linear_equation"
@@ -974,13 +997,11 @@ class AcceptingGovernance:
             "status": "complete",
             "taxonomy_revision": context["expected_revision"],
             "accepted_fields": {
-                "knowledge_points": payload["knowledge_points"],
-                "prerequisite_points": payload["prerequisite_points"],
-                "method_tags": payload["method_tags"],
-                "ability_tags": payload["ability_tags"],
-                "math_model_tags": payload["math_model_tags"],
-                "special_type_tags": payload["special_type_tags"],
-                "textbook_chapters": payload["textbook_chapters"],
+                "method_tags": payload.get("method_tags", []),
+                "thought_tags": payload.get("thought_tags", []),
+                "ability_tags": payload.get("ability_tags", []),
+                "math_model_tags": payload.get("math_model_tags", []),
+                "special_type_tags": payload.get("special_type_tags", []),
             },
             "accepted_terms": {
                 "knowledge": [
@@ -1012,7 +1033,6 @@ def test_existing_tag_writer_reuses_quality_gate_and_question_save_seam(
     _seed_questions(database)
     install_current_knowledge(database)
     payload = _tag_payload()
-    payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
     writer = ExistingTagProjectionWriter(
         write_service=QuestionBankWriteService(
             database,
@@ -1037,7 +1057,7 @@ def test_existing_tag_writer_reuses_quality_gate_and_question_save_seam(
             WHERE question_id = 1
             """
         ).fetchall()
-    assert ("knowledge_point", "一元一次方程", "synthetic-model") in {
+    assert ("thought", "方程思想", "synthetic-model") in {
         (row["tag_type"], row["tag_value"], row["model_name"])
         for row in rows
     }
@@ -1050,8 +1070,7 @@ def test_existing_tag_writer_accepts_candidate_ids_and_saves_names(
     _seed_questions(database)
     install_current_knowledge(database)
     payload = _tag_payload()
-    payload["knowledge_points"] = ["kp_alg_linear_equation"]
-    payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
+    payload["thought_tags"] = ["thought_equation"]
     writer = ExistingTagProjectionWriter(
         write_service=QuestionBankWriteService(
             database,
@@ -1076,7 +1095,7 @@ def test_existing_tag_writer_accepts_candidate_ids_and_saves_names(
             WHERE question_id = 1
             """
         ).fetchall()
-    assert ("knowledge_point", "一元一次方程", "synthetic-model") in {
+    assert ("thought", "方程思想", "synthetic-model") in {
         (row["tag_type"], row["tag_value"], row["model_name"])
         for row in rows
     }
@@ -1141,7 +1160,6 @@ def test_existing_tag_writer_reuses_one_prepared_batch_and_defers_refresh(
         tagging_service=ExistingWriterTaggingStub(),  # type: ignore[arg-type]
     )
     payload = _tag_payload()
-    payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
 
     with write_service.tag_analysis_batch():
         writer.write(
@@ -1182,7 +1200,6 @@ def test_existing_tag_writer_does_not_report_success_without_complete_persisted_
         tagging_service=ExistingWriterTaggingStub(),  # type: ignore[arg-type]
     )
     payload = _tag_payload()
-    payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
 
     with pytest.raises(ValueError, match="core tags remain incomplete"):
         writer.write(
@@ -1266,7 +1283,6 @@ def test_existing_tag_writer_persists_proposals_with_the_question_contract(
     }
     question = replace(_question(1), taxonomy_contract=contract)
     payload = _tag_payload()
-    payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
     payload["proposed_tags"] = [
         {
             "dimension": "knowledge",
@@ -1456,16 +1472,9 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     }
     assert "kp_alg_linear_equation" in contracts[1]["candidates"]["knowledge"][0]["id"]
     format_schema = protocol.calls[0]["kwargs"]["text"]["format"]["schema"]
-    knowledge_items = _schema_node(
-        format_schema,
-        format_schema["properties"]["results"]["items"]["properties"]["tag_analysis"][
-            "properties"
-        ]["knowledge_points"]["items"],
-    )
-    assert knowledge_items["enum"] == [
-        "kp_alg_linear_equation",
-        "kp_geo_parallel_lines",
-    ]
+    assert "prerequisite_points" not in format_schema["properties"]["results"][
+        "items"
+    ]["properties"]["tag_analysis"]["properties"]
     fine_term_id = _schema_node(
         format_schema,
         format_schema["properties"]["results"]["items"]["properties"][
@@ -1489,7 +1498,7 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     assert "candidate_contract.candidates.knowledge" in rules
     assert "id 与 name 成对原样照抄" in rules
     assert "只能逐字照抄该题 candidate_contract" in rules
-    assert "curriculum_sections" in rules
+    assert "不再输出整题知识点" in rules
     assert "只能逐字照抄该题 candidate_contract 中对应维度候选条的 id" in rules
     assert "part-1-step-1" in rules
     assert "独立可评分的数学台阶" in rules
@@ -1517,7 +1526,7 @@ def test_gateway_prompt_turns_teacher_retry_into_targeted_repair() -> None:
     base = _question(11)
     rejected_result = {
         "question_id": 11,
-        "tag_analysis": {"knowledge_points": ["三角形内角和定理"]},
+        "tag_analysis": {"thought_tags": ["数形结合思想"]},
         "solution_evidence": {
             "parts": [
                 {
@@ -1737,7 +1746,7 @@ def test_duplicate_results_merge_parts_and_renumber_ids() -> None:
         "question_id": 1,
         "tag_analysis": {
             **_tag_payload(),
-            "knowledge_points": ["一元一次方程"],
+            "method_tags": ["换元法"],
             "difficulty": 3,
         },
         "solution_evidence": _evidence_payload(1, "第1问", steps=2),
@@ -1748,7 +1757,7 @@ def test_duplicate_results_merge_parts_and_renumber_ids() -> None:
         "question_id": 1,
         "tag_analysis": {
             **_tag_payload(),
-            "knowledge_points": ["一元一次方程", "合并同类项"],
+            "method_tags": ["换元法", "待定系数法"],
             "difficulty": 5,
         },
         "solution_evidence": _evidence_payload(1, "第2问", steps=1),
@@ -1770,9 +1779,9 @@ def test_duplicate_results_merge_parts_and_renumber_ids() -> None:
     assert ep_ids == ["part-1-step-1", "part-1-step-2", "part-2-step-1"]
     assert parts[0]["evidence_points"][1]["depends_on"] == ["part-1-step-1"]
     # tag_analysis：列表字段保序去重并集，标量字段取第一份
-    assert merged["tag_analysis"]["knowledge_points"] == [
-        "一元一次方程",
-        "合并同类项",
+    assert merged["tag_analysis"]["method_tags"] == [
+        "换元法",
+        "待定系数法",
     ]
     assert merged["tag_analysis"]["difficulty"] == 3
     # reference_assessment 取最保守值，reason 拼接
@@ -2013,35 +2022,20 @@ _816_STEM = (
 )
 
 
-def test_angle_bisector_rule_ignores_quoted_custom_defined_term() -> None:
-    context = TaggingContext(question_text=_816_STEM)
+def test_tag_analysis_drops_retired_whole_question_dimensions() -> None:
+    # 角平分线规则类冲突检查随整题知识点维度一并移除；
+    # 这里锁定新契约不再携带整题知识点/错误点等旧字段。
     analysis = TagAnalysis.from_dict(_tag_payload())
 
-    notes = _rule_conflict_notes(context, analysis)
-
-    assert not any("角平分线" in note for note in notes)
-
-
-def test_angle_bisector_rule_still_flags_genuine_bisector_question() -> None:
-    context = TaggingContext(
-        question_text="如图，AD是△ABC的角平分线，交BC于点D，求证BD=DC。"
-    )
-    analysis = TagAnalysis.from_dict(_tag_payload())
-
-    notes = _rule_conflict_notes(context, analysis)
-
-    assert any("角平分线" in note for note in notes)
-
-
-def test_angle_bisector_rule_flags_quoted_term_without_definition_intro() -> None:
-    context = TaggingContext(
-        question_text="课本把“角平分线”作为重点概念，请完成相关计算。"
-    )
-    analysis = TagAnalysis.from_dict(_tag_payload())
-
-    notes = _rule_conflict_notes(context, analysis)
-
-    assert any("角平分线" in note for note in notes)
+    for field in (
+        "knowledge_points",
+        "error_prone_points",
+        "textbook_chapters",
+        "curriculum_sections",
+        "suitable_student_level",
+        "canonical_knowledge_id",
+    ):
+        assert field not in analysis.to_dict()
 
 
 class RepairQueueGateway:
@@ -2238,7 +2232,7 @@ def test_question_level_validation_failure_repairs_failed_questions_only(
 ) -> None:
     database = tmp_path / "question-bank.db"
     _seed_questions(database, count=2)
-    incomplete_tag = {**_tag_payload(), "knowledge_points": []}
+    incomplete_tag = {**_tag_payload(), "reason": ""}
     gateway = RepairQueueGateway(
         [
             {

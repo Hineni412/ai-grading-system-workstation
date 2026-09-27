@@ -407,9 +407,6 @@ def test_only_question_tag_runtime_contracts_remain() -> None:
         build_question_tag_graph_rows,
     )
     from question_bank.database.schema import initialize_database
-    from question_bank.recommendation.practice_plan_service import (
-        PracticePlanService,
-    )
     from question_bank.services.ai_tagging_service import AITaggingService
     from question_bank.services.question_write_service import QuestionBankWriteService
     import session_manager
@@ -430,16 +427,27 @@ def test_only_question_tag_runtime_contracts_remain() -> None:
     ).parameters
     assert build_question_tag_graph_rows({"students": []}) == []
 
-    service = PracticePlanService(PROJECT_ROOT / "unused.db")
-    try:
-        service.generate_variant(
-            {"diagnosis_identity": "skill", "students": []},
-            question_count=8,
-        )
-    except ValueError as exc:
-        assert "question_tag" in str(exc)
-    else:
-        raise AssertionError("retired skill diagnosis was accepted")
+    from fastapi.testclient import TestClient
+
+    from backend.api.app import create_app
+    from backend.api.dependencies import get_request_diagnosis_profile_service
+
+    class _SkillDiagnosisService:
+        def build_profiles(self, **_kwargs: object) -> dict[str, object]:
+            return {"diagnosis_identity": "skill", "students": []}
+
+    app = create_app()
+    app.dependency_overrides[get_request_diagnosis_profile_service] = (
+        _SkillDiagnosisService
+    )
+    response = TestClient(app).post(
+        "/api/training/diagnosis",
+        json={
+            "scope": {"mode": "class", "class_id": "P3-17"},
+            "exam_scope": {"mode": "cross_exam"},
+        },
+    )
+    assert response.status_code == 422, response.text
 
 
 def test_009_drops_exact_legacy_tables_and_backup_restores_rows(

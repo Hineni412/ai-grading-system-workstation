@@ -3,10 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../errors'
 import {
   decodeAnalysisPreflight,
-  decodeJobSummaryList,
   decodeReportContext,
-  decodeTrainingTaskDetail,
-  decodeTrainingTaskList,
   exportsApi,
 } from '../exports'
 
@@ -61,35 +58,6 @@ describe('file center API contract', () => {
     expect(() => decodeReportContext({
       ...payload,
       jobs: [{ ...payload.jobs[0], file_path: 'C:/private/report.pdf' }],
-    })).toThrow()
-  })
-
-  it('accepts the public training task list and rejects storage fields', () => {
-    const payload = {
-      items: [
-        {
-          id: 12,
-          task_code: 'TRAIN-12',
-          created_by: 'teacher',
-          scope_snapshot: { mode: 'class', class_id: '七年级一班' },
-          exam_scope: { mode: 'current', session_ids: [7] },
-          generation_config: { variant_mode: 'individual' },
-          warnings: [],
-          status: 'ready',
-          created_at: '2026-07-17T09:00:00Z',
-          updated_at: '2026-07-17T09:01:00Z',
-        },
-      ],
-      total: 1,
-      page: 1,
-      page_size: 20,
-      total_pages: 1,
-    }
-
-    expect(decodeTrainingTaskList(payload)).toEqual(payload)
-    expect(() => decodeTrainingTaskList({
-      ...payload,
-      items: [{ ...payload.items[0], output_path: 'C:/private/training.docx' }],
     })).toThrow()
   })
 
@@ -149,6 +117,9 @@ describe('file center API contract', () => {
       call_count: 10,
       estimated_total_tokens: 120000,
       cache_hits: 3,
+      cause_call_count: 0,
+      cause_total_questions: 0,
+      cause_estimated_tokens: 0,
     }
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify(preflight), {
@@ -175,6 +146,9 @@ describe('file center API contract', () => {
       call_count: 1,
       estimated_total_tokens: 50000,
       cache_hits: 0,
+      cause_call_count: 0,
+      cause_total_questions: 0,
+      cause_estimated_tokens: 0,
     }
 
     expect(decodeAnalysisPreflight(preflight)).toEqual(preflight)
@@ -224,147 +198,6 @@ describe('file center API contract', () => {
         }),
       }),
     )
-  })
-
-  it('loads training export history and resolves a selected job safely', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        items: [{
-          id: 91,
-          job_type: 'training_export',
-          status: 'succeeded',
-          progress: 1,
-          stage: 'training_export',
-          detail: 'complete',
-          created_at: '2026-07-17T10:00:00Z',
-          started_at: '2026-07-17T10:00:00Z',
-          updated_at: '2026-07-17T10:00:01Z',
-          finished_at: '2026-07-17T10:00:01Z',
-        }],
-        total: 1,
-        page: 1,
-        page_size: 20,
-        total_pages: 1,
-      }), { status: 200, headers: { 'content-type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        ...job,
-        id: 91,
-        job_type: 'training_export',
-        payload: { task_id: 12, format: 'docx' },
-        result: {
-          task_id: 12,
-          filename: '训练材料.zip',
-          download_url: '/api/jobs/91/download',
-        },
-      }), { status: 200, headers: { 'content-type': 'application/json' } }))
-
-    const listing = await exportsApi.listTrainingExportJobs()
-    const detail = await exportsApi.getJob(91)
-
-    expect(listing.total).toBe(1)
-    expect(detail.result.filename).toBe('训练材料.zip')
-    expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      '/api/jobs?job_type=training_export&page=1&page_size=20',
-    )
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/jobs/91')
-  })
-
-  it('submits a task bundle and retries only through dedicated training endpoints', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockImplementation(async () => new Response(JSON.stringify({
-        ...job,
-        job_type: 'training_export',
-        payload: { task_id: 12, format: 'docx' },
-      }), { status: 202, headers: { 'content-type': 'application/json' } }))
-
-    await exportsApi.submitTrainingExport(12, { format: 'docx' })
-    await exportsApi.retryTrainingExport(81)
-
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/training/tasks/12/exports')
-    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
-      method: 'POST',
-      body: JSON.stringify({ format: 'docx' }),
-    }))
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/training/exports/jobs/81/retry')
-  })
-
-  it('decodes training details and job pages without accepting storage fields', () => {
-    const task = {
-      id: 12,
-      task_code: 'TRAIN-12',
-      created_by: 'teacher',
-      scope_snapshot: { mode: 'class', class_id: '七年级一班' },
-      exam_scope: { mode: 'current', session_ids: [7] },
-      generation_config: { variant_mode: 'individual' },
-      warnings: [],
-      status: 'completed',
-      created_at: '2026-07-17T09:00:00Z',
-      updated_at: '2026-07-17T09:01:00Z',
-      diagnosis_snapshot: {},
-      variants: [{
-        id: 3,
-        variant_key: 'group-a',
-        variant_type: 'individual',
-        students: [],
-        items: [],
-      }],
-      exports: [{ id: 4, status: 'succeeded', export_format: 'docx' }],
-    }
-    const page = {
-      items: [{
-        id: 91,
-        job_type: 'training_export',
-        status: 'succeeded',
-        progress: 1,
-        stage: 'training_export',
-        detail: 'complete',
-        created_at: '2026-07-17T10:00:00Z',
-        started_at: null,
-        updated_at: '2026-07-17T10:00:01Z',
-        finished_at: '2026-07-17T10:00:01Z',
-      }],
-      total: 1,
-      page: 1,
-      page_size: 20,
-      total_pages: 1,
-    }
-
-    expect(decodeTrainingTaskDetail(task).variants).toHaveLength(1)
-    expect(decodeJobSummaryList(page).items[0]?.id).toBe(91)
-    expect(() => decodeTrainingTaskDetail({
-      ...task,
-      exports: [{ output_path: 'C:/private/file.docx' }],
-    })).toThrow()
-  })
-
-  it('enforces bundle and variant export choices before writing', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockImplementation(async () => new Response(JSON.stringify({
-        ...job,
-        job_type: 'training_export',
-        payload: {
-          task_id: 12,
-          variant_id: 3,
-          format: 'markdown',
-          audience: 'teacher',
-        },
-      }), { status: 202, headers: { 'content-type': 'application/json' } }))
-
-    await exportsApi.submitTrainingExport(12, {
-      variant_id: 3,
-      format: 'markdown',
-      audience: 'teacher',
-    })
-    await expect(exportsApi.submitTrainingExport(12, {
-      format: 'docx',
-      audience: 'teacher',
-    })).rejects.toThrow()
-    await expect(exportsApi.submitTrainingExport(12, {
-      variant_id: 3,
-      format: 'docx',
-    })).rejects.toThrow()
-
-    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('downloads a controlled file and decodes its Chinese filename', async () => {

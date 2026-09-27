@@ -1,12 +1,13 @@
-"""Versioned small-part estimates referencing the existing solution evidence.
+"""Per-part difficulty reads referencing the existing solution evidence.
 
-Knowledge links remain in solution-evidence versions; this module never stores a
-second tag truth or changes a frozen marking standard.
+Per-part difficulty has one source: the formula score in
+``question_part_difficulty_features`` (active rows). This module only reads;
+it never stores a second tag truth or changes a frozen marking standard.
 """
 from __future__ import annotations
 
+import hashlib
 import json
-import math
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -56,117 +57,144 @@ def current_inputs(db_path: Path, ids: Sequence[int], connection: sqlite3.Connec
 def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Connection | None = None,
                   verify_source: bool = True, data_root: Path | None = None,
                   question_inputs: Mapping[int, Any] | None = None) -> dict[int, dict[str, Any]]:
+    """Latest usable evidence plus active formula difficulty per part.
+
+    A record exists for every question whose newest proposed/approved evidence
+    version is present. ``parts[].difficulty`` is the active
+    ``question_part_difficulty_features`` formula score; it is ``None`` when the
+    part has no active row or the row's content fingerprint no longer matches
+    the current question (需重评). ``revision`` is a derived token identifying
+    the evidence version plus its current formula difficulties, not a stored
+    row number.
+    """
     if not ids:
         return {}
     with reading(db_path, connection) as conn:
-        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='question_part_assessment_profiles'").fetchone() is None:
-            return {}
         marks = ",".join("?" for _ in ids)
-        rows = conn.execute(
-            f"""SELECT p.*,e.evidence_json,e.source_content_hash evidence_source_hash,e.status evidence_status,
-                       e.graph_release_id
-                FROM question_part_assessment_profiles p
-                JOIN question_solution_evidence_versions e ON e.evidence_version_id=p.evidence_version_id
-                JOIN questions q ON q.id=p.question_id
-                WHERE p.status='active' AND q.is_deleted=0 AND p.question_id IN ({marks})""", list(ids),
-        ).fetchall()
+        # created_at has second precision; when two usable versions tie, the
+        # most recently inserted row (max rowid) wins.
+        rows = [
+            row
+            for row in conn.execute(
+                f"""SELECT v.question_id, v.evidence_version_id, v.evidence_json,
+                           v.source_content_hash AS evidence_source_hash,
+                           v.status AS evidence_status, v.graph_release_id
+                    FROM question_solution_evidence_versions v
+                    JOIN questions q ON q.id = v.question_id AND q.is_deleted = 0
+                    JOIN (
+                        SELECT question_id, MAX(created_at) AS max_created
+                        FROM question_solution_evidence_versions
+                        WHERE status IN ('proposed', 'approved')
+                        GROUP BY question_id
+                    ) m ON m.question_id = v.question_id AND m.max_created = v.created_at
+                    WHERE v.status IN ('proposed', 'approved')
+                      AND v.question_id IN ({marks})
+                    ORDER BY v.rowid""", list(ids),
+            ).fetchall()
+        ]
+        seen: set[int] = set()
+        deduped: list[Any] = []
+        for row in reversed(rows):
+            question_id = int(row["question_id"])
+            if question_id in seen:
+                continue
+            seen.add(question_id)
+            deduped.append(row)
+        rows = deduped
+        features: dict[int, dict[str, Any]] = {}
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='question_part_difficulty_features'").fetchone() is not None:
+            for row in conn.execute(
+                f"""SELECT question_id, part_id, features_json, formula_difficulty,
+                           formula_version, source_content_hash
+                    FROM question_part_difficulty_features
+                    WHERE is_active = 1 AND question_id IN ({marks})""", list(ids),
+            ).fetchall():
+                features.setdefault(int(row["question_id"]), {})[str(row["part_id"])] = row
         result = {}
         inputs = {}
+        question_rows: dict[int, Any] = {}
         if rows and verify_source:
             # A caller that already loaded this batch can reuse its exact
             # question inputs. Source comparison still runs for every profile.
             inputs = question_inputs if question_inputs is not None else current_inputs(
                 db_path, [int(r["question_id"]) for r in rows], conn, data_root=data_root)
+            question_rows = {
+                int(row["id"]): dict(row)
+                for row in conn.execute(
+                    f"SELECT * FROM questions WHERE id IN ({marks}) AND is_deleted = 0", list(ids),
+                ).fetchall()
+            }
+        from question_bank.services.standard_difficulty import question_content_fingerprint
         from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+        from question_bank.solution_evidence.repository import (
+            _classification_from_evidence_payload,
+        )
         for row in rows:
-            record = dict(row)
-            record["parts"] = json.loads(record.pop("parts_json"))
-            record["evidence"] = json.loads(record.pop("evidence_json"))
-            record["available"] = record["evidence_status"] in {"proposed", "approved"}
+            question_id = int(row["question_id"])
+            evidence = json.loads(row["evidence_json"])
+            # Match the decorated payload readers get from repository.latest().
+            evidence["whole_question_classification"] = (
+                _classification_from_evidence_payload(evidence)
+            )
+            evidence_source_hash = str(row["evidence_source_hash"])
+            fingerprint = ""
+            alias = ""
             if verify_source:
-                question = inputs[int(row["question_id"])]
-                record["available"] = record["available"] and (
-                    solution_evidence_source_content_hash(question) == row["current_source_content_hash"]
-                    and source_alias(question, str(row["evidence_source_hash"])) is not None
+                question = inputs[question_id]
+                current_hash = solution_evidence_source_content_hash(question)
+                alias = source_alias(question, evidence_source_hash)
+                question_row = question_rows.get(question_id)
+                fingerprint = (
+                    question_content_fingerprint(question_row)
+                    if question_row is not None else ""
                 )
-            record["reason"] = None if record["available"] else "part_assessment_source_changed"
-            result[int(row["question_id"])] = record
+            else:
+                current_hash = evidence_source_hash
+            parts = []
+            for part in evidence.get("parts", []):
+                feature = features.get(question_id, {}).get(str(part.get("part_id")))
+                rationale = ""
+                formula_version = ""
+                difficulty = None
+                if feature is not None:
+                    stale = (
+                        verify_source
+                        and fingerprint
+                        and str(feature["source_content_hash"]) != fingerprint
+                    )
+                    if not stale:
+                        difficulty = feature["formula_difficulty"]
+                    try:
+                        rationale = str(
+                            (json.loads(str(feature["features_json"] or "{}")) or {}).get("evidence") or ""
+                        )
+                    except (TypeError, ValueError):
+                        rationale = ""
+                    formula_version = str(feature["formula_version"])
+                parts.append({"part_id": part.get("part_id"), "difficulty": difficulty,
+                              "source": "formula", "rationale": rationale,
+                              "formula_version": formula_version})
+            revision = hashlib.sha256(json.dumps(
+                [str(row["evidence_version_id"]),
+                 [(part["part_id"], part["difficulty"], part["formula_version"]) for part in parts]],
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()[:16]
+            available = alias is not None if verify_source else True
+            result[question_id] = {
+                "question_id": question_id,
+                "evidence_version_id": str(row["evidence_version_id"]),
+                "evidence": evidence,
+                "evidence_source_hash": evidence_source_hash,
+                "evidence_status": str(row["evidence_status"]),
+                "graph_release_id": row["graph_release_id"],
+                "current_source_content_hash": current_hash,
+                "source_type_alias": alias or "",
+                "available": available,
+                "reason": None if available else "part_assessment_source_changed",
+                "revision": revision,
+                "parts": parts,
+            }
         return result
-
-
-def save_profile(db_path: Path, *, question_id: int, evidence_version_id: str,
-                 parts: Sequence[Mapping[str, Any]], created_by: str) -> dict[str, Any]:
-    from question_bank.database.schema import connect
-    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
-    if not str(created_by).strip():
-        raise ValueError("Estimate author is required")
-    with connect(db_path) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT * FROM question_solution_evidence_versions WHERE question_id=? AND evidence_version_id=?",
-                           (question_id, evidence_version_id)).fetchone()
-        if row is None or row["status"] not in {"proposed", "approved"}:
-            raise ValueError("Usable source evidence is required")
-        question = current_inputs(db_path, [question_id], conn)[question_id]
-        alias = source_alias(question, str(row["source_content_hash"]))
-        if alias is None:
-            raise ValueError("Source content changed; estimates cannot be attached")
-        expected_parts = json.loads(row["evidence_json"])["parts"]
-        expected_ids = {p["part_id"] for p in expected_parts}
-        if len(parts) != len(expected_ids) or {p.get("part_id") for p in parts} != expected_ids:
-            raise ValueError("Every source part must be supplied exactly once")
-        clean = []
-        for part in parts:
-            difficulty = part.get("difficulty")
-            if difficulty is not None and (isinstance(difficulty, bool) or not isinstance(difficulty, (int, float))
-                                          or not math.isfinite(difficulty) or not 1 <= difficulty <= 10):
-                raise ValueError("Small-part difficulty must be between 1 and 10, or unknown")
-            if part.get("source") not in {"codex_self", "model", "whole_question", "teacher", "unknown"}:
-                raise ValueError("Difficulty estimate source is invalid")
-            if part["source"] == "whole_question" and len(expected_ids) != 1:
-                raise ValueError("Whole-question difficulty cannot be copied to multiple parts")
-            if not str(part.get("rationale") or "").strip():
-                raise ValueError("Every estimate needs a rationale")
-            clean.append({"part_id": part["part_id"], "difficulty": difficulty, "source": part["source"],
-                          "rationale": str(part["rationale"]).strip(),
-                          "review_note": str(part.get("review_note") or "").strip(),
-                          **({"difficulty_scale_version": str(part["difficulty_scale_version"])}
-                             if part.get("difficulty_scale_version") else {})})
-        encoded = json.dumps(clean, ensure_ascii=False, sort_keys=True)
-        current_hash = solution_evidence_source_content_hash(question)
-        previous = conn.execute("SELECT * FROM question_part_assessment_profiles WHERE question_id=? AND status='active'", (question_id,)).fetchone()
-        if previous and previous["parts_json"] == encoded and previous["evidence_version_id"] == evidence_version_id and previous["current_source_content_hash"] == current_hash:
-            return {"question_id": question_id, "revision": previous["revision"], "unchanged": True}
-        revision = conn.execute("SELECT COALESCE(MAX(revision),0)+1 FROM question_part_assessment_profiles WHERE question_id=?", (question_id,)).fetchone()[0]
-        conn.execute("UPDATE question_part_assessment_profiles SET status='inactive' WHERE question_id=? AND status='active'", (question_id,))
-        conn.execute("""INSERT INTO question_part_assessment_profiles(question_id,evidence_version_id,
-                     current_source_content_hash,source_type_alias,parts_json,revision,created_by)
-                     VALUES(?,?,?,?,?,?,?)""", (question_id, evidence_version_id, current_hash, alias, encoded, revision, created_by))
-        return {"question_id": question_id, "revision": revision, "unchanged": False}
-
-
-def model_part_estimates(raw: Any, evidence: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
-    """Keep old responses readable; new estimates must cover the exact source parts."""
-    if raw is None:
-        return ()
-    expected = {p["part_id"] for p in evidence["parts"]}
-    if not isinstance(raw, (list, tuple)) or len(raw) != len(expected):
-        raise ValueError("Small-part estimates must cover every source part")
-    clean = []
-    for value in raw:
-        if not isinstance(value, Mapping) or value.get("part_id") not in expected:
-            raise ValueError("Small-part estimate has an unknown part identity")
-        difficulty = value.get("difficulty")
-        rationale = str(value.get("rationale") or "").strip()
-        if (isinstance(difficulty, bool) or not isinstance(difficulty, (int, float))
-                or not math.isfinite(difficulty) or not 1 <= difficulty <= 10 or not rationale):
-            raise ValueError("Small-part estimate requires difficulty 1–10 and a rationale")
-        clean.append({"part_id": value["part_id"], "difficulty": difficulty,
-                      "rationale": rationale, "source": "model",
-                      **({"difficulty_scale_version": str(value["difficulty_scale_version"])}
-                         if value.get("difficulty_scale_version") else {})})
-    if len({p["part_id"] for p in clean}) != len(expected):
-        raise ValueError("Small-part estimate identities must be unique")
-    return tuple(clean)
 
 
 def direct_targets(part: Mapping[str, Any], links: Mapping[str, Sequence[Any]]) -> tuple[str, ...]:

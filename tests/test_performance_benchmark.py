@@ -18,7 +18,7 @@ from tools.performance.scenarios import (
 )
 
 
-MICRO = ScaleDefinition("micro", 1, 2, 2, 4, 8, 2, 2)
+MICRO = ScaleDefinition("micro", 1, 2, 2, 4, 8, 2)
 EXPECTED_NAMES = {
     "health",
     "question_bank.papers",
@@ -28,9 +28,6 @@ EXPECTED_NAMES = {
     "question_bank.question.asset",
     "question_bank.question.preview",
     "training.diagnosis",
-    "training.plan.preview",
-    "training.tasks",
-    "training.task.detail",
     "graph.query",
     "graph.evidence",
     "ops.self_check",
@@ -69,9 +66,9 @@ def _contains_field_named(value: object, forbidden: str) -> bool:
 def test_build_scenarios_has_unique_real_route_contract(micro_dataset) -> None:
     scenarios = build_scenarios(micro_dataset)
 
-    assert len(scenarios) == 15
+    assert len(scenarios) == 12
     assert {scenario.name for scenario in scenarios} == EXPECTED_NAMES
-    assert len({scenario.name for scenario in scenarios}) == 15
+    assert len({scenario.name for scenario in scenarios}) == 12
     assert all(scenario.method in {"GET", "POST"} for scenario in scenarios)
     assert all(scenario.route_template.startswith("/") for scenario in scenarios)
 
@@ -83,7 +80,6 @@ def test_build_scenarios_has_unique_real_route_contract(micro_dataset) -> None:
     assert "{asset_index}" in by_name["question_bank.question.asset"].route_template
     assert "{question_id}" in by_name["question_bank.question.preview"].route_template
     assert "{preview_type}" in by_name["question_bank.question.preview"].route_template
-    assert "{task_id}" in by_name["training.task.detail"].route_template
     assert by_name["question_bank.papers"].scale_driver == "papers"
 
 
@@ -141,7 +137,6 @@ def test_scenario_requests_use_only_deterministic_allowlisted_inputs(
 
     for name in (
         "training.diagnosis",
-        "training.plan.preview",
         "graph.query",
         "graph.evidence",
     ):
@@ -166,9 +161,7 @@ def test_runner_overrides_only_the_brief_allowlist(micro_dataset) -> None:
         get_diagnosis_profile_service,
         get_graph_diagnosis_profile_service,
         get_ops_self_check_service,
-        get_practice_plan_service,
         get_question_bank_read_service,
-        get_training_task_service,
     )
     from backend.api.routers.graph import get_current_graph_query_service
     from path_manager import get_path_manager
@@ -179,8 +172,6 @@ def test_runner_overrides_only_the_brief_allowlist(micro_dataset) -> None:
         get_path_manager,
         get_question_bank_read_service,
         get_diagnosis_profile_service,
-        get_practice_plan_service,
-        get_training_task_service,
         get_current_graph_query_service,
     }
     assert get_graph_diagnosis_profile_service not in app.dependency_overrides

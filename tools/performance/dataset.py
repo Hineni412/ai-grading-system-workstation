@@ -56,25 +56,23 @@ class ScaleDefinition:
     questions_per_session: int
     grading_details: int
     question_bank_questions: int
-    training_tasks: int
     backups: int
 
     @property
-    def counts(self) -> tuple[int, int, int, int, int, int, int]:
+    def counts(self) -> tuple[int, int, int, int, int, int]:
         return (
             self.sessions,
             self.students,
             self.questions_per_session,
             self.grading_details,
             self.question_bank_questions,
-            self.training_tasks,
             self.backups,
         )
 
 
-SMALL = ScaleDefinition("small", 1, 30, 10, 300, 200, 10, 5)
-MEDIUM = ScaleDefinition("medium", 5, 200, 20, 20_000, 2_000, 100, 50)
-LARGE = ScaleDefinition("large_5pct", 1, 25, 2, 7_500, 500, 25, 5)
+SMALL = ScaleDefinition("small", 1, 30, 10, 300, 200, 5)
+MEDIUM = ScaleDefinition("medium", 5, 200, 20, 20_000, 2_000, 50)
+LARGE = ScaleDefinition("large_5pct", 1, 25, 2, 7_500, 500, 5)
 SCALES = (SMALL, MEDIUM, LARGE)
 
 
@@ -240,7 +238,6 @@ class BenchmarkDataset:
     paths: BenchmarkPaths = field(repr=False)
     manifest: DatasetManifest
     representative_question_id: int
-    representative_task_id: int
     representative_knowledge_term_id: str
     representative_stable_key: str
 
@@ -272,7 +269,6 @@ def build_benchmark_dataset(
         asset_path=asset_path.relative_to(paths.data_root).as_posix(),
         preview_path=preview_path.relative_to(paths.data_root).as_posix(),
     )
-    representative_task_id = 1
     backup_paths = _write_backup_metadata(paths, scale.backups, int(seed))
 
     _checkpoint(paths.db_path)
@@ -297,7 +293,6 @@ def build_benchmark_dataset(
         paths=paths,
         manifest=manifest,
         representative_question_id=representative_question_id,
-        representative_task_id=representative_task_id,
         representative_knowledge_term_id=_benchmark_knowledge_term_ids()[0],
         representative_stable_key=_benchmark_representative_stable_key(),
     )
@@ -340,7 +335,6 @@ def _validate_scale(scale: ScaleDefinition) -> None:
         scale.students,
         scale.questions_per_session,
         scale.question_bank_questions,
-        scale.training_tasks,
     )
     if not scale.name or any(value <= 0 for value in positive):
         raise ValueError("benchmark scale requires a name and positive core counts")
@@ -634,10 +628,6 @@ def _populate_question_bank_database(
         _insert_batches(conn, _QUESTION_TAG_INSERT, _question_tag_rows(scale))
         _insert_batches(conn, _QUESTION_PREVIEW_INSERT, _preview_rows(preview_path))
         _insert_batches(conn, _QUESTION_LINK_INSERT, _question_link_rows(scale))
-        _insert_batches(conn, _TRAINING_TASK_INSERT, _training_task_rows(scale, seed))
-        _insert_batches(conn, _TRAINING_VARIANT_INSERT, _training_variant_rows(scale))
-        _insert_batches(conn, _VARIANT_STUDENT_INSERT, _variant_student_rows(scale))
-        _insert_batches(conn, _TRAINING_ITEM_INSERT, _training_item_rows(scale))
     return 1
 
 
@@ -664,31 +654,6 @@ _QUESTION_LINK_INSERT = (
     "status, evidence_json, reviewed_by, reviewed_at, created_at, updated_at"
     ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
-_TRAINING_TASK_INSERT = (
-    "INSERT INTO training_tasks ("
-    "id, task_code, created_by, scope_json, exam_scope_json, diagnosis_snapshot_json, "
-    "generation_config_json, warnings_json, status, created_at, updated_at"
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-)
-_TRAINING_VARIANT_INSERT = (
-    "INSERT INTO training_variants ("
-    "id, task_id, variant_key, variant_type, grouping_reason_json, diagnosis_snapshot_json, "
-    "shortages_json, warnings_json, status, created_at, updated_at"
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-)
-_VARIANT_STUDENT_INSERT = (
-    "INSERT INTO variant_students ("
-    "variant_id, student_id, student_name_snapshot, class_id_snapshot, created_at"
-    ") VALUES (?, ?, ?, ?, ?)"
-)
-_TRAINING_ITEM_INSERT = (
-    "INSERT INTO training_task_items ("
-    "id, variant_id, task_item_code, bank_question_id, bank_question_fingerprint, item_order, "
-    "stage, concept_snapshot_json, recommendation_snapshot_json, question_snapshot_json, created_at"
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-)
-
-
 def _question_bank_paper_count(scale: ScaleDefinition) -> int:
     return max(1, (scale.question_bank_questions + 99) // 100)
 
@@ -784,68 +749,6 @@ def _question_link_rows(scale: ScaleDefinition) -> Iterator[tuple[object, ...]]:
             )
 
 
-def _training_task_rows(
-    scale: ScaleDefinition,
-    seed: int,
-) -> Iterator[tuple[object, ...]]:
-    for task_id in range(1, scale.training_tasks + 1):
-        yield (
-            task_id,
-            f"GEN-TASK-{seed}-{task_id:05d}",
-            "generated-benchmark",
-            "{}",
-            "{}",
-            "{}",
-            "{}",
-            "[]",
-            "ready",
-            _GENERATED_TIME,
-            _GENERATED_TIME,
-        )
-
-
-def _training_variant_rows(scale: ScaleDefinition) -> Iterator[tuple[object, ...]]:
-    for task_id in range(1, scale.training_tasks + 1):
-        yield (
-            task_id,
-            task_id,
-            f"generated-variant-{task_id:05d}",
-            "individual",
-            "{}",
-            "{}",
-            "[]",
-            "[]",
-            "ready",
-            _GENERATED_TIME,
-            _GENERATED_TIME,
-        )
-
-
-def _variant_student_rows(scale: ScaleDefinition) -> Iterator[tuple[object, ...]]:
-    for task_id in range(1, scale.training_tasks + 1):
-        student_id = ((task_id - 1) % scale.students) + 1
-        student_code = f"GEN-{student_id:05d}"
-        yield (task_id, student_code, student_code, "CLASS-001", _GENERATED_TIME)
-
-
-def _training_item_rows(scale: ScaleDefinition) -> Iterator[tuple[object, ...]]:
-    for task_id in range(1, scale.training_tasks + 1):
-        question_id = ((task_id - 1) % scale.question_bank_questions) + 1
-        yield (
-            task_id,
-            task_id,
-            f"GEN-ITEM-{task_id:05d}",
-            question_id,
-            f"generated-fingerprint-{question_id:05d}",
-            1,
-            "direct",
-            "{}",
-            "{}",
-            "{}",
-            _GENERATED_TIME,
-        )
-
-
 def _write_backup_metadata(
     paths: BenchmarkPaths,
     count: int,
@@ -901,10 +804,6 @@ def _expected_counts(scale: ScaleDefinition) -> dict[str, int]:
         "question_tags": scale.question_bank_questions * 5,
         "question_previews": 2,
         "grading_question_links": scale.sessions * scale.questions_per_session,
-        "training_tasks": scale.training_tasks,
-        "training_variants": scale.training_tasks,
-        "variant_students": scale.training_tasks,
-        "training_task_items": scale.training_tasks,
         "backup_files": scale.backups,
     }
 

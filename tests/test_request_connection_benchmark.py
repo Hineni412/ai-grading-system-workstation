@@ -44,7 +44,7 @@ from tools.performance.runner import (
 )
 
 
-MICRO = ScaleDefinition("micro", 1, 2, 2, 4, 8, 2, 2)
+MICRO = ScaleDefinition("micro", 1, 2, 2, 4, 8, 2)
 FORBIDDEN_KEY = re.compile(
     r"(?:^|_)(?:path|url|sql|body|content|student_name|question_text|request_id|"
     r"hostname|username|environment|command|raw_samples?)(?:$|_)",
@@ -256,9 +256,9 @@ def test_amended_cli_defaults_use_ten_percent_two_sample_workload() -> None:
     scaled = tuple(cli_module._scaled_scale(scale, args.data_scale_factor) for scale in cli_module.SCALES)
     assert tuple(scale.name for scale in scaled) == ("small", "medium", "large_5pct")
     assert tuple(scale.counts for scale in scaled) == (
-        (1, 3, 1, 30, 20, 1, 1),
-        (1, 20, 2, 2_000, 200, 10, 5),
-        (1, 2, 1, 750, 50, 2, 1),
+        (1, 3, 1, 30, 20, 1),
+        (1, 20, 2, 2_000, 200, 5),
+        (1, 2, 1, 750, 50, 1),
     )
 
 
@@ -268,9 +268,7 @@ def test_legacy_mode_is_benchmark_only_wiring_to_production_legacy_dependencies(
     import tools.performance.runner as runner_module
     from backend.api.dependencies import (
         get_diagnosis_profile_service,
-        get_practice_plan_service,
         get_request_diagnosis_profile_service,
-        get_request_practice_plan_service,
     )
     from backend.performance.metrics import InMemoryPerformanceSink
 
@@ -284,10 +282,6 @@ def test_legacy_mode_is_benchmark_only_wiring_to_production_legacy_dependencies(
     assert (
         app.dependency_overrides[get_request_diagnosis_profile_service]
         is app.dependency_overrides[get_diagnosis_profile_service]
-    )
-    assert (
-        app.dependency_overrides[get_request_practice_plan_service]
-        is app.dependency_overrides[get_practice_plan_service]
     )
     assert "legacy_per_call" not in inspect.getsource(
         __import__("backend.api.dependencies", fromlist=["*"])
@@ -315,7 +309,7 @@ def test_legacy_mode_uses_generated_paths_before_testclient_lifespan(
         warmups=1,
         samples=1,
         repetitions=2,
-        scenario_names=("training.diagnosis", "training.plan.preview"),
+        scenario_names=("training.diagnosis", "graph.evidence"),
         connection_mode="legacy_per_call",
     )
 
@@ -381,7 +375,7 @@ def test_report_uses_same_dataset_legacy_measurements_not_p1_26_numbers(
     target = next(
         item
         for item in payload["comparisons"]
-        if item["repetition"] == 1 and item["scenario"] == "training.plan.preview"
+        if item["repetition"] == 1 and item["scenario"] == "graph.evidence"
     )
     assert target["latency_p50_ms"]["before"] == 100.0
     assert target["db_statements"]["before"] == 100.0

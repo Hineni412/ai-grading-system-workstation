@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -36,6 +37,8 @@ from backend.jobs.manager import (
 from backend.jobs.store import JobRecord
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.compat import open_grading_repositories
+
+LOGGER = logging.getLogger(__name__)
 
 CLASS_ANALYSIS_JOB_TYPE = "class_analysis_generate"
 CLASS_ANALYSIS_STATE_DIRNAME = ".class_analysis"
@@ -275,7 +278,7 @@ def known_cause_patterns(
     for parent, ctx in bank_context.items():
         for bank_id in ctx["bank_ids"]:
             for row in confirmed.get(bank_id) or []:
-                collect(parent, row.get("pattern"), row.get("category"), "题库已确认")
+                collect(parent, row.get("pattern"), row.get("category"), "题库已有")
     for parent, links in _linked_question_sources(question_bank_db_path, session_id).items():
         for other_sid, other_parent in links:
             other = store.load(other_sid)
@@ -488,27 +491,17 @@ def apply_cause_results(
 
     v3 结果按输入指纹判定新鲜；v2 旧结果在证据一致时仍展示（无错误大类，
     标记 causes_outdated 等待重新整理）；v1 文本归并走原 legacy 路径。
-    传入 session_id + 题库路径时，额外标注每题题库关联与“已入库”错法。
+    传入 session_id + 题库路径时，额外标注每题题库关联。
     """
     from analysis_report_exporter import _parent_question_id
-    from backend.error_patterns import bank_confirmed_triggers, session_bank_context
+    from backend.error_causes import CAUSE_CATEGORIES
+    from backend.error_patterns import session_bank_context
 
     stored = ((state or {}).get("cause_analysis") or {}).get("questions") or {}
     bank_map: dict[str, int] = {}
-    confirmed_names: dict[str, set[str]] = {}
     if session_id is not None and question_bank_path is not None:
         bank_context = session_bank_context(question_bank_path, int(session_id))
         bank_map = {parent: int(ctx["bank_id"]) for parent, ctx in bank_context.items()}
-        confirmed_rows = bank_confirmed_triggers(
-            question_bank_path,
-            sorted({bid for ctx in bank_context.values() for bid in ctx["bank_ids"]}),
-        )
-        for parent, ctx in bank_context.items():
-            names = confirmed_names.setdefault(parent, set())
-            for bank_id in ctx["bank_ids"]:
-                for row in confirmed_rows.get(int(bank_id)) or []:
-                    if row.get("pattern"):
-                        names.add(str(row["pattern"]))
     sources = {source["question_id"]: source for source in all_inputs}
     ready, failed, legacy_count, outdated_count, stale = 0, 0, 0, 0, False
     times, origins = [], set()
@@ -586,10 +579,25 @@ def apply_cause_results(
                     cause["step_id"] = group["step_id"]
                 if group.get("pattern_status"):
                     cause["pattern_status"] = group["pattern_status"]
-                parent = _parent_question_id(question_id)
-                cause["bank_confirmed"] = cause["reason"] in confirmed_names.get(parent, set())
+                cause["teacher_edited"] = bool(group.get("teacher_edited"))
                 causes.append(cause)
         question["causes"] = sorted(causes, key=lambda item: -item["count"])
+        category_members: dict[str, set[int]] = {}
+        for cause in question["causes"]:
+            category = str(cause.get("category") or "")
+            if not category:
+                continue
+            bucket = category_members.setdefault(category, set())
+            for item in cause["evidence"]:
+                bucket.update(item.get("student_ids") or [])
+        category_order = {name: index for index, name in enumerate(CAUSE_CATEGORIES)}
+        question["cause_category_counts"] = [
+            {"category": category, "count": len(members)}
+            for category, members in sorted(
+                category_members.items(),
+                key=lambda kv: (-len(kv[1]), category_order.get(kv[0], len(category_order)), kv[0]),
+            )
+        ]
         question["bank_question_id"] = bank_map.get(_parent_question_id(question_id))
         question["cause_review"] = {
             "positive": details(saved["result"]["positive_ids"]),
@@ -687,6 +695,11 @@ def plan_cause_question(
                 key: dict(value) for key, value in entry["analysis"].items()
                 if isinstance(value, dict)
             }
+            # 教师在题库改过的错法覆盖会话内保存的诊断结果（仅 teacher_edit 来源）。
+            edited = merge_bank_triggers_into_patterns(
+                _bank_pattern_rows(ctx, confirmed_by_bank), trigger_kind="option",
+                sources={"teacher_edit", "teacher_confirm"})
+            option["patterns"].update(edited)
             return {"path": "option", "needs_call": False, "option": option}
         if entry and entry.get("failed") and not retry_failed:
             return {"path": "skip", "needs_call": False, "option": option}
@@ -819,6 +832,7 @@ def run_cause_analysis(
         CHOICE_TYPES, FILL_TYPES, OPTION_ANALYSIS_VOLUMES,
         additions_from_v3_result, bank_confirmed_triggers,
         record_answer_patterns, session_bank_context,
+        sync_session_patterns_to_bank,
     )
 
     session_id = int(context.payload["session_id"])
@@ -924,7 +938,15 @@ def run_cause_analysis(
                 **saved, "failed": True, "failed_input_fingerprint": fingerprint,
             }
             store.save(session_id, cause_analysis={"questions": old})
+    # P5：整理产出自动回挂题库；回挂失败只记日志，不影响本场整理结果。
+    try:
+        written = sync_session_patterns_to_bank(
+            store, session_id, question_bank_path, bank_context)
+    except Exception:
+        LOGGER.warning("sync session %s patterns to bank failed", session_id, exc_info=True)
+        written = 0
     return {"session_id": session_id, "kind": "causes", "failed_questions": failed,
+            "bank_patterns_written": written,
             "status": "failed" if failed else "ready"}
 
 
@@ -973,6 +995,182 @@ def collect_student_error_index(store: Any, session_ids: Iterable[int]) -> dict[
                 if pattern:
                     entry["patterns"].setdefault(str(pattern), set()).add(int(sid))
     return index
+
+
+def session_error_records(
+    db: Any, session_id: int, reports_dir: Path,
+    *, data_root: Path | None = None,
+) -> dict[int, dict[str, list[dict[str, Any]]]]:
+    """本场全部学生的物化错因记录 {student_id: {question_id: [记录]}}。
+
+    证据指纹必须基于整场数据构建（按班级子集装配会让全部指纹失配）；
+    无状态文件或任何异常一律按无记录返回，报告与导出不受影响。
+    """
+    try:
+        state = ClassAnalysisStateStore(Path(reports_dir)).load(int(session_id))
+        if not state:
+            return {}
+        data = assemble_cause_data(db, int(session_id), data_root=data_root)
+        sources = build_cause_inputs(data)
+        out: dict[int, dict[str, list[dict[str, Any]]]] = {}
+        for student in data.students:
+            mapped = student_error_map(state, student, sources)
+            if mapped:
+                out[int(student.student_id)] = mapped
+        return out
+    except Exception:
+        LOGGER.warning("load session %s error records failed", session_id, exc_info=True)
+        return {}
+
+
+def question_category_counts(
+    records_by_student: dict[int, dict[str, list[dict[str, Any]]]],
+    student_ids: Iterable[int] | None = None,
+) -> dict[str, list[tuple[str, int]]]:
+    """{question_id: [(大类, 学生数)]}：每大类按去重学生数统计，降序。"""
+    from backend.error_causes import CAUSE_CATEGORIES
+
+    allowed = {int(sid) for sid in student_ids} if student_ids is not None else None
+    per_question: dict[str, dict[str, set[int]]] = {}
+    for sid, by_question in (records_by_student or {}).items():
+        try:
+            student_id = int(sid)
+        except (TypeError, ValueError):
+            continue
+        if allowed is not None and student_id not in allowed:
+            continue
+        for qid, rows in (by_question or {}).items():
+            buckets = per_question.setdefault(str(qid), {})
+            for row in rows or []:
+                category = str(row.get("category") or "").strip()
+                if category:
+                    buckets.setdefault(category, set()).add(student_id)
+    order = {name: index for index, name in enumerate(CAUSE_CATEGORIES)}
+    return {
+        qid: sorted(
+            ((category, len(members)) for category, members in buckets.items()),
+            key=lambda item: (-item[1], order.get(item[0], len(order)), item[0]),
+        )
+        for qid, buckets in per_question.items()
+    }
+
+
+class CausePatternEditError(Exception):
+    """错法修改失败；code 供 API 层映射为 409/422。"""
+
+    def __init__(self, code: str, message: str, status: int = 409) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+
+def edit_cause_pattern(
+    store: Any, session_id: int, *,
+    question_id: str, kind: str, reason: str, new_reason: str,
+    category: str | None,
+    question_bank_path: Path | None = None,
+    bank_context: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """教师修改错法名称/大类（可选操作，非必经步骤）。
+
+    已关联题库时先把本场整理结果自动回挂（保证旧名行存在），再把该题
+    判重家族里同名 confirmed 行标记 merged、以 ``teacher_edit`` 来源写入
+    新名；未关联时仅改会话状态。会话内同步更新错因分组、物化错因记录、
+    选项诊断与填空候选库中的同名条目，并标记 ``teacher_edited``。
+    """
+    from analysis_report_exporter import _parent_question_id
+    from backend.error_causes import CAUSE_KIND_CATEGORIES, normalize_cause_category
+    from backend.error_patterns import (
+        answer_pattern_map, option_analysis_entries, sync_session_patterns_to_bank,
+    )
+    from question_bank.services.error_pattern_service import rename_patterns
+
+    question_id = str(question_id)
+    kind = str(kind or "").strip()
+    reason = str(reason or "").strip()
+    new_reason = str(new_reason or "").strip()
+    if not new_reason:
+        raise CausePatternEditError(
+            "cause_pattern_name_blank", "错法名称不能为空", status=422)
+    state = store.load(session_id) or {}
+    questions = dict(((state.get("cause_analysis") or {}).get("questions")) or {})
+    saved = questions.get(question_id) or {}
+    if saved.get("version") != CAUSE_ANALYSIS_VERSION or not isinstance(saved.get("result"), dict):
+        raise CausePatternEditError(
+            "cause_pattern_not_ready", "该题尚未完成新版错因整理，不能修改错法")
+    group = next(
+        (item for item in saved["result"].get("groups") or []
+         if isinstance(item, dict)
+         and str(item.get("reason") or "").strip() == reason
+         and str(item.get("kind") or "") == kind),
+        None,
+    )
+    if group is None:
+        raise CausePatternEditError(
+            "cause_pattern_group_missing", "未找到对应的错因分组，请先重新整理错因")
+    if kind not in ("error", "process"):
+        raise CausePatternEditError(
+            "cause_pattern_category_invalid", "仅错误与过程类分组支持修改", status=422)
+    category = normalize_cause_category(category)
+    if category is None or category not in CAUSE_KIND_CATEGORIES[kind]:
+        raise CausePatternEditError(
+            "cause_pattern_category_invalid", "错误大类与分组类型不匹配", status=422)
+
+    parent = _parent_question_id(question_id)
+    ctx = (bank_context or {}).get(parent) or {}
+    if question_bank_path is not None and ctx.get("bank_ids"):
+        sync_session_patterns_to_bank(store, session_id, question_bank_path, bank_context)
+        rename_patterns(
+            question_bank_path, question_ids=ctx["bank_ids"],
+            old_pattern=reason, new_pattern=new_reason, category=category)
+
+    group["reason"] = new_reason
+    group["category"] = category
+    group["teacher_edited"] = True
+    store_fields: dict[str, Any] = {"cause_analysis": {"questions": questions}}
+
+    records_state = dict(state.get("error_records") or {})
+    envelope = records_state.get(question_id)
+    if isinstance(envelope, dict) and isinstance(envelope.get("records"), list):
+        for row in envelope["records"]:
+            if str(row.get("pattern") or "").strip() == reason:
+                row["pattern"] = new_reason
+                row["category"] = category
+        store_fields["error_records"] = records_state
+
+    option_entries = dict(option_analysis_entries(state))
+    touched_option = False
+    for qid, entry in option_entries.items():
+        if _parent_question_id(str(qid)) != parent or not isinstance(entry, dict):
+            continue
+        analysis = entry.get("analysis")
+        if not isinstance(analysis, dict):
+            continue
+        for item in analysis.values():
+            if isinstance(item, dict) and str(item.get("pattern") or "").strip() == reason:
+                item["pattern"] = new_reason
+                item["category"] = category
+                touched_option = True
+    if touched_option:
+        store_fields["option_analysis"] = option_entries
+
+    library = {key: dict(value) for key, value in answer_pattern_map(state).items()}
+    bucket = library.get(parent)
+    touched_answers = False
+    if isinstance(bucket, dict):
+        for answer, item in bucket.items():
+            if str(answer).startswith("_") or not isinstance(item, dict):
+                continue
+            if str(item.get("pattern") or "").strip() == reason[:40]:
+                item["pattern"] = new_reason[:40]
+                item["category"] = category
+                touched_answers = True
+    if touched_answers:
+        store_fields["answer_patterns"] = library
+
+    store.save(session_id, **store_fields)
+    return {"ok": True, "question_id": question_id, "reason": new_reason,
+            "category": category, "bank_linked": bool(ctx.get("bank_ids"))}
 
 
 def class_question_preview(

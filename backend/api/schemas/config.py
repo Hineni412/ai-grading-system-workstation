@@ -61,6 +61,7 @@ class ConfigRichBlockResponse(BaseModel):
     text: str = Field(max_length=500_000)
     segments: list[ConfigRichInlineSegmentResponse] = Field(max_length=5_000)
     rows: list[ConfigRichTableRowResponse] = Field(max_length=500)
+    html: str = Field(default="", max_length=500_000)
     asset_indexes: list[int] = Field(max_length=5_000)
     asset_urls: list[str] = Field(max_length=5_000)
 

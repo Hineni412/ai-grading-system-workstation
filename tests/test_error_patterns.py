@@ -36,10 +36,13 @@ def _make_bank_db(path: Path) -> sqlite3.Connection:
         """
         CREATE TABLE questions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id INTEGER,
+            is_deleted INTEGER DEFAULT 0,
             question_text TEXT,
             answer_text TEXT,
             question_type TEXT
         );
+        CREATE TABLE papers (id INTEGER PRIMARY KEY, import_status TEXT);
         CREATE TABLE grading_question_links (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             grading_session_id TEXT NOT NULL,
@@ -49,7 +52,8 @@ def _make_bank_db(path: Path) -> sqlite3.Connection:
         );
         CREATE TABLE question_duplicate_links (
             question_id INTEGER NOT NULL,
-            duplicate_of_question_id INTEGER NOT NULL
+            duplicate_of_question_id INTEGER NOT NULL,
+            match_kind TEXT DEFAULT 'exact'
         );
         CREATE TABLE question_tags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +69,7 @@ def _make_bank_db(path: Path) -> sqlite3.Connection:
     )
     conn.execute(
         "INSERT INTO questions (id, question_text, answer_text, question_type)"
-        " VALUES (202, '计算：sqrt8 化简为 A. 4 B. 2sqrt2 C. sqrt4 D. 2', '【答案】B', '选择题')"
+        " VALUES (202, '下列各数中是无理数的是 A. 3.14 B. sqrt2 C. 0.5 D. 22/7', '【答案】B', '选择题')"
     )
     conn.execute(
         "INSERT INTO grading_question_links (grading_session_id, source_question_id, bank_question_id, status)"
@@ -237,46 +241,166 @@ def test_option_analysis_reuse_across_sessions(tmp_path):
     assert find_option_analysis(store, 7, "Q3", "fp-other", linked) is None
 
 
-def test_confirm_pattern_idempotent_and_occurrences(tmp_path):
-    from question_bank.database.schema import initialize_database
-    from question_bank.services.error_pattern_service import (
-        confirm_pattern, list_patterns, reject_pattern,
-    )
+def _seed_pattern_question(qb_path: Path) -> int:
+    from question_bank.database.schema import connect, initialize_database
 
-    qb_path = tmp_path / "databases" / "question_bank.db"
     initialize_database(qb_path)
-    from question_bank.database.schema import connect
-
     with connect(qb_path) as conn:
         conn.execute(
             "INSERT INTO questions (question_number, question_text, answer_text, question_type)"
             " VALUES ('3', '题干', '【答案】B', '选择题')"
         )
-        question_id = int(conn.execute("SELECT id FROM questions").fetchone()[0])
-    occurrence = {"session_id": 7, "question_id": "Q3", "kind": "error"}
-    first = confirm_pattern(
-        qb_path, question_id=question_id, category="概念理解",
-        pattern="混淆平方根与算术平方根", explanation="取错根",
-        trigger_kind="option", trigger_value="C",
-        source="teacher_confirm", occurrence=occurrence,
-        confirm_token="tok-1", confirmed_by="local_teacher",
+        return int(conn.execute("SELECT id FROM questions").fetchone()[0])
+
+
+def test_record_auto_patterns_insert_rerun_and_occurrence(tmp_path):
+    from question_bank.database.schema import connect
+    from question_bank.services.error_pattern_service import (
+        list_patterns, record_auto_patterns,
     )
-    second = confirm_pattern(
-        qb_path, question_id=question_id, category="概念理解",
-        pattern="混淆平方根与算术平方根", explanation="取错根",
-        trigger_kind="option", trigger_value="C",
-        source="teacher_confirm", occurrence={**occurrence, "session_id": 9},
-        confirm_token="tok-2", confirmed_by="local_teacher",
-    )
-    assert second["id"] == first["id"]                      # 幂等：不重复建行
-    assert len(second["occurrences"]) == 2                  # 来源快照追加
+
+    qb_path = tmp_path / "databases" / "question_bank.db"
+    question_id = _seed_pattern_question(qb_path)
+    occurrence = {"session_id": 7, "question_id": "Q3"}
+    rows = [{
+        "question_id": question_id, "category": "概念理解",
+        "pattern": "混淆平方根与算术平方根", "explanation": "取错根",
+        "trigger_kind": "option", "trigger_value": "C",
+        "source": "ai_auto", "occurrence": occurrence,
+    }]
+    assert record_auto_patterns(qb_path, rows) == 1
+    # 重跑同一快照：不新增、不重复追加 occurrence。
+    assert record_auto_patterns(qb_path, rows) == 0
+    # 新场次的出现快照追加到同一行。
+    assert record_auto_patterns(qb_path, [
+        {**rows[0], "occurrence": {"session_id": 9, "question_id": "Q1"}},
+    ]) == 0
     with connect(qb_path) as conn:
-        listed = list_patterns(conn, [question_id])
-    assert len(listed[question_id]) == 1
-    assert listed[question_id][0]["status"] == "confirmed"
-    assert reject_pattern(qb_path, pattern_id=first["id"]) is True
+        listed = list_patterns(conn, [question_id])[question_id]
+    assert len(listed) == 1
+    assert listed[0]["source"] == "ai_auto"
+    assert listed[0]["status"] == "confirmed"
+    assert len(listed[0]["occurrences"]) == 2
+
+
+def test_record_auto_patterns_existing_trigger_and_inactive_rows(tmp_path):
+    from question_bank.database.schema import connect
+    from question_bank.services.error_pattern_service import (
+        list_patterns, record_auto_patterns, reject_pattern,
+    )
+
+    qb_path = tmp_path / "databases" / "question_bank.db"
+    question_id = _seed_pattern_question(qb_path)
+    base = {
+        "question_id": question_id, "category": "概念理解",
+        "pattern": "旧名错法", "explanation": "",
+        "trigger_kind": "option", "trigger_value": "C",
+        "source": "ai_auto", "occurrence": {"session_id": 7, "question_id": "Q3"},
+    }
+    assert record_auto_patterns(qb_path, [base]) == 1
+    # 同触发值已存在不同错法名（如教师改过名）：不再插行，只补出现快照。
+    assert record_auto_patterns(qb_path, [{**base, "pattern": "另一个名字",
+        "occurrence": {"session_id": 8, "question_id": "Q3"}}]) == 0
+    with connect(qb_path) as conn:
+        listed = list_patterns(conn, [question_id])[question_id]
+    assert len(listed) == 1 and listed[0]["pattern"] == "旧名错法"
+    assert len(listed[0]["occurrences"]) == 2  # 新快照已追加
+
+    # rejected 行不复活：同触发同名的 rejected 行只追加快照，不产生新 confirmed 行。
+    assert reject_pattern(qb_path, pattern_id=listed[0]["id"]) is True
+    assert record_auto_patterns(qb_path, [
+        {**base, "occurrence": {"session_id": 9, "question_id": "Q3"}},
+    ]) == 0
     with connect(qb_path) as conn:
         assert list_patterns(conn, [question_id])[question_id] == []
+        row = conn.execute(
+            "SELECT status, occurrences_json FROM question_error_patterns"
+        ).fetchone()
+    assert row[0] == "rejected"
+    assert len(json.loads(row[1])) == 3  # 快照追加但状态不变
+
+
+def test_record_auto_patterns_missing_table_returns_zero(tmp_path):
+    from question_bank.database.schema import connect, initialize_database
+    from question_bank.services.error_pattern_service import record_auto_patterns
+
+    qb_path = tmp_path / "databases" / "question_bank.db"
+    initialize_database(qb_path)
+    with connect(qb_path) as conn:
+        conn.execute("DROP TABLE question_error_patterns")
+    assert record_auto_patterns(qb_path, [{
+        "question_id": 1, "pattern": "任何错法", "trigger_kind": "observation",
+        "trigger_value": "", "source": "ai_auto", "occurrence": None,
+    }]) == 0
+
+
+def test_rename_patterns_merges_old_and_writes_teacher_edit(tmp_path):
+    from question_bank.database.schema import connect
+    from question_bank.services.error_pattern_service import (
+        list_patterns, record_auto_patterns, rename_patterns,
+    )
+
+    qb_path = tmp_path / "databases" / "question_bank.db"
+    question_id = _seed_pattern_question(qb_path)
+    record_auto_patterns(qb_path, [{
+        "question_id": question_id, "category": "概念理解",
+        "pattern": "混淆平方根与算术平方根", "explanation": "取错根",
+        "trigger_kind": "option", "trigger_value": "C",
+        "source": "ai_auto", "occurrence": {"session_id": 7, "question_id": "Q3"},
+    }])
+    # 改名：旧行 merged，新名以 teacher_edit 生效，触发条件保留。
+    assert rename_patterns(
+        qb_path, question_ids=[question_id],
+        old_pattern="混淆平方根与算术平方根", new_pattern="误认梯形为轴对称",
+        category="审题与条件",
+    ) == 1
+    with connect(qb_path) as conn:
+        listed = list_patterns(conn, [question_id])[question_id]
+        all_rows = conn.execute(
+            "SELECT pattern, status, source, trigger_kind, trigger_value, category"
+            " FROM question_error_patterns ORDER BY id"
+        ).fetchall()
+    assert len(all_rows) == 2
+    assert all_rows[0][1] == "merged"
+    assert tuple(all_rows[1]) == (
+        "误认梯形为轴对称", "confirmed", "teacher_edit", "option", "C", "审题与条件")
+    assert len(listed) == 1 and listed[0]["pattern"] == "误认梯形为轴对称"
+
+    # 只改大类：原行就地更新，不新建行。
+    assert rename_patterns(
+        qb_path, question_ids=[question_id],
+        old_pattern="误认梯形为轴对称", new_pattern="误认梯形为轴对称",
+        category="概念理解",
+    ) == 1
+    with connect(qb_path) as conn:
+        listed = list_patterns(conn, [question_id])[question_id]
+        total = conn.execute("SELECT COUNT(*) FROM question_error_patterns").fetchone()[0]
+    assert total == 2
+    assert listed[0]["category"] == "概念理解"
+    assert listed[0]["source"] == "teacher_edit"
+
+
+def test_merge_bank_triggers_sources_filter():
+    from backend.error_patterns import merge_bank_triggers_into_patterns
+
+    rows = [
+        {"trigger_kind": "option", "trigger_value": "C", "pattern": "AI错法",
+         "category": "概念理解", "source": "ai_auto", "status": "confirmed"},
+        {"trigger_kind": "option", "trigger_value": "C", "pattern": "教师改名",
+         "category": "审题与条件", "source": "teacher_edit", "status": "confirmed"},
+        {"trigger_kind": "option", "trigger_value": "D", "pattern": "旧确认",
+         "category": "概念理解", "source": "teacher_confirm", "status": "confirmed"},
+    ]
+    merged = merge_bank_triggers_into_patterns(rows, trigger_kind="option")
+    assert merged["C"]["pattern"] == "AI错法"          # 不过滤时首个生效
+    assert merged["D"]["pattern"] == "旧确认"
+    edited = merge_bank_triggers_into_patterns(
+        rows, trigger_kind="option", sources={"teacher_edit", "teacher_confirm"})
+    assert edited["C"]["pattern"] == "教师改名"         # 教师修改优先覆盖
+    assert edited["D"]["pattern"] == "旧确认"
+    assert merge_bank_triggers_into_patterns(
+        rows, trigger_kind="option", sources={"teacher_edit"}
+    ) == {"C": edited["C"]}
 
 
 def test_list_patterns_legacy_tag_conversion(tmp_path):
@@ -371,55 +495,3 @@ def test_plan_cause_question_scope_and_paths(tmp_path):
     )
     assert covered["path"] == "fill_covered" and covered["needs_call"] is False
     assert covered["payload"]["groups"][0]["reason"] == "漏写负根"
-
-
-def test_recommendation_error_dimensions(tmp_path):
-    """薄弱点新错因字段进入匹配维度；题库确认错法与旧标签都参与候选匹配。"""
-    from question_bank.database.schema import connect, initialize_database
-    from question_bank.recommendation.practice_plan_service import (
-        _merge_error_pattern_tags,
-        _question_tag_targets,
-    )
-    from question_bank.services.error_pattern_service import confirm_pattern
-
-    profile = {
-        "students": [{
-            "student_id": "1",
-            "weak_points": [{
-                "knowledge_point": "平方根",
-                "error_categories": ["概念理解"],
-                "error_patterns": ["漏写负根"],
-                "error_types": ["运算化简错误", "未登记旧词"],
-                "tag_context": {"sub_skill": ["估算"]},
-            }],
-        }],
-    }
-    targets = _question_tag_targets(profile)
-    ctx = targets["平方根"]
-    assert ctx["error_pattern"] == {"漏写负根", "未登记旧词"}
-    assert ctx["error_category"] == {"概念理解", "计算与化简"}  # 旧词换算
-    assert ctx["sub_skill"] == {"估算"}
-
-    qb_path = tmp_path / "qb.db"
-    initialize_database(qb_path)
-    with connect(qb_path) as conn:
-        conn.execute(
-            "INSERT INTO questions (question_number, question_text) VALUES ('1', '题干')")
-        qid = int(conn.execute("SELECT id FROM questions").fetchone()[0])
-        conn.execute(
-            "INSERT INTO question_tags (question_id, tag_type, tag_value)"
-            " VALUES (?, 'error_type', '概念理解不清')",
-            (qid,),
-        )
-    confirm_pattern(
-        qb_path, question_id=qid, category="审题与条件",
-        pattern="漏写负根", trigger_kind="wrong_answer", trigger_value="8",
-        source="teacher_confirm",
-    )
-    tags = {qid: {"error_type": ["概念理解不清"]}}
-    with connect(qb_path) as conn:
-        _merge_error_pattern_tags(conn, tags)
-    merged = tags[qid]
-    assert "漏写负根" in merged["error_pattern"]              # 确认错法
-    assert "审题与条件" in merged["error_category"]
-    assert "概念理解" in merged["error_category"]             # 旧标签换算

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 
 # 题干开头的分值标记，如“（12分）”。高分值是解答题的可靠信号。
@@ -75,6 +76,86 @@ QUESTION_TYPES = (
 # 解答题子类标签的封闭取值（special_type 标签维度）。
 ESSAY_SUBTYPES = ("画图", "计算", "证明")
 
+# None means this is not a section; an empty string is an unknown section
+# that must clear the preceding section's hint.
+_SECTION_PREFIX = re.compile(
+    r"^(?:#{1,6}\s*)?(?:[一二三四五六七八九十百]+\s*[、.．:：]\s*"
+    r"|第[一二三四五六七八九十百\d]+\s*(?:部分|篇|节)\s*[、.．:：]?\s*)"
+)
+_SECTION_NAMES = (
+    (r"多项选择|多选|双选", "multi_choice"),
+    (r"单项选择|单选|选择|选一选", "choice"),
+    (r"填空|填一填", "fill_blank"),
+    (r"证明|证一证", "proof"),
+    (r"计算|算一算", "calculation"),
+    (r"解答|简答|综合|作图|画一画|实践|探究", "comprehensive"),
+)
+
+
+def question_section_type(value: object) -> str | None:
+    """Recognize a heading without mistaking a numbered question for one."""
+    text = html.unescape(re.sub(r"<[^>]+>", "", str(value or ""))).strip()
+    text = re.sub(r"\[\[IMAGE:.*?\]\]", "", text).strip()
+    match = _SECTION_PREFIX.match(text)
+    if match:
+        name = text[match.end():]
+    else:
+        numeric = re.match(r"^\d+\s*[、.．]\s*", text)
+        if numeric is None or not any(re.fullmatch("(?:" + pattern + r")题\s*(?:[（(][^（）()]{0,50}[）)])?\s*[:：]?", text[numeric.end():]) for pattern, _ in _SECTION_NAMES):
+            return None
+        name = text[numeric.end():]
+    if len(text) > 100 or "\n" in text:
+        return None
+    for pattern, kind in _SECTION_NAMES:
+        if re.match(pattern, name):
+            return kind
+    return ""
+
+
+def explicit_choice_labels(value: object) -> set[str]:
+    text = html.unescape(re.sub(r"<[^>]+>", " ", str(value or "")))
+    text = text.translate({n: n - 0xFEE0 for n in range(0xFF01, 0xFF5F)})
+    return {
+        match.group(1).upper()
+        for match in re.finditer(r"(?:^|[\s,，;；(【])([A-Da-d])\s*(?:[.、:)]|\s{2,})", text)
+    }
+
+
+def _stem_without_data_tables(value: str) -> str:
+    def replace_table(match: re.Match[str]) -> str:
+        table = match.group(0)
+        if len(re.findall(r"<tr\b", table, re.I)) >= 2 or len(re.findall(r"<(?:td|th)\b", table, re.I)) >= 3:
+            return " "
+        return table
+    return re.sub(r"<table\b[^>]*>.*?</table>", replace_table, value, flags=re.I | re.S)
+
+
+class RepeatedQuestionNumberError(ValueError):
+    """Section numbering cannot be mapped to a unique question/answer pair."""
+
+
+def validate_section_numbering(text: object) -> None:
+    """Reject repeated main numbers across sections before a mapper loses them."""
+    seen: dict[int, int] = {}
+    section = 0
+    first_in_section = False
+    highest_number = 0
+    for line in str(text or "").splitlines():
+        value = html.unescape(re.sub(r"<[^>]+>", "", line)).strip()
+        if question_section_type(value) is not None:
+            section += 1
+            first_in_section = True
+            continue
+        match = re.match(r"^(?:\[\[IMAGE:.*?\]\]\s*)*(\d{1,3})\s*[.．、](?!\d)", value)
+        if match:
+            number = int(match.group(1))
+            if first_in_section and number in seen and seen[number] != section:
+                raise RepeatedQuestionNumberError("试卷各分节重复使用大题编号，无法可靠对应答案。请将整卷大题改为连续编号后重新上传。")
+            if first_in_section or number > highest_number:
+                seen.setdefault(number, section)
+                highest_number = max(highest_number, number)
+            first_in_section = False
+
 # 兼容输入：归一前的旧六值子类题型 → （归一大类，子类标签值）。
 _ESSAY_SUBTYPE_BY_LEGACY_TYPE = {
     "解答题（画图）": "画图",
@@ -143,7 +224,7 @@ def _looks_like_full_solution(text: str) -> bool:
     return {"1", "2"} <= marks
 
 
-def detect_question_type(question_text: str, current_type: str | None = None) -> str:
+def detect_question_type(question_text: str, current_type: str | None = None, *, section_type: str | None = None) -> str:
     """
     Robust junior high school math question type detector.
     Classifies a question into exactly one of:
@@ -154,34 +235,20 @@ def detect_question_type(question_text: str, current_type: str | None = None) ->
     """
     # 0. If current type is already specified and is highly granular, keep it!
     val = str(current_type or "").strip()
-    if val in QUESTION_TYPES and val != "解答题":
+    if val in QUESTION_TYPES:
         return val
     # 兼容输入：归一前的旧子类题型按大类"解答题"保留，子类由标签表达。
     if val in _ESSAY_SUBTYPE_BY_LEGACY_TYPE:
         return "解答题"
 
+    hinted = question_type_from_rubric(section_type)
+    if hinted:
+        return hinted
     text = str(question_text or "")
 
     # 1. Check choice questions (选择题 / 多选题)
     # Check for option prefixes (e.g., A. B. C. D. or A、 B、 C、 D、 or (A) (B) (C) (D))
-    found_options = set()
-    for opt in ("A", "B", "C", "D"):
-        # Match option character:
-        # - Vertex or label check: must be preceded by start of line, space, or punctuation,
-        #   and followed by a dot (., ．), backslash/comma (、), parenthesis, or at least two spaces.
-        if re.search(rf"(?:^|[\s\u3000,\(\)（）【】])(?:{opt})(?:[\.．、\)]|）|\s{{2,}})", text):
-            found_options.add(opt)
-
-    is_choice = len(found_options) >= 3
-
-    if not is_choice:
-        # Fallback to simple matching if option patterns are very standard
-        has_a = any(x in text for x in ("A．", "A.", "A、", "(A)", "（A）"))
-        has_b = any(x in text for x in ("B．", "B.", "B、", "(B)", "（B）"))
-        has_c = any(x in text for x in ("C．", "C.", "C、", "(C)", "（C）"))
-        has_d = any(x in text for x in ("D．", "D.", "D、", "(D)", "（D）"))
-        if sum([has_a, has_b, has_c, has_d]) >= 3:
-            is_choice = True
+    is_choice = len(explicit_choice_labels(text)) >= 3
 
     if is_choice:
         if "多选" in text or "双选" in text:
@@ -189,15 +256,19 @@ def detect_question_type(question_text: str, current_type: str | None = None) ->
         return "选择题"
 
     # 2. Check fill in the blank (填空题)
+    text = _stem_without_data_tables(text)
     is_blank = False
     # Match standard underscore blanks: e.g. ___ or ______
-    if re.search(r"_{2,}", text):
+    if re.search(r"_{2,}|＿+|﹏{2,}|<u\b[^>]*>.*?</u>", text, re.I | re.S):
         is_blank = True
-    # Match empty parentheses: e.g. (  ) or （  ） or （ ）
-    elif re.search(r"\(\s*\)", text) or re.search(r"（\s*[　\s]*\s*）", text):
+    # Match empty parentheses: e.g. (  ) or （  ） or （　）(full-width space)
+    elif re.search(r"[\(（]\s*[　\s]*\s*[\)）]", text):
+        is_blank = True
+    # 部分试卷用 ▲/△ 占位表示填空；△ABC 这类三角形记号不算。
+    elif re.search(r"[▲△](?![A-Za-z])", text):
         is_blank = True
     # Match keyword "填空" or Chinese full-width space "　"
-    elif "填空" in text or "　" in text:
+    elif "填空" in text or re.search(r"[\u00a0\u3000]{2,}", text):
         is_blank = True
 
     if is_blank:
@@ -211,12 +282,33 @@ def detect_question_type(question_text: str, current_type: str | None = None) ->
     return "解答题"
 
 
+def detect_grading_question_type(question_text: str, *, section_type: str | None = None) -> str:
+    """The exam enum is a projection of the same stem-only bank decision."""
+    kind = detect_question_type(question_text, section_type=section_type)
+    if kind in {"选择题", "多选题"}:
+        return "choice"
+    if kind == "填空题":
+        return "fill_blank"
+    if section_type == "calculation" and len(subq_mark_labels(question_text)) >= 2:
+        return "comprehensive"
+    if section_type in {"proof", "calculation"}:
+        return section_type
+    subtype = detect_essay_subtype(question_text)
+    if subtype == "证明":
+        return "proof"
+    if subtype == "计算" and len(subq_mark_labels(question_text)) < 2:
+        return "calculation"
+    return "comprehensive"
+
+
 # Grading-rubric (LLM) question types mapped onto the question-bank enum.
 # The rubric enum has no drawing/multi-choice granularity, so calculation,
 # proof and comprehensive all fall back to the generic 解答题；解答题子类
 # 由导入链路的 detect_essay_subtype 依据题干另行打标。
 _RUBRIC_QUESTION_TYPE_MAP = {
     "choice": "选择题",
+    "single_choice": "选择题",
+    "multi_choice": "多选题",
     "fill_blank": "填空题",
     "calculation": "解答题",
     "proof": "解答题",

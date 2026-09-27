@@ -103,7 +103,6 @@ def test_batch_gateway_retry_does_not_multiply_logical_request_events(
                     "math_model_tags": [],
                     "difficulty": 3,
                     "error_prone_points": ["符号错误"],
-                    "prerequisite_points": ["有理数运算"],
                     "textbook_chapter": "七年级下册 第一章 整式的乘除",
                     "teaching_stage": "期末复习",
                     "suitable_student_level": "基础巩固",

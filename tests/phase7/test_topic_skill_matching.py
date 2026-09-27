@@ -273,7 +273,11 @@ def test_table_links_without_difficulty_profiles_reach_filtered_pool_and_real_se
     assert {q['question_id'] for q in filtered} == {q['question_id'] for q in full} == {1, 2, 3, 4, 5, 7}
     facets = load_question_facets(module.db_path, module.current_knowledge)
     for candidate in filtered:
-        assert candidate['part_assessment'] is None
+        # 小问难度唯一来源是公式特征行：没有有效特征的题仍回退整题难度，
+        # part_assessment 可能存在但所有小问难度为 None。
+        assessment = candidate['part_assessment']
+        if assessment is not None:
+            assert all(part['difficulty'] is None for part in assessment['parts'])
         assert SKILL in candidate['stable_keys']
         assert candidate['target_facets'] == facets[candidate['question_id']]['parts']
         assert candidate['scope_complete']
@@ -380,7 +384,7 @@ def test_approved_criterion_does_not_borrow_tags_from_newer_profile(current_link
     def profiles(db_path, ids, **kwargs):
         result = original(db_path, ids, **kwargs)
         if 2 in ids:
-            result[2] = {'available': True, 'evidence_version_id': new_id, 'revision': 1,
+            result[2] = {'available': True, 'evidence_version_id': new_id, 'revision': 'a' * 16,
                          'evidence': deepcopy(evidence), 'parts': [{'part_id': 'part1', 'difficulty': 6}]}
         return result
     monkeypatch.setattr(part_assessments, 'load_profiles', profiles)

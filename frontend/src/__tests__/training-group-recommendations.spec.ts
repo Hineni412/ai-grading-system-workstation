@@ -43,7 +43,7 @@ function mount(overlap = false, editor: ChapterGroupEditor | null = { memberIds:
   app = createApp(TrainingGroupRecommendations, {
     diagnosis: data, scope: { mode: 'all' }, examScope: { mode: 'current', session_ids: [1] },
     settings: { scope_keys: ['chapter'], question_count: 10, expected_minutes: 40, difficulty_min: 2,
-      difficulty_max: 8, direct_ratio: .6, prerequisite_ratio: .3, transfer_ratio: .1,
+      difficulty_max: 8,
       exclude_current_exam_originals: true, curriculum_volume_id: '' },
     editor, adopted: null,
     arrangements: overlap ? [{ groupId: 'previous', memberIds: ['A'], targetKeys: ['target'], scopeKeys: ['chapter'], sourceVersion: 'old' }] : [],

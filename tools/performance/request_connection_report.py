@@ -13,13 +13,13 @@ from tools.performance.runner import NumericSummary, ScaleBenchmarkResult, Scena
 
 CONTROL_SCENARIO = "question_bank.questions.default"
 TARGET_SCENARIOS = (
+    "question_bank.questions.filtered",
     "training.diagnosis",
-    "training.plan.preview",
     "graph.evidence",
 )
 SCENARIO_NAMES = (CONTROL_SCENARIO, *TARGET_SCENARIOS)
 MEDIUM_LATENCY_SCENARIOS = (
-    "training.plan.preview",
+    "question_bank.questions.filtered",
     "graph.evidence",
 )
 
