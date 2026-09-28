@@ -26,6 +26,28 @@ def observation(index, difficulty, score, **assessment):
                            "part_id": "p1", "part_difficulty": difficulty, **assessment}}
 
 
+def test_saved_draft_and_export_source_check_use_the_preview_scope(direct_module, monkeypatch):
+    diagnosis = _direct_diagnosis()
+    config = PersonalizedRecommendationConfig(scope_keys=(BNU_CHAPTER4,), target_keys=(BNU_TARGET,),
+                                               curriculum_volume_id="bnu24-math-g7-lower")
+    preview = direct_module.evaluate_candidates(diagnosis=diagnosis, config=config)
+    expected = {sid: [e['candidate']['question_id'] for e, _ in _choose_practice_entries(entries, 10)]
+                for sid, entries in preview['pools'].items()}
+    calls = []
+    original = direct_module._source_snapshot
+    def scoped(**kwargs):
+        assert kwargs.get('knowledge_keys'), 'draft/export must not load the entire bank'
+        assert kwargs.get('candidate_config') == config
+        calls.append(kwargs['knowledge_keys'])
+        return original(**kwargs)
+    monkeypatch.setattr(direct_module, '_source_snapshot', scoped)
+    draft = direct_module.create(request_token='d'*32, diagnosis=diagnosis, config=config, actor_ref='test')
+    for student in draft['students']:
+        assert {i['question_id'] for i in student['items']} == set(expected[student['student_id']])
+    assert direct_module.ensure_current(draft['draft_id'])['draft_id'] == draft['draft_id']
+    assert len(calls) >= 2 and len(set(calls)) == 1
+
+
 def test_repeated_successes_survive_one_trap_and_duplicate_tags():
     refs = [observation(i, 6.5, 5) for i in range(1, 5)] + [observation(5, 3, 0)]
     plan = _difficulty_plan({}, .2, 8, {"source_question_refs": refs})
