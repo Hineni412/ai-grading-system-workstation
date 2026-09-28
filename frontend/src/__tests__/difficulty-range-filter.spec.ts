@@ -5,7 +5,7 @@ import DifficultyRangeFilter from '../components/question-bank/DifficultyRangeFi
 
 const apps: Array<ReturnType<typeof createApp>> = []
 
-function mountFilter(min = 1, max = 8) {
+function mountFilter(min = 1, max = 8, ceiling = 10) {
   const host = document.createElement('div')
   document.body.append(host)
   const updates: Array<[string, number]> = []
@@ -14,6 +14,7 @@ function mountFilter(min = 1, max = 8) {
       return () => h(DifficultyRangeFilter, {
         min,
         max,
+        ceiling,
         'onUpdate:min': (value: number) => updates.push(['min', value]),
         'onUpdate:max': (value: number) => updates.push(['max', value]),
       })
@@ -30,6 +31,17 @@ afterEach(() => {
 })
 
 describe('difficulty range filter', () => {
+  it('caps practice at eight while retaining the bank ten-level scale', async () => {
+    const bank = mountFilter(1, 8)
+    const practice = mountFilter(1, 7, 8)
+    const bankMax = bank.host.querySelectorAll<HTMLInputElement>('input[type="range"]')[1]!
+    const practiceMax = practice.host.querySelectorAll<HTMLInputElement>('input[type="range"]')[1]!
+    expect(bankMax.max).toBe('10')
+    expect(practiceMax.max).toBe('8')
+    practiceMax.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    await nextTick()
+    expect(practice.updates).toContainEqual(['max', 8])
+  })
 
   it('hands pointer priority to the opposite thumb after collapsing to one value', async () => {
     const { host } = mountFilter(8, 8)

@@ -75,6 +75,7 @@ class AssemblyDraft:
     layout_mode: str
     preview_mode: str
     revision: str
+    practice_rules: bool = False
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -87,6 +88,7 @@ class AssemblyDraft:
             "include_answer": self.include_answer,
             "layout_mode": self.layout_mode,
             "preview_mode": self.preview_mode,
+            **({"practice_rules": True} if self.practice_rules else {}),
         }
 
 
@@ -642,6 +644,8 @@ def _normalize_draft(payload: Mapping[str, object]) -> AssemblyDraft:
         "layout_mode": layout_mode,
         "preview_mode": preview_mode,
     }
+    if payload.get("practice_rules") and basket:
+        normalized_payload["practice_rules"] = True
     revision = _payload_revision(normalized_payload)
     return AssemblyDraft(
         basket_ids=tuple(basket),
@@ -653,6 +657,7 @@ def _normalize_draft(payload: Mapping[str, object]) -> AssemblyDraft:
         layout_mode=layout_mode,
         preview_mode=preview_mode,
         revision=revision,
+        practice_rules=bool(normalized_payload.get("practice_rules")),
     )
 
 

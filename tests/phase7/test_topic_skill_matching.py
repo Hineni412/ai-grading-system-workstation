@@ -247,11 +247,10 @@ def test_new_skill_links_generate_and_persist_personal_and_shared_drafts(
     diagnosis = _direct_diagnosis(
         (("synthetic-A", 0.6, 1, SKILL), ("synthetic-B", 0.7, 1, SKILL))
     )
-    monkeypatch.setattr(module, "current_exam_question_ids", lambda diagnosis: {1})
     monkeypatch.setattr(
         module,
         "_recent_question_ids",
-        lambda student_ids, **kwargs: {sid: {7} for sid in student_ids},
+        lambda student_ids, **kwargs: {sid: {1, 7} for sid in student_ids},
     )
     config = PersonalizedRecommendationConfig(
         paper_mode=paper_mode,

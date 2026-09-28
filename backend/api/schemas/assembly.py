@@ -21,6 +21,7 @@ class AssemblySectionResponse(_AssemblyModel):
 
 
 class AssemblyDraftPayload(_AssemblyModel):
+    practice_rules: bool = False
     basket_ids: list[int] = Field(default_factory=list, max_length=500)
     order_ids: list[int] = Field(default_factory=list, max_length=500)
     sections: list[AssemblySectionResponse] = Field(default_factory=list, max_length=100)
@@ -102,8 +103,8 @@ class AssemblyAssistantRequest(_AssemblyModel):
     chapter_id: str = Field(default="", max_length=100)
     target_keys: list[str] | None = Field(default=None, max_length=100)
     question_type: Literal["", "选择题", "多选题", "填空题", "解答题"] = ""
-    difficulty_min: float = Field(default=1, ge=1, le=10)
-    difficulty_max: float = Field(default=10, ge=1, le=10)
+    difficulty_min: float = Field(default=1, ge=1, le=8)
+    difficulty_max: float = Field(default=8, ge=1, le=8)
     exclude_exam_originals: bool = True
     exclude_recent: bool = True
 
@@ -111,7 +112,7 @@ class AssemblyAssistantRequest(_AssemblyModel):
 class AssemblyWeakness(_AssemblyModel):
     knowledge_key: str
     knowledge_point: str
-    mastery: float = Field(ge=0, le=1)
+    mastery: float | None = Field(ge=0, le=1)
     weak_student_count: int = Field(ge=0)
     evidence_student_count: int = Field(ge=0)
     exam_score_rate: float | None = Field(ge=0, le=1)
@@ -129,6 +130,12 @@ class AssemblyAssistantCandidate(_AssemblyModel):
     selection_kind: Literal["direct", "task_matched", "supplement"] | None = None
     difficulty: float | None = Field(default=None, ge=1, le=10)
     difficulty_band: Literal["suitable", "lower", "higher", "unknown"] = "unknown"
+    suitable_student_count: int = 0
+    remediation_student_count: int = 0
+    consolidation_student_count: int = 0
+    new_practice_student_count: int = 0
+    uncertain_student_count: int = 0
+    difficulty_basis: str = ""
     similar_question_ids: list[int] = Field(default_factory=list)
     direct_target_keys: list[str] = Field(default_factory=list)
 

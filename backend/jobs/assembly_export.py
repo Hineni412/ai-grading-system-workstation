@@ -37,6 +37,9 @@ def run_assembly_export_job(
         raise ValueError("assembly draft revision does not match payload")
     if not draft.order_ids:
         raise ValueError("assembly draft is empty")
+    if draft.practice_rules:
+        from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+        PersonalizedRecommendationModule(db_path=question_bank_db_path, data_root=data_root).validate_paper_questions(draft.order_ids)
     export_format = str(context.payload.get("format") or "").strip().casefold()
     if export_format not in {"docx", "markdown"}:
         raise ValueError("assembly export format is not supported")

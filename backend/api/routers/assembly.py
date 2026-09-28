@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -12,6 +13,7 @@ from backend.api.dependencies import (
     get_assembly_workspace_service,
     get_job_manager,
     get_question_bank_read_service,
+    get_question_bank_db_path,
     get_request_diagnosis_profile_service,
     get_personalized_recommendation_module,
 )
@@ -102,7 +104,7 @@ def compute_assistant_candidates(
     target_keys: list[str] | None = None,
     question_type: str = "",
     difficulty_min: float = 1,
-    difficulty_max: float = 10,
+    difficulty_max: float = 8,
     exclude_exam_originals: bool = True,
     exclude_recent: bool = True,
 ) -> dict:
@@ -132,9 +134,8 @@ def compute_assistant_candidates(
     diagnosis = diagnosis_service.build_profiles(
         scope=scope, exam_scope=exam_scope,
     )
-    excluded = recommendations.current_exam_question_ids(diagnosis) if exclude_exam_originals else set()
-    if exclude_recent:
-        excluded.update(qid for record in workspace.list_records(limit=5) for qid in record.question_ids)
+    # Compatibility flags no longer select different history definitions.
+    excluded = recommendations.current_exam_question_ids(diagnosis)
 
     key_fn = getattr(diagnosis_service, "tag_profile_cache_key", None)
     diagnosis_key = (
@@ -148,14 +149,14 @@ def compute_assistant_candidates(
             target_keys=target_keys, question_type=question_type,
             difficulty_min=difficulty_min, difficulty_max=difficulty_max,
             excluded_question_ids=excluded,
-            cache_scope=diagnosis_key,
+            cache_scope=diagnosis_key, recommendations=recommendations,
         )
 
     if not callable(key_fn):
         return _compute()
     return _ASSISTANT_CACHE.get_or_compute(
         (
-            "assistant-shortlist-v1",
+            "assistant-shortlist-v2-unified",
             str(read_service.db_path.resolve(strict=False)),
             commit_generation(read_service.db_path),
             diagnosis_key,
@@ -187,7 +188,12 @@ def get_assembly_draft(
 def save_assembly_draft(
     body: AssemblyDraftWriteRequest,
     service: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
+    db_path: Path = Depends(get_question_bank_db_path),
 ) -> AssemblyDraftResponse:
+    if service.load_draft().practice_rules and body.draft.basket_ids:
+        body.draft.practice_rules = True
+    if body.draft.practice_rules:
+        _validate_practice_paper(body.draft.basket_ids, db_path, service.data_root)
     try:
         saved = service.save_draft(
             expected_revision=body.expected_revision,
@@ -221,6 +227,7 @@ def submit_assembly_export(
     body: AssemblyExportSubmitRequest,
     service: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
     manager: JobManager = Depends(get_job_manager),
+    db_path: Path = Depends(get_question_bank_db_path),
 ) -> JobResponse:
     draft = service.load_draft()
     if body.draft_revision != draft.revision:
@@ -236,6 +243,8 @@ def submit_assembly_export(
             "assembly_draft_empty",
             "Assembly draft has no questions",
         )
+    if draft.practice_rules:
+        _validate_practice_paper(draft.order_ids, db_path, service.data_root)
     payload: dict[str, object] = {
         "draft_revision": draft.revision,
         "draft": draft.to_payload(),
@@ -254,6 +263,13 @@ def submit_assembly_export(
             {"job_type": "assembly_export"},
         ) from exc
     return _job_response(job)
+
+
+def _validate_practice_paper(question_ids, db_path: Path, data_root: Path) -> None:
+    try:
+        PersonalizedRecommendationModule(db_path=db_path, data_root=data_root).validate_paper_questions(question_ids)
+    except ValueError as exc:
+        raise ApiError(422, "assembly_practice_rule", str(exc)) from exc
 
 
 @router.post(

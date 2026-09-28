@@ -71,6 +71,7 @@ function draftPayload(draft: AssemblyDraft): AssemblyDraft {
 }
 
 function safeMessage(error: unknown): string {
+  if (error instanceof ApiError && error.code === 'assembly_practice_rule') return error.message
   if (error instanceof ApiError && error.code === 'assembly_draft_conflict') {
     return '组卷草稿已经被另一个窗口更新，请重新加载后再保存。'
   }
@@ -213,11 +214,12 @@ export const useAssemblyStore = defineStore('assembly', () => {
     return persistDraft(nextDraft, false)
   }
 
-  async function addQuestions(questionIds: readonly number[]): Promise<boolean> {
+  async function addQuestions(questionIds: readonly number[], practiceRules = false): Promise<boolean> {
     const nextIds = cleanQuestionIds([...draft.value.basket_ids, ...questionIds])
     const nextOrder = cleanQuestionIds([...draft.value.order_ids, ...questionIds])
     return save({
       ...draft.value,
+      practice_rules: Boolean(draft.value.practice_rules || practiceRules),
       basket_ids: nextIds,
       order_ids: nextOrder.filter((id) => nextIds.includes(id)),
     })

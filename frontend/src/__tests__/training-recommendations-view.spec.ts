@@ -389,7 +389,7 @@ describe('training recommendations view', () => {
     await vi.waitFor(() => expect(second.host.textContent).toContain('04 · 草稿审核与匹配预览'))
     expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(paperDraft.draft_id)
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledTimes(1)
-    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({ difficulty_max: 7 }))
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({ difficulty_max: 8 }))
     expect(second.host.querySelector('[aria-label="训练强度"]')).toBeNull()
     expect(second.host.querySelector('.personalized-draft-toolbar')?.textContent)
       .toContain('草稿已自动暂存')

@@ -73,9 +73,9 @@ export function loadPaperSelectionSession(): PaperSelectionSession | null {
       targetKeys,
       rangeKeys,
       questionCount,
-      difficultyMax: parsed.rulesVersion === 5 ? difficultyMax : 7,
-      rulesVersion: 5,
-      excludeCurrentOriginals,
+      difficultyMax: parsed.rulesVersion === 6 ? Math.min(8, difficultyMax) : 8,
+      rulesVersion: 6,
+      excludeCurrentOriginals: true,
       paperMode,
       chapterKey: typeof parsed.chapterKey === 'string' ? parsed.chapterKey : '',
       trainingIntent: parsed.trainingIntent === 'challenge' ? 'challenge' : 'remediation',
@@ -110,7 +110,7 @@ function validGroup(value: unknown): value is AdoptedChapterGroup {
 
 export function savePaperSelectionSession(selection: PaperSelectionSession): void {
   try {
-    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify({ ...selection, rulesVersion: 5 }))
+    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify({ ...selection, rulesVersion: 6 }))
   } catch {
     // Storage can be unavailable in private or restricted browser contexts.
   }

@@ -1,41 +1,16 @@
-"""Read-only class evidence -> a small, teacher-selected question shortlist."""
+"""Teacher shortlist: aggregate the same per-student matching used by training."""
 from __future__ import annotations
 
-from collections import defaultdict, deque
-from dataclasses import replace
+from collections import defaultdict
 from statistics import median
 from typing import Any, Mapping, Sequence
 
-from integration.data_generation import commit_generation
-from integration.result_cache import ResultCache
-from question_bank.database.schema import connect
 from question_bank.current_knowledge import CurrentKnowledgeResolver
-from question_bank.recommendation.recommendation_engine import normalize_question_text, text_similarity
-from question_bank.services import standard_difficulty
-from question_bank.services.duplicate_analysis_copy_service import exact_identity_map
-from question_bank.services.question_read_service import QuestionBankReadService, QuestionReadFilters
+from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 from question_bank.recommendation.personalized import (
-    _loss_difficulty, _loss_refs, _training_tasks, _practice_part_fits, _task_matched_part,
+    PersonalizedRecommendationModule, PersonalizedRecommendationConfig, _paper_diversity_allowed,
 )
-from question_bank.recommendation.target_matching import load_question_facets, match_target, target_index
-
-# Stems this alike inside one difficulty band are shown once; alternates stay
-# reachable through the representative card instead of crowding the shortlist.
-SIMILAR_FOLD_THRESHOLD = 0.9
-
-# Pool-invariant work (eligible ids, question facets) is reused across
-# weakness switches for the same (bank generation, release, volume, chapter,
-# type, difficulty band, exclusions).
-_CONTEXT_CACHE = ResultCache(limit=16)
-# Identity/difficulty/text maps are scoped to pool ∪ exclusions so unrelated
-# questions never enter the expensive exact-content comparison; they are
-# cached per pool set so revisiting the same weakness set is free.
-_MAP_CACHE = ResultCache(limit=64)
-# Per-key ranked pools additionally depend on the class diagnosis; callers
-# pass cache_scope (the diagnosis cache key) to enable reuse.
-_KEY_POOL_CACHE = ResultCache(limit=64)
-
 
 def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id: str,
                     resolver: Any = None) -> list[dict[str, Any]]:
@@ -84,193 +59,15 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
             "candidate_count": None,
             "target_difficulty": None,
         })
-    return sorted(result, key=lambda item: (item["mastery"] >= .8, -item["weak_student_count"], item["mastery"], -item["evidence_student_count"], item["knowledge_key"]))
+    present = {item["knowledge_key"] for item in result}
+    names = {point["id"]: point["display_name"] for chapter in chapters for section in chapter["sections"] for point in section["knowledge_points"]}
+    for key in sorted(allowed - present):
+        node = resolver.node(key) if resolver else None
+        result.append({"knowledge_key": key, "knowledge_point": node.display_name if node else names.get(key, key),
+                       "mastery": None, "weak_student_count": 0, "evidence_student_count": 0,
+                       "exam_score_rate": None, "evidence_count": 0, "candidate_count": None, "target_difficulty": None})
+    return sorted(result, key=lambda item: (item["mastery"] is None, (item["mastery"] or 0) >= .8, -item["weak_student_count"], item["mastery"] or 0, -item["evidence_student_count"], item["knowledge_key"]))
 
-
-def _question_ids(service: QuestionBankReadService, filters: QuestionReadFilters) -> list[int]:
-    ids = []
-    page = 1
-    while True:
-        result = service.list_question_refs(replace(filters, page=page, page_size=20000))
-        ids.extend(int(item["id"]) for item in result.items)
-        if not result.items or page >= result.total_pages:
-            return ids
-        page += 1
-
-
-def _context_key(
-    *,
-    read_service: QuestionBankReadService,
-    resolver: Any,
-    volume_id: str,
-    chapter_id: str,
-    question_type: str,
-    difficulty_min: float,
-    difficulty_max: float,
-) -> tuple[Any, ...]:
-    return (
-        "assistant-context-v1",
-        str(read_service.db_path.resolve(strict=False)),
-        commit_generation(read_service.db_path),
-        str(getattr(resolver, "release_id", "")),
-        volume_id,
-        chapter_id,
-        question_type,
-        difficulty_min,
-        difficulty_max,
-    )
-
-
-def _build_context(
-    *,
-    read_service: QuestionBankReadService,
-    resolver: Any,
-    volume_id: str,
-    question_type: str,
-    difficulty_min: float,
-    difficulty_max: float,
-) -> dict[str, Any]:
-    """Pool-invariant reads: eligible ids and question facets.
-
-    Every per-key pool is a subset of the eligible set (same filters minus the
-    knowledge-point filter), so both are reusable when only the selected
-    weakness changes.
-    """
-
-    filters = QuestionReadFilters(
-        question_types=(question_type,) if question_type else (),
-        difficulty_min=difficulty_min, difficulty_max=difficulty_max,
-        curriculum_volume_ids=(volume_id,),
-        collapse_duplicates=False,
-        scope_mode="primary",
-    )
-    return {
-        "eligible_ids": _question_ids(read_service, filters),
-        "facets": load_question_facets(read_service.db_path, resolver),
-    }
-
-
-def _build_maps(
-    *,
-    read_service: QuestionBankReadService,
-    pool_ids: set[int],
-    excluded_question_ids: set[int],
-) -> dict[str, Any]:
-    """Identity/difficulty/text maps bounded to pool ∪ exclusions."""
-
-    universe = sorted(pool_ids | {int(qid) for qid in excluded_question_ids})
-    with connect(read_service.db_path) as connection:
-        identities = exact_identity_map(
-            connection,
-            data_root=read_service.data_root or read_service.db_path.parent.parent,
-            question_ids=universe,
-        )
-        # Only pool questions are consumed below; a chunked IN scan avoids
-        # materializing the whole bank on every request.
-        rows = []
-        pool_list = sorted(pool_ids)
-        for start in range(0, len(pool_list), 500):
-            batch = pool_list[start:start + 500]
-            rows.extend(connection.execute(
-                "SELECT id, difficulty, question_type, question_text FROM questions"
-                " WHERE is_deleted=0 AND id IN (" + ",".join("?" for _ in batch) + ")",
-                batch).fetchall())
-    difficulties = {int(row["id"]): float(row["difficulty"]) for row in rows
-                    if int(row["id"]) in pool_ids and row["difficulty"] is not None
-                    and 1 <= float(row["difficulty"]) <= 10}
-    texts = {int(row["id"]): (str(row["question_text"] or ""), str(row["question_type"] or ""))
-             for row in rows if int(row["id"]) in pool_ids}
-    return {
-        "identities": identities,
-        "difficulties": difficulties,
-        "texts": texts,
-    }
-
-
-def _key_pool(
-    *,
-    key: str,
-    knowledge_point: str,
-    students: Sequence[Mapping[str, Any]],
-    read_service: QuestionBankReadService,
-    base_filters: QuestionReadFilters,
-    facets: Mapping[int, Any],
-    index: Mapping[str, Any],
-    eligible_ids: Sequence[int],
-    allowed_chapters: set[str],
-    difficulty_max: float,
-) -> tuple[list[int], dict[tuple[str, int], dict[str, Any]], float | None]:
-    pool = _question_ids(
-        read_service,
-        replace(base_filters, knowledge_points=(knowledge_point,)),
-    )
-    source_parts = []
-    source_tasks = []
-    aims = []
-    for student in students:
-        for point in student.get("weak_points", []):
-            if point["knowledge_key"] != key:
-                continue
-            for ref in _loss_refs(point):
-                if float(ref.get("score_awarded") or 0) >= float(ref.get("full_score") or 0):
-                    continue
-                assessment = ref.get("assessment") or {}
-                if assessment.get("eligible") is False or float(assessment.get("evidence_weight", 1)) < .999:
-                    continue
-                aim = _loss_difficulty(ref, student.get("score_rate"), difficulty_max)
-                if aim is not None:
-                    aims.append(aim)
-                part_id = assessment.get("evidence_part_id") or assessment.get("part_id")
-                source_facet = facets.get(int(ref.get("bank_question_id") or 0), {})
-                parts = [part for part in source_facet.get("parts", [])
-                         if (not part_id or part["part_id"] == part_id) and key in part["direct_keys"]]
-                source_parts.extend(parts)
-                enriched = {**ref, "practice_observations_by_key": {
-                    key: [part for part in source_facet.get("practice_observations_by_key", {}).get(key, [])
-                          if not part_id or part["part_id"] == part_id]},
-                    "task_evidence_version_matches": bool(assessment.get("evidence_version_id")) and
-                    assessment["evidence_version_id"] == source_facet.get("evidence_version_id")}
-                source_tasks.append((enriched, parts, _training_tasks({"stable_key": key, "source_question_refs": [enriched]})))
-    target_difficulty = round(median(aims), 1) if aims else None
-    if not source_parts:
-        return pool, {}, target_difficulty
-    ranked = []
-    details: dict[tuple[str, int], dict[str, Any]] = {}
-    for qid in eligible_ids:
-        parts = facets.get(qid, {}).get("parts", [])
-        chapters = {chapter for part in parts for chapter in part["chapter_keys"]}
-        if not chapters or not chapters <= allowed_chapters:
-            continue
-        options = []
-        candidate = {"practice_observations_by_key": facets.get(qid, {}).get("practice_observations_by_key", {})}
-        for ref, anchors, tasks in source_tasks:
-            for part in parts:
-                match = match_target(key, anchors, [part], index)
-                if match is None:
-                    continue
-                direct = match["match_level"] <= 2 or (not key.startswith("sk_") and key in part["direct_keys"])
-                full_response = not tasks or any(p["part_id"] == part["part_id"] and _practice_part_fits(p, tasks)
-                                                 for p in candidate["practice_observations_by_key"].get(key, []))
-                task_match = None
-                if not direct and any(set(anchor["chapter_keys"]) & set(part["chapter_keys"])
-                                      and (not anchor["topic_keys"] or set(anchor["topic_keys"]) <= set(part["topic_keys"]))
-                                      for anchor in anchors):
-                    task_match = _task_matched_part(candidate, key, ref, tasks, {part["part_id"]})
-                kind = "direct" if direct else "task_matched" if task_match else "supplement"
-                label = ("同技能环节练习（不代替完整书写）" if direct and not full_response else
-                         "原小问环节匹配（不代替完整书写）" if task_match and task_match.get("practice_role") == "step_practice" else
-                         "原小问任务匹配（已有解题步骤）" if task_match else
-                         "同技能，作答要求不足（仅作补充）" if not direct and key in part["direct_keys"] else match["match_label"])
-                options.append({**match, "selection_kind": kind, "match_label": label})
-        if options:
-            match = min(options, key=lambda m: (m["selection_kind"] == "supplement", m["match_level"]))
-            details[key, qid] = match
-            ranked.append(qid)
-    return (
-        sorted(ranked, key=lambda qid: (details[key, qid]["selection_kind"] == "supplement", details[key, qid]["match_level"], qid)),
-        details,
-        target_difficulty,
-    )
 
 
 def shortlist_candidates(
@@ -278,200 +75,67 @@ def shortlist_candidates(
     volume_id: str, chapter_id: str, target_keys: list[str] | None,
     question_type: str, difficulty_min: float, difficulty_max: float,
     excluded_question_ids: set[int], limit: int | None = None,
-    cache_scope: object = None,
+    cache_scope: object = None, recommendations: PersonalizedRecommendationModule | None = None,
 ) -> dict[str, Any]:
-    resolver = read_service.current_knowledge or CurrentKnowledgeResolver.from_active_database(read_service.db_path)
-    weaknesses = class_weaknesses(diagnosis, volume_id=volume_id, chapter_id=chapter_id,
-                                resolver=resolver)
+    module = recommendations or PersonalizedRecommendationModule(db_path=read_service.db_path,
+        data_root=read_service.data_root or read_service.db_path.parent.parent)
+    resolver = module.current_knowledge
+    weaknesses = class_weaknesses(diagnosis, volume_id=volume_id, chapter_id=chapter_id, resolver=resolver)
     by_key = {item["knowledge_key"]: item for item in weaknesses}
     selected = list(dict.fromkeys(target_keys)) if target_keys is not None else [item["knowledge_key"] for item in weaknesses[:1]]
     if any(key not in by_key for key in selected):
-        raise ValueError("Selected weakness is no longer in the current class scope")
+        raise ValueError("Selected target is no longer in the current class scope")
     students = diagnosis.get("students", [])
-    exam_scores = [float(student["score_rate"]) for student in students if student.get("score_rate") is not None]
-    output = {
-        "student_count": len(students), "exam_student_count": len(exam_scores),
+    scores = [float(p["score_rate"]) for p in students if p.get("score_rate") is not None]
+    output = {"student_count": len(students), "exam_student_count": len(scores),
         "evidence_student_count": sum(any(p.get("mastery") is not None and p.get("evidence_count", 0) > 0 for p in student.get("weak_points", [])) for student in students),
-        "exam_score_rate": round(sum(exam_scores) / len(exam_scores), 4) if exam_scores else None,
+        "exam_score_rate": round(sum(scores)/len(scores), 4) if scores else None,
         "exam_count": len(diagnosis.get("exam_scope", {}).get("session_ids", [])),
-        "weaknesses": weaknesses, "selected_target_keys": selected,
-        "candidate_total": 0, "candidates": [],
-    }
-    if not selected:
+        "weaknesses": weaknesses, "selected_target_keys": selected, "candidate_total": 0, "candidates": []}
+    if not selected or not students:
         return output
-    filters = QuestionReadFilters(
-        knowledge_points=tuple(by_key[key]["knowledge_point"] for key in selected),
-        question_types=(question_type,) if question_type else (),
-        difficulty_min=difficulty_min, difficulty_max=difficulty_max,
-        curriculum_volume_ids=(volume_id,),
-        collapse_duplicates=False,
-        scope_mode="primary",
-    )
-    # Identity-only queries rank the pool before loading rich content for the
-    # final shortlist. Duplicate folding and governed tag aliases stay shared
-    # with the existing question browser.
     volume = curriculum_volume(volume_id=volume_id)
-    allowed_chapters = {chapter["knowledge_id"] for chapter in volume["chapters"]
-                        if not chapter_id or chapter["id"] == chapter_id}
-    context_key = _context_key(
-        read_service=read_service, resolver=resolver, volume_id=volume_id,
-        chapter_id=chapter_id, question_type=question_type,
-        difficulty_min=difficulty_min, difficulty_max=difficulty_max,
-    )
-    context = _CONTEXT_CACHE.get_or_compute(
-        context_key,
-        lambda: _build_context(
-            read_service=read_service, resolver=resolver, volume_id=volume_id,
-            question_type=question_type, difficulty_min=difficulty_min,
-            difficulty_max=difficulty_max,
-        ),
-    )
-    index = target_index(resolver)
-    facets = context["facets"]
-    # The manual assistant retains the teacher's difficulty bounds. Candidate
-    # context must remain inside the selected chapter(s), including all parts.
-    eligible_ids = context["eligible_ids"]
-    details: dict[tuple[str, int], dict[str, Any]] = {}
-    pools: dict[str, list[int]] = {}
+    scope = tuple(chapter["knowledge_id"] for chapter in volume["chapters"] if not chapter_id or chapter["id"] == chapter_id)
+    config = PersonalizedRecommendationConfig(paper_mode="shared", target_keys=tuple(selected), scope_keys=scope,
+                                             curriculum_volume_id=volume_id, difficulty_max=min(8., float(difficulty_max)))
+    evaluated = module.evaluate_candidates(diagnosis=diagnosis, config=config, excluded=excluded_question_ids)
+    groups = defaultdict(list)
+    for entries in evaluated["pools"].values():
+        for entry in entries:
+            c = entry["candidate"]
+            if c["difficulty"] >= difficulty_min and c["difficulty"] <= difficulty_max and (not question_type or c["question_type"] == question_type):
+                groups[c["question_id"]].append(entry)
     for key in selected:
-        compute = lambda key=key: _key_pool(  # noqa: B023
-            key=key,
-            knowledge_point=by_key[key]["knowledge_point"],
-            students=students,
-            read_service=read_service,
-            base_filters=filters,
-            facets=facets,
-            index=index,
-            eligible_ids=eligible_ids,
-            allowed_chapters=allowed_chapters,
-            difficulty_max=difficulty_max,
-        )
-        if cache_scope is not None:
-            pool, key_details, target_difficulty = _KEY_POOL_CACHE.get_or_compute(
-                ("assistant-pool-v1", context_key, cache_scope, key),
-                compute,
-            )
+        entries = [e for group in groups.values() for e in group if e["key"] == key]
+        by_key[key]["candidate_count"] = len({e["candidate"]["question_id"] for e in entries})
+        by_key[key]["target_difficulty"] = median(e["target"]["target_difficulty"] for e in entries) if entries else None
+    candidates = []
+    for qid, group in groups.items():
+        members = {}
+        for e in sorted(group, key=lambda e: (e["practice_purpose"] != "remediation", e["selection_kind"] == "supplement", e["match_level"], e["key"])):
+            members.setdefault(e["student_id"], e)
+        best = min(members.values(), key=lambda e: (e["practice_purpose"] != "remediation", e["match_level"], e["distance"], -e["preference"]))
+        purposes = {kind: sum(e["practice_purpose"] == kind for e in members.values()) for kind in ("remediation", "consolidation", "new")}
+        candidates.append({"question_id": qid, "target_keys": sorted({e["key"] for e in group}),
+            "practice_kind": "focus" if purposes["remediation"] else "foundation", "match_level": best["match_level"],
+            "match_label": best["match_label"], "selection_kind": best["selection_kind"],
+            "difficulty": best["candidate"]["difficulty"], "difficulty_band": "suitable",
+            "suitable_student_count": len(members), "remediation_student_count": purposes["remediation"],
+            "consolidation_student_count": purposes["consolidation"], "new_practice_student_count": purposes["new"],
+            "uncertain_student_count": sum(e["evidence_confidence"] != "repeated" for e in members.values()),
+            "difficulty_basis": best["difficulty_basis"], "similar_question_ids": [],
+            "direct_target_keys": sorted({e["key"] for e in group if e["selection_kind"] == "direct"})})
+    candidates.sort(key=lambda item: (-item["remediation_student_count"], -item["suitable_student_count"], item["match_level"], item["question_id"]))
+    # Fold only genuine similarity using the same comparator. Written count is
+    # a selected-paper rule, so comparing two candidates never imposes a quota.
+    descriptors = {q["question_id"]: q for q in evaluated["candidates"]}
+    folded = []
+    for item in candidates:
+        representative = next((other for other in folded if not _paper_diversity_allowed(descriptors[item["question_id"]], [descriptors[other["question_id"]]])), None)
+        if representative:
+            representative["similar_question_ids"].append(item["question_id"])
         else:
-            pool, key_details, target_difficulty = compute()
-        by_key[key]["target_difficulty"] = target_difficulty
-        pools[key] = pool
-        details.update(key_details)
-    pool_ids = set(qid for ids in pools.values() for qid in ids)
-    maps = _MAP_CACHE.get_or_compute(
-        ("assistant-maps-v1", context_key,
-         tuple(sorted(pool_ids | {int(qid) for qid in excluded_question_ids}))),
-        lambda: _build_maps(
-            read_service=read_service,
-            pool_ids=pool_ids,
-            excluded_question_ids=excluded_question_ids,
-        ),
-    )
-    identities = maps["identities"]
-    difficulties = maps["difficulties"]
-    texts = maps["texts"]
-    excluded_keys = {identities[qid] for qid in excluded_question_ids if identities.get(qid)}
-    available: set[int] = set()
-    seen: set[str] = set()
-    for qid in sorted(pool_ids):
-        identity = identities.get(qid, "")
-        if qid in excluded_question_ids or (identity and (identity in excluded_keys or identity in seen)):
-            continue
-        available.add(qid)
-        if identity:
-            seen.add(identity)
-    queues: dict[str, deque[int]] = {}
-    matches: dict[int, list[str]] = defaultdict(list)
-    for key in selected:
-        queues[key] = deque(qid for qid in pools[key] if qid in available)
-        by_key[key]["candidate_count"] = len(queues[key])
-        for qid in queues[key]:
-            matches[qid].append(key)
-    chosen = []
-    # Alternate between chosen weaknesses so a large question pool for one
-    # point cannot crowd every other classroom weakness out of the shortlist.
-    priority_keys = [point["knowledge_key"] for point in weaknesses if point["knowledge_key"] in selected]
-    chosen_ids = set()
-    while True:
-        before = len(chosen)
-        for key in priority_keys:
-            while queues[key] and queues[key][0] in chosen_ids:
-                queues[key].popleft()
-            if queues[key]:
-                qid = queues[key].popleft()
-                chosen.append(qid)
-                chosen_ids.add(qid)
-        if len(chosen) == before:
-            break
-    def foundation(qid: int) -> bool:
-        return (standard_difficulty.difficulty_level(difficulties.get(qid)) or 10) <= 4 or all(by_key[key]["mastery"] >= .8 for key in matches[qid])
-    def match_details(qid: int) -> dict[str, Any]:
-        options = [details[key, qid] for key in matches[qid] if (key, qid) in details]
-        return min(options, key=lambda item: (item.get("selection_kind") == "supplement", item["match_level"])) if options else {}
-    def band(qid: int) -> tuple[str, float | None]:
-        difficulty = difficulties.get(qid)
-        aims = [by_key[key]["target_difficulty"] for key in matches[qid]
-                if by_key[key].get("target_difficulty") is not None]
-        if difficulty is None or not aims:
-            return "unknown", None
-        aim = min(aims, key=lambda value: abs(difficulty - value))
-        gap = abs(difficulty - aim)
-        if gap <= 1:
-            return "suitable", gap
-        return ("lower" if difficulty < aim else "higher"), gap
-    bands = {qid: band(qid) for qid in chosen}
-    band_order = {"suitable": 0, "lower": 1, "higher": 2, "unknown": 3}
-    chosen.sort(key=lambda qid: (match_details(qid).get("selection_kind") == "supplement",
-                                 band_order[bands[qid][0]], match_details(qid).get("match_level", 5),
-                                 bands[qid][1] if bands[qid][1] is not None else 0, qid))
-    similar_members = _fold_similar(chosen, bands=bands, difficulties=difficulties,
-                                    facets=facets, texts=texts)
-    if similar_members:
-        folded = {member for members in similar_members.values() for member in members}
-        chosen = [qid for qid in chosen if qid not in folded]
-    output["candidate_total"] = len(chosen)
-    if limit is not None:
-        chosen = chosen[:limit]
-    output["candidates"] = [{"question_id": qid, "target_keys": matches[qid],
-                             "practice_kind": "foundation" if foundation(qid) else "focus",
-                             "match_level": match_details(qid).get("match_level"),
-                             "match_label": match_details(qid).get("match_label", "按已选目标关联"),
-                             "selection_kind": match_details(qid).get("selection_kind"),
-                             "difficulty": difficulties.get(qid),
-                             "difficulty_band": bands[qid][0],
-                             "similar_question_ids": similar_members.get(qid, []),
-                             "direct_target_keys": [key for key in matches[qid]
-                                                    if details.get((key, qid), {}).get("selection_kind", "direct") == "direct"],
-                             } for qid in chosen]
+            folded.append(item)
+    output["candidate_total"] = len(folded)
+    output["candidates"] = folded if limit is None else folded[:limit]
     return output
-
-
-def _fold_similar(chosen: Sequence[int], *, bands: Mapping[int, tuple[str, Any]],
-                  difficulties: Mapping[int, float], facets: Mapping[int, Mapping[str, Any]],
-                  texts: Mapping[int, tuple[str, str]]) -> dict[int, list[int]]:
-    """Fold near-identical questions inside one difficulty band.
-
-    Same band + type + difficulty + same knowledge/skill signature bucket
-    first; inside a bucket a normalized-stem similarity at or above
-    SIMILAR_FOLD_THRESHOLD folds the later item under the earlier (better
-    ranked) representative. Members stay retrievable by id.
-    """
-    normalized = {qid: normalize_question_text(texts.get(qid, ("", ""))[0]) for qid in chosen}
-    buckets: dict[tuple[Any, ...], list[int]] = {}
-    for qid in chosen:
-        facet = facets.get(qid, {})
-        buckets.setdefault((bands[qid][0], texts.get(qid, ("", ""))[1],
-                            standard_difficulty.difficulty_level(difficulties.get(qid)),
-                            tuple(facet.get("skill_keys") or ()),
-                            tuple(facet.get("topic_keys") or ())), []).append(qid)
-    members: dict[int, list[int]] = {}
-    for ids in buckets.values():
-        representatives: list[int] = []
-        for qid in ids:
-            text = normalized.get(qid) or ""
-            for rep in representatives:
-                if text and text_similarity(text, normalized[rep]) >= SIMILAR_FOLD_THRESHOLD:
-                    members.setdefault(rep, []).append(qid)
-                    break
-            else:
-                representatives.append(qid)
-    return members

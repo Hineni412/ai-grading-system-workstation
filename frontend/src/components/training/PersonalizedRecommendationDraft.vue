@@ -52,7 +52,7 @@ const emit = defineEmits<{
 
 type RequestState = 'idle' | 'loading' | 'ready' | 'error' | 'editing'
 
-const difficultyMax = ref(props.difficultyMax ?? 7)
+const difficultyMax = ref(props.difficultyMax ?? 8)
 const selectedTargets = ref<string[]>([])
 const editReason = ref('教师根据课堂安排调整推荐草稿')
 const state = ref<RequestState>('idle')
@@ -100,7 +100,7 @@ const canGenerate = computed(() => (
   && props.questionCount >= 8
   && props.questionCount <= 12
   && difficultyMax.value >= 1
-  && difficultyMax.value <= 10
+  && difficultyMax.value <= 8
   && (
     (props.scopeKeys?.length ?? 0) > 0
     || !targetOptions.value.length
@@ -124,7 +124,7 @@ const canDiscardDraft = computed(() => (
 // 出卷设置指纹：设置一致时才恢复上次草稿，设置变了必须重新生成。
 // rulesVersion 随选题规则升级递增，避免恢复规则升级前的旧草稿。
 const settingsFingerprint = computed(() => JSON.stringify({
-  rulesVersion: 7,
+  rulesVersion: 8,
   scope: props.scope,
   examScope: props.examScope,
   questionCount: props.questionCount,
@@ -154,9 +154,9 @@ async function restoreDraft(): Promise<void> {
   if (stored.fingerprint !== settingsFingerprint.value) {
     try {
       const previous = JSON.parse(stored.fingerprint)
-      previousRules = Number(previous.rulesVersion) < 7
+      previousRules = Number(previous.rulesVersion) < 8
       if (!previousRules) return
-      previous.rulesVersion = 7
+      previous.rulesVersion = 8
       for (const key of ['trainingIntent', 'expectedMinutes', 'difficultyMin', 'stageRatios']) delete previous[key]
       previous.teachingProgressChapterId ??= ''
       previous.difficultyMax = difficultyMax.value
@@ -261,6 +261,8 @@ function stageLabel(stage: TrainingStage): string {
 }
 
 function itemLabel(item: PersonalizedRecommendationItem): string {
+  if (item.practice_purpose === 'new') return '新练习'
+  if (item.practice_purpose === 'consolidation') return '巩固练习'
   if (item.selection_kind === 'task_matched') return item.match_label || '原小问任务匹配'
   if (item.match_level && item.match_label) return `${item.match_level}级 · ${item.match_label}`
   return item.selection_kind === 'supplement' ? '补充练习' : stageLabel(item.stage)
@@ -725,9 +727,9 @@ async function editItem(
     <div class="personalized-controls">
       <label>
         难度上限
-        <input v-model.number="difficultyMax" type="number" min="1" max="10">
+        <input v-model.number="difficultyMax" type="number" min="1" max="8">
       </label>
-      <p>按目标作答表现安排起步、巩固和少量突破练习；每份训练最多2道解答题，默认难度上限7级。</p>
+      <p>依据同技能多次作答匹配难度；允许巩固与新练习，每份训练最多2道解答题，最高8级。</p>
     </div>
 
     <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets">
@@ -852,16 +854,16 @@ async function editItem(
           <ol class="personalized-match-list">
             <li v-for="item in student.items" :key="item.item_id" class="personalized-match">
               <div class="personalized-match__evidence">
-                <strong>{{ item.selection_kind === 'supplement' ? '补充依据' : '错题依据' }}</strong>
+                <strong>{{ item.practice_purpose === 'new' ? '新练习依据' : item.practice_purpose === 'consolidation' ? '巩固依据' : item.selection_kind === 'supplement' ? '补充依据' : '错题依据' }}</strong>
                 <template v-if="evidenceDisplayFor(student.student_id, item).representative">
-                  <span title="本次考试失分最重的同细点错题">
+                  <span title="同目标作答依据">
                     {{ evidenceRefLabel(evidenceDisplayFor(student.student_id, item).representative!) }}
                   </span>
                   <button
                     v-if="evidenceDisplayFor(student.student_id, item).representative!.bank_question_id"
                     type="button"
                     class="training-link"
-                    @click="openPreview(evidenceDisplayFor(student.student_id, item).representative!.bank_question_id, '错题原题')"
+                    @click="openPreview(evidenceDisplayFor(student.student_id, item).representative!.bank_question_id, '作答原题')"
                   >
                     预览
                   </button>
@@ -879,14 +881,14 @@ async function editItem(
                         v-if="evidence.bank_question_id"
                         type="button"
                         class="training-link"
-                        @click="openPreview(evidence.bank_question_id, '错题原题')"
+                        @click="openPreview(evidence.bank_question_id, '作答原题')"
                       >
                         预览
                       </button>
                     </span>
                   </details>
                 </template>
-                <small v-else-if="item.selection_kind === 'supplement'">范围内少量补充，不计作原失分任务覆盖；自动选题时最多占实际题量20%。</small>
+                <small v-else-if="item.selection_kind === 'supplement'">范围内的新练习，不认定为已证实薄弱；不设固定比例。</small>
                 <small v-else>该细点在当前范围内暂无逐题失分记录</small>
               </div>
               <span class="personalized-match__arrow" aria-hidden="true">→</span>

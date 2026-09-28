@@ -74,6 +74,7 @@ describe('class assembly assistant', () => {
     await vi.waitFor(() => expect(api.assemblyApi.saveDraft).toHaveBeenCalledTimes(1))
     expect(useAssemblyStore().draft.order_ids).toEqual([11])
     expect(useAssemblyStore().draft.title).toBe('已有的班级卷')
+    expect(useAssemblyStore().draft.practice_rules).toBe(true)
     app.unmount()
     mounted.splice(mounted.indexOf(app), 1)
     const nextHost = document.createElement('div')

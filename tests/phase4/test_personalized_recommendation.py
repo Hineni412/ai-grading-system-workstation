@@ -766,7 +766,9 @@ def test_current_full_score_does_not_resurrect_historical_loss(direct_module):
     old["session_id"] = 2
     point["source_question_refs"][0]["score_awarded"] = 5
     point["source_question_refs"].append(old)
-    assert not _make_direct(direct_module, diagnosis=diagnosis)["students"][0]["items"]
+    items = _make_direct(direct_module, diagnosis=diagnosis)["students"][0]["items"]
+    assert items
+    assert all(item["practice_purpose"] != "remediation" for item in items)
     assert not _group_needs(diagnosis, (BNU_TARGET,))["A"]
 
 

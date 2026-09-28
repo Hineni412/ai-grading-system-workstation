@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ref, useId } from 'vue'
+import { computed, ref, useId } from 'vue'
 
 const props = withDefaults(defineProps<{
   min: number
   max: number
   compact?: boolean
+  ceiling?: number
 }>(), {
   compact: false,
+  ceiling: 10,
 })
 
 const emit = defineEmits<{
@@ -17,15 +19,15 @@ const emit = defineEmits<{
 
 const summaryId = useId()
 const activeThumb = ref<'min' | 'max' | null>(null)
-const ticks = Array.from({ length: 10 }, (_value, index) => index + 1)
+const ticks = computed(() => Array.from({ length: props.ceiling }, (_value, index) => index + 1))
 
 function railPosition(value: number): string {
-  const ratio = (value - 1) / 9
+  const ratio = (value - 1) / (props.ceiling - 1)
   return `calc(${ratio * 100}% + ${16 - 32 * ratio}px)`
 }
 
 function railDistanceFromRight(value: number): string {
-  const ratio = (10 - value) / 9
+  const ratio = (props.ceiling - value) / (props.ceiling - 1)
   return `calc(${ratio * 100}% + ${16 - 32 * ratio}px)`
 }
 
@@ -93,7 +95,7 @@ function updateMinFromKeyboard(event: KeyboardEvent): void {
 }
 
 function updateMaxFromKeyboard(event: KeyboardEvent): void {
-  const value = keyboardValue(event, props.max, props.min, 10)
+  const value = keyboardValue(event, props.max, props.min, props.ceiling)
   if (value === null) return
   event.preventDefault()
   if (value === props.max) return
@@ -109,7 +111,7 @@ function updateMaxFromKeyboard(event: KeyboardEvent): void {
       <strong>{{ formatLevel(min) }}–{{ formatLevel(max) }}</strong>
     </legend>
     <p :id="summaryId" class="difficulty-range__summary">
-      难度使用 1 到 10 的刻度，可按 0.5 微调，压轴拔高为 7.5 到 10，当前选择 {{ formatLevel(min) }} 到 {{ formatLevel(max) }}。
+      难度使用 1 到 {{ ceiling }} 的刻度，可按 0.5 微调，当前选择 {{ formatLevel(min) }} 到 {{ formatLevel(max) }}。
     </p>
     <div class="difficulty-range__rail">
       <div class="difficulty-range__track" />
@@ -137,7 +139,7 @@ function updateMaxFromKeyboard(event: KeyboardEvent): void {
         :value="min"
         type="range"
         min="1"
-        max="10"
+        :max="ceiling"
         step="0.5"
         aria-label="最低难度"
         :aria-valuetext="`最低难度 ${formatLevel(min)}`"
@@ -154,7 +156,7 @@ function updateMaxFromKeyboard(event: KeyboardEvent): void {
         :value="max"
         type="range"
         min="1"
-        max="10"
+        :max="ceiling"
         step="0.5"
         aria-label="最高难度"
         :aria-valuetext="`最高难度 ${formatLevel(max)}`"
@@ -177,7 +179,7 @@ function updateMaxFromKeyboard(event: KeyboardEvent): void {
         <b>{{ tick }}</b>
       </span>
     </div>
-    <div class="difficulty-range__bands" aria-label="难度分段">
+    <div v-if="ceiling === 10" class="difficulty-range__bands" aria-label="难度分段">
       <span
         v-for="band in bands"
         :key="band.range"
