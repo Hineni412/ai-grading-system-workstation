@@ -255,7 +255,7 @@ describe('personalized recommendation draft', () => {
         target_names: ['一元一次方程'],
         paper_mode: 'individual',
         question_count: 8,
-        difficulty_max: 7,
+        difficulty_max: 8,
         teaching_progress_chapter_id: 'bnu24-math-g8-upper-c02',
       }),
     )

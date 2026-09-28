@@ -19,6 +19,7 @@ export interface AssemblySection {
 }
 
 export interface AssemblyDraft {
+  practice_rules?: boolean
   basket_ids: number[]
   order_ids: number[]
   sections: AssemblySection[]
@@ -95,7 +96,7 @@ export interface AssemblyAssistantRequest {
 export interface AssemblyWeakness {
   knowledge_key: string
   knowledge_point: string
-  mastery: number
+  mastery: number | null
   weak_student_count: number
   evidence_student_count: number
   exam_score_rate: number | null
@@ -113,7 +114,7 @@ export interface AssemblyAssistantResult {
   weaknesses: AssemblyWeakness[]
   selected_target_keys: string[]
   candidate_total: number
-  candidates: Array<{ question_id: number; target_keys: string[]; practice_kind?: 'focus' | 'foundation'; selection_kind?: 'direct' | 'task_matched' | 'supplement' | null; match_level?: number | null; match_label?: string; difficulty?: number | null; difficulty_band?: 'suitable' | 'lower' | 'higher' | 'unknown'; similar_question_ids?: number[]; direct_target_keys?: string[] }>
+  candidates: Array<{ question_id: number; target_keys: string[]; practice_kind?: 'focus' | 'foundation'; selection_kind?: 'direct' | 'task_matched' | 'supplement' | null; match_level?: number | null; match_label?: string; difficulty?: number | null; difficulty_band?: 'suitable' | 'lower' | 'higher' | 'unknown'; similar_question_ids?: number[]; direct_target_keys?: string[]; suitable_student_count?: number; remediation_student_count?: number; consolidation_student_count?: number; new_practice_student_count?: number; uncertain_student_count?: number; difficulty_basis?: string }>
 }
 
 export function decodeAssemblyAssistant(value: unknown): AssemblyAssistantResult {
@@ -125,7 +126,7 @@ export function decodeAssemblyAssistant(value: unknown): AssemblyAssistantResult
     || !strings(value.selected_target_keys) || !Array.isArray(value.weaknesses)
     || !value.weaknesses.every(item => isRecord(item)
       && typeof item.knowledge_key === 'string' && typeof item.knowledge_point === 'string'
-      && typeof item.mastery === 'number' && rate(item.mastery) && rate(item.exam_score_rate)
+      && (item.mastery === null || typeof item.mastery === 'number') && rate(item.mastery) && rate(item.exam_score_rate)
       && count(item.weak_student_count) && count(item.evidence_student_count) && count(item.evidence_count)
       && (item.candidate_count === null || count(item.candidate_count)))
     || !Array.isArray(value.candidates)
@@ -200,6 +201,7 @@ export function decodeAssemblyDraft(value: unknown): AssemblyDraft {
       'layout_mode',
       'preview_mode',
       'revision',
+      ...(value.practice_rules === undefined ? [] : ['practice_rules']),
     ]) ||
     !isQuestionIdList(value.basket_ids) ||
     !isQuestionIdList(value.order_ids) ||
@@ -212,6 +214,7 @@ export function decodeAssemblyDraft(value: unknown): AssemblyDraft {
     typeof value.include_answer !== 'boolean' ||
     !isLayoutMode(value.layout_mode) ||
     !isPreviewMode(value.preview_mode) ||
+    (value.practice_rules !== undefined && typeof value.practice_rules !== 'boolean') ||
     !isRevision(value.revision)
   ) {
     throw new Error('Invalid assembly draft')

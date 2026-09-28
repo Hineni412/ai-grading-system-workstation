@@ -120,6 +120,9 @@ export interface PersonalizedRecommendationRelation {
 }
 
 export interface PersonalizedRecommendationItem {
+  practice_purpose?: 'remediation' | 'consolidation' | 'new'
+  difficulty_basis?: string
+  evidence_confidence?: 'repeated' | 'sparse' | 'auxiliary' | 'unknown'
   item_id: string
   item_order: number
   slot: number

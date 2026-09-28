@@ -1,7 +1,8 @@
 """Class shortlist expectations, using synthetic evidence and a real question bank."""
 
 from copy import deepcopy
-from types import SimpleNamespace
+from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+from tests.phase4.test_personalized_recommendation import _approve_synthetic_criteria
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,7 @@ from backend.api.dependencies import (
     get_assembly_workspace_service,
     get_personalized_recommendation_module,
     get_question_bank_read_service,
+    get_question_bank_db_path,
     get_request_diagnosis_profile_service,
 )
 from question_bank.database.schema import connect, initialize_database
@@ -104,13 +106,16 @@ def client_and_source(tmp_path):
             if qid == 33:
                 text = f"{stems[1 % len(stems)]}，{contexts[1 % len(contexts)]}，写出完整解答过程。"  # Duplicate of excluded exam original.
             conn.execute(
-                "INSERT INTO questions(id,paper_id,question_number,question_type,question_text,answer_text,difficulty) VALUES(?,1,?,'选择题',?,'合成解析','5')",
+                "INSERT INTO questions(id,paper_id,question_number,question_type,question_text,answer_text,difficulty) VALUES(?,1,?,'选择题',?,'合成解析','3')",
                 (qid, str(qid), text),
             )
             conn.execute(
                 "INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(?,'knowledge_point',?)",
                 (qid, point["display_name"]),
             )
+    _approve_synthetic_criteria(db_path, tmp_path, tuple(range(1, 34)))
+    module = PersonalizedRecommendationModule(db_path=db_path, data_root=tmp_path)
+    module._recent_question_ids = lambda ids, **kwargs: {sid: {1, 33} for sid in ids}
     reader = QuestionBankReadService(db_path, data_root=tmp_path)
     workspace = AssemblyWorkspaceService(tmp_path)
     original = workspace.load_draft()
@@ -134,10 +139,9 @@ def client_and_source(tmp_path):
     app = create_app()
     app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: Profiles()
     app.dependency_overrides[get_question_bank_read_service] = lambda: reader
+    app.dependency_overrides[get_question_bank_db_path] = lambda: db_path
     app.dependency_overrides[get_assembly_workspace_service] = lambda: workspace
-    app.dependency_overrides[get_personalized_recommendation_module] = lambda: (
-        SimpleNamespace(current_exam_question_ids=lambda value: {1})
-    )
+    app.dependency_overrides[get_personalized_recommendation_module] = lambda: module
     with TestClient(app) as client:
         yield client, source, calls, workspace
 
@@ -168,7 +172,7 @@ def test_api_returns_full_balanced_pool_without_creating_or_replacing_a_paper(
     assert result["selected_target_keys"] == [
         first
     ]  # Single-select default focuses the weakest point.
-    assert result["candidate_total"] == 26  # original and its duplicate both excluded
+    assert result["candidate_total"] == 31  # Same-section new exercises are also eligible.
     ids = [candidate["question_id"] for candidate in result["candidates"]]
     assert not {1, 33}.intersection(ids)
     assert len(set(ids)) == len(ids)
@@ -181,10 +185,10 @@ def test_api_returns_full_balanced_pool_without_creating_or_replacing_a_paper(
     tagged_second = [
         candidate
         for candidate in both["candidates"]
-        if POINTS[1]["id"] in candidate["target_keys"]
+        if POINTS[1]["id"] in candidate["direct_target_keys"]
     ]
     assert (
-        tagged_second and POINTS[1]["id"] not in result["candidates"][0]["target_keys"]
+        tagged_second and all(c["new_practice_student_count"] >= 1 for c in tagged_second)
     )
     assert not {1, 33}.intersection(both_ids)
     assert workspace.draft_path.read_bytes() == before
@@ -249,4 +253,23 @@ def test_filters_empty_evidence_and_changed_scope_never_silently_expand(
         "/api/question-assembly/assistant/candidates", json=request()
     ).json()
     assert empty["evidence_student_count"] == 0
-    assert empty["weaknesses"] == empty["candidates"] == []
+    assert empty["weaknesses"]
+    assert all(p["mastery"] is None for p in empty["weaknesses"])
+    assert all(c["new_practice_student_count"] == 5 for c in empty["candidates"])
+
+
+def test_teacher_practice_rules_persist_and_rejected_save_keeps_previous_draft(client_and_source):
+    client, _, _, workspace = client_and_source
+    current = client.get('/api/question-assembly/draft').json()
+    payload = {key: value for key, value in current.items() if key != 'revision'}
+    payload.update(practice_rules=True, basket_ids=[2,3], order_ids=[2,3])
+    saved = client.put('/api/question-assembly/draft', json={'expected_revision': current['revision'], 'draft': payload})
+    assert saved.status_code == 200, saved.text
+    assert client.get('/api/question-assembly/draft').json()['practice_rules'] is True
+    before = workspace.draft_path.read_bytes()
+    # These are duplicate original question records; the failure must preserve the basket.
+    payload.update(practice_rules=False, basket_ids=[1,33], order_ids=[1,33])
+    rejected = client.put('/api/question-assembly/draft', json={'expected_revision': saved.json()['revision'], 'draft': payload})
+    assert rejected.status_code == 422
+    assert rejected.json()['error']['code'] == 'assembly_practice_rule'
+    assert workspace.draft_path.read_bytes() == before

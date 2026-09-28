@@ -45,7 +45,7 @@ const selectedTargetKeys = ref<string[]>(savedPaperSelection?.targetKeys ?? [])
 const selectedRangeKeys = ref<string[]>(savedPaperSelection?.rangeKeys ?? [])
 const questionCount = ref(savedPaperSelection?.questionCount ?? 10)
 const teachingProgressChapterId = ref(savedPaperSelection?.teachingProgressChapterId ?? '')
-const difficultyMax = ref(savedPaperSelection?.difficultyMax ?? 7)
+const difficultyMax = ref(savedPaperSelection?.difficultyMax ?? 8)
 const progressChapters = computed(() => (curriculumScope.selectedVolume ? [curriculumScope.selectedVolume] : curriculumScope.volumes)
   .flatMap(volume => volume.chapters.map(chapter => ({ id: chapter.id, label: `${volume.label} · ${chapter.label}` }))))
 watch(progressChapters, (chapters) => {
@@ -79,7 +79,7 @@ const trainingMode = computed<TrainingMode>(() => {
 const pageCopy = computed(() => ({
   chapter: {
     title: '按章节训练',
-    description: '选择多个班和章／小节，按成绩相近、共同薄弱点覆盖每人至少一半的条件分组；核对名单后采用同卷训练。',
+    description: '选择多个班和章／小节，按同技能作答所支持的适合难度与练习需要分组；核对名单后采用同卷训练。',
   },
   student: {
     title: '按学生训练',
@@ -132,7 +132,7 @@ const paperNumericSettingsValid = computed(() => (
   questionCount.value >= 8
   && questionCount.value <= 12
   && difficultyMax.value >= 1
-  && difficultyMax.value <= 10
+  && difficultyMax.value <= 8
 ))
 // 多人同一套卷用成员需求并集出题；一人一卷用章/节范围出题。
 // 出卷页按最后编辑页记录的模式（paperMode）取对应的校验。

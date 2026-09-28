@@ -150,7 +150,7 @@ class DiagnosisProfileService:
         )
         return (
             "\u0000".join(source_identity),
-            "tag-profile-part-v7-error-causes",
+            "tag-profile-part-v9-graded-activities",
             str(self.data_root),
             json.dumps(scope, ensure_ascii=False, sort_keys=True, default=str),
             json.dumps(exam_scope, ensure_ascii=False, sort_keys=True, default=str),
@@ -520,6 +520,7 @@ class DiagnosisProfileService:
         normalized_scope = resolved.normalized_scope(scope)
         result = {
             "scope": normalized_scope,
+            "_graded_activities": self.graded_activities(student_ids),
             "exam_scope": {
                 "mode": str(exam_scope.get("mode") or "current"),
                 **({"curriculum_volume_id": str(exam_scope.get("curriculum_volume_id") or "")}
@@ -549,6 +550,27 @@ class DiagnosisProfileService:
             "diagnosis_identity": "question_tag",
         }
         return result, dict(aggregated_mastery)
+
+    def graded_activities(self, student_ids: Iterable[str]) -> list[dict[str, Any]]:
+        """Read actual participation independently of tag coverage or score loss."""
+        ids = tuple(student_ids)
+        if not ids:
+            return []
+        sessions = {str(item["id"]): item for item in self.db.list_grading_sessions()
+                    if not item.get("is_deleted")}
+        activities: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in self.db.get_active_assessment_evidence(student_ids=ids):
+            if row.get("score_awarded") is None:
+                continue
+            sid, session = str(row["student_id"]), str(row["session_id"])
+            if session not in sessions:
+                continue
+            activities.setdefault((sid, session), {
+                "student_id": sid, "activity_id": "exam:" + session,
+                "session_id": session, "occurred_at": str(sessions[session].get("created_at") or ""),
+            })
+        return sorted(activities.values(), key=lambda item: (item["student_id"], item["occurred_at"], item["activity_id"]))
+
     def _merge_current_mastery(
         self,
         student_profiles: list[dict[str, Any]],

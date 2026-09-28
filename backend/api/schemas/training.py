@@ -80,7 +80,7 @@ class TrainingGroupingRequest(_TrainingModel):
     question_count: int = Field(default=10, ge=8, le=12)
     expected_minutes: int = 40  # 兼容输入，不参与推荐
     difficulty_min: int = Field(default=2, ge=1, le=10)
-    difficulty_max: int = Field(default=7, ge=1, le=10)
+    difficulty_max: int = Field(default=8, ge=1, le=8)
     exclude_current_exam_originals: bool = True
     curriculum_volume_id: str = ""
     training_intent: Literal["remediation", "challenge"] = "remediation"
@@ -103,7 +103,7 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
     question_count: int = Field(default=10, ge=8, le=12)
     expected_minutes: int = 45  # 兼容输入，不参与推荐
     difficulty_min: int = Field(default=1, ge=1, le=10)
-    difficulty_max: int = Field(default=7, ge=1, le=10)
+    difficulty_max: int = Field(default=8, ge=1, le=8)
     paper_mode: Literal["individual", "shared"] = "individual"
     target_keys: list[str] = Field(default_factory=list, max_length=50)
     scope_keys: list[str] = Field(default_factory=list, max_length=50)

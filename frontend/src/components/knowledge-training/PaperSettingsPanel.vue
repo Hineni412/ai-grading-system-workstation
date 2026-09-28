@@ -22,7 +22,7 @@ const excludeCurrentOriginals = defineModel<boolean>('excludeCurrentOriginals', 
 const modeLabel = computed(() => (props.mode === 'shared' ? '多人同一套卷' : '一人一卷'))
 const modeNote = computed(() => (props.mode === 'shared'
   ? '整卷覆盖成员各自需求，每道题可主要帮助部分成员。'
-  : '每名学生在选定范围内围绕自己的实际错题分别选题。'))
+  : '每名学生在选定范围内按实际需要选题，也可安排合适的新练习。'))
 </script>
 
 <template>
@@ -41,14 +41,14 @@ const modeNote = computed(() => (props.mode === 'shared'
         <option v-for="chapter in progressChapters ?? []" :key="chapter.id" :value="chapter.id">{{ chapter.label }}</option>
       </select></label>
     </div>
-    <p class="paper-settings-panel__hint">从实际错题难度起步，结合整体成绩与失分表现下浮 0–1 级，优先服从难度上限。按题量控制规模；整题所有小问均检查已学范围。</p>
+    <p class="paper-settings-panel__hint">依据同技能多次作答（包含正确与失分）判断适合难度。允许范围内新练习；整题所有小问均检查已学范围，相似题受限，解答题最多2道。</p>
     <div class="paper-settings__grid">
       <label>每卷题数<input v-model.number="questionCount" type="number" min="8" max="12"><small>8–12 题</small></label>
-      <label>难度上限<input v-model.number="difficultyMax" type="number" min="1" max="10"><small>1–10 级，默认 7 级</small></label>
+      <label>难度上限<input v-model.number="difficultyMax" type="number" min="1" max="8"><small>最高 8 级</small></label>
     </div>
     <div class="paper-settings-panel__footer">
       <label class="paper-settings-panel__exclude">
-        <input v-model="excludeCurrentOriginals" type="checkbox">排除本次考试原题
+        训练与考试合并，排除最近3次已有批改结果的原题
       </label>
       <span class="paper-settings-panel__note">{{ modeNote }}</span>
       <AppButton

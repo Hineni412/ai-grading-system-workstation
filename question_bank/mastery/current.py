@@ -84,7 +84,7 @@ class CurrentMasteryCalculator:
             raise ValueError("current mastery parameters are unavailable")
         exam = self._exam_evidence(profile)
         exam_scope = profile.get("exam_scope") or {}
-        training = self._training_evidence(
+        training = self.training_observations(
             exclude_evidence_ids=exclude_training_evidence_ids,
             allowed_student_ids=allowed_student_ids,
             curriculum_volume_id=(str(exam_scope.get("curriculum_volume_id") or "")
@@ -276,7 +276,7 @@ class CurrentMasteryCalculator:
                         result[(student_id, target.stable_key)].append(evidence)
         return result
 
-    def _training_evidence(
+    def training_observations(
         self,
         *,
         exclude_evidence_ids: frozenset[str],

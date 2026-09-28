@@ -12,7 +12,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   const filters = reactive<AssemblyAssistantRequest>({
     class_id: typeof previous.class_id === 'string' ? previous.class_id : '',
     curriculum_volume_id: '', chapter_id: '', target_keys: null,
-    question_type: '', difficulty_min: 1, difficulty_max: 10,
+    question_type: '', difficulty_min: 1, difficulty_max: 8,
     exclude_exam_originals: true, exclude_recent: true,
   })
   const result = shallowRef<AssemblyAssistantResult | null>(null)
