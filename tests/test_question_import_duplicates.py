@@ -26,6 +26,78 @@ ANSWER_TEXT = "42"
 PAPER_TEXT = f"1. {QUESTION_TEXT}\n答案：\n1. {ANSWER_TEXT}"
 
 
+def test_incremental_identity_refresh_keeps_file_edits_and_rollback_visible(tmp_path, monkeypatch):
+    import json
+    from PIL import Image
+    from question_bank.services import duplicate_analysis_copy_service as identity
+    from question_bank.services.rich_content_service import save_question_rich_content
+
+    db = tmp_path / "databases/question_bank.db"
+    initialize_database(db)
+    asset = tmp_path / "question_bank/extracted_images/figure.png"
+    asset.parent.mkdir(parents=True)
+    Image.new("RGB", (12, 12), "red").save(asset)
+    with connect(db) as conn:
+        conn.execute("INSERT INTO papers(id,title) VALUES(1,'合成试卷')")
+        conn.executemany("INSERT INTO questions(id,paper_id,question_number,question_text,image_paths,has_images) VALUES(?,1,'1',?,?,?)", [
+            (1, "计算 x+1", "[]", 0),
+            (2, "计算 x+2", "[]", 0),
+            (3, "如图求面积", json.dumps(["question_bank/extracted_images/figure.png"]), 1),
+        ])
+        identity.ensure_content_index(conn, data_root=tmp_path)
+    original = identity.exact_question_key
+    computed = []
+    def compute(question, **kwargs):
+        computed.append(question["id"])
+        return original(question, **kwargs)
+    monkeypatch.setattr(identity, "exact_question_key", compute)
+    with connect(db) as conn:
+        before = identity.exact_identity_map(conn, data_root=tmp_path)
+        identity.ensure_content_index(conn, data_root=tmp_path)
+        assert computed == []
+        conn.execute("UPDATE questions SET question_text='计算 x+7' WHERE id=2")
+        identity.ensure_content_index(conn, data_root=tmp_path)
+        assert computed == [2]
+        conn.rollback()
+        assert identity.exact_identity_map(conn, data_root=tmp_path) == before
+        computed.clear()
+        Image.new("RGB", (12, 12), "blue").save(asset)
+        after_image = identity.exact_identity_map(conn, data_root=tmp_path)
+        assert computed == [3]
+        assert after_image[3] != before[3]
+        computed.clear()
+        save_question_rich_content(1, question_blocks=[{"text": "公式", "math_nodes": []}], root=tmp_path / "question_bank/rich_content")
+        identity.ensure_content_index(conn, data_root=tmp_path)
+        assert computed == [1]
+
+
+def test_near_candidate_index_matches_exhaustive_scoring_and_new_batch_questions():
+    import random
+    from types import SimpleNamespace
+    from question_bank.services.similarity_service import question_text_profile, profiled_text_similarity
+
+    rng = random.Random(128)
+    stems = ["".join(rng.choices("甲乙丙丁戊己庚辛0123456789+=", k=rng.randrange(4, 80))) for _ in range(180)]
+    stems += ["求 x+1 的值", "求 x-1 的值", "如图求面积 [[IMAGE:a.png]]", "a" * 210 + "bc", "a" * 210 + "cb", ""]
+    index = batch_importer._DuplicateIndex(questions=[{
+        "id": i + 1, "question_text": stem, "question_type": "填空题", "paper_title": "合成卷",
+        "profile": question_text_profile(stem),
+    } for i, stem in enumerate(stems)])
+    queries = [*stems[::7], "求 x+2 的值", "如图求面积 [[IMAGE:b.png]]"]
+    for text in queries:
+        query = SimpleNamespace(question_number="1", question_text=text, question_type="填空题")
+        scores = [(profiled_text_similarity(question_text_profile(text), row["profile"]), row["id"]) for row in index.questions]
+        score, qid = min(scores, key=lambda item: (-item[0], item[1]))
+        actual = batch_importer._near_duplicate_hint(query, index)
+        if score < 0.7:
+            assert actual is None
+        else:
+            assert (actual["similarity"], actual["matched_question_id"]) == (score, qid)
+    index.add(999, question_text="新加入的完全不同题目", answer_text="", question_type="填空题", paper_title="新卷", key="already-computed")
+    hit = batch_importer._near_duplicate_hint(SimpleNamespace(question_number="9", question_text="新加入的完全不同题目", question_type="填空题"), index)
+    assert hit["matched_question_id"] == 999
+
+
 def _fake_extract(text: str):
     def extract(path, **_kwargs):
         return ExtractedDocument(
