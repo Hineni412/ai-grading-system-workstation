@@ -24,6 +24,11 @@ from grading_limits import PRECHECK_WORKERS_MAX, PRECHECK_WORKERS_MIN, bounded_i
 from image_preprocessor import ENHANCER_VERSION, enhance_for_ai, enhance_image_file
 from llm_client import LLMClient
 
+try:
+    from scan_identity import IDENTITY_METHOD
+except Exception:  # pragma: no cover - numpy/mineru absent keeps the legacy path
+    IDENTITY_METHOD = "roster"
+
 STUDENT_NAME_REGION_ID = "__student_name__"
 STUDENT_NAME_REGION_ALIASES = {STUDENT_NAME_REGION_ID, "student_name", "name", "姓名", "姓名区域"}
 STUDENT_NAME_BATCH_SIZE = 10
@@ -59,6 +64,7 @@ class ScanIssue:
     suggested_student_name: str | None = None
     suggested_match_score: float | None = None
     detected_class_name: str | None = None
+    suggested_students: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -68,6 +74,7 @@ class ScanAnalysis:
     absent_students: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     total_pages: int = 0
+    identity: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +83,7 @@ class ScanAnalysis:
             "absent_students": self.absent_students,
             "warnings": self.warnings,
             "total_pages": self.total_pages,
+            "identity": dict(self.identity) if isinstance(self.identity, dict) else None,
         }
 
     @classmethod
@@ -86,6 +94,7 @@ class ScanAnalysis:
             absent_students=[dict(item) for item in data.get("absent_students", []) if isinstance(item, dict)],
             warnings=[str(item) for item in data.get("warnings", [])],
             total_pages=int(data.get("total_pages") or 0),
+            identity=dict(data["identity"]) if isinstance(data.get("identity"), dict) else None,
         )
 
 
@@ -122,7 +131,7 @@ class _ScanProgressReporter:
             f"页面准备已处理 {done}/{total} 页",
         )
 
-    def recognition_page_done(self) -> None:
+    def recognition_page_done(self, detail: str | None = None) -> None:
         with self._lock:
             self._recognition_done += 1
             completed_work = min(self._recognition_done, self._recognition_pages)
@@ -131,7 +140,15 @@ class _ScanProgressReporter:
             self._emit(
                 0.15 + 0.75 * ratio,
                 "识别姓名",
-                f"姓名识别已处理 {completed_work}/{total_work} 个候选正面页",
+                detail or f"姓名识别已处理 {completed_work}/{total_work} 个候选正面页",
+            )
+
+    def roster_assign(self, student_count: int) -> None:
+        with self._lock:
+            self._emit(
+                0.90,
+                "名单比对",
+                f"正在把识别结果与 {student_count} 名学生做一对一分配",
             )
 
     def recognition_complete(self) -> None:
@@ -280,7 +297,7 @@ class Scanner:
     def __init__(
         self,
         exams_dir: Path,
-        llm_client: LLMClient,
+        llm_client: LLMClient | None,
         ocr_model: str | None = None,
         enhance_images: bool = True,
         ocr_workers: int | None = None,
@@ -313,6 +330,11 @@ class Scanner:
         self.render_dir = self.exams_dir / "_pdf_pages"
         self.enhanced_dir = self.exams_dir / "_enhanced"
         self._detected_classes: dict[str, str] = {}
+
+    def _require_llm_client(self) -> LLMClient:
+        if self.llm_client is None:
+            raise ValueError("active LLM API configuration is missing")
+        return self.llm_client
 
     def scan(self) -> List[ExamPaperGroup]:
         return self.analyze().groups
@@ -384,8 +406,16 @@ class Scanner:
             analysis.warnings.append("当前未导入学生库，无法把 OCR 姓名匹配到班级学生；请先导入学生名单。")
         matched_student_ids: set[int] = set()
 
+        all_pdf_page_sets = pdf_page_sets + rendered_page_sets
+        roster_identity = self._extract_roster_identities(
+            image_files,
+            all_pdf_page_sets,
+            students,
+            progress,
+        )
+
         legacy_detected_names: dict[int, str | None] = {}
-        if image_files:
+        if image_files and roster_identity is None:
             paired_page_count = len(image_files) - (len(image_files) % 2)
             front_indices = list(range(0, paired_page_count, 2))
             if type(self)._extract_student_name is Scanner._extract_student_name:
@@ -404,13 +434,13 @@ class Scanner:
                     )
                     progress.recognition_page_done()
 
-        all_pdf_page_sets = pdf_page_sets + rendered_page_sets
-        for _source_name, pages in all_pdf_page_sets:
-            self._extract_pdf_page_names(
-                pages,
-                student_lookup,
-                on_page_processed=progress.recognition_page_done,
-            )
+        if roster_identity is None:
+            for _source_name, pages in all_pdf_page_sets:
+                self._extract_pdf_page_names(
+                    pages,
+                    student_lookup,
+                    on_page_processed=progress.recognition_page_done,
+                )
 
         progress.recognition_complete()
 
@@ -419,6 +449,7 @@ class Scanner:
                 image_files,
                 student_lookup,
                 detected_names=legacy_detected_names,
+                roster_identity=roster_identity,
             )
             analysis.groups.extend(image_analysis.groups)
             analysis.issues.extend(image_analysis.issues)
@@ -427,7 +458,12 @@ class Scanner:
             progress.pairing_pages_done(len(image_files))
 
         for source_name, pages in all_pdf_page_sets:
-            pdf_analysis = self._pair_pdf_pages(source_name, pages, student_lookup)
+            pdf_analysis = self._pair_pdf_pages(
+                source_name,
+                pages,
+                student_lookup,
+                roster_identity=roster_identity,
+            )
             analysis.groups.extend(pdf_analysis.groups)
             analysis.issues.extend(pdf_analysis.issues)
             analysis.warnings.extend(pdf_analysis.warnings)
@@ -435,15 +471,31 @@ class Scanner:
             progress.pairing_pages_done(len(pages))
 
         progress.finalizing()
-        refine_scan_analysis_matches(analysis, students or [])
+        if roster_identity is None:
+            refine_scan_analysis_matches(analysis, students or [])
 
-        # Reuse text already obtained from the name area; never add a model call
-        # or infer a class from a student's name or from an upload filename.
-        for item in [*analysis.groups, *analysis.issues]:
-            item.detected_class_name = self._detected_classes.get(str(item.front_image)) or self._detected_classes.get(str(item.enhanced_front_image))
-            if isinstance(item, ScanIssue) and student_lookup.get(_normalize_name(item.detected_name or ""), {}).get("_ambiguous_name"):
-                item.issue_type = "ambiguous_name"
-                item.message = "名单中有重名学生，请按学号和班级确认归属。"
+            # Reuse text already obtained from the name area; never add a model call
+            # or infer a class from a student's name or from an upload filename.
+            for item in [*analysis.groups, *analysis.issues]:
+                item.detected_class_name = self._detected_classes.get(str(item.front_image)) or self._detected_classes.get(str(item.enhanced_front_image))
+                if isinstance(item, ScanIssue) and student_lookup.get(_normalize_name(item.detected_name or ""), {}).get("_ambiguous_name"):
+                    item.issue_type = "ambiguous_name"
+                    item.message = "名单中有重名学生，请按学号和班级确认归属。"
+        else:
+            analysis.identity = {
+                "method": "roster_local",
+                "auto": sum(
+                    1
+                    for record in roster_identity.values()
+                    if record["decision"].status == "auto"
+                ),
+                "needs_confirmation": sum(
+                    1
+                    for record in roster_identity.values()
+                    if record["decision"].status == "review"
+                ),
+                "model_requests": 0,
+            }
 
         for group in analysis.groups:
             if group.student_id is not None:
@@ -509,6 +561,7 @@ class Scanner:
         student_lookup: dict[str, dict[str, Any]],
         *,
         detected_names: dict[int, str | None] | None = None,
+        roster_identity: dict[str, dict[str, Any]] | None = None,
     ) -> ScanAnalysis:
         analysis = ScanAnalysis(total_pages=len(image_files))
         if len(image_files) % 2 != 0:
@@ -527,11 +580,29 @@ class Scanner:
 
         for index in range(0, len(image_files), 2):
             front_image, back_image = image_files[index], image_files[index + 1]
-            detected_name = (
-                detected_names[index]
-                if detected_names is not None and index in detected_names
-                else self._extract_student_name(front_image, student_lookup)
-            )
+            if roster_identity is not None:
+                record = roster_identity.get(str(front_image))
+                if record is not None:
+                    analysis_pair = _roster_decision_paper(
+                        record,
+                        issue_id=f"image_pair_{index + 1}_{index + 2}",
+                        front_image=front_image,
+                        back_image=back_image,
+                        source_label=f"{front_image.name} + {back_image.name}",
+                        fallback_detected_name=None,
+                    )
+                    if isinstance(analysis_pair, ExamPaperGroup):
+                        analysis.groups.append(analysis_pair)
+                    else:
+                        analysis.issues.append(analysis_pair)
+                    continue
+                detected_name = None
+            else:
+                detected_name = (
+                    detected_names[index]
+                    if detected_names is not None and index in detected_names
+                    else self._extract_student_name(front_image, student_lookup)
+                )
             match = _match_student(detected_name, student_lookup)
             student = match.student if match else None
             if student:
@@ -589,9 +660,17 @@ class Scanner:
         source_name: str,
         pages: list[PageRecord],
         student_lookup: dict[str, dict[str, Any]],
+        *,
+        roster_identity: dict[str, dict[str, Any]] | None = None,
     ) -> ScanAnalysis:
         if self.front_page_parity in {"odd", "even"}:
-            return _pair_pdf_pages_by_template_parity(source_name, pages, student_lookup, self.front_page_parity)
+            return _pair_pdf_pages_by_template_parity(
+                source_name,
+                pages,
+                student_lookup,
+                self.front_page_parity,
+                roster_identity=roster_identity,
+            )
 
         analysis = ScanAnalysis()
         used: set[int] = set()
@@ -815,6 +894,90 @@ class Scanner:
                 results[item[0]] = name
         return results
 
+    def _extract_roster_identities(
+        self,
+        image_files: list[Path],
+        all_pdf_page_sets: list[tuple[str, list[PageRecord]]],
+        students: list[dict[str, Any]] | None,
+        progress: "_ScanProgressReporter",
+    ) -> dict[str, dict[str, Any]] | None:
+        """Local roster-constrained identification; returns None when unavailable.
+
+        Requires a confirmed front-page parity (one class per file, fixed name box)
+        and a non-empty student list. No remote model is called on this path.
+        """
+        if self.front_page_parity not in {"odd", "even"} or not students:
+            return None
+        try:
+            from local_ocr import get_local_ocr
+            from scan_identity import (
+                RosterEntry,
+                assign_identities,
+                build_vocabulary,
+                extract_paper_evidence,
+            )
+            ocr = get_local_ocr()
+            roster = [
+                RosterEntry(
+                    student_id=int(student["id"]),
+                    name=str(student.get("name") or "").strip(),
+                    class_name=str(student.get("class_name") or ""),
+                )
+                for student in students
+                if student.get("id") is not None and str(student.get("name") or "").strip()
+            ]
+            if not roster:
+                return None
+            vocabulary = build_vocabulary(roster)
+            # Loads the engine lazily; missing models raise and keep the legacy path.
+            ocr.character_columns(vocabulary)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARNING] 本机名单识别不可用，回退到原姓名识别流程: {exc}")
+            return None
+
+        fronts: list[tuple[str, Path]] = []
+        if image_files:
+            paired_count = len(image_files) - (len(image_files) % 2)
+            for index in range(0, paired_count, 2):
+                fronts.append((image_files[index].name, image_files[index]))
+        for source_name, pages in all_pdf_page_sets:
+            for index in _front_page_indices(len(pages), self.front_page_parity or "odd"):
+                fronts.append((source_name, pages[index].image_path))
+
+        records: dict[str, dict[str, Any]] = {}
+        evidence_list = []
+        total = len(fronts)
+        for position, (file_key, image_path) in enumerate(fronts, start=1):
+            try:
+                with Image.open(image_path) as page_image:
+                    evidence = extract_paper_evidence(
+                        page_image.convert("RGB"),
+                        self.name_region,
+                        roster,
+                        vocabulary,
+                        key=str(image_path),
+                        file_key=file_key,
+                        ocr=ocr,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[WARNING] 本机姓名识别失败 {image_path.name}: {exc}")
+            else:
+                evidence_list.append(evidence)
+                records[str(image_path)] = {"evidence": evidence}
+            progress.recognition_page_done(f"本机识别姓名与班级 {position}/{total}")
+        progress.roster_assign(len(roster))
+        roster_by_id = {entry.student_id: entry for entry in roster}
+        for decision in assign_identities(evidence_list, roster):
+            record = records[decision.key]
+            record["decision"] = decision
+            record["suggestions"] = _identity_suggestions(decision, roster_by_id)
+            record["student"] = (
+                roster_by_id.get(decision.student_id)
+                if decision.student_id is not None
+                else None
+            )
+        return records
+
     def _prepare_name_crop(
         self,
         image_path: Path,
@@ -860,7 +1023,7 @@ class Scanner:
                     "只能从以下学生名单选择；明显不符时返回 NOT_FOUND：\n"
                     f"{json.dumps(list(student_lookup.keys()), ensure_ascii=False)}"
                 )
-            text = self.llm_client.text_from_images(
+            text = self._require_llm_client().text_from_images(
                 prompt,
                 [atlas],
                 model=self.ocr_model,
@@ -974,7 +1137,7 @@ class Scanner:
         if report:
             report(None, "兜底识别", f"[{front_image.name}] ⚠️ 本地匹配失败，正触发大模型智能提取...")
             
-        text = self.llm_client.text_from_images(prompt, [image_bytes], model=self.ocr_model, system_prompt=system_prompt)
+        text = self._require_llm_client().text_from_images(prompt, [image_bytes], model=self.ocr_model, system_prompt=system_prompt)
 
         cleaned_ai = text.strip().replace("\n", "")
         if not cleaned_ai:
@@ -1103,6 +1266,95 @@ def _choose_student_name(
         if local_match_score > ai_score:
             return best_local
     return normalized
+
+
+def _identity_suggestions(decision: Any, roster_by_id: dict[int, Any]) -> list[dict[str, Any]]:
+    suggestions: list[dict[str, Any]] = []
+    for student_id, score in decision.suggestions[:3]:
+        entry = roster_by_id.get(student_id)
+        if entry is None:
+            continue
+        suggestions.append(
+            {
+                "student_id": int(student_id),
+                "student_name": entry.name,
+                "class_name": entry.class_name,
+                "score": float(score),
+            }
+        )
+    return suggestions
+
+
+def _roster_decision_paper(
+    record: dict[str, Any],
+    *,
+    issue_id: str,
+    front_image: Path,
+    back_image: Path | None,
+    source_label: str,
+    fallback_detected_name: str | None = None,
+    enhanced_front_image: Path | None = None,
+    enhanced_back_image: Path | None = None,
+) -> ExamPaperGroup | ScanIssue:
+    decision = record["decision"]
+    evidence = record["evidence"]
+    detected_name = evidence.display_text or fallback_detected_name
+    # Only the class actually read on this paper counts as 卷面班级; the
+    # file-majority prior must not be reported as a paper-level reading.
+    detected_class = evidence.class_name or ""
+    if decision.status == "auto" and record.get("student") is not None:
+        student = record["student"]
+        return ExamPaperGroup(
+            front_image=front_image,
+            back_image=back_image,
+            student_name=student.name,
+            student_id=int(student.student_id),
+            detected_name=detected_name,
+            source_label=source_label,
+            enhanced_front_image=enhanced_front_image,
+            enhanced_back_image=enhanced_back_image,
+            match_method=IDENTITY_METHOD,
+            match_score=round(float(decision.posterior), 3),
+            detected_class_name=detected_class,
+        )
+    suggestions = record.get("suggestions") or []
+    top = suggestions[0] if suggestions else None
+    return ScanIssue(
+        issue_id=issue_id,
+        issue_type="needs_confirmation",
+        message="本机识别不够确定，请看卷确认学生。",
+        front_image=front_image,
+        back_image=back_image,
+        detected_name=detected_name,
+        source_label=source_label,
+        enhanced_front_image=enhanced_front_image,
+        enhanced_back_image=enhanced_back_image,
+        suggested_student_id=top["student_id"] if top else None,
+        suggested_student_name=top["student_name"] if top else None,
+        suggested_match_score=top["score"] if top else None,
+        detected_class_name=detected_class,
+        suggested_students=suggestions,
+    )
+
+
+def _identity_extras(record: dict[str, Any] | None) -> dict[str, Any]:
+    """Suggestion fields a structural issue inherits from its front's decision."""
+    if not record:
+        return {}
+    suggestions = record.get("suggestions") or []
+    top = suggestions[0] if suggestions else None
+    decision = record.get("decision")
+    evidence = record.get("evidence")
+    extras: dict[str, Any] = {
+        "detected_class_name": (evidence.class_name if evidence else None) or "",
+        "suggested_student_id": top["student_id"] if top else None,
+        "suggested_student_name": top["student_name"] if top else None,
+        "suggested_match_score": top["score"] if top else None,
+        "suggested_students": suggestions,
+    }
+    if evidence and evidence.display_text:
+        extras["detected_name"] = evidence.display_text
+    return extras
 
 
 def _build_student_lookup(students: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -1351,6 +1603,8 @@ def _pair_pdf_pages_by_template_parity(
     pages: list[PageRecord],
     student_lookup: dict[str, dict[str, Any]],
     front_page_parity: str,
+    *,
+    roster_identity: dict[str, dict[str, Any]] | None = None,
 ) -> ScanAnalysis:
     analysis = ScanAnalysis()
     used: set[int] = set()
@@ -1359,16 +1613,19 @@ def _pair_pdf_pages_by_template_parity(
             continue
         back_idx = front_idx + 1 if front_page_parity == "odd" else front_idx - 1
         front = pages[front_idx]
+        record = roster_identity.get(str(front.image_path)) if roster_identity else None
         if back_idx < 0 or back_idx >= len(pages):
+            extras = _identity_extras(record)
+            extras.setdefault("detected_name", front.detected_name)
             analysis.issues.append(
                 ScanIssue(
                     issue_id=f"{_safe_id(source_name)}_p{front.page_number or front_idx + 1}",
                     issue_type="missing_back",
                     message="按样卷正反面顺序配对时，未找到该页对应的另一面。",
                     front_image=front.image_path,
-                    detected_name=front.detected_name,
                     source_label=front.source_label,
                     enhanced_front_image=front.enhanced_image_path,
+                    **extras,
                 )
             )
             used.add(front_idx)
@@ -1376,8 +1633,24 @@ def _pair_pdf_pages_by_template_parity(
 
         back = pages[back_idx]
         used.update({front_idx, back_idx})
-        match = _match_student(front.detected_name, student_lookup)
         source_label = f"{source_name} 第 {front.page_number}-{back.page_number} 页"
+        if record is not None:
+            paired = _roster_decision_paper(
+                record,
+                issue_id=f"{_safe_id(source_name)}_p{front.page_number}_{back.page_number}",
+                front_image=front.image_path,
+                back_image=back.image_path,
+                source_label=source_label,
+                fallback_detected_name=front.detected_name,
+                enhanced_front_image=front.enhanced_image_path,
+                enhanced_back_image=back.enhanced_image_path,
+            )
+            if isinstance(paired, ExamPaperGroup):
+                analysis.groups.append(paired)
+            else:
+                analysis.issues.append(paired)
+            continue
+        match = _match_student(front.detected_name, student_lookup)
         if match and match.student:
             student = match.student
             analysis.groups.append(
@@ -1622,4 +1895,7 @@ def _issue_from_dict(data: dict[str, Any]) -> ScanIssue:
         suggested_student_name=data.get("suggested_student_name"),
         suggested_match_score=float(data["suggested_match_score"]) if data.get("suggested_match_score") is not None else None,
         detected_class_name=data.get("detected_class_name"),
+        suggested_students=[
+            dict(item) for item in data["suggested_students"] if isinstance(item, dict)
+        ] if isinstance(data.get("suggested_students"), list) else None,
     )

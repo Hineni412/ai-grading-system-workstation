@@ -55,7 +55,7 @@ const requestedStage = ref(new URLSearchParams(window.location.search).get('stag
 type StageId = 'draft' | 'source' | 'generation' | 'editor' | 'template'
 const activePanel = ref<'source' | 'editor'>('source')
 const sourceStage = ref<'draft' | 'source' | 'generation'>('draft')
-const transitionName = ref<'config-forward' | 'config-back'>('config-forward')
+const transitionName = ref<'fx-stage-forward' | 'fx-stage-back'>('fx-stage-forward')
 const pendingStageFocus = ref<'draft' | 'source' | 'generation' | null>(null)
 const selectedScoringQuestion = ref('')
 const regenerationSubmitting = ref(false)
@@ -156,7 +156,7 @@ const activeStage = computed<StageId>(() => activePanel.value === 'editor'
 watch(() => configStore.phase, (phase) => {
   if (requestedStage.value !== null) return
   if (phase === 'editor') {
-    if (activePanel.value !== 'editor') transitionName.value = 'config-forward'
+    if (activePanel.value !== 'editor') transitionName.value = 'fx-stage-forward'
     activePanel.value = 'editor'
     return
   }
@@ -185,13 +185,13 @@ async function selectStage(stage: StageId): Promise<void> {
   }
   if (stage === 'editor') {
     if (!configStore.editor?.configured) return
-    transitionName.value = 'config-forward'
+    transitionName.value = 'fx-stage-forward'
     activePanel.value = 'editor'
     await nextTick()
     document.querySelector<HTMLElement>('#rubric-ledger-title')?.focus()
     return
   }
-  transitionName.value = 'config-back'
+  transitionName.value = 'fx-stage-back'
   const panelChanging = activePanel.value !== 'source'
   sourceStage.value = stage
   pendingStageFocus.value = stage
@@ -770,18 +770,4 @@ watch(
 .session-config-view__empty { padding: var(--space-3) var(--space-6); border-block-end: var(--border-width) solid var(--border); color: var(--color-text-secondary); }
 .session-config-view__state button { min-height: var(--control-height-default); margin-block-start: var(--space-3); }
 .config-workspace__panel { min-width: 0; }
-.config-forward-enter-active,
-.config-forward-leave-active,
-.config-back-enter-active,
-.config-back-leave-active { transition: opacity 180ms ease, transform 220ms cubic-bezier(.2, .75, .25, 1); }
-.config-forward-enter-from,
-.config-back-leave-to { opacity: 0; transform: translateX(32px); }
-.config-forward-leave-to,
-.config-back-enter-from { opacity: 0; transform: translateX(-32px); }
-@media (prefers-reduced-motion: reduce) {
-  .config-forward-enter-active,
-  .config-forward-leave-active,
-  .config-back-enter-active,
-  .config-back-leave-active { transition: none; }
-}
 </style>
