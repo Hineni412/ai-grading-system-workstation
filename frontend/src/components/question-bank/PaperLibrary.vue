@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   computed,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   onScopeDispose,
@@ -226,6 +227,34 @@ const paperFolders = computed<PaperFolder[]>(() => {
   }
   return result
 })
+
+const paperPageSize = 24
+const paperPage = ref(1)
+const libraryElement = ref<HTMLElement | null>(null)
+async function changePaperPage(step: number): Promise<void> {
+  paperPage.value = Math.max(1, Math.min(paperPageCount.value, paperPage.value + step))
+  await nextTick()
+  libraryElement.value?.scrollIntoView?.({ block: 'start' })
+}
+const paperPageCount = computed(() => Math.max(1, Math.ceil(filteredPapers.value.length / paperPageSize)))
+const pageFolders = computed(() => {
+  let offset = (paperPage.value - 1) * paperPageSize
+  let remaining = paperPageSize
+  return paperFolders.value.flatMap((folder) => {
+    if (offset >= folder.papers.length) {
+      offset -= folder.papers.length
+      return []
+    }
+    const visiblePapers = folder.papers.slice(offset, offset + remaining)
+    remaining -= visiblePapers.length
+    offset = 0
+    return visiblePapers.length ? [{ ...folder, visiblePapers }] : []
+  })
+})
+watch([debouncedKeyword, year, examType, sourceType, progressStatus, () => curriculumScope.selectedVolumeId], () => {
+  paperPage.value = 1
+})
+watch(paperPageCount, (count) => { paperPage.value = Math.min(paperPage.value, count) })
 
 watch(() => curriculumScope.selectedVolumeId, () => {
   const next = new Set(collapsedFolderKeys.value)
@@ -1068,7 +1097,7 @@ async function confirmPermanentDelete(): Promise<void> {
 </script>
 
 <template>
-  <section class="paper-library" aria-labelledby="paper-library-title">
+  <section ref="libraryElement" class="paper-library" aria-labelledby="paper-library-title">
     <header class="paper-library__header">
       <div>
         <p class="paper-library__eyebrow">PAPER LIBRARY</p>
@@ -1163,7 +1192,7 @@ async function confirmPermanentDelete(): Promise<void> {
           :disabled="filteredPaperIds.length === 0"
           @change="onSelectAllChange"
         >
-        <span>全选</span>
+        <span title="包含其他页中符合当前筛选条件的试卷">全选筛选结果</span>
       </label>
       <span class="paper-batch-bar__info">
         {{ selectedCount > 0 ? `已选 ${selectedCount} 份试卷` : '未选中试卷' }}
@@ -1209,7 +1238,7 @@ async function confirmPermanentDelete(): Promise<void> {
     </div>
 
     <div v-else class="paper-folders">
-      <section v-for="folder in paperFolders" :key="folder.key" class="paper-folder">
+      <section v-for="folder in pageFolders" :key="folder.key" class="paper-folder">
         <div class="paper-folder__head">
           <label class="paper-folder__check" @click.stop>
             <input
@@ -1239,7 +1268,7 @@ async function confirmPermanentDelete(): Promise<void> {
         </div>
         <div v-if="!collapsedFolderKeys.has(folder.key) || keyword.trim()" class="paper-library__grid">
           <article
-            v-for="paper in folder.papers"
+            v-for="paper in folder.visiblePapers"
             :key="paper.id"
             class="paper-card"
             :class="{ 'is-selected': isPaperSelected(paper.id) }"
@@ -1379,6 +1408,12 @@ async function confirmPermanentDelete(): Promise<void> {
         </div>
       </section>
     </div>
+
+    <nav v-if="paperPageCount > 1" class="paper-library__pagination" aria-label="试卷分页">
+      <AppButton variant="secondary" :disabled="paperPage === 1" @click="changePaperPage(-1)">上一页</AppButton>
+      <span role="status">第 {{ paperPage }} / {{ paperPageCount }} 页 · 共 {{ filteredPapers.length }} 份试卷</span>
+      <AppButton variant="secondary" :disabled="paperPage === paperPageCount" @click="changePaperPage(1)">下一页</AppButton>
+    </nav>
 
     <Teleport to="body">
       <div
@@ -1649,6 +1684,7 @@ async function confirmPermanentDelete(): Promise<void> {
 </template>
 
 <style scoped>
+.paper-library__pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; }
 .paper-library {
   display: grid;
   gap: 18px;
