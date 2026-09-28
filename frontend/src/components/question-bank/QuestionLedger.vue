@@ -286,7 +286,7 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
         <div v-else class="qb-similar-list">
           <article v-for="item in similarItems" :key="item.id" class="qb-similar-card">
             <div class="qb-similar-card__score">
-              <strong>{{ Math.round(item.similarity_score * 100) }}%</strong>
+              <strong title="用于排列当前相似题，不代表题目相同的概率">推荐分 {{ Math.round(item.similarity_score * 100) }}</strong>
               <ul v-if="item.similarity_reasons.length" class="qb-similar-reasons">
                 <li
                   v-for="(reason, index) in item.similarity_reasons"

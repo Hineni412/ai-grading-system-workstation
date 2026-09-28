@@ -1416,7 +1416,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
         <div v-else class="assembly-similar-list">
           <article v-for="item in similarItems" :key="item.id">
             <div class="assembly-similar-score">
-              <strong>{{ Math.round(item.similarity_score * 100) }}%</strong>
+              <strong title="用于排列当前相似题，不代表题目相同的概率">推荐分 {{ Math.round(item.similarity_score * 100) }}</strong>
               <ul v-if="item.similarity_reasons.length" class="assembly-similar-reasons">
                 <li
                   v-for="(reason, index) in item.similarity_reasons"

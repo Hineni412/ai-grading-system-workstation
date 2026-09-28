@@ -40,16 +40,12 @@ from question_bank.services.asset_path_service import (
     resolve_question_bank_asset_path,
 )
 from question_bank.services.preview_html import block_preview_html
-from question_bank.services.question_frequency_service import (
-    calculate_question_similarity,
-    canonical_knowledge_containment,
-)
 from question_bank.services.question_revision import question_revision, question_revisions
 from question_bank.services.rich_content_service import clean_question_blocks
-from question_bank.services.similarity_service import (
-    profiled_text_similarity,
-    question_text_profile,
-    wording_similarity_upper_bound,
+from question_bank.services.similar_question_ranker import (
+    SimilarQuestionIndex,
+    build_index as build_similar_question_index,
+    dice as similarity_dice,
 )
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_chapter_exam_scope_values,
@@ -444,6 +440,10 @@ _READ_RESULT_CACHE_LIMIT = 48
 _READ_RESULT_CACHE_LOCK = threading.Lock()
 _READ_RESULT_CACHE: OrderedDict[tuple[object, ...], object] = OrderedDict()
 _CACHE_MISS = object()
+# An index is shared across different target questions; no database-side index
+# or result writes. Keep at most two prepared source generations in memory.
+_SIMILAR_INDEX_CACHE_LOCK = threading.Lock()
+_SIMILAR_INDEX_CACHE: OrderedDict[tuple[object, ...], SimilarQuestionIndex] = OrderedDict()
 # Parsed rich-content sidecars keyed by (root, question_id, mtime_ns, size);
 # a stat per hit keeps entries automatically correct when a sidecar is
 # rewritten, and avoids re-reading plus re-parsing JSON on every request.
@@ -1865,9 +1865,32 @@ class QuestionBankReadService:
         if (
             generation is not None
             and generation == _source_generation_token(self.db_path)
+            and taxonomy_token == _taxonomy_generation_token()
         ):
             _read_result_cache_put(key, result)
         return result
+
+    def _similar_question_index(self, conn, rows, cache_key) -> SimilarQuestionIndex:
+        with _SIMILAR_INDEX_CACHE_LOCK:
+            if cache_key is not None and cache_key in _SIMILAR_INDEX_CACHE:
+                _SIMILAR_INDEX_CACHE.move_to_end(cache_key)
+                return _SIMILAR_INDEX_CACHE[cache_key]
+            resolver = self.current_knowledge
+            public_tags = _load_page_tags(
+                conn, [int(row["id"]) for row in rows], current_knowledge=resolver,
+            )
+            index = build_similar_question_index(
+                rows, public_tags, resolver, db_path=self.db_path,
+                connection=conn, data_root=self.data_root,
+            )
+            if (cache_key is not None
+                    and cache_key[0] == _source_generation_token(self.db_path)
+                    and cache_key[2] == _taxonomy_generation_token()):
+                _SIMILAR_INDEX_CACHE[cache_key] = index
+                _SIMILAR_INDEX_CACHE.move_to_end(cache_key)
+                while len(_SIMILAR_INDEX_CACHE) > 2:
+                    _SIMILAR_INDEX_CACHE.popitem(last=False)
+            return index
 
     def _find_similar_questions(
         self,
@@ -1875,6 +1898,14 @@ class QuestionBankReadService:
         *,
         limit: int,
     ) -> list[dict[str, Any]] | None:
+        cache_key = None
+        if _ACTIVE_READ_SCOPE.get() is None:
+            try:
+                generation = _source_generation_token(self.db_path)
+                if generation is not None:
+                    cache_key = (generation, self._cache_data_root, _taxonomy_generation_token())
+            except (AttributeError, OSError):
+                pass
         with _read_connection(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -1907,98 +1938,20 @@ class QuestionBankReadService:
                 LEFT JOIN papers p ON p.id = q.paper_id
                 WHERE COALESCE(q.is_deleted, 0) = 0
                   AND COALESCE(p.import_status, '') <> 'deleted'
+                ORDER BY q.id
                 """
             ).fetchall()
             rows_by_id = {int(row["id"]): row for row in rows}
             target = rows_by_id.get(int(question_id))
             if target is None:
                 return None
-            # 打分只消费 method/model 公共标签（知识点重合走
-            # current_knowledge_key 规范键），全量公共标签只对目标题与
-            # 最终入选题展开，用于推荐理由和返回体。
-            scoring_tags_by_question = _load_page_tags(
-                conn,
-                list(rows_by_id),
-                current_knowledge=self.current_knowledge,
-                tag_types=("method", "model"),
-            )
-            # 相似度算法只认规范键（current_knowledge_key）；公开展示标签
-            # 里没有它，需要按原始存储值单独投影后并入评分输入。
-            knowledge_key_tags = _current_knowledge_key_tags(
-                conn,
-                list(rows_by_id),
-                self.current_knowledge,
-            )
-            scored: list[tuple[float, str, int, sqlite3.Row, float]] = []
-            target_for_similarity = {
-                "difficulty": target["difficulty"],
-                "tags": [
-                    *scoring_tags_by_question.get(int(question_id), []),
-                    *knowledge_key_tags.get(int(question_id), []),
-                ],
-            }
-            target_profile = question_text_profile(target["question_text"])
-            for candidate_id, candidate in rows_by_id.items():
-                if candidate_id == int(question_id):
-                    continue
-                candidate_tags = scoring_tags_by_question.get(candidate_id, [])
-                tag_score = calculate_question_similarity(
-                    target_for_similarity,
-                    {
-                        "difficulty": candidate["difficulty"],
-                        "tags": [
-                            *candidate_tags,
-                            *knowledge_key_tags.get(candidate_id, []),
-                        ],
-                    },
-                    knowledge_overlap=canonical_knowledge_containment,
-                )
-                # 先用廉价上界过滤：就算题干完全命中也够不到 0.35 线的
-                # 候选不再跑昂贵的 SequenceMatcher；上界由 ngram Jaccard
-                # 与字符多重集交集组成，不会误杀本应入选的题。
-                tag_component = max(0.0, min(float(tag_score), 1.0))
-                needed_wording = (
-                    (0.35 - tag_component * 0.8) / 0.2
-                    if tag_component > 0
-                    else 0.7
-                )
-                if needed_wording > 1.0:
-                    continue
-                candidate_profile = question_text_profile(
-                    candidate["question_text"]
-                )
-                if needed_wording > 0.0 and (
-                    wording_similarity_upper_bound(
-                        target_profile, candidate_profile
-                    )
-                    < needed_wording - 0.001
-                ):
-                    continue
-                wording_score = profiled_text_similarity(
-                    target_profile,
-                    candidate_profile,
-                )
-                score = _combined_similarity_score(tag_score, wording_score)
-                # 不为凑满数量返回弱相关题：标签或题干证据不足时宁可为空。
-                if score < 0.35:
-                    continue
-                scored.append(
-                    (
-                        score,
-                        str(candidate["updated_at"] or ""),
-                        candidate_id,
-                        candidate,
-                        wording_score,
-                    )
-                )
-            selected = sorted(
-                scored,
-                key=lambda item: (item[0], item[1], item[2]),
-                reverse=True,
-            )[: max(1, min(int(limit), 20))]
-            selected_ids = [
-                candidate_id for _, _, candidate_id, _, _ in selected
-            ]
+            if (cache_key is not None
+                    and (cache_key[0] != _source_generation_token(self.db_path)
+                         or cache_key[2] != _taxonomy_generation_token())):
+                cache_key = None
+            index = self._similar_question_index(conn, rows, cache_key)
+            selected = index.rank(int(question_id), max(1, min(int(limit), 20)))
+            selected_ids = [candidate_id for candidate_id, _ in selected]
             display_tags = _load_page_tags(
                 conn,
                 [int(question_id), *selected_ids],
@@ -2009,7 +1962,11 @@ class QuestionBankReadService:
             review_ids = _load_criteria_needs_review_ids(conn, selected_ids)
 
         items: list[dict[str, Any]] = []
-        for score, _, candidate_id, candidate, wording_score in selected:
+        target_input = index.questions[index.positions[int(question_id)]]
+        for candidate_id, score in selected:
+            candidate = rows_by_id[candidate_id]
+            candidate_input = index.questions[index.positions[candidate_id]]
+            wording_score = similarity_dice(target_input.text_grams, candidate_input.text_grams)
             candidate_tags = display_tags.get(candidate_id, [])
             reasons = _similarity_reasons(
                 target,
