@@ -1034,9 +1034,12 @@ class PersonalizedRecommendationModule:
 
         excluded = set()
         snapshot_generation = commit_generation(self.db_path)
+        candidate_scope = self._candidate_scope(normalized_diagnosis, config)
         snapshot = self._source_snapshot(
             excluded_question_ids=excluded,
             prepare_refinements=True,
+            knowledge_keys=candidate_scope,
+            candidate_config=config,
         )
         candidates, relations, base_source_version = snapshot
         base_source_version = _hash_payload({"bank": base_source_version, "loss_sources": self._source_practice_metadata(normalized_diagnosis)})
@@ -1170,8 +1173,8 @@ class PersonalizedRecommendationModule:
                 self._source_snapshot_cache_key(
                     prepare_refinements=True,
                     excluded_question_ids=excluded,
-                    knowledge_keys=(),
-                    candidate_config=None,
+                    knowledge_keys=candidate_scope,
+                    candidate_config=config,
                 ),
                 snapshot,
             )
@@ -1434,8 +1437,11 @@ class PersonalizedRecommendationModule:
             for item in diagnosis["students"]
         )
         excluded = set()
+        candidate_config = PersonalizedRecommendationConfig(**_config_constructor(config))
         candidates, _relations, base_source_version = self._source_snapshot(
             excluded_question_ids=excluded,
+            knowledge_keys=self._candidate_scope(diagnosis, candidate_config),
+            candidate_config=candidate_config,
         )
         base_source_version = _hash_payload({"bank": base_source_version, "loss_sources": self._source_practice_metadata(diagnosis)})
         recent = self._recent_question_ids(
@@ -1642,15 +1648,19 @@ class PersonalizedRecommendationModule:
             warnings.append(f"当前已具备有效训练资料的候选中：近期原题排除 {recent_count} 道；范围和难度上限检查后 {len(eligible)} 道；目标匹配后 {len(matched_ids)} 道；学生适合难度检查后 {len(suitable_ids)} 道。卷内相似题和解答题限制另行检查。")
         return entries, warnings
 
+    def _candidate_scope(self, diagnosis: Mapping[str, Any], config: PersonalizedRecommendationConfig) -> tuple[str, ...]:
+        relations = tuple({"relation_type": r.relation_type, "source_key": r.source_key, "target_key": r.target_key}
+                          for r in self.current_knowledge.relations)
+        return _scope_leaves(config.scope_keys or config.group_scope_keys or config.target_keys,
+                             diagnosis=diagnosis, relations=relations)
+
     def evaluate_candidates(self, *, diagnosis: Mapping[str, Any], config: PersonalizedRecommendationConfig,
                             candidates: Sequence[dict[str, Any]] | None = None,
                             mastery: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
                             recent: Mapping[str, set[int]] | None = None,
                             excluded: set[int] | None = None) -> dict[str, Any]:
         """One public read-only matching operation for all three selection flows."""
-        relations = tuple({"relation_type": r.relation_type, "source_key": r.source_key, "target_key": r.target_key}
-                          for r in self.current_knowledge.relations)
-        scope = _scope_leaves(config.scope_keys or config.group_scope_keys or config.target_keys, diagnosis=diagnosis, relations=relations)
+        scope = self._candidate_scope(diagnosis, config)
         if candidates is None:
             candidates, _, _ = self._source_snapshot(knowledge_keys=scope, candidate_config=config)
         if mastery is None:
