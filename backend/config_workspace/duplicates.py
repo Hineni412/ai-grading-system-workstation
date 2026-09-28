@@ -26,7 +26,7 @@ _SAME_SESSION_REASON = "题库中的相同题目来自本场考试此前的入�
 
 _REASON_BY_KIND = {
     "exact_reusable": "题库已有相同题目，生成时将复用已有分析，不调用 AI。",
-    "exact_needs_analysis": "题库已有相同题目，但已存分析缺失或失效，需补分析。",
+    "exact_needs_analysis": "题库已有相同题目，但已存分析缺失或失效；请先在题库补齐分析，再回到本场考试继续。",
     "image_uncertain": "题库存在相同题干的带图题，图片内容需人工核对。",
     "answer_conflict": "题面与题库相同，但参考答案不同，请核对答案。",
     "same_session": _SAME_SESSION_REASON,
@@ -93,7 +93,8 @@ def source_duplicate_preview(
     from question_bank.database.schema import connect, initialize_database
     from question_bank.importers.batch_importer import (
         ParsedQuestion,
-        _load_duplicate_index,
+        _DuplicateIndex,
+        _load_near_duplicate_questions,
         _near_duplicate_hint,
     )
     from question_bank.services.duplicate_analysis_copy_service import (
@@ -154,9 +155,7 @@ def source_duplicate_preview(
                 if keys.get(source.source_question_ref) not in matches
             ),
         )
-        duplicate_index = _load_duplicate_index(
-            bank_path, data_root=data_root, connection=conn
-        )
+        duplicate_index = None
         linked_ids = _session_linked_bank_ids(conn, session_id)
         matched_ids = {
             int(question_id)
@@ -248,6 +247,10 @@ def source_duplicate_preview(
                 else:
                     items.append(item(source, "exact_needs_analysis", bank_id))
                 continue
+            if duplicate_index is None:
+                duplicate_index = _DuplicateIndex(
+                    data_root=data_root, questions=_load_near_duplicate_questions(conn)
+                )
             hint = _near_duplicate_hint(
                 ParsedQuestion(
                     question_number=str(block.get("question_number") or reference),

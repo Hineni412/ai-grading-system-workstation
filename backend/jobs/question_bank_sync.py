@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -998,20 +998,23 @@ def _adopt_deferred_analysis_with_links(
         db_path=question_bank_db_path,
         data_root=data_root,
     )
+    adoption_ids = sorted({
+        int(link["bank_question_id"])
+        for item, link in linked_items
+        if isinstance(link, dict) and item.reused_from_question_id is None
+    })
     provisional = loader.load(
-        bank_ids,
+        adoption_ids,
         curriculum_volume_id=artifact.curriculum_volume_id,
-    )
+    ) if adoption_ids else ()
     contracts = ai_service.taxonomy_contracts(
         {item.question_id: item.tagging_context for item in provisional}
-    )
+    ) if provisional else {}
     questions = {
-        item.question_id: item
-        for item in loader.load(
-            bank_ids,
-            taxonomy_contracts=contracts,
-            curriculum_volume_id=artifact.curriculum_volume_id,
+        item.question_id: replace(
+            item, taxonomy_contract=contracts.get(item.question_id, {})
         )
+        for item in provisional
     }
     mapping_repository = CurrentFineTermResolver.from_active_database(
         question_bank_db_path

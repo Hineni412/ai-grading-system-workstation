@@ -366,3 +366,36 @@ def test_duplicates_endpoint_reports_matches(
     assert match["matched_question_id"] == 1
     assert match["matched_paper_title"] == "题库原卷"
     assert "长度足够" in match["matched_question_excerpt"]
+
+
+def test_exact_preview_skips_near_profiles_and_refreshes_changed_content(bank, monkeypatch):
+    import question_bank.importers.batch_importer as importer
+    import question_bank.services.duplicate_analysis_copy_service as identity
+
+    _insert_bank_questions(bank["db"], [(1, "1", "计算三个连续整数的和是多少", "12", 0)])
+    service = _service([{"question_id": "Q1", "question_number": "1",
+                         "question_text": "计算三个连续整数的和是多少", "answer_text": "12"}])
+    checks = []
+    original = identity.ensure_content_index
+
+    def checked(*args, **kwargs):
+        checks.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(identity, "ensure_content_index", checked)
+    original_profiles = importer._load_near_duplicate_questions
+    profiles = []
+
+    def load_profiles(conn):
+        profiles.append(1)
+        return original_profiles(conn)
+
+    monkeypatch.setattr(importer, "_load_near_duplicate_questions", load_profiles)
+    assert _preview(service, bank)["items"][0]["kind"] == "exact_needs_analysis"
+    assert len(checks) == 1
+    assert profiles == []
+    with connect(bank["db"]) as conn:
+        conn.execute("UPDATE questions SET question_text='判断正方形对角线的性质' WHERE id=1")
+    assert _preview(service, bank)["items"] == []
+    assert len(checks) == 2
+    assert len(profiles) == 1

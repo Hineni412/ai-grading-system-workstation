@@ -102,6 +102,54 @@ def valid_source_bytes(filename: str) -> bytes:
     return _pdf_bytes() if filename.casefold().endswith(".pdf") else _docx_bytes()
 
 
+def test_word_preview_reuses_split_xml_after_reopening(tmp_path: Path, monkeypatch) -> None:
+    from backend.config_workspace import formula_preview
+
+    source_service = service(tmp_path)
+    content = _docx_bytes(question="1. 计算 x²+1。", with_image=True)
+    record = asyncio.run(source_service.stage_and_parse(
+        session_id=7, filename="formula.docx", chunks=chunks(content),
+    ))
+    saved_xml = record.private_blocks[0]["_word_paragraphs"]
+    expected = formula_preview.load_paragraph_xml_index(content)
+    assert formula_preview._index_paragraphs(saved_xml) == expected
+    formula_preview._INDEX_CACHE.clear()
+
+    def unexpected_parse(*args, **kwargs):
+        pytest.fail("Preview must reuse the persisted split XML")
+
+    monkeypatch.setattr(formula_preview, "load_paragraph_xml_index", unexpected_parse)
+    snapshot = record.public_snapshot()
+    assert "_word_paragraphs" not in json.dumps(snapshot, ensure_ascii=False)
+    prepared = source_service.apply_teacher_decisions(record, [])
+    assert all("_word_paragraphs" not in block for block in prepared.confirmed_blocks)
+    # Rehydrate from the persisted manifest rather than an in-memory extraction.
+    manifest = json.loads(record.manifest_path.read_text(encoding="utf-8"))
+    formula_preview._INDEX_CACHE.clear()
+    reopened = formula_preview.paragraph_xml_index(
+        7, record.source_id, record.source_revision, content,
+        paragraphs=manifest["private_blocks"][0]["_word_paragraphs"],
+    )
+    assert reopened == expected
+
+
+def test_optional_preview_xml_does_not_reject_large_manifests(tmp_path: Path) -> None:
+    source_service = service(tmp_path)
+    content = _docx_bytes()
+    original = asyncio.run(source_service.stage_and_parse(
+        session_id=7, filename="formula.docx", chunks=chunks(content),
+    ))
+    manifest = json.loads(original.manifest_path.read_text(encoding="utf-8"))
+    for block in manifest["private_blocks"]:
+        block.pop("_word_paragraphs", None)
+    source_service.max_manifest_bytes = len(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")) + 64
+    fallback = asyncio.run(source_service.stage_and_parse(
+        session_id=8, filename="formula.docx", chunks=chunks(content),
+    ))
+    assert all("_word_paragraphs" not in block for block in fallback.private_blocks)
+    assert fallback.public_snapshot()["questions"]
+
+
 def test_ambiguous_floating_image_waits_for_one_manual_adjacent_binding(
     tmp_path: Path,
 ) -> None:

@@ -609,12 +609,23 @@ def _run_deferred_adoption(
 
 def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    from backend.jobs import question_bank_sync
+    original_load = question_bank_sync.QuestionAnalysisInputLoader.load
+    loaded_ids = []
+
+    def counted_load(self, question_ids, **kwargs):
+        loaded_ids.append(tuple(question_ids))
+        return original_load(self, question_ids, **kwargs)
+
+    monkeypatch.setattr(question_bank_sync.QuestionAnalysisInputLoader, "load", counted_load)
     result, gateway, imported_ids, question_bank_db, artifact_path = (
         _run_deferred_adoption(tmp_path)
     )
 
     assert result["outcome"] == "complete", result
+    assert loaded_ids == [tuple(imported_ids)]
     assert result["tagged_count"] == 1
     assert result["evidence_count"] == 1
     assert result["criteria_count"] == 1

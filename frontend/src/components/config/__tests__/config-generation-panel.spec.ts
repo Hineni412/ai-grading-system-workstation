@@ -9,6 +9,7 @@ import type { CurriculumCatalog } from '../../../api/question-bank';
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace';
 
 import { useJobStore } from '../../../stores/jobs';
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import ConfigGenerationPanel from '../ConfigGenerationPanel.vue'
 
 function source(): ConfigSource {
@@ -86,10 +87,10 @@ function curriculum(): CurriculumCatalog {
 }
 
 async function settle(): Promise<void> {
-  await Promise.resolve()
-  await nextTick()
-  await Promise.resolve()
-  await nextTick()
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve()
+    await nextTick()
+  }
 }
 
 async function mountPanel(options: {
@@ -134,6 +135,41 @@ beforeEach(async () => {
 })
 
 describe('ConfigGenerationPanel', () => {
+  it('reuses the global catalog, follows the term, and preserves a manual choice', async () => {
+    const scope = useCurriculumScopeStore()
+    const catalog = curriculum()
+    catalog.volumes.push({ ...catalog.volumes[0]!, id: 'g8-upper', label: '八年级上册' })
+    await scope.initialize(async () => catalog)
+    scope.selectVolume('g8-upper')
+    const loader = vi.fn(async () => catalog)
+    const { host, unmount } = await mountPanel({ curriculumLoader: loader })
+    const select = host.querySelector('select')!
+    expect(loader).not.toHaveBeenCalled()
+    expect(select.value).toBe('g8-upper')
+    scope.selectVolume('bnu24-math-g7-upper')
+    await settle()
+    expect(select.value).toBe('bnu24-math-g7-upper')
+    select.value = 'g8-upper'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    scope.selectVolume(null)
+    await settle()
+    expect(select.value).toBe('g8-upper')
+    unmount()
+  })
+
+  it('shows a failed catalog load and recovers through the inline retry', async () => {
+    const loader = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(curriculum())
+    const { host, unmount } = await mountPanel({ curriculumLoader: loader })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('教材目录暂时无法读取')
+    const retry = [...host.querySelectorAll('button')].find(button => button.textContent?.includes('重试读取教材'))!
+    retry.click()
+    await settle()
+    expect(host.querySelector('select')?.value).toBe('bnu24-math-g7-upper')
+    expect(loader).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    unmount()
+  })
+
   it('shows incomplete intake distinctly and resumes stored analysis without a model retry', async () => {
     const retryer = vi.fn(async () => job({ id: 35, status: 'queued' }))
     const configStore = useConfigWorkspaceStore()

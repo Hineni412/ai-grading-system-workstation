@@ -32,6 +32,7 @@ def parse_docx_question_blocks(
     register_created_file: Callable[[Path], None] | None = None,
     write_created_file: Callable[[Path, bytes], None] | None = None,
     document_text_out: list[str] | None = None,
+    preserve_preview_xml: bool = False,
 ) -> list[dict[str, Any]]:
     rich_failed = False
     parsed_text: list[str] = []
@@ -43,6 +44,7 @@ def parse_docx_question_blocks(
             register_created_file=register_created_file,
             write_created_file=write_created_file,
             document_text_out=parsed_text,
+            preserve_preview_xml=preserve_preview_xml,
         )
     except (ControlledDocxWriteError, RepeatedQuestionNumberError):
         raise
@@ -76,6 +78,7 @@ def _extract_rich_question_blocks(
     register_created_file: Callable[[Path], None] | None = None,
     write_created_file: Callable[[Path, bytes], None] | None = None,
     document_text_out: list[str] | None = None,
+    preserve_preview_xml: bool = False,
 ) -> list[dict[str, Any]] | None:
     from question_bank.importers.batch_importer import (
         map_rich_content_by_number,
@@ -190,4 +193,13 @@ def _extract_rich_question_blocks(
         blocks[0]["needs_review"] = True
     if blocks and ambiguous_assets:
         blocks[0]["_ambiguous_assets"] = ambiguous_assets
+    if blocks and preserve_preview_xml:
+        # Keep the already extracted XML for preview projection. Images use the
+        # owned asset lane; the preview renderer does not resolve Word drawings.
+        blocks[0]["_word_paragraphs"] = [
+            {"text": re.sub(r"\[\[IMAGE:[^\]\r\n]+\]\]", "", str(p.get("text") or "")),
+             "xml": str(p["xml"])}
+            for p in extracted.rich_paragraphs
+            if p.get("xml")
+        ]
     return blocks or None
