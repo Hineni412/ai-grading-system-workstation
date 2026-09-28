@@ -93,6 +93,20 @@ export interface ScanPageAssignment {
   front_page_parity: 'odd' | 'even'
 }
 
+export interface ScanIssueSuggestion {
+  student_id: number
+  student_name: string
+  class_name: string
+  score: number
+}
+
+export interface ScanPreflightIdentity {
+  method: string
+  auto: number
+  needs_confirmation: number
+  model_requests: number
+}
+
 export interface ScanPreflight {
   revision: number
   summary: Record<string, number>
@@ -104,6 +118,7 @@ export interface ScanPreflight {
   decisions: ScanDecision[]
   pending_issue_count: number
   match_conflicts?: ScanMatchConflict[]
+  identity?: ScanPreflightIdentity
 }
 
 export interface ScanMatchConflict {
@@ -263,6 +278,25 @@ function decodePreflight(value: unknown): ScanPreflight {
   ] as const
   if (!isRecord(summary) || !summaryKeys.every((key) => finiteInteger(summary[key]))) {
     throw new Error('Invalid scan preflight summary')
+  }
+  const identity = value.identity
+  if (identity !== undefined && (!isRecord(identity)
+    || typeof identity.method !== 'string'
+    || !finiteInteger(identity.auto)
+    || !finiteInteger(identity.needs_confirmation)
+    || !finiteInteger(identity.model_requests))) {
+    throw new Error('Invalid scan preflight identity')
+  }
+  for (const issue of value.issues) {
+    const suggestions = isRecord(issue) ? issue.suggested_students : undefined
+    if (suggestions === undefined) continue
+    if (!Array.isArray(suggestions) || !suggestions.every((item) => isRecord(item)
+      && finiteInteger(item.student_id, 1)
+      && typeof item.student_name === 'string'
+      && typeof item.class_name === 'string'
+      && typeof item.score === 'number' && Number.isFinite(item.score))) {
+      throw new Error('Invalid scan preflight suggestion')
+    }
   }
   return {
     ...value,

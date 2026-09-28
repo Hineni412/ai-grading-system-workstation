@@ -1308,6 +1308,14 @@ class ScanGradingWorkspace:
                 ],
                 "decisions": list(state.get("public_decisions", [])),
             }
+            identity = analysis.get("identity")
+            if isinstance(identity, dict):
+                payload["identity"] = {
+                    "method": str(identity.get("method") or ""),
+                    "auto": int(identity.get("auto") or 0),
+                    "needs_confirmation": int(identity.get("needs_confirmation") or 0),
+                    "model_requests": int(identity.get("model_requests") or 0),
+                }
             students = analysis.get("students")
             if self.grading_db_path is not None:
                 from backend.repositories.compat import open_grading_repositories
@@ -1787,13 +1795,23 @@ class ScanGradingWorkspace:
         result = {
             "id": issue_id,
             "issue_type": str(issue.get("issue_type") or "unknown"),
-            "message": "扫描文件需要人工处理",
+            "message": str(issue.get("message") or "扫描文件需要人工处理"),
             "source_label": str(issue.get("source_label") or ""),
             "detected_name": str(issue.get("detected_name") or ""),
             "detected_class_name": str(issue.get("detected_class_name") or ""),
             "suggested_student_id": issue.get("suggested_student_id"),
             "suggested_student_name": str(issue.get("suggested_student_name") or ""),
             "suggested_match_score": issue.get("suggested_match_score"),
+            "suggested_students": [
+                {
+                    "student_id": int(item["student_id"]),
+                    "student_name": str(item.get("student_name") or ""),
+                    "class_name": str(item.get("class_name") or ""),
+                    "score": float(item.get("score") or 0),
+                }
+                for item in issue.get("suggested_students") or []
+                if isinstance(item, dict) and item.get("student_id") is not None
+            ],
             "front_media_url": self._media_url(session_id, "issue", issue_id, "front"),
             "back_media_url": None,
         }

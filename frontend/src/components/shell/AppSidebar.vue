@@ -59,6 +59,9 @@ const navigationRef = ref<HTMLElement | null>(null)
 const settingsNavRef = ref<HTMLElement | null>(null)
 const navigationIndicator = ref<{ top: string; height: string } | null>(null)
 const settingsIndicator = ref<{ top: string; height: string } | null>(null)
+/* 布局驱动的重定位不做过渡（否则悬停/模式切换时指示条会滞后滑动）；
+   只有导航切换（路由、所选考试）才保留 top/height 动画。 */
+const indicatorInstant = ref(true)
 
 function measureIndicator(
   container: HTMLElement | null,
@@ -68,40 +71,46 @@ function measureIndicator(
   return { top: `${current.offsetTop}px`, height: `${current.offsetHeight}px` }
 }
 
-async function updateIndicators(): Promise<void> {
+async function updateIndicators(animated: boolean): Promise<void> {
+  indicatorInstant.value = !animated
   await nextTick()
   navigationIndicator.value = measureIndicator(navigationRef.value)
   settingsIndicator.value = measureIndicator(settingsNavRef.value)
 }
 
+function remeasureIndicators(): void {
+  void updateIndicators(false)
+}
+
 /* 指示条只跟随容器内部布局：悬停展开/宽度过渡会即时改导航内部行高，
    分两步兜底——容器尺寸每帧变化都重测（ResizeObserver），
-   宽度/抽屉动画收尾再校一次（transitionend）；字体就绪也重测一次。 */
+   宽度/抽屉动画收尾再校一次（transitionend）；字体就绪也重测一次。
+   这些来源都算布局驱动，重定位一律即时完成。 */
 function onSidebarTransitionEnd(event: Event): void {
   const property = (event as TransitionEvent).propertyName
   if (property === 'width' || property === 'max-height') {
-    void updateIndicators()
+    remeasureIndicators()
   }
 }
 
 let indicatorObserver: ResizeObserver | null = null
 
-watch(() => route.fullPath, () => { void updateIndicators() })
-watch(() => props.mode, () => { void updateIndicators() })
-watch(() => sessionStore.selectedSessionId, () => { void updateIndicators() })
+watch(() => route.fullPath, () => { void updateIndicators(true) })
+watch(() => props.mode, () => { void updateIndicators(false) })
+watch(() => sessionStore.selectedSessionId, () => { void updateIndicators(true) })
 onMounted(() => {
-  void updateIndicators()
-  window.addEventListener('resize', updateIndicators)
+  void updateIndicators(false)
+  window.addEventListener('resize', remeasureIndicators)
   sidebarRef.value?.addEventListener('transitionend', onSidebarTransitionEnd)
   if (typeof ResizeObserver !== 'undefined') {
-    indicatorObserver = new ResizeObserver(() => { void updateIndicators() })
+    indicatorObserver = new ResizeObserver(remeasureIndicators)
     if (navigationRef.value) indicatorObserver.observe(navigationRef.value)
     if (settingsNavRef.value) indicatorObserver.observe(settingsNavRef.value)
   }
-  void document.fonts?.ready.then(() => updateIndicators())
+  void document.fonts?.ready.then(remeasureIndicators)
 })
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', updateIndicators)
+  window.removeEventListener('resize', remeasureIndicators)
   sidebarRef.value?.removeEventListener('transitionend', onSidebarTransitionEnd)
   indicatorObserver?.disconnect()
   indicatorObserver = null
@@ -156,6 +165,7 @@ onBeforeUnmount(() => {
       <span
         v-if="navigationIndicator"
         class="app-sidebar__indicator"
+        :class="{ 'app-sidebar__indicator--instant': indicatorInstant }"
         aria-hidden="true"
         :style="navigationIndicator"
       />
@@ -193,6 +203,7 @@ onBeforeUnmount(() => {
         <span
           v-if="settingsIndicator"
           class="app-sidebar__indicator"
+          :class="{ 'app-sidebar__indicator--instant': indicatorInstant }"
           aria-hidden="true"
           :style="settingsIndicator"
         />

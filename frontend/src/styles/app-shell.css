@@ -230,6 +230,11 @@
     height var(--duration-drawer) var(--ease-out);
 }
 
+/* 布局驱动的重定位（尺寸变化/模式切换/字体就绪）直接到位，只有路由导航才滑动 */
+.app-sidebar__indicator--instant {
+  transition: none;
+}
+
 .app-sidebar__command {
   width: 100%;
   border-color: transparent;
@@ -953,19 +958,26 @@
     padding-inline-start: 10px;
   }
 
-  /* 隐藏的分组标题收缩为零高，非首组用一条居中短分隔线保持纵向节奏 */
-  .app-shell--rail .app-sidebar__group > p {
-    padding: 0;
-    font-size: 0;
+  /* 图标轨下分组标题保留整行高度（只隐去文字），
+     收起/悬停/常驻展开三种状态的链接纵向位置一致。
+     具体行高恢复规则在隐藏标签公共规则之后（见下方覆写）。 */
+  .app-shell--rail .app-sidebar__group {
+    position: relative;
   }
 
+  /* 分隔线改为绝对定位、叠在标题行中央（21px = 2+4 内边距 + 15px 行高），
+     不参与布局；悬停展开时淡出而不是移除 */
   .app-shell--rail .app-sidebar__group:not(:first-child)::before {
     content: '';
-    justify-self: center;
-    width: 16px;
-    height: 1px;
-    margin-block: 2px;
-    background: var(--sidebar-shell-border);
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    height: 21px;
+    background: linear-gradient(var(--sidebar-shell-border), var(--sidebar-shell-border))
+      center / 16px 1px no-repeat;
+    opacity: 1;
+    pointer-events: none;
+    transition: opacity var(--duration-fast) var(--ease-out);
   }
 
   /* 激活项：背景块仍居中于 36px 列，状态条单独贴轨道左缘 */
@@ -1014,7 +1026,16 @@
     overflow: hidden;
     pointer-events: none;
     visibility: hidden;
-    transition: opacity var(--duration-base) var(--ease-out);
+    /* 收起：快速淡出，visibility 在淡出结束时才翻转 */
+    transition:
+      opacity var(--duration-fast) var(--ease-out),
+      visibility 0s linear var(--duration-fast);
+  }
+
+  /* 分组标题只折叠横向占位，纵向行高与展开态一致，链接位置不随悬停跳动 */
+  .app-shell--rail .app-sidebar__group > p {
+    padding-block: 2px 4px;
+    font-size: 10px;
   }
 
   .app-shell--rail .app-sidebar:hover,
@@ -1040,8 +1061,11 @@
     opacity: 1;
     pointer-events: auto;
     visibility: visible;
-    /* 展开时标签淡入略滞后于宽度动画，避免展开过程中文字折行 */
-    transition-delay: 60ms;
+    /* 展开时标签淡入略滞后于宽度动画，避免展开过程中文字折行；
+       visibility 立即恢复，opacity 延迟 60ms 再淡入 */
+    transition:
+      opacity var(--duration-base) var(--ease-out) 60ms,
+      visibility 0s;
   }
 
   /* 悬停/聚焦展开后恢复行内间隙（内边距不动，图标锚点保持同一根轴） */
@@ -1073,7 +1097,7 @@
 
   .app-shell--rail .app-sidebar:hover .app-sidebar__group::before,
   .app-shell--rail .app-sidebar:focus-within .app-sidebar__group::before {
-    content: none;
+    opacity: 0;
   }
 
   .app-shell--rail .app-sidebar:hover .app-sidebar__settings-chevron,
@@ -1182,5 +1206,33 @@
 
   .app-topbar__page-copy span {
     white-space: normal;
+  }
+}
+
+/* ── 减弱动效 ── */
+@media (prefers-reduced-motion: reduce) {
+  .app-shell,
+  .app-sidebar,
+  .app-sidebar__link,
+  .app-sidebar__settings-toggle,
+  .app-sidebar__settings-chevron,
+  .exam-switcher__card,
+  .exam-switcher__icon-box,
+  .exam-switcher-popover__footer-link,
+  .tp-workspace-tabs__pill,
+  .app-topbar__skip-link {
+    transition: none;
+  }
+
+  /* 标签与分隔线的过渡声明在 .app-shell--rail 高优先级规则内，需 !important 压掉 */
+  .app-sidebar__brand-copy,
+  .app-sidebar__link > span,
+  .app-sidebar__settings-toggle > span,
+  .app-sidebar__settings-chevron,
+  .app-sidebar__group > p,
+  .app-sidebar__command kbd,
+  .app-sidebar__indicator,
+  .app-shell--rail .app-sidebar__group::before {
+    transition: none !important;
   }
 }

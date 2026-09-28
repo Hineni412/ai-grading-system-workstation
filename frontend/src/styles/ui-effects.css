@@ -225,6 +225,17 @@
   animation: fx-dialog-in 180ms var(--ease-out) backwards;
 }
 
+/* ===== 阶段面板切换：前进右滑、回退左滑（考试配置/考试批改共用） ===== */
+
+.fx-stage-forward-enter-active,
+.fx-stage-forward-leave-active,
+.fx-stage-back-enter-active,
+.fx-stage-back-leave-active { transition: opacity 180ms ease, transform 220ms cubic-bezier(.2, .75, .25, 1); }
+.fx-stage-forward-enter-from,
+.fx-stage-back-leave-to { opacity: 0; transform: translateX(32px); }
+.fx-stage-forward-leave-to,
+.fx-stage-back-enter-from { opacity: 0; transform: translateX(-32px); }
+
 @keyframes fx-popover-in {
   from { opacity: 0; transform: scale(0.96); }
   to { opacity: 1; transform: scale(1); }
@@ -279,6 +290,10 @@
   .scan-progress progress::-moz-progress-bar,
   .config-source__progress progress::-moz-progress-bar,
   .taxonomy-review__suggestion-progress progress::-moz-progress-bar,
+  .fx-stage-forward-enter-active,
+  .fx-stage-forward-leave-active,
+  .fx-stage-back-enter-active,
+  .fx-stage-back-leave-active,
   .fx-enter,
   .fx-stagger > *,
   .fx-overlay,

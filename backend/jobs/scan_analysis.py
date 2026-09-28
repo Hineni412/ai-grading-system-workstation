@@ -113,7 +113,11 @@ def run_scan_analysis(
         raise ValueError("student list is empty")
 
     regions = answer_regions_with_template_source_sizes(db, session_id, data_root=Path(data_root))
-    llm_client = llm_client_factory()
+    try:
+        # 名单本机识别路径不需要远端模型；模型未配置时留空，旧路径再按原样报错。
+        llm_client = llm_client_factory()
+    except Exception:  # noqa: BLE001
+        llm_client = None
     scanner = scanner_factory(
         exams_dir=exams_dir,
         llm_client=llm_client,

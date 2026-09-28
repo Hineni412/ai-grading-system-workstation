@@ -136,6 +136,13 @@ class ScanPageAssignmentResponse(BaseModel):
     front_page_parity: Literal["odd", "even"]
 
 
+class ScanPreflightIdentityResponse(BaseModel):
+    method: str
+    auto: int = Field(ge=0)
+    needs_confirmation: int = Field(ge=0)
+    model_requests: int = Field(ge=0)
+
+
 class ScanPreflightResponse(BaseModel):
     revision: int = Field(ge=0)
     summary: ScanPreflightSummaryResponse
@@ -147,6 +154,7 @@ class ScanPreflightResponse(BaseModel):
     decisions: list[ScanDecisionItem]
     pending_issue_count: int = Field(ge=0)
     match_conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    identity: ScanPreflightIdentityResponse | None = None
 
 
 class ScanStudentMatchOptionResponse(BaseModel):
