@@ -128,6 +128,38 @@ afterEach(() => {
 })
 
 describe('question bank workspace', () => {
+  it('pages large paper folders and preserves selections while searching across all pages', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = Array.from({ length: 67 }, (_, i) => ({ ...paper, id: i + 1, title: `合成试卷 ${i + 1}` }))
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    expect(host.querySelectorAll('.paper-card')).toHaveLength(24)
+    const check = host.querySelector<HTMLInputElement>('.paper-card input[type="checkbox"]')!
+    check.click()
+    await nextTick()
+    const next = [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="试卷分页"] button')].find(b => b.textContent === '下一页')!
+    next.click()
+    await nextTick()
+    expect(host.textContent).toContain('第 2 / 3 页')
+    expect(host.querySelectorAll('.paper-card')).toHaveLength(24)
+    const previous = [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="试卷分页"] button')].find(b => b.textContent === '上一页')!
+    previous.click()
+    await nextTick()
+    expect(host.querySelector<HTMLInputElement>('.paper-card input[type="checkbox"]')!.checked).toBe(true)
+    const search = host.querySelector<HTMLInputElement>('input[type="search"]')!
+    search.value = '合成试卷 67'
+    search.dispatchEvent(new Event('input'))
+    await vi.waitFor(() => expect(host.querySelectorAll('.paper-card')).toHaveLength(1))
+    expect(host.querySelector('.paper-card')!.textContent).toContain('合成试卷 67')
+    expect(host.querySelector('nav[aria-label="试卷分页"]')).toBeNull()
+  })
+
   it('does not download the full taxonomy catalog while opening the paper library', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)

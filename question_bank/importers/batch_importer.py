@@ -32,6 +32,8 @@ from question_bank.services.duplicate_analysis_copy_service import (
 from question_bank.services.similarity_service import (
     question_text_profile, profiled_text_similarity,
     wording_similarity_upper_bound,
+    WordingCandidateIndex,
+    QuestionTextProfile,
 )
 from question_bank.services.source_paper_archive_service import archive_source_paper
 from question_bank.services.rich_content_service import save_question_rich_content
@@ -428,6 +430,22 @@ class _DuplicateIndex:
     data_root: Path = field(default_factory=Path)
     exact: dict[str, int] = field(default_factory=dict)
     questions: list[dict[str, Any]] = field(default_factory=list)
+    _wording_index: WordingCandidateIndex | None = field(default=None, init=False, repr=False)
+
+    def candidates(self, profile: QuestionTextProfile) -> list[tuple[int, float]]:
+        start = self._wording_index.size if self._wording_index is not None else 0
+        for candidate in self.questions[start:]:
+            if candidate.get("profile") is None:
+                candidate["profile"] = question_text_profile(candidate["question_text"])
+        if self._wording_index is None or len(self.questions) > self._wording_index.size + 128:
+            self._wording_index = WordingCandidateIndex([item["profile"] for item in self.questions])
+        candidates = self._wording_index.candidates(profile)
+        if len(self.questions) == self._wording_index.size:
+            return candidates
+        # Questions appended during this import must participate immediately.
+        candidates.extend((position, wording_similarity_upper_bound(profile, item["profile"]))
+                          for position, item in enumerate(self.questions[self._wording_index.size:], self._wording_index.size))
+        return sorted(candidates, key=lambda row: (-row[1], row[0]))
 
     def add(
         self,
@@ -513,26 +531,22 @@ def _near_duplicate_hint(
     new_type = str(question.question_type or "")
     best: dict[str, Any] | None = None
     profile = question_text_profile(text)
-    for candidate in index.questions:
+    best_position = len(index.questions)
+    for position, upper_bound in index.candidates(profile):
+        threshold = max(0.7, float(best["similarity"]) if best else 0.7)
+        if upper_bound < threshold - 0.00005:
+            break
+        candidate = index.questions[position]
         candidate_type = str(candidate["question_type"])
         candidate_text = str(candidate["question_text"])
         other = candidate.get("profile")
         if other is None:
             other = candidate["profile"] = question_text_profile(candidate_text)
-        threshold = max(0.7, float(best["similarity"]) if best else 0.7)
-        lengths = (len(profile.normalized), len(other.normalized))
-        grams = (len(profile.ngrams), len(other.ngrams))
-        if not min(lengths):
-            continue
-        length_bound = max(2 * min(lengths) / sum(lengths), min(grams) / max(grams) if max(grams) else 0)
-        if length_bound < threshold - 0.00005:
-            continue
-        if wording_similarity_upper_bound(profile, other) < threshold - 0.00005:
-            continue
         score = profiled_text_similarity(profile, other)
         if score < 0.7:
             continue
-        if best is None or score > float(best["similarity"]):
+        if best is None or score > float(best["similarity"]) or (score == float(best["similarity"]) and position < best_position):
+            best_position = position
             math_tokens = lambda value: re.findall(r"\d+(?:\.\d+)?|[+\-−×÷=<>≤≥≠]", re.sub(r"\[\[IMAGE:.*?\]\]", "", value))
             changed_conditions = math_tokens(text) != math_tokens(candidate_text)
             best = {
@@ -545,8 +559,6 @@ def _near_duplicate_hint(
                 "requires_review": True,
                 "reason": ("数字或运算条件不同，保留为不同题目" if changed_conditions else "题面相似，需核对条件、选项及图片") + ("；题型标注不同" if new_type and candidate_type != new_type else ""),
             }
-        if score == 1.0:
-            break
     return best
 
 

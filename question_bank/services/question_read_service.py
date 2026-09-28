@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO, Iterable, Iterator
 
@@ -481,6 +481,7 @@ class _ActiveQuestionReadScope:
     source: Path
     connection: sqlite3.Connection
     current_knowledge: object = _CURRENT_KNOWLEDGE_NOT_LOADED
+    identities: dict[str, dict[int, str]] = field(default_factory=dict)
 
 
 _ACTIVE_READ_SCOPE: ContextVar[_ActiveQuestionReadScope | None] = ContextVar(
@@ -1037,6 +1038,13 @@ def _read_result_cache_put(key: tuple[object, ...], value: object) -> None:
     with _READ_RESULT_CACHE_LOCK:
         _READ_RESULT_CACHE[key] = deepcopy(value)
         _READ_RESULT_CACHE.move_to_end(key)
+        if key[0] == "collapsed_ids":
+            # Group keys contain a candidate set, not just a 20-row page.
+            # Keep fewer of these so changing filters cannot retain dozens
+            # of full-bank identity maps.
+            group_keys = [candidate for candidate in _READ_RESULT_CACHE if candidate[0] == "collapsed_ids"]
+            for stale in group_keys[:-8]:
+                del _READ_RESULT_CACHE[stale]
         while len(_READ_RESULT_CACHE) > _READ_RESULT_CACHE_LIMIT:
             _READ_RESULT_CACHE.popitem(last=False)
 
@@ -1259,10 +1267,12 @@ class QuestionBankReadService:
                     END) AS complete_analysis_count
                 FROM papers p
                 LEFT JOIN (
-                    SELECT questions.*, questions.paper_id AS _member_paper_id
+                    SELECT id, is_deleted, difficulty, paper_delete_operation_id,
+                           paper_id AS _member_paper_id
                     FROM questions
                     UNION ALL
-                    SELECT questions.*, occ.paper_id
+                    SELECT questions.id, questions.is_deleted, questions.difficulty,
+                           questions.paper_delete_operation_id, occ.paper_id
                     FROM paper_question_occurrences occ
                     JOIN questions ON questions.id = occ.question_id
                 ) q ON q._member_paper_id = p.id
@@ -1383,7 +1393,24 @@ class QuestionBankReadService:
                 ids = [int(row[0]) for row in conn.execute(" ".join([
                     "SELECT DISTINCT q.id FROM questions q", *joins,
                     "WHERE " + " AND ".join(where), "ORDER BY q.id"]), params).fetchall()]
-                identities = exact_identity_map(conn, data_root=self.data_root or self.db_path.parent.parent, question_ids=ids)
+                scope = _ACTIVE_READ_SCOPE.get()
+                known = scope.identities.setdefault(self._cache_data_root or str(self.db_path.parent.parent), {}) if scope is not None else {}
+                missing = [qid for qid in ids if qid not in known]
+                known.update(exact_identity_map(conn, data_root=self.data_root or self.db_path.parent.parent,
+                                               question_ids=missing, persist=False))
+                identities = {qid: known[qid] for qid in ids if qid in known}
+                # Page/sort changes share the same candidate set. Identity
+                # revisions still validate file edits; the DB token also
+                # invalidates representative choices after manual relabelling.
+                generation = _source_generation_token(self.db_path)
+                collapse_key = ("collapsed_ids", generation, self._cache_data_root, tuple(ids), tuple(identities.items()))
+                cached = _read_result_cache_get(collapse_key) if generation is not None else _CACHE_MISS
+                if cached is not _CACHE_MISS:
+                    hidden = cached
+                    if hidden:
+                        where.append("q.id NOT IN (" + ",".join("?" for _ in hidden) + ")")
+                        params.extend(hidden)
+                    return joins, where, params
                 ranks = canonical_question_ranks(conn, ids)
             seen = set()
             hidden = []
@@ -1393,6 +1420,8 @@ class QuestionBankReadService:
                     hidden.append(qid)
                 elif key:
                     seen.add(key)
+            if generation is not None and generation == _source_generation_token(self.db_path):
+                _read_result_cache_put(collapse_key, hidden)
             if hidden:
                 where.append("q.id NOT IN (" + ",".join("?" for _ in hidden) + ")")
                 params.extend(hidden)
@@ -1432,7 +1461,7 @@ class QuestionBankReadService:
                 SELECT DISTINCT
                     q.id,
                     q.paper_id,
-                    {number_select},
+                    q.question_number,
                     q.question_type,
                     q.question_text,
                     q.answer_text,
@@ -1456,10 +1485,8 @@ class QuestionBankReadService:
                     p.textbook_version
                 FROM questions q
                 """,
-                *list_joins,
-                where_sql,
-                f"ORDER BY {order_clause}",
-                "LIMIT ? OFFSET ?",
+                "LEFT JOIN papers p ON p.id = q.paper_id",
+                "WHERE q.id IN ({page_ids})",
             ]
         )
         offset = (filters.page - 1) * filters.page_size
@@ -1467,10 +1494,20 @@ class QuestionBankReadService:
         with _read_connection(self.db_path) as conn:
             count_row = conn.execute(count_sql, params).fetchone()
             total = int(count_row[0] or 0)
-            rows = conn.execute(
-                list_sql,
+            # Sort/filter narrow identity rows first; only load the page's
+            # long stems/answers afterwards. Preserve occurrence numbering
+            # and DISTINCT semantics, including a question in multiple papers.
+            page_rows = conn.execute(
+                " ".join([f"SELECT DISTINCT q.id, {number_select} FROM questions q",
+                          *list_joins, where_sql, f"ORDER BY {order_clause}", "LIMIT ? OFFSET ?"]),
                 [*params, filters.page_size, offset],
             ).fetchall()
+            page_ids = list(dict.fromkeys(int(row["id"]) for row in page_rows))
+            full_rows = conn.execute(
+                list_sql.format(page_ids=",".join("?" for _ in page_ids)), page_ids,
+            ).fetchall() if page_ids else []
+            by_id = {int(row["id"]): dict(row) for row in full_rows}
+            rows = [dict(by_id[int(row["id"])], question_number=row["question_number"]) for row in page_rows]
             tags_by_question = _load_page_tags(
                 conn,
                 [int(row["id"]) for row in rows],

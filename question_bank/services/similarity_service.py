@@ -135,6 +135,59 @@ def question_text_profile(value: object) -> QuestionTextProfile:
     )
 
 
+class WordingCandidateIndex:
+    """Exact upper bounds in batches; never excludes a possible threshold hit.
+
+    Character and ngram postings reuse the existing score's two bounds.
+    There is no top-k cap or label filter: candidates keep their original
+    position for deterministic ties, even when visited by strongest bound.
+    """
+
+    def __init__(self, profiles: list[QuestionTextProfile]) -> None:
+        import numpy as np
+
+        self.size = len(profiles)
+        self.lengths = np.array([len(p.normalized) for p in profiles], dtype=np.int64)
+        self.gram_sizes = np.array([len(p.ngrams) for p in profiles], dtype=np.int64)
+        characters: dict[str, list[tuple[int, int]]] = {}
+        grams: dict[str, list[int]] = {}
+        for position, profile in enumerate(profiles):
+            for char, count in profile.char_counts.items():
+                characters.setdefault(char, []).append((position, count))
+            for gram in profile.ngrams:
+                grams.setdefault(gram, []).append(position)
+        self.characters = {
+            char: (np.array([p for p, _ in rows], dtype=np.intp),
+                   np.array([n for _, n in rows], dtype=np.int64))
+            for char, rows in characters.items()
+        }
+        self.grams = {gram: np.array(rows, dtype=np.intp) for gram, rows in grams.items()}
+
+    def candidates(self, profile: QuestionTextProfile, threshold: float = 0.7) -> list[tuple[int, float]]:
+        import numpy as np
+
+        if not profile.normalized:
+            return []
+        shared = np.zeros(self.size, dtype=np.int64)
+        for char, count in profile.char_counts.items():
+            posting = self.characters.get(char)
+            if posting is not None:
+                positions, counts = posting
+                shared[positions] += np.minimum(counts, count)
+        bounds = 2.0 * shared / (self.lengths + len(profile.normalized))
+        shared.fill(0)
+        for gram in profile.ngrams:
+            positions = self.grams.get(gram)
+            if positions is not None:
+                shared[positions] += 1
+        denominator = self.gram_sizes + len(profile.ngrams) - shared
+        jaccard = np.divide(shared, denominator, out=np.zeros(self.size), where=denominator > 0)
+        bounds = np.maximum(bounds, jaccard)
+        positions = np.flatnonzero((self.lengths > 0) & (bounds >= threshold - 0.00005))
+        positions = positions[np.argsort(-bounds[positions], kind="stable")]
+        return [(int(p), float(bounds[p])) for p in positions]
+
+
 def profiled_text_similarity(
     left: QuestionTextProfile,
     right: QuestionTextProfile,
@@ -233,6 +286,7 @@ def _char_ngrams(text: str, size: int = 3) -> set[str]:
 
 
 __all__ = [
+    "WordingCandidateIndex",
     "QuestionTextProfile",
     "SimilarQuestionGroup",
     "SimilarityPlan",
