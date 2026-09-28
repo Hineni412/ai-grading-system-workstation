@@ -1,9 +1,8 @@
 """Read-time Word XML lookup for config source previews.
 
-Config source manifests only keep the linear block text (``question_html`` /
-``answer_html`` lines); the Word paragraph XML that the question bank uses to
-render formulas is dropped at parse time.  This module re-parses the stored
-``.docx`` bytes once per source, indexes each paragraph/table record by its
+Config source manifests retain Word paragraph XML from the initial split.
+Older manifests fall back to parsing the stored ``.docx`` bytes once per source.
+This module indexes each paragraph/table record by its
 normalized text and projects matched preview blocks through the existing
 question-bank renderer so config previews can show formulas, underlines and
 tables exactly like the question bank does.
@@ -20,7 +19,7 @@ import re
 import tempfile
 import threading
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -66,8 +65,6 @@ def load_paragraph_xml_index(source_docx: bytes) -> dict[str, str]:
     Stripped keys never override a direct key, and the first record wins on
     duplicate text so the index stays deterministic.
     """
-    index: dict[str, str] = {}
-    stripped_entries: list[tuple[str, str]] = []
     try:
         with tempfile.TemporaryDirectory(prefix="config-src-xml-") as temp_root:
             temp_path = Path(temp_root)
@@ -79,7 +76,13 @@ def load_paragraph_xml_index(source_docx: bytes) -> dict[str, str]:
             )
     except Exception:
         return {}
-    for record in getattr(extracted, "rich_paragraphs", None) or []:
+    return _index_paragraphs(getattr(extracted, "rich_paragraphs", None) or [])
+
+
+def _index_paragraphs(records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    index: dict[str, str] = {}
+    stripped_entries: list[tuple[str, str]] = []
+    for record in records:
         if not isinstance(record, dict):
             continue
         text = str(record.get("text") or "")
@@ -103,6 +106,8 @@ def paragraph_xml_index(
     source_id: str,
     source_revision: str,
     source_docx: bytes,
+    *,
+    paragraphs: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, str]:
     """Cached ``load_paragraph_xml_index`` keyed by session/source/revision.
 
@@ -117,7 +122,8 @@ def paragraph_xml_index(
         if cached is not None:
             _INDEX_CACHE.move_to_end(key)
             return cached
-    index = load_paragraph_xml_index(source_docx)
+    index = (_index_paragraphs(paragraphs) if paragraphs is not None
+             else load_paragraph_xml_index(source_docx))
     with _INDEX_CACHE_LOCK:
         existing = _INDEX_CACHE.get(key)
         if existing is not None:

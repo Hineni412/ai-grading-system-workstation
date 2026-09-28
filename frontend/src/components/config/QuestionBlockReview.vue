@@ -12,6 +12,7 @@ import {
   type QuestionType,
 } from '../../api/config-workspace'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
+import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import DuplicateCompareDialog from './DuplicateCompareDialog.vue'
 import type { ConfigQuestionGenerationState } from '../../api/config-workspace'
 import { useConfigQuestionFocus } from '../../composables/useConfigQuestionFocus'
@@ -566,6 +567,11 @@ function stemLine(question: ConfigQuestionPreview): string {
   return question.question_preview.replace(/\s+/g, ' ').trim()
 }
 
+const stemHtmlById = computed(() => new Map(props.source.questions.map(question => [
+  question.question_id,
+  question.rich_content?.question_blocks.find(block => block.kind !== 'table' && block.text.trim() && block.html)?.html ?? '',
+])))
+
 function assetCountFor(question: ConfigQuestionPreview): number {
   return placedAssets(question.question_id, 'question').length
     + placedAssets(question.question_id, 'answer').length
@@ -688,8 +694,10 @@ function assetCountFor(question: ConfigQuestionPreview): number {
                 class="question-review__type-chip"
                 :class="{ 'question-review__type-chip--review': question.question_type_review_required }"
               >{{ questionTypeLabels[question.question_type as QuestionType] ?? question.question_type }}</span>
-              <span class="question-review__stem" :title="stemLine(question)">{{ stemLine(question) }}</span>
-              <span class="question-review__answer-mini" :title="question.answer_preview">{{ question.answer_preview }}</span>
+              <QuestionHtmlBlock class="question-review__stem" :title="stemLine(question)"
+                :html="stemHtmlById.get(question.question_id)" :text="stemLine(question)" inline typeset-text />
+              <QuestionHtmlBlock class="question-review__answer-mini" :title="question.answer_preview"
+                :text="question.answer_preview" inline />
               <span
                 v-for="flag in questionTags(question).slice(0, 1)"
                 :key="flag.label"

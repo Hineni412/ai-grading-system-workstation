@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { ConfigEditorEdit, ConfigEditorIssue, ConfigEditorRow } from '../../api/config-workspace'
+import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 
 const props = withDefaults(defineProps<{
   rows: ConfigEditorRow[]
@@ -482,9 +483,9 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             <template v-else><strong>{{ group.rows[0]!.response_mode === 'visual_construction' ? '按作图成果评分' : '各答案项分别给分' }}</strong><span>不套用“仅答案 1 分”的过程题规则。</span></template>
             <span>{{ group.rows.every(row => row.allow_alternative_methods !== false) ? '允许其他正确解法。' : '部分评分块限定方法，同一方法的等价表达仍可得分。' }}</span>
           </div>
-          <p v-if="group.rows[0]!.standard_answer"><strong>参考解答</strong>{{ group.rows[0]!.standard_answer }}</p>
-          <p v-for="rule in group.rows[0]!.part_deduction_rules" :key="rule">{{ rule }}</p>
-          <p v-if="group.rows[0]!.require_final_answer">{{ group.rows[0]!.final_answer_rule }}</p>
+          <div v-if="group.rows[0]!.standard_answer"><strong>参考解答</strong><QuestionHtmlBlock :text="group.rows[0]!.standard_answer" /></div>
+          <QuestionHtmlBlock v-for="rule in group.rows[0]!.part_deduction_rules" :key="rule" :text="rule" />
+          <QuestionHtmlBlock v-if="group.rows[0]!.require_final_answer" :text="group.rows[0]!.final_answer_rule ?? ''" />
         </details>
         <div class="rubric-part__steps">
       <div class="rubric-part__col-head" aria-hidden="true">
@@ -521,7 +522,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               <strong>{{ group.objective ? row.question_id : row.step_id }}</strong>
             </span>
             <span class="rubric-unit-card__goal" :title="compactPreview(row.core_goal, '未提供评分点')">
-              {{ compactPreview(row.core_goal, '未提供评分点') }}
+              <QuestionHtmlBlock :text="compactPreview(row.core_goal, '未提供评分点')" inline />
             </span>
             <strong class="rubric-unit-card__score-badge">{{ group.objective ? '' : '最高 ' }}{{ row.score }} 分</strong>
           </span>
@@ -531,12 +532,12 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               class="rubric-unit-card__preview-field rubric-field--answer"
             >
               <span class="sr-only">标准答案</span>
-              <span :title="compactPreview(row.standard_answer)">{{ compactPreview(row.standard_answer) }}</span>
+              <QuestionHtmlBlock :title="compactPreview(row.standard_answer)" :text="compactPreview(row.standard_answer)" inline />
             </span>
             <span class="rubric-unit-card__preview-field rubric-field--required">
               <span class="sr-only">{{ group.objective ? '接受答案' : '得分依据' }}</span>
               <span :title="compactPreview(row.required_elements)">
-                {{ compactPreview(row.required_elements) }}
+                <QuestionHtmlBlock :text="compactPreview(row.required_elements)" inline />
               </span>
             </span>
             <span
@@ -545,7 +546,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             >
               <span class="sr-only">具体扣分</span>
               <span :title="compactPreview(row.deduction_rules)">
-                {{ compactPreview(row.deduction_rules) }}
+                <QuestionHtmlBlock :text="compactPreview(row.deduction_rules)" inline />
               </span>
             </span>
             <span
@@ -554,7 +555,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             >
               <span class="sr-only">等价达成</span>
               <span :title="compactPreview(row.equivalent_rules ?? [])">
-                {{ compactPreview(row.equivalent_rules ?? []) }}
+                <QuestionHtmlBlock :text="compactPreview(row.equivalent_rules ?? [])" inline />
               </span>
             </span>
           </span>

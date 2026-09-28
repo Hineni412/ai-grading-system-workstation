@@ -942,6 +942,8 @@ def _combined_prompt(
     if include_evidence:
         instructions += evidence_instructions
     questions = []
+    contracts: dict[str, dict[str, Any]] = {}
+    contract_refs: dict[str, str] = {}
     for item in batch.questions:
         context = item.tagging_context.to_dict()
         context.pop("existing_tags", None)
@@ -974,17 +976,35 @@ def _combined_prompt(
         if item.repair_context:
             question_payload["repair_context"] = dict(item.repair_context)
         questions.append(question_payload)
+    # Identical catalogs belong to the batch, while each question keeps an
+    # explicit reference. Distinct scopes must never borrow another catalog.
+    if len(questions) > 1:
+        for question in questions:
+            contract = question.pop("candidate_contract")
+            key = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            reference = contract_refs.get(key)
+            if reference is None:
+                reference = f"catalog-{len(contracts) + 1}"
+                contract_refs[key] = reference
+                contracts[reference] = contract
+            question["candidate_contract_ref"] = reference
+        instructions += (
+            "题目的 candidate_contract_ref 指向顶层 candidate_contracts 中同名目录；"
+            "规则中的该题 candidate_contract 均指此目录。只使用该题引用的目录，不得跨目录混用。"
+        )
     task_payload: dict[str, Any] = {
         "task": "初中数学题联合分析（标签、解题证据与训练判定点）",
         "rules": instructions,
         "questions": questions,
     }
+    if contracts:
+        task_payload["candidate_contracts"] = contracts
     if include_evidence:
         task_payload["evidence_examples"] = _combined_evidence_examples()
     content: list[dict[str, Any]] = [
         {
             "type": "input_text",
-            "text": json.dumps(task_payload, ensure_ascii=False),
+            "text": json.dumps(task_payload, ensure_ascii=False, separators=(",", ":")),
         }
     ]
     for item in batch.questions:

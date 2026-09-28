@@ -54,14 +54,19 @@ const emit = defineEmits<{
 
 const host = ref<HTMLElement | null>(null)
 let dispose: (() => void) | undefined
+let editorPage: 'front' | 'back' = 'front'
 
 function initialize(): void {
+  const continuousDrawing = host.value?.querySelector('[data-role="editor-root"]')
+    ?.classList.contains('is-create-mode') ?? false
   dispose?.()
   if (!host.value) return
+  editorPage = props.activePage ?? props.modelValue.active_page ?? 'front'
   dispose = answerRegionEditor({
     parentElement: host.value,
     data: {
-      editor_state: { ...props.modelValue, active_page: props.activePage ?? props.modelValue.active_page },
+      editor_state: { ...props.modelValue, active_page: editorPage },
+      continuous_drawing: continuousDrawing,
       images: props.images,
       image_sizes: {
         front: [props.images.front.width, props.images.front.height],
@@ -74,7 +79,10 @@ function initialize(): void {
       save_status: props.saveStatus,
     },
     setStateValue(name: string, value: EditorState) {
-      if (name === 'editor_state') emit('update:modelValue', value)
+      if (name === 'editor_state') {
+        editorPage = value.active_page ?? editorPage
+        emit('update:modelValue', value)
+      }
     },
     setTriggerValue(name: string, value: { revision: number }) {
       if (name === 'finish_requested') emit('finish', value)
@@ -86,10 +94,16 @@ function initialize(): void {
 onMounted(initialize)
 watch(
   () => [props.images, props.manualQuestionOptions, props.automaticCandidates, props.issues,
-    props.readOnly, props.activePage],
+    props.readOnly],
   async () => { await nextTick(); initialize() },
   { deep: true },
 )
+watch(() => props.activePage, async page => {
+  // A page emitted by this editor is an acknowledgement, not an external switch.
+  if (page === undefined || page === editorPage) return
+  await nextTick()
+  initialize()
+})
 watch(
   () => [props.saveStatus, props.modelValue.revision],
   ([status, revision]) => {

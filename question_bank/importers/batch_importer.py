@@ -477,21 +477,21 @@ def _load_duplicate_index(db_path: Path, *, data_root: Path | None = None, conne
               AND COALESCE(p.import_status, '') <> 'deleted'
             """
         ).fetchall()
-        rows = conn.execute(
-            """
-            SELECT q.id, q.question_text, q.question_type,
-                   p.title AS paper_title
-            FROM questions q
-            LEFT JOIN papers p ON p.id = q.paper_id
-            WHERE COALESCE(q.is_deleted, 0) = 0
-              AND COALESCE(p.import_status, '') <> 'deleted'
-            ORDER BY q.id
-            """
-        ).fetchall()
+        questions = _load_near_duplicate_questions(conn)
         canonical = content_index_lookup(conn, {str(row["content_key"]) for row in key_rows})
-    index = _DuplicateIndex(data_root=root)
-    index.exact = canonical
-    index.questions = [
+    return _DuplicateIndex(data_root=root, exact=canonical, questions=questions)
+
+
+def _load_near_duplicate_questions(conn: Any) -> list[dict[str, Any]]:
+    """Read the wording profiles only; exact matching has its own persistent index."""
+    rows = conn.execute(
+        """SELECT q.id, q.question_text, q.question_type, p.title AS paper_title
+           FROM questions q LEFT JOIN papers p ON p.id = q.paper_id
+           WHERE COALESCE(q.is_deleted, 0) = 0
+             AND COALESCE(p.import_status, '') <> 'deleted'
+           ORDER BY q.id"""
+    ).fetchall()
+    return [
         {
             "id": int(row["id"]),
             "question_text": str(row["question_text"] or ""),
@@ -501,7 +501,6 @@ def _load_duplicate_index(db_path: Path, *, data_root: Path | None = None, conne
         }
         for row in rows
     ]
-    return index
 
 
 def _near_duplicate_hint(
@@ -1121,6 +1120,7 @@ def _import_scanned_paper(
                 question_type=item.question_type,
                 paper_title=source_title or path.stem,
                 question_number=item.question_number, image_paths=item.image_paths, has_images=item.has_images,
+                key=exact_keys.get(item.question_number),
             )
 
     return PaperImportFileResult(

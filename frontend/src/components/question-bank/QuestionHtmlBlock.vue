@@ -1,17 +1,30 @@
-<script setup lang="ts">
-import { onMounted, onUpdated, ref } from 'vue'
-import 'katex/dist/katex.min.css'
-
+<script lang="ts">
 interface KatexApi {
   renderToString(tex: string, options?: { throwOnError?: boolean; displayMode?: boolean }): string
 }
+let katexLoading: Promise<KatexApi | null> | undefined
+const formulaCache = new Map<string, string>()
+function loadKatex(): Promise<KatexApi | null> {
+  katexLoading ??= import('katex').then(module => module.default as KatexApi).catch(() => null)
+  return katexLoading
+}
+</script>
+
+<script setup lang="ts">
+import { computed, onMounted, ref, watch } from 'vue'
+import 'katex/dist/katex.min.css'
 
 const props = withDefaults(defineProps<{
-  html: string
+  html?: string
+  text?: string
+  inline?: boolean
   imageAlt?: string
   typesetText?: boolean
 }>(), {
   imageAlt: '题目图片',
+  html: '',
+  text: '',
+  inline: false,
   typesetText: false,
 })
 
@@ -20,19 +33,25 @@ const emit = defineEmits<{
 }>()
 
 const host = ref<HTMLElement | null>(null)
-let katexLoading: Promise<KatexApi | null> | undefined
-
-function loadKatex(): Promise<KatexApi | null> {
-  katexLoading ??= import('katex')
-    .then((module) => module.default as KatexApi)
-    .catch(() => null)
-  return katexLoading
-}
+const renderedHtml = computed(() => {
+  const container = document.createElement('div')
+  if (props.html) container.innerHTML = props.html
+  else container.textContent = props.text
+  if (props.inline) {
+    container.querySelectorAll('img').forEach(node => node.remove())
+    container.querySelectorAll('table').forEach(node => node.replaceWith(node.textContent ?? ''))
+    container.querySelectorAll('p,div,br').forEach(node => node.replaceWith(...node.childNodes, ' '))
+  }
+  return container.innerHTML
+})
 
 async function hydrateFormulas(): Promise<void> {
   const root = host.value
   if (!root) return
-  if (props.typesetText) markLinearFormulas(root)
+  if (props.typesetText || props.text) {
+    markDelimitedFormulas(root)
+    markLinearFormulas(root)
+  }
   const targets = root.querySelectorAll<HTMLElement>('.qm[data-latex]:not(.qm--done)')
   if (!targets.length) return
   const katex = await loadKatex()
@@ -40,16 +59,70 @@ async function hydrateFormulas(): Promise<void> {
   for (const target of targets) {
     const latex = target.dataset.latex ?? ''
     try {
-      target.innerHTML = katex.renderToString(latex, {
-        throwOnError: true,
-        displayMode: target.classList.contains('qm--display'),
-      })
+      const displayMode = !props.inline && target.classList.contains('qm--display')
+      const key = `${displayMode}:${latex}`
+      let html = formulaCache.get(key)
+      if (html === undefined) {
+        html = katex.renderToString(latex, { throwOnError: true, displayMode })
+        if (formulaCache.size >= 256) formulaCache.delete(formulaCache.keys().next().value!)
+        formulaCache.set(key, html)
+      }
+      target.innerHTML = html
       target.classList.add('qm--done')
     } catch {
       // Keep the linear fallback text the backend placed inside the span.
       target.classList.add('qm--done')
     }
   }
+}
+
+function markDelimitedFormulas(root: HTMLElement): void {
+  for (const node of [...root.childNodes]) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent ?? ''
+      const matches = [...text.matchAll(/\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$|\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]/g)]
+      if (!matches.length) continue
+      const fragment = document.createDocumentFragment()
+      let offset = 0
+      for (const match of matches) {
+        fragment.append(text.slice(offset, match.index))
+        const span = document.createElement('span')
+        span.className = match[1] || match[4] ? 'qm qm--display' : 'qm'
+        span.dataset.latex = match[1] ?? match[2] ?? match[3] ?? match[4] ?? ''
+        span.textContent = match[0]
+        fragment.append(span)
+        offset = match.index + match[0].length
+      }
+      fragment.append(text.slice(offset))
+      node.replaceWith(fragment)
+    } else if (node instanceof HTMLElement && !node.classList.contains('qm')) {
+      markDelimitedFormulas(node)
+    }
+  }
+}
+
+// Preserve nested radicands instead of stopping at the first closing parenthesis.
+function convertRadicals(value: string): string {
+  let result = ''
+  for (let i = 0; i < value.length; i += 1) {
+    if (value[i] !== '√') { result += value[i]; continue }
+    if (value[i + 1] === '(') {
+      let end = i + 2
+      let depth = 1
+      for (; end < value.length && depth; end += 1) {
+        if (value[end] === '(') depth += 1
+        if (value[end] === ')') depth -= 1
+      }
+      if (depth) { result += value.slice(i); break }
+      result += `\\sqrt{${convertRadicals(value.slice(i + 2, end - 1))}}`
+      i = end - 1
+    } else {
+      const term = value.slice(i + 1).match(/^(?:\d+(?:\.\d+)?|[A-Za-z])/)
+      if (term) { result += `\\sqrt{${term[0]}}`; i += term[0].length }
+      else result += '√'
+    }
+  }
+  return result
 }
 
 // Some Word sources use ordinary runs + superscripts rather than OMML.
@@ -65,20 +138,21 @@ function markLinearFormulas(root: HTMLElement): void {
       span.textContent = node.textContent
       return span.innerHTML
     }).join('')
-    const pattern = /(?:<sup>[+\-−A-Za-z0-9]+<\/sup>|<sub>[A-Za-z0-9]+<\/sub>|&(?:lt|gt);|(?!(?:[A-D][.．、]))[A-Za-z0-9πθ√+\-−×÷=<>≤≥≠²³^_{}()./]|[ \t])+/g
+    const pattern = /(?:<sup>[+\-−A-Za-z0-9]+<\/sup>|<sub>[A-Za-z0-9]+<\/sub>|&(?:lt|gt);|\\[A-Za-z]+|(?!(?:[A-D][.．、]))[A-Za-z0-9πθ√±∠△+\-−×÷=<>≤≥≠²³^_{}()./]|[ \t])+/g
     const updated = original.replace(pattern, fragment => {
       const prefix = fragment.match(/^[ .\t]*/)?.[0] ?? ''
       const suffix = fragment.match(/[ \t]*$/)?.[0] ?? ''
       const formula = fragment.slice(prefix.length, fragment.length - suffix.length)
-      if (!/[=+×÷≤≥≠²³√]|<su[pb]>|&(?:lt|gt);/.test(formula)
+      if (/&lt;\/?[A-Za-z]+\s+[A-Za-z]+=/.test(formula)) return fragment
+      if (!/[=+×÷≤≥≠²³√±∠△^_]|\\[A-Za-z]+|<su[pb]>|&(?:lt|gt);/.test(formula)
         && !/[A-Za-z].*[-−]|[-−].*[A-Za-z]/.test(formula)) return fragment
       if (!/[A-Za-z0-9πθ]/.test(formula)) return fragment
       const text = document.createElement('span')
       text.innerHTML = formula.replace(/<sup>([^<]+)<\/sup>/g, '^{$1}').replace(/<sub>([^<]+)<\/sub>/g, '_{$1}')
-      const latex = (text.textContent ?? '').replace(/−/g, '-').replace(/²/g, '^{2}').replace(/³/g, '^{3}')
+      const latex = convertRadicals(text.textContent ?? '').replace(/−/g, '-').replace(/²/g, '^{2}').replace(/³/g, '^{3}')
         .replace(/×/g, '\\times ').replace(/÷/g, '\\div ').replace(/≤/g, '\\leq ').replace(/≥/g, '\\geq ')
         .replace(/≠/g, '\\ne ').replace(/π/g, '\\pi ').replace(/θ/g, '\\theta ')
-        .replace(/√\(([^()]*)\)/g, '\\sqrt{$1}').replace(/√([A-Za-z0-9]+)/g, '\\sqrt{$1}')
+        .replace(/±/g, '\\pm ').replace(/∠/g, '\\angle ').replace(/△/g, '\\triangle ')
       const span = document.createElement('span')
       span.className = 'qm'
       span.dataset.latex = latex
@@ -120,19 +194,22 @@ function handleImageError(event: Event): void {
 }
 
 onMounted(hydrateFormulas)
-onUpdated(hydrateFormulas)
+watch([renderedHtml, () => props.typesetText, () => props.inline], hydrateFormulas, { flush: 'post' })
 </script>
 
 <template>
-  <!-- Backend-generated controlled HTML (whitelisted tags, escaped text). -->
-  <!-- eslint-disable-next-line vue/no-v-html -->
-  <div
+  <!-- Controlled HTML or escaped plain text; dynamic tag is always native span/div. -->
+  <!-- eslint-disable vue/no-v-html, vue/no-v-text-v-html-on-component -->
+  <component
+    :is="inline ? 'span' : 'div'"
     ref="host"
     class="question-html"
-    v-html="props.html"
+    :class="{ 'question-html--inline': inline }"
+    v-html="renderedHtml"
     @click="handleClick"
     @error.capture="handleImageError"
   />
+  <!-- eslint-enable vue/no-v-html, vue/no-v-text-v-html-on-component -->
 </template>
 
 <style scoped>
@@ -150,6 +227,13 @@ onUpdated(hydrateFormulas)
   display: block;
   margin: 6px 0;
   text-align: center;
+}
+.question-html--inline {
+  white-space: nowrap;
+}
+.question-html--inline :deep(.qm--display) {
+  display: inline;
+  margin: 0;
 }
 
 .question-html :deep(.katex) {

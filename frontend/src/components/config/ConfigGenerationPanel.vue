@@ -16,7 +16,6 @@ import {
 import { jobApi, type JobResponse } from '../../api/jobs'
 import { isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../../api/errors'
 import {
-  questionBankApi,
   type CurriculumCatalog,
   type CurriculumVolume,
 } from '../../api/question-bank'
@@ -50,7 +49,6 @@ const props = withDefaults(defineProps<{
   editorLoader: fetchConfigEditor,
   generationLoader: fetchConfigGenerationJobByToken,
   requestAbandoner: abandonConfigGenerationRequest,
-  curriculumLoader: () => questionBankApi.getCurriculum(),
 })
 const emit = defineEmits<{
   continue: []
@@ -63,11 +61,12 @@ const submitting = ref(false)
 const requestError = ref('')
 const editorError = ref('')
 const selectedFailed = ref<string[]>([])
-const curriculum = ref<CurriculumCatalog | null>(null)
+const curriculum = computed(() => curriculumScope.catalog)
 const selectedVolumeId = ref('')
 const volumeManuallyChanged = ref(false)
-const curriculumLoading = ref(true)
-const curriculumError = ref('')
+const curriculumLoading = computed(() => ['idle', 'loading'].includes(curriculumScope.loadState))
+const curriculumError = computed(() => curriculumScope.loadState === 'error'
+  ? '教材目录暂时无法读取，请重试。当前不会调用题目分析模型。' : '')
 const volumeTeleportTarget = ref<HTMLElement | null>(null)
 const intakeTeleportTarget = ref<HTMLElement | null>(null)
 const editorLoads = new Set<number>()
@@ -88,6 +87,7 @@ const generationBlockReason = computed(() => {
   const unresolved = uncertainIds.filter((item) => !resolved.has(item)).length
   if (unresolved > 0) return `还有 ${unresolved} 张黄色图片没有归属，请先拖到题目或答案区域。`
   if (curriculumLoading.value) return '正在读取教材目录。'
+  if (curriculumError.value) return curriculumError.value
   if (selectedVolume.value === null) return '请先选择这份试卷对应的教材册别。'
   if (!generationAvailable.value) return '拆题结果尚未达到整卷生成条件。'
   return ''
@@ -102,17 +102,17 @@ function resolveDefaultVolumeId(sessionName: string): string {
   return inferCurriculumVolumeId(sessionName, curriculum.value?.volumes ?? []) || ''
 }
 
-onMounted(async () => {
+async function loadCurriculum(): Promise<void> {
+  await curriculumScope.initialize(props.curriculumLoader)
+  if (!volumeManuallyChanged.value) {
+    selectedVolumeId.value = resolveDefaultVolumeId(props.sessionName)
+  }
+}
+
+onMounted(() => {
   volumeTeleportTarget.value = document.querySelector<HTMLElement>('#config-curriculum-volume-slot')
   intakeTeleportTarget.value = document.querySelector<HTMLElement>('#config-intake-status-slot')
-  try {
-    curriculum.value = await props.curriculumLoader()
-    selectedVolumeId.value = resolveDefaultVolumeId(props.sessionName)
-  } catch {
-    curriculumError.value = '本地教材目录暂时无法读取，当前不会调用题目分析模型。'
-  } finally {
-    curriculumLoading.value = false
-  }
+  void loadCurriculum()
 })
 
 // 未在本面板手动改过册别时，跟随顶部全局教学学期。
@@ -713,6 +713,10 @@ watch(
             </option>
           </select>
         </label>
+        <span v-if="curriculumError" role="alert">
+          {{ curriculumError }}
+          <button type="button" class="secondary" @click="loadCurriculum">重试读取教材</button>
+        </span>
         <span class="config-generation__console-count">通过 {{ passedStateCount }} · 异常 {{ redStateCount }}</span>
         <span
           v-if="job === null && reusablePreviewCount > 0"

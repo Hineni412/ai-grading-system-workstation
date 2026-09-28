@@ -310,13 +310,15 @@ export default function answerRegionEditor(component) {
   let revision = Math.max(0, Math.floor(numberOr(state.revision)));
   let activePage = state.active_page === "back" ? "back" : "front";
   let selectedUuid = null;
-  let mode = "select";
+  let mode = !readOnly && data.continuous_drawing ? "create" : "select";
   let drawerOpen = Boolean(state.drawer_open || data.drawer_open_requested);
   let zoom = 1;
   let zoomMode = "fit";
   let spacePressed = false;
   let interaction = null;
   let draftRegion = null;
+  let moveFrame = null;
+  let pendingMove = null;
   let disposed = false;
   const listeners = [];
   const validationIssues = Array.isArray(data.validation_issues)
@@ -467,19 +469,33 @@ export default function answerRegionEditor(component) {
   }
 
   function renderDraft() {
-    draftLayer.replaceChildren();
     if (!draftRegion) {
+      draftLayer.replaceChildren();
       return;
     }
-    draftLayer.append(
-      createSvgElement("rect", {
-        class: "draft-box",
-        x: draftRegion.x,
-        y: draftRegion.y,
-        width: draftRegion.w,
-        height: draftRegion.h,
-      }),
-    );
+    let box = draftLayer.firstElementChild;
+    if (!box) {
+      box = createSvgElement("rect", { class: "draft-box" });
+      draftLayer.append(box);
+    }
+    for (const [key, value] of Object.entries({ x: draftRegion.x, y: draftRegion.y,
+      width: draftRegion.w, height: draftRegion.h })) box.setAttribute(key, String(value));
+  }
+
+  function renderDraggedRegion(region) {
+    const group = regionsLayer.querySelector(".selected");
+    if (!group) return;
+    const start = interaction.startRegion;
+    group.setAttribute("transform", `translate(${region.x - start.x} ${region.y - start.y})`);
+    if (interaction.kind !== "resize") return;
+    const box = group.querySelector(".region-box");
+    box.setAttribute("width", String(region.w));
+    box.setAttribute("height", String(region.h));
+    const half = 5 / zoom;
+    for (const handle of group.querySelectorAll("[data-handle]")) {
+      handle.setAttribute("x", String(start.x + (handle.dataset.handle.endsWith("e") ? region.w : 0) - half));
+      handle.setAttribute("y", String(start.y + (handle.dataset.handle.startsWith("s") ? region.h : 0) - half));
+    }
   }
 
   function nextMapping() {
@@ -844,6 +860,7 @@ export default function answerRegionEditor(component) {
   }
 
   function cancelInteraction() {
+    cancelPendingMove();
     if (!interaction) {
       draftRegion = null;
       return;
@@ -939,12 +956,12 @@ export default function answerRegionEditor(component) {
         return;
       }
       selectedUuid = regionUuid;
-      mode = "select";
       const handle = event.target.dataset?.handle;
       interaction = {
         kind: handle ? "resize" : "move",
         pointerId: event.pointerId,
         uuid: regionUuid,
+        regionIndex: regions.indexOf(region),
         handle,
         startPoint: pointFromEvent(event),
         startRegion: cloneValue(region),
@@ -977,7 +994,26 @@ export default function answerRegionEditor(component) {
     renderAll();
   }
 
+  function cancelPendingMove() {
+    if (moveFrame !== null) cancelAnimationFrame(moveFrame);
+    moveFrame = null;
+    pendingMove = null;
+  }
+
+  function flushPointerMove() {
+    const event = pendingMove;
+    cancelPendingMove();
+    if (event) applyPointerMove(event);
+  }
+
   function handlePointerMove(event) {
+    if (!interaction || event.pointerId !== interaction.pointerId) return;
+    event.preventDefault();
+    pendingMove = event;
+    if (moveFrame === null) moveFrame = requestAnimationFrame(flushPointerMove);
+  }
+
+  function applyPointerMove(event) {
     if (!interaction || event.pointerId !== interaction.pointerId) {
       return;
     }
@@ -992,7 +1028,7 @@ export default function answerRegionEditor(component) {
     if (interaction.kind === "create") {
       draftRegion = normalizedRect(interaction.startPoint, point);
       interaction.moved = draftRegion.w > 0.5 || draftRegion.h > 0.5;
-      renderCanvas();
+      renderDraft();
       event.preventDefault();
       return;
     }
@@ -1001,16 +1037,11 @@ export default function answerRegionEditor(component) {
       const dx = point.x - interaction.startPoint.x;
       const dy = point.y - interaction.startPoint.y;
       interaction.moved = Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5;
-      regions = regions.map((region) => (
-        region.region_uuid === interaction.uuid
-          ? {
-            ...cloneValue(interaction.startRegion),
-            x: numberOr(interaction.startRegion.x) + dx,
-            y: numberOr(interaction.startRegion.y) + dy,
-          }
-          : cloneValue(region)
-      ));
-      renderCanvas();
+      const region = { ...interaction.startRegion,
+        x: numberOr(interaction.startRegion.x) + dx,
+        y: numberOr(interaction.startRegion.y) + dy };
+      regions[interaction.regionIndex] = region;
+      renderDraggedRegion(region);
       event.preventDefault();
       return;
     }
@@ -1023,12 +1054,8 @@ export default function answerRegionEditor(component) {
         || Math.abs(numberOr(resized.w) - numberOr(interaction.startRegion.w)) > 0.5
         || Math.abs(numberOr(resized.h) - numberOr(interaction.startRegion.h)) > 0.5
       );
-      regions = regions.map((region) => (
-        region.region_uuid === interaction.uuid
-          ? resized
-          : cloneValue(region)
-      ));
-      renderCanvas();
+      regions[interaction.regionIndex] = resized;
+      renderDraggedRegion(resized);
       event.preventDefault();
     }
   }
@@ -1037,6 +1064,7 @@ export default function answerRegionEditor(component) {
     if (!interaction || event.pointerId !== interaction.pointerId) {
       return;
     }
+    flushPointerMove();
     if (svg.hasPointerCapture(event.pointerId)) {
       svg.releasePointerCapture(event.pointerId);
     }
@@ -1162,14 +1190,13 @@ export default function answerRegionEditor(component) {
       return;
     }
     if (event.key === "Escape") {
+      mode = "select";
       if (interaction) {
         cancelInteraction();
       } else if (drawerOpen) {
         setDrawerOpen(false);
-      } else {
-        mode = "select";
-        renderAll();
       }
+      renderAll();
       event.preventDefault();
       return;
     }
@@ -1258,6 +1285,7 @@ export default function answerRegionEditor(component) {
 
   return () => {
     disposed = true;
+    cancelPendingMove();
     resizeObserver?.disconnect();
     for (const removeListener of listeners.splice(0)) {
       removeListener();

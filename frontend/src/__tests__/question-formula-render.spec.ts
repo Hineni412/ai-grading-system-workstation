@@ -1,8 +1,9 @@
-import { createApp, h } from 'vue';
+import { createApp, h, ref } from 'vue';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { QuestionBankRichBlock } from '../api/question-bank';
 import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
+import QuestionHtmlBlock from '../components/question-bank/QuestionHtmlBlock.vue'
 
 const mounted: Array<ReturnType<typeof createApp>> = []
 
@@ -62,6 +63,36 @@ afterEach(() => {
 })
 
 describe('question html block rendering', () => {
+  it('renders inline score text, nested radicals and delimited LaTeX, then refreshes edited content', async () => {
+    const text = ref('答案 ±8；计算 √(1+√(4))；满足 $x\\geq 5$。')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp({ render: () => h(QuestionHtmlBlock, { text: text.value, inline: true }) })
+    app.mount(host)
+    mounted.push(app)
+    await vi.waitFor(() => expect(host.querySelectorAll('.katex')).toHaveLength(3))
+    expect(host.querySelector('.question-html')?.tagName).toBe('SPAN')
+    expect([...host.querySelectorAll<HTMLElement>('.qm')].map(node => node.dataset.latex?.trim()))
+      .toEqual(['\\pm 8', '\\sqrt{1+\\sqrt{4}}', 'x\\geq 5'])
+    text.value = '保留原文 <img src=x>；答案 \\frac{1}{2}。'
+    await vi.waitFor(() => expect(host.querySelectorAll('.katex')).toHaveLength(1))
+    expect(host.querySelector('img')).toBeNull()
+    expect(host.textContent).toContain('<img src=x>')
+  })
+
+  it('keeps rich source formulas in a single-line summary without images or paragraph wrappers', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp({ render: () => h(QuestionHtmlBlock, {
+      inline: true, html: '<p>计算 <span class="qm" data-latex="\\frac{1}{3}">(1)/(3)</span><img src="test.png"></p>',
+    }) })
+    app.mount(host)
+    mounted.push(app)
+    await vi.waitFor(() => expect(host.querySelector('.katex')).not.toBeNull())
+    expect(host.querySelector('p,img')).toBeNull()
+    expect(host.textContent).toContain('计算')
+  })
+
   it('typesets ordinary Word superscripts for the assistant without changing prose or option labels', async () => {
     const host = mountBlocks([htmlBlock('2024-2025 学年。A. x<sup>2</sup>+6<sup>2</sup>=10<sup>2</sup>  B. 10<sup>2</sup>+6<sup>2</sup>=x<sup>2</sup>')], true)
     await vi.waitFor(() => expect(host.querySelectorAll('.qm .katex')).toHaveLength(2))

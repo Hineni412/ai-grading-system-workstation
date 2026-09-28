@@ -519,7 +519,14 @@ class ConfigSourceService:
             }
             source_revision = _canonical_source_revision(manifest)
             manifest["source_revision"] = source_revision
-            if len(json.dumps(manifest, ensure_ascii=False).encode("utf-8")) > self.max_manifest_bytes:
+            if len((json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")) > self.max_manifest_bytes:
+                # Preview acceleration must not reduce the accepted document
+                # size. Large sources can use the existing read-time fallback.
+                for block in blocks:
+                    block.pop("_word_paragraphs", None)
+                source_revision = _canonical_source_revision(manifest)
+                manifest["source_revision"] = source_revision
+            if len((json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")) > self.max_manifest_bytes:
                 raise ConfigSourceInvalidError()
             with session_config_lock(self.upload_config_dir, clean_session_id):
                 guard = activation_guard() if activation_guard is not None else None
@@ -1231,6 +1238,7 @@ class ConfigSourceService:
         included_ids: set[str] = set()
         for private_block in record.private_blocks:
             block = copy.deepcopy(private_block)
+            block.pop("_word_paragraphs", None)
             question_id = str(block.get("question_id") or "").strip()
             decision = by_id.get(question_id)
             if decision is not None and decision.excluded:
@@ -1513,6 +1521,7 @@ class ConfigSourceService:
                 register_created_file=parser_registry.register,
                 write_created_file=write_parser_asset,
                 document_text_out=document_text_parts,
+                preserve_preview_xml=True,
             )
             document_text = "\n".join(document_text_parts)
             for block in blocks:
@@ -2605,6 +2614,11 @@ def _public_questions_with_rich_content(
                 source_id,
                 source_revision,
                 source_docx,
+                paragraphs=next(
+                    (block["_word_paragraphs"] for block in private_blocks
+                     if isinstance(block.get("_word_paragraphs"), list)),
+                    None,
+                ),
             )
         except Exception:
             formula_index = None

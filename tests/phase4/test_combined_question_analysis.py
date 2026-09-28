@@ -26,6 +26,36 @@ from tests.current_knowledge_support import install_current_knowledge
 FIXTURE = Path(__file__).parent / "fixtures" / "p4_00_gold_set.json"
 
 
+@pytest.mark.parametrize("projection", ["tag", "all"])
+def test_prompt_shares_only_identical_candidate_catalogs(projection: str) -> None:
+    from question_bank.training_criteria.adapters import _combined_prompt, _prompt_candidate_contract
+    from question_bank.training_criteria.analysis import PlannedAnalysisBatch
+
+    questions = tuple(
+        QuestionAnalysisInput(
+            question_id=number,
+            tagging_context=TaggingContext(question_text=f"计算 {number}+1", question_type="填空题"),
+            taxonomy_contract={"candidates": {
+                "ability": [{"id": "ability-1", "name": "运算能力"}],
+                "knowledge": [{"id": f"knowledge-{scope}", "name": f"知识 {scope}"}],
+            }, "taxonomy_revision": scope},
+        )
+        for number, scope in [(1, 1), (2, 1), (3, 2)]
+    )
+    batch = PlannedAnalysisBatch(questions, 1000, 1000)
+    payload = json.loads(_combined_prompt(batch, projection)[1]["content"][0]["text"])
+    assert len(payload["candidate_contracts"]) == 2
+    for original, sent in zip(questions, payload["questions"], strict=True):
+        assert sent["question_id"] == original.question_id
+        assert payload["candidate_contracts"][sent["candidate_contract_ref"]] == _prompt_candidate_contract(
+            original.taxonomy_contract, include_knowledge=projection != "tag",
+        )
+    assert payload["questions"][0]["candidate_contract_ref"] == payload["questions"][1]["candidate_contract_ref"]
+    single = json.loads(_combined_prompt(PlannedAnalysisBatch(questions[:1], 1000, 1000), projection)[1]["content"][0]["text"])
+    assert "candidate_contract" in single["questions"][0]
+    assert "candidate_contracts" not in single
+
+
 class FakeTagWriter:
     def __init__(self) -> None:
         self.calls: list[tuple[int, str]] = []
