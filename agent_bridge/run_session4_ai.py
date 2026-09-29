@@ -44,7 +44,7 @@ def _write_papers_index(
     db: object,
 ) -> Path:
     from grading_service import _attach_enhanced_paths, apply_scan_manual_decisions
-    from hybrid_batch_grading_service import build_paper_entries
+    from ai_batch_grading_service import build_paper_entries
     from scanner import ScanAnalysis
 
     analysis = ScanAnalysis.from_dict(

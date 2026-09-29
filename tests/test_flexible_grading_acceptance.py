@@ -6,12 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from ai_grader import AIGrader
+from backend.domain_models import GradingResult
 from backend.repositories.results import ResultRepository
-from hybrid_batch_grading_service import MajorQuestionSpec, _detail_from_ai_item
+from ai_batch_grading_service import _detail_from_ai_item, build_major_question_specs
 
 
-def grader_and_spec():
+def question_spec():
     question = {
         "question_id": "Q1",
         "question_type": "calculation",
@@ -30,18 +30,10 @@ def grader_and_spec():
             }
         ],
     }
-    grader = AIGrader.__new__(AIGrader)
-    grader.rubric = {"total_score": 9, "questions": [question]}
-    grader.answer_key = {}
-    grader.question_tag_context = {}
-    grader.target_question_ids = []
-    return grader, MajorQuestionSpec(
-        question_id="Q1",
-        rubric=question,
-        answer_key={},
-        max_score=9,
-        detail_question_ids=["Q1"],
-    )
+    return build_major_question_specs(
+        {"total_score": 9, "questions": [question]},
+        {"questions": []},
+    )[0]
 
 
 def assessments(achievements=("full", "full", "none")):
@@ -61,17 +53,13 @@ def assessments(achievements=("full", "full", "none")):
     ]
 
 
-def convert(grader, item):
-    return grader._validate_and_convert(
-        {
-            "student_name": "合成验收",
-            "total_score": 9,
-            "student_score": item["score_awarded"],
-            "needs_human_review": False,
-            "grading_details": [copy.deepcopy(item)],
-        },
-        expected_student_name="合成验收",
+def convert(item):
+    spec = question_spec()
+    detail, reason, metadata = _detail_from_ai_item(
+        copy.deepcopy(item), set(spec.detail_question_ids), 80, spec=spec
     )
+    assert not reason
+    return detail, metadata
 
 
 @pytest.mark.parametrize(
@@ -83,10 +71,9 @@ def convert(grader, item):
         (True, False, False, 9),
     ],
 )
-def test_final_simplification_deducts_exactly_one_in_both_grading_modes(
+def test_final_simplification_deducts_exactly_one(
     required, equivalent, simplified, expected
 ):
-    grader, spec = grader_and_spec()
     item = {
         "question_id": "Q1",
         "score_awarded": 9,
@@ -100,12 +87,8 @@ def test_final_simplification_deducts_exactly_one_in_both_grading_modes(
             "requirement_evidence": "计算最简结果",
         },
     }
-    result = convert(grader, item)
-    detail, reason, metadata = _detail_from_ai_item(
-        copy.deepcopy(item), {"Q1"}, 80, spec=spec
-    )
-    assert not reason
-    assert result.student_score == detail.score_awarded == expected
+    detail, metadata = convert(item)
+    assert detail.score_awarded == expected
     assert sum(step["score_awarded"] for step in metadata["step_assessments"]) == 9
     if expected == 8:
         assert metadata["presentation_deduction"] == 1
@@ -114,8 +97,7 @@ def test_final_simplification_deducts_exactly_one_in_both_grading_modes(
 
 @pytest.mark.parametrize("observed", ["4和6", "a=4，b=6"])
 @pytest.mark.parametrize("raw_score", [0, 1])
-def test_correct_answer_without_work_is_one_in_both_modes(observed, raw_score):
-    grader, spec = grader_and_spec()
+def test_correct_answer_without_work_is_one(observed, raw_score):
     item = {
         "question_id": "Q1",
         "score_awarded": raw_score,
@@ -125,26 +107,28 @@ def test_correct_answer_without_work_is_one_in_both_modes(observed, raw_score):
         "answer_is_blank_or_no_valid_work": True,
         "step_assessments": assessments(("none", "none", "none")),
     }
-    full = convert(grader, item)
-    hybrid, reason, metadata = _detail_from_ai_item(
-        copy.deepcopy(item), {"Q1"}, 80, spec=spec
-    )
-    assert full.student_score == 1
-    assert not reason and hybrid.score_awarded == 1
+    detail, metadata = convert(item)
+    assert detail.score_awarded == 1
     assert all(s["achievement"] == "none" for s in metadata["step_assessments"])
     assert sum(s["score_awarded"] for s in metadata["step_assessments"]) == 0
 
 
 def test_repository_rejects_fractional_score_before_replacing_existing_result():
-    grader, _ = grader_and_spec()
-    result = convert(
-        grader,
+    detail, metadata = convert(
         {
             "question_id": "Q1",
             "score_awarded": 6,
             "deduction_reason": "",
             "step_assessments": assessments(),
-        },
+        }
+    )
+    result = GradingResult(
+        student_name="合成验收",
+        total_score=9,
+        student_score=detail.score_awarded,
+        needs_human_review=False,
+        grading_details=[detail],
+        raw_json={"detail_metadata": {"Q1": metadata}},
     )
     invalid = replace(
         result, grading_details=[replace(result.grading_details[0], score_awarded=8.5)]

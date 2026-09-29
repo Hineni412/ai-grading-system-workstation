@@ -41,7 +41,7 @@ def _write_papers_index(
 ) -> Path:
     """Reproduce the pipeline's matched paper groups for local crop helpers."""
     from grading_service import _attach_enhanced_paths, apply_scan_manual_decisions
-    from hybrid_batch_grading_service import build_paper_entries
+    from ai_batch_grading_service import build_paper_entries
     from scanner import ScanAnalysis
 
     analysis = ScanAnalysis.from_dict(

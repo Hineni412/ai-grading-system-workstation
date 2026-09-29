@@ -9,7 +9,6 @@ import {
   type ReviewQuestionSummary,
 } from '../api/review'
 import type {
-  AutomatedGradingMode,
   GradingPlanMetrics,
   ScanDecision,
   ScanIssueSuggestion,
@@ -924,7 +923,7 @@ function chooseMode(mode: SelectableGradingMode): void {
 function retryPlan(): void {
   if (store.selectedMode && canPreviewPlan.value) void store.previewPlan(store.selectedMode)
 }
-async function startAutomated(mode: AutomatedGradingMode): Promise<void> {
+async function startAutomated(mode: 'ai'): Promise<void> {
   gradingSubmissionPending.value = true
   const submission = store.begin(mode, confirmPending.value)
   await nextTick()
@@ -948,7 +947,7 @@ async function confirmPlan(): Promise<void> {
     })
     return
   }
-  await startAutomated(plan.mode)
+  if (plan.mode === 'ai') await startAutomated(plan.mode)
 }
 function planNumber(source: GradingPlanMetrics | undefined, keys: string[]): number | null {
   if (!source) return null

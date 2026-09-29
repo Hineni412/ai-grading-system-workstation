@@ -59,6 +59,13 @@ class ScanReplacementCleanupIncompleteError(ScanGradingWorkspaceError):
     """新答卷已生效，但旧文件清理仍需安全重试。"""
 
 
+class LegacyGradingModeError(ScanGradingWorkspaceError):
+    """旧批改方式的历史运行只能查看，不能继续执行。"""
+
+
+LEGACY_GRADING_MODE_MESSAGE = "旧批改方式已停用，请用 AI 批改重新开始未完成的部分"
+
+
 class ScanGradingWorkspace:
     """隐藏上传文件、manifest 与后续扫描状态的会话级模块。"""
 
@@ -203,6 +210,8 @@ class ScanGradingWorkspace:
             ):
                 projected_state = "interrupted"
                 actions = ["resume", "cancel"]
+        if str(run.grading_mode) != "ai":
+            actions = [action for action in actions if action == "cancel"]
         result: dict[str, Any] = {
             "run_id": run.id,
             "mode": run.grading_mode,
@@ -412,6 +421,8 @@ class ScanGradingWorkspace:
 
     def prepare_resume(self, session_id: int, run_id: int) -> dict[str, Any]:
         run, counts = self._require_run(session_id, run_id)
+        if str(run.grading_mode) != "ai":
+            raise LegacyGradingModeError(LEGACY_GRADING_MODE_MESSAGE)
         control = self._read_grading_control(session_id)
         if (
             int(control.get("run_id") or 0) == run.id
@@ -481,6 +492,8 @@ class ScanGradingWorkspace:
 
     def prepare_failed_retry(self, session_id: int, run_id: int) -> dict[str, Any]:
         run, counts = self._require_run(session_id, run_id)
+        if str(run.grading_mode) != "ai":
+            raise LegacyGradingModeError(LEGACY_GRADING_MODE_MESSAGE)
         if self._run_was_cancelled(session_id, run.id):
             raise ScanGradingWorkspaceError("cancelled grading run cannot retry")
         if run.state not in {"completed", "failed"} or (
@@ -499,6 +512,8 @@ class ScanGradingWorkspace:
 
     def prepare_supplement(self, session_id: int, run_id: int) -> dict[str, Any]:
         run, _counts = self._require_run(session_id, run_id)
+        if str(run.grading_mode) != "ai":
+            raise LegacyGradingModeError(LEGACY_GRADING_MODE_MESSAGE)
         if self._run_was_cancelled(session_id, run.id):
             raise ScanGradingWorkspaceError("cancelled grading run cannot supplement")
         if run.state not in {"completed", "failed"}:
@@ -608,13 +623,11 @@ class ScanGradingWorkspace:
                 raise GradingConfigChangedError(
                     "grading configuration binding cannot be verified"
                 )
+            if str(grading_mode) != "ai":
+                raise LegacyGradingModeError(LEGACY_GRADING_MODE_MESSAGE)
             payload: dict[str, Any] = {
                 "session_id": int(session_id),
-                "grading_mode": (
-                    grading_mode
-                    if grading_mode in {"ai", "hybrid_batch", "full_paper"}
-                    else "ai"
-                ),
+                "grading_mode": "ai",
                 "failed_only": False,
                 "enhance_images": bool(enhance_images),
                 "config_revision": config_revision,

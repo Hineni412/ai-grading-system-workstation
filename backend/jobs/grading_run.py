@@ -166,8 +166,10 @@ def _read_optional_json_list(path: Path) -> list[dict[str, Any]] | None:
 
 def _normalize_grading_mode(value: str) -> str:
     normalized = str(value or "").strip()
-    if normalized in {"ai", "hybrid_batch", "full_paper"}:
-        return normalized
+    if normalized in {"hybrid_batch", "full_paper"}:
+        raise ValueError(
+            "旧批改方式已停用，请用 AI 批改重新开始未完成的部分"
+        )
     return "ai"
 
 

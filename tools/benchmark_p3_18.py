@@ -28,7 +28,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.media.service import ReviewMediaService
-from hybrid_batch_grading_service import MajorQuestionSpec, grade_major_question_batch
+from ai_batch_grading_service import MajorQuestionSpec, grade_major_question_batch
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.question_tag_projection_service import QuestionTagProjectionService
 from llm_client import LLMClient, LLMSettings

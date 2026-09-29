@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ai_grader import GradingResult, QuestionGradingDetail, SecondaryError
+from backend.domain_models import GradingResult, QuestionGradingDetail, SecondaryError
 from db_manager import DBManager
 
 

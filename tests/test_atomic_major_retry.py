@@ -8,10 +8,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
-from ai_grader import GradingResult, QuestionGradingDetail
+from backend.domain_models import GradingResult, QuestionGradingDetail
 from db_manager import DBManager
 from grading_service import GradingService
-from hybrid_batch_grading_service import HybridBatchRunResult, PaperEntry
 from llm_client import LLMClient
 from scanner import ExamPaperGroup
 

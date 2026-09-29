@@ -69,7 +69,7 @@ def test_partial_grading_uses_completed_semantics_and_failed_only_recovery(
     api_e2e.paths.qb_db_path.resolve().relative_to(api_e2e.paths.data_root.resolve())
     submitted = api_e2e.client.post(
         f"/api/sessions/{scanned_session_id}/grading/run",
-        json={"grading_mode": "full_paper", "enhance_images": False},
+        json={"grading_mode": "ai", "enhance_images": False},
     )
     assert submitted.status_code == 202
     job = api_e2e.poll_job(submitted.json()["id"], "succeeded")

@@ -25,12 +25,15 @@ from backend.exam_intake import exam_intake_blocks_progress
 from backend.grading_workflow import build_grading_plan
 from backend.scan_grading.workspace import (
     GradingConfigChangedError,
+    LegacyGradingModeError,
     PendingScanIssuesError,
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
     ScanMatchConflictError,
     UploadBatchRevisionError,
 )
+
+LEGACY_GRADING_MODE_MESSAGE = "旧批改方式已停用，请用 AI 批改重新开始未完成的部分"
 from backend.jobs.manager import ActiveJobExistsError, JobManager, UnsupportedJobTypeError
 from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
@@ -221,6 +224,12 @@ def resume_session_grading(
     try:
         job = workspace.submit_resume(session_id, run_id)
         return _job_response(job)
+    except LegacyGradingModeError as exc:
+        raise ApiError(
+            409,
+            "legacy_grading_mode_disabled",
+            LEGACY_GRADING_MODE_MESSAGE,
+        ) from exc
     except ActiveJobExistsError as exc:
         raise ApiError(
             409,
@@ -258,6 +267,12 @@ def retry_failed_session_grading(
     try:
         job = workspace.submit_failed_retry(session_id, run_id)
         return _job_response(job)
+    except LegacyGradingModeError as exc:
+        raise ApiError(
+            409,
+            "legacy_grading_mode_disabled",
+            LEGACY_GRADING_MODE_MESSAGE,
+        ) from exc
     except ActiveJobExistsError as exc:
         raise ApiError(
             409,
@@ -289,6 +304,12 @@ def supplement_session_grading(
     try:
         job = workspace.submit_supplement(session_id, run_id)
         return _job_response(job)
+    except LegacyGradingModeError as exc:
+        raise ApiError(
+            409,
+            "legacy_grading_mode_disabled",
+            LEGACY_GRADING_MODE_MESSAGE,
+        ) from exc
     except ActiveJobExistsError as exc:
         raise ApiError(
             409,
@@ -420,6 +441,12 @@ def run_session_grading(
                 "grading_preflight_stale",
                 "The grading configuration changed; run scan preflight again",
             ) from exc
+        except LegacyGradingModeError as exc:
+            raise ApiError(
+                409,
+                "legacy_grading_mode_disabled",
+                LEGACY_GRADING_MODE_MESSAGE,
+            ) from exc
         except ScanGradingWorkspaceError as exc:
             raise ApiError(409, "grading_input_not_ready", "Grading input is not ready") from exc
         except ActiveJobExistsError as exc:
@@ -437,6 +464,16 @@ def run_session_grading(
             ) from exc
         return _job_response(job)
 
+    if request.resume_run_id is not None:
+        from grading_run_store import GradingRunStore
+
+        stored_run = GradingRunStore(db.db_path).get_run(int(request.resume_run_id))
+        if stored_run is not None and str(stored_run.grading_mode) != "ai":
+            raise ApiError(
+                409,
+                "legacy_grading_mode_disabled",
+                LEGACY_GRADING_MODE_MESSAGE,
+            )
     payload: dict[str, object] = {
         "session_id": int(session_id),
         "grading_mode": request.grading_mode,

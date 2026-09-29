@@ -572,15 +572,15 @@ def test_grading_category_survives_without_legacy_error_type_tag():
     ]
 
 
-def test_hybrid_grading_prompt_uses_actual_work_not_legacy_tag_as_constraint():
-    from hybrid_batch_grading_service import MajorQuestionSpec, build_hybrid_major_prompt
+def test_ai_grading_prompt_uses_actual_work_not_legacy_tag_as_constraint():
+    from ai_batch_grading_service import MajorQuestionSpec, build_ai_major_prompt
 
     spec = MajorQuestionSpec(
         question_id="Q1", detail_question_ids=["Q1"],
         rubric={}, answer_key={}, max_score=5,
     )
-    system_prompt, _, _ = build_hybrid_major_prompt(
-        spec, {"mode": "tiles", "items": []},
+    system_prompt, _, _ = build_ai_major_prompt(
+        spec, {"mode": "full_page_subjective", "items": []},
         question_tag_context={"Q1": {"error_type": ["计算错误"]}},
     )
     assert "根据本次实际作答和扣分证据选择 error_category" in system_prompt

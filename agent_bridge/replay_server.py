@@ -446,7 +446,7 @@ def _handle_objective(req_dir: Path, manifest: dict, specs_by_qid, obj_old) -> s
 
 
 def _handle_subjective(req_dir: Path, manifest: dict, spec, subj_old) -> str:
-    from hybrid_batch_grading_service import _detail_from_ai_item
+    from ai_batch_grading_service import _detail_from_ai_item
 
     items = []
     problems = []
@@ -541,7 +541,7 @@ def _fallback_response(manifest: dict) -> dict:
 
 def main() -> int:
     from objective_batch_recognition_service import build_objective_question_specs
-    from hybrid_batch_grading_service import build_major_question_specs
+    from ai_batch_grading_service import build_major_question_specs
 
     rubric = json.loads(RUBRIC_PATH.read_text(encoding="utf-8"))
     answer_key = json.loads(ANSWER_KEY_PATH.read_text(encoding="utf-8"))
