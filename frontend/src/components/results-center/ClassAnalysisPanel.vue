@@ -423,6 +423,15 @@ function evidenceStudentCount(items: ClassCauseEvidence[]): number {
   return new Set(items.flatMap((item) => item.student_ids)).size
 }
 
+function previousAnswersFor(
+  cause: ClassCause,
+  sourceQuestionId: string | null,
+  item: ClassCauseEvidence,
+): NonNullable<ClassCauseEvidence['previous_answers']> {
+  if (cause.kind !== 'carry_forward' || sourceQuestionId === null) return []
+  return (item.previous_answers ?? []).filter((previous) => previous.question_id === sourceQuestionId)
+}
+
 function canEditPattern(cause: ClassCause): boolean {
   return !!cause.kind && EDITABLE_KINDS.has(cause.kind)
 }
@@ -725,7 +734,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                                 <p v-else-if="cause.kind" class="class-analysis__note">未保存作答文字，具体原因以已有证据为限。</p>
                                 <p v-if="item.evidence_steps?.length"><strong>已有步骤记录：</strong><QuestionHtmlBlock :text="item.evidence_steps.join('；')" inline typeset-text /></p>
                                 <p><strong v-if="cause.kind">原始批语：</strong><QuestionHtmlBlock :text="item.text" inline typeset-text /></p>
-                                <p v-for="previous in item.previous_answers" :key="previous.question_id" class="class-analysis__note">{{ previous.question_id }} 作答：<QuestionHtmlBlock :text="previous.student_answer || '未记录作答文字'" inline typeset-text /></p>
+                                <p v-for="previous in previousAnswersFor(cause, variant.source_question_id, item)" :key="previous.question_id"><strong>{{ previous.question_id }} 作答：</strong><QuestionHtmlBlock :text="previous.student_answer || '未记录作答文字'" inline typeset-text /></p>
                                 <small>{{ causeStudents(selectedQuestion, item.student_ids) }}</small>
                               </div>
                             </div>

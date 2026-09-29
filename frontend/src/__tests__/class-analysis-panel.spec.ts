@@ -241,14 +241,19 @@ describe('class analysis panel', () => {
     question.records[0]!.student_id = 31
     const evidence = [{ text: '绳长求和有误', student_ids: [31], student_answer: '10+6=16',
       evidence_steps: ['已算出斜段10'], previous_answers: [{ question_id: 'Q12(P1)', student_answer: '前问保留的作答', text: '前问批语', evidence_steps: [] }] }]
+    const carryEvidence = [{ text: '沿用数值', student_ids: [31], student_answer: '直接沿用',
+      previous_answers: [
+        { question_id: 'Q12(P1)', student_answer: '前问保留的作答', text: '前问批语', evidence_steps: [] },
+        { question_id: 'Q12(P2)', student_answer: '另一小问的作答', text: '', evidence_steps: [] },
+      ] }]
     question.causes_grouped = true
     question.causes = [
       { kind: 'error', reason: '选错目标量的组成部分', count: 1, evidence,
         manifestations: [{ description: '用水平边替换竖直绳段', source_question_id: null, evidence }] },
       { kind: 'process', reason: '未写依据', count: 1, evidence },
       { kind: 'response_state', reason: '未作答', count: 1, evidence: [{ text: '空白', student_ids: [31] }] },
-      { kind: 'carry_forward', reason: '前问错误结果延续', count: 1, evidence,
-        manifestations: [{ description: '沿用前问数值', source_question_id: 'Q12(P1)', evidence }] },
+      { kind: 'carry_forward', reason: '前问错误结果延续', count: 1, evidence: carryEvidence,
+        manifestations: [{ description: '沿用前问数值', source_question_id: 'Q12(P1)', evidence: carryEvidence }] },
       { kind: 'review', reason: '书写要求待核对', count: 1, evidence },
     ]
     apiMock.getClassAnalysis.mockResolvedValue(result)
@@ -263,10 +268,15 @@ describe('class analysis panel', () => {
     ).toContain('用水平边替换竖直绳段'))
     expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('10+6=16')
     expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('原始批语')
+    // 非 carry_forward 错因的证据即使有 previous_answers 也不显示前问作答。
+    expect(host.querySelector('[data-kind="error"]')!.textContent).not.toContain('前问保留的作答')
     host.querySelector<HTMLElement>('[data-kind="carry_forward"] .class-analysis__cause-detail summary')!.click()
     await vi.waitFor(() => expect(
       host.querySelector('[data-kind="carry_forward"]')!.textContent,
     ).toContain('延续自 Q12(P1)'))
+    // 延续错因只显示来源小问的前问作答，其他小问的 previous_answers 不渲染。
+    expect(host.querySelector('[data-kind="carry_forward"]')!.textContent).toContain('前问保留的作答')
+    expect(host.querySelector('[data-kind="carry_forward"]')!.textContent).not.toContain('另一小问的作答')
     mounted.pop()!.unmount()
     host.remove()
     const reopened = await mountPanel()
