@@ -8,7 +8,6 @@ import { aiDiagnosticsApi } from '../api/ai-diagnostics'
 import { modelProfilesApi } from '../api/model-profiles'
 import { opsApi } from '../api/ops'
 import SettingsHubView from '../views/SettingsHubView.vue'
-import { workspaceAITaskApi } from '../workspaces/shared/ai-tasks/api'
 
 const mounted: VueApp[] = []
 
@@ -56,7 +55,6 @@ beforeEach(() => {
     scanned_event_count: 0,
     truncated: false,
   })
-  vi.spyOn(workspaceAITaskApi, 'list').mockResolvedValue([])
 })
 
 afterEach(() => {

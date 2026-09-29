@@ -28,7 +28,6 @@
 
 - 迁移清单在 `migrations/<目标>/`,覆盖 grading、question_bank 两个库。已应用迁移记录在各库的 `schema_migrations` 表(含校验和与成功标记),不会重放;重复加列等幂等语句可安全跳过。
 - 核心库(grading、question_bank)启动时执行 schema 闸门:已有库存在待迁移时,普通启动拒绝修改数据并停止,要求通过受保护维护入口确认迁移;受保护操作经操作日志与锁,在下次启动由 `backend.ops.offline --apply-pending` 应用。空白库按当前 schema 直接初始化。
-- 工作区注册也使用 schema 闸门，明确设置 allow_existing_migrations=False；已有库存在待迁移时停止相关工作台注册，不在打开时自动迁移。维护迁移需通过明确授权的入口执行。
 
 ## 当前未覆盖范围
 

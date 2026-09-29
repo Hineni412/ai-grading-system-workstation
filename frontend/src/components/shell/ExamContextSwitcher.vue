@@ -21,7 +21,6 @@ import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useSessionStore } from '../../stores/session'
 import { useSessionSwitch } from '../../composables/useSessionSwitch'
-import { workspaceRegistry } from '../../workspaces/registry'
 import SessionManagementDrawer from '../sessions/SessionManagementDrawer.vue'
 
 type SwitcherMode = 'expanded' | 'rail' | 'drawer'
@@ -48,14 +47,7 @@ const rootRef = ref<HTMLElement | null>(null)
 const interactedOutside = ref(false)
 
 const knowledgeTraining = computed(() => ['knowledge-graph', 'training', 'student-evidence'].includes(String(route.name)))
-const currentWorkspace = computed(() => workspaceRegistry.modules.find(
-  ({ manifest }) => route.path === manifest.routePrefix
-    || route.path.startsWith(`${manifest.routePrefix}/`),
-))
-const showCurriculumScope = computed(() => (
-  currentWorkspace.value?.manifest.curriculumScope
-  ?? route.meta.curriculumScope !== false
-))
+const showCurriculumScope = computed(() => route.meta.curriculumScope !== false)
 
 const scopedSessions = computed(() => {
   const selectedVolumeId = curriculumScope.selectedVolumeId

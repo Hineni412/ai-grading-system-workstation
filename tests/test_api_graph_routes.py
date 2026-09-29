@@ -17,7 +17,6 @@ from db_manager import DBManager
 from question_bank.database.schema import initialize_database
 from question_bank.relations.query_service import CurrentKnowledgeGraphQueryService
 from tests.current_knowledge_support import install_current_knowledge
-from backend.workspaces.registry import WorkspaceRegistry
 from path_manager import PathManager
 
 
@@ -296,8 +295,7 @@ def test_application_startup_installs_current_standard_when_none_is_active(
     paths._data_root = tmp_path / "user_data"
     paths._logs_root = tmp_path / "logs"
     paths.ensure_directories()
-    registry = WorkspaceRegistry((), paths=paths)
-    app = create_app(path_manager=paths, workspace_registry=registry)
+    app = create_app(path_manager=paths)
     app.dependency_overrides[get_job_manager] = lambda: object()
     app.dependency_overrides[get_ops_write_service] = lambda: object()
 

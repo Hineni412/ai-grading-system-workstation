@@ -12,7 +12,6 @@ import {
 import { useSessionStore } from '../../stores/session'
 import AppIcon from './AppIcon.vue'
 import ExamContextSwitcher from './ExamContextSwitcher.vue'
-import WorkspaceAITaskDrawer from '../../workspaces/shared/ai-tasks/WorkspaceAITaskDrawer.vue'
 import { resolveNavigationTarget } from './navigation-target'
 
 type SidebarMode = 'expanded' | 'rail' | 'drawer'
@@ -192,7 +191,6 @@ onBeforeUnmount(() => {
     </nav>
 
     <div class="app-sidebar__settings">
-      <WorkspaceAITaskDrawer />
       <nav
         ref="settingsNavRef"
         id="settings-navigation"

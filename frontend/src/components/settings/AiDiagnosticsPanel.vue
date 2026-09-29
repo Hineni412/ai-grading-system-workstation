@@ -7,7 +7,6 @@ import {
   type AiDiagnosticOutcome,
   type AiDiagnosticSummary,
 } from '../../api/ai-diagnostics'
-import type { WorkspaceAITask } from '../../workspaces/shared/ai-tasks/contracts'
 import '../../styles/model-profiles.css'
 
 type DiagnosticTab = 'request' | 'attachments' | 'response' | 'parsed' | 'error'
@@ -20,11 +19,8 @@ const diagnosticsError = ref('')
 const diagnosticsNotice = ref('')
 const diagnosticsMatching = ref(0)
 const diagnosticsLoadingMore = ref(false)
-const workspaceTaskRecords = ref<WorkspaceAITask[]>([])
 const diagnosticOutcome = ref<'' | AiDiagnosticOutcome>('')
 const diagnosticKind = ref('')
-const workspaceModuleFilter = ref<'' | WorkspaceAITask['module']>('')
-const workspaceTaskKindFilter = ref('')
 const selectedDiagnosticId = ref('')
 const selectedDiagnostic = shallowRef<AiDiagnosticDetail | null>(null)
 const diagnosticDetailState = ref<'idle' | 'loading' | 'error'>('idle')
@@ -40,7 +36,6 @@ const JSON_DISPLAY_LIMIT = 80_000
 
 let diagnosticsController: AbortController | null = null
 let diagnosticDetailController: AbortController | null = null
-let workspaceTaskRecordsController: AbortController | null = null
 
 const diagnosticKinds = [
   { value: '', label: '全部用途' },
@@ -50,34 +45,6 @@ const diagnosticKinds = [
   { value: 'tagging', label: '题库标注' },
   { value: 'workspace', label: '工作台' },
 ] as const
-const workspaceModules = [
-  { value: '', label: '全部工作台' },
-] as const
-const workspaceTaskKinds = [
-  { value: '', module: '', label: '全部功能' },
-] as const
-const availableWorkspaceTaskKinds = computed(() => workspaceTaskKinds.filter(
-  ({ module }) => !module || !workspaceModuleFilter.value || module === workspaceModuleFilter.value,
-))
-const workspaceTasksByOperation = computed(() => new Map(
-  workspaceTaskRecords.value.map((task) => [task.operation_id, task]),
-))
-const visibleDiagnostics = computed(() => diagnostics.value.filter((call) => {
-  if (!workspaceModuleFilter.value && !workspaceTaskKindFilter.value) return true
-  if (call.request_kind !== 'workspace') return false
-  if (call.workspace_module || call.workspace_task_kind) {
-    return (
-      (!workspaceModuleFilter.value || call.workspace_module === workspaceModuleFilter.value)
-      && (!workspaceTaskKindFilter.value || call.workspace_task_kind === workspaceTaskKindFilter.value)
-    )
-  }
-  const task = workspaceTasksByOperation.value.get(call.operation_id)
-  if (!task) return false
-  return (
-    (!workspaceModuleFilter.value || task.module === workspaceModuleFilter.value)
-    && (!workspaceTaskKindFilter.value || task.task_kind === workspaceTaskKindFilter.value)
-  )
-}))
 const diagnosticTabs: readonly { value: DiagnosticTab; label: string }[] = [
   { value: 'request', label: '发送内容' },
   { value: 'attachments', label: '附件' },
@@ -86,77 +53,12 @@ const diagnosticTabs: readonly { value: DiagnosticTab; label: string }[] = [
   { value: 'error', label: '错误与重试' },
 ]
 
-function linkedTask(call: AiDiagnosticSummary): WorkspaceAITask | undefined {
-  return workspaceTasksByOperation.value.get(call.operation_id)
-}
-
 function diagnosticKindLabel(value: string): string {
   return diagnosticKinds.find((item) => item.value === value)?.label ?? value
 }
 
-function workspaceModuleLabel(module: WorkspaceAITask['module']): string {
-  return String(module)
-}
-
-function workspaceTaskKindLabel(taskKind: string): string {
-  return workspaceTaskKinds.find(({ value }) => value === taskKind)?.label ?? '其他功能'
-}
-
 function diagnosticDisplayLabel(call: AiDiagnosticSummary): string {
-  if (call.request_kind !== 'workspace') return diagnosticKindLabel(call.request_kind)
-  if (call.workspace_module) {
-    return `${workspaceModuleLabel(call.workspace_module as WorkspaceAITask['module'])} · ${workspaceTaskKindLabel(call.workspace_task_kind)}`
-  }
-  const task = linkedTask(call)
-  if (!task) return '工作台 · 功能未知'
-  return `${workspaceModuleLabel(task.module)} · ${workspaceTaskKindLabel(task.task_kind)}`
-}
-
-function workspaceTaskStatus(task: WorkspaceAITask): string {
-  if (task.status === 'proposal_ready') return '已返回可审核结果'
-  if (task.status === 'needs_input') return '等待补充信息'
-  if (task.status === 'prepared') return '尚未发送'
-  if (task.status === 'queued') return '等待发送'
-  if (task.status === 'running') return '处理中'
-  if (task.status === 'result_unknown') return '已尝试发送，结果无法确认'
-  if (task.status.startsWith('failed') || task.status === 'invalid_result') return '失败'
-  if (task.status.includes('cancel') || task.status === 'discarded') return '已取消'
-  return task.status
-}
-
-function clearHiddenDiagnosticSelection(): void {
-  if (
-    selectedDiagnosticId.value
-    && !visibleDiagnostics.value.some(({ call_id: callId }) => callId === selectedDiagnosticId.value)
-  ) {
-    clearSelectedDiagnostic()
-  }
-}
-
-function handleDiagnosticKindChange(): void {
-  if (diagnosticKind.value !== 'workspace') {
-    workspaceModuleFilter.value = ''
-    workspaceTaskKindFilter.value = ''
-  }
-  void loadDiagnostics()
-}
-
-function handleWorkspaceModuleChange(): void {
-  const selected = workspaceTaskKinds.find(
-    ({ value }) => value === workspaceTaskKindFilter.value,
-  )
-  if (
-    selected?.module
-    && workspaceModuleFilter.value
-    && selected.module !== workspaceModuleFilter.value
-  ) workspaceTaskKindFilter.value = ''
-  clearHiddenDiagnosticSelection()
-  void loadDiagnostics()
-}
-
-function handleWorkspaceTaskKindChange(): void {
-  clearHiddenDiagnosticSelection()
-  void loadDiagnostics()
+  return diagnosticKindLabel(call.request_kind)
 }
 
 function diagnosticOutcomeLabel(value: AiDiagnosticOutcome): string {
@@ -284,14 +186,12 @@ async function loadDiagnostics(): Promise<void> {
       limit: DIAGNOSTIC_PAGE_SIZE,
       requestKind: diagnosticKind.value,
       outcome: diagnosticOutcome.value,
-      workspaceModule: workspaceModuleFilter.value,
-      workspaceTaskKind: workspaceTaskKindFilter.value,
       signal: controller.signal,
     })
     diagnostics.value = result.items
     diagnosticsMatching.value = result.matching
     diagnosticsState.value = 'idle'
-    const selectedStillVisible = visibleDiagnostics.value.some(
+    const selectedStillVisible = diagnostics.value.some(
       ({ call_id: callId }) => callId === selectedDiagnosticId.value,
     )
     if (!selectedStillVisible) {
@@ -319,8 +219,6 @@ async function loadMoreDiagnostics(): Promise<void> {
       offset: diagnostics.value.length,
       requestKind: diagnosticKind.value,
       outcome: diagnosticOutcome.value,
-      workspaceModule: workspaceModuleFilter.value,
-      workspaceTaskKind: workspaceTaskKindFilter.value,
       signal: controller.signal,
     })
     const seen = new Set(diagnostics.value.map(({ call_id }) => call_id))
@@ -340,31 +238,13 @@ async function loadMoreDiagnostics(): Promise<void> {
   }
 }
 
-
-async function loadWorkspaceTaskRecords(): Promise<void> {
-  workspaceTaskRecordsController?.abort()
-  const controller = new AbortController()
-  workspaceTaskRecordsController = controller
-  try {
-    const availableTasks: WorkspaceAITask[] = []
-    if (controller.signal.aborted) return
-    workspaceTaskRecords.value = availableTasks
-      .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
-    clearHiddenDiagnosticSelection()
-  } catch {
-    if (controller.signal.aborted) return
-  }
-}
-
 onMounted(() => {
   void loadDiagnostics()
-  void loadWorkspaceTaskRecords()
 })
 
 onBeforeUnmount(() => {
   diagnosticsController?.abort()
   diagnosticDetailController?.abort()
-  workspaceTaskRecordsController?.abort()
 })
 </script>
 
@@ -374,29 +254,9 @@ onBeforeUnmount(() => {
       <div class="ai-diagnostics__filters">
         <label>
           <span>来源</span>
-          <select v-model="diagnosticKind" @change="handleDiagnosticKindChange">
+          <select v-model="diagnosticKind" @change="loadDiagnostics">
             <option v-for="kind in diagnosticKinds" :key="kind.value" :value="kind.value">
               {{ kind.label }}
-            </option>
-          </select>
-        </label>
-        <label v-if="diagnosticKind === 'workspace'">
-          <span>工作台</span>
-          <select v-model="workspaceModuleFilter" @change="handleWorkspaceModuleChange">
-            <option v-for="module in workspaceModules" :key="module.value" :value="module.value">
-              {{ module.label }}
-            </option>
-          </select>
-        </label>
-        <label v-if="diagnosticKind === 'workspace'">
-          <span>具体功能</span>
-          <select v-model="workspaceTaskKindFilter" @change="handleWorkspaceTaskKindChange">
-            <option
-              v-for="taskKind in availableWorkspaceTaskKinds"
-              :key="taskKind.value"
-              :value="taskKind.value"
-            >
-              {{ taskKind.label }}
             </option>
           </select>
         </label>
@@ -452,7 +312,7 @@ onBeforeUnmount(() => {
       <aside class="ai-diagnostics-ledger" aria-label="AI 调用列表">
         <header>
           <strong>最近调用</strong>
-          <span>{{ visibleDiagnostics.length }} / {{ diagnosticsMatching }} 条</span>
+          <span>{{ diagnostics.length }} / {{ diagnosticsMatching }} 条</span>
         </header>
         <p
           v-if="diagnosticsState === 'loading' && diagnostics.length === 0"
@@ -461,13 +321,13 @@ onBeforeUnmount(() => {
           正在读取本机记录…
         </p>
         <p
-          v-else-if="visibleDiagnostics.length === 0"
+          v-else-if="diagnostics.length === 0"
           class="ai-diagnostics-ledger__state"
         >
           还没有符合当前筛选条件的调用。执行相应功能后再刷新。
         </p>
         <ul v-else>
-          <li v-for="call in visibleDiagnostics" :key="call.call_id">
+          <li v-for="call in diagnostics" :key="call.call_id">
             <button
               type="button"
               class="ai-diagnostic-call"
@@ -482,9 +342,6 @@ onBeforeUnmount(() => {
                 </span>
               </span>
               <span class="ai-diagnostic-call__model">{{ call.model || '模型未知' }}</span>
-              <span v-if="linkedTask(call)" class="ai-diagnostic-call__meta">
-                {{ workspaceTaskStatus(linkedTask(call)!) }}
-              </span>
               <span class="ai-diagnostic-call__meta">
                 <time>{{ formatDiagnosticTime(call.started_at_utc) }}</time>
                 <span>{{ formatDuration(call.elapsed_ms) }}</span>

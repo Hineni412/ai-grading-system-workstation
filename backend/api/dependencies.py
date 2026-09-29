@@ -476,15 +476,6 @@ def get_job_manager(request: Request) -> JobManager:
     return manager
 
 
-def get_workspace_ai_task_service(request: Request):
-    service = getattr(request.app.state, "workspace_ai_task_service", None)
-    if service is None:
-        raise RuntimeError(
-            "Workspace AI task service is unavailable outside application lifespan"
-        )
-    return service
-
-
 def get_scan_grading_workspace(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
