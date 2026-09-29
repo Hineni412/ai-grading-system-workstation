@@ -56,6 +56,28 @@ describe('review draft store', () => {
     expect(store.drafts[draft.key]?.dirty).toBe(true)
   })
 
+  it('auto step initialisation stays clean until the teacher enters a score', () => {
+    const store = useReviewDraftStore()
+    const draft = store.ensureDraft(item({ review_item_id: 'batch:1:Q1', score_awarded: 3 }))
+    store.initSteps(draft.key, [
+      { partId: 'Q1', stepId: 'S1', maxScore: 3, scoreText: '3' },
+      { partId: 'Q1', stepId: 'S2', maxScore: 2, scoreText: '0' },
+    ])
+
+    expect(store.drafts[draft.key]?.scoreText).toBe('3')
+    expect(store.drafts[draft.key]?.dirty).toBe(false)
+    expect(store.dirtyCount).toBe(0)
+
+    const steps = store.drafts[draft.key]!.stepScores!
+    store.updateSteps(draft.key, steps.map((step, index) => index === 0 ? { ...step, scoreText: '2' } : step))
+    expect(store.drafts[draft.key]?.dirty).toBe(true)
+    expect(store.dirtyCount).toBe(1)
+
+    // 点回原值后恢复为非草稿状态
+    store.updateSteps(draft.key, steps.map((step, index) => index === 0 ? { ...step, scoreText: '3' } : step))
+    expect(store.drafts[draft.key]?.dirty).toBe(false)
+  })
+
   it('isolates drafts by session, question and detail and clears only confirmed work', () => {
     const store = useReviewDraftStore()
     const first = store.ensureDraft(item())

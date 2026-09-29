@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { DialogClose, DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 
 import {
   classAnalysisApi,
   type CauseCategory,
   type ClassAnalysisQuestion,
-  type ClassQuestionPreview,
   type ClassAnalysisResponse,
   type ClassCauseEvidence,
   type ClassCause,
 } from '../../api/class-analysis'
+import type { ResultsCenterStudent } from '../../api/results-center'
 import { ApiError } from '../../api/errors'
 import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import {
@@ -19,9 +19,17 @@ import {
   type ModelTaskBinding,
 } from '../../api/model-profiles'
 import { useJobStore } from '../../stores/jobs'
+import { useResultsCenterStore } from '../../stores/results-center'
 import AppButton from '../design-system/AppButton.vue'
 import ClassAnalysisGenerateConfirm from './ClassAnalysisGenerateConfirm.vue'
-import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
+import ReviewAnswerPanel from '../review/ReviewAnswerPanel.vue'
+import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
+import { scoreStructureFor, subQuestionLabelFor } from './results-overview'
+import {
+  cachedClassAnalysis,
+  invalidateClassAnalysis,
+  rememberClassAnalysis,
+} from './class-analysis-cache'
 
 const props = defineProps<{
   sessionId: number | null
@@ -29,13 +37,16 @@ const props = defineProps<{
   initialClass?: string | null
 }>()
 
+type QuestionRecord = ClassAnalysisQuestion['records'][number]
+
+const route = useRoute()
 const router = useRouter()
 const jobStore = useJobStore()
+const resultsStore = useResultsCenterStore()
 const analysis = ref<ClassAnalysisResponse | null>(null)
 const selectedClass = ref(props.initialClass ?? '')
-const panelRoot = ref<HTMLElement | null>(null)
-const focusedQuestion = ref<string | null>(null)
-let focusTimer: ReturnType<typeof setTimeout> | undefined
+const listRoot = ref<HTMLElement | null>(null)
+const sortMode = ref<'rate' | 'number'>('rate')
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const errorMessage = ref('')
 const confirmOpen = ref(false)
@@ -45,15 +56,10 @@ const confirmError = ref('')
 const regenerating = ref(false)
 let loadGeneration = 0
 let loadController: AbortController | null = null
-let previewController: AbortController | null = null
-const previewQuestion = ref<ClassAnalysisQuestion | null>(null)
-const preview = ref<ClassQuestionPreview | null>(null)
-const previewLoading = ref(false)
-const previewError = ref('')
-let previewTrigger: HTMLElement | null = null
-const previewCache = new Map<string, ClassQuestionPreview>()
 const expandedBands = ref(new Set<string>())
 const expandedCauses = ref(new Set<string>())
+// 打开的 <details> 键；证据内容只在打开时渲染，减少长卷面的常驻 DOM。
+const openDetails = ref(new Set<string>())
 const patternEdit = ref<{
   questionId: string
   kind: string
@@ -99,50 +105,174 @@ const causeStatusText = computed(() => {
   if (state.status === 'partial') return `部分题目已整理，${state.pending_questions} 题仍显示原始理由，可继续整理。`
   return '已结合现有作答整理；展开可核对本题表现、作答与批语。同一学生同类只计一次，不同类可重复出现。'
 })
-const diagnosticQuestions = computed(() => [...(data.value?.questions ?? [])]
-  .sort((a, b) => a.class_rate - b.class_rate)
-  .map((question) => {
-    const limits = [0, Number((question.max_score / 3).toFixed(2)), Number((question.max_score * 2 / 3).toFixed(2)), question.max_score]
-    const records = [...question.records].sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
-    const bands = [2, 1, 0].map((index) => ({
-      key: `${question.question_id}:${index}`,
-      label: `${formatScore(limits[index]!)}–${formatScore(limits[index + 1]!)} 分`,
-      description: `${formatScore(limits[index]!)} 分及以上、不足 ${formatScore(limits[index + 1]!)} 分`,
-      records: records.filter((record) => record.score !== null && record.score >= limits[index]! && record.score < limits[index + 1]!),
-    }))
-    const unscored = records.filter((record) => record.score === null)
-    if (unscored.length) bands.push({ key: `${question.question_id}:unscored`, label: '未记分', description: '尚未记录本题得分', records: unscored })
-    const structuredCauses = question.causes_legacy === false || question.causes?.some((cause) => cause.kind !== undefined)
-    const groupedCauses: ClassCause[] = [...(question.causes ?? [])]
-    if (structuredCauses && question.cause_review?.uncertain.length) groupedCauses.push({
-      kind: 'review', reason: '错因待明确', count: evidenceStudentCount(question.cause_review.uncertain),
-      evidence: question.cause_review.uncertain,
+const diagnosticQuestions = computed(() => {
+  const questions = data.value?.questions ?? []
+  return [...questions].sort((a, b) => a.class_rate - b.class_rate)
+    .map((question) => {
+      const sub = subQuestionLabelFor(question.question_id, question.stem_summary, questions)
+      const limits = [0, Number((question.max_score / 3).toFixed(2)), Number((question.max_score * 2 / 3).toFixed(2)), question.max_score]
+      const records = [...question.records].sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
+      const bands = [2, 1, 0].map((index) => ({
+        key: `${question.question_id}:${index}`,
+        label: `${formatScore(limits[index]!)}–${formatScore(limits[index + 1]!)} 分`,
+        description: `${formatScore(limits[index]!)} 分及以上、不足 ${formatScore(limits[index + 1]!)} 分`,
+        records: records.filter((record) => record.score !== null && record.score >= limits[index]! && record.score < limits[index + 1]!),
+      }))
+      const unscored = records.filter((record) => record.score === null)
+      if (unscored.length) bands.push({ key: `${question.question_id}:unscored`, label: '未记分', description: '尚未记录本题得分', records: unscored })
+      const structuredCauses = question.causes_legacy === false || question.causes?.some((cause) => cause.kind !== undefined)
+      const groupedCauses: ClassCause[] = [...(question.causes ?? [])]
+      if (structuredCauses && question.cause_review?.uncertain.length) groupedCauses.push({
+        kind: 'review', reason: '错因待明确', count: evidenceStudentCount(question.cause_review.uncertain),
+        evidence: question.cause_review.uncertain,
+      })
+      const kinds = [
+        ['legacy', question.causes_legacy ? '既有归并 · 待升级' : '原始归并'],
+        ['error', '数学与单位错误'], ['process', '过程与表达缺项'],
+        ['response_state', '作答状态'], ['carry_forward', '前问错误延续'], ['review', '需要核对'],
+      ] as const
+      const causeSections = kinds.map(([kind, label]) => {
+        const causes = groupedCauses.filter((cause) => (cause.kind ?? 'legacy') === kind).sort((a, b) => b.count - a.count)
+        const count = causes.every((cause) => cause.evidence?.length)
+          ? evidenceStudentCount(causes.flatMap((cause) => cause.evidence ?? [])) : null
+        const byCategory = new Map<string, ClassCause[]>()
+        for (const cause of causes) {
+          if (!cause.category) continue
+          byCategory.set(cause.category, [...(byCategory.get(cause.category) ?? []), cause])
+        }
+        const categoryText = byCategory.size ? [...byCategory.entries()]
+          .map(([category, entries]) => `${category} ${
+            entries.every((cause) => cause.evidence?.length)
+              ? evidenceStudentCount(entries.flatMap((cause) => cause.evidence ?? []))
+              : entries.reduce((total, cause) => total + cause.count, 0)
+          }`).join(' · ') : null
+        return { kind, label, key: `${question.question_id}:${kind}`, causes, count, categoryText }
+      }).filter((section) => section.causes.length)
+      return {
+        ...question,
+        subIndex: sub?.index ?? null,
+        subParentStem: sub?.parentStem ?? null,
+        causeSections,
+        structuredCauses,
+        scoreBands: bands.map((band) => ({ ...band, share: records.length ? Number((band.records.length / records.length * 100).toFixed(1)) : 0 })),
+        causes: [...(question.causes ?? [])].sort((a, b) => b.count - a.count),
+      }
     })
-    const kinds = [
-      ['legacy', question.causes_legacy ? '既有归并 · 待升级' : '原始归并'],
-      ['error', '数学与单位错误'], ['process', '过程与表达缺项'],
-      ['response_state', '作答状态'], ['carry_forward', '前问错误延续'], ['review', '需要核对'],
-    ] as const
-    const causeSections = kinds.map(([kind, label]) => {
-      const causes = groupedCauses.filter((cause) => (cause.kind ?? 'legacy') === kind).sort((a, b) => b.count - a.count)
-      return { kind, label, key: `${question.question_id}:${kind}`, causes,
-        count: causes.every((cause) => cause.evidence?.length) ? evidenceStudentCount(causes.flatMap((cause) => cause.evidence ?? [])) : null }
-    }).filter((section) => section.causes.length)
-    return {
-      ...question,
-      causeSections,
-      structuredCauses,
-      scoreBands: bands.map((band) => ({ ...band, share: records.length ? Number((band.records.length / records.length * 100).toFixed(1)) : 0 })),
-      causes: [...(question.causes ?? [])].sort((a, b) => b.count - a.count),
-    }
-  }))
+})
+
+const sortedQuestions = computed(() => {
+  const questions = diagnosticQuestions.value
+  if (sortMode.value === 'rate') return questions
+  return [...questions].sort(
+    (a, b) => a.question_id.localeCompare(b.question_id, 'zh-CN', { numeric: true }),
+  )
+})
+
+const requestedQuestionId = computed(() => {
+  const query = route.query.question
+  return (typeof query === 'string' && query.length > 0 ? query : null) ?? props.focusQuestion ?? null
+})
+
+const selectedQuestionId = computed(() => {
+  const list = sortedQuestions.value
+  const requested = requestedQuestionId.value
+  if (requested !== null && list.some((question) => question.question_id === requested)) return requested
+  return list[0]?.question_id ?? null
+})
+
+const selectedQuestion = computed(() => (
+  sortedQuestions.value.find((question) => question.question_id === selectedQuestionId.value) ?? null
+))
+
+function selectQuestion(questionId: string): void {
+  if (questionId === selectedQuestionId.value && route.query.question === questionId) return
+  void router.replace({ query: { ...route.query, question: questionId } })
+}
+
+function listRowFor(questionId: string): HTMLElement | null {
+  return [...(listRoot.value?.querySelectorAll<HTMLElement>('[data-question-id]') ?? [])]
+    .find((element) => element.dataset.questionId === questionId) ?? null
+}
+
+watch(selectedQuestionId, async (questionId) => {
+  if (questionId === null) return
+  await nextTick()
+  listRowFor(questionId)?.scrollIntoView?.({ block: 'nearest' })
+})
+
+function onListKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  const list = sortedQuestions.value
+  if (!list.length) return
+  event.preventDefault()
+  const index = list.findIndex((question) => question.question_id === selectedQuestionId.value)
+  const nextIndex = event.key === 'ArrowDown'
+    ? Math.min(index + 1, list.length - 1)
+    : Math.max(index - 1, 0)
+  const target = list[nextIndex]
+  if (!target) return
+  selectQuestion(target.question_id)
+  void nextTick(() => listRowFor(target.question_id)?.focus())
+}
+
+// 明细成绩（结果中心 store）提供满分/部分/0分结构和逐题深评入口。
+const scopeStudents = computed(() => (resultsStore.results?.students ?? [])
+  .filter((student) => !selectedClass.value || (student.class_name ?? '') === selectedClass.value))
+
+const selectedStructure = computed(() => {
+  const question = selectedQuestion.value
+  if (question === null) return null
+  const structure = scoreStructureFor(scopeStudents.value, [question.question_id])
+    .get(question.question_id)
+  return structure !== undefined && structure.resolved > 0 ? structure : null
+})
+
+function structureWidth(count: number, resolved: number): string {
+  return resolved > 0 ? `${(count / resolved) * 100}%` : '0%'
+}
+
+function reviewTargetFor(questionId: string, record: QuestionRecord): {
+  student: ResultsCenterStudent
+  reviewItemId: string
+} | null {
+  if (record.student_id === undefined) return null
+  const student = resultsStore.results?.students
+    .find((entry) => entry.student_id === record.student_id)
+  const item = student?.items.find((entry) => entry.question_id === questionId)
+  return student !== undefined && item !== undefined
+    ? { student, reviewItemId: item.review_item_id }
+    : null
+}
+
+function openStudentReview(questionId: string, record: QuestionRecord): void {
+  const sessionId = props.sessionId
+  const target = reviewTargetFor(questionId, record)
+  const question = diagnosticQuestions.value.find((entry) => entry.question_id === questionId)
+  if (sessionId === null || target === null || question === undefined) return
+  resultsStore.setReviewNavigation({
+    sessionId,
+    studentIds: [...new Set(question.scoreBands
+      .flatMap((band) => band.records)
+      .map((entry) => entry.student_id)
+      .filter((id): id is number => id !== undefined))],
+  })
+  void router.push({
+    path: '/grading',
+    query: {
+      session: String(sessionId),
+      scope: 'all',
+      question: questionId,
+      item: target.reviewItemId,
+      student: String(target.student.student_id),
+      entry: 'results',
+    },
+  })
+}
 
 watch(
   () => props.sessionId,
   () => {
     closeConfirm()
-    closePreview()
-    previewCache.clear()
     selectedClass.value = props.initialClass ?? ''
     analysis.value = null
     void load()
@@ -161,28 +291,12 @@ watch(
 )
 
 watch(
-  () => props.focusQuestion,
-  () => { void applyFocusQuestion() },
-)
-
-async function applyFocusQuestion(): Promise<void> {
-  const target = props.focusQuestion
-  focusedQuestion.value = null
-  if (!target || loadState.value !== 'ready') return
-  await nextTick()
-  const row = [...(panelRoot.value?.querySelectorAll<HTMLElement>('[data-question-id]') ?? [])]
-    .find((element) => element.dataset.questionId === target)
-  if (!row) return
-  focusedQuestion.value = target
-  row.scrollIntoView({ block: 'center' })
-  window.clearTimeout(focusTimer)
-  focusTimer = setTimeout(() => { focusedQuestion.value = null }, 2000)
-}
-
-watch(
   () => activeJob.value?.status,
   (status) => {
-    if (status !== undefined && TERMINAL_JOB_STATUSES.has(status)) void load()
+    if (status !== undefined && TERMINAL_JOB_STATUSES.has(status)) {
+      if (props.sessionId !== null) invalidateClassAnalysis(props.sessionId)
+      void load()
+    }
   },
 )
 
@@ -197,76 +311,38 @@ async function load(): Promise<void> {
     loadState.value = 'idle'
     return
   }
-  loadState.value = 'loading'
-  expandedBands.value = new Set()
-  expandedCauses.value = new Set()
+  const requestedClass = selectedClass.value
+  const cached = cachedClassAnalysis(sessionId, requestedClass)
+  if (cached) {
+    // 先复用总览侧缓存的数据立即出表，再静默重取最新结果。
+    analysis.value = cached
+    loadState.value = 'ready'
+  } else {
+    loadState.value = 'loading'
+    expandedBands.value = new Set()
+    expandedCauses.value = new Set()
+    openDetails.value = new Set()
+  }
   errorMessage.value = ''
   try {
-    const next = await classAnalysisApi.getClassAnalysis(sessionId, controller.signal, selectedClass.value, 'summary')
+    const next = await classAnalysisApi.getClassAnalysis(sessionId, controller.signal, requestedClass, 'summary')
     if (generation !== loadGeneration || props.sessionId !== sessionId) return
+    rememberClassAnalysis(sessionId, requestedClass, next)
     analysis.value = next
     selectedClass.value = next.selected_class ?? ''
     loadState.value = 'ready'
     void ensureTracked(next.active_job_id)
-    void applyFocusQuestion()
   } catch {
     if (generation !== loadGeneration || props.sessionId !== sessionId) return
+    if (cached) return
     loadState.value = 'error'
     errorMessage.value = '班级分析暂时无法读取，请稍后重试。'
-  }
-}
-
-function openReport(): void {
-  if (props.sessionId === null) return
-  void router.push({
-    path: '/class-report',
-    query: {
-      session: String(props.sessionId),
-      ...(selectedClass.value ? { class: selectedClass.value } : {}),
-    },
-  })
-}
-
-function closePreview(): void {
-  previewController?.abort()
-  previewQuestion.value = null
-  preview.value = null
-}
-
-function restorePreviewFocus(event: Event): void {
-  event.preventDefault()
-  if (previewTrigger?.isConnected) previewTrigger.focus()
-}
-
-async function openPreview(question: ClassAnalysisQuestion, event?: Event): Promise<void> {
-  if (event?.currentTarget instanceof HTMLElement) previewTrigger = event.currentTarget
-  previewController?.abort()
-  const sessionId = props.sessionId
-  if (sessionId === null) return
-  const controller = new AbortController()
-  previewController = controller
-  previewQuestion.value = question
-  preview.value = previewCache.get(question.question_id) ?? null
-  previewError.value = ''
-  previewLoading.value = !preview.value
-  if (preview.value) return
-  try {
-    const result = await classAnalysisApi.getQuestionPreview(sessionId, question.question_id, controller.signal)
-    if (controller.signal.aborted || props.sessionId !== sessionId) return
-    previewCache.set(question.question_id, result)
-    preview.value = result
-  } catch {
-    if (!controller.signal.aborted) previewError.value = '原题暂时无法读取，请重试。'
-  } finally {
-    if (!controller.signal.aborted) previewLoading.value = false
   }
 }
 
 onBeforeUnmount(() => {
   loadGeneration += 1
   loadController?.abort()
-  previewController?.abort()
-  window.clearTimeout(focusTimer)
 })
 
 async function ensureTracked(id: number | null): Promise<void> {
@@ -318,6 +394,7 @@ async function confirmRegenerate(): Promise<void> {
     if (props.sessionId !== sessionId) return
     jobStore.track(job)
     closeConfirm()
+    invalidateClassAnalysis(sessionId)
     await load()
   } catch (error) {
     if (props.sessionId !== sessionId) return
@@ -382,6 +459,7 @@ async function savePatternEdit(): Promise<void> {
     })
     if (props.sessionId !== sessionId) return
     patternEdit.value = null
+    invalidateClassAnalysis(sessionId)
     await load()
   } catch (error) {
     if (props.sessionId !== sessionId) return
@@ -411,14 +489,24 @@ function toggleCauses(questionId: string): void {
   expandedCauses.value = next
 }
 
+function syncDetailOpen(event: Event, key: string): void {
+  const next = new Set(openDetails.value)
+  if ((event.target as HTMLDetailsElement).open) next.add(key)
+  else next.delete(key)
+  openDetails.value = next
+}
+
 function formatPercent(value: number): string {
   const percent = value <= 1 ? value * 100 : value
   return `${Math.round(percent)}%`
 }
 
-function formatTime(value: string | null): string {
-  if (!value) return '时间未记录'
-  return value.replace('T', ' ').replace('Z', '').slice(0, 19)
+function formatShortDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
+  if (!match) return value
+  return match[1] === String(new Date().getFullYear())
+    ? `${match[2]}-${match[3]}`
+    : `${match[1]}-${match[2]}-${match[3]}`
 }
 
 function rateTone(rate: number): 'low' | 'mid' | 'high' {
@@ -431,7 +519,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
 
 
 <template>
-  <section ref="panelRoot" class="class-analysis" aria-label="试题诊断">
+  <section class="class-analysis" aria-label="试题诊断">
       <div v-if="props.sessionId === null" class="results-state-panel">
         <strong>请先在顶部选择考试</strong>
         <span>选择后，这里会显示该考试的班级整体分析。</span>
@@ -445,10 +533,29 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
               <option v-for="name in analysis.class_names" :key="name" :value="name">{{ name }}</option>
             </select>
           </label>
-          <AppButton variant="secondary" data-testid="ai-analysis-open" @click="openReport">
-            AI 班级分析<span v-if="generating"> · 生成中</span>
-          </AppButton>
+          <p v-if="data" class="class-analysis__exam-meta">
+            满分 {{ formatScore(data.exam.full_score) }} 分 · 参考 {{ data.present }} 人<template
+              v-if="data.roster_absent.length"
+            > · 名册另有 {{ data.roster_absent.length }} 人未检测到答卷</template><template
+              v-if="data.exam.graded_at"
+            > · 批改完成 {{ formatShortDate(data.exam.graded_at) }}</template>
+          </p>
+          <p class="class-analysis__cause-status" data-testid="cause-analysis-status">{{ causeStatusText }}</p>
+          <div class="class-analysis__toolbar-actions">
+            <AppButton
+              variant="secondary"
+              data-testid="group-causes-open"
+              :disabled="!canRegenerate || causeAnalysis?.pending_questions === 0"
+              @click="openRegenerateConfirm()"
+            >
+              {{ causeAnalysis?.status === 'ready' ? '已整理' : causeAnalysis?.status === 'partial' || causeAnalysis?.stale ? '继续整理 / 更新' : '整理错因' }}
+            </AppButton>
+            <span class="class-analysis__privacy">含学生姓名，请勿直接外发</span>
+          </div>
         </div>
+        <p v-if="analysis?.small_sample" class="class-analysis__note" data-testid="small-sample-note">
+          当前范围参考人数较少，比率指标解读需谨慎。
+        </p>
         <div v-if="loadState === 'loading'" class="results-state-panel" role="status">
           <strong>正在读取班级分析</strong>
           <span>正在统计当前范围的成绩与试题。</span>
@@ -467,162 +574,214 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
           <span>完成后页面会自动更新，无需手动刷新。</span>
         </div>
         <template v-else-if="analysis && data">
-          <section class="class-analysis__section" aria-labelledby="class-analysis-overview-title">
-            <div class="class-analysis__section-heading">
-              <div>
-                <p class="results-center__eyebrow">成绩概览 · {{ selectedClass || '全部班级合并' }}</p>
-                <h2 id="class-analysis-overview-title">{{ data.exam.title }}</h2>
-                <p>
-                  <template v-if="data.exam.subject">{{ data.exam.subject }} · </template>
-                  满分 {{ formatScore(data.exam.full_score) }} 分 · 实际参考 {{ data.present }} 人
-                  <template v-if="data.roster_absent.length > 0"> · 名册另有 {{ data.roster_absent.length }} 人未检测到答卷</template>
-                </p>
-                <p v-if="data.exam.graded_at">批改完成 {{ formatTime(data.exam.graded_at) }}</p>
+          <div class="class-analysis__body">
+            <aside
+              ref="listRoot"
+              class="class-analysis__list"
+              aria-label="题目列表"
+              @keydown="onListKeydown"
+            >
+              <div class="class-analysis__sort" role="group" aria-label="题目排序">
+                <button
+                  type="button"
+                  :aria-pressed="sortMode === 'rate'"
+                  data-testid="sort-rate"
+                  @click="sortMode = 'rate'"
+                >按得分率</button>
+                <button
+                  type="button"
+                  :aria-pressed="sortMode === 'number'"
+                  data-testid="sort-number"
+                  @click="sortMode = 'number'"
+                >按题号</button>
               </div>
-            </div>
-            <p v-if="analysis.small_sample" class="class-analysis__note" data-testid="small-sample-note">
-              当前范围参考人数较少，比率指标解读需谨慎。
-            </p>
-          </section>
-          <section class="class-analysis__section" aria-labelledby="class-analysis-questions-title">
-            <div class="class-analysis__section-heading">
-              <div>
-                <p class="results-center__eyebrow">每题得分率</p>
-                <h2 id="class-analysis-questions-title">试题诊断</h2>
-                <p>得分率低的题目在前；错因按人数从多到少排列。</p>
-                <p class="class-analysis__cause-status" data-testid="cause-analysis-status">{{ causeStatusText }}</p>
-                <p>失分名单按本题满分分为三档，临界分归入较高档；点击档位查看名单。</p>
-              </div>
-              <div class="class-analysis__heading-actions">
-                <AppButton
-                  variant="secondary"
-                  data-testid="group-causes-open"
-                  :disabled="!canRegenerate || causeAnalysis?.pending_questions === 0"
-                  @click="openRegenerateConfirm()"
+              <div class="class-analysis__list-items" role="listbox" aria-label="题目">
+                <button
+                  v-for="question in sortedQuestions"
+                  :key="question.question_id"
+                  type="button"
+                  role="option"
+                  class="class-analysis__list-row"
+                  :class="{ 'is-selected': question.question_id === selectedQuestionId }"
+                  :aria-selected="question.question_id === selectedQuestionId"
+                  :data-question-id="question.question_id"
+                  @click="selectQuestion(question.question_id)"
                 >
-                  {{ causeAnalysis?.status === 'ready' ? '已整理' : causeAnalysis?.status === 'partial' || causeAnalysis?.stale ? '继续整理 / 更新' : '整理错因' }}
-                </AppButton>
-                <span class="class-analysis__privacy">含学生姓名，请勿直接外发</span>
+                  <span class="class-analysis__list-head">
+                    <strong>{{ question.question_id }}</strong>
+                    <span class="class-analysis__list-rate">{{ formatPercent(question.class_rate) }}</span>
+                  </span>
+                  <span
+                    class="class-analysis__ratebar"
+                    :class="`class-analysis__ratebar--${rateTone(question.class_rate)}`"
+                    aria-hidden="true"
+                  ><i :style="{ width: formatPercent(question.class_rate) }"></i></span>
+                  <span class="class-analysis__list-stem">
+                    <template v-if="question.subIndex !== null">第 {{ question.subIndex }} 小问</template>
+                    <QuestionHtmlBlock
+                      v-else-if="question.stem_summary"
+                      :text="question.stem_summary"
+                      inline
+                      typeset-text
+                    />
+                    <template v-else>—</template>
+                  </span>
+                </button>
               </div>
-            </div>
-            <div class="results-table-wrap class-analysis__table-wrap">
-              <table class="class-analysis__questions">
-                <colgroup><col class="class-analysis__col-question"><col class="class-analysis__col-score"><col class="class-analysis__col-rate"><col class="class-analysis__col-students"><col></colgroup>
-                <thead>
-                  <tr><th scope="col">题目</th><th scope="col">满分</th><th scope="col">得分率</th><th scope="col">失分同学 · 本题得分</th><th scope="col">错因与作答情况</th></tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="question in diagnosticQuestions"
-                    :key="question.question_id"
-                    :data-question-id="question.question_id"
-                    :class="{ 'is-focused': focusedQuestion === question.question_id }"
+            </aside>
+
+            <div v-if="selectedQuestion" class="class-analysis__detail" :data-question-id="selectedQuestion.question_id">
+              <header class="class-analysis__detail-header">
+                <strong>{{ selectedQuestion.question_id }}</strong>
+                <span>满分 {{ formatScore(selectedQuestion.max_score) }} 分</span>
+                <span>得分率 {{ formatPercent(selectedQuestion.class_rate) }}</span>
+                <span v-if="selectedStructure" class="class-analysis__structure">
+                  <span
+                    class="overview__structure"
+                    role="img"
+                    :aria-label="`满分 ${selectedStructure.full} 人，部分得分 ${selectedStructure.partial} 人，0 分 ${selectedStructure.zero} 人`"
                   >
-                    <th scope="row">
-                      <strong>{{ question.question_id }}</strong>
-                      <span v-if="question.stem_summary" class="class-analysis__stem">{{ question.stem_summary }}</span>
-                      <button type="button" class="class-analysis__preview-button" :aria-label="`预览 ${question.question_id} 原题`" @click="openPreview(question, $event)">查看原题</button>
-                    </th>
-                    <td>{{ formatScore(question.max_score) }}</td>
-                    <td>
-                      <span class="class-analysis__ratebar" :class="`class-analysis__ratebar--${rateTone(question.class_rate)}`" aria-hidden="true"><i :style="{ width: formatPercent(question.class_rate) }"></i></span>
-                      <strong>{{ formatPercent(question.class_rate) }}</strong>
-                    </td>
-                    <td>
-                      <div v-if="question.records.length" class="class-analysis__score-bands">
-                        <div v-for="band in question.scoreBands" :key="band.key" class="class-analysis__score-band">
-                          <button type="button" class="class-analysis__score-band-toggle" :aria-expanded="expandedBands.has(band.key)" :disabled="!band.records.length" :title="`${band.description}；占本题失分人数 ${band.share}%`" @click="toggleBand(band.key)">
-                            <span class="class-analysis__score-band-arrow" :class="{ 'is-expanded': expandedBands.has(band.key) }" aria-hidden="true">▶</span>
-                            <strong>{{ band.label }}</strong>
-                            <span class="class-analysis__score-band-count">{{ band.records.length }} 人 · {{ band.share }}%</span>
-                            <span class="class-analysis__score-band-track" aria-hidden="true"><i :style="{ width: `${band.share}%` }"></i></span>
-                          </button>
-                          <div v-if="expandedBands.has(band.key)" class="class-analysis__score-list">
-                            <span v-for="(record, index) in band.records" :key="record.student_id ?? index" class="class-analysis__score-chip" :title="[record.class_name, record.student_code].filter(Boolean).join(' · ')">
-                              <span>{{ record.student_name }}<small v-if="!selectedClass && question.records.some(other => other.student_name === record.student_name && other.student_id !== record.student_id)">（{{ record.class_name }} {{ record.student_code }}）</small></span>
-                              <b>{{ formatScore(record.score) }} 分</b>
-                            </span>
-                          </div>
+                    <i class="is-full" :style="{ width: structureWidth(selectedStructure.full, selectedStructure.resolved) }" :title="`满分 ${selectedStructure.full} 人`"></i>
+                    <i class="is-partial" :style="{ width: structureWidth(selectedStructure.partial, selectedStructure.resolved) }" :title="`部分得分 ${selectedStructure.partial} 人`"></i>
+                    <i class="is-zero" :style="{ width: structureWidth(selectedStructure.zero, selectedStructure.resolved) }" :title="`0 分 ${selectedStructure.zero} 人`"></i>
+                  </span>
+                  <span class="class-analysis__structure-counts">
+                    满分 {{ selectedStructure.full }} · 部分 {{ selectedStructure.partial }} · 0 分 {{ selectedStructure.zero }}
+                  </span>
+                </span>
+              </header>
+              <div class="class-analysis__detail-columns">
+                <ReviewAnswerPanel
+                  v-if="props.sessionId !== null"
+                  :key="selectedQuestion.question_id"
+                  :session-id="props.sessionId"
+                  :question-id="selectedQuestion.question_id"
+                  embedded
+                  class="class-analysis__embedded-panel"
+                />
+                <div class="class-analysis__outcome">
+                  <section class="class-analysis__outcome-section" aria-label="失分情况">
+                    <h3>失分情况</h3>
+                    <div v-if="selectedQuestion.records.length" class="class-analysis__score-bands">
+                      <div v-for="band in selectedQuestion.scoreBands" :key="band.key" class="class-analysis__score-band">
+                        <button type="button" class="class-analysis__score-band-toggle" :aria-expanded="expandedBands.has(band.key)" :disabled="!band.records.length" :title="`${band.description}；占本题失分人数 ${band.share}%`" @click="toggleBand(band.key)">
+                          <span class="class-analysis__score-band-arrow" :class="{ 'is-expanded': expandedBands.has(band.key) }" aria-hidden="true">▶</span>
+                          <strong>{{ band.label }}</strong>
+                          <span class="class-analysis__score-band-count">{{ band.records.length }} 人 · {{ band.share }}%</span>
+                          <span class="class-analysis__score-band-track" aria-hidden="true"><i :style="{ width: `${band.share}%` }"></i></span>
+                        </button>
+                        <div v-if="expandedBands.has(band.key)" class="class-analysis__score-list">
+                          <component
+                            :is="reviewTargetFor(selectedQuestion.question_id, record) !== null ? 'button' : 'span'"
+                            v-for="(record, index) in band.records"
+                            :key="record.student_id ?? index"
+                            :type="reviewTargetFor(selectedQuestion.question_id, record) !== null ? 'button' : undefined"
+                            class="class-analysis__score-chip"
+                            :class="{ 'class-analysis__score-chip--link': reviewTargetFor(selectedQuestion.question_id, record) !== null }"
+                            :title="reviewTargetFor(selectedQuestion.question_id, record) !== null
+                              ? '查看该生本题作答'
+                              : [record.class_name, record.student_code].filter(Boolean).join(' · ')"
+                            @click="openStudentReview(selectedQuestion.question_id, record)"
+                          >
+                            <span>{{ record.student_name }}<small v-if="!selectedClass && selectedQuestion.records.some(other => other.student_name === record.student_name && other.student_id !== record.student_id)">（{{ record.class_name }} {{ record.student_code }}）</small></span>
+                            <b>{{ formatScore(record.score) }} 分</b>
+                          </component>
                         </div>
-                        <span class="class-analysis__note">共 {{ question.records.length }} 人失分，档内按得分从高到低排列</span>
                       </div>
-                      <span v-if="!question.records.length" class="class-analysis__note">无人失分</span>
-                    </td>
-                    <td>
-                      <div v-if="question.cause_category_counts?.length" class="class-analysis__cause-chips" data-testid="cause-category-chips">
-                        <span v-for="item in question.cause_category_counts" :key="item.category" class="class-analysis__cause-tag">{{ item.category }} {{ item.count }}人</span>
-                      </div>
-                      <details v-for="section in question.causeSections" :key="section.kind" class="class-analysis__cause-category" :data-kind="section.kind" :open="section.kind === 'error' || section.kind === 'legacy'">
-                        <summary>{{ section.label }}<span v-if="section.count !== null"> · {{ section.count }} 人</span></summary>
-                        <ol class="class-analysis__causes">
-                          <li v-for="cause in (expandedCauses.has(section.key) ? section.causes : section.causes.slice(0, 5))" :key="cause.reason">
-                            <details v-if="cause.evidence?.length" class="class-analysis__cause-detail">
-                              <summary>
-                                <span v-if="cause.category" class="class-analysis__cause-tag" data-testid="cause-category">{{ cause.category }}</span>
-                                <span v-if="cause.pattern_status === 'candidate'" class="class-analysis__cause-tag class-analysis__cause-tag--new">新错法</span>
-                                <span v-if="cause.teacher_edited" class="class-analysis__cause-tag class-analysis__cause-tag--edited" data-testid="cause-teacher-edited">老师改过</span>
-                                <span>{{ cause.reason }}</span><b>{{ cause.count }} 人</b>
-                                <button
-                                  v-if="canEditPattern(cause)"
-                                  type="button"
-                                  class="class-analysis__link class-analysis__cause-confirm"
-                                  data-testid="cause-edit"
-                                  @click.stop.prevent="openPatternEdit(question, cause)"
-                                >修改</button>
-                              </summary>
-                              <div v-for="(variant, variantIndex) in (cause.manifestations ?? [{ description: '', source_question_id: null, evidence: cause.evidence }])" :key="variantIndex" class="class-analysis__cause-manifestation">
-                                <p v-if="variant.description" class="class-analysis__cause-observation">本题表现：{{ variant.description }}</p>
-                                <p v-if="variant.source_question_id" class="class-analysis__note">延续自 {{ variant.source_question_id }}</p>
-                                <div v-for="(item, index) in variant.evidence" :key="index" class="class-analysis__cause-evidence">
-                                  <p v-if="item.student_answer"><strong>作答记录：</strong>{{ item.student_answer }}</p>
-                                  <p v-else-if="cause.kind" class="class-analysis__note">未保存作答文字，具体原因以已有证据为限。</p>
-                                  <p v-if="item.evidence_steps?.length"><strong>已有步骤记录：</strong>{{ item.evidence_steps.join('；') }}</p>
-                                  <p><strong v-if="cause.kind">原始批语：</strong>{{ item.text }}</p>
-                                  <p v-for="previous in item.previous_answers" :key="previous.question_id" class="class-analysis__note">{{ previous.question_id }} 作答：{{ previous.student_answer || '未记录作答文字' }}</p>
-                                  <small>{{ causeStudents(question, item.student_ids) }}</small>
-                                </div>
-                              </div>
-                            </details>
-                            <template v-else>
-                              <span v-if="cause.category" class="class-analysis__cause-tag">{{ cause.category }}</span>
+                      <span class="class-analysis__note">共 {{ selectedQuestion.records.length }} 人失分，档内按得分从高到低排列</span>
+                    </div>
+                    <span v-if="!selectedQuestion.records.length" class="class-analysis__note">无人失分</span>
+                  </section>
+                  <section class="class-analysis__outcome-section" aria-label="错因">
+                    <h3>错因</h3>
+                    <details v-for="section in selectedQuestion.causeSections" :key="section.kind" class="class-analysis__cause-category" :data-kind="section.kind" :open="section.kind === 'error' || section.kind === 'legacy'">
+                      <summary>{{ section.label }}<span v-if="section.count !== null"> · {{ section.count }} 人</span><span v-if="section.categoryText" class="class-analysis__cause-categories">（{{ section.categoryText }}）</span></summary>
+                      <ol class="class-analysis__causes">
+                        <li v-for="(cause, causeIndex) in (expandedCauses.has(section.key) ? section.causes : section.causes.slice(0, 5))" :key="cause.reason">
+                          <details
+                            v-if="cause.evidence?.length"
+                            class="class-analysis__cause-detail"
+                            @toggle="syncDetailOpen($event, `${section.key}#${causeIndex}`)"
+                          >
+                            <summary>
+                              <span v-if="cause.category" class="class-analysis__cause-tag" data-testid="cause-category">{{ cause.category }}</span>
+                              <span v-if="cause.pattern_status === 'candidate'" class="class-analysis__cause-tag class-analysis__cause-tag--new">新错法</span>
                               <span v-if="cause.teacher_edited" class="class-analysis__cause-tag class-analysis__cause-tag--edited" data-testid="cause-teacher-edited">老师改过</span>
-                              <span>{{ cause.reason }}</span><b>{{ cause.count }} 人</b>
+                              <QuestionHtmlBlock :text="cause.reason" inline typeset-text /><b>{{ cause.count }} 人</b>
                               <button
                                 v-if="canEditPattern(cause)"
                                 type="button"
                                 class="class-analysis__link class-analysis__cause-confirm"
                                 data-testid="cause-edit"
-                                @click="openPatternEdit(question, cause)"
+                                @click.stop.prevent="openPatternEdit(selectedQuestion, cause)"
                               >修改</button>
+                            </summary>
+                            <template v-if="openDetails.has(`${section.key}#${causeIndex}`)">
+                            <div v-for="(variant, variantIndex) in (cause.manifestations ?? [{ description: '', source_question_id: null, evidence: cause.evidence }])" :key="variantIndex" class="class-analysis__cause-manifestation">
+                              <p v-if="variant.description" class="class-analysis__cause-observation">本题表现：<QuestionHtmlBlock :text="variant.description" inline typeset-text /></p>
+                              <p v-if="variant.source_question_id" class="class-analysis__note">延续自 {{ variant.source_question_id }}</p>
+                              <div v-for="(item, index) in variant.evidence" :key="index" class="class-analysis__cause-evidence">
+                                <p v-if="item.student_answer"><strong>作答记录：</strong><QuestionHtmlBlock :text="item.student_answer" inline typeset-text /></p>
+                                <p v-else-if="cause.kind" class="class-analysis__note">未保存作答文字，具体原因以已有证据为限。</p>
+                                <p v-if="item.evidence_steps?.length"><strong>已有步骤记录：</strong><QuestionHtmlBlock :text="item.evidence_steps.join('；')" inline typeset-text /></p>
+                                <p><strong v-if="cause.kind">原始批语：</strong><QuestionHtmlBlock :text="item.text" inline typeset-text /></p>
+                                <p v-for="previous in item.previous_answers" :key="previous.question_id" class="class-analysis__note">{{ previous.question_id }} 作答：<QuestionHtmlBlock :text="previous.student_answer || '未记录作答文字'" inline typeset-text /></p>
+                                <small>{{ causeStudents(selectedQuestion, item.student_ids) }}</small>
+                              </div>
+                            </div>
                             </template>
-                          </li>
-                        </ol>
-                        <button v-if="section.causes.length > 5" type="button" class="class-analysis__preview-button class-analysis__causes-toggle" :aria-expanded="expandedCauses.has(section.key)" @click="toggleCauses(section.key)">
-                          {{ expandedCauses.has(section.key) ? '收起错因' : `展开其余 ${section.causes.length - 5} 条错因` }} · 共 {{ section.causes.length }} 条
-                        </button>
-                      </details>
-                      <span v-if="question.causes_outdated" class="class-analysis__note" data-testid="causes-outdated">旧版整理 · 待升级（暂无错误大类）</span>
-                      <span v-if="!question.causeSections.length" class="class-analysis__note">{{ question.records.length ? (question.causes_grouped ? '没有可确认的共同错因，见下方原始证据' : '未记录具体错因') : '—' }}</span>
-                      <details v-if="!question.structuredCauses && question.cause_review?.uncertain.length" class="class-analysis__cause-review">
-                        <summary>错因待明确 · {{ evidenceStudentCount(question.cause_review.uncertain) }} 人</summary>
-                        <div v-for="(item, index) in question.cause_review.uncertain" :key="index" class="class-analysis__cause-evidence">
-                          <p v-if="item.student_answer">作答记录：{{ item.student_answer }}</p>
-                          <p>{{ item.text }}</p><small>{{ causeStudents(question, item.student_ids) }}</small>
+                          </details>
+                          <template v-else>
+                            <span v-if="cause.category" class="class-analysis__cause-tag">{{ cause.category }}</span>
+                            <span v-if="cause.teacher_edited" class="class-analysis__cause-tag class-analysis__cause-tag--edited" data-testid="cause-teacher-edited">老师改过</span>
+                            <QuestionHtmlBlock :text="cause.reason" inline typeset-text /><b>{{ cause.count }} 人</b>
+                            <button
+                              v-if="canEditPattern(cause)"
+                              type="button"
+                              class="class-analysis__link class-analysis__cause-confirm"
+                              data-testid="cause-edit"
+                              @click="openPatternEdit(selectedQuestion, cause)"
+                            >修改</button>
+                          </template>
+                        </li>
+                      </ol>
+                      <button v-if="section.causes.length > 5" type="button" class="class-analysis__link class-analysis__causes-toggle" :aria-expanded="expandedCauses.has(section.key)" @click="toggleCauses(section.key)">
+                        {{ expandedCauses.has(section.key) ? '收起错因' : `展开其余 ${section.causes.length - 5} 条错因` }} · 共 {{ section.causes.length }} 条
+                      </button>
+                    </details>
+                    <span v-if="selectedQuestion.causes_outdated" class="class-analysis__note" data-testid="causes-outdated">旧版整理 · 待升级（暂无错误大类）</span>
+                    <span v-if="!selectedQuestion.causeSections.length" class="class-analysis__note">{{ selectedQuestion.records.length ? (selectedQuestion.causes_grouped ? '没有可确认的共同错因，见下方原始证据' : '未记录具体错因') : '—' }}</span>
+                    <details
+                      v-if="!selectedQuestion.structuredCauses && selectedQuestion.cause_review?.uncertain.length"
+                      class="class-analysis__cause-review"
+                      @toggle="syncDetailOpen($event, `${selectedQuestion.question_id}:uncertain`)"
+                    >
+                      <summary>错因待明确 · {{ evidenceStudentCount(selectedQuestion.cause_review.uncertain) }} 人</summary>
+                      <template v-if="openDetails.has(`${selectedQuestion.question_id}:uncertain`)">
+                        <div v-for="(item, index) in selectedQuestion.cause_review.uncertain" :key="index" class="class-analysis__cause-evidence">
+                          <p v-if="item.student_answer">作答记录：<QuestionHtmlBlock :text="item.student_answer" inline typeset-text /></p>
+                          <p><QuestionHtmlBlock :text="item.text" inline typeset-text /></p><small>{{ causeStudents(selectedQuestion, item.student_ids) }}</small>
                         </div>
-                      </details>
-                      <details v-if="question.cause_review?.positive.length" class="class-analysis__cause-review">
-                        <summary>未归为错因的批语 · {{ evidenceStudentCount(question.cause_review.positive) }} 人</summary>
-                        <div v-for="(item, index) in question.cause_review.positive" :key="index" class="class-analysis__cause-evidence">
-                          <p v-if="item.student_answer">作答记录：{{ item.student_answer }}</p>
-                          <p>{{ item.text }}</p><small>{{ causeStudents(question, item.student_ids) }}</small>
+                      </template>
+                    </details>
+                    <details
+                      v-if="selectedQuestion.cause_review?.positive.length"
+                      class="class-analysis__cause-review"
+                      @toggle="syncDetailOpen($event, `${selectedQuestion.question_id}:positive`)"
+                    >
+                      <summary>未归为错因的批语 · {{ evidenceStudentCount(selectedQuestion.cause_review.positive) }} 人</summary>
+                      <template v-if="openDetails.has(`${selectedQuestion.question_id}:positive`)">
+                        <div v-for="(item, index) in selectedQuestion.cause_review.positive" :key="index" class="class-analysis__cause-evidence">
+                          <p v-if="item.student_answer">作答记录：<QuestionHtmlBlock :text="item.student_answer" inline typeset-text /></p>
+                          <p><QuestionHtmlBlock :text="item.text" inline typeset-text /></p><small>{{ causeStudents(selectedQuestion, item.student_ids) }}</small>
                         </div>
-                      </details>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                      </template>
+                    </details>
+                  </section>
+                </div>
+              </div>
             </div>
-          </section>
+          </div>
         </template>
       </template>
     </section>
@@ -638,24 +797,6 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
       @close="closeConfirm"
       @confirm="confirmRegenerate"
     />
-
-  <DialogRoot :open="previewQuestion !== null" @update:open="!$event && closePreview()">
-    <DialogPortal>
-      <DialogOverlay class="class-analysis__overlay" />
-      <DialogContent class="class-analysis__preview" data-testid="question-preview-dialog" :aria-describedby="undefined" @close-auto-focus="restorePreviewFocus">
-        <div class="class-analysis__dialog-heading">
-          <DialogTitle>{{ previewQuestion?.question_id }} · 原题预览</DialogTitle>
-          <DialogClose class="class-analysis__link" aria-label="关闭原题预览">关闭</DialogClose>
-        </div>
-        <p v-if="previewLoading" role="status">正在读取原题…</p>
-        <p v-else-if="previewError" class="class-analysis__error" role="alert">{{ previewError }} <button class="class-analysis__link" @click="previewQuestion && openPreview(previewQuestion)">重试</button></p>
-        <template v-else-if="preview">
-          <p v-if="preview.notice" class="class-analysis__note">{{ preview.notice }}</p>
-          <QuestionContentRenderer :blocks="preview.rich_content.question_blocks" :fallback="preview.text" empty-label="此题尚无可预览的原题内容" image-alt="原题配图" media-mode="detail" />
-        </template>
-      </DialogContent>
-    </DialogPortal>
-  </DialogRoot>
 
   <DialogRoot :open="patternEdit !== null" @update:open="!$event && (patternEdit = null)">
     <DialogPortal>

@@ -13,6 +13,8 @@ import {
 import AppButton from '../components/design-system/AppButton.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
+import type { ScanStudentMatchOption } from '../api/scan-grading'
+import type { ResultsCenterItem } from '../api/results-center'
 import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
 import ReviewDeepWorkspace from '../components/review/ReviewDeepWorkspace.vue'
 import ReviewFeedbackToast from '../components/review/ReviewFeedbackToast.vue'
@@ -46,7 +48,11 @@ const feedback = ref('')
 const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
 const annotationRetryEntries = ref<AnnotationRetryEntry[]>([])
 const mode = ref<'batch' | 'deep'>('batch')
+// 跨题深查切换期间继续展示上一份答卷，等目标题数据到达后再替换。
+const deepSwitching = ref(false)
 const batchScrollTop = ref(0)
+const ANSWER_PANEL_STORAGE_KEY = 'ai-grading:review-answer-panel:v1'
+const answerPanelOpen = ref(false)
 
 let contextGeneration = 0
 let itemGeneration = 0
@@ -126,6 +132,82 @@ const nextDeepItem = computed(() =>
     ? reviewStore.filteredItems[deepItemIndex.value + 1] ?? null
     : null,
 )
+
+interface StudentNavTarget {
+  name: string
+  reviewItemId: string
+}
+
+// 成绩明细跳转过来时按当时矩阵顺序（班级/搜索/状态/排序生效后的行序）切换同题学生。
+const reviewNavIds = computed<number[]>(() => {
+  if (entryQuery() !== 'results') return []
+  const nav = resultsStore.reviewNavigation
+  return nav !== null && nav.sessionId === sessionStore.selectedSessionId
+    ? nav.studentIds
+    : []
+})
+const navIndex = computed(() => {
+  const id = activeStudentId.value
+  return id === null ? -1 : reviewNavIds.value.indexOf(id)
+})
+
+function navQuestionTarget(index: number): StudentNavTarget | null {
+  const data = resultsStore.results
+  const questionId = reviewStore.selectedQuestionId
+  const studentId = reviewNavIds.value[index]
+  if (!data || questionId === null || studentId === undefined) return null
+  if (data.session_id !== sessionStore.selectedSessionId) return null
+  const student = data.students.find((entry) => entry.student_id === studentId)
+  const item = student?.items.find((entry) => entry.question_id === questionId)
+  return student && item
+    ? { name: student.student_name, reviewItemId: item.review_item_id }
+    : null
+}
+
+function queueNavTarget(item: ReviewItemLike | null): StudentNavTarget | null {
+  if (item === null) return null
+  const resolved = resolveReviewItem(item)
+  return { name: resolved.student_name, reviewItemId: resolved.review_item_id }
+}
+
+const previousStudentTarget = computed<StudentNavTarget | null>(() => {
+  if (reviewNavIds.value.length > 0) {
+    if (navIndex.value <= 0) return null
+    for (let index = navIndex.value - 1; index >= 0; index -= 1) {
+      const target = navQuestionTarget(index)
+      if (target !== null) return target
+    }
+    return null
+  }
+  return queueNavTarget(previousDeepItem.value)
+})
+const nextStudentTarget = computed<StudentNavTarget | null>(() => {
+  if (reviewNavIds.value.length > 0) {
+    if (navIndex.value < 0) return null
+    for (let index = navIndex.value + 1; index < reviewNavIds.value.length; index += 1) {
+      const target = navQuestionTarget(index)
+      if (target !== null) return target
+    }
+    return null
+  }
+  return queueNavTarget(nextDeepItem.value)
+})
+const studentNavPosition = computed(() => {
+  if (reviewNavIds.value.length > 0) {
+    return navIndex.value >= 0
+      ? `第 ${navIndex.value + 1} / ${reviewNavIds.value.length} 人`
+      : null
+  }
+  return deepItemIndex.value >= 0
+    ? `第 ${deepItemIndex.value + 1} / ${reviewStore.filteredItems.length} 人`
+    : null
+})
+const studentNav = computed(() => ({
+  previousName: previousStudentTarget.value?.name ?? null,
+  nextName: nextStudentTarget.value?.name ?? null,
+  position: studentNavPosition.value,
+}))
+
 const annotationRetryTitle = computed(() =>
   `分数已保存，${annotationRetryEntries.value.length} 份标注图需要重试`,
 )
@@ -169,15 +251,24 @@ function entryQuery(): string | null {
     : null
 }
 
-const studentStripId = computed(() => (
+const requestedStudentId = computed(() => (
   entryQuery() === 'results' ? positiveIntegerQuery(route.query.student) : null
 ))
+const activeStudentId = computed<number | null>(() => {
+  if (entryQuery() !== 'results') return null
+  const current = deepItem.value
+  if (current !== null) {
+    const studentId = resolveReviewItem(current).student_id
+    if (studentId > 0) return studentId
+  }
+  return requestedStudentId.value
+})
 const stripStudent = computed(() => {
-  if (studentStripId.value === null) return null
+  if (activeStudentId.value === null) return null
   const data = resultsStore.results
   if (!data || data.session_id !== sessionStore.selectedSessionId) return null
   return data.students.find(
-    (student) => student.student_id === studentStripId.value,
+    (student) => student.student_id === activeStudentId.value,
   ) ?? null
 })
 const studentStripEntries = computed(() => {
@@ -214,6 +305,72 @@ function stripStatusLabel(status: string): string {
   }[status] ?? status
 }
 
+// 与成绩明细热度图同一套刻度：已出分按得分率着色，未评分/失败用中性灰。
+function stripChipStyle(item: ResultsCenterItem | null): Record<string, string> | undefined {
+  if (!item) return undefined
+  const scored = ['ai_ready', 'teacher_final'].includes(item.score_status)
+    && item.score_awarded !== null && item.max_score > 0
+  if (!scored) return { backgroundColor: 'var(--color-bg-subtle)' }
+  const rate = Math.max(0, Math.min(1, item.score_awarded! / item.max_score))
+  return { backgroundColor: `hsl(${Math.round(7 + rate * 126)} 52% 88%)`, color: '#172333' }
+}
+
+const studentSearchOptions = computed<ScanStudentMatchOption[]>(() => {
+  const data = resultsStore.results
+  if (!data || data.session_id !== sessionStore.selectedSessionId) return []
+  return data.students.map((student) => ({
+    id: student.student_id,
+    name: student.student_name,
+    student_code: student.student_code ?? '',
+    class_name: student.class_name,
+    pinyin_initials: student.pinyin_initials,
+    pinyin_full: student.pinyin_full,
+  }))
+})
+const studentSearchNotice = ref('')
+watch(deepItem, () => {
+  studentSearchNotice.value = ''
+})
+
+function openStudentPick(studentId: number | undefined): void {
+  studentSearchNotice.value = ''
+  if (studentId === undefined) return
+  const questionId = reviewStore.selectedQuestionId
+  const data = resultsStore.results
+  const student = data?.students.find((entry) => entry.student_id === studentId)
+  const item = student?.items.find((entry) => entry.question_id === questionId)
+  if (!student || !item) {
+    studentSearchNotice.value = '该生本题无作答记录'
+    return
+  }
+  void openStudentQuestion(item.question_id, item.review_item_id)
+}
+
+function openQuestionNav(direction: -1 | 1): void {
+  const entries = studentStripEntries.value
+  const index = entries.findIndex(
+    (entry) => entry.questionId === reviewStore.selectedQuestionId,
+  )
+  if (index < 0) return
+  for (let step = index + direction; step >= 0 && step < entries.length; step += direction) {
+    const item = entries[step]!.item
+    if (item !== null) {
+      void openStudentQuestion(entries[step]!.questionId, item.review_item_id)
+      return
+    }
+  }
+}
+
+function questionNavEnabled(direction: -1 | 1): boolean {
+  const entries = studentStripEntries.value
+  const index = entries.findIndex(
+    (entry) => entry.questionId === reviewStore.selectedQuestionId,
+  )
+  if (index < 0) return false
+  return entries.slice(direction < 0 ? 0 : index + 1, direction < 0 ? index : undefined)
+    .some((entry) => entry.item !== null)
+}
+
 function openGradingRun(): void {
   const sessionId = sessionStore.selectedSessionId
   if (sessionId !== null) void router.push(`/sessions/${sessionId}/grading-run`)
@@ -233,7 +390,7 @@ function syncValidatedQuery(): void {
   if (sessionId !== null) query.session = String(sessionId)
   const entry = entryQuery()
   if (entry !== null) query.entry = entry
-  if (studentStripId.value !== null) query.student = String(studentStripId.value)
+  if (activeStudentId.value !== null) query.student = String(activeStudentId.value)
   if (questionIsValid && questionId !== null) query.question = questionId
   if (
     mode.value === 'deep'
@@ -602,14 +759,20 @@ async function openStudentQuestion(
     await querySync
     return
   }
-  await loadQuestion(
-    sessionId,
-    questionId,
-    reviewItemId,
-    null,
-    true,
-    contextGeneration,
-  )
+  // 不清空当前列表：深查工作区继续显示旧答卷直到新题数据到达，避免闪回批量页。
+  deepSwitching.value = true
+  try {
+    await loadQuestion(
+      sessionId,
+      questionId,
+      reviewItemId,
+      null,
+      false,
+      contextGeneration,
+    )
+  } finally {
+    deepSwitching.value = false
+  }
 }
 
 async function openItem(reviewItemId: string): Promise<void> {
@@ -657,9 +820,17 @@ async function handleDeepConfirmed(payload: {
     : reviewStore.itemLoadState === 'error'
       ? '此份评分已确认，但页面刷新失败；可安全重新加载。'
       : '此份评分已确认。'
-  // 标注重试和刷新失败提示仍留在当前页，避免返回成绩页后丢失处理入口。
-  const needsFollowUp = resultsReturnPath.value && (payload.annotationRetry || reviewStore.itemLoadState === 'error')
-  if (!selectionChanged && !needsFollowUp) await closeDeepReview()
+  // 成绩明细入口确认后留在深查页继续复核；其他入口维持返回行为。
+  if (!resultsReturnPath.value && !selectionChanged) {
+    await closeDeepReview()
+    return
+  }
+  if (resultsReturnPath.value && !selectionChanged) {
+    await nextTick()
+    reviewPage.value
+      ?.querySelector<HTMLInputElement>('.review-quick-score input')
+      ?.focus()
+  }
 }
 
 function handleDeepAnnotationRetry(entry: AnnotationRetryEntry): void {
@@ -671,6 +842,8 @@ function handleDeepAnnotationRetry(entry: AnnotationRetryEntry): void {
 function isShortcutProtectedTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false
   if (target.closest('input, textarea, select, button')) return true
+  // 面板分隔条自身的 ←/→ 用于调整宽度
+  if (target.closest('.review-deep-workspace__divider')) return true
   if (target instanceof HTMLElement && target.isContentEditable) return true
   const editableRoot = target.closest<HTMLElement>('[contenteditable]')
   if (editableRoot === null) return false
@@ -692,7 +865,40 @@ async function focusBatchScore(reviewItemId: string): Promise<void> {
   focusSelectedBatchScore()
 }
 
+function openStudentNav(direction: -1 | 1): void {
+  const target = direction < 0 ? previousStudentTarget.value : nextStudentTarget.value
+  const questionId = reviewStore.selectedQuestionId
+  if (target === null || questionId === null) return
+  void openStudentQuestion(questionId, target.reviewItemId)
+}
+
 function onKeydown(event: KeyboardEvent): void {
+  if (
+    !event.defaultPrevented
+    && !event.altKey
+    && !event.ctrlKey
+    && !event.metaKey
+    && !event.shiftKey
+    && mode.value === 'deep'
+    && (!isShortcutProtectedTarget(event.target)
+      // 快捷给分输入框里的方向键仍用于切换题/学生
+      || (event.target instanceof Element
+        && event.target.closest('.review-quick-score') !== null))
+    && !(
+      event.target instanceof Element
+      && event.target.closest('.review-evidence-viewer')
+    )
+    && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)
+  ) {
+    // ←/→ 同一名学生的题间切换；↑/↓ 同一题的学生间切换。
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      openQuestionNav(event.key === 'ArrowLeft' ? -1 : 1)
+    } else {
+      openStudentNav(event.key === 'ArrowUp' ? -1 : 1)
+    }
+    event.preventDefault()
+    return
+  }
   if (
     !event.defaultPrevented
     && !event.altKey
@@ -760,7 +966,7 @@ const stopSelectionWatch = watch(
 
 // 从成绩页进入且带学生参数时，复用成绩快照生成该生各题横条；快照缺失时补一次读取。
 const stopStudentStripWatch = watch(
-  [studentStripId, () => sessionStore.selectedSessionId],
+  [activeStudentId, () => sessionStore.selectedSessionId],
   ([studentId, sessionId]) => {
     if (studentId === null || sessionId === null) return
     if (resultsStore.state === 'loading') return
@@ -770,7 +976,19 @@ const stopStudentStripWatch = watch(
   { immediate: true },
 )
 
+const stopAnswerPanelWatch = watch(
+  answerPanelOpen,
+  (open) => {
+    try {
+      localStorage.setItem(ANSWER_PANEL_STORAGE_KEY, open ? '1' : '0')
+    } catch {
+      // 隐私模式等场景下写入失败时仅本次会话生效
+    }
+  },
+)
+
 onMounted(() => {
+  answerPanelOpen.value = localStorage.getItem(ANSWER_PANEL_STORAGE_KEY) === '1'
   window.addEventListener('keydown', onKeydown)
 })
 
@@ -781,6 +999,7 @@ onBeforeUnmount(() => {
   stopSessionWatch()
   stopSelectionWatch()
   stopStudentStripWatch()
+  stopAnswerPanelWatch()
   window.removeEventListener('keydown', onKeydown)
   reviewStore.reset()
 })
@@ -796,7 +1015,7 @@ onBeforeUnmount(() => {
     <header class="review-page__header">
       <div class="review-page__header-copy">
         <h1 id="review-page-title" tabindex="-1">{{ resultsReturnPath ? '学生作答' : '人工干预工作台' }}</h1>
-        <p>{{ resultsReturnPath ? '查看原卷与本题评分；返回后保留成绩页的筛选和位置。' : '需要教师处理的答卷优先显示；高置信 AI 结果保留在队列中，也可以随时修改。' }}</p>
+        <p v-if="!resultsReturnPath">需要教师处理的答卷优先显示；高置信 AI 结果保留在队列中，也可以随时修改。</p>
       </div>
       <AppButton
         v-if="!resultsReturnPath"
@@ -863,8 +1082,20 @@ onBeforeUnmount(() => {
       :previous-item="previousDeepItem"
       :next-item="nextDeepItem"
       :back-label="resultsReturnLabel"
+      :session-id="sessionStore.selectedSessionId"
+      :question-id="reviewStore.selectedQuestionId"
+      :student-nav="studentNav"
+      :student-options="studentSearchOptions"
+      :active-student-id="activeStudentId"
+      :student-search-notice="studentSearchNotice"
+      :answer-panel-open="answerPanelOpen"
+      :switching="deepSwitching"
+      :stay-after-confirm="resultsReturnPath !== null"
       :register-annotation-retry="handleDeepAnnotationRetry"
       @back="closeDeepReview"
+      @student-nav="openStudentNav"
+      @student-pick="openStudentPick"
+      @toggle-answer-panel="answerPanelOpen = !answerPanelOpen"
       @confirmed="handleDeepConfirmed"
     >
       <template #strip>
@@ -874,12 +1105,30 @@ onBeforeUnmount(() => {
           data-testid="student-question-strip"
           :aria-label="`${stripStudent!.student_name} 各题得分与切换`"
         >
+          <span
+            v-if="deepSwitching"
+            class="review-student-strip__loading"
+            role="status"
+            aria-label="正在切换题目"
+          />
+          <button
+            type="button"
+            class="review-student-strip__nav"
+            :disabled="!questionNavEnabled(-1)"
+            aria-label="上一题"
+            title="上一题（快捷键 ←）"
+            @click="openQuestionNav(-1)"
+          >
+            ‹
+          </button>
           <button
             v-for="entry in studentStripEntries"
             :key="entry.questionId"
             type="button"
+            class="review-student-strip__chip"
             :disabled="entry.item === null"
             :data-status="entry.item?.score_status"
+            :style="stripChipStyle(entry.item)"
             :aria-current="entry.questionId === reviewStore.selectedQuestionId ? 'true' : undefined"
             :aria-label="entry.item === null
               ? `${entry.questionId}，无作答记录`
@@ -892,6 +1141,16 @@ onBeforeUnmount(() => {
               · {{ stripStatusLabel(entry.item.score_status) }}
             </span>
             <span v-else>无记录</span>
+          </button>
+          <button
+            type="button"
+            class="review-student-strip__nav"
+            :disabled="!questionNavEnabled(1)"
+            aria-label="下一题"
+            title="下一题（快捷键 →）"
+            @click="openQuestionNav(1)"
+          >
+            ›
           </button>
         </nav>
       </template>

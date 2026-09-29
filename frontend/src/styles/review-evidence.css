@@ -27,7 +27,7 @@
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   border: var(--border-width) solid var(--color-border-default);
   background: var(--color-bg-surface);
 }
@@ -35,7 +35,7 @@
 .review-deep-workspace__header {
   display: grid;
   min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--space-5);
   padding: var(--space-4);
@@ -56,19 +56,127 @@
   min-width: 0;
 }
 
-.review-deep-workspace__sources {
+.review-deep-workspace__student-nav {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.review-deep-workspace__student-nav button {
+  min-height: var(--control-height-small);
+  padding-inline: var(--space-2);
+  white-space: nowrap;
+}
+
+.review-deep-workspace__student-nav button:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.review-deep-workspace__position {
+  white-space: nowrap;
+}
+
+.review-deep-workspace__student-search {
+  position: relative;
+  flex: 0 0 220px;
+  min-width: 160px;
+}
+
+.review-deep-workspace__student-search .student-match-select {
+  flex: none;
+  min-width: 0;
+  width: 100%;
+}
+
+.review-deep-workspace__student-search .student-match-select__input {
+  min-height: var(--control-height-small);
+  padding-inline-start: 26px;
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+}
+
+.review-deep-workspace__student-search .student-match-select__input:focus {
+  color: var(--color-text-primary);
+  outline: var(--border-width) solid var(--color-accent);
+  outline-offset: var(--focus-offset);
+  box-shadow: var(--focus-ring);
+}
+
+.review-deep-workspace__search-icon {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: calc(var(--control-height-small) / 2);
+  inset-inline-start: var(--space-2);
+  color: var(--color-text-muted);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.review-deep-workspace__search-notice {
+  position: absolute;
+  inset-block-start: calc(100% + var(--space-1));
+  inset-inline-start: 0;
+  color: var(--color-warning);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.review-deep-workspace__tools {
   display: flex;
   min-width: 0;
   max-width: min(54vw, 760px);
+  align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
 }
 
-.review-deep-workspace__sources button[aria-pressed="true"] {
+.review-deep-workspace__panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--control-height-small);
+  padding-inline: var(--space-2);
+  white-space: nowrap;
+}
+
+.review-deep-workspace__panel-toggle[aria-pressed="true"] {
   border-color: var(--color-accent);
-  box-shadow: inset var(--border-width) 0 0 var(--color-accent);
   background: var(--color-bg-selected);
+  color: var(--color-accent);
+}
+
+/* 证据来源：一个共享边框的分段控件，选中项实心填充 */
+.review-deep-workspace__sources {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+}
+
+.review-deep-workspace__sources button {
+  min-height: calc(var(--control-height-small) - var(--border-width) * 2);
+  padding-inline: var(--space-2);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.review-deep-workspace__sources button + button {
+  border-inline-start: var(--border-width) solid var(--color-border-default);
+}
+
+.review-deep-workspace__sources button[aria-pressed="true"] {
+  background: var(--color-accent);
+  color: var(--color-bg-surface);
 }
 
 .review-deep-workspace__header h2,
@@ -86,7 +194,42 @@
   display: grid;
   min-width: 0;
   min-height: 0;
+  grid-row: 3;
   grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+}
+
+.review-deep-workspace__body--answers {
+  grid-template-columns:
+    minmax(0, 1.1fr)
+    6px
+    minmax(300px, var(--review-answer-panel-width, 420px))
+    minmax(280px, 0.55fr);
+}
+
+.review-deep-workspace__divider {
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.review-deep-workspace__divider::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 50%;
+  width: 1px;
+  background: var(--color-border-default);
+  transform: translateX(-50%);
+}
+
+.review-deep-workspace__divider:hover::before,
+.review-deep-workspace__divider:focus-visible::before {
+  width: 3px;
+  background: var(--color-accent);
+}
+
+.review-deep-workspace__divider:focus-visible {
+  outline: none;
 }
 
 .review-deep-workspace__evidence,
@@ -99,22 +242,15 @@
   border-inline-end: var(--border-width) solid var(--color-border-default);
 }
 
+.review-deep-workspace--switching .review-deep-workspace__evidence,
+.review-deep-workspace--switching .review-deep-workspace__scoring {
+  opacity: 0.55;
+  transition: opacity var(--duration-fast) ease;
+}
+
 .review-deep-workspace__evidence .review-evidence-viewer,
 .review-deep-workspace__scoring .review-scoring-inspector {
   height: 100%;
-}
-
-/* 对比模式：ImageCompare 填满证据区，盖住组件自带的固定高度 */
-.review-deep-workspace__compare {
-  height: 100%;
-  min-height: 0;
-  border-radius: 0;
-  background: var(--color-bg-subtle);
-}
-
-.review-deep-workspace__compare:focus-visible {
-  outline: none;
-  box-shadow: inset var(--focus-ring);
 }
 
 @media (max-width: 1100px) {
@@ -126,14 +262,18 @@
   }
 
   .review-deep-workspace {
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
   }
 
   .review-deep-workspace__header {
     grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .review-deep-workspace__sources {
+  .review-deep-workspace__student-nav {
+    grid-column: 1 / -1;
+  }
+
+  .review-deep-workspace__tools {
     max-width: none;
     grid-column: 1 / -1;
     justify-content: flex-start;
@@ -141,6 +281,10 @@
 
   .review-deep-workspace__body {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .review-deep-workspace__divider {
+    display: none;
   }
 
   .review-deep-workspace__evidence {

@@ -61,7 +61,10 @@ async function settle() {
   await nextTick()
 }
 
-async function mountView(selectedSessionId: number | null = 7) {
+async function mountView(
+  selectedSessionId: number | null = 7,
+  props: { embedded?: boolean; variant?: 'page' | 'popover' } = {},
+) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const sessionStore = useSessionStore(pinia)
@@ -122,7 +125,7 @@ async function mountView(selectedSessionId: number | null = 7) {
   await router.isReady()
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(FileCenterView)
+  const app = createApp(FileCenterView, props)
   app.use(pinia)
   app.use(router)
   app.mount(host)

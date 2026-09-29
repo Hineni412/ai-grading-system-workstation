@@ -20,6 +20,11 @@ export type ResultsCenterLoader = (
   signal: AbortSignal,
 ) => Promise<ResultsCenterResponse>
 
+export interface ReviewNavigation {
+  sessionId: number
+  studentIds: number[]
+}
+
 export interface ResultsViewState {
   sessionId: number
   fullPath: string
@@ -53,6 +58,7 @@ export const useResultsCenterStore = defineStore('results-center', () => {
   const errorMessage = ref('')
   const updatedAt = ref<string | null>(null)
   const viewState = ref<ResultsViewState | null>(null)
+  const reviewNavigation = ref<ReviewNavigation | null>(null)
 
   let controller: AbortController | null = null
   let generation = 0
@@ -67,6 +73,11 @@ export const useResultsCenterStore = defineStore('results-center', () => {
     errorMessage.value = ''
     updatedAt.value = null
     viewState.value = null
+    reviewNavigation.value = null
+  }
+
+  function setReviewNavigation(value: ReviewNavigation | null): void {
+    reviewNavigation.value = value
   }
 
   async function load(
@@ -128,6 +139,8 @@ export const useResultsCenterStore = defineStore('results-center', () => {
     errorMessage,
     updatedAt,
     viewState,
+    reviewNavigation,
+    setReviewNavigation,
     load,
     reset,
   }

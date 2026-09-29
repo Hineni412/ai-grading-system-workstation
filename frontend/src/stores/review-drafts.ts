@@ -128,6 +128,20 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
     refreshDirty(draft)
   }
 
+  // 自动进入步骤模式写入的是 AI/现状投影，不是教师输入：
+  // 直接作为基线记录，教师之后的改动才计入未确认草稿。
+  function initSteps(key: string, steps: ReviewStepDraft[]): void {
+    const draft = drafts.value[key]
+    if (!draft || draft.dirty) return
+    draft.stepScores = steps
+    draft.scoreText = steps.every((step) => scoreIssue(step.scoreText, step.maxScore) === null)
+      ? String(steps.reduce((total, step) => total + Number(step.scoreText), 0)) : ''
+    draft.baseScoreText = draft.scoreText
+    draft.baseStepsJson = JSON.stringify(steps)
+    draft.dirty = false
+    draft.updatedAt = Date.now()
+  }
+
   function updateSteps(key: string, steps: ReviewStepDraft[] | undefined): void {
     const draft = drafts.value[key]
     if (!draft) return
@@ -170,6 +184,7 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
     hasDirtyDrafts,
     ensureDraft,
     updateScore,
+    initSteps,
     updateSteps,
     updateNote,
     markConfirmed,

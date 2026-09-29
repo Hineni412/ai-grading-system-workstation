@@ -51,7 +51,7 @@ export function jobLocation(job: JobResponse): string {
   ].includes(job.job_type)) return '/question-bank'
   if (['scan_analysis', 'grading_run'].includes(job.job_type)) return '/grading'
   if (job.job_type === 'assembly_export') return '/question-assembly'
-  if (job.job_type === 'report_export') return '/results'
+  if (job.job_type === 'report_export') return '/results?tab=exports'
   return '/workbench'
 }
 

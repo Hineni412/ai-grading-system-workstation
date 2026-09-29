@@ -149,7 +149,10 @@ function markLinearFormulas(root: HTMLElement): void {
       if (!/[A-Za-z0-9πθ]/.test(formula)) return fragment
       const text = document.createElement('span')
       text.innerHTML = formula.replace(/<sup>([^<]+)<\/sup>/g, '^{$1}').replace(/<sub>([^<]+)<\/sub>/g, '_{$1}')
-      const latex = convertRadicals(text.textContent ?? '').replace(/−/g, '-').replace(/²/g, '^{2}').replace(/³/g, '^{3}')
+      const latex = convertRadicals(text.textContent ?? '')
+        // 连续下划线是填空占位符；原样进 KaTeX 会因裸 _ 解析失败而退化成纯文本。
+        .replace(/_{2,}/g, (run) => `\\underline{\\hspace{${(run.length * 0.45).toFixed(2)}em}}`)
+        .replace(/−/g, '-').replace(/²/g, '^{2}').replace(/³/g, '^{3}')
         .replace(/×/g, '\\times ').replace(/÷/g, '\\div ').replace(/≤/g, '\\leq ').replace(/≥/g, '\\geq ')
         .replace(/≠/g, '\\ne ').replace(/π/g, '\\pi ').replace(/θ/g, '\\theta ')
         .replace(/±/g, '\\pm ').replace(/∠/g, '\\angle ').replace(/△/g, '\\triangle ')
