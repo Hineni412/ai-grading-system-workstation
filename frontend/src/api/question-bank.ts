@@ -1808,7 +1808,38 @@ export function questionJobRetryIds(job: JobResponse): number[] {
   return []
 }
 
+export interface QuestionStandardSummary {
+  active_release_id: string | null
+  taxonomy_revision: number | null
+  versions: { release_id: string; taxonomy_revision: number; status: string; activated_at: string | null; created_at: string }[]
+  question_count: number
+  usable_question_count: number
+  skill_question_count: number
+  section_only_question_count: number
+  missing_link_question_count: number
+  older_link_question_count: number
+  model_calls: number
+}
+
+function decodeQuestionStandardSummary(value: unknown): QuestionStandardSummary {
+  if (!isRecord(value) || !isNullableString(value.active_release_id)
+    || !(value.taxonomy_revision === null || Number.isInteger(value.taxonomy_revision))
+    || !Array.isArray(value.versions)
+    || !value.versions.every((row) => isRecord(row) && typeof row.release_id === 'string'
+      && Number.isInteger(row.taxonomy_revision) && typeof row.status === 'string'
+      && isNullableString(row.activated_at) && typeof row.created_at === 'string')
+    || !['question_count', 'usable_question_count', 'skill_question_count', 'section_only_question_count',
+      'missing_link_question_count', 'older_link_question_count', 'model_calls']
+      .every((key) => typeof value[key] === 'number' && Number.isInteger(value[key]) && value[key] >= 0)) {
+    throw new Error('标准版本信息格式不正确')
+  }
+  return value as unknown as QuestionStandardSummary
+}
+
 export const questionBankApi = {
+  standardSummary(signal?: AbortSignal): Promise<QuestionStandardSummary> {
+    return apiClient.request('/api/question-bank/standard-summary', { decode: decodeQuestionStandardSummary, signal })
+  },
   getCurriculum(
     signal?: AbortSignal,
     includeKnowledgePoints = true,

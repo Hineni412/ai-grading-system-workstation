@@ -10,6 +10,7 @@ const props = defineProps<{
   valid: boolean
   generating?: boolean
   progressChapters?: Array<{ id: string; label: string }>
+  scopeSummary?: string
 }>()
 
 const emit = defineEmits<{ goPaper: [] }>()
@@ -17,6 +18,7 @@ const emit = defineEmits<{ goPaper: [] }>()
 const questionCount = defineModel<number>('questionCount', { required: true })
 const difficultyMax = defineModel<number>('difficultyMax', { required: true })
 const teachingProgressChapterId = defineModel<string>('teachingProgressChapterId', { default: '' })
+const scopeMode = defineModel<'comprehensive' | 'focused'>('scopeMode', { default: 'comprehensive' })
 const excludeCurrentOriginals = defineModel<boolean>('excludeCurrentOriginals', { required: true })
 
 const modeLabel = computed(() => (props.mode === 'shared' ? '多人同一套卷' : '一人一卷'))
@@ -36,12 +38,17 @@ const modeNote = computed(() => (props.mode === 'shared'
     </header>
 
     <div class="paper-settings__fit">
+      <label v-if="mode === 'individual'">训练范围<select v-model="scopeMode" aria-label="训练范围模式">
+        <option value="comprehensive">综合训练 · 覆盖已学章节</option>
+        <option value="focused">专项训练 · 仅勾选的章或节</option>
+      </select></label>
       <label>已学到<select v-model="teachingProgressChapterId" aria-label="已学到的章节">
-        <option value="">按所选训练目标的最晚章节</option>
+        <option value="">{{ mode === 'individual' && scopeMode === 'comprehensive' ? '按已有作答及勾选范围的最晚章节' : '按所选训练目标的最晚章节' }}</option>
         <option v-for="chapter in progressChapters ?? []" :key="chapter.id" :value="chapter.id">{{ chapter.label }}</option>
       </select></label>
     </div>
-    <p class="paper-settings-panel__hint">依据同技能多次作答（包含正确与失分）判断适合难度。允许范围内新练习；整题所有小问均检查已学范围，相似题受限，解答题最多2道。</p>
+    <p class="paper-settings-panel__hint">{{ scopeSummary ?? (mode === 'shared' ? '专项训练 · 按所选章节与共同目标选题' : '') }}</p>
+    <p class="paper-settings-panel__hint">依据同技能多次作答（包含正确与失分）判断适合难度。允许范围内新练习；整题所有小问均检查已学范围，同技能最多1道，相似题受限，解答题最多2道。</p>
     <div class="paper-settings__grid">
       <label>每卷题数<input v-model.number="questionCount" type="number" min="8" max="12"><small>8–12 题</small></label>
       <label>难度上限<input v-model.number="difficultyMax" type="number" min="1" max="8"><small>最高 8 级</small></label>
@@ -61,7 +68,7 @@ const modeNote = computed(() => (props.mode === 'shared'
       </AppButton>
     </div>
     <p v-if="!valid" class="paper-settings-panel__hint">
-      请先在本页完成学生与{{ mode === 'shared' ? '细知识点' : '章/节范围' }}勾选，并确认题量与难度上限。
+      请先在本页完成学生与{{ mode === 'shared' ? '细知识点勾选' : '已学进度或专项范围设置' }}，并确认题量与难度上限。
     </p>
   </section>
 </template>

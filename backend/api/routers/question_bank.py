@@ -271,6 +271,13 @@ def get_taxonomy_catalog() -> TaxonomyCatalogResponse:
     return TaxonomyCatalogResponse(**payload)
 
 
+@router.get("/standard-summary")
+def get_standard_summary(
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+) -> dict[str, Any]:
+    return service.standard_summary()
+
+
 @router.get(
     "/taxonomy/proposals",
     response_model=TaxonomyProposalListResponse,

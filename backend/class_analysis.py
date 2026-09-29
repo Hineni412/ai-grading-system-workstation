@@ -161,6 +161,33 @@ def _cause_input_fingerprint(source: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def cause_input_matches(saved: dict[str, Any], source: dict[str, Any]) -> bool:
+    """Current input, or an older export missing only supplemental bank text.
+
+    Legacy external runs omitted question_text/reference_analysis. Accept their
+    original evidence, answers and rubric only when those still match exactly;
+    never treat an edited, previously populated field as compatible.
+    """
+    previous = saved.get("input")
+    fingerprint = saved.get("input_fingerprint") or (
+        _cause_input_fingerprint(previous) if isinstance(previous, dict) else None
+    )
+    if fingerprint == _cause_input_fingerprint(source):
+        return True
+    if not isinstance(previous, dict) or fingerprint != _cause_input_fingerprint(previous):
+        return False
+    if previous.get("question_text"):
+        return False
+    comparable = dict(source)
+    for key in ("question_text", "reference_analysis"):
+        if not previous.get(key):
+            if key in previous:
+                comparable[key] = previous[key]
+            else:
+                comparable.pop(key, None)
+    return fingerprint == _cause_input_fingerprint(comparable)
+
+
 def _merge_known_patterns(*groups: Any) -> list[dict[str, Any]]:
     """合并多个来源的已知错法名，按 reason 去重，控制提示词长度。"""
     merged: dict[str, dict[str, Any]] = {}
@@ -510,11 +537,7 @@ def apply_cause_results(
     question_pages = {item["question_id"]: item for item in (page or {}).get("questions", [])}
     for question_id, source in sources.items():
         saved = stored.get(question_id) or {}
-        fingerprint = _cause_input_fingerprint(source)
-        saved_fp = saved.get("input_fingerprint") or (
-            _cause_input_fingerprint(saved["input"]) if isinstance(saved.get("input"), dict) else ""
-        )
-        fresh = (saved.get("version") == CAUSE_ANALYSIS_VERSION and saved_fp == fingerprint
+        fresh = (saved.get("version") == CAUSE_ANALYSIS_VERSION and cause_input_matches(saved, source)
                  and isinstance(saved.get("result"), dict))
         old_version = saved.get("version")
         old_source = saved.get("input") or {}
@@ -619,7 +642,8 @@ def apply_cause_results(
 def _ensure_error_records(store: Any, session_id: int, state: Any,
                           source: dict[str, Any], saved: dict[str, Any], data: Any) -> None:
     """已整理且输入未变的题：补齐早期任务未物化的学生错因记录。"""
-    fingerprint = _cause_input_fingerprint(source)
+    fingerprint = ((saved.get("input_fingerprint") or _cause_input_fingerprint(saved.get("input") or source))
+                   if cause_input_matches(saved, source) else _cause_input_fingerprint(source))
     records_state = dict(state.get("error_records") or {})
     envelope = records_state.get(source["question_id"]) or {}
     if envelope.get("input_fingerprint") == fingerprint and isinstance(envelope.get("records"), list):
@@ -895,10 +919,7 @@ def run_cause_analysis(
         old = ((state.get("cause_analysis") or {}).get("questions")) or {}
         saved = old.get(source["question_id"]) or {}
         fingerprint = _cause_input_fingerprint(source)
-        saved_fp = saved.get("input_fingerprint") or (
-            _cause_input_fingerprint(saved["input"]) if isinstance(saved.get("input"), dict) else ""
-        )
-        if saved.get("version") == CAUSE_ANALYSIS_VERSION and saved_fp == fingerprint and saved.get("result"):
+        if saved.get("version") == CAUSE_ANALYSIS_VERSION and cause_input_matches(saved, source) and saved.get("result"):
             _ensure_error_records(store, session_id, state, source, saved, data)
             continue
         if (not retry_failed and saved.get("failed")
@@ -965,7 +986,7 @@ def run_cause_analysis(
     # P5：整理产出自动回挂题库；回挂失败只记日志，不影响本场整理结果。
     try:
         written = sync_session_patterns_to_bank(
-            store, session_id, question_bank_path, bank_context)
+            store, session_id, question_bank_path, bank_context, current_sources=sources)
     except Exception:
         LOGGER.warning("sync session %s patterns to bank failed", session_id, exc_info=True)
         written = 0
@@ -979,7 +1000,15 @@ def student_error_map(
 ) -> dict[str, list[dict[str, Any]]]:
     """{question_id: [错因记录]}：输入指纹与证据哈希都一致才返回，过期题不展示。"""
     envelopes = (state or {}).get("error_records") or {}
-    fingerprints = {source["question_id"]: _cause_input_fingerprint(source) for source in sources}
+    saved_questions = ((state or {}).get("cause_analysis") or {}).get("questions") or {}
+    fingerprints = {
+        source["question_id"]: (
+            (saved_questions[source["question_id"]].get("input_fingerprint")
+             or _cause_input_fingerprint(saved_questions[source["question_id"]]["input"]))
+            if cause_input_matches(saved_questions.get(source["question_id"]) or {}, source)
+            else _cause_input_fingerprint(source)
+        ) for source in sources
+    }
     out: dict[str, list[dict[str, Any]]] = {}
     for record in student.records:
         if not record.lost:
@@ -997,17 +1026,17 @@ def student_error_map(
     return out
 
 
-def collect_student_error_index(store: Any, session_ids: Iterable[int]) -> dict[int, dict[str, dict[str, set[int]]]]:
+def collect_student_error_index(store: Any, session_ids: Iterable[int], *, db: Any,
+                                data_root: Path | None = None) -> dict[int, dict[str, dict[str, set[int]]]]:
     """跨场次历史错因索引：{student_id: {"categories": {大类: {场次id}}, "patterns": {错法名: {场次id}}}}。
 
-    历史场次的证据无法重新校验，按已物化记录原样汇总；只用于报告里的
-    「以前也犯过同类错误」提示。
+    历史场次同样校验当前答卷，避免更正后的旧错因继续进入报告。
     """
     index: dict[int, dict[str, dict[str, set[int]]]] = {}
     for sid in session_ids:
-        envelopes = ((store.load(sid) or {}).get("error_records")) or {}
-        for envelope in envelopes.values():
-            for row in envelope.get("records") or []:
+        students = session_error_records(db, sid, store.state_dir.parent, data_root=data_root)
+        for questions in students.values():
+            for row in (row for rows in questions.values() for row in rows):
                 student_id = row.get("student_id")
                 if not isinstance(student_id, int):
                     continue

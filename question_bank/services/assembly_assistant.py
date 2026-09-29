@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from statistics import median
 from typing import Any, Mapping, Sequence
 
@@ -9,15 +10,18 @@ from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 from question_bank.recommendation.personalized import (
-    PersonalizedRecommendationModule, PersonalizedRecommendationConfig, _paper_diversity_allowed,
+    PersonalizedRecommendationModule, PersonalizedRecommendationConfig, _paper_similarity_allowed, resolve_practice_scope,
+    _repeated_consolidation_only,
 )
 
 def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id: str,
-                    resolver: Any = None) -> list[dict[str, Any]]:
+                    resolver: Any = None, scope_keys: Sequence[str] = ()) -> list[dict[str, Any]]:
     volume = curriculum_volume(volume_id=volume_id)
     if volume is None:
         raise ValueError("Unknown teaching term")
     chapters = [chapter for chapter in volume["chapters"] if not chapter_id or chapter["id"] == chapter_id]
+    if scope_keys:
+        chapters = [chapter for chapter in chapters if chapter['knowledge_id'] in scope_keys]
     if not chapters:
         raise ValueError("Chapter is outside teaching term")
     allowed = {point["id"] for chapter in chapters for section in chapter["sections"] for point in section["knowledge_points"]}
@@ -76,11 +80,20 @@ def shortlist_candidates(
     question_type: str, difficulty_min: float, difficulty_max: float,
     excluded_question_ids: set[int], limit: int | None = None,
     cache_scope: object = None, recommendations: PersonalizedRecommendationModule | None = None,
+    teaching_progress_chapter_id: str = '',
 ) -> dict[str, Any]:
     module = recommendations or PersonalizedRecommendationModule(db_path=read_service.db_path,
         data_root=read_service.data_root or read_service.db_path.parent.parent)
     resolver = module.current_knowledge
-    weaknesses = class_weaknesses(diagnosis, volume_id=volume_id, chapter_id=chapter_id, resolver=resolver)
+    volume = curriculum_volume(volume_id=volume_id)
+    if volume is None or (chapter_id and not any(c['id'] == chapter_id for c in volume['chapters'])):
+        raise ValueError('Chapter is outside teaching term')
+    scope = tuple(c['knowledge_id'] for c in volume['chapters'] if c['id'] == chapter_id)
+    config = resolve_practice_scope(PersonalizedRecommendationConfig(scope_keys=scope,
+        curriculum_volume_id=volume_id, difficulty_max=min(8., float(difficulty_max)),
+        teaching_progress_chapter_id=teaching_progress_chapter_id), diagnosis, resolver)
+    weaknesses = class_weaknesses(diagnosis, volume_id=volume_id, chapter_id=chapter_id,
+                                 resolver=resolver, scope_keys=config.scope_keys)
     by_key = {item["knowledge_key"]: item for item in weaknesses}
     selected = list(dict.fromkeys(target_keys)) if target_keys is not None else [item["knowledge_key"] for item in weaknesses[:1]]
     if any(key not in by_key for key in selected):
@@ -94,10 +107,7 @@ def shortlist_candidates(
         "weaknesses": weaknesses, "selected_target_keys": selected, "candidate_total": 0, "candidates": []}
     if not selected or not students:
         return output
-    volume = curriculum_volume(volume_id=volume_id)
-    scope = tuple(chapter["knowledge_id"] for chapter in volume["chapters"] if not chapter_id or chapter["id"] == chapter_id)
-    config = PersonalizedRecommendationConfig(paper_mode="shared", target_keys=tuple(selected), scope_keys=scope,
-                                             curriculum_volume_id=volume_id, difficulty_max=min(8., float(difficulty_max)))
+    config = replace(config, paper_mode='shared', target_keys=tuple(selected))
     evaluated = module.evaluate_candidates(diagnosis=diagnosis, config=config, excluded=excluded_question_ids)
     groups = defaultdict(list)
     for entries in evaluated["pools"].values():
@@ -125,13 +135,14 @@ def shortlist_candidates(
             "uncertain_student_count": sum(e["evidence_confidence"] != "repeated" for e in members.values()),
             "difficulty_basis": best["difficulty_basis"], "similar_question_ids": [],
             "direct_target_keys": sorted({e["key"] for e in group if e["selection_kind"] == "direct"})})
-    candidates.sort(key=lambda item: (-item["remediation_student_count"], -item["suitable_student_count"], item["match_level"], item["question_id"]))
+    candidates.sort(key=lambda item: (-item["remediation_student_count"], _repeated_consolidation_only(groups[item["question_id"]]),
+                                     -item["suitable_student_count"], item["match_level"], item["question_id"]))
     # Fold only genuine similarity using the same comparator. Written count is
     # a selected-paper rule, so comparing two candidates never imposes a quota.
     descriptors = {q["question_id"]: q for q in evaluated["candidates"]}
     folded = []
     for item in candidates:
-        representative = next((other for other in folded if not _paper_diversity_allowed(descriptors[item["question_id"]], [descriptors[other["question_id"]]])), None)
+        representative = next((other for other in folded if not _paper_similarity_allowed(descriptors[item["question_id"]], [descriptors[other["question_id"]]])), None)
         if representative:
             representative["similar_question_ids"].append(item["question_id"])
         else:

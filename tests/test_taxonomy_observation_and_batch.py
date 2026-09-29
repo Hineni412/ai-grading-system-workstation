@@ -61,6 +61,22 @@ def _proposal(
     return result["proposals"][0], int(result["taxonomy_revision"])
 
 
+def test_previous_standard_proposal_stays_in_history_but_not_current_queue(tmp_path):
+    governance = _governance(tmp_path)
+    proposal, revision = _proposal(governance, question_id=41, name="历史例外术语甲", token="8"*32)
+    governance.allocate_observation_sequences(generation_id="old-standard", question_ids=["41"])
+    governance.record_successful_observation(question_id="41", generation_id="old-standard",
+        proposal_ids=[proposal["id"]], taxonomy_revision=revision, graph_release_id="kgr_retired_synthetic")
+    assert governance.get_proposal(proposal["id"])["status"] == "pending"
+    assert governance.pending_proposal_reference_summary()["question_refs_by_proposal"][proposal["id"]] == []
+    assert governance.list_proposals(status="pending")["items"][0]["active_question_refs"] == []
+    current = governance.observation_snapshot()["graph_release_id"]
+    governance.allocate_observation_sequences(generation_id="current-standard", question_ids=["41"])
+    governance.record_successful_observation(question_id="41", generation_id="current-standard",
+        proposal_ids=[proposal["id"]], taxonomy_revision=revision, graph_release_id=current)
+    assert governance.pending_proposal_reference_summary()["question_refs_by_proposal"][proposal["id"]] == [41]
+
+
 def test_exact_batch_advances_once_is_idempotent_and_undo_keeps_preexisting_tag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

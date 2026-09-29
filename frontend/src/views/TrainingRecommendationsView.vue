@@ -21,7 +21,7 @@ import TrainingKnowledgeStructure from '../components/knowledge-training/Trainin
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
-import { loadPaperSelectionSession, savePaperSelectionSession, type AdoptedChapterGroup, type ChapterGroupEditor, type ChapterGroupSort } from '../features/training/paper-selection-session'
+import { loadPaperSelectionSession, savePaperSelectionSession, resolvePaperScope, type AdoptedChapterGroup, type ChapterGroupEditor, type ChapterGroupSort } from '../features/training/paper-selection-session'
 import { useSessionStore } from '../stores/session'
 import '../styles/training-recommendations.css'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
@@ -45,6 +45,9 @@ const selectedTargetKeys = ref<string[]>(savedPaperSelection?.targetKeys ?? [])
 const selectedRangeKeys = ref<string[]>(savedPaperSelection?.rangeKeys ?? [])
 const questionCount = ref(savedPaperSelection?.questionCount ?? 10)
 const teachingProgressChapterId = ref(savedPaperSelection?.teachingProgressChapterId ?? '')
+const scopeMode = ref<'comprehensive' | 'focused'>(savedPaperSelection?.scopeMode ?? 'comprehensive')
+const individualScope = computed(() => resolvePaperScope(curriculumScope.selectedVolume, training.diagnosis,
+  selectedRangeKeys.value, teachingProgressChapterId.value, scopeMode.value))
 const difficultyMax = ref(savedPaperSelection?.difficultyMax ?? 8)
 const progressChapters = computed(() => (curriculumScope.selectedVolume ? [curriculumScope.selectedVolume] : curriculumScope.volumes)
   .flatMap(volume => volume.chapters.map(chapter => ({ id: chapter.id, label: `${volume.label} · ${chapter.label}` }))))
@@ -83,7 +86,7 @@ const pageCopy = computed(() => ({
   },
   student: {
     title: '按学生训练',
-    description: '用顶部筛选确定学生群体，勾选章或小节作为训练范围；生成一人一卷时按每名学生的实际失分匹配知识与技能。',
+    description: '选择学生并确认已学进度，默认综合训练覆盖已学章节；需要集中练某章或小节时，切换专项训练。',
   },
   paper: {
     title: '生成试卷',
@@ -144,7 +147,7 @@ const sharedSettingsValid = computed(() => (
 ))
 const individualSettingsValid = computed(() => (
   Boolean(training.diagnosis)
-  && selectedRangeKeys.value.length > 0
+  && individualScope.value.keys.length > 0
   && paperNumericSettingsValid.value
 ))
 const paperSettingsValid = computed(() => (
@@ -361,6 +364,7 @@ watch(
     questionCount,
     difficultyMax,
     teachingProgressChapterId,
+    scopeMode,
     excludeCurrentOriginals,
     paperMode,
     chapterKey, sectionKey, chapterScope, groupSort, groupEditor, adoptedGroup, arrangements,
@@ -372,6 +376,7 @@ watch(
       questionCount: questionCount.value,
       difficultyMax: difficultyMax.value,
       teachingProgressChapterId: teachingProgressChapterId.value,
+      scopeMode: scopeMode.value,
       excludeCurrentOriginals: excludeCurrentOriginals.value,
       paperMode: paperMode.value,
       chapterKey: chapterKey.value, sectionKey: sectionKey.value, chapterScope: chapterScope.value,
@@ -503,7 +508,7 @@ onBeforeUnmount(() => studentsController?.abort())
           selection-kind="range"
           :diagnosis="training.diagnosis"
           title="所选学生的知识与技能关联"
-          description="勾选章或小节作为训练范围，点击知识主题或技能查看关联；一人一卷时按每名学生的实际失分自动配题。"
+          description="综合训练覆盖已学章节；勾选的章或小节仅在切换专项训练后限定选题范围。点击知识主题或技能可查看关联。"
           @focus="() => undefined"
         />
         <div v-else-if="training.analysisState === 'empty'" class="status-card empty-state">
@@ -537,7 +542,9 @@ onBeforeUnmount(() => studentsController?.abort())
           v-if="trainingMode === 'student' && training.analysisState !== 'empty'"
           mode="individual"
           :student-count="selectedStudentCount"
-          :selection-text="`${selectedRangeKeys.length} 个范围`"
+          :selection-text="individualScope.label"
+          :scope-summary="individualScope.label"
+          v-model:scope-mode="scopeMode"
           :valid="individualSettingsValid"
           :generating="draftRequestState === 'loading'"
           v-model:question-count="questionCount"
@@ -579,11 +586,11 @@ onBeforeUnmount(() => studentsController?.abort())
               <span v-if="paperMode === 'shared'">供 <b>{{ paperStudentCount }}</b> 名学生共同练习</span>
               <span v-else><b>{{ paperStudentCount }}</b> 名学生</span>
               <span v-if="paperMode === 'shared'"><b>{{ selectedTargetKeys.length }}</b> 项细点</span>
-              <span v-else><b>{{ selectedRangeKeys.length }}</b> 个范围</span>
+              <span v-else>{{ individualScope.label }}</span>
               <span>每卷 <b>{{ questionCount }}</b> 题</span>
               <span>难度上限 <b>{{ difficultyMax }}</b> 级</span>
-              <span>已学到 {{ progressChapters.find(chapter => chapter.id === teachingProgressChapterId)?.label ?? '所选目标最晚章节' }}</span>
-              <span v-if="excludeCurrentOriginals">排除本次考试原题</span>
+              <span>已学到 {{ progressChapters.find(chapter => chapter.id === (paperMode === 'individual' ? individualScope.progressId : teachingProgressChapterId))?.label ?? '所选目标最晚章节' }}</span>
+              <span>排除最近3次已批改活动原题</span>
               <RouterLink class="paper-review-bar__back" :to="paperBackTarget">{{ paperBackLabel }}</RouterLink>
               <AppButton
                 v-if="workflowStage === 'diagnosis'"
@@ -598,7 +605,7 @@ onBeforeUnmount(() => studentsController?.abort())
             <p v-if="workflowStage === 'diagnosis' && !paperSettingsValid" class="paper-review-hint">
               {{ paperMode === 'shared'
                 ? '多人同一套卷：请回到“按章节训练”勾选至少一个细知识点并完成出卷设置。'
-                : '一人一卷：请回到“按学生训练”勾选至少一个章/节范围并完成出卷设置。' }}
+                : '一人一卷：请回到“按学生训练”确认已学进度，或选择专项范围并完成出卷设置。' }}
             </p>
 
             <PersonalizedRecommendationDraft
@@ -609,12 +616,12 @@ onBeforeUnmount(() => studentsController?.abort())
               :exam-scope="personalizedExamScope"
               :question-count="questionCount"
               :difficulty-max="difficultyMax"
-              :teaching-progress-chapter-id="teachingProgressChapterId"
+              :teaching-progress-chapter-id="paperMode === 'individual' ? individualScope.progressId : teachingProgressChapterId"
 
               :exclude-current-exam-originals="excludeCurrentOriginals"
               :paper-mode="paperMode"
-              :target-keys="selectedTargetKeys"
-              :scope-keys="paperMode === 'shared' ? [] : selectedRangeKeys"
+              :target-keys="paperMode === 'shared' ? selectedTargetKeys : []"
+              :scope-keys="paperMode === 'shared' ? [] : individualScope.keys"
               :group-scope-keys="paperMode === 'shared' ? adoptedGroup?.scopeKeys : undefined"
               :group-source-version="paperMode === 'shared' ? adoptedGroup?.sourceVersion : undefined"
               :curriculum-volume-id="curriculumScope.selectedVolumeId"

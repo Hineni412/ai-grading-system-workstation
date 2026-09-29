@@ -153,11 +153,25 @@ def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
+    paths.taxonomy_state_path = tmp_path / "account-config" / "taxonomy_state_v2.json"
+    paths.taxonomy_state_path.parent.mkdir()
+    paths.taxonomy_state_path.write_text('{"decision":"old"}', encoding="utf-8")
+    (paths.taxonomy_state_path.parent / "api_profiles.json").write_text('secret', encoding="utf-8")
+    from update_tools.backup_core import preview_backup
+    from backend.ops.jobs import _backup_entries
+    preview = preview_backup(path_manager=paths)
+    assert "config/taxonomy-governance/state.json" in preview["files"]
+    assert not any("api_profiles" in name for name in preview["files"])
+    staging = tmp_path / "backup-staging"
+    staging.mkdir()
+    entries = _backup_entries(paths, staging, scopes=["grading"])
+    assert any(entry.arc_name == "config/taxonomy-governance/state.json" for entry in entries)
     journal = _prepare_restore(
         paths,
         {
             "user_data/config/keep.txt": b"restored",
             "user_data/config/new.txt": b"new",
+            "config/taxonomy-governance/state.json": b'{"decision":"restored"}',
         },
     )
     (paths.config_dir / "keep.txt").write_text("latest", encoding="utf-8")
@@ -167,6 +181,8 @@ def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
 
     assert (paths.config_dir / "keep.txt").read_text(encoding="utf-8") == "restored"
     assert (paths.config_dir / "new.txt").read_text(encoding="utf-8") == "new"
+    assert paths.taxonomy_state_path.read_text(encoding="utf-8") == '{"decision":"restored"}'
+    assert (paths.taxonomy_state_path.parent / "api_profiles.json").read_text() == "secret"
     assert (paths.config_dir / "unlisted.txt").read_text(
         encoding="utf-8"
     ) == "preserved"

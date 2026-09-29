@@ -124,7 +124,7 @@ const canDiscardDraft = computed(() => (
 // 出卷设置指纹：设置一致时才恢复上次草稿，设置变了必须重新生成。
 // rulesVersion 随选题规则升级递增，避免恢复规则升级前的旧草稿。
 const settingsFingerprint = computed(() => JSON.stringify({
-  rulesVersion: 8,
+  rulesVersion: 10,
   scope: props.scope,
   examScope: props.examScope,
   questionCount: props.questionCount,
@@ -154,9 +154,9 @@ async function restoreDraft(): Promise<void> {
   if (stored.fingerprint !== settingsFingerprint.value) {
     try {
       const previous = JSON.parse(stored.fingerprint)
-      previousRules = Number(previous.rulesVersion) < 8
+      previousRules = Number(previous.rulesVersion) < 10
       if (!previousRules) return
-      previous.rulesVersion = 8
+      previous.rulesVersion = 10
       for (const key of ['trainingIntent', 'expectedMinutes', 'difficultyMin', 'stageRatios']) delete previous[key]
       previous.teachingProgressChapterId ??= ''
       previous.difficultyMax = difficultyMax.value
@@ -729,7 +729,7 @@ async function editItem(
         难度上限
         <input v-model.number="difficultyMax" type="number" min="1" max="8">
       </label>
-      <p>依据同技能多次作答匹配难度；允许巩固与新练习，每份训练最多2道解答题，最高8级。</p>
+      <p>依据同技能多次作答匹配难度；允许巩固与新练习，每份训练同技能最多1道、解答题最多2道，最高8级。</p>
     </div>
 
     <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets">
@@ -919,7 +919,7 @@ async function editItem(
                   {{ item.relation.rationale }}
                 </small>
                 <small class="personalized-match__reason">
-                  {{ item.reason }}
+                  推荐理由：{{ item.reason }}
                 </small>
                 <div v-if="paperMode !== 'shared'" class="personalized-item-actions">
                   <button
@@ -977,7 +977,7 @@ async function editItem(
             <div class="personalized-item-main">
               <span>第 {{ item.item_order }} 题 · {{ itemLabel(item) }}</span>
               <strong>{{ item.matched_name }}</strong>
-              <p>{{ item.reason }}</p>
+              <p>推荐理由：{{ item.reason }}</p>
               <small>
                 原卷第 {{ item.question_number }} 题 ·
                 {{ item.part_assessment ? '最难小问' : '整题难度' }} {{ item.difficulty }} ·

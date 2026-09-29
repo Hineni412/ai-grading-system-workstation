@@ -48,6 +48,12 @@
 
 普通备份由 `update_tools/backup_core.py` 实现，范围为 grading（阅卷及题库），不包含已独立的班主任工作区；排除模型密钥、诊断日志及 SQLite 临时文件。完整安装包包含数据与密钥，不能当作普通备份分发，见 `docs/maintenance/packaging.md`。单条数据删除不会追溯删除已有备份副本。
 
+词表状态虽可位于账户配置目录，普通备份仍明确包含状态主文件、其 `.bak`、审核回执及建议记录，归档成员固定为 `config/taxonomy-governance/` 下的四个文件。离线恢复与恢复前安全备份均把这些成员映射到本机 `taxonomy_state_path` 及配套文件；不复制相邻的模型密钥。旧备份没有这些成员时不改变现有词表状态。
+
+`tools/maintain_question_bank.py` 统一题库定期维护。`errors --sessions 3 4 5` 在副本上预演既有考试错因回挂，只接纳与当前证据匹配的成果，重复执行不重复记录；`standard --release <发布文件>` 预演标准变化和受影响题目。标准修订的 `--links <关联文件>` 是数组，每项含 `question_id`、`evidence_version_id` 和完整 `points`；各点含 `part_id`、`evidence_point_id`、`links`，每个链接含 `term_id`、`stable_key`、`role` 和可选 `weight`。必须覆盖全部受影响题及其当前判定点，未变化题不能夹带进来；生成或人工整理这些关联仍沿用既有版本工具。
+
+上述工具默认只读取真实数据库，在临时副本上预演，不调用模型。正式执行需先关闭应用并取得本次批量操作授权，添加 `--apply` 后先在 `user_data/backups/question_maintenance_<时间>/question_bank_before.db` 创建题库快照，再执行、检查数据库完整性和引用。考试库、原答卷、分数及场次分析文件不改写。标准先准备候选关联再启用；执行中断时保留快照及已完成记录，错因回挂可幂等续跑，标准失败需先核对活动版本和候选记录再重试；恢复覆盖快照按 `AGENTS.md` 另行授权。既有一次性脚本不自动归档或删除。
+
 以下工具会读取真实数据：只读审计和预览自动允许；向 `user_data` 写入结果、应用硬链接或归档等改变真实数据状态的操作仍按 `AGENTS.md` 授权；预览不等于批准应用。
 
 | 工具与参数 | 作用 |

@@ -266,6 +266,36 @@ afterEach(() => {
 })
 
 describe('training recommendations view', () => {
+  it.each(['comprehensive', 'focused'] as const)('sends learned chapters for %s and keeps the chosen range on return', async (scopeMode) => {
+    const pinia = createPinia()
+    const volumeId = 'bnu24-math-g8-upper'
+    const chapterKeys = ['kp_bnu24_math_g8_upper_1', 'kp_bnu24_math_g8_upper_2']
+    trainingApiMock.diagnose.mockResolvedValue({ ...diagnosis, knowledge_catalog: [
+      ...diagnosis.knowledge_catalog, ...chapterKeys.map(key => ({ knowledge_key: key, knowledge_point: key })),
+    ] })
+    useCurriculumScopeStore(pinia).volumes = [{ id: volumeId, order: 3, label: '八上', grade: '八年级',
+      semester: '上学期', textbook_version: '北师大版', source: {}, statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 },
+      chapters: chapterKeys.map((key, i) => ({ id: `${volumeId}-c0${i + 1}`, knowledge_id: key, order: i + 1,
+        number: String(i + 1), title: i ? '实数' : '勾股定理', label: i ? '第二章 实数' : '第一章 勾股定理',
+        kind: 'chapter', display_name: key, source_ref: { node_id: '', relative_url: '' }, exam_scope_values: [], sections: [] })) }]
+    savePaperSelectionSession({ scopeMode, targetKeys: [], rangeKeys: [chapterKeys[1]!], questionCount: 10,
+      difficultyMax: 8, teachingProgressChapterId: `${volumeId}-c02`, excludeCurrentOriginals: true, paperMode: 'individual' })
+    const view = await mountView('/training?mode=student', pinia)
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="go-paper"]')).not.toBeNull())
+    expect((view.host.querySelector('[aria-label="训练范围模式"]') as HTMLSelectElement).value).toBe(scopeMode)
+    view.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
+    await vi.waitFor(() => expect(view.router.currentRoute.value.query.mode).toBe('paper'))
+    view.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce())
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({
+      scope_keys: scopeMode === 'comprehensive' ? chapterKeys : [chapterKeys[1]], target_keys: [],
+      teaching_progress_chapter_id: `${volumeId}-c02`,
+    }))
+    await view.router.push('/training?mode=student')
+    await settle()
+    expect((view.host.querySelector('[aria-label="训练范围模式"]') as HTMLSelectElement).value).toBe(scopeMode)
+  })
+
   it('sends the student score floor in diagnosis and restores it after leaving and returning', async () => {
     const first = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledOnce())

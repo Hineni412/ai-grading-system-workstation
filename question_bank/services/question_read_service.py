@@ -77,6 +77,12 @@ EXISTS (
     JOIN training_criterion_versions version
       ON version.version_id = head.current_version_id
     WHERE head.question_id = {qid}
+      AND NOT EXISTS (
+          SELECT 1 FROM training_criterion_versions approved
+          WHERE approved.version_id = head.approved_version_id
+            AND approved.status = 'approved'
+            AND approved.source_content_hash = head.current_source_hash
+      )
       AND (
             version.status IN ('rejected', 'stale')
             OR (
@@ -1099,6 +1105,49 @@ class QuestionBankReadService:
         if isinstance(active.current_knowledge, CurrentKnowledgeResolver):
             return active.current_knowledge
         return None
+
+    def standard_summary(self) -> dict[str, Any]:
+        """Maintenance metadata, using the same current evidence and links as training."""
+        from question_bank.solution_evidence.part_assessments import load_profiles
+        from question_bank.solution_evidence.knowledge_links import load_point_links
+
+        with _read_connection(self.db_path) as conn:
+            versions = [dict(row) for row in conn.execute(
+                "SELECT release_id, taxonomy_revision, status, activated_at, created_at "
+                "FROM knowledge_graph_releases ORDER BY created_at DESC, release_id DESC"
+            )]
+            active = next((row for row in versions if row["status"] == "active"), None)
+            ids = [int(row[0]) for row in conn.execute("SELECT id FROM questions WHERE is_deleted=0")]
+            profiles = load_profiles(self.db_path, ids, connection=conn, data_root=self.data_root)
+            usable = {qid: profile for qid, profile in profiles.items() if profile.get("available")}
+            links = load_point_links(self.db_path,
+                [profile["evidence_version_id"] for profile in usable.values()],
+                active["release_id"] if active else None, connection=conn)
+            skill_ids, coarse_ids, missing_ids, older_ids = set(), set(), set(), set()
+            for qid, profile in usable.items():
+                point_links = links.get(profile["evidence_version_id"], {})
+                for part in profile["evidence"].get("parts", []):
+                    for point in part.get("evidence_points", []):
+                        rows = [row for row in point_links.get(point["evidence_point_id"], ()) if row.role == "direct"]
+                        resolved = [row for row in rows if row.resolution_status == "resolved" and row.stable_key]
+                        if not resolved:
+                            missing_ids.add(qid)
+                        elif any(row.stable_key.startswith("sk_") for row in resolved):
+                            skill_ids.add(qid)
+                        else:
+                            coarse_ids.add(qid)
+                        if active and any(row.graph_release_id != active["release_id"] for row in rows):
+                            older_ids.add(qid)
+            return {
+                "active_release_id": active["release_id"] if active else None,
+                "taxonomy_revision": active["taxonomy_revision"] if active else None,
+                "versions": versions, "question_count": len(ids),
+                "usable_question_count": len(usable), "skill_question_count": len(skill_ids),
+                "section_only_question_count": len(coarse_ids),
+                "missing_link_question_count": len(missing_ids),
+                "older_link_question_count": len(older_ids),
+                "model_calls": 0,
+            }
 
     def list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
         generation = (
@@ -3440,18 +3489,9 @@ def _load_criteria_needs_review_ids(
     placeholders = ", ".join("?" for _ in clean_ids)
     rows = conn.execute(
         f"""
-        SELECT head.question_id
-        FROM training_criterion_heads head
-        JOIN training_criterion_versions version
-          ON version.version_id = head.current_version_id
-        WHERE head.question_id IN ({placeholders})
-          AND (
-                version.status IN ('rejected', 'stale')
-                OR (
-                    version.status = 'proposed'
-                    AND COALESCE(version.quality_status, '') <> 'passed'
-                )
-          )
+        SELECT q.id AS question_id FROM questions q
+        WHERE q.id IN ({placeholders})
+          AND {_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id")}
         """,
         clean_ids,
     ).fetchall()

@@ -458,6 +458,9 @@ class OpsWriteService:
         return path
 
     def _path_for_backup_name(self, name: str) -> Path:
+        from update_tools.backup_core import taxonomy_backup_target
+        if target := taxonomy_backup_target(self.paths, name):
+            return target
         parts = Path(name).parts
         if parts[0] == "user_data":
             return Path(self.paths.data_root).joinpath(*parts[1:])

@@ -29,6 +29,12 @@ const candidates = computed(() => (assistant.result?.candidates ?? []).slice(0, 
   return question ? [{ question, fitCount: item.suitable_student_count, remediationCount: item.remediation_student_count, consolidationCount: item.consolidation_student_count, newCount: item.new_practice_student_count, uncertainCount: item.uncertain_student_count, difficultyBasis: item.difficulty_basis, matchLabel: item.selection_kind === 'task_matched' ? item.match_label : item.match_level ? `${item.match_level}级 · ${item.match_label}` : '', practiceKind: item.practice_kind ?? 'focus', band: item.difficulty_band ?? 'unknown', similarIds: item.similar_question_ids ?? [], targets: item.target_keys.flatMap(key => weaknesses.value.get(key) ?? []) }] : []
 }))
 const busy = computed(() => assistant.state === 'loading' || assistant.waiting)
+const rangeChoice = computed(() => assistant.filters.chapter_id ? `focused:${assistant.filters.chapter_id}`
+  : assistant.filters.teaching_progress_chapter_id ? `through:${assistant.filters.teaching_progress_chapter_id}` : '')
+function changeRange(value: string): void {
+  const [mode, id = ''] = value.split(':')
+  assistant.changeScope({ chapter_id: mode === 'focused' ? id : '', teaching_progress_chapter_id: mode === 'through' ? id : '' })
+}
 const BAND_LABELS: Record<string, string> = { suitable: '难度合适', lower: '难度较低', higher: '难度较高' }
 
 async function moveSelection(delta: number): Promise<void> {
@@ -69,7 +75,7 @@ async function loadClasses(): Promise<void> {
   } catch { rosterState.value = 'error' }
 }
 watch(() => curriculum.selectedVolumeId, volume => {
-  if (assistant.filters.curriculum_volume_id !== (volume ?? '')) assistant.changeScope({ curriculum_volume_id: volume ?? '', chapter_id: '' })
+  if (assistant.filters.curriculum_volume_id !== (volume ?? '')) assistant.changeScope({ curriculum_volume_id: volume ?? '', chapter_id: '', teaching_progress_chapter_id: '' })
 }, { immediate: true })
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
@@ -89,11 +95,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
     <form class="assistant-filters" @submit.prevent="assistant.search()">
       <label>练习班级<select :value="assistant.filters.class_id" :disabled="rosterState !== 'ready'" @change="assistant.changeScope({ class_id: ($event.target as HTMLSelectElement).value })"><option value="">请选择班级</option><option v-for="name in classes" :key="name" :value="name">{{ name }}</option></select></label>
-      <label class="assistant-chapter">考察范围<select :value="assistant.filters.chapter_id" :disabled="!curriculum.selectedVolume" @change="assistant.changeScope({ chapter_id: ($event.target as HTMLSelectElement).value })"><option value="">{{ curriculum.selectedVolume?.label ?? '请先在顶部选择教学学期' }} · 全部章节</option><option v-for="chapter in curriculum.selectedVolume?.chapters ?? []" :key="chapter.id" :value="chapter.id">{{ chapter.label }}</option></select></label>
+      <label class="assistant-chapter">训练范围<select :value="rangeChoice" :disabled="!curriculum.selectedVolume" @change="changeRange(($event.target as HTMLSelectElement).value)"><option value="">综合训练 · 按已有作答涉及的最晚章节</option><optgroup label="综合训练 · 已学到"><option v-for="chapter in curriculum.selectedVolume?.chapters ?? []" :key="chapter.id" :value="`through:${chapter.id}`">本册开头至{{ chapter.label }}</option></optgroup><optgroup label="专项训练"><option v-for="chapter in curriculum.selectedVolume?.chapters ?? []" :key="chapter.id" :value="`focused:${chapter.id}`">仅{{ chapter.label }}</option></optgroup></select></label>
       <label>题型<select v-model="assistant.filters.question_type"><option value="">全部题型</option><option>选择题</option><option>多选题</option><option>填空题</option><option>解答题</option></select></label>
       <DifficultyRangeFilter v-model:min="assistant.filters.difficulty_min" v-model:max="assistant.filters.difficulty_max" class="assistant-difficulty" :ceiling="8" compact @change="assistant.scheduleSearch()" />
       <button class="assembly-button is-primary" type="submit" :disabled="!assistant.canSearch || rosterState !== 'ready'">{{ busy ? '正在筛选…' : assistant.result ? '刷新学情与题库' : '查看班级知识与技能' }}</button>
-      <div class="assistant-exclusions"><span>训练与考试合并，排除每名学生最近3次已有批改结果的原题；解答题最多2道，相似题受限。</span></div>
+      <div class="assistant-exclusions"><span>训练与考试合并，排除每名学生最近3次已有批改结果的原题；同技能最多1道、解答题最多2道，相似题受限。</span></div>
     </form>
     <p v-if="rosterState === 'error'" class="assistant-notice" role="alert">班级列表暂时无法读取。<button type="button" class="assembly-link" @click="loadClasses">重新读取</button></p>
     <p v-if="assembly.loadState === 'error'" class="assistant-notice" role="alert">{{ assembly.message }} <button type="button" class="assembly-link" @click="assembly.load()">重新读取试卷篮</button></p>

@@ -12,6 +12,7 @@ from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig, PersonalizedRecommendationModule,
     _difficulty_plan, _choose_practice_entries, _common_entries, _direct_preference,
     _valid_difficulty_features, _group_similarity,
+    _paper_diversity_allowed,
 )
 from question_bank.services.assembly_assistant import shortlist_candidates
 from question_bank.services.question_read_service import QuestionBankReadService
@@ -24,6 +25,61 @@ def observation(index, difficulty, score, **assessment):
     return {"session_id": index, "question_id": "Q1", "full_score": 5, "score_awarded": score,
             "assessment": {"eligible": True, "evidence_weight": 1, "granularity": "part",
                            "part_id": "p1", "part_difficulty": difficulty, **assessment}}
+
+
+def test_repeated_success_counts_deduplicate_and_ignore_ineligible_evidence():
+    refs = [observation(1, 3, 5), observation(1, 3, 5), observation(2, 3, 5),
+            observation(3, 3, 0, eligible=False)]
+    plan = _difficulty_plan({}, .5, 8, {'source_question_refs': refs})
+    assert (plan['evidence_count'], plan['correct_count']) == (2, 2)
+    refs.append(observation(4, 3, 4))
+    plan = _difficulty_plan({}, .5, 8, {'source_question_refs': refs})
+    assert (plan['evidence_count'], plan['correct_count']) == (3, 2)
+
+
+@pytest.mark.parametrize('members', [('A',), ('A', 'B')])
+def test_repeated_consolidation_is_lower_but_remains_available(members):
+    def entry(qid, sid, purpose, scores):
+        target = {'display_name': f'技能·合成技能{qid}', 'difficulty_plan': _difficulty_plan(
+            {}, .5, 8, {'source_question_refs': [observation(n, 3, score) for n, score in enumerate(scores)]})}
+        return {'candidate': {'question_id': qid, 'stable_keys': [f'sk_{qid}'], 'question_type': '选择题'},
+                'student_id': sid, 'key': f'sk_{qid}', 'matched_key': f'sk_{qid}', 'selection_kind': 'direct',
+                'target': target, 'practice_purpose': purpose, 'match_level': 1, 'distance': 0, 'preference': 0}
+    entries = [entry(q, sid, purpose, scores) for sid in members for q, purpose, scores in (
+        (1, 'consolidation', [5, 5]), (2, 'new', []), (3, 'consolidation', [5]))]
+    chosen = _choose_practice_entries(_common_entries(entries, members), 3)
+    assert [e['candidate']['question_id'] for e, _ in chosen] == [2, 3, 1]
+    # Another skill on the same question still needs remediation.
+    loss = entry(1, members[0], 'remediation', [0, 5])
+    loss['key'] = loss['matched_key'] = 'sk_other'
+    entries.append(loss)
+    assert _choose_practice_entries(_common_entries(entries, members), 1)[0][0]['candidate']['question_id'] == 1
+
+
+def test_reason_includes_each_matched_need_without_duplicate_evidence():
+    from question_bank.recommendation.personalized import _practice_reason_summary, _member_entries
+    entries = []
+    for key, purpose, scores in [('sk_a', 'consolidation', [5, 5]), ('sk_b', 'remediation', [0, 5]), ('sk_c', 'new', [])]:
+        entries.append({'student_id': 'A', 'key': key, 'matched_key': key, 'selection_kind': 'direct',
+                        'candidate': {'stable_names': {key: '章节｜技能·'+key}}, 'distance': 0, 'match_level': 1,
+                        'target': {'stable_key': key, 'difficulty_plan': _difficulty_plan({}, .5, 8,
+                            {'source_question_refs': [observation(n, 3, score) for n, score in enumerate(scores)]})},
+                        'practice_purpose': purpose})
+    text = _practice_reason_summary([*entries, entries[1]])
+    assert text.count('补弱·sk_b') == 1
+    assert '2次有效作答中1次满分、1次失分' in text
+    assert '已多次答对，降低巩固优先级' in text
+    assert '暂无直接作答证据' in text
+    assert _member_entries(entries)['A']['key'] == 'sk_b'
+    # A task match may use another skill's difficulty plan. Its explanation
+    # must still count the original skill's observations, not that plan.
+    task = deepcopy(entries[0])
+    task['selection_kind'] = 'task_matched'
+    task['target']['source_question_refs'] = [observation(1, 5, 0)]
+    task['practice_purpose'] = 'remediation'
+    text = _practice_reason_summary([task])
+    assert '1次有效作答中0次满分、1次失分' in text
+    assert '不表示同技能命中' in text
 
 
 def test_saved_draft_and_export_source_check_use_the_preview_scope(direct_module, monkeypatch):
@@ -46,6 +102,47 @@ def test_saved_draft_and_export_source_check_use_the_preview_scope(direct_module
         assert {i['question_id'] for i in student['items']} == set(expected[student['student_id']])
     assert direct_module.ensure_current(draft['draft_id'])['draft_id'] == draft['draft_id']
     assert len(calls) >= 2 and len(set(calls)) == 1
+
+
+def test_comprehensive_scope_includes_earlier_chapters_and_preserves_focused_scope(direct_module):
+    from question_bank.recommendation.personalized import resolve_practice_scope
+    diagnosis = _direct_diagnosis()
+    base = PersonalizedRecommendationConfig(curriculum_volume_id='bnu24-math-g7-lower',
+                                             teaching_progress_chapter_id='bnu24-math-g7-lower-c04')
+    resolved = resolve_practice_scope(base, diagnosis, direct_module.current_knowledge)
+    assert len(resolved.scope_keys) == 4
+    assert resolved.scope_keys[-1] == BNU_CHAPTER4
+    focused = replace(base, scope_keys=(BNU_CHAPTER4,))
+    assert resolve_practice_scope(focused, diagnosis, direct_module.current_knowledge) == focused
+    inferred = resolve_practice_scope(replace(base, teaching_progress_chapter_id=''), diagnosis, direct_module.current_knowledge)
+    assert inferred.scope_keys == resolved.scope_keys
+    many = {'students': [{'weak_points': [{'knowledge_key': f'{BNU_CHAPTER4}_synthetic_{i}', 'evidence_count': 1}
+                                          for i in range(150)]}]}
+    assert resolve_practice_scope(replace(base, teaching_progress_chapter_id=''), many, direct_module.current_knowledge).scope_keys == resolved.scope_keys
+    with pytest.raises(ValueError, match='已学到'):
+        resolve_practice_scope(replace(base, teaching_progress_chapter_id=''), {'students': []}, direct_module.current_knowledge)
+
+
+def test_new_needs_and_different_methods_precede_small_distance_advantages():
+    def entry(qid, key, method, distance):
+        return {'candidate': {'question_id': qid, 'stable_keys': [f'sk_{qid}'],
+                'similarity_profile': {'tags': [{'tag_type': 'method', 'tag_value': method}]}},
+                'student_id': 'A', 'key': key, 'selection_kind': 'direct', 'practice_purpose': 'consolidation',
+                'distance': distance, 'preference': 0, 'match_level': 1}
+    first = entry(1, 'need_a', 'method_a', 0)
+    repeated_need = entry(2, 'need_a', 'method_b', .1)
+    repeated_method = entry(3, 'need_b', 'method_a', .2)
+    new_method = entry(4, 'need_b', 'method_b', .5)
+    chosen = _choose_practice_entries([first, repeated_need, repeated_method, new_method], 2)
+    assert [e['candidate']['question_id'] for e, _ in chosen] == [1, 4]
+
+
+def test_same_skill_candidates_are_not_automatically_folded_as_similar():
+    from question_bank.recommendation.personalized import _paper_similarity_allowed
+    first = {'question_id': 1, 'stable_keys': ['sk_a'], 'question_text': '合成测量任务'}
+    second = {'question_id': 2, 'stable_keys': ['sk_a'], 'question_text': '合成图形推理'}
+    assert _paper_similarity_allowed(first, [second])
+    assert not _paper_diversity_allowed(first, [second])
 
 
 def test_repeated_successes_survive_one_trap_and_duplicate_tags():
@@ -140,6 +237,56 @@ def test_shared_paper_allows_different_purposes_and_has_no_fine_ratios():
     assert len(selected) == 8
     assert all({e["student_id"] for e in group} == {"A", "B", "C"} for _, group in selected)
     assert [e["candidate"]["question_id"] for e, _ in selected] == [e["candidate"]["question_id"] for e, _ in _choose_practice_entries(list(reversed(common)), 8)]
+
+
+@pytest.mark.parametrize('members', [('A',), ('A', 'B', 'C')])
+def test_skill_cap_counts_whole_questions_and_all_direct_skills(members):
+    skill_sets = [('sk_a', 'sk_a'), ('sk_a',), ('sk_a', 'sk_b'), ('sk_b',), ('sk_b',), ('sk_b',)]
+    entries = [{'candidate': {'question_id': qid, 'question_type': '选择题',
+                             'stable_keys': [*skills, 'kp_shared_topic']},
+                'student_id': sid, 'key': f'varied-reason-{qid}', 'selection_kind': 'direct',
+                'practice_purpose': 'remediation', 'distance': 0, 'preference': 0, 'match_level': 1}
+               for qid, skills in enumerate(skill_sets, 1) for sid in members]
+    selected = _choose_practice_entries(_common_entries(entries, members), 10)
+    assert [entry['candidate']['question_id'] for entry, _ in selected] == [1, 4]
+    assert all(len(group) == len(members) for _, group in selected)
+    printed = [entry['candidate'] for entry, _ in selected]
+    # Same topic/prerequisite is not the same directly trained skill.
+    assert _paper_diversity_allowed({'question_id': 7, 'stable_keys': ['kp_shared_topic', 'sk_c'],
+                                    'supporting_keys': ['sk_a', 'sk_b']}, printed)
+    assert not _paper_diversity_allowed({'question_id': 8, 'stable_keys': ['sk_c', 'sk_b']}, printed)
+
+
+@pytest.mark.parametrize('replaced_qid,allowed', [(1, True), (3, False)])
+def test_replacement_releases_old_skill_slot_but_cannot_add_a_second(replaced_qid, allowed, monkeypatch):
+    from question_bank.recommendation.personalized import RecommendationEditCommand, RecommendationEditInvalid
+    from tests.phase4.test_personalized_recommendation import _selection_candidate
+    candidates = [_selection_candidate(q, '', key='sk_a' if q in (1,4) else f'sk_{q}') for q in (1, 2, 3, 4)]
+    target = {'stable_key': 'sk_a', 'source_question_refs': []}
+    draft = {'revision': 1, 'students': [{'student_id': 'A', 'warnings': [], 'items': [
+        {'question_id': q, 'item_id': str(q), 'slot': q, 'item_order': q, 'stage': 'direct',
+         'selection_kind': 'direct', 'matched_key': 'sk_a', 'target': target, 'locked': False,
+         'difficulty': 5, 'replacement_history': []} for q in (1, 2, 3)]}]}
+    module = object.__new__(PersonalizedRecommendationModule)
+    module.current_knowledge = SimpleNamespace(relations=())
+    monkeypatch.setattr(module, '_recent_question_ids', lambda *args, **kwargs: {'A': set()})
+    entry = {'candidate': candidates[-1], 'target': target, 'matched_key': 'sk_a',
+             'key': 'sk_a', 'student_id': 'A', 'selection_kind': 'direct', 'distance': 0, 'preference': 0}
+    monkeypatch.setattr(module, '_candidate_entries', lambda **kwargs: ([entry], []))
+    monkeypatch.setattr(module, 'evaluate_candidates', lambda **kwargs: {'pools': {'A': [entry]}})
+    command = RecommendationEditCommand(request_token='f'*32, expected_revision=1, action='replace',
+        student_id='A', item_id=str(replaced_qid), actor_ref='test', reason='synthetic replacement', replacement_question_id=4)
+    before = deepcopy(draft)
+    def replace_item():
+        return module._apply_edit(draft, draft_id='e'*64, request={'config': PersonalizedRecommendationConfig().to_dict(),
+            'diagnosis': {'students': [{'student_id': 'A'}]}}, command=command, candidates=tuple(candidates))
+    if allowed:
+        replace_item()
+        assert [i['question_id'] for i in draft['students'][0]['items']] == [4, 2, 3]
+    else:
+        with pytest.raises(RecommendationEditInvalid):
+            replace_item()
+        assert draft == before
 
 
 @pytest.fixture

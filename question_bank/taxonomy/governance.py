@@ -2963,6 +2963,10 @@ class TaxonomyGovernance:
         for observation in lifecycle["observations"]:
             if not observation["is_current"]:
                 continue
+            if (release.get("release_id") and observation.get("graph_release_id")
+                    and observation["graph_release_id"] != release["release_id"]):
+                # 换标准后的旧整题新词仅保留历史，不能当作当前待办。
+                continue
             try:
                 question_id = int(observation["question_id"])
             except (TypeError, ValueError):
@@ -2985,24 +2989,13 @@ class TaxonomyGovernance:
         """Return only the current question references needed for a count."""
 
         state = self._read_state()
+        current_refs = self.observation_snapshot()["current_question_refs"]
         pending_ids = {
             str(proposal["id"])
             for proposal in state["proposals"]
             if proposal["status"] == "pending"
         }
-        refs_by_proposal = {proposal_id: [] for proposal_id in pending_ids}
-        for observation in state["observation_lifecycle"]["observations"]:
-            if not observation["is_current"]:
-                continue
-            try:
-                question_id = int(observation["question_id"])
-            except (TypeError, ValueError):
-                continue
-            if question_id <= 0:
-                continue
-            for proposal_id in observation["proposal_ids"]:
-                if proposal_id in pending_ids:
-                    refs_by_proposal[proposal_id].append(question_id)
+        refs_by_proposal = {proposal_id: current_refs.get(proposal_id, []) for proposal_id in pending_ids}
         return {
             "revision": int(state["revision"]),
             "evidence_revision": int(

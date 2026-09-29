@@ -95,7 +95,7 @@ onBeforeUnmount(() => {
         <header class="taxonomy-review__header">
           <div>
             <h2 id="criteria-review-title">判定点待审核</h2>
-            <p>这些题目的判定点还需要您核对。点开后可以修正、重新生成，或在没有硬性问题时直接批准。</p>
+            <p>正常通过质检的判定点已自动可用。这里只列出仍无法确定的个别题目；点开后可修正或重新生成。</p>
           </div>
           <button
             ref="closeButton"

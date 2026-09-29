@@ -154,3 +154,48 @@ def test_preview_blocks_unaccounted_teacher_relation(tmp_path: Path) -> None:
 
     assert not preview.can_activate
     assert any(issue.code == "teacher_relation_conflict" for issue in preview.issues)
+
+
+def test_maintenance_reuses_unchanged_links_and_limits_replacements(tmp_path):
+    import json
+    from tools.maintain_question_bank import standard_plan, install_standard
+    db_path = _database(tmp_path)
+    first = load_release_for_taxonomy_revision(3)
+    stage_release(db_path, first, actor_ref="test", source_reference="test")
+    activate_release(db_path, first.release_id, expected_active_release_id=None, actor_ref="test", reason="test")
+    keys = [node["stable_key"] for node in first.payload["core_nodes"][:2]]
+    with connect(db_path) as conn:
+        for qid, key in enumerate(keys, 1):
+            vid = str(qid) * 64
+            evidence = {"parts": [{"part_id": "P1", "evidence_points": [{"evidence_point_id": "E1"}]}]}
+            conn.execute("INSERT INTO questions(id,question_number,question_text) VALUES(?,?,?)", (qid, str(qid), "合成试题"))
+            conn.execute("""INSERT INTO question_solution_evidence_versions
+                (evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,
+                 source_kind,source_reference,created_by,graph_release_id)
+                VALUES(?,?,?,'question-solution-evidence-v2',?,?,'backfill','synthetic','test',?)""",
+                (vid, qid, "a"*64, "b"*64, json.dumps(evidence), first.release_id))
+            conn.execute("""INSERT INTO evidence_point_knowledge_links
+                (evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,
+                 term_id,stable_key,resolution_status,weight,source_kind,source_reference)
+                VALUES(?,?,'P1','E1',?,'direct',?,?,'resolved',1,'link_job','synthetic')""",
+                (vid, qid, first.release_id, key, key))
+    payload = copy.deepcopy(first.payload)
+    payload.pop("content_hash")
+    payload.update(release_id="kgr_synthetic_maintenance", predecessor_release_id=first.release_id)
+    payload["core_nodes"][1]["definition"] += "修订"
+    second = KnowledgeGraphRelease.from_mapping(payload)
+    plan = standard_plan(db_path, second)
+    assert plan["reusable_question_ids"] == [1]
+    assert plan["affected_question_ids"] == [2]
+    with pytest.raises(ValueError, match="覆盖受影响"):
+        install_standard(db_path, second, plan, [])
+    replacements = [{"question_id": 2, "evidence_version_id": "2"*64,
+                     "points": [{"part_id": "P1", "evidence_point_id": "E1", "links": [
+                         {"role": "direct", "term_id": keys[1], "stable_key": keys[1], "weight": 1}]}]}]
+    install_standard(db_path, second, plan, replacements)
+    with connect(db_path) as conn:
+        old = tuple(conn.execute("SELECT term_id,stable_key,weight,source_kind,source_reference FROM evidence_point_knowledge_links WHERE question_id=1 AND graph_release_id=?", (first.release_id,)).fetchone())
+        new = tuple(conn.execute("SELECT term_id,stable_key,weight,source_kind,source_reference FROM evidence_point_knowledge_links WHERE question_id=1 AND graph_release_id=?", (second.release_id,)).fetchone())
+        assert new == old
+        assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links").fetchone()[0] == 4
+    assert active_release_id(db_path) == second.release_id
