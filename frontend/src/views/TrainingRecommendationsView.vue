@@ -531,7 +531,6 @@ onBeforeUnmount(() => studentsController?.abort())
           v-model:difficulty-max="difficultyMax"
           v-model:teaching-progress-chapter-id="teachingProgressChapterId"
           :progress-chapters="progressChapters"
-          v-model:exclude-current-originals="excludeCurrentOriginals"
           @go-paper="goPaper('shared')"
         />
         <div v-if="trainingMode === 'chapter' && adoptedGroup" class="training-adopted-group">
@@ -551,7 +550,6 @@ onBeforeUnmount(() => studentsController?.abort())
           v-model:difficulty-max="difficultyMax"
           v-model:teaching-progress-chapter-id="teachingProgressChapterId"
           :progress-chapters="progressChapters"
-          v-model:exclude-current-originals="excludeCurrentOriginals"
           @go-paper="goPaper('individual')"
         />
       </template>

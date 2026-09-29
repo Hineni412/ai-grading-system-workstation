@@ -192,6 +192,7 @@ def test_training_diagnosis_uses_question_tag_identity(
 
     assert response.status_code == 200
     payload = response.json()
+    assert not any(key.startswith("_") for key in payload)
     assert payload["diagnosis_identity"] == "question_tag"
     assert payload["scope"]["mode"] == "student"
     assert payload["scope"]["student_ids"] == ["12"]

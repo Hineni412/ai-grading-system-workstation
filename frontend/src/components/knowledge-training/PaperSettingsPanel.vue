@@ -19,7 +19,6 @@ const questionCount = defineModel<number>('questionCount', { required: true })
 const difficultyMax = defineModel<number>('difficultyMax', { required: true })
 const teachingProgressChapterId = defineModel<string>('teachingProgressChapterId', { default: '' })
 const scopeMode = defineModel<'comprehensive' | 'focused'>('scopeMode', { default: 'comprehensive' })
-const excludeCurrentOriginals = defineModel<boolean>('excludeCurrentOriginals', { required: true })
 
 const modeLabel = computed(() => (props.mode === 'shared' ? '多人同一套卷' : '一人一卷'))
 const modeNote = computed(() => (props.mode === 'shared'
