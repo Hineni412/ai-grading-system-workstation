@@ -59,6 +59,99 @@ def contains_prompt_injection_or_score_bait(answer: str | None) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in _SCORE_BAIT_PATTERNS)
 
 
+# 提示词注入硬规则词表：只作用于学生作答原文，不扫描模型写的错因/理由字段。
+_SCORE_BAIT_HARD_PATTERNS = (
+    r"请\s*(?:判定|判断|给|打)\s*(?:我|他|她)?\s*满分",
+    r"(?:给|打)\s*(?:我|他|她)\s*满分",
+    r"AI\s*给\s*(?:我|他|她)?\s*满分",
+    r"强制\s*满分",
+    r"自动\s*改为?\s*满分",
+    r"出题错误.*满分",
+    r"按\s*满分\s*处理",
+    r"不用\s*批改",
+    r"直接\s*给\s*分",
+    r"老师\s*直接?\s*给\s*分",
+    r"(?:忽略|忽视).{0,20}(?:评分|批改|标准|规则|要求|设置|指令)",
+    r"不要\s*按\s*(?:评分|批改|标准|规则)",
+    r"ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions?",
+    r"disregard\s+(?:all\s+)?(?:previous|above|prior)\s+instructions?",
+    r"give\s+(?:me\s+)?full\s+(?:marks?|score|credit)",
+)
+
+# 作答去掉空白和标点后恰好只剩这些词时，不硬清零，只标记待教师核对。
+_SCORE_BAIT_REVIEW_WORDS = {"满分", "打勾", "红笔打勾", "正确", "√"}
+
+# 学生作答文本在模型返回项里可能出现的字段（客观题与主观题共用）。
+_SCORE_BAIT_ANSWER_KEYS = (
+    "observed_answer",
+    "student_answer",
+    "answer_observed",
+    "recognized_answer",
+    "raw_answer",
+)
+
+_SCORE_BAIT_BARE_STRIP = re.compile(
+    r"[\s，,。.．;；:：、!！?？'\"“”‘’()（）\[\]【】《》<>·…~～\-—_]+"
+)
+
+SCORE_BAIT_REVIEW_REASON = "作答中只有“满分/正确/打勾”等字样，请核对是否为骗分"
+
+
+def _bait_flag_truthy(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1", "是"}
+    return bool(value)
+
+
+def _bare_answer_text(value) -> str:
+    return _SCORE_BAIT_BARE_STRIP.sub("", str(value or ""))
+
+
+def _accepted_answer_words(value) -> set:
+    if isinstance(value, dict):
+        return _accepted_answer_words(
+            value.get("accepted_forms")
+            or value.get("canonical_answer")
+            or value.get("standard_answer")
+        )
+    if isinstance(value, str):
+        word = _bare_answer_text(value)
+        return {word} if word else set()
+    if isinstance(value, (list, tuple, set)):
+        words = set()
+        for form in value:
+            words |= _accepted_answer_words(form)
+        return words
+    return set()
+
+
+def grading_item_bait_status(item: dict, accepted_answers=None) -> str:
+    """提示词注入/骗分判定。返回 "hard_zero"、"review_only" 或 ""。
+
+    hard_zero：模型自报注入（prompt_injection_detected 或非空
+        ignored_prompt_injection_text），或学生作答字段命中硬规则词表。
+    review_only：作答字段去掉空白与标点后恰好是 满分/打勾/红笔打勾/正确/√，
+        且该题参考答案归一化后不是同一个词（如标准答案本身为“正确”则不算）。
+    """
+    if _bait_flag_truthy(item.get("prompt_injection_detected")):
+        return "hard_zero"
+    if str(item.get("ignored_prompt_injection_text") or "").strip():
+        return "hard_zero"
+    answer_texts = [str(item.get(key) or "") for key in _SCORE_BAIT_ANSWER_KEYS]
+    for text in answer_texts:
+        if text and any(
+            re.search(pattern, text, flags=re.IGNORECASE)
+            for pattern in _SCORE_BAIT_HARD_PATTERNS
+        ):
+            return "hard_zero"
+    accepted = _accepted_answer_words(accepted_answers)
+    for text in answer_texts:
+        word = _bare_answer_text(text)
+        if word and word in _SCORE_BAIT_REVIEW_WORDS and word not in accepted:
+            return "review_only"
+    return ""
+
+
 def _parse_numeric_value(s: str) -> float | None:
     try:
         return float(s)

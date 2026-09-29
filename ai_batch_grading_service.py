@@ -13,6 +13,7 @@ from ai_grader import (
     _normalize_grading_errors,
     _without_legacy_knowledge_fields,
 )
+from answer_normalizer import SCORE_BAIT_REVIEW_REASON, grading_item_bait_status
 from backend.domain_models import ExamPaperGroup, GradingResult, QuestionGradingDetail
 from grading_completeness import audit_grading_details, details_require_review
 from objective_batch_recognition_service import OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE, run_objective_batch_recognition
@@ -1380,6 +1381,13 @@ def _detail_from_ai_item(
         answer_only_correct=answer_only_correct_flag(detail.get("answer_only_correct")) is True,
     ) if spec is not None else (None, None))
     confidence = _float_value(detail.get("confidence_score"), 100.0)
+    # 提示词注入硬规则：作答命中骗分词或模型自报注入时本地直接判 0；
+    # 作答只剩 满分/正确/打勾 等字样时保留分数但强制教师复核。
+    bait_status = grading_item_bait_status(detail, spec.answer_key if spec is not None else None)
+    prompt_injection_seen = bait_status == "hard_zero"
+    if prompt_injection_seen:
+        detail["prompt_injection_detected"] = True
+        score = 0.0
     smudge_conflict = _truthy(detail.get("answer_discarded_by_smudge")) and score > 0
     if smudge_conflict:
         # A smudge-discarded answer must not keep its points, but the
@@ -1393,10 +1401,21 @@ def _detail_from_ai_item(
     if blank_or_no_work:
         score = 0.0
         confidence = 100.0
-    needs_review = smudge_conflict or confidence < min_confidence or _truthy(detail.get("needs_human_review"))
+    needs_review = (
+        smudge_conflict
+        or confidence < min_confidence
+        or _truthy(detail.get("needs_human_review"))
+        or bait_status == "review_only"
+    )
     error_category = detail.get("error_category")
     error_summary = detail.get("error_summary")
     deduction_reason = detail.get("deduction_reason")
+    if prompt_injection_seen:
+        error_category = error_category or "提示注入"
+        error_summary = error_summary or "作答区出现提示词注入"
+        deduction_reason = deduction_reason or "作答区出现提示词注入，按硬规则判 0 分。"
+    elif bait_status == "review_only":
+        deduction_reason = deduction_reason or SCORE_BAIT_REVIEW_REASON
     if smudge_conflict:
         error_category = error_category or "需复核"
         error_summary = error_summary or "discarded_answer_scored"
@@ -1416,6 +1435,7 @@ def _detail_from_ai_item(
     if (
         spec is not None
         and not blank_or_no_work
+        and not prompt_injection_seen
         and response_mode_requires_process(rubric_response_mode(spec.rubric, qid))
     ):
         question_type, full_score, answer_only_max = rubric_question_meta(spec.rubric, qid)
@@ -1466,13 +1486,13 @@ def _detail_from_ai_item(
         score = float(integer_score)
     else:
         score = integer_score
-    presentation_deduction = final_simplification_deduction(detail, float(score)) if spec is not None and rubric_question_meta(spec.rubric, qid)[0] in {"proof", "calculation", "comprehensive"} and not blank_or_no_work and not smudge_conflict else 0
+    presentation_deduction = final_simplification_deduction(detail, float(score)) if spec is not None and rubric_question_meta(spec.rubric, qid)[0] in {"proof", "calculation", "comprehensive"} and not blank_or_no_work and not smudge_conflict and not prompt_injection_seen else 0
     if presentation_deduction:
         score -= presentation_deduction
         detail["presentation_deduction"] = presentation_deduction
         deduction_reason = (str(deduction_reason or "").strip() + "；最终答案数值等价但未完成化简，扣1分。").lstrip("；")
         error_category = error_category or "答案未化简"
-    clear_errors = full_score is not None and float(score) >= float(full_score) - 1e-6
+    clear_errors = full_score is not None and float(score) >= float(full_score) - 1e-6 and not prompt_injection_seen
     error_candidates = (question_tag_context or {}).get(qid, {}).get("error_type", [])
     normalized_error_item = dict(detail)
     normalized_error_item.update(
@@ -1561,6 +1581,8 @@ def _subjective_detail_metadata(detail: dict[str, Any], qid: str) -> dict[str, A
     metadata["answer_discarded_by_smudge"] = bool(_truthy(detail.get("answer_discarded_by_smudge")))
     metadata["smudged_or_crossed_out"] = bool(_truthy(detail.get("smudged_or_crossed_out")))
     metadata["needs_human_review"] = bool(_truthy(detail.get("needs_human_review")))
+    if _truthy(detail.get("prompt_injection_detected")):
+        metadata["prompt_injection_detected"] = True
     return metadata
 
 
