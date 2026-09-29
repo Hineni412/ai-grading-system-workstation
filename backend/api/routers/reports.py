@@ -81,7 +81,7 @@ def export_session_report(
         )
     if request is not None and request.report_type in ANALYSIS_REPORT_TYPES:
         # 兜底校验：未配置内容生成模型时不得静默改用阅卷模型或空跑计费。
-        from analysis_report_exporter import resolve_content_generation_settings
+        from backend.model_profiles.content_generation import resolve_content_generation_settings
 
         if resolve_content_generation_settings() is None:
             raise ApiError(
@@ -226,8 +226,8 @@ def get_class_analysis(
     from analysis_report_exporter import (
         build_class_page_data,
         class_narrative_with_student_names,
-        split_session_analysis_by_class,
     )
+    from backend.session_analysis import split_session_analysis_by_class
     from backend.class_analysis import (
         CLASS_ANALYSIS_RENDITION_VERSION,
         assemble_cause_data,
@@ -241,12 +241,12 @@ def get_class_analysis(
     state = store.load(session_id)
     # 页面数据按当前成绩实时装配；无成绩数据时整体降级为 no_data。
     data = assemble_cause_data(db, int(session_id))
-    from analysis_report_exporter import _question_bank_db_path
+    from backend.session_analysis import question_bank_db_path
 
     cause_inputs = build_cause_inputs(
         data,
         known_patterns=known_cause_patterns(
-            store, _question_bank_db_path(Path(db.db_path)), int(session_id),
+            store, question_bank_db_path(Path(db.db_path)), int(session_id),
         ),
     )
     groups = split_session_analysis_by_class(data)
@@ -288,7 +288,7 @@ def get_class_analysis(
     cause_analysis = apply_cause_results(
         page_data, data, cause_inputs, state,
         session_id=int(session_id),
-        question_bank_path=_question_bank_db_path(Path(db.db_path)),
+        question_bank_path=question_bank_db_path(Path(db.db_path)),
     )
     return ClassAnalysisResponse(
         status=(
@@ -323,14 +323,14 @@ def edit_cause_pattern(
     reports_dir: Path = Depends(get_reports_dir),
 ) -> CausePatternEditResponse:
     """教师可选修改错法名称/大类：已关联题库时同步改写题库行，未关联只改本场。"""
-    from analysis_report_exporter import _question_bank_db_path
+    from backend.session_analysis import question_bank_db_path
     from backend.class_analysis import (
         CausePatternEditError, edit_cause_pattern as apply_cause_edit,
     )
     from backend.error_patterns import session_bank_context
 
     _require_session(db, session_id)
-    question_bank_path = _question_bank_db_path(Path(db.db_path))
+    question_bank_path = question_bank_db_path(Path(db.db_path))
     try:
         apply_cause_edit(
             ClassAnalysisStateStore(reports_dir), session_id,
@@ -374,9 +374,11 @@ def get_class_analysis_report(
     reports_dir: Path = Depends(get_reports_dir),
 ) -> HTMLResponse:
     """内嵌班级报告页：按已生成的班级叙述渲染自包含 HTML，供系统内页面嵌套展示。"""
-    from analysis_report_exporter import (
-        _render_class_html, split_session_analysis_by_class, assemble_session_analysis,
-        _enrich_personal_knowledge,
+    from analysis_report_exporter import render_class_html
+    from backend.session_analysis import (
+        assemble_session_analysis,
+        enrich_personal_knowledge,
+        split_session_analysis_by_class,
     )
     from backend.class_analysis import question_category_counts, session_error_records
 
@@ -401,13 +403,13 @@ def get_class_analysis_report(
             {"class_name": selected_class},
         )
     selected = groups[selected_class]
-    _enrich_personal_knowledge(db, selected, None)
+    enrich_personal_knowledge(db, selected, None)
     cause_counts = question_category_counts(
         session_error_records(db, session_id, reports_dir),
         student_ids=[student.student_id for student in selected.students],
     )
     return HTMLResponse(
-        _render_class_html(selected, entry["narrative"], cause_counts=cause_counts))
+        render_class_html(selected, entry["narrative"], cause_counts=cause_counts))
 
 
 @router.get("/sessions/{session_id}/class-analysis/questions/{question_id}/preview")
@@ -453,7 +455,7 @@ def regenerate_class_analysis(
 ) -> JobResponse:
     _require_session(db, session_id)
     # 兜底校验：未配置内容生成模型时不得静默改用阅卷模型或空跑计费。
-    from analysis_report_exporter import resolve_content_generation_settings
+    from backend.model_profiles.content_generation import resolve_content_generation_settings
 
     if resolve_content_generation_settings() is None:
         raise ApiError(

@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from analysis_report_exporter import resolve_content_generation_settings
+from backend.model_profiles.content_generation import resolve_content_generation_settings
 from backend.llm.policy import LLMRequestKind
 from llm_client import LLMClient
 from question_bank.parsers.type_detector import (

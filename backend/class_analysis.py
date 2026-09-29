@@ -98,16 +98,16 @@ def _cause_text(record: Any) -> str:
 
 def assemble_cause_data(db: Any, session_id: int, *, data_root: Path | None = None) -> Any:
     """复用成绩快照、作答文字和已绑定题目，跳过报告图片与题库回填。"""
-    from analysis_report_exporter import assemble_session_analysis, _enrich_personal_questions
+    from backend.session_analysis import assemble_session_analysis, enrich_personal_questions
     repositories = as_grading_repositories(db)
     data = assemble_session_analysis(repositories, session_id, data_root=data_root,
                                      page_only=True, include_answer_evidence=True)
-    _enrich_personal_questions(repositories, data, data_root, include_images=False)
+    enrich_personal_questions(repositories, data, data_root, include_images=False)
     return data
 
 
 def _cause_rubric(data: Any, question_id: str) -> dict[str, Any]:
-    from analysis_report_exporter import _parent_question_id
+    from backend.session_analysis import parent_question_id
     allowed = {"question_id", "question_type", "part_id", "max_score", "stem_summary", "question_text",
                "text", "parts", "deduction_policy", "proof_obligations", "steps", "canonical_answer",
                "step_id", "description", "evidence", "evidence_required", "score", "points",
@@ -124,15 +124,15 @@ def _cause_rubric(data: Any, question_id: str) -> dict[str, Any]:
         return value
 
     return {key: value for q in data.rubric.get("questions", []) if isinstance(q, dict)
-            and _parent_question_id(str(q.get("question_id") or "")) == _parent_question_id(question_id)
+            and parent_question_id(str(q.get("question_id") or "")) == parent_question_id(question_id)
             for key, value in project(q).items()}
 
 
 def _cause_evidence(student: Any, record: Any) -> dict[str, Any]:
-    from analysis_report_exporter import _parent_question_id, _natural_question_order
+    from backend.session_analysis import natural_question_order, parent_question_id
     siblings = {item.question_id: item for item in student.records
-                if _parent_question_id(item.question_id) == _parent_question_id(record.question_id)}
-    order = _natural_question_order(siblings)
+                if parent_question_id(item.question_id) == parent_question_id(record.question_id)}
+    order = natural_question_order(siblings)
     previous = [siblings[qid] for qid in order[:order.index(record.question_id)]]
     return {
         "text": _cause_text(record), "student_answer": record.student_answer,
@@ -219,7 +219,7 @@ def build_cause_inputs(data: Any, *, known_patterns: dict[str, Any] | None = Non
                 item = _cause_evidence(student, record)
                 evidence.setdefault(record.question_id, {})[_evidence_key(item)] = item
 
-    from analysis_report_exporter import _parent_question_id
+    from backend.session_analysis import parent_question_id
     return [{
         "question_id": info.question_id, "max_score": info.max_score,
         "stem_summary": info.stem_summary, "canonical_answer": info.canonical_answer,
@@ -228,7 +228,7 @@ def build_cause_inputs(data: Any, *, known_patterns: dict[str, Any] | None = Non
         "evidence": [{"id": f"E{index}", **item} for index, (_key, item) in
                      enumerate(sorted(evidence[info.question_id].items()), start=1)],
         "known_patterns": _merge_known_patterns(
-            by_question.get(_parent_question_id(info.question_id)), shared,
+            by_question.get(parent_question_id(info.question_id)), shared,
         ),
     } for info in data.questions if evidence.get(info.question_id)]
 
@@ -254,7 +254,7 @@ def known_cause_patterns(
     store: Any, question_bank_db_path: Path | None, session_id: int,
 ) -> dict[str, Any]:
     """整理时可复用的错法名：本场其他题已整理的（shared）+ 跨场次同题的（questions）。"""
-    from analysis_report_exporter import _parent_question_id
+    from backend.session_analysis import parent_question_id
     from backend.error_causes import CAUSE_KIND_CATEGORIES
 
     def usable_groups(state: Any) -> Iterable[dict[str, Any]]:
@@ -295,7 +295,7 @@ def known_cause_patterns(
     for qid, entry in option_analysis_entries(state).items():
         for item in (entry.get("analysis") or {}).values():
             if isinstance(item, dict):
-                collect(_parent_question_id(str(qid)), item.get("pattern"),
+                collect(parent_question_id(str(qid)), item.get("pattern"),
                         item.get("category"), "本题候选")
     bank_context = session_bank_context(question_bank_db_path, session_id)
     confirmed = bank_confirmed_triggers(
@@ -313,7 +313,7 @@ def known_cause_patterns(
             other = store.load(other_sid)
             stored = (((other or {}).get("cause_analysis") or {}).get("questions")) or {}
             for qid, entry in stored.items():
-                if _parent_question_id(qid) != other_parent:
+                if parent_question_id(qid) != other_parent:
                     continue
                 for group in (entry.get("result") or {}).get("groups") or []:
                     if isinstance(group, dict) and group.get("kind") in CAUSE_KIND_CATEGORIES:
@@ -323,7 +323,7 @@ def known_cause_patterns(
                 if isinstance(item, dict):
                     collect(parent, item.get("pattern"), item.get("category"), "同题以往整理")
             for qid, entry in option_analysis_entries(other).items():
-                if _parent_question_id(str(qid)) != other_parent:
+                if parent_question_id(str(qid)) != other_parent:
                     continue
                 for item in (entry.get("analysis") or {}).values():
                     if isinstance(item, dict):
@@ -522,7 +522,7 @@ def apply_cause_results(
     标记 causes_outdated 等待重新整理）；v1 文本归并走原 legacy 路径。
     传入 session_id + 题库路径时，额外标注每题题库关联。
     """
-    from analysis_report_exporter import _parent_question_id
+    from backend.session_analysis import parent_question_id
     from backend.error_causes import CAUSE_CATEGORIES
     from backend.error_patterns import session_bank_context
 
@@ -623,7 +623,7 @@ def apply_cause_results(
                 key=lambda kv: (-len(kv[1]), category_order.get(kv[0], len(category_order)), kv[0]),
             )
         ]
-        question["bank_question_id"] = bank_map.get(_parent_question_id(question_id))
+        question["bank_question_id"] = bank_map.get(parent_question_id(question_id))
         question["cause_review"] = {
             "positive": details(saved["result"]["positive_ids"]),
             "uncertain": details(saved["result"]["uncertain_ids"]),
@@ -696,14 +696,14 @@ def plan_cause_question(
     - "skip"：选项诊断此前失败且输入未变、本次不重试。
     needs_call：本次是否会产生一次模型调用。
     """
-    from analysis_report_exporter import _parent_question_id
+    from backend.session_analysis import parent_question_id
     from backend.error_patterns import (
         CHOICE_TYPES, FILL_TYPES, bank_question_row, find_option_analysis,
         merge_bank_triggers_into_patterns, question_fingerprint,
         synthesize_answer_result,
     )
 
-    parent = _parent_question_id(source["question_id"])
+    parent = parent_question_id(source["question_id"])
     if qtype in CHOICE_TYPES and option_scope and ctx.get("bank_id"):
         text, letters, correct = _resolve_option_source(
             source, bank_question_row(question_bank_path, int(ctx["bank_id"])),
@@ -848,10 +848,10 @@ def _organize_fill_question(
     ctx: dict[str, Any], confirmed_by_bank: dict[int, list[dict[str, Any]]],
 ) -> str:
     """填空题：错误答案库全覆盖时直接映射（0 次调用）；否则退回 v3 整理。"""
-    from analysis_report_exporter import _parent_question_id
+    from backend.session_analysis import parent_question_id
     from backend.error_patterns import synthesize_answer_result
 
-    parent = _parent_question_id(source["question_id"])
+    parent = parent_question_id(source["question_id"])
     library = _fill_answer_library(
         store=store, session_id=session_id, parent=parent,
         ctx=ctx, confirmed_by_bank=confirmed_by_bank,
@@ -879,7 +879,7 @@ def run_cause_analysis(
     已关联题库的选择题先复用题库选项预测，缺项才补做选项诊断；填空题先查错误答案库，全覆盖零调用，
     否则走 v3 整理并把新错法按规范化答案回写候选库。
     """
-    from analysis_report_exporter import _parent_question_id, _question_bank_db_path
+    from backend.session_analysis import parent_question_id, question_bank_db_path
     from backend.error_causes import CAUSE_KIND_CATEGORIES
     from backend.error_patterns import (
         CHOICE_TYPES, FILL_TYPES,
@@ -890,7 +890,7 @@ def run_cause_analysis(
 
     session_id = int(context.payload["session_id"])
     option_scope = True
-    question_bank_path = _question_bank_db_path(Path(db.db_path))
+    question_bank_path = question_bank_db_path(Path(db.db_path))
     bank_context = session_bank_context(question_bank_path, session_id)
     confirmed_by_bank = bank_confirmed_triggers(
         question_bank_path,
@@ -930,7 +930,7 @@ def run_cause_analysis(
             progress_stage, "grouping_error_causes",
         )
         qtype = qtypes.get(source["question_id"], "")
-        ctx = bank_context.get(_parent_question_id(source["question_id"])) or {}
+        ctx = bank_context.get(parent_question_id(source["question_id"])) or {}
         try:
             plan = plan_cause_question(
                 store, session_id, source, qtype=qtype, option_scope=option_scope,
@@ -965,7 +965,7 @@ def run_cause_analysis(
                 if additions:
                     record_answer_patterns(
                         store, session_id,
-                        _parent_question_id(source["question_id"]), additions,
+                        parent_question_id(source["question_id"]), additions,
                         bank_question_id=ctx.get("bank_id"),
                     )
             for group in result["groups"]:
@@ -1131,7 +1131,7 @@ def edit_cause_pattern(
     提示核对。未关联时仅改会话状态。会话内同步更新错因分组、物化记录、
     选项诊断与填空候选库中的同名条目，并标记 ``teacher_edited``。
     """
-    from analysis_report_exporter import _parent_question_id
+    from backend.session_analysis import parent_question_id
     from backend.error_causes import CAUSE_KIND_CATEGORIES, normalize_cause_category
     from backend.error_patterns import (
         answer_pattern_map, bank_confirmed_triggers, option_analysis_entries,
@@ -1172,13 +1172,13 @@ def edit_cause_pattern(
         raise CausePatternEditError(
             "cause_pattern_category_invalid", "错误大类与分组类型不匹配", status=422)
 
-    parent = _parent_question_id(question_id)
+    parent = parent_question_id(question_id)
     ctx = (bank_context or {}).get(parent) or {}
     if question_bank_path is not None and ctx.get("bank_ids"):
         sync_session_patterns_to_bank(store, session_id, question_bank_path, bank_context)
         triggers: set[tuple[str, str]] = set()
         for qid, entry in option_analysis_entries(state).items():
-            if _parent_question_id(str(qid)) != parent or not isinstance(entry, dict):
+            if parent_question_id(str(qid)) != parent or not isinstance(entry, dict):
                 continue
             analysis = entry.get("analysis")
             if not isinstance(analysis, dict):
@@ -1259,7 +1259,7 @@ def edit_cause_pattern(
     option_entries = dict(option_analysis_entries(state))
     touched_option = False
     for qid, entry in option_entries.items():
-        if _parent_question_id(str(qid)) != parent or not isinstance(entry, dict):
+        if parent_question_id(str(qid)) != parent or not isinstance(entry, dict):
             continue
         analysis = entry.get("analysis")
         if not isinstance(analysis, dict):
@@ -1295,13 +1295,13 @@ def class_question_preview(
     db: GradingRepositoryAccess, session_id: int, question_id: str, *, source_service: Any,
 ) -> dict[str, Any]:
     """按需读取考试绑定的原题，复用配置页图文投影及图片读取入口。"""
-    from analysis_report_exporter import _infer_data_root, _load_rubric, _parent_question_id
+    from backend.session_analysis import infer_data_root, load_rubric, parent_question_id
     from backend.config_workspace.sources import _project_config_rich_blocks
 
     repositories = as_grading_repositories(db)
     session = repositories.sessions.get_grading_session(session_id) or {}
-    root = _infer_data_root(repositories.db_path)
-    parent = _parent_question_id(question_id)
+    root = infer_data_root(repositories.db_path)
+    parent = parent_question_id(question_id)
     bound_source = str(session.get("source_paper_sha256") or "").strip()
     if bound_source:
         try:
@@ -1322,9 +1322,9 @@ def class_question_preview(
         except (OSError, ValueError, RuntimeError):
             pass
 
-    rubric = _load_rubric(session, root)
+    rubric = load_rubric(session, root)
     question = next((item for item in rubric.get("questions", []) if isinstance(item, dict)
-                     and _parent_question_id(str(item.get("question_id") or "")) == parent), {})
+                     and parent_question_id(str(item.get("question_id") or "")) == parent), {})
     text = next((str(question[key]).strip() for key in ("question_html", "question_text", "text", "stem")
                  if question.get(key)), "")
     full_text = bool(text)
@@ -1496,9 +1496,11 @@ def run_class_analysis_generate(
     """class_analysis_generate job：装配数据 → 生成 AI 叙述 → 写状态文件。"""
     from analysis_report_exporter import (
         AnalysisNarrativeCache,
-        assemble_session_analysis,
         build_class_payload,
         build_report_prompt,
+    )
+    from backend.session_analysis import (
+        assemble_session_analysis,
         split_session_analysis_by_class,
     )
 
@@ -1622,7 +1624,7 @@ def maybe_auto_generate_class_analysis(
     同 revision 已 ready 或已有进行中 job 时幂等跳过；未配置模型时记
     not_configured 状态（页面降级显示），不提交 job、不产生费用。
     """
-    from analysis_report_exporter import resolve_content_generation_settings
+    from backend.model_profiles.content_generation import resolve_content_generation_settings
     from backend.report_exports import score_revision
 
     repositories = as_grading_repositories(db)

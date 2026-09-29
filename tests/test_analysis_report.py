@@ -316,6 +316,7 @@ def analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def _patch_configured(monkeypatch: pytest.MonkeyPatch, configured: bool) -> None:
     import analysis_report_exporter as exporter
+    import backend.model_profiles.content_generation as content_generation
     from llm_client import LLMSettings
 
     settings = (
@@ -334,6 +335,16 @@ def _patch_configured(monkeypatch: pytest.MonkeyPatch, configured: bool) -> None
     )
     monkeypatch.setattr(
         exporter,
+        "content_generation_public_info",
+        lambda: (
+            ("测试服务 @ example.com", "content-model") if configured else (None, None)
+        ),
+    )
+    monkeypatch.setattr(
+        content_generation, "resolve_content_generation_settings", lambda: settings
+    )
+    monkeypatch.setattr(
+        content_generation,
         "content_generation_public_info",
         lambda: (
             ("测试服务 @ example.com", "content-model") if configured else (None, None)
@@ -409,7 +420,7 @@ def test_visual_reports_include_manual_students_and_keep_final_scores(
 ) -> None:
     import io
     from PIL import Image
-    from analysis_report_exporter import assemble_session_analysis
+    from backend.session_analysis import assemble_session_analysis
 
     db, session_id, root = analysis_db
     papers = _add_personal_report_scans(db, session_id, root)
