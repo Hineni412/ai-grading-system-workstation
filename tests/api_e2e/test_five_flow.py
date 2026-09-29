@@ -55,7 +55,7 @@ def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
     ]
     assert Path(config["rubric_path"]).is_file()
     assert Path(config["answer_key_path"]).is_file()
-    assert api_e2e.db.is_template_ready(session_id) is True
+    assert api_e2e.db.templates.is_template_ready(session_id) is True
     regions_response = api_e2e.client.get(f"/api/sessions/{session_id}/regions")
     assert regions_response.status_code == 200
     regions = regions_response.json()

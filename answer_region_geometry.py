@@ -72,8 +72,8 @@ def answer_regions_with_template_source_sizes(
     *,
     data_root: Path | None = None,
 ) -> list[dict[str, Any]]:
-    regions = db.list_answer_regions(session_id)
-    template = db.get_session_template(session_id)
+    regions = db.templates.list_answer_regions(session_id)
+    template = db.templates.get_session_template(session_id)
     if not template:
         return [dict(region) for region in regions]
 

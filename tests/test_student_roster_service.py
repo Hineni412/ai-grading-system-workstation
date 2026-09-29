@@ -15,12 +15,13 @@ from backend.students import (
     StudentRosterModule,
 )
 from db_manager import DBManager, StudentRecord
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _roster(tmp_path):
-    db = DBManager(tmp_path / "grading.db")
+    db = open_grading_repositories(tmp_path / "grading.db")
     db.initialize()
-    return StudentRosterModule(db), db
+    return StudentRosterModule(db.students), db
 
 
 def _seed_student_history(db: DBManager, student_id: int) -> None:
@@ -75,15 +76,15 @@ def _seed_student_history(db: DBManager, student_id: int) -> None:
 
 def test_delete_student_aborts_when_backup_fails(tmp_path, monkeypatch) -> None:
     roster, db = _roster(tmp_path)
-    db.upsert_students([StudentRecord("S001", "匿名学生甲", "一班")])
-    student = db.list_students()[0]
+    db.students.upsert_students([StudentRecord("S001", "匿名学生甲", "一班")])
+    student = db.students.list_students()[0]
     _seed_student_history(db, int(student["id"]))
     impact = roster.deletion_impact(int(student["id"]))
 
     def fail_backup(*_args, **_kwargs):
         raise OSError("private backup path is unavailable")
 
-    monkeypatch.setattr(db, "create_backup", fail_backup)
+    monkeypatch.setattr(db._database, "create_backup", fail_backup)
 
     with pytest.raises(StudentBackupFailed) as caught:
         roster.delete_student(
@@ -93,7 +94,7 @@ def test_delete_student_aborts_when_backup_fails(tmp_path, monkeypatch) -> None:
         )
 
     assert str(caught.value) == "备份失败，学生未删除"
-    assert len(db.list_students()) == 1
+    assert len(db.students.list_students()) == 1
     assert roster.deletion_impact(int(student["id"])).counts == impact.counts
 
 
@@ -101,8 +102,8 @@ def test_delete_student_rolls_back_when_a_related_delete_fails(tmp_path) -> None
     from grading_run_store import GradingRunStore
 
     roster, db = _roster(tmp_path)
-    db.upsert_students([StudentRecord("S001", "匿名学生甲", "一班")])
-    student = db.list_students()[0]
+    db.students.upsert_students([StudentRecord("S001", "匿名学生甲", "一班")])
+    student = db.students.list_students()[0]
     _seed_student_history(db, int(student["id"]))
     with sqlite3.connect(db.db_path) as conn:
         session_id, paper_id, result_id = conn.execute(
@@ -146,6 +147,6 @@ def test_delete_student_rolls_back_when_a_related_delete_fails(tmp_path) -> None
         )
 
     assert str(caught.value) == "删除失败，学生和历史数据均未改变"
-    assert len(db.list_students()) == 1
+    assert len(db.students.list_students()) == 1
     assert roster.deletion_impact(int(student["id"])).counts == impact.counts
     assert run_store.counts(run.id)["graded"] == 1

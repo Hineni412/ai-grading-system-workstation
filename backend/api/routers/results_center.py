@@ -32,7 +32,7 @@ def get_results_center(
     ),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ResultsCenterResponse:
-    session = _require_session(db, session_id)
+    session = _require_session(db.sessions, session_id)
     snapshot = results_service.get_snapshot(
         session_id,
         session,

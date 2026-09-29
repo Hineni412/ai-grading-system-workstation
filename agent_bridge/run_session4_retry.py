@@ -38,7 +38,7 @@ def _current_scan_batch_id(exams_root: Path) -> str:
 def main() -> int:
     from agent_bridge.bridge_client import BridgeLLMClient
     from backend.jobs.grading_run import run_grading_job
-    from backend.repositories.compat import open_grading_repositories
+    from backend.repositories.grading_database import open_grading_repositories
     from path_manager import get_path_manager
 
     pm = get_path_manager()

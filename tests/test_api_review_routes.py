@@ -15,6 +15,7 @@ warnings.filterwarnings(
 )
 
 from fastapi.testclient import TestClient
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
@@ -26,11 +27,11 @@ def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
     )
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
 
     db_dir = tmp_path / "databases"
     db_dir.mkdir(parents=True, exist_ok=True)
-    db = DBManager(db_dir / "grading.db")
+    db = open_grading_repositories(db_dir / "grading.db")
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(
@@ -53,7 +54,7 @@ def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
         ),
         encoding="utf-8",
     )
-    session_id = db.create_grading_session("Exam A", str(rubric_path), "answer.json")
+    session_id = db.sessions.create_grading_session("Exam A", str(rubric_path), "answer.json")
     with sqlite3.connect(db.db_path) as conn:
         conn.row_factory = sqlite3.Row
         result_id = 0

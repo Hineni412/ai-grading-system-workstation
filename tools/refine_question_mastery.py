@@ -12,6 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from backend.repositories.grading_database import open_grading_repositories
+
 
 
 def read_only(path: Path) -> sqlite3.Connection:
@@ -28,7 +30,7 @@ def write_new(path: Path, payload: object) -> None:
 
 
 def prepare(args: argparse.Namespace) -> dict[str, object]:
-    from db_manager import DBManager
+    
     from question_bank.current_knowledge import CurrentKnowledgeResolver
     from question_bank.mastery.current import (
         CURRENT_MASTERY_PARAMETERS, CurrentMastery, CurrentMasteryCalculator,
@@ -57,8 +59,8 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
             raise ValueError("Exam title must identify exactly one active exam")
         session = dict(sessions[0])
         session_id = int(session["id"])
-        db = DBManager(data / "databases/grading_system.db", external_connection=grading)
-        rubric = db._load_session_rubric(session_id)
+        db = open_grading_repositories(data / "databases/grading_system.db", external_connection=grading)
+        rubric = db.results._load_session_rubric(session_id)
         questions = [dict(row) for row in qb.execute(
             "SELECT q.* FROM questions q WHERE q.is_deleted=0 AND EXISTS("
             "SELECT 1 FROM question_tags t WHERE t.question_id=q.id "
@@ -283,7 +285,7 @@ def compare(data: Path, output: Path, *, report_name: str = "exam_comparison.jso
 
 def verify_exam_snapshot(data: Path, snapshot: dict) -> dict[str, object]:
     """Compare only authorized exam rows, locks and selected rubric with the baseline."""
-    from db_manager import DBManager
+
     ids = sorted({r["question_id"] for r in snapshot["rows"]})
     marks = ",".join("?" for _ in ids)
     sid = snapshot["session"]["id"]
@@ -299,7 +301,7 @@ def verify_exam_snapshot(data: Path, snapshot: dict) -> dict[str, object]:
         locks = [dict(r) for r in connection.execute(f"SELECT student_id,question_id,score_awarded,max_score,revision FROM teacher_score_locks WHERE session_id=? AND question_id IN ({marks}) ORDER BY student_id,question_id", [sid,*ids])]
         if locks != sorted(snapshot["teacher_locks"],key=lambda r:(r["student_id"],r["question_id"])):
             raise ValueError("Teacher final decisions changed since baseline")
-        rubric = DBManager(data / "databases/grading_system.db",external_connection=connection)._load_session_rubric(sid)
+        rubric = open_grading_repositories(data / "databases/grading_system.db",external_connection=connection).results._load_session_rubric(sid)
         selected = [{k:v for k,v in q.items() if k!="question_image_base64"} for q in rubric["questions"] if q["question_id"] in snapshot["question_links"]]
         if selected != snapshot["rubric"]["questions"]:
             raise ValueError("Exam marking standard changed since baseline")

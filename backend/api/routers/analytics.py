@@ -39,7 +39,7 @@ def list_question_analysis(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: SessionAnalysisService = Depends(get_session_analysis_service),
 ) -> QuestionAnalysisListResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     clean_class_name = _clean_optional_text(class_name)
     clean_question_id = _clean_optional_text(question_id)
     rows = service.list_questions(session_id, class_name=clean_class_name)
@@ -78,7 +78,7 @@ def list_student_analysis(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: SessionAnalysisService = Depends(get_session_analysis_service),
 ) -> StudentAnalysisListResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     clean_question_id = question_id.strip()
     clean_class_name = _clean_optional_text(class_name)
     rows = service.list_students(
@@ -117,7 +117,7 @@ def _session_classes(
     return sorted(
         {
             str(row.get("class_name") or "未分班")
-            for row in db.get_session_results(int(session_id))
+            for row in db.results.get_session_results(int(session_id))
         }
     )
 

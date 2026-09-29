@@ -125,7 +125,7 @@ class TemplateUploadService:
         version_path = session_dir / "template-versions" / version_id
         session_dir.mkdir(parents=True, exist_ok=True)
         with get_answer_region_session_lock(session_dir):
-            session = db.get_grading_session(int(session_id))
+            session = db.sessions.get_grading_session(int(session_id))
             if session is None:
                 raise TemplateUploadError("grading session is missing")
             rubric = _load_json(
@@ -200,7 +200,7 @@ class TemplateUploadService:
                 mapping_targets = {
                     key: version_path / path.name for key, path in mapping_sources.items()
                 }
-                template_id = db.activate_session_template(
+                template_id = db.templates.activate_session_template(
                     int(session_id),
                     front_template_path=str(front_path),
                     back_template_path=str(back_path),
@@ -208,7 +208,7 @@ class TemplateUploadService:
                     template_config_path=str(mapping_targets["template_config_path"]),
                     regions_path=str(mapping_targets["regions_path"]),
                 )
-                template = db.get_session_template(int(session_id))
+                template = db.templates.get_session_template(int(session_id))
                 if template is None:
                     raise RuntimeError("template activation failed")
                 if activated_request_token is not None:
@@ -244,7 +244,7 @@ class TemplateUploadService:
     ) -> TemplateUploadResult:
         session_dir = self.templates_dir / f"session_{int(session_id)}"
         with get_answer_region_session_lock(session_dir):
-            template = db.get_session_template(int(session_id))
+            template = db.templates.get_session_template(int(session_id))
             if template is None:
                 raise FileNotFoundError("session template is missing")
             paths = {
@@ -306,7 +306,7 @@ class TemplateUploadService:
             raise TemplatePageAssignmentConflictError("invalid first page role")
         session_dir = self.templates_dir / f"session_{int(session_id)}"
         with get_answer_region_session_lock(session_dir):
-            template = db.get_session_template(int(session_id))
+            template = db.templates.get_session_template(int(session_id))
             if template is None:
                 raise FileNotFoundError("session template is missing")
             paths = {
@@ -387,7 +387,7 @@ class TemplateUploadService:
                     template=self.load_current(db=db, session_id=session_id),
                 )
 
-            changed = db.swap_template_page_assignment(
+            changed = db.templates.swap_template_page_assignment(
                 int(session_id),
                 int(template["id"]),
                 expected_front_path=str(template.get("front_template_path") or ""),
@@ -840,7 +840,7 @@ def _current_activation_token(
     session_dir: Path,
     session_id: int,
 ) -> str | None:
-    template = db.get_session_template(int(session_id))
+    template = db.templates.get_session_template(int(session_id))
     if template is None:
         return None
     try:

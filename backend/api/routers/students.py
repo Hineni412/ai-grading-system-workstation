@@ -326,9 +326,9 @@ def get_student_exam_results(
             "Student not found",
             {"student_id": int(student_id)},
         )
-    rows = db.get_active_assessment_evidence(student_ids=[int(student_id)])
+    rows = db.results.get_active_assessment_evidence(student_ids=[int(student_id)])
     if curriculum_volume_id is not None:
-        session_ids = {int(item["id"]) for item in db.list_grading_sessions()
+        session_ids = {int(item["id"]) for item in db.sessions.list_grading_sessions()
                        if curriculum_volume_id and item.get("curriculum_volume_id") == curriculum_volume_id
                        and not item.get("is_deleted")}
         rows = [row for row in rows if int(row["session_id"]) in session_ids]

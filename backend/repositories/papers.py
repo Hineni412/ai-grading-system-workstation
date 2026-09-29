@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import TYPE_CHECKING, Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
 from backend.status_contracts import validate_status
+
+if TYPE_CHECKING:
+    from backend.repositories.results import ResultRepositoryGateway
 
 
 class PaperRepository:
@@ -362,8 +366,14 @@ class PaperRepository:
 class PaperRepositoryGateway:
     """Open one owned or borrowed repository session per paper operation."""
 
-    def __init__(self, sessions: RepositorySessionProvider) -> None:
+    def __init__(
+        self,
+        sessions: RepositorySessionProvider,
+        *,
+        results: "ResultRepositoryGateway",
+    ) -> None:
         self._sessions = sessions
+        self._results = results
 
     def create_exam_paper(
         self,
@@ -479,3 +489,127 @@ class PaperRepositoryGateway:
             return PaperRepository(session).get_session_storage_path_rows(
                 session_id
             )
+
+    def get_session_progress(self, session_id: int) -> dict[str, int | float]:
+        source = self.get_session_progress_source(session_id)
+        total = source["total"]
+        matched = source["matched"]
+        unmatched = source["unmatched"]
+        graded = source["graded"]
+        failed = source["failed"]
+        in_progress = source["in_progress"]
+        absent = source["absent"]
+        scan_issue = source["scan_issue"]
+
+        done = graded + failed
+        progress_percent = round((done / matched) * 100, 2) if matched else 0.0
+        return {
+            "total_papers": int(total),
+            "matched_papers": int(matched),
+            "unmatched_papers": int(unmatched),
+            "graded_papers": int(graded),
+            "failed_papers": int(failed),
+            "grading_papers": int(in_progress),
+            "needs_human_review": int(source["review_count"]),
+            "absent_students": int(absent),
+            "scan_issue_students": int(scan_issue),
+            "progress_percent": progress_percent,
+        }
+
+    def list_session_anomalies(self, session_id: int) -> list[dict[str, Any]]:
+        """Return unmatched papers, scan issues, and failed papers without paths."""
+        items = self.get_session_anomaly_rows(session_id)
+        for row in self.list_failed_papers(int(session_id)):
+            paper_id = int(row["paper_id"])
+            items.append(
+                {
+                    "anomaly_id": f"grading_failed:{paper_id:020d}",
+                    "anomaly_type": "grading_failed",
+                    "display_name": f"批改失败试卷 #{paper_id}",
+                    "student_code": row.get("student_code"),
+                    "class_name": row.get("class_name"),
+                    "status": str(row.get("processing_status") or "failed"),
+                    "detail": row.get("error_message"),
+                    "created_at": row.get("created_at"),
+                }
+            )
+        return sorted(items, key=lambda item: (item["anomaly_type"], item["anomaly_id"]))
+
+    def list_failed_papers(self, session_id: int) -> list[dict[str, Any]]:
+        """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷，含学生姓名与错误信息。"""
+        items = self.get_failed_paper_rows(session_id)
+        for item in items:
+            item["error_message"] = sanitize_incomplete_failure_summary(item.get("error_message"))
+        existing_paper_ids = {int(item["paper_id"]) for item in items if item.get("paper_id") is not None}
+        for row in self._results.list_incomplete_results(session_id):
+            paper_id = int(row["paper_id"])
+            if paper_id in existing_paper_ids:
+                continue
+            items.append(
+                {
+                    "paper_id": paper_id,
+                    "ocr_name": row.get("ocr_name"),
+                    "student_name": row.get("student_name"),
+                    "student_code": row.get("student_code"),
+                    "class_name": row.get("class_name"),
+                    "processing_status": row.get("processing_status"),
+                    "error_message": "批改结果不完整，需补跑受影响大题",
+                    "created_at": None,
+                }
+            )
+            existing_paper_ids.add(paper_id)
+        return sorted(items, key=lambda item: int(item["paper_id"]))
+
+    def list_failed_papers_detailed(self, session_id: int) -> list[dict[str, Any]]:
+        """返回本场次中批改失败（processing_status='failed'、'grading'（非运行状态下）或含有局部失败降级）的所有试卷的详细信息，用于增量重试。"""
+        items = self.get_failed_paper_detail_rows(session_id)
+        existing_paper_ids = {int(item["paper_id"]) for item in items if item.get("paper_id") is not None}
+        for row in self._results.list_incomplete_results(session_id):
+            paper_id = int(row["paper_id"])
+            if paper_id in existing_paper_ids:
+                continue
+            items.append(
+                {
+                    "paper_id": paper_id,
+                    "front_image": row.get("front_image"),
+                    "back_image": row.get("back_image"),
+                    "ocr_name": row.get("ocr_name"),
+                    "student_id": row.get("student_id"),
+                    "match_status": row.get("match_status"),
+                }
+            )
+            existing_paper_ids.add(paper_id)
+        return items
+
+
+def sanitize_incomplete_failure_summary(value: Any, *, max_chars: int = 240) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"data:image/[^\s\"']+", "[图片数据已省略]", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\bAuthorization\b[\"']?\s*[:=]\s*[\"']?(?:(?:Bearer|Basic)\s+)?[^,\s;\"'}]+",
+        "Authorization=[已隐藏认证信息]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bBearer\s+[^,\s;\"'}]+",
+        "Bearer [已隐藏密钥]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?<![A-Za-z0-9])(?:[A-Za-z0-9_-]*api[_ -]?key)[\"']?\s*[:=]\s*[\"']?[^,\s;\"'}]+",
+        "[API密钥已隐藏]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]+\b", "[已隐藏密钥]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{128,}(?![A-Za-z0-9+/=_-])", "[长数据已省略]", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    limit = max(32, int(max_chars))
+    if len(text) > limit:
+        suffix = "…（内容已截断）"
+        text = text[: limit - len(suffix)].rstrip() + suffix
+    return text

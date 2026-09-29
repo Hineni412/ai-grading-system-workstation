@@ -25,6 +25,7 @@ from backend.jobs.config_generation import load_config_generation_input
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from db_manager import DBManager
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _client(
@@ -34,7 +35,7 @@ def _client(
 ) -> tuple[TestClient, DBManager, JobManager]:
     # db lives under a "databases" directory so load_editor_config infers
     # tmp_path as the controlled data root for the session config files.
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
     manager.register(
@@ -67,7 +68,7 @@ def _session(db: DBManager, tmp_path: Path) -> int:
     answer = tmp_path / "answer.json"
     rubric.write_text("{}", encoding="utf-8")
     answer.write_text("{}", encoding="utf-8")
-    return db.create_grading_session("Config Job", str(rubric), str(answer))
+    return db.sessions.create_grading_session("Config Job", str(rubric), str(answer))
 
 
 def test_config_generation_retry_rejects_unknown_external_request_outcome_without_confirmation(

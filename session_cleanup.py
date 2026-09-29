@@ -129,7 +129,7 @@ def _collect_session_file_paths(
     data_root: Path,
 ) -> set[Path]:
     files: set[Path] = set()
-    for raw_path in db.collect_session_storage_paths(session_id):
+    for raw_path in db.sessions.collect_session_storage_paths(session_id):
         resolved = _resolve_stored_candidate(raw_path, data_root)
         if resolved is not None and resolved.is_file():
             files.add(resolved)
@@ -142,7 +142,7 @@ def _collect_other_session_references(
     data_root: Path,
 ) -> set[Path]:
     refs: set[Path] = set()
-    for session in db.list_grading_sessions(include_deleted=True):
+    for session in db.sessions.list_grading_sessions(include_deleted=True):
         other_id = int(session["id"])
         if other_id == int(session_id):
             continue
@@ -442,7 +442,7 @@ def list_pending_session_permanent_deletions(
         except OSError:
             continue
         session_id = int(match.group(1))
-        if db.get_grading_session(session_id) is not None:
+        if db.sessions.get_grading_session(session_id) is not None:
             continue
         loaded = _read_staging_manifest(data_root, session_id)
         if loaded is None:
@@ -467,7 +467,7 @@ def preview_session_permanent_deletion(
     data_root = Path(data_root).resolve()
     if (
         _read_staging_manifest(data_root, int(session_id)) is not None
-        and db.get_grading_session(int(session_id)) is not None
+        and db.sessions.get_grading_session(int(session_id)) is not None
     ):
         _restore_staged_storage(data_root, int(session_id))
     files = _collect_session_file_paths(db, int(session_id), data_root)
@@ -687,7 +687,7 @@ def recover_interrupted_session_permanent_deletion(
     if loaded is None:
         return None
     _staging_dir, payload = loaded
-    if db.get_grading_session(int(session_id)) is not None:
+    if db.sessions.get_grading_session(int(session_id)) is not None:
         _restore_staged_storage(data_root, int(session_id))
         return None
 
@@ -735,7 +735,7 @@ def hard_delete_session_from_archive(
     )
     if recovered is not None:
         return recovered
-    session = db.get_grading_session(int(session_id))
+    session = db.sessions.get_grading_session(int(session_id))
     if session is None:
         raise ValueError(f"Session {session_id} does not exist.")
     files = _collect_session_file_paths(db, int(session_id), data_root)
@@ -754,7 +754,7 @@ def hard_delete_session_from_archive(
     deletion_committed = False
     try:
         if question_bank_db_path is None:
-            db_counts = db.hard_delete_grading_session(
+            db_counts = db.sessions.hard_delete_grading_session(
                 int(session_id),
                 expected_revision=expected_revision,
             )
@@ -769,7 +769,7 @@ def hard_delete_session_from_archive(
                 # This IMMEDIATE grading transaction is the final revision and
                 # active-work check. Question-bank changes are still uncommitted,
                 # and owned files are only staged for reversible deletion.
-                db_counts = db.hard_delete_grading_session(
+                db_counts = db.sessions.hard_delete_grading_session(
                     int(session_id),
                     expected_revision=expected_revision,
                 )

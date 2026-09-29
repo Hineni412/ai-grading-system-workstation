@@ -41,12 +41,12 @@ class OriginalPaperExporter:
         self.output_dir = output_dir
 
     def export_session_originals(self, session_id: int) -> Path:
-        results = self.db.get_session_results(session_id)
+        results = self.db.results.get_session_results(session_id)
         if not results:
             raise ValueError("当前考试批改暂无结果，无法导出原卷。")
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        session = self.db.get_grading_session(session_id)
+        session = self.db.sessions.get_grading_session(session_id)
         session_name = session.get("session_name") if session else f"考试批改_{session_id}"
         work_dir = self.output_dir / f"{safe_filename_fragment(session_name, '考试批改')}_批注原卷页面_{ts}"
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -72,7 +72,7 @@ class OriginalPaperExporter:
         expected_parent_ids: list[str] = []
         for result in sorted_results:
             result_id = int(result["result_id"])
-            details = self.db.get_result_details(result_id)
+            details = self.db.results.get_result_details(result_id)
             question_scores = aggregate_parent_question_scores(details, rubric)
             prepared_results.append((result, question_scores))
             for question_id in question_scores:
@@ -112,7 +112,7 @@ class OriginalPaperExporter:
         return pdf_path
 
     def _load_rubric(self, session_id: int) -> dict[str, Any]:
-        session = self.db.get_grading_session(session_id)
+        session = self.db.sessions.get_grading_session(session_id)
         if not session:
             raise PrintableScoreContractError("当前考试不存在，无法读取评分依据。")
         rubric_path = self._resolve_stored_file_path(session.get("rubric_path"))
@@ -135,7 +135,7 @@ class OriginalPaperExporter:
         results: list[dict[str, Any]],
     ) -> dict[str, Path]:
         paths: dict[str, Path] = {}
-        template = self.db.get_session_template(session_id)
+        template = self.db.templates.get_session_template(session_id)
         if template:
             for page in ("front", "back"):
                 path_value = template.get(f"{page}_template_path")

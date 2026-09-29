@@ -7,7 +7,8 @@ from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
 from backend.api.dependencies import get_grading_db
-from db_manager import DBManager
+from backend.repositories.grading_database import open_grading_repositories
+
 
 
 def _client_for_config(
@@ -16,7 +17,7 @@ def _client_for_config(
     rubric: dict,
     answer_key: dict,
 ) -> tuple[TestClient, int, Path, Path]:
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
     answer_path = tmp_path / "answer.json"
@@ -28,7 +29,7 @@ def _client_for_config(
         json.dumps(answer_key, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "Rubric compatibility",
         str(rubric_path),
         str(answer_path),

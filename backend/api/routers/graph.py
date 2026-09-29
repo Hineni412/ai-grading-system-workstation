@@ -215,7 +215,7 @@ def _attach_assessment_evidence(
     if not isinstance(items, list) or not items:
         return
     fetch = getattr(
-        getattr(diagnosis_service, "db", None),
+        getattr(getattr(diagnosis_service, "db", None), "results", None),
         "get_active_assessment_evidence",
         None,
     )

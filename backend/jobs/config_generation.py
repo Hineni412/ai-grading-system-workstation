@@ -453,7 +453,7 @@ def _run_config_generation_job_impl(
     question_bank_intake_runner: Callable[..., dict[str, object]] | None = None,
 ) -> dict[str, object]:
     session_id = _required_int(context.payload, "session_id")
-    session = db.get_grading_session(session_id)
+    session = db.sessions.get_grading_session(session_id)
     if session is None or bool(int(session.get("is_deleted") or 0)):
         raise ValueError("grading session is unavailable")
     mode = str(context.payload.get("mode") or "").strip()
@@ -707,7 +707,7 @@ def _run_config_generation_job_impl(
 
     def checkpoint(value: dict[str, Any]) -> None:
         with session_config_lock(Path(upload_config_dir), session_id):
-            current_session = db.get_grading_session(session_id)
+            current_session = db.sessions.get_grading_session(session_id)
             if (
                 current_session is None
                 or bool(int(current_session.get("is_deleted") or 0))
@@ -1265,7 +1265,7 @@ def _run_config_generation_job_impl(
                         }
                     )
         with session_config_lock(Path(upload_config_dir), session_id):
-            current_session = db.get_grading_session(session_id)
+            current_session = db.sessions.get_grading_session(session_id)
             if (
                 current_session is None
                 or bool(int(current_session.get("is_deleted") or 0))
@@ -1299,7 +1299,7 @@ def _run_config_generation_job_impl(
     )
     _set_mapping_result(summary, "reconfirm_required")
     with session_config_lock(Path(upload_config_dir), session_id):
-        current_session = db.get_grading_session(session_id)
+        current_session = db.sessions.get_grading_session(session_id)
         if (
             current_session is None
             or bool(int(current_session.get("is_deleted") or 0))
@@ -1786,7 +1786,7 @@ def _confirm_intake_source_links(
     loaded = load_editor_config(db, session_id)
     if not loaded.configured:
         raise ValueError("published grading config is unavailable")
-    session = db.get_grading_session(int(session_id))
+    session = db.sessions.get_grading_session(int(session_id))
     source_path_value = str((session or {}).get("source_paper_path") or "").strip()
     rubric = (
         loaded.payload.get("rubric")
@@ -1863,7 +1863,7 @@ def _confirm_intake_source_links(
         if str(item).strip()
     ]
     ready = confirmed > 0 and not unresolved_ids
-    db.update_question_bank_sync_state(
+    db.sessions.update_question_bank_sync_state(
         int(session_id),
         state="ready" if ready else "partial",
         details={

@@ -60,7 +60,7 @@ class SessionAnalysisService:
         class_name: str | None = None,
     ) -> list[QuestionAnalysisRow]:
         """Return legacy-equivalent class rows or merged all-class rows."""
-        session = self.db.get_grading_session(int(session_id))
+        session = self.db.sessions.get_grading_session(int(session_id))
         score_map, _type_map = load_session_score_type_maps(
             session,
             data_root=_data_root(self.db),
@@ -94,7 +94,7 @@ class SessionAnalysisService:
         if not raw_requested_question_id:
             return []
 
-        session = self.db.get_grading_session(int(session_id))
+        session = self.db.sessions.get_grading_session(int(session_id))
         score_map, _type_map = load_session_score_type_maps(
             session,
             data_root=_data_root(self.db),
@@ -114,12 +114,12 @@ class SessionAnalysisService:
         selected_parent_id = question_parent_id(requested_question_id)
         rows: list[StudentAnalysisRow] = []
 
-        for result in self.db.get_session_results(int(session_id)):
+        for result in self.db.results.get_session_results(int(session_id)):
             result_class_name = str(result.get("class_name") or "未分班")
             if class_name is not None and result_class_name != class_name:
                 continue
             result_id = int(result.get("result_id") or 0)
-            details = self.db.get_result_details(result_id)
+            details = self.db.results.get_result_details(result_id)
             normalized_details = normalize_question_analysis_details(
                 details,
                 score_map,
@@ -199,17 +199,17 @@ class SessionAnalysisService:
         score_map: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         if score_map is None:
-            session = self.db.get_grading_session(int(session_id))
+            session = self.db.sessions.get_grading_session(int(session_id))
             score_map, _type_map = load_session_score_type_maps(
                 session,
                 data_root=_data_root(self.db),
             )
         buckets: dict[tuple[str, str], dict[str, Any]] = {}
 
-        for result in self.db.get_session_results(int(session_id)):
+        for result in self.db.results.get_session_results(int(session_id)):
             class_name = str(result.get("class_name") or "未分班")
             result_id = int(result.get("result_id") or 0)
-            details = self.db.get_result_details(result_id)
+            details = self.db.results.get_result_details(result_id)
             for detail in normalize_question_analysis_details(details, score_map):
                 question_id = str(detail.get("question_id") or "").strip()
                 if not question_id:

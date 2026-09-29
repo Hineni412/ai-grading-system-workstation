@@ -12,6 +12,7 @@ warnings.filterwarnings(
 
 import pytest
 from fastapi.testclient import TestClient
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _seed_result(db, session_id: int) -> None:
@@ -50,9 +51,9 @@ def client_with_db_and_manager(tmp_path):
     )
     from backend.jobs.manager import JobContext, JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "grading.db")
+    db = open_grading_repositories(tmp_path / "grading.db")
     db.initialize()
     manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
 
@@ -96,7 +97,7 @@ def test_session_report_export_uses_new_job_after_score_revision_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, db, manager = client_with_db_and_manager
-    session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    session_id = db.sessions.create_grading_session("Exam A", "rubric.json", "answer.json")
     _seed_result(db, session_id)
     revisions = iter(("a" * 64, "b" * 64))
     monkeypatch.setattr(

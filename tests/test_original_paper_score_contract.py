@@ -39,6 +39,38 @@ def test_original_export_detects_template_anchors_once_and_renders_every_student
     class FakeDb:
         db_path = databases / "grading.db"
 
+        @property
+        def student_repository(self):
+            return self
+
+        @property
+        def session_repository(self):
+            return self
+
+        @property
+        def paper_repository(self):
+            return self
+
+        @property
+        def result_repository(self):
+            return self
+
+        @property
+        def review_repository(self):
+            return self
+
+        @property
+        def template_repository(self):
+            return self
+
+        @property
+        def settings_repository(self):
+            return self
+
+        @property
+        def report_repository(self):
+            return self
+
         def get_session_results(self, _session_id: int):
             return [
                 {

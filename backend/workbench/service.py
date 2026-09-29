@@ -29,11 +29,11 @@ class WorkbenchService:
     ) -> dict[str, Any]:
         """Aggregate existing read models without internal HTTP calls."""
         recent_sessions = []
-        for session in self.db.list_grading_sessions()[: int(recent_limit)]:
+        for session in self.db.sessions.list_grading_sessions()[: int(recent_limit)]:
             recent_sessions.append(
                 {
                     "session": _session_summary(session),
-                    "progress": self.db.get_session_progress(int(session["id"])),
+                    "progress": self.db.papers.get_session_progress(int(session["id"])),
                 }
             )
 
@@ -43,10 +43,10 @@ class WorkbenchService:
         anomalies = None
         recent_jobs: list[dict[str, Any]] = []
         if session_id is not None:
-            session = self.db.get_grading_session(int(session_id))
+            session = self.db.sessions.get_grading_session(int(session_id))
             if session is not None:
                 current_session = _session_summary(session)
-                progress = self.db.get_session_progress(int(session_id))
+                progress = self.db.papers.get_session_progress(int(session_id))
                 questions = self.review_service.list_questions(
                     int(session_id),
                     session,
@@ -91,7 +91,7 @@ class WorkbenchService:
     def list_anomalies(self, session_id: int) -> list[dict[str, Any]]:
         """Return sanitized stable anomaly rows."""
         items: list[dict[str, Any]] = []
-        for row in self.db.list_session_anomalies(int(session_id)):
+        for row in self.db.papers.list_session_anomalies(int(session_id)):
             item = dict(row)
             item["detail"] = sanitize_public_diagnostic_text(item.get("detail"))
             items.append(item)

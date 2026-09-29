@@ -409,7 +409,7 @@ class ManualReviewService:
         )
 
     def _load_max_score_map(self, session_id: int) -> dict[str, float]:
-        session = self.db.get_grading_session(session_id)
+        session = self.db.sessions.get_grading_session(session_id)
         if not session:
             return {}
 

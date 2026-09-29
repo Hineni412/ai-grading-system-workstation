@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _client_with_db(tmp_path):
     from backend.api.app import create_app
     from backend.api.dependencies import get_grading_db
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "grading.db")
+    db = open_grading_repositories(tmp_path / "grading.db")
     db.initialize()
     app = create_app()
     app.dependency_overrides[get_grading_db] = lambda: db
@@ -20,7 +21,7 @@ def test_student_workspace_and_import_commit_share_revision_contract(tmp_path) -
     from db_manager import StudentRecord
 
     client, db = _client_with_db(tmp_path)
-    db.upsert_students([StudentRecord("S001", "旧姓名", "一班")])
+    db.students.upsert_students([StudentRecord("S001", "旧姓名", "一班")])
 
     workspace = client.get(
         "/api/students/workspace?search=旧姓名&class_name=一班&page=1&page_size=50"
@@ -76,8 +77,8 @@ def test_student_delete_requires_impact_revision_and_confirmation(tmp_path) -> N
     from db_manager import StudentRecord
 
     client, db = _client_with_db(tmp_path)
-    db.upsert_students([StudentRecord("S001", "Alice", "Class 1")])
-    student_id = db.list_students()[0]["id"]
+    db.students.upsert_students([StudentRecord("S001", "Alice", "Class 1")])
+    student_id = db.students.list_students()[0]["id"]
 
     impact = client.get(f"/api/students/{student_id}/deletion-impact")
     unconfirmed = client.delete(
@@ -93,7 +94,7 @@ def test_student_delete_requires_impact_revision_and_confirmation(tmp_path) -> N
     assert impact.json()["counts"]["deleted_students"] == 1
     assert unconfirmed.status_code == 422
     assert unconfirmed.json()["error"]["code"] == "student_roster_invalid"
-    assert db.list_students()[0]["student_code"] == "S001"
+    assert db.students.list_students()[0]["student_code"] == "S001"
 
 
 @pytest.mark.parametrize("run_state", ["running", "pause_requested", "paused"])
@@ -105,9 +106,9 @@ def test_student_delete_is_rejected_while_grading_is_active(
     from grading_run_store import GradingRunStore
 
     client, db = _client_with_db(tmp_path)
-    db.upsert_students([StudentRecord("S001", "Alice", "Class 1")])
-    student_id = int(db.list_students()[0]["id"])
-    session_id = db.create_grading_session(
+    db.students.upsert_students([StudentRecord("S001", "Alice", "Class 1")])
+    student_id = int(db.students.list_students()[0]["id"])
+    session_id = db.sessions.create_grading_session(
         "Active grading", "rubric.json", "answer.json"
     )
     run_store = GradingRunStore(db.db_path)
@@ -144,7 +145,7 @@ def test_student_delete_is_rejected_while_grading_is_active(
             "request_id": "rid-delete-active-grading",
         }
     }
-    assert db.list_students()[0]["student_code"] == "S001"
+    assert db.students.list_students()[0]["student_code"] == "S001"
     assert run_store.get_run(run.id).state == run_state
     assert run_store.counts(run.id)["grading"] == 1
     assert list(db.backup_dir.glob("grading_before_delete_student_*.db")) == []

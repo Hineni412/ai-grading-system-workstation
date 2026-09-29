@@ -59,7 +59,7 @@ def _write_papers_index(
         (work_dir / "scan_decisions_state.json").read_text(encoding="utf-8")
     )
     groups = apply_scan_manual_decisions(
-        analysis, state["internal_decisions"], db.list_students()
+        analysis, state["internal_decisions"], db.students.list_students()
     )
     entries = build_paper_entries(groups)
     index = {
@@ -84,7 +84,7 @@ def _write_papers_index(
 def main() -> int:
     from agent_bridge.bridge_client import BridgeLLMClient
     from backend.jobs.grading_run import run_grading_job
-    from backend.repositories.compat import open_grading_repositories
+    from backend.repositories.grading_database import open_grading_repositories
     from path_manager import get_path_manager
 
     pm = get_path_manager()

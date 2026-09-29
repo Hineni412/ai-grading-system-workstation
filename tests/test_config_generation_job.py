@@ -46,6 +46,7 @@ from question_id_contract import canonicalize_grading_config_payload
 from question_bank.database.schema import initialize_database
 from question_bank.services.source_paper_archive_service import archive_source_bytes
 from session_manager import save_generated_config
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _minimal_input() -> dict[str, object]:
@@ -219,7 +220,7 @@ def _job_context(
 def _db_with_session(tmp_path: Path) -> tuple[DBManager, int, tuple[str, str]]:
     databases_dir = tmp_path / "databases"
     databases_dir.mkdir(parents=True, exist_ok=True)
-    db = DBManager(databases_dir / "grading.db")
+    db = open_grading_repositories(databases_dir / "grading.db")
     db.initialize()
     initial_dir = tmp_path / "initial"
     rubric_path, answer_path = save_generated_config(
@@ -227,7 +228,7 @@ def _db_with_session(tmp_path: Path) -> tuple[DBManager, int, tuple[str, str]]:
         _valid_config_payload(),
         "initial",
     )
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "Config Job Exam",
         str(rubric_path),
         str(answer_path),
@@ -303,7 +304,7 @@ def test_config_generation_job_saves_partial_draft_without_binding_session(
         llm_client_factory=lambda: object(),
     )
 
-    session = db.get_grading_session(session_id)
+    session = db.sessions.get_grading_session(session_id)
     assert session is not None
     assert (session["rubric_path"], session["answer_key_path"]) == old_paths
     assert result["outcome"] == "partial"
@@ -333,7 +334,7 @@ def test_config_generation_job_does_not_overwrite_manual_config_change(
     def change_config_then_return(
         *_args: object, **_kwargs: object
     ) -> dict[str, object]:
-        db.update_grading_session_config(
+        db.sessions.update_grading_session_config(
             session_id,
             rubric_path=str(manual_rubric),
             answer_key_path=str(manual_answer),
@@ -353,7 +354,7 @@ def test_config_generation_job_does_not_overwrite_manual_config_change(
             llm_client_factory=lambda: object(),
         )
 
-    session = db.get_grading_session(session_id)
+    session = db.sessions.get_grading_session(session_id)
     assert session is not None
     assert session["rubric_path"] == str(manual_rubric)
     assert session["answer_key_path"] == str(manual_answer)
@@ -363,7 +364,7 @@ def test_config_generation_job_does_not_overwrite_manual_config_change(
 
 def _refine_context(tmp_path: Path):
     db, session_id, old_paths = _db_with_session(tmp_path)
-    db.bind_grading_session_source(
+    db.sessions.bind_grading_session_source(
         session_id,
         source_paper_path="papers/original.docx",
         source_paper_sha256="e" * 64,
@@ -440,7 +441,7 @@ def test_refine_job_preserves_teacher_part_ids_and_calls_factory_once(
 
     assert result["outcome"] == "complete"
     assert calls == 1
-    current = db.get_grading_session(session_id)
+    current = db.sessions.get_grading_session(session_id)
     assert (current["rubric_path"], current["answer_key_path"]) != old_paths
     assert current["source_paper_path"] == "papers/original.docx"
     assert current["source_paper_sha256"] == "e" * 64
@@ -1068,7 +1069,7 @@ def test_deferred_intake_blocks_when_asset_decisions_go_stale(
 
     assert result["question_bank_sync_state"] == "failed"
     assert "图片归属决定已失效" in str(result["question_bank_sync_error"])
-    session = db.get_grading_session(session_id)
+    session = db.sessions.get_grading_session(session_id)
     assert session is not None
     assert session["question_bank_sync_state"] == "failed"
     assert "asset_decisions_stale" in str(

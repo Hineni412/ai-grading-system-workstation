@@ -30,6 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path[:1]:
     sys.path.insert(0, str(REPO_ROOT))
 
+from backend.repositories.grading_database import open_grading_repositories
 from tools import p1_29_acceptance as workspace_tools
 from question_id_contract import QuestionIdCatalog, QuestionIdContractError
 
@@ -934,10 +935,10 @@ def _pending_teacher_review_count(
 ) -> int:
     try:
         from backend.review.service import ReviewApplicationService
-        from db_manager import DBManager
+        
 
-        db = DBManager(database)
-        session = db.get_grading_session(session_id)
+        db = open_grading_repositories(database)
+        session = db.sessions.get_grading_session(session_id)
         if not session:
             raise AcceptanceError("acceptance session is missing or deleted")
         questions = ReviewApplicationService(db).list_questions(
@@ -2469,7 +2470,7 @@ def mount_manual_continuation(
                 from backend.api.schemas.config import (
                     ConfigGenerationRetryRequest,
                 )
-                from db_manager import DBManager
+                
 
                 path_manager = getattr(app.state, "path_manager", None)
                 if path_manager is None:
@@ -2486,7 +2487,7 @@ def mount_manual_continuation(
                         retry_question_ids=retry_question_ids,
                         client_request_token=token,
                     ),
-                    DBManager(path_manager.db_path),
+                    open_grading_repositories(path_manager.db_path),
                     manager,
                 )
             job_id = int(
@@ -3145,10 +3146,10 @@ def create_acceptance_app(
         raise AcceptanceError("acceptance runtime resolved outside the workspace")
     paths.ensure_directories()
 
-    from db_manager import DBManager
+    
     from question_bank.database.schema import initialize_database
 
-    DBManager(paths.db_path).initialize()
+    open_grading_repositories(paths.db_path).initialize()
     initialize_database(paths.qb_db_path)
 
     from backend.api.app import create_app

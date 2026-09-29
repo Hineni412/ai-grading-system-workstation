@@ -29,7 +29,7 @@ def session_grading_config_fingerprint(
     grading_model: str | None = None,
 ) -> str:
     db = as_grading_repositories(db)
-    session = db.get_grading_session(int(session_id))
+    session = db.sessions.get_grading_session(int(session_id))
     if session is None:
         raise ValueError("grading session was not found")
     rubric_path = resolve_stored_file_path(

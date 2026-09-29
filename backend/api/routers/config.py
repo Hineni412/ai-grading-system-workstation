@@ -285,7 +285,7 @@ def get_config_source_submission(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         return source_service.submission_public(
             session_id=session_id,
@@ -326,7 +326,7 @@ def get_active_config_source(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         return source_service.load_active_public(session_id=session_id)
     except ConfigSourceError as exc:
@@ -350,7 +350,7 @@ def get_active_config_source_duplicates(
 ) -> dict[str, Any]:
     from backend.config_workspace.duplicates import source_duplicate_preview
 
-    session = _require_session(db, session_id)
+    session = _require_session(db.sessions, session_id)
     try:
         return source_duplicate_preview(
             service=source_service,
@@ -383,7 +383,7 @@ def get_config_source(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> dict[str, Any]:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         return source_service.load_public(
             session_id=session_id,
@@ -405,7 +405,7 @@ def get_config_source_asset(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> Response:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     if asset_kind not in {"question", "answer"}:
         raise ApiError(404, "config_asset_not_found", "Config asset not found")
     try:
@@ -437,7 +437,7 @@ def get_indexed_config_source_asset(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> Response:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     if asset_kind not in {"question", "answer"} or asset_index < 0:
         raise ApiError(404, "config_asset_not_found", "Config asset not found")
     try:
@@ -468,7 +468,7 @@ def get_config_source_ambiguous_asset(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> Response:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         content, media_type = source_service.read_ambiguous_asset(
             session_id=session_id,
@@ -538,7 +538,7 @@ def get_session_config(
     session_id: int,
     db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> SessionConfigResponse:
-    return _config_response(_require_session(db, session_id))
+    return _config_response(_require_session(db.sessions, session_id))
 
 
 @router.put("/sessions/{session_id}/config", response_model=SessionConfigResponse)
@@ -587,7 +587,7 @@ def save_session_config(
             "Config payload is invalid",
             {"session_id": int(session_id)},
         ) from exc
-    return _config_response(_require_session(db, session_id))
+    return _config_response(_require_session(db.sessions, session_id))
 
 
 def _editor_commands(values: list[Any]) -> tuple[Any, ...]:
@@ -788,7 +788,7 @@ def _require_active_session(
     db: GradingRepositoryAccess,
     session_id: int,
 ) -> dict[str, Any]:
-    session = _require_session(db, session_id)
+    session = _require_session(db.sessions, session_id)
     if bool(int(session.get("is_deleted") or 0)):
         raise ApiError(
             404,

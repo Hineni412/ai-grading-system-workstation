@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import random
+from pathlib import Path
 from typing import Any
 
 from backend.domain_models import (
@@ -11,9 +13,25 @@ from backend.domain_models import (
     detail_ai_score,
 )
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
-from backend.repositories.papers import PaperRepository
-from grading_completeness import audit_grading_details, merge_detail_metadata, details_require_review
+from backend.repositories.papers import (
+    PaperRepository,
+    sanitize_incomplete_failure_summary,
+)
+from grading_completeness import (
+    audit_grading_details,
+    merge_detail_metadata,
+    details_require_review,
+    resolve_grading_completeness,
+)
+from path_manager import resolve_stored_file_path
 from solution_answer_guard import integer_business_score
+
+try:
+    from question_bank.taxonomy.registry import (
+        canonicalize_knowledge as _registry_canonicalize,
+    )
+except Exception:
+    _registry_canonicalize = None  # type: ignore[assignment]
 
 
 def _validate_new_ai_details(
@@ -949,8 +967,22 @@ class ResultRepository:
 class ResultRepositoryGateway:
     """Open one repository session per result operation."""
 
-    def __init__(self, sessions: RepositorySessionProvider) -> None:
+    def __init__(
+        self,
+        sessions: RepositorySessionProvider,
+        *,
+        db_path: Path | None = None,
+    ) -> None:
         self._sessions = sessions
+        self._db_path = (
+            Path(db_path)
+            if db_path is not None
+            else getattr(sessions, "database", None)
+        )
+        self._rubric_map_cache: dict[int, dict[str, dict[str, Any]]] = {}
+
+    def _invalidate_rubric_maps(self, session_id: int) -> None:
+        self._rubric_map_cache.pop(session_id, None)
 
     def save_session_result(
         self,
@@ -1136,6 +1168,499 @@ class ResultRepositoryGateway:
                 student_id,
             )
 
+    def list_incomplete_results(self, session_id: int) -> list[dict[str, Any]]:
+        rubric = self._load_session_rubric(session_id)
+        result_rows, details_by_result = self.get_session_completeness_source(
+            session_id
+        )
+        if not result_rows:
+            return []
+
+        items: list[dict[str, Any]] = []
+        for row in result_rows:
+            parsed_raw_json = _safe_json_loads(row["raw_json"])
+            completeness = resolve_grading_completeness(
+                parsed_raw_json,
+                rubric=rubric,
+                details=details_by_result.get(int(row["result_id"]), []),
+            )
+            if not isinstance(completeness, dict):
+                continue
+            if completeness.get("status") not in {"incomplete", "invalid"}:
+                continue
+            retry_attempts = _grading_retry_attempts(parsed_raw_json)
+            items.append(
+                {
+                    "result_id": int(row["result_id"]),
+                    "student_id": int(row["student_id"]),
+                    "paper_id": int(row["paper_id"]),
+                    "student_code": row["student_code"],
+                    "student_name": row["student_name"],
+                    "class_name": row["class_name"],
+                    "ocr_name": row["ocr_name"],
+                    "front_image": row["front_image"],
+                    "back_image": row["back_image"],
+                    "match_status": row["match_status"],
+                    "processing_status": row["processing_status"],
+                    "status": completeness["status"],
+                    "missing_question_ids": list(completeness.get("missing_question_ids", [])),
+                    "affected_major_question_ids": list(completeness.get("affected_major_question_ids", [])),
+                    "last_failure_reason": _last_incomplete_failure_reason(
+                        parsed_raw_json,
+                        fallback_error=row["error_message"],
+                        completeness_status=str(completeness.get("status") or ""),
+                    ),
+                    "retry_attempt_count": len(retry_attempts),
+                }
+            )
+        return items
+
+    def get_session_weak_points(self, session_id: int, student_id: int | None = None) -> list[dict[str, Any]]:
+        rows = self.get_session_weak_point_rows(
+            session_id,
+            student_id,
+        )
+        return self._build_weak_point_rows(rows)
+
+    def get_active_global_weak_points(
+        self,
+        student_id: int | None = None,
+        session_ids: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self.get_active_weak_point_rows(
+            student_id,
+            session_ids,
+        )
+        return self._build_weak_point_rows(rows)
+
+    def get_active_assessment_evidence(
+        self,
+        *,
+        student_ids: list[str] | tuple[str, ...] = (),
+        session_ids: list[int] | tuple[int, ...] = (),
+    ) -> list[dict[str, Any]]:
+        normalized_students = [int(value) for value in student_ids]
+        normalized_sessions = [int(value) for value in session_ids]
+        rows = self.get_active_assessment_rows(
+            student_ids=normalized_students,
+            session_ids=normalized_sessions,
+        )
+        enriched = self._enrich_detail_rows(rows)
+        for row in enriched:
+            row["full_score"] = _safe_float(row.get("max_score"), 0.0)
+        return enriched
+
+    def get_active_global_error_points(
+        self,
+        student_id: int | None = None,
+        session_ids: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self.get_active_error_point_rows(
+            student_id,
+            session_ids,
+        )
+        return self._build_error_point_rows(rows)
+
+    def get_active_wrong_items_for_knowledge(self, student_id: int, knowledge_id: str) -> list[dict[str, Any]]:
+        return [
+            item for item in self.get_active_items_for_knowledge(student_id, knowledge_id)
+            if item.get("is_deducted")
+        ]
+
+    def get_active_items_for_knowledge(self, student_id: int, knowledge_id: str) -> list[dict[str, Any]]:
+        rows = self.get_active_detail_rows(
+            student_id=student_id
+        )
+
+        result: list[dict[str, Any]] = []
+        rubric_cache: dict[int, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            session_id = int(row.get("session_id") or 0)
+            if session_id not in rubric_cache:
+                rubric_cache[session_id] = self._load_rubric_maps_for_session(session_id)
+            qid = str(row.get("question_id") or "")
+            row_knowledge_ids = _knowledge_ids_from_result_row(row)
+            if not _knowledge_id_matches(knowledge_id, row_knowledge_ids):
+                continue
+            full_score = rubric_cache[session_id]["score"].get(qid)
+            awarded = _safe_float(row.get("score_awarded"), 0.0)
+            reason = str(row.get("deduction_reason") or "")
+            max_score = full_score if full_score is not None else awarded
+            row["max_score"] = max_score
+            row["score_rate"] = round(awarded / max_score * 100, 2) if max_score else 0.0
+            row["is_deducted"] = _is_deducted(awarded, full_score, reason)
+            row["deduction_amount"] = max(0.0, round((max_score or 0.0) - awarded, 2))
+            row["knowledge_label"] = rubric_cache[session_id]["label"].get(
+                knowledge_id,
+                _fallback_knowledge_label(knowledge_id, qid),
+            )
+            result.append(row)
+        return sorted(
+            result,
+            key=lambda item: (
+                float(item.get("score_rate") or 0),
+                0 if item.get("is_deducted") else 1,
+                str(item.get("graded_at") or ""),
+            ),
+        )
+
+    def get_representative_wrong_items_for_knowledge(
+        self,
+        knowledge_id: str,
+        session_ids: list[int] | None = None,
+        limit: int = 1,
+    ) -> list[dict[str, Any]]:
+        rows = self._query_active_detail_rows(session_ids=session_ids)
+        result = self._enrich_detail_rows(rows, knowledge_id=knowledge_id)
+        wrong_items = [item for item in result if item.get("is_deducted")]
+        random.shuffle(wrong_items)
+        return sorted(
+            wrong_items,
+            key=lambda item: (
+                float(item.get("score_rate") or 0),
+                str(item.get("graded_at") or ""),
+            ),
+        )[: max(1, int(limit))]
+
+    def get_representative_wrong_items_for_error(
+        self,
+        error_category: str,
+        student_id: int | None = None,
+        session_ids: list[int] | None = None,
+        limit: int = 1,
+    ) -> list[dict[str, Any]]:
+        rows = self._query_active_detail_rows(student_id=student_id, session_ids=session_ids)
+        result: list[dict[str, Any]] = []
+        for item in self._enrich_detail_rows(rows):
+            if not item.get("is_deducted"):
+                continue
+            category = _normalize_error_category(item.get("error_category"), str(item.get("deduction_reason") or ""))
+            if category != error_category:
+                continue
+            item["error_category"] = category
+            if not item.get("error_summary"):
+                item["error_summary"] = _short_reason(str(item.get("deduction_reason") or ""))
+            result.append(item)
+        random.shuffle(result)
+        return sorted(
+            result,
+            key=lambda item: (
+                float(item.get("score_rate") or 0),
+                str(item.get("graded_at") or ""),
+            ),
+        )[: max(1, int(limit))]
+
+    def _query_active_detail_rows(
+        self,
+        *,
+        student_id: int | None = None,
+        session_ids: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.get_active_detail_rows(
+            student_id=student_id,
+            session_ids=session_ids,
+        )
+
+    def _enrich_detail_rows(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        knowledge_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        rubric_cache: dict[int, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            session_id = int(row.get("session_id") or 0)
+            if session_id not in rubric_cache:
+                rubric_cache[session_id] = self._load_rubric_maps_for_session(session_id)
+            qid = str(row.get("question_id") or "")
+            row_knowledge_ids = _knowledge_ids_from_result_row(row)
+            if knowledge_id is not None and not _knowledge_id_matches(knowledge_id, row_knowledge_ids):
+                continue
+            full_score = rubric_cache[session_id]["score"].get(qid)
+            awarded = _safe_float(row.get("score_awarded"), 0.0)
+            reason = str(row.get("deduction_reason") or "")
+            max_score = full_score if full_score is not None else awarded
+            row = dict(row)
+            row["max_score"] = max_score
+            row["score_rate"] = round(awarded / max_score * 100, 2) if max_score else 0.0
+            row["is_deducted"] = _is_deducted(awarded, full_score, reason)
+            row["deduction_amount"] = max(0.0, round((max_score or 0.0) - awarded, 2))
+            if knowledge_id:
+                row["knowledge_label"] = rubric_cache[session_id]["label"].get(
+                    knowledge_id,
+                    _fallback_knowledge_label(knowledge_id, qid),
+                )
+            result.append(row)
+        return result
+
+    def _build_weak_point_rows(self, detail_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[Any, str], dict[str, Any]] = {}
+        rubric_cache: dict[int, dict[str, dict[str, Any]]] = {}
+
+        for row in detail_rows:
+            session_id = int(row.get("session_id") or 0)
+            if session_id not in rubric_cache:
+                rubric_cache[session_id] = self._load_rubric_maps_for_session(session_id)
+            maps = rubric_cache[session_id]
+            qid = str(row.get("question_id") or "")
+            knowledge_ids = _knowledge_ids_from_result_row(row)
+            full_score = maps["score"].get(qid)
+            awarded = _safe_float(row.get("score_awarded"), 0.0)
+            full_score_value = _safe_float(full_score, 0.0)
+            if full_score_value > 0:
+                score_for_rate = min(max(awarded, 0.0), full_score_value)
+            else:
+                full_score_value = max(awarded, 0.0)
+                score_for_rate = max(awarded, 0.0)
+            reason = str(row.get("deduction_reason") or "").strip()
+            deducted = _is_deducted(awarded, full_score, reason)
+
+            for knowledge_id in knowledge_ids:
+                # 当 knowledge_id 是 UNKNOWN 时，尝试获取该题目特定的中文标签
+                if knowledge_id == "UNKNOWN":
+                    label = maps["label"].get(f"{qid}_UNKNOWN")
+                    # 如果找到了中文标签，则直接用该中文标签作为 knowledge_id，实现按实际知识点名称分组
+                    if label and _has_chinese(label):
+                        effective_kid = label
+                    else:
+                        effective_kid = qid
+                else:
+                    effective_kid = knowledge_id
+                    label = maps["label"].get(effective_kid)
+
+                if not label:
+                    # 从 registry 查找标准中文名称（处理 C2_01、K1、JSSX_xxx 等各种代码格式）
+                    label = _knowledge_label_from_registry(effective_kid)
+                if not label:
+                    label = _fallback_knowledge_label(effective_kid, qid)
+                key = (row.get("student_id"), _knowledge_group_key(effective_kid, label))
+                item = grouped.setdefault(
+                    key,
+                    {
+                        "student_id": row.get("student_id"),
+                        "student_code": row.get("student_code"),
+                        "student_name": row.get("student_name"),
+                        "class_name": row.get("class_name"),
+                        "knowledge_id": effective_kid,
+                        "knowledge_ids": [],
+                        "knowledge_label": label,
+                        "score_sum": 0.0,
+                        "full_score_sum": 0.0,
+                        "item_count": 0,
+                        "deduction_count": 0,
+                        "exam_ids": set(),
+                        "reasons": set(),
+                    },
+                )
+                if effective_kid not in item["knowledge_ids"]:
+                    item["knowledge_ids"].append(effective_kid)
+                item["score_sum"] += score_for_rate
+                item["full_score_sum"] += full_score_value
+                item["item_count"] += 1
+                item["exam_ids"].add(session_id)
+                if deducted:
+                    item["deduction_count"] += 1
+                    if _is_real_deduction_reason(reason):
+                        item["reasons"].add(reason)
+
+        result: list[dict[str, Any]] = []
+        for item in grouped.values():
+            item_count = max(1, int(item["item_count"]))
+            full_score_sum = float(item.get("full_score_sum") or 0.0)
+            score_sum = float(item.get("score_sum") or 0.0)
+            weighted_score_rate = round(score_sum / full_score_sum * 100, 2) if full_score_sum > 0 else 100.0
+            result.append(
+                {
+                    "student_id": item["student_id"],
+                    "student_code": item["student_code"],
+                    "student_name": item["student_name"],
+                    "class_name": item["class_name"],
+                    "knowledge_id": item["knowledge_id"],
+                    "knowledge_ids": item["knowledge_ids"],
+                    "knowledge_label": item["knowledge_label"],
+                    "avg_score": round(score_sum / item_count, 2),
+                    "score_sum": round(score_sum, 2),
+                    "full_score_sum": round(full_score_sum, 2),
+                    "weighted_score_rate": weighted_score_rate,
+                    "deduction_count": int(item["deduction_count"]),
+                    "item_count": item_count,
+                    "exam_count": len(item["exam_ids"]),
+                    "sample_reasons": "；".join(sorted(item["reasons"])),
+                }
+            )
+
+        return sorted(
+            result,
+            key=lambda item: (
+                _safe_float(item.get("weighted_score_rate"), 100.0),
+                -int(item.get("deduction_count") or 0),
+                str(item.get("knowledge_id") or ""),
+            ),
+        )
+
+    def _build_error_point_rows(self, detail_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[Any, str], dict[str, Any]] = {}
+        rubric_cache: dict[int, dict[str, dict[str, Any]]] = {}
+
+        for row in detail_rows:
+            session_id = int(row.get("session_id") or 0)
+            if session_id not in rubric_cache:
+                rubric_cache[session_id] = self._load_rubric_maps_for_session(session_id)
+            qid = str(row.get("question_id") or "")
+            full_score = rubric_cache[session_id]["score"].get(qid)
+            awarded = _safe_float(row.get("score_awarded"), 0.0)
+            reason = str(row.get("deduction_reason") or "").strip()
+            if not _is_deducted(awarded, full_score, reason):
+                continue
+
+            full_score_value = _safe_float(full_score, 0.0)
+            if full_score_value <= 0:
+                full_score_value = max(awarded, 0.0)
+            category = _normalize_error_category(row.get("error_category"), reason)
+            summary = str(row.get("error_summary") or "").strip() or _short_reason(reason)
+            key = (row.get("student_id"), category)
+            item = grouped.setdefault(
+                key,
+                {
+                    "student_id": row.get("student_id"),
+                    "student_code": row.get("student_code"),
+                    "student_name": row.get("student_name"),
+                    "class_name": row.get("class_name"),
+                    "error_category": category,
+                    "score_sum": 0.0,
+                    "full_score_sum": 0.0,
+                    "item_count": 0,
+                    "deduction_count": 0,
+                    "exam_ids": set(),
+                    "summaries": set(),
+                },
+            )
+            item["score_sum"] += min(max(awarded, 0.0), full_score_value)
+            item["full_score_sum"] += full_score_value
+            item["item_count"] += 1
+            item["deduction_count"] += 1
+            item["exam_ids"].add(session_id)
+            if summary:
+                item["summaries"].add(summary)
+
+        result: list[dict[str, Any]] = []
+        for item in grouped.values():
+            full_score_sum = float(item.get("full_score_sum") or 0.0)
+            score_sum = float(item.get("score_sum") or 0.0)
+            score_rate = round(score_sum / full_score_sum * 100, 2) if full_score_sum > 0 else 0.0
+            result.append(
+                {
+                    "student_id": item["student_id"],
+                    "student_code": item["student_code"],
+                    "student_name": item["student_name"],
+                    "class_name": item["class_name"],
+                    "error_category": item["error_category"],
+                    "score_sum": round(score_sum, 2),
+                    "full_score_sum": round(full_score_sum, 2),
+                    "weighted_score_rate": score_rate,
+                    "deduction_count": int(item["deduction_count"]),
+                    "item_count": int(item["item_count"]),
+                    "exam_count": len(item["exam_ids"]),
+                    "sample_reasons": "；".join(sorted(item["summaries"])),
+                }
+            )
+        return sorted(
+            result,
+            key=lambda item: (
+                -int(item.get("deduction_count") or 0),
+                _safe_float(item.get("weighted_score_rate"), 100.0),
+                str(item.get("error_category") or ""),
+            ),
+        )
+
+    def _load_rubric_maps_for_session(self, session_id: int) -> dict[str, dict[str, Any]]:
+        if session_id in self._rubric_map_cache:
+            return self._rubric_map_cache[session_id]
+
+        session = self._get_grading_session_row(session_id)
+        score_map: dict[str, float] = {}
+        label_map: dict[str, str] = {}
+        knowledge_map: dict[str, list[str]] = {}
+        result = {"score": score_map, "label": label_map, "knowledge": knowledge_map}
+
+        if not session:
+            self._rubric_map_cache[session_id] = result
+            return result
+
+        rubric_path = self._resolve_stored_file_path(session.get("rubric_path"))
+        if not rubric_path.exists():
+            self._rubric_map_cache[session_id] = result
+            return result
+        try:
+            rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+        except Exception:
+            self._rubric_map_cache[session_id] = result
+            return result
+
+        questions = rubric.get("questions") if isinstance(rubric, dict) else []
+        if not isinstance(questions, list):
+            return {"score": score_map, "label": label_map, "knowledge": knowledge_map}
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            qid = str(question.get("question_id") or "").strip()
+            knowledge_ids = _knowledge_ids_from_question(question)
+            if qid:
+                score_map[qid] = _safe_float(question.get("max_score"), 0.0)
+                knowledge_map[qid] = knowledge_ids
+            for kid in knowledge_ids:
+                lbl = _knowledge_label_from_question(kid, question)
+                label_map.setdefault(kid, lbl)
+                if kid == "UNKNOWN" and qid:
+                    label_map[f"{qid}_UNKNOWN"] = lbl
+            parts = question.get("parts")
+            if isinstance(parts, list):
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    pid = str(part.get("part_id") or "").strip()
+                    if pid:
+                        score_map[pid] = _safe_float(part.get("part_score"), 0.0)
+                        knowledge_map[pid] = _normalize_knowledge_ids(
+                            part.get("knowledge_points") or part.get("knowledge_ids"),
+                            part.get("knowledge_id"),
+                        ) or knowledge_ids
+                        for kid in knowledge_map[pid]:
+                            lbl = _knowledge_label_from_question(kid, question)
+                            label_map.setdefault(kid, lbl)
+                            if kid == "UNKNOWN" and pid:
+                                label_map[f"{pid}_UNKNOWN"] = lbl
+        return {"score": score_map, "label": label_map, "knowledge": knowledge_map}
+
+    def _load_session_rubric(self, session_id: int) -> dict[str, Any]:
+        session = self._get_grading_session_row(session_id)
+        if not session:
+            return {}
+        rubric_path = self._resolve_stored_file_path(session.get("rubric_path"))
+        if not rubric_path.exists():
+            return {}
+        try:
+            rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return rubric if isinstance(rubric, dict) else {}
+
+    def _get_grading_session_row(self, session_id: int) -> dict[str, Any] | None:
+        from backend.repositories.sessions import SessionRepository
+
+        with self._sessions.session(read_only=True) as session:
+            return SessionRepository(session).get_grading_session(session_id)
+
+    def _resolve_stored_file_path(self, path_value: object) -> Path:
+        db_path = self._db_path
+        data_root = (
+            db_path.parent.parent
+            if db_path is not None and db_path.parent.name == "databases"
+            else None
+        )
+        return resolve_stored_file_path(path_value, data_root=data_root)
+
 
 def _safe_json_loads(value: Any) -> Any:
     if value is None or isinstance(value, (dict, list)):
@@ -1251,3 +1776,332 @@ def _knowledge_ids_from_row(row: dict[str, Any]) -> list[str]:
         return normalized
     fallback = str(row.get("knowledge_id") or "").strip()
     return [fallback] if fallback else ["UNKNOWN"]
+
+
+def _grading_retry_attempts(raw_json: Any) -> list[dict[str, Any]]:
+    parsed = _safe_json_loads(raw_json)
+    attempts = parsed.get("grading_retry_attempts") if isinstance(parsed, dict) else None
+    if not isinstance(attempts, list):
+        return []
+    return [dict(item) for item in attempts if isinstance(item, dict)]
+
+
+def _last_incomplete_failure_reason(raw_json: Any, *, fallback_error: Any, completeness_status: str) -> str:
+    raw_reason = ""
+    attempts = _grading_retry_attempts(raw_json)
+    if attempts:
+        latest = attempts[-1]
+        for key in ("error", "message", "reason"):
+            value = str(latest.get(key) or "").strip()
+            if value:
+                raw_reason = value
+                break
+
+    parsed = _safe_json_loads(raw_json)
+    if not raw_reason and isinstance(parsed, dict):
+        legacy = parsed.get("hybrid_batch_fallback")
+        if isinstance(legacy, dict):
+            items = legacy.get("items") if isinstance(legacy.get("items"), list) else []
+            reasons = _unique_text_list(
+                [
+                    item.get("reason")
+                    for item in items
+                    if isinstance(item, dict)
+                ]
+            )
+            if reasons:
+                raw_reason = "；".join(reasons)
+
+    if not raw_reason:
+        raw_reason = str(fallback_error or "").strip()
+    safe_reason = sanitize_incomplete_failure_summary(raw_reason)
+    if safe_reason:
+        return safe_reason
+    if completeness_status == "invalid":
+        return "批改结果存在异常题目或分值，建议补跑受影响大题"
+    return "批改结果缺少部分小题，建议补跑受影响大题"
+
+
+def _unique_text_list(values: Any) -> list[str]:
+    if isinstance(values, (str, bytes)):
+        values = [values]
+    elif not isinstance(values, list):
+        try:
+            values = list(values)
+        except TypeError:
+            values = [values]
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
+
+
+def _knowledge_ids_from_result_row(row: dict[str, Any]) -> list[str]:
+    return _normalize_knowledge_ids(row.get("knowledge_ids"), row.get("knowledge_id")) or ["UNKNOWN"]
+
+
+def _knowledge_ids_from_question(question: dict[str, Any]) -> list[str]:
+    return _normalize_knowledge_ids(
+        question.get("knowledge_points") or question.get("knowledge_ids"),
+        question.get("knowledge_id"),
+    ) or ["UNKNOWN"]
+
+
+def _knowledge_id_filter_values(value: str) -> set[str]:
+    return {part.strip() for part in str(value or "").replace("|", ",").split(",") if part.strip()}
+
+
+def _knowledge_id_matches(filter_value: str, candidate_ids: list[str]) -> bool:
+    filters = _knowledge_id_filter_values(filter_value)
+    return bool(filters.intersection({str(item).strip() for item in candidate_ids}))
+
+
+def _knowledge_group_key(knowledge_id: str, knowledge_label: str) -> str:
+    label = str(knowledge_label or "").strip()
+    kid = str(knowledge_id or "").strip()
+    if kid and label.startswith(kid):
+        label = label[len(kid):].strip()
+        for separator in ("·", "：", ":", "-", "|", " "):
+            label = label.removeprefix(separator).strip()
+    return label or kid or "UNKNOWN"
+
+
+def _normalize_knowledge_ids(raw: Any, fallback: Any = None) -> list[str]:
+    values: list[Any] = []
+    if isinstance(raw, list):
+        values.extend(raw)
+    elif isinstance(raw, str) and raw.strip():
+        parsed = _safe_json_loads(raw)
+        if isinstance(parsed, list):
+            values.extend(parsed)
+        else:
+            values.extend(_split_knowledge_text(raw))
+    elif raw:
+        values.append(raw)
+
+    if fallback:
+        if isinstance(fallback, list):
+            values.extend(fallback)
+        else:
+            values.extend(_split_knowledge_text(str(fallback)))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, dict):
+            kid = str(value.get("knowledge_id") or value.get("id") or "").strip()
+        else:
+            kid = str(value or "").strip()
+        if not kid or kid in seen:
+            continue
+        seen.add(kid)
+        result.append(kid)
+    return result
+
+
+def _split_knowledge_text(text: str) -> list[str]:
+    normalized = text.replace("，", ",").replace("；", ",").replace(";", ",").replace("|", ",")
+    return [part.strip() for part in normalized.split(",") if part.strip()]
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_real_deduction_reason(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    positive_markers = {
+        "正确",
+        "全对",
+        "无扣分",
+        "未扣分",
+        "答案正确",
+        "过程正确",
+        "ok",
+        "right",
+        "correct",
+        "none",
+        "null",
+        "无",
+    }
+    return text not in positive_markers
+
+
+def _is_deducted(score_awarded: float, full_score: float | None, reason: str) -> bool:
+    if full_score is not None and full_score > 0:
+        return score_awarded < full_score - 0.01
+    return _is_real_deduction_reason(reason)
+
+
+def _normalize_error_category(raw: Any, reason: str = "") -> str:
+    text = str(raw or "").strip()
+    allowed = {
+        "概念理解错误",
+        "计算错误",
+        "审题错误",
+        "条件遗漏",
+        "逻辑断裂",
+        "表达不规范",
+        "未作答",
+        "多选失分",
+        "作废答案",
+        "提示注入",
+        "答案不等价",
+        "其他",
+    }
+    if text in allowed:
+        return text
+    reason_text = str(reason or "")
+    if any(token in reason_text for token in ["多选", "多个选项", "AB", "AC", "AD", "BC", "BD", "CD"]):
+        return "多选失分"
+    if any(token in reason_text for token in ["未作答", "空白", "没有写", "未写"]):
+        return "未作答"
+    if any(token in reason_text for token in ["划掉", "作废", "删除线", "打叉"]):
+        return "作废答案"
+    if any(token in reason_text for token in ["请打满分", "忽略", "prompt", "AI"]):
+        return "提示注入"
+    if any(token in reason_text for token in ["计算", "算错", "化简", "数值"]):
+        return "计算错误"
+    if any(token in reason_text for token in ["审题", "看错", "条件理解"]):
+        return "审题错误"
+    if any(token in reason_text for token in ["条件", "前提", "已知"]):
+        return "条件遗漏"
+    if any(token in reason_text for token in ["逻辑", "证明", "推出", "全等", "断裂"]):
+        return "逻辑断裂"
+    if any(token in reason_text for token in ["等价", "不等价", "答案不符"]):
+        return "答案不等价"
+    if any(token in reason_text for token in ["表达", "书写", "格式", "符号"]):
+        return "表达不规范"
+    return "其他"
+
+
+def _short_reason(reason: str, max_len: int = 36) -> str:
+    text = " ".join(str(reason or "").replace("\n", " ").split())
+    return text[:max_len] + ("..." if len(text) > max_len else "")
+
+
+def _knowledge_label_from_question(knowledge_id: str, question: dict[str, Any]) -> str:
+    kid = str(knowledge_id or "").strip()
+    point_label = _knowledge_point_labels_from_question(question).get(kid)
+    if point_label:
+        return _format_knowledge_label(kid, point_label)
+
+    candidates = [
+        question.get("knowledge_name"),
+        question.get("knowledge_text"),
+        question.get("knowledge_label"),
+    ]
+    obligations = question.get("proof_obligations")
+    if isinstance(obligations, list):
+        for obligation in obligations:
+            if isinstance(obligation, dict):
+                candidates.append(obligation.get("description"))
+    parts = question.get("parts")
+    if isinstance(parts, list):
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            steps = part.get("steps")
+            if isinstance(steps, list):
+                for step in steps:
+                    if isinstance(step, dict):
+                        candidates.append(step.get("core_goal"))
+
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text and text.lower() not in {"direct-answer", "direct_answer", "正确", "unknown"}:
+            # 如果候选文本不含中文（如英文 core_goal 字段），则跳过，避免显示英文
+            if not _has_chinese(text):
+                continue
+            return _format_knowledge_label(kid, text[:28])
+    return _fallback_knowledge_label(knowledge_id, str(question.get("question_id") or ""))
+
+
+def _knowledge_point_labels_from_question(question: dict[str, Any]) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    raw_points = question.get("knowledge_points")
+    if isinstance(raw_points, list):
+        for point in raw_points:
+            if isinstance(point, dict):
+                kid = str(point.get("knowledge_id") or point.get("id") or "").strip()
+                label = str(
+                    point.get("knowledge_name")
+                    or point.get("name")
+                    or point.get("knowledge_label")
+                    or point.get("label")
+                    or point.get("knowledge_text")
+                    or ""
+                ).strip()
+                if kid and label:
+                    labels.setdefault(kid, label)
+                elif label:
+                    labels.setdefault(label, label)
+            else:
+                for label in _split_knowledge_text(str(point or "")):
+                    labels.setdefault(label, label)
+    elif isinstance(raw_points, str):
+        for label in _split_knowledge_text(raw_points):
+            labels.setdefault(label, label)
+
+    primary_kid = str(question.get("knowledge_id") or "").strip()
+    primary_label = str(
+        question.get("knowledge_name")
+        or question.get("knowledge_label")
+        or question.get("knowledge_text")
+        or ""
+    ).strip()
+    if primary_kid and primary_label:
+        labels.setdefault(primary_kid, primary_label)
+    return labels
+
+
+def _format_knowledge_label(knowledge_id: str, label: str) -> str:
+    kid = str(knowledge_id or "").strip()
+    text = str(label or "").strip()
+    if not kid or kid == "UNKNOWN":
+        return text
+    if not text or text == kid:
+        return kid
+    return f"{kid} · {text}"
+
+
+def _fallback_knowledge_label(knowledge_id: str, question_id: str) -> str:
+    return knowledge_id
+
+
+def _has_chinese(text: str) -> bool:
+    """判断字符串是否含有中文字符（汉字）。"""
+    return any("一" <= ch <= "鿿" for ch in str(text or ""))
+
+
+def _knowledge_label_from_registry(knowledge_id: str) -> str:
+    """从 taxonomy registry 把知识点代码映射为标准中文名称。
+
+    - 如果 knowledge_id 本身是中文（如 "等腰三角形性质"），直接返回
+    - 如果是代码格式（C2_01、K1 等），在 registry 中查 alias
+    - 查不到则返回空字符串（让调用方继续回退）
+    """
+    kid = str(knowledge_id or "").strip()
+    if not kid or kid == "UNKNOWN":
+        return ""
+    # knowledge_id 本身是中文：直接作为标签
+    if _has_chinese(kid):
+        return kid
+    # 通过 registry 查找
+    if _registry_canonicalize is not None:
+        try:
+            canonical = _registry_canonicalize(kid)
+            if canonical is not None:
+                return canonical.canonical_name
+        except Exception:
+            pass
+    return ""

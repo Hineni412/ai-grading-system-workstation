@@ -186,7 +186,7 @@ async def upload_session_template(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> TemplateUploadResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     if not _scoring_configured(db, session_id):
         raise ApiError(
             409,
@@ -294,7 +294,7 @@ def assign_template_page_role(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> TemplatePageAssignmentResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         result = service.assign_first_page_role(
             db=db,
@@ -349,12 +349,12 @@ def get_region_readiness(
     session_id: int,
     db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> RegionReadinessResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     return RegionReadinessResponse(
         session_id=int(session_id),
         scoring_configured=_scoring_configured(db, session_id),
-        template_present=db.get_session_template(int(session_id)) is not None,
-        template_ready=db.is_template_ready(int(session_id)),
+        template_present=db.templates.get_session_template(int(session_id)) is not None,
+        template_ready=db.templates.is_template_ready(int(session_id)),
     )
 
 
@@ -368,7 +368,7 @@ def get_template_upload_submission(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> dict[str, object]:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         return service.submission_public(
             session_id=session_id, request_token=request_token, db=db
@@ -388,7 +388,7 @@ def abandon_template_upload_submission(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> dict[str, str]:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         service.abandon_submission(
             session_id=session_id, request_token=request_token, db=db
@@ -414,7 +414,7 @@ def get_region_workspace(
     templates_dir: Path = Depends(get_templates_dir),
     upload_service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> RegionWorkspaceResponse:
-    session = _require_session(db, session_id)
+    session = _require_session(db.sessions, session_id)
     try:
         template_result = upload_service.load_current(db=db, session_id=session_id)
     except FileNotFoundError:
@@ -426,7 +426,7 @@ def get_region_workspace(
     draft_result = draft_service.load(
         expected_template_fingerprint=template_result.template_fingerprint
     )
-    formal_regions = _public_regions(db.list_answer_regions(int(session_id)))
+    formal_regions = _public_regions(db.templates.list_answer_regions(int(session_id)))
     draft_payload = draft_result.draft if draft_result.status == "compatible" else None
     draft_regions = _public_regions(
         list(draft_payload.get("regions", [])) if isinstance(draft_payload, dict) else []
@@ -471,7 +471,7 @@ def get_region_workspace(
             }
             for issue in validation.issues
         ],
-        template_ready=db.is_template_ready(int(session_id)),
+        template_ready=db.templates.is_template_ready(int(session_id)),
     )
 
 
@@ -500,8 +500,8 @@ def _require_template(
     db: GradingRepositoryAccess,
     session_id: int,
 ) -> dict[str, Any]:
-    _require_session(db, session_id)
-    template = db.get_session_template(int(session_id))
+    _require_session(db.sessions, session_id)
+    template = db.templates.get_session_template(int(session_id))
     if template is None:
         raise ApiError(
             404,
@@ -593,8 +593,8 @@ def update_session_template(
     request: TemplateUpdateRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> SessionTemplateResponse:
-    _require_session(db, session_id)
-    db.upsert_session_template(
+    _require_session(db.sessions, session_id)
+    db.templates.upsert_session_template(
         int(session_id),
         request.front_template_path,
         request.back_template_path,
@@ -604,7 +604,7 @@ def update_session_template(
         or request.template_config_path is not None
         or request.regions_path is not None
     ):
-        db.update_session_template_analysis(
+        db.templates.update_session_template_analysis(
             int(session_id),
             ai_analysis_path=request.ai_analysis_path,
             template_config_path=request.template_config_path,
@@ -732,7 +732,7 @@ def commit_answer_regions(
         ) from None
     except TimeoutError:
         raise _region_lock_timeout_error(session_id) from None
-    region_count = len(db.list_answer_regions(int(session_id))) if result.committed else 0
+    region_count = len(db.templates.list_answer_regions(int(session_id))) if result.committed else 0
     return _commit_response(result, region_count)
 
 
@@ -764,5 +764,5 @@ def retry_answer_region_snapshot(
         result = service.retry_pending_snapshot(session_id=int(session_id))
     except TimeoutError:
         raise _region_lock_timeout_error(session_id) from None
-    region_count = len(db.list_answer_regions(int(session_id))) if result.committed else 0
+    region_count = len(db.templates.list_answer_regions(int(session_id))) if result.committed else 0
     return _commit_response(result, region_count)

@@ -252,7 +252,8 @@ def test_teacher_final_total_does_not_restore_superseded_ai_step_scores():
     service = object.__new__(DiagnosisProfileService)
     projected = _projected_with_steps()
     service.db = SimpleNamespace(
-        get_active_assessment_evidence=lambda **kwargs: [
+        results=SimpleNamespace(
+            get_active_assessment_evidence=lambda **kwargs: [
             {
                 "session_id": 1,
                 "student_id": 1,
@@ -266,7 +267,7 @@ def test_teacher_final_total_does_not_restore_superseded_ai_step_scores():
                     ]
                 },
             }
-        ]
+        ])
     )
     (row,) = service._projected_tag_evidence(
         student_ids=["1"],

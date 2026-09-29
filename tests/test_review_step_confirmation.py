@@ -80,7 +80,7 @@ def seed_step_review(tmp_path):
             ),
         )
         conn.execute("UPDATE session_details SET score_awarded=7, ai_score_awarded=7")
-    session = seed.db.get_grading_session(seed.session_id)
+    session = seed.db.sessions.get_grading_session(seed.session_id)
     context = {
         "scan_batch_id": "test-step-batch",
         "papers": [{"student_id": 1, "target_type": "group", "target_id": "test"}],
@@ -130,7 +130,7 @@ def test_step_confirmation_roundtrip_partial_means_not_achieved_and_total_only_c
         (2, "none"),
     ]
     assert review["steps"][1]["evidence_point_ids"] == ["p2"]
-    rows = seed.db.get_active_assessment_evidence(
+    rows = seed.db.results.get_active_assessment_evidence(
         student_ids=["1"], session_ids=[seed.session_id]
     )
     assert rows[0]["assessment_state"]["teacher_review"] == review
@@ -195,7 +195,7 @@ def test_teacher_steps_survive_full_ai_regrade_and_missing_ai_metadata(tmp_path)
         ],
         raw_json={"teacher_reviews": {"Q1": {"revision": 999, "steps": []}}},
     )
-    seed.db.result_repository.save_session_result(
+    seed.db.results.save_session_result(
         seed.session_id, 1, paper_id, incoming, scan_batch_id=context["scan_batch_id"]
     )
     (final,) = service.list_items(seed.session_id, session, manual_context=context)

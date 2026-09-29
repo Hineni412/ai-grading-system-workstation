@@ -50,7 +50,7 @@ from backend.repositories.access import (
     GradingRepositoryAccess,
     as_grading_repositories,
 )
-from backend.repositories.compat import open_grading_repositories
+from backend.repositories.grading_database import open_grading_repositories
 from backend.review.service import REVIEW_CONFIRMED_REASON
 from backend.session_analysis import (
     _BAND_CUTOFFS,

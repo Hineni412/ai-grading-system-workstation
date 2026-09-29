@@ -12,12 +12,12 @@ from backend.api.dependencies import (
     get_request_diagnosis_profile_service,
 )
 from backend.api.routers.graph import get_current_graph_query_service
-from backend.repositories.compat import open_grading_repositories
 from db_manager import DBManager
 from question_bank.database.schema import initialize_database
 from question_bank.relations.query_service import CurrentKnowledgeGraphQueryService
 from tests.current_knowledge_support import install_current_knowledge
 from path_manager import PathManager
+from backend.repositories.grading_database import open_grading_repositories
 
 
 class _DiagnosisService:

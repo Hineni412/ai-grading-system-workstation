@@ -8,15 +8,16 @@ import pytest
 
 from db_manager import DBManager
 from manual_review_service import ManualReviewService
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _seed_two_review_results(tmp_path: Path) -> tuple[DBManager, int, dict[str, int]]:
-    db = DBManager(tmp_path / "manual-review-atomic.db")
+    db = open_grading_repositories(tmp_path / "manual-review-atomic.db")
     db.initialize()
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "Atomic review", "rubric.json", "answer.json"
     )
-    foreign_session_id = db.create_grading_session(
+    foreign_session_id = db.sessions.create_grading_session(
         "Foreign atomic review",
         "rubric.json",
         "answer.json",
@@ -166,7 +167,7 @@ def test_atomic_write_revalidates_session_result_and_question_ownership(
     before = _review_state(db, ids)
 
     with pytest.raises(ValueError, match="does not belong"):
-        db.apply_session_review_adjustments(requested_session_id, [adjustment])
+        db.reviews.apply_session_review_adjustments(requested_session_id, [adjustment])
 
     assert _review_state(db, ids) == before
 
@@ -192,7 +193,7 @@ def test_second_result_detail_failure_rolls_back_entire_review_batch(
     with pytest.raises(
         sqlite3.IntegrityError, match="forced second review write failure"
     ):
-        db.apply_session_review_adjustments(session_id, _adjustments(session_id, ids))
+        db.reviews.apply_session_review_adjustments(session_id, _adjustments(session_id, ids))
 
     assert _review_state(db, ids) == before
 

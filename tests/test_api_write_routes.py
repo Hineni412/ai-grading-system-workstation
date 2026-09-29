@@ -8,6 +8,7 @@ warnings.filterwarnings(
 )
 
 from fastapi.testclient import TestClient
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _client_with_db(tmp_path):
@@ -17,11 +18,11 @@ def _client_with_db(tmp_path):
         get_grading_db,
         get_question_bank_db_path,
     )
-    from db_manager import DBManager
+    
     from question_bank.database.schema import initialize_database
 
     data_root = tmp_path / "user_data"
-    db = DBManager(data_root / "databases" / "grading.db")
+    db = open_grading_repositories(data_root / "databases" / "grading.db")
     db.initialize()
     question_bank_db = data_root / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
@@ -50,7 +51,7 @@ def test_session_write_routes_create_rename_soft_delete_and_restore(tmp_path) ->
     session_id = created["id"]
     assert created["name"] == "Exam B"
     assert created["rubric_path"] == "rubric-b.json"
-    assert db.get_grading_session(session_id)["session_name"] == "Exam B"
+    assert db.sessions.get_grading_session(session_id)["session_name"] == "Exam B"
 
     rename_response = client.patch(
         f"/api/sessions/{session_id}",

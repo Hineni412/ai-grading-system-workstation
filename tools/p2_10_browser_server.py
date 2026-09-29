@@ -11,6 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path[:1]:
     sys.path.insert(0, str(REPO_ROOT))
+from backend.repositories.grading_database import open_grading_repositories
 ALLOWED_DATA_ROOT = (
     REPO_ROOT / "frontend" / "test-results" / "p2-10-real"
 ).resolve()
@@ -46,9 +47,9 @@ def _prepare_isolated_paths(data_root: Path):
 def _seed(paths) -> None:
     import fitz
 
-    from db_manager import DBManager
+    
 
-    db = DBManager(paths.db_path)
+    db = open_grading_repositories(paths.db_path)
     db.initialize()
     rubric_path = paths.upload_config_dir / "anonymous-rubric.json"
     answer_path = paths.upload_config_dir / "anonymous-answer-key.json"
@@ -72,7 +73,7 @@ def _seed(paths) -> None:
         json.dumps({"questions": [{"question_id": "Q1"}]}, ensure_ascii=False),
         encoding="utf-8",
     )
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "匿名浏览器验收考试", str(rubric_path), str(answer_path)
     )
     if session_id != 1:

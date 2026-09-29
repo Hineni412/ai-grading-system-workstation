@@ -52,6 +52,7 @@ LEGACY_CATALOG_PATH = (
     / "catalogs"
     / "tag_vocabulary_v2.json"
 )
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def test_stale_job_cannot_overwrite_a_newer_sync_owner(
@@ -60,7 +61,7 @@ def test_stale_job_cannot_overwrite_a_newer_sync_owner(
     db, session_id, _source, source_sha256, _revision = _configured_session(tmp_path)
     store = JobStore(db.db_path)
     newer_revision = "d" * 64
-    db.update_question_bank_sync_state(
+    db.sessions.update_question_bank_sync_state(
         session_id,
         state="running",
         details={
@@ -83,7 +84,7 @@ def test_stale_job_cannot_overwrite_a_newer_sync_owner(
         is False
     )
 
-    unchanged = db.get_grading_session(session_id)
+    unchanged = db.sessions.get_grading_session(session_id)
     assert unchanged is not None
     assert unchanged["question_bank_sync_state"] == "running"
     assert json.loads(unchanged["question_bank_sync_details_json"]) == {
@@ -100,7 +101,7 @@ def _configured_session(
     data_root = tmp_path / "data"
     databases = data_root / "databases"
     databases.mkdir(parents=True)
-    db = DBManager(databases / "grading.db")
+    db = open_grading_repositories(databases / "grading.db")
     db.initialize()
     rubric_path = data_root / "config" / "rubric.json"
     answer_path = data_root / "config" / "answer.json"
@@ -155,7 +156,7 @@ def _configured_session(
     source.parent.mkdir(parents=True)
     source.write_bytes(b"controlled source paper")
     source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "同步测试",
         str(rubric_path),
         str(answer_path),

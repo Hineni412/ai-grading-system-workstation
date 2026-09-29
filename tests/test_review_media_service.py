@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from backend.repositories.grading_database import open_grading_repositories
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ def _render_annotation_in_separate_process(
     completed,
 ) -> None:
     import manual_review_service as manual_review_module
-    from db_manager import DBManager
+    
     from manual_review_service import ManualReviewService
 
     def fake_render(**kwargs):
@@ -61,7 +62,7 @@ def _render_annotation_in_separate_process(
     worker_ready.set()
     try:
         ManualReviewService(
-            DBManager(Path(db_path)),
+            open_grading_repositories(Path(db_path)),
             Path(annotated_dir),
         ).render_result_annotation(result_id, highlight_qids=["Q1"])
     finally:
@@ -70,7 +71,7 @@ def _render_annotation_in_separate_process(
 
 def _seed_media(tmp_path: Path) -> SeededMedia:
     from backend.media.service import ReviewMediaService
-    from db_manager import DBManager
+    
 
     data_root = tmp_path / "data"
     exams_dir = data_root / "exams"
@@ -78,7 +79,7 @@ def _seed_media(tmp_path: Path) -> SeededMedia:
     annotated_dir = data_root / "annotated"
     db_path = data_root / "databases" / "grading.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    db = DBManager(db_path)
+    db = open_grading_repositories(db_path)
     db.initialize()
 
     front_path = exams_dir / "session_1" / "front.jpg"
@@ -88,13 +89,13 @@ def _seed_media(tmp_path: Path) -> SeededMedia:
     for path in (front_path, back_path, template_front, template_back):
         _image(path)
 
-    session_id = db.create_grading_session("Media Exam", "rubric.json", "answer.json")
-    template_id = db.upsert_session_template(
+    session_id = db.sessions.create_grading_session("Media Exam", "rubric.json", "answer.json")
+    template_id = db.templates.upsert_session_template(
         session_id,
         str(template_front),
         str(template_back),
     )
-    db.add_answer_region(
+    db.templates.add_answer_region(
         session_id,
         template_id,
         {
@@ -183,7 +184,7 @@ def test_annotation_rerender_failure_preserves_previous_published_pair(
     service = ManualReviewService(seed.db, seed.annotated_dir)
     initial_paths = service.render_result_annotation(seed.result_id)
     assert initial_paths is not None
-    published_before = seed.db.get_annotated_result(seed.result_id)
+    published_before = seed.db.reviews.get_annotated_result(seed.result_id)
     assert published_before is not None
     previous_front = Path(published_before["annotated_front_path"]).read_bytes()
     previous_back = Path(published_before["annotated_back_path"]).read_bytes()
@@ -194,7 +195,7 @@ def test_annotation_rerender_failure_preserves_previous_published_pair(
     with pytest.raises(Exception):
         service.render_result_annotation(seed.result_id)
 
-    published_after = seed.db.get_annotated_result(seed.result_id)
+    published_after = seed.db.reviews.get_annotated_result(seed.result_id)
     assert published_after is not None
     assert (
         published_after["annotated_front_path"]
@@ -272,7 +273,7 @@ def test_annotation_render_lock_prevents_cross_process_stale_publish(
     assert first.exitcode == 0
     assert second is not None
     assert second.exitcode == 0
-    current_record = seed.db.get_annotated_result(seed.result_id)
+    current_record = seed.db.reviews.get_annotated_result(seed.result_id)
     assert current_record is not None
     assert (
         Path(current_record["annotated_front_path"]).read_text(encoding="utf-8") == "9"

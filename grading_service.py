@@ -162,9 +162,9 @@ class GradingService:
             raise ValueError("resume and supplement cannot target the same job")
         if bool(supplement_only) != (supplement_run_id is not None):
             raise ValueError("supplement run identity is incomplete")
-        if not self.db.is_template_ready(session_id):
+        if not self.db.templates.is_template_ready(session_id):
             raise ValueError("当前会话尚未完成模板题框映射确认，请先在“评分依据与会话”页完成模板配置")
-        session = self.db.get_grading_session(session_id)
+        session = self.db.sessions.get_grading_session(session_id)
         rubric = _load_rubric_for_preflight(rubric_path)
         _validate_session_exam_identity(session, rubric)
         from answer_region_geometry import answer_regions_with_template_source_sizes
@@ -218,7 +218,7 @@ class GradingService:
             name_region=student_name_region_from_regions(answer_regions),
             front_page_parity=_session_front_page_parity(session_id),
         )
-        students = self.db.list_students()
+        students = self.db.students.list_students()
         target_question_ids = _target_question_ids_from_regions(answer_regions, rubric=rubric)
         grader = AIGrader(
             rubric_path=rubric_path,
@@ -317,11 +317,11 @@ class GradingService:
                 except Exception:
                     pass
             if release_session:
-                self.db.finish_session_run(session_id, "completed")
+                self.db.sessions.finish_session_run(session_id, "completed")
             return {
                 "event": "session_cancelled",
                 "run_id": run.id if run is not None else None,
-                "progress": self.db.get_session_progress(session_id),
+                "progress": self.db.papers.get_session_progress(session_id),
             }
 
         paper_cancel_restore_state: dict[int, tuple[str, str | None]] = {}
@@ -349,13 +349,13 @@ class GradingService:
             yield _finish_cancelled_run(release_session=False)
             return
 
-        if not self.db.try_start_session_run(session_id):
+        if not self.db.sessions.try_start_session_run(session_id):
             raise RuntimeError("当前考试批改已有运行中的批改任务，请等待完成后再启动")
         if _cancel_requested():
             yield _finish_cancelled_run(release_session=True)
             return
         if not failed_only and not supplement_only:
-            self.db.clear_session_run_data(session_id)
+            self.db.sessions.clear_session_run_data(session_id)
         if _cancel_requested():
             yield _finish_cancelled_run(release_session=True)
             return
@@ -369,7 +369,7 @@ class GradingService:
             )
 
         if failed_only:
-            failed_detailed = self.db.list_failed_papers_detailed(session_id)
+            failed_detailed = self.db.papers.list_failed_papers_detailed(session_id)
             failed_paper_ids = [
                 int(item["paper_id"])
                 for item in failed_detailed
@@ -443,7 +443,7 @@ class GradingService:
                             "kind": "existing",
                         }
                         continue
-                student = {"id": group.student_id, "name": group.student_name} if group.student_id else self.db.find_student_by_name(group.student_name)
+                student = {"id": group.student_id, "name": group.student_name} if group.student_id else self.db.students.find_student_by_name(group.student_name)
                 if student is None:
                     paper_id = self.papers.create_exam_paper(
                         session_id=session_id,
@@ -823,8 +823,8 @@ class GradingService:
                 }
             if run_store is not None and run is not None:
                 run_store.finish(run.run_token, "completed")
-            self.db.finish_session_run(session_id, "completed")
-            progress = self.db.get_session_progress(session_id)
+            self.db.sessions.finish_session_run(session_id, "completed")
+            progress = self.db.papers.get_session_progress(session_id)
             yield {"event": "session_completed", "progress": progress}
             return
 
@@ -1044,8 +1044,8 @@ class GradingService:
                 run_store.finish(run.run_token, "paused" if run_paused else "completed")
             except Exception:
                 pass
-        self.db.finish_session_run(session_id, "completed")
-        progress = self.db.get_session_progress(session_id)
+        self.db.sessions.finish_session_run(session_id, "completed")
+        progress = self.db.papers.get_session_progress(session_id)
         if run_paused:
             yield {
                 "event": "session_paused",
@@ -1227,7 +1227,7 @@ class GradingService:
                         "source_reason": "未检测到有效答卷；请结合扫描异常确认" if has_scan_issues else "未检测到有效答卷",
                     }
                 )
-        self.db.replace_session_attendance(session_id, rows)
+        self.db.sessions.replace_session_attendance(session_id, rows)
 
 
 def _target_question_ids_from_regions(regions: list[dict], rubric: dict | None = None) -> list[str]:

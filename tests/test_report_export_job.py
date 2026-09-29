@@ -101,10 +101,10 @@ def test_personal_report_export_survives_cause_failures(tmp_path) -> None:
     from backend.jobs.default_handlers import register_default_job_handlers
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    from backend.repositories.grading_database import open_grading_repositories
     from tests.test_analysis_report import _seed_analysis_session
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     session_id = _seed_analysis_session(db, tmp_path)
 

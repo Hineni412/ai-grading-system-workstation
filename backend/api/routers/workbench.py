@@ -34,7 +34,7 @@ def get_workbench_overview(
 ) -> WorkbenchOverviewResponse:
     manual_context = None
     if session_id is not None:
-        _require_session(db, session_id)
+        _require_session(db.sessions, session_id)
         manual_context = current_manual_context(session_id, workspace)
     return WorkbenchOverviewResponse(
         **service.overview(session_id, recent_limit, manual_context=manual_context)
@@ -58,7 +58,7 @@ def list_session_anomalies(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: WorkbenchService = Depends(get_workbench_service),
 ) -> SessionAnomalyListResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     rows = service.list_anomalies(session_id)
     if anomaly_type is not None:
         rows = [row for row in rows if row["anomaly_type"] == anomaly_type]

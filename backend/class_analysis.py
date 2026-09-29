@@ -36,7 +36,7 @@ from backend.jobs.manager import (
 )
 from backend.jobs.store import JobRecord
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
-from backend.repositories.compat import open_grading_repositories
+from backend.repositories.grading_database import open_grading_repositories
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1633,7 +1633,7 @@ def maybe_auto_generate_class_analysis(
     if existing is not None and not bool(existing.get("auto_generate", True)):
         return None
     # 仍有未批完答卷时不算「阅卷结束」。
-    if repositories.list_incomplete_results(int(session_id)):
+    if repositories.results.list_incomplete_results(int(session_id)):
         return None
     revision = score_revision(repositories, session_id, include_question_bank=False)
     if (

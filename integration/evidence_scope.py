@@ -62,7 +62,7 @@ class EvidenceScopeResolver:
         warnings: list[str] = []
         all_sessions = [
             dict(item)
-            for item in self.db.list_grading_sessions()
+            for item in self.db.sessions.list_grading_sessions()
             if not item.get("is_deleted")
         ]
         if exam_scope.get("mode") == "semester":
@@ -70,7 +70,7 @@ class EvidenceScopeResolver:
             all_sessions = [item for item in all_sessions
                             if volume_id and item.get("curriculum_volume_id") == volume_id]
         sessions = self._resolve_sessions(all_sessions, exam_scope, warnings)
-        all_students = [dict(item) for item in self.db.list_students()]
+        all_students = [dict(item) for item in self.db.students.list_students()]
         score_profiles, history_ids = self._score_profiles(
             students=all_students,
             selected_sessions=sessions,
@@ -209,7 +209,7 @@ class EvidenceScopeResolver:
         selected_ids = {int(item["id"]) for item in selected_sessions}
         current_totals: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
         for session_id in selected_ids:
-            for result in self.db.get_session_results(session_id):
+            for result in self.db.results.get_session_results(session_id):
                 student_id = by_code.get(str(result.get("student_code") or ""))
                 if student_id is None:
                     continue
@@ -229,7 +229,7 @@ class EvidenceScopeResolver:
         ]
         historical_rates: dict[str, list[tuple[float, float, dict[str, Any]]]] = defaultdict(list)
         for session in historical_sessions:
-            for result in self.db.get_session_results(int(session["id"])):
+            for result in self.db.results.get_session_results(int(session["id"])):
                 student_id = by_code.get(str(result.get("student_code") or ""))
                 total = _number(result.get("total_score"))
                 if student_id is None or total <= 0:

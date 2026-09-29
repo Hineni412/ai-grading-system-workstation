@@ -15,7 +15,7 @@ from backend.model_profiles.content_generation import (
 from api_profiles import get_api_profile_store, resolve_profile_for_task
 from backend.llm.policy import policy_overrides_from_profile
 from backend.repositories.access import GradingRepositoryAccess
-from backend.repositories.compat import open_grading_repositories
+from backend.repositories.grading_database import open_grading_repositories
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from original_paper_exporter import OriginalPaperExporter
 from report import ReportGenerator

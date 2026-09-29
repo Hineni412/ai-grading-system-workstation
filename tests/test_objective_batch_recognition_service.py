@@ -15,6 +15,7 @@ from objective_batch_recognition_service import (
     run_objective_batch_recognition,
 )
 from scanner import ExamPaperGroup
+from backend.repositories.grading_database import open_grading_repositories
 
 
 class FakeBatchClient:
@@ -279,7 +280,7 @@ def test_hybrid_model_scores_survive_storage_and_teacher_confirmation(
     tmp_path: Path,
 ) -> None:
     import sqlite3
-    from db_manager import DBManager
+    
     from backend.repositories import SQLiteConnectionFactory
     from backend.repositories.papers import PaperRepositoryGateway
     from backend.repositories.results import ResultRepositoryGateway
@@ -287,9 +288,9 @@ def test_hybrid_model_scores_survive_storage_and_teacher_confirmation(
     from ai_batch_grading_service import run_ai_batch_grading
 
     database = tmp_path / "scores.db"
-    db = DBManager(database)
+    db = open_grading_repositories(database)
     db.initialize()
-    session_id = db.create_grading_session("Test AI scores", "", "")
+    session_id = db.sessions.create_grading_session("Test AI scores", "", "")
     with sqlite3.connect(database) as conn:
         student_id = conn.execute(
             "INSERT INTO students (student_code,name) VALUES ('test-1','Student 1')"
@@ -328,8 +329,8 @@ def test_hybrid_model_scores_survive_storage_and_teacher_confirmation(
     assert result.grading_details[0].score_awarded == 8
     assert result.needs_human_review is True
     sessions = SQLiteConnectionFactory(database)
-    papers = PaperRepositoryGateway(sessions)
-    results = ResultRepositoryGateway(sessions)
+    results = ResultRepositoryGateway(sessions, db_path=database)
+    papers = PaperRepositoryGateway(sessions, results=results)
     paper_id = papers.create_exam_paper(
         session_id,
         str(groups[0].front_image),

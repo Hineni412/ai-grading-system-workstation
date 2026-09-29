@@ -4,6 +4,18 @@ from integration.evidence_scope import EvidenceScopeResolver
 
 
 class _GradingData:
+    @property
+    def sessions(self):
+        return self
+
+    @property
+    def students(self):
+        return self
+
+    @property
+    def results(self):
+        return self
+
     def list_grading_sessions(self):
         return [
             {
