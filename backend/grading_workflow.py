@@ -12,7 +12,7 @@ import re
 from typing import Any, Literal
 
 
-GradingWorkflowMode = Literal["ai", "full_paper", "manual", "hybrid_batch"]
+GradingWorkflowMode = Literal["ai", "manual"]
 _OBJECTIVE_TYPES = frozenset({"choice", "fill_blank"})
 
 
@@ -135,39 +135,13 @@ def build_grading_plan(
         }
         ai_target_items = 0
         manual_target_items = pending_items
-    elif mode == "full_paper":
-        full_paper_requests = sum(
-            1
-            for paper in papers
-            if any(
-                (int(paper["student_id"]), question_id) not in locked_pairs
-                for question_id in all_question_ids
-            )
-        )
-        requests = {
-            "total": full_paper_requests,
-            "full_paper": full_paper_requests,
-            "objective_sheet": 0,
-            "subjective_batches": 0,
-        }
-        ai_target_items = pending_items
-        manual_target_items = 0
-    elif mode == "ai":
+    else:
         # AI 批改：每名学生一次客观题整区识别，每道解答大题每名学生一次整页请求。
         requests = {
             "total": objective_students + subjective_requests,
             "full_paper": 0,
             "objective_sheet": objective_students,
             "subjective_batches": subjective_requests,
-        }
-        ai_target_items = pending_items
-        manual_target_items = 0
-    else:
-        requests = {
-            "total": objective_students + subjective_batches,
-            "full_paper": 0,
-            "objective_sheet": objective_students,
-            "subjective_batches": subjective_batches,
         }
         ai_target_items = pending_items
         manual_target_items = 0
@@ -220,17 +194,6 @@ def build_grading_plan(
                 ),
             }
         )
-    if singleton_subjective_batches and mode == "hybrid_batch":
-        warnings.append(
-            {
-                "code": "subjective_singleton",
-                "message": (
-                    f"有 {singleton_subjective_batches} 个解答题批次只能包含 1 名学生；"
-                    "其余批次按 2～3 人均衡组合。"
-                ),
-            }
-        )
-
     return {
         "session_id": int(session_id),
         "scan_batch_id": str(scan_batch_id),

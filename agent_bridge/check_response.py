@@ -6,7 +6,7 @@ Usage (project runtime):
 
 Loads the request's manifest, rebuilds the real specs from the session's
 rubric/answer-key files, and runs ``validate_objective_paper_response`` or
-``validate_hybrid_major_response`` exactly as the pipeline will.
+``validate_ai_major_response`` exactly as the pipeline will.
 """
 from __future__ import annotations
 
@@ -76,9 +76,9 @@ def main(argv: list[str]) -> int:
         return 0
 
     if mode == "hybrid_major_batch":
-        from hybrid_batch_grading_service import (
+        from ai_batch_grading_service import (
             build_major_question_specs,
-            validate_hybrid_major_response,
+            validate_ai_major_response,
         )
 
         spec = next(
@@ -86,7 +86,7 @@ def main(argv: list[str]) -> int:
             for item in build_major_question_specs(rubric, answer_key)
             if item.question_id == manifest.get("question_id")
         )
-        accepted, failed = validate_hybrid_major_response(
+        accepted, failed = validate_ai_major_response(
             response, manifest, spec, min_confidence=80.0
         )
         print(

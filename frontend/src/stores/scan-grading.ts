@@ -20,7 +20,6 @@ import {
   startPreflight,
   supplementGrading,
   uploadScan,
-  type AutomatedGradingMode,
   type GradingPlan,
   type SelectableGradingMode,
   type GradingWorkspace,
@@ -476,7 +475,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     if (next !== previous) invalidatePlan()
   })
 
-  async function begin(mode: AutomatedGradingMode, confirmPending: boolean): Promise<void> {
+  async function begin(mode: 'ai', confirmPending: boolean): Promise<void> {
     const id = sessionId.value; const batch = uploadBatch.value; const check = preflight.value
     const current = generation
     if (!id || !batch || !check) return

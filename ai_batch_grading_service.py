@@ -5,9 +5,9 @@ import re
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 from ai_grader import (
     _normalize_grading_errors,
@@ -15,7 +15,6 @@ from ai_grader import (
 )
 from backend.domain_models import ExamPaperGroup, GradingResult, QuestionGradingDetail
 from grading_completeness import audit_grading_details, details_require_review
-from major_region_evidence import build_major_evidence_groups
 from objective_batch_recognition_service import OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE, run_objective_batch_recognition
 from scoring_prompt_rules import SHARED_GRADING_RULES
 from solution_answer_guard import (
@@ -66,7 +65,7 @@ class MajorQuestionSpec:
 
 
 @dataclass(frozen=True)
-class HybridBatchRunResult:
+class AIBatchRunResult:
     paper_entries: list[PaperEntry]
     results_by_paper_key: dict[str, GradingResult]
     fallback_items: list[dict[str, Any]]
@@ -75,7 +74,7 @@ class HybridBatchRunResult:
     paused: bool = False
 
 
-def run_hybrid_batch_grading(
+def run_ai_batch_grading(
     *,
     session_id: int | str,
     paper_groups: list[ExamPaperGroup],
@@ -85,7 +84,6 @@ def run_hybrid_batch_grading(
     llm_client: Any,
     grading_model: str | None,
     output_root: Path,
-    batch_size: int = 4,
     objective_batch_size: int = 15,
     min_confidence: float = 80.0,
     include_objective_local: bool = True,
@@ -97,10 +95,7 @@ def run_hybrid_batch_grading(
     target_questions_by_student: Mapping[Any, Sequence[str] | set[str]] | None = None,
     question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
     should_pause: Any | None = None,
-    subjective_evidence: str = "major_atlas",
-    include_target_crop: bool = False,
-    result_mode: str = "hybrid_batch",
-) -> HybridBatchRunResult:
+) -> AIBatchRunResult:
     entries = build_paper_entries(paper_groups)
     specs = build_major_question_specs(rubric, answer_key)
     details_by_key: dict[str, list[QuestionGradingDetail]] = {entry.paper_key: [] for entry in entries}
@@ -138,14 +133,7 @@ def run_hybrid_batch_grading(
             if not item.get("has_model_score", True)
         )
 
-    full_page_evidence = subjective_evidence == "full_page"
-    if full_page_evidence:
-        builder: Any = FullPageEvidenceBuilder(
-            output_root=output_root,
-            include_target_crop=include_target_crop,
-        )
-    else:
-        builder = MajorQuestionAtlasBuilder(output_root=output_root)
+    builder: Any = FullPageEvidenceBuilder(output_root=output_root)
     major_tasks: list[
         tuple[
             MajorQuestionSpec,
@@ -168,11 +156,8 @@ def run_hybrid_batch_grading(
             filtered_entries.append((entry, target_detail_qids))
         if not filtered_entries:
             continue
-        if full_page_evidence:
-            # AI 批改：一名学生 × 一道大题 × 整页原图，每次请求一名学生。
-            task_groups = [[item] for item in filtered_entries]
-        else:
-            task_groups = _balanced_subjective_groups(filtered_entries, batch_size)
+        # AI 批改：一名学生 × 一道大题 × 整页原图，每次请求一名学生。
+        task_groups = [[item] for item in filtered_entries]
         for batch_index, batch_items in enumerate(
             task_groups,
             start=1,
@@ -244,7 +229,7 @@ def run_hybrid_batch_grading(
                             "question_id": spec.question_id,
                             "batch_index": batch_index,
                             "item_count": len(batch_entries),
-                            "error": str(exc) or "hybrid_major_batch_failed",
+                            "error": str(exc) or "ai_major_batch_failed",
                         }
                     )
                 return {
@@ -259,7 +244,7 @@ def run_hybrid_batch_grading(
                                 entry.paper_key,
                                 [],
                             ),
-                            "reason": str(exc) or "hybrid_major_batch_failed",
+                            "reason": str(exc) or "ai_major_batch_failed",
                         }
                         for entry in batch_entries
                     ],
@@ -289,7 +274,7 @@ def run_hybrid_batch_grading(
                             entry.paper_key,
                             [],
                         ),
-                        "reason": str(exc) or "hybrid_major_batch_failed",
+                        "reason": str(exc) or "ai_major_batch_failed",
                     }
                     for entry in batch_entries
                 ],
@@ -315,7 +300,7 @@ def run_hybrid_batch_grading(
     else:
         pending_tasks = iter(major_tasks)
         inflight: set[Any] = set()
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="hybrid-major") as executor:
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ai-major") as executor:
             while True:
                 while len(inflight) < worker_count and not paused:
                     if _pause_now():
@@ -359,11 +344,11 @@ def run_hybrid_batch_grading(
             metadata=metadata_by_key.get(paper_key, []),
             paper_key=paper_key,
             fallback_items=fallback_items_by_key.get(paper_key, []),
-            result_mode=result_mode,
+            result_mode="ai",
         )
         for paper_key, details in details_by_key.items()
     }
-    return HybridBatchRunResult(
+    return AIBatchRunResult(
         paper_entries=entries,
         results_by_paper_key=results,
         fallback_items=fallback_items,
@@ -484,35 +469,6 @@ def _question_selection_for_paper(
     return False, set()
 
 
-def _balanced_subjective_groups(
-    items: list[Any],
-    preferred_size: int = 3,
-) -> list[list[Any]]:
-    """Partition into groups of two or three; only a lone paper stays single."""
-
-    count = len(items)
-    if count == 0:
-        return []
-    if count == 1:
-        return [list(items)]
-    # ``preferred_size`` is retained for caller compatibility.  The new
-    # workflow has a fixed cost/legibility contract of two or three papers.
-    _ = preferred_size
-    groups = (count + 2) // 3
-    groups = max(1, groups)
-    base_size, remainder = divmod(count, groups)
-    sizes = [
-        base_size + (1 if index < remainder else 0)
-        for index in range(groups)
-    ]
-    result: list[list[Any]] = []
-    offset = 0
-    for size in sizes:
-        result.append(items[offset : offset + size])
-        offset += size
-    return result
-
-
 def normalize_sub_question_id(qid: str) -> str:
     text = str(qid or "").strip()
     coordinates = question_id_coordinates(text)
@@ -521,116 +477,6 @@ def normalize_sub_question_id(qid: str) -> str:
     if coordinates[1] is not None:
         return f"{coordinates[0]}-{coordinates[1]}"
     return f"Q{coordinates[0]}"
-
-
-class MajorQuestionAtlasBuilder:
-    def __init__(self, output_root: Path, crop_padding: int = 8, max_width: int = 1500, jpeg_quality: int = 88) -> None:
-        self.output_root = Path(output_root)
-        self.crop_padding = max(0, int(crop_padding))
-        self.max_width = max(320, int(max_width))
-        self.jpeg_quality = max(40, min(95, int(jpeg_quality)))
-
-    def build(
-        self,
-        *,
-        session_id: int | str,
-        spec: MajorQuestionSpec,
-        paper_entries: list[PaperEntry],
-        answer_regions: list[dict[str, Any]],
-        batch_index: int,
-        target_detail_question_ids_by_paper_key: Mapping[
-            str,
-            Sequence[str],
-        ] | None = None,
-    ) -> dict[str, Any]:
-        evidence_groups = build_major_evidence_groups(
-            spec.question_id,
-            spec.detail_question_ids,
-            answer_regions,
-        )
-
-        output_dir = self.output_root / f"session_{session_id}" / f"major_{_safe_path_part(spec.question_id)}"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        atlas_path = output_dir / f"batch_{int(batch_index)}.jpg"
-        manifest_path = output_dir / f"batch_{int(batch_index)}_manifest.json"
-
-        tile_images: list[Image.Image] = []
-        tile_labels: list[str] = []
-        items: list[dict[str, Any]] = []
-
-        try:
-            for item_index, entry in enumerate(paper_entries, start=1):
-                target_detail_qids = list(
-                    (
-                        target_detail_question_ids_by_paper_key or {}
-                    ).get(
-                        entry.paper_key,
-                        spec.detail_question_ids or [spec.question_id],
-                    )
-                )
-                normalized_targets = {
-                    normalize_sub_question_id(qid)
-                    for qid in target_detail_qids
-                }
-                student_sub_items: list[dict[str, Any]] = []
-                for evidence_group in evidence_groups:
-                    page = str(evidence_group["page"])
-                    group_part_ids = list(evidence_group.get("part_ids") or [])
-                    source_path = _source_image_path(entry.group, page)
-                    crop, bbox = _crop_region(source_path, evidence_group["bbox"], self.crop_padding)
-                    tile_images.append(crop)
-                    
-                    if len(group_part_ids) == len(spec.detail_question_ids or [spec.question_id]):
-                        tile_label = f"{item_index:02d}. [{entry.student_name}] 整题: {spec.question_id}"
-                    elif len(group_part_ids) > 1:
-                        tile_label = f"{item_index:02d}. [{entry.student_name}] 合并小问: {','.join(group_part_ids)}"
-                    else:
-                        tile_label = f"{item_index:02d}. [{entry.student_name}] 小问: {group_part_ids[0]}"
-                        
-                    tile_labels.append(tile_label)
-                    for part_id in group_part_ids:
-                        student_sub_items.append(
-                            {
-                                "part_id": part_id,
-                                "tile_label": tile_label,
-                                "page": page,
-                                "bbox": bbox,
-                                "is_target": (
-                                    normalize_sub_question_id(part_id)
-                                    in normalized_targets
-                                ),
-                            }
-                        )
-                items.append(
-                    {
-                        "paper_key": entry.paper_key,
-                        "student_id": entry.student_id,
-                        "student_name": entry.student_name,
-                        "question_id": spec.question_id,
-                        "detail_question_ids": spec.detail_question_ids,
-                        "target_detail_question_ids": target_detail_qids,
-                        "batch_index": int(batch_index),
-                        "item_index": item_index,
-                        "sub_items": student_sub_items,
-                    }
-                )
-            _save_atlas_with_labels(tile_labels, tile_images, atlas_path, self.max_width, self.jpeg_quality)
-        finally:
-            for image in tile_images:
-                image.close()
-
-        manifest = {
-            "schema_version": 3,
-            "mode": "hybrid_major_batch",
-            "session_id": session_id,
-            "question_id": spec.question_id,
-            "detail_question_ids": spec.detail_question_ids,
-            "batch_index": int(batch_index),
-            "atlas_path": str(atlas_path),
-            "items": items,
-        }
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {"atlas_path": atlas_path, "manifest_path": manifest_path, "manifest": manifest}
 
 
 class FullPageEvidenceBuilder:
@@ -647,15 +493,11 @@ class FullPageEvidenceBuilder:
         page_gap: int = 18,
         max_width: int = 1800,
         jpeg_quality: int = 90,
-        include_target_crop: bool = False,
-        crop_padding: int = 24,
     ) -> None:
         self.output_root = Path(output_root)
         self.page_gap = max(0, int(page_gap))
         self.max_width = max(640, int(max_width))
         self.jpeg_quality = max(60, min(95, int(jpeg_quality)))
-        self.include_target_crop = bool(include_target_crop)
-        self.crop_padding = max(0, int(crop_padding))
 
     def build(
         self,
@@ -871,78 +713,11 @@ class FullPageEvidenceBuilder:
             "atlas_path": str(atlas_path),
         }
 
-        if self.include_target_crop:
-            normalized_targets = {
-                normalize_sub_question_id(qid) for qid in target_detail_qids
-            }
-            target_part_ids = [
-                part_id
-                for part_id in composite_part_bbox
-                if normalize_sub_question_id(part_id) in normalized_targets
-            ]
-            target_pages = {
-                part_page_bbox[part_id][0]
-                for part_id in target_part_ids
-                if part_id in part_page_bbox
-            }
-            crop: Image.Image | None = None
-            if len(target_pages) == 1:
-                # All targets share one page: crop at full source resolution
-                # using page coordinates instead of the downscaled composite.
-                page = next(iter(target_pages))
-                union = _union_bboxes(
-                    part_page_bbox[part_id][1]
-                    for part_id in target_part_ids
-                    if part_id in part_page_bbox
-                    and part_page_bbox[part_id][0] == page
-                )
-                crop, _ = _crop_region(source_paths[page], union, self.crop_padding)
-                if crop.width > self.max_width:
-                    scale = self.max_width / float(crop.width)
-                    resized_crop = crop.resize(
-                        (
-                            self.max_width,
-                            max(1, int(round(crop.height * scale))),
-                        ),
-                        Image.Resampling.LANCZOS,
-                    )
-                    crop.close()
-                    crop = resized_crop
-            elif target_part_ids:
-                # Targets span pages: fall back to cropping the composite.
-                union = _union_bboxes(
-                    composite_part_bbox[part_id][1] for part_id in target_part_ids
-                )
-                crop, _ = _crop_region(atlas_path, union, self.crop_padding)
-            if crop is not None:
-                try:
-                    target_crop_path = output_dir / f"{atlas_path.stem}_target.jpg"
-                    crop.save(
-                        target_crop_path,
-                        format="JPEG",
-                        quality=self.jpeg_quality,
-                    )
-                finally:
-                    crop.close()
-                manifest["target_crop_path"] = str(target_crop_path)
-
         manifest_path.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         return {"atlas_path": atlas_path, "manifest_path": manifest_path, "manifest": manifest}
-
-
-def _union_bboxes(boxes: Iterable[Mapping[str, Any]]) -> dict[str, int]:
-    boxes = list(boxes)
-    left = min(int(box["x"]) for box in boxes)
-    top = min(int(box["y"]) for box in boxes)
-    return {
-        "x": left,
-        "y": top,
-        "w": max(int(box["x"]) + int(box["w"]) for box in boxes) - left,
-        "h": max(int(box["y"]) + int(box["h"]) for box in boxes) - top,
-    }
 
 
 def _scale_bbox_records(records: list[dict[str, Any]], scale: float) -> None:
@@ -981,7 +756,7 @@ def grade_major_question_batch(
     ] | None = None,
     validation_retry_limit: int = 1,
 ) -> dict[str, Any]:
-    atlas_builder = builder or MajorQuestionAtlasBuilder(output_root)
+    atlas_builder = builder or FullPageEvidenceBuilder(output_root)
     atlas = atlas_builder.build(
         session_id=session_id,
         spec=spec,
@@ -1028,7 +803,7 @@ def grade_major_question_batch(
                     question_stem_image_bytes = f.read()
                 break
                 
-    system_prompt, static_prompt, dynamic_prompt = build_hybrid_major_prompt(
+    system_prompt, static_prompt, dynamic_prompt = build_ai_major_prompt(
         spec,
         atlas["manifest"],
         has_rubric_image=bool(rubric_image_bytes),
@@ -1041,8 +816,6 @@ def grade_major_question_batch(
         current = extract_usage_fields(completion)
         current["model"] = (kwargs or {}).get("model") or grading_model
         img_count = 1
-        if atlas["manifest"].get("target_crop_path"):
-            img_count += 1
         if rubric_image_bytes:
             img_count += 1
         if question_stem_image_bytes:
@@ -1061,10 +834,6 @@ def grade_major_question_batch(
         static_images.append(rubric_image_bytes)
 
     dynamic_images = [image_bytes]
-    target_crop_path = atlas["manifest"].get("target_crop_path")
-    if target_crop_path:
-        with Path(target_crop_path).open("rb") as crop_file:
-            dynamic_images.append(crop_file.read())
 
     if rate_limiter is not None:
         rate_limiter.acquire()
@@ -1117,7 +886,7 @@ def grade_major_question_batch(
         )
 
     response = _call_model(dynamic_prompt)
-    accepted, failed = validate_hybrid_major_response(
+    accepted, failed = validate_ai_major_response(
         response,
         atlas["manifest"],
         spec,
@@ -1131,7 +900,7 @@ def grade_major_question_batch(
         retry_response = _call_model(
             dynamic_prompt + _validation_retry_hint(failed, spec)
         )
-        retry_accepted, retry_failed = validate_hybrid_major_response(
+        retry_accepted, retry_failed = validate_ai_major_response(
             retry_response,
             atlas["manifest"],
             spec,
@@ -1212,42 +981,27 @@ def _merge_usage_attempts(usage_attempts: list[dict[str, Any]]) -> dict[str, Any
     return merged
 
 
-def build_hybrid_major_prompt(
+def build_ai_major_prompt(
     spec: MajorQuestionSpec,
     manifest: dict[str, Any],
     has_rubric_image: bool = False,
     has_stem_image: bool = False,
     question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> tuple[str, str, str]:
-    is_full_page = manifest.get("mode") == "full_page_subjective"
-    has_target_crop = bool(manifest.get("target_crop_path"))
-    if is_full_page:
-        intro_prompt = (
-            "你是严谨的中学试卷批改助手。\n"
-            f"任务：根据评分细则（rubric）、标准答案（answer_key）和该学生的整页原图，只批改大题 {spec.question_id}。\n"
-            "图中是学生答卷的整页（可能正反面上下拼接），保留原始版面。\n"
-            "QUESTION_REGION_HINTS 给出目标小问作答区域的大致坐标，仅为定位提示，不是裁切边界："
-            "学生可能写到框外、页边或用箭头引到别处，需在整页中寻找属于该题的作答；"
-            "页面上其他题目仅作上下文，禁止返回或改写。\n"
-            "先区分印刷题干、图形、横线与学生笔迹。\n"
-            "只返回该学生 target_detail_question_ids 中要求的小题；图中其他小题仅用于理解上下文，禁止返回或改写。\n"
-            "硬性要求：\n"
-            f"{SHARED_GRADING_RULES}\n"
-            "整页同一区域中可能存在纵向、横向或连续书写的多个答案。\n"
-            "每个目标题只能评分一次，不得在不同小问之间重复使用同一份作答证据。\n"
-        )
-    else:
-        intro_prompt = (
-            "你是严谨的中学试卷批改助手。\n"
-            "任务：根据评分细则（rubric）、标准答案（answer_key）和学生作答区域切片，一次批改多名学生的同一道大题。\n"
-            "拼图中包含多名学生的答题切片，每个切片都标有学生序号、姓名和对应题号。\n"
-            "你必须根据 TILE_TO_SUBQUESTION_MAP，将拼图中的每一个切片正确映射到学生的 paper_key 和对应小问的 part_id。\n"
-            "每名学生可能有不同的 target_detail_question_ids。只返回该学生的目标题；图中其他已人工处理的小题仅用于理解上下文，禁止返回或改写。\n"
-            "硬性要求：\n"
-            f"{SHARED_GRADING_RULES}\n"
-            "同一切片中可能存在纵向、横向或连续书写的多个答案。\n"
-            "每个目标题只能评分一次，不得在不同小问之间重复使用同一份作答证据。\n"
-        )
+    intro_prompt = (
+        "你是严谨的中学试卷批改助手。\n"
+        f"任务：根据评分细则（rubric）、标准答案（answer_key）和该学生的整页原图，只批改大题 {spec.question_id}。\n"
+        "图中是学生答卷的整页（可能正反面上下拼接），保留原始版面。\n"
+        "QUESTION_REGION_HINTS 给出目标小问作答区域的大致坐标，仅为定位提示，不是裁切边界："
+        "学生可能写到框外、页边或用箭头引到别处，需在整页中寻找属于该题的作答；"
+        "页面上其他题目仅作上下文，禁止返回或改写。\n"
+        "先区分印刷题干、图形、横线与学生笔迹。\n"
+        "只返回该学生 target_detail_question_ids 中要求的小题；图中其他小题仅用于理解上下文，禁止返回或改写。\n"
+        "硬性要求：\n"
+        f"{SHARED_GRADING_RULES}\n"
+        "整页同一区域中可能存在纵向、横向或连续书写的多个答案。\n"
+        "每个目标题只能评分一次，不得在不同小问之间重复使用同一份作答证据。\n"
+    )
     system_prompt = (
         intro_prompt
         + "若小问边界不清，必须返回所有可能受影响的目标题，降低 confidence_score，并设置 needs_human_review=true。\n"
@@ -1295,10 +1049,7 @@ def build_hybrid_major_prompt(
     detail_ids = spec.detail_question_ids if spec.detail_question_ids else [spec.question_id]
     
     # Image instructions
-    if is_full_page:
-        image_instruction = f"请批改大题 {spec.question_id}。本次批改对象为一名学生的整页原图。"
-    else:
-        image_instruction = f"请批改大题 {spec.question_id}。当前批次包含多个学生的答题切片拼图。"
+    image_instruction = f"请批改大题 {spec.question_id}。本次批改对象为一名学生的整页原图。"
     image_list_desc = []
     idx = 1
     if has_stem_image:
@@ -1307,12 +1058,7 @@ def build_hybrid_major_prompt(
     if has_rubric_image:
         image_list_desc.append(f"第 {idx} 张图片是本题的【标准答案与解析图】。作为评分的参考标准依据。")
         idx += 1
-    if is_full_page:
-        image_list_desc.append("最后一张图片是该学生的【整页原图】。")
-        if has_target_crop:
-            image_list_desc.append("再后一张是目标区域【局部放大图】，仅辅助辨认笔迹，判读以整页为准。")
-    else:
-        image_list_desc.append("最后一张图片是包含本批次学生作答切片的【答题拼图】。")
+    image_list_desc.append("最后一张图片是该学生的【整页原图】。")
 
     image_instruction += " " + "".join(image_list_desc)
     
@@ -1332,10 +1078,7 @@ def build_hybrid_major_prompt(
         },
     }
     
-    if is_full_page:
-        target_qids_note = "该学生实际需要评分的小问以 BATCH_MANIFEST_JSON 中 target_detail_question_ids 为准。"
-    else:
-        target_qids_note = "每名学生实际需要评分的小问以 BATCH_MANIFEST_JSON 中各自的 target_detail_question_ids 为准。"
+    target_qids_note = "该学生实际需要评分的小问以 BATCH_MANIFEST_JSON 中 target_detail_question_ids 为准。"
     static_prompt = "\n".join([
         "【批改任务说明】",
         image_instruction,
@@ -1346,65 +1089,38 @@ def build_hybrid_major_prompt(
         _stable_json(payload)
     ])
 
-    if is_full_page:
-        hint_lines: list[str] = []
-        for item in manifest.get("items", []):
-            target_qids = {
-                normalize_sub_question_id(str(qid))
-                for qid in item.get(
-                    "target_detail_question_ids",
-                    detail_ids,
-                )
-            }
-            for si in item.get("sub_items", []):
-                is_target = (
-                    normalize_sub_question_id(str(si.get("part_id") or ""))
-                    in target_qids
-                )
-                bbox = si.get("bbox")
-                position = (
-                    f"大致位置 bbox={bbox}"
-                    if isinstance(bbox, dict)
-                    else "无坐标，请在整页中定位"
-                )
-                hint_lines.append(
-                    f"  小问 ID={si.get('part_id')!r}, 页={si.get('page')}, "
-                    f"{position}, 本次目标={'是' if is_target else '否（仅上下文）'}"
-                )
-        evidence_map_block = (
-            "【目标小问区域提示 (QUESTION_REGION_HINTS)】:\n" + "\n".join(hint_lines)
-            if hint_lines else ""
-        )
-        evidence_map_note = (
-            "请务必对照上面的区域提示在整页中定位作答，只为 target_detail_question_ids 中的小题返回评分；"
-            "标为“仅上下文”的小题不得出现在响应中。"
-        )
-    else:
-        tile_map_lines: list[str] = []
-        for item in manifest.get("items", []):
-            pk = item.get("paper_key", "?")
-            name = item.get("student_name", "?")
-            target_qids = {
-                normalize_sub_question_id(str(qid))
-                for qid in item.get(
-                    "target_detail_question_ids",
-                    detail_ids,
-                )
-            }
-            for si in item.get("sub_items", []):
-                is_target = (
-                    normalize_sub_question_id(str(si.get("part_id") or ""))
-                    in target_qids
-                )
-                tile_map_lines.append(
-                    f"  切片 '{si['tile_label']}' → paper_key={pk!r} (学生:{name}), "
-                    f"小问 ID={si['part_id']!r}, 本次目标={'是' if is_target else '否（仅上下文）'}"
-                )
-        evidence_map_block = "【切片与学生/小问映射关系表 (TILE_TO_SUBQUESTION_MAP)】:\n" + "\n".join(tile_map_lines) if tile_map_lines else ""
-        evidence_map_note = (
-            "请务必对照上面的映射表，只为各学生 target_detail_question_ids 中的小题返回评分；"
-            "标为“仅上下文”的小题不得出现在响应中。"
-        )
+    hint_lines: list[str] = []
+    for item in manifest.get("items", []):
+        target_qids = {
+            normalize_sub_question_id(str(qid))
+            for qid in item.get(
+                "target_detail_question_ids",
+                detail_ids,
+            )
+        }
+        for si in item.get("sub_items", []):
+            is_target = (
+                normalize_sub_question_id(str(si.get("part_id") or ""))
+                in target_qids
+            )
+            bbox = si.get("bbox")
+            position = (
+                f"大致位置 bbox={bbox}"
+                if isinstance(bbox, dict)
+                else "无坐标，请在整页中定位"
+            )
+            hint_lines.append(
+                f"  小问 ID={si.get('part_id')!r}, 页={si.get('page')}, "
+                f"{position}, 本次目标={'是' if is_target else '否（仅上下文）'}"
+            )
+    evidence_map_block = (
+        "【目标小问区域提示 (QUESTION_REGION_HINTS)】:\n" + "\n".join(hint_lines)
+        if hint_lines else ""
+    )
+    evidence_map_note = (
+        "请务必对照上面的区域提示在整页中定位作答，只为 target_detail_question_ids 中的小题返回评分；"
+        "标为“仅上下文”的小题不得出现在响应中。"
+    )
 
     def _schema_detail(sub_qid: str) -> dict[str, Any]:
         return {
@@ -1483,7 +1199,7 @@ def build_hybrid_major_prompt(
     return system_prompt, static_prompt, dynamic_prompt
 
 
-def validate_hybrid_major_response(
+def validate_ai_major_response(
     response: dict[str, Any],
     manifest: dict[str, Any],
     spec: MajorQuestionSpec,
@@ -1627,54 +1343,6 @@ def validate_hybrid_major_response(
         if paper_key not in seen:
             failed.append({"paper_key": paper_key, "student_id": item.get("student_id"), "question_id": spec.question_id, "reason": "missing_paper_result"})
     return accepted, failed
-
-
-def _append_objective_local_details(
-    *,
-    session_id: int | str,
-    entries: list[PaperEntry],
-    rubric: dict[str, Any],
-    details_by_key: dict[str, list[QuestionGradingDetail]],
-    escalation_items: list[dict[str, Any]],
-) -> None:
-    try:
-        from objective_shadow_service import run_objective_shadow_grading
-    except Exception:
-        return
-    shadow_config = {"enabled": True, "question_types": ["choice", "fill_blank"], "sample_limit": 0, "write_report": False}
-    for entry in entries:
-        shadow = run_objective_shadow_grading(
-            session_id=str(session_id),
-            paper_group=entry.group,
-            main_result={"grading_details": []},
-            rubric=rubric,
-            template_config={},
-            shadow_config=shadow_config,
-        )
-        for item in shadow.get("items", []):
-            qid = str(item.get("question_id") or "")
-            if item.get("objective_auto_scored") and not item.get("objective_need_review") and item.get("objective_score") is not None:
-                details_by_key[entry.paper_key].append(
-                    QuestionGradingDetail(
-                        question_id=qid,
-                        score_awarded=float(item.get("objective_score") or 0),
-                        deduction_reason=item.get("objective_review_reason") or None,
-                        knowledge_id="OBJECTIVE",
-                        error_category=None,
-                        error_summary=None,
-                        confidence_score=_confidence_0_to_100(item.get("confidence", 100)),
-                        knowledge_ids=["OBJECTIVE"],
-                    )
-                )
-            else:
-                escalation_items.append(
-                    {
-                        "paper_key": entry.paper_key,
-                        "student_id": entry.student_id,
-                        "question_id": qid,
-                        "reason": item.get("objective_review_reason") or "objective_low_confidence",
-                    }
-                )
 
 
 def _detail_from_ai_item(
@@ -1896,64 +1564,6 @@ def _subjective_detail_metadata(detail: dict[str, Any], qid: str) -> dict[str, A
     return metadata
 
 
-def _objective_escalation_batches(
-    escalation_items: list[dict[str, Any]],
-    entries: list[PaperEntry],
-    rubric: dict[str, Any],
-    answer_key: dict[str, Any],
-) -> list[tuple[MajorQuestionSpec, list[PaperEntry]]]:
-    if not escalation_items:
-        return []
-    entry_by_key = {entry.paper_key: entry for entry in entries}
-    rubric_questions = _questions_by_id(rubric)
-    answer_questions = _questions_by_id(answer_key)
-    grouped: dict[str, list[PaperEntry]] = {}
-    seen: set[tuple[str, str]] = set()
-    for item in escalation_items:
-        qid = str(item.get("question_id") or "").strip()
-        paper_key = str(item.get("paper_key") or "").strip()
-        if not qid or paper_key not in entry_by_key or (qid, paper_key) in seen:
-            continue
-        seen.add((qid, paper_key))
-        grouped.setdefault(qid, []).append(entry_by_key[paper_key])
-
-    result: list[tuple[MajorQuestionSpec, list[PaperEntry]]] = []
-    for qid in sorted(grouped, key=_question_sort_key):
-        question = dict(rubric_questions.get(qid) or {"question_id": qid, "question_type": "objective"})
-        result.append(
-            (
-                MajorQuestionSpec(
-                    question_id=qid,
-                    detail_question_ids=[qid],
-                    rubric=question,
-                    answer_key=dict(answer_questions.get(qid) or {}),
-                    max_score=_question_max_score(question),
-                ),
-                grouped[qid],
-            )
-        )
-    return result
-
-
-def _questions_by_id(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    result: dict[str, dict[str, Any]] = {}
-    if not isinstance(payload, dict):
-        return result
-    for question in payload.get("questions", []):
-        if not isinstance(question, dict):
-            continue
-        qid = str(question.get("question_id") or "").strip()
-        if qid:
-            result[qid] = question
-        for part in question.get("parts", []) if isinstance(question.get("parts"), list) else []:
-            if not isinstance(part, dict):
-                continue
-            part_id = str(part.get("part_id") or part.get("question_id") or "").strip()
-            if part_id:
-                result[part_id] = part
-    return result
-
-
 def _build_result(
     student_name: str,
     rubric: dict[str, Any],
@@ -1962,7 +1572,7 @@ def _build_result(
     metadata: list[dict[str, Any]],
     paper_key: str,
     fallback_items: list[dict[str, Any]] | None = None,
-    result_mode: str = "hybrid_batch",
+    result_mode: str = "ai",
 ) -> GradingResult:
     metadata_by_qid = {
         str(item.get("question_id")): item
@@ -2069,82 +1679,6 @@ def _major_sub_regions(spec: MajorQuestionSpec, regions: list[dict[str, Any]]) -
     return [(did, dict(merged)) for did in detail_ids]
 
 
-def _crop_region(source_path: Path, region: dict[str, Any], padding: int) -> tuple[Image.Image, dict[str, int]]:
-    with Image.open(source_path) as image:
-        rgb = image.convert("RGB")
-        width, height = rgb.size
-        from answer_region_geometry import scaled_region_bbox
-        left, top, right, bottom = scaled_region_bbox(region, width, height, padding=padding)
-        crop = rgb.crop((left, top, right, bottom))
-    return crop, {"x": left, "y": top, "w": right - left, "h": bottom - top}
-
-
-def _load_atlas_label_font(size: int = 18) -> ImageFont.ImageFont:
-    candidates = (
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/simsun.ttc",
-        "/System/Library/Fonts/PingFang.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    )
-    for candidate in candidates:
-        try:
-            font = ImageFont.truetype(candidate, size)
-        except (OSError, ValueError):
-            continue
-        if bytes(font.getmask("样卷A")) != bytes(font.getmask("□□A")):
-            return font
-    return ImageFont.load_default()
-
-
-def _save_atlas_with_labels(labels: list[str], tile_images: list[Image.Image], atlas_path: Path, max_width: int, jpeg_quality: int) -> None:
-    """Save atlas where each tile has a custom pre-built label string."""
-    label_height = 42
-    gap = 12
-    margin = 18
-    max_tile_width = max_width - margin * 2
-    scaled: list[Image.Image] = []
-    for image in tile_images:
-        if image.width > max_tile_width:
-            ratio = max_tile_width / float(image.width)
-            scaled.append(image.resize((max(1, int(image.width * ratio)), max(1, int(image.height * ratio))), Image.Resampling.LANCZOS))
-        else:
-            scaled.append(image.copy())
-    atlas_width = max(image.width for image in scaled) + margin * 2
-    atlas_height = margin + sum(label_height + image.height + gap for image in scaled) + margin
-    atlas = Image.new("RGB", (atlas_width, atlas_height), "white")
-    draw = ImageDraw.Draw(atlas)
-    label_font = _load_atlas_label_font()
-    y = margin
-    try:
-        for label, image in zip(labels, scaled):
-            draw.rectangle((margin, y, atlas_width - margin, y + label_height - 4), fill=(242, 244, 247))
-            draw.text(
-                (margin + 10, y + 8),
-                label,
-                fill=(20, 30, 40),
-                font=label_font,
-            )
-            y += label_height
-            atlas.paste(image, (margin, y))
-            y += image.height + gap
-        atlas.save(atlas_path, format="JPEG", quality=jpeg_quality)
-    finally:
-        atlas.close()
-        for image in scaled:
-            image.close()
-
-
-def _save_atlas(items: list[dict[str, Any]], tile_images: list[Image.Image], atlas_path: Path, max_width: int, jpeg_quality: int) -> None:
-    """Legacy single-tile-per-student atlas saver (kept for compatibility)."""
-    labels = [
-        f"{item['item_index']:02d}. paper_key={item['paper_key']} student={item.get('student_id')} name={item.get('student_name')}"
-        for item in items
-    ]
-    _save_atlas_with_labels(labels, tile_images, atlas_path, max_width, jpeg_quality)
-
-
 def _source_image_path(group: ExamPaperGroup, page: str) -> Path:
     if page == "back":
         return Path(group.enhanced_back_image or group.back_image)
@@ -2242,13 +1776,6 @@ def _float_value(value: Any, default: float | None = 0.0) -> float | None:
         return default
 
 
-def _confidence_0_to_100(value: Any) -> float:
-    confidence = _float_value(value, 100.0) or 0.0
-    if confidence <= 1:
-        return confidence * 100
-    return confidence
-
-
 def _truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "是"}
@@ -2261,12 +1788,6 @@ def _question_sort_key(question_id: Any) -> tuple[int, int | str, str]:
     if match:
         return (0, int(match.group()), text)
     return (1, text, text)
-
-
-def _chunk(items: list[Any], size: int) -> list[list[Any]]:
-    chunk_size = max(1, int(size or 1))
-    return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
-
 
 
 def summarize_usage_records(records: list[dict[str, Any]]) -> dict[str, int]:

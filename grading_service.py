@@ -6,7 +6,7 @@ import queue
 import re
 import time
 from dataclasses import replace
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -21,7 +21,6 @@ from backend.domain_models import (
 from backend.llm.execution import execution_snapshot_from_profile
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.grading_workflow import preflight_match_status, rubric_scoring_item_scores
-from evidence_atlas import EvidenceAtlasBuilder
 from grading_limits import (
     FULL_PAPER_WORKERS_MAX,
     FULL_PAPER_WORKERS_MIN,
@@ -29,13 +28,8 @@ from grading_limits import (
     GRADING_RPM_MIN,
     HYBRID_INFLIGHT_WORKERS_MAX,
     HYBRID_INFLIGHT_WORKERS_MIN,
-    LARGE_REQUEST_WORKERS_DEFAULT,
-    LARGE_REQUEST_WORKERS_MAX,
-    LARGE_REQUEST_WORKERS_MIN,
     OBJECTIVE_BATCH_SIZE_MAX,
     OBJECTIVE_BATCH_SIZE_MIN,
-    SUBJECTIVE_MAJOR_BATCH_SIZE_MAX,
-    SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,
     bounded_int,
 )
 from grading_completeness import audit_grading_details, is_objective_detail, major_question_id, major_question_ids_for_issues, merge_detail_metadata, details_require_review, review_confidence_threshold
@@ -43,7 +37,7 @@ from image_preprocessor import enhance_image_file, is_standard_pdf_page
 from integration.question_tag_projection_service import QuestionTagProjectionService
 from llm_client import LLMClient
 from path_manager import get_path_manager
-from hybrid_batch_grading_service import run_hybrid_batch_grading
+from ai_batch_grading_service import run_ai_batch_grading
 from request_pacer import RequestPacer
 from scanner import STUDENT_NAME_REGION_ALIASES, ScanAnalysis, Scanner, student_name_region_from_regions
 
@@ -155,7 +149,7 @@ class GradingService:
         enhance_images: bool = True,
         max_workers: int | None = None,
         requests_per_minute: int | None = None,
-        grading_mode: str = "full_paper",
+        grading_mode: str = "ai",
         scan_batch_id: str | None = None,
         objective_escalation_question_ids: Iterable[str] | None = None,
         failed_only: bool = False,
@@ -176,12 +170,11 @@ class GradingService:
         from answer_region_geometry import answer_regions_with_template_source_sizes
         data_root = self.db.db_path.parent.parent if self.db.db_path.parent.name == "databases" else None
         answer_regions = answer_regions_with_template_source_sizes(self.db, session_id, data_root=data_root)
-        if grading_mode == "hybrid_batch":
-            resolved_grading_mode = "hybrid_batch"
-        elif grading_mode == "full_paper":
-            resolved_grading_mode = "full_paper"
-        else:
-            resolved_grading_mode = "ai"
+        if str(grading_mode or "").strip() in {"full_paper", "hybrid_batch"}:
+            raise ValueError(
+                "旧批改方式已停用，请用 AI 批改重新开始未完成的部分"
+            )
+        resolved_grading_mode = "ai"
         teacher_locks = (
             self.db.reviews.list_teacher_score_locks(
                 session_id,
@@ -257,6 +250,20 @@ class GradingService:
                 grading_model=grading_model or "",
             )
             run_store = GradingRunStore(self.db.db_path)
+            target_run_id = (
+                resume_run_id
+                if resume_run_id is not None
+                else supplement_run_id
+            )
+            if target_run_id is not None:
+                stored_run = run_store.get_run(int(target_run_id))
+                if (
+                    stored_run is not None
+                    and str(stored_run.grading_mode) != "ai"
+                ):
+                    raise GradingRunResumeMismatchError(
+                        "旧批改方式已停用，请用 AI 批改重新开始未完成的部分"
+                    )
             if resume_run_id is not None:
                 run = run_store.resume_exact(
                     resume_run_id,
@@ -509,14 +516,14 @@ class GradingService:
                 execution_snapshot.max_in_flight,
             ),
         )
-        full_paper_workers = worker_count
+        large_request_workers = worker_count
         rpm_limit = bounded_int(
             requests_per_minute,
             execution_snapshot.requests_per_minute,
             GRADING_RPM_MIN,
             GRADING_RPM_MAX,
         )
-        hybrid_worker_count = bounded_int(
+        batch_worker_count = bounded_int(
             max_workers,
             execution_snapshot.max_in_flight,
             HYBRID_INFLIGHT_WORKERS_MIN,
@@ -533,610 +540,381 @@ class GradingService:
                 "event": "batch_grading_config",
                 "total": total,
                 "max_workers": worker_count,
-                "large_request_workers": full_paper_workers,
-                "hybrid_inflight_workers": hybrid_worker_count,
+                "large_request_workers": large_request_workers,
+                "hybrid_inflight_workers": batch_worker_count,
                 "requests_per_minute": rpm_limit,
                 "grading_mode": resolved_grading_mode,
             }
 
-        if resolved_grading_mode in {"hybrid_batch", "ai"}:
-            matched_records, hybrid_run_item_by_paper = yield from (
-                self._classify_full_paper_candidates(
-                    matched_records,
-                    run_store=run_store,
-                    run=run,
-                    session_id=session_id,
-                    config_fingerprint=config_fingerprint,
-                    resume_run_id=resume_run_id or supplement_run_id,
-                )
+        matched_records, batch_run_item_by_paper = yield from (
+            self._classify_grading_candidates(
+                matched_records,
+                run_store=run_store,
+                run=run,
+                session_id=session_id,
+                config_fingerprint=config_fingerprint,
+                resume_run_id=resume_run_id or supplement_run_id,
             )
-            total = len(matched_records)
-            existing_results_by_student = {}
-            # Teacher-locked questions are graded by the AI like everything
-            # else; locks only win when results are merged and persisted.
-            # This map is reserved for the failed_only retry path below.
-            skipped_questions_by_student: dict[int, set[str]] = {}
-            if failed_only:
-                for paper_id, group, student_id in matched_records:
-                    stored_result = self.results.get_student_result_for_retry(
-                        session_id,
-                        student_id,
+        )
+        total = len(matched_records)
+        existing_results_by_student = {}
+        # Teacher-locked questions are graded by the AI like everything
+        # else; locks only win when results are merged and persisted.
+        # This map is reserved for the failed_only retry path below.
+        skipped_questions_by_student: dict[int, set[str]] = {}
+        if failed_only:
+            for paper_id, group, student_id in matched_records:
+                stored_result = self.results.get_student_result_for_retry(
+                    session_id,
+                    student_id,
+                )
+                if stored_result:
+                    existing_results_by_student[student_id] = stored_result
+                    details_rows = stored_result["details"]
+                    completeness = audit_grading_details(
+                        grader.rubric,
+                        details_rows,
                     )
-                    if stored_result:
-                        existing_results_by_student[student_id] = stored_result
-                        details_rows = stored_result["details"]
-                        completeness = audit_grading_details(
-                            grader.rubric,
-                            details_rows,
-                        )
-                        affected_major_ids = set(
-                            major_question_ids_for_issues(completeness)
-                        )
-                        raw_completeness = existing_results_by_student[
-                            student_id
-                        ]["raw_json"].get("grading_completeness")
-                        has_structured_audit = isinstance(
-                            raw_completeness,
-                            dict,
-                        )
-                        has_unmapped_unexpected = (
-                            has_structured_audit
-                            and any(
-                                major_question_id(
-                                    grader.rubric,
-                                    question_id,
-                                )
-                                is None
-                                for question_id in completeness[
-                                    "unexpected_question_ids"
-                                ]
-                            )
-                        )
-                        replace_all_details = has_unmapped_unexpected or (
-                            has_structured_audit and not affected_major_ids
-                        )
-                        if replace_all_details:
-                            affected_major_ids = (
-                                _rubric_major_question_ids(grader.rubric)
-                            )
-                        stored_result["affected_major_ids"] = (
-                            affected_major_ids
-                        )
-                        stored_result["atomic_retry"] = bool(
-                            affected_major_ids or has_structured_audit
-                        )
-                        stored_result["replace_all_details"] = (
-                            replace_all_details
-                        )
-                        if replace_all_details:
-                            skipped_questions_by_student.setdefault(
-                                student_id,
-                                set(),
-                            )
-                        else:
-                            skipped_questions_by_student.setdefault(
-                                student_id,
-                                set(),
-                            ).update({
-                                detail["question_id"]
-                                for detail in details_rows
-                                if major_question_id(
-                                    grader.rubric,
-                                    detail["question_id"],
-                                )
-                                not in affected_major_ids
-                            })
-
-            hybrid_marked_paper_ids: list[int] = []
-            for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
-                if _cancel_requested():
-                    for marked_paper_id in hybrid_marked_paper_ids:
-                        _restore_paper_after_cancel(
-                            marked_paper_id,
-                            hybrid_run_item_by_paper.get(marked_paper_id),
-                        )
-                    yield _finish_cancelled_run(release_session=True)
-                    return
-                self.papers.update_exam_paper_status(paper_id, "grading")
-                if paper_id in hybrid_run_item_by_paper:
-                    run_store.mark_grading(hybrid_run_item_by_paper[paper_id])
-                hybrid_marked_paper_ids.append(paper_id)
-                yield {
-                    "event": "grading_started",
-                    "paper_id": paper_id,
-                    "student_name": group.student_name,
-                    "current": idx,
-                    "total": total,
-                }
-                if _cancel_requested():
-                    for marked_paper_id in hybrid_marked_paper_ids:
-                        _restore_paper_after_cancel(
-                            marked_paper_id,
-                            hybrid_run_item_by_paper.get(marked_paper_id),
-                        )
-                    yield _finish_cancelled_run(release_session=True)
-                    return
-
-            completed = 0
-            try:
-                objective_completed = 0
-                subjective_completed = 0
-                subjective_total = 0
-
-                ai_full_page = resolved_grading_mode == "ai"
-
-                def _hybrid_progress(event: dict[str, Any]) -> None:
-                    nonlocal objective_completed, subjective_completed, subjective_total
-                    stage = str(event.get("stage") or "")
-                    qid = str(event.get("question_id") or "?")
-                    batch_index = event.get("batch_index")
-                    unit = "位" if ai_full_page else "批"
-                    if stage.startswith("objective"):
-                        if stage.endswith(("_done", "_error")):
-                            objective_completed += 1
-                        objective_total = max(1, total)
-                        progress = 0.08 + 0.40 * min(
-                            1.0,
-                            objective_completed / objective_total,
-                        )
-                        if stage.endswith("_error"):
-                            msg = (
-                                f"正在识别客观题，已处理 "
-                                f"{objective_completed}/{objective_total} 份答卷；"
-                                "本次未识别项将转教师复核"
-                            )
-                        else:
-                            msg = (
-                                f"正在识别客观题，已处理 "
-                                f"{objective_completed}/{objective_total} 份答卷"
-                            )
-                        public_stage = "grading_objective"
-                    elif stage.endswith("_summary"):
-                        subjective_total = int(event.get("total_batches") or 0)
-                        progress = 0.48
-                        msg = (
-                            f"客观题识别完成；正在准备主观题批改，"
-                            f"共 {subjective_total} 个批次"
-                        )
-                        public_stage = "grading_subjective"
-                    elif stage.endswith(("_done", "_error")):
-                        subjective_completed += 1
-                        progress = 0.48 + 0.40 * min(
-                            1.0,
-                            subjective_completed / max(1, subjective_total),
-                        )
-                        suffix = "；失败项将转教师复核" if stage.endswith("_error") else ""
-                        msg = (
-                            f"正在批改主观题，已完成 "
-                            f"{subjective_completed}/{max(1, subjective_total)} 个批次"
-                            f"（当前 {qid}，第 {batch_index} {unit}）{suffix}"
-                        )
-                        public_stage = "grading_subjective"
-                    else:
-                        return
-                    event_queue.put(
-                        {
-                            "event": "grading_progress",
-                            "stage": public_stage,
-                            "progress": progress,
-                            "message": msg,
-                        }
+                    affected_major_ids = set(
+                        major_question_ids_for_issues(completeness)
                     )
-
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
-                        run_hybrid_batch_grading,
-                        session_id=session_id,
-                        paper_groups=[group for _, group, _ in matched_records],
-                        answer_regions=answer_regions,
-                        rubric=grader.rubric,
-                        answer_key=grader.answer_key,
-                        llm_client=self.llm_client,
-                        grading_model=grading_model,
-                        output_root=(
-                            get_path_manager().outputs_dir
-                            / ("ai_grading" if ai_full_page else "hybrid_batch")
-                        ),
-                        subjective_evidence=(
-                            "full_page" if ai_full_page else "major_atlas"
-                        ),
-                        result_mode=resolved_grading_mode,
-                        batch_size=bounded_int(
-                            os.getenv("LLM_HYBRID_MAJOR_BATCH_SIZE"),
-                            4,
-                            SUBJECTIVE_MAJOR_BATCH_SIZE_MIN,
-                            SUBJECTIVE_MAJOR_BATCH_SIZE_MAX,
-                        ),
-                        objective_batch_size=bounded_int(
-                            os.getenv("LLM_OBJECTIVE_BATCH_SIZE"),
-                            OBJECTIVE_BATCH_SIZE_MAX,
-                            OBJECTIVE_BATCH_SIZE_MIN,
-                            OBJECTIVE_BATCH_SIZE_MAX,
-                        ),
-                        batch_workers=hybrid_worker_count,
-                        rate_limiter=rate_limiter,
-                        progress_callback=_hybrid_progress,
-                        rubric_images_dir=get_path_manager().templates_dir / f"session_{session_id}" / "rubric_images",
-                        skipped_questions_by_student=skipped_questions_by_student,
-                        question_tag_context=grader.question_tag_context,
-                        should_pause=lambda: _pause_requested() or _cancel_requested(),
+                    raw_completeness = existing_results_by_student[
+                        student_id
+                    ]["raw_json"].get("grading_completeness")
+                    has_structured_audit = isinstance(
+                        raw_completeness,
+                        dict,
                     )
-                    while not future.done():
-                        try:
-                            while True:
-                                yield event_queue.get_nowait()
-                        except queue.Empty:
-                            pass
-                        time.sleep(0.1)
-                    batch_run = future.result()
-                if _cancel_requested():
-                    for marked_paper_id in hybrid_marked_paper_ids:
-                        _restore_paper_after_cancel(
-                            marked_paper_id,
-                            hybrid_run_item_by_paper.get(marked_paper_id),
+                    has_unmapped_unexpected = (
+                        has_structured_audit
+                        and any(
+                            major_question_id(
+                                grader.rubric,
+                                question_id,
+                            )
+                            is None
+                            for question_id in completeness[
+                                "unexpected_question_ids"
+                            ]
                         )
-                    yield _finish_cancelled_run(release_session=True)
-                    return
-                fallback_items_by_key = _fallback_items_by_paper_key(batch_run.fallback_items)
-                paper_key_by_paper_id = {
-                    paper_id: entry.paper_key
-                    for entry, (paper_id, _, _) in zip(batch_run.paper_entries, matched_records)
-                }
-            except Exception as exc:  # noqa: BLE001
-                if _cancel_requested():
-                    for marked_paper_id in hybrid_marked_paper_ids:
-                        _restore_paper_after_cancel(
-                            marked_paper_id,
-                            hybrid_run_item_by_paper.get(marked_paper_id),
+                    )
+                    replace_all_details = has_unmapped_unexpected or (
+                        has_structured_audit and not affected_major_ids
+                    )
+                    if replace_all_details:
+                        affected_major_ids = (
+                            _rubric_major_question_ids(grader.rubric)
                         )
-                    yield _finish_cancelled_run(release_session=True)
-                    return
-                for _, (paper_id, group, student_id) in enumerate(matched_records, start=1):
-                    completed += 1
-                    retry_existing = existing_results_by_student.get(student_id) if failed_only else None
-                    if retry_existing and retry_existing.get("atomic_retry"):
-                        self.results.record_result_retry_failure(
-                            retry_existing["result_id"],
-                            _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
-                        )
-                    assignment_is_current = (
-                        self.papers.update_exam_paper_status_if_current_assignment(
-                            paper_id,
+                    stored_result["affected_major_ids"] = (
+                        affected_major_ids
+                    )
+                    stored_result["atomic_retry"] = bool(
+                        affected_major_ids or has_structured_audit
+                    )
+                    stored_result["replace_all_details"] = (
+                        replace_all_details
+                    )
+                    if replace_all_details:
+                        skipped_questions_by_student.setdefault(
                             student_id,
-                            "failed",
-                            str(exc),
+                            set(),
                         )
+                    else:
+                        skipped_questions_by_student.setdefault(
+                            student_id,
+                            set(),
+                        ).update({
+                            detail["question_id"]
+                            for detail in details_rows
+                            if major_question_id(
+                                grader.rubric,
+                                detail["question_id"],
+                            )
+                            not in affected_major_ids
+                        })
+
+        marked_paper_ids: list[int] = []
+        for idx, (paper_id, group, student_id) in enumerate(matched_records, start=1):
+            if _cancel_requested():
+                for marked_paper_id in marked_paper_ids:
+                    _restore_paper_after_cancel(
+                        marked_paper_id,
+                        batch_run_item_by_paper.get(marked_paper_id),
                     )
-                    if not assignment_is_current:
-                        yield {
-                            "event": "paper_skipped",
-                            "paper_id": paper_id,
-                            "student_name": group.student_name,
-                            "reason": "paper assignment changed while grading was running",
-                            "kind": "assignment_changed",
-                        }
-                        continue
-                    if paper_id in hybrid_run_item_by_paper:
-                        run_store.set_item_status(
-                            hybrid_run_item_by_paper[paper_id],
-                            "failed",
-                            disposition_reason=str(exc),
-                        )
-                    yield {
-                        "event": "grading_failed",
-                        "paper_id": paper_id,
-                        "student_name": group.student_name,
-                        "error": str(exc),
-                        "current": completed,
-                        "total": total,
-                    }
-                if run_store is not None and run is not None:
-                    run_store.finish(run.run_token, "completed")
-                self.db.finish_session_run(session_id, "completed")
-                progress = self.db.get_session_progress(session_id)
-                yield {"event": "session_completed", "progress": progress}
+                yield _finish_cancelled_run(release_session=True)
+                return
+            self.papers.update_exam_paper_status(paper_id, "grading")
+            if paper_id in batch_run_item_by_paper:
+                run_store.mark_grading(batch_run_item_by_paper[paper_id])
+            marked_paper_ids.append(paper_id)
+            yield {
+                "event": "grading_started",
+                "paper_id": paper_id,
+                "student_name": group.student_name,
+                "current": idx,
+                "total": total,
+            }
+            if _cancel_requested():
+                for marked_paper_id in marked_paper_ids:
+                    _restore_paper_after_cancel(
+                        marked_paper_id,
+                        batch_run_item_by_paper.get(marked_paper_id),
+                    )
+                yield _finish_cancelled_run(release_session=True)
                 return
 
-            for result_index, (paper_id, group, student_id) in enumerate(matched_records):
-                if _cancel_requested():
-                    for pending_paper_id, _, _ in matched_records[result_index:]:
-                        _restore_paper_after_cancel(
-                            pending_paper_id,
-                            hybrid_run_item_by_paper.get(pending_paper_id),
-                        )
-                    yield _finish_cancelled_run(release_session=True)
-                    return
-                completed += 1
-                retry_existing = existing_results_by_student.get(student_id) if failed_only else None
-                try:
-                    paper_key = paper_key_by_paper_id.get(paper_id, "")
-                    fallback_items = fallback_items_by_key.get(paper_key, [])
-                    result = batch_run.results_by_paper_key[paper_key]
-                    _merge_teacher_score_locks_into_result(
-                        result,
-                        teacher_score_locks_by_student.get(student_id, {}),
-                        grader.rubric,
-                        scan_batch_id=scan_batch_id,
+        completed = 0
+        try:
+            objective_completed = 0
+            subjective_completed = 0
+            subjective_total = 0
+
+            def _batch_progress(event: dict[str, Any]) -> None:
+                nonlocal objective_completed, subjective_completed, subjective_total
+                stage = str(event.get("stage") or "")
+                qid = str(event.get("question_id") or "?")
+                batch_index = event.get("batch_index")
+                unit = "位"
+                if stage.startswith("objective"):
+                    if stage.endswith(("_done", "_error")):
+                        objective_completed += 1
+                    objective_total = max(1, total)
+                    progress = 0.08 + 0.40 * min(
+                        1.0,
+                        objective_completed / objective_total,
                     )
+                    if stage.endswith("_error"):
+                        msg = (
+                            f"正在识别客观题，已处理 "
+                            f"{objective_completed}/{objective_total} 份答卷；"
+                            "本次未识别项将转教师复核"
+                        )
+                    else:
+                        msg = (
+                            f"正在识别客观题，已处理 "
+                            f"{objective_completed}/{objective_total} 份答卷"
+                        )
+                    public_stage = "grading_objective"
+                elif stage.endswith("_summary"):
+                    subjective_total = int(event.get("total_batches") or 0)
+                    progress = 0.48
+                    msg = (
+                        f"客观题识别完成；正在准备主观题批改，"
+                        f"共 {subjective_total} 个批次"
+                    )
+                    public_stage = "grading_subjective"
+                elif stage.endswith(("_done", "_error")):
+                    subjective_completed += 1
+                    progress = 0.48 + 0.40 * min(
+                        1.0,
+                        subjective_completed / max(1, subjective_total),
+                    )
+                    suffix = "；失败项将转教师复核" if stage.endswith("_error") else ""
+                    msg = (
+                        f"正在批改主观题，已完成 "
+                        f"{subjective_completed}/{max(1, subjective_total)} 个批次"
+                        f"（当前 {qid}，第 {batch_index} {unit}）{suffix}"
+                    )
+                    public_stage = "grading_subjective"
+                else:
+                    return
+                event_queue.put(
+                    {
+                        "event": "grading_progress",
+                        "stage": public_stage,
+                        "progress": progress,
+                        "message": msg,
+                    }
+                )
 
-                    atomic_major_retry = bool(retry_existing and retry_existing["atomic_retry"])
-                    if atomic_major_retry:
-                        existing = retry_existing
-                        affected_major_ids = existing["affected_major_ids"]
-                        if existing["replace_all_details"] and not affected_major_ids:
-                            raise ValueError("Structured incomplete result has no rubric major questions to retry safely")
-                        merged_raw_json = dict(existing["raw_json"])
-                        merged_raw_json.pop("hybrid_batch_fallback", None)
-                        merged_raw_json.pop("detail_metadata", None)
-                        if result.raw_json:
-                            merged_raw_json.update(result.raw_json)
-                        merged_raw_json = merge_detail_metadata(existing["raw_json"], merged_raw_json,
-                            [d["question_id"] for d in existing["details"] if existing["replace_all_details"]
-                             or major_question_id(grader.rubric, d["question_id"]) in affected_major_ids]
-                            + [d.question_id for d in result.grading_details])
-                        preserved_details = [
-                            _detail_from_row(detail)
-                            for detail in existing["details"]
-                            if not existing["replace_all_details"]
-                            and major_question_id(grader.rubric, detail["question_id"]) not in affected_major_ids
-                        ]
-                        replacement_details = [
-                            detail
-                            for detail in result.grading_details
-                            if major_question_id(grader.rubric, detail.question_id) in affected_major_ids
-                        ]
-                        merged_details = [*preserved_details, *replacement_details]
-                        if fallback_items:
-                            raise ValueError("Retry did not return every affected major-question part exactly once and in range")
-                        result.total_score = existing["total_score"]
-                        result.student_score = sum(detail.score_awarded for detail in merged_details)
-                        merged_raw_json["grading_completeness"] = audit_grading_details(grader.rubric, merged_details)
-                        result.needs_human_review = details_require_review(merged_details, merged_raw_json)
-                        result.grading_details = merged_details
-                        result.raw_json = merged_raw_json
-
-                    elif failed_only and retry_existing:
-                        existing = retry_existing
-                        merged_raw_json = dict(existing["raw_json"])
-                        merged_raw_json.pop("hybrid_batch_fallback", None)
-                        merged_raw_json.pop("detail_metadata", None)
-                        if result.raw_json:
-                            merged_raw_json.update(result.raw_json)
-                        merged_raw_json = merge_detail_metadata(existing["raw_json"], merged_raw_json,
-                            [d.question_id for d in result.grading_details])
-
-                        new_details_map = {d.question_id: d for d in result.grading_details}
-                        merged_details = []
-                        for old_detail in existing["details"]:
-                            merged_details.append(new_details_map.pop(old_detail["question_id"], _detail_from_row(old_detail)))
-                        merged_details.extend(new_details_map.values())
-                        result.total_score = existing["total_score"]
-                        result.student_score = sum(detail.score_awarded for detail in merged_details)
-                        merged_raw_json["grading_completeness"] = audit_grading_details(grader.rubric, merged_details)
-                        result.needs_human_review = details_require_review(merged_details, merged_raw_json)
-                        result.grading_details = merged_details
-                        result.raw_json = merged_raw_json
-
-                    if fallback_items:
-                        result.needs_human_review = True
-                        result.raw_json = dict(result.raw_json or {})
-                        result.raw_json["hybrid_batch_fallback"] = {
-                            "mode": "partial_failure",
-                            "items": fallback_items,
-                        }
-
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    run_ai_batch_grading,
+                    session_id=session_id,
+                    paper_groups=[group for _, group, _ in matched_records],
+                    answer_regions=answer_regions,
+                    rubric=grader.rubric,
+                    answer_key=grader.answer_key,
+                    llm_client=self.llm_client,
+                    grading_model=grading_model,
+                    output_root=get_path_manager().outputs_dir / "ai_grading",
+                    objective_batch_size=bounded_int(
+                        os.getenv("LLM_OBJECTIVE_BATCH_SIZE"),
+                        OBJECTIVE_BATCH_SIZE_MAX,
+                        OBJECTIVE_BATCH_SIZE_MIN,
+                        OBJECTIVE_BATCH_SIZE_MAX,
+                    ),
+                    batch_workers=batch_worker_count,
+                    rate_limiter=rate_limiter,
+                    progress_callback=_batch_progress,
+                    rubric_images_dir=get_path_manager().templates_dir / f"session_{session_id}" / "rubric_images",
+                    skipped_questions_by_student=skipped_questions_by_student,
+                    question_tag_context=grader.question_tag_context,
+                    should_pause=lambda: _pause_requested() or _cancel_requested(),
+                )
+                while not future.done():
                     try:
                         while True:
                             yield event_queue.get_nowait()
                     except queue.Empty:
                         pass
-
-                    if _cancel_requested():
-                        for pending_paper_id, _, _ in matched_records[result_index:]:
-                            _restore_paper_after_cancel(
-                                pending_paper_id,
-                                hybrid_run_item_by_paper.get(pending_paper_id),
-                            )
-                        yield _finish_cancelled_run(release_session=True)
-                        return
-
-                    if atomic_major_retry:
-                        remove_question_ids = [
-                            detail["question_id"]
-                            for detail in retry_existing["details"]
-                            if retry_existing["replace_all_details"]
-                            or major_question_id(grader.rubric, detail["question_id"])
-                            in retry_existing["affected_major_ids"]
-                        ]
-                        replacement_details = [
-                            detail
-                            for detail in result.grading_details
-                            if major_question_id(grader.rubric, detail.question_id)
-                            in retry_existing["affected_major_ids"]
-                        ]
-                        result_id = retry_existing["result_id"]
-                        self.results.replace_result_details_atomic(
-                            result_id,
-                            remove_question_ids,
-                            replacement_details,
-                            rubric=grader.rubric,
-                            student_score=result.student_score,
-                            needs_human_review=result.needs_human_review,
-                            raw_json=result.raw_json,
-                            scan_batch_id=scan_batch_id,
-                        )
-                        assignment_is_current = (
-                            self.papers.update_exam_paper_status_if_current_assignment(
-                                paper_id,
-                                student_id,
-                                "graded",
-                            )
-                        )
-                    else:
-                        result_id = (
-                            self.results.publish_session_result_if_current_assignment(
-                                session_id,
-                                student_id,
-                                paper_id,
-                                result,
-                                scan_batch_id=scan_batch_id,
-                            )
-                        )
-                        assignment_is_current = result_id is not None
-                    if not assignment_is_current:
-                        yield {
-                            "event": "paper_skipped",
-                            "paper_id": paper_id,
-                            "student_name": group.student_name,
-                            "reason": "paper assignment changed while grading was running",
-                            "kind": "assignment_changed",
-                        }
-                        continue
-                    if paper_id in hybrid_run_item_by_paper:
-                        run_store.set_item_status(
-                            hybrid_run_item_by_paper[paper_id],
-                            "graded",
-                            result_id=result_id,
-                        )
-                    yield {
-                        "event": "graded",
-                        "paper_id": paper_id,
-                        "result_id": result_id,
-                        "student_name": result.student_name,
-                        "score": result.student_score,
-                        "total_score": result.total_score,
-                        "needs_human_review": result.needs_human_review,
-                        "current": completed,
-                        "total": total,
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    if retry_existing and retry_existing.get("atomic_retry"):
-                        self.results.record_result_retry_failure(
-                            retry_existing["result_id"],
-                            _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
-                        )
-                    assignment_is_current = (
-                        self.papers.update_exam_paper_status_if_current_assignment(
-                            paper_id,
-                            student_id,
-                            "failed",
-                            str(exc),
-                        )
+                    time.sleep(0.1)
+                batch_run = future.result()
+            if _cancel_requested():
+                for marked_paper_id in marked_paper_ids:
+                    _restore_paper_after_cancel(
+                        marked_paper_id,
+                        batch_run_item_by_paper.get(marked_paper_id),
                     )
-                    if not assignment_is_current:
-                        yield {
-                            "event": "paper_skipped",
-                            "paper_id": paper_id,
-                            "student_name": group.student_name,
-                            "reason": "paper assignment changed while grading was running",
-                            "kind": "assignment_changed",
-                        }
-                        continue
-                    if paper_id in hybrid_run_item_by_paper:
-                        run_store.set_item_status(
-                            hybrid_run_item_by_paper[paper_id],
-                            "failed",
-                            disposition_reason=str(exc),
-                        )
+                yield _finish_cancelled_run(release_session=True)
+                return
+            fallback_items_by_key = _fallback_items_by_paper_key(batch_run.fallback_items)
+            paper_key_by_paper_id = {
+                paper_id: entry.paper_key
+                for entry, (paper_id, _, _) in zip(batch_run.paper_entries, matched_records)
+            }
+        except Exception as exc:  # noqa: BLE001
+            if _cancel_requested():
+                for marked_paper_id in marked_paper_ids:
+                    _restore_paper_after_cancel(
+                        marked_paper_id,
+                        batch_run_item_by_paper.get(marked_paper_id),
+                    )
+                yield _finish_cancelled_run(release_session=True)
+                return
+            for _, (paper_id, group, student_id) in enumerate(matched_records, start=1):
+                completed += 1
+                retry_existing = existing_results_by_student.get(student_id) if failed_only else None
+                if retry_existing and retry_existing.get("atomic_retry"):
+                    self.results.record_result_retry_failure(
+                        retry_existing["result_id"],
+                        _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
+                    )
+                assignment_is_current = (
+                    self.papers.update_exam_paper_status_if_current_assignment(
+                        paper_id,
+                        student_id,
+                        "failed",
+                        str(exc),
+                    )
+                )
+                if not assignment_is_current:
                     yield {
-                        "event": "grading_failed",
+                        "event": "paper_skipped",
                         "paper_id": paper_id,
                         "student_name": group.student_name,
-                        "error": str(exc),
-                        "current": completed,
-                        "total": total,
+                        "reason": "paper assignment changed while grading was running",
+                        "kind": "assignment_changed",
                     }
-
-            hybrid_paused = bool(getattr(batch_run, "paused", False))
+                    continue
+                if paper_id in batch_run_item_by_paper:
+                    run_store.set_item_status(
+                        batch_run_item_by_paper[paper_id],
+                        "failed",
+                        disposition_reason=str(exc),
+                    )
+                yield {
+                    "event": "grading_failed",
+                    "paper_id": paper_id,
+                    "student_name": group.student_name,
+                    "error": str(exc),
+                    "current": completed,
+                    "total": total,
+                }
             if run_store is not None and run is not None:
-                try:
-                    run_store.finish(run.run_token, "paused" if hybrid_paused else "completed")
-                except Exception:
-                    pass
+                run_store.finish(run.run_token, "completed")
             self.db.finish_session_run(session_id, "completed")
             progress = self.db.get_session_progress(session_id)
-            if hybrid_paused:
-                yield {
-                    "event": "session_paused",
-                    "run_id": run.id if run is not None else None,
-                    "progress": progress,
-                }
-            else:
-                yield {"event": "session_completed", "progress": progress}
+            yield {"event": "session_completed", "progress": progress}
             return
 
-        # ===== 整卷批改：候选判定 + 可暂停的有界增量派发 =====
-        grade_records, run_item_by_paper = yield from self._classify_full_paper_candidates(
-            matched_records,
-            run_store=run_store,
-            run=run,
-            session_id=session_id,
-            config_fingerprint=config_fingerprint,
-            resume_run_id=resume_run_id or supplement_run_id,
-        )
-
-        total_grade = len(grade_records)
-        completed = 0
-        paused = False
-        cancelled = False
-        dispatch_exhausted = total_grade == 0
-        record_iter = iter(list(enumerate(grade_records, start=1)))
-        inflight: dict[Any, tuple[int, int, ExamPaperGroup, int]] = {}
-
-        with ThreadPoolExecutor(max_workers=full_paper_workers, thread_name_prefix="grading") as executor:
-            while True:
-                while (
-                    len(inflight) < full_paper_workers
-                    and not paused
-                    and not dispatch_exhausted
-                ):
-                    if _cancel_requested():
-                        cancelled = True
-                        paused = True
-                        break
-                    if _pause_requested():
-                        paused = True
-                        break
-                    try:
-                        idx, (paper_id, group, student_id) = next(record_iter)
-                    except StopIteration:
-                        dispatch_exhausted = True
-                        break
-                    self.papers.update_exam_paper_status(paper_id, "grading")
-                    if run_store is not None and paper_id in run_item_by_paper:
-                        try:
-                            run_store.mark_grading(run_item_by_paper[paper_id])
-                        except Exception:
-                            pass
-                    yield {
-                        "event": "grading_started",
-                        "paper_id": paper_id,
-                        "student_name": group.student_name,
-                        "current": idx,
-                        "total": total_grade,
-                    }
-                    if _cancel_requested():
-                        cancelled = True
-                        paused = True
-                        _restore_paper_after_cancel(
-                            paper_id,
-                            run_item_by_paper.get(paper_id),
-                        )
-                        break
-                    future = executor.submit(
-                        _grade_one_paper_with_retries,
-                        grader,
-                        group,
-                        rate_limiter,
-                        event_queue,
-                        session_id,
-                        grading_mode=resolved_grading_mode,
-                        answer_regions=answer_regions,
-                        atlas_output_root=get_path_manager().outputs_dir / "evidence_atlas",
+        for result_index, (paper_id, group, student_id) in enumerate(matched_records):
+            if _cancel_requested():
+                for pending_paper_id, _, _ in matched_records[result_index:]:
+                    _restore_paper_after_cancel(
+                        pending_paper_id,
+                        batch_run_item_by_paper.get(pending_paper_id),
                     )
-                    inflight[future] = (idx, paper_id, group, student_id)
-                    if idx >= total_grade:
-                        dispatch_exhausted = True
+                yield _finish_cancelled_run(release_session=True)
+                return
+            completed += 1
+            retry_existing = existing_results_by_student.get(student_id) if failed_only else None
+            try:
+                paper_key = paper_key_by_paper_id.get(paper_id, "")
+                fallback_items = fallback_items_by_key.get(paper_key, [])
+                result = batch_run.results_by_paper_key[paper_key]
+                _merge_teacher_score_locks_into_result(
+                    result,
+                    teacher_score_locks_by_student.get(student_id, {}),
+                    grader.rubric,
+                    scan_batch_id=scan_batch_id,
+                )
+
+                atomic_major_retry = bool(retry_existing and retry_existing["atomic_retry"])
+                if atomic_major_retry:
+                    existing = retry_existing
+                    affected_major_ids = existing["affected_major_ids"]
+                    if existing["replace_all_details"] and not affected_major_ids:
+                        raise ValueError("Structured incomplete result has no rubric major questions to retry safely")
+                    merged_raw_json = dict(existing["raw_json"])
+                    merged_raw_json.pop("hybrid_batch_fallback", None)
+                    merged_raw_json.pop("detail_metadata", None)
+                    if result.raw_json:
+                        merged_raw_json.update(result.raw_json)
+                    merged_raw_json = merge_detail_metadata(existing["raw_json"], merged_raw_json,
+                        [d["question_id"] for d in existing["details"] if existing["replace_all_details"]
+                         or major_question_id(grader.rubric, d["question_id"]) in affected_major_ids]
+                        + [d.question_id for d in result.grading_details])
+                    preserved_details = [
+                        _detail_from_row(detail)
+                        for detail in existing["details"]
+                        if not existing["replace_all_details"]
+                        and major_question_id(grader.rubric, detail["question_id"]) not in affected_major_ids
+                    ]
+                    replacement_details = [
+                        detail
+                        for detail in result.grading_details
+                        if major_question_id(grader.rubric, detail.question_id) in affected_major_ids
+                    ]
+                    merged_details = [*preserved_details, *replacement_details]
+                    if fallback_items:
+                        raise ValueError("Retry did not return every affected major-question part exactly once and in range")
+                    result.total_score = existing["total_score"]
+                    result.student_score = sum(detail.score_awarded for detail in merged_details)
+                    merged_raw_json["grading_completeness"] = audit_grading_details(grader.rubric, merged_details)
+                    result.needs_human_review = details_require_review(merged_details, merged_raw_json)
+                    result.grading_details = merged_details
+                    result.raw_json = merged_raw_json
+
+                elif failed_only and retry_existing:
+                    existing = retry_existing
+                    merged_raw_json = dict(existing["raw_json"])
+                    merged_raw_json.pop("hybrid_batch_fallback", None)
+                    merged_raw_json.pop("detail_metadata", None)
+                    if result.raw_json:
+                        merged_raw_json.update(result.raw_json)
+                    merged_raw_json = merge_detail_metadata(existing["raw_json"], merged_raw_json,
+                        [d.question_id for d in result.grading_details])
+
+                    new_details_map = {d.question_id: d for d in result.grading_details}
+                    merged_details = []
+                    for old_detail in existing["details"]:
+                        merged_details.append(new_details_map.pop(old_detail["question_id"], _detail_from_row(old_detail)))
+                    merged_details.extend(new_details_map.values())
+                    result.total_score = existing["total_score"]
+                    result.student_score = sum(detail.score_awarded for detail in merged_details)
+                    merged_raw_json["grading_completeness"] = audit_grading_details(grader.rubric, merged_details)
+                    result.needs_human_review = details_require_review(merged_details, merged_raw_json)
+                    result.grading_details = merged_details
+                    result.raw_json = merged_raw_json
+
+                if fallback_items:
+                    result.needs_human_review = True
+                    result.raw_json = dict(result.raw_json or {})
+                    result.raw_json["hybrid_batch_fallback"] = {
+                        "mode": "partial_failure",
+                        "items": fallback_items,
+                    }
 
                 try:
                     while True:
@@ -1144,138 +922,139 @@ class GradingService:
                 except queue.Empty:
                     pass
 
-                if _cancel_requested() and inflight:
-                    cancelled = True
-                    paused = True
-
-                if not inflight:
-                    break
-
-                done, _ = wait(set(inflight), timeout=0.1, return_when=FIRST_COMPLETED)
-                for future in done:
-                    idx, paper_id, group, student_id = inflight.pop(future)
-                    completed += 1
-                    if cancelled or _cancel_requested():
-                        cancelled = True
-                        paused = True
-                        try:
-                            future.result()
-                        except Exception:
-                            pass
+                if _cancel_requested():
+                    for pending_paper_id, _, _ in matched_records[result_index:]:
                         _restore_paper_after_cancel(
+                            pending_paper_id,
+                            batch_run_item_by_paper.get(pending_paper_id),
+                        )
+                    yield _finish_cancelled_run(release_session=True)
+                    return
+
+                if atomic_major_retry:
+                    remove_question_ids = [
+                        detail["question_id"]
+                        for detail in retry_existing["details"]
+                        if retry_existing["replace_all_details"]
+                        or major_question_id(grader.rubric, detail["question_id"])
+                        in retry_existing["affected_major_ids"]
+                    ]
+                    replacement_details = [
+                        detail
+                        for detail in result.grading_details
+                        if major_question_id(grader.rubric, detail.question_id)
+                        in retry_existing["affected_major_ids"]
+                    ]
+                    result_id = retry_existing["result_id"]
+                    self.results.replace_result_details_atomic(
+                        result_id,
+                        remove_question_ids,
+                        replacement_details,
+                        rubric=grader.rubric,
+                        student_score=result.student_score,
+                        needs_human_review=result.needs_human_review,
+                        raw_json=result.raw_json,
+                        scan_batch_id=scan_batch_id,
+                    )
+                    assignment_is_current = (
+                        self.papers.update_exam_paper_status_if_current_assignment(
                             paper_id,
-                            run_item_by_paper.get(paper_id),
+                            student_id,
+                            "graded",
                         )
-                        continue
-                    try:
-                        result = future.result()
-                        if _cancel_requested():
-                            cancelled = True
-                            paused = True
-                            _restore_paper_after_cancel(
-                                paper_id,
-                                run_item_by_paper.get(paper_id),
-                            )
-                            continue
-                        result_id = (
-                            self.results.publish_session_result_if_current_assignment(
-                                session_id,
-                                student_id,
-                                paper_id,
-                                result,
-                                scan_batch_id=scan_batch_id,
-                            )
+                    )
+                else:
+                    result_id = (
+                        self.results.publish_session_result_if_current_assignment(
+                            session_id,
+                            student_id,
+                            paper_id,
+                            result,
+                            scan_batch_id=scan_batch_id,
                         )
-                        if result_id is None:
-                            yield {
-                                "event": "paper_skipped",
-                                "paper_id": paper_id,
-                                "student_name": group.student_name,
-                                "reason": "paper assignment changed while grading was running",
-                                "kind": "assignment_changed",
-                            }
-                            continue
-                        if run_store is not None and paper_id in run_item_by_paper:
-                            try:
-                                run_store.set_item_status(run_item_by_paper[paper_id], "graded", result_id=result_id)
-                            except Exception:
-                                pass
-                        yield {
-                            "event": "graded",
-                            "paper_id": paper_id,
-                            "result_id": result_id,
-                            "student_name": result.student_name,
-                            "score": result.student_score,
-                            "total_score": result.total_score,
-                            "needs_human_review": result.needs_human_review,
-                            "current": completed,
-                            "total": total_grade,
-                        }
-                    except Exception as exc:  # noqa: BLE001
-                        assignment_is_current = (
-                            self.papers.update_exam_paper_status_if_current_assignment(
-                                paper_id,
-                                student_id,
-                                "failed",
-                                str(exc),
-                            )
-                        )
-                        if not assignment_is_current:
-                            yield {
-                                "event": "paper_skipped",
-                                "paper_id": paper_id,
-                                "student_name": group.student_name,
-                                "reason": "paper assignment changed while grading was running",
-                                "kind": "assignment_changed",
-                            }
-                            continue
-                        if run_store is not None and paper_id in run_item_by_paper:
-                            try:
-                                run_store.set_item_status(
-                                    run_item_by_paper[paper_id], "failed", disposition_reason=str(exc)
-                                )
-                            except Exception:
-                                pass
-                        yield {
-                            "event": "grading_failed",
-                            "paper_id": paper_id,
-                            "student_name": group.student_name,
-                            "error": str(exc),
-                            "current": completed,
-                            "total": total_grade,
-                        }
+                    )
+                    assignment_is_current = result_id is not None
+                if not assignment_is_current:
+                    yield {
+                        "event": "paper_skipped",
+                        "paper_id": paper_id,
+                        "student_name": group.student_name,
+                        "reason": "paper assignment changed while grading was running",
+                        "kind": "assignment_changed",
+                    }
+                    continue
+                if paper_id in batch_run_item_by_paper:
+                    run_store.set_item_status(
+                        batch_run_item_by_paper[paper_id],
+                        "graded",
+                        result_id=result_id,
+                    )
+                yield {
+                    "event": "graded",
+                    "paper_id": paper_id,
+                    "result_id": result_id,
+                    "student_name": result.student_name,
+                    "score": result.student_score,
+                    "total_score": result.total_score,
+                    "needs_human_review": result.needs_human_review,
+                    "current": completed,
+                    "total": total,
+                }
+            except Exception as exc:  # noqa: BLE001
+                if retry_existing and retry_existing.get("atomic_retry"):
+                    self.results.record_result_retry_failure(
+                        retry_existing["result_id"],
+                        _failed_retry_attempt(exc, retry_existing["affected_major_ids"]),
+                    )
+                assignment_is_current = (
+                    self.papers.update_exam_paper_status_if_current_assignment(
+                        paper_id,
+                        student_id,
+                        "failed",
+                        str(exc),
+                    )
+                )
+                if not assignment_is_current:
+                    yield {
+                        "event": "paper_skipped",
+                        "paper_id": paper_id,
+                        "student_name": group.student_name,
+                        "reason": "paper assignment changed while grading was running",
+                        "kind": "assignment_changed",
+                    }
+                    continue
+                if paper_id in batch_run_item_by_paper:
+                    run_store.set_item_status(
+                        batch_run_item_by_paper[paper_id],
+                        "failed",
+                        disposition_reason=str(exc),
+                    )
+                yield {
+                    "event": "grading_failed",
+                    "paper_id": paper_id,
+                    "student_name": group.student_name,
+                    "error": str(exc),
+                    "current": completed,
+                    "total": total,
+                }
 
-                if paused and not inflight:
-                    break
-
-        if cancelled:
-            yield _finish_cancelled_run(release_session=True)
-            return
-
-        if paused:
-            # 未派发答卷保持 pending 待恢复；标记账本运行为 paused 并释放会话运行守卫。
-            if run_store is not None and run is not None:
-                try:
-                    run_store.finish(run.run_token, "paused")
-                except Exception:
-                    pass
-            self.db.finish_session_run(session_id, "completed")
-            progress = self.db.get_session_progress(session_id)
+        run_paused = bool(getattr(batch_run, "paused", False))
+        if run_store is not None and run is not None:
+            try:
+                run_store.finish(run.run_token, "paused" if run_paused else "completed")
+            except Exception:
+                pass
+        self.db.finish_session_run(session_id, "completed")
+        progress = self.db.get_session_progress(session_id)
+        if run_paused:
             yield {
                 "event": "session_paused",
                 "run_id": run.id if run is not None else None,
                 "progress": progress,
             }
-            return
-
-        if run_store is not None and run is not None:
-            try:
-                run_store.finish(run.run_token, "completed")
-            except Exception:
-                pass
-        self.db.finish_session_run(session_id, "completed")
-        progress = self.db.get_session_progress(session_id)
-        yield {"event": "session_completed", "progress": progress}
+        else:
+            yield {"event": "session_completed", "progress": progress}
+        return
 
     def _existing_supplement_identities(
         self,
@@ -1298,7 +1077,7 @@ class GradingService:
         }
         return fingerprints, student_ids
 
-    def _classify_full_paper_candidates(
+    def _classify_grading_candidates(
         self,
         matched_records: list[tuple[int, ExamPaperGroup, int]],
         *,
@@ -1505,7 +1284,7 @@ def _merge_teacher_score_locks_into_result(
     *,
     scan_batch_id: str | None,
 ) -> None:
-    """Complete an in-memory hybrid result with pre-existing teacher scores."""
+    """Complete an in-memory batch result with pre-existing teacher scores."""
 
     if not locks_by_question_id:
         return
@@ -1584,18 +1363,6 @@ def _merge_teacher_score_locks_into_result(
         )
     )
     result.raw_json = raw_json
-
-
-
-def _fallback_items_by_student(fallback_items: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
-    result: dict[int, list[dict[str, Any]]] = {}
-    for item in fallback_items:
-        try:
-            student_id = int(item.get("student_id"))
-        except (TypeError, ValueError):
-            continue
-        result.setdefault(student_id, []).append(dict(item))
-    return result
 
 
 def _fallback_items_by_paper_key(fallback_items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -1819,10 +1586,6 @@ def _enhance_or_original(path: Path, output_dir: Path) -> Path:
         return path
 
 
-def _is_standard_pdf_page(path: Path) -> bool:
-    return is_standard_pdf_page(path)
-
-
 def _clear_enhanced_paths(analysis: ScanAnalysis) -> None:
     for group in analysis.groups:
         group.enhanced_front_image = None
@@ -1830,98 +1593,6 @@ def _clear_enhanced_paths(analysis: ScanAnalysis) -> None:
     for issue in analysis.issues:
         issue.enhanced_front_image = None
         issue.enhanced_back_image = None
-
-
-def _grade_one_paper_with_retries(
-    grader: AIGrader,
-    group: ExamPaperGroup,
-    rate_limiter: RequestPacer,
-    event_queue: queue.Queue | None = None,
-    session_id: int | None = None,
-    *,
-    grading_mode: str = "full_paper",
-    answer_regions: list[dict[str, Any]] | None = None,
-    atlas_output_root: Path | None = None,
-):
-    # Compatibility name only.  P3.5 makes every teacher action correspond to
-    # exactly one physical full-paper request.  Network, timeout, rate-limit,
-    # parsing, and validation failures all return to the teacher queue; an
-    # explicit teacher action is required before another paid request exists.
-    return _grade_one_paper(
-        grader,
-        group,
-        rate_limiter,
-        event_queue,
-        session_id,
-        grading_mode=grading_mode,
-        answer_regions=answer_regions,
-        atlas_output_root=atlas_output_root,
-    )
-
-
-def _grade_one_paper(
-    grader: AIGrader,
-    group: ExamPaperGroup,
-    rate_limiter: RequestPacer,
-    event_queue: queue.Queue | None = None,
-    session_id: int | None = None,
-    *,
-    grading_mode: str = "full_paper",
-    answer_regions: list[dict[str, Any]] | None = None,
-    atlas_output_root: Path | None = None,
-):
-    def report(msg: str):
-        if event_queue:
-            event_queue.put({"event": "grading_log", "student_name": group.student_name, "message": msg})
-            
-    rate_limiter.acquire()
-    
-    # [ROUTING LOGIC START] Simulate routing and log it
-    from grading_router import route_grading_task
-    for qid in grader.target_question_ids:
-        q_type = grader.get_question_type(qid)
-                
-        route_grading_task(
-            question_type=q_type,
-            exam_id=str(session_id) if session_id is not None else "unknown",
-            student_id=str(group.student_id),
-            question_id=qid
-        )
-    # [ROUTING LOGIC END]
-
-    # [SUBJECTIVE ONLY REPLACEMENT START]
-    main_result = None
-
-    def _run_main_grading():
-        if grading_mode == "evidence_atlas":
-            try:
-                builder = EvidenceAtlasBuilder(
-                    output_root=atlas_output_root or get_path_manager().outputs_dir / "evidence_atlas"
-                )
-                atlas_result = builder.build(
-                    session_id=session_id if session_id is not None else "unknown",
-                    paper_group=group,
-                    answer_regions=answer_regions or getattr(grader, "answer_regions", []),
-                )
-                report(f"Evidence atlas grading enabled: {atlas_result.atlas_path}")
-                return grader.grade_with_atlas(
-                    group,
-                    atlas_path=atlas_result.atlas_path,
-                    atlas_manifest=atlas_result.manifest,
-                    report=report,
-                )
-            except Exception as e:  # noqa: BLE001
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(f"Evidence atlas grading failed, falling back to full_paper: {e}")
-                report(f"Evidence atlas failed, falling back to full paper: {e}")
-        return grader.grade(group, report=report)
-
-    main_result = _run_main_grading()
-    # [SUBJECTIVE ONLY REPLACEMENT END]
-
-
-    return main_result
 
 
 def _env_int(name: str, default: int) -> int:

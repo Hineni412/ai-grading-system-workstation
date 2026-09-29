@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-"""Hybrid batch validation tolerance and retry regressions."""
+"""AI batch major-question validation tolerance and retry regressions."""
 
-from hybrid_batch_grading_service import (
+from ai_batch_grading_service import (
     MajorQuestionSpec,
     grade_major_question_batch,
-    validate_hybrid_major_response,
+    validate_ai_major_response,
 )
 
 
@@ -93,7 +93,7 @@ def test_symbolic_and_expanded_proofs_preserve_the_model_score_without_literal_a
                 }
             ],
         }
-        accepted, failed = validate_hybrid_major_response(response, manifest, spec)
+        accepted, failed = validate_ai_major_response(response, manifest, spec)
         assert failed == []
         assert accepted[0]["details"][0].score_awarded == score
         assert accepted[0]["metadata"][0]["observed_answer"] == observed
@@ -185,7 +185,7 @@ def test_single_invalid_detail_no_longer_voids_siblings() -> None:
         ],
     }
 
-    accepted, failed = validate_hybrid_major_response(response, MANIFEST, SPEC)
+    accepted, failed = validate_ai_major_response(response, MANIFEST, SPEC)
 
     assert len(accepted) == 1
     assert {d.question_id for d in accepted[0]["details"]} == {"Q12(P1)", "Q12(P3)"}

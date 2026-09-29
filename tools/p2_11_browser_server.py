@@ -115,7 +115,7 @@ def _grading_handler(paths):
         from grading_run_store import GradingRunStore
 
         session_id = int(context.payload["session_id"])
-        mode = str(context.payload.get("grading_mode") or "full_paper")
+        mode = str(context.payload.get("grading_mode") or "ai")
         db = DBManager(paths.db_path)
         config_fingerprint = session_grading_config_fingerprint(
             db=db,

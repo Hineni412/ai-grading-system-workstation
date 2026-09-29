@@ -6,15 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-import hybrid_batch_grading_service as hybrid
-from hybrid_batch_grading_service import (
-    MajorQuestionAtlasBuilder,
-    MajorQuestionSpec,
-    PaperEntry,
-    grade_major_question_batch,
-    run_hybrid_batch_grading,
-    validate_hybrid_major_response,
-)
+from ai_batch_grading_service import run_ai_batch_grading
 from scanner import ExamPaperGroup
 
 
@@ -116,7 +108,7 @@ def test_full_page_run_sends_one_student_per_major_request(tmp_path: Path) -> No
             }
 
     client = FullPageClient()
-    run = run_hybrid_batch_grading(
+    run = run_ai_batch_grading(
         session_id=7,
         paper_groups=groups,
         answer_regions=regions,
@@ -126,8 +118,6 @@ def test_full_page_run_sends_one_student_per_major_request(tmp_path: Path) -> No
         grading_model="fake",
         output_root=tmp_path / "out",
         include_objective_local=False,
-        subjective_evidence="full_page",
-        result_mode="ai",
     )
 
     assert client.calls == 2  # 2 students × 1 major question

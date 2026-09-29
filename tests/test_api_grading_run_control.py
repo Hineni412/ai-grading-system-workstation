@@ -157,7 +157,7 @@ def _prepare_ready_scan_batch(client, db, tmp_path, session_id: int) -> dict:
     return result
 
 
-def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(
+def test_cancelled_run_cannot_resume_and_legacy_run_retry_is_rejected(
     tmp_path,
 ) -> None:
     from db_manager import StudentRecord
@@ -193,10 +193,12 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(
             f"/api/sessions/{session_id}/grading/runs/{cancelled_run.id}/resume"
         )
         assert resume.status_code == 409
+        assert resume.json()["error"]["code"] == "legacy_grading_mode_disabled"
         supplement = client.post(
             f"/api/sessions/{session_id}/grading/runs/{cancelled_run.id}/supplement-new-matches"
         )
         assert supplement.status_code == 409
+        assert supplement.json()["error"]["code"] == "legacy_grading_mode_disabled"
 
         new_batch = client.post(f"/api/sessions/{session_id}/scan-uploads/new-batch")
         assert new_batch.status_code == 200
@@ -216,18 +218,12 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(
         )
         store.finish(failed_run.run_token, "failed")
         retryable = client.get(f"/api/sessions/{session_id}/grading-workspace")
-        assert retryable.json()["grading_run"]["allowed_actions"] == [
-            "retry_failed",
-            "supplement_new_matches",
-        ]
+        assert retryable.json()["grading_run"]["allowed_actions"] == []
         retried = client.post(
             f"/api/sessions/{session_id}/grading/runs/{failed_run.id}/retry-failed"
         )
-        assert retried.status_code == 202
-        assert retried.json()["payload"]["grading_mode"] == "full_paper"
-        assert retried.json()["payload"]["failed_only"] is True
-        assert retried.json()["payload"]["source_run_id"] == failed_run.id
-        assert "max_workers" not in retried.json()["payload"]
+        assert retried.status_code == 409
+        assert retried.json()["error"]["code"] == "legacy_grading_mode_disabled"
     finally:
         manager.shutdown()
 
@@ -291,7 +287,7 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
 
     manager.register("grading_run", wait_for_release)
     request = {
-        "grading_mode": "full_paper",
+        "grading_mode": "ai",
         "upload_revision": 2,
         "decision_revision": 0,
         "confirm_pending_issues": False,
@@ -404,14 +400,14 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
 
         rejected_path = client.post(
             f"/api/sessions/{session_id}/grading/run",
-            json={"exams_dir": "C:/private", "grading_mode": "full_paper"},
+            json={"exams_dir": "C:/private", "grading_mode": "ai"},
         )
         assert rejected_path.status_code == 422
 
         unconfirmed = client.post(
             f"/api/sessions/{session_id}/grading/run",
             json={
-                "grading_mode": "full_paper",
+                "grading_mode": "ai",
                 "upload_revision": 2,
                 "decision_revision": 0,
                 "confirm_pending_issues": False,
@@ -425,25 +421,25 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
         started = client.post(
             f"/api/sessions/{session_id}/grading/run",
             json={
-                "grading_mode": "hybrid_batch",
+                "grading_mode": "ai",
                 "upload_revision": 2,
                 "decision_revision": 0,
                 "confirm_pending_issues": True,
             },
         )
         assert started.status_code == 202
-        assert started.json()["payload"]["grading_mode"] == "hybrid_batch"
+        assert started.json()["payload"]["grading_mode"] == "ai"
         assert "exams_dir" not in started.json()["payload"]
 
         from grading_run_store import GradingRunStore
 
         active_run = GradingRunStore(db.db_path).begin(
-            session_id, "d" * 64, "hybrid_batch"
+            session_id, "d" * 64, "ai"
         )
         duplicate = client.post(
             f"/api/sessions/{session_id}/grading/run",
             json={
-                "grading_mode": "hybrid_batch",
+                "grading_mode": "ai",
                 "upload_revision": 2,
                 "decision_revision": 0,
                 "confirm_pending_issues": True,
@@ -470,7 +466,7 @@ def test_resume_rejects_changed_grading_configuration_before_submitting_job(
     student_id = int(db.list_students()[0]["id"])
     session_id = db.create_grading_session("配置变化恢复", "rubric.json", "answer.json")
     store = GradingRunStore(db.db_path)
-    run = store.begin(session_id, "a" * 64, "full_paper")
+    run = store.begin(session_id, "a" * 64, "ai")
     store.add_item(
         run.id,
         source_label="001",
@@ -500,7 +496,7 @@ def test_resume_rejects_changed_grading_configuration_before_submitting_job(
 
 
 @pytest.mark.parametrize("grading_mode", ["hybrid_batch", "full_paper"])
-def test_terminal_run_can_submit_separate_original_mode_supplement(
+def test_terminal_legacy_run_cannot_be_supplemented(
     tmp_path,
     grading_mode: str,
 ) -> None:
@@ -511,7 +507,7 @@ def test_terminal_run_can_submit_separate_original_mode_supplement(
         config_fingerprint_resolver=lambda _session_id, _mode: "a" * 64,
     )
     session_id = db.create_grading_session("异常卷补批", "rubric.json", "answer.json")
-    frozen = _prepare_ready_scan_batch(client, db, tmp_path, session_id)
+    _prepare_ready_scan_batch(client, db, tmp_path, session_id)
     store = GradingRunStore(db.db_path)
     run = store.begin(session_id, "a" * 64, grading_mode)
     store.finish(run.run_token, "completed")
@@ -519,23 +515,13 @@ def test_terminal_run_can_submit_separate_original_mode_supplement(
     try:
         loaded = client.get(f"/api/sessions/{session_id}/grading-workspace")
         assert loaded.status_code == 200
-        assert (
-            "supplement_new_matches" in loaded.json()["grading_run"]["allowed_actions"]
-        )
+        assert loaded.json()["grading_run"]["mode"] == grading_mode
+        assert loaded.json()["grading_run"]["allowed_actions"] == []
 
         submitted = client.post(
             f"/api/sessions/{session_id}/grading/runs/{run.id}/supplement-new-matches"
         )
-        assert submitted.status_code == 202
-        expected_payload = {
-            "session_id": session_id,
-            "grading_mode": grading_mode,
-            "failed_only": False,
-            "supplement_only": True,
-            "supplement_run_id": run.id,
-            "enhance_images": True,
-            "scan_batch_id": frozen["batch_id"],
-        }
-        assert submitted.json()["payload"] == expected_payload
+        assert submitted.status_code == 409
+        assert submitted.json()["error"]["code"] == "legacy_grading_mode_disabled"
     finally:
         manager.shutdown()

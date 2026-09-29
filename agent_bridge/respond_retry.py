@@ -26,7 +26,7 @@ _ACH_FIX = {"missing": "none"}
 
 
 def _load_specs():
-    from hybrid_batch_grading_service import build_major_question_specs
+    from ai_batch_grading_service import build_major_question_specs
 
     rubric = json.loads(RUBRIC_PATH.read_text(encoding="utf-8"))
     answer_key = json.loads(ANSWER_KEY_PATH.read_text(encoding="utf-8"))
@@ -69,7 +69,7 @@ def _repair_detail(detail: dict) -> dict:
 
 
 def main() -> None:
-    from hybrid_batch_grading_service import _detail_from_ai_item
+    from ai_batch_grading_service import _detail_from_ai_item
 
     req_dir = Path(sys.argv[1])
     dyn = (req_dir / "prompt_dynamic.txt").read_text(encoding="utf-8")

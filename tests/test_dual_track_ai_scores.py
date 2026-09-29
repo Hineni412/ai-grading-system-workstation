@@ -21,7 +21,7 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
     tmp_path: Path,
 ) -> None:
     from grading_service import GradingService
-    from hybrid_batch_grading_service import HybridBatchRunResult, PaperEntry
+    from ai_batch_grading_service import AIBatchRunResult, PaperEntry
     from llm_client import LLMClient
     from scanner import ExamPaperGroup
 
@@ -164,7 +164,7 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
         ],
         raw_json={"Q1": {"score": 4.0}, "Q2": {"score": 3.0}},
     )
-    batch_result = HybridBatchRunResult(
+    batch_result = AIBatchRunResult(
         paper_entries=[entry],
         results_by_paper_key={"Alice": ai_result},
         fallback_items=[],
@@ -174,7 +174,7 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
 
     service = GradingService(db, MagicMock(spec=LLMClient))
     with patch(
-        "grading_service.run_hybrid_batch_grading", return_value=batch_result
+        "grading_service.run_ai_batch_grading", return_value=batch_result
     ) as run:
         events = list(
             service.run_session_grading(
@@ -182,7 +182,7 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
                 exams_dir,
                 rubric_path,
                 answer_key_path,
-                grading_mode="hybrid_batch",
+                grading_mode="ai",
                 scan_batch_id="batch-1",
                 failed_only=True,
             )

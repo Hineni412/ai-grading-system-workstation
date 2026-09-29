@@ -284,7 +284,7 @@ def test_hybrid_model_scores_survive_storage_and_teacher_confirmation(
     from backend.repositories.papers import PaperRepositoryGateway
     from backend.repositories.results import ResultRepositoryGateway
     from backend.repositories.review import ReviewRepositoryGateway
-    from hybrid_batch_grading_service import run_hybrid_batch_grading
+    from ai_batch_grading_service import run_ai_batch_grading
 
     database = tmp_path / "scores.db"
     db = DBManager(database)
@@ -303,7 +303,7 @@ def test_hybrid_model_scores_survive_storage_and_teacher_confirmation(
             {"question_id": "Q1", "question_type": "fill_blank", "max_score": 8}
         ],
     }
-    run = run_hybrid_batch_grading(
+    run = run_ai_batch_grading(
         session_id=session_id,
         paper_groups=groups,
         answer_regions=[
@@ -378,7 +378,7 @@ def test_hybrid_model_scores_survive_storage_and_teacher_confirmation(
 def test_hybrid_missing_model_score_remains_ungraded_and_can_be_targeted(
     tmp_path: Path,
 ) -> None:
-    from hybrid_batch_grading_service import run_hybrid_batch_grading
+    from ai_batch_grading_service import run_ai_batch_grading
 
     class MissingOneScore(FakeBatchClient):
         def json_from_images(self, *args, **kwargs):
@@ -420,7 +420,7 @@ def test_hybrid_missing_model_score_remains_ungraded_and_can_be_targeted(
         grading_model="fake",
         output_root=tmp_path / "out",
     )
-    run = run_hybrid_batch_grading(**kwargs, llm_client=client)
+    run = run_ai_batch_grading(**kwargs, llm_client=client)
     result = next(iter(run.results_by_paper_key.values()))
     assert [(d.question_id, d.score_awarded) for d in result.grading_details] == [
         ("Q1", 8)
@@ -430,7 +430,7 @@ def test_hybrid_missing_model_score_remains_ungraded_and_can_be_targeted(
     assert run.fallback_items[0]["question_id"] == "Q2"
     assert len(client.calls) == 1
     retry = FakeBatchClient(score=0, answer="D")
-    run = run_hybrid_batch_grading(
+    run = run_ai_batch_grading(
         **kwargs,
         llm_client=retry,
         target_questions_by_student={groups[0].student_id: {"Q2"}},

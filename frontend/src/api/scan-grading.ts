@@ -479,7 +479,7 @@ export function fetchScanStudentOptions(sessionId: number): Promise<ScanStudentM
   })
 }
 
-export function fetchGradingPlan(sessionId: number, mode: GradingMode, signal?: AbortSignal): Promise<GradingPlan> {
+export function fetchGradingPlan(sessionId: number, mode: SelectableGradingMode, signal?: AbortSignal): Promise<GradingPlan> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/grading/plan`, {
     method: 'POST',
     body: { grading_mode: mode },
@@ -502,7 +502,7 @@ export function saveScanDecisions(sessionId: number, revision: number, decisions
   })
 }
 
-export function startGrading(sessionId: number, mode: AutomatedGradingMode, uploadRevision: number, decisionRevision: number, confirmPendingIssues: boolean): Promise<JobResponse> {
+export function startGrading(sessionId: number, mode: 'ai', uploadRevision: number, decisionRevision: number, confirmPendingIssues: boolean): Promise<JobResponse> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/grading/run`, {
     method: 'POST',
     body: { grading_mode: mode, upload_revision: uploadRevision, decision_revision: decisionRevision,

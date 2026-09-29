@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from PIL import Image
 
-from ai_grader import GradingResult, QuestionGradingDetail
+from backend.domain_models import GradingResult, QuestionGradingDetail
 from backend.api.dependencies import (
     get_annotated_dir,
     get_backups_dir,
@@ -596,7 +596,7 @@ class ApiE2EHarness:
         submitted = self.client.post(
             f"/api/sessions/{session_id}/grading/run",
             json={
-                "grading_mode": "full_paper",
+                "grading_mode": "ai",
                 "failed_only": failed_only,
                 "enhance_images": False,
             },

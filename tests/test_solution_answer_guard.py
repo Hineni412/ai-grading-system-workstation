@@ -1,111 +1,78 @@
-import json
-import tempfile
 import unittest
-from pathlib import Path
 
-from ai_grader import AIGrader
-from solution_answer_guard import (
-    uncertain_step_ids,
-    validate_step_assessments,
+from ai_batch_grading_service import (
+    _detail_from_ai_item,
+    build_major_question_specs,
 )
+from solution_answer_guard import validate_step_assessments
 
 
-class _FakeLLMClient:
-    pass
+_PROOF_RUBRIC = {
+    "total_score": 4,
+    "questions": [
+        {
+            "question_id": "Q12",
+            "question_type": "proof",
+            "max_score": 12,
+            "answer_only_max_score": 1,
+            "parts": [{"part_id": "Q12", "part_score": 4}],
+        }
+    ],
+}
+
+
+_THREE_STEP_QUESTION = {
+    "question_id": "Q1",
+    "question_type": "calculation",
+    "max_score": 9,
+    "answer_only_max_score": 1,
+    "parts": [
+        {
+            "part_id": "Q1",
+            "part_score": 9,
+            "response_mode": "process_required",
+            "steps": [
+                {"step_id": "S1", "step_score": 3, "core_goal": "建立边长和关系"},
+                {"step_id": "S2", "step_score": 3, "core_goal": "建立面积关系并联立"},
+                {"step_id": "S3", "step_score": 3, "core_goal": "求解并回答边长"},
+            ],
+        }
+    ],
+}
+
+
+def _spec_for(rubric: dict):
+    return build_major_question_specs(rubric, {"questions": []})[0]
+
+
+def _ai_detail(item: dict, spec) -> tuple:
+    return _detail_from_ai_item(
+        item,
+        set(spec.detail_question_ids),
+        80,
+        spec=spec,
+    )
 
 
 class SolutionAnswerGuardTests(unittest.TestCase):
     def test_subjective_stem_echo_gets_zero_score(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            rubric_path = root / "rubric.json"
-            rubric_path.write_text(
-                json.dumps(
-                    {
-                        "total_score": 4,
-                        "questions": [
-                            {
-                                "question_id": "Q12",
-                                "question_type": "proof",
-                                "max_score": 12,
-                                "answer_only_max_score": 1,
-                                "parts": [{"part_id": "Q12", "part_score": 4}],
-                            }
-                        ],
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-            grader = AIGrader(rubric_path, _FakeLLMClient())
-            result = grader._validate_and_convert(
-                {
-                    "student_name": "余天策",
-                    "total_score": 4,
-                    "student_score": 4,
-                    "needs_human_review": False,
-                    "grading_details": [
-                        {
-                            "question_id": "Q12",
-                            "observed_answer": "(3)是不是定值√",
-                            "score_awarded": 4,
-                            "deduction_reason": "",
-                            "knowledge_id": "K1",
-                            "knowledge_ids": ["K1"],
-                        }
-                    ],
-                },
-                expected_student_name="余天策",
-            )
-
-            self.assertEqual(result.student_score, 0)
-            self.assertEqual(result.grading_details[0].score_awarded, 0)
-            self.assertEqual(result.grading_details[0].error_category, "未作答")
-
-    def _grader_with_three_step_question(self, root: Path):
-        rubric_path = root / "rubric.json"
-        rubric_path.write_text(
-            json.dumps(
-                {
-                    "total_score": 9,
-                    "questions": [
-                        {
-                            "question_id": "Q1",
-                            "question_type": "calculation",
-                            "max_score": 9,
-                            "answer_only_max_score": 1,
-                            "parts": [
-                                {
-                                    "part_id": "Q1",
-                                    "part_score": 9,
-                                    "response_mode": "process_required",
-                                    "steps": [
-                                        {
-                                            "step_id": "S1",
-                                            "step_score": 3,
-                                            "core_goal": "建立边长和关系",
-                                        },
-                                        {
-                                            "step_id": "S2",
-                                            "step_score": 3,
-                                            "core_goal": "建立面积关系并联立",
-                                        },
-                                        {
-                                            "step_id": "S3",
-                                            "step_score": 3,
-                                            "core_goal": "求解并回答边长",
-                                        },
-                                    ],
-                                }
-                            ],
-                        }
-                    ],
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        spec = _spec_for(_PROOF_RUBRIC)
+        detail, reason, metadata = _ai_detail(
+            {
+                "question_id": "Q12",
+                "observed_answer": "(3)是不是定值√",
+                "score_awarded": 4,
+                "deduction_reason": "",
+                "knowledge_id": "K1",
+                "knowledge_ids": ["K1"],
+            },
+            spec,
         )
-        return AIGrader(rubric_path, _FakeLLMClient())
+
+        self.assertEqual(reason, "")
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.score_awarded, 0)
+        self.assertEqual(detail.error_category, "未作答")
 
     def _process_detail(self, score, assessments=None, **extra):
         item = {
@@ -120,55 +87,47 @@ class SolutionAnswerGuardTests(unittest.TestCase):
         return item
 
     def test_valid_step_assessments_are_normalized_and_persisted(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            grader = self._grader_with_three_step_question(Path(temp_dir))
-            result = grader._validate_and_convert(
-                {
-                    "student_name": "余天策",
-                    "total_score": 9,
-                    "student_score": 6,
-                    "needs_human_review": False,
-                    "grading_details": [
-                        self._process_detail(
-                            6.0,
-                            assessments=[
-                                {
-                                    "step_id": "S1",
-                                    "achievement": "full",
-                                    "score_awarded": 3,
-                                    "student_evidence": "设一边为 x，另一边为 10−x",
-                                    "missing_or_error": "",
-                                    "reason": "边长和关系已建立。",
-                                },
-                                {
-                                    "step_id": "S2",
-                                    "achievement": "full",
-                                    "score_awarded": 3,
-                                    "student_evidence": "x(10−x)=24",
-                                    "missing_or_error": "",
-                                    "reason": "面积关系已联立。",
-                                },
-                                {
-                                    "step_id": "S3",
-                                    "achievement": "none",
-                                    "score_awarded": 0,
-                                    "student_evidence": "",
-                                    "missing_or_error": "未写出求解过程与边长结果",
-                                    "reason": "求解目标未达成。",
-                                },
-                            ],
-                        )
-                    ],
-                },
-                expected_student_name="余天策",
-            )
+        spec = _spec_for({"total_score": 9, "questions": [_THREE_STEP_QUESTION]})
+        detail, reason, metadata = _ai_detail(
+            self._process_detail(
+                6.0,
+                assessments=[
+                    {
+                        "step_id": "S1",
+                        "achievement": "full",
+                        "score_awarded": 3,
+                        "student_evidence": "设一边为 x，另一边为 10−x",
+                        "missing_or_error": "",
+                        "reason": "边长和关系已建立。",
+                    },
+                    {
+                        "step_id": "S2",
+                        "achievement": "full",
+                        "score_awarded": 3,
+                        "student_evidence": "x(10−x)=24",
+                        "missing_or_error": "",
+                        "reason": "面积关系已联立。",
+                    },
+                    {
+                        "step_id": "S3",
+                        "achievement": "none",
+                        "score_awarded": 0,
+                        "student_evidence": "",
+                        "missing_or_error": "未写出求解过程与边长结果",
+                        "reason": "求解目标未达成。",
+                    },
+                ],
+            ),
+            spec,
+        )
 
-            self.assertEqual(result.student_score, 6.0)
-            metadata = result.raw_json["detail_metadata"]["Q1"]
-            self.assertEqual(len(metadata["step_assessments"]), 3)
-            self.assertEqual(metadata["step_assessments"][2]["score_awarded"], 0)
-            self.assertEqual(metadata["step_assessments"][2]["achievement"], "none")
-            self.assertIsNone(metadata["step_assessments_error"])
+        self.assertEqual(reason, "")
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.score_awarded, 6.0)
+        self.assertEqual(len(metadata["step_assessments"]), 3)
+        self.assertEqual(metadata["step_assessments"][2]["score_awarded"], 0)
+        self.assertEqual(metadata["step_assessments"][2]["achievement"], "none")
+        self.assertIsNone(metadata["step_assessments_error"])
 
     def test_invalid_step_assessments_route_to_review_without_saving(self) -> None:
         bad_cases = [
@@ -268,30 +227,19 @@ class SolutionAnswerGuardTests(unittest.TestCase):
                 },
             ],
         ]
+        spec = _spec_for({"total_score": 9, "questions": [_THREE_STEP_QUESTION]})
         for index, assessments in enumerate(bad_cases):
-            with tempfile.TemporaryDirectory() as temp_dir:
-                grader = self._grader_with_three_step_question(Path(temp_dir))
-                result = grader._validate_and_convert(
-                    {
-                        "student_name": "余天策",
-                        "total_score": 9,
-                        "student_score": 9,
-                        "needs_human_review": False,
-                        "grading_details": [
-                            self._process_detail(
-                                9.0 if index != 4 else 8.0,
-                                assessments=assessments,
-                            )
-                        ],
-                    },
-                    expected_student_name="余天策",
+            with self.subTest(index=index):
+                detail, reason, metadata = _ai_detail(
+                    self._process_detail(
+                        9.0 if index != 4 else 8.0,
+                        assessments=assessments,
+                    ),
+                    spec,
                 )
-                self.assertTrue(result.needs_human_review, index)
-                detail = result.grading_details[0]
-                self.assertTrue(detail.error_category, index)
-                metadata = result.raw_json["detail_metadata"]["Q1"]
-                self.assertEqual(metadata["step_assessments"], [], index)
-                self.assertTrue(metadata["step_assessments_error"], index)
+                # Rejected items surface as fallback/review, never saved.
+                self.assertIsNone(detail, index)
+                self.assertEqual(reason, "score_contract_error:step_assessments", index)
 
 
 _THREE_STEP_RUBRIC = {
