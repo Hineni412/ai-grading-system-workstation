@@ -4,7 +4,13 @@ __pycache__/
 .pytest_cache/
 .test-runs/
 /outputs/
+/output/
 /tmp/
+/tmp_*/
+/retag_run/
+/frontend/output/
+/nul
+/frontend/nul
 
 # Local environment and secrets
 .env
