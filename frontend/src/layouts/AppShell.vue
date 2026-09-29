@@ -5,7 +5,6 @@ import { RouterView, useRoute } from 'vue-router'
 import AppSidebar from '../components/shell/AppSidebar.vue'
 import AppTopbar from '../components/shell/AppTopbar.vue'
 import CommandPalette from '../components/shell/CommandPalette.vue'
-import { useWorkspaceAITaskStore } from '../workspaces/shared/ai-tasks/store'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
@@ -17,7 +16,6 @@ const sessionStore = useSessionStore()
 const draftStore = useReviewDraftStore()
 const configStore = useConfigWorkspaceStore()
 const curriculumScope = useCurriculumScopeStore()
-const workspaceAITasks = useWorkspaceAITaskStore()
 const jobs = useJobStore()
 const SIDEBAR_COLLAPSED_KEY = 'zhiheng.sidebar.collapsed'
 const hydratingWorkspace = ref(false)
@@ -93,7 +91,6 @@ onMounted(() => {
   syncWideViewport(wideMediaQuery)
   wideMediaQuery.addEventListener('change', syncWideViewport)
   window.addEventListener('beforeunload', onBeforeUnload)
-  void workspaceAITasks.initialize()
   void jobs.initialize()
   hydratingWorkspace.value = true
   void sessionStore.initialize().then(async () => {

@@ -1,5 +1,3 @@
-import { workspaceRegistry } from './workspaces/registry'
-
 export type WorkspaceRouteId =
   | 'workbench'
   | 'sessions'
@@ -55,7 +53,7 @@ export interface WorkspaceRouteDefinition {
 }
 
 export interface WorkspaceNavigationGroup {
-  id: 'exam' | 'question-work' | 'analysis' | 'teacher-workspaces'
+  id: 'exam' | 'question-work' | 'analysis'
   label: string
   items: readonly WorkspaceRouteDefinition[]
 }
@@ -226,24 +224,6 @@ export const aiTraceRouteDefinition = {
   icon: 'ai-trace',
 } as const satisfies WorkspaceRouteDefinition
 
-workspaceRegistry.assertNoCoreConflicts([
-  workbenchRouteDefinition,
-  sessionRouteDefinition,
-  studentsRouteDefinition,
-  questionBankRouteDefinition,
-  questionAssemblyRouteDefinition,
-  authoringRouteDefinition,
-  trainingRouteDefinition,
-  reviewRouteDefinition,
-  knowledgeOverviewRouteDefinition,
-  knowledgeGraphRouteDefinition,
-  filesRouteDefinition,
-  resultsRouteDefinition,
-  modelProfilesRouteDefinition,
-  settingsRouteDefinition,
-  aiTraceRouteDefinition,
-])
-
 export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
   {
     id: 'exam',
@@ -270,13 +250,6 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
       knowledgeOverviewRouteDefinition,
     ],
   },
-  ...(workspaceRegistry.navigationItems.length
-    ? [{
-        id: 'teacher-workspaces' as const,
-        label: '教师工作台',
-        items: workspaceRegistry.navigationItems,
-      }]
-    : []),
 ] as const
 
 export const settingsNavigationItems: readonly WorkspaceRouteDefinition[] = [

@@ -17,10 +17,6 @@ from pydantic import BaseModel, Field
 
 from backend.api.frontend import mount_frontend
 from backend.performance.metrics import PerformanceSink, request_performance_scope
-from backend.workspaces.registry import (
-    WorkspaceRegistry,
-    load_default_workspace_registry,
-)
 from path_manager import PathManager, get_path_manager as get_default_path_manager
 
 
@@ -92,12 +88,10 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
     manager = None
     ops_service = None
     prewarm_worker = None
-    workspace_services: dict[str, object] = {}
     try:
         owns_manager = get_job_manager not in api.dependency_overrides
         owns_ops_service = get_ops_write_service not in api.dependency_overrides
         paths = api.state.path_manager
-        registry: WorkspaceRegistry = api.state.workspace_registry
         if hasattr(paths, "db_path") and hasattr(paths, "qb_db_path"):
             ensure_application_schema(paths)
             from question_bank.current_knowledge import (
@@ -105,32 +99,12 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
             )
 
             ensure_checked_in_current_standard(Path(paths.qb_db_path))
-        registry.run_migrations()
-        workspace_services = registry.create_services()
         manager = create_job_manager(paths) if owns_manager else None
         ops_service = (
             create_ops_write_service(paths) if owns_ops_service else None
         )
         if manager is not None:
-            from backend.workspaces.ai_tasks.job_adapter import (
-                register_workspace_ai_job,
-            )
-            from backend.workspaces.ai_tasks.service import WorkspaceAITaskService
-            from backend.workspaces.ai_tasks.store import WorkspaceAITaskStore
-
-            workspace_ai_task_service = WorkspaceAITaskService(
-                store=WorkspaceAITaskStore(manager.store.db_path),
-                manager=manager,
-            )
-            register_workspace_ai_job(manager, workspace_ai_task_service)
-            registry.register_jobs(manager, workspace_services)
-            registry.register_ai_tasks(
-                workspace_ai_task_service,
-                workspace_services,
-            )
-            workspace_ai_task_service.recover_interrupted()
             api.state.job_manager = manager
-            api.state.workspace_ai_task_service = workspace_ai_task_service
             from integration.training_prewarm import start_prewarm
 
             prewarm_worker = start_prewarm(paths, manager)
@@ -138,7 +112,6 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
                 api.state.training_prewarm = prewarm_worker
         if ops_service is not None:
             api.state.ops_write_service = ops_service
-        api.state.workspace_services = workspace_services
         yield
     finally:
         if prewarm_worker is not None:
@@ -152,17 +125,12 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
         if ops_service is not None:
             if hasattr(api.state, "ops_write_service"):
                 del api.state.ops_write_service
-        if hasattr(api.state, "workspace_services"):
-            del api.state.workspace_services
-        if hasattr(api.state, "workspace_ai_task_service"):
-            del api.state.workspace_ai_task_service
 
 
 def create_app(
     *,
     performance_sink: PerformanceSink | None = None,
     path_manager: PathManager | None = None,
-    workspace_registry: WorkspaceRegistry | None = None,
 ) -> FastAPI:
     from backend.api import dependencies
 
@@ -186,8 +154,6 @@ def create_app(
         },
     )
     api.state.path_manager = paths
-    registry = workspace_registry or load_default_workspace_registry(paths)
-    api.state.workspace_registry = registry
     project_root = getattr(paths, "project_root", None)
     if project_root is None:
         project_root = PROJECT_ROOT
@@ -320,7 +286,6 @@ def create_app(
         templates_router,
         training_router,
         workbench_router,
-        workspace_ai_tasks_router,
     )
 
     api.include_router(ai_assembly_router)
@@ -346,8 +311,6 @@ def create_app(
     api.include_router(templates_router)
     api.include_router(training_router)
     api.include_router(workbench_router)
-    api.include_router(workspace_ai_tasks_router)
-    registry.include_routers(api)
 
     return api
 

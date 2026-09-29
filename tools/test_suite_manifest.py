@@ -183,6 +183,5 @@ DATABASE_BASELINE_TEST_PATHS = frozenset(
         "tests/test_smoke_check.py",
         "tests/test_student_roster_service.py",
         "tests/test_template_upload_service.py",
-        "tests/test_workspace_ai_tasks.py",
     )
 )
