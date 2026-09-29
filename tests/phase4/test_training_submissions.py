@@ -305,6 +305,11 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     frozen_profile = _diagnosis(student_ids=("SYN-S01",))
     frozen_profile["exam_scope"] = profile["exam_scope"]
     frozen_profile["students"][0]["student_id"] = "1"
+    # The source exam is older than the three latest graded activities.
+    frozen_profile["_graded_activities"] = [
+        {"student_id": "1", "session_id": i, "occurred_at": f"2026-09-0{i}"}
+        for i in (2, 3, 4)
+    ]
     frozen_profile["students"][0]["weak_points"][0]["source_question_refs"][0][
         "question_difficulty"
     ] = 8

@@ -213,7 +213,9 @@ def build_training_diagnosis(
             "Training data is temporarily unavailable",
         ) from exc
 
-    public = _public_training_mapping(diagnosis)
+    public = _public_training_mapping(
+        {k: v for k, v in diagnosis.items() if not str(k).startswith("_")}
+    )
     if public.get("diagnosis_identity") != "question_tag":
         raise ApiError(
             422,
