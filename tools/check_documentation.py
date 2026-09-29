@@ -21,7 +21,6 @@ AUTHORITY_DOCUMENT_PATHS = (
     "CONTEXT.md",
     "docs/product/GRADING.md",
     "docs/product/KNOWLEDGE_AND_TRAINING.md",
-    "docs/product/CLASS_TEACHER.md",
     "docs/security/SECURITY.md",
     "docs/maintenance/storage-policy.md",
     "docs/maintenance/packaging.md",

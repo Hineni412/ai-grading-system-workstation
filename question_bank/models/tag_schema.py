@@ -52,7 +52,7 @@ PROPOSABLE_TAG_DIMENSIONS = (
     "special_type",
 )
 
-# 标准难度逐小问特征取值范围（docs/requests/2026-09-25-g8-upper-retagging-plan.md 第 4 节）。
+# 标准难度逐小问特征取值范围（公式见 question_bank/services/standard_difficulty.py）。
 PART_FEATURE_RANGES: dict[str, tuple[int, int]] = {
     "solo": (1, 4),
     "reasoning": (0, 2),

@@ -1,6 +1,6 @@
 """标准难度：逐小问 SOLO 与难度特征的独立评估存储。
 
-依据 docs/requests/2026-09-25-g8-upper-retagging-plan.md 第 4 节：
+产品规则见 docs/product/KNOWLEDGE_AND_TRAINING.md“唯一当前掌握度”：
 
 - 存特征而不只存结果；公式权重固定，日后可按考试数据在本机重算。
 - 整题难度取最难小问，不取平均。``questions.difficulty`` 由
