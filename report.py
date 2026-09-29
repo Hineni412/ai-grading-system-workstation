@@ -447,7 +447,7 @@ class ReportGenerator:
                 work_df["class_name"].fillna("未分班").astype(str)
                 == class_name
             ]
-            qids = _natural_question_order(
+            qids = natural_question_order(
                 class_df["question_id"].dropna().astype(str).unique().tolist()
             )
             for qid in qids:
@@ -630,7 +630,7 @@ class ReportGenerator:
         qid_order = {
             qid: index
             for index, qid in enumerate(
-                _natural_question_order(
+                natural_question_order(
                     [str(row["题号"]) for row in rows]
                 )
             )
@@ -699,7 +699,7 @@ class ReportGenerator:
         qid_order = {
             qid: index
             for index, qid in enumerate(
-                _natural_question_order(
+                natural_question_order(
                     [str(row["题号"]) for row in rows]
                 )
             )
@@ -1257,7 +1257,7 @@ class ReportGenerator:
         rubric: dict | None = None,
         eligible_result_ids: set[int] | None = None,
     ) -> pd.DataFrame:
-        question_ids = _natural_question_order(df_details["question_id"].dropna().astype(str).unique().tolist())
+        question_ids = natural_question_order(df_details["question_id"].dropna().astype(str).unique().tolist())
         rows_by_result: dict[int, dict[str, object]] = {}
         detail_rows_by_result: dict[int, list[dict[str, object]]] = {}
         for detail in df_details.to_dict(orient="records"):
@@ -1536,7 +1536,7 @@ class ReportGenerator:
                 {
                     "班级": class_name,
                     "知识点": str(bucket.get("label") or "未命名知识点"),
-                    "涉及题目": "、".join(_natural_question_order([str(q) for q in questions])),
+                    "涉及题目": "、".join(natural_question_order([str(q) for q in questions])),
                     "累计得分": round(score_sum, 2),
                     "累计满分": round(full_sum, 2),
                     "得分率": round(score_sum / full_sum, 4) if full_sum > 0 else 0,
@@ -1634,7 +1634,7 @@ def _pending_review_counts(df_results: pd.DataFrame) -> dict[int, int]:
     return counts
 
 
-def _natural_question_order(question_ids: list[str]) -> list[str]:
+def natural_question_order(question_ids: list[str]) -> list[str]:
     import re
 
     def key(value: str) -> tuple[int, str]:

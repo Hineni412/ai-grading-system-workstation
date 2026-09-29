@@ -8,10 +8,8 @@ from tests.test_analysis_report import analysis_db  # noqa: F401
 
 
 def test_graph_uses_current_mastery_separately_from_exam_scores(analysis_db):
-    from analysis_report_exporter import (
-        assemble_session_analysis,
-        _personal_knowledge_view,
-    )
+    from analysis_report_exporter import _personal_knowledge_view
+    from backend.session_analysis import assemble_session_analysis
 
     db, session, root = analysis_db
     data = assemble_session_analysis(db, session, data_root=root)

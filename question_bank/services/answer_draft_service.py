@@ -44,7 +44,7 @@ class AnswerDraftService:
         if llm_client is None:
             # 「内容生成」任务绑定的模型档案，与 ai_assembly / report 共用；
             # settings 为 None 表示教师还没在设置页配置模型。
-            from analysis_report_exporter import (
+            from backend.model_profiles.content_generation import (
                 resolve_content_generation_settings,
             )
 

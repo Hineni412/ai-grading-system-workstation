@@ -7,9 +7,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends
 
-from analysis_report_exporter import (
+from analysis_report_exporter import estimate_prompt_tokens
+from backend.model_profiles.content_generation import (
     content_generation_public_info,
-    estimate_prompt_tokens,
     resolve_content_generation_settings,
 )
 from backend.api.app import ApiError, ErrorResponse

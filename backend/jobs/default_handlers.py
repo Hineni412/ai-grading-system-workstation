@@ -8,6 +8,8 @@ from typing import Any, Callable, Protocol
 from analysis_report_exporter import (
     ANALYSIS_REPORT_TYPES,
     AnalysisReportGenerator,
+)
+from backend.model_profiles.content_generation import (
     resolve_content_generation_settings,
 )
 from api_profiles import get_api_profile_store, resolve_profile_for_task

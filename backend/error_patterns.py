@@ -39,9 +39,9 @@ def kind_for_category(category: str | None) -> str | None:
 
 
 def _parent_qid(question_id: str) -> str:
-    from analysis_report_exporter import _parent_question_id
+    from backend.session_analysis import parent_question_id
 
-    return _parent_question_id(question_id)
+    return parent_question_id(question_id)
 
 OPTION_ANALYSIS_VERSION = "option_analysis_v1"
 CHOICE_TYPES = {"choice", "single_choice"}
