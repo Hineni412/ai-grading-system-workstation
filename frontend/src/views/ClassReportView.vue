@@ -169,10 +169,13 @@ function backToResults(): void {
   void router.push({
     path: '/results',
     query: {
-      tab: 'analysis',
+      tab: 'overview',
       ...(sessionStore.selectedSessionId === null
         ? {}
         : { session: String(sessionStore.selectedSessionId) }),
+      ...(stringQuery(route.query.class) === null
+        ? {}
+        : { class: stringQuery(route.query.class) }),
     },
   })
 }

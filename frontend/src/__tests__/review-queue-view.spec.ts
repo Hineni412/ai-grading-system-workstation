@@ -9,6 +9,7 @@ import { createAppRouter } from '../router';
 
 import { useReviewDraftStore } from '../stores/review-drafts';
 import { useReviewQueueStore } from '../stores/review-queue';
+import { useResultsCenterStore } from '../stores/results-center';
 import { useSessionStore } from '../stores/session';
 import ReviewQueueView from '../views/ReviewQueueView.vue'
 
@@ -24,6 +25,17 @@ vi.mock('../api/results-center', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/results-center')>(),
   fetchResultsCenter: vi.fn(),
 }))
+
+vi.mock('../api/class-analysis', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../api/class-analysis')>()
+  return {
+    ...original,
+    classAnalysisApi: {
+      ...original.classAnalysisApi,
+      getQuestionPreview: vi.fn().mockRejectedValue(new Error('no preview in tests')),
+    },
+  }
+})
 
 const media = {
   crop_url: '/api/crop',
@@ -505,7 +517,7 @@ describe('source-recalibrated review view', () => {
       expect(element).not.toBeNull()
       return element!
     })
-    const buttons = [...strip.querySelectorAll<HTMLButtonElement>('button')]
+    const buttons = [...strip.querySelectorAll<HTMLButtonElement>('.review-student-strip__chip')]
     expect(buttons.map((button) => button.querySelector('strong')?.textContent)).toEqual(['Q1', 'Q2'])
     expect(buttons[0]!.getAttribute('aria-current')).toBe('true')
     expect(buttons[0]!.textContent).toContain('3 / 5')
@@ -526,7 +538,267 @@ describe('source-recalibrated review view', () => {
     await vi.waitFor(() => {
       const current = host.querySelector('[data-testid="student-question-strip"]')
       expect(current).not.toBeNull()
-      expect(current!.querySelectorAll('button')[1]!.getAttribute('aria-current')).toBe('true')
+      expect(current!.querySelectorAll('.review-student-strip__chip')[1]!.getAttribute('aria-current')).toBe('true')
     })
+
+    // ← 在同一学生的题条中回到上一题。
+    dispatchKey(document.body, 'ArrowLeft')
+    await vi.waitFor(() => {
+      expect(reviewStore.selectedQuestionId).toBe('Q1')
+      expect(reviewStore.selectedReviewItemId).toBe('7:Q1:11')
+    })
+  })
+
+  it('keeps the deep workspace mounted while a cross-question switch is loading', async () => {
+    const stripResults: ResultsCenterResponse = {
+      session_id: 7,
+      session_name: '合成成绩验证',
+      summary: {
+        student_count: 1, complete_student_count: 1, average_sample_count: 1,
+        average_score: 7, highest_score: 7, lowest_score: 7, max_score: 10,
+        ungraded_item_count: 0, failed_item_count: 0, needs_review_item_count: 1,
+        ai_ready_item_count: 1, teacher_final_item_count: 0,
+      },
+      questions: [
+        { question_id: 'Q1', max_score: 5, total_count: 1, ungraded_count: 0, failed_count: 0, needs_review_count: 1, ai_ready_count: 0, teacher_final_count: 0, average_score: 3 },
+        { question_id: 'Q2', max_score: 5, total_count: 1, ungraded_count: 0, failed_count: 0, needs_review_count: 0, ai_ready_count: 1, teacher_final_count: 0, average_score: 4 },
+      ],
+      students: [{
+        student_id: 11, student_code: 'S011', student_name: '学生甲', class_name: '七年级一班',
+        pinyin_initials: 'xsj', pinyin_full: 'xueshengjia',
+        current_score: 7, max_score: 10,
+        ungraded_count: 0, failed_count: 0, needs_review_count: 1, status: 'needs_review',
+        items: [
+          {
+            review_item_id: '7:Q1:11', question_id: 'Q1', score_awarded: 3, max_score: 5,
+            score_status: 'ai_review', score_source: 'ai', confidence_score: 65,
+            needs_review: true, review_reason: null, result_id: 11, detail_id: 11,
+          },
+          {
+            review_item_id: '7:Q2:11', question_id: 'Q2', score_awarded: 4, max_score: 5,
+            score_status: 'ai_ready', score_source: 'ai', confidence_score: 90,
+            needs_review: false, review_reason: null, result_id: 12, detail_id: 12,
+          },
+        ],
+      }],
+    }
+    vi.mocked(fetchResultsCenter).mockResolvedValue(stripResults)
+    const pending = deferred<ReviewItem[]>()
+    const { host, reviewStore } = await mountView({
+      initialUrl: '/grading?session=7&question=Q1&item=7:Q1:11&entry=results&student=11',
+      reviewItems: {
+        Q1: [item(11), item(12)],
+        Q2: [item(11, { question_id: 'Q2', score_awarded: 4, needs_review: false })],
+      },
+      itemLoader: async (_sessionId, questionId) =>
+        questionId === 'Q2' ? pending.promise : (itemsByQuestion[questionId] ?? []),
+    })
+
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="review-deep-workspace"]'),
+    ).not.toBeNull())
+    const chip = [...host.querySelectorAll<HTMLButtonElement>('.review-student-strip__chip')]
+      .find((button) => button.querySelector('strong')?.textContent === 'Q2')!
+    chip.click()
+
+    // 目标题还在加载：深查工作区继续显示旧答卷，批量工作区绝不闪现。
+    await nextTick()
+    await nextTick()
+    expect(host.querySelector('[data-testid="review-batch-workspace"]')).toBeNull()
+    expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull()
+    expect(host.querySelector('.review-student-strip__loading')).not.toBeNull()
+    expect(host.textContent).toContain('学生甲')
+
+    pending.resolve([item(11, { question_id: 'Q2', score_awarded: 4, needs_review: false })])
+    await vi.waitFor(() => {
+      expect(reviewStore.selectedQuestionId).toBe('Q2')
+      expect(reviewStore.selectedReviewItemId).toBe('7:Q2:11')
+    })
+    await settleUi()
+    expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="review-batch-workspace"]')).toBeNull()
+    expect(host.querySelector('.review-student-strip__loading')).toBeNull()
+  })
+
+  it('stays on the deep page and refocuses the quick bar after confirming a results-entry item', async () => {
+    const { host, reviewStore, router } = await mountView({
+      initialUrl: '/grading?session=7&question=Q1&item=7:Q1:11&entry=results&student=11',
+      reviewItems: { Q1: [item(11), item(12)] },
+    })
+    const confirmButton = await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')
+      expect(button?.disabled).toBe(false)
+      return button!
+    })
+    // 成绩入口：按钮不再提示“并返回”
+    expect(confirmButton.textContent).toBe('确认此份')
+    confirmButton.click()
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
+    await settleUi()
+    // 不返回成绩明细：仍停在 /grading 的同一答卷上
+    expect(router.currentRoute.value.path).toBe('/grading')
+    expect(router.currentRoute.value.query).toMatchObject({ entry: 'results', item: '7:Q1:11' })
+    expect(reviewStore.selectedReviewItemId).toBe('7:Q1:11')
+    expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull()
+    expect(document.activeElement).toBe(
+      host.querySelector<HTMLInputElement>('.review-quick-score input'),
+    )
+  })
+
+  it('resizes the answer panel with divider keys, resets on double click, and keeps page arrows', async () => {
+    const { host, reviewStore } = await mountView({
+      initialUrl: '/grading?session=7&question=Q1&item=7:Q1:11&entry=results&student=11',
+      reviewItems: { Q1: [item(11), item(12)] },
+    })
+    host.querySelector<HTMLButtonElement>('[title="显示或隐藏原题与参考答案"]')!.click()
+    const divider = await vi.waitFor(() => {
+      const element = host.querySelector<HTMLElement>('.review-deep-workspace__divider')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    expect(divider.getAttribute('role')).toBe('separator')
+    expect(divider.getAttribute('aria-orientation')).toBe('vertical')
+    expect(divider.getAttribute('aria-valuenow')).toBe('420')
+    dispatchKey(divider, 'ArrowRight')
+    await nextTick()
+    expect(divider.getAttribute('aria-valuenow')).toBe('444')
+    // 分隔条上的方向键用于调宽度，不触发页面级题间切换
+    expect(reviewStore.selectedQuestionId).toBe('Q1')
+    expect(localStorage.getItem('ai-grading:review-answer-panel-width:v1')).toBe('444')
+    divider.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await nextTick()
+    expect(divider.getAttribute('aria-valuenow')).toBe('420')
+  })
+
+  it('lets arrow keys inside quick score inputs switch questions', async () => {
+    const stripResults: ResultsCenterResponse = {
+      session_id: 7,
+      session_name: '合成成绩验证',
+      summary: {
+        student_count: 1, complete_student_count: 1, average_sample_count: 1,
+        average_score: 7, highest_score: 7, lowest_score: 7, max_score: 10,
+        ungraded_item_count: 0, failed_item_count: 0, needs_review_item_count: 1,
+        ai_ready_item_count: 1, teacher_final_item_count: 0,
+      },
+      questions: [
+        { question_id: 'Q1', max_score: 5, total_count: 1, ungraded_count: 0, failed_count: 0, needs_review_count: 1, ai_ready_count: 0, teacher_final_count: 0, average_score: 3 },
+        { question_id: 'Q2', max_score: 5, total_count: 1, ungraded_count: 0, failed_count: 0, needs_review_count: 0, ai_ready_count: 1, teacher_final_count: 0, average_score: 4 },
+      ],
+      students: [{
+        student_id: 11, student_code: 'S011', student_name: '学生甲', class_name: '七年级一班',
+        pinyin_initials: 'xsj', pinyin_full: 'xueshengjia',
+        current_score: 7, max_score: 10,
+        ungraded_count: 0, failed_count: 0, needs_review_count: 1, status: 'needs_review',
+        items: [
+          {
+            review_item_id: '7:Q1:11', question_id: 'Q1', score_awarded: 3, max_score: 5,
+            score_status: 'ai_review', score_source: 'ai', confidence_score: 65,
+            needs_review: true, review_reason: null, result_id: 11, detail_id: 11,
+          },
+          {
+            review_item_id: '7:Q2:11', question_id: 'Q2', score_awarded: 4, max_score: 5,
+            score_status: 'ai_ready', score_source: 'ai', confidence_score: 90,
+            needs_review: false, review_reason: null, result_id: 12, detail_id: 12,
+          },
+        ],
+      }],
+    }
+    vi.mocked(fetchResultsCenter).mockResolvedValue(stripResults)
+    const { host, reviewStore } = await mountView({
+      initialUrl: '/grading?session=7&question=Q1&item=7:Q1:11&entry=results&student=11',
+      reviewItems: {
+        Q1: [item(11), item(12)],
+        Q2: [item(11, { question_id: 'Q2', score_awarded: 4, needs_review: false })],
+      },
+    })
+    const quick = await vi.waitFor(() => {
+      const input = host.querySelector<HTMLInputElement>('.review-quick-score input')
+      expect(input).not.toBeNull()
+      return input!
+    })
+    dispatchKey(quick, 'ArrowRight')
+    await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q2'))
+    dispatchKey(document.activeElement ?? document.body, 'ArrowLeft')
+    await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q1'))
+  })
+
+  it('moves between students in the stored matrix order, skipping students without the item', async () => {
+    const navItem = (questionId: string, id: number, score = 3) => ({
+      review_item_id: `7:${questionId}:${id}`,
+      question_id: questionId,
+      score_awarded: score,
+      max_score: 5,
+      score_status: 'ai_review' as const,
+      score_source: 'ai' as const,
+      confidence_score: 65,
+      needs_review: true,
+      review_reason: null,
+      result_id: id,
+      detail_id: id,
+    })
+    const navStudent = (id: number, name: string, items: ReturnType<typeof navItem>[]) => ({
+      student_id: id,
+      student_code: `S${String(id).padStart(3, '0')}`,
+      student_name: name,
+      class_name: '七年级一班',
+      pinyin_initials: 'xs',
+      pinyin_full: 'xuesheng',
+      current_score: 8,
+      max_score: 10,
+      ungraded_count: 0,
+      failed_count: 0,
+      needs_review_count: 1,
+      status: 'needs_review' as const,
+      items,
+    })
+    const navResults: ResultsCenterResponse = {
+      session_id: 7,
+      session_name: '顺序验证',
+      summary: {
+        student_count: 3, complete_student_count: 3, average_sample_count: 3,
+        average_score: 8, highest_score: 8, lowest_score: 8, max_score: 10,
+        ungraded_item_count: 0, failed_item_count: 0, needs_review_item_count: 3,
+        ai_ready_item_count: 0, teacher_final_item_count: 0,
+      },
+      questions: [
+        { question_id: 'Q1', max_score: 5, total_count: 2, ungraded_count: 0, failed_count: 0, needs_review_count: 2, ai_ready_count: 0, teacher_final_count: 0, average_score: 3 },
+        { question_id: 'Q2', max_score: 5, total_count: 3, ungraded_count: 0, failed_count: 0, needs_review_count: 0, ai_ready_count: 3, teacher_final_count: 0, average_score: 4 },
+      ],
+      students: [
+        navStudent(11, '学生甲', [navItem('Q1', 11), navItem('Q2', 11)]),
+        navStudent(12, '学生乙', [navItem('Q2', 12)]),
+        navStudent(13, '学生丙', [navItem('Q1', 13), navItem('Q2', 13)]),
+      ],
+    }
+    vi.mocked(fetchResultsCenter).mockResolvedValue(navResults)
+    const { host, pinia, router, reviewStore } = await mountView({
+      initialUrl: '/grading?session=7&question=Q1&item=7:Q1:11&entry=results&student=11',
+      reviewItems: {
+        Q1: [item(11, { student_name: '学生甲' }), item(13, { student_name: '学生丙' })],
+        Q2: [item(11, { question_id: 'Q2' }), item(12, { question_id: 'Q2' }), item(13, { question_id: 'Q2' })],
+      },
+    })
+    useResultsCenterStore(pinia).setReviewNavigation({
+      sessionId: 7,
+      studentIds: [11, 12, 13],
+    })
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="student-question-strip"]'),
+    ).not.toBeNull())
+    expect(host.textContent).toContain('第 1 / 3 人')
+
+    // 学生乙没有 Q1 记录，↓ 应直接跳到学生丙。
+    dispatchKey(document.body, 'ArrowDown')
+    await vi.waitFor(() => expect(reviewStore.selectedReviewItemId).toBe('7:Q1:13'))
+    await vi.waitFor(() => expect(router.currentRoute.value.query.student).toBe('13'))
+    expect(host.textContent).toContain('第 3 / 3 人')
+    const nextButton = [
+      ...host.querySelectorAll<HTMLButtonElement>('.review-deep-workspace__student-nav > button'),
+    ].slice(-1)[0]!
+    expect(nextButton.disabled).toBe(true)
+
+    dispatchKey(document.body, 'ArrowUp')
+    await vi.waitFor(() => expect(reviewStore.selectedReviewItemId).toBe('7:Q1:11'))
+    expect(host.textContent).toContain('学生甲')
   })
 })

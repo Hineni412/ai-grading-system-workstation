@@ -10,9 +10,7 @@
 }
 
 .file-center__hero,
-.file-section__heading,
-.file-product__topline,
-.file-ledger__list li {
+.file-section__heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -27,8 +25,7 @@
 
 .file-center__hero h1,
 .file-section h2,
-.file-section h3,
-.file-product h3 {
+.file-section h3 {
   margin: 0;
   color: var(--color-text-primary);
 }
@@ -44,8 +41,7 @@
   color: var(--color-text-secondary);
 }
 
-.file-center__eyebrow,
-.file-product__topline > span:first-child {
+.file-center__eyebrow {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-caption);
@@ -80,47 +76,106 @@
   font-size: var(--font-size-h2);
 }
 
-.file-section__context {
-  color: var(--color-text-secondary);
+.file-report-table {
+  width: 100%;
+  border-collapse: collapse;
   font-size: var(--font-size-dense);
 }
 
-.file-product-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-4);
+.file-report-table th,
+.file-report-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-width) solid var(--color-border-subtle);
+  text-align: left;
+  vertical-align: middle;
 }
 
-.file-product {
-  display: grid;
-  align-content: start;
-  gap: var(--space-3);
-  min-width: 0;
-  padding: var(--space-4);
-  border: var(--border-width) solid var(--border);
-  border-radius: var(--radius);
-  background: var(--color-bg-subtle);
-}
-
-.file-product > p {
-  margin: 0;
-  color: var(--color-text-secondary);
-}
-
-.file-product__filename {
-  overflow: hidden;
-  color: var(--color-text-primary) !important;
+.file-report-table thead th {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
+}
+
+.file-report-table tbody tr:not(.file-report-table__history):last-child th,
+.file-report-table tbody tr:not(.file-report-table__history):last-child td {
+  border-bottom: 0;
+}
+
+.file-report-table th[scope='row'] {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.file-report-table__kind {
+  margin-left: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+  white-space: nowrap;
+}
+
+.file-report-table__filename {
+  display: block;
+  max-width: 320px;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.file-product__actions {
+.file-report-table__detail {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.file-report-table__actions-head,
+.file-report-table__actions {
+  text-align: right;
+}
+
+.file-report-table__actions {
+  white-space: nowrap;
+}
+
+.file-report-table__history td {
+  padding: var(--space-1) var(--space-4) var(--space-3);
+  background: var(--color-bg-subtle);
+}
+
+.file-report-table__history-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-report-table__history-list li {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: auto;
-  padding-top: var(--space-2);
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-width) solid var(--color-border-subtle);
+}
+
+.file-report-table__history-list li:last-child {
+  border-bottom: 0;
+}
+
+.file-report-table__history-name {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.file-report-table__history-name small {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
 }
 
 .excel-settings-backdrop {
@@ -328,41 +383,6 @@
   outline-offset: var(--focus-offset);
 }
 
-.file-ledger {
-  display: grid;
-  gap: var(--space-3);
-  padding-top: var(--space-4);
-  border-top: var(--border-width) solid var(--color-border-subtle);
-}
-
-.file-ledger__list {
-  display: grid;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.file-ledger__list li {
-  min-height: 60px;
-  padding: var(--space-3) 0;
-  border-bottom: var(--border-width) solid var(--color-border-subtle);
-}
-
-.file-ledger__list li:last-child {
-  border-bottom: 0;
-}
-
-.file-ledger__list li > div {
-  display: grid;
-  min-width: 0;
-  gap: var(--space-1);
-}
-
-.file-ledger__list li span:not(.file-status) {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-caption);
-}
-
 .file-ledger__empty,
 .file-center__empty {
   padding: var(--space-5);
@@ -445,7 +465,6 @@
     flex-direction: column;
   }
 
-  .file-product-grid,
   .excel-settings-preview,
   .excel-settings-students {
     grid-template-columns: minmax(0, 1fr);
@@ -453,11 +472,6 @@
 }
 
 @media (max-width: 640px) {
-  .file-ledger__list li {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .file-center__hero-actions {
     align-items: flex-start;
     flex-direction: column;
@@ -478,4 +492,51 @@
   .file-center * {
     transition-duration: var(--duration-reduced);
   }
+}
+
+/* 导出弹层：紧凑三行模式 */
+.file-center--popover {
+  padding: 0;
+}
+
+.file-center__rows {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-center__row {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+}
+
+.file-center__row-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--font-size-dense);
+}
+
+.file-center__row-time {
+  margin-inline-start: auto;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.file-center__row-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.file-center__rows .file-report-table__history-list {
+  margin: var(--space-1) 0 0;
 }

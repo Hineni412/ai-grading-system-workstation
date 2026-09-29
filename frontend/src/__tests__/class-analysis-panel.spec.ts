@@ -44,6 +44,11 @@ vi.mock('../api/jobs', async (importOriginal) => ({
   jobApi: jobsMock,
 }))
 
+vi.mock('../components/review/review-rubric-cache', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../components/review/review-rubric-cache')>(),
+  loadReviewRubric: vi.fn(async () => null),
+}))
+
 function makeJob(overrides: Partial<JobResponse> = {}): JobResponse {
   return {
     id: 91,
@@ -176,6 +181,8 @@ async function mountPanel(
     history: createMemoryHistory(),
     routes: [
       { path: '/', component: { render: () => h('div') } },
+      { path: '/results', component: { render: () => h('div') } },
+      { path: '/grading', component: { render: () => h('div', '合成深评页') } },
       { path: '/class-report', component: { render: () => h('div', '合成班级报告页') } },
     ],
   })
@@ -251,13 +258,22 @@ describe('class analysis panel', () => {
     expect(host.querySelector<HTMLDetailsElement>('[data-kind="process"]')!.open).toBe(false)
     expect(host.querySelector('[data-kind="error"]')!.textContent).not.toContain('未作答')
     host.querySelector<HTMLElement>('[data-kind="error"] .class-analysis__cause-detail summary')!.click()
-    expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('用水平边替换竖直绳段')
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-kind="error"]')!.textContent,
+    ).toContain('用水平边替换竖直绳段'))
     expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('10+6=16')
     expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('原始批语')
-    expect(host.querySelector('[data-kind="carry_forward"]')!.textContent).toContain('延续自 Q12(P1)')
+    host.querySelector<HTMLElement>('[data-kind="carry_forward"] .class-analysis__cause-detail summary')!.click()
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-kind="carry_forward"]')!.textContent,
+    ).toContain('延续自 Q12(P1)'))
     mounted.pop()!.unmount()
     host.remove()
     const reopened = await mountPanel()
+    await vi.waitFor(() => expect(
+      reopened.host.querySelector('[data-kind="error"]'),
+    ).not.toBeNull())
+    reopened.host.querySelector<HTMLElement>('[data-kind="error"] .class-analysis__cause-detail summary')!.click()
     await vi.waitFor(() => expect(reopened.host.textContent).toContain('用水平边替换竖直绳段'))
     expect(apiMock.regenerate).not.toHaveBeenCalled()
     expect(reopened.host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.disabled).toBe(true)
@@ -280,6 +296,9 @@ describe('class analysis panel', () => {
     const { host } = await mountPanel()
     await vi.waitFor(() => expect(host.querySelector('[data-testid="cause-category"]')).not.toBeNull())
     expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('审题与条件')
+    // 大类统计并入区块标题，不再渲染独立 chips 行。
+    expect(host.querySelector('[data-kind="error"] > summary')!.textContent).toContain('审题与条件 1')
+    expect(host.querySelector('[data-testid="cause-category-chips"]')).toBeNull()
     expect(host.querySelector('[data-kind="process"]')!.textContent).toContain('过程与依据')
     expect(host.textContent).toContain('1 题为旧版整理，暂无错误大类')
     mounted.pop()!.unmount()
@@ -318,9 +337,8 @@ describe('class analysis panel', () => {
     const detail = host.querySelector<HTMLDetailsElement>('.class-analysis__cause-detail')!
     expect(detail.open).toBe(false)
     detail.querySelector('summary')!.click()
-    await settle()
     expect(detail.open).toBe(true)
-    expect(detail.textContent).toContain('未明确推出 ADB 为直角')
+    await vi.waitFor(() => expect(detail.textContent).toContain('未明确推出 ADB 为直角'))
     expect(detail.textContent).toContain('钱肖白（0 分）')
     expect(host.querySelector('.class-analysis__causes')!.textContent).not.toContain('方程及求解正确')
     expect(host.querySelector('.class-analysis__cause-review')!.textContent).toContain('未归为错因的批语')
@@ -336,36 +354,128 @@ describe('class analysis panel', () => {
   it('shows diagnostics while AI generation is still running', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({ status: 'generating', active_job_id: 91 }))
     const { host } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
-    expect(host.textContent).toContain('试题诊断')
+    await vi.waitFor(() => expect(host.textContent).toContain('满分'))
+    expect(host.querySelector('.class-analysis')!.getAttribute('aria-label')).toBe('试题诊断')
     expect(host.querySelector('[data-testid="class-analysis-generating"]')).toBeNull()
   })
 
-  it('scrolls to and highlights the question row named by focusQuestion', async () => {
+  it('selects the question row named by focusQuestion', async () => {
     const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
       .mockImplementation(() => undefined)
     const { host } = await mountPanel(7, { focusQuestion: '12(3)' })
     await vi.waitFor(() => expect(
-      host.querySelector('tr.is-focused[data-question-id="12(3)"]'),
-    ).not.toBeNull())
+      host.querySelector('[role="option"][data-question-id="12(3)"]')?.getAttribute('aria-selected'),
+    ).toBe('true'))
     expect(scrollSpy).toHaveBeenCalled()
   })
 
-  it('loads original questions only when opened and reuses the preview', async () => {
-    apiMock.getQuestionPreview.mockResolvedValue({
-      question_id: '12(3)', parent_question_id: 'Q12', text: '完整原题与全部条件', notice: '',
-      rich_content: { available: false, question_blocks: [], answer_blocks: [], question_block_count: 0, answer_block_count: 0 },
-    })
-    const { host } = await mountPanel()
-    expect(apiMock.getQuestionPreview).not.toHaveBeenCalled()
-    host.querySelector<HTMLButtonElement>('.class-analysis__preview-button')!.click()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('完整原题与全部条件'))
-    expect(apiMock.getQuestionPreview).toHaveBeenCalledWith(7, '12(3)', expect.any(AbortSignal))
-    document.querySelector<HTMLButtonElement>('[aria-label="关闭原题预览"]')!.click()
+  it('renders a master-detail list, syncs selection to the question query and scopes the detail', async () => {
+    const result = makeAnalysis()
+    result.data!.questions = [
+      {
+        question_id: '2',
+        max_score: 4,
+        class_rate: 0.8,
+        stem_summary: '高得分率题',
+        canonical_answer: 'A',
+        causes: [{ reason: '第二题错因', count: 1, kind: 'error' as const,
+          evidence: [{ text: '第二题证据', student_ids: [31] }] }],
+        records: [],
+      },
+      {
+        question_id: '1',
+        max_score: 8,
+        class_rate: 0.25,
+        stem_summary: '低得分率题',
+        canonical_answer: 'B',
+        causes: [{ reason: '第一题错因', count: 1, kind: 'error' as const,
+          evidence: [{ text: '第一题证据', student_ids: [32] }] }],
+        records: [],
+      },
+    ]
+    apiMock.getClassAnalysis.mockResolvedValue(result)
+    const { host, router } = await mountPanel()
+    await vi.waitFor(() => expect(host.querySelectorAll('[role="option"]').length).toBe(2))
+
+    // 默认按得分率升序，选中第一行，详情只显示选中题的错因。
+    const options = [...host.querySelectorAll<HTMLElement>('[role="option"]')]
+    expect(options[0]!.dataset.questionId).toBe('1')
+    expect(options[0]!.getAttribute('aria-selected')).toBe('true')
+    expect(host.textContent).toContain('第一题错因')
+    expect(host.querySelector('.class-analysis__detail')!.textContent).not.toContain('第二题错因')
+
+    // 点击另一行 → question 查询参数同步，详情切换。
+    options[1]!.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.question).toBe('2'))
+    await vi.waitFor(() => expect(
+      host.querySelector('.class-analysis__detail')!.textContent,
+    ).toContain('第二题错因'))
+    expect(host.querySelector('.class-analysis__detail')!.textContent).not.toContain('第一题错因')
+
+    // 按题号排序 + 列表内方向键移动选择。
+    host.querySelector<HTMLButtonElement>('[data-testid="sort-number"]')!.click()
     await settle()
-    host.querySelector<HTMLButtonElement>('.class-analysis__preview-button')!.click()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('完整原题与全部条件'))
-    expect(apiMock.getQuestionPreview).toHaveBeenCalledTimes(1)
+    const reordered = [...host.querySelectorAll<HTMLElement>('[role="option"]')]
+    expect(reordered[0]!.dataset.questionId).toBe('1')
+    reordered[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await vi.waitFor(() => expect(router.currentRoute.value.query.question).toBe('2'))
+  })
+
+  it('opens a失分 chip student in the review deep page', async () => {
+    const result = makeAnalysis()
+    const question = result.data!.questions[0]!
+    question.records[0]!.student_id = 31
+    apiMock.getClassAnalysis.mockResolvedValue(result)
+    const { host, router } = await mountPanel()
+    await vi.waitFor(() => expect(host.querySelector('.class-analysis__score-band-toggle:not(:disabled)')).not.toBeNull())
+
+    const { useResultsCenterStore } = await import('../stores/results-center')
+    useResultsCenterStore().results = {
+      session_id: 7,
+      session_name: '数学阶段测试',
+      summary: {},
+      questions: [],
+      students: [{
+        student_id: 31,
+        student_code: 'S31',
+        student_name: '钱肖白',
+        class_name: '9',
+        pinyin_initials: 'QXB',
+        pinyin_full: 'qianxiaobai',
+        current_score: 90,
+        max_score: 100,
+        ungraded_count: 0,
+        failed_count: 0,
+        needs_review_count: 0,
+        status: 'complete',
+        items: [{
+          review_item_id: '7:12(3):31',
+          question_id: '12(3)',
+          score_awarded: 0,
+          max_score: 8,
+          score_status: 'scored',
+          score_source: 'teacher',
+          confidence_score: null,
+          needs_review: false,
+          review_reason: null,
+          result_id: 1,
+          detail_id: 2,
+        }],
+      }],
+    } as never
+    await settle()
+
+    host.querySelector<HTMLButtonElement>('.class-analysis__score-band-toggle:not(:disabled)')!.click()
+    await settle()
+    const chip = host.querySelector<HTMLElement>('button.class-analysis__score-chip')
+    expect(chip).not.toBeNull()
+    chip!.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/grading'))
+    expect(router.currentRoute.value.query).toMatchObject({
+      session: '7', scope: 'all', question: '12(3)',
+      item: '7:12(3):31', student: '31', entry: 'results',
+    })
+    expect(useResultsCenterStore().reviewNavigation?.studentIds).toEqual([31])
   })
 
   it('loads the chosen class without keeping the previous class data visible', async () => {
@@ -388,7 +498,7 @@ describe('class analysis panel', () => {
     select.dispatchEvent(new Event('change'))
     await settle()
     expect(apiMock.getClassAnalysis).toHaveBeenLastCalledWith(7, expect.any(AbortSignal), '', 'summary')
-    expect(host.textContent).toContain('全部班级合并')
+    expect(host.textContent).toContain('全部班级')
   })
 
   it('shows the empty state when the session has no graded results', async () => {
@@ -427,9 +537,9 @@ describe('class analysis panel', () => {
     await vi.waitFor(() => expect(apiMock.getClassAnalysis).toHaveBeenCalledTimes(2))
   })
 
-  it('keeps only statistics and diagnostics on the page and navigates to the report for AI analysis', async () => {
-    const { host, router } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
+  it('keeps only statistics and diagnostics on the page; the AI report entry lives on the overview', async () => {
+    const { host } = await mountPanel()
+    await vi.waitFor(() => expect(host.textContent).toContain('满分'))
     expect(apiMock.getClassAnalysis).toHaveBeenCalledTimes(1)
     expect(apiMock.getClassAnalysis).toHaveBeenCalledWith(7, expect.any(AbortSignal), '', 'summary')
     expect(host.querySelector('.class-analysis__score-list')).toBeNull()
@@ -441,10 +551,7 @@ describe('class analysis panel', () => {
     expect(host.textContent).not.toContain('陈维懋')
     expect(host.textContent).not.toContain('两极分化严重')
     expect(apiMock.regenerate).not.toHaveBeenCalled()
-
-    host.querySelector<HTMLButtonElement>('[data-testid="ai-analysis-open"]')!.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/class-report'))
-    expect(router.currentRoute.value.query).toMatchObject({ session: '7' })
+    expect(host.querySelector('[data-testid="ai-analysis-open"]')).toBeNull()
   })
 
   it('requires confirmation before submitting cause grouping and tracks the new job', async () => {
@@ -453,7 +560,7 @@ describe('class analysis panel', () => {
         failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
     }))
     const { host } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
+    await vi.waitFor(() => expect(host.textContent).toContain('满分'))
 
     host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
     await vi.waitFor(() => expect(
@@ -489,7 +596,7 @@ describe('class analysis panel', () => {
         failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
     }))
     const { host } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
+    await vi.waitFor(() => expect(host.textContent).toContain('满分'))
 
     host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
     await vi.waitFor(() => expect(
@@ -520,7 +627,7 @@ describe('class analysis panel', () => {
         failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
     }))
     const { host } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
+    await vi.waitFor(() => expect(host.textContent).toContain('满分'))
 
     host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
     await vi.waitFor(() => expect(
@@ -569,13 +676,12 @@ describe('class analysis panel', () => {
     }))
     apiMock.editCausePattern.mockResolvedValue({ ok: true })
     const { host } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('数学阶段测试'))
+    await vi.waitFor(() => expect(host.textContent).toContain('满分'))
 
-    // 大类统计行按人数渲染。
-    expect(host.querySelector('[data-testid="cause-category-chips"]')!.textContent)
-      .toContain('概念理解 2人')
-    expect(host.querySelector('[data-testid="cause-category-chips"]')!.textContent)
-      .toContain('审题与条件 1人')
+    // 大类统计并入区块标题（按该节证据人数）。
+    expect(host.querySelector('[data-kind="error"] > summary')!.textContent)
+      .toContain('（概念理解 1）')
+    expect(host.querySelector('[data-testid="cause-category-chips"]')).toBeNull()
     // 自动归并结果不再有“写入题库/已入库”流程。
     expect(host.textContent).not.toContain('写入题库')
     expect(host.textContent).not.toContain('已入库')

@@ -3,6 +3,7 @@ import type {
   ResultsCenterItem,
   ResultsCenterStudent,
 } from '../../api/results-center'
+import type { SessionSummary } from '../../api/sessions'
 
 export type OverviewBandId = 'excellent' | 'good' | 'pass' | 'watch' | 'low'
 
@@ -36,18 +37,59 @@ export interface ClassSummary {
   bandCounts: Record<OverviewBandId, number>
 }
 
-export type FindingSegment =
-  | { type: 'text'; text: string }
-  | { type: 'strong'; text: string }
-  | { type: 'question'; questionId: string }
-  | { type: 'action'; action: 'attention'; label: string }
-
-export interface OverviewFinding {
-  id: 'low-tail' | 'weak-questions' | 'main-errors' | 'blanks' | 'class-gap'
-  segments: FindingSegment[]
+export interface ScoreStructure {
+  /** 已给分人数中满分 / 部分得分 / 0 分的人数 */
+  full: number
+  partial: number
+  zero: number
+  resolved: number
 }
 
-export interface FindingsInput {
+export interface LowTailTile {
+  id: 'low-tail'
+  count: number
+  perClass: { label: string; count: number }[]
+  zeroAverage: number | null
+  /** 中位数高出平均 ≥5 分时给出 */
+  medianGap: { average: number; median: number } | null
+}
+
+export interface WeakQuestionsTile {
+  id: 'weak-questions'
+  rows: { questionId: string; rate: number }[]
+}
+
+export interface ZeroShareTile {
+  id: 'zero-share'
+  top: { questionId: string; share: number }
+  topIds: string[]
+  bars: { questionId: string; share: number }[]
+}
+
+export interface ClassGapTile {
+  id: 'class-gap'
+  gap: number
+  lowLabel: string
+  lowAverage: number
+  highLabel: string
+  highAverage: number
+  widest: { questionId: string; lowRate: number; highRate: number } | null
+}
+
+export interface CauseCategoriesTile {
+  id: 'cause-categories'
+  segments: { category: string; count: number }[]
+  total: number
+}
+
+export type OverviewTile =
+  | LowTailTile
+  | WeakQuestionsTile
+  | ZeroShareTile
+  | ClassGapTile
+  | CauseCategoriesTile
+
+export interface OverviewTilesInput {
   /** null = 全部班级合并 */
   scopeKey: string | null
   scopeStudents: readonly ResultsCenterStudent[]
@@ -59,6 +101,8 @@ export interface FindingsInput {
   classQuestionRates?: ReadonlyMap<string, ReadonlyMap<string, number | null>>
   /** 当前范围的 class-analysis 题目（含错因）；null 表示尚未加载 */
   analysisQuestions: readonly ClassAnalysisQuestion[] | null
+  /** 当前范围各题分数结构，按卷面题号顺序 */
+  scoreStructure: ReadonlyMap<string, ScoreStructure>
 }
 
 export function isCompleteStudent(student: ResultsCenterStudent): boolean {
@@ -187,33 +231,6 @@ export function blankCountsByStudent(
   return counts
 }
 
-export interface AttentionStudent {
-  student: ResultsCenterStudent
-  rate: number
-  zeroCount: number
-}
-
-export function attentionStudents(
-  students: readonly ResultsCenterStudent[],
-): { low: AttentionStudent[]; nearPass: AttentionStudent[] } {
-  const low: AttentionStudent[] = []
-  const nearPass: AttentionStudent[] = []
-  for (const student of students) {
-    if (!isCompleteStudent(student)) continue
-    const rate = studentRate(student)
-    if (rate === null) continue
-    const entry = { student, rate, zeroCount: zeroScoreCount(student) }
-    if (rate < 0.4) low.push(entry)
-    else if (rate >= 0.5 && rate < 0.6) nearPass.push(entry)
-  }
-  const byScore = (left: AttentionStudent, right: AttentionStudent) => (
-    left.student.current_score - right.student.current_score
-    || left.student.student_name.localeCompare(right.student.student_name, 'zh-CN')
-    || left.student.student_id - right.student.student_id
-  )
-  return { low: low.sort(byScore), nearPass: nearPass.sort(byScore) }
-}
-
 /** 总览只使用新版结构化错因（带 kind）；旧版归并结果按 'legacy' 区分展示。 */
 export type TopCause = { label: string; count: number } | 'legacy' | null
 
@@ -244,16 +261,31 @@ export function formatCount(value: number): string {
   return formatScore(value)
 }
 
-function responseStateCount(question: ClassAnalysisQuestion): number {
-  return (question.causes ?? [])
-    .filter((cause) => cause.kind === 'response_state')
-    .reduce((total, cause) => total + cause.count, 0)
+export function scoreStructureFor(
+  students: readonly ResultsCenterStudent[],
+  questionIds: readonly string[],
+): Map<string, ScoreStructure> {
+  const sums = new Map<string, ScoreStructure>(
+    questionIds.map((id) => [id, { full: 0, partial: 0, zero: 0, resolved: 0 }]),
+  )
+  for (const student of students) {
+    for (const item of student.items) {
+      const bucket = sums.get(item.question_id)
+      if (!bucket) continue
+      const score = resolvedItemScore(item)
+      if (score === null) continue
+      bucket.resolved += 1
+      if (score === 0) bucket.zero += 1
+      else if (item.max_score > 0 && score >= item.max_score) bucket.full += 1
+      else bucket.partial += 1
+    }
+  }
+  return sums
 }
 
-export function buildFindings(input: FindingsInput): OverviewFinding[] {
-  const findings: OverviewFinding[] = []
+export function buildOverviewTiles(input: OverviewTilesInput): OverviewTile[] {
+  const tiles: OverviewTile[] = []
   const complete = input.scopeStudents.filter(isCompleteStudent)
-  const scores = complete.map((student) => student.current_score)
   const rated = complete
     .map((student) => ({ student, rate: studentRate(student) }))
     .filter((entry): entry is { student: ResultsCenterStudent; rate: number } => (
@@ -262,130 +294,56 @@ export function buildFindings(input: FindingsInput): OverviewFinding[] {
   const low = rated.filter((entry) => entry.rate < 0.4)
 
   if (low.length > 0) {
-    const perClass = input.scopeKey === null
-      ? input.classes
-        .filter((entry) => entry.bandCounts.low > 0)
-        .map((entry) => `${entry.label} ${entry.bandCounts.low}`)
-        .join(' · ')
-      : ''
-    const zeroAverage = low.reduce(
-      (total, entry) => total + zeroScoreCount(entry.student), 0,
-    ) / low.length
-    const segments: FindingSegment[] = [
-      { type: 'text', text: '低于 40% 的有 ' },
-      { type: 'strong', text: `${low.length} 人` },
-    ]
-    if (perClass) segments.push({ type: 'text', text: `（${perClass}）` })
-    segments.push(
-      { type: 'text', text: '，人均 0 分题 ' },
-      { type: 'strong', text: `${formatCount(zeroAverage)} 道` },
-    )
+    const scores = complete.map((student) => student.current_score)
     const median = medianOf(scores)
     const average = scores.length
       ? scores.reduce((total, score) => total + score, 0) / scores.length
       : null
-    if (median !== null && average !== null && median - average >= 5) {
-      segments.push(
-        { type: 'text', text: '；中位数 ' },
-        { type: 'strong', text: formatScore(median) },
-        { type: 'text', text: ' 高于平均 ' },
-        { type: 'strong', text: formatScore(average) },
-        { type: 'text', text: '，低分学生明显拉低了平均' },
-      )
-    }
-    segments.push({ type: 'action', action: 'attention', label: '查看名单' })
-    findings.push({ id: 'low-tail', segments })
+    tiles.push({
+      id: 'low-tail',
+      count: low.length,
+      perClass: input.scopeKey === null
+        ? input.classes
+          .filter((entry) => entry.bandCounts.low > 0)
+          .map((entry) => ({ label: entry.label, count: entry.bandCounts.low }))
+        : [],
+      zeroAverage: low.reduce(
+        (total, entry) => total + zeroScoreCount(entry.student), 0,
+      ) / low.length,
+      medianGap: median !== null && average !== null && median - average >= 5
+        ? { average, median }
+        : null,
+    })
   }
 
   const weakest = [...input.questionRates.entries()]
     .filter((entry): entry is [string, number] => entry[1] !== null)
     .sort((left, right) => left[1] - right[1])
-    .slice(0, 3)
+    .slice(0, 5)
   if (weakest.length > 0) {
-    const segments: FindingSegment[] = [{ type: 'text', text: '得分率最低：' }]
-    weakest.forEach(([questionId, rate], index) => {
-      if (index > 0) segments.push({ type: 'text', text: ' · ' })
-      segments.push(
-        { type: 'question', questionId },
-        { type: 'strong', text: ` ${formatRate(rate)}` },
-      )
+    tiles.push({
+      id: 'weak-questions',
+      rows: weakest.map(([questionId, rate]) => ({ questionId, rate })),
     })
-    const lowestId = weakest[0]![0]
-    const lowestQuestion = input.analysisQuestions?.find(
-      (question) => question.question_id === lowestId,
-    )
-    const topCause = (lowestQuestion?.causes ?? [])
-      .filter((cause) => cause.kind !== undefined && cause.kind !== 'response_state')
-      .sort((left, right) => right.count - left.count)[0]
-    if (topCause) {
-      segments.push(
-        { type: 'text', text: '；' },
-        { type: 'question', questionId: lowestId },
-        { type: 'text', text: ` 主要是「${topCause.reason}」` },
-        { type: 'strong', text: `${topCause.count} 人` },
-      )
-    }
-    findings.push({ id: 'weak-questions', segments })
   }
 
-  if (input.analysisQuestions !== null) {
-    const categories = new Map<string, { total: number; perQuestion: Map<string, number> }>()
-    for (const question of input.analysisQuestions) {
-      if (!(question.causes ?? []).some((cause) => cause.kind !== undefined)) continue
-      for (const entry of question.cause_category_counts ?? []) {
-        if (entry.category === '未作答') continue
-        const bucket = categories.get(entry.category) ?? { total: 0, perQuestion: new Map() }
-        bucket.total += entry.count
-        bucket.perQuestion.set(
-          question.question_id,
-          (bucket.perQuestion.get(question.question_id) ?? 0) + entry.count,
-        )
-        categories.set(entry.category, bucket)
-      }
-    }
-    const top = [...categories.entries()]
-      .sort((left, right) => right[1].total - left[1].total)
-      .slice(0, 2)
-    if (top.length > 0) {
-      const segments: FindingSegment[] = [{ type: 'text', text: '失分人次最多：' }]
-      top.forEach(([category, bucket], index) => {
-        if (index > 0) segments.push({ type: 'text', text: ' · ' })
-        segments.push({ type: 'strong', text: `${category} ${bucket.total} 人次` })
-        const topQuestions = [...bucket.perQuestion.entries()]
-          .sort((left, right) => right[1] - left[1])
-          .slice(0, 3)
-        if (topQuestions.length > 0) {
-          segments.push({ type: 'text', text: '（主要在 ' })
-          topQuestions.forEach(([questionId], questionIndex) => {
-            if (questionIndex > 0) segments.push({ type: 'text', text: '、' })
-            segments.push({ type: 'question', questionId })
-          })
-          segments.push({ type: 'text', text: '）' })
-        }
-      })
-      findings.push({ id: 'main-errors', segments })
-    }
-
-    const blankPerQuestion = input.analysisQuestions
-      .map((question) => ({
-        questionId: question.question_id,
-        count: responseStateCount(question),
-      }))
-      .filter((entry) => entry.count > 0)
-      .sort((left, right) => right.count - left.count)
-    const blankTotal = blankPerQuestion.reduce((total, entry) => total + entry.count, 0)
-    if (blankTotal > 0) {
-      const segments: FindingSegment[] = [
-        { type: 'text', text: '未作答共 ' },
-        { type: 'strong', text: `${blankTotal} 人次` },
-        { type: 'text', text: '，集中在 ' },
-      ]
-      blankPerQuestion.slice(0, 3).forEach((entry, index) => {
-        if (index > 0) segments.push({ type: 'text', text: '、' })
-        segments.push({ type: 'question', questionId: entry.questionId })
-      })
-      findings.push({ id: 'blanks', segments })
-    }
+  const zeroBars = [...input.scoreStructure.entries()]
+    .filter((entry) => entry[1].resolved > 0 && entry[1].zero > 0)
+    .map(([questionId, structure]) => ({
+      questionId,
+      share: structure.zero / structure.resolved,
+    }))
+  if (zeroBars.length > 0) {
+    const topIds = [...zeroBars]
+      .sort((left, right) => right.share - left.share)
+      .slice(0, 3)
+      .map((bar) => bar.questionId)
+    tiles.push({
+      id: 'zero-share',
+      top: zeroBars.find((bar) => bar.questionId === topIds[0])!,
+      topIds,
+      bars: zeroBars,
+    })
   }
 
   if (input.scopeKey === null && input.classes.length >= 2) {
@@ -395,54 +353,229 @@ export function buildFindings(input: FindingsInput): OverviewFinding[] {
     if (ranked.length >= 2) {
       const lowClass = ranked[0]!
       const highClass = ranked[ranked.length - 1]!
-      const diff = highClass.average! - lowClass.average!
-      if (diff >= 5) {
-        const segments: FindingSegment[] = [{
-          type: 'strong',
-          text: `${lowClass.label}平均比${highClass.label}低 ${formatScore(diff)} 分`,
-        }]
+      const gap = highClass.average! - lowClass.average!
+      if (gap >= 5) {
         const lowRates = lowClass.key === null
           ? undefined
           : input.classQuestionRates?.get(lowClass.key)
         const highRates = highClass.key === null
           ? undefined
           : input.classQuestionRates?.get(highClass.key)
-        let widest: { questionId: string; low: number; high: number; gap: number } | null = null
+        let widest: ClassGapTile['widest'] = null
         if (lowRates && highRates) {
+          let widestGap = 0
           for (const [questionId, lowRate] of lowRates) {
             const highRate = highRates.get(questionId)
             if (lowRate === null || highRate === null || highRate === undefined) continue
-            const gap = Math.abs(highRate - lowRate)
-            if (!widest || gap > widest.gap) {
-              widest = { questionId, low: lowRate, high: highRate, gap }
+            const rateGap = Math.abs(highRate - lowRate)
+            if (rateGap > widestGap) {
+              widestGap = rateGap
+              widest = { questionId, lowRate, highRate }
             }
           }
         }
-        if (widest) {
-          segments.push(
-            { type: 'text', text: '；差距最大在 ' },
-            { type: 'question', questionId: widest.questionId },
-            { type: 'text', text: '（' },
-            { type: 'strong', text: `${highClass.label} ${formatRate(widest.high)}` },
-            { type: 'text', text: ' / ' },
-            { type: 'strong', text: `${lowClass.label} ${formatRate(widest.low)}` },
-            { type: 'text', text: '）' },
-          )
-        }
-        findings.push({ id: 'class-gap', segments })
+        tiles.push({
+          id: 'class-gap',
+          gap,
+          lowLabel: lowClass.label,
+          lowAverage: lowClass.average!,
+          highLabel: highClass.label,
+          highAverage: highClass.average!,
+          widest,
+        })
       }
     }
   }
 
-  return findings
+  if (input.analysisQuestions !== null) {
+    const categories = new Map<string, number>()
+    for (const question of input.analysisQuestions) {
+      for (const cause of question.causes ?? []) {
+        if (cause.kind === undefined || cause.kind === 'response_state') continue
+        const category = cause.category ?? ''
+        if (category === '' || category === '未作答') continue
+        categories.set(category, (categories.get(category) ?? 0) + cause.count)
+      }
+    }
+    const segments = [...categories.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 4)
+      .map(([category, count]) => ({ category, count }))
+    if (segments.length > 0) {
+      tiles.push({
+        id: 'cause-categories',
+        segments,
+        total: segments.reduce((total, segment) => total + segment.count, 0),
+      })
+    }
+  }
+
+  return tiles
 }
 
-export function findingText(finding: OverviewFinding): string {
-  return finding.segments
-    .map((segment) => {
-      if (segment.type === 'text' || segment.type === 'strong') return segment.text
-      if (segment.type === 'question') return segment.questionId
-      return ` ${segment.label}`
+/** 子题参考答案展示：首个「 或 」后若仍是大段内容，只保留首选写法，全文放 title。 */
+export function displayAnswer(answer: string | null): string | null {
+  if (answer === null) return null
+  const index = answer.indexOf(' 或 ')
+  if (index === -1) return answer
+  const rest = answer.slice(index + 3).trim()
+  return rest.length > 20 ? answer.slice(0, index).trim() : answer
+}
+
+/** 班内名次：完整成绩按分降序，同分同名次，下一名次跳号。 */
+export function classRanksOf(
+  students: readonly ResultsCenterStudent[],
+): Map<number, { rank: number; size: number }> {
+  const groups = new Map<string, ResultsCenterStudent[]>()
+  for (const student of students) {
+    const key = student.class_name ?? ''
+    const group = groups.get(key) ?? []
+    group.push(student)
+    groups.set(key, group)
+  }
+  const ranks = new Map<number, { rank: number; size: number }>()
+  for (const group of groups.values()) {
+    const ranked = group
+      .filter(isCompleteStudent)
+      .sort((left, right) => (
+        right.current_score - left.current_score
+        || left.student_id - right.student_id
+      ))
+    let previous: number | null = null
+    let rank = 0
+    ranked.forEach((student, index) => {
+      if (previous === null || student.current_score !== previous) rank = index + 1
+      previous = student.current_score
+      ranks.set(student.student_id, { rank, size: ranked.length })
     })
-    .join('')
+  }
+  return ranks
+}
+
+export interface RankChange {
+  student: ResultsCenterStudent
+  previousScore: number
+  previousMax: number
+  previousRank: number
+  currentRank: number
+  /** 本次班内参与排名的完整学生数，用于名次轨道比例。 */
+  currentSize: number
+  /** 上次名次 − 本次名次；正数为进步 */
+  change: number
+}
+
+/** 只比较两场考试中都完整、且班级未变的学生。 */
+export function rankChanges(
+  current: readonly ResultsCenterStudent[],
+  previous: readonly ResultsCenterStudent[],
+): RankChange[] {
+  const currentRanks = classRanksOf(current)
+  const previousRanks = classRanksOf(previous)
+  const previousById = new Map(
+    previous.map((student) => [student.student_id, student] as const),
+  )
+  const entries: RankChange[] = []
+  for (const student of current) {
+    const before = previousById.get(student.student_id)
+    if (!before) continue
+    if (!isCompleteStudent(student) || !isCompleteStudent(before)) continue
+    if ((student.class_name ?? '') !== (before.class_name ?? '')) continue
+    const currentEntry = currentRanks.get(student.student_id)
+    const previousEntry = previousRanks.get(student.student_id)
+    if (!currentEntry || !previousEntry) continue
+    entries.push({
+      student,
+      previousScore: before.current_score,
+      previousMax: before.max_score,
+      previousRank: previousEntry.rank,
+      currentRank: currentEntry.rank,
+      currentSize: currentEntry.size,
+      change: previousEntry.rank - currentEntry.rank,
+    })
+  }
+  return entries
+}
+
+export function rankChangeGroups(
+  entries: readonly RankChange[],
+  minChange = 5,
+  limit = 8,
+): { improved: RankChange[]; declined: RankChange[] } {
+  const byChange = (left: RankChange, right: RankChange) => (
+    Math.abs(right.change) - Math.abs(left.change)
+    || left.student.student_id - right.student.student_id
+  )
+  return {
+    improved: entries
+      .filter((entry) => entry.change >= minChange)
+      .sort(byChange)
+      .slice(0, limit),
+    declined: entries
+      .filter((entry) => entry.change <= -minChange)
+      .sort(byChange)
+      .slice(0, limit),
+  }
+}
+
+/** 同一学期卷别下可作对比的其他已完成考试，按创建时间从近到远。 */
+export function comparisonCandidates(
+  current: SessionSummary | null,
+  sessions: readonly SessionSummary[],
+): SessionSummary[] {
+  if (!current) return []
+  return sessions
+    .filter((session) => (
+      session.id !== current.id
+      && !session.is_deleted
+      && session.status === 'completed'
+      && (session.curriculum_volume_id ?? null) === (current.curriculum_volume_id ?? null)
+    ))
+    .sort((left, right) => (right.created_at ?? '').localeCompare(left.created_at ?? ''))
+}
+
+/** 默认对比 = 同卷别中创建时间早于本场、最近的一场。 */
+export function defaultComparison(
+  current: SessionSummary | null,
+  sessions: readonly SessionSummary[],
+): SessionSummary | null {
+  const candidates = comparisonCandidates(current, sessions)
+  const earlier = current?.created_at != null
+    ? candidates.filter((session) => (
+      session.created_at !== null && session.created_at < current.created_at!
+    ))
+    : []
+  return earlier[0] ?? candidates[0] ?? null
+}
+
+/** 形如 Q14(P8) 的小问；返回父题号与小问序号。 */
+export function subQuestionOf(
+  questionId: string,
+): { parentId: string; index: number } | null {
+  const match = /^(.*)\(P(\d+)\)$/.exec(questionId)
+  if (!match) return null
+  return { parentId: match[1]!, index: Number(match[2]) }
+}
+
+/**
+ * 判断一行是不是小问行：题号形如 Q14(P8)，且同父题号下另有题目
+ * 与之共用同一题干（即题干是小问组标题），或题干为空/等于父题号。
+ * parentStem 是用于 title 的小问组标题；无法确定时为 null。
+ */
+export function subQuestionLabelFor(
+  questionId: string,
+  stem: string | null,
+  questions: ReadonlyArray<{ question_id: string; stem_summary?: string | null }>,
+): { index: number; parentStem: string | null } | null {
+  const sub = subQuestionOf(questionId)
+  if (sub === null) return null
+  const text = stem?.trim() ?? ''
+  if (text === '' || text === sub.parentId) {
+    return { index: sub.index, parentStem: null }
+  }
+  const siblingSharesStem = questions.some((other) => (
+    other.question_id !== questionId
+    && subQuestionOf(other.question_id)?.parentId === sub.parentId
+    && (other.stem_summary ?? null) === stem
+  ))
+  return siblingSharesStem ? { index: sub.index, parentStem: stem } : null
 }

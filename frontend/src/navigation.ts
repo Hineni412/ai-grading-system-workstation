@@ -38,7 +38,11 @@ export type AppIconName =
   | 'trash'
   | 'menu'
   | 'close'
+  | 'search'
   | 'chevron-down'
+  | 'arrow-up'
+  | 'book-open'
+  | 'download'
 
 export interface WorkspaceRouteDefinition {
   id: WorkspaceRouteId

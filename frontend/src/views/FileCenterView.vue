@@ -21,9 +21,14 @@ import { useSessionStore } from '../stores/session'
 
 const props = withDefaults(defineProps<{
   embedded?: boolean
+  variant?: 'page' | 'popover'
 }>(), {
   embedded: false,
+  variant: 'page',
 })
+
+const isPopover = computed(() => props.variant === 'popover')
+const chromeless = computed(() => props.embedded || isPopover.value)
 
 const sessionStore = useSessionStore()
 const fileCenter = useFileCenterStore()
@@ -106,33 +111,68 @@ const previewVisibleStudentCount = computed(() => Math.max(
 
 const reportDefinitions: Array<{
   type: ReportType
-  eyebrow: string
+  kind: string
   title: string
   description: string
 }> = [
   {
     type: 'score_excel',
-    eyebrow: '表格',
+    kind: '表格',
     title: '成绩表',
     description: '用于汇总、复核和后续统计的 Excel 成绩文件。',
   },
   {
     type: 'annotated_original_pdf',
-    eyebrow: '原卷',
+    kind: 'PDF',
     title: '批注原卷',
     description: '保留原始试卷版面和批改标记的 PDF 文件。',
   },
   {
     type: 'personal_analysis_html',
-    eyebrow: 'AI 分析',
+    kind: 'AI 分析',
     title: '学生个人分析报告',
     description: '每名学生一份自包含 HTML 分析报告，打包为 ZIP，含 AI 生成的个性化叙述。',
   },
 ]
 
+const historyOpen = ref(new Set<ReportType>())
+
+function toggleHistory(type: ReportType): void {
+  const next = new Set(historyOpen.value)
+  if (next.has(type)) next.delete(type)
+  else next.add(type)
+  historyOpen.value = next
+}
+
 const liveJobs = computed(() => Object.values(jobStore.jobs)
   .filter((job) => job.job_type === 'report_export')
   .sort((left, right) => right.id - left.id))
+
+function liveJobFor(type: ReportType): JobResponse | null {
+  return liveJobs.value.find(
+    (job) => job.payload.report_type === type
+      && !TERMINAL_JOB_STATUSES.has(job.status),
+  ) ?? null
+}
+
+const reportRows = computed(() => reportDefinitions.map((definition) => {
+  const jobs = [...reportJobs(definition.type)]
+    .sort((left, right) => right.created_at.localeCompare(left.created_at))
+  const latest = jobs.find((job) => job.is_current_revision) ?? jobs[0] ?? null
+  return {
+    ...definition,
+    jobs,
+    latest,
+    history: latest === null ? jobs : jobs.filter((job) => job.id !== latest.id),
+    liveJob: liveJobFor(definition.type),
+  }
+}))
+
+function reportLiveDetail(job: JobResponse): string {
+  return typeof job.detail === 'string' && job.detail.length > 0
+    ? job.detail
+    : ''
+}
 const pendingReportStatusSignal = computed(() => (
   fileCenter.reportContext?.jobs ?? []
 )
@@ -153,6 +193,7 @@ watch(
     analysisConfirmOpen.value = false
     manualHiddenStudentIds.value = []
     manualStudentSearch.value = ''
+    historyOpen.value = new Set()
     refreshedTerminalReportIds.clear()
     if (sessionId === null) {
       fileCenter.reset()
@@ -181,11 +222,6 @@ watch(pendingReportStatusSignal, () => {
 function reportJobs(type: ReportType): ReportHistoryJob[] {
   return (fileCenter.reportContext?.jobs ?? [])
     .filter((job) => job.payload.report_type === type)
-}
-
-function latestReport(type: ReportType): ReportHistoryJob | null {
-  const jobs = reportJobs(type)
-  return jobs.find((job) => job.is_current_revision) ?? jobs[0] ?? null
 }
 
 function reportFilename(job: ReportHistoryJob): string {
@@ -243,6 +279,12 @@ function statusTone(status: JobStatus | ReportDisplayStatus): string {
 function formatTime(value: string | null): string {
   if (!value) return '时间未记录'
   return value.replace('T', ' ').replace('Z', '').slice(0, 19)
+}
+
+function formatShortTime(value: string | null): string {
+  if (!value) return ''
+  const normalized = value.replace('T', ' ').replace('Z', '')
+  return normalized.slice(5, 16)
 }
 
 async function generateReport(type: ReportType, forceRegenerate = false): Promise<void> {
@@ -458,16 +500,23 @@ function refresh(): void {
   if (sessionId !== null) void fileCenter.load(sessionId)
 }
 
+const dialogOpen = computed(() => excelSettingsOpen.value || analysisConfirmOpen.value)
+
+defineExpose({ dialogOpen })
+
 </script>
 
 <template>
   <section
     class="file-center"
-    :class="{ 'file-center--embedded': props.embedded }"
-    :aria-labelledby="props.embedded ? undefined : 'file-center-title'"
-    :aria-label="props.embedded ? '导出文件' : undefined"
+    :class="{
+      'file-center--embedded': props.embedded,
+      'file-center--popover': isPopover,
+    }"
+    :aria-labelledby="chromeless ? undefined : 'file-center-title'"
+    :aria-label="chromeless ? '导出文件' : undefined"
   >
-    <header v-if="!props.embedded" class="file-center__hero">
+    <header v-if="!chromeless" class="file-center__hero">
       <div>
         <p class="file-center__eyebrow">安全出件登记簿</p>
         <h1 id="file-center-title" tabindex="-1">文件中心</h1>
@@ -498,45 +547,98 @@ function refresh(): void {
         <button type="button" class="file-link-button" @click="refresh">重新加载</button>
       </div>
 
-      <section class="file-section" aria-labelledby="report-files-title">
-        <div class="file-section__heading">
-          <div>
-            <p class="file-center__eyebrow">当前考试</p>
-            <h2 id="report-files-title">考试文件</h2>
-          </div>
-          <span class="file-section__context">{{ sessionStore.currentSession?.name }}</span>
+      <section
+        class="file-section"
+        :aria-labelledby="chromeless ? undefined : 'report-files-title'"
+        :aria-label="chromeless ? '考试文件' : undefined"
+      >
+        <div v-if="!chromeless" class="file-section__heading">
+          <h2 id="report-files-title">考试文件</h2>
         </div>
 
-        <div class="file-product-grid">
-          <article
-            v-for="definition in reportDefinitions"
-            :key="definition.type"
-            class="file-product"
-          >
-            <div class="file-product__topline">
-              <span>{{ definition.eyebrow }}</span>
+        <div
+          v-if="fileCenter.state === 'loading' && !fileCenter.reportContext"
+          class="file-ledger__empty"
+          role="status"
+        >
+          正在读取文件记录…
+        </div>
+        <template v-else>
+        <ul v-if="isPopover" class="file-center__rows">
+          <li v-for="row in reportRows" :key="row.type" class="file-center__row">
+            <div class="file-center__row-head">
+              <strong>{{ row.title }}</strong>
+              <span class="file-report-table__kind">{{ row.kind }}</span>
+              <template v-if="row.liveJob">
+                <span class="file-status file-status--progress">
+                  {{ statusLabel(row.liveJob.status) }}
+                  {{ Math.round(row.liveJob.progress * 100) }}%
+                </span>
+                <span v-if="reportLiveDetail(row.liveJob)" class="file-report-table__detail">
+                  {{ reportLiveDetail(row.liveJob) }}
+                </span>
+              </template>
               <span
-                v-if="latestReport(definition.type)"
+                v-else-if="row.latest"
                 class="file-status"
-                :class="`file-status--${statusTone(reportDisplayStatus(latestReport(definition.type)!))}`"
+                :class="`file-status--${statusTone(reportDisplayStatus(row.latest))}`"
               >
-                {{ fileStatusLabel(reportDisplayStatus(latestReport(definition.type)!)) }}
+                {{ fileStatusLabel(reportDisplayStatus(row.latest)) }}
               </span>
               <span v-else class="file-status file-status--muted">尚未生成</span>
+              <span v-if="row.latest" class="file-center__row-time">
+                {{ formatShortTime(row.latest.finished_at ?? row.latest.created_at) }}
+              </span>
             </div>
-            <h3>{{ definition.title }}</h3>
-            <p>{{ definition.description }}</p>
-            <p
-              v-if="latestReport(definition.type) && reportDisplayStatus(latestReport(definition.type)!) === 'available'"
-              class="file-product__filename"
-            >
-              {{ reportFilename(latestReport(definition.type)!) }}
-            </p>
-            <div class="file-product__actions">
+            <div class="file-center__row-actions">
               <button
-                v-if="definition.type === 'score_excel'"
+                v-if="row.liveJob && !TERMINAL_JOB_STATUSES.has(row.liveJob.status)"
+                type="button"
+                class="file-link-button file-link-button--danger"
+                :data-testid="`cancel-job-${row.liveJob.id}`"
+                @click="cancelJob(row.liveJob.id)"
+              >
+                取消
+              </button>
+              <button
+                v-if="row.latest && reportDisplayStatus(row.latest) === 'available'"
+                type="button"
+                class="file-button file-button--primary"
+                :data-testid="`download-report-${row.latest.id}`"
+                @click="download(row.latest)"
+              >
+                下载
+              </button>
+              <button
+                v-if="row.latest && reportDisplayStatus(row.latest) === 'available'"
                 type="button"
                 class="file-button file-button--secondary"
+                :data-testid="`regenerate-${row.type}`"
+                :disabled="
+                  fileCenter.submittingKey === `report:${row.type}`
+                  || fileCenter.reportContext?.has_results === false
+                "
+                @click="generateReport(row.type, true)"
+              >
+                重新生成
+              </button>
+              <button
+                v-else
+                type="button"
+                class="file-button file-button--secondary"
+                :data-testid="`generate-${row.type}`"
+                :disabled="
+                  fileCenter.submittingKey === `report:${row.type}`
+                  || fileCenter.reportContext?.has_results === false
+                "
+                @click="generateReport(row.type)"
+              >
+                {{ row.latest ? '重新生成' : '生成' }}
+              </button>
+              <button
+                v-if="row.type === 'score_excel'"
+                type="button"
+                class="file-link-button"
                 data-testid="configure-score-excel"
                 :disabled="fileCenter.reportContext?.has_results === false"
                 @click="openExcelSettings(false)"
@@ -544,39 +646,209 @@ function refresh(): void {
                 导出设置
               </button>
               <button
-                v-if="latestReport(definition.type) && reportDisplayStatus(latestReport(definition.type)!) === 'available'"
+                v-if="row.history.length"
                 type="button"
-                class="file-button file-button--primary"
-                :data-testid="`download-report-${latestReport(definition.type)!.id}`"
-                @click="download(latestReport(definition.type)!)"
+                class="file-link-button"
+                :aria-expanded="historyOpen.has(row.type)"
+                @click="toggleHistory(row.type)"
               >
-                下载
-              </button>
-              <button
-                v-else
-                type="button"
-                class="file-button file-button--primary"
-                :data-testid="`generate-${definition.type}`"
-                :disabled="
-                  fileCenter.submittingKey === `report:${definition.type}`
-                  || fileCenter.reportContext?.has_results === false
-                "
-                @click="generateReport(definition.type)"
-              >
-                生成文件
-              </button>
-              <button
-                v-if="latestReport(definition.type) && reportDisplayStatus(latestReport(definition.type)!) === 'available'"
-                type="button"
-                class="file-button file-button--secondary"
-                :data-testid="`regenerate-${definition.type}`"
-                @click="generateReport(definition.type, true)"
-              >
-                重新生成
+                历史 {{ row.history.length }} 份
               </button>
             </div>
-          </article>
-        </div>
+            <ul v-if="row.history.length && historyOpen.has(row.type)" class="file-report-table__history-list">
+              <li v-for="job in row.history" :key="job.id">
+                <span class="file-report-table__history-name">
+                  {{ reportFilename(job) }}
+                  <small>{{ formatTime(job.created_at) }} · 任务 #{{ job.id }}</small>
+                </span>
+                <span class="file-status" :class="`file-status--${statusTone(reportDisplayStatus(job))}`">
+                  {{ fileStatusLabel(reportDisplayStatus(job)) }}
+                </span>
+                <button
+                  v-if="reportDisplayStatus(job) === 'available'"
+                  type="button"
+                  class="file-link-button"
+                  :data-testid="`download-report-${job.id}`"
+                  @click="download(job)"
+                >
+                  下载
+                </button>
+                <button
+                  v-if="reportDisplayStatus(job) === 'available' && isRetainedReport(job)"
+                  type="button"
+                  class="file-link-button"
+                  :data-testid="`delete-report-${job.id}`"
+                  @click="deleteReport(job)"
+                >
+                  删除
+                </button>
+                <button
+                  v-else-if="
+                    reportDisplayStatus(job) === 'expired'
+                    || reportDisplayStatus(job) === 'unavailable'
+                    || reportDisplayStatus(job) === 'stale'
+                  "
+                  type="button"
+                  class="file-link-button"
+                  @click="generateReport(job.payload.report_type as ReportType, true)"
+                >
+                  重新生成
+                </button>
+              </li>
+            </ul>
+          </li>
+        </ul>
+        <table v-else class="file-report-table">
+          <thead>
+            <tr>
+              <th scope="col">文件</th>
+              <th scope="col">状态</th>
+              <th scope="col">最近生成</th>
+              <th scope="col" class="file-report-table__actions-head">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="row in reportRows" :key="row.type">
+              <tr>
+                <th scope="row" :title="row.description">
+                  {{ row.title }}<span class="file-report-table__kind">{{ row.kind }}</span>
+                  <span v-if="row.latest" class="file-report-table__filename">{{ reportFilename(row.latest) }}</span>
+                </th>
+                <td>
+                  <template v-if="row.liveJob">
+                    <span class="file-status file-status--progress">
+                      {{ statusLabel(row.liveJob.status) }}
+                      {{ Math.round(row.liveJob.progress * 100) }}%
+                    </span>
+                    <span v-if="reportLiveDetail(row.liveJob)" class="file-report-table__detail">
+                      {{ reportLiveDetail(row.liveJob) }}
+                    </span>
+                  </template>
+                  <span
+                    v-else-if="row.latest"
+                    class="file-status"
+                    :class="`file-status--${statusTone(reportDisplayStatus(row.latest))}`"
+                  >
+                    {{ fileStatusLabel(reportDisplayStatus(row.latest)) }}
+                  </span>
+                  <span v-else class="file-status file-status--muted">尚未生成</span>
+                </td>
+                <td>{{ row.latest ? formatTime(row.latest.finished_at ?? row.latest.created_at) : '—' }}</td>
+                <td class="file-report-table__actions">
+                  <button
+                    v-if="row.liveJob && !TERMINAL_JOB_STATUSES.has(row.liveJob.status)"
+                    type="button"
+                    class="file-link-button file-link-button--danger"
+                    :data-testid="`cancel-job-${row.liveJob.id}`"
+                    @click="cancelJob(row.liveJob.id)"
+                  >
+                    取消
+                  </button>
+                  <button
+                    v-if="row.latest && reportDisplayStatus(row.latest) === 'available'"
+                    type="button"
+                    class="file-button file-button--primary"
+                    :data-testid="`download-report-${row.latest.id}`"
+                    @click="download(row.latest)"
+                  >
+                    下载
+                  </button>
+                  <button
+                    v-if="row.latest && reportDisplayStatus(row.latest) === 'available'"
+                    type="button"
+                    class="file-button file-button--secondary"
+                    :data-testid="`regenerate-${row.type}`"
+                    :disabled="
+                      fileCenter.submittingKey === `report:${row.type}`
+                      || fileCenter.reportContext?.has_results === false
+                    "
+                    @click="generateReport(row.type, true)"
+                  >
+                    重新生成
+                  </button>
+                  <button
+                    v-else
+                    type="button"
+                    class="file-button file-button--secondary"
+                    :data-testid="`generate-${row.type}`"
+                    :disabled="
+                      fileCenter.submittingKey === `report:${row.type}`
+                      || fileCenter.reportContext?.has_results === false
+                    "
+                    @click="generateReport(row.type)"
+                  >
+                    {{ row.latest ? '重新生成' : '生成' }}
+                  </button>
+                  <button
+                    v-if="row.type === 'score_excel'"
+                    type="button"
+                    class="file-link-button"
+                    data-testid="configure-score-excel"
+                    :disabled="fileCenter.reportContext?.has_results === false"
+                    @click="openExcelSettings(false)"
+                  >
+                    导出设置
+                  </button>
+                  <button
+                    v-if="row.history.length"
+                    type="button"
+                    class="file-link-button"
+                    :aria-expanded="historyOpen.has(row.type)"
+                    @click="toggleHistory(row.type)"
+                  >
+                    历史 {{ row.history.length }} 份
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="row.history.length && historyOpen.has(row.type)" class="file-report-table__history">
+                <td colspan="4">
+                  <ul class="file-report-table__history-list">
+                    <li v-for="job in row.history" :key="job.id">
+                      <span class="file-report-table__history-name">
+                        {{ reportFilename(job) }}
+                        <small>{{ formatTime(job.created_at) }} · 任务 #{{ job.id }}</small>
+                      </span>
+                      <span class="file-status" :class="`file-status--${statusTone(reportDisplayStatus(job))}`">
+                        {{ fileStatusLabel(reportDisplayStatus(job)) }}
+                      </span>
+                      <button
+                        v-if="reportDisplayStatus(job) === 'available'"
+                        type="button"
+                        class="file-link-button"
+                        :data-testid="`download-report-${job.id}`"
+                        @click="download(job)"
+                      >
+                        下载
+                      </button>
+                      <button
+                        v-if="reportDisplayStatus(job) === 'available' && isRetainedReport(job)"
+                        type="button"
+                        class="file-link-button"
+                        :data-testid="`delete-report-${job.id}`"
+                        @click="deleteReport(job)"
+                      >
+                        删除
+                      </button>
+                      <button
+                        v-else-if="
+                          reportDisplayStatus(job) === 'expired'
+                          || reportDisplayStatus(job) === 'unavailable'
+                          || reportDisplayStatus(job) === 'stale'
+                        "
+                        type="button"
+                        class="file-link-button"
+                        @click="generateReport(job.payload.report_type as ReportType, true)"
+                      >
+                        重新生成
+                      </button>
+                    </li>
+                  </ul>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+        </template>
 
         <div
           v-if="excelSettingsOpen"
@@ -859,85 +1131,6 @@ function refresh(): void {
         >
           当前考试还没有已保存成绩，完成批改后才能生成考试文件。
         </p>
-
-        <div class="file-ledger">
-          <h3>报表记录</h3>
-          <div v-if="fileCenter.state === 'loading' && !fileCenter.reportContext" class="file-ledger__empty" role="status">
-            正在读取文件记录…
-          </div>
-          <div v-else-if="!fileCenter.reportContext?.jobs.length" class="file-ledger__empty">
-            还没有报表记录，生成后会显示在这里。
-          </div>
-          <ul v-else class="file-ledger__list">
-            <li v-for="job in fileCenter.reportContext.jobs" :key="job.id">
-              <div>
-                <strong>{{ reportTypeLabel(job.payload.report_type) }}</strong>
-                <span>{{ formatTime(job.created_at) }} · 任务 #{{ job.id }}</span>
-              </div>
-              <span class="file-status" :class="`file-status--${statusTone(reportDisplayStatus(job))}`">
-                {{ fileStatusLabel(reportDisplayStatus(job)) }}
-              </span>
-              <button
-                v-if="reportDisplayStatus(job) === 'available'"
-                type="button"
-                class="file-link-button"
-                @click="download(job)"
-              >
-                下载
-              </button>
-              <button
-                v-if="reportDisplayStatus(job) === 'available' && isRetainedReport(job)"
-                type="button"
-                class="file-link-button"
-                :data-testid="`delete-report-${job.id}`"
-                @click="deleteReport(job)"
-              >
-                删除
-              </button>
-              <button
-                v-else-if="
-                  reportDisplayStatus(job) === 'expired'
-                  || reportDisplayStatus(job) === 'unavailable'
-                  || reportDisplayStatus(job) === 'stale'
-                "
-                type="button"
-                class="file-link-button"
-                @click="generateReport(job.payload.report_type as ReportType, true)"
-              >
-                重新生成
-              </button>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <section v-if="liveJobs.length" class="file-section file-section--compact" aria-labelledby="live-jobs-title">
-        <div class="file-section__heading">
-          <div>
-            <p class="file-center__eyebrow">本机恢复</p>
-            <h2 id="live-jobs-title">正在跟踪</h2>
-          </div>
-        </div>
-        <ul class="file-ledger__list">
-          <li v-for="job in liveJobs" :key="job.id">
-            <div>
-              <strong>{{ reportTypeLabel(job.payload.report_type) }}</strong>
-              <span>任务 #{{ job.id }} · {{ Math.round(job.progress * 100) }}%</span>
-            </div>
-            <span class="file-status" :class="`file-status--${statusTone(job.status)}`">
-              {{ statusLabel(job.status) }}
-            </span>
-            <button
-              v-if="job.status === 'queued' || job.status === 'running' || job.status === 'paused'"
-              type="button"
-              class="file-link-button file-link-button--danger"
-              :data-testid="`cancel-job-${job.id}`"
-              @click="cancelJob(job.id)"
-            >
-              取消
-            </button>
-          </li>
-        </ul>
       </section>
     </template>
   </section>

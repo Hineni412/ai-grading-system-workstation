@@ -26,6 +26,21 @@ vi.mock('../api/class-analysis', async (original) => ({
   classAnalysisApi: classAnalysisMock,
 }))
 
+const exportsMock = vi.hoisted(() => ({
+  getReportContext: vi.fn(async () => {
+    throw new Error('合成环境不读导出登记簿')
+  }),
+  getAnalysisPreflight: vi.fn(),
+  submitReport: vi.fn(),
+  downloadJobFile: vi.fn(),
+  deleteReportFile: vi.fn(),
+}))
+
+vi.mock('../api/exports', async (original) => ({
+  ...await original<typeof import('../api/exports')>(),
+  exportsApi: exportsMock,
+}))
+
 function item(studentId: number, questionId: string, score: number | null, status: ResultsCenterItem['score_status'] = 'ai_ready'): ResultsCenterItem {
   return {
     review_item_id: `detail:${studentId}${questionId.slice(1)}`, question_id: questionId,
@@ -79,7 +94,9 @@ async function mountView(tab: string | null = 'details') {
   document.body.append(host)
   app = createApp({ render: () => h('main', { id: 'main-workspace' }, [h(RouterView)]) })
   app.use(pinia).use(router).mount(host)
-  const ready = tab === null || tab === 'overview' ? '[data-testid="results-overview"]' : '.results-conclusion'
+  const ready = tab === null || tab === 'overview' || tab === 'exports'
+    ? '[data-testid="results-overview"]'
+    : '.results-matrix-wrap'
   await vi.waitFor(() => expect(host.querySelector(ready)).not.toBeNull())
   return { host, router }
 }
@@ -147,5 +164,25 @@ describe('results center class filtering and return position', () => {
     expect(router.currentRoute.value.query.filter).toBe('complete')
     expect(host.querySelector('th.results-matrix__total')!.getAttribute('aria-sort')).toBe('ascending')
     expect(host.querySelector('.results-matrix tbody tr')!.textContent).toContain('合成乙')
+  })
+
+  it('opens the export popover for the legacy tab=exports entry instead of a tab', async () => {
+    const { host } = await mountView('exports')
+    const rail = host.querySelector('.results-rail')!
+    expect(rail.textContent).not.toContain('导出文件')
+    await vi.waitFor(() => expect(
+      document.body.querySelector('.results-export-popover'),
+    ).not.toBeNull())
+    expect(document.body.querySelector('.results-export-popover')!.textContent)
+      .toContain('成绩表')
+    // 手动关闭再打开由页面头部按钮驱动。
+    host.querySelector<HTMLButtonElement>('.results-export-toggle')!.click()
+    await vi.waitFor(() => expect(
+      document.body.querySelector('.results-export-popover'),
+    ).toBeNull())
+    host.querySelector<HTMLButtonElement>('.results-export-toggle')!.click()
+    await vi.waitFor(() => expect(
+      document.body.querySelector('.results-export-popover'),
+    ).not.toBeNull())
   })
 })

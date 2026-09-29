@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui'
+import { Download, LayoutDashboard, ListChecks, Table2 } from '@lucide/vue'
 
 import type {
   ResultsCenterItem,
@@ -10,7 +12,10 @@ import type {
 } from '../api/results-center'
 import ClassAnalysisPanel from '../components/results-center/ClassAnalysisPanel.vue'
 import ResultsOverviewPanel from '../components/results-center/ResultsOverviewPanel.vue'
+import { invalidateClassAnalysis } from '../components/results-center/class-analysis-cache'
+import { classRanksOf } from '../components/results-center/results-overview'
 import AppButton from '../components/design-system/AppButton.vue'
+import AppIconButton from '../components/design-system/AppIconButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import { Input } from '../components/ui/input'
 import { useResultsCenterStore, type ResultsViewState } from '../stores/results-center'
@@ -18,7 +23,7 @@ import { useSessionStore } from '../stores/session'
 import { translateGradingReason } from '../utils/grading-reasons'
 import FileCenterView from './FileCenterView.vue'
 
-type ResultsTab = 'overview' | 'details' | 'analysis' | 'exports'
+type ResultsTab = 'overview' | 'details' | 'analysis'
 type DetailFilter = 'all' | 'attention' | ResultsStudentStatus
 type MatrixSortKey = 'student' | 'total' | 'question'
 type SortDirection = 'ascending' | 'descending'
@@ -31,6 +36,7 @@ const searchQuery = ref('')
 const selectedClass = ref<string | null>(null)
 const resultsPage = ref<HTMLElement | null>(null)
 const matrixScroller = ref<HTMLElement | null>(null)
+const matrixCollapsed = ref(false)
 let pendingRestoration: ResultsViewState | null = null
 const selectedStudent = ref<ResultsCenterStudent | null>(null)
 const matrixSort = ref<{
@@ -46,12 +52,11 @@ const drawer = ref<HTMLElement | null>(null)
 const drawerCloseButton = ref<HTMLButtonElement | null>(null)
 let drawerTrigger: HTMLElement | null = null
 
-const tabs: Array<{ id: ResultsTab; label: string }> = [
-  { id: 'overview', label: '考情总览' },
-  { id: 'details', label: '成绩明细' },
-  { id: 'analysis', label: '试题诊断' },
-  { id: 'exports', label: '导出文件' },
-]
+const tabs = [
+  { id: 'overview', label: '考情总览', icon: LayoutDashboard },
+  { id: 'details', label: '成绩明细', icon: Table2 },
+  { id: 'analysis', label: '试题诊断', icon: ListChecks },
+] satisfies Array<{ id: ResultsTab; label: string; icon: unknown }>
 
 const DETAIL_FILTER_LABELS: Record<DetailFilter, string> = {
   all: '全部学生',
@@ -72,12 +77,32 @@ function positiveIntegerQuery(value: unknown): number | null {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
 }
 
+const exportOpen = ref(false)
+const fileCenterRef = ref<InstanceType<typeof FileCenterView> | null>(null)
+
 const activeTab = computed<ResultsTab>(() => {
   const candidate = stringQuery(route.query.tab)
-  return candidate === 'details' || candidate === 'analysis' || candidate === 'exports'
+  return candidate === 'details' || candidate === 'analysis'
     ? candidate
     : 'overview'
 })
+
+// 旧入口 tab=exports 落在总览上并自动打开导出弹层；弹层挂载后才置 open，
+// 否则 PopoverRoot 初始化会把 v-model 回写成 false。
+onMounted(async () => {
+  await nextTick()
+  if (stringQuery(route.query.tab) === 'exports') exportOpen.value = true
+})
+watch(
+  () => route.query.tab,
+  (tab) => {
+    if (stringQuery(tab) === 'exports') exportOpen.value = true
+  },
+)
+
+function guardExportPopoverClose(event: Event): void {
+  if (fileCenterRef.value?.dialogOpen) event.preventDefault()
+}
 
 const analysisFocusQuestion = computed(() => (
   activeTab.value === 'analysis' ? stringQuery(route.query.question) : null
@@ -129,31 +154,7 @@ const visibleStudents = computed(() => {
   })
 })
 
-const classRanks = computed(() => {
-  const groups = new Map<string, ResultsCenterStudent[]>()
-  for (const student of results.value?.students ?? []) {
-    const key = student.class_name ?? ''
-    const group = groups.get(key) ?? []
-    group.push(student)
-    groups.set(key, group)
-  }
-  const ranks = new Map<number, { rank: number; size: number }>()
-  for (const group of groups.values()) {
-    const ranked = group
-      .filter((student) => student.ungraded_count === 0 && student.failed_count === 0)
-      .sort((left, right) => (
-        right.current_score - left.current_score || left.student_id - right.student_id
-      ))
-    let previous: number | null = null
-    let rank = 0
-    ranked.forEach((student, index) => {
-      if (previous === null || student.current_score !== previous) rank = index + 1
-      previous = student.current_score
-      ranks.set(student.student_id, { rank, size: ranked.length })
-    })
-  }
-  return ranks
-})
+const classRanks = computed(() => classRanksOf(results.value?.students ?? []))
 
 function studentRankText(student: ResultsCenterStudent): string | null {
   const entry = classRanks.value.get(student.student_id)
@@ -297,6 +298,47 @@ onBeforeRouteLeave(rememberView)
 onMounted(() => { void restoreViewPosition() })
 watch(results, () => { void restoreViewPosition() }, { flush: 'post' })
 
+// 总览「看名单」直达：按总分升序排，覆盖默认排序但不覆盖视图恢复。
+watch(
+  () => route.query.sort,
+  (sort) => {
+    if (
+      sort === 'total-asc'
+      && activeTab.value === 'details'
+      && !pendingRestoration
+    ) {
+      matrixSort.value = { key: 'total', direction: 'ascending', questionId: null }
+    }
+  },
+  { immediate: true },
+)
+
+// 成绩刷新后班级分析摘要即过期，总览与诊断会在下次读取时重取。
+watch(
+  () => resultsStore.updatedAt,
+  () => {
+    const sessionId = sessionStore.selectedSessionId
+    if (sessionId !== null) invalidateClassAnalysis(sessionId)
+  },
+)
+
+function onVisibilityChange(): void {
+  if (document.visibilityState !== 'visible') return
+  const sessionId = sessionStore.selectedSessionId
+  const updatedAt = resultsStore.updatedAt
+  if (sessionId === null || updatedAt === null) return
+  if (Date.now() - new Date(updatedAt).getTime() > 60_000) {
+    void resultsStore.load(sessionId)
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
+
 function matchesFilter(
   student: ResultsCenterStudent,
   filter: DetailFilter,
@@ -351,6 +393,29 @@ function formatScore(value: number | null): string {
   return Number.isInteger(value)
     ? String(value)
     : value.toFixed(1).replace(/\.0$/, '')
+}
+
+function formatUpdatedAt(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  const now = new Date()
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  return sameDay ? time : `${date.getMonth() + 1}月${date.getDate()}日 ${time}`
+}
+
+function onMatrixScroll(event: Event): void {
+  matrixCollapsed.value = (event.target as HTMLElement).scrollTop > 8
+}
+
+function scrollToTop(): void {
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  const behavior: ScrollBehavior = reduced ? 'auto' : 'smooth'
+  matrixScroller.value?.scrollTo({ top: 0, left: 0, behavior })
+  resultsPage.value?.parentElement?.scrollTo({ top: 0, behavior })
 }
 
 function scoreStatusLabel(status: ResultsScoreStatus): string {
@@ -509,6 +574,10 @@ function confidenceLabel(value: number | null): string | null {
 function navigateToReview(item: ResultsCenterItem, student: ResultsCenterStudent): void {
   const sessionId = sessionStore.selectedSessionId
   if (sessionId === null) return
+  resultsStore.setReviewNavigation({
+    sessionId,
+    studentIds: matrixStudents.value.map((entry) => entry.student_id),
+  })
   void router.push({
     path: '/grading',
     query: {
@@ -553,8 +622,25 @@ function openQuestionInAnalysis(
   void router.replace({ path: '/results', query })
 }
 
-function openAttentionFilter(): void {
-  selectDetailFilter('attention')
+function openReview(scope: 'teacher_pending' | 'all'): void {
+  void router.push({
+    path: '/grading',
+    query: { ...selectedSessionQuery(), scope, entry: 'results' },
+  })
+}
+
+function openLowList(className: string | null): void {
+  selectedClass.value = className !== null && classOptions.value.includes(className)
+    ? className
+    : null
+  void router.replace({
+    path: '/results',
+    query: {
+      tab: 'details',
+      ...selectedSessionQuery(),
+      sort: 'total-asc',
+    },
+  })
 }
 
 function setOverviewScope(className: string | null): void {
@@ -598,41 +684,62 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <section ref="resultsPage" class="results-center" aria-labelledby="results-center-title">
+  <section
+    ref="resultsPage"
+    class="results-center"
+    :class="{ 'results-center--matrix': activeTab === 'details' }"
+    aria-labelledby="results-center-title"
+  >
     <PageHeader title="成绩中心" title-id="results-center-title">
       <template #meta>
         <span v-if="results">{{ results.session_name }}</span>
         <span v-if="resultsStore.updatedAt">
-          已更新 {{ resultsStore.updatedAt.replace('T', ' ').slice(0, 19) }}
+          已更新 {{ formatUpdatedAt(resultsStore.updatedAt) }}
         </span>
       </template>
-      <template
-        v-if="activeTab === 'overview' || activeTab === 'details'"
-        #actions
-      >
-        <AppButton class="results-button results-button--secondary" @click="refresh">
-          刷新成绩
-        </AppButton>
+      <template #actions>
+        <nav class="results-rail" aria-label="成绩中心页面">
+          <button
+            v-for="tab in tabs"
+            :key="tab.id"
+            type="button"
+            :aria-current="activeTab === tab.id ? 'page' : undefined"
+            :class="{ 'is-active': activeTab === tab.id }"
+            @click="selectTab(tab.id)"
+          >
+            <component :is="tab.icon" :size="15" :stroke-width="2" aria-hidden="true" />
+            <span class="results-rail__label">{{ tab.label }}</span>
+          </button>
+        </nav>
+        <PopoverRoot v-model:open="exportOpen">
+          <PopoverTrigger as-child>
+            <button
+              type="button"
+              class="results-export-toggle"
+              aria-label="导出文件"
+            >
+              <Download :size="14" :stroke-width="2" aria-hidden="true" />
+              导出
+            </button>
+          </PopoverTrigger>
+          <PopoverPortal>
+            <PopoverContent
+              class="results-export-popover"
+              align="end"
+              :side-offset="8"
+              :collision-padding="8"
+              @interact-outside="guardExportPopoverClose"
+              @escape-key-down="guardExportPopoverClose"
+            >
+              <FileCenterView ref="fileCenterRef" embedded variant="popover" />
+            </PopoverContent>
+          </PopoverPortal>
+        </PopoverRoot>
       </template>
     </PageHeader>
 
-    <nav class="results-tabs" aria-label="成绩中心页面">
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        type="button"
-        :aria-current="activeTab === tab.id ? 'page' : undefined"
-        :class="{ 'is-active': activeTab === tab.id }"
-        @click="selectTab(tab.id)"
-      >
-        {{ tab.label }}
-      </button>
-    </nav>
-
-    <FileCenterView v-if="activeTab === 'exports'" embedded />
-
     <ClassAnalysisPanel
-      v-else-if="activeTab === 'analysis'"
+      v-if="activeTab === 'analysis'"
       :session-id="sessionStore.selectedSessionId"
       :focus-question="analysisFocusQuestion"
       :initial-class="analysisInitialClass"
@@ -687,110 +794,115 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           :scope="overviewScope"
           @open-student="openStudentById"
           @open-question="openQuestionInAnalysis"
-          @open-filter="openAttentionFilter"
+          @open-low-list="openLowList"
+          @open-review="openReview"
           @update:scope="setOverviewScope"
         />
 
         <template v-else>
-        <section class="results-conclusion" aria-label="成绩概况">
-          <div class="results-conclusion__line">
-            <button
-              type="button"
-              class="results-chip"
-              :aria-pressed="activeFilter === 'complete'"
-              @click="selectDetailFilter('complete')"
-            >
-              成绩完整 {{ summary?.complete_student_count }}/{{ summary?.student_count }} 人
-            </button>
-            <span class="results-conclusion__stats">
-              平均 {{ formatScore(summary?.average_score ?? null) }} ·
-              最高 {{ formatScore(summary?.highest_score ?? null) }} ·
-              最低 {{ formatScore(summary?.lowest_score ?? null) }}
-            </span>
-            <template
-              v-if="(summary?.needs_review_item_count ?? 0)
-                + (summary?.ungraded_item_count ?? 0)
-                + (summary?.failed_item_count ?? 0) > 0"
-            >
-              <button
-                v-if="(summary?.needs_review_item_count ?? 0) > 0"
-                type="button"
-                class="results-chip results-chip--warning"
-                :aria-pressed="activeFilter === 'needs_review'"
-                @click="selectDetailFilter('needs_review')"
-              >
-                待复核 {{ summary?.needs_review_item_count }} 题
-              </button>
-              <button
-                v-if="(summary?.ungraded_item_count ?? 0) > 0"
-                type="button"
-                class="results-chip results-chip--info"
-                :aria-pressed="activeFilter === 'incomplete'"
-                @click="selectDetailFilter('incomplete')"
-              >
-                未评分 {{ summary?.ungraded_item_count }} 题
-              </button>
-              <button
-                v-if="(summary?.failed_item_count ?? 0) > 0"
-                type="button"
-                class="results-chip results-chip--danger"
-                :aria-pressed="activeFilter === 'failed'"
-                @click="selectDetailFilter('failed')"
-              >
-                处理失败 {{ summary?.failed_item_count }} 题
-              </button>
-            </template>
-            <span v-else class="results-conclusion__done">阅卷已全部完成</span>
-          </div>
-        </section>
-
         <section
           class="results-panel results-panel--matrix"
+          :class="{ 'is-collapsed': matrixCollapsed }"
           aria-labelledby="score-matrix-title"
         >
-          <div class="results-panel__heading results-panel__heading--matrix">
-            <div>
-              <p class="results-center__eyebrow">逐题明细</p>
-              <h2 id="score-matrix-title">学生 × 题号</h2>
-              <p>未评分以“—”显示，不按零分计算；点击任一分数查看学生作答。</p>
+          <div class="results-panel__head">
+            <div class="results-matrix-collapsible">
+              <h2 id="score-matrix-title" class="results-panel__title">学生 × 题号</h2>
+              <div class="results-conclusion__line" aria-label="成绩概况">
+              <button
+                type="button"
+                class="results-chip"
+                :aria-pressed="activeFilter === 'complete'"
+                @click="selectDetailFilter('complete')"
+              >
+                成绩完整 {{ summary?.complete_student_count }}/{{ summary?.student_count }} 人
+              </button>
+              <span class="results-conclusion__stats">
+                平均 {{ formatScore(summary?.average_score ?? null) }} ·
+                最高 {{ formatScore(summary?.highest_score ?? null) }} ·
+                最低 {{ formatScore(summary?.lowest_score ?? null) }}
+              </span>
+              <template
+                v-if="(summary?.needs_review_item_count ?? 0)
+                  + (summary?.ungraded_item_count ?? 0)
+                  + (summary?.failed_item_count ?? 0) > 0"
+              >
+                <button
+                  v-if="(summary?.needs_review_item_count ?? 0) > 0"
+                  type="button"
+                  class="results-chip results-chip--warning"
+                  :aria-pressed="activeFilter === 'needs_review'"
+                  @click="selectDetailFilter('needs_review')"
+                >
+                  待复核 {{ summary?.needs_review_item_count }} 题
+                </button>
+                <button
+                  v-if="(summary?.ungraded_item_count ?? 0) > 0"
+                  type="button"
+                  class="results-chip results-chip--info"
+                  :aria-pressed="activeFilter === 'incomplete'"
+                  @click="selectDetailFilter('incomplete')"
+                >
+                  未评分 {{ summary?.ungraded_item_count }} 题
+                </button>
+                <button
+                  v-if="(summary?.failed_item_count ?? 0) > 0"
+                  type="button"
+                  class="results-chip results-chip--danger"
+                  :aria-pressed="activeFilter === 'failed'"
+                  @click="selectDetailFilter('failed')"
+                >
+                  处理失败 {{ summary?.failed_item_count }} 题
+                </button>
+              </template>
+              <span v-else class="results-conclusion__done">阅卷已全部完成</span>
+              </div>
             </div>
-            <div class="results-detail-filters">
-              <label class="results-class-filter">
-                <span>班级</span>
-                <select v-model="selectedClass" aria-label="成绩明细班级">
-                  <option :value="null">全部班级</option>
-                  <option v-for="className in classOptions" :key="className" :value="className">{{ className || '未填写班级' }}</option>
-                </select>
-              </label>
-              <label class="results-search">
-                <span>搜索学生</span>
-                <Input v-model="searchQuery" type="search" placeholder="姓名、学号、班级或拼音首字母" />
-              </label>
+
+            <div class="results-filter-bar" aria-label="学生成绩筛选">
+              <select
+                v-model="selectedClass"
+                class="results-filter-bar__select"
+                aria-label="成绩明细班级"
+              >
+                <option :value="null">全部班级</option>
+                <option v-for="className in classOptions" :key="className" :value="className">{{ className || '未填写班级' }}</option>
+              </select>
+              <Input
+                v-model="searchQuery"
+                type="search"
+                class="results-filter-bar__search"
+                aria-label="搜索学生"
+                placeholder="姓名、学号、班级或拼音首字母"
+              />
+              <button
+                type="button"
+                :aria-pressed="activeFilter === 'attention'"
+                :class="{ 'is-active': activeFilter === 'attention' }"
+                @click="selectDetailFilter('attention')"
+              >
+                只看待处理学生
+              </button>
+              <button
+                v-if="activeFilter !== 'all'"
+                type="button"
+                class="results-filter-chip"
+                :aria-label="`清除筛选：${DETAIL_FILTER_LABELS[activeFilter]}`"
+                @click="selectDetailFilter('all')"
+              >
+                已筛选：{{ DETAIL_FILTER_LABELS[activeFilter] }} ×
+              </button>
+              <span>显示 {{ visibleStudents.length }} / {{ studentsInClass.length }} 人</span>
             </div>
           </div>
 
-          <div class="results-filter-bar" aria-label="学生成绩筛选">
-            <button
-              type="button"
-              :aria-pressed="activeFilter === 'attention'"
-              :class="{ 'is-active': activeFilter === 'attention' }"
-              @click="selectDetailFilter('attention')"
-            >
-              只看待处理学生
-            </button>
-            <button
-              v-if="activeFilter !== 'all'"
-              type="button"
-              class="results-filter-chip"
-              :aria-label="`清除筛选：${DETAIL_FILTER_LABELS[activeFilter]}`"
-              @click="selectDetailFilter('all')"
-            >
-              已筛选：{{ DETAIL_FILTER_LABELS[activeFilter] }} ×
-            </button>
-            <span>显示 {{ visibleStudents.length }} / {{ studentsInClass.length }} 人</span>
-          </div>
-
-          <div ref="matrixScroller" class="results-matrix-wrap" tabindex="0" aria-label="逐题成绩表，可横向滚动">
+          <div
+            ref="matrixScroller"
+            class="results-matrix-wrap"
+            tabindex="0"
+            aria-label="逐题成绩表，可横向滚动"
+            @scroll.passive="onMatrixScroll"
+          >
             <table class="results-matrix">
               <thead>
                 <tr>
@@ -883,6 +995,14 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             没有符合当前筛选条件的学生。
           </p>
         </section>
+        <AppIconButton
+          v-if="matrixCollapsed"
+          class="results-back-top"
+          label="回到顶部"
+          icon="arrow-up"
+          variant="secondary"
+          @click="scrollToTop"
+        />
         </template>
       </template>
     </template>

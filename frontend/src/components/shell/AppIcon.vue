@@ -96,7 +96,24 @@ withDefaults(defineProps<{
     <g v-else-if="name === 'close'">
       <path d="m6 6 12 12M18 6 6 18" />
     </g>
+    <g v-else-if="name === 'search'">
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.35-4.35" />
+    </g>
     <path v-else-if="name === 'chevron-down'" d="m7 9.5 5 5 5-5" />
+    <g v-else-if="name === 'arrow-up'">
+      <path d="M12 19V5" />
+      <path d="m5.5 11.5 6.5-6.5 6.5 6.5" />
+    </g>
+    <g v-else-if="name === 'book-open'">
+      <path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z" />
+      <path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z" />
+    </g>
+    <g v-else-if="name === 'download'">
+      <path d="M12 3v11" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M4.5 20h15" />
+    </g>
   </svg>
 </template>
 

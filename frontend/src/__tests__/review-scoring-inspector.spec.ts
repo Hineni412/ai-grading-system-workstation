@@ -4,6 +4,7 @@ import { createApp, nextTick } from 'vue';
 
 import type { ReviewConfirmResponse, ReviewItem, ReviewRubricSection } from '../api/review';
 import { confirmReviewItem, fetchReviewItems, fetchReviewRubric } from '../api/review';
+import { clearReviewRubrics } from '../components/review/review-rubric-cache';
 import ReviewScoringInspector from '../components/review/ReviewScoringInspector.vue'
 import { useReviewDraftStore } from '../stores/review-drafts';
 import { useReviewQueueStore } from '../stores/review-queue';
@@ -94,6 +95,8 @@ async function mountInspector(items: ReviewItem[] = [item]) {
   app.use(pinia)
   app.mount(host)
   await vi.waitFor(() => expect(fetchReviewRubric).toHaveBeenCalledWith(7, 'Q1', expect.any(AbortSignal)))
+  // 共享评分标准缓存的多步异步链需要一次宏任务才能完全落回组件状态。
+  await new Promise((resolve) => setTimeout(resolve, 0))
   await nextTick()
   return { app, host, pinia, confirmed, annotationRetry }
 }
@@ -108,20 +111,25 @@ describe('review scoring inspector', () => {
         { part_id: 'Q1', step_id: 'S1', score_awarded: 3 },
         { part_id: 'Q1', step_id: 'S2', score_awarded: 0 },
       ] } }])
-    const begin = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === '按步骤复核')!
-    begin.click()
-    await nextTick()
-    const inputs = host.querySelectorAll<HTMLInputElement>('.review-step-score input')
-    expect(inputs).toHaveLength(2)
-    inputs[0]!.value = '2'
-    inputs[0]!.dispatchEvent(new Event('input'))
-    inputs[1]!.value = '2'
-    inputs[1]!.dispatchEvent(new Event('input'))
-    await nextTick()
-    expect(host.querySelector<HTMLInputElement>('#teacher-score')!.value).toBe('4')
-    expect(host.querySelector<HTMLInputElement>('#teacher-score')!.readOnly).toBe(true)
-    expect(host.querySelectorAll('.review-step-score > span')[0]!.textContent).toBe('未达成')
-    expect(host.querySelectorAll('.review-step-score > span')[1]!.textContent).toBe('达成')
+    // 可分步复核时自动进入步骤模式，AI 步骤分与总分一致则预填到快捷输入。
+    const quick = await vi.waitFor(() => {
+      const found = host.querySelectorAll<HTMLInputElement>('.review-quick-score input')
+      expect(found).toHaveLength(2)
+      return [...found]
+    })
+    const setQuick = async (input: HTMLInputElement, value: string) => {
+      input.value = value
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+    }
+    expect(quick[0]!.value).toBe('3')
+    await setQuick(quick[0]!, '2')
+    await setQuick(quick[1]!, '2')
+    expect(host.querySelector('.review-quick-score__total')!.textContent).toContain('4 / 5')
+    expect(host.querySelector('#teacher-score')).toBeNull()
+    const states = host.querySelectorAll('.review-rubric-point__state')
+    expect(states[0]!.textContent).toBe('2/3 未达成')
+    expect(states[1]!.textContent).toBe('2/2 达成')
     host.querySelector<HTMLButtonElement>('[data-testid="scoring-footer"] button')!.click()
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledWith(7, 'Q1', expect.objectContaining({
       score_awarded: 4,
@@ -133,21 +141,138 @@ describe('review scoring inspector', () => {
     app.unmount()
   })
 
+  it('auto step initialisation stays clean until the teacher enters a step score', async () => {
+    vi.mocked(fetchReviewRubric).mockResolvedValue({ ...rubricSection, points: [
+      rubricSection.points[0]!, { ...rubricSection.points[0]!, step_id: 'S2', score: 2 },
+    ] })
+    const { app, host, pinia } = await mountInspector([{ ...item, review_item_id: 'batch:1:Q1',
+      metadata: { step_assessments: [
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 3 },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 0 },
+      ] } }])
+    const first = await vi.waitFor(() => {
+      const found = host.querySelectorAll<HTMLInputElement>('.review-quick-score input')
+      expect(found).toHaveLength(2)
+      return found[0]!
+    })
+    // 自动预填不是教师输入：不产生未确认草稿。
+    const drafts = useReviewDraftStore(pinia)
+    const draftKey = Object.keys(drafts.drafts)[0]!
+    expect(drafts.drafts[draftKey]?.dirty).toBe(false)
+    expect(drafts.dirtyCount).toBe(0)
+    expect(host.textContent).not.toContain('教师草稿未确认')
+
+    first.value = '2'
+    first.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(drafts.drafts[draftKey]?.dirty).toBe(true)
+    expect(drafts.dirtyCount).toBe(1)
+    expect(host.textContent).toContain('教师草稿未确认')
+    app.unmount()
+  })
+
+  it('quick score inputs drive the step draft and Enter submits the same payload', async () => {
+    vi.mocked(fetchReviewRubric).mockResolvedValue({ ...rubricSection, points: [
+      rubricSection.points[0]!, { ...rubricSection.points[0]!, step_id: 'S2', score: 2 },
+    ] })
+    const { app, host } = await mountInspector([{ ...item, review_item_id: 'batch:1:Q1',
+      metadata: { step_assessments: [
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 3 },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 0 },
+      ] } }])
+    document.body.append(host)
+    const quick = await vi.waitFor(() => {
+      const found = host.querySelectorAll<HTMLInputElement>('.review-quick-score input')
+      expect(found).toHaveLength(2)
+      return [...found]
+    })
+    // 自动预填同步到快捷输入框
+    expect(quick[0]!.value).toBe('3')
+    expect(quick[1]!.value).toBe('0')
+    expect(host.textContent).toContain('合计 3 / 5')
+
+    // 输入合法数字：写入草稿并前进焦点，步骤卡状态同步
+    quick[0]!.value = '2'
+    quick[0]!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(document.activeElement).toBe(quick[1])
+    expect(host.querySelector('.review-rubric-point__state')?.textContent).toBe('2/3 未达成')
+    expect(host.textContent).toContain('合计 2 / 5')
+
+    // 聚焦快捷输入时高亮对应步骤卡
+    quick[0]!.dispatchEvent(new FocusEvent('focus'))
+    await nextTick()
+    expect(
+      host.querySelector('.review-rubric-point--active')?.getAttribute('data-step-key'),
+    ).toBe('Q1:S1')
+    quick[0]!.dispatchEvent(new FocusEvent('blur'))
+    await nextTick()
+
+    // 点击步骤卡聚焦回对应的快捷输入框
+    host.querySelector<HTMLElement>('[data-step-key="Q1:S1"]')!.click()
+    await nextTick()
+    expect(document.activeElement).toBe(quick[0])
+
+    // 改回 3 分继续验证提交
+    quick[0]!.value = '3'
+    quick[0]!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(quick[0]!.value).toBe('3')
+
+    // Enter 与确认按钮同一动作
+    quick[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledWith(7, 'Q1', expect.objectContaining({
+      score_awarded: 3,
+      step_scores: [
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 3 },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 0 },
+      ],
+    })))
+    app.unmount()
+  })
+
+  it('marks invalid quick input without writing and Enter respects the disabled state', async () => {
+    vi.mocked(fetchReviewRubric).mockResolvedValue({ ...rubricSection,
+      points: [{ ...rubricSection.points[0]!, score: 5 }] })
+    const { app, host, pinia } = await mountInspector([{ ...item, review_item_id: 'batch:1:Q1',
+      metadata: { step_assessments: [{ part_id: 'Q1', step_id: 'S1', score_awarded: 5 }] } }])
+    document.body.append(host)
+    const quick = await vi.waitFor(() => {
+      const found = host.querySelectorAll<HTMLInputElement>('.review-quick-score input')
+      expect(found).toHaveLength(1)
+      return found[0]!
+    })
+    // 非法值（超过满分）不写入草稿，仅标红
+    quick.value = '9'
+    quick.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(quick.classList.contains('review-quick-score__input--invalid')).toBe(true)
+    const draft = Object.values(useReviewDraftStore(pinia).drafts)[0]!
+    expect(draft.stepScores![0]!.scoreText).toBe('')
+
+    // 草稿未完整 → Enter 不提交，且内联显示禁用原因
+    quick.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await nextTick()
+    expect(confirmReviewItem).not.toHaveBeenCalled()
+    expect(host.querySelector('.review-quick-score__notice')?.textContent).toContain('请输入教师最终分')
+    app.unmount()
+  })
+
   it('does not silently restore AI points when the teacher total differs', async () => {
     vi.mocked(fetchReviewRubric).mockResolvedValue({ ...rubricSection,
       points: [{ ...rubricSection.points[0]!, score: 5 }] })
     const { app, host } = await mountInspector([{ ...item, review_item_id: 'batch:1:Q1',
       metadata: { step_assessments: [{ part_id: 'Q1', step_id: 'S1', score_awarded: 5 }] } }])
-    Array.from(host.querySelectorAll('button')).find((button) => button.textContent === '按步骤复核')!.click()
-    await nextTick()
-    expect(host.querySelector<HTMLInputElement>('.review-step-score input')!.value).toBe('')
-    expect(host.textContent).toContain('原步骤分与当前总分不一致')
+    await vi.waitFor(() => expect(host.textContent).toContain('AI 步骤分与总分不一致'))
+    expect(host.querySelector<HTMLInputElement>('.review-quick-score input')?.value).toBe('')
+    expect(host.querySelector('.review-rubric-point__state')?.textContent).toContain('待评分')
     expect(host.querySelector<HTMLButtonElement>('[data-testid="scoring-footer"] button')!.disabled).toBe(true)
     app.unmount()
   })
 
   beforeEach(() => {
     document.body.innerHTML = ''
+    clearReviewRubrics()
     vi.clearAllMocks()
     vi.mocked(fetchReviewRubric).mockResolvedValue(rubricSection)
     vi.mocked(fetchReviewItems).mockResolvedValue([item])

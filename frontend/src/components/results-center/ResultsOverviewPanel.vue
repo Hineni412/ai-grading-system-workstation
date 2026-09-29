@@ -1,26 +1,46 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
   classAnalysisApi,
   type ClassAnalysisResponse,
 } from '../../api/class-analysis'
-import type { ResultsCenterResponse } from '../../api/results-center'
+import {
+  fetchResultsCenter,
+  type ResultsCenterResponse,
+} from '../../api/results-center'
+import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
+import { useJobStore } from '../../stores/jobs'
+import { useSessionStore } from '../../stores/session'
 import { Skeleton } from '../ui/skeleton'
+import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
+import {
+  cachedClassAnalysis,
+  rememberClassAnalysis,
+} from './class-analysis-cache'
 import {
   OVERVIEW_BANDS,
-  attentionStudents,
-  blankCountsByStudent,
-  buildFindings,
+  buildOverviewTiles,
   classDisplayLabel,
   classKeysOf,
+  comparisonCandidates,
+  defaultComparison,
+  displayAnswer,
+  formatCount,
   formatRate,
   formatScore,
   questionRatesFor,
+  rankChangeGroups,
+  rankChanges,
+  scoreStructureFor,
+  subQuestionLabelFor,
   summarizeStudents,
   topCauseOf,
   type ClassSummary,
   type OverviewBandId,
+  type OverviewTile,
+  type RankChange,
 } from './results-overview'
 
 const props = defineProps<{
@@ -32,9 +52,14 @@ const props = defineProps<{
 const emit = defineEmits<{
   'open-student': [studentId: number]
   'open-question': [questionId: string, className: string | null]
-  'open-filter': [filter: 'attention']
+  'open-low-list': [scope: string | null]
+  'open-review': [scope: 'teacher_pending' | 'all']
   'update:scope': [scope: string | null]
 }>()
+
+const router = useRouter()
+const sessionStore = useSessionStore()
+const jobStore = useJobStore()
 
 const classKeys = computed(() => classKeysOf(props.results.students))
 
@@ -50,22 +75,25 @@ const sortBy = ref<'rate' | 'number'>('rate')
 const analysis = ref<ClassAnalysisResponse | null>(null)
 const analysisState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const mergedAnalysis = ref<ClassAnalysisResponse | null>(null)
-const attentionSection = ref<HTMLElement | null>(null)
+const narrative = ref<ClassAnalysisResponse | null>(null)
+const narrativeState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+const narrativeCache = new Map<string, ClassAnalysisResponse>()
 
-const analysisCache = new Map<string, ClassAnalysisResponse>()
 let loadGeneration = 0
 let scopeController: AbortController | null = null
 let mergedController: AbortController | null = null
+let narrativeController: AbortController | null = null
 
 watch(
-  [scope, () => props.sessionId],
+  [scope, () => props.sessionId, () => props.results],
   ([scopeKey, sessionId], previous) => {
     if (previous?.[1] !== sessionId) {
       mergedController?.abort()
       mergedController = null
-      mergedAnalysis.value = analysisCache.get(`${sessionId}::`) ?? null
+      mergedAnalysis.value = cachedClassAnalysis(sessionId, '')
     }
     void loadScope(scopeKey, sessionId)
+    void loadNarrative(scopeKey, sessionId)
     if (scopeKey !== null) void ensureMerged(sessionId)
   },
   { immediate: true },
@@ -77,10 +105,9 @@ async function loadScope(
 ): Promise<void> {
   // '' 的 class_name 在后端表示合并全部班级；范围 null 与未分班都落到同一请求。
   const apiScope = scopeKey ?? ''
-  const cacheKey = `${sessionId}::${apiScope}`
   const generation = ++loadGeneration
   scopeController?.abort()
-  const cached = analysisCache.get(cacheKey)
+  const cached = cachedClassAnalysis(sessionId, apiScope)
   if (cached) {
     analysis.value = cached
     analysisState.value = 'ready'
@@ -99,7 +126,7 @@ async function loadScope(
       'summary',
     )
     if (generation !== loadGeneration || props.sessionId !== sessionId) return
-    analysisCache.set(cacheKey, result)
+    rememberClassAnalysis(sessionId, apiScope, result)
     analysis.value = result
     analysisState.value = 'ready'
     if (apiScope === '') mergedAnalysis.value = result
@@ -111,8 +138,7 @@ async function loadScope(
 
 async function ensureMerged(sessionId: number): Promise<void> {
   if (mergedAnalysis.value || mergedController) return
-  const cacheKey = `${sessionId}::`
-  const cached = analysisCache.get(cacheKey)
+  const cached = cachedClassAnalysis(sessionId, '')
   if (cached) {
     mergedAnalysis.value = cached
     return
@@ -126,7 +152,7 @@ async function ensureMerged(sessionId: number): Promise<void> {
       '',
       'summary',
     )
-    analysisCache.set(cacheKey, result)
+    rememberClassAnalysis(sessionId, '', result)
     if (!controller.signal.aborted && props.sessionId === sessionId) {
       mergedAnalysis.value = result
     }
@@ -137,10 +163,98 @@ async function ensureMerged(sessionId: number): Promise<void> {
   }
 }
 
+const narrativeActiveJob = computed(() => {
+  const id = narrative.value?.active_job_id ?? null
+  return id === null ? null : jobStore.jobs[id] ?? null
+})
+const narrativeGenerating = computed(() => (
+  narrative.value?.status === 'generating'
+  || (narrativeActiveJob.value !== null
+    && !TERMINAL_JOB_STATUSES.has(narrativeActiveJob.value.status))
+))
+const narrativeFindings = computed(() => (
+  narrative.value?.narrative?.key_findings.slice(0, 2) ?? []
+))
+
+watch(() => narrativeActiveJob.value?.status, (status) => {
+  if (status === undefined || !TERMINAL_JOB_STATUSES.has(status)) return
+  narrativeCache.delete(`${props.sessionId}::${scope.value ?? ''}`)
+  void loadNarrative(scope.value, props.sessionId)
+})
+
+async function loadNarrative(
+  scopeKey: string | null,
+  sessionId: number,
+): Promise<void> {
+  const apiScope = scopeKey ?? ''
+  const cacheKey = `${sessionId}::${apiScope}`
+  narrativeController?.abort()
+  const cached = narrativeCache.get(cacheKey)
+  if (cached) {
+    narrative.value = cached
+    narrativeState.value = 'ready'
+    return
+  }
+  narrative.value = null
+  narrativeState.value = 'loading'
+  const controller = new AbortController()
+  narrativeController = controller
+  try {
+    const result = await classAnalysisApi.getClassAnalysis(
+      sessionId,
+      controller.signal,
+      apiScope,
+      'narrative',
+    )
+    if (controller.signal.aborted || props.sessionId !== sessionId) return
+    narrativeCache.set(cacheKey, result)
+    narrative.value = result
+    narrativeState.value = 'ready'
+    void ensureNarrativeTracked(result.active_job_id)
+  } catch {
+    if (controller.signal.aborted || props.sessionId !== sessionId) return
+    narrativeState.value = 'error'
+  }
+}
+
+async function ensureNarrativeTracked(id: number | null): Promise<void> {
+  if (id === null) return
+  const existing = jobStore.jobs[id]
+  if (existing !== undefined && !TERMINAL_JOB_STATUSES.has(existing.status)) return
+  try {
+    const job = await jobApi.getJob(id)
+    if (jobStore.jobs[id] !== undefined) return
+    if (!TERMINAL_JOB_STATUSES.has(job.status)) jobStore.track(job)
+  } catch {
+    // 任务可能已结束或被清理；下次进入时按最新状态展示。
+  }
+}
+
+function reloadNarrative(): void {
+  narrativeCache.delete(`${props.sessionId}::${scope.value ?? ''}`)
+  void loadNarrative(scope.value, props.sessionId)
+}
+
+function reloadAnalysis(): void {
+  void loadScope(scope.value, props.sessionId)
+}
+
+function openReport(): void {
+  void router.push({
+    path: '/class-report',
+    query: {
+      session: String(props.sessionId),
+      ...(scope.value ? { class: scope.value } : {}),
+    },
+  })
+}
+
 onBeforeUnmount(() => {
   loadGeneration += 1
   scopeController?.abort()
   mergedController?.abort()
+  comparisonController?.abort()
+  narrativeController?.abort()
 })
 
 const studentsInScope = computed(() => (scope.value === null
@@ -192,6 +306,11 @@ const scopeQuestionRates = computed(() => questionRatesFor(
   questionIds.value,
 ))
 
+const scopeScoreStructure = computed(() => scoreStructureFor(
+  studentsInScope.value,
+  questionIds.value,
+))
+
 const classQuestionRates = computed(() => new Map(
   classKeys.value.map((key) => [
     key,
@@ -223,13 +342,14 @@ const causeIssue = computed<'missing' | 'legacy' | null>(() => {
     : 'missing'
 })
 
-const findings = computed(() => buildFindings({
+const tiles = computed(() => buildOverviewTiles({
   scopeKey: scope.value,
   scopeStudents: studentsInScope.value,
   classes: classSummaries.value,
   questionRates: scopeQuestionRates.value,
   classQuestionRates: scope.value === null ? classQuestionRates.value : undefined,
   analysisQuestions: scopeAnalysisQuestions.value,
+  scoreStructure: scopeScoreStructure.value,
 }))
 
 interface QuestionRow {
@@ -237,10 +357,14 @@ interface QuestionRow {
   maxScore: number
   rate: number | null
   stem: string | null
+  stemTitle: string | null
+  subIndex: number | null
+  answer: string | null
+  answerFull: string | null
   causeLabel: string | null
   causeCount: number | null
   causeLegacy: boolean
-  categories: { category: string; count: number }[]
+  structure: { full: number; partial: number; zero: number; resolved: number }
   classRates: { key: string; label: string; rate: number | null; isLow: boolean }[]
 }
 
@@ -259,6 +383,10 @@ const questionRows = computed<QuestionRow[]>(() => {
       rates: classQuestionRates.value.get(key)!,
     }))
     : []
+  const stemList = props.results.questions.map((question) => ({
+    question_id: question.question_id,
+    stem_summary: analysisById.get(question.question_id)?.stem_summary ?? null,
+  }))
   const rows = props.results.questions.map((question) => {
     const analysisQuestion = analysisById.get(question.question_id)
     const topCause = analysisQuestion ? topCauseOf(analysisQuestion) : null
@@ -276,15 +404,22 @@ const questionRows = computed<QuestionRow[]>(() => {
     if (minRate !== null && maxRate !== null && maxRate - minRate >= CLASS_RATE_GAP) {
       for (const entry of classRates) entry.isLow = entry.rate === minRate
     }
+    const stem = analysisQuestion?.stem_summary ?? null
+    const sub = subQuestionLabelFor(question.question_id, stem, stemList)
     return {
       questionId: question.question_id,
       maxScore: question.max_score,
       rate: scopeQuestionRates.value.get(question.question_id) ?? null,
-      stem: analysisQuestion?.stem_summary ?? null,
+      stem,
+      stemTitle: sub?.parentStem ?? stem,
+      subIndex: sub?.index ?? null,
+      answer: sub ? displayAnswer(analysisQuestion?.canonical_answer ?? null) : null,
+      answerFull: sub ? (analysisQuestion?.canonical_answer ?? null) : null,
       causeLabel: topCause !== null && topCause !== 'legacy' ? topCause.label : null,
       causeCount: topCause !== null && topCause !== 'legacy' ? topCause.count : null,
       causeLegacy: topCause === 'legacy',
-      categories: (analysisQuestion?.cause_category_counts ?? []).slice(0, 2),
+      structure: scopeScoreStructure.value.get(question.question_id)
+        ?? { full: 0, partial: 0, zero: 0, resolved: 0 },
       classRates,
     }
   })
@@ -296,28 +431,175 @@ const questionRows = computed<QuestionRow[]>(() => {
   return rows
 })
 
-const attention = computed(() => attentionStudents(studentsInScope.value))
+const reviewPending = computed(() => {
+  const summary = props.results.summary
+  return summary.needs_review_item_count
+    + summary.ungraded_item_count
+    + summary.failed_item_count
+})
 
-const blanks = computed(() => (
-  analysisState.value === 'ready' && analysis.value?.data
-    ? blankCountsByStudent(analysis.value.data.questions)
-    : null
-))
-
-const pendingParts = computed(() => {
+const reviewBreakdown = computed(() => {
   const summary = props.results.summary
   const parts: string[] = []
   if (summary.needs_review_item_count > 0) {
-    parts.push(`${summary.needs_review_item_count} 题待复核`)
+    parts.push(`待复核 ${summary.needs_review_item_count}`)
   }
   if (summary.ungraded_item_count > 0) {
-    parts.push(`${summary.ungraded_item_count} 题未评分`)
+    parts.push(`未评分 ${summary.ungraded_item_count}`)
   }
   if (summary.failed_item_count > 0) {
-    parts.push(`${summary.failed_item_count} 题处理失败`)
+    parts.push(`失败 ${summary.failed_item_count}`)
   }
-  return parts
+  return parts.join(' · ')
 })
+
+type MarkerTileId = 'review' | 'ai-report' | 'ranks' | 'cause-categories'
+type DisplayTile = OverviewTile | { id: MarkerTileId }
+
+interface TileSlot {
+  tile: DisplayTile
+  /** 行内宽度占比（4 列布局中的份数）；由数据决定，保证每行铺满无空位。 */
+  span: number
+}
+
+const tileRows = computed<TileSlot[][]>(() => {
+  const byId = new Map(tiles.value.map((tile) => [tile.id, tile]))
+  const row1: TileSlot[] = [{ tile: { id: 'review' }, span: 1 }]
+  for (const id of ['low-tail', 'weak-questions', 'zero-share'] as const) {
+    const tile = byId.get(id)
+    if (tile) row1.push({ tile, span: 1 })
+  }
+  // 失分类型磁贴始终占位（加载/无数据/失败态都在格内展示），保证第二行恒为 1+3。
+  const categories = byId.get('cause-categories')
+  const row2: TileSlot[] = [
+    { tile: categories ?? { id: 'cause-categories' }, span: 1 },
+    { tile: { id: 'ranks' }, span: 3 },
+  ]
+  const classGap = byId.get('class-gap')
+  const row3: TileSlot[] = [
+    ...(classGap ? [{ tile: classGap, span: 1 }] : []),
+    { tile: { id: 'ai-report' }, span: 1 },
+  ]
+  return [row1, row2, row3]
+})
+
+const currentSession = computed(() => (
+  sessionStore.sessions.find((session) => session.id === props.sessionId) ?? null
+))
+
+const comparisonOptions = computed(() => comparisonCandidates(
+  currentSession.value,
+  sessionStore.sessions,
+))
+
+const comparisonId = ref<number | null>(null)
+const previousResults = ref<ResultsCenterResponse | null>(null)
+const previousState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+const previousCache = new Map<number, ResultsCenterResponse>()
+let comparisonController: AbortController | null = null
+
+watch(
+  [comparisonOptions, () => props.sessionId],
+  () => {
+    const fallback = defaultComparison(currentSession.value, sessionStore.sessions)
+    comparisonId.value = comparisonOptions.value.some(
+      (session) => session.id === comparisonId.value,
+    ) ? comparisonId.value : (fallback?.id ?? null)
+  },
+  { immediate: true },
+)
+
+watch(comparisonId, (sessionId) => {
+  comparisonController?.abort()
+  previousResults.value = null
+  if (sessionId === null) {
+    previousState.value = 'idle'
+    return
+  }
+  if (previousState.value === 'ready') previousState.value = 'loading'
+  const cached = previousCache.get(sessionId)
+  if (cached) {
+    previousResults.value = cached
+    previousState.value = 'ready'
+    return
+  }
+  previousState.value = 'loading'
+  const controller = new AbortController()
+  comparisonController = controller
+  void fetchResultsCenter(sessionId, controller.signal)
+    .then((result) => {
+      if (controller.signal.aborted || comparisonId.value !== sessionId) return
+      previousCache.set(sessionId, result)
+      previousResults.value = result
+      previousState.value = 'ready'
+    })
+    .catch(() => {
+      if (!controller.signal.aborted && comparisonId.value === sessionId) {
+        previousState.value = 'error'
+      }
+    })
+}, { immediate: true })
+
+const rankEntries = computed<RankChange[]>(() => {
+  if (!previousResults.value) return []
+  const current = studentsInScope.value
+  const previous = scope.value === null
+    ? previousResults.value.students
+    : previousResults.value.students.filter(
+      (student) => (student.class_name ?? '') === scope.value,
+    )
+  return rankChanges(current, previous)
+})
+
+const rankGroups = computed(() => rankChangeGroups(
+  rankEntries.value,
+  5,
+  10,
+))
+const ranksExpanded = ref(false)
+
+const rankRows = computed(() => ({
+  improved: ranksExpanded.value
+    ? rankGroups.value.improved
+    : rankGroups.value.improved.slice(0, 5),
+  declined: ranksExpanded.value
+    ? rankGroups.value.declined
+    : rankGroups.value.declined.slice(0, 5),
+}))
+
+const ranksExpandable = computed(() => (
+  rankGroups.value.improved.length > 5 || rankGroups.value.declined.length > 5
+))
+
+/** 名次→横轴位置：第 1 名在右端，最后一名在左端；范围外按边缘截断。 */
+function rankFraction(rank: number, size: number): number {
+  if (size <= 1) return 0.5
+  const clamped = Math.max(1, Math.min(size, rank))
+  return 1 - (clamped - 1) / (size - 1)
+}
+
+function rankPosition(rank: number, size: number): string {
+  return `${rankFraction(rank, size) * 100}%`
+}
+
+function rankSegmentStyle(entry: RankChange): Record<string, string> {
+  const from = rankFraction(entry.previousRank, entry.currentSize)
+  const to = rankFraction(entry.currentRank, entry.currentSize)
+  return {
+    left: `${Math.min(from, to) * 100}%`,
+    width: `${Math.abs(from - to) * 100}%`,
+  }
+}
+
+function rankAria(entry: RankChange): string {
+  const parts = [entry.student.student_name]
+  if (scope.value === null) parts.push(classDisplayLabel(entry.student.class_name))
+  parts.push(
+    `名次从第 ${entry.previousRank} 名到第 ${entry.currentRank} 名`,
+    `${entry.change >= 0 ? '进步' : '退步'} ${Math.abs(entry.change)} 名`,
+  )
+  return parts.join('，')
+}
 
 function bandTotal(summary: ClassSummary): number {
   return OVERVIEW_BANDS.reduce(
@@ -343,27 +625,33 @@ function isActiveRow(row: ClassSummary): boolean {
   return row.key === scope.value
 }
 
-function rateTone(rate: number | null): 'low' | 'mid' | 'high' | 'none' {
-  if (rate === null) return 'none'
-  if (rate < 0.4) return 'low'
-  if (rate < 0.7) return 'mid'
-  return 'high'
-}
-
 function rateWidth(rate: number | null): string {
   return rate === null ? '0%' : `${Math.max(0, Math.min(1, rate)) * 100}%`
 }
 
+function structureAria(structure: {
+  full: number
+  partial: number
+  zero: number
+  resolved: number
+}): string {
+  return `满分 ${structure.full} 人，部分得分 ${structure.partial} 人，0 分 ${structure.zero} 人`
+}
+
+function structureWidth(count: number, resolved: number): string {
+  return resolved === 0 ? '0%' : `${(count / resolved) * 100}%`
+}
+
+function axisPosition(value: number, maxScore: number): string {
+  return `${maxScore > 0 ? Math.max(0, Math.min(1, value / maxScore)) * 100 : 0}%`
+}
+
+function categoryColor(index: number): string {
+  return `var(--chart-${(index % 5) + 1})`
+}
+
 function openQuestion(questionId: string): void {
   emit('open-question', questionId, scope.value)
-}
-
-function scrollToAttention(): void {
-  attentionSection.value?.scrollIntoView({ block: 'start' })
-}
-
-function blankCountFor(studentId: number): number {
-  return blanks.value?.get(studentId) ?? 0
 }
 </script>
 
@@ -386,14 +674,6 @@ function blankCountFor(studentId: number): number {
           @click="scope = key"
         >{{ classDisplayLabel(key) }}</button>
       </div>
-      <p v-if="pendingParts.length" class="overview__warning">
-        <span>还有 {{ pendingParts.join(' · ') }}，以下统计只含已有成绩</span>
-        <button
-          type="button"
-          class="overview__link"
-          @click="emit('open-filter', 'attention')"
-        >去处理</button>
-      </p>
     </div>
 
     <section class="overview__section" aria-labelledby="overview-classes-title">
@@ -462,54 +742,413 @@ function blankCountFor(studentId: number): number {
 
     <section class="overview__section" aria-labelledby="overview-findings-title">
       <h2 id="overview-findings-title" class="overview__title">本次重点</h2>
-      <ol v-if="findings.length" class="overview__findings">
-        <li v-for="finding in findings" :key="finding.id">
-          <template
-            v-for="(segment, index) in finding.segments"
-            :key="index"
+      <div class="overview__tiles">
+        <div
+          v-for="(row, rowIndex) in tileRows"
+          :key="rowIndex"
+          class="overview__tile-row"
+        >
+        <template v-for="({ tile, span }) in row" :key="tile.id">
+          <section
+            v-if="tile.id === 'review'"
+            class="overview__tile"
+            :style="{ '--tile-span': span }"
           >
+            <h3>复核</h3>
+            <template v-if="reviewPending > 0">
+              <strong class="overview__tile-num">{{ reviewPending }} 题待处理</strong>
+              <span class="overview__tile-sub">{{ reviewBreakdown }}</span>
+              <button
+                type="button"
+                class="overview__link overview__tile-action"
+                @click="emit('open-review', 'teacher_pending')"
+              >去复核</button>
+            </template>
+            <template v-else>
+              <strong class="overview__tile-num">已全部确认</strong>
+              <span class="overview__tile-sub">
+                教师确认 {{ results.summary.teacher_final_item_count }} ·
+                AI 评分 {{ results.summary.ai_ready_item_count }}
+              </span>
+              <button
+                type="button"
+                class="overview__link overview__tile-action"
+                @click="emit('open-review', 'all')"
+              >抽查复核</button>
+            </template>
+          </section>
+          <section
+            v-else-if="tile.id === 'low-tail'"
+            class="overview__tile"
+            :style="{ '--tile-span': span }"
+          >
+            <h3>低分学生</h3>
+            <strong class="overview__tile-num">{{ tile.count }} 人</strong>
+            <span class="overview__tile-sub">
+              低于 40%<template v-if="tile.zeroAverage !== null">
+                · 人均 0 分题 {{ formatCount(tile.zeroAverage) }} 道
+              </template>
+            </span>
+            <template v-if="tile.perClass.length > 1">
+              <span
+                class="overview__tile-stack"
+                role="img"
+                :aria-label="tile.perClass.map((seg) => `${seg.label} ${seg.count} 人`).join('，')"
+              >
+                <i
+                  v-for="seg in tile.perClass"
+                  :key="seg.label"
+                  :style="{ width: `${(seg.count / tile.count) * 100}%` }"
+                  :title="`${seg.label} ${seg.count} 人`"
+                ></i>
+              </span>
+              <span class="overview__tile-legend">
+                {{ tile.perClass.map((seg) => `${seg.label} ${seg.count}`).join(' · ') }}
+              </span>
+            </template>
+            <template v-if="tile.medianGap">
+              <span
+                class="overview__tile-axis"
+                role="img"
+                :aria-label="`平均 ${formatScore(tile.medianGap.average)}，中位 ${formatScore(tile.medianGap.median)}，位置按 0–100 分`"
+              >
+                <i
+                  class="overview__tile-marker overview__tile-marker--avg"
+                  :style="{ left: axisPosition(tile.medianGap.average, results.summary.max_score) }"
+                  aria-hidden="true"
+                ></i>
+                <i
+                  class="overview__tile-marker overview__tile-marker--median"
+                  :style="{ left: axisPosition(tile.medianGap.median, results.summary.max_score) }"
+                  aria-hidden="true"
+                ></i>
+              </span>
+              <span class="overview__tile-legend">
+                <span>
+                  <i class="overview__tile-key overview__tile-key--avg" aria-hidden="true"></i>
+                  平均 {{ formatScore(tile.medianGap.average) }}
+                </span>
+                <span>
+                  <i class="overview__tile-key overview__tile-key--median" aria-hidden="true"></i>
+                  中位 {{ formatScore(tile.medianGap.median) }}
+                </span>
+              </span>
+              <p class="overview__tile-caption">低分拉低了平均</p>
+            </template>
             <button
-              v-if="segment.type === 'question'"
+              type="button"
+              class="overview__link overview__tile-action"
+              @click="emit('open-low-list', scope)"
+            >看名单</button>
+          </section>
+
+          <section
+            v-else-if="tile.id === 'weak-questions'"
+            class="overview__tile"
+            :style="{ '--tile-span': span }"
+          >
+            <h3>最弱题目</h3>
+            <ol class="overview__weak">
+              <li v-for="row in tile.rows" :key="row.questionId">
+                <button
+                  type="button"
+                  class="overview__link overview__qid-link"
+                  @click="openQuestion(row.questionId)"
+                >{{ row.questionId }}</button>
+                <span class="overview__mini-bar" aria-hidden="true">
+                  <i :style="{ width: rateWidth(row.rate) }"></i>
+                </span>
+                <strong>{{ formatRate(row.rate) }}</strong>
+              </li>
+            </ol>
+          </section>
+
+          <section
+            v-else-if="tile.id === 'zero-share'"
+            class="overview__tile"
+            :style="{ '--tile-span': span }"
+          >
+            <h3>0 分集中</h3>
+            <strong class="overview__tile-num">
+              <button
+                type="button"
+                class="overview__link overview__qid-link"
+                @click="openQuestion(tile.top.questionId)"
+              >{{ tile.top.questionId }}</button>
+              {{ formatRate(tile.top.share) }}
+            </strong>
+            <span class="overview__tile-sub">已给分学生中 0 分占比最高</span>
+            <span
+              class="overview__columns"
+              role="img"
+              :aria-label="tile.bars.map((bar) => `${bar.questionId} ${formatRate(bar.share)}`).join('，')"
+            >
+              <i
+                v-for="bar in tile.bars"
+                :key="bar.questionId"
+                :class="{ 'is-top': tile.topIds.includes(bar.questionId) }"
+                :style="{ height: `${Math.max(4, bar.share * 100)}%` }"
+                :title="`${bar.questionId} 0 分占比 ${formatRate(bar.share)}`"
+              ></i>
+            </span>
+            <p class="overview__tile-caption">
+              0 分最多：<template
+                v-for="(id, index) in tile.topIds"
+                :key="id"
+              ><template v-if="index">、</template><button
+                type="button"
+                class="overview__link"
+                @click="openQuestion(id)"
+              >{{ id }}</button></template>
+            </p>
+          </section>
+
+          <section
+            v-else-if="tile.id === 'class-gap'"
+            class="overview__tile"
+            :style="{ '--tile-span': span }"
+          >
+            <h3>班级差距</h3>
+            <strong class="overview__tile-num">差 {{ formatScore(tile.gap) }} 分</strong>
+            <span class="overview__tile-sub">
+              {{ tile.highLabel }} {{ formatScore(tile.highAverage) }} ·
+              {{ tile.lowLabel }} {{ formatScore(tile.lowAverage) }}
+            </span>
+            <span
+              class="overview__gapbars"
+              role="img"
+              :aria-label="`${tile.highLabel}平均 ${formatScore(tile.highAverage)}，${tile.lowLabel}平均 ${formatScore(tile.lowAverage)}`"
+            >
+              <span class="overview__gapbar">
+                <em>{{ tile.highLabel }}</em>
+                <span class="overview__mini-bar overview__mini-bar--high"><i
+                  :style="{ width: axisPosition(tile.highAverage, results.summary.max_score) }"
+                ></i></span>
+                <b>{{ formatScore(tile.highAverage) }}</b>
+              </span>
+              <span class="overview__gapbar">
+                <em>{{ tile.lowLabel }}</em>
+                <span class="overview__mini-bar overview__mini-bar--low"><i
+                  :style="{ width: axisPosition(tile.lowAverage, results.summary.max_score) }"
+                ></i></span>
+                <b>{{ formatScore(tile.lowAverage) }}</b>
+              </span>
+            </span>
+            <p v-if="tile.widest" class="overview__tile-caption">
+              差距最大
+              <button
+                type="button"
+                class="overview__link"
+                @click="openQuestion(tile.widest.questionId)"
+              >{{ tile.widest.questionId }}</button>
+              （{{ tile.highLabel }} {{ formatRate(tile.widest.highRate) }} /
+              {{ tile.lowLabel }} {{ formatRate(tile.widest.lowRate) }}）
+            </p>
+          </section>
+
+          <section
+            v-else-if="tile.id === 'cause-categories'"
+            class="overview__tile"
+            :style="{ '--tile-span': span }"
+          >
+            <h3>失分类型 <span class="overview__ai-tag" title="来自 AI 错因整理">AI 整理</span></h3>
+            <Skeleton
+              v-if="analysisState === 'loading'"
+              class="overview__skeleton-text"
+              aria-hidden="true"
+            />
+            <template v-else-if="analysisState === 'error'">
+              <span class="overview__tile-sub">暂时无法读取</span>
+              <button
+                type="button"
+                class="overview__link overview__tile-action"
+                @click="reloadAnalysis"
+              >重试</button>
+            </template>
+            <template v-else-if="causeIssue === 'missing'">
+              <span class="overview__tile-sub">错因尚未整理</span>
+              <button
+                type="button"
+                class="overview__link overview__tile-action"
+                @click="emit('open-question', '', scope)"
+              >去试题诊断查看</button>
+            </template>
+            <template v-else-if="causeIssue === 'legacy'">
+              <span class="overview__tile-sub">错因为旧版整理</span>
+              <button
+                type="button"
+                class="overview__link overview__tile-action"
+                @click="emit('open-question', '', scope)"
+              >去试题诊断查看</button>
+            </template>
+            <template v-else-if="'segments' in tile">
+              <span
+                class="overview__tile-stack overview__tile-stack--cats"
+                role="img"
+                :aria-label="tile.segments.map((seg) => `${seg.category} ${seg.count} 人次`).join('，')"
+              >
+                <i
+                  v-for="(seg, index) in tile.segments"
+                  :key="seg.category"
+                  :style="{ width: `${(seg.count / tile.total) * 100}%`, background: categoryColor(index) }"
+                ></i>
+              </span>
+              <ul class="overview__tile-legend overview__tile-legend--cats">
+                <li v-for="(seg, index) in tile.segments" :key="seg.category">
+                  <i :style="{ background: categoryColor(index) }" aria-hidden="true"></i>
+                  {{ seg.category }} {{ seg.count }} 人次
+                </li>
+              </ul>
+            </template>
+            <span v-else class="overview__tile-sub">暂无错因分类</span>
+          </section>
+
+          <section
+            v-else-if="tile.id === 'ai-report'"
+            class="overview__tile overview__tile--ai-report"
+            :style="{ '--tile-span': span }"
+          >
+            <h3>班级分析 <span class="overview__ai-tag" title="来自 AI 班级分析">AI</span></h3>
+            <Skeleton
+              v-if="narrativeState === 'loading'"
+              class="overview__skeleton-text"
+              aria-hidden="true"
+            />
+            <template v-else-if="narrativeState === 'error'">
+              <span class="overview__tile-sub">暂时无法读取</span>
+              <button
+                type="button"
+                class="overview__link overview__tile-action"
+                @click="reloadNarrative"
+              >重试</button>
+            </template>
+            <strong v-else-if="narrativeGenerating" class="overview__tile-num">生成中…</strong>
+            <template v-else-if="narrative?.narrative && !narrative.stale">
+              <ul class="overview__tile-findings">
+                <li
+                  v-for="finding in narrativeFindings"
+                  :key="finding.title"
+                  :title="finding.title"
+                >{{ finding.title }}</li>
+              </ul>
+              <button
+                type="button"
+                class="overview__link overview__tile-action"
+                @click="openReport"
+              >查看完整报告</button>
+            </template>
+            <template v-else-if="narrative?.stale">
+              <strong class="overview__tile-num">成绩已变化</strong>
+              <span class="overview__tile-sub">报告需更新</span>
+              <button
+                type="button"
+                class="overview__link overview__tile-action"
+                @click="openReport"
+              >去更新</button>
+            </template>
+            <template v-else>
+              <strong class="overview__tile-num">
+                {{ narrative?.narrative_failed ? '上次生成失败' : '尚未生成' }}
+              </strong>
+              <button
+                type="button"
+                class="overview__link overview__tile-action"
+                @click="openReport"
+              >去生成</button>
+            </template>
+          </section>
+
+          <section
+            v-else-if="tile.id === 'ranks'"
+            class="overview__tile overview__tile--ranks"
+            :style="{ '--tile-span': span }"
+          >
+            <div class="overview__tile-head">
+              <h3 id="overview-ranks-title">排名变化</h3>
+              <label v-if="comparisonOptions.length" class="overview__compare">
+                <span>对比：</span>
+                <select v-model.number="comparisonId" aria-label="对比考试">
+                  <option
+                    v-for="option in comparisonOptions"
+                    :key="option.id"
+                    :value="option.id"
+                  >{{ option.name }}</option>
+                </select>
+              </label>
+            </div>
+            <p v-if="!comparisonOptions.length" class="overview__tile-sub">
+              没有可对比的上一场考试
+            </p>
+            <Skeleton
+              v-else-if="previousState === 'loading'"
+              class="overview__skeleton-block"
+              aria-hidden="true"
+            />
+            <p v-else-if="previousState === 'error'" class="overview__tile-sub">
+              对比考试的成绩暂时无法读取。
+            </p>
+            <div v-else-if="previousState === 'ready'" class="overview__ranks">
+              <div
+                v-for="group in [
+                  { key: 'improved', title: '进步明显', rows: rankRows.improved },
+                  { key: 'declined', title: '退步明显', rows: rankRows.declined },
+                ]"
+                :key="group.key"
+                class="overview__rank-group"
+                :data-direction="group.key"
+              >
+                <h4>{{ group.title }}</h4>
+                <ol v-if="group.rows.length" class="overview__rank-list">
+                  <li v-for="entry in group.rows" :key="entry.student.student_id">
+                    <button
+                      type="button"
+                      class="overview__rank-row"
+                      :aria-label="rankAria(entry)"
+                      @click="emit('open-student', entry.student.student_id)"
+                    >
+                      <span class="overview__rank-name">
+                        {{ entry.student.student_name }}<small v-if="scope === null">
+                          {{ classDisplayLabel(entry.student.class_name) }}
+                        </small>
+                      </span>
+                      <span
+                        class="overview__ranktrack"
+                        :class="entry.change >= 0 ? 'is-up' : 'is-down'"
+                        aria-hidden="true"
+                      >
+                        <i class="overview__ranktrack-seg" :style="rankSegmentStyle(entry)"></i>
+                        <i
+                          class="overview__ranktrack-dot is-prev"
+                          :style="{ left: rankPosition(entry.previousRank, entry.currentSize) }"
+                        ></i>
+                        <i
+                          class="overview__ranktrack-dot is-curr"
+                          :style="{ left: rankPosition(entry.currentRank, entry.currentSize) }"
+                        ></i>
+                      </span>
+                      <span class="overview__rank-nums">
+                        {{ entry.previousRank }} → {{ entry.currentRank }}
+                      </span>
+                      <b
+                        class="overview__rank-change"
+                        :class="entry.change >= 0 ? 'is-up' : 'is-down'"
+                      >{{ entry.change >= 0 ? '↑' : '↓' }}{{ Math.abs(entry.change) }}</b>
+                    </button>
+                  </li>
+                </ol>
+                <p v-else class="overview__empty">无明显变化</p>
+              </div>
+            </div>
+            <button
+              v-if="previousState === 'ready' && ranksExpandable"
               type="button"
               class="overview__link"
-              @click="openQuestion(segment.questionId)"
-            >{{ segment.questionId }}</button>
-            <strong v-else-if="segment.type === 'strong'">{{ segment.text }}</strong>
-            <button
-              v-else-if="segment.type === 'action'"
-              type="button"
-              class="overview__link overview__finding-action"
-              @click="scrollToAttention"
-            >{{ segment.label }}</button>
-            <span v-else>{{ segment.text }}</span>
-          </template>
-        </li>
-      </ol>
-      <Skeleton
-        v-if="analysisState === 'loading'"
-        class="overview__skeleton-line"
-        aria-hidden="true"
-      />
-      <p v-if="causeIssue === 'missing'" class="overview__missing">
-        错因尚未整理
-        <button
-          type="button"
-          class="overview__link"
-          @click="emit('open-question', '', scope)"
-        >去试题诊断查看</button>
-      </p>
-      <p v-else-if="causeIssue === 'legacy'" class="overview__missing">
-        错因为旧版整理
-        <button
-          type="button"
-          class="overview__link"
-          @click="emit('open-question', '', scope)"
-        >去试题诊断查看</button>
-      </p>
-      <p
-        v-if="!findings.length && analysisState !== 'loading' && !causeIssue"
-        class="overview__empty"
-      >当前范围没有发现需要重点提示的问题。</p>
+              @click="ranksExpanded = !ranksExpanded"
+            >{{ ranksExpanded ? '收起' : '展开全部' }}</button>
+          </section>
+        </template>
+        </div>
+      </div>
     </section>
 
     <section class="overview__section" aria-labelledby="overview-questions-title">
@@ -539,20 +1178,47 @@ function blankCountFor(studentId: number): number {
             @click="openQuestion(row.questionId)"
           >
             <span class="overview__qid">{{ row.questionId }}</span>
-            <span class="overview__stem" :title="row.stem ?? undefined">
+            <span class="overview__stem" :title="row.stemTitle ?? undefined">
               <Skeleton
                 v-if="analysisState === 'loading'"
                 class="overview__skeleton-text"
                 aria-hidden="true"
               />
-              <template v-else>{{ row.stem ?? '—' }}</template>
+              <template v-else-if="row.subIndex !== null">
+                第 {{ row.subIndex }} 小问<template v-if="row.answer">
+                  · 答案 <span :title="row.answerFull ?? undefined"><QuestionHtmlBlock :text="row.answer" inline typeset-text /></span>
+                </template>
+              </template>
+              <QuestionHtmlBlock
+                v-else-if="row.stem"
+                :text="row.stem"
+                inline
+                typeset-text
+              />
+              <template v-else>—</template>
             </span>
             <span class="overview__rate">
               <span
-                class="overview__ratebar"
-                :class="`overview__ratebar--${rateTone(row.rate)}`"
-                aria-hidden="true"
-              ><i :style="{ width: rateWidth(row.rate) }"></i></span>
+                class="overview__structure"
+                role="img"
+                :aria-label="structureAria(row.structure)"
+              >
+                <i
+                  class="is-full"
+                  :style="{ width: structureWidth(row.structure.full, row.structure.resolved) }"
+                  :title="`满分 ${row.structure.full} 人`"
+                ></i>
+                <i
+                  class="is-partial"
+                  :style="{ width: structureWidth(row.structure.partial, row.structure.resolved) }"
+                  :title="`部分得分 ${row.structure.partial} 人`"
+                ></i>
+                <i
+                  class="is-zero"
+                  :style="{ width: structureWidth(row.structure.zero, row.structure.resolved) }"
+                  :title="`0 分 ${row.structure.zero} 人`"
+                ></i>
+              </span>
               <strong>{{ formatRate(row.rate) }}</strong>
               <span
                 v-if="row.classRates.length"
@@ -574,74 +1240,15 @@ function blankCountFor(studentId: number): number {
                 <span class="overview__cause-legacy">旧版错因 · 去试题诊断更新</span>
               </template>
               <template v-else-if="row.causeLabel !== null">
+                <span class="overview__ai-tag" title="来自 AI 错因整理">AI</span>
                 {{ row.causeLabel }} <b>{{ row.causeCount }} 人</b>
               </template>
               <template v-else>—</template>
-            </span>
-            <span class="overview__cats">
-              <span
-                v-for="category in row.categories"
-                :key="category.category"
-                class="overview__cat"
-              >{{ category.category }} {{ category.count }}人</span>
             </span>
           </button>
         </li>
       </ol>
     </section>
 
-    <section
-      ref="attentionSection"
-      class="overview__section"
-      aria-labelledby="overview-attention-title"
-    >
-      <h2 id="overview-attention-title" class="overview__title">需要关注的学生</h2>
-      <div class="overview__attention">
-        <div class="overview__attention-group">
-          <h3>低分（低于 40%）· {{ attention.low.length }} 人</h3>
-          <p v-if="!attention.low.length" class="overview__empty">无</p>
-          <ul v-else class="overview__chips">
-            <li v-for="entry in attention.low" :key="entry.student.student_id">
-              <button
-                type="button"
-                class="overview__chip"
-                @click="emit('open-student', entry.student.student_id)"
-              >
-                <strong>{{ entry.student.student_name }}</strong>
-                <span v-if="scope === null">
-                  {{ classDisplayLabel(entry.student.class_name) }} ·
-                </span>
-                {{ formatScore(entry.student.current_score) }}/{{ formatScore(entry.student.max_score) }}
-                · 0分 {{ entry.zeroCount }} 题<template v-if="blanks && blankCountFor(entry.student.student_id) > 0">
-                  · 空白 {{ blankCountFor(entry.student.student_id) }}
-                </template>
-              </button>
-            </li>
-          </ul>
-        </div>
-        <div class="overview__attention-group">
-          <h3>差一点及格（50%–60%）· {{ attention.nearPass.length }} 人</h3>
-          <p v-if="!attention.nearPass.length" class="overview__empty">无</p>
-          <ul v-else class="overview__chips">
-            <li v-for="entry in attention.nearPass" :key="entry.student.student_id">
-              <button
-                type="button"
-                class="overview__chip"
-                @click="emit('open-student', entry.student.student_id)"
-              >
-                <strong>{{ entry.student.student_name }}</strong>
-                <span v-if="scope === null">
-                  {{ classDisplayLabel(entry.student.class_name) }} ·
-                </span>
-                {{ formatScore(entry.student.current_score) }}/{{ formatScore(entry.student.max_score) }}
-                · 0分 {{ entry.zeroCount }} 题<template v-if="blanks && blankCountFor(entry.student.student_id) > 0">
-                  · 空白 {{ blankCountFor(entry.student.student_id) }}
-                </template>
-              </button>
-            </li>
-          </ul>
-        </div>
-      </div>
-    </section>
   </div>
 </template>
