@@ -22,6 +22,7 @@ from question_bank.training_criteria.analysis import (
     solution_evidence_source_content_hash,
 )
 from question_bank.training_criteria.versioning import TrainingCriterionModule
+from backend.repositories.grading_database import open_grading_repositories
 
 
 class _EmptyResolver:
@@ -302,7 +303,7 @@ def test_duplicates_endpoint_reports_matches(
     from backend.config_workspace.sources import ConfigSourceService
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
 
     _insert_bank_questions(
         bank["db"],
@@ -310,13 +311,13 @@ def test_duplicates_endpoint_reports_matches(
     )
     _seed_analysis(bank["db"], bank["data_root"], 1)
 
-    db = DBManager(tmp_path / "grading.db")
+    db = open_grading_repositories(tmp_path / "grading.db")
     db.initialize()
     rubric = tmp_path / "rubric.json"
     answer = tmp_path / "answer.json"
     rubric.write_text("{}", encoding="utf-8")
     answer.write_text("{}", encoding="utf-8")
-    session_id = db.create_grading_session("第七周测试", str(rubric), str(answer))
+    session_id = db.sessions.create_grading_session("第七周测试", str(rubric), str(answer))
     upload_root = tmp_path / "uploaded"
     app = create_app()
     manager = JobManager(JobStore(db.db_path), max_workers=1)

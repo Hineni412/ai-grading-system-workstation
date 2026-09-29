@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
-from db_manager import DBManager, StudentRecord
+from db_manager import StudentRecord
 from question_bank.database.schema import initialize_database
 from tests.api_e2e.harness import (
     ApiE2EHarness,
@@ -16,15 +16,16 @@ from tests.api_e2e.harness import (
     build_paths,
     install_dependency_overrides,
 )
+from backend.repositories.grading_database import open_grading_repositories
 
 
 @pytest.fixture
 def api_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     paths = build_paths(tmp_path)
-    db = DBManager(paths.db_path)
+    db = open_grading_repositories(paths.db_path)
     db.initialize()
     initialize_database(paths.qb_db_path)
-    db.upsert_students(
+    db.students.upsert_students(
         [
             StudentRecord("SYN-001", "Synthetic Student A", "Synthetic Class"),
             StudentRecord("SYN-002", "Synthetic Student B", "Synthetic Class"),

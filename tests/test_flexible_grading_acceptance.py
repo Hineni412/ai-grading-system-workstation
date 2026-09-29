@@ -9,6 +9,7 @@ import pytest
 from backend.domain_models import GradingResult
 from backend.repositories.results import ResultRepository
 from ai_batch_grading_service import _detail_from_ai_item, build_major_question_specs
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def question_spec():
@@ -151,7 +152,7 @@ def test_saving_new_ai_grade_keeps_historical_fractional_teacher_lock_and_eviden
     import json
     import sqlite3
     from backend.domain_models import GradingResult, QuestionGradingDetail
-    from db_manager import DBManager
+    
     from tests.test_report_ai_teacher_comparison import _seed_mixed_session
 
     db_path = _seed_mixed_session(tmp_path)
@@ -180,8 +181,8 @@ def test_saving_new_ai_grade_keeps_historical_fractional_teacher_lock_and_eviden
         ],
         raw_json={"detail_metadata": {"Q1": {"step_assessments": steps}}},
     )
-    db = DBManager(db_path)
-    saved_id = db.result_repository.save_session_result(
+    db = open_grading_repositories(db_path)
+    saved_id = db.results.save_session_result(
         1, 1, 1, result, scan_batch_id="batch-1"
     )
     with sqlite3.connect(db_path) as conn:
@@ -200,7 +201,7 @@ def test_saving_new_ai_grade_keeps_historical_fractional_teacher_lock_and_eviden
         result, grading_details=[replace(result.grading_details[0], score_awarded=2.5)]
     )
     with pytest.raises(ValueError, match="score_contract_error"):
-        db.result_repository.save_session_result(
+        db.results.save_session_result(
             1, 1, 1, invalid, scan_batch_id="batch-1"
         )
     with sqlite3.connect(db_path) as conn:

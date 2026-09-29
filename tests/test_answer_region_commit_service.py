@@ -11,10 +11,15 @@ import answer_region_commit_service as commit_module
 from answer_region_commit_service import AnswerRegionCommitService
 from answer_region_draft_service import AnswerRegionDraftService
 from answer_region_session_lock import get_answer_region_session_lock
+from backend.repositories.access import (
+    GradingRepositoryAccess,
+    as_grading_repositories,
+)
 from db_manager import DBManager
 
 
 IMAGE_SIZES = {"front": (200, 300), "back": (200, 300)}
+from backend.repositories.grading_database import open_grading_repositories
 
 
 class _PausingDraftService(AnswerRegionDraftService):
@@ -55,7 +60,7 @@ def _older_completion_in_process(
     release: object,
 ) -> None:
     service = AnswerRegionCommitService(
-        DBManager(Path(db_path)),
+        open_grading_repositories(Path(db_path)),
         Path(session_dir),
         _PausingDraftService(Path(session_dir), events, release),
     )
@@ -78,7 +83,7 @@ def _reported_commit_in_process(
 ) -> None:
     events.put(("newer_commit", "started"))
     service = AnswerRegionCommitService(
-        _ReportingDBManager(Path(db_path), events),
+        as_grading_repositories(_ReportingDBManager(Path(db_path), events)),
         Path(session_dir),
         AnswerRegionDraftService(Path(session_dir)),
     )
@@ -132,8 +137,8 @@ def _region(
 
 def _setup(
     tmp_path: Path,
-) -> tuple[DBManager, int, int, Path, AnswerRegionDraftService]:
-    db = DBManager(tmp_path / "grading.db")
+) -> tuple[GradingRepositoryAccess, int, int, Path, AnswerRegionDraftService]:
+    db = open_grading_repositories(tmp_path / "grading.db")
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(
@@ -151,12 +156,12 @@ def _setup(
         ),
         encoding="utf-8",
     )
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "regions",
         str(rubric_path),
         "answer.json",
     )
-    template_id = db.upsert_session_template(session_id, "front.png", "back.png")
+    template_id = db.templates.upsert_session_template(session_id, "front.png", "back.png")
     session_dir = tmp_path / "session"
     draft_service = AnswerRegionDraftService(session_dir)
     return db, session_id, template_id, session_dir, draft_service
@@ -172,21 +177,21 @@ def _save_draft(draft_service: AnswerRegionDraftService, session_id: int) -> Non
 
 
 def _seed_formal(
-    db: DBManager,
+    db: GradingRepositoryAccess,
     session_id: int,
     template_id: int,
     region_uuid: str = "formal-region",
     *,
     pending: bool = False,
 ) -> str:
-    token = db.replace_answer_regions_atomic(
+    token = db.templates.replace_answer_regions_atomic(
         session_id,
         template_id,
         [_region(region_uuid)],
         confirmed=True,
     )
     if not pending:
-        db.mark_region_snapshot_complete(session_id, expected_token=token)
+        db.templates.mark_region_snapshot_complete(session_id, expected_token=token)
     return token
 
 
@@ -196,7 +201,7 @@ def test_database_failure_leaves_formal_regions_and_draft_untouched(
     db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
     _seed_formal(db, session_id, template_id)
     _save_draft(draft_service, session_id)
-    formal_before = db.list_answer_regions(session_id)
+    formal_before = db.templates.list_answer_regions(session_id)
     draft_before = draft_service.draft_path.read_bytes()
     service = AnswerRegionCommitService(db, session_dir, draft_service)
 
@@ -204,7 +209,7 @@ def test_database_failure_leaves_formal_regions_and_draft_untouched(
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(
-        db.template_repository,
+        db.templates,
         "replace_answer_regions_atomic",
         fail_replace,
     )
@@ -222,7 +227,7 @@ def test_database_failure_leaves_formal_regions_and_draft_untouched(
     assert result.validation.can_commit is True
     assert result.snapshot_path is None
     assert result.error == "database_commit_failed"
-    assert db.list_answer_regions(session_id) == formal_before
+    assert db.templates.list_answer_regions(session_id) == formal_before
     assert draft_service.draft_path.read_bytes() == draft_before
     assert list(session_dir.glob("regions_confirmed_*.json")) == []
 

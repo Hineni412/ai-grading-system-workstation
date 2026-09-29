@@ -77,14 +77,14 @@ class ReviewMediaService:
             raise ReviewMediaNotFound("Review media resource was not found.")
 
         if normalized_variant == "original":
-            context = self.db.get_result_context(int(result_id))
+            context = self.db.results.get_result_context(int(result_id))
             if context is None or int(context["session_id"]) != int(session_id):
                 raise ReviewMediaNotFound("Review media resource was not found.")
             path_value = context[f"{normalized_page}_image"]
             root = self.exams_dir
         elif normalized_variant == "annotated":
-            context = self.db.get_result_context(int(result_id))
-            annotated = self.db.get_annotated_result(int(result_id))
+            context = self.db.results.get_result_context(int(result_id))
+            annotated = self.db.reviews.get_annotated_result(int(result_id))
             if (
                 context is None
                 or int(context["session_id"]) != int(session_id)
@@ -99,7 +99,7 @@ class ReviewMediaService:
                     ManualReviewService(self.db, self.annotated_dir).ensure_result_annotation(int(result_id))
                 except Exception as exc:
                     raise ReviewMediaUnreadable("Annotation could not be refreshed; retry the image.") from exc
-                annotated = self.db.get_annotated_result(int(result_id))
+                annotated = self.db.reviews.get_annotated_result(int(result_id))
                 if not annotated:
                     raise ReviewMediaNotFound("Review media resource was not found.")
             path_value = annotated[f"annotated_{normalized_page}_path"]
@@ -120,7 +120,7 @@ class ReviewMediaService:
         result_id: int,
         detail_id: int,
     ) -> bytes:
-        context = self.db.get_review_media_context(
+        context = self.db.reviews.get_review_media_context(
             int(session_id),
             int(result_id),
             int(detail_id),
@@ -341,8 +341,8 @@ class ReviewMediaService:
         return None
 
     def _regions_with_template_sizes(self, session_id: int) -> list[dict[str, Any]]:
-        regions = [dict(region) for region in self.db.list_answer_regions(session_id)]
-        template = self.db.get_session_template(session_id)
+        regions = [dict(region) for region in self.db.templates.list_answer_regions(session_id)]
+        template = self.db.templates.get_session_template(session_id)
         if not template:
             return regions
 

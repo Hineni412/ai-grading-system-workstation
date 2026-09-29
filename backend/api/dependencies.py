@@ -9,7 +9,7 @@ from fastapi import Depends, Request
 
 from api_profiles import get_api_profile_store
 from backend.repositories.access import GradingRepositoryAccess
-from backend.repositories.compat import open_grading_repositories
+from backend.repositories.grading_database import open_grading_repositories
 from backend.analytics import SessionAnalysisService
 from backend.api.read_connections import (
     RequestReadContext,
@@ -103,13 +103,13 @@ def get_grading_db() -> GradingRepositoryAccess:
 def get_student_repository(
     db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> StudentRepositoryGateway:
-    return db.student_repository
+    return db.students
 
 
 def get_session_repository(
     db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> SessionRepositoryGateway:
-    return db.session_repository
+    return db.sessions
 
 
 def get_student_roster_module(
@@ -500,7 +500,7 @@ def get_scan_grading_workspace(
             raise SessionDerivedTrainingDataExists(
                 list(impact["blocking_training_tasks"])
             )
-        db.reset_session_for_scan_replacement(session_id)
+        db.sessions.reset_session_for_scan_replacement(session_id)
         clear_question_bank_session_references(question_bank_db_path, session_id)
         return []
 
@@ -510,7 +510,7 @@ def get_scan_grading_workspace(
         grading_db_path=db.db_path,
         job_manager=manager,
         data_root=data_root,
-        replacement_storage_paths=db.collect_session_reupload_storage_paths,
+        replacement_storage_paths=db.sessions.collect_session_reupload_storage_paths,
         replacement_reset=reset_replaced_scan_data,
         config_fingerprint_resolver=lambda session_id, grading_mode: (
             session_grading_config_fingerprint(
@@ -521,11 +521,11 @@ def get_scan_grading_workspace(
             )
         ),
         incomplete_result_counter=lambda session_id: len(
-            db.list_incomplete_results(session_id)
+            db.results.list_incomplete_results(session_id)
         ),
         incomplete_item_counter=lambda session_id: sum(
             len(item.get("missing_question_ids") or [])
-            for item in db.list_incomplete_results(session_id)
+            for item in db.results.list_incomplete_results(session_id)
         ),
     )
 

@@ -549,7 +549,8 @@ def seed_workspace(workspace: Path, source_sha: str) -> dict[str, Any]:
     from fastapi.testclient import TestClient
 
     from backend.api.app import create_app
-    from db_manager import DBManager, StudentRecord
+    from backend.repositories.grading_database import open_grading_repositories
+    from db_manager import StudentRecord
     from question_bank.database.schema import initialize_database
     from tests.api_e2e.harness import (
         ApiE2EHarness,
@@ -576,10 +577,10 @@ def seed_workspace(workspace: Path, source_sha: str) -> dict[str, Any]:
     if not _SHA_RE.fullmatch(source_sha):
         raise AcceptanceError("internal seed source SHA is invalid")
     paths = build_paths(workspace)
-    db = DBManager(paths.db_path)
+    db = open_grading_repositories(paths.db_path)
     db.initialize()
     initialize_database(paths.qb_db_path)
-    db.upsert_students(
+    db.students.upsert_students(
         [
             StudentRecord("SYN-001", "Synthetic Student A", "Synthetic Class"),
             StudentRecord("SYN-002", "Synthetic Student B", "Synthetic Class"),

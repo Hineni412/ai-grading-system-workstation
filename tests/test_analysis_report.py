@@ -63,6 +63,7 @@ CLASS_NARRATIVE = {
     ],
     "grouping_advice": "按分数断层分层布置作业",
 }
+from backend.repositories.grading_database import open_grading_repositories
 
 
 class FakeLLMClient:
@@ -121,7 +122,7 @@ def _seed_analysis_session(db, root: Path) -> int:
     answer_path = config_dir / "answer_key.json"
     rubric_path.write_text(json.dumps(rubric, ensure_ascii=False), encoding="utf-8")
     answer_path.write_text(json.dumps(answer_key, ensure_ascii=False), encoding="utf-8")
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "单元测试", str(rubric_path), str(answer_path)
     )
 
@@ -226,9 +227,9 @@ def _seed_analysis_session(db, root: Path) -> int:
 
 @pytest.fixture
 def analysis_db(tmp_path: Path):
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     session_id = _seed_analysis_session(db, tmp_path)
     return db, session_id, tmp_path
@@ -280,9 +281,9 @@ def analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     from backend.jobs.manager import JobContext, JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     session_id = _seed_analysis_session(db, tmp_path)
     reports_dir = tmp_path / "databases" / ".." / "reports"

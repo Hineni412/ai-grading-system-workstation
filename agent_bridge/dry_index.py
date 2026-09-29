@@ -3,7 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from agent_bridge.run_session4 import _current_scan_batch_id, _write_papers_index, BRIDGE_DIR, SESSION_ID
-from backend.repositories.compat import open_grading_repositories
+from backend.repositories.grading_database import open_grading_repositories
 from path_manager import get_path_manager
 pm = get_path_manager()
 batch_id = _current_scan_batch_id(pm.exams_dir)

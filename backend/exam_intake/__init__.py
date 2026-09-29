@@ -134,13 +134,13 @@ def classify_intake_result(result: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def persist_intake_required(db: Any, session_id: int) -> None:
-    session = db.get_grading_session(int(session_id))
+    session = db.sessions.get_grading_session(int(session_id))
     details = session_intake_details(session)
     details[INTAKE_REQUIRED_KEY] = True
     current = str((session or {}).get("question_bank_sync_state") or "not_started")
     if current not in {"ready", "partial", "failed", "running"}:
         current = "not_started"
-    db.update_question_bank_sync_state(
+    db.sessions.update_question_bank_sync_state(
         int(session_id),
         state=current,
         details=details,
@@ -153,7 +153,7 @@ def persist_intake_result(
     session_id: int,
     classified: Mapping[str, Any],
 ) -> None:
-    session = db.get_grading_session(int(session_id))
+    session = db.sessions.get_grading_session(int(session_id))
     details = session_intake_details(session)
     details[INTAKE_REQUIRED_KEY] = True
     details["intake_category"] = str(classified.get("category") or "")
@@ -163,7 +163,7 @@ def persist_intake_result(
     details["intake_retryable"] = bool(classified.get("retryable"))
     details["intake_message"] = str(classified.get("message") or "")
     error = None if classified.get("complete") else str(classified.get("message") or "")
-    db.update_question_bank_sync_state(
+    db.sessions.update_question_bank_sync_state(
         int(session_id),
         state=str(classified.get("state") or "failed"),
         details=details,

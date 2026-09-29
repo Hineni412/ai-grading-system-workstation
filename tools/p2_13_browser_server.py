@@ -11,6 +11,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path[:1]:
     sys.path.insert(0, str(REPO_ROOT))
+from backend.repositories.access import as_grading_repositories
+from backend.repositories.grading_database import open_grading_repositories
 ALLOWED_DATA_ROOT = Path(
     os.path.abspath(REPO_ROOT / "frontend" / "test-results" / "p2-13-real")
 )
@@ -55,11 +57,11 @@ def _prepare_paths(data_root: Path):
 def _seed(paths) -> None:
     import pandas as pd
 
-    from db_manager import DBManager, StudentRecord
+    from db_manager import StudentRecord
 
-    db = DBManager(paths.db_path)
+    db = open_grading_repositories(paths.db_path)
     db.initialize()
-    db.upsert_students(
+    db.students.upsert_students(
         [
             StudentRecord(
                 f"A{index:03d}",
@@ -73,7 +75,7 @@ def _seed(paths) -> None:
             for index in range(1, 126)
         ]
     )
-    first_student = db.list_students()[0]
+    first_student = db.students.list_students()[0]
     rubric = paths.upload_config_dir / "anonymous-rubric.json"
     answer = paths.upload_config_dir / "anonymous-answer.json"
     rubric.write_text(
@@ -84,7 +86,7 @@ def _seed(paths) -> None:
         json.dumps({"questions": []}, ensure_ascii=False),
         encoding="utf-8",
     )
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "匿名名单验收考试",
         str(rubric),
         str(answer),
@@ -193,7 +195,9 @@ def main() -> None:
             return super().create_backup(reason, once_per_day=once_per_day)
 
     app = create_app(path_manager=paths)
-    app.dependency_overrides[get_grading_db] = lambda: BrowserDBManager(paths.db_path)
+    app.dependency_overrides[get_grading_db] = lambda: as_grading_repositories(
+        BrowserDBManager(paths.db_path)
+    )
     frontend_dist = REPO_ROOT / "frontend" / "dist"
     if not (frontend_dist / "index.html").is_file():
         raise RuntimeError("build the frontend before running the P2-13 browser gate")

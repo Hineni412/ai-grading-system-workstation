@@ -61,7 +61,7 @@ def get_grading_workspace(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanGradingWorkspaceResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     return ScanGradingWorkspaceResponse.model_validate(workspace.get_workspace(session_id))
 
 
@@ -73,7 +73,7 @@ def get_scan_student_options(
     session_id: int,
     db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> ScanStudentMatchOptionsResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     return ScanStudentMatchOptionsResponse.model_validate(
         {
             "items": [
@@ -85,7 +85,7 @@ def get_scan_student_options(
                     "pinyin_initials": _student_name_initials(student.get("name")),
                     "pinyin_full": _student_name_pinyin(student.get("name")),
                 }
-                for student in db.list_students()
+                for student in db.students.list_students()
             ]
         }
     )
@@ -128,7 +128,7 @@ async def upload_session_scan(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     filename = unquote(str(request.headers.get("x-upload-filename") or ""))
     digest = str(request.headers.get("x-content-sha256") or "")
     media_type = str(request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
@@ -191,7 +191,7 @@ def remove_session_scan_upload(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     return _mutate_draft_uploads(
         lambda: workspace.remove_upload(
             session_id,
@@ -213,7 +213,7 @@ def clear_session_scan_uploads(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     return _mutate_draft_uploads(
         lambda: workspace.clear_uploads(
             session_id,
@@ -233,7 +233,7 @@ def freeze_session_scan_uploads(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         batch = workspace.freeze_uploads(
             session_id,
@@ -257,7 +257,7 @@ def start_new_session_scan_batch(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         batch = workspace.start_new_upload_batch(session_id)
     except ActiveScanAnalysisError as exc:
@@ -280,7 +280,7 @@ def begin_session_scan_replacement(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         batch = workspace.begin_replacement_upload(session_id)
     except ActiveScanAnalysisError as exc:
@@ -306,7 +306,7 @@ def cancel_session_scan_replacement(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> dict[str, bool]:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     workspace.cancel_replacement_upload(session_id)
     return {"cancelled": True}
 
@@ -321,7 +321,7 @@ def commit_session_scan_replacement(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         batch = workspace.commit_replacement_upload(
             session_id,
@@ -360,7 +360,7 @@ def get_session_scan_preflight(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanPreflightResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         payload = workspace.get_preflight(session_id)
     except ScanGradingWorkspaceError as exc:
@@ -378,10 +378,10 @@ def save_session_scan_decisions(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanDecisionResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     valid_student_ids = {
         int(student["id"])
-        for student in db.list_students()
+        for student in db.students.list_students()
         if student.get("id") is not None
     }
     try:
@@ -408,7 +408,7 @@ def get_session_scan_preflight_media(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> FileResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         path = workspace.resolve_preflight_media(session_id, media_ref)
     except ScanGradingWorkspaceError as exc:
@@ -432,7 +432,7 @@ def analyze_session_scans(
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
     template_service: TemplateUploadService = Depends(get_template_upload_service),
 ) -> JobResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     request = request or ScanAnalyzeRequest()
     try:
         template = template_service.load_current(db=db, session_id=session_id)

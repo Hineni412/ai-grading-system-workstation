@@ -13,6 +13,7 @@ warnings.filterwarnings(
 )
 
 from fastapi.testclient import TestClient
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _client_with_db(tmp_path):
@@ -24,9 +25,9 @@ def _client_with_db(tmp_path):
     )
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
 
     app = create_app()
@@ -63,7 +64,7 @@ def _session(db) -> int:
     )
     # Session names are unique per database (migration 012), so each helper
     # call needs a distinct name.
-    return db.create_grading_session(
+    return db.sessions.create_grading_session(
         f"Template Exam {next(_session_counter)}", str(rubric), str(answer)
     )
 
@@ -158,12 +159,12 @@ def test_current_template_page_assignment_swaps_regions_and_is_idempotent(
         },
     )
     assert saved_draft.status_code == 200
-    db.save_answer_regions(session_id, uploaded["template_id"], [draft_region])
-    db.mark_template_confirmed(session_id, True)
-    before_template = db.get_session_template(session_id)
+    db.templates.save_answer_regions(session_id, uploaded["template_id"], [draft_region])
+    db.templates.mark_template_confirmed(session_id, True)
+    before_template = db.templates.get_session_template(session_id)
     assert before_template is not None
-    before_region = db.list_answer_regions(session_id)[0]
-    assert db.is_template_ready(session_id) is True
+    before_region = db.templates.list_answer_regions(session_id)[0]
+    assert db.templates.is_template_ready(session_id) is True
 
     changed = client.put(
         f"/api/sessions/{session_id}/template/page-assignment",
@@ -189,7 +190,7 @@ def test_current_template_page_assignment_swaps_regions_and_is_idempotent(
     )
     assert str(tmp_path) not in changed.text
 
-    after_template = db.get_session_template(session_id)
+    after_template = db.templates.get_session_template(session_id)
     assert after_template is not None
     assert (
         after_template["front_template_path"] == before_template["back_template_path"]
@@ -199,13 +200,13 @@ def test_current_template_page_assignment_swaps_regions_and_is_idempotent(
     )
     assert after_template["is_confirmed"] == 0
     assert after_template["regions_snapshot_pending"] == 0
-    after_region = db.list_answer_regions(session_id)[0]
+    after_region = db.templates.list_answer_regions(session_id)[0]
     assert after_region["page"] == "back"
     assert after_region["is_confirmed"] == 0
     assert {key: after_region[key] for key in ("x", "y", "w", "h")} == {
         key: before_region[key] for key in ("x", "y", "w", "h")
     }
-    assert db.is_template_ready(session_id) is False
+    assert db.templates.is_template_ready(session_id) is False
     draft = client.get(f"/api/sessions/{session_id}/regions/draft").json()
     assert draft["status"] == "compatible"
     assert draft["template_fingerprint"] == body["template"]["template_fingerprint"]
@@ -223,8 +224,8 @@ def test_current_template_page_assignment_swaps_regions_and_is_idempotent(
     assert retried.status_code == 200
     assert retried.json()["changed"] is False
     assert retried.json()["draft_sync_pending"] is False
-    assert db.get_session_template(session_id) == after_template
-    assert db.list_answer_regions(session_id)[0]["page"] == "back"
+    assert db.templates.get_session_template(session_id) == after_template
+    assert db.templates.list_answer_regions(session_id)[0]["page"] == "back"
     assert (
         client.get(f"/api/sessions/{session_id}/regions/draft").json()["draft"][
             "revision"
@@ -304,7 +305,7 @@ def test_pending_snapshot_can_be_retried_without_recommitting_regions(
         },
     )
     monkeypatch.setattr(commit_module, "_atomic_write_json", original_atomic_write)
-    before_retry = db.list_answer_regions(session_id)
+    before_retry = db.templates.list_answer_regions(session_id)
 
     retried = client.post(
         f"/api/sessions/{session_id}/regions/snapshot/retry",
@@ -316,6 +317,6 @@ def test_pending_snapshot_can_be_retried_without_recommitting_regions(
     assert retried.status_code == 200
     assert retried.json()["committed"] is True
     assert retried.json()["snapshot_pending"] is False
-    assert db.list_answer_regions(session_id) == before_retry
-    assert db.get_session_template(session_id)["regions_snapshot_pending"] == 0
+    assert db.templates.list_answer_regions(session_id) == before_retry
+    assert db.templates.get_session_template(session_id)["regions_snapshot_pending"] == 0
     assert str(tmp_path) not in retried.text

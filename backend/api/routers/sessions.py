@@ -442,7 +442,7 @@ def get_session_progress(
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionProgress:
     _require_session(sessions, session_id)
-    return SessionProgress(**db.get_session_progress(int(session_id)))
+    return SessionProgress(**db.papers.get_session_progress(int(session_id)))
 
 
 @router.get(
@@ -477,7 +477,7 @@ def get_session_template(
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionTemplateResponse:
     _require_session(sessions, session_id)
-    template = db.get_session_template(int(session_id))
+    template = db.templates.get_session_template(int(session_id))
     if template is None:
         raise ApiError(
             404,
@@ -495,7 +495,7 @@ def list_answer_regions(
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> AnswerRegionListResponse:
     _require_session(sessions, session_id)
-    items = [_region_response(row) for row in db.list_answer_regions(int(session_id))]
+    items = [_region_response(row) for row in db.templates.list_answer_regions(int(session_id))]
     return AnswerRegionListResponse(items=items, total=len(items))
 
 

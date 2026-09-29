@@ -1,17 +1,15 @@
 """Named repository access for active grading callers.
 
-The compatibility source is deliberately kept behind this boundary.  Active
-services consume the named repositories below; methods that have not yet been
-assigned to one repository remain available only as logged compatibility
-operations for the one-release DBManager transition window.
+GradingRepositoryAccess is an explicit container: the eight named repository
+gateways plus the database lifecycle members callers need.  It performs no
+attribute forwarding; every member below is a real, declared dependency.
 """
 
 from __future__ import annotations
 
-import logging
-import threading
+import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from backend.repositories.papers import PaperRepositoryGateway
 from backend.repositories.reporting import ReportRepositoryGateway
@@ -22,130 +20,52 @@ from backend.repositories.sessions import SessionRepositoryGateway
 from backend.repositories.students import StudentRepositoryGateway
 from backend.repositories.templates import TemplateRegionRepositoryGateway
 
-
-logger = logging.getLogger(__name__)
-_COMPATIBILITY_LOG_GUARD = threading.Lock()
-_LOGGED_COMPATIBILITY_OPERATIONS: set[str] = set()
+if TYPE_CHECKING:
+    from db_manager import DBManager
 
 
 class GradingRepositoryAccess:
     """Expose grading persistence through named repository gateways."""
 
-    def __init__(self, compatibility_source: Any) -> None:
-        self._compatibility_source = compatibility_source
-        self.db_path = Path(getattr(compatibility_source, "db_path", "."))
-        self.students: StudentRepositoryGateway = (
-            getattr(compatibility_source, "student_repository", compatibility_source)
-        )
-        self.sessions: SessionRepositoryGateway = (
-            getattr(compatibility_source, "session_repository", compatibility_source)
-        )
-        self.papers: PaperRepositoryGateway = getattr(
-            compatibility_source,
-            "paper_repository",
-            compatibility_source,
-        )
-        self.results: ResultRepositoryGateway = (
-            getattr(compatibility_source, "result_repository", compatibility_source)
-        )
-        self.reviews: ReviewRepositoryGateway = (
-            getattr(compatibility_source, "review_repository", compatibility_source)
-        )
-        self.templates: TemplateRegionRepositoryGateway = (
-            getattr(compatibility_source, "template_repository", compatibility_source)
-        )
-        self.settings: SettingsRepositoryGateway = (
-            getattr(compatibility_source, "settings_repository", compatibility_source)
-        )
-        self.reports: ReportRepositoryGateway = (
-            getattr(compatibility_source, "report_repository", compatibility_source)
-        )
-        repositories = [
-            self.students,
-            self.sessions,
-            self.papers,
-            self.results,
-            self.reviews,
-            self.templates,
-            self.settings,
-            self.reports,
-        ]
-        self._named_repositories = tuple(
-            repository
-            for index, repository in enumerate(repositories)
-            if all(repository is not prior for prior in repositories[:index])
-        )
+    def __init__(self, database: "DBManager") -> None:
+        self._database = database
+        self.db_path = Path(database.db_path)
+        self.students: StudentRepositoryGateway = database.student_repository
+        self.sessions: SessionRepositoryGateway = database.session_repository
+        self.papers: PaperRepositoryGateway = database.paper_repository
+        self.results: ResultRepositoryGateway = database.result_repository
+        self.reviews: ReviewRepositoryGateway = database.review_repository
+        self.templates: TemplateRegionRepositoryGateway = database.template_repository
+        self.settings: SettingsRepositoryGateway = database.settings_repository
+        self.reports: ReportRepositoryGateway = database.report_repository
 
     @property
-    def student_repository(self) -> StudentRepositoryGateway:
-        return self.students
+    def backup_dir(self) -> Path:
+        return self._database.backup_dir
 
-    @property
-    def session_repository(self) -> SessionRepositoryGateway:
-        return self.sessions
+    def initialize(self) -> None:
+        self._database.initialize()
 
-    @property
-    def paper_repository(self) -> PaperRepositoryGateway:
-        return self.papers
+    def create_backup(self, reason: str, *, once_per_day: bool = False) -> Path | None:
+        return self._database.create_backup(reason, once_per_day=once_per_day)
 
-    @property
-    def result_repository(self) -> ResultRepositoryGateway:
-        return self.results
+    def commit(self) -> None:
+        self._database.commit()
 
-    @property
-    def review_repository(self) -> ReviewRepositoryGateway:
-        return self.reviews
+    def rollback(self) -> None:
+        self._database.rollback()
 
-    @property
-    def template_repository(self) -> TemplateRegionRepositoryGateway:
-        return self.templates
+    def close(self) -> None:
+        self._database.close()
 
-    @property
-    def settings_repository(self) -> SettingsRepositoryGateway:
-        return self.settings
-
-    @property
-    def report_repository(self) -> ReportRepositoryGateway:
-        return self.reports
-
-    def __getattr__(self, name: str) -> Any:
-        instance_overrides = getattr(self._compatibility_source, "__dict__", {})
-        if name in instance_overrides:
-            _log_compatibility_operation(name)
-            return instance_overrides[name]
-
-        matches = [
-            getattr(repository, name)
-            for repository in self._named_repositories
-            if hasattr(repository, name)
-        ]
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            raise AttributeError(
-                f"repository operation {name!r} is ambiguous; use a named repository"
-            )
-
-        operation = getattr(self._compatibility_source, name)
-        _log_compatibility_operation(name)
-        return operation
+    def _connect(self) -> sqlite3.Connection:
+        return self._database._connect()
 
 
 def as_grading_repositories(source: Any) -> GradingRepositoryAccess:
     if isinstance(source, GradingRepositoryAccess):
         return source
     return GradingRepositoryAccess(source)
-
-
-def _log_compatibility_operation(name: str) -> None:
-    with _COMPATIBILITY_LOG_GUARD:
-        if name in _LOGGED_COMPATIBILITY_OPERATIONS:
-            return
-        _LOGGED_COMPATIBILITY_OPERATIONS.add(name)
-    logger.info(
-        "grading repository compatibility operation used",
-        extra={"repository_compatibility_operation": name},
-    )
 
 
 __all__ = ["GradingRepositoryAccess", "as_grading_repositories"]

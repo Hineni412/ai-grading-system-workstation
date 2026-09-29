@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from backend.domain_models import GradingResult, QuestionGradingDetail, SecondaryError
 from db_manager import DBManager
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _seed_result(db: DBManager) -> tuple[int, int]:
-    session_id = db.create_grading_session("错因持久化", "rubric.json", "answer.json")
+    session_id = db.sessions.create_grading_session("错因持久化", "rubric.json", "answer.json")
     with db._connect() as conn:
         student_id = int(
             conn.execute(
@@ -49,11 +50,11 @@ def _seed_result(db: DBManager) -> tuple[int, int]:
         ],
         raw_json={"grading_completeness": {"status": "complete"}},
     )
-    return session_id, db.save_session_result(session_id, student_id, paper_id, result)
+    return session_id, db.results.save_session_result(session_id, student_id, paper_id, result)
 
 
 def test_atomic_retry_replaces_only_target_secondary_errors(tmp_path) -> None:
-    db = DBManager(tmp_path / "grading.db")
+    db = open_grading_repositories(tmp_path / "grading.db")
     db.initialize()
     _session_id, result_id = _seed_result(db)
     replacement = QuestionGradingDetail(
@@ -65,7 +66,7 @@ def test_atomic_retry_replaces_only_target_secondary_errors(tmp_path) -> None:
         secondary_errors=[SecondaryError("其他", "单位遗漏", "末行")],
     )
 
-    db.replace_result_details_atomic(
+    db.results.replace_result_details_atomic(
         result_id,
         ["Q2"],
         [replacement],
@@ -81,7 +82,7 @@ def test_atomic_retry_replaces_only_target_secondary_errors(tmp_path) -> None:
         raw_json={"grading_completeness": {"status": "complete"}},
     )
 
-    rows = {row["question_id"]: row for row in db.get_result_details(result_id)}
+    rows = {row["question_id"]: row for row in db.results.get_result_details(result_id)}
     assert rows["Q1"]["secondary_errors"] == []
     assert rows["Q2"]["secondary_errors"] == [
         {"category": "其他", "summary": "单位遗漏", "evidence": "末行"}

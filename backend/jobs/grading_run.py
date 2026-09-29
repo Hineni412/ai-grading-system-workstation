@@ -46,7 +46,7 @@ def run_grading_job(
     db = as_grading_repositories(db)
     session_id = int(session_id)
     _check_cancelled(raise_if_cancelled)
-    session = db.get_grading_session(session_id)
+    session = db.sessions.get_grading_session(session_id)
     if session is None:
         raise ValueError(f"session not found: {session_id}")
 

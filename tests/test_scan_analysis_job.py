@@ -18,6 +18,18 @@ def test_template_change_during_scan_analysis_preserves_previous_preflight(
     template_changed = False
 
     class FakeDb:
+        @property
+        def sessions(self):
+            return self
+
+        @property
+        def templates(self):
+            return self
+
+        @property
+        def students(self):
+            return self
+
         def get_grading_session(self, session_id: int) -> dict[str, int]:
             return {"id": session_id}
 

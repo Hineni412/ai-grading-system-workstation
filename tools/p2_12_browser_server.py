@@ -11,6 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path[:1]:
     sys.path.insert(0, str(REPO_ROOT))
+from backend.repositories.grading_database import open_grading_repositories
 ALLOWED_DATA_ROOT = Path(
     os.path.abspath(REPO_ROOT / "frontend" / "test-results" / "p2-12-real")
 )
@@ -53,9 +54,9 @@ def _prepare_paths(data_root: Path):
 
 
 def _seed_business_data(paths) -> int:
-    from db_manager import DBManager, StudentRecord
+    from db_manager import StudentRecord
 
-    db = DBManager(paths.db_path)
+    db = open_grading_repositories(paths.db_path)
     db.initialize()
     rubric = paths.upload_config_dir / "anonymous-rubric.json"
     answer = paths.upload_config_dir / "anonymous-answer.json"
@@ -75,13 +76,13 @@ def _seed_business_data(paths) -> int:
         json.dumps({"questions": [{"question_id": "Q1"}]}, ensure_ascii=False),
         encoding="utf-8",
     )
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "七年级匿名期末",
         str(rubric),
         str(answer),
     )
-    db.upsert_students([StudentRecord("A001", "匿名学生一", "测试班")])
-    student_id = int(db.list_students()[0]["id"])
+    db.students.upsert_students([StudentRecord("A001", "匿名学生一", "测试班")])
+    student_id = int(db.students.list_students()[0]["id"])
     page = paths.exams_dir / "anonymous-paper.jpg"
     page.write_bytes(b"anonymous browser fixture")
     with db._connect() as conn:
@@ -134,9 +135,9 @@ def _finish(store, job_type: str, payload: dict, *, status: str, result=None, er
 
 def _seed_jobs(paths, store, session_id: int) -> None:
     from backend.report_exports import score_revision
-    from db_manager import DBManager
+    
 
-    revision = score_revision(DBManager(paths.db_path), session_id)
+    revision = score_revision(open_grading_repositories(paths.db_path), session_id)
     for index in range(98):
         _finish(
             store,

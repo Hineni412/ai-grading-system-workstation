@@ -14,6 +14,7 @@ from ai_batch_grading_service import AIBatchRunResult, PaperEntry
 from db_manager import DBManager, StudentGradingActiveError
 from grading_run_store import GradingRunStore
 from scanner import ExamPaperGroup
+from backend.repositories.grading_database import open_grading_repositories
 
 
 class _CountingGrader:
@@ -93,9 +94,9 @@ def _seed(tmp_path: Path, students: list[tuple[int, str]]) -> tuple[DBManager, i
     # 否则解析相对路径（如 "rubric.json"）会落到会话级共享临时根，全量跑时被其他测试的同名文件干扰。
     databases_dir = tmp_path / "databases"
     databases_dir.mkdir()
-    db = DBManager(databases_dir / "grading.db")
+    db = open_grading_repositories(databases_dir / "grading.db")
     db.initialize()
-    session_id = db.create_grading_session("测试", "rubric.json", "answer.json")
+    session_id = db.sessions.create_grading_session("测试", "rubric.json", "answer.json")
     import sqlite3
 
     conn = sqlite3.connect(db.db_path)
@@ -163,9 +164,11 @@ def test_pause_stops_batch_and_marks_run_paused(patched, tmp_path, monkeypatch):
         "_apply_manual_decisions",
         lambda analysis, decisions, students: groups,
     )
-    monkeypatch.setattr(db, "is_template_ready", lambda session_id: True)
+    monkeypatch.setattr(db.templates, "is_template_ready", lambda session_id: True)
     monkeypatch.setattr(
-        db, "find_student_by_name", lambda name: {"id": int(name[3:]), "name": name}
+        db.students,
+        "find_student_by_name",
+        lambda name: {"id": int(name[3:]), "name": name},
     )
 
     service = _service(db)
@@ -209,7 +212,7 @@ def test_cancel_discards_unpublished_batch_results(patched, tmp_path, monkeypatc
         "_apply_manual_decisions",
         lambda _analysis, _decisions, _students: [group],
     )
-    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    monkeypatch.setattr(db.templates, "is_template_ready", lambda _session_id: True)
     started = threading.Event()
     release = threading.Event()
     cancelled = threading.Event()
@@ -285,7 +288,7 @@ def test_supplement_grades_only_new_sources_without_clearing_prior_results(
         "_apply_manual_decisions",
         lambda _analysis, _decisions, _students: list(visible_groups),
     )
-    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    monkeypatch.setattr(db.templates, "is_template_ready", lambda _session_id: True)
 
     first_events = list(
         _service(db).run_session_grading(
@@ -343,7 +346,7 @@ def test_supplement_grades_only_new_sources_without_clearing_prior_results(
 
 def test_legacy_grading_mode_is_rejected(patched, tmp_path, monkeypatch):
     db, session_id = _seed(tmp_path, [(1, "stu1")])
-    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    monkeypatch.setattr(db.templates, "is_template_ready", lambda _session_id: True)
 
     for legacy_mode in ("full_paper", "hybrid_batch"):
         with pytest.raises(ValueError, match="旧批改方式已停用"):
@@ -362,7 +365,7 @@ def test_legacy_grading_mode_is_rejected(patched, tmp_path, monkeypatch):
 
 def test_legacy_run_cannot_be_resumed(patched, tmp_path, monkeypatch):
     db, session_id = _seed(tmp_path, [(1, "stu1")])
-    monkeypatch.setattr(db, "is_template_ready", lambda _session_id: True)
+    monkeypatch.setattr(db.templates, "is_template_ready", lambda _session_id: True)
     store = GradingRunStore(db.db_path)
     legacy_run = store.begin(session_id, "a" * 64, "full_paper")
     store.finish(legacy_run.run_token, "paused")

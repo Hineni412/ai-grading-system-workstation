@@ -330,11 +330,13 @@ def test_latest_three_graded_activities_merge_exams_and_unpublished_training(act
 def test_graded_activity_participation_does_not_depend_on_wrong_answers_or_tags():
     service = object.__new__(DiagnosisProfileService)
     service.db = SimpleNamespace(
-        list_grading_sessions=lambda: [{"id": 1, "created_at": "2020-01-01"}, {"id": 2, "is_deleted": True}],
-        get_active_assessment_evidence=lambda **kwargs: [
+        sessions=SimpleNamespace(
+            list_grading_sessions=lambda: [{"id": 1, "created_at": "2020-01-01"}, {"id": 2, "is_deleted": True}]),
+        results=SimpleNamespace(
+            get_active_assessment_evidence=lambda **kwargs: [
             {"student_id": 1, "session_id": 1, "score_awarded": 5, "full_score": 5},
             {"student_id": 1, "session_id": 1, "score_awarded": 0, "full_score": 5},
-            {"student_id": 1, "session_id": 2, "score_awarded": 0, "full_score": 5}])
+            {"student_id": 1, "session_id": 2, "score_awarded": 0, "full_score": 5}]))
     assert service.graded_activities(["1"]) == [{"student_id": "1", "activity_id": "exam:1", "session_id": "1", "occurred_at": "2020-01-01"}]
 
 

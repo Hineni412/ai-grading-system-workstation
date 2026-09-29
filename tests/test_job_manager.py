@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
@@ -10,7 +11,7 @@ def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
 ) -> None:
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
     from question_bank.database.schema import connect, initialize_database
     from question_bank.services.source_question_link_service import (
         SourceQuestionLinkService,
@@ -18,9 +19,9 @@ def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
 
     grading_db_path = tmp_path / "grading.db"
     question_bank_db_path = tmp_path / "question-bank.db"
-    grading_db = DBManager(grading_db_path)
+    grading_db = open_grading_repositories(grading_db_path)
     grading_db.initialize()
-    session_id = grading_db.create_grading_session(
+    session_id = grading_db.sessions.create_grading_session(
         "Exam",
         "rubric.json",
         "answer.json",
@@ -35,7 +36,7 @@ def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
         },
     )
     assert store.mark_running(job.id)
-    grading_db.update_question_bank_sync_state(
+    grading_db.sessions.update_question_bank_sync_state(
         session_id,
         state="running",
         details={
@@ -83,7 +84,7 @@ def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
             (item["source_question_id"], item["bank_question_id"]) for item in remaining
         ] == [("Q18", 202)]
         assert (
-            grading_db.get_grading_session(session_id)["question_bank_sync_state"]
+            grading_db.sessions.get_grading_session(session_id)["question_bank_sync_state"]
             == "failed"
         )
     finally:

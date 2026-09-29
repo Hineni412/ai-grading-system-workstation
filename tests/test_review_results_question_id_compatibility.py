@@ -13,6 +13,7 @@ from backend.review.service import (
     ReviewConfirmationInput,
 )
 from db_manager import DBManager
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _seed_review_result(
@@ -23,7 +24,7 @@ def _seed_review_result(
 ) -> tuple[DBManager, int, dict[str, Any], dict[str, Any]]:
     db_path = tmp_path / "databases" / "grading.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    db = DBManager(db_path)
+    db = open_grading_repositories(db_path)
     db.initialize()
     rubric_path = tmp_path / "rubric.json"
     configured_parts = rubric_parts or [
@@ -48,7 +49,7 @@ def _seed_review_result(
         ),
         encoding="utf-8",
     )
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "Historical question ID",
         str(rubric_path),
         "answer.json",
@@ -107,7 +108,7 @@ def _seed_review_result(
     finally:
         connection.close()
 
-    session = db.get_grading_session(session_id)
+    session = db.sessions.get_grading_session(session_id)
     assert session is not None
     manual_context = {
         "scan_batch_id": "current-batch",

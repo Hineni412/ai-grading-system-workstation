@@ -22,6 +22,7 @@ RUBRIC = {
         {"question_id": "Q12", "max_score": 5},
     ]
 }
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _seed_session(
@@ -30,7 +31,7 @@ def _seed_session(
     db_path = tmp_path / "databases" / "grading.db"
     rubric_path = tmp_path / "rubric.json"
     rubric_path.write_text(json.dumps(RUBRIC, ensure_ascii=False), encoding="utf-8")
-    db = DBManager(db_path)
+    db = open_grading_repositories(db_path)
     db.initialize()
 
     payload = raw_json if raw_json is not None else {}
@@ -102,7 +103,7 @@ def test_incomplete_result_stays_visible_after_another_failed_retry(
         },
     )
 
-    db.record_result_retry_failure(
+    db.results.record_result_retry_failure(
         1,
         {
             "status": "failed",
@@ -112,7 +113,7 @@ def test_incomplete_result_stays_visible_after_another_failed_retry(
         },
     )
 
-    rows = db.list_incomplete_results(session_id)
+    rows = db.results.list_incomplete_results(session_id)
 
     assert len(rows) == 1
     assert rows[0]["status"] == "incomplete"

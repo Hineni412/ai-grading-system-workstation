@@ -9,7 +9,7 @@ import threading
 from typing import Any, Iterable, Mapping, TypedDict
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
-from backend.repositories.compat import open_grading_repositories
+from backend.repositories.grading_database import open_grading_repositories
 from integration.data_generation import commit_generation
 from integration.evidence_scope import EvidenceScopeResolver
 from integration.question_tag_projection_service import (
@@ -572,10 +572,10 @@ class DiagnosisProfileService:
         ids = tuple(student_ids)
         if not ids:
             return []
-        sessions = {str(item["id"]): item for item in self.db.list_grading_sessions()
+        sessions = {str(item["id"]): item for item in self.db.sessions.list_grading_sessions()
                     if not item.get("is_deleted")}
         activities: dict[tuple[str, str], dict[str, Any]] = {}
-        for row in self.db.get_active_assessment_evidence(student_ids=ids):
+        for row in self.db.results.get_active_assessment_evidence(student_ids=ids):
             if row.get("score_awarded") is None:
                 continue
             sid, session = str(row["student_id"]), str(row["session_id"])
@@ -819,7 +819,7 @@ class DiagnosisProfileService:
         # in the resolved profile are consumed by the mastery calculator.
         sessions = [
             item
-            for item in self.db.list_grading_sessions()
+            for item in self.db.sessions.list_grading_sessions()
             if not item.get("is_deleted")
         ]
         return {
@@ -841,7 +841,7 @@ class DiagnosisProfileService:
         if session_ids is None:
             selected_sessions = [
                 int(item["id"])
-                for item in self.db.list_grading_sessions()
+                for item in self.db.sessions.list_grading_sessions()
                 if not item.get("is_deleted")
             ]
         if not selected_sessions:
@@ -899,7 +899,7 @@ class DiagnosisProfileService:
         )
         projections: dict[int, QuestionTagProjection] = {}
         for session_id in session_ids:
-            rubric = self.db._load_session_rubric(int(session_id))
+            rubric = self.db.results._load_session_rubric(int(session_id))
             projections[int(session_id)] = service.project_session(
                 grading_session_id=int(session_id),
                 rubric=rubric,
@@ -918,7 +918,7 @@ class DiagnosisProfileService:
             for session_id, projection in projection_by_session.items()
             for item in projection.items
         }
-        rows = self.db.get_active_assessment_evidence(
+        rows = self.db.results.get_active_assessment_evidence(
             student_ids=tuple(student_ids),
             session_ids=tuple(session_ids),
         )
@@ -982,7 +982,7 @@ class DiagnosisProfileService:
     ) -> list[dict[str, Any]]:
         active = {
             int(item["id"]): item
-            for item in self.db.list_grading_sessions()
+            for item in self.db.sessions.list_grading_sessions()
             if not item.get("is_deleted")
         }
         mode = str(exam_scope.get("mode") or "current")
@@ -1010,7 +1010,7 @@ class DiagnosisProfileService:
         scope: Mapping[str, Any],
         warnings: list[str],
     ) -> list[dict[str, Any]]:
-        all_students = self.db.list_students()
+        all_students = self.db.students.list_students()
         by_id = {str(item["id"]): item for item in all_students}
         mode = str(scope.get("mode") or "student")
         requested = _text_list(scope.get("student_ids"))
@@ -1046,7 +1046,7 @@ class DiagnosisProfileService:
         }
         totals: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
         for session_id in session_ids:
-            for result in self.db.get_session_results(session_id):
+            for result in self.db.results.get_session_results(session_id):
                 student_id = student_id_by_code.get(str(result.get("student_code") or ""))
                 if student_id is None:
                     continue
@@ -1054,7 +1054,7 @@ class DiagnosisProfileService:
                 totals[student_id][1] += _number(result.get("total_score"))
         fallback = {
             str(item["student_id"]): _number(item.get("avg_score_rate")) / 100
-            for item in self.db.get_active_student_score_rates()
+            for item in self.db.results.get_active_student_score_rates()
         }
         return {
             str(student["id"]): (

@@ -16,6 +16,7 @@ from template_upload_service import (
 )
 
 TEST_CONTENT_SHA256 = "0" * 64
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _two_page_pdf() -> bytes:
@@ -48,13 +49,13 @@ def _create_session_with_config(db: DBManager, root, *, questions=None) -> int:
         ),
         encoding="utf-8",
     )
-    return db.create_grading_session(
+    return db.sessions.create_grading_session(
         "Template Exam", str(rubric_path), str(answer_path)
     )
 
 
 def test_failed_database_activation_preserves_previous_template_files(tmp_path) -> None:
-    db = DBManager(tmp_path / "grading.db")
+    db = open_grading_repositories(tmp_path / "grading.db")
     db.initialize()
     session_id = _create_session_with_config(db, tmp_path)
     templates_dir = tmp_path / "templates"
@@ -64,7 +65,7 @@ def test_failed_database_activation_preserves_previous_template_files(tmp_path) 
     back = session_dir / "template_back_from_pdf_page.jpg"
     front.write_bytes(b"previous-front")
     back.write_bytes(b"previous-back")
-    db.upsert_session_template(session_id, str(front), str(back))
+    db.templates.upsert_session_template(session_id, str(front), str(back))
     with sqlite3.connect(db.db_path) as connection:
         connection.execute(
             """

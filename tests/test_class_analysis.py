@@ -22,6 +22,7 @@ from tests.test_analysis_report import (
     _patch_configured,
     _seed_analysis_session,
 )
+from backend.repositories.grading_database import open_grading_repositories
 
 
 class BlockingLLMClient(FakeLLMClient):
@@ -50,9 +51,9 @@ def class_analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from backend.jobs.default_handlers import _build_class_analysis_generate_handler
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     session_id = _seed_analysis_session(db, tmp_path)
     reports_dir = tmp_path / "reports"
@@ -180,7 +181,7 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
     manager.wait(job["id"], timeout=5)
     assert len(fake.calls) == 3
     # 图像编码不进入文本归并请求；实际评分要求变化会使该题归并过期。
-    rubric_path = Path(db.get_grading_session(sid)["rubric_path"])
+    rubric_path = Path(db.sessions.get_grading_session(sid)["rubric_path"])
     rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
     rubric["questions"][1]["question_image_base64"] = "synthetic-image-payload"
     rubric["questions"][1]["proof_obligations"] = ["必须说明直角条件"]
@@ -249,7 +250,7 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
         conn.execute(
             "UPDATE session_details SET deduction_reason='求解有误', error_summary='', error_category='' WHERE question_id='Q2'"
         )
-    session = db.get_grading_session(sid)
+    session = db.sessions.get_grading_session(sid)
     answer_path = Path(session["answer_key_path"])
     answer_key = json.loads(answer_path.read_text(encoding="utf-8"))
     answer_key["questions"][1]["analysis"] = "列出12x=28，解得x=7/3。"
@@ -443,9 +444,9 @@ def auto_generate_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from backend.jobs.default_handlers import _build_class_analysis_generate_handler
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     session_id = _seed_analysis_session(db, tmp_path)
     reports_dir = tmp_path / "reports"
@@ -493,9 +494,9 @@ def test_student_error_records_materialize_and_invalidate_on_input_change(
         save_cause_result,
         student_error_map,
     )
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     sid = _seed_analysis_session(db, tmp_path)
     store = ClassAnalysisStateStore(tmp_path / "reports")
@@ -902,9 +903,9 @@ def test_session_error_records_and_category_counts(tmp_path: Path) -> None:
         session_error_records,
     )
     from analysis_report_exporter import build_class_page_data
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     sid = _seed_analysis_session(db, tmp_path)
     reports_dir = tmp_path / "reports"

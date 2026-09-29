@@ -18,6 +18,7 @@ from session_cleanup import (
     list_pending_session_permanent_deletions,
     recover_interrupted_session_permanent_deletion,
 )
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _write(path: Path, content: str = "x") -> Path:
@@ -29,7 +30,7 @@ def _write(path: Path, content: str = "x") -> Path:
 def _make_deleted_session(db: DBManager, data_root: Path) -> tuple[int, list[Path]]:
     rubric = _write(data_root / "config" / "uploaded" / "rubric.json")
     answer_key = _write(data_root / "config" / "uploaded" / "answer.json")
-    session_id = db.create_grading_session("old session", str(rubric), str(answer_key))
+    session_id = db.sessions.create_grading_session("old session", str(rubric), str(answer_key))
 
     template_dir = data_root / "templates" / f"session_{session_id}"
     exams_dir = data_root / "exams" / f"session_{session_id}"
@@ -44,16 +45,16 @@ def _make_deleted_session(db: DBManager, data_root: Path) -> tuple[int, list[Pat
     annotated_front = _write(annotated_dir / "front.jpg")
     annotated_back = _write(annotated_dir / "back.jpg")
 
-    template_id = db.upsert_session_template(
+    template_id = db.templates.upsert_session_template(
         session_id, str(front_template), str(back_template)
     )
-    db.update_session_template_analysis(
+    db.templates.update_session_template_analysis(
         session_id,
         ai_analysis_path=str(analysis),
         template_config_path=str(template_dir / "config.json"),
         regions_path=str(regions),
     )
-    db.save_answer_regions(
+    db.templates.save_answer_regions(
         session_id,
         template_id,
         [
@@ -112,7 +113,7 @@ def _make_deleted_session(db: DBManager, data_root: Path) -> tuple[int, list[Pat
         )
         conn.commit()
 
-    db.soft_delete_grading_session(session_id)
+    db.sessions.soft_delete_grading_session(session_id)
     return session_id, [
         rubric,
         answer_key,
@@ -167,7 +168,7 @@ def test_grading_delete_failure_rolls_back_question_bank_and_storage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data_root = tmp_path / "user_data"
-    db = DBManager(data_root / "databases" / "grading_system.db")
+    db = open_grading_repositories(data_root / "databases" / "grading_system.db")
     db.db_path.parent.mkdir(parents=True)
     db.initialize()
     session_id, owned_files = _make_deleted_session(db, data_root)
@@ -177,7 +178,7 @@ def test_grading_delete_failure_rolls_back_question_bank_and_storage(
     def reject_delete(*_args, **_kwargs):
         raise SessionDeletionRevisionConflict("injected revision conflict")
 
-    monkeypatch.setattr(db, "hard_delete_grading_session", reject_delete)
+    monkeypatch.setattr(db.sessions, "hard_delete_grading_session", reject_delete)
 
     with pytest.raises(SessionDeletionRevisionConflict):
         hard_delete_session_from_archive(
@@ -187,7 +188,7 @@ def test_grading_delete_failure_rolls_back_question_bank_and_storage(
             question_bank_db_path=question_bank_db,
         )
 
-    assert db.get_grading_session(session_id) is not None
+    assert db.sessions.get_grading_session(session_id) is not None
     assert _question_bank_link_count(question_bank_db, session_id) == 1
     assert all(path.exists() for path in owned_files)
     assert not (
@@ -200,7 +201,7 @@ def test_success_with_pending_storage_cleanup_is_idempotently_recoverable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data_root = tmp_path / "user_data"
-    db = DBManager(data_root / "databases" / "grading_system.db")
+    db = open_grading_repositories(data_root / "databases" / "grading_system.db")
     db.db_path.parent.mkdir(parents=True)
     db.initialize()
     session_id, _owned_files = _make_deleted_session(db, data_root)
@@ -222,7 +223,7 @@ def test_success_with_pending_storage_cleanup_is_idempotently_recoverable(
     assert result["db_counts"]["grading_sessions"] == 1
     assert result["storage_cleanup_pending"] is True
     assert result["recovered_interrupted_delete"] is False
-    assert db.get_grading_session(session_id) is None
+    assert db.sessions.get_grading_session(session_id) is None
     assert _question_bank_link_count(question_bank_db, session_id) == 0
     assert (data_root / ".session-delete-staging" / f"session_{session_id}").is_dir()
     assert list_pending_session_permanent_deletions(db, data_root=data_root) == [

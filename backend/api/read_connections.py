@@ -9,7 +9,7 @@ from typing import Protocol
 
 from backend.performance.metrics import instrument_sqlite_connection
 from backend.repositories.access import GradingRepositoryAccess
-from backend.repositories.compat import open_grading_repositories
+from backend.repositories.grading_database import open_grading_repositories
 from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.services.question_read_service import (

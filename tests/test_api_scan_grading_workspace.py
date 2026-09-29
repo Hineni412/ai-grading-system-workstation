@@ -5,6 +5,7 @@ import json
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _configure_scan_prerequisites(db, tmp_path, session_id: int) -> None:
@@ -22,7 +23,7 @@ def _configure_scan_prerequisites(db, tmp_path, session_id: int) -> None:
         json.dumps({"questions": []}),
         encoding="utf-8",
     )
-    db.update_grading_session_config(
+    db.sessions.update_grading_session_config(
         session_id,
         rubric_path=str(rubric_path),
         answer_key_path=str(answer_path),
@@ -33,12 +34,12 @@ def _configure_scan_prerequisites(db, tmp_path, session_id: int) -> None:
     back_path = session_dir / "back.png"
     Image.new("RGB", (16, 16), "white").save(front_path)
     Image.new("RGB", (16, 16), "black").save(back_path)
-    db.upsert_session_template(
+    db.templates.upsert_session_template(
         session_id,
         str(front_path),
         str(back_path),
     )
-    db.mark_template_confirmed(session_id, True)
+    db.templates.mark_template_confirmed(session_id, True)
 
 
 def _jpeg(payload: bytes) -> bytes:
@@ -55,9 +56,9 @@ def _client(tmp_path):
     )
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     manager = JobManager(JobStore(db.db_path), max_workers=1)
     app = create_app()
@@ -70,7 +71,7 @@ def _client(tmp_path):
 
 def test_scan_upload_routes_publish_safe_queue_and_freeze_it(tmp_path) -> None:
     client, db, manager = _client(tmp_path)
-    session_id = db.create_grading_session("匿名月考", "rubric.json", "answer.json")
+    session_id = db.sessions.create_grading_session("匿名月考", "rubric.json", "answer.json")
     content = _jpeg(b"anonymous-jpeg")
     digest = hashlib.sha256(content).hexdigest()
     headers = {
@@ -127,14 +128,14 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(
     from db_manager import StudentRecord
 
     client, db, manager = _client(tmp_path)
-    db.upsert_students(
+    db.students.upsert_students(
         [
             StudentRecord("S001", "学生甲", "七年级 1 班"),
             StudentRecord("S002", "学生乙", "七年级 1 班"),
         ]
     )
-    students = db.list_students()
-    session_id = db.create_grading_session("匿名期中", "rubric.json", "answer.json")
+    students = db.students.list_students()
+    session_id = db.sessions.create_grading_session("匿名期中", "rubric.json", "answer.json")
     try:
         for index, content in enumerate((_jpeg(b"front"), _jpeg(b"back")), start=1):
             client.post(
@@ -285,7 +286,7 @@ def test_scan_analysis_uses_frozen_server_batch_and_rejects_client_paths(
     tmp_path,
 ) -> None:
     client, db, manager = _client(tmp_path)
-    session_id = db.create_grading_session("匿名模拟考", "rubric.json", "answer.json")
+    session_id = db.sessions.create_grading_session("匿名模拟考", "rubric.json", "answer.json")
     _configure_scan_prerequisites(db, tmp_path, session_id)
 
     def handler(context):

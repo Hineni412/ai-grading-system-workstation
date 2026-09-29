@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _configure_preflight_binding(db, tmp_path, session_id: int) -> dict:
     from PIL import Image
 
     from backend.config_workspace.publish import load_editor_config
-    from backend.repositories.compat import open_grading_repositories
     from template_upload_service import TemplateUploadService
 
     config_dir = tmp_path / "config"
@@ -29,7 +29,7 @@ def _configure_preflight_binding(db, tmp_path, session_id: int) -> dict:
         json.dumps({"questions": []}),
         encoding="utf-8",
     )
-    db.update_grading_session_config(
+    db.sessions.update_grading_session_config(
         session_id,
         rubric_path=str(rubric_path),
         answer_key_path=str(answer_path),
@@ -40,12 +40,12 @@ def _configure_preflight_binding(db, tmp_path, session_id: int) -> dict:
     back_path = session_dir / "back.png"
     Image.new("RGB", (16, 16), "white").save(front_path)
     Image.new("RGB", (16, 16), "black").save(back_path)
-    template_id = db.upsert_session_template(
+    template_id = db.templates.upsert_session_template(
         session_id,
         str(front_path),
         str(back_path),
     )
-    db.mark_template_confirmed(session_id, True)
+    db.templates.mark_template_confirmed(session_id, True)
     current = TemplateUploadService(tmp_path / "templates").load_current(
         db=open_grading_repositories(db.db_path),
         session_id=session_id,
@@ -73,9 +73,9 @@ def _system(tmp_path, *, config_fingerprint_resolver=None):
     )
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     manager = JobManager(JobStore(db.db_path), max_workers=1)
     app = create_app()
@@ -101,9 +101,9 @@ def _system(tmp_path, *, config_fingerprint_resolver=None):
 def _prepare_ready_scan_batch(client, db, tmp_path, session_id: int) -> dict:
     from db_manager import StudentRecord
 
-    if not db.list_students():
-        db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
-    student = db.list_students()[0]
+    if not db.students.list_students():
+        db.students.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
+    student = db.students.list_students()[0]
     binding = _configure_preflight_binding(db, tmp_path, session_id)
     content = b"\xff\xd8\xffready scan"
     uploaded = client.post(
@@ -164,9 +164,9 @@ def test_cancelled_run_cannot_resume_and_legacy_run_retry_is_rejected(
     from grading_run_store import GradingRunStore
 
     client, db, manager = _system(tmp_path)
-    db.upsert_students([StudentRecord("S001", "学生甲", "七年级 1 班")])
-    student_id = int(db.list_students()[0]["id"])
-    session_id = db.create_grading_session("匿名周测", "rubric.json", "answer.json")
+    db.students.upsert_students([StudentRecord("S001", "学生甲", "七年级 1 班")])
+    student_id = int(db.students.list_students()[0]["id"])
+    session_id = db.sessions.create_grading_session("匿名周测", "rubric.json", "answer.json")
     store = GradingRunStore(db.db_path)
     cancelled_run = store.begin(session_id, "a" * 64, "hybrid_batch")
     manager.register("grading_run", lambda context: {"state": "completed"})
@@ -232,8 +232,8 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
     from db_manager import StudentRecord
 
     client, db, manager = _system(tmp_path)
-    db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
-    session_id = db.create_grading_session("并发启动测试", "rubric.json", "answer.json")
+    db.students.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
+    session_id = db.sessions.create_grading_session("并发启动测试", "rubric.json", "answer.json")
     binding = _configure_preflight_binding(db, tmp_path, session_id)
     content = b"\xff\xd8\xfffront"
     client.post(
@@ -346,7 +346,7 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
     tmp_path,
 ) -> None:
     client, db, manager = _system(tmp_path)
-    session_id = db.create_grading_session("匿名期末", "rubric.json", "answer.json")
+    session_id = db.sessions.create_grading_session("匿名期末", "rubric.json", "answer.json")
     binding = _configure_preflight_binding(db, tmp_path, session_id)
     manager.register("grading_run", lambda context: {"state": "completed"})
     content = b"\xff\xd8\xfffront"
@@ -462,9 +462,9 @@ def test_resume_rejects_changed_grading_configuration_before_submitting_job(
         tmp_path,
         config_fingerprint_resolver=lambda _session_id, _mode: "b" * 64,
     )
-    db.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
-    student_id = int(db.list_students()[0]["id"])
-    session_id = db.create_grading_session("配置变化恢复", "rubric.json", "answer.json")
+    db.students.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
+    student_id = int(db.students.list_students()[0]["id"])
+    session_id = db.sessions.create_grading_session("配置变化恢复", "rubric.json", "answer.json")
     store = GradingRunStore(db.db_path)
     run = store.begin(session_id, "a" * 64, "ai")
     store.add_item(
@@ -506,7 +506,7 @@ def test_terminal_legacy_run_cannot_be_supplemented(
         tmp_path,
         config_fingerprint_resolver=lambda _session_id, _mode: "a" * 64,
     )
-    session_id = db.create_grading_session("异常卷补批", "rubric.json", "answer.json")
+    session_id = db.sessions.create_grading_session("异常卷补批", "rubric.json", "answer.json")
     _prepare_ready_scan_batch(client, db, tmp_path, session_id)
     store = GradingRunStore(db.db_path)
     run = store.begin(session_id, "a" * 64, grading_mode)

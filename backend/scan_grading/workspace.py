@@ -605,11 +605,11 @@ class ScanGradingWorkspace:
                 raise GradingConfigChangedError(
                     "grading configuration binding cannot be verified"
                 )
-            from backend.repositories.compat import open_grading_repositories
+            from backend.repositories.grading_database import open_grading_repositories
 
             repositories = open_grading_repositories(self.grading_db_path)
-            current_session = repositories.get_grading_session(int(session_id))
-            stored_template = repositories.get_session_template(int(session_id))
+            current_session = repositories.sessions.get_grading_session(int(session_id))
+            stored_template = repositories.templates.get_session_template(int(session_id))
             config_revision = str(
                 analysis.get("config_revision") or ""
             ).strip()
@@ -1228,7 +1228,7 @@ class ScanGradingWorkspace:
                 "scan preflight template binding is unavailable"
             )
 
-        from backend.repositories.compat import open_grading_repositories
+        from backend.repositories.grading_database import open_grading_repositories
         from template_upload_service import TemplateUploadError, TemplateUploadService
 
         try:
@@ -1331,8 +1331,8 @@ class ScanGradingWorkspace:
                 }
             students = analysis.get("students")
             if self.grading_db_path is not None:
-                from backend.repositories.compat import open_grading_repositories
-                students = open_grading_repositories(self.grading_db_path).list_students()
+                from backend.repositories.grading_database import open_grading_repositories
+                students = open_grading_repositories(self.grading_db_path).students.list_students()
             status = preflight_match_status(payload, students)
             payload["summary"].update(status["summary"])
             payload["match_conflicts"] = status["conflicts"]

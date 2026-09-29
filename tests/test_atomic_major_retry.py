@@ -30,6 +30,7 @@ RUBRIC = {
         },
     ],
 }
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _detail(
@@ -45,9 +46,9 @@ def _seed_retry_case(
 ) -> tuple[DBManager, int, int, int, Path, Path, Path]:
     db_dir = tmp_path / "databases"
     db_dir.mkdir()
-    db = DBManager(db_dir / "retry.db")
+    db = open_grading_repositories(db_dir / "retry.db")
     db.initialize()
-    session_id = db.create_grading_session("Retry", "rubric.json", "answer.json")
+    session_id = db.sessions.create_grading_session("Retry", "rubric.json", "answer.json")
     exams_dir = tmp_path / "exams"
     exams_dir.mkdir()
     front_image = exams_dir / "front.jpg"
@@ -58,7 +59,7 @@ def _seed_retry_case(
     back_template = tmp_path / "back-template.png"
     Image.new("RGB", (100, 100), "white").save(front_template)
     Image.new("RGB", (100, 100), "white").save(back_template)
-    template_id = db.upsert_session_template(
+    template_id = db.templates.upsert_session_template(
         session_id, str(front_template), str(back_template)
     )
     regions = []
@@ -79,7 +80,7 @@ def _seed_retry_case(
                 "mapping_status": "manual",
             }
         )
-    db.replace_answer_regions_atomic(session_id, template_id, regions, confirmed=True)
+    db.templates.replace_answer_regions_atomic(session_id, template_id, regions, confirmed=True)
 
     rubric_path = tmp_path / "rubric.json"
     answer_path = tmp_path / "answer.json"
@@ -126,13 +127,13 @@ def test_replace_result_details_atomic_rolls_back_delete_and_result_update(
     tmp_path: Path,
 ) -> None:
     db, session_id, student_id, paper_id, _, _, _ = _seed_retry_case(tmp_path)
-    original = db.get_session_results(session_id)[0]
+    original = db.results.get_session_results(session_id)[0]
     result_id = original["result_id"]
     invalid_detail = _detail("10-2", 6)
     invalid_detail.question_id = None  # type: ignore[assignment]
 
     with pytest.raises(sqlite3.IntegrityError):
-        db.replace_result_details_atomic(
+        db.results.replace_result_details_atomic(
             result_id,
             ["10-1", "10-2"],
             [_detail("10-1", 4), invalid_detail],
@@ -142,12 +143,12 @@ def test_replace_result_details_atomic_rolls_back_delete_and_result_update(
             raw_json={"grading_completeness": {"status": "complete"}},
         )
 
-    preserved = db.get_session_results(session_id)[0]
+    preserved = db.results.get_session_results(session_id)[0]
     assert preserved["result_id"] == result_id
     assert preserved["student_score"] == original["student_score"]
     assert preserved["raw_json"] == original["raw_json"]
     assert [
-        (d["question_id"], d["score_awarded"]) for d in db.get_result_details(result_id)
+        (d["question_id"], d["score_awarded"]) for d in db.results.get_result_details(result_id)
     ] == [
         ("Q1", 5.0),
         ("10-1", 3.0),
@@ -158,7 +159,7 @@ def test_retry_retains_other_question_evidence_and_recomputes_review_after_reloa
     tmp_path: Path,
 ) -> None:
     db, session_id, _, _, _, _, _ = _seed_retry_case(tmp_path)
-    result_id = db.get_session_results(session_id)[0]["result_id"]
+    result_id = db.results.get_session_results(session_id)[0]["result_id"]
     previous = {
         "detail_metadata": {
             "Q1": {"recognized_answer": "A", "need_review": False},
@@ -171,7 +172,7 @@ def test_retry_retains_other_question_evidence_and_recomputes_review_after_reloa
             (json.dumps(previous), result_id),
         )
         conn.commit()
-    db.replace_result_details_atomic(
+    db.results.replace_result_details_atomic(
         result_id,
         ["10-1", "10-2"],
         [_detail("10-1", 4), _detail("10-2", 6)],
@@ -188,7 +189,7 @@ def test_retry_retains_other_question_evidence_and_recomputes_review_after_reloa
             }
         },
     )
-    stored = db.get_session_results(session_id)[0]
+    stored = db.results.get_session_results(session_id)[0]
     raw = stored["raw_json"]
     if isinstance(raw, str):
         raw = json.loads(raw)

@@ -46,7 +46,7 @@ def _require_exam_intake_complete(
     db: GradingRepositoryAccess,
     session_id: int,
 ) -> None:
-    session = db.get_grading_session(int(session_id))
+    session = db.sessions.get_grading_session(int(session_id))
     if not exam_intake_blocks_progress(session):
         return
     details: dict[str, object] = {}
@@ -104,7 +104,7 @@ def preview_session_grading(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> GradingPlanResponse:
-    session = _require_session(db, session_id)
+    session = _require_session(db.sessions, session_id)
     _require_exam_intake_complete(db, session_id)
     try:
         workspace_state = workspace.get_workspace(session_id)
@@ -175,7 +175,7 @@ def pause_session_grading(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> GradingRunSummaryResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         result = workspace.pause_grading_run(session_id, run_id)
     except ScanGradingWorkspaceError as exc:
@@ -220,7 +220,7 @@ def resume_session_grading(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         job = workspace.submit_resume(session_id, run_id)
         return _job_response(job)
@@ -263,7 +263,7 @@ def retry_failed_session_grading(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         job = workspace.submit_failed_retry(session_id, run_id)
         return _job_response(job)
@@ -300,7 +300,7 @@ def supplement_session_grading(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         job = workspace.submit_supplement(session_id, run_id)
         return _job_response(job)
@@ -348,7 +348,7 @@ def cancel_session_grading(
     manager: JobManager = Depends(get_job_manager),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> GradingRunSummaryResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     summary = workspace.get_grading_run(session_id)
     if summary is None or int(summary["run_id"]) != int(run_id):
         raise ApiError(409, "grading_run_not_cancellable", "Grading run cannot be cancelled")
@@ -393,7 +393,7 @@ def run_session_grading(
     manager: JobManager = Depends(get_job_manager),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> JobResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     request = request or GradingRunRequest()
     _require_exam_intake_complete(db, session_id)
     if workspace.upload_batch_exists(session_id):

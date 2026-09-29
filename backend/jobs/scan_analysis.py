@@ -49,9 +49,9 @@ def run_scan_analysis(
         "准备文件",
         "正在核对考试、模板和答卷文件",
     )
-    if db.get_grading_session(session_id) is None:
+    if db.sessions.get_grading_session(session_id) is None:
         raise ValueError(f"session not found: {session_id}")
-    if not db.is_template_ready(session_id):
+    if not db.templates.is_template_ready(session_id):
         raise ValueError("session template mapping is not confirmed")
     expected_config_revision = str(config_revision or "").strip()
     if not expected_config_revision:
@@ -108,7 +108,7 @@ def run_scan_analysis(
     if not _list_scan_input_files(exams_dir):
         raise FileNotFoundError("no PDF/JPG/PNG scan files found")
 
-    students = db.list_students()
+    students = db.students.list_students()
     if not students:
         raise ValueError("student list is empty")
 

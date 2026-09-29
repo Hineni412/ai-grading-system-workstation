@@ -30,7 +30,8 @@ _PROJECT_ROOT = _SCRIPT_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from db_manager import DBManager  # noqa: E402
+from backend.repositories.grading_database import open_grading_repositories  # noqa: E402
+
 from path_manager import resolve_stored_file_path  # noqa: E402
 from question_bank.database.schema import connect, initialize_database  # noqa: E402
 from question_bank.services.source_question_link_service import (  # noqa: E402
@@ -110,9 +111,9 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="真正写入(默认只报告)")
     args = parser.parse_args()
 
-    grading_db = DBManager(args.grading_db)
+    grading_db = open_grading_repositories(args.grading_db)
     grading_db.initialize()
-    session = grading_db.get_grading_session(args.session_id)
+    session = grading_db.sessions.get_grading_session(args.session_id)
     if session is None:
         print(f"找不到考试场次: {args.session_id}")
         return 1
@@ -164,7 +165,7 @@ def main() -> int:
         if str(item).strip()
     ]
     ready = confirmed > 0 and not unresolved_ids
-    grading_db.update_question_bank_sync_state(
+    grading_db.sessions.update_question_bank_sync_state(
         args.session_id,
         state="ready" if ready else "partial",
         details={

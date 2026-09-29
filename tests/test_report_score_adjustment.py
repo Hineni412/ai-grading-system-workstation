@@ -8,6 +8,7 @@ import pytest
 
 from db_manager import DBManager
 from manual_review_service import ManualReviewService
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _seed_session(tmp_path: Path) -> tuple[DBManager, Path]:
@@ -29,7 +30,7 @@ def _seed_session(tmp_path: Path) -> tuple[DBManager, Path]:
         ),
         encoding="utf-8",
     )
-    db = DBManager(db_path)
+    db = open_grading_repositories(db_path)
     db.initialize()
 
     with sqlite3.connect(db_path) as conn:
@@ -110,4 +111,4 @@ def test_batch_score_adjustment_checks_a_legacy_part_against_its_own_maximum(
             [{"detail_id": 1, "score_awarded": 4}],
         )
 
-    assert [row["score_awarded"] for row in db.get_result_details(1)] == [2.0, 1.0]
+    assert [row["score_awarded"] for row in db.results.get_result_details(1)] == [2.0, 1.0]

@@ -41,6 +41,7 @@ from backend.jobs.scan_analysis import run_scan_analysis
 from backend.jobs.store import JobStore
 from report import ReportGenerator
 from scanner import ExamPaperGroup, ScanAnalysis
+from backend.repositories.grading_database import open_grading_repositories
 
 
 @dataclass
@@ -311,14 +312,14 @@ class SyntheticGradingService:
         **_kwargs: Any,
     ) -> Iterator[dict[str, Any]]:
         self.controls.grading_runs += 1
-        self.db.try_start_session_run(session_id)
+        self.db.sessions.try_start_session_run(session_id)
         if failed_only:
-            failed_papers = self.db.list_failed_papers_detailed(session_id)
+            failed_papers = self.db.papers.list_failed_papers_detailed(session_id)
             total = len(failed_papers)
             for current, paper in enumerate(failed_papers, start=1):
                 student_id = int(paper["student_id"])
                 student = self._student_by_id(student_id)
-                result_id = self.db.save_session_result(
+                result_id = self.db.results.save_session_result(
                     session_id,
                     student_id,
                     int(paper["paper_id"]),
@@ -328,7 +329,7 @@ class SyntheticGradingService:
                         needs_human_review=False,
                     ),
                 )
-                self.db.update_exam_paper_status(int(paper["paper_id"]), "graded")
+                self.db.papers.update_exam_paper_status(int(paper["paper_id"]), "graded")
                 yield {
                     "event": "graded",
                     "student_name": str(student["name"]),
@@ -345,7 +346,7 @@ class SyntheticGradingService:
                 student_id = int(group["student_id"])
                 student = self._student_by_id(student_id)
                 student_code = str(student["student_code"])
-                paper_id = self.db.create_exam_paper(
+                paper_id = self.db.papers.create_exam_paper(
                     session_id=session_id,
                     front_image=str(group["front_image"]),
                     back_image=str(group["back_image"]),
@@ -355,7 +356,7 @@ class SyntheticGradingService:
                     processing_status="grading",
                 )
                 if student_code == "SYN-001":
-                    result_id = self.db.save_session_result(
+                    result_id = self.db.results.save_session_result(
                         session_id,
                         student_id,
                         paper_id,
@@ -365,7 +366,7 @@ class SyntheticGradingService:
                             needs_human_review=True,
                         ),
                     )
-                    self.db.update_exam_paper_status(paper_id, "graded")
+                    self.db.papers.update_exam_paper_status(paper_id, "graded")
                     yield {
                         "event": "graded",
                         "student_name": str(student["name"]),
@@ -376,7 +377,7 @@ class SyntheticGradingService:
                         "total": total,
                     }
                 else:
-                    self.db.update_exam_paper_status(
+                    self.db.papers.update_exam_paper_status(
                         paper_id,
                         "failed",
                         "synthetic grading failure",
@@ -388,16 +389,16 @@ class SyntheticGradingService:
                         "total": total,
                     }
 
-        self.db.finish_session_run(session_id, "completed")
+        self.db.sessions.finish_session_run(session_id, "completed")
         yield {
             "event": "session_completed",
-            "progress": self.db.get_session_progress(session_id),
+            "progress": self.db.papers.get_session_progress(session_id),
         }
 
     def _student_by_id(self, student_id: int) -> dict[str, Any]:
         return next(
             student
-            for student in self.db.list_students()
+            for student in self.db.students.list_students()
             if int(student["id"]) == int(student_id)
         )
 
@@ -878,7 +879,7 @@ def serve_browser_review() -> None:
     import path_manager
     import uvicorn
     from backend.api.app import create_app
-    from db_manager import DBManager, StudentRecord
+    from db_manager import StudentRecord
     from backend.scan_grading.workspace import ScanGradingWorkspace
     from question_bank.database.schema import initialize_database
 
@@ -891,10 +892,10 @@ def serve_browser_review() -> None:
     application_paths = path_manager.get_path_manager()
     application_paths._data_root = paths.data_root
     application_paths._logs_root = sandbox / "logs"
-    db = DBManager(paths.db_path)
+    db = open_grading_repositories(paths.db_path)
     db.initialize()
     initialize_database(paths.qb_db_path)
-    db.upsert_students([
+    db.students.upsert_students([
         StudentRecord("SYN-001", "Synthetic Student A", "Synthetic Class"),
         StudentRecord("SYN-002", "Synthetic Student B", "Synthetic Class"),
     ])
@@ -939,19 +940,19 @@ def serve_browser_review() -> None:
             assert preflight.status_code == 200, preflight.text
             # Seed known AI results; this acceptance starts at teacher review.
             # All saves under test subsequently go through the real browser/API.
-            db.try_start_session_run(session_id)
-            for student, scores in zip(db.list_students(), (
+            db.sessions.try_start_session_run(session_id)
+            for student, scores in zip(db.students.list_students(), (
                 [12, 17, 17, 16, 16, 7], [10, 12, 12, 12, 11, 13],
             ), strict=True):
                 code = student["student_code"]
-                paper_id = db.create_exam_paper(
+                paper_id = db.papers.create_exam_paper(
                     session_id=session_id,
                     front_image=str(controls.uploaded_scan_paths[f"{code}_front.png"]),
                     back_image=str(controls.uploaded_scan_paths[f"{code}_back.png"]),
                     ocr_name=student["name"], student_id=student["id"],
                     match_status="matched", processing_status="graded",
                 )
-                db.result_repository.save_session_result(
+                db.results.save_session_result(
                     session_id, student["id"], paper_id,
                     _synthetic_grading_result(
                         student_name=student["name"], scores=scores,
@@ -959,7 +960,7 @@ def serve_browser_review() -> None:
                     ),
                     scan_batch_id=frozen.json()["batch_id"],
                 )
-            db.finish_session_run(session_id, "completed")
+            db.sessions.finish_session_run(session_id, "completed")
         uvicorn.run(app, host="127.0.0.1", port=args.port)
     finally:
         manager.shutdown()

@@ -44,14 +44,14 @@ def report_narrative_version(report_type: str) -> str:
 
 def score_revision(db: GradingRepositoryAccess, session_id: int, *, include_question_bank: bool = True) -> str:
     rows: list[dict[str, object]] = []
-    for result in db.get_session_results(int(session_id)):
+    for result in db.results.get_session_results(int(session_id)):
         result_id = int(result["result_id"])
         rows.append(
             {
                 "result": dict(result),
                 "details": [
                     dict(detail)
-                    for detail in db.get_result_details(result_id)
+                    for detail in db.results.get_result_details(result_id)
                 ],
             }
         )
@@ -59,7 +59,7 @@ def score_revision(db: GradingRepositoryAccess, session_id: int, *, include_ques
         "results": rows,
         "locks": [
             dict(lock)
-            for lock in db.review_repository.list_teacher_score_locks(
+            for lock in db.reviews.list_teacher_score_locks(
                 int(session_id)
             )
         ],

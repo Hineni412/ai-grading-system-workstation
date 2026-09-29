@@ -17,6 +17,7 @@ from backend.api.dependencies import (
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from db_manager import DBManager
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _payload() -> dict:
@@ -85,7 +86,7 @@ def _write_config(tmp_path: Path, db: DBManager, payload: dict | None = None) ->
     answer.write_text(
         json.dumps(value["answer_key"], ensure_ascii=False), encoding="utf-8"
     )
-    return db.create_grading_session("Editor exam", str(rubric), str(answer))
+    return db.sessions.create_grading_session("Editor exam", str(rubric), str(answer))
 
 
 @pytest.mark.parametrize(
@@ -203,7 +204,7 @@ def test_teacher_scores_save_exactly_with_advisories_and_structure_command(
 
 @pytest.fixture
 def editor_env(tmp_path: Path):
-    db = DBManager(tmp_path / "databases" / "grading.db")
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     manager = JobManager(
         JobStore(tmp_path / "databases" / "grading.db"),
@@ -235,7 +236,7 @@ def _assert_safe_editor(body: dict, tmp_path: Path) -> None:
 def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) -> None:
     client, db, _manager, tmp_path = editor_env
     session_id = _write_config(tmp_path, db)
-    db.bind_grading_session_source(
+    db.sessions.bind_grading_session_source(
         session_id,
         source_paper_path="papers/original.docx",
         source_paper_sha256="c" * 64,
@@ -255,7 +256,7 @@ def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) 
     body = saved.json()
     assert body["revision"] != first["revision"]
     assert body["save_result"]["config_saved"] is True
-    current = db.get_grading_session(session_id)
+    current = db.sessions.get_grading_session(session_id)
     assert current["source_paper_path"] == "papers/original.docx"
     assert current["source_paper_sha256"] == "c" * 64
     stored_rubric = json.loads(Path(current["rubric_path"]).read_text(encoding="utf-8"))
@@ -287,7 +288,7 @@ def test_database_failure_cleans_both_new_files_and_keeps_binding(
     client, db, manager, tmp_path = editor_env
     session_id = _write_config(tmp_path, db)
     first = client.get(f"/api/sessions/{session_id}/config/editor").json()
-    old = db.get_grading_session(session_id)
+    old = db.sessions.get_grading_session(session_id)
 
     def fail_db(*_args, **_kwargs):
         raise RuntimeError("private database failure")
@@ -302,7 +303,7 @@ def test_database_failure_cleans_both_new_files_and_keeps_binding(
         },
     )
     assert response.status_code == 500
-    current = db.get_grading_session(session_id)
+    current = db.sessions.get_grading_session(session_id)
     assert (current["rubric_path"], current["answer_key_path"]) == (
         old["rubric_path"],
         old["answer_key_path"],

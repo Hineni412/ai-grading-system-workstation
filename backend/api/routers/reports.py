@@ -68,10 +68,10 @@ def export_session_report(
     manager: JobManager = Depends(get_job_manager),
     file_service: JobFileService = Depends(get_job_file_service),
 ) -> JobResponse:
-    _require_session(db, session_id)
-    has_results = bool(db.get_session_results(int(session_id)))
+    _require_session(db.sessions, session_id)
+    has_results = bool(db.results.get_session_results(int(session_id)))
     has_teacher_locks = bool(
-        db.review_repository.list_teacher_score_locks(int(session_id))
+        db.reviews.list_teacher_score_locks(int(session_id))
     )
     if request is not None and not has_results and not has_teacher_locks:
         raise ApiError(
@@ -130,7 +130,7 @@ def get_analysis_report_preflight(
     """生成前预估：目标服务/模型、实际调用次数与 token 粗估（费用取决于服务商定价）。"""
     from analysis_report_exporter import build_analysis_preflight
 
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     payload = build_analysis_preflight(
         db,
         session_id,
@@ -154,10 +154,10 @@ def get_session_report_context(
     manager: JobManager = Depends(get_job_manager),
     file_service: JobFileService = Depends(get_job_file_service),
 ) -> ReportExportContextResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     revision = score_revision(db, session_id)
-    has_results = bool(db.get_session_results(int(session_id))) or bool(
-        db.review_repository.list_teacher_score_locks(int(session_id))
+    has_results = bool(db.results.get_session_results(int(session_id))) or bool(
+        db.reviews.list_teacher_score_locks(int(session_id))
     )
     jobs, total = manager.list(
         session_id=int(session_id),
@@ -236,7 +236,7 @@ def get_class_analysis(
         known_cause_patterns,
     )
 
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     store = ClassAnalysisStateStore(reports_dir)
     state = store.load(session_id)
     # 页面数据按当前成绩实时装配；无成绩数据时整体降级为 no_data。
@@ -329,7 +329,7 @@ def edit_cause_pattern(
     )
     from backend.error_patterns import session_bank_context
 
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     question_bank_path = question_bank_db_path(Path(db.db_path))
     try:
         apply_cause_edit(
@@ -382,7 +382,7 @@ def get_class_analysis_report(
     )
     from backend.class_analysis import question_category_counts, session_error_records
 
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     data = assemble_session_analysis(db, int(session_id), page_only=True, include_knowledge=True)
     groups = split_session_analysis_by_class(data)
     selected_class = class_name if class_name in groups else next(iter(groups), None)
@@ -421,7 +421,7 @@ def get_class_question_preview(
 ) -> dict[str, object]:
     from backend.class_analysis import class_question_preview
 
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     return class_question_preview(db, session_id, question_id, source_service=source_service)
 
 
@@ -435,7 +435,7 @@ def put_class_analysis_settings(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     reports_dir: Path = Depends(get_reports_dir),
 ) -> ClassAnalysisSettingsResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     store = ClassAnalysisStateStore(reports_dir)
     state = store.set_auto_generate(session_id, request.auto_generate)
     return ClassAnalysisSettingsResponse(auto_generate=bool(state["auto_generate"]))
@@ -453,7 +453,7 @@ def regenerate_class_analysis(
     manager: JobManager = Depends(get_job_manager),
     reports_dir: Path = Depends(get_reports_dir),
 ) -> JobResponse:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     # 兜底校验：未配置内容生成模型时不得静默改用阅卷模型或空跑计费。
     from backend.model_profiles.content_generation import resolve_content_generation_settings
 
@@ -485,7 +485,7 @@ def delete_retained_report_file(
     file_service: JobFileService = Depends(get_job_file_service),
 ) -> ReportFileDeleteResponse:
     """删除一份留存在本机的个人学情报告文件；幂等，重复删除返回 deleted=false。"""
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     job = _require_job(manager, job_id)
     if int(job.payload.get("session_id") or 0) != int(session_id):
         raise ApiError(

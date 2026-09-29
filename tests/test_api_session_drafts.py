@@ -8,14 +8,15 @@ warnings.filterwarnings(
 )
 
 from fastapi.testclient import TestClient
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _client_with_db(tmp_path):
     from backend.api.app import create_app
     from backend.api.dependencies import get_grading_db, get_upload_config_dir
-    from db_manager import DBManager
+    
 
-    db = DBManager(tmp_path / "grading.db")
+    db = open_grading_repositories(tmp_path / "grading.db")
     db.initialize()
     upload_config_dir = tmp_path / "uploaded"
 
@@ -40,7 +41,7 @@ def test_session_draft_curriculum_volume_round_trips_and_can_be_cleared(
     assert created.status_code == 201
     assert created.json()["curriculum_volume_id"] == volume_id
     session_id = int(created.json()["id"])
-    assert db.get_grading_session(session_id)["curriculum_volume_id"] == volume_id
+    assert db.sessions.get_grading_session(session_id)["curriculum_volume_id"] == volume_id
 
     cleared = client.patch(
         f"/api/sessions/{session_id}",
@@ -48,4 +49,4 @@ def test_session_draft_curriculum_volume_round_trips_and_can_be_cleared(
     )
     assert cleared.status_code == 200
     assert cleared.json()["curriculum_volume_id"] is None
-    assert db.get_grading_session(session_id)["curriculum_volume_id"] is None
+    assert db.sessions.get_grading_session(session_id)["curriculum_volume_id"] is None

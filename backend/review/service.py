@@ -151,7 +151,7 @@ class ReviewApplicationService:
         ) = (
             _load_scoring_item_map(session, self.db)
         )
-        raw_rows = self.db.get_session_review_rows(int(session_id))
+        raw_rows = self.db.reviews.get_session_review_rows(int(session_id))
         if manual_context is not None:
             items = self._list_unified_items(
                 int(session_id),
@@ -345,12 +345,12 @@ class ReviewApplicationService:
                 ).append(row)
         students = {
             int(item["id"]): item
-            for item in self.db.list_students()
+            for item in self.db.students.list_students()
             if item.get("id") is not None
         }
         regions = [
             dict(item)
-            for item in self.db.list_answer_regions(session_id)
+            for item in self.db.templates.list_answer_regions(session_id)
         ]
         selected_scores = {
             qid: score for qid, score in score_map.items()
@@ -363,7 +363,7 @@ class ReviewApplicationService:
         )
         incomplete_keys: set[tuple[int, str]] = set()
         try:
-            incomplete_results = self.db.list_incomplete_results(session_id) if needs_completeness_check else []
+            incomplete_results = self.db.results.list_incomplete_results(session_id) if needs_completeness_check else []
         except Exception:  # noqa: BLE001
             incomplete_results = []
         for incomplete in incomplete_results:
@@ -662,7 +662,7 @@ class ReviewApplicationService:
         score_map = _load_score_map(session, self.db)
         detail_lookup = {
             int(row.get("detail_id") or 0): row
-            for row in self.db.get_session_review_rows(requested_session_id)
+            for row in self.db.reviews.get_session_review_rows(requested_session_id)
         }
         normalized: list[dict[str, Any]] = []
         seen_detail_ids: set[int] = set()

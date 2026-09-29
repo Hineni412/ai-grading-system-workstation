@@ -9,9 +9,11 @@ import time
 from pathlib import Path
 
 
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path[:1]:
     sys.path.insert(0, str(REPO_ROOT))
+from backend.repositories.grading_database import open_grading_repositories
 ALLOWED_DATA_ROOT = Path(os.path.abspath(REPO_ROOT / "frontend" / "test-results" / "p2-11-real"))
 
 
@@ -50,18 +52,18 @@ def _prepare_paths(data_root: Path):
 
 def _seed(paths) -> None:
     from PIL import Image, ImageDraw
-    from db_manager import DBManager, StudentRecord
+    from db_manager import StudentRecord
 
-    db = DBManager(paths.db_path)
+    db = open_grading_repositories(paths.db_path)
     db.initialize()
     rubric = paths.upload_config_dir / "anonymous-rubric.json"
     answer = paths.upload_config_dir / "anonymous-answer.json"
     rubric.write_text(json.dumps({"total_score": 10, "questions": []}), encoding="utf-8")
     answer.write_text(json.dumps({"questions": []}), encoding="utf-8")
-    session_id = db.create_grading_session("匿名浏览器批改考试", str(rubric), str(answer))
+    session_id = db.sessions.create_grading_session("匿名浏览器批改考试", str(rubric), str(answer))
     if session_id != 1:
         raise RuntimeError("isolated P2-11 session must have id 1")
-    db.upsert_students([
+    db.students.upsert_students([
         StudentRecord("A001", "匿名学生一", "测试班"),
         StudentRecord("A002", "匿名学生二", "测试班"),
         StudentRecord("A003", "匿名学生三", "测试班"),
@@ -81,7 +83,7 @@ def _scan_handler(paths):
         scans = sorted(Path(str(context.payload["exams_dir"])).glob("*"))
         if not scans:
             raise RuntimeError("anonymous scan fixture is missing")
-        students = __import__("db_manager").DBManager(paths.db_path).list_students()
+        students = open_grading_repositories(paths.db_path).students.list_students()
         target = paths.templates_dir / f"session_{session_id}" / "scan_analysis_latest.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         context.report(0.4, "scan_analysis", "matching anonymous pages")
@@ -111,12 +113,11 @@ def _grading_handler(paths):
         from backend.scan_grading.config_fingerprint import (
             session_grading_config_fingerprint,
         )
-        from db_manager import DBManager
         from grading_run_store import GradingRunStore
 
         session_id = int(context.payload["session_id"])
         mode = str(context.payload.get("grading_mode") or "ai")
-        db = DBManager(paths.db_path)
+        db = open_grading_repositories(paths.db_path)
         config_fingerprint = session_grading_config_fingerprint(
             db=db,
             data_root=paths.data_root,
@@ -142,7 +143,7 @@ def _grading_handler(paths):
             )
         else:
             run = store.begin(session_id, config_fingerprint, mode)
-        students = db.list_students()
+        students = db.students.list_students()
         if supplement_run_id:
             item_id = store.add_item(
                 run.id,

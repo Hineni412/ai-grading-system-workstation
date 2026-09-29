@@ -23,12 +23,12 @@ BRIDGE_DIR = Path(__file__).resolve().parent / "session_4"
 
 
 def _load_session_docs() -> tuple[dict, dict]:
-    from backend.repositories.compat import open_grading_repositories
+    from backend.repositories.grading_database import open_grading_repositories
     from path_manager import get_path_manager, resolve_stored_file_path
 
     pm = get_path_manager()
     db = open_grading_repositories(pm.databases_dir / "grading_system.db")
-    session = db.get_grading_session(SESSION_ID)
+    session = db.sessions.get_grading_session(SESSION_ID)
     rubric = json.loads(
         resolve_stored_file_path(session["rubric_path"], data_root=pm.data_root)
         .read_text(encoding="utf-8")

@@ -21,7 +21,7 @@ from backend.repositories.access import (
     GradingRepositoryAccess,
     as_grading_repositories,
 )
-from backend.repositories.compat import open_grading_repositories
+from backend.repositories.grading_database import open_grading_repositories
 from export_names import session_export_path_name
 from grading_completeness import resolve_grading_completeness
 from path_manager import resolve_stored_file_path

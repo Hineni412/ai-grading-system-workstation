@@ -61,7 +61,7 @@ def list_review_questions(
     review_service: ReviewApplicationService = Depends(get_review_application_service),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ReviewQuestionListResponse:
-    session = _require_session(db, session_id)
+    session = _require_session(db.sessions, session_id)
     manual_context = current_manual_context(session_id, workspace)
     questions = review_service.list_questions(
         session_id,
@@ -96,7 +96,7 @@ def list_review_question_items(
     review_service: ReviewApplicationService = Depends(get_review_application_service),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ReviewItemListResponse:
-    session = _require_session(db, session_id)
+    session = _require_session(db.sessions, session_id)
     manual_context = current_manual_context(session_id, workspace)
     review_items = review_service.list_items(
         session_id,
@@ -122,7 +122,7 @@ def get_review_question_rubric(
     question_id: str,
     db: GradingRepositoryAccess = Depends(get_grading_db),
 ) -> ReviewRubricSectionResponse | None:
-    _require_session(db, session_id)
+    _require_session(db.sessions, session_id)
     try:
         section = load_review_rubric_section(
             db,
@@ -163,7 +163,7 @@ def confirm_review_question_items(
     review_service: ReviewApplicationService = Depends(get_review_application_service),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ReviewConfirmResponse:
-    session = _require_session(db, session_id)
+    session = _require_session(db.sessions, session_id)
     manual_context = current_manual_context(session_id, workspace)
     try:
         result = review_service.confirm(

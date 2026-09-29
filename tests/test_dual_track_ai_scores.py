@@ -11,10 +11,11 @@ import pytest
 
 from backend.domain_models import GradingResult, QuestionGradingDetail
 from db_manager import DBManager
+from backend.repositories.grading_database import open_grading_repositories
 
 
 def _detail_by_question(db: DBManager, result_id: int) -> dict[str, dict[str, object]]:
-    return {str(row["question_id"]): row for row in db.get_result_details(result_id)}
+    return {str(row["question_id"]): row for row in db.results.get_result_details(result_id)}
 
 
 def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
@@ -53,9 +54,9 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
     answer_key_path = controlled_root / "answer_key.json"
     answer_key_path.write_text("{}", encoding="utf-8")
 
-    db = DBManager(tmp_path / "hybrid-locks.db")
+    db = open_grading_repositories(tmp_path / "hybrid-locks.db")
     db.initialize()
-    session_id = db.create_grading_session(
+    session_id = db.sessions.create_grading_session(
         "混合双轨", str(rubric_path), str(answer_key_path)
     )
 
@@ -69,7 +70,7 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
     back_template = templates_root / "back.png"
     Image.new("RGB", (2831, 1960), "white").save(front_template)
     Image.new("RGB", (2800, 1900), "white").save(back_template)
-    template_id = db.upsert_session_template(
+    template_id = db.templates.upsert_session_template(
         session_id, str(front_template), str(back_template)
     )
     regions = [
@@ -89,7 +90,7 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
         }
         for index, question_id in enumerate(("Q1", "Q2"), start=1)
     ]
-    db.replace_answer_regions_atomic(session_id, template_id, regions, confirmed=True)
+    db.templates.replace_answer_regions_atomic(session_id, template_id, regions, confirmed=True)
 
     with sqlite3.connect(db.db_path) as conn:
         student_id = int(
@@ -110,7 +111,7 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
         )
         conn.commit()
 
-    db.confirm_teacher_score_locks(
+    db.reviews.confirm_teacher_score_locks(
         session_id,
         "batch-1",
         [
@@ -192,7 +193,7 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
     assert run.call_args.kwargs["skipped_questions_by_student"] == {}
     assert any(event.get("event") == "graded" for event in events)
 
-    saved = db.get_session_results(session_id)[0]
+    saved = db.results.get_session_results(session_id)[0]
     assert saved["student_score"] == 8.0
     assert saved["ai_student_score"] == 7.0
     details = _detail_by_question(db, int(saved["result_id"]))

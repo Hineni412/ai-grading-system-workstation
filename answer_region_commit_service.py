@@ -54,7 +54,7 @@ class AnswerRegionCommitService:
         if resolved_session_dir != resolved_draft_session_dir:
             raise ValueError("draft service session directory must match session_dir")
         self._db = db
-        self._templates = getattr(db, "template_repository", db)
+        self._templates = db.templates
         self._session_dir = resolved_session_dir
         self._draft_service = draft_service
         self._lock = get_answer_region_session_lock(self._session_dir)
@@ -182,11 +182,11 @@ class AnswerRegionCommitService:
         return regions, issues
 
     def _load_question_catalog(self, session_id: int) -> QuestionIdCatalog:
-        session = self._db.get_grading_session(session_id)
+        session = self._db.sessions.get_grading_session(session_id)
         if not isinstance(session, dict):
             raise ValueError("grading session is unavailable")
         search_roots = [self._session_dir, self._session_dir.parent]
-        db_path = getattr(self._db, "db_path", None)
+        db_path = self._db.db_path
         if db_path:
             search_roots.append(Path(db_path).parent)
         rubric_path = resolve_stored_file_path(
@@ -557,7 +557,7 @@ def _build_workflow_state(
     snapshot_token: str,
     previous: dict[str, Any],
 ) -> dict[str, Any]:
-    session = db.get_grading_session(session_id)
+    session = db.sessions.get_grading_session(session_id)
     if session is None:
         raise ValueError(f"grading session {session_id} does not exist")
     template = templates.get_session_template(session_id)
@@ -582,7 +582,7 @@ def _build_workflow_state(
         },
         "template_ready": templates.is_template_ready(session_id),
         "region_count": len(formal_regions),
-        "progress": db.get_session_progress(session_id),
+        "progress": db.papers.get_session_progress(session_id),
         "extra": merged_extra,
     }
 
@@ -613,7 +613,7 @@ def _draft_marker(draft_path: Path) -> str | None:
 
 def _snapshot_is_pending(db: Any, session_id: int) -> bool:
     try:
-        template = db.get_session_template(session_id)
+        template = db.templates.get_session_template(session_id)
     except Exception:
         logger.exception("Failed to read answer-region pending state")
         return True
