@@ -11,7 +11,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   try { previous = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') ?? {} } catch { /* Empty preferences. */ }
   const filters = reactive<AssemblyAssistantRequest>({
     class_id: typeof previous.class_id === 'string' ? previous.class_id : '',
-    curriculum_volume_id: '', chapter_id: '', target_keys: null,
+    curriculum_volume_id: '', chapter_id: '', teaching_progress_chapter_id: '', target_keys: null,
     question_type: '', difficulty_min: 1, difficulty_max: 8,
     exclude_exam_originals: true, exclude_recent: true,
   })
@@ -38,7 +38,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   function cancelScheduled(): void { clearTimeout(scheduled); waiting.value = false }
   onScopeDispose(() => { cancelScheduled(); controller?.abort() })
 
-  function changeScope(patch: Partial<Pick<AssemblyAssistantRequest, 'class_id' | 'curriculum_volume_id' | 'chapter_id'>>): void {
+  function changeScope(patch: Partial<Pick<AssemblyAssistantRequest, 'class_id' | 'curriculum_volume_id' | 'chapter_id' | 'teaching_progress_chapter_id'>>): void {
     if (Object.entries(patch).every(([key, value]) => filters[key as keyof AssemblyAssistantRequest] === value)) return
     controller?.abort()
     cancelScheduled()
@@ -58,6 +58,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     return JSON.stringify({
       class_id: body.class_id, curriculum_volume_id: body.curriculum_volume_id,
       chapter_id: body.chapter_id, question_type: body.question_type,
+      teaching_progress_chapter_id: body.teaching_progress_chapter_id,
       difficulty_min: body.difficulty_min, difficulty_max: body.difficulty_max,
       exclude_exam_originals: body.exclude_exam_originals, exclude_recent: body.exclude_recent,
     })
@@ -184,7 +185,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
       if (token !== serial) return
       state.value = 'error'
       message.value = error instanceof ApiError && error.code === 'assembly_assistant_scope_invalid'
-        ? '所选薄弱点或范围已变化，请重新查看班级薄弱点。'
+        ? '请确认已学到的章节或专项范围，再重新查看班级知识与技能。'
         : '暂时无法取得班级学情或候选题，当前选择已保留，请稍后重试。'
     }
   }

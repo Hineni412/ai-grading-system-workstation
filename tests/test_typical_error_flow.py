@@ -51,6 +51,100 @@ def _predictions():
     ]
 
 
+def test_legacy_external_causes_accept_only_missing_supplemental_text():
+    from copy import deepcopy
+    from backend.class_analysis import cause_input_matches, _cause_input_fingerprint
+    old = {"question_id": "Q1", "question_text": "", "reference_analysis": "",
+           "canonical_answer": "B", "rubric": {"max_score": 3},
+           "evidence": [{"id": "E1", "student_answer": "C", "text": "误选 C"}]}
+    saved = {"input": old, "input_fingerprint": _cause_input_fingerprint(old)}
+    current = {**old, "question_text": "后补的题干", "reference_analysis": "后补的解析"}
+    assert cause_input_matches(saved, current)
+    for key, value in (("canonical_answer", "D"), ("rubric", {"max_score": 5}),
+                       ("evidence", [{"id": "E1", "student_answer": "B"}])):
+        assert not cause_input_matches(saved, {**current, key: value})
+    populated = deepcopy(current)
+    populated["question_text"] = "原有题干"
+    assert not cause_input_matches({"input": populated, "input_fingerprint": _cause_input_fingerprint(populated)}, current)
+
+
+def test_report_preparation_reuses_legacy_external_results_without_model(tmp_path, monkeypatch):
+    import backend.class_analysis as causes
+    path, _qid = _choice_question(tmp_path)
+    old = {"question_id": "Q1", "question_text": "", "reference_analysis": "", "evidence": []}
+    source = {**old, "question_text": "后补题干", "reference_analysis": "后补解析"}
+    fingerprint = causes._cause_input_fingerprint(old)
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    store.save(3, cause_analysis={"questions": {"Q1": {"version": CAUSE_ANALYSIS_VERSION,
+               "input": old, "input_fingerprint": fingerprint, "result": {"groups": []}}}},
+               error_records={"Q1": {"input_fingerprint": fingerprint, "records": []}})
+    monkeypatch.setattr(causes, "assemble_cause_data", lambda *a, **k: SimpleNamespace(questions=[], students=[]))
+    monkeypatch.setattr(causes, "build_cause_inputs", lambda *a, **k: [source])
+    context = SimpleNamespace(payload={"session_id": 3}, raise_if_cancelled=lambda: None)
+    result = causes.run_cause_analysis(context, db=SimpleNamespace(db_path=path.parent / "grading_system.db"),
+        data_root=tmp_path, store=store, retry_failed=False,
+        llm_client_factory=lambda: pytest.fail("已有有效整理不能重新付费调用"))
+    assert result["status"] == "ready"
+
+
+def test_diagnosis_and_history_ignore_stale_raw_state(tmp_path, monkeypatch):
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from backend.class_analysis import collect_student_error_index
+    import backend.class_analysis as causes
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    store.save(3, error_records={"Q1": {"records": [{"student_id": 1, "pattern": "过期错因"}]}})
+    service = object.__new__(DiagnosisProfileService)
+    service.data_root = tmp_path
+    service.db = object()
+    monkeypatch.setattr(causes, "session_error_records", lambda *args, **kwargs: {})
+    assert service._error_cause_index([3]) == {}
+    assert collect_student_error_index(store, [3], db=service.db) == {}
+    current = {1: {"Q1": [{"student_id": 1, "kind": "error", "category": "计算与化简", "pattern": "计算漏项"}]}}
+    monkeypatch.setattr(causes, "session_error_records", lambda *args, **kwargs: current)
+    assert service._error_cause_index([3])[(3, 1, "Q1")][0]["pattern"] == "计算漏项"
+    assert collect_student_error_index(store, [3], db=service.db)[1]["patterns"] == {"计算漏项": {3}}
+
+
+def test_backfill_skips_stale_state_and_is_idempotent(tmp_path):
+    from backend.class_analysis import _cause_input_fingerprint
+    from backend.error_patterns import sync_session_patterns_to_bank
+    path, qid = _choice_question(tmp_path)
+    source = {"question_id": "Q1", "question_text": "题干\nA. 1\nB. 2\nC. 3\nD. 4", "canonical_answer": "B",
+              "evidence": [{"id": "E1", "student_answer": "C"}]}
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    store.save(3, cause_analysis={"questions": {"Q1": {"version": CAUSE_ANALYSIS_VERSION,
+               "input": source, "input_fingerprint": _cause_input_fingerprint(source), "origin": "option_map",
+               "result": {"groups": [{"evidence_ids": ["E1"]}]}}}},
+               option_analysis={"Q1": {"version": OPTION_ANALYSIS_VERSION,
+                 "input_fingerprint": question_fingerprint(source["question_text"], "B"), "source": "model",
+                 "analysis": {"C": {"category": "计算与化简", "pattern": "误选C"}}}})
+    context = {"Q1": {"bank_id": qid}}
+    assert sync_session_patterns_to_bank(store, 3, path, context, current_sources=[{**source, "canonical_answer": "A"}]) == 0
+    assert sync_session_patterns_to_bank(store, 3, path, context, current_sources=[source]) == 1
+    assert sync_session_patterns_to_bank(store, 3, path, context, current_sources=[source]) == 0
+    with connect(path) as conn:
+        row = list_patterns(conn, [qid])[qid][0]
+        assert row["occurrences"] == [{"session_id": 3, "question_id": "Q1"}]
+
+
+def test_failed_new_draft_does_not_reopen_review_when_teacher_version_still_matches(tmp_path):
+    path, qid = _choice_question(tmp_path)
+    with connect(path) as conn:
+        for vid, status, quality in (("a"*64, "approved", "passed"), ("b"*64, "proposed", "failed")):
+            conn.execute("""INSERT INTO training_criterion_versions
+                (version_id,question_id,version_number,source_content_hash,schema_version,status,
+                 source_kind,source_reference,criteria_json,criteria_hash,quality_status,created_by)
+                VALUES(?,?,? ,?,'judgment-points-v1',?,'teacher_manual',?,'{}',?,?,'synthetic')""",
+                (vid, qid, 1 if status == "approved" else 2, "c"*64, status, vid, "d"*64, quality))
+        conn.execute("INSERT INTO training_criterion_heads(question_id,current_version_id,approved_version_id,current_source_hash) VALUES(?,?,?,?)",
+                     (qid, "b"*64, "a"*64, "c"*64))
+    reader = QuestionBankReadService(path)
+    assert reader.get_question(qid)["criteria_needs_review"] is False
+    with connect(path) as conn:
+        conn.execute("UPDATE training_criterion_heads SET current_source_hash=? WHERE question_id=?", ("e"*64, qid))
+    assert reader.get_question(qid)["criteria_needs_review"] is True
+
+
 def test_predicted_choice_maps_selected_c_without_inventing_other_students(tmp_path):
     path, qid = _choice_question(tmp_path)
     with connect(path) as conn:

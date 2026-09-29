@@ -4033,7 +4033,9 @@ class AnalysisReportGenerator:
                 for entry in entries
                 if entry.get("session_id") != data.session_id
             }
-            history_error_index = collect_student_error_index(store, sorted(history_ids))
+            history_error_index = collect_student_error_index(
+                store, sorted(history_ids), db=self.repositories, data_root=self.data_root,
+            )
             error_maps = {
                 student.student_id: student_error_map(error_state, student, error_sources)
                 for _group, student in scoped_students
@@ -4232,6 +4234,7 @@ def build_analysis_preflight(
             known_cause_patterns,
             plan_cause_question,
             _cause_input_fingerprint,
+            cause_input_matches,
         )
         from backend.error_patterns import (
             OPTION_ANALYSIS_PROMPT,
@@ -4261,13 +4264,8 @@ def build_analysis_preflight(
         for source in sources:
             fingerprint = _cause_input_fingerprint(source)
             saved = stored.get(source["question_id"]) or {}
-            saved_fp = saved.get("input_fingerprint") or (
-                _cause_input_fingerprint(saved["input"])
-                if isinstance(saved.get("input"), dict)
-                else ""
-            )
             if (saved.get("version") == CAUSE_ANALYSIS_VERSION
-                    and saved_fp == fingerprint and saved.get("result")):
+                    and cause_input_matches(saved, source) and saved.get("result")):
                 continue
             if saved.get("failed") and saved.get("failed_input_fingerprint") == fingerprint:
                 continue

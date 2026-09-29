@@ -651,6 +651,7 @@ def sync_session_patterns_to_bank(
     session_id: int,
     question_bank_path: Path | None,
     bank_context: dict[str, dict[str, Any]],
+    *, current_sources: list[dict[str, Any]] | None = None,
 ) -> int:
     """把本场整理出的典型错法自动回挂题库（source='ai_auto'）；返回新增行数。
 
@@ -664,6 +665,26 @@ def sync_session_patterns_to_bank(
     if question_bank_path is None or not bank_context:
         return 0
     state = store.load(session_id) or {}
+    if current_sources is not None:
+        # 维护回填及正常整理只回挂当前输入匹配的成果；旧缓存不能制造新证据。
+        from backend.class_analysis import cause_input_matches
+        questions = ((state.get("cause_analysis") or {}).get("questions")) or {}
+        valid = {str(source["question_id"]): source for source in current_sources
+                 if cause_input_matches(questions.get(str(source["question_id"])) or {}, source)
+                 and (questions.get(str(source["question_id"])) or {}).get("version") == CAUSE_ANALYSIS_VERSION}
+        state = {**state, "cause_analysis": {"questions": {qid: questions[qid] for qid in valid}},
+                 "option_analysis": {qid: entry for qid, entry in option_analysis_entries(state).items() if qid in valid},
+                 "answer_patterns": {}}
+        # 错误答案库本身不带学生证据；从本次有效的填空整理成果重新取有证据的条目。
+        answers: dict[str, dict[str, Any]] = {}
+        for qid, source in valid.items():
+            ctx = bank_context.get(_parent_qid(qid)) or {}
+            row = bank_question_row(question_bank_path, int(ctx.get("bank_id") or 0)) or {}
+            if row.get("question_type") not in FILL_TYPES:
+                continue
+            additions = additions_from_v3_result(source, questions[qid].get("result") or {}, source.get("canonical_answer"))
+            answers.setdefault(_parent_qid(qid), {}).update({item["answer"]: item for item in additions})
+        state["answer_patterns"] = answers
     occurrence_base = {"session_id": int(session_id)}
     rows: list[dict[str, Any]] = []
 

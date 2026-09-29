@@ -142,8 +142,13 @@ def client_and_source(tmp_path):
     app.dependency_overrides[get_question_bank_db_path] = lambda: db_path
     app.dependency_overrides[get_assembly_workspace_service] = lambda: workspace
     app.dependency_overrides[get_personalized_recommendation_module] = lambda: module
-    with TestClient(app) as client:
+    # All domain dependencies are isolated above. Application startup installs
+    # an unrelated full knowledge release; it is not part of shortlist tests.
+    client = TestClient(app)
+    try:
         yield client, source, calls, workspace
+    finally:
+        client.close()
 
 
 def request(**patch):
@@ -273,3 +278,38 @@ def test_teacher_practice_rules_persist_and_rejected_save_keeps_previous_draft(c
     assert rejected.status_code == 422
     assert rejected.json()['error']['code'] == 'assembly_practice_rule'
     assert workspace.draft_path.read_bytes() == before
+
+
+def test_class_comprehensive_scope_keeps_previous_chapters_and_focused_scope_stays_local(client_and_source):
+    client, _, _, _ = client_and_source
+    second = VOLUME['chapters'][1]
+    comprehensive = client.post('/api/question-assembly/assistant/candidates',
+        json=request(chapter_id='', teaching_progress_chapter_id=second['id']))
+    assert comprehensive.status_code == 200
+    keys = {point['knowledge_key'] for point in comprehensive.json()['weaknesses']}
+    assert POINTS[0]['id'] in keys
+    assert second['sections'][0]['knowledge_points'][0]['id'] in keys
+    focused = client.post('/api/question-assembly/assistant/candidates', json=request()).json()
+    assert second['sections'][0]['knowledge_points'][0]['id'] not in {p['knowledge_key'] for p in focused['weaknesses']}
+
+
+def test_teacher_cannot_save_second_question_of_same_skill(client_and_source, monkeypatch):
+    client, _, _, workspace = client_and_source
+    candidates = [{'question_id': qid, 'question_type': '选择题', 'difficulty': 3,
+                   'stable_keys': ['sk_test_limit'], 'stable_names': {'sk_test_limit': '合成技能'}}
+                  for qid in (2, 3, 4)]
+    monkeypatch.setattr(PersonalizedRecommendationModule, '_source_snapshot',
+                        lambda self, **kwargs: (candidates, (), 'synthetic'))
+    current = client.get('/api/question-assembly/draft').json()
+    payload = {key: value for key, value in current.items() if key != 'revision'}
+    payload.update(practice_rules=True, basket_ids=[2], order_ids=[2])
+    saved = client.put('/api/question-assembly/draft', json={'expected_revision': current['revision'], 'draft': payload})
+    assert saved.status_code == 200
+    before = workspace.draft_path.read_bytes()
+    payload.update(basket_ids=[2, 3], order_ids=[2, 3])
+    rejected = client.put('/api/question-assembly/draft', json={'expected_revision': saved.json()['revision'], 'draft': payload})
+    assert rejected.status_code == 422
+    assert '同一技能最多选 1 道' in rejected.json()['error']['message']
+    assert '合成技能' in rejected.json()['error']['message']
+    assert workspace.draft_path.read_bytes() == before
+    assert client.get('/api/question-assembly/draft').json()['order_ids'] == [2]

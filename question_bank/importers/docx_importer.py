@@ -154,7 +154,8 @@ def import_docx(
         page_range="document",
         text="\n".join(paragraphs),
         has_images=has_images,
-        needs_image_review=has_images,
+        # 图片本身是正常题目内容；具体缺图/转换异常由导入任务定位。
+        needs_image_review=False,
         image_paths=image_paths,
         rich_paragraphs=rich_paragraphs,
     )

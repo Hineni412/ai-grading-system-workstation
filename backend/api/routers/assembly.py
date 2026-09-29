@@ -78,6 +78,7 @@ def get_assistant_candidates(
             class_id=body.class_id,
             curriculum_volume_id=body.curriculum_volume_id,
             chapter_id=body.chapter_id,
+            teaching_progress_chapter_id=body.teaching_progress_chapter_id,
             target_keys=body.target_keys,
             question_type=body.question_type,
             difficulty_min=body.difficulty_min,
@@ -101,6 +102,7 @@ def compute_assistant_candidates(
     class_id: str,
     curriculum_volume_id: str,
     chapter_id: str = "",
+    teaching_progress_chapter_id: str = "",
     target_keys: list[str] | None = None,
     question_type: str = "",
     difficulty_min: float = 1,
@@ -123,6 +125,7 @@ def compute_assistant_candidates(
             "class_id": class_id,
             "curriculum_volume_id": curriculum_volume_id,
             "chapter_id": chapter_id,
+            "teaching_progress_chapter_id": teaching_progress_chapter_id,
             "target_keys": target_keys,
             "question_type": question_type,
             "difficulty_min": difficulty_min,
@@ -146,6 +149,7 @@ def compute_assistant_candidates(
         return shortlist_candidates(
             diagnosis=diagnosis, read_service=read_service,
             volume_id=curriculum_volume_id, chapter_id=chapter_id,
+            teaching_progress_chapter_id=teaching_progress_chapter_id,
             target_keys=target_keys, question_type=question_type,
             difficulty_min=difficulty_min, difficulty_max=difficulty_max,
             excluded_question_ids=excluded,
@@ -156,11 +160,12 @@ def compute_assistant_candidates(
         return _compute()
     return _ASSISTANT_CACHE.get_or_compute(
         (
-            "assistant-shortlist-v2-unified",
+            "assistant-shortlist-v4-evidence-priority",
             str(read_service.db_path.resolve(strict=False)),
             commit_generation(read_service.db_path),
             diagnosis_key,
             chapter_id,
+            teaching_progress_chapter_id,
             None if target_keys is None else tuple(target_keys),
             question_type,
             difficulty_min,

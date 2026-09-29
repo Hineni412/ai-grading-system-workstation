@@ -14,6 +14,7 @@ import type {
   QuestionBankPaper,
   QuestionBankPaperMetadataInput,
   QuestionBankPaperPermanentDeleteImpact,
+  QuestionStandardSummary,
 } from '../../api/question-bank'
 import { questionBankApi } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
@@ -85,6 +86,23 @@ const permanentDeleteRequestToken = ref('')
 const formError = ref('')
 const retagBusyPaperId = ref<number | null>(null)
 const retagAllBusy = ref(false)
+const standardSummary = ref<QuestionStandardSummary | null>(null)
+const standardState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+const showStandard = ref(false)
+const maintenanceMenu = ref<HTMLDetailsElement | null>(null)
+function closeMaintenance(): void {
+  if (maintenanceMenu.value) maintenanceMenu.value.open = false
+}
+async function loadStandardSummary(): Promise<void> {
+  showStandard.value = true
+  standardState.value = 'loading'
+  try {
+    standardSummary.value = await questionBankApi.standardSummary()
+    standardState.value = 'ready'
+  } catch {
+    standardState.value = 'error'
+  }
+}
 const taggingMode = ref<'fill' | 'retag' | null>(null)
 const retagMessage = ref('')
 const answerDraftBusy = ref(false)
@@ -1102,20 +1120,24 @@ async function confirmPermanentDelete(): Promise<void> {
       <div>
         <p class="paper-library__eyebrow">PAPER LIBRARY</p>
         <h1 id="paper-library-title">试卷库</h1>
-        <p>以老师上传的 Word 或 PDF 试卷为入口，再进入试题核对与标注。</p>
+        <p>上传 Word 或 PDF 试卷后自动分析，只有无法确定的个别题目需要核对。</p>
       </div>
       <div class="paper-library__stats" aria-label="试卷库概况">
         <span><strong>{{ store.papers.length }}</strong> 份试卷</span>
         <span><strong>{{ totalQuestions }}</strong> 道题</span>
         <span><strong>{{ completeQuestions }}</strong> 道联合分析完整</span>
         <button
+          v-if="reviewQuestions > 0"
           type="button"
           class="paper-button is-review"
           @click="emit('reviewCriteria')"
         >
-          判定点待审核
+          判定点需核对
           <strong>{{ reviewQuestions }}</strong>
         </button>
+        <details ref="maintenanceMenu" class="paper-library__maintenance">
+          <summary class="paper-button">维护</summary>
+          <div class="paper-library__maintenance-items" @click="closeMaintenance">
         <AppButton
           variant="secondary"
           :disabled="retagAllBusy || retagBusyPaperId !== null"
@@ -1126,7 +1148,7 @@ async function confirmPermanentDelete(): Promise<void> {
           class="paper-button is-review"
           @click="emit('reviewTaxonomy')"
         >
-          待审核新词
+          无法归类的新词
           <strong>{{ pendingTaxonomyLabel }}</strong>
         </button>
         <AppButton
@@ -1134,11 +1156,27 @@ async function confirmPermanentDelete(): Promise<void> {
           :disabled="retagAllBusy || retagBusyPaperId !== null"
           @click="retagAllPapers"
         >{{ retagAllBusy && taggingMode === 'retag' ? '正在准备…' : '全库重新打标签' }}</AppButton>
+        <AppButton variant="secondary" @click="loadStandardSummary">标准版本与缺口</AppButton>
+          </div>
+        </details>
         <AppButton variant="primary" @click="emit('import')">
           上传试卷
         </AppButton>
       </div>
     </header>
+
+    <section v-if="showStandard" class="paper-library__standard" aria-label="标准版本与缺口">
+      <div class="paper-library__standard-heading"><h2>标准版本与缺口</h2><button class="paper-button" @click="showStandard = false">收起</button></div>
+      <p v-if="standardState === 'loading'" role="status">正在读取当前标准与关联情况…</p>
+      <p v-else-if="standardState === 'error'" role="alert">暂时无法读取。<button class="paper-button" @click="loadStandardSummary">重试</button></p>
+      <template v-else-if="standardSummary">
+        <p>当前标准：{{ standardSummary.active_release_id ?? '尚未启用' }} · 词表版本 {{ standardSummary.taxonomy_revision ?? '—' }}</p>
+        <p>{{ standardSummary.question_count }} 道题中，{{ standardSummary.usable_question_count }} 道有当前可用判定点，{{ standardSummary.skill_question_count }} 道已关联技能。</p>
+        <p>{{ standardSummary.section_only_question_count }} 道题仍有只关联到小节的判定点；{{ standardSummary.missing_link_question_count }} 道题仍有未关联的判定点。两项可能重叠。</p>
+        <p>{{ standardSummary.older_link_question_count }} 道题正在沿用旧版本关联。查看不调用 AI、不收费；标准修订先预演影响，沿用未变化的关联，只处理受影响题目。</p>
+        <ul><li v-for="version in standardSummary.versions" :key="version.release_id">{{ version.release_id }} · 词表 {{ version.taxonomy_revision }} · {{ version.status === 'active' ? '使用中' : version.status === 'candidate' ? '候选' : '历史' }} · {{ version.activated_at ?? version.created_at }}</li></ul>
+      </template>
+    </section>
 
     <p v-if="retagMessage" class="paper-library__notice" role="status">{{ retagMessage }}</p>
     <p v-if="deleteNotice" class="paper-library__notice" role="status">{{ deleteNotice }}</p>
@@ -1685,6 +1723,13 @@ async function confirmPermanentDelete(): Promise<void> {
 
 <style scoped>
 .paper-library__pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; }
+.paper-library__maintenance { position: relative; }
+.paper-library__maintenance summary { cursor: pointer; }
+.paper-library__maintenance-items { position: absolute; right: 0; top: 100%; z-index: 31; display: grid; gap: 8px; width: min(290px, 85vw); padding: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 24px #18283f20; }
+.paper-library__standard { padding: 18px; border: 1px solid #d8dee8; border-radius: 12px; overflow-wrap: anywhere; }
+.paper-library__standard-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.paper-library__standard h2 { font-size: 17px; }
+.paper-library__standard p, .paper-library__standard li { line-height: 1.7; }
 .paper-library {
   display: grid;
   gap: 18px;

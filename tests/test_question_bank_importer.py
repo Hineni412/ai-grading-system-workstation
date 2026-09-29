@@ -22,6 +22,20 @@ from question_bank.services.rich_content_service import (
 )
 
 
+def test_word_picture_alone_does_not_require_teacher_review(tmp_path):
+    from io import BytesIO
+    from base64 import b64decode
+    from question_bank.importers.docx_importer import import_docx
+    document = Document()
+    document.add_paragraph("1. 看图填空。")
+    document.add_picture(BytesIO(b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6rCEAAAAASUVORK5CYII=")))
+    file = tmp_path / "synthetic-image.docx"
+    document.save(file)
+    extracted = import_docx(file, asset_root=tmp_path / "assets")
+    assert extracted.has_images and extracted.image_paths
+    assert not extracted.needs_image_review
+
+
 def _extracted_with_floating_image(tmp_path: Path) -> ExtractedDocument:
     floating = tmp_path / "floating.png"
     floating.write_bytes(b"floating-image-bytes")

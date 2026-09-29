@@ -101,6 +101,7 @@ class AssemblyAssistantRequest(_AssemblyModel):
     class_id: str = Field(min_length=1, max_length=100)
     curriculum_volume_id: str = Field(min_length=1, max_length=100)
     chapter_id: str = Field(default="", max_length=100)
+    teaching_progress_chapter_id: str = Field(default="", max_length=100)
     target_keys: list[str] | None = Field(default=None, max_length=100)
     question_type: Literal["", "选择题", "多选题", "填空题", "解答题"] = ""
     difficulty_min: float = Field(default=1, ge=1, le=8)

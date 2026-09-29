@@ -451,6 +451,7 @@ class TrainingPrewarmWorker:
             class_id=str(params.get("class_id") or ""),
             curriculum_volume_id=str(params.get("curriculum_volume_id") or ""),
             chapter_id=str(params.get("chapter_id") or ""),
+            teaching_progress_chapter_id=str(params.get("teaching_progress_chapter_id") or ""),
             target_keys=None if target_keys is None else list(target_keys),
             question_type=str(params.get("question_type") or ""),
             difficulty_min=int(params.get("difficulty_min") or 1),

@@ -87,6 +87,25 @@ _WORKSPACE_DERIVED_DATABASE_DIRS = {
 }
 
 
+def taxonomy_backup_members(paths: Any) -> dict[str, Path]:
+    """Explicit vocabulary files only; never include neighbouring API profiles."""
+    value = getattr(paths, "taxonomy_state_path", None)
+    if value is None:
+        return {}
+    base = Path(value)
+    suffix = base.suffix or ".json"
+    return {
+        "config/taxonomy-governance/state.json": base,
+        "config/taxonomy-governance/state.json.bak": base.with_name(base.name + ".bak"),
+        "config/taxonomy-governance/review_receipts.json": base.with_name(f"{base.stem}.review_receipts{suffix}"),
+        "config/taxonomy-governance/suggestions.json": base.with_name(f"{base.stem}.suggestions{suffix}"),
+    }
+
+
+def taxonomy_backup_target(paths: Any, member: str) -> Path | None:
+    return taxonomy_backup_members(paths).get(Path(member.replace("\\", "/")).as_posix())
+
+
 def _backup_root() -> Path:
     """获取备份 zip 存放目录（项目根/backups/）。"""
     try:
@@ -174,6 +193,7 @@ def preview_backup(
     skipped: list[str] = []
     skipped_sensitive: list[str] = []
     total_size = 0
+    taxonomy_paths = {path.resolve() for path in taxonomy_backup_members(pm).values()}
     for source_dir, prefix in backup_sources:
         if not source_dir.exists():
             continue
@@ -184,12 +204,16 @@ def preview_backup(
             ensure_controlled_path(item, source_dir)
             if not item.is_file():
                 continue
+            if item.resolve() in taxonomy_paths:
+                continue
             try:
                 rel = item.relative_to(source_dir)
             except ValueError:
                 continue
             full_rel = Path(prefix) / rel
             public_name = full_rel.as_posix()
+            if public_name.startswith("config/taxonomy-governance/"):
+                continue
             if public_name.endswith((".db-wal", ".db-shm", ".db-journal")):
                 skipped.append(public_name)
                 continue
@@ -210,6 +234,11 @@ def preview_backup(
                 total_size += max(0, int(item.stat().st_size))
             except OSError:
                 pass
+    if "grading" in selected:
+        for name, path in taxonomy_backup_members(pm).items():
+            if path.is_file() and name not in files:
+                files.append(name)
+                total_size += path.stat().st_size
     return {
         "file_count": len(files),
         "total_size": total_size,
@@ -325,6 +354,7 @@ def create_backup(
 
     # 收集文件列表
     files_to_add: list[tuple[Path, str]] = []  # (abs_path, arcname)
+    taxonomy_paths = {path.resolve() for path in taxonomy_backup_members(pm).values()}
 
     for source_dir, prefix in backup_sources:
         if not source_dir.exists():
@@ -332,11 +362,15 @@ def create_backup(
         for item in sorted(source_dir.rglob("*")):
             if not item.is_file():
                 continue
+            if item.resolve() in taxonomy_paths:
+                continue
             try:
                 rel = item.relative_to(source_dir)
             except ValueError:
                 continue
             full_rel = Path(prefix) / rel
+            if full_rel.as_posix().startswith("config/taxonomy-governance/"):
+                continue
 
             if full_rel.as_posix().endswith((".db-wal", ".db-shm", ".db-journal")):
                 result["skipped"].append(str(full_rel))
@@ -357,6 +391,12 @@ def create_backup(
             except OSError:
                 pass
 
+    if "grading" in selected:
+        for name, path in taxonomy_backup_members(pm).items():
+            if path.is_file() and name not in result["files"]:
+                files_to_add.append((path, name))
+                result["files"].append(name)
+                result["total_size"] += path.stat().st_size
     result["file_count"] = len(files_to_add)
 
     if dry_run:
@@ -513,7 +553,7 @@ def restore_backup(
                 if member.endswith("/"):
                     continue
 
-                dest = _safe_restore_destination(
+                dest = taxonomy_backup_target(pm, member) or _safe_restore_destination(
                     member,
                     project_root=project_root,
                     data_root=pm.data_root,

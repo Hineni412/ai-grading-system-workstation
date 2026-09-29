@@ -508,6 +508,9 @@ def _transfer_export_entries(
 
 
 def _backup_source_path(paths: Any, arc_name: str) -> Path:
+    from update_tools.backup_core import taxonomy_backup_target
+    if target := taxonomy_backup_target(paths, arc_name):
+        return target
     parts = Path(arc_name).parts
     if parts[0] == "user_data":
         return Path(paths.data_root).joinpath(*parts[1:])
@@ -519,6 +522,9 @@ def _backup_source_path(paths: Any, arc_name: str) -> Path:
 
 
 def _backup_source_root(paths: Any, arc_name: str) -> Path:
+    from update_tools.backup_core import taxonomy_backup_target
+    if target := taxonomy_backup_target(paths, arc_name):
+        return target.parent
     parts = Path(arc_name).parts
     if parts[0] == "user_data":
         return Path(paths.data_root)

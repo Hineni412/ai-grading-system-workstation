@@ -160,6 +160,35 @@ describe('question bank workspace', () => {
     expect(host.querySelector('nav[aria-label="试卷分页"]')).toBeNull()
   })
 
+  it('keeps maintenance collapsed and reads standard gaps on demand', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper]
+    store.papersState = 'ready'
+    const load = vi.spyOn(questionBankApi, 'standardSummary').mockResolvedValue({
+      active_release_id: 'kgr_test', taxonomy_revision: 9, versions: [], question_count: 10,
+      usable_question_count: 9, skill_question_count: 8, section_only_question_count: 2,
+      missing_link_question_count: 1, older_link_question_count: 0, model_calls: 0,
+    })
+    app.mount(host)
+    mounted.push(app)
+    expect(load).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('判定点需核对')
+    const menu = host.querySelector<HTMLDetailsElement>('.paper-library__maintenance')!
+    expect(menu.open).toBe(false)
+    expect(menu.textContent).toContain('全库重新打标签')
+    menu.querySelector('summary')!.click()
+    const button = [...menu.querySelectorAll('button')].find((item) => item.textContent === '标准版本与缺口')!
+    button.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('kgr_test'))
+    expect(host.textContent).toContain('2 道题仍有只关联到小节')
+    expect(host.textContent).toContain('查看不调用 AI、不收费')
+  })
+
   it('does not download the full taxonomy catalog while opening the paper library', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)

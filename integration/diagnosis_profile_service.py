@@ -298,7 +298,7 @@ class DiagnosisProfileService:
                     ),
                 }
                 # 新错因体系：同场次同学同题的物化记录按证据挂到来源引用上，
-                # 未确认的候选项也会附上（由页面按状态自行区分展示）。
+                # 只引用当前答卷仍有效的实际错因，不把题库预测当作学生表现。
                 cause_rows = cause_index.get(
                     (
                         int(row.get("session_id") or 0),
@@ -847,36 +847,29 @@ class DiagnosisProfileService:
     ) -> dict[tuple[int, int, str], list[dict[str, Any]]]:
         """{(session_id, student_id, question_id): [{category, pattern, kind}]}。
 
-        读取错因整理物化的学生错因记录（.class_analysis/error_records），
-        不做指纹校验——诊断页只需要已生成结果的原样引用；文件缺失返回空。
+        与报告共用证据校验；改分、改答案后的旧记录不进入诊断与训练。
         """
         reports_dir = self.data_root / "reports"
         if not reports_dir.is_dir():
             return {}
-        from backend.class_analysis import ClassAnalysisStateStore
-
-        store = ClassAnalysisStateStore(reports_dir)
+        from backend.class_analysis import session_error_records
         index: dict[tuple[int, int, str], list[dict[str, Any]]] = {}
         for session_id in session_ids:
-            envelopes = (store.load(int(session_id)) or {}).get("error_records") or {}
-            for question_id, envelope in envelopes.items():
-                for row in envelope.get("records") or []:
-                    student_id = _safe_int(row.get("student_id"))
-                    if not student_id:
-                        continue
+            students = session_error_records(
+                self.db, int(session_id), reports_dir, data_root=self.data_root,
+            )
+            for student_id, questions in students.items():
+                for question_id, rows in questions.items():
                     key = (int(session_id), student_id, str(question_id))
                     seen = index.setdefault(key, [])
-                    signature = (row.get("kind"), row.get("category"), row.get("pattern"))
-                    if all(
-                        (item.get("kind"), item.get("category"), item.get("pattern")) != signature
-                        for item in seen
-                    ):
-                        seen.append({
-                            "kind": row.get("kind"),
-                            "category": row.get("category"),
-                            "pattern": row.get("pattern"),
-                            "pattern_status": row.get("pattern_status"),
-                        })
+                    for row in rows:
+                        signature = (row.get("kind"), row.get("category"), row.get("pattern"))
+                        if all(
+                            (item.get("kind"), item.get("category"), item.get("pattern")) != signature
+                            for item in seen
+                        ):
+                            seen.append({name: row.get(name) for name in
+                                         ("kind", "category", "pattern", "pattern_status", "step_id")})
         return index
 
     def _tag_projections(

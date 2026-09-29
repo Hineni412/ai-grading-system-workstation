@@ -442,6 +442,10 @@ def _restore_database_member(
 
 
 def _target_for_archive_name(paths: Any, archive_name: str) -> Path:
+    from update_tools.backup_core import taxonomy_backup_target
+    if target := taxonomy_backup_target(paths, archive_name):
+        _reject_link_chain(target, target.parent)
+        return target
     pure = Path(archive_name)
     if pure.is_absolute() or ".." in pure.parts or not pure.parts:
         raise ValueError("archive target is invalid")

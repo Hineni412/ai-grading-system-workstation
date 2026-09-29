@@ -85,6 +85,7 @@ export interface AssemblyAssistantRequest {
   class_id: string
   curriculum_volume_id: string
   chapter_id: string
+  teaching_progress_chapter_id?: string
   target_keys: string[] | null
   question_type: '' | '选择题' | '多选题' | '填空题' | '解答题'
   difficulty_min: number

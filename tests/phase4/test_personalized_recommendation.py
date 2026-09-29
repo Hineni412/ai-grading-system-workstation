@@ -83,6 +83,21 @@ def test_blank_or_ineligible_evidence_does_not_invent_an_error():
     assert _training_tasks(point) == []
 
 
+def test_classified_cause_guides_practice_without_turning_predictions_into_evidence():
+    from question_bank.recommendation.personalized import _training_tasks
+    ref = {"source_kind": "current_exam", "full_score": 5, "score_awarded": 2,
+           "assessment": {"granularity": "part", "eligible": True},
+           "deduction_reason": "失分", "causes": [{"kind": "error", "category": "计算与化简",
+               "pattern": "计算漏负号", "pattern_status": "candidate"}]}
+    tasks = _training_tasks({"source_question_refs": [ref]})
+    assert [(task["code"], task["basis"]) for task in tasks] == [("calculation_check", "classified_cause")]
+    ref["causes"][0]["pattern_status"] = "rejected"
+    assert _training_tasks({"source_question_refs": [ref]}) == []
+    ref["causes"][0]["pattern_status"] = "candidate"
+    ref["score_awarded"] = 5
+    assert _training_tasks({"source_question_refs": [ref]}) == []
+
+
 @pytest.fixture()
 def recommendation_module(
     tmp_path: Path, question_bank_database
