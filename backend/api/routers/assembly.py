@@ -137,8 +137,13 @@ def compute_assistant_candidates(
     diagnosis = diagnosis_service.build_profiles(
         scope=scope, exam_scope=exam_scope,
     )
+    graded_activities = diagnosis_service.graded_activities(
+        [str(item["student_id"]) for item in diagnosis.get("students", [])]
+    )
     # Compatibility flags no longer select different history definitions.
-    excluded = recommendations.current_exam_question_ids(diagnosis)
+    excluded = recommendations.current_exam_question_ids(
+        diagnosis, graded_activities=graded_activities
+    )
 
     key_fn = getattr(diagnosis_service, "tag_profile_cache_key", None)
     diagnosis_key = (
@@ -154,6 +159,7 @@ def compute_assistant_candidates(
             difficulty_min=difficulty_min, difficulty_max=difficulty_max,
             excluded_question_ids=excluded,
             cache_scope=diagnosis_key, recommendations=recommendations,
+            graded_activities=graded_activities,
         )
 
     if not callable(key_fn):

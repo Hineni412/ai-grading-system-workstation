@@ -229,8 +229,8 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
 
     # The source exam is older than the three latest graded activities.
     diagnosis = _diagnosis(student_ids=("SYN-S01",))
-    diagnosis["_graded_activities"] = [{"student_id": "SYN-S01", "session_id": i,
-                                      "occurred_at": f"2026-09-0{i}"} for i in (2, 3, 4)]
+    graded_activities = [{"student_id": "SYN-S01", "session_id": i,
+                          "occurred_at": f"2026-09-0{i}"} for i in (2, 3, 4)]
     diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0][
         "question_difficulty"
     ] = 8
@@ -243,6 +243,7 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
         request_token="a" * 32,
         actor_ref="test",
         diagnosis=diagnosis,
+        graded_activities=graded_activities,
         config=PersonalizedRecommendationConfig(
             question_count=8,
             expected_minutes=45,

@@ -294,6 +294,8 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
         exam_scope = {"mode": "semester", "curriculum_volume_id": "bnu24-math-g8-upper"}
     # Warm the real diagnosis cache before publishing training evidence.
     profile = diagnosis_service.build_profiles(scope=scope, exam_scope=exam_scope)
+    # The diagnosis snapshot carries only teacher-visible top-level keys.
+    assert not any(str(key).startswith("_") for key in profile)
     before = {
         point["knowledge_key"]: point["mastery"]
         for point in profile["students"][0]["weak_points"]
@@ -306,7 +308,7 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     frozen_profile["exam_scope"] = profile["exam_scope"]
     frozen_profile["students"][0]["student_id"] = "1"
     # The source exam is older than the three latest graded activities.
-    frozen_profile["_graded_activities"] = [
+    graded_activities = [
         {"student_id": "1", "session_id": i, "occurred_at": f"2026-09-0{i}"}
         for i in (2, 3, 4)
     ]
@@ -324,6 +326,7 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     draft = recommendation.create(
         request_token="1" * 32,
         diagnosis=frozen_profile,
+        graded_activities=graded_activities,
         config=PersonalizedRecommendationConfig(
             question_count=8, difficulty_max=8, exclude_current_exam_originals=False
         ),

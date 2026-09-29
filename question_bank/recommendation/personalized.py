@@ -603,10 +603,10 @@ def _paper_diversity_allowed(candidate: Mapping[str, Any], selected: Sequence[Ma
         return False
     if _is_written_question(candidate) and sum(_is_written_question(other) for other in selected) >= 2:
         return False
-    return _paper_similarity_allowed(candidate, selected)
+    return paper_similarity_allowed(candidate, selected)
 
 
-def _paper_similarity_allowed(candidate: Mapping[str, Any], selected: Sequence[Mapping[str, Any]]) -> bool:
+def paper_similarity_allowed(candidate: Mapping[str, Any], selected: Sequence[Mapping[str, Any]]) -> bool:
     """Compare question content only; candidate folding must not apply paper quotas."""
     template = _practice_template(str(candidate.get("question_text") or ""))
     for other in selected:
@@ -677,7 +677,7 @@ def _need_id(entry: Mapping[str, Any], memo: dict | None = None) -> tuple[str, .
     return need_id
 
 
-def _repeated_consolidation_only(entries: Sequence[Mapping[str, Any]]) -> bool:
+def repeated_consolidation_only(entries: Sequence[Mapping[str, Any]]) -> bool:
     """Lower priority only when every useful matched need is repeatedly correct."""
     relevant = [e for e in entries if _is_core(e)] or list(entries)
     return bool(relevant) and all(
@@ -792,7 +792,7 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
             beneficiaries = {e["student_id"] for e in core}
             practice_needs = {(e['student_id'], e.get('matched_key', e['key'])) for e in group}
             return (-len(beneficiaries - members), -len(needs - covered), not bool(core),
-                    _repeated_consolidation_only(group), -len(practice_needs - practiced), _pattern_count(group[0]["candidate"], printed),
+                    repeated_consolidation_only(group), -len(practice_needs - practiced), _pattern_count(group[0]["candidate"], printed),
                     min(e.get("match_level", 4) for e in group),
                     median(e["distance"] for e in group), -max(e["preference"] for e in group),
                     group[0]["candidate"]["question_id"])
@@ -920,6 +920,7 @@ class PersonalizedRecommendationModule:
     def chapter_groups(
         self, *, diagnosis: Mapping[str, Any], config: PersonalizedRecommendationConfig,
         member_ids: Sequence[str] = (), target_keys: Sequence[str] = (),
+        graded_activities: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Read-only preview using the same source and eligibility rules as drafts."""
         students = diagnosis.get("students", [])
@@ -929,6 +930,8 @@ class PersonalizedRecommendationModule:
                     "summary": {"student_count": 0, "students_with_needs": 0,
                                 "grouped_student_count": 0, "group_count": 0}}
         normalized = _normalize_diagnosis(diagnosis)
+        if graded_activities is None:
+            graded_activities = diagnosis.get("_graded_activities")
         excluded = set()
         relations = tuple({"relation_type": relation.relation_type, "source_key": relation.source_key,
                            "target_key": relation.target_key} for relation in self.current_knowledge.relations)
@@ -957,12 +960,12 @@ class PersonalizedRecommendationModule:
             candidates, relations, source_version = self._source_snapshot(
                 excluded_question_ids=excluded, knowledge_keys=leaves, candidate_config=config,
             )
-            recent = self._recent_question_ids(tuple(str(student["student_id"]) for student in students), diagnosis=normalized)
+            recent = self._recent_question_ids(tuple(str(student["student_id"]) for student in students), diagnosis=normalized, graded_activities=graded_activities)
             metadata = self._source_practice_metadata(normalized)
         groups = [self._chapter_group_summary(
             diagnosis=normalized, members=members, targets=(), needs=needs, config=config,
             candidates=candidates, relations=relations, recent=recent, excluded=excluded, source_version=source_version, metadata=metadata,
-            mastery=mastery,
+            mastery=mastery, graded_activities=graded_activities,
         ) for members in grouped_members]
         groups.sort(key=lambda group: (not group["ready"], -len(group["targets"]),
                                       -group["compatibility"], -len(group["members"]), group["group_id"]))
@@ -974,7 +977,7 @@ class PersonalizedRecommendationModule:
             selection = self._chapter_group_summary(
                 diagnosis=normalized, members=tuple(sorted(set(member_ids))), targets=target_keys, needs=needs, config=config,
                 candidates=candidates, relations=relations, recent=recent, excluded=excluded, source_version=source_version, metadata=metadata,
-                mastery=mastery,
+                mastery=mastery, graded_activities=graded_activities,
             )
         return {"version": GROUPING_VERSION, "scope_keys": list(config.group_scope_keys),
                 "source_scope_revision": str(diagnosis.get("scope", {}).get("scope_revision") or ""),
@@ -999,6 +1002,7 @@ class PersonalizedRecommendationModule:
         recent: Mapping[str, set[int]], excluded: set[int], source_version: str,
         metadata: Mapping[int, Mapping[str, Any]],
         mastery: Mapping[tuple[str, str], Mapping[str, Any]],
+        graded_activities: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         profiles = {student["student_id"]: student for student in diagnosis["students"]}
         union = set().union(*(set(needs[sid]) for sid in members)) if members else set()
@@ -1060,6 +1064,7 @@ class PersonalizedRecommendationModule:
         # drops the volatile mastery/effective_weight keys during construction.
         selected = {
             **diagnosis,
+            **({"_graded_activities": graded_activities} if graded_activities is not None else {}),
             "students": [
                 {
                     **profiles[sid],
@@ -1103,16 +1108,32 @@ class PersonalizedRecommendationModule:
         diagnosis: Mapping[str, Any],
         config: PersonalizedRecommendationConfig,
         actor_ref: str,
+        graded_activities: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         token = _request_token(request_token)
         actor = _required_text(actor_ref, "actor_ref")
         normalized_diagnosis = _normalize_diagnosis(diagnosis)
+        if graded_activities is None:
+            graded_activities = diagnosis.get("_graded_activities")
         config = resolve_practice_scope(config, normalized_diagnosis, self.current_knowledge)
         request = {
             "diagnosis": normalized_diagnosis,
             "config": config.to_dict(),
         }
-        input_fingerprint = _hash_payload(request)
+        if graded_activities is not None:
+            request["graded_activities"] = graded_activities
+        # Old stored requests embedded the activities inside the diagnosis; the
+        # fingerprint keeps hashing that payload so a retry maps to its draft.
+        input_fingerprint = _hash_payload(
+            {
+                "diagnosis": (
+                    {**normalized_diagnosis, "_graded_activities": graded_activities}
+                    if graded_activities is not None
+                    else normalized_diagnosis
+                ),
+                "config": request["config"],
+            }
+        )
         existing = self._by_request_token(token)
         if existing is not None:
             existing_fingerprint = str(existing.pop("_input_fingerprint"))
@@ -1125,7 +1146,7 @@ class PersonalizedRecommendationModule:
         if config.group_scope_keys:
             checked = self.chapter_groups(diagnosis=normalized_diagnosis, config=config,
                                           member_ids=[item["student_id"] for item in normalized_diagnosis["students"]],
-                                          target_keys=config.target_keys)["selection"]
+                                          target_keys=config.target_keys, graded_activities=graded_activities)["selection"]
             if not checked or not checked["ready"]:
                 raise ValueError("selected group no longer has compatible common targets")
             if not config.group_source_version or checked["source_version"] != config.group_source_version:
@@ -1147,7 +1168,7 @@ class PersonalizedRecommendationModule:
             tuple(
                 str(item["student_id"])
                 for item in normalized_diagnosis["students"]
-            ), diagnosis=normalized_diagnosis
+            ), diagnosis=normalized_diagnosis, graded_activities=graded_activities
         )
         source_version = _context_source_version(
             base_source_version,
@@ -1546,6 +1567,7 @@ class PersonalizedRecommendationModule:
         recent = self._recent_question_ids(
             student_ids,
             exclude_draft_id=draft_id, diagnosis=diagnosis,
+            graded_activities=request.get("graded_activities"),
         )
         return (
             candidates,
@@ -1757,7 +1779,8 @@ class PersonalizedRecommendationModule:
                             candidates: Sequence[dict[str, Any]] | None = None,
                             mastery: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
                             recent: Mapping[str, set[int]] | None = None,
-                            excluded: set[int] | None = None) -> dict[str, Any]:
+                            excluded: set[int] | None = None,
+                            graded_activities: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
         """One public read-only matching operation for all three selection flows."""
         config = resolve_practice_scope(config, diagnosis, self.current_knowledge)
         scope = self._candidate_scope(diagnosis, config)
@@ -1766,7 +1789,7 @@ class PersonalizedRecommendationModule:
         if mastery is None:
             mastery = self._mastery_snapshot(dict(diagnosis))
         if recent is None:
-            recent = self._recent_question_ids(tuple(str(p["student_id"]) for p in diagnosis["students"]), diagnosis=diagnosis)
+            recent = self._recent_question_ids(tuple(str(p["student_id"]) for p in diagnosis["students"]), diagnosis=diagnosis, graded_activities=graded_activities)
         excluded = set(excluded or ())
         if config.paper_mode == "shared":
             excluded.update(q for ids in recent.values() for q in ids)
@@ -2475,11 +2498,14 @@ class PersonalizedRecommendationModule:
 
     def _recent_question_ids(self, student_ids: tuple[str, ...], *,
                              diagnosis: Mapping[str, Any] | None = None,
+                             graded_activities: Sequence[Mapping[str, Any]] | None = None,
                              exclude_draft_id: str | None = None) -> dict[str, set[int]]:
         """Latest three *graded* activities per student, exam and training merged."""
         if not student_ids:
             return {}
         diagnosis = diagnosis or {}
+        if graded_activities is None:
+            graded_activities = diagnosis.get("_graded_activities")
         activities = {}
         def add(sid, identity, when, ids):
             sid = str(sid)
@@ -2503,10 +2529,10 @@ class PersonalizedRecommendationModule:
             exam_links = {}
             for row in conn.execute("SELECT grading_session_id,bank_question_id FROM grading_question_links WHERE status='confirmed'"):
                 exam_links.setdefault(str(row["grading_session_id"]), set()).add(int(row["bank_question_id"]))
-            for row in diagnosis.get("_graded_activities", []):
+            for row in graded_activities or ():
                 session = str(row["session_id"])
                 add(row["student_id"], 'exam:'+session, row.get("occurred_at"), exam_links.get(session, ()))
-            if "_graded_activities" not in diagnosis:
+            if graded_activities is None:
                 # In-memory callers can supply their observed exam references.
                 for student in diagnosis.get("students", []):
                     for point in student.get("weak_points", []):
@@ -2570,9 +2596,10 @@ class PersonalizedRecommendationModule:
                     result[sid] = used | {q for q, key in identities.items() if key and key in keys}
         return result
 
-    def current_exam_question_ids(self, diagnosis: Mapping[str, Any]) -> set[int]:
+    def current_exam_question_ids(self, diagnosis: Mapping[str, Any], *,
+                                  graded_activities: Sequence[Mapping[str, Any]] | None = None) -> set[int]:
         """Compatibility name: shared union of the unified graded-activity window."""
-        recent = self._recent_question_ids(tuple(str(p['student_id']) for p in diagnosis.get('students', [])), diagnosis=diagnosis)
+        recent = self._recent_question_ids(tuple(str(p['student_id']) for p in diagnosis.get('students', [])), diagnosis=diagnosis, graded_activities=graded_activities)
         return {q for ids in recent.values() for q in ids}
 
     def _by_request_token(self, token: str) -> dict[str, Any] | None:
@@ -2657,7 +2684,8 @@ class PersonalizedRecommendationModule:
             entries, _ = self._candidate_entries(
                 profile=source_profile, targets=(item["target"],), candidates=candidates, metadata={},
                 config=config, supplement_keys=scope or (str(item["matched_key"]),),
-                recent=self._recent_question_ids((str(student["student_id"]),), exclude_draft_id=draft_id, diagnosis=request["diagnosis"])
+                recent=self._recent_question_ids((str(student["student_id"]),), exclude_draft_id=draft_id, diagnosis=request["diagnosis"],
+                                                graded_activities=request.get("graded_activities"))
                            .get(str(student["student_id"]), set()),
                 excluded=set())
             by_id = {candidate["question_id"]: candidate for candidate in candidates}
@@ -2674,7 +2702,7 @@ class PersonalizedRecommendationModule:
                                                        -entry["preference"], entry["candidate"]["question_id"]))
             matched_entries = self.evaluate_candidates(
                 diagnosis={**request["diagnosis"], "students": [source_profile]}, config=config,
-                candidates=(selected["candidate"],))['pools'].get(str(student['student_id']), [])
+                candidates=(selected["candidate"],), graded_activities=request.get("graded_activities"))['pools'].get(str(student['student_id']), [])
             if matched_entries:
                 selected = _member_entries(matched_entries)[str(student['student_id'])]
             replacement = _draft_item(
@@ -2757,7 +2785,6 @@ def _normalize_diagnosis(value: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(exam_scope, Mapping)
             else {"mode": "", "session_ids": []}
         ),
-        **({"_graded_activities": deepcopy(value["_graded_activities"])} if "_graded_activities" in value else {}),
         "_mastery_session_times": dict(
             value.get("_mastery_session_times")
             if isinstance(value.get("_mastery_session_times"), Mapping)

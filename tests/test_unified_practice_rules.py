@@ -138,10 +138,10 @@ def test_new_needs_and_different_methods_precede_small_distance_advantages():
 
 
 def test_same_skill_candidates_are_not_automatically_folded_as_similar():
-    from question_bank.recommendation.personalized import _paper_similarity_allowed
+    from question_bank.recommendation.personalized import paper_similarity_allowed
     first = {'question_id': 1, 'stable_keys': ['sk_a'], 'question_text': '合成测量任务'}
     second = {'question_id': 2, 'stable_keys': ['sk_a'], 'question_text': '合成图形推理'}
-    assert _paper_similarity_allowed(first, [second])
+    assert paper_similarity_allowed(first, [second])
     assert not _paper_diversity_allowed(first, [second])
 
 

@@ -136,6 +136,9 @@ def client_and_source(tmp_path):
             calls.append((scope, exam_scope))
             return deepcopy(source)
 
+        def graded_activities(self, student_ids):
+            return []
+
     app = create_app()
     app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: Profiles()
     app.dependency_overrides[get_question_bank_read_service] = lambda: reader

@@ -10,8 +10,8 @@ from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 from question_bank.recommendation.personalized import (
-    PersonalizedRecommendationModule, PersonalizedRecommendationConfig, _paper_similarity_allowed, resolve_practice_scope,
-    _repeated_consolidation_only,
+    PersonalizedRecommendationModule, PersonalizedRecommendationConfig, paper_similarity_allowed, resolve_practice_scope,
+    repeated_consolidation_only,
 )
 
 def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id: str,
@@ -81,6 +81,7 @@ def shortlist_candidates(
     excluded_question_ids: set[int], limit: int | None = None,
     cache_scope: object = None, recommendations: PersonalizedRecommendationModule | None = None,
     teaching_progress_chapter_id: str = '',
+    graded_activities: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     module = recommendations or PersonalizedRecommendationModule(db_path=read_service.db_path,
         data_root=read_service.data_root or read_service.db_path.parent.parent)
@@ -108,7 +109,7 @@ def shortlist_candidates(
     if not selected or not students:
         return output
     config = replace(config, paper_mode='shared', target_keys=tuple(selected))
-    evaluated = module.evaluate_candidates(diagnosis=diagnosis, config=config, excluded=excluded_question_ids)
+    evaluated = module.evaluate_candidates(diagnosis=diagnosis, config=config, excluded=excluded_question_ids, graded_activities=graded_activities)
     groups = defaultdict(list)
     for entries in evaluated["pools"].values():
         for entry in entries:
@@ -135,14 +136,14 @@ def shortlist_candidates(
             "uncertain_student_count": sum(e["evidence_confidence"] != "repeated" for e in members.values()),
             "difficulty_basis": best["difficulty_basis"], "similar_question_ids": [],
             "direct_target_keys": sorted({e["key"] for e in group if e["selection_kind"] == "direct"})})
-    candidates.sort(key=lambda item: (-item["remediation_student_count"], _repeated_consolidation_only(groups[item["question_id"]]),
+    candidates.sort(key=lambda item: (-item["remediation_student_count"], repeated_consolidation_only(groups[item["question_id"]]),
                                      -item["suitable_student_count"], item["match_level"], item["question_id"]))
     # Fold only genuine similarity using the same comparator. Written count is
     # a selected-paper rule, so comparing two candidates never imposes a quota.
     descriptors = {q["question_id"]: q for q in evaluated["candidates"]}
     folded = []
     for item in candidates:
-        representative = next((other for other in folded if not _paper_similarity_allowed(descriptors[item["question_id"]], [descriptors[other["question_id"]]])), None)
+        representative = next((other for other in folded if not paper_similarity_allowed(descriptors[item["question_id"]], [descriptors[other["question_id"]]])), None)
         if representative:
             representative["similar_question_ids"].append(item["question_id"])
         else:
