@@ -1059,6 +1059,9 @@ class TrainingEvidencePublisher:
             **dict(diagnosis),
             "students": selected_students,
         }
+        graded_activities = context.get("graded_activities")
+        if graded_activities is None:
+            graded_activities = next_diagnosis.get("_graded_activities")
         # The paper keeps its original diagnosis. Only the next draft receives
         # the mastery just calculated from the published training evidence.
         current_by_key = {
@@ -1098,6 +1101,12 @@ class TrainingEvidencePublisher:
                     if field in config_payload
                 }
             )
+            # Requests frozen before graded_activities became a request-level
+            # sibling embed them inside the diagnosis; rebuild that payload so
+            # the idempotency token stays identical for existing papers.
+            token_diagnosis = dict(next_diagnosis)
+            if graded_activities is not None:
+                token_diagnosis["_graded_activities"] = graded_activities
             token = stable_hash(
                 {
                     "kind": "training-next-round-draft-v2-current-mastery",
@@ -1107,7 +1116,7 @@ class TrainingEvidencePublisher:
                     ],
                     "student_id": student_id,
                     "evidence_version": evidence_version,
-                    "diagnosis": next_diagnosis,
+                    "diagnosis": token_diagnosis,
                 }
             )[:32]
             draft = PersonalizedRecommendationModule(
@@ -1119,6 +1128,7 @@ class TrainingEvidencePublisher:
                 diagnosis=next_diagnosis,
                 config=config,
                 actor_ref=actor_ref,
+                graded_activities=graded_activities,
             )
         except Exception:
             return {
@@ -1275,6 +1285,7 @@ class TrainingEvidencePublisher:
             "draft_id": str(row["draft_id"]),
             "draft_result_version": str(row["draft_result_version"]),
             "diagnosis": request.get("diagnosis"),
+            "graded_activities": request.get("graded_activities"),
             "recommendation_config": request.get("config"),
             "items": items,
         }

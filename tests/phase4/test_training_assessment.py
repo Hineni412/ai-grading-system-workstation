@@ -571,3 +571,119 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
     assert (
         original_request["diagnosis"]["students"][0]["weak_points"][0]["mastery"] == 0.2
     )
+
+
+def test_next_round_token_matches_legacy_frozen_request(
+    assessment_workspace: tuple[Path, Path],
+) -> None:
+    from backend.training_assessment.contracts import stable_hash
+    from backend.training_assessment.evidence import TrainingEvidencePublisher
+    from tests.phase4.test_personalized_recommendation import (
+        _seed_recommendation_sources,
+    )
+
+    db_path, data_root = assessment_workspace
+    _seed_recommendation_sources(db_path, data_root)
+    activities = [
+        {
+            "student_id": "SYN-001",
+            "session_id": "1",
+            "occurred_at": "2026-07-01T08:00:00+08:00",
+        }
+    ]
+    student = {
+        "student_id": "SYN-001",
+        "student_code": "001",
+        "student_name": "合成学生",
+        "class_id": "SYN-CLASS",
+        "weak_points": [
+            {
+                "knowledge_point": "一元一次方程",
+                "mastery": 0.2,
+                "evidence_count": 1,
+                "source_question_refs": [
+                    {
+                        "session_id": 1,
+                        "question_id": "SYN-EX-Q1",
+                        "score_awarded": 2,
+                        "full_score": 10,
+                    }
+                ],
+                "actionable_reasons": ["合成考试证据偏弱"],
+            }
+        ],
+    }
+    diagnosis = {
+        "students": [student],
+        "exam_scope": {"mode": "current", "session_ids": [1]},
+        "_mastery_session_times": {"1": "2026-07-01T08:00:00+08:00"},
+    }
+    publisher = TrainingEvidencePublisher(
+        db_path=db_path,
+        data_root=data_root,
+        outcome_loader=lambda *args: None,
+        clock=lambda: datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+    )
+    context = {
+        "submission_id": "SYN-SUB",
+        "submission_revision": 1,
+        "student_id": "SYN-001",
+        "items": [],
+        "recommendation_config": PersonalizedRecommendationConfig(
+            question_count=8,
+            expected_minutes=120,
+        ).to_dict(),
+    }
+    # Requests frozen before the snapshot refactor embedded the activities
+    # inside the stored diagnosis. Rebuilding the same frozen context from the
+    # request-level sibling key must produce the identical idempotency token.
+    expected_token = stable_hash(
+        {
+            "kind": "training-next-round-draft-v2-current-mastery",
+            "submission_id": context["submission_id"],
+            "submission_revision": context["submission_revision"],
+            "student_id": "SYN-001",
+            "evidence_version": "ev-1",
+            "diagnosis": {
+                **diagnosis,
+                "students": [student],
+                "_graded_activities": activities,
+            },
+        }
+    )[:32]
+    legacy = publisher._next_round(
+        {
+            **context,
+            "diagnosis": {**diagnosis, "_graded_activities": activities},
+        },
+        evidence_version="ev-1",
+        actor_ref="synthetic",
+        mastery_changes=[],
+        publication_pending=False,
+    )
+    assert legacy["status"] == "draft", legacy
+    sibling = publisher._next_round(
+        {
+            **context,
+            "diagnosis": diagnosis,
+            "graded_activities": activities,
+        },
+        evidence_version="ev-1",
+        actor_ref="synthetic",
+        mastery_changes=[],
+        publication_pending=False,
+    )
+    assert sibling["draft_id"] == legacy["draft_id"]
+    with connect(db_path) as connection:
+        stored = connection.execute(
+            """
+            SELECT request_token, request_json
+            FROM personalized_recommendation_drafts
+            WHERE draft_id = ?
+            """,
+            (legacy["draft_id"],),
+        ).fetchone()
+    assert str(stored["request_token"]) == expected_token
+    stored_request = json.loads(str(stored["request_json"]))
+    assert stored_request["graded_activities"] == activities
+    assert "_graded_activities" not in stored_request["diagnosis"]

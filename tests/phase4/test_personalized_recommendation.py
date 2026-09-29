@@ -841,6 +841,9 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
                 ]
             return result
 
+        def graded_activities(self, student_ids):
+            return []
+
     app = create_app()
     app.dependency_overrides[get_diagnosis_profile_service] = Diagnosis
     app.dependency_overrides[get_request_diagnosis_profile_service] = Diagnosis
@@ -918,6 +921,139 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
             ).fetchone()[0]
             == 1
         )
+
+
+def test_group_adopt_stores_activities_for_all_scope_students(
+    direct_module,
+):
+    from backend.api.app import create_app
+    from backend.api.dependencies import (
+        get_diagnosis_profile_service,
+        get_request_diagnosis_profile_service,
+    )
+    from backend.api.dependencies import get_personalized_recommendation_module
+    from backend.api.routers.training import _grouping_module
+    from fastapi.testclient import TestClient
+
+    members = ("SYN-A", "SYN-B", "SYN-C")
+    source = _direct_diagnosis(
+        tuple((sid, 0.8, 900, BNU_TARGET) for sid in members)
+    )
+    source["students"].append(
+        {
+            "student_id": "IDLE-01",
+            "student_name": "合成学生IDLE-01",
+            "class_id": "synthetic",
+            "score_rate": 0.9,
+            "weak_points": [],
+        }
+    )
+    source.update(
+        knowledge_catalog=[],
+        coverage={"covered_items": 2, "total_items": 2, "missing_items": {}},
+        diagnosis_identity="question_tag",
+        warnings=[],
+        confirmed_concept_ids=[],
+        suggested_terms=[],
+        unmapped_terms=[],
+    )
+    for student in source["students"]:
+        student["student_code"] = student["student_id"]
+        for point in student["weak_points"]:
+            point.update(
+                score_sum=4,
+                full_score_sum=5,
+                deduction_count=1,
+                exam_count=1,
+                actionable_reasons=[],
+                tag_context={},
+                error_counts={},
+            )
+            for ref in point["source_question_refs"]:
+                ref["session_name"] = "合成学期考试"
+
+    class Diagnosis:
+        def build_profiles(self, *, scope, exam_scope):
+            result = deepcopy(source)
+            result["scope"] = scope
+            result["exam_scope"] = {**exam_scope, "session_ids": [1, 2], "sessions": []}
+            if scope["mode"] == "selected":
+                result["students"] = [
+                    student
+                    for student in result["students"]
+                    if student["student_id"] in scope["student_ids"]
+                ]
+            return result
+
+        def graded_activities(self, student_ids):
+            return [
+                {
+                    "student_id": sid,
+                    "activity_id": "exam:1",
+                    "session_id": "1",
+                    "occurred_at": "2026-09-01T08:00:00",
+                }
+                for sid in student_ids
+            ]
+
+    app = create_app()
+    app.dependency_overrides[get_diagnosis_profile_service] = Diagnosis
+    app.dependency_overrides[get_request_diagnosis_profile_service] = Diagnosis
+    app.dependency_overrides[get_personalized_recommendation_module] = lambda: (
+        direct_module
+    )
+    app.dependency_overrides[_grouping_module] = lambda: direct_module
+    client = TestClient(app)
+    exams = {
+        "mode": "semester",
+        "session_ids": [],
+        "curriculum_volume_id": "bnu24-math-g8-upper",
+    }
+    settings = {"scope_keys": [BNU_CHAPTER4], "question_count": 8, "difficulty_max": 7}
+    checked = client.post(
+        "/api/training/diagnosis",
+        json={
+            "scope": {"mode": "all"},
+            "exam_scope": exams,
+            "grouping": {
+                **settings,
+                "member_ids": list(members),
+                "target_keys": [BNU_TARGET],
+            },
+        },
+    )
+    assert checked.status_code == 200, checked.text
+    created = client.post(
+        "/api/training/personalized-drafts",
+        json={
+            "request_token": "5" * 32,
+            # IDLE-01 stays in scope but is filtered out for lack of weak
+            # points; the stored activities must still cover all scope students.
+            "scope": {"mode": "all"},
+            "exam_scope": exams,
+            "paper_mode": "shared",
+            "question_count": 8,
+            "difficulty_max": 7,
+            "target_keys": [BNU_TARGET],
+            "group_scope_keys": [BNU_CHAPTER4],
+            "group_source_version": checked.json()["grouping"]["selection"][
+                "source_version"
+            ],
+        },
+    )
+    assert created.status_code == 200, created.text
+    with connect(direct_module.db_path) as conn:
+        stored = json.loads(
+            conn.execute(
+                "SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id = ?",
+                (created.json()["draft_id"],),
+            ).fetchone()[0]
+        )
+    assert {item["student_id"] for item in stored["graded_activities"]} == {
+        *members,
+        "IDLE-01",
+    }
+    assert "_graded_activities" not in stored["diagnosis"]
 
 
 def test_saved_lock_replace_exclude_and_idempotent_retry(direct_module):
@@ -1001,6 +1137,89 @@ def test_saved_lock_replace_exclude_and_idempotent_retry(direct_module):
         len(updated["students"][0]["items"]) == len(removed["students"][0]["items"]) - 1
     )
     assert direct_module.get(draft["draft_id"]) == updated
+
+
+def test_legacy_embedded_activities_still_exclude_originals_on_edit(
+    direct_module,
+):
+    from question_bank.services.source_question_link_service import (
+        SourceQuestionLinkService,
+    )
+
+    links = SourceQuestionLinkService(direct_module.db_path)
+    linked_ids = (105, 107, 109, 111)
+    for index, qid in enumerate(linked_ids):
+        links.confirm_link(
+            grading_session_id=9,
+            source_question_id=f"LEGACY-{index}",
+            bank_question_id=qid,
+            link_method="synthetic",
+        )
+    activities = [
+        {"student_id": "A", "session_id": "9", "occurred_at": "2026-09-09"}
+    ]
+    draft = _make_direct(
+        direct_module,
+        diagnosis={**_direct_diagnosis(), "_graded_activities": activities},
+        difficulty_max=10,
+    )
+    # Requests stored before the snapshot refactor embedded the activities
+    # inside the diagnosis instead of the request-level sibling key.
+    with connect(direct_module.db_path) as conn:
+        request = json.loads(
+            conn.execute(
+                "SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id = ?",
+                (draft["draft_id"],),
+            ).fetchone()[0]
+        )
+        request["diagnosis"]["_graded_activities"] = request.pop(
+            "graded_activities"
+        )
+        conn.execute(
+            "UPDATE personalized_recommendation_drafts SET request_json = ? WHERE draft_id = ?",
+            (json.dumps(request, ensure_ascii=False), draft["draft_id"]),
+        )
+    control = _make_direct(direct_module, token="9", difficulty_max=10)
+    control_ids = {
+        item["question_id"] for item in control["students"][0]["items"]
+    }
+    recent_original = next(
+        qid for qid in linked_ids if qid not in control_ids
+    )
+    item = next(
+        q
+        for q in draft["students"][0]["items"]
+        if q["question_id"] in range(100, 114)
+    )
+    control_item = next(
+        q
+        for q in control["students"][0]["items"]
+        if q["question_id"] in range(100, 114)
+        and q["question_id"] != recent_original
+    )
+
+    def replace_command(token, target_item):
+        return RecommendationEditCommand(
+            request_token=token * 32,
+            expected_revision=1,
+            action="replace",
+            student_id="A",
+            item_id=target_item["item_id"],
+            actor_ref="synthetic",
+            reason="合成验收",
+            replacement_question_id=recent_original,
+        )
+
+    replaced = direct_module.edit(
+        control["draft_id"], replace_command("8", control_item)
+    )
+    assert next(
+        q
+        for q in replaced["students"][0]["items"]
+        if q["item_id"] == control_item["item_id"]
+    )["question_id"] == recent_original
+    with pytest.raises(RecommendationEditInvalid):
+        direct_module.edit(draft["draft_id"], replace_command("7", item))
 
 
 def test_concurrent_teacher_edits_allow_only_one_revision(direct_module):

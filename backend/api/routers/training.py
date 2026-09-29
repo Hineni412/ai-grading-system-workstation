@@ -167,6 +167,12 @@ def build_training_diagnosis(
                     config=grouping_config,
                     member_ids=grouping.member_ids,
                     target_keys=grouping.target_keys,
+                    graded_activities=service.graded_activities(
+                        tuple(
+                            str(item["student_id"])
+                            for item in diagnosis.get("students", [])
+                        )
+                    ),
                 )
 
             grouping_key_fn = getattr(service, "tag_profile_cache_key", None)
@@ -308,6 +314,11 @@ def create_personalized_recommendation_draft(
             scope=body.scope.model_dump(exclude_none=True),
             exam_scope=body.exam_scope.model_dump(exclude_none=True),
         )
+        # Fetch before the weak-points filter: the stored activities cover every
+        # scope student, matching the list build_profiles used to embed.
+        graded_activities = diagnosis_service.graded_activities(
+            [str(item["student_id"]) for item in diagnosis.get("students", [])]
+        )
         explicitly_included = set(body.scope.include_student_ids)
         diagnosis["students"] = [
             student
@@ -344,6 +355,7 @@ def create_personalized_recommendation_draft(
                 teaching_progress_chapter_id=body.teaching_progress_chapter_id,
             ),
             actor_ref="local_teacher",
+            graded_activities=graded_activities,
         )
     except RecommendationSourceChanged as exc:
         raise ApiError(409, "personalized_recommendation_source_changed",

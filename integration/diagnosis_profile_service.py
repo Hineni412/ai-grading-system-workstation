@@ -6,7 +6,7 @@ from pathlib import Path
 import pickle
 import sqlite3
 import threading
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, TypedDict
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.compat import open_grading_repositories
@@ -101,6 +101,23 @@ def _normalized_profile_scope(
     return scope
 
 
+class DiagnosisSnapshot(TypedDict, total=False):
+    """Teacher-visible diagnosis snapshot returned by build_profiles/build_tag_profiles."""
+
+    scope: dict[str, Any]
+    exam_scope: dict[str, Any]
+    students: list[dict[str, Any]]
+    group_weak_points: list[dict[str, Any]]
+    knowledge_catalog: list[dict[str, Any]]
+    knowledge_associations: list[dict[str, Any]]
+    coverage: dict[str, Any]
+    confirmed_concept_ids: list[Any]
+    suggested_terms: list[Any]
+    unmapped_terms: list[Any]
+    warnings: list[str]
+    diagnosis_identity: str
+
+
 class DiagnosisProfileService:
     def __init__(
         self,
@@ -129,7 +146,7 @@ class DiagnosisProfileService:
         *,
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
-    ) -> dict[str, Any]:
+    ) -> DiagnosisSnapshot:
         return self.build_tag_profiles(scope=scope, exam_scope=exam_scope)
 
     def tag_profile_cache_key(
@@ -161,7 +178,7 @@ class DiagnosisProfileService:
         *,
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
-    ) -> dict[str, Any]:
+    ) -> DiagnosisSnapshot:
         cache_key = self.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
         cached = _claim_or_wait_tag_profile(cache_key)
         if cached is not None:
@@ -195,7 +212,7 @@ class DiagnosisProfileService:
         *,
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    ) -> tuple[DiagnosisSnapshot, dict[str, Any]]:
         resolved = EvidenceScopeResolver(self.db).resolve(
             scope=scope,
             exam_scope=exam_scope,
@@ -520,7 +537,6 @@ class DiagnosisProfileService:
         normalized_scope = resolved.normalized_scope(scope)
         result = {
             "scope": normalized_scope,
-            "_graded_activities": self.graded_activities(student_ids),
             "exam_scope": {
                 "mode": str(exam_scope.get("mode") or "current"),
                 **({"curriculum_volume_id": str(exam_scope.get("curriculum_volume_id") or "")}
