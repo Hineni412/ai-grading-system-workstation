@@ -118,7 +118,7 @@ export interface ScanPreflight {
   decisions: ScanDecision[]
   pending_issue_count: number
   match_conflicts?: ScanMatchConflict[]
-  identity?: ScanPreflightIdentity
+  identity?: ScanPreflightIdentity | null
 }
 
 export interface ScanMatchConflict {
@@ -280,7 +280,7 @@ function decodePreflight(value: unknown): ScanPreflight {
     throw new Error('Invalid scan preflight summary')
   }
   const identity = value.identity
-  if (identity !== undefined && (!isRecord(identity)
+  if (identity !== undefined && identity !== null && (!isRecord(identity)
     || typeof identity.method !== 'string'
     || !finiteInteger(identity.auto)
     || !finiteInteger(identity.needs_confirmation)

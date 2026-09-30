@@ -126,7 +126,9 @@ export const useResultsCenterStore = defineStore('results-center', () => {
         return
       }
       state.value = updatedAt.value === null ? 'error' : 'stale-error'
-      errorMessage.value = '当前考试的成绩暂时无法读取，请稍后重试。'
+      errorMessage.value = error instanceof ApiError && error.message.trim()
+        ? error.message
+        : '当前考试的成绩暂时无法读取，请稍后重试。'
     } finally {
       if (controller === nextController) controller = null
     }

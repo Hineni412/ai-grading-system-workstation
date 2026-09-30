@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
 import { reviewDraftKey, scoreIssue, useReviewDraftStore } from '../../stores/review-drafts'
-import { translateGradingReason } from '../../utils/grading-reasons'
+import { displayErrorCategory, translateGradingReason } from '../../utils/grading-reasons'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import ReviewImageDialog from './ReviewImageDialog.vue'
 
@@ -30,7 +30,7 @@ const riskReason = computed(() => {
   if (item.score_status === 'ungraded') return '等待教师评分'
   if (item.score_status === 'failed') return '自动处理失败，请教师直接评分'
   const reason = item.error_summary?.trim()
-    || item.error_category?.trim()
+    || displayErrorCategory(item.error_category)
     || item.deduction_reason?.trim()
   if (item.score_status === 'ai_ready') {
     return reason ? translateGradingReason(reason, '高置信 AI 结果') : '高置信 AI 结果'
@@ -49,7 +49,7 @@ const deductionReason = computed(() => {
   return translateGradingReason(
     item.deduction_reason
       || item.error_summary
-      || item.error_category,
+      || displayErrorCategory(item.error_category),
     item.score_status === 'ai_ready'
       ? 'AI 未提供明确扣分依据'
       : 'AI 未提供明确扣分依据，建议教师复核',

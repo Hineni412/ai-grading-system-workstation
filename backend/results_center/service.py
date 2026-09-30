@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
+from backend.error_causes import display_error_category
 from backend.name_pinyin import student_name_initials, student_name_pinyin
 from backend.public_data import contains_filesystem_reference
 from backend.review.service import ReviewApplicationService, ReviewItem
@@ -196,7 +197,7 @@ def _review_reason(item: ReviewItem) -> str | None:
     if not item.needs_review:
         return None
     for value in (
-        item.error_category,
+        display_error_category(item.error_category),
         item.error_summary,
         item.deduction_reason,
     ):

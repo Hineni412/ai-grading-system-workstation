@@ -91,6 +91,14 @@ export function isRetainedReport(job: JobResponse | ReportHistoryJob): boolean {
   return job.payload.report_type === 'personal_analysis_html'
 }
 
+/** 个人报告导出结果中的"建议核对"条数；旧版结果无此字段时按 0 处理。 */
+export function reviewNoteCount(job: JobResponse | ReportHistoryJob): number {
+  const value = job.result.review_note_count
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : 0
+}
+
 export function formatTokenCount(value: number): string {
   return value.toLocaleString('zh-CN')
 }

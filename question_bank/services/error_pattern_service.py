@@ -20,12 +20,14 @@ _PATTERN_COLS = (
     "id", "question_id", "category", "pattern", "explanation",
     "trigger_kind", "trigger_value", "status", "source",
     "occurrences_json", "confirm_token", "confirmed_by", "confirmed_at",
-    "created_at", "updated_at",
+    "created_at", "updated_at", "skill_key",
 )
 
 
 def _row_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    data = {key: row[key] for key in _PATTERN_COLS}
+    available = set(row.keys())
+    data = {key: row[key] for key in _PATTERN_COLS if key in available}
+    data.setdefault("skill_key", None)
     try:
         occurrences = json.loads(data.get("occurrences_json") or "[]")
     except (TypeError, json.JSONDecodeError):
@@ -210,6 +212,7 @@ def _legacy_tag_patterns(
             "status": "predicted",
             "source": "legacy_tag",
             "occurrences": [],
+            "skill_key": None,
         })
     return out
 
@@ -347,11 +350,15 @@ def rename_patterns(
     new_pattern: str,
     category: str | None = None,
     pattern_id: int | None = None,
+    skill_key: str | None = None,
+    update_skill: bool = False,
     connection: sqlite3.Connection | None = None,
 ) -> int:
     """教师修改错法：旧行标记 merged，新名以 ``teacher_edit`` 来源生效。
 
     ``new_pattern == old_pattern`` 时仅在原行上更新大类与来源，不新建行。
+    ``update_skill`` 为真时把关联技能写成 ``skill_key``（None 表示清除），
+    为假时改名生成的新行沿用旧行的关联技能。
     返回处理的旧行数；表缺失或无匹配返回 0。
     """
     old = str(old_pattern or "").strip()
@@ -375,12 +382,19 @@ def rename_patterns(
         for row in rows:
             data = _row_to_dict(row)
             if new == old:
+                assignments = (
+                    "category=COALESCE(?, category),"
+                    " status='confirmed', source='teacher_edit'"
+                )
+                params: list[Any] = [category]
+                if update_skill:
+                    assignments += ", skill_key=?"
+                    params.append(skill_key)
                 conn.execute(
-                    f"UPDATE {_PATTERN_TABLE} SET category=COALESCE(?, category),"
-                    " status='confirmed', source='teacher_edit',"
+                    f"UPDATE {_PATTERN_TABLE} SET {assignments},"
                     " updated_at=datetime('now','localtime')"
                     " WHERE id=?",
-                    (category, int(data["id"])),
+                    (*params, int(data["id"])),
                 )
                 continue
             conflict = conn.execute(
@@ -399,14 +413,16 @@ def rename_patterns(
             conn.execute(
                 f"INSERT INTO {_PATTERN_TABLE} (question_id, category, pattern,"
                 " explanation, trigger_kind, trigger_value, status, source,"
-                " occurrences_json, confirm_token, confirmed_by, confirmed_at)"
+                " occurrences_json, confirm_token, confirmed_by, confirmed_at,"
+                " skill_key)"
                 " VALUES (?,?,?,?,?,?,'confirmed','teacher_edit',?,?,'',"
-                "datetime('now','localtime'))"
+                "datetime('now','localtime'), ?)"
                 " ON CONFLICT(question_id, trigger_kind, trigger_value, pattern)"
                 " DO UPDATE SET status='confirmed', category=excluded.category,"
                 " explanation=excluded.explanation, source='teacher_edit',"
                 " occurrences_json=excluded.occurrences_json,"
                 " confirm_token=excluded.confirm_token,"
+                " skill_key=excluded.skill_key,"
                 " updated_at=datetime('now','localtime')",
                 (
                     int(data["question_id"]),
@@ -417,6 +433,7 @@ def rename_patterns(
                     data["trigger_value"],
                     json.dumps(data["occurrences"], ensure_ascii=False),
                     f"renamed_from:{int(data['id'])}",
+                    skill_key if update_skill else data["skill_key"],
                 ),
             )
         return len(rows)
@@ -480,9 +497,125 @@ def confirmed_index(
     }
 
 
+def _skill_label(knowledge: Any, key: str | None) -> str | None:
+    if knowledge is None or not key:
+        return None
+    term = knowledge.canonical_term(key)
+    if term is not None:
+        return term[1]
+    node = knowledge.node(key)
+    return node.display_name if node is not None else None
+
+
+def _criterion_skill_map(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    question_id: int,
+    point_ids: Iterable[str],
+) -> dict[str, str]:
+    """{判定点 id: 技能稳定键}：当前可用证据版本中，恰有唯一直达 sk_* 链接时成立。"""
+    wanted = {str(point) for point in point_ids if str(point or "").strip()}
+    if not wanted:
+        return {}
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        ("question_solution_evidence_versions",),
+    ).fetchone() is None:
+        return {}
+    version = conn.execute(
+        """
+        SELECT v.evidence_version_id
+        FROM question_solution_evidence_versions v
+        JOIN (
+            SELECT question_id, MAX(created_at) AS max_created
+            FROM question_solution_evidence_versions
+            WHERE status IN ('proposed', 'approved')
+            GROUP BY question_id
+        ) m
+          ON m.question_id = v.question_id
+         AND m.max_created = v.created_at
+        WHERE v.question_id = ? AND v.status IN ('proposed', 'approved')
+        LIMIT 1
+        """,
+        (int(question_id),),
+    ).fetchone()
+    if version is None:
+        return {}
+    try:
+        from question_bank.solution_evidence.knowledge_links import (
+            load_point_links,
+        )
+
+        grouped = load_point_links(
+            Path(db_path), [str(version["evidence_version_id"])], None,
+            connection=conn,
+        )
+    except sqlite3.Error:
+        return {}
+    points = grouped.get(str(version["evidence_version_id"]), {})
+    out: dict[str, str] = {}
+    for point_id in wanted:
+        keys = {
+            str(link.stable_key)
+            for link in points.get(point_id, ())
+            if link.role == "direct"
+            and link.resolution_status == "resolved"
+            and str(link.stable_key or "").startswith("sk_")
+        }
+        if len(keys) == 1:
+            out[point_id] = keys.pop()
+    return out
+
+
+def pattern_skill_index(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    question_id: int,
+    rows: Iterable[dict[str, Any]],
+    *,
+    knowledge: Any = None,
+) -> dict[int, dict[str, Any]]:
+    """{错法行 id: {skill_key, skill_label, skill_source}}，供题目详情读取。
+
+    生效顺序：教师设定的 ``skill_key``（teacher）优先；未设定时判定点
+    （``trigger_kind='step'``）触发位取该判定点在当前证据版本中唯一直达
+    的技能链接（criterion）；其余为空。
+    """
+    entries = [row for row in rows if row.get("id") is not None]
+    teacher_keys = {
+        int(row["id"]): str(row["skill_key"]).strip()
+        for row in entries
+        if str(row.get("skill_key") or "").strip()
+    }
+    derived = _criterion_skill_map(
+        conn, db_path, int(question_id),
+        (
+            str(row.get("trigger_value") or "")
+            for row in entries
+            if int(row["id"]) not in teacher_keys
+            and row.get("trigger_kind") == "step"
+        ),
+    )
+    out: dict[int, dict[str, Any]] = {}
+    for row in entries:
+        rid = int(row["id"])
+        key = teacher_keys.get(rid)
+        source = "teacher" if key else None
+        if key is None and row.get("trigger_kind") == "step":
+            key = derived.get(str(row.get("trigger_value") or "").strip())
+            source = "criterion" if key else None
+        out[rid] = {
+            "skill_key": key,
+            "skill_label": _skill_label(knowledge, key),
+            "skill_source": source,
+        }
+    return out
+
+
 __all__ = [
     "confirmed_index",
     "list_patterns",
+    "pattern_skill_index",
     "record_auto_patterns",
     "reject_pattern",
     "rename_patterns",

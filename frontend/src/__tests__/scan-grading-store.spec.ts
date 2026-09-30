@@ -121,4 +121,21 @@ describe('scan grading store isolation and recovery', () => {
     expect(store.preflight?.decisions[0]?.action).toBe('invalid')
     expect(store.errorMessage).toContain('本次选择尚未保存')
   })
+
+  it('stays silent only for a real missing preflight, not for load failures', async () => {
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(workspace(1, 'frozen'))
+    vi.mocked(api.fetchPreflight).mockRejectedValue(new ApiError({ kind: 'not_found', status: 404,
+      code: 'scan_preflight_not_found', message: 'not ready', details: {}, requestId: 't', retryable: false }))
+    const store = useScanGradingStore()
+    await store.load(1)
+    expect(store.loadState).toBe('ready')
+    expect(store.preflight).toBeNull()
+    expect(store.errorMessage).toBe('')
+
+    vi.mocked(api.fetchPreflight).mockRejectedValue(new Error('Invalid scan preflight identity'))
+    await store.load(1)
+    expect(store.loadState).toBe('ready')
+    expect(store.preflight).toBeNull()
+    expect(store.errorMessage).toContain('Invalid scan preflight identity')
+  })
 })

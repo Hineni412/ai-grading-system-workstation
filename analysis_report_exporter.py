@@ -43,6 +43,8 @@ from answer_region_geometry import (
     answer_regions_with_template_source_sizes,
     scaled_region_bbox,
 )
+from backend.analysis_review_notes import merge_session_notes
+from backend.error_causes import display_error_category
 from backend.model_profiles.content_generation import (
     content_generation_public_info,
     resolve_content_generation_settings,
@@ -227,7 +229,7 @@ def build_personal_payload(
             item["reference_analysis"] = info.reference_analysis if info is not None else ""
             item["grading_record"] = {
                 "deduction_reason": record.deduction_reason or None,
-                "error_category": record.error_category or None,
+                "error_category": display_error_category(record.error_category) or None,
                 "error_summary": record.error_summary or None,
                 "secondary_errors": record.secondary_errors,
                 "evidence_steps": record.evidence_steps,
@@ -269,7 +271,10 @@ def record_type_label(
     return str(info.question_type if info is not None else "") or ""
 
 
-def build_class_payload(data: SessionAnalysisData) -> dict[str, Any]:
+def build_class_payload(
+    data: SessionAnalysisData,
+    error_records: dict[int, dict[str, list[dict[str, Any]]]] | None = None,
+) -> dict[str, Any]:
     aliases = {
         student.student_id: f"{CLASS_ALIAS_PREFIX}{index}"
         for index, student in enumerate(data.students, start=1)
@@ -277,6 +282,21 @@ def build_class_payload(data: SessionAnalysisData) -> dict[str, Any]:
     bands = {
         band["label"].replace(" ", ""): band["count"] for band in data.stats["bands"]
     }
+    # 已归类的错因记录（错因整理结果）：{question_id: {student_id: [rows]}}，
+    # 只保留本班学生；有归类的题目改用大类/错法，不再给旧的 error_category。
+    organized: dict[str, dict[int, list[dict[str, Any]]]] = {}
+    if error_records:
+        class_student_ids = {student.student_id for student in data.students}
+        for raw_sid, by_question in error_records.items():
+            try:
+                sid = int(raw_sid)
+            except (TypeError, ValueError):
+                continue
+            if sid not in class_student_ids:
+                continue
+            for qid, rows in (by_question or {}).items():
+                if rows:
+                    organized.setdefault(str(qid), {})[sid] = list(rows)
     students_payload: list[dict[str, Any]] = []
     for student in data.students:
         students_payload.append(
@@ -300,16 +320,24 @@ def build_class_payload(data: SessionAnalysisData) -> dict[str, Any]:
         for record in student.records:
             if not record.lost:
                 continue
-            records_by_question.setdefault(record.question_id, []).append(
-                {
-                    "alias": aliases[student.student_id],
-                    "score": record.score,
-                    "deduction_reason": record.deduction_reason or None,
-                    "error_category": record.error_category or None,
-                }
-            )
-    questions_payload = [
-        {
+            entry: dict[str, Any] = {
+                "alias": aliases[student.student_id],
+                "score": record.score,
+                "deduction_reason": record.deduction_reason or None,
+            }
+            question_causes = organized.get(str(record.question_id))
+            if question_causes is None:
+                entry["error_category"] = (
+                    display_error_category(record.error_category) or None
+                )
+            else:
+                cause = _organized_record_cause(question_causes.get(student.student_id))
+                if cause:
+                    entry["cause"] = cause
+            records_by_question.setdefault(record.question_id, []).append(entry)
+    questions_payload = []
+    for info in data.questions:
+        item: dict[str, Any] = {
             "question_id": info.question_id,
             "max_score": info.max_score,
             "class_rate": (
@@ -319,8 +347,10 @@ def build_class_payload(data: SessionAnalysisData) -> dict[str, Any]:
             "canonical_answer": info.canonical_answer,
             "records": records_by_question.get(info.question_id, []),
         }
-        for info in data.questions
-    ]
+        question_causes = organized.get(str(info.question_id))
+        if question_causes:
+            item["causes"] = _question_cause_groups(question_causes, aliases)
+        questions_payload.append(item)
     return {
         "exam": {
             "title": data.session_name,
@@ -343,12 +373,64 @@ def build_class_payload(data: SessionAnalysisData) -> dict[str, Any]:
     }
 
 
+def _organized_record_cause(
+    rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """该生本题已归类的错因 {category, pattern} 列表，去重保序。"""
+    seen: set[tuple[str | None, str | None]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        category = str(row.get("category") or "").strip() or None
+        pattern = str(row.get("pattern") or "").strip() or None
+        if category is None and pattern is None:
+            continue
+        key = (category, pattern)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"category": category, "pattern": pattern})
+    return out
+
+
+def _question_cause_groups(
+    by_student: dict[int, list[dict[str, Any]]],
+    aliases: dict[int, str],
+) -> list[dict[str, Any]]:
+    """本题按 (大类, 错法) 聚合的归类结果，含各组学生代号；高频在前。"""
+    groups: dict[tuple[str | None, str | None], list[str]] = {}
+    for sid, rows in by_student.items():
+        alias = aliases.get(sid)
+        if alias is None:
+            continue
+        for cause in _organized_record_cause(rows):
+            key = (cause["category"], cause["pattern"])
+            members = groups.setdefault(key, [])
+            if alias not in members:
+                members.append(alias)
+
+    def _alias_order(alias: str) -> tuple[int, str]:
+        suffix = alias[len(CLASS_ALIAS_PREFIX):]
+        return (0, f"{int(suffix):06d}") if suffix.isdigit() else (1, alias)
+
+    return [
+        {
+            "category": category,
+            "pattern": pattern,
+            "students": sorted(members, key=_alias_order),
+        }
+        for (category, pattern), members in sorted(
+            groups.items(),
+            key=lambda item: (-len(item[1]), item[0][0] or "", item[0][1] or ""),
+        )
+    ]
+
+
 def _record_brief_text(record: StudentQuestionRecord) -> str:
     parts = [
         text
         for text in (
             record.deduction_reason,
-            record.error_category,
+            display_error_category(record.error_category),
             record.error_summary,
         )
         if text
@@ -398,7 +480,7 @@ def build_class_page_data(data: SessionAnalysisData, *, compact: bool = False) -
                     "class_name": student.class_name,
                     "score": record.score,
                 })
-                reason = record.error_summary or record.deduction_reason or record.error_category or "未记录具体错因"
+                reason = record.error_summary or record.deduction_reason or display_error_category(record.error_category) or "未记录具体错因"
                 # 仅归并已有记录中的相同错因，不把不同表述推断为同一知识错误。
                 seen = set()
                 for text in re.split(r"[；;\n]+", reason):
@@ -423,7 +505,7 @@ def build_class_page_data(data: SessionAnalysisData, *, compact: bool = False) -
                     "max_score": record.max_score,
                     "lost_points": round(record.lost_points, 2),
                     "deduction_reason": record.deduction_reason or None,
-                    "error_category": record.error_category or None,
+                    "error_category": display_error_category(record.error_category) or None,
                     "error_summary": record.error_summary or None,
                 })
         questions.append(
@@ -451,7 +533,7 @@ def build_class_page_data(data: SessionAnalysisData, *, compact: bool = False) -
                 continue
             record_payload = {
                 "deduction_reason": record.deduction_reason or None,
-                "error_category": record.error_category or None,
+                "error_category": display_error_category(record.error_category) or None,
                 "error_summary": record.error_summary or None,
             }
             if not any(record_payload.values()):
@@ -1027,6 +1109,41 @@ def _narrative_items(narrative: dict[str, Any] | None, key: str) -> list[Any]:
 
 def _narrative_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _collect_review_notes(
+    narrative: dict[str, Any] | None,
+    student: StudentReportData,
+    info_by_qid: dict[str, QuestionInfo],
+    lock_revisions: dict[tuple[int, str], int],
+) -> list[dict[str, Any]]:
+    """从一条个人叙述中收集"建议核对"条目，附带生成时的教师复核锁修订号。"""
+    items: list[dict[str, Any]] = []
+    for item in _narrative_items(narrative, "question_analyses"):
+        if not isinstance(item, dict):
+            continue
+        note = _narrative_text(item.get("review_note"))
+        if not note:
+            continue
+        raw = _narrative_text(item.get("question_id"))
+        question_id = resolve_known_question_id(raw, info_by_qid) or raw
+        if not question_id:
+            continue
+        items.append(
+            {
+                "student_id": int(student.student_id),
+                "student_code": student.student_code,
+                "student_name": student.student_name,
+                "class_name": student.class_name,
+                "question_id": question_id,
+                "display_label": _question_display_label(question_id),
+                "note": note,
+                "lock_revision": lock_revisions.get(
+                    (int(student.student_id), question_id), 0
+                ),
+            }
+        )
+    return items
 
 
 def _knowledge_rows(
@@ -2683,6 +2800,8 @@ class AnalysisReportGenerator:
         self.reports_dir = Path(reports_dir) if reports_dir is not None else None
         self._llm_client: Any = None
         self._llm_client_resolved = False
+        # 最近一次个人报告导出写入集中提示清单后的条目总数（无 reports_dir 时为 0）。
+        self.last_review_note_count = 0
 
     def export_session(
         self,
@@ -2740,7 +2859,10 @@ class AnalysisReportGenerator:
                 continue
             narrative = _class_narrative(
                 client=client, cache=cache, session_id=session_id, revision=revision,
-                class_name=name, prompt=build_report_prompt(CLASS_SYSTEM_PROMPT, build_class_payload(group)),
+                class_name=name,
+                prompt=build_report_prompt(
+                    CLASS_SYSTEM_PROMPT, build_class_payload(group, error_records)
+                ),
             )
             cause_counts = question_category_counts(
                 error_records, student_ids=[s.student_id for s in group.students])
@@ -2894,6 +3016,22 @@ class AnalysisReportGenerator:
         histories = _load_student_histories(
             self.repositories, session_data, self.data_root
         )
+        # "建议核对"提示集中存档：与教师复核锁的修订号对账，导出后可在
+        # 成绩中心集中查看并跳转复核。
+        note_info_by_qid = {info.question_id: info for info in session_data.questions}
+        lock_revisions: dict[tuple[int, str], int] = {}
+        if self.reports_dir is not None:
+            for lock in self.repositories.reviews.list_teacher_score_locks(
+                session_data.session_id
+            ):
+                key = (
+                    int(lock.get("student_id") or 0),
+                    str(lock.get("question_id") or ""),
+                )
+                lock_revisions[key] = max(
+                    lock_revisions.get(key, 0), int(lock.get("revision") or 0)
+                )
+        review_note_items: list[dict[str, Any]] = []
         # 错因整理产物：本场学生×题记录 + 历次同类/同错法场次索引。
         # 未整理或输入已过期的题不返回记录，报告相应位置不显示错误类型。
         error_state: dict[str, Any] = {}
@@ -3001,10 +3139,20 @@ class AnalysisReportGenerator:
                         if history_index
                         else None
                     )
+                    narrative = future.result()
+                    if self.reports_dir is not None:
+                        review_note_items.extend(
+                            _collect_review_notes(
+                                narrative,
+                                student,
+                                note_info_by_qid,
+                                lock_revisions,
+                            )
+                        )
                     html_text = _render_personal_html(
                         data,
                         student,
-                        future.result(),
+                        narrative,
                         shots,
                         history=histories.get(student.student_id, []),
                         error_map=error_maps.get(student.student_id),
@@ -3013,6 +3161,17 @@ class AnalysisReportGenerator:
                     report_path.write_text(html_text, encoding="utf-8")
 
         data = session_data
+
+        if self.reports_dir is not None:
+            self.last_review_note_count = merge_session_notes(
+                self.reports_dir,
+                data.session_id,
+                score_revision=revision,
+                items=review_note_items,
+                scoped_student_ids={
+                    student.student_id for _group, student in scoped_students
+                },
+            )
 
         checklist_lines = [
             "未生成个人报告的学生清单",

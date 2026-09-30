@@ -34,6 +34,10 @@ except Exception:
     _registry_canonicalize = None  # type: ignore[assignment]
 
 
+class RubricUnreadableError(RuntimeError):
+    """The session's configured rubric file cannot be read."""
+
+
 def _validate_new_ai_details(
     details: list[QuestionGradingDetail], raw_json: dict[str, Any],
 ) -> None:
@@ -1588,15 +1592,17 @@ class ResultRepositoryGateway:
             self._rubric_map_cache[session_id] = result
             return result
 
-        rubric_path = self._resolve_stored_file_path(session.get("rubric_path"))
-        if not rubric_path.exists():
+        raw_rubric_path = str(session.get("rubric_path") or "").strip()
+        if not raw_rubric_path:
             self._rubric_map_cache[session_id] = result
             return result
+        rubric_path = self._resolve_stored_file_path(raw_rubric_path)
+        if not rubric_path.exists():
+            raise RubricUnreadableError(f"评分依据文件不存在: {rubric_path.name}")
         try:
             rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-        except Exception:
-            self._rubric_map_cache[session_id] = result
-            return result
+        except Exception as exc:
+            raise RubricUnreadableError(f"评分依据文件无法读取: {rubric_path.name}") from exc
 
         questions = rubric.get("questions") if isinstance(rubric, dict) else []
         if not isinstance(questions, list):
@@ -1637,13 +1643,16 @@ class ResultRepositoryGateway:
         session = self._get_grading_session_row(session_id)
         if not session:
             return {}
-        rubric_path = self._resolve_stored_file_path(session.get("rubric_path"))
-        if not rubric_path.exists():
+        raw_rubric_path = str(session.get("rubric_path") or "").strip()
+        if not raw_rubric_path:
             return {}
+        rubric_path = self._resolve_stored_file_path(raw_rubric_path)
+        if not rubric_path.exists():
+            raise RubricUnreadableError(f"评分依据文件不存在: {rubric_path.name}")
         try:
             rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        except Exception as exc:
+            raise RubricUnreadableError(f"评分依据文件无法读取: {rubric_path.name}") from exc
         return rubric if isinstance(rubric, dict) else {}
 
     def _get_grading_session_row(self, session_id: int) -> dict[str, Any] | None:

@@ -66,6 +66,27 @@ export interface ReportContext {
   total_pages: number
 }
 
+export type AnalysisReviewNoteStatus = 'pending' | 'confirmed'
+
+export interface AnalysisReviewNoteItem {
+  student_id: number
+  student_code: string | null
+  student_name: string
+  class_name: string | null
+  question_id: string
+  display_label: string
+  note: string
+  lock_revision: number
+  status: AnalysisReviewNoteStatus
+  review_item_id: string | null
+}
+
+export interface AnalysisReviewNotes {
+  session_id: number
+  generated_at: string | null
+  items: AnalysisReviewNoteItem[]
+}
+
 export interface DownloadedJobFile {
   blob: Blob
   filename: string
@@ -213,6 +234,58 @@ async function downloadJobFile(jobId: number): Promise<DownloadedJobFile> {
   }
 }
 
+function decodeAnalysisReviewNoteItem(value: unknown): AnalysisReviewNoteItem {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !Number.isSafeInteger(value.student_id)
+    || Number(value.student_id) <= 0
+    || !isNullableString(value.student_code)
+    || typeof value.student_name !== 'string'
+    || !isNullableString(value.class_name)
+    || typeof value.question_id !== 'string'
+    || !value.question_id.trim()
+    || typeof value.display_label !== 'string'
+    || typeof value.note !== 'string'
+    || !Number.isSafeInteger(value.lock_revision)
+    || Number(value.lock_revision) < 0
+    || (value.status !== 'pending' && value.status !== 'confirmed')
+    || !isNullableString(value.review_item_id)
+  ) {
+    throw new Error('Invalid analysis review note item')
+  }
+  return {
+    student_id: Number(value.student_id),
+    student_code: value.student_code,
+    student_name: value.student_name,
+    class_name: value.class_name,
+    question_id: value.question_id,
+    display_label: value.display_label,
+    note: value.note,
+    lock_revision: Number(value.lock_revision),
+    status: value.status,
+    review_item_id: value.review_item_id,
+  }
+}
+
+export function decodeAnalysisReviewNotes(value: unknown): AnalysisReviewNotes {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !Number.isSafeInteger(value.session_id)
+    || Number(value.session_id) <= 0
+    || !isNullableString(value.generated_at)
+    || !Array.isArray(value.items)
+  ) {
+    throw new Error('Invalid analysis review notes')
+  }
+  return {
+    session_id: Number(value.session_id),
+    generated_at: value.generated_at,
+    items: value.items.map(decodeAnalysisReviewNoteItem),
+  }
+}
+
 export const exportsApi = {
   async getReportContext(
     sessionId: number,
@@ -323,5 +396,19 @@ export const exportsApi = {
     id: number,
   ): Promise<DownloadedJobFile> {
     return downloadJobFile(requirePositiveInteger(id, 'job id'))
+  },
+
+  async getAnalysisReviewNotes(
+    sessionId: number,
+    signal?: AbortSignal,
+  ): Promise<AnalysisReviewNotes> {
+    const id = requirePositiveInteger(sessionId, 'session id')
+    return apiClient.request(
+      `/api/sessions/${id}/reports/analysis-review-notes`,
+      {
+        decode: decodeAnalysisReviewNotes,
+        signal,
+      },
+    )
   },
 }

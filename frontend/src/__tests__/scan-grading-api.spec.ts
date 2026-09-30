@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { supplementGrading } from '../api/scan-grading';
+import { fetchPreflight, supplementGrading } from '../api/scan-grading';
 
 function response(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -28,5 +28,30 @@ describe('scan grading API contract', () => {
       '/api/sessions/7/grading/runs/19/supplement-new-matches',
     )
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
+  })
+
+  function preflightPayload(identity: unknown): unknown {
+    return {
+      revision: 0,
+      summary: { auto_matched: 0, ready_to_grade: 0, issues: 0,
+        absent_candidates: 0, total_pages: 0 },
+      groups: [], issues: [], absent_students: [], warnings: [],
+      decisions: [], pending_issue_count: 0,
+      identity,
+    }
+  }
+
+  it('accepts a null preflight identity emitted by the backend', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => response(preflightPayload(null))))
+
+    const check = await fetchPreflight(7)
+
+    expect(check.identity).toBeNull()
+  })
+
+  it('rejects a malformed preflight identity', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => response(preflightPayload('broken'))))
+
+    await expect(fetchPreflight(7)).rejects.toThrow('无法识别')
   })
 })

@@ -31,6 +31,13 @@ const exportsMock = vi.hoisted(() => ({
     throw new Error('合成环境不读导出登记簿')
   }),
   getAnalysisPreflight: vi.fn(),
+  getAnalysisReviewNotes: vi.fn(
+    async (): Promise<import('../api/exports').AnalysisReviewNotes> => ({
+      session_id: 7,
+      generated_at: null,
+      items: [],
+    }),
+  ),
   submitReport: vi.fn(),
   downloadJobFile: vi.fn(),
   deleteReportFile: vi.fn(),
@@ -184,5 +191,76 @@ describe('results center class filtering and return position', () => {
     await vi.waitFor(() => expect(
       document.body.querySelector('.results-export-popover'),
     ).not.toBeNull())
+  })
+
+  it('lists report review notes from the overview tile and routes 去核对 to the review item', async () => {
+    exportsMock.getAnalysisReviewNotes.mockResolvedValueOnce({
+      session_id: 7,
+      generated_at: '2026-09-30T00:00:00Z',
+      items: [
+        {
+          student_id: 2, student_code: 'A02', student_name: '合成乙',
+          class_name: '一班', question_id: 'Q1', display_label: '第1题',
+          note: '建议核对第 1 题给分', lock_revision: 0,
+          status: 'pending', review_item_id: 'batch-1:2:Q1',
+        },
+        {
+          student_id: 1, student_code: 'A01', student_name: '合成甲',
+          class_name: '一班', question_id: 'Q2', display_label: '第2题',
+          note: '已核对过的旧提示', lock_revision: 1,
+          status: 'confirmed', review_item_id: 'batch-1:1:Q2',
+        },
+      ],
+    })
+    const { host, router } = await mountView('overview')
+    await vi.waitFor(() => expect(host.textContent).toContain('1 条待核对'))
+    const tile = [...host.querySelectorAll<HTMLElement>('.overview__tile')]
+      .find((element) => element.textContent?.includes('报告提示'))!
+    tile.querySelector<HTMLButtonElement>('button')!.click()
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="report-review-notes"]'),
+    ).not.toBeNull())
+    const rows = host.querySelectorAll('.overview__notes-item')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.textContent).toContain('合成乙')
+    expect(rows[0]!.textContent).toContain('第1题')
+    expect(rows[1]!.textContent).toContain('已核对')
+    expect(rows[1]!.classList.contains('is-confirmed')).toBe(true)
+    const action = rows[0]!.querySelector<HTMLButtonElement>('button')!
+    expect(action.textContent).toContain('去核对')
+    action.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/grading'))
+    expect(router.currentRoute.value.query).toMatchObject({
+      session: '7',
+      scope: 'all',
+      question: 'Q1',
+      item: 'batch-1:2:Q1',
+      student: '2',
+      entry: 'results',
+    })
+  })
+
+  it('surfaces the server error message when the score load fails', async () => {
+    const { ApiError } = await import('../api/errors')
+    vi.mocked(fetchResultsCenter).mockReset().mockRejectedValue(new ApiError({
+      kind: 'conflict', status: 409, code: 'rubric_unreadable',
+      message: '评分细则文件 rubric.json 无法读取，请先恢复该文件。',
+      details: {}, requestId: 'req-1', retryable: false,
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().$patch({ selectedSessionId: 7, loadState: 'ready', sessions: [{ id: 7, name: '合成成绩验证', status: 'grading', is_deleted: false, deleted_at: null, created_at: null, updated_at: null }] })
+    const router = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/results', component: ResultsCenterView },
+    ] })
+    await router.push('/results?tab=details&session=7')
+    await router.isReady()
+    app = createApp({ render: () => h('main', { id: 'main-workspace' }, [h(RouterView)]) })
+    app.use(pinia).use(router).mount(host)
+    await vi.waitFor(() => expect(host.querySelector('.results-state-panel--error')).not.toBeNull())
+    expect(host.textContent).toContain('评分细则文件 rubric.json 无法读取，请先恢复该文件。')
+    expect(host.textContent).not.toContain('当前考试的成绩暂时无法读取')
   })
 })

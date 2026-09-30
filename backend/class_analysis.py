@@ -42,7 +42,7 @@ LOGGER = logging.getLogger(__name__)
 
 CLASS_ANALYSIS_JOB_TYPE = "class_analysis_generate"
 CLASS_ANALYSIS_STATE_DIRNAME = ".class_analysis"
-CLASS_ANALYSIS_RENDITION_VERSION = "class_analysis_page_v3_class_scope"
+CLASS_ANALYSIS_RENDITION_VERSION = "class_analysis_page_v4_cause_payload"
 CLASS_ANALYSIS_REPORT_KEY = "class:session"
 NARRATIVE_CACHE_DIRNAME = ".analysis_narrative_cache"
 CAUSE_ANALYSIS_VERSION = "class_error_causes_v3"
@@ -1565,6 +1565,10 @@ def run_class_analysis_generate(
     context.raise_if_cancelled()
     context.report(0.1, "class_analysis", "assembling")
     data = assemble_session_analysis(db, session_id, data_root=data_root)
+    # 已整理的错因记录随班级叙述入参；无状态文件时为空，题目保持旧字段。
+    error_records = session_error_records(
+        db, session_id, Path(reports_dir), data_root=data_root
+    )
     generated_at = _now_iso()
     if not data.students:
         store.save(
@@ -1614,7 +1618,9 @@ def run_class_analysis_generate(
             client=client,
             cache=AnalysisNarrativeCache(Path(reports_dir) / NARRATIVE_CACHE_DIRNAME),
             session_id=session_id, revision=revision, class_name=class_name,
-            prompt=build_report_prompt(CLASS_SYSTEM_PROMPT, build_class_payload(group)),
+            prompt=build_report_prompt(
+                CLASS_SYSTEM_PROMPT, build_class_payload(group, error_records)
+            ),
         )
         class_reports[class_name] = {
             "status": "ready" if narrative is not None else "failed",

@@ -745,3 +745,33 @@ def test_deferred_intake_blocks_when_asset_decisions_go_stale(
         or session.get("question_bank_sync_details")
         or ""
     )
+
+
+def test_interrupted_job_with_unreadable_draft_still_ends_failed(tmp_path):
+    """草稿概括失败不能让中断任务停在 running：必须进入 failed 终态，
+    同时仍然保护上传输入供重试。"""
+    db, session_id, _paths = _db_with_session(tmp_path)
+    context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "input_id": "input-corrupt",
+        },
+    )
+    upload_dir = tmp_path / "uploaded"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    # 损坏的草稿：_read_json_object/_summary_from_batch_draft 都会失败。
+    (upload_dir / f"config_generation_draft_job_{context.job_id}.json").write_text(
+        "{corrupted", encoding="utf-8"
+    )
+
+    protected = preserve_interrupted_config_generation_checkpoints(
+        upload_dir, store
+    )
+
+    assert protected == {"input-corrupt"}
+    job = store.get_job(context.job_id)
+    assert job is not None
+    assert job.status == "failed"
+    assert "interrupted" in str(job.error or "")

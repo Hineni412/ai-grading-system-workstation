@@ -251,8 +251,14 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
         try {
           const result = await fetchPreflight(id)
           if (isCurrent(id, current)) preflight.value = result
-        } catch {
-          // A frozen batch can still be waiting for its first successful preflight.
+        } catch (error) {
+          // A frozen batch can still be waiting for its first successful
+          // preflight (404); anything else is a real load/decode failure and
+          // must be visible instead of silently disabling the grade/review rail.
+          if (isCurrent(id, current)
+            && !(error instanceof ApiError && error.code === 'scan_preflight_not_found')) {
+            errorMessage.value = safeMessage(error)
+          }
         }
       }
       if (!isCurrent(id, current)) return

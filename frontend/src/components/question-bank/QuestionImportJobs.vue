@@ -9,6 +9,7 @@ import {
   type CurriculumVolume,
 } from '../../api/question-bank'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
+import QuestionPreviewDialog from '../training/QuestionPreviewDialog.vue'
 import { CURRICULUM_SCOPE_STORAGE_KEY } from '../../stores/curriculum-scope'
 import { useJobStore } from '../../stores/jobs'
 import { useQuestionBankStore } from '../../stores/question-bank'
@@ -74,47 +75,104 @@ function safeCount(result: Record<string, unknown>, key: string): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
 }
 
-interface NearDuplicateHint {
+interface ImportMatchEntry {
   questionNumber: string
+  matchedQuestionId: number
   matchedPaperTitle: string
-  similarity: number
-  high: boolean
+  matchedQuestionNumber: string
+  questionId: number | null
+  matchKind: string
+  reason: string
 }
 
-function nearDuplicateHints(result: Record<string, unknown>): NearDuplicateHint[] {
-  const raw = result.near_duplicate_hints
-  if (!Array.isArray(raw)) return []
-  return raw
-    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
-    .map((item) => ({
-      questionNumber: typeof item.question_number === 'string' ? item.question_number : '',
-      matchedPaperTitle: typeof item.matched_paper_title === 'string' ? item.matched_paper_title : '',
-      similarity: typeof item.similarity === 'number' ? item.similarity : 0,
-      high: item.high === true,
-    }))
+function toMatchEntry(item: Record<string, unknown>): ImportMatchEntry {
+  const matchedId = Number(item.matched_question_id)
+  const newId = Number(item.question_id)
+  return {
+    questionNumber: typeof item.question_number === 'string' ? item.question_number : '',
+    matchedQuestionId: Number.isSafeInteger(matchedId) ? matchedId : 0,
+    matchedPaperTitle: typeof item.matched_paper_title === 'string' ? item.matched_paper_title : '',
+    matchedQuestionNumber: typeof item.matched_question_number === 'string' ? item.matched_question_number : '',
+    questionId: Number.isSafeInteger(newId) && newId > 0 ? newId : null,
+    matchKind: typeof item.match_kind === 'string' ? item.match_kind : 'suspected',
+    reason: typeof item.reason === 'string' ? item.reason : '',
+  }
+}
+
+function recordList(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+    : []
+}
+
+function exactDuplicates(result: Record<string, unknown>): ImportMatchEntry[] {
+  return recordList(result.exact_duplicates).map((item) => ({
+    ...toMatchEntry(item),
+    matchKind: 'exact',
+  }))
+}
+
+function nearDuplicateHints(result: Record<string, unknown>): ImportMatchEntry[] {
+  return recordList(result.near_duplicate_hints).map(toMatchEntry)
+}
+
+function similarHints(result: Record<string, unknown>): ImportMatchEntry[] {
+  return nearDuplicateHints(result).filter((hint) => hint.matchKind !== 'answer_conflict')
+}
+
+function conflictHints(result: Record<string, unknown>): ImportMatchEntry[] {
+  return nearDuplicateHints(result).filter((hint) => hint.matchKind === 'answer_conflict')
+}
+
+interface DuplicatePaper {
+  paperId: number
+  title: string
+}
+
+function duplicatePapers(result: Record<string, unknown>): DuplicatePaper[] {
+  return recordList(result.duplicate_papers).map((item) => ({
+    paperId: Number.isSafeInteger(Number(item.paper_id)) ? Number(item.paper_id) : 0,
+    title: typeof item.title === 'string' ? item.title : '',
+  })).filter((item) => item.paperId > 0)
+}
+
+function hasImportDetail(result: Record<string, unknown>): boolean {
+  return exactDuplicates(result).length > 0
+    || nearDuplicateHints(result).length > 0
+    || duplicatePapers(result).length > 0
+}
+
+function importDetailSummary(result: Record<string, unknown>): string {
+  const parts: string[] = []
+  const exact = exactDuplicates(result).length
+  const similar = similarHints(result).length
+  const conflicts = conflictHints(result).length
+  if (exact > 0) parts.push(`完全相同已关联 ${exact}`)
+  if (similar > 0) parts.push(`相似或变式 ${similar}`)
+  if (conflicts > 0) parts.push(`答案不同 ${conflicts}`)
+  return parts.length ? parts.join(' · ') : '查看导入明细'
 }
 
 function questionImportCompletionNote(result: Record<string, unknown>): string {
-  const notes = ['试卷已入库，尚未执行标签与判定点分析。']
-  const exactCount = safeCount(result, 'exact_duplicate_count')
-  if (exactCount > 0) {
-    const reusedCount = safeCount(result, 'analysis_reused_count')
-    notes.push(
-      `${exactCount} 道题与题库已有题目完全相同，已自动关联并复用已有标签`
-      + (reusedCount > 0 ? `，其中 ${reusedCount} 道同时复用了判定点与解题证据` : '')
-      + '。',
-    )
-  }
-  const hints = nearDuplicateHints(result)
-  if (hints.length > 0) {
-    const numbers = hints.map((hint) => hint.questionNumber).filter(Boolean).join('、')
-    notes.push(
-      `${hints.length} 道题与题库已有题目近似`
-      + (numbers ? `（第 ${numbers} 题）` : '')
-      + '，已照常入库，如有需要请自行核对。',
-    )
-  }
-  return notes.join(' ')
+  const note = '试卷已入库，尚未执行标签与判定点分析。'
+  return hasImportDetail(result) ? `${note}（明细见下方展开）` : note
+}
+
+const previewQuestionId = ref<number | null>(null)
+const previewTitle = ref('')
+
+function openPreview(questionId: number, title: string): void {
+  previewTitle.value = title
+  previewQuestionId.value = questionId
+}
+
+function closePreview(): void {
+  previewQuestionId.value = null
+}
+
+function matchedLabel(entry: ImportMatchEntry): string {
+  const paper = entry.matchedPaperTitle ? `《${entry.matchedPaperTitle}》` : '题库已有题目'
+  return entry.matchedQuestionNumber ? `${paper}第 ${entry.matchedQuestionNumber} 题` : paper
 }
 
 function jobCompletionNote(job: JobResponse): string {
@@ -307,6 +365,77 @@ function downloadFailures(job: JobResponse): void {
             <progress :value="job.progress" max="1">{{ Math.round(job.progress * 100) }}%</progress>
           </header>
           <p>{{ jobCompletionNote(job) }}</p>
+          <template v-if="job.job_type === 'question_import' && TERMINAL_JOB_STATUSES.has(job.status)">
+            <p
+              v-for="dup in duplicatePapers(job.result)"
+              :key="`dup-${dup.paperId}`"
+              class="qb-feedback is-warning"
+            >
+              这份试卷已在题库中（《{{ dup.title }}》），本次未重复入库。
+            </p>
+            <details
+              v-if="exactDuplicates(job.result).length || nearDuplicateHints(job.result).length"
+              class="qb-import-detail"
+            >
+              <summary>{{ importDetailSummary(job.result) }}</summary>
+              <div class="qb-import-detail__groups">
+                <section v-if="exactDuplicates(job.result).length" class="qb-import-detail__group">
+                  <h4>完全相同，已关联</h4>
+                  <ul>
+                    <li v-for="(entry, index) in exactDuplicates(job.result)" :key="`exact-${index}`">
+                      <span>本卷第 {{ entry.questionNumber }} 题 ↔ {{ matchedLabel(entry) }}</span>
+                      <button
+                        type="button"
+                        class="qb-link"
+                        @click="openPreview(entry.matchedQuestionId, matchedLabel(entry))"
+                      >查看</button>
+                    </li>
+                  </ul>
+                </section>
+                <section v-if="similarHints(job.result).length" class="qb-import-detail__group">
+                  <h4>相似或变式，供核对</h4>
+                  <ul>
+                    <li v-for="(entry, index) in similarHints(job.result)" :key="`similar-${index}`">
+                      <span>本卷第 {{ entry.questionNumber }} 题 ↔ {{ matchedLabel(entry) }}</span>
+                      <small v-if="entry.reason">{{ entry.reason }}</small>
+                      <button
+                        type="button"
+                        class="qb-link"
+                        @click="openPreview(entry.matchedQuestionId, matchedLabel(entry))"
+                      >查看</button>
+                      <button
+                        v-if="entry.questionId !== null"
+                        type="button"
+                        class="qb-link"
+                        @click="openPreview(entry.questionId, `本卷第 ${entry.questionNumber} 题`)"
+                      >查看新题</button>
+                    </li>
+                  </ul>
+                </section>
+                <section v-if="conflictHints(job.result).length" class="qb-import-detail__group is-danger">
+                  <h4>答案不同，需核对</h4>
+                  <p class="qb-import-detail__note">新入库的题已标记为待复核，请核对答案后确认。</p>
+                  <ul>
+                    <li v-for="(entry, index) in conflictHints(job.result)" :key="`conflict-${index}`">
+                      <span>本卷第 {{ entry.questionNumber }} 题 ↔ {{ matchedLabel(entry) }}</span>
+                      <small v-if="entry.reason">{{ entry.reason }}</small>
+                      <button
+                        type="button"
+                        class="qb-link"
+                        @click="openPreview(entry.matchedQuestionId, matchedLabel(entry))"
+                      >查看</button>
+                      <button
+                        v-if="entry.questionId !== null"
+                        type="button"
+                        class="qb-link"
+                        @click="openPreview(entry.questionId, `本卷第 ${entry.questionNumber} 题`)"
+                      >查看新题</button>
+                    </li>
+                  </ul>
+                </section>
+              </div>
+            </details>
+          </template>
           <p v-if="job.result.outcome === 'partial'" class="qb-feedback is-warning">
             部分完成：成功
             {{ safeCount(job.result, 'tagged_count') || safeCount(job.result, 'question_count') }}，
@@ -376,5 +505,10 @@ function downloadFailures(job: JobResponse): void {
       </div>
       <p v-else class="qb-empty">当前浏览器还没有记录题库任务。</p>
     </details>
+    <QuestionPreviewDialog
+      :question-id="previewQuestionId"
+      :title="previewTitle"
+      @close="closePreview"
+    />
   </section>
 </template>

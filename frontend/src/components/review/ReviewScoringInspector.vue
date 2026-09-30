@@ -16,7 +16,7 @@ import {
   type ReviewDraft,
 } from '../../stores/review-drafts'
 import { useReviewQueueStore } from '../../stores/review-queue'
-import { translateGradingReason } from '../../utils/grading-reasons'
+import { displayErrorCategory, translateGradingReason } from '../../utils/grading-reasons'
 import {
   cachedReviewRubric,
   clearReviewRubrics,
@@ -239,7 +239,7 @@ const riskText = computed(() => {
   if (current.score_status === 'ungraded') parts.push('当前记录尚未评分')
   else if (current.score_status === 'ai_review') parts.push('当前 AI 结果需要教师复核')
   else if (current.score_status === 'failed') parts.push('自动处理失败，请教师直接评分')
-  for (const value of [current.deduction_reason, current.error_category, current.error_summary]) {
+  for (const value of [current.deduction_reason, displayErrorCategory(current.error_category), current.error_summary]) {
     const text = typeof value === 'string' ? translateGradingReason(value).trim() : ''
     if (text) parts.push(text)
   }

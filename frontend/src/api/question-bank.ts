@@ -430,6 +430,12 @@ export interface QuestionBankDetail extends QuestionBankListItem {
   previews: QuestionBankPreview[]
   error_patterns?: QuestionErrorPattern[]
   wrong_option_letters?: string[]
+  selectable_skills?: QuestionBankSkillOption[]
+}
+
+export interface QuestionBankSkillOption {
+  key: string
+  label: string
 }
 
 export interface QuestionErrorPattern {
@@ -442,6 +448,9 @@ export interface QuestionErrorPattern {
   status: 'candidate' | 'confirmed'
   source: string
   has_evidence: boolean
+  skill_key?: string | null
+  skill_label?: string | null
+  skill_source?: 'teacher' | 'criterion' | null
 }
 
 export type CoreResolutionStatus = 'resolved' | 'ambiguous' | 'unmapped'
@@ -1528,7 +1537,7 @@ export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail
   if (
     !isRecord(value) ||
     !(hasExactQuestionKeys(value, detailKeys)
-      || hasExactQuestionKeys(value, [...detailKeys, 'error_patterns', 'wrong_option_letters'])) ||
+      || hasExactQuestionKeys(value, [...detailKeys, 'error_patterns', 'wrong_option_letters', 'selectable_skills'])) ||
     !hasQuestionBankListFields(value) ||
     !isNullableString(value.page_range) ||
     !Array.isArray(value.assets) ||
@@ -1543,6 +1552,7 @@ export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail
         hasExactKeys(item, [
           'id', 'category', 'pattern', 'explanation', 'trigger_kind',
           'trigger_value', 'status', 'source', 'has_evidence',
+          'skill_key', 'skill_label', 'skill_source',
         ]) &&
         isPositiveInteger(item.id) &&
         isNullableString(item.category) &&
@@ -1552,12 +1562,24 @@ export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail
         typeof item.trigger_value === 'string' &&
         (item.status === 'candidate' || item.status === 'confirmed') &&
         typeof item.source === 'string' &&
-        typeof item.has_evidence === 'boolean'
+        typeof item.has_evidence === 'boolean' &&
+        isNullableString(item.skill_key) &&
+        isNullableString(item.skill_label) &&
+        (item.skill_source === null || ['teacher', 'criterion'].includes(String(item.skill_source)))
       ))
     )) ||
     (value.wrong_option_letters !== undefined && (
       !Array.isArray(value.wrong_option_letters) ||
       !value.wrong_option_letters.every((letter) => typeof letter === 'string' && /^[A-F]$/.test(letter))
+    )) ||
+    (value.selectable_skills !== undefined && (
+      !Array.isArray(value.selectable_skills) ||
+      !value.selectable_skills.every((item) => (
+        isRecord(item) &&
+        hasExactKeys(item, ['key', 'label']) &&
+        typeof item.key === 'string' &&
+        typeof item.label === 'string'
+      ))
     ))
   ) {
     throw new Error('Invalid question bank detail')
@@ -1971,7 +1993,9 @@ export const questionBankApi = {
   editErrorPattern(
     questionId: number,
     pattern: QuestionErrorPattern,
-    change: { action: 'edit'; pattern: string; category: string } | { action: 'reject' },
+    change:
+      | { action: 'edit'; pattern: string; category: string; skill_key?: string | null }
+      | { action: 'reject' },
   ): Promise<QuestionBankDetail> {
     if (!isPositiveInteger(questionId) || !isPositiveInteger(pattern.id)) {
       throw new Error('Invalid typical error target')

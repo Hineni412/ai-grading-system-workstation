@@ -226,6 +226,25 @@ def create_app(
             ).model_dump(),
         )
 
+    from backend.repositories.results import RubricUnreadableError
+
+    @api.exception_handler(RubricUnreadableError)
+    async def rubric_unreadable_handler(
+        request: Request, exc: RubricUnreadableError
+    ) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", "") or uuid4().hex
+        return JSONResponse(
+            status_code=409,
+            headers={"x-request-id": request_id},
+            content=ErrorResponse(
+                error=ErrorPayload(
+                    code="rubric_unreadable",
+                    message=str(exc) or "评分依据文件无法读取",
+                    request_id=request_id,
+                )
+            ).model_dump(),
+        )
+
     @api.exception_handler(RequestValidationError)
     async def validation_error_handler(
         request: Request,

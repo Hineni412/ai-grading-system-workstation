@@ -17,6 +17,7 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.worksheet.pagebreak import Break
 from openpyxl.worksheet.worksheet import Worksheet
 
+from backend.error_causes import display_error_category
 from backend.repositories.access import (
     GradingRepositoryAccess,
     as_grading_repositories,
@@ -1681,7 +1682,11 @@ def _normalize_question_detail_records(
             ("error_category", "_error_categories"),
             ("error_summary", "_error_summaries"),
         ):
-            value = _clean_grading_text(record.get(field))
+            value = (
+                display_error_category(record.get(field))
+                if field == "error_category"
+                else _clean_grading_text(record.get(field))
+            )
             if value:
                 item[private_field].append(value)
         item["_knowledge_ids"].extend(kid for kid in _knowledge_ids_from_detail(record) if kid != "UNKNOWN")
@@ -1945,7 +1950,7 @@ def _loss_entry_label(item: dict) -> str:
         return answer or "未识别作答"
     if reason:
         return _short_loss_label(_public_grading_reason(reason))
-    category = _clean_grading_text(item.get("error_category"))
+    category = display_error_category(item.get("error_category"))
     if category:
         return _short_loss_label(_public_grading_reason(category))
     return "原因未记录"

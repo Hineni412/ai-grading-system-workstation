@@ -347,6 +347,14 @@ class QuestionErrorPattern(_QuestionBankModel):
     status: Literal["candidate", "confirmed"]
     source: str
     has_evidence: bool
+    skill_key: str | None = None
+    skill_label: str | None = None
+    skill_source: Literal["teacher", "criterion"] | None = None
+
+
+class QuestionSkillOption(_QuestionBankModel):
+    key: str
+    label: str
 
 
 class QuestionDetailResponse(QuestionListItem):
@@ -355,6 +363,7 @@ class QuestionDetailResponse(QuestionListItem):
     previews: list[QuestionPreviewMetadata]
     error_patterns: list[QuestionErrorPattern] = Field(default_factory=list)
     wrong_option_letters: list[str] = Field(default_factory=list)
+    selectable_skills: list[QuestionSkillOption] = Field(default_factory=list)
 
 
 class QuestionErrorPatternEditRequest(_QuestionBankModel):
@@ -362,6 +371,7 @@ class QuestionErrorPatternEditRequest(_QuestionBankModel):
     expected_pattern: str
     pattern: str | None = None
     category: str | None = None
+    skill_key: str | None = None
 
 
 class QuestionSolutionEvidenceResponse(_QuestionBankModel):

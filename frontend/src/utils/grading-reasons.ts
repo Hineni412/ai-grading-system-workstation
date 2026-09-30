@@ -25,6 +25,17 @@ const REASON_LABELS: Record<string, string> = {
 
 const OBJECTIVE_ANSWER_PREFIX = 'objective_answer='
 
+// 与后端 error_causes._PLACEHOLDER_REASONS 一致：教师确认写入的占位词
+// 不是错因类别，展示/聚合时视为空。
+const REVIEW_CONFIRMED_PLACEHOLDERS = new Set([
+  '人工复核已确认', '人工复核', '教师已确认', '教师已确认最终分', '已复核',
+])
+
+export function displayErrorCategory(value: string | null | undefined): string {
+  const text = value?.trim() ?? ''
+  return REVIEW_CONFIRMED_PLACEHOLDERS.has(text) ? '' : text
+}
+
 export function translateGradingReason(
   value: string | null | undefined,
   fallback = '自动处理未完成，请教师复核',

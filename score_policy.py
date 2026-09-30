@@ -487,12 +487,11 @@ def _looks_like_calculation_question(question: dict[str, Any]) -> bool:
 
 
 def re_search(pattern: str, text: str) -> bool:
-    try:
-        import re
+    """Internal hard-coded patterns only; an invalid regex is a programming
+    error and must surface instead of degrading into substring matching."""
+    import re
 
-        return re.search(pattern, text) is not None
-    except Exception:
-        return pattern in text
+    return re.search(pattern, text) is not None
 
 
 def _collect_nested_text(value: Any, output: list[str]) -> None:

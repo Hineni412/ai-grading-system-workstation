@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
 import type {
   AnalysisPreflight,
@@ -37,6 +38,7 @@ const props = withDefaults(defineProps<{
 const isPopover = computed(() => props.variant === 'popover')
 const chromeless = computed(() => props.embedded || isPopover.value)
 
+const router = useRouter()
 const sessionStore = useSessionStore()
 const fileCenter = useFileCenterStore()
 const jobStore = useJobStore()
@@ -434,6 +436,17 @@ function refresh(): void {
   if (sessionId !== null) void fileCenter.load(sessionId)
 }
 
+function openReviewNotes(): void {
+  const sessionId = sessionStore.selectedSessionId
+  void router.push({
+    path: '/results',
+    query: {
+      tab: 'overview',
+      ...(sessionId === null ? {} : { session: String(sessionId) }),
+    },
+  })
+}
+
 const dialogOpen = computed(() => excelSettingsOpen.value || analysisConfirmOpen.value)
 
 defineExpose({ dialogOpen })
@@ -507,6 +520,7 @@ defineExpose({ dialogOpen })
           @download="download"
           @delete-report="deleteReport"
           @open-excel-settings="openExcelSettings(false)"
+          @open-review-notes="openReviewNotes"
           @toggle-history="toggleHistory"
         />
 

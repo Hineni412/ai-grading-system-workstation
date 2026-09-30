@@ -144,3 +144,111 @@ def test_question_import_job_serializes_different_requests_for_same_content(
     with connect(service.db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 2
+
+
+def test_question_import_job_result_lists_duplicate_papers_and_match_details(
+    tmp_path: Path,
+) -> None:
+    service, request = _service_and_request(tmp_path)
+    initialize_database(service.db_path)
+    with connect(service.db_path) as connection:
+        existing_paper_id = int(
+            connection.execute(
+                "INSERT INTO papers (title, source_file, import_status) VALUES (?, ?, ?)",
+                ("既有试卷", "old.docx", "imported"),
+            ).lastrowid
+        )
+
+    def importer(scanned, _database_path, **_kwargs):
+        source = str(scanned[0].source_file)
+        return BatchImportResult(
+            [
+                PaperImportFileResult(
+                    source,
+                    "imported",
+                    question_count=1,
+                    paper_id=existing_paper_id + 1,
+                    exact_duplicate_count=1,
+                    exact_duplicates=(
+                        {
+                            "question_number": "1",
+                            "matched_question_id": 7,
+                            "matched_paper_title": "既有试卷",
+                            "matched_question_number": "3",
+                        },
+                    ),
+                    near_duplicate_hints=(
+                        {
+                            "question_number": "2",
+                            "matched_question_id": 8,
+                            "matched_paper_title": "既有试卷",
+                            "matched_question_number": "4",
+                            "question_id": 11,
+                            "similarity": 1.0,
+                            "high": True,
+                            "match_kind": "answer_conflict",
+                            "reason": "题面相同但答案文本不同，保留两个来源并等待核对",
+                        },
+                    ),
+                ),
+                PaperImportFileResult(
+                    source + "2",
+                    "duplicate",
+                    paper_id=existing_paper_id,
+                ),
+            ],
+            1,
+            1,
+            0,
+            0,
+            1,
+            0,
+            exact_duplicate_count=1,
+            exact_duplicates=(
+                {
+                    "question_number": "1",
+                    "matched_question_id": 7,
+                    "matched_paper_title": "既有试卷",
+                    "matched_question_number": "3",
+                },
+            ),
+            near_duplicate_hints=(
+                {
+                    "question_number": "2",
+                    "matched_question_id": 8,
+                    "matched_paper_title": "既有试卷",
+                    "matched_question_number": "4",
+                    "question_id": 11,
+                    "similarity": 1.0,
+                    "high": True,
+                    "match_kind": "answer_conflict",
+                    "reason": "题面相同但答案文本不同，保留两个来源并等待核对",
+                },
+            ),
+        )
+
+    context, _ = _context(
+        tmp_path / "job",
+        {"request_id": request.request_id},
+    )
+    result = run_question_import_job(
+        context=context,
+        question_bank_db_path=service.db_path,
+        data_root=service.data_root,
+        write_service=service,
+        importer=importer,
+    )
+
+    assert result["exact_duplicates"] == [
+        {
+            "question_number": "1",
+            "matched_question_id": 7,
+            "matched_paper_title": "既有试卷",
+            "matched_question_number": "3",
+        }
+    ]
+    assert result["near_duplicate_hints"][0]["matched_question_number"] == "4"
+    assert result["near_duplicate_hints"][0]["question_id"] == 11
+    assert result["duplicate_papers"] == [
+        {"paper_id": existing_paper_id, "title": "既有试卷"}
+    ]

@@ -144,6 +144,10 @@ def run_grading_job(
         "state": state,
         "summary": summary,
         "last_event": last_event,
+        # 账本（附加层）写入失败不影响成绩；这里把警告透传给任务结果。
+        "run_record_write_failed": bool(
+            last_event.get("run_record_write_failed")
+        ),
     }
 
 
