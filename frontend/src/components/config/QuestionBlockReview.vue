@@ -14,6 +14,7 @@ import {
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import DuplicateCompareDialog from './DuplicateCompareDialog.vue'
+import AppButton from '../design-system/AppButton.vue'
 import type { ConfigQuestionGenerationState } from '../../api/config-workspace'
 import { useConfigQuestionFocus } from '../../composables/useConfigQuestionFocus'
 import {
@@ -635,12 +636,12 @@ function assetCountFor(question: ConfigQuestionPreview): number {
       >
         <img :src="asset.asset_url" :alt="`${asset.asset_id} 已忽略图片`">
         <div><strong>疑难图片 · {{ asset.candidate_question_ids.join(' / ') }}</strong><small>已忽略，不会发送给AI</small></div>
-        <button
-          type="button"
+        <AppButton
+          variant="secondary"
           class="question-review__restore-button"
           :aria-label="`恢复疑难图片 ${asset.candidate_question_ids.join(' / ')} 到待归属提醒区`"
           @click="restoreAsset(asset.asset_id)"
-        >恢复</button>
+        >恢复</AppButton>
       </li>
     </ul>
 
@@ -777,11 +778,11 @@ function assetCountFor(question: ConfigQuestionPreview): number {
                 class="question-review__dup-meta"
                 :title="`《${duplicateFor(question.question_id)!.matched_paper_title}》${duplicateFor(question.question_id)!.matched_question_number ? `第${duplicateFor(question.question_id)!.matched_question_number}题` : ''}`"
               >《{{ duplicateFor(question.question_id)!.matched_paper_title }}》<template v-if="duplicateFor(question.question_id)!.matched_question_number">第{{ duplicateFor(question.question_id)!.matched_question_number }}题</template></span>
-              <button
-                type="button"
+              <AppButton
+                variant="ghost"
                 class="question-review__dup-compare"
                 @click="openDuplicateCompare(question.question_id)"
-              >对照</button>
+              >对照</AppButton>
             </div>
             <p v-if="intakeFailed(question.question_id)" class="question-review__type-check" role="alert">
               <strong>本题入库未完成：</strong>AI 分析已保留，请核对题目边界和配图归属；完整入库后才能赋分。

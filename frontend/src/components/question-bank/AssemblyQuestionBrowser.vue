@@ -852,7 +852,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
           <p class="assembly-kicker">CURRICULUM INDEX</p>
           <h2 id="assembly-chapter-title">教材章节</h2>
         </div>
-        <button v-if="selectedScopeLabel" type="button" class="assembly-link" @click="clearScope">清除</button>
+        <AppButton v-if="selectedScopeLabel" variant="ghost" @click="clearScope">清除</AppButton>
       </header>
       <label v-if="catalogState === 'ready' && catalog" class="assembly-volume-select">
         <span>教材册别</span>
@@ -874,13 +874,12 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
       </div>
       <div v-else-if="catalogState === 'error' || baseFacetsState === 'error'" class="assembly-compact-state">
         <span>教材目录或章节计数暂不可用</span>
-        <button
-          type="button"
-          class="assembly-link"
+        <AppButton
+          variant="ghost"
           @click="retryCurriculum"
         >
           重试
-        </button>
+        </AppButton>
       </div>
       <nav v-else-if="currentVolume" class="assembly-curriculum-tree" aria-label="教材章节筛选">
         <button
@@ -1252,9 +1251,9 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
             {{ filter.key === 'knowledgePoints' ? knowledgeLeafLabel(filter.value) : filter.value }}
             <b aria-hidden="true">×</b>
           </button>
-          <button type="button" class="assembly-active-filters__clear" @click="resetFilters">
+          <AppButton variant="ghost" class="assembly-active-filters__clear" @click="resetFilters">
             清除全部
-          </button>
+          </AppButton>
         </div>
 
         <div class="assembly-filter-row is-search">
@@ -1276,7 +1275,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
       <div v-if="state === 'loading'" class="assembly-state" role="status">正在读取试题…</div>
       <div v-else-if="state === 'error'" class="assembly-state" role="alert">
         <span>试题暂时无法读取。</span>
-        <button type="button" class="assembly-link" @click="loadQuestions()">重新读取</button>
+        <AppButton variant="ghost" @click="loadQuestions()">重新读取</AppButton>
       </div>
       <div v-else-if="state === 'empty'" class="assembly-state">
         当前筛选下没有试题，可以清除筛选后再查看。
@@ -1336,16 +1335,16 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
               <button type="button" class="assembly-link" @click="toggleAnswer(question.id)">
                 {{ expandedAnswers.has(question.id) ? '收起解析' : '查看解析' }}
               </button>
-              <button type="button" class="assembly-link" @click="openSimilar(question)">相似题</button>
-              <button
-                type="button"
+              <AppButton variant="ghost" @click="openSimilar(question)">相似题</AppButton>
+              <AppButton
+                variant="secondary"
                 class="assembly-button"
                 :class="{ 'is-selected': isInBasket(question.id) }"
                 :disabled="assembly.saveState === 'saving'"
                 @click="toggleBasket(question.id)"
               >
                 {{ isInBasket(question.id) ? '移出试卷篮' : '加入试卷篮' }}
-              </button>
+              </AppButton>
             </span>
           </footer>
         </article>
@@ -1410,7 +1409,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
         <div v-if="similarState === 'loading'" class="assembly-state">正在查找相似题…</div>
         <div v-else-if="similarState === 'error'" class="assembly-state">
           <span>相似题暂时无法读取。</span>
-          <button type="button" class="assembly-link" @click="openSimilar(similarSource)">重新查找</button>
+          <AppButton variant="ghost" @click="openSimilar(similarSource)">重新查找</AppButton>
         </div>
         <div v-else-if="similarItems.length === 0" class="assembly-state">当前题库没有找到足够相似的题目。</div>
         <div v-else class="assembly-similar-list">
@@ -1444,14 +1443,14 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
             />
             <footer>
               <span>{{ item.paper_title || '未命名试卷' }}</span>
-              <button
-                type="button"
+              <AppButton
+                variant="secondary"
                 class="assembly-button"
                 :class="{ 'is-selected': isInBasket(item.id) }"
                 @click="toggleBasket(item.id)"
               >
                 {{ isInBasket(item.id) ? '移出试卷篮' : '加入试卷篮' }}
-              </button>
+              </AppButton>
             </footer>
           </article>
         </div>

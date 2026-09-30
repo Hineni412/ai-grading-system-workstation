@@ -264,7 +264,6 @@
 .scan-viewer__decision .scan-decision-state { margin: 0; padding-top: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-default); }
 .scan-empty { color: var(--color-text-secondary); }
 .text-button { background: transparent; color: var(--color-accent); border-color: transparent; }
-button.danger { border-color: var(--destructive); background: var(--destructive); color: var(--destructive-foreground); }
 @media (max-width: 900px) { .scan-review { grid-template-columns: 1fr; height: auto; } .scan-review-list { max-height: 40vh; } .scan-review-detail { overflow: visible; } .scan-review-detail__header { flex-direction: column; } }
 @media (max-width: 960px) { .scan-viewer__body { grid-template-columns: 1fr; } .scan-viewer__decision { max-height: 38vh; overflow: auto; border-inline-start: 0; border-block-start: var(--border-width) solid var(--color-border-default); } }
 @media (max-width: 768px) { .grading-modes { grid-template-columns: 1fr; } .grading-plan__metrics { grid-template-columns: repeat(2, 1fr); } .grading-plan__metrics > div:nth-child(2) { border-inline-end: 0; } .grading-plan__state, .grading-plan__confirm { align-items: stretch; flex-direction: column; } .grading-plan__confirm button { width: 100%; } .run-counts { grid-template-columns: repeat(2, 1fr); } .hybrid-run-board__phases { grid-template-columns: repeat(2, 1fr); } .scan-viewer { padding: var(--space-2); } .scan-viewer__shell { width: 100%; height: 96vh; } }

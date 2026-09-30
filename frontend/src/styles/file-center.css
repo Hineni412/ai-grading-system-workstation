@@ -331,40 +331,11 @@
   outline-offset: var(--focus-offset);
 }
 
-.file-button,
 .file-link-button {
   min-height: var(--control-height-default);
   border-radius: var(--radius-control);
   font: inherit;
   cursor: pointer;
-}
-
-.file-link-button--danger {
-  color: var(--color-danger);
-}
-
-.file-button {
-  padding: 0 var(--space-4);
-  border: var(--border-width) solid transparent;
-  font-weight: var(--font-weight-medium);
-}
-
-.file-button--primary {
-  background: var(--color-accent);
-  color: var(--color-bg-surface);
-}
-
-.file-button--primary:hover {
-  background: var(--color-accent-hover);
-}
-
-.file-button--secondary {
-  border-color: var(--color-border-default);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-}
-
-.file-link-button {
   padding: 0 var(--space-2);
   border: 0;
   background: transparent;
@@ -372,12 +343,6 @@
   font-weight: var(--font-weight-medium);
 }
 
-.file-button:disabled {
-  cursor: not-allowed;
-  opacity: var(--opacity-disabled);
-}
-
-.file-button:focus-visible,
 .file-link-button:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: var(--focus-offset);
