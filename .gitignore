@@ -46,10 +46,12 @@ output/playwright/
 *.bak
 *.log
 
-# 调试与分析产物（根目录不应再出现，杂物已归档至仓库外）
+# 本机调试与分析产物（保留本地文件，不参与版本管理）
 debug_*.db
 scratch/
 analysis_outputs/
+.codex-review/
+/论文修订输出/
 
 # Local agent/tool session state
 .superpowers/
@@ -65,6 +67,9 @@ Thumbs.db
 .p35t/
 .codex_artifacts/
 agent_bridge/session_*/
+/agent_bridge/auth_baseline.json
+/agent_bridge/obj_old_answers.json
+/agent_bridge/p1_old_details.json
 
 # Machine-local playwright CLI config
 .playwright/

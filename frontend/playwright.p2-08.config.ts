@@ -15,7 +15,7 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'npm run demo:phase2-recalibration',
+    command: 'npm run demo:review-batch',
     url: 'http://127.0.0.1:4188/healthz',
     reuseExistingServer: false,
     timeout: 15_000,

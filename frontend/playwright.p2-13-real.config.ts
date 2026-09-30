@@ -18,7 +18,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: '..\\..\\..\\runtime\\python\\python.exe ../tools/p2_13_browser_server.py --data-root test-results/p2-13-real --port 8013',
+    command: '..\\runtime\\python\\python.exe ../tools/p2_13_browser_server.py --data-root test-results/p2-13-real --port 8013',
     url: 'http://127.0.0.1:8013/api/healthz',
     reuseExistingServer: false,
     timeout: 60_000,
