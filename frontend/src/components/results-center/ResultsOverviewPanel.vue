@@ -13,6 +13,7 @@ import {
 import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
 import { useSessionStore } from '../../stores/session'
+import AppButton from '../design-system/AppButton.vue'
 import { Skeleton } from '../ui/skeleton'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import {
@@ -758,11 +759,11 @@ function openQuestion(questionId: string): void {
             <template v-if="reviewPending > 0">
               <strong class="overview__tile-num">{{ reviewPending }} 题待处理</strong>
               <span class="overview__tile-sub">{{ reviewBreakdown }}</span>
-              <button
-                type="button"
-                class="overview__link overview__tile-action"
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
                 @click="emit('open-review', 'teacher_pending')"
-              >去复核</button>
+              >去复核</AppButton>
             </template>
             <template v-else>
               <strong class="overview__tile-num">已全部确认</strong>
@@ -770,11 +771,11 @@ function openQuestion(questionId: string): void {
                 教师确认 {{ results.summary.teacher_final_item_count }} ·
                 AI 评分 {{ results.summary.ai_ready_item_count }}
               </span>
-              <button
-                type="button"
-                class="overview__link overview__tile-action"
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
                 @click="emit('open-review', 'all')"
-              >抽查复核</button>
+              >抽查复核</AppButton>
             </template>
           </section>
           <section
@@ -835,11 +836,11 @@ function openQuestion(questionId: string): void {
               </span>
               <p class="overview__tile-caption">低分拉低了平均</p>
             </template>
-            <button
-              type="button"
-              class="overview__link overview__tile-action"
+            <AppButton
+              variant="ghost"
+              class="overview__tile-action"
               @click="emit('open-low-list', scope)"
-            >看名单</button>
+              >看名单</AppButton>
           </section>
 
           <section
@@ -959,27 +960,27 @@ function openQuestion(questionId: string): void {
             />
             <template v-else-if="analysisState === 'error'">
               <span class="overview__tile-sub">暂时无法读取</span>
-              <button
-                type="button"
-                class="overview__link overview__tile-action"
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
                 @click="reloadAnalysis"
-              >重试</button>
+              >重试</AppButton>
             </template>
             <template v-else-if="causeIssue === 'missing'">
               <span class="overview__tile-sub">错因尚未整理</span>
-              <button
-                type="button"
-                class="overview__link overview__tile-action"
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
                 @click="emit('open-question', '', scope)"
-              >去试题诊断查看</button>
+              >去试题诊断查看</AppButton>
             </template>
             <template v-else-if="causeIssue === 'legacy'">
               <span class="overview__tile-sub">错因为旧版整理</span>
-              <button
-                type="button"
-                class="overview__link overview__tile-action"
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
                 @click="emit('open-question', '', scope)"
-              >去试题诊断查看</button>
+              >去试题诊断查看</AppButton>
             </template>
             <template v-else-if="'segments' in tile">
               <span
@@ -1016,11 +1017,11 @@ function openQuestion(questionId: string): void {
             />
             <template v-else-if="narrativeState === 'error'">
               <span class="overview__tile-sub">暂时无法读取</span>
-              <button
-                type="button"
-                class="overview__link overview__tile-action"
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
                 @click="reloadNarrative"
-              >重试</button>
+              >重试</AppButton>
             </template>
             <strong v-else-if="narrativeGenerating" class="overview__tile-num">生成中…</strong>
             <template v-else-if="narrative?.narrative && !narrative.stale">
@@ -1031,30 +1032,30 @@ function openQuestion(questionId: string): void {
                   :title="finding.title"
                 >{{ finding.title }}</li>
               </ul>
-              <button
-                type="button"
-                class="overview__link overview__tile-action"
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
                 @click="openReport"
-              >查看完整报告</button>
+              >查看完整报告</AppButton>
             </template>
             <template v-else-if="narrative?.stale">
               <strong class="overview__tile-num">成绩已变化</strong>
               <span class="overview__tile-sub">报告需更新</span>
-              <button
-                type="button"
-                class="overview__link overview__tile-action"
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
                 @click="openReport"
-              >去更新</button>
+              >去更新</AppButton>
             </template>
             <template v-else>
               <strong class="overview__tile-num">
                 {{ narrative?.narrative_failed ? '上次生成失败' : '尚未生成' }}
               </strong>
-              <button
-                type="button"
-                class="overview__link overview__tile-action"
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
                 @click="openReport"
-              >去生成</button>
+              >去生成</AppButton>
             </template>
           </section>
 

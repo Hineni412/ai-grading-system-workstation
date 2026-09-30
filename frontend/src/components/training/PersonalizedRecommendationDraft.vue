@@ -16,6 +16,7 @@ import {
 import { knowledgeLeafLabel } from '../../api/question-bank'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import { difficultyLevel } from '../../lib/utils'
+import AppButton from '../design-system/AppButton.vue'
 import TrainingScanBatchPanel from './TrainingScanBatchPanel.vue'
 import QuestionPreviewDialog from './QuestionPreviewDialog.vue'
 import {
@@ -749,15 +750,13 @@ async function editItem(
       当前没有可确认的薄弱目标；一人一卷需要范围内已有掌握证据才会配题。
     </p>
 
-    <button
-      type="button"
-      class="training-button is-secondary"
+    <AppButton variant="secondary"
       data-testid="generate-personalized-draft"
       :disabled="!canGenerate"
       @click="generate"
     >
       {{ state === 'loading' ? '正在生成并核对…' : pendingRequestToken ? '核对生成结果' : '生成个性化草稿' }}
-    </button>
+    </AppButton>
       </section>
     </details>
 
@@ -774,28 +773,24 @@ async function editItem(
           草稿已自动暂存（版本 {{ draft.revision }}）；切到其他页面再回来会自动恢复，不需要重新勾选。
         </span>
         <template v-if="canDiscardDraft">
-          <button
+          <AppButton variant="ghost"
             v-if="!confirmDiscard"
-            type="button"
-            class="training-link"
             data-testid="discard-paper-draft"
             @click="confirmDiscard = true"
           >
             放弃草稿
-          </button>
+          </AppButton>
           <template v-else>
             <span class="personalized-draft-toolbar__confirm">
               确认放弃？该草稿不再自动恢复；勾选与出卷设置会保留。
             </span>
-            <button
-              type="button"
-              class="training-button"
+            <AppButton variant="secondary"
               data-testid="confirm-discard-paper-draft"
               @click="discardDraft"
             >
               确认放弃
-            </button>
-            <button type="button" class="training-link" @click="confirmDiscard = false">取消</button>
+            </AppButton>
+            <AppButton variant="ghost" @click="confirmDiscard = false">取消</AppButton>
           </template>
         </template>
         <small v-else class="personalized-draft-toolbar__locked">
@@ -859,14 +854,12 @@ async function editItem(
                   <span title="同目标作答依据">
                     {{ evidenceRefLabel(evidenceDisplayFor(student.student_id, item).representative!) }}
                   </span>
-                  <button
+                  <AppButton variant="ghost"
                     v-if="evidenceDisplayFor(student.student_id, item).representative!.bank_question_id"
-                    type="button"
-                    class="training-link"
                     @click="openPreview(evidenceDisplayFor(student.student_id, item).representative!.bank_question_id, '作答原题')"
                   >
                     预览
-                  </button>
+                  </AppButton>
                   <details
                     v-if="evidenceDisplayFor(student.student_id, item).refs.length > 1"
                     class="personalized-match__evidence-all"
@@ -877,14 +870,12 @@ async function editItem(
                       :key="`${evidence.session_id}-${evidence.question_id}-${evidence.bank_question_id}`"
                     >
                       {{ evidenceRefLabel(evidence) }}
-                      <button
+                      <AppButton variant="ghost"
                         v-if="evidence.bank_question_id"
-                        type="button"
-                        class="training-link"
                         @click="openPreview(evidence.bank_question_id, '作答原题')"
                       >
                         预览
-                      </button>
+                      </AppButton>
                     </span>
                   </details>
                 </template>
@@ -922,37 +913,29 @@ async function editItem(
                   推荐理由：{{ item.reason }}
                 </small>
                 <div v-if="paperMode !== 'shared'" class="personalized-item-actions">
-                  <button
-                    type="button"
-                    class="training-link"
+                  <AppButton variant="ghost"
                     @click="openPreview(item.question_id, '推荐题预览')"
                   >
                     预览
-                  </button>
-                  <button
-                    type="button"
-                    class="training-link"
+                  </AppButton>
+                  <AppButton variant="ghost"
                     :disabled="state === 'editing'"
                     @click="editItem(student.student_id, item, item.locked ? 'unlock' : 'lock')"
                   >
                     {{ item.locked ? '解锁' : '锁定' }}
-                  </button>
-                  <button
-                    type="button"
-                    class="training-link"
+                  </AppButton>
+                  <AppButton variant="ghost"
                     :disabled="item.locked || state === 'editing'"
                     @click="editItem(student.student_id, item, 'replace')"
                   >
                     替换
-                  </button>
-                  <button
-                    type="button"
-                    class="training-link"
+                  </AppButton>
+                  <AppButton variant="ghost"
                     :disabled="item.locked || state === 'editing'"
                     @click="editItem(student.student_id, item, 'exclude')"
                   >
                     排除
-                  </button>
+                  </AppButton>
                 </div>
                 <p v-else class="personalized-shared-note">同题模式不允许只改某一名学生；如需换题，请调整设置后重新生成整组草稿。</p>
               </div>
@@ -992,30 +975,24 @@ async function editItem(
               </small>
             </div>
             <div v-if="paperMode !== 'shared'" class="personalized-item-actions">
-              <button
-                type="button"
-                class="training-link"
+              <AppButton variant="ghost"
                 :disabled="state === 'editing'"
                 @click="editItem(student.student_id, item, item.locked ? 'unlock' : 'lock')"
               >
                 {{ item.locked ? '解锁' : '锁定' }}
-              </button>
-              <button
-                type="button"
-                class="training-link"
+              </AppButton>
+              <AppButton variant="ghost"
                 :disabled="item.locked || state === 'editing'"
                 @click="editItem(student.student_id, item, 'replace')"
               >
                 替换
-              </button>
-              <button
-                type="button"
-                class="training-link"
+              </AppButton>
+              <AppButton variant="ghost"
                 :disabled="item.locked || state === 'editing'"
                 @click="editItem(student.student_id, item, 'exclude')"
               >
                 排除
-              </button>
+              </AppButton>
             </div>
             <p v-else class="personalized-shared-note">同题模式不允许只改某一名学生；如需换题，请调整设置后重新生成整组草稿。</p>
           </li>
@@ -1047,24 +1024,20 @@ async function editItem(
               {{ instance.formula_fallbacks.length }} 处公式无法转为可编辑公式，已保留原式或题图，打印前请预览核对。
             </small>
             <div class="personalized-paper-actions">
-              <button
+              <AppButton variant="ghost"
                 v-if="instance.downloads.frozen_pdf"
-                type="button"
-                class="training-link"
                 :disabled="Boolean(paperBusy)"
                 @click="downloadPaper(instance, 'frozen_pdf')"
               >
                 下载 PDF 试卷
-              </button>
-              <button
+              </AppButton>
+              <AppButton variant="ghost"
                 v-if="instance.downloads.review_docx"
-                type="button"
-                class="training-link"
                 :disabled="Boolean(paperBusy)"
                 @click="downloadPaper(instance, 'review_docx')"
               >
                 下载 DOCX 版（可选精修）
-              </button>
+              </AppButton>
             </div>
           </article>
           <p class="personalized-paper-note">
@@ -1082,25 +1055,23 @@ async function editItem(
           <strong id="personalized-batch-title">{{ paperMode === 'shared' ? '批量生成实名同题卷' : '批量生成实名一人一卷' }}</strong>
           <p>每名学生保持独立卷实例；成功卷不会因其他学生失败而丢失。生成的是可直接打印的 PDF 试卷。</p>
         </div>
-        <button type="button" class="training-button is-primary" :disabled="Boolean(paperBusy)" @click="createPaperBatch">
+        <AppButton variant="primary" :disabled="Boolean(paperBusy)" @click="createPaperBatch">
           {{ paperBusy === 'batch' ? '正在逐人生成 PDF…' : '生成全部 PDF 试卷（可直接打印）' }}
-        </button>
-        <button
+        </AppButton>
+        <AppButton variant="secondary"
           v-if="paperBatch?.status === 'creating'"
-          type="button"
-          class="training-button is-secondary"
           :disabled="paperCancelBusy"
           @click="cancelPaperBatch"
         >
           {{ paperCancelBusy ? '正在停止…' : '停止未开始学生' }}
-        </button>
+        </AppButton>
         <div v-if="paperBatch" class="personalized-batch-result">
           <span>成功 {{ paperBatch.succeeded_count }} / {{ paperBatch.requested_count }} 人</span>
-          <button v-if="paperBatch.downloads.frozen_bundle" type="button" class="training-link" @click="downloadBatch('frozen_bundle')">下载试卷 PDF ZIP</button>
-          <button v-if="paperBatch.downloads.bundle" type="button" class="training-link" @click="downloadBatch('bundle')">下载 DOCX 版 ZIP</button>
-          <button v-if="paperBatch.failures.length" type="button" class="training-button is-secondary" :disabled="Boolean(paperBusy)" @click="retryFailedPaperBatch">
+          <AppButton variant="ghost" v-if="paperBatch.downloads.frozen_bundle" @click="downloadBatch('frozen_bundle')">下载试卷 PDF ZIP</AppButton>
+          <AppButton variant="ghost" v-if="paperBatch.downloads.bundle" @click="downloadBatch('bundle')">下载 DOCX 版 ZIP</AppButton>
+          <AppButton variant="secondary" v-if="paperBatch.failures.length" :disabled="Boolean(paperBusy)" @click="retryFailedPaperBatch">
             {{ paperBusy === 'batch-retry' ? '正在重试失败学生…' : `只重试失败的 ${paperBatch.failures.length} 人` }}
-          </button>
+          </AppButton>
           <ul v-if="paperBatch.failures.length">
             <li v-for="failure in paperBatch.failures" :key="failure.student_id">学生 {{ failure.student_id }}：生成失败，可单独重试</li>
           </ul>

@@ -27,6 +27,7 @@ import {
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useJobStore } from '../../stores/jobs'
 import { useConfigQuestionFocus } from '../../composables/useConfigQuestionFocus'
+import AppButton from '../design-system/AppButton.vue'
 
 const props = withDefaults(defineProps<{
   sessionName?: string
@@ -702,28 +703,28 @@ watch(
         </label>
         <span v-if="curriculumError" role="alert">
           {{ curriculumError }}
-          <button type="button" class="secondary" @click="loadCurriculum">重试读取教材</button>
+          <AppButton variant="secondary" @click="loadCurriculum">重试读取教材</AppButton>
         </span>
         <span class="config-generation__console-count">通过 {{ passedStateCount }} · 异常 {{ redStateCount }}</span>
         <span
           v-if="job === null && reusablePreviewCount > 0"
           class="config-generation__console-reuse"
         >{{ reusablePreviewCount }} 题复用题库分析</span>
-        <button
+        <AppButton
           v-if="job === null"
-          type="button"
           name="开始生成"
+          variant="primary"
           class="config-generation__primary"
           :disabled="!generationAvailable || curriculumLoading || selectedVolume === null || submitting || workspacePending"
           @click="startGeneration()"
-        >{{ submitting ? '正在提交…' : '开始分析并入库' }}</button>
-        <button
+        >{{ submitting ? '正在提交…' : '开始分析并入库' }}</AppButton>
+        <AppButton
           v-else-if="terminal && redStateCount > 0 && retryable && !canResumeIntake"
-          type="button"
+          variant="primary"
           class="config-generation__primary"
           :disabled="submitting || workspacePending"
           @click="retryRedQuestions"
-        >重试红灯题</button>
+        >重试红灯题</AppButton>
       </div>
     </Teleport>
 
@@ -749,12 +750,12 @@ watch(
         <span class="config-generation__success-copy">
           评分依据已生成<template v-if="intakeSummaryCopy"> · {{ intakeSummaryCopy }}</template> · {{ passedStateCount }} 通过 · {{ redStateCount }} 需处理
         </span>
-        <button
-          type="button"
+        <AppButton
           name="进入评分标准编辑"
+          variant="primary"
           class="config-generation__primary"
           @click="continueToEditor"
-        >检查本场赋分</button>
+        >检查本场赋分</AppButton>
       </div>
       <div v-else class="config-generation__status-line">
         <strong>{{ statusCopy(job) }}</strong>
@@ -772,7 +773,7 @@ watch(
         </p>
         <template v-if="canResumeIntake">
           <p>继续时复用已保存的分析，先补齐入库，再在本地赋分；不会重新发送已完成题目给 AI。</p>
-          <button type="button" name="继续入库并赋分" :disabled="submitting || workspacePending" @click="retrySelected(true)">继续入库并赋分</button>
+          <AppButton name="继续入库并赋分" variant="primary" :disabled="submitting || workspacePending" @click="retrySelected(true)">继续入库并赋分</AppButton>
         </template>
       </div>
       </Teleport>
@@ -800,13 +801,13 @@ watch(
       >
         其中 {{ taxonomyReviewCount }} 道题的知识标签需要稍后重试或人工归并；评分依据不受影响，未知词尚未写入正式标签。
       </p>
-      <button
+      <AppButton
         v-if="terminal && outcome === 'complete' && !completeSuccess"
-        type="button"
         name="进入评分标准编辑"
+        variant="primary"
         class="config-generation__primary"
         @click="continueToEditor"
-      >检查本场赋分</button>
+      >检查本场赋分</AppButton>
 
       <div
         v-if="terminal && outcome === 'partial' && uncertainQuestionIds.length > 0"
@@ -820,14 +821,13 @@ watch(
           这次请求可能已经在模型服务端完成。已有成功题目均保存在本机；确认后只会重新分析
           {{ uncertainQuestionIds.join('、') }}，但极端情况下可能产生一次重复调用费用。
         </p>
-        <button
+        <AppButton
           v-if="uncertainRetryAvailable"
-          type="button"
           name="确认重新分析结果不确定题"
-          class="config-generation__primary"
+          variant="primary"
           :disabled="submitting || workspacePending"
           @click="retrySelected(false, true)"
-        >确认重新分析 {{ uncertainQuestionIds.join('、') }}</button>
+        >确认重新分析 {{ uncertainQuestionIds.join('、') }}</AppButton>
       </div>
 
       <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length > 0" class="config-generation__partial">
@@ -849,12 +849,12 @@ watch(
           </label>
         </fieldset>
         <div class="config-generation__failure-actions">
-          <button v-if="retryable" type="button" name="重试所选批次" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected()">
+          <AppButton v-if="retryable" name="重试所选批次" variant="primary" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected()">
             重试所选失败题
-          </button>
-          <button type="button" name="重新分析全部题目" class="config-generation__secondary" :disabled="submitting || workspacePending" @click="restartAnalysis">
+          </AppButton>
+          <AppButton name="重新分析全部题目" variant="secondary" :disabled="submitting || workspacePending" @click="restartAnalysis">
             重新分析全部题目
-          </button>
+          </AppButton>
         </div>
       </div>
 
@@ -872,16 +872,16 @@ watch(
           <strong>{{ failureCategoryCopy(scoreAllocationFailureCategory) }}</strong>：
           {{ scoreAllocationError }}
         </p>
-        <button type="button" name="重新进行统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
+        <AppButton name="重新进行统一配分" variant="primary" :disabled="submitting || workspacePending" @click="retrySelected(true)">
           重新进行统一配分
-        </button>
+        </AppButton>
       </div>
 
       <div v-if="['failed', 'cancelled'].includes(job.status) && outcome === 'complete'" class="config-generation__partial">
         <p>全部批次已经保存在本机，只差统一配分；继续时在本地完成配分，不调用模型，也不会重新生成题目批次。</p>
-        <button type="button" name="继续统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
+        <AppButton name="继续统一配分" variant="primary" :disabled="submitting || workspacePending" @click="retrySelected(true)">
           继续统一配分
-        </button>
+        </AppButton>
       </div>
       <p
         v-if="job.status === 'failed' && outcome !== 'partial' && outcome !== 'complete'"
@@ -892,41 +892,40 @@ watch(
         模型请求、返回格式或本地处理没有完成，因此没有发布任何新评分标准。
       </p>
 
-      <button
+      <AppButton
         v-if="active && !job.cancel_requested"
-        type="button"
         name="取消生成"
-        class="config-generation__secondary"
+        variant="secondary"
         :disabled="workspacePending"
         @click="jobStore.cancel(job.id)"
-      >取消生成</button>
-      <button
+      >取消生成</AppButton>
+      <AppButton
         v-if="job.status === 'failed' && outcome !== 'partial' && outcome !== 'complete'"
-        type="button"
         name="重新生成"
+        variant="primary"
         class="config-generation__primary"
         :disabled="submitting || workspacePending"
         @click="startGeneration()"
-      >重新生成</button>
+      >重新生成</AppButton>
     </div>
 
     <div v-if="syncError" class="config-generation__warning" role="alert">
       <span>任务状态暂时无法更新，已保留上次进度。</span>
-      <button type="button" name="重新同步" @click="configStore.jobId !== null && jobStore.refresh(configStore.jobId)">重新同步</button>
+      <AppButton name="重新同步" variant="secondary" @click="configStore.jobId !== null && jobStore.refresh(configStore.jobId)">重新同步</AppButton>
     </div>
     <div v-if="editorError" class="config-generation__warning" role="alert">
       <span>{{ editorError }}</span>
-      <button v-if="job" type="button" name="重新读取评分依据" @click="reloadEditor(job)">重新读取评分依据</button>
+      <AppButton v-if="job" name="重新读取评分依据" variant="secondary" @click="reloadEditor(job)">重新读取评分依据</AppButton>
     </div>
     <div v-if="requestError || submissionUnknown" class="config-generation__error" role="alert">
       <span>{{ requestError || '有一次生成类请求的结果尚未确认。' }}</span>
-      <button
+      <AppButton
         v-if="submissionUnknown"
-        type="button"
         name="重新核对生成任务"
+        variant="secondary"
         :disabled="submitting"
         @click="reconcileUnknownSubmission"
-      >重新核对</button>
+      >重新核对</AppButton>
     </div>
   </section>
 </template>
@@ -950,10 +949,8 @@ watch(
 .config-generation__link { min-height: auto; padding: 0; border: 0; background: transparent; color: var(--color-accent); }
 .config-generation__candidate-note { margin: var(--space-2) 0 0; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
 .config-generation__failure-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
-.config-generation__primary,
-.config-generation__secondary,
-.config-generation__partial button,
-.config-generation__warning button { min-height: var(--control-height-default); padding-inline: var(--space-4); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); color: var(--color-text-primary); }
+.config-generation__partial button:not(.app-button),
+.config-generation__warning button:not(.app-button) { min-height: var(--control-height-default); padding-inline: var(--space-4); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); color: var(--color-text-primary); }
 .config-generation__primary { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-primary-foreground); font-weight: var(--font-weight-medium); }
 .config-generation__primary:hover:not(:disabled) { background: var(--color-accent-hover); }
 button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }

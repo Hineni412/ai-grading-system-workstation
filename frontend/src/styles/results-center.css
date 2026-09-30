@@ -84,22 +84,10 @@
 }
 
 .results-export-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-height: var(--control-height-small, 30px);
-  padding: 0 var(--space-2);
-  border: var(--border-width) solid var(--color-border-strong);
-  border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--foreground);
-  font-size: var(--font-size-dense);
-  cursor: pointer;
   white-space: nowrap;
 }
 
-.results-export-toggle[data-state='open'],
-.results-export-toggle:hover {
+.results-export-toggle[data-state='open'] {
   border-color: var(--color-accent);
   color: var(--color-accent);
 }

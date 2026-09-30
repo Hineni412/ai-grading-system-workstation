@@ -713,14 +713,17 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
         </nav>
         <PopoverRoot v-model:open="exportOpen">
           <PopoverTrigger as-child>
-            <button
-              type="button"
+            <AppButton
+              variant="secondary"
+              size="sm"
               class="results-export-toggle"
               aria-label="导出文件"
             >
-              <Download :size="14" :stroke-width="2" aria-hidden="true" />
+              <template #leading>
+                <Download :size="14" :stroke-width="2" aria-hidden="true" />
+              </template>
               导出
-            </button>
+            </AppButton>
           </PopoverTrigger>
           <PopoverPortal>
             <PopoverContent
@@ -779,7 +782,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           role="alert"
         >
           <span>当前显示上次成功读取的成绩，最新数据暂时无法取得。</span>
-          <button type="button" @click="refresh">重新加载</button>
+          <AppButton variant="secondary" @click="refresh">重新加载</AppButton>
         </div>
 
         <div v-if="results.students.length === 0" class="results-state-panel">
