@@ -450,6 +450,7 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
                 "source_id",
                 "source_revision",
                 "sync_to_question_bank",
+                "curriculum_volume_id",
             )
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}

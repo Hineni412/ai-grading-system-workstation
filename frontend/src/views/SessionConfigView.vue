@@ -438,10 +438,24 @@ async function regenerateEditorQuestions(
   const sessionId = configStore.sessionId
   const generationContext = configStore.captureGenerationContext()
   const requestToken = createClientRequestToken()
+  const generationJobs = Object.values(jobStore.jobs)
+    .filter((record) => record.job_type === 'config_generation'
+      && record.payload.session_id === sessionId
+      && String(record.payload.curriculum_volume_id ?? '').trim())
+  const generationJob = generationJobs
+    .sort((left, right) => right.id - left.id)[0]
+  const curriculumVolumeId = String(
+    generationJob?.payload?.curriculum_volume_id ?? '',
+  ).trim()
+  if (!curriculumVolumeId) {
+    regenerationError.value = '缺少题库科目选择，无法重新生成。请先用“分析并入库”生成评分依据。'
+    return
+  }
+
   let request: ConfigGenerationRequest
   try {
     request = {
-      ...configStore.sourceRequest('batched', false),
+      ...configStore.sourceRequest('batched', true, curriculumVolumeId),
       client_request_token: requestToken,
     }
   } catch {
@@ -450,7 +464,8 @@ async function regenerateEditorQuestions(
   }
   request.regenerate_question_ids = [...targetedQuestionIds]
   request.base_revision = configStore.editor?.revision
-  request.sync_to_question_bank = false
+  request.sync_to_question_bank = true
+  request.curriculum_volume_id = curriculumVolumeId
   if (!configStore.markJobSubmissionPending(requestToken, 'generate', 'batched')) return
   const previousScoreReviewRequirements = new Set(scoreReviewRequiredQuestions.value)
   if (requireManualScoreReview) {

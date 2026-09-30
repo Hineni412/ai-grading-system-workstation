@@ -6,7 +6,6 @@ from .ai_diagnostics import (
     AiDiagnosticSummary,
 )
 from .config import (
-    ConfigGenerationRequest,
     ConfigGenerationRetryRequest,
     ConfigQuestionPreviewResponse,
     ConfigSourceResponse,
@@ -141,7 +140,6 @@ __all__ = [
     "PersonalizedRecommendationDraftResponse",
     "PersonalizedRecommendationEditRequest",
     "QuestionBankSyncRequest",
-    "ConfigGenerationRequest",
     "ConfigGenerationRetryRequest",
     "ConfigQuestionPreviewResponse",
     "ConfigSourceResponse",

@@ -800,6 +800,51 @@ class DeferredCombinedAnalysisBundle:
         object.__setattr__(self, "operation_id", operation)
         object.__setattr__(self, "curriculum_volume_id", volume_id)
 
+    def filtered(
+        self,
+        source_refs: Sequence[str],
+    ) -> "DeferredCombinedAnalysisBundle":
+        """Return the sub-bundle covering only the selected source refs."""
+        wanted = {
+            str(reference or "").strip()
+            for reference in source_refs
+            if str(reference or "").strip()
+        }
+        fingerprints = tuple(
+            (reference, fingerprint)
+            for reference, fingerprint in self.source_fingerprints
+            if reference in wanted
+        )
+        if len(fingerprints) != len(wanted):
+            raise ValueError("filtered analysis refs are outside the bundle scope")
+        return DeferredCombinedAnalysisBundle(
+            operation_id=self.operation_id,
+            curriculum_volume_id=self.curriculum_volume_id,
+            items=tuple(
+                item
+                for item in self.items
+                if item.source_question_ref in wanted
+            ),
+            failures=tuple(
+                item
+                for item in self.failures
+                if item.source_question_ref in wanted
+            ),
+            requests=tuple(
+                request
+                for request in self.requests
+                if set(request.source_question_refs).issubset(wanted)
+            ),
+            source_fingerprints=fingerprints,
+            input_fingerprint=_hash_payload(
+                {
+                    "contract": "combined-v3-memory",
+                    "curriculum_volume_id": self.curriculum_volume_id,
+                    "sources": fingerprints,
+                }
+            ),
+        )
+
     @property
     def status(self) -> str:
         latest_request_status = {
@@ -1467,6 +1512,142 @@ class InMemoryCombinedQuestionAnalysisModule:
             checkpoint=checkpoint,
             projection="training_criteria",
             preserved_items_by_ref=previous_items,
+        )
+
+    def regenerate_selected(
+        self,
+        previous: DeferredCombinedAnalysisBundle,
+        *,
+        sources: Sequence[ConfigQuestionAnalysisSource],
+        curriculum_volume_id: str,
+        source_refs: Sequence[str],
+        reused_items: Mapping[
+            str, DeferredCombinedAnalysisItem | DeferredAnalysisFailure
+        ]
+        | None = None,
+        checkpoint: Callable[[DeferredCombinedAnalysisBundle], None] | None = None,
+    ) -> DeferredCombinedAnalysisBundle:
+        """Re-run fresh analysis requests for selected refs, preserving the rest.
+
+        Unlike :meth:`reanalyze_selected` the selected sources are sent as
+        new physical requests without a repair context, and refs missing
+        from the previous bundle simply extend its scope. Every untouched
+        item and failure is preserved verbatim.
+        """
+
+        clean_operation, volume_id, normalized = _normalize_sources(
+            previous.operation_id,
+            curriculum_volume_id,
+            sources,
+        )
+        if volume_id != previous.curriculum_volume_id:
+            raise ValueError("deferred retry curriculum volume changed")
+        current_fingerprints = tuple(
+            (
+                item.source_question_ref,
+                solution_evidence_source_content_hash(item.question),
+            )
+            for item in normalized
+        )
+        current_fingerprint_map = dict(current_fingerprints)
+        if any(
+            current_fingerprint_map.get(reference) != fingerprint
+            for reference, fingerprint in previous.source_fingerprints
+        ):
+            raise ValueError("deferred retry input changed")
+        requested = tuple(str(value or "").strip() for value in source_refs)
+        if (
+            not requested
+            or any(not value for value in requested)
+            or len(set(requested)) != len(requested)
+        ):
+            raise ValueError("source_refs must be a non-empty unique sequence")
+        selected_refs = set(requested)
+        if any(
+            reference not in current_fingerprint_map
+            for reference in selected_refs
+        ):
+            raise ValueError("selected analysis source is unavailable")
+        reused = dict(reused_items or {})
+        if reused:
+            invalid = sorted(
+                reference
+                for reference, item in reused.items()
+                if reference not in selected_refs
+                or item.source_question_ref != reference
+                or (
+                    isinstance(item, DeferredCombinedAnalysisItem)
+                    and (
+                        item.reused_from_question_id is None
+                        or item.curriculum_volume_id != volume_id
+                        or item.operation_id != clean_operation
+                    )
+                )
+                or (
+                    isinstance(item, DeferredAnalysisFailure)
+                    and item.category
+                    not in {
+                        "duplicate_analysis_missing",
+                        "duplicate_content_uncertain",
+                    }
+                )
+            )
+            if invalid:
+                raise ValueError(
+                    "reused analysis items must match selected sources"
+                )
+        selected = tuple(
+            item
+            for item in normalized
+            if item.source_question_ref in selected_refs
+            and item.source_question_ref not in reused
+        )
+        scoped_refs = {
+            reference for reference, _fingerprint in previous.source_fingerprints
+        } | selected_refs
+        scoped_fingerprints = tuple(
+            pair
+            for pair in current_fingerprints
+            if pair[0] in scoped_refs
+        )
+        return self._run(
+            operation_id=clean_operation,
+            curriculum_volume_id=volume_id,
+            selected_sources=selected,
+            source_fingerprints=scoped_fingerprints,
+            input_fingerprint=_hash_payload(
+                {
+                    "contract": "combined-v3-memory",
+                    "curriculum_volume_id": volume_id,
+                    "sources": scoped_fingerprints,
+                }
+            ),
+            base_items=tuple(
+                item
+                for item in previous.items
+                if item.source_question_ref not in selected_refs
+            )
+            + tuple(
+                reused[item.source_question_ref]
+                for item in normalized
+                if item.source_question_ref in selected_refs
+                and isinstance(
+                    reused.get(item.source_question_ref),
+                    DeferredCombinedAnalysisItem,
+                )
+            ),
+            base_failures=tuple(
+                item
+                for item in previous.failures
+                if item.source_question_ref not in selected_refs
+            )
+            + tuple(
+                item
+                for item in reused.values()
+                if isinstance(item, DeferredAnalysisFailure)
+            ),
+            base_requests=previous.requests,
+            checkpoint=checkpoint,
         )
 
     def resume_interrupted(

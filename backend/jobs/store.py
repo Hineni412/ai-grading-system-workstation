@@ -1391,6 +1391,8 @@ class JobStore:
         source_id: str,
         source_revision: str,
         generation_mode: str,
+        modes: frozenset[str] = frozenset({"generate", "retry"}),
+        exclude_job_id: int | None = None,
     ) -> JobRecord | None:
         clean_session_id = int(session_id)
         clean_source_id = str(source_id or "").strip()
@@ -1410,6 +1412,10 @@ class JobStore:
             ).fetchall()
         for row in rows:
             record = _job_record(row)
+            if exclude_job_id is not None and int(record.id) == int(
+                exclude_job_id
+            ):
+                continue
             payload = record.payload
             try:
                 payload_session_id = int(payload.get("session_id") or 0)
@@ -1417,7 +1423,7 @@ class JobStore:
                 continue
             if (
                 payload_session_id == clean_session_id
-                and payload.get("mode") in {"generate", "retry"}
+                and payload.get("mode") in modes
                 and payload.get("source_id") == clean_source_id
                 and payload.get("source_revision") == clean_revision
                 and payload.get("generation_mode") == clean_mode

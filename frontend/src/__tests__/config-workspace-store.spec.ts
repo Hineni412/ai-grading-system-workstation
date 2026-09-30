@@ -154,7 +154,7 @@ describe('configuration workspace Store', () => {
   it('refuses session changes and token replacement while a write result is unknown', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)
-    expect(store.markJobSubmissionPending('1'.repeat(32), 'refine')).toBe(true)
+    expect(store.markJobSubmissionPending('1'.repeat(32), 'retry')).toBe(true)
 
     expect(store.markJobSubmissionPending('2'.repeat(32), 'generate', 'batched')).toBe(false)
     expect(store.markUploadSubmissionPending('3'.repeat(32))).toBe(false)

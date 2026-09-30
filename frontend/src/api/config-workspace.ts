@@ -7,7 +7,7 @@ export const QUESTION_TYPES = [
   'choice', 'fill_blank', 'calculation', 'proof', 'comprehensive',
 ] as const
 export type QuestionType = (typeof QUESTION_TYPES)[number]
-export type GenerationMode = 'batched' | 'whole_document'
+export type GenerationMode = 'batched'
 
 export interface QuestionDecision {
   question_id: string
@@ -222,12 +222,6 @@ export interface ConfigEditorSaveRequest {
   revision: string
   edits: ConfigEditorEdit[]
   commands: ConfigEditorCommand[]
-}
-
-export interface ConfigEditorRefineRequest {
-  revision: string
-  commands: ConfigEditorCommand[]
-  client_request_token?: string
 }
 
 export interface ConfigEditorSaveResponse extends ConfigEditorResponse {
@@ -599,7 +593,7 @@ export async function fetchLatestConfigGenerationJob(
   const id = requireSessionId(sessionId)
   const sourceId = requireSourceId(request.source_id)
   if (!/^[0-9a-f]{64}$/.test(request.source_revision)
-    || !['batched', 'whole_document'].includes(request.generation_mode)) {
+    || request.generation_mode !== 'batched') {
     throw new Error('Invalid generation lookup')
   }
   const query = new URLSearchParams({
@@ -726,11 +720,4 @@ export async function saveConfigEditor(
   })
 }
 
-export async function refineConfigEditor(
-  sessionId: number, request: ConfigEditorRefineRequest,
-): Promise<JobResponse> {
-  const id = requireSessionId(sessionId)
-  return apiClient.request(`/api/sessions/${id}/config/editor/refine`, {
-    method: 'POST', body: request, decode: decodeStrictJob,
-  })
-}
+

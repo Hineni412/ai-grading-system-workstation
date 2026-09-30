@@ -24,14 +24,7 @@ def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
     api_e2e,
 ) -> None:
     session_id = api_e2e.create_configured_session()
-    assert sorted(api_e2e.controls.fake_llm_calls) == [
-        "question:Q1",
-        "question:Q2",
-        "question:Q3",
-        "question:Q4",
-        "question:Q5",
-        "question:Q6",
-    ]
+    assert api_e2e.controls.fake_llm_calls == []
 
     config_response = api_e2e.client.get(f"/api/sessions/{session_id}/config")
     assert config_response.status_code == 200

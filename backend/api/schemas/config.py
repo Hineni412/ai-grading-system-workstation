@@ -330,61 +330,16 @@ class ConfigSourceGenerationRequest(BaseModel):
             )
         if targeted and (
             self.generation_mode != "batched"
-            or self.sync_to_question_bank
+            or not self.sync_to_question_bank
         ):
             raise ValueError(
-                "targeted regeneration must be batched and cannot sync to question bank"
+                "targeted regeneration must be batched and sync to question bank"
             )
         if self.sync_to_question_bank and self.curriculum_volume_id is None:
             raise ValueError(
                 "curriculum_volume_id is required before question analysis"
             )
         return self
-
-
-class ConfigGenerationQuestionImages(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    question: str = Field(min_length=1, max_length=28_000_000)
-    answer: str | None = Field(default=None, max_length=28_000_000)
-
-    @field_validator("question", "answer")
-    @classmethod
-    def _validate_base64_image(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        clean = str(value).strip()
-        if not clean:
-            return None
-        try:
-            decoded = base64.b64decode(clean, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ValueError("question image values must be valid base64") from exc
-        if not decoded or len(decoded) > 20 * 1024 * 1024:
-            raise ValueError("question image values must decode to 1..20971520 bytes")
-        return clean
-
-
-class ConfigGenerationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    confirmed_blocks: list[dict[str, Any]] = Field(min_length=1, max_length=500)
-    document_text: str = Field(default="", max_length=2_000_000)
-    question_images: dict[str, ConfigGenerationQuestionImages] = Field(
-        default_factory=dict,
-        max_length=500,
-    )
-    sync_to_question_bank: bool = False
-
-    @field_validator("question_images")
-    @classmethod
-    def _validate_question_image_ids(
-        cls,
-        value: dict[str, ConfigGenerationQuestionImages],
-    ) -> dict[str, ConfigGenerationQuestionImages]:
-        if any(not str(key).strip() or len(str(key)) > 100 for key in value):
-            raise ValueError("question image ids must be nonblank and at most 100 characters")
-        return value
 
 
 class ConfigGenerationRetryRequest(BaseModel):
@@ -490,17 +445,6 @@ class ConfigEditorSaveRequest(BaseModel):
     revision: str = Field(pattern=r"^[0-9a-f]{64}$")
     edits: list[ConfigEditorEditRequest] = Field(default_factory=list, max_length=1000)
     commands: list[ConfigEditorCommandRequest] = Field(default_factory=list, max_length=200)
-
-
-class ConfigEditorRefineRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
-    commands: list[ConfigEditorCommandRequest] = Field(default_factory=list, max_length=200)
-    client_request_token: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-f]{32}$",
-    )
 
 
 class ConfigEditorRowResponse(BaseModel):

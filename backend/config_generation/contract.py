@@ -1,97 +1,15 @@
 from __future__ import annotations
 
-import re
 from typing import Any, Mapping, Sequence
 
 from question_id_contract import (
     canonical_parent_id,
     canonical_part_id,
-    question_id_coordinates,
-)
-
-
-GENERATED_ID_CONTRACT_PROMPT = (
-    "编号硬约束：question_id 只能使用本次给定的 Qn；"
-    "单小问题的 part_id 必须等于父题号 Qn；"
-    "多小问题的 part_id 必须依次为 Qn(P1)、Qn(P2)…；"
-    "每个小问内部的 step_id 必须独立从 S1、S2… 顺序编号。"
-    "rubric 与 answer_key 必须使用完全相同的 question_id、part_id；"
-    "不得使用 P4_1、S4_1、Q4_1 等自创写法。"
-)
-
-TEACHER_TYPE_CONTRACT_PROMPT = (
-    "question_type_confirmed 是教师事实：输入为 true 时必须保留教师题型；"
-    "输入为 false 时必须保持 false，并结合题干、答案和图片重新判断题型；"
-    "模型不得自行把 question_type_confirmed 改为 true。"
 )
 
 
 class GeneratedOutputContractError(ValueError):
-    """模型结果无法在不猜测业务结构的前提下归一化。"""
-
-
-def align_generated_question_ids(
-    payload: dict[str, Any],
-    expected_question_ids: Sequence[str],
-) -> list[str]:
-    """Align safe parent-id aliases to one already-known batch order.
-
-    The batch plan owns question identity.  Missing or decorated spellings can
-    be repaired by position, but a recognisable *different* parent remains a
-    hard failure rather than being silently reassigned.
-    """
-
-    expected = [str(value or "").strip() for value in expected_question_ids]
-    if any(canonical_parent_id(value) != value for value in expected):
-        raise GeneratedOutputContractError("本地批次包含无效的规范题号。")
-    rubric = payload.get("rubric") if isinstance(payload, dict) else None
-    answer_key = payload.get("answer_key") if isinstance(payload, dict) else None
-    rubric_questions = rubric.get("questions") if isinstance(rubric, dict) else None
-    answer_questions = (
-        answer_key.get("questions") if isinstance(answer_key, dict) else None
-    )
-    if not isinstance(rubric_questions, list) or not isinstance(
-        answer_questions, list
-    ):
-        raise GeneratedOutputContractError(
-            "模型结果缺少 rubric.questions 或 answer_key.questions。"
-        )
-    if len(rubric_questions) != len(expected) or len(answer_questions) != len(
-        expected
-    ):
-        raise GeneratedOutputContractError(
-            "模型返回的题目数量与当前批次不一致。"
-        )
-
-    operations: list[str] = []
-    for collection_name, questions in (
-        ("rubric", rubric_questions),
-        ("answer_key", answer_questions),
-    ):
-        for index, (question, expected_id) in enumerate(
-            zip(questions, expected),
-            start=1,
-        ):
-            if not isinstance(question, dict):
-                raise GeneratedOutputContractError(
-                    f"{collection_name} 第 {index} 道题不是对象。"
-                )
-            raw = str(question.get("question_id") or "").strip()
-            resolved = _generated_parent_alias(raw)
-            if raw and resolved is None:
-                raise GeneratedOutputContractError(
-                    f"{collection_name} 的题号 {raw!r} 无法对应 {expected_id}。"
-                )
-            if resolved is not None and resolved != expected_id:
-                raise GeneratedOutputContractError(
-                    f"{collection_name} 返回了 {resolved}，当前应为 {expected_id}。"
-                )
-            if raw != expected_id:
-                operations.append(
-                    f"{collection_name}.question_id:{raw or '<missing>'}->{expected_id}"
-                )
-            question["question_id"] = expected_id
-    return operations
+    """生成结果无法在不猜测业务结构的前提下归一化。"""
 
 
 def canonicalize_new_generated_structure_ids(
@@ -194,79 +112,6 @@ def canonicalize_new_generated_structure_ids(
     return operations
 
 
-def align_score_allocation_ids(
-    score_data: dict[str, Any],
-    structure_summary: Sequence[Mapping[str, Any]],
-) -> list[str]:
-    """Repair score-allocation identifiers against the retained rubric structure."""
-
-    raw_scores = score_data.get("question_scores") if isinstance(score_data, dict) else None
-    if not isinstance(raw_scores, list) or len(raw_scores) != len(structure_summary):
-        return []
-    operations: list[str] = []
-    for index, (actual, expected) in enumerate(
-        zip(raw_scores, structure_summary),
-        start=1,
-    ):
-        if not isinstance(actual, dict):
-            return operations
-        expected_question_id = str(expected.get("question_id") or "").strip()
-        raw_question_id = str(actual.get("question_id") or "").strip()
-        resolved = _generated_parent_alias(raw_question_id)
-        if raw_question_id and resolved is None:
-            raise GeneratedOutputContractError(
-                f"统一配分第 {index} 道题号 {raw_question_id!r} 无法对应 "
-                f"{expected_question_id}。"
-            )
-        if resolved is not None and resolved != expected_question_id:
-            raise GeneratedOutputContractError(
-                f"统一配分返回了 {resolved}，当前应为 {expected_question_id}。"
-            )
-        if raw_question_id != expected_question_id:
-            operations.append(
-                "score.question_id:"
-                f"{raw_question_id or '<missing>'}->{expected_question_id}"
-            )
-        actual["question_id"] = expected_question_id
-
-        expected_parts = expected.get("parts")
-        actual_parts = actual.get("parts")
-        if not isinstance(expected_parts, list) or not isinstance(actual_parts, list):
-            continue
-        if len(expected_parts) != len(actual_parts):
-            continue
-        for actual_part, expected_part in zip(actual_parts, expected_parts):
-            if not isinstance(actual_part, dict) or not isinstance(expected_part, Mapping):
-                continue
-            expected_part_id = str(expected_part.get("part_id") or "").strip()
-            raw_part_id = str(actual_part.get("part_id") or "").strip()
-            if raw_part_id != expected_part_id:
-                operations.append(
-                    f"score.part_id:{raw_part_id or '<missing>'}->{expected_part_id}"
-                )
-            actual_part["part_id"] = expected_part_id
-            expected_steps = expected_part.get("steps")
-            actual_steps = actual_part.get("steps")
-            if not isinstance(expected_steps, list) or not isinstance(actual_steps, list):
-                continue
-            if len(expected_steps) != len(actual_steps):
-                continue
-            for actual_step, expected_step in zip(actual_steps, expected_steps):
-                if not isinstance(actual_step, dict) or not isinstance(
-                    expected_step, Mapping
-                ):
-                    continue
-                expected_step_id = str(expected_step.get("step_id") or "").strip()
-                raw_step_id = str(actual_step.get("step_id") or "").strip()
-                if raw_step_id != expected_step_id:
-                    operations.append(
-                        "score.step_id:"
-                        f"{raw_step_id or '<missing>'}->{expected_step_id}"
-                    )
-                actual_step["step_id"] = expected_step_id
-    return operations
-
-
 def attach_structure_repairs(
     payload: dict[str, Any],
     operations: Sequence[str],
@@ -310,29 +155,8 @@ def is_simple_objective_question(question: Mapping[str, Any]) -> bool:
     return isinstance(steps, list) and len(steps) == 1
 
 
-def _generated_parent_alias(raw: object) -> str | None:
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    canonical = canonical_parent_id(text)
-    if canonical is not None:
-        return canonical
-    coordinates = question_id_coordinates(text)
-    if coordinates is not None and coordinates[1] in {None, 1}:
-        return f"Q{coordinates[0]}"
-    match = re.fullmatch(r"(?:第\s*)?0*(\d+)\s*(?:题)?", text)
-    if match is None:
-        return None
-    number = int(match.group(1))
-    return f"Q{number}" if number > 0 else None
-
-
 __all__ = [
-    "GENERATED_ID_CONTRACT_PROMPT",
-    "TEACHER_TYPE_CONTRACT_PROMPT",
     "GeneratedOutputContractError",
-    "align_generated_question_ids",
-    "align_score_allocation_ids",
     "attach_structure_repairs",
     "canonicalize_new_generated_structure_ids",
     "is_simple_objective_question",

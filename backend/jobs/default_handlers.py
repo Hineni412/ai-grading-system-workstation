@@ -212,7 +212,6 @@ def register_default_job_handlers(
             ),
             upload_config_dir=resolved_upload_config_dir,
             config_generation_runner=config_generation_runner,
-            llm_client_factory=scan_llm_client_factory,
             tagging_ai_service_factory=resolved_tagging_factory,
             taxonomy_governance=resolved_taxonomy_governance,
         ),
@@ -500,7 +499,6 @@ def _build_config_generation_handler(
     mapping_output_dir: Path,
     upload_config_dir: Path,
     config_generation_runner: Callable[..., dict[str, object]],
-    llm_client_factory: Callable[[], Any],
     tagging_ai_service_factory: Callable[[], Any],
     taxonomy_governance: Any,
 ):
@@ -511,7 +509,6 @@ def _build_config_generation_handler(
             data_root=data_root,
             mapping_output_dir=mapping_output_dir,
             upload_config_dir=upload_config_dir,
-            llm_client_factory=llm_client_factory,
             question_bank_db_path=question_bank_db_path,
             tagging_ai_service_factory=tagging_ai_service_factory,
             taxonomy_governance=taxonomy_governance,

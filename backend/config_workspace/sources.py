@@ -1356,27 +1356,6 @@ class ConfigSourceService:
         mode = str(generation_mode or "").strip()
         if mode == "per_question":
             mode = "batched"
-        if mode == "whole_document":
-            if decisions or asset_decisions:
-                raise ValueError(
-                    "whole-document generation does not accept source review decisions"
-                )
-            if record.suffix == ".docx" and not record.private_document_text.strip():
-                raise ValueError("whole-document DOCX source has no readable text")
-            if record.suffix == ".pdf" and not record.private_whole_page_images:
-                raise ValueError("whole-document PDF source has no readable pages")
-            confirmed_blocks: list[dict[str, Any]] = []
-            if record.suffix == ".docx":
-                for private_block in record.private_blocks:
-                    block = copy.deepcopy(private_block)
-                    _strip_embedded_question_section_heading(block)
-                    confirmed_blocks.append(block)
-            return PreparedGenerationInput(
-                confirmed_blocks=tuple(confirmed_blocks),
-                document_text=record.private_document_text,
-                question_images={},
-                whole_page_images=record.private_whole_page_images,
-            )
         if mode != "batched":
             raise ValueError("unsupported config generation mode")
         prepared = self.apply_teacher_decisions(record, decisions, asset_decisions)

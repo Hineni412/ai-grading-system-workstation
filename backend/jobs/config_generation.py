@@ -13,14 +13,6 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from backend.repositories.access import GradingRepositoryAccess
 from backend.config_workspace.locks import session_config_lock
-from backend.config_workspace.editor import (
-    ManualPartInput,
-    ReplaceScoringUnitsCommand,
-    SplitScoringUnitCommand,
-    apply_config_editor_changes,
-    editor_identity_signature,
-    editor_part_ids,
-)
 from backend.config_workspace.publish import (
     PublishedConfig,
     load_editor_config,
@@ -56,10 +48,6 @@ from backend.config_generation.compat import (
     allocate_grading_config_scores,
     failed_grading_config_batches,
     failed_grading_config_question_ids,
-    generate_grading_config_in_batches,
-    regenerate_grading_config_questions,
-    retry_failed_grading_config_batches,
-    refine_grading_config_from_manual_structure,
 )
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_volume,
@@ -88,9 +76,7 @@ from backend.config_workspace.deferred_analysis import (
     DeferredAnalysisArtifactStore,
 )
 from backend.config_generation.normalization import (
-    normalize_generated_config_schema,
     normalize_new_generated_config_payload,
-    strip_generated_config_knowledge_fields,
 )
 from backend.config_generation.quality import (
     blocking_quality_question_ids,
@@ -99,11 +85,11 @@ from backend.config_generation.quality import (
 )
 from backend.config_generation.reference_context import build_reference_context
 from backend.config_generation.status_projection import project_question_states
-from session_manager import (
-    generate_grading_config_from_images,
-    generate_grading_config_from_text,
+from backend.config_generation.targeted import (
+    merge_question_states,
+    merge_targeted_failure_draft,
+    merge_targeted_regeneration,
 )
-
 from .manager import JobCancellationRequested, JobContext
 from .question_bank_sync import run_deferred_question_bank_intake
 from backend.exam_intake import (
@@ -113,11 +99,6 @@ from backend.exam_intake import (
     persist_intake_result,
 )
 
-
-# Compatibility names for older callers/tests. Both execute the new batched
-# implementation; no per-question request behavior remains.
-generate_grading_config_from_confirmed_blocks = generate_grading_config_in_batches
-retry_failed_grading_config_questions = retry_failed_grading_config_batches
 
 if TYPE_CHECKING:
     from .store import JobStore
@@ -140,79 +121,6 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         raise ValueError("config generation input exceeds size limit")
     filesystem = SecureRootFilesystem(path.parent)
     filesystem.write_json_atomic(path, payload)
-
-
-def stage_config_generation_input(
-    upload_config_dir: Path,
-    *,
-    session_id: int,
-    expected_rubric_path: str,
-    expected_answer_key_path: str,
-    confirmed_blocks: list[dict[str, Any]],
-    document_text: str,
-    question_images: dict[str, Any] | None,
-    generation_mode: str | None = None,
-    source_id: str | None = None,
-    source_revision: str | None = None,
-    source_suffix: str | None = None,
-    source_safe_filename: str | None = None,
-    whole_page_images: list[bytes] | None = None,
-    sync_to_question_bank: bool = False,
-) -> str:
-    input_id = uuid.uuid4().hex
-    payload: dict[str, Any] = {
-        "session_id": int(session_id),
-        "expected_rubric_path": str(expected_rubric_path),
-        "expected_answer_key_path": str(expected_answer_key_path),
-        "confirmed_blocks": confirmed_blocks,
-        "document_text": str(document_text or ""),
-        "question_images": dict(question_images or {}),
-        "sync_to_question_bank": bool(sync_to_question_bank),
-    }
-    if generation_mode is not None:
-        payload.update(
-            {
-                "generation_mode": str(generation_mode),
-                "source_id": str(source_id or ""),
-                "source_revision": str(source_revision or ""),
-                "source_suffix": str(source_suffix or ""),
-                "source_safe_filename": str(source_safe_filename or ""),
-                "whole_page_images": [
-                    base64.b64encode(bytes(image)).decode("ascii")
-                    for image in (whole_page_images or [])
-                ],
-            }
-        )
-    _write_json_atomic(
-        _input_path(upload_config_dir, input_id),
-        payload,
-    )
-    return input_id
-
-
-def stage_config_refine_input(
-    upload_config_dir: Path,
-    *,
-    session_id: int,
-    expected_rubric_path: str,
-    expected_answer_key_path: str,
-    expected_revision: str,
-    existing_payload: dict[str, Any],
-    commands: list[dict[str, Any]],
-) -> str:
-    input_id = uuid.uuid4().hex
-    _write_json_atomic(
-        _input_path(upload_config_dir, input_id),
-        {
-            "session_id": int(session_id),
-            "expected_rubric_path": str(expected_rubric_path),
-            "expected_answer_key_path": str(expected_answer_key_path),
-            "expected_revision": str(expected_revision),
-            "existing_payload": existing_payload,
-            "commands": commands,
-        },
-    )
-    return input_id
 
 
 def stage_config_source_generation_input(
@@ -341,7 +249,6 @@ def run_config_generation_job(
     context: JobContext,
     db: GradingRepositoryAccess,
     upload_config_dir: Path,
-    llm_client_factory: Callable[[], Any],
     data_root: Path | None = None,
     mapping_output_dir: Path | None = None,
     question_bank_db_path: Path | None = None,
@@ -356,7 +263,6 @@ def run_config_generation_job(
             context=context,
             db=db,
             upload_config_dir=upload_config_dir,
-            llm_client_factory=llm_client_factory,
             data_root=data_root,
             mapping_output_dir=mapping_output_dir,
             question_bank_db_path=question_bank_db_path,
@@ -444,7 +350,6 @@ def _run_config_generation_job_impl(
     context: JobContext,
     db: GradingRepositoryAccess,
     upload_config_dir: Path,
-    llm_client_factory: Callable[[], Any],
     data_root: Path | None = None,
     mapping_output_dir: Path | None = None,
     question_bank_db_path: Path | None = None,
@@ -457,11 +362,11 @@ def _run_config_generation_job_impl(
     if session is None or bool(int(session.get("is_deleted") or 0)):
         raise ValueError("grading session is unavailable")
     mode = str(context.payload.get("mode") or "").strip()
-    if mode not in {"generate", "retry", "refine", "regenerate_questions"}:
+    if mode not in {"generate", "retry", "regenerate_questions"}:
         raise ValueError("unsupported config generation mode")
 
     existing_payload: dict[str, Any] | None = None
-    if mode in {"generate", "refine", "regenerate_questions"}:
+    if mode in {"generate", "regenerate_questions"}:
         input_id = str(context.payload.get("input_id") or "")
     else:
         source_job_id = _required_int(context.payload, "source_job_id")
@@ -543,6 +448,10 @@ def _run_config_generation_job_impl(
         context.payload.get("sync_to_question_bank")
         or inputs.get("sync_to_question_bank")
     )
+    if not sync_to_question_bank:
+        raise ValueError(
+            "旧的评分依据生成方式已停用，请用“分析并入库”重新生成。"
+        )
     curriculum_volume_id = str(
         inputs.get("curriculum_volume_id") or ""
     ).strip()
@@ -565,18 +474,6 @@ def _run_config_generation_job_impl(
         loaded = load_editor_config(db, session_id)
         if loaded.revision != str(inputs.get("expected_revision") or ""):
             raise ValueError("session config changed before regeneration started")
-    if mode == "refine":
-        return _run_refine_config_job(
-            context=context,
-            db=db,
-            upload_config_dir=Path(upload_config_dir),
-            llm_client_factory=llm_client_factory,
-            inputs=inputs,
-            session_id=session_id,
-            expected_rubric_path=expected_rubric_path,
-            expected_answer_key_path=expected_answer_key_path,
-            mapping_output_dir=mapping_output_dir,
-        )
     generation_mode = str(
         context.payload.get("generation_mode")
         or inputs.get("generation_mode")
@@ -584,10 +481,10 @@ def _run_config_generation_job_impl(
     ).strip()
     if generation_mode == "per_question":
         generation_mode = "batched"
-    if generation_mode not in {"batched", "whole_document"}:
-        raise ValueError("unsupported config generation mode")
-    if mode == "retry" and generation_mode != "batched":
-        raise ValueError("whole-document config generation is not retryable")
+    if generation_mode != "batched":
+        raise ValueError(
+            "旧的评分依据生成方式已停用，请用“分析并入库”重新生成。"
+        )
     staged_generation_mode = inputs.get("generation_mode")
     staged_mode = str(staged_generation_mode or "").strip()
     if staged_mode == "per_question":
@@ -684,14 +581,10 @@ def _run_config_generation_job_impl(
         confirmed_blocks = list(prepared.confirmed_blocks)
         question_images = prepared.question_images
         document_text = prepared.document_text
-        whole_page_images = list(prepared.whole_page_images)
-        source_suffix = source_record.suffix
     else:
         confirmed_blocks = inputs.get("confirmed_blocks")
         question_images = inputs.get("question_images")
         document_text = str(inputs.get("document_text") or "")
-        whole_page_images = _decode_whole_page_images(inputs.get("whole_page_images"))
-        source_suffix = str(inputs.get("source_suffix") or "")
     if not isinstance(confirmed_blocks, list) or (
         generation_mode == "batched" and not confirmed_blocks
     ):
@@ -729,23 +622,37 @@ def _run_config_generation_job_impl(
     analysis_artifact: DeferredAnalysisArtifact | None = None
     intake_classified: dict[str, Any] | None = None
     local_quality_retry_refs: tuple[str, ...] = ()
-    evidence_flow = (
-        sync_to_question_bank
-        and source_record is not None
-        and generation_mode == "batched"
-        and mode in {"generate", "retry"}
-        and tagging_ai_service_factory is not None
-        and taxonomy_governance is not None
-    )
-    if evidence_flow:
-        evidence_reported_count = 0
-        analysis_artifact_id = str(
-            inputs.get("analysis_artifact_id") or ""
-        ).strip().casefold()
-        if not _INPUT_ID.fullmatch(analysis_artifact_id):
-            raise ValueError("deferred question analysis identity is invalid")
-        artifact_store = DeferredAnalysisArtifactStore(Path(upload_config_dir))
-        previous_artifact = (
+    targeted_mode = mode == "regenerate_questions"
+    targeted_source_refs: tuple[str, ...] = ()
+    intake_artifact: DeferredAnalysisArtifact | None = None
+    if (
+        source_record is None
+        or tagging_ai_service_factory is None
+        or taxonomy_governance is None
+    ):
+        raise ValueError(
+            "旧的评分依据生成方式已停用，请用“分析并入库”重新生成。"
+        )
+    evidence_reported_count = 0
+    analysis_artifact_id = str(
+        inputs.get("analysis_artifact_id") or ""
+    ).strip().casefold()
+    if not _INPUT_ID.fullmatch(analysis_artifact_id):
+        raise ValueError("deferred question analysis identity is invalid")
+    artifact_store = DeferredAnalysisArtifactStore(Path(upload_config_dir))
+    previous_artifact = (
+        _load_previous_analysis_artifact(
+            context=context,
+            artifact_store=artifact_store,
+            upload_config_dir=Path(upload_config_dir),
+            session_id=session_id,
+            source_id=source_id,
+            source_revision=source_revision,
+            curriculum_volume_id=curriculum_volume_id,
+            current_job_id=int(context.job_id),
+        )
+        if targeted_mode
+        else (
             artifact_store.load(
                 analysis_artifact_id,
                 session_id=session_id,
@@ -756,103 +663,137 @@ def _run_config_generation_job_impl(
             if artifact_store.exists(analysis_artifact_id)
             else None
         )
-        retry_source_refs = (
-            _retry_source_refs(context.payload)
-            if mode == "retry"
-            else None
-        )
-        local_quality_retry_refs = _local_quality_retry_source_refs(
+    )
+    retry_source_refs = (
+        _retry_source_refs(context.payload)
+        if mode == "retry"
+        else None
+    )
+    local_quality_retry_refs = (
+        _local_quality_retry_source_refs(
             existing_payload,
             retry_source_refs,
         )
+        if mode == "retry"
+        else ()
+    )
 
-        def evidence_checkpoint(bundle: DeferredCombinedAnalysisBundle) -> None:
-            nonlocal evidence_artifact_hash, evidence_reported_count
-            artifact = artifact_store.save(
-                artifact_id=analysis_artifact_id,
-                session_id=session_id,
-                source_id=source_id,
-                source_revision=source_revision,
-                curriculum_volume_id=curriculum_volume_id,
-                bundle=bundle,
+    def evidence_checkpoint(bundle: DeferredCombinedAnalysisBundle) -> None:
+        nonlocal evidence_artifact_hash, evidence_reported_count
+        artifact = artifact_store.save(
+            artifact_id=analysis_artifact_id,
+            session_id=session_id,
+            source_id=source_id,
+            source_revision=source_revision,
+            curriculum_volume_id=curriculum_volume_id,
+            bundle=bundle,
+        )
+        evidence_artifact_hash = artifact.content_hash
+        checkpoint(
+            _deferred_analysis_draft(
+                bundle,
+                exam_title=str(session.get("name") or "待命名试卷"),
             )
-            evidence_artifact_hash = artifact.content_hash
-            checkpoint(
-                _deferred_analysis_draft(
-                    bundle,
-                    exam_title=str(session.get("name") or "待命名试卷"),
-                )
-            )
-            running_refs = set(bundle.running_source_refs)
-            completed_refs = (
-                {item.source_question_ref for item in bundle.items}
-                | {
+        )
+        running_refs = set(bundle.running_source_refs)
+        completed_refs = (
+            {item.source_question_ref for item in bundle.items}
+            | {
+                item.source_question_ref
+                for item in bundle.failures
+            }
+            | set(bundle.uncertain_source_refs)
+        ) - running_refs
+        completed_count = len(completed_refs)
+        total_count = len(bundle.source_fingerprints)
+        if completed_count > evidence_reported_count and total_count > 0:
+            evidence_reported_count = completed_count
+            succeeded_count = len(
+                {
                     item.source_question_ref
-                    for item in bundle.failures
+                    for item in bundle.items
+                    if item.source_question_ref in completed_refs
                 }
-                | set(bundle.uncertain_source_refs)
-            ) - running_refs
-            completed_count = len(completed_refs)
-            total_count = len(bundle.source_fingerprints)
-            if completed_count > evidence_reported_count and total_count > 0:
-                evidence_reported_count = completed_count
-                succeeded_count = len(
-                    {
-                        item.source_question_ref
-                        for item in bundle.items
-                        if item.source_question_ref in completed_refs
-                    }
-                )
-                pending_count = max(0, completed_count - succeeded_count)
-                context.report(
-                    0.08 + 0.76 * (completed_count / total_count),
-                    "question_analysis",
-                    (
-                        f"题目分析已完成 {completed_count}/{total_count} 题；"
-                        f"成功 {succeeded_count} 题，待处理 {pending_count} 题。"
-                    ),
-                )
+            )
+            pending_count = max(0, completed_count - succeeded_count)
+            context.report(
+                0.08 + 0.76 * (completed_count / total_count),
+                "question_analysis",
+                (
+                    f"题目分析已完成 {completed_count}/{total_count} 题；"
+                    f"成功 {succeeded_count} 题，待处理 {pending_count} 题。"
+                ),
+            )
 
-        if (
-            previous_artifact is not None
-            and previous_artifact.bundle.status == "succeeded"
-            and not local_quality_retry_refs
-        ):
-            analysis_bundle = previous_artifact.bundle
-            evidence_artifact_hash = previous_artifact.content_hash
-            analysis_artifact = previous_artifact
-        else:
-            tagging_service = tagging_ai_service_factory()
-            sources = _config_analysis_sources(
-                confirmed_blocks,
-                question_images or {},
-                curriculum_volume_id=curriculum_volume_id,
-                tagging_service=tagging_service,
-                volume=volume,
-            )
-            gateway = OpenAICombinedAnalysisGateway(
-                protocol_adapter=tagging_service._protocol_adapter(),
-                model_name=str(tagging_service.model),
-            )
-            analysis_module = InMemoryCombinedQuestionAnalysisModule(
-                gateway=gateway,
-                taxonomy_governance=taxonomy_governance,
-            )
-        if previous_artifact is None:
-            if mode == "retry" and existing_payload is not None:
-                raise ValueError(
-                    "题目分析断点已丢失；为避免重复调用模型，"
-                    "本次未自动重新分析全部题目。"
-                )
+    if (
+        not targeted_mode
+        and previous_artifact is not None
+        and previous_artifact.bundle.status == "succeeded"
+        and not local_quality_retry_refs
+    ):
+        analysis_bundle = previous_artifact.bundle
+        evidence_artifact_hash = previous_artifact.content_hash
+        analysis_artifact = previous_artifact
+    else:
+        tagging_service = tagging_ai_service_factory()
+        sources = _config_analysis_sources(
+            confirmed_blocks,
+            question_images or {},
+            curriculum_volume_id=curriculum_volume_id,
+            tagging_service=tagging_service,
+            volume=volume,
+        )
+        gateway = OpenAICombinedAnalysisGateway(
+            protocol_adapter=tagging_service._protocol_adapter(),
+            model_name=str(tagging_service.model),
+        )
+        analysis_module = InMemoryCombinedQuestionAnalysisModule(
+            gateway=gateway,
+            taxonomy_governance=taxonomy_governance,
+        )
+    if targeted_mode:
+        targeted_source_refs = _targeted_source_refs(inputs, sources)
+        targeted_ref_set = set(targeted_source_refs)
+        selected_sources = tuple(
+            item
+            for item in sources
+            if item.source_question_ref in targeted_ref_set
+        )
+        previous_bundle = (
+            previous_artifact.bundle
+            if previous_artifact is not None
+            else None
+        )
+        if previous_bundle is not None and previous_bundle.running_source_refs:
             context.report(
                 0.08,
                 "question_analysis",
-                f"正在分析题目：0/{len(sources)}。",
+                "正在核对上次中断的题目分析结果。",
+            )
+            previous_bundle = analysis_module.resume_interrupted(
+                previous_bundle,
+                sources=_scoped_analysis_sources(
+                    sources,
+                    {
+                        ref
+                        for ref, _fingerprint in (
+                            previous_bundle.source_fingerprints
+                        )
+                    },
+                ),
+                curriculum_volume_id=curriculum_volume_id,
+                checkpoint=evidence_checkpoint,
+            )
+        if previous_bundle is None:
+            context.report(
+                0.08,
+                "question_analysis",
+                f"正在分析题目：0/{len(selected_sources)}。",
             )
             analysis_bundle = analysis_module.analyze(
                 operation_id=f"config:{session_id}:{analysis_artifact_id}",
                 curriculum_volume_id=curriculum_volume_id,
-                sources=sources,
+                sources=selected_sources,
                 reused_items=_reused_analysis_items(
                     (
                         Path(question_bank_db_path)
@@ -864,228 +805,341 @@ def _run_config_generation_job_impl(
                         if data_root is not None
                         else _infer_data_root(Path(db.db_path))
                     ),
-                    sources=sources,
+                    sources=selected_sources,
                     operation_id=f"config:{session_id}:{analysis_artifact_id}",
                     decisions=decisions,
                 ),
                 checkpoint=evidence_checkpoint,
             )
-        elif previous_artifact.bundle.running_source_refs:
-            context.report(
-                0.08,
-                "question_analysis",
-                "正在核对上次中断的题目分析结果。",
-            )
-            analysis_bundle = analysis_module.resume_interrupted(
-                previous_artifact.bundle,
-                sources=sources,
-                curriculum_volume_id=curriculum_volume_id,
-                checkpoint=evidence_checkpoint,
-            )
-        elif local_quality_retry_refs:
-            context.report(
-                0.08,
-                "question_analysis",
-                "正在重新分析本地结构检查未通过的题目。",
-            )
-            analysis_bundle = analysis_module.reanalyze_selected(
-                previous_artifact.bundle,
-                sources=sources,
-                curriculum_volume_id=curriculum_volume_id,
-                source_refs=local_quality_retry_refs,
-                validation_issues_by_ref=_quality_issues_by_ref(
-                    existing_payload,
-                    local_quality_retry_refs,
-                ),
-                repair_attempts_by_ref=_quality_repair_attempts_by_ref(
-                    existing_payload,
-                    local_quality_retry_refs,
-                ),
-                checkpoint=evidence_checkpoint,
-            )
-        elif previous_artifact.bundle.status != "succeeded":
-            context.report(
-                0.08,
-                "question_analysis",
-                "正在重试教师选定的未完成题目。",
-            )
-            analysis_bundle = analysis_module.retry_failed(
-                previous_artifact.bundle,
-                sources=sources,
-                curriculum_volume_id=curriculum_volume_id,
-                retry_source_refs=retry_source_refs,
-                retry_uncertain=bool(
-                    context.payload.get("confirm_uncertain_retry")
-                ),
-                checkpoint=evidence_checkpoint,
-            )
-        artifact = artifact_store.save(
-            artifact_id=analysis_artifact_id,
-            session_id=session_id,
-            source_id=source_id,
-            source_revision=source_revision,
-            curriculum_volume_id=curriculum_volume_id,
-            bundle=analysis_bundle,
-        )
-        evidence_artifact_hash = artifact.content_hash
-        analysis_artifact = artifact
-        analysis_reused_refs = [
-            item.source_question_ref
-            for item in analysis_bundle.items
-            if item.reused_from_question_id is not None
-        ]
-        if analysis_bundle.status != "succeeded":
-            payload = _deferred_analysis_draft(
-                analysis_bundle,
-                exam_title=str(session.get("name") or "待命名试卷"),
-            )
-            checkpoint(payload)
         else:
-            structure = analysis_bundle.compose_generated_config(
-                exam_title=str(session.get("name") or "待命名试卷"),
+            previous_scope = {
+                ref
+                for ref, _fingerprint in previous_bundle.source_fingerprints
+            }
+            prior_success = {
+                item.source_question_ref
+                for item in previous_bundle.items
+            }
+            issues_by_ref = _targeted_quality_issue_map(
+                existing_payload,
+                targeted_source_refs,
             )
-            structure_meta = structure.setdefault("meta", {})
-            if isinstance(structure_meta, dict):
-                structure_meta["analysis_reused_question_ids"] = list(
-                    analysis_reused_refs
+            repairable = targeted_ref_set.issubset(prior_success) and all(
+                issues_by_ref.get(ref) for ref in targeted_source_refs
+            )
+            if repairable:
+                context.report(
+                    0.08,
+                    "question_analysis",
+                    "正在重新分析本地结构检查未通过的题目。",
                 )
-            normalize_new_generated_config_payload(structure)
-            refresh_generated_config_quality_warnings(structure)
-            if blocking_quality_question_ids(structure):
-                # Do not spend a second model request allocating scores for a
-                # structure that is already known to be invalid.  The exact
-                # evidence issues are persisted below and become the repair
-                # contract for the next targeted request.
-                payload = structure
+                analysis_bundle = analysis_module.reanalyze_selected(
+                    previous_bundle,
+                    sources=_scoped_analysis_sources(
+                        sources,
+                        previous_scope,
+                    ),
+                    curriculum_volume_id=curriculum_volume_id,
+                    source_refs=list(targeted_source_refs),
+                    validation_issues_by_ref=issues_by_ref,
+                    repair_attempts_by_ref=_quality_repair_attempts_by_ref(
+                        existing_payload,
+                        targeted_source_refs,
+                    ),
+                    checkpoint=evidence_checkpoint,
+                )
             else:
-                intake_classified = None
-                if sync_to_question_bank:
-                    persist_intake_required(db, session_id)
-                    intake_classified = _run_exam_paper_intake(
-                        context=context,
-                        db=db,
-                        session_id=session_id,
-                        analysis_artifact=analysis_artifact,
-                        source_record=source_record,
-                        question_bank_db_path=question_bank_db_path,
-                        data_root=data_root,
-                        tagging_ai_service_factory=tagging_ai_service_factory,
-                        taxonomy_governance=taxonomy_governance,
-                        question_bank_intake_runner=question_bank_intake_runner,
-                        source_service=source_service,
-                        asset_decisions=asset_decisions,
-                        type_overrides=_intake_type_overrides(confirmed_blocks),
-                        confirmed_duplicates=_intake_confirmed_duplicates(decisions),
+                context.report(
+                    0.08,
+                    "question_analysis",
+                    (
+                        "正在重新生成教师选定的 "
+                        f"{len(targeted_source_refs)} 题。"
+                    ),
+                )
+                analysis_bundle = analysis_module.regenerate_selected(
+                    previous_bundle,
+                    sources=_scoped_analysis_sources(
+                        sources,
+                        previous_scope | targeted_ref_set,
+                    ),
+                    curriculum_volume_id=curriculum_volume_id,
+                    source_refs=list(targeted_source_refs),
+                    reused_items=_reused_analysis_items(
+                        (
+                            Path(question_bank_db_path)
+                            if question_bank_db_path is not None
+                            else None
+                        ),
+                        data_root=(
+                            Path(data_root)
+                            if data_root is not None
+                            else _infer_data_root(Path(db.db_path))
+                        ),
+                        sources=selected_sources,
+                        operation_id=(
+                            f"config:{session_id}:{analysis_artifact_id}"
+                        ),
+                        decisions=decisions,
+                    ),
+                    checkpoint=evidence_checkpoint,
+                )
+    elif previous_artifact is None:
+        if mode == "retry" and existing_payload is not None:
+            raise ValueError(
+                "题目分析断点已丢失；为避免重复调用模型，"
+                "本次未自动重新分析全部题目。"
+            )
+        context.report(
+            0.08,
+            "question_analysis",
+            f"正在分析题目：0/{len(sources)}。",
+        )
+        analysis_bundle = analysis_module.analyze(
+            operation_id=f"config:{session_id}:{analysis_artifact_id}",
+            curriculum_volume_id=curriculum_volume_id,
+            sources=sources,
+            reused_items=_reused_analysis_items(
+                (
+                    Path(question_bank_db_path)
+                    if question_bank_db_path is not None
+                    else None
+                ),
+                data_root=(
+                    Path(data_root)
+                    if data_root is not None
+                    else _infer_data_root(Path(db.db_path))
+                ),
+                sources=sources,
+                operation_id=f"config:{session_id}:{analysis_artifact_id}",
+                decisions=decisions,
+            ),
+            checkpoint=evidence_checkpoint,
+        )
+    elif previous_artifact.bundle.running_source_refs:
+        context.report(
+            0.08,
+            "question_analysis",
+            "正在核对上次中断的题目分析结果。",
+        )
+        analysis_bundle = analysis_module.resume_interrupted(
+            previous_artifact.bundle,
+            sources=sources,
+            curriculum_volume_id=curriculum_volume_id,
+            checkpoint=evidence_checkpoint,
+        )
+    elif local_quality_retry_refs:
+        context.report(
+            0.08,
+            "question_analysis",
+            "正在重新分析本地结构检查未通过的题目。",
+        )
+        analysis_bundle = analysis_module.reanalyze_selected(
+            previous_artifact.bundle,
+            sources=sources,
+            curriculum_volume_id=curriculum_volume_id,
+            source_refs=local_quality_retry_refs,
+            validation_issues_by_ref=_quality_issues_by_ref(
+                existing_payload,
+                local_quality_retry_refs,
+            ),
+            repair_attempts_by_ref=_quality_repair_attempts_by_ref(
+                existing_payload,
+                local_quality_retry_refs,
+            ),
+            checkpoint=evidence_checkpoint,
+        )
+    elif previous_artifact.bundle.status != "succeeded":
+        context.report(
+            0.08,
+            "question_analysis",
+            "正在重试教师选定的未完成题目。",
+        )
+        analysis_bundle = analysis_module.retry_failed(
+            previous_artifact.bundle,
+            sources=sources,
+            curriculum_volume_id=curriculum_volume_id,
+            retry_source_refs=retry_source_refs,
+            retry_uncertain=bool(
+                context.payload.get("confirm_uncertain_retry")
+            ),
+            checkpoint=evidence_checkpoint,
+        )
+    artifact = artifact_store.save(
+        artifact_id=analysis_artifact_id,
+        session_id=session_id,
+        source_id=source_id,
+        source_revision=source_revision,
+        curriculum_volume_id=curriculum_volume_id,
+        bundle=analysis_bundle,
+    )
+    evidence_artifact_hash = artifact.content_hash
+    analysis_artifact = artifact
+    exam_title = str(session.get("name") or "待命名试卷")
+    compose_bundle = analysis_bundle
+    intake_artifact = artifact
+    if targeted_mode:
+        # Intake/composition run against the targeted sub-bundle while the
+        # persisted artifact keeps the union scope for later regenerations.
+        targeted_bundle = analysis_bundle.filtered(targeted_source_refs)
+        compose_bundle = targeted_bundle
+        intake_artifact = DeferredAnalysisArtifact(
+            artifact_id=artifact.artifact_id,
+            session_id=artifact.session_id,
+            source_id=artifact.source_id,
+            source_revision=artifact.source_revision,
+            curriculum_volume_id=artifact.curriculum_volume_id,
+            bundle=targeted_bundle,
+            content_hash=artifact.content_hash,
+        )
+    analysis_reused_refs = [
+        item.source_question_ref
+        for item in compose_bundle.items
+        if item.reused_from_question_id is not None
+    ]
+    if compose_bundle.status != "succeeded":
+        failure_draft = _deferred_analysis_draft(
+            compose_bundle,
+            exam_title=exam_title,
+        )
+        payload = (
+            merge_targeted_failure_draft(
+                existing_payload=existing_payload or {},
+                failure_draft=failure_draft,
+                targeted_source_refs=targeted_source_refs,
+            )
+            if targeted_mode
+            else failure_draft
+        )
+        checkpoint(payload)
+    else:
+        structure = compose_bundle.compose_generated_config(
+            exam_title=exam_title,
+        )
+        structure_meta = structure.setdefault("meta", {})
+        if isinstance(structure_meta, dict):
+            structure_meta["analysis_reused_question_ids"] = list(
+                analysis_reused_refs
+            )
+        normalize_new_generated_config_payload(structure)
+        refresh_generated_config_quality_warnings(structure)
+        blocked_ids = blocking_quality_question_ids(structure)
+        if blocked_ids:
+            # Do not spend a second model request allocating scores for a
+            # structure that is already known to be invalid.  The exact
+            # evidence issues are persisted below and become the repair
+            # contract for the next targeted request.
+            if targeted_mode:
+                payload = merge_targeted_regeneration(
+                    existing_payload=existing_payload or {},
+                    regenerated_structure=structure,
+                    targeted_question_ids=targeted_source_refs,
+                    targeted_source_refs=targeted_source_refs,
+                )
+                meta = payload.setdefault("meta", {})
+                if not isinstance(meta, dict):
+                    payload["meta"] = meta = {}
+                quality_warnings = [
+                    str(item)
+                    for item in meta.get("warnings") or []
+                    if str(item).startswith("[质量检查-阻断]")
+                ]
+                meta["failed_question_ids"] = list(blocked_ids)
+                meta["failed_batches"] = [
+                    {
+                        "batch_id": "本地校验",
+                        "question_ids": list(blocked_ids),
+                        "status": "failed",
+                        "category": "local_validation",
+                        "error": (
+                            "；".join(quality_warnings[:3])
+                            or "评分标准未通过本地业务校验"
+                        )[:600],
+                    }
+                ]
+            else:
+                payload = structure
+        else:
+            intake_classified = _run_exam_paper_intake(
+                context=context,
+                db=db,
+                session_id=session_id,
+                analysis_artifact=intake_artifact,
+                source_record=source_record,
+                question_bank_db_path=question_bank_db_path,
+                data_root=data_root,
+                tagging_ai_service_factory=tagging_ai_service_factory,
+                taxonomy_governance=taxonomy_governance,
+                question_bank_intake_runner=question_bank_intake_runner,
+                source_service=source_service,
+                asset_decisions=asset_decisions,
+                type_overrides=_intake_type_overrides(confirmed_blocks),
+                confirmed_duplicates=_intake_confirmed_duplicates(decisions),
+            )
+            if intake_classified is not None and not intake_classified["complete"]:
+                payload = (
+                    merge_targeted_regeneration(
+                        existing_payload=existing_payload or {},
+                        regenerated_structure=structure,
+                        targeted_question_ids=targeted_source_refs,
+                        targeted_source_refs=targeted_source_refs,
                     )
-                if intake_classified is not None and not intake_classified["complete"]:
-                    payload = structure
+                    if targeted_mode
+                    else structure
+                )
+                meta = payload.setdefault("meta", {})
+                if not isinstance(meta, dict):
+                    payload["meta"] = meta = {}
+                meta["exam_intake_incomplete"] = True
+                meta["exam_intake_category"] = intake_classified["category"]
+                meta["exam_intake_failed_question_ids"] = list(
+                    intake_classified["failed_question_ids"]
+                )
+                meta["exam_intake_retryable"] = bool(
+                    intake_classified["retryable"]
+                )
+                meta["exam_intake_error"] = intake_classified["message"]
+                meta["structure_source"] = "judgment_points"
+            else:
+                context.raise_if_cancelled()
+                if targeted_mode:
+                    payload = merge_targeted_regeneration(
+                        existing_payload=existing_payload or {},
+                        regenerated_structure=structure,
+                        targeted_question_ids=targeted_source_refs,
+                        targeted_source_refs=targeted_source_refs,
+                    )
                     meta = payload.setdefault("meta", {})
                     if not isinstance(meta, dict):
                         payload["meta"] = meta = {}
-                    meta["exam_intake_incomplete"] = True
-                    meta["exam_intake_category"] = intake_classified["category"]
-                    meta["exam_intake_failed_question_ids"] = list(
-                        intake_classified["failed_question_ids"]
-                    )
-                    meta["exam_intake_retryable"] = bool(
-                        intake_classified["retryable"]
-                    )
-                    meta["exam_intake_error"] = intake_classified["message"]
                     meta["structure_source"] = "judgment_points"
+                    checkpoint(payload)
                 else:
-                    context.raise_if_cancelled()
                     meta = structure.setdefault("meta", {})
                     if not isinstance(meta, dict):
                         structure["meta"] = meta = {}
                     meta["structure_source"] = "judgment_points"
-                    client = llm_client_factory()
                     payload = allocate_grading_config_scores(
                         structure,
                         confirmed_blocks,
                         document_text,
-                        llm_client=client,
-                        model_name=_config_model(client),
                         report=report,
                         q_images=question_images or None,
                         checkpoint=checkpoint,
                     )
-    elif mode == "regenerate_questions":
-        client = llm_client_factory()
-        raw_regenerate_ids = inputs.get("regenerate_question_ids")
-        if not isinstance(raw_regenerate_ids, list):
-            raise ValueError("targeted regeneration question ids are invalid")
-        regenerate_ids = [
-            str(question_id).strip()
-            for question_id in raw_regenerate_ids
-            if str(question_id).strip()
-        ]
-        payload = regenerate_grading_config_questions(
-            existing_payload or {},
-            confirmed_blocks,
-            document_text,
-            llm_client=client,
-            model_name=_config_model(client),
-            report=report,
-            q_images=question_images or None,
-            regenerate_question_ids=regenerate_ids,
-            checkpoint=checkpoint,
-        )
-    elif existing_payload is not None:
-        client = llm_client_factory()
-        raw_retry_ids = context.payload.get("retry_question_ids")
-        retry_ids = (
-            [str(qid).strip() for qid in raw_retry_ids if str(qid).strip()]
-            if isinstance(raw_retry_ids, list)
-            else None
-        )
-        payload = retry_failed_grading_config_questions(
-            existing_payload,
-            confirmed_blocks,
-            document_text,
-            llm_client=client,
-            model_name=_config_model(client),
-            report=report,
-            q_images=question_images or None,
-            retry_question_ids=retry_ids,
-            checkpoint=checkpoint,
-        )
-    elif generation_mode == "batched":
-        client = llm_client_factory()
-        payload = generate_grading_config_from_confirmed_blocks(
-            confirmed_blocks,
-            document_text,
-            llm_client=client,
-            model_name=_config_model(client),
-            report=report,
-            q_images=question_images or None,
-            checkpoint=checkpoint,
-        )
-    elif source_suffix == ".docx":
-        client = llm_client_factory()
-        payload = generate_grading_config_from_text(
-            document_text,
-            llm_client=client,
-            model_name=_config_model(client),
-            report=report,
-            question_blocks=confirmed_blocks,
-        )
-    else:
-        client = llm_client_factory()
-        payload = generate_grading_config_from_images(
-            whole_page_images,
-            "",
-            llm_client=client,
-            model_name=_config_model(client),
-            report=report,
-        )
-    normalize_new_generated_config_payload(payload)
+    if not targeted_mode:
+        normalize_new_generated_config_payload(payload)
     refresh_generated_config_quality_warnings(payload)
     _refresh_quality_repair_state(
         payload,
         previous_payload=existing_payload,
-        retried_refs=local_quality_retry_refs,
+        retried_refs=(
+            targeted_source_refs if targeted_mode else local_quality_retry_refs
+        ),
     )
-    quality_blocked_ids = blocking_quality_question_ids(payload)
+    quality_blocked_ids = (
+        () if targeted_mode else blocking_quality_question_ids(payload)
+    )
     if quality_blocked_ids and not failed_grading_config_question_ids(payload):
         meta = payload.setdefault("meta", {})
         quality_warnings = [
@@ -1094,11 +1148,7 @@ def _run_config_generation_job_impl(
             if str(item).startswith("[质量检查-阻断]")
         ]
         failure = {
-            "batch_id": (
-                "整卷生成"
-                if generation_mode == "whole_document"
-                else "本地校验"
-            ),
+            "batch_id": "本地校验",
             "question_ids": quality_blocked_ids,
             "status": "failed",
             "category": "local_validation",
@@ -1109,13 +1159,11 @@ def _run_config_generation_job_impl(
         }
         meta["failed_question_ids"] = quality_blocked_ids
         meta["failed_batches"] = [failure]
-        if generation_mode == "whole_document":
-            meta["batches"] = [failure]
     context.raise_if_cancelled()
     failed_ids = failed_grading_config_question_ids(payload)
     uncertain_ids = _deferred_uncertain_question_ids(payload)
     score_allocation = _score_allocation_summary(payload)
-    summary_blocks = [] if generation_mode == "whole_document" else confirmed_blocks
+    summary_blocks = confirmed_blocks
     total_questions = _question_count(payload, summary_blocks)
     summary = _summary(
         session_id,
@@ -1127,7 +1175,7 @@ def _run_config_generation_job_impl(
         local_json_repairs=_local_json_repairs(payload),
         local_structure_repairs=_local_structure_repairs(payload),
         **score_allocation,
-        retryable_mode=generation_mode == "batched",
+        retryable_mode=True,
         analysis_reused_question_ids=_analysis_reused_question_ids(payload),
     )
     summary["questions"] = project_question_states(
@@ -1214,7 +1262,7 @@ def _run_config_generation_job_impl(
                     intake_result = intake_runner(
                         context=context,
                         session_id=session_id,
-                        artifact=analysis_artifact,
+                        artifact=intake_artifact or analysis_artifact,
                         source_filename=source_record.safe_filename,
                         source_content=source_record.private_source_bytes,
                         question_bank_db_path=Path(question_bank_db_path),
@@ -1338,6 +1386,7 @@ def _run_config_generation_job_impl(
                     Path(upload_config_dir),
                     payload,
                     job_id=context.job_id,
+                    preserve_scores=targeted_mode,
                 )
                 context.raise_if_cancelled()
                 context.report(0.98, "config_generation", "binding")
@@ -1651,108 +1700,6 @@ def _apply_intake_summary(
         )
         summary["retryable"] = bool(classified.get("retryable"))
         summary["question_bank_sync_error"] = str(classified.get("message") or "")
-
-
-def _run_refine_config_job(
-    *,
-    context: JobContext,
-    db: GradingRepositoryAccess,
-    upload_config_dir: Path,
-    llm_client_factory: Callable[[], Any],
-    inputs: dict[str, Any],
-    session_id: int,
-    expected_rubric_path: str,
-    expected_answer_key_path: str,
-    mapping_output_dir: Path | None,
-) -> dict[str, object]:
-    expected_revision = str(inputs.get("expected_revision") or "")
-    current = load_editor_config(db, session_id)
-    if current.revision != expected_revision:
-        raise ValueError("session config changed before refinement started")
-    existing_payload = inputs.get("existing_payload")
-    commands = inputs.get("commands")
-    if not isinstance(existing_payload, dict) or not isinstance(commands, list):
-        raise ValueError("refine input is invalid")
-    candidate = apply_config_editor_changes(
-        existing_payload,
-        edits=(),
-        commands=_decode_refine_commands(commands),
-    )
-    expected_ids = editor_part_ids(candidate)
-    expected_identity = editor_identity_signature(candidate)
-    context.raise_if_cancelled()
-    context.report(0.25, "config_generation", "refining")
-    client = llm_client_factory()
-    payload = refine_grading_config_from_manual_structure(
-        candidate,
-        llm_client=client,
-        model_name=_config_model(client),
-    )
-    # Teacher-created scoring-unit identities are stable references used by
-    # the editor and answer-region mapping.  Refine repairs the schema and
-    # removes forbidden knowledge metadata, but must not canonicalise part IDs
-    # as if this were a newly generated rubric.
-    strip_generated_config_knowledge_fields(payload)
-    normalize_generated_config_schema(payload)
-    strip_generated_config_knowledge_fields(payload)
-    context.raise_if_cancelled()
-    if editor_identity_signature(payload) != expected_identity:
-        raise ValueError("refined config changed teacher scoring-unit identities")
-    summary: dict[str, object] = {
-        "session_id": session_id,
-        "outcome": "complete",
-        "total_questions": len(expected_ids),
-        "generated_questions": len(expected_ids),
-        "failed_count": 0,
-        "failed_question_ids": [],
-        "retryable": False,
-    }
-    publication: PublishedConfig | None = None
-    resolved_mapping_output_dir = (
-        Path(mapping_output_dir)
-        if mapping_output_dir is not None
-        else _infer_data_root(Path(db.db_path)) / "templates"
-    )
-    _set_mapping_result(summary, "reconfirm_required")
-    with session_config_lock(upload_config_dir, session_id):
-        latest = load_editor_config(db, session_id)
-        if latest.revision != expected_revision:
-            raise ValueError("session config changed while refinement was running")
-        try:
-            context.raise_if_cancelled()
-            publication = publish_generated_config(
-                upload_config_dir, payload, job_id=context.job_id
-            )
-            bound = context.store.finish_config_generation_and_bind(
-                context.job_id,
-                session_id=session_id,
-                expected_rubric_path=expected_rubric_path,
-                expected_answer_key_path=expected_answer_key_path,
-                rubric_path=str(publication.rubric_path),
-                answer_key_path=str(publication.answer_key_path),
-                result=summary,
-            )
-            if not bound:
-                context.raise_if_cancelled()
-                raise ValueError("session config changed while refinement was running")
-            _refresh_mapping_and_finalize_job(
-                context=context,
-                db=db,
-                session_id=session_id,
-                mapping_output_dir=resolved_mapping_output_dir,
-                summary=summary,
-            )
-        except BaseException:
-            if publication is not None:
-                referenced = context.store.referenced_config_paths(
-                    {str(path) for path in publication.created_paths}
-                )
-                remove_published_config(
-                    upload_config_dir,
-                    tuple(path for path in publication.created_paths if str(path) not in referenced),
-                )
-            raise
-    return summary
 
 
 def _set_mapping_result(
@@ -2481,6 +2428,101 @@ def _retry_source_refs(payload: dict[str, Any]) -> list[str] | None:
     return values
 
 
+def _targeted_source_refs(
+    inputs: dict[str, Any],
+    sources: tuple[ConfigQuestionAnalysisSource, ...],
+) -> tuple[str, ...]:
+    raw = inputs.get("regenerate_question_ids")
+    if not isinstance(raw, list):
+        raise ValueError("targeted regeneration question ids are invalid")
+    cleaned = [str(item or "").strip() for item in raw]
+    refs = list(dict.fromkeys(value for value in cleaned if value))
+    if not refs or len(refs) != len(cleaned):
+        raise ValueError("targeted regeneration question ids are invalid")
+    available = {item.source_question_ref for item in sources}
+    missing = [ref for ref in refs if ref not in available]
+    if missing:
+        raise ValueError(
+            "重新生成的题目不在本次试卷来源中：" + "、".join(missing)
+        )
+    return tuple(refs)
+
+
+def _scoped_analysis_sources(
+    sources: tuple[ConfigQuestionAnalysisSource, ...],
+    refs: set[str],
+) -> tuple[ConfigQuestionAnalysisSource, ...]:
+    return tuple(
+        item for item in sources if item.source_question_ref in refs
+    )
+
+
+def _targeted_quality_issue_map(
+    payload: dict[str, Any] | None,
+    source_refs: tuple[str, ...],
+) -> dict[str, tuple[dict[str, str], ...]]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    if not isinstance(meta, dict) or not isinstance(
+        meta.get("quality_issues"), list
+    ):
+        return {}
+    try:
+        return _quality_issues_by_ref(payload, source_refs)
+    except ValueError:
+        return {}
+
+
+def _load_previous_analysis_artifact(
+    *,
+    context: JobContext,
+    artifact_store: DeferredAnalysisArtifactStore,
+    upload_config_dir: Path,
+    session_id: int,
+    source_id: str,
+    source_revision: str,
+    curriculum_volume_id: str,
+    current_job_id: int,
+) -> DeferredAnalysisArtifact | None:
+    """Locate the session's most recent analysis artifact for targeted
+    regeneration by chaining through the latest generation job's input."""
+
+    source_job = context.store.find_latest_config_generation_job(
+        session_id=session_id,
+        source_id=source_id,
+        source_revision=source_revision,
+        generation_mode="batched",
+        modes=frozenset({"generate", "retry", "regenerate_questions"}),
+        exclude_job_id=current_job_id,
+    )
+    if source_job is None:
+        return None
+    previous_input_id = str(source_job.payload.get("input_id") or "")
+    try:
+        staged = load_config_generation_input(upload_config_dir, previous_input_id)
+        artifact_id = str(
+            staged.get("analysis_artifact_id") or ""
+        ).strip().casefold()
+        if not _INPUT_ID.fullmatch(artifact_id) or not artifact_store.exists(
+            artifact_id
+        ):
+            return None
+        return artifact_store.load(
+            artifact_id,
+            session_id=session_id,
+            source_id=source_id,
+            source_revision=source_revision,
+            curriculum_volume_id=curriculum_volume_id,
+        )
+    except Exception:
+        LOGGER.warning(
+            "Previous deferred analysis artifact is unavailable for "
+            "session_id=%s; selected questions will be analyzed fresh",
+            session_id,
+            exc_info=True,
+        )
+        return None
+
+
 def _local_quality_retry_source_refs(
     payload: dict[str, Any] | None,
     requested_refs: list[str] | None,
@@ -2687,57 +2729,12 @@ def _refresh_mapping_and_finalize_job(
         raise escaped
 
 
-def _decode_refine_commands(values: list[Any]) -> tuple[Any, ...]:
-    result: list[Any] = []
-    for value in values:
-        if not isinstance(value, dict):
-            raise ValueError("refine command is invalid")
-        kind = str(value.get("kind") or "")
-        if kind == "split":
-            result.append(
-                SplitScoringUnitCommand(
-                    kind="split",
-                    question_id=str(value.get("question_id") or ""),
-                    count=int(value.get("count") or 0),
-                    style=str(value.get("style") or ""),
-                )
-            )
-        elif kind == "replace_parts":
-            parts = value.get("parts")
-            if not isinstance(parts, list):
-                raise ValueError("refine parts are invalid")
-            result.append(
-                ReplaceScoringUnitsCommand(
-                    kind="replace_parts",
-                    question_id=str(value.get("question_id") or ""),
-                    parts=tuple(
-                        ManualPartInput(
-                            part_id=str(part.get("part_id") or ""),
-                            score=float(part.get("score") or 0),
-                            core_goal=str(part.get("core_goal") or ""),
-                        )
-                        for part in parts
-                        if isinstance(part, dict)
-                    ),
-                )
-            )
-        else:
-            raise ValueError("refine command is unsupported")
-    return tuple(result)
-
-
 def _required_int(payload: dict[str, Any], field_name: str) -> int:
     value = payload.get(field_name)
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be an integer") from exc
-
-
-def _config_model(client: Any) -> str | None:
-    settings = getattr(client, "settings", None)
-    value = getattr(settings, "config_model", None)
-    return str(value) if value else None
 
 
 def _draft_path(upload_config_dir: Path, job_id: int) -> Path:
@@ -3020,25 +3017,6 @@ def _deferred_uncertain_question_ids(payload: dict[str, Any]) -> list[str]:
             if str(item or "").strip()
         )
     )
-
-
-def _decode_whole_page_images(value: Any) -> list[bytes]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise ValueError("whole_page_images must be a list")
-    decoded: list[bytes] = []
-    for item in value:
-        if not isinstance(item, str) or not item:
-            raise ValueError("whole_page_images contains an invalid item")
-        try:
-            content = base64.b64decode(item, validate=True)
-        except (binascii.Error, ValueError):
-            raise ValueError("whole_page_images contains invalid base64") from None
-        if not content:
-            raise ValueError("whole_page_images contains an empty image")
-        decoded.append(content)
-    return decoded
 
 
 def _infer_data_root(db_path: Path) -> Path:

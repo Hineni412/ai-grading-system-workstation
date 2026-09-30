@@ -149,6 +149,7 @@ DATABASE_BASELINE_TEST_PATHS = frozenset(
         "tests/test_class_analysis.py",
         "tests/test_config_duplicate_decisions.py",
         "tests/test_config_generation_job.py",
+        "tests/test_config_generation_targeted.py",
         "tests/test_config_source_duplicates.py",
         "tests/test_current_knowledge_resolver.py",
         "tests/test_dual_track_ai_scores.py",

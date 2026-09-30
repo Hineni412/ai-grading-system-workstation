@@ -472,14 +472,6 @@ def blocking_quality_question_ids(payload: dict[str, Any]) -> list[str]:
     )
 
 
-SESSION_MANAGER_COMPAT_EXPORTS = (
-    "_looks_like_garbled_generated_text",
-    "_quality_answer_texts",
-    "collect_generated_config_quality_issues",
-    "collect_generated_config_quality_warnings",
-    "refresh_generated_config_quality_warnings",
-)
-
 __all__ = [
     "blocking_quality_question_ids",
     "collect_generated_config_quality_issues",

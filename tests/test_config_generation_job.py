@@ -1,14 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import io
 import json
-import sqlite3
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import fitz
@@ -26,42 +21,13 @@ from backend.jobs.config_generation import (
     load_config_generation_input,
     preserve_interrupted_config_generation_checkpoints,
     run_config_generation_job,
-    stage_config_generation_input,
-    stage_config_refine_input,
     stage_config_source_generation_input,
 )
-from backend.config_workspace.editor import (
-    ManualPartInput,
-    ReplaceScoringUnitsCommand,
-    apply_config_editor_changes,
-    editor_part_ids,
-)
-from backend.config_workspace.publish import load_editor_config
-from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifactStore
-from backend.jobs.manager import JobCancellationRequested, JobContext
+from backend.jobs.manager import JobContext
 from backend.jobs.store import JobStore
-from backend.jobs.store import ConfigRetryAlreadySubmittedError
 from db_manager import DBManager
-from question_id_contract import canonicalize_grading_config_payload
-from question_bank.database.schema import initialize_database
-from question_bank.services.source_paper_archive_service import archive_source_bytes
 from session_manager import save_generated_config
 from backend.repositories.grading_database import open_grading_repositories
-
-
-def _minimal_input() -> dict[str, object]:
-    return {
-        "confirmed_blocks": [
-            {
-                "question_id": "Q1",
-                "question_type": "choice",
-                "text": "1 + 1 = ?",
-                "canonical_answer": "2",
-            }
-        ],
-        "document_text": "1. 1 + 1 = ?\n答案：2",
-        "question_images": {},
-    }
 
 
 def _valid_config_payload() -> dict[str, object]:
@@ -185,17 +151,13 @@ def _stage_controlled_input(
         source_revision=source.source_revision,
         sync_to_question_bank=sync_to_question_bank,
         curriculum_volume_id=("bnu24-math-g7-upper" if sync_to_question_bank else None),
-        decisions=(
-            []
-            if generation_mode == "whole_document"
-            else [
-                {
-                    "question_id": source.questions[0].question_id,
-                    "question_type": "proof",
-                    "excluded": False,
-                }
-            ]
-        ),
+        decisions=[
+            {
+                "question_id": source.questions[0].question_id,
+                "question_type": "proof",
+                "excluded": False,
+            }
+        ],
     )
 
 
@@ -234,221 +196,6 @@ def _db_with_session(tmp_path: Path) -> tuple[DBManager, int, tuple[str, str]]:
         str(answer_path),
     )
     return db, session_id, (str(rubric_path), str(answer_path))
-
-
-def _stage_job_input(
-    tmp_path: Path,
-    session_id: int,
-    expected_paths: tuple[str, str],
-    *,
-    question_ids: list[str] | None = None,
-) -> str:
-    staged = _minimal_input()
-    if question_ids is not None:
-        staged["confirmed_blocks"] = [
-            {
-                "question_id": question_id,
-                "question_type": "comprehensive",
-                "text": f"{question_id} controlled question",
-                "canonical_answer": question_id,
-            }
-            for question_id in question_ids
-        ]
-    return stage_config_generation_input(
-        tmp_path / "uploaded",
-        session_id=session_id,
-        expected_rubric_path=expected_paths[0],
-        expected_answer_key_path=expected_paths[1],
-        **staged,
-    )
-
-
-def test_config_generation_job_saves_partial_draft_without_binding_session(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db, session_id, old_paths = _db_with_session(tmp_path)
-    input_id = _stage_job_input(
-        tmp_path,
-        session_id,
-        old_paths,
-        question_ids=[f"Q{index}" for index in range(1, 7)],
-    )
-    context, _store = _job_context(
-        db.db_path,
-        {"session_id": session_id, "mode": "generate", "input_id": input_id},
-    )
-    partial = _valid_config_payload()
-    partial["meta"] = {
-        "warnings": ["Q2 generation failed"],
-        "failed_question_ids": ["Q2"],
-        "failed_questions": [
-            {
-                "question_id": "Q2",
-                "attempts": 1,
-                "category": "transient_network",
-                "error": "temporary upstream",
-            }
-        ],
-        "score_allocation_pending": True,
-    }
-    monkeypatch.setattr(
-        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
-        lambda *_args, **_kwargs: partial,
-    )
-
-    result = run_config_generation_job(
-        context=context,
-        db=db,
-        upload_config_dir=tmp_path / "uploaded",
-        llm_client_factory=lambda: object(),
-    )
-
-    session = db.sessions.get_grading_session(session_id)
-    assert session is not None
-    assert (session["rubric_path"], session["answer_key_path"]) == old_paths
-    assert result["outcome"] == "partial"
-    assert result["failed_question_ids"] == ["Q2"]
-    assert result["retryable"] is True
-    draft = tmp_path / "uploaded" / f"config_generation_draft_job_{context.job_id}.json"
-    assert json.loads(draft.read_text(encoding="utf-8"))["meta"][
-        "failed_question_ids"
-    ] == ["Q2"]
-
-
-def test_config_generation_job_does_not_overwrite_manual_config_change(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db, session_id, old_paths = _db_with_session(tmp_path)
-    input_id = _stage_job_input(tmp_path, session_id, old_paths)
-    context, _store = _job_context(
-        db.db_path,
-        {"session_id": session_id, "mode": "generate", "input_id": input_id},
-    )
-    manual_rubric = tmp_path / "manual-rubric.json"
-    manual_answer = tmp_path / "manual-answer.json"
-    manual_rubric.write_text("{}", encoding="utf-8")
-    manual_answer.write_text("{}", encoding="utf-8")
-
-    def change_config_then_return(
-        *_args: object, **_kwargs: object
-    ) -> dict[str, object]:
-        db.sessions.update_grading_session_config(
-            session_id,
-            rubric_path=str(manual_rubric),
-            answer_key_path=str(manual_answer),
-        )
-        return _valid_config_payload()
-
-    monkeypatch.setattr(
-        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
-        change_config_then_return,
-    )
-
-    with pytest.raises(ValueError, match="config changed while generation was running"):
-        run_config_generation_job(
-            context=context,
-            db=db,
-            upload_config_dir=tmp_path / "uploaded",
-            llm_client_factory=lambda: object(),
-        )
-
-    session = db.sessions.get_grading_session(session_id)
-    assert session is not None
-    assert session["rubric_path"] == str(manual_rubric)
-    assert session["answer_key_path"] == str(manual_answer)
-    assert not list((tmp_path / "uploaded").glob("rubric_job-*.json"))
-    assert not list((tmp_path / "uploaded").glob("answer_key_job-*.json"))
-
-
-def _refine_context(tmp_path: Path):
-    db, session_id, old_paths = _db_with_session(tmp_path)
-    db.sessions.bind_grading_session_source(
-        session_id,
-        source_paper_path="papers/original.docx",
-        source_paper_sha256="e" * 64,
-    )
-    current = load_editor_config(db, session_id)
-    candidate = apply_config_editor_changes(
-        current.payload,
-        edits=(),
-        commands=(
-            ReplaceScoringUnitsCommand(
-                kind="replace_parts",
-                question_id="Q1",
-                parts=(
-                    ManualPartInput(part_id="Q1(P1)", score=8, core_goal="first"),
-                    ManualPartInput(part_id="Q1(P2)", score=9, core_goal="second"),
-                ),
-            ),
-        ),
-    )
-    input_id = stage_config_refine_input(
-        tmp_path / "uploaded",
-        session_id=session_id,
-        expected_rubric_path=old_paths[0],
-        expected_answer_key_path=old_paths[1],
-        expected_revision=current.revision,
-        existing_payload=current.payload,
-        commands=[
-            {
-                "kind": "replace_parts",
-                "question_id": "Q1",
-                "parts": [
-                    {"part_id": "Q1(P1)", "score": 8, "core_goal": "first"},
-                    {"part_id": "Q1(P2)", "score": 9, "core_goal": "second"},
-                ],
-            }
-        ],
-    )
-    context, store = _job_context(
-        db.db_path,
-        {"session_id": session_id, "mode": "refine", "input_id": input_id},
-    )
-    return db, session_id, old_paths, candidate, context, store
-
-
-def test_refine_job_preserves_teacher_part_ids_and_calls_factory_once(
-    tmp_path: Path,
-) -> None:
-    db, session_id, old_paths, candidate, context, _store = _refine_context(tmp_path)
-    calls = 0
-
-    class Client:
-        def json_from_text(
-            self,
-            _prompt: str,
-            *,
-            model: str | None = None,
-        ) -> dict[str, object]:
-            assert model is None
-            return json.loads(json.dumps(candidate))
-
-    client = Client()
-
-    def factory():
-        nonlocal calls
-        calls += 1
-        return client
-
-    result = run_config_generation_job(
-        context=context,
-        db=db,
-        upload_config_dir=tmp_path / "uploaded",
-        llm_client_factory=factory,
-    )
-
-    assert result["outcome"] == "complete"
-    assert calls == 1
-    current = db.sessions.get_grading_session(session_id)
-    assert (current["rubric_path"], current["answer_key_path"]) != old_paths
-    assert current["source_paper_path"] == "papers/original.docx"
-    assert current["source_paper_sha256"] == "e" * 64
-    published = load_editor_config(db, session_id)
-    assert editor_part_ids(published.payload) == editor_part_ids(
-        canonicalize_grading_config_payload(candidate)
-    )
 
 
 def _deferred_taxonomy_contract() -> dict[str, Any]:
@@ -619,62 +366,8 @@ class _DeferredTaggingService:
         return {question_id: _deferred_taxonomy_contract() for question_id in contexts}
 
 
-class _DeferredScoreClient:
-    def __init__(self, *, valid_six_question_score: bool) -> None:
-        self.valid_six_question_score = valid_six_question_score
-        self.calls: list[str] = []
-        self.settings = SimpleNamespace(config_model="synthetic-score-only")
-
-    def json_from_text_once(
-        self,
-        prompt: str,
-        **_kwargs: Any,
-    ) -> dict[str, Any]:
-        self.calls.append(prompt)
-        structure = json.loads(prompt.split("待分值结构：\n", 1)[1])
-        if self.valid_six_question_score:
-            assert len(structure) == 6
-            scores = [17, 17, 17, 17, 17, 15]
-        else:
-            assert len(structure) == 1
-            # Deliberately violates the existing 18-point cap.  The job must
-            # checkpoint the finished analysis and leave only scoring pending.
-            scores = [100]
-        return {
-            "question_scores": [
-                {
-                    "question_id": item["question_id"],
-                    "max_score": score,
-                    "parts": [
-                        {
-                            "part_id": part["part_id"],
-                            "part_score": score,
-                            "steps": [
-                                {
-                                    "step_id": step["step_id"],
-                                    "step_score": (
-                                        score // len(part["steps"])
-                                        + (
-                                            1
-                                            if step_index < score % len(part["steps"])
-                                            else 0
-                                        )
-                                    ),
-                                }
-                                for step_index, step in enumerate(part["steps"])
-                            ],
-                        }
-                        for part in item["parts"]
-                    ],
-                }
-                for item, score in zip(structure, scores, strict=True)
-            ]
-        }
-
-
 def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_replay(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db, session_id, old_paths = _db_with_session(tmp_path)
     _source_service, source = _controlled_source(
@@ -711,13 +404,6 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
         tagging_factory_calls += 1
         return tagging_service
 
-    monkeypatch.setattr(
-        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
-        lambda *_args, **_kwargs: pytest.fail(
-            "the legacy structure generator must not run"
-        ),
-    )
-    score_client = _DeferredScoreClient(valid_six_question_score=False)
     intake_calls: list[dict[str, Any]] = []
 
     def intake_runner(**kwargs: Any) -> dict[str, object]:
@@ -736,7 +422,6 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
         question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
-        llm_client_factory=lambda: score_client,
         tagging_ai_service_factory=tagging_factory,
         taxonomy_governance=object(),
         question_bank_intake_runner=intake_runner,
@@ -751,8 +436,6 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
     assert len(intake_calls) == 1
     assert intake_calls[0]["artifact"].bundle.status == "succeeded"
     assert len(protocol.calls) == 1
-    # 本地配分不发模型请求；单题卷不满足整数约束时保持配分待办。
-    assert len(score_client.calls) == 0
     assert tagging_factory_calls == 1
     store.finish(first_context.job_id, "succeeded", result=first)
     completed_first = store.get_job(first_context.job_id)
@@ -781,7 +464,6 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
         question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
-        llm_client_factory=lambda: score_client,
         tagging_ai_service_factory=tagging_factory,
         taxonomy_governance=object(),
         question_bank_intake_runner=intake_runner,
@@ -790,7 +472,6 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
     assert retried["outcome"] == "partial"
     assert len(protocol.calls) == 1
     assert tagging_factory_calls == 1
-    assert len(score_client.calls) == 0
     assert len(intake_calls) == 2
 
 
@@ -831,7 +512,6 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
             db=db,
             upload_config_dir=tmp_path / "uploaded",
             data_root=tmp_path / "data",
-            llm_client_factory=lambda: pytest.fail("scoring must not start"),
             tagging_ai_service_factory=lambda: _DeferredTaggingService(
                 interrupted_protocol
             ),
@@ -885,7 +565,6 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
         question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
-        llm_client_factory=lambda: pytest.fail("scoring must not start"),
         tagging_ai_service_factory=lambda: _DeferredTaggingService(replay_protocol),
         taxonomy_governance=object(),
         question_bank_intake_runner=partial_intake_runner,
@@ -902,7 +581,6 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
 
     resume_store.finish(resume_context.job_id, "succeeded", result=resumed)
     confirmed_protocol = _DeferredProtocol()
-    score_client = _DeferredScoreClient(valid_six_question_score=False)
 
     def confirmed_intake_runner(**_kwargs: Any) -> dict[str, object]:
         return {
@@ -933,7 +611,6 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
         question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
-        llm_client_factory=lambda: score_client,
         tagging_ai_service_factory=lambda: _DeferredTaggingService(confirmed_protocol),
         taxonomy_governance=object(),
         question_bank_intake_runner=confirmed_intake_runner,
@@ -943,7 +620,6 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
     assert confirmed["generated_questions"] == 1
     assert confirmed.get("uncertain_question_ids") is None
     assert confirmed["score_allocation_pending"] is True
-    assert len(score_client.calls) == 0
 
 
 def _png_bytes() -> bytes:
@@ -1036,13 +712,6 @@ def test_deferred_intake_blocks_when_asset_decisions_go_stale(
             "sync_to_question_bank": True,
         },
     )
-    monkeypatch.setattr(
-        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
-        lambda *_args, **_kwargs: pytest.fail(
-            "the legacy structure generator must not run"
-        ),
-    )
-
     def stale_resolve(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], ...]:
         raise ValueError("invalid ambiguous asset decision")
 
@@ -1061,7 +730,6 @@ def test_deferred_intake_blocks_when_asset_decisions_go_stale(
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
         question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
-        llm_client_factory=lambda: _DeferredScoreClient(valid_six_question_score=False),
         tagging_ai_service_factory=lambda: _DeferredTaggingService(_DeferredProtocol()),
         taxonomy_governance=object(),
         question_bank_intake_runner=intake_runner,

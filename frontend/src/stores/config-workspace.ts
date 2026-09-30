@@ -177,7 +177,8 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
         !Array.isArray(item.assetDecisions) || !item.assetDecisions.every(validAssetDecision)
       ))
       || ('pendingGenerationMode' in item
-        && !['batched', 'per_question', 'whole_document'].includes(String(item.pendingGenerationMode)))
+        && !['batched', 'per_question', 'whole_document', 'refine']
+          .includes(String(item.pendingGenerationMode)))
       || ('pendingJobRequestToken' in item
         && !/^[0-9a-f]{32}$/.test(String(item.pendingJobRequestToken)))
       || ('pendingJobRequestKind' in item
@@ -187,7 +188,9 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
       || ('generationSummary' in item && !validGenerationSummary(item.generationSummary))) return null
     if (('pendingJobRequestToken' in item) !== ('pendingJobRequestKind' in item)) return null
     if ((item.sourceId === null) !== (item.sourceRevision === null)) return null
-    if (item.pendingGenerationMode === 'per_question') item.pendingGenerationMode = 'batched'
+    if ('pendingGenerationMode' in item && item.pendingGenerationMode !== 'batched') {
+      item.pendingGenerationMode = 'batched'
+    }
     return item as unknown as PersistedConfigWorkspace
   } catch {
     return null
@@ -304,9 +307,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       (question) => !excluded.has(question.question_id),
     )
   })
-  const canGenerateWholeDocument = computed(() => sessionId.value !== null
-    && source.value !== null && sourceId.value !== null && sourceRevision.value !== null)
-
   function derivePhase(): ConfigPhase {
     if (editor.value?.configured) return 'editor'
     if (jobId.value !== null) return 'generation'
@@ -652,7 +652,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   function markJobSubmissionPending(
     token: string,
-    kind: 'generate' | 'retry' | 'refine',
+    kind: 'generate' | 'retry',
     mode: GenerationMode | null = null,
     retainedSummary?: ConfigGenerationSummary,
   ): boolean {
@@ -695,8 +695,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     syncToQuestionBank = false,
     curriculumVolumeId?: string,
   ): ConfigGenerationRequest {
-    const ready = mode === 'whole_document' ? canGenerateWholeDocument.value : canGenerate.value
-    if (!ready || sourceId.value === null || sourceRevision.value === null) {
+    if (!canGenerate.value || sourceId.value === null || sourceRevision.value === null) {
       throw new Error('Config source is not ready')
     }
     const request: ConfigGenerationRequest = {
@@ -704,11 +703,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       source_revision: sourceRevision.value,
       generation_mode: mode,
       sync_to_question_bank: syncToQuestionBank,
-      decisions: mode === 'whole_document'
-        ? []
-        : decisions.value.map((item) => ({ ...item })),
+      decisions: decisions.value.map((item) => ({ ...item })),
     }
-    if (mode !== 'whole_document' && assetDecisions.value.length > 0) {
+    if (assetDecisions.value.length > 0) {
       request.asset_decisions = assetDecisions.value.map((item) => ({ ...item }))
     }
     if (syncToQuestionBank) {
@@ -1088,7 +1085,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceDuplicates, duplicatesUnavailable, loadSourceDuplicates,
     saveStatus, mappingStatus, hasDirtyEditor, hasPendingSubmission,
     effectiveEditorRows, effectiveTotalScore,
-    canGenerate, canGenerateWholeDocument, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
+    canGenerate, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, updateAssetDecisions, loadSource,
     setEditor, captureGenerationContext, attachJob, detachJob, sourceRequest,

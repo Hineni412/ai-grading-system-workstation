@@ -375,7 +375,6 @@ const terminal = computed(() => job.value !== null
   && ['succeeded', 'failed', 'cancelled'].includes(job.value.status))
 const waitingForCancel = computed(() => job.value?.cancel_requested === true
   && (job.value.status === 'queued' || job.value.status === 'running'))
-const refineJob = computed(() => job.value?.payload.mode === 'refine')
 const completeSuccess = computed(() => job.value !== null
   && job.value.status === 'succeeded' && outcome.value === 'complete')
 const publishedConfigPresent = computed(() => configStore.editor?.configured === true)
@@ -467,15 +466,6 @@ async function restartAnalysis(): Promise<void> {
   await startGeneration('batched')
 }
 
-function returnToEditor(): void {
-  const current = job.value
-  if (!current || !refineJob.value) return
-  configStore.detachJob(current.id)
-  jobStore.remove(current.id)
-  requestError.value = ''
-  document.querySelector<HTMLElement>('#rubric-ledger-title')?.focus()
-}
-
 function prepareFreshGeneration(): void {
   const current = job.value
   if (current === null || !terminal.value || workspacePending.value) return
@@ -500,10 +490,7 @@ async function abandonMissingRequest(
 }
 
 async function startGeneration(requestedMode: GenerationMode = 'batched'): Promise<void> {
-  const ready = requestedMode === 'whole_document'
-    ? configStore.canGenerateWholeDocument
-    : configStore.canGenerate
-  if (!ready || submitting.value || active.value || workspacePending.value
+  if (!configStore.canGenerate || submitting.value || active.value || workspacePending.value
     || configStore.sessionId === null) return
   if (selectedVolume.value === null) {
     requestError.value = '请先选择这份试卷对应的年级和上下册；选择前不会调用模型。'
@@ -763,7 +750,6 @@ watch(
           评分依据已生成<template v-if="intakeSummaryCopy"> · {{ intakeSummaryCopy }}</template> · {{ passedStateCount }} 通过 · {{ redStateCount }} 需处理
         </span>
         <button
-          v-if="!refineJob"
           type="button"
           name="进入评分标准编辑"
           class="config-generation__primary"
@@ -815,7 +801,7 @@ watch(
         其中 {{ taxonomyReviewCount }} 道题的知识标签需要稍后重试或人工归并；评分依据不受影响，未知词尚未写入正式标签。
       </p>
       <button
-        v-if="terminal && outcome === 'complete' && !refineJob && !completeSuccess"
+        v-if="terminal && outcome === 'complete' && !completeSuccess"
         type="button"
         name="进入评分标准编辑"
         class="config-generation__primary"
@@ -914,22 +900,14 @@ watch(
         :disabled="workspacePending"
         @click="jobStore.cancel(job.id)"
       >取消生成</button>
-      <div v-if="job.status === 'failed' && refineJob" class="config-generation__refine-actions">
-        <button type="button" name="重新细化" class="config-generation__primary" :disabled="workspacePending" @click="returnToEditor">
-          重新细化
-        </button>
-        <button type="button" name="返回编辑器" class="config-generation__secondary" :disabled="workspacePending" @click="returnToEditor">
-          返回编辑器
-        </button>
-      </div>
       <button
-        v-else-if="job.status === 'failed' && outcome !== 'partial' && outcome !== 'complete'"
+        v-if="job.status === 'failed' && outcome !== 'partial' && outcome !== 'complete'"
         type="button"
         name="重新生成"
         class="config-generation__primary"
         :disabled="submitting || workspacePending"
-        @click="startGeneration(job.payload.generation_mode === 'whole_document' ? 'whole_document' : 'batched')"
-      >{{ job.payload.generation_mode === 'whole_document' ? '重新整卷生成' : '重新分批生成' }}</button>
+        @click="startGeneration()"
+      >重新生成</button>
     </div>
 
     <div v-if="syncError" class="config-generation__warning" role="alert">
@@ -996,7 +974,6 @@ button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 .config-generation__partial { padding-block: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-subtle); }
 .config-generation__intake-alert { margin-block: var(--space-3); padding: var(--space-4); border: 0; border-inline-start: 4px solid var(--color-warning); border-radius: var(--radius-control); background: var(--color-warning-subtle); color: var(--color-text-primary); }
 .config-generation__intake-alert p { margin: 0 0 var(--space-3); line-height: 1.6; }
-.config-generation__refine-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .config-generation__partial fieldset { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-3); border: var(--border-width) solid var(--color-border-subtle); border-radius: var(--radius-control); }
 .config-generation__partial label { display: inline-flex; align-items: center; gap: var(--space-2); }
 .config-generation__warning,
