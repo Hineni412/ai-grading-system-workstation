@@ -18,7 +18,6 @@ from question_bank.services.question_read_service import (
     captured_sqlite_read_connection,
 )
 
-
 _GRADING_REQUIRED_TABLES = frozenset(
     {
         "exam_papers",

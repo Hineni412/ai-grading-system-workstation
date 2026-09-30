@@ -44,7 +44,7 @@ class RowMapper(Protocol[RowT]):
 @runtime_checkable
 class Repository(Protocol):
     @property
-    def session(self) -> "RepositorySession": ...
+    def session(self) -> RepositorySession: ...
 
 
 class RepositorySessionProvider(Protocol):
@@ -52,7 +52,7 @@ class RepositorySessionProvider(Protocol):
         self,
         *,
         read_only: bool = False,
-    ) -> AbstractContextManager["RepositorySession"]: ...
+    ) -> AbstractContextManager[RepositorySession]: ...
 
 
 class RepositoryCursor(Iterator[Any]):
@@ -61,7 +61,7 @@ class RepositoryCursor(Iterator[Any]):
     def __init__(self, cursor: sqlite3.Cursor) -> None:
         self.__cursor = cursor
 
-    def __iter__(self) -> "RepositoryCursor":
+    def __iter__(self) -> RepositoryCursor:
         return self
 
     def __next__(self) -> Any:
@@ -140,7 +140,7 @@ class RepositorySession:
         return self._read_only
 
     @contextmanager
-    def transaction(self, *, immediate: bool = False) -> Iterator["RepositorySession"]:
+    def transaction(self, *, immediate: bool = False) -> Iterator[RepositorySession]:
         self._check_available()
         if immediate and self._read_only:
             raise ReadOnlyRepositoryError("read-only sessions cannot start immediate transactions")

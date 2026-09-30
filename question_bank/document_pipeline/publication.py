@@ -5,9 +5,9 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Mapping
 
 from question_bank.database.schema import connect
 
@@ -290,7 +290,10 @@ class QuestionBankPublicationAdapter:
                 moved = self._publish_staged_files(staged_files)
                 moved_sidecars = [item for item in moved if item in owned_sidecars]
                 moved_assets = [item for item in moved if item not in owned_sidecars]
-                from question_bank.services.duplicate_analysis_copy_service import exact_identity_map, link_new_question_duplicate
+                from question_bank.services.duplicate_analysis_copy_service import (
+                    exact_identity_map,
+                    link_new_question_duplicate,
+                )
                 identities = exact_identity_map(conn, data_root=self.data_root)
                 for published_question in published:
                     link_new_question_duplicate(conn, question_id=published_question.bank_question_id,
@@ -335,7 +338,9 @@ class QuestionBankPublicationAdapter:
         return receipt
 
     def _reuse_duplicate_analysis(self, receipt: PublishReceipt) -> None:
-        from question_bank.services.duplicate_analysis_copy_service import copy_duplicate_analysis
+        from question_bank.services.duplicate_analysis_copy_service import (
+            copy_duplicate_analysis,
+        )
         with connect(self.db_path) as conn:
             links = [conn.execute("SELECT duplicate_of_question_id FROM question_duplicate_links WHERE question_id=?",
                                   (item.bank_question_id,)).fetchone() for item in receipt.questions]

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from pathlib import Path
 from typing import Any
 
 from question_bank.knowledge_graph_release.contracts import KnowledgeGraphRelease
-
 
 DEFAULT_RELEASE_PATH = (
     Path(__file__).resolve().parents[1]

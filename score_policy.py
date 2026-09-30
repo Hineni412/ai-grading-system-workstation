@@ -62,7 +62,7 @@ def _solve_global_question_scores(
     else:
         ideals = [score / raw_total * target_total for score in raw_scores]
 
-    objective_indexes: "OrderedDict[str, list[int]]" = OrderedDict()
+    objective_indexes: OrderedDict[str, list[int]] = OrderedDict()
     solution_units: list[list[int]] = []
     for index, question in enumerate(questions):
         normalized_type = _normalize_type(str(question.get("question_type") or "comprehensive"))
@@ -243,7 +243,7 @@ def _apply_solution_group_scores(
     group_scores: dict[str, int],
     qtype: str,
     target_total: int,
-    all_groups: "OrderedDict[str, list[dict[str, Any]]]",
+    all_groups: OrderedDict[str, list[dict[str, Any]]],
 ) -> None:
     """Scale each solution-type question to an integer, preserving their relative weights."""
     # Determine the total budget for all solution questions combined
@@ -291,7 +291,7 @@ def apply_integer_question_score(question: dict[str, Any], new_score: int) -> No
 
 
 def _solve_group_scores(
-    groups: "OrderedDict[str, list[dict[str, Any]]]",
+    groups: OrderedDict[str, list[dict[str, Any]]],
     target_total: int,
     *,
     max_question_score: int,

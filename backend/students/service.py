@@ -19,7 +19,6 @@ from backend.repositories.students import (
     student_roster_revision,
 )
 
-
 FIELD_ALIASES = {
     "student_code": ("student_code", "学号", "考号", "id", "编号"),
     "name": ("name", "姓名", "学生姓名"),

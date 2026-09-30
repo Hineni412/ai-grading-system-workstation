@@ -16,13 +16,9 @@ from backend.repositories.papers import PaperRepositoryGateway
 from backend.repositories.reporting import ReportRepositoryGateway
 from backend.repositories.results import ResultRepositoryGateway
 from backend.repositories.review import ReviewRepositoryGateway
-from backend.repositories.settings import SettingsRepositoryGateway
 from backend.repositories.sessions import SessionRepositoryGateway
-from backend.repositories.students import (
-    StudentGradingActiveError,
-    StudentRecord,
-    StudentRepositoryGateway,
-)
+from backend.repositories.settings import SettingsRepositoryGateway
+from backend.repositories.students import StudentRepositoryGateway
 from backend.repositories.templates import TemplateRegionRepositoryGateway
 from backend.schema_migrations import ensure_schema_current
 

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import json
-from typing import Any, Iterable, Mapping
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 from backend.repositories.access import GradingRepositoryAccess
 

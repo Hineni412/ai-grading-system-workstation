@@ -370,7 +370,7 @@ class PaperRepositoryGateway:
         self,
         sessions: RepositorySessionProvider,
         *,
-        results: "ResultRepositoryGateway",
+        results: ResultRepositoryGateway,
     ) -> None:
         self._sessions = sessions
         self._results = results

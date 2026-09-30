@@ -32,7 +32,6 @@ from backend.config_workspace.sources import (
     QuestionDecision,
 )
 
-
 __all__ = [
     "ConfigAssetNotFoundError",
     "ConfigEditorCommand",

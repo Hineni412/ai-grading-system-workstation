@@ -18,7 +18,7 @@ def _client_with_db(tmp_path):
 
 
 def test_student_workspace_and_import_commit_share_revision_contract(tmp_path) -> None:
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
 
     client, db = _client_with_db(tmp_path)
     db.students.upsert_students([StudentRecord("S001", "旧姓名", "一班")])
@@ -74,7 +74,7 @@ def test_student_workspace_and_import_commit_share_revision_contract(tmp_path) -
 
 
 def test_student_delete_requires_impact_revision_and_confirmation(tmp_path) -> None:
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
 
     client, db = _client_with_db(tmp_path)
     db.students.upsert_students([StudentRecord("S001", "Alice", "Class 1")])
@@ -102,7 +102,7 @@ def test_student_delete_is_rejected_while_grading_is_active(
     tmp_path,
     run_state: str,
 ) -> None:
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
     from grading_run_store import GradingRunStore
 
     client, db = _client_with_db(tmp_path)

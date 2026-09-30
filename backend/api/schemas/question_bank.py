@@ -428,7 +428,7 @@ class SimilarQuestionListResponse(_QuestionBankModel):
 
 class QuestionTagWriteRequest(_QuestionBankModel):
     expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
-    tags: list["QuestionTagWriteItem"] = Field(max_length=100)
+    tags: list[QuestionTagWriteItem] = Field(max_length=100)
 
 
 class QuestionTagWriteItem(QuestionTagResponse):

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 _LEGACY_FALLBACK_KEYS = ("standard_answer", "correct_answer", "answer", "answers", "reference_answer")
 
 

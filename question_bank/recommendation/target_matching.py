@@ -6,18 +6,17 @@ describe a single part, but never assert which of several parts tests a topic.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from copy import deepcopy
-from typing import Any
 import json
 import sqlite3
 import threading
-from pathlib import Path
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
 from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
-
 
 MATCH_LABELS = {
     1: "同技能、同知识主题",

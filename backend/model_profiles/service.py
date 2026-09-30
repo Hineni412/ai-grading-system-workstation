@@ -5,8 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from api_profiles import ApiProfileStore, PROFILE_FIELD_REMOVE
-from backend.llm.policy import REQUEST_TIMEOUT_MAX, REQUEST_TIMEOUT_MIN
+from api_profiles import PROFILE_FIELD_REMOVE, ApiProfileStore
 from backend.llm.execution import (
     LLMExecutionGovernorRegistry,
     LLMExecutionSettingsError,
@@ -15,7 +14,7 @@ from backend.llm.execution import (
     get_default_execution_governors,
     validate_execution_profile_updates,
 )
-
+from backend.llm.policy import REQUEST_TIMEOUT_MAX, REQUEST_TIMEOUT_MIN
 
 _PROFILE_NAME_PATTERN = re.compile(r"^[^\x00-\x1f\x7f/\\]{1,80}$")
 _EDITABLE_FIELDS = frozenset(

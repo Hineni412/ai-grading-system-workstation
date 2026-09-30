@@ -36,7 +36,7 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
         CURRENT_MASTERY_PARAMETERS, CurrentMastery, CurrentMasteryCalculator,
     )
     from question_bank.mastery.v2 import compute_mastery_v2
-    from session_manager import iter_effective_rubric_item_refs
+    from backend.config_generation.contract import iter_effective_rubric_item_refs
 
     output = Path(args.output).resolve()
     backup = Path(args.backup).resolve()

@@ -9,10 +9,10 @@ import sqlite3
 import tempfile
 import threading
 import uuid
+from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from collections.abc import AsyncIterable, Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -286,7 +286,7 @@ class QuestionImportResource:
 class _TagAnalysisWriteBatch:
     """One prepared tag-write run with one deferred frequency refresh."""
 
-    def __init__(self, service: "QuestionBankWriteService") -> None:
+    def __init__(self, service: QuestionBankWriteService) -> None:
         self._service = service
         self._resolver: CurrentKnowledgeResolver | None = None
         self._prepare_error: Exception | None = None
@@ -294,7 +294,7 @@ class _TagAnalysisWriteBatch:
         self._success_lock = threading.Lock()
         self._entered = False
 
-    def __enter__(self) -> "_TagAnalysisWriteBatch":
+    def __enter__(self) -> _TagAnalysisWriteBatch:
         with self._service._tag_analysis_batch_lock:
             if self._service._active_tag_analysis_batch is not None:
                 raise RuntimeError("tag analysis write batch is already active")
@@ -406,7 +406,10 @@ class QuestionBankWriteService:
 
         _validate_question_create(question)
         initialize_database(self.db_path)
-        from question_bank.services.duplicate_analysis_copy_service import link_new_question_duplicate, copy_duplicate_analysis
+        from question_bank.services.duplicate_analysis_copy_service import (
+            copy_duplicate_analysis,
+            link_new_question_duplicate,
+        )
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import math
 import json
+import math
 from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider

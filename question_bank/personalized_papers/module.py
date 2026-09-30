@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -53,7 +54,6 @@ from .rendering import (
     render_review_docx,
     stamp_frozen_pdf,
 )
-
 
 BUDGET_VERSION = "whole-paper-context-budget-v1"
 SUPPORTED_CONTEXT_WINDOWS = frozenset({32_768, 65_536, 128_000})
@@ -2620,14 +2620,27 @@ def _atomic_write_bytes(destination: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, destination)
+        _replace_with_retry(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
 
 
+def _replace_with_retry(source: Path, destination: Path) -> None:
+    # Windows file scanners can hold a freshly written file open briefly;
+    # retry the atomic rename a few times before giving up.
+    for attempt in range(12):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == 11:
+                raise
+            time.sleep(min(0.05 * (attempt + 1), 0.4))
+
+
 def _atomic_publish(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(source, destination)
+    _replace_with_retry(source, destination)
 
 
 def _file_sha256(path: Path) -> str:

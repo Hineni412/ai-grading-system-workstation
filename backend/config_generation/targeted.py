@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from question_id_contract import canonical_parent_id
 

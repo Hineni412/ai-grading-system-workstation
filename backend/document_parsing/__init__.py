@@ -3,7 +3,6 @@ from backend.document_parsing.docx import (
     parse_docx_question_blocks,
 )
 from backend.document_parsing.question_blocks import (
-    _parse_inline_answer_blocks,
     image_paths_from_rich_text,
     infer_question_type_from_text,
     parse_plain_question_blocks,

@@ -7,76 +7,18 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
-from backend.repositories.access import GradingRepositoryAccess
-from backend.config_workspace.locks import session_config_lock
-from backend.config_workspace.publish import (
-    PublishedConfig,
-    load_editor_config,
-    publish_generated_config,
-    refresh_mapping_after_config_save,
-    refresh_template_mapping_from_session,
-    remove_published_config,
-)
-from backend.config_workspace.sources import (
-    AmbiguousAssetDecision,
-    ConfigSourceError,
-    ConfigSourceRecord,
-    ConfigSourceService,
-    QuestionDecision,
-)
-from backend.config_workspace.secure_fs import (
-    SecureFilesystemError,
-    SecureRootFilesystem,
-)
-from question_bank.services.source_paper_archive_service import (
-    ArchivedSourcePaper,
-    archive_source_bytes,
-    source_archive_sha_lock,
-)
-from question_bank.parsers.type_detector import question_type_from_rubric
-from question_bank.database.schema import connect
-from path_manager import resolve_stored_file_path
-from question_bank.services.source_question_link_service import (
-    SourceQuestionLinkService,
-    _normalize_question_number,
-)
-from backend.config_generation.compat import (
-    allocate_grading_config_scores,
-    failed_grading_config_batches,
-    failed_grading_config_question_ids,
-)
-from question_bank.taxonomy.curriculum_catalog import (
-    curriculum_volume,
-    infer_curriculum_volume_from_text,
-)
-from question_bank.services.duplicate_analysis_copy_service import (
-    analysis_source_exact_key,
-    content_index_lookup,
-    ensure_content_index,
-    reusable_analysis,
-    uncertain_image_candidates,
-)
-from question_bank.training_criteria import (
-    ConfigQuestionAnalysisSource,
-    DeferredCombinedAnalysisBundle,
-    DeferredCombinedAnalysisItem,
-    DeferredAnalysisFailure,
-    InMemoryCombinedQuestionAnalysisModule,
-    OpenAICombinedAnalysisGateway,
-    QuestionAnalysisImage,
-    question_analysis_input_from_config_source,
-    reused_analysis_item,
-)
-from backend.config_workspace.deferred_analysis import (
-    DeferredAnalysisArtifact,
-    DeferredAnalysisArtifactStore,
-)
+from backend.config_generation.compat import allocate_grading_config_scores
 from backend.config_generation.normalization import (
     normalize_new_generated_config_payload,
+)
+from backend.config_generation.orchestration import (
+    failed_grading_config_batches,
+    failed_grading_config_question_ids,
 )
 from backend.config_generation.quality import (
     blocking_quality_question_ids,
@@ -86,19 +28,77 @@ from backend.config_generation.quality import (
 from backend.config_generation.reference_context import build_reference_context
 from backend.config_generation.status_projection import project_question_states
 from backend.config_generation.targeted import (
-    merge_question_states,
     merge_targeted_failure_draft,
     merge_targeted_regeneration,
 )
-from .manager import JobCancellationRequested, JobContext
-from .question_bank_sync import run_deferred_question_bank_intake
+from backend.config_workspace.deferred_analysis import (
+    DeferredAnalysisArtifact,
+    DeferredAnalysisArtifactStore,
+)
+from backend.config_workspace.locks import session_config_lock
+from backend.config_workspace.publish import (
+    PublishedConfig,
+    load_editor_config,
+    publish_generated_config,
+    refresh_mapping_after_config_save,
+    refresh_template_mapping_from_session,
+    remove_published_config,
+)
+from backend.config_workspace.secure_fs import (
+    SecureFilesystemError,
+    SecureRootFilesystem,
+)
+from backend.config_workspace.sources import (
+    AmbiguousAssetDecision,
+    ConfigSourceError,
+    ConfigSourceRecord,
+    ConfigSourceService,
+    QuestionDecision,
+)
 from backend.exam_intake import (
     INTAKE_REQUIRED_KEY,
     classify_intake_result,
     persist_intake_required,
     persist_intake_result,
 )
+from backend.repositories.access import GradingRepositoryAccess
+from path_manager import resolve_stored_file_path
+from question_bank.database.schema import connect
+from question_bank.parsers.type_detector import question_type_from_rubric
+from question_bank.services.duplicate_analysis_copy_service import (
+    analysis_source_exact_key,
+    content_index_lookup,
+    ensure_content_index,
+    reusable_analysis,
+    uncertain_image_candidates,
+)
+from question_bank.services.source_paper_archive_service import (
+    ArchivedSourcePaper,
+    archive_source_bytes,
+    source_archive_sha_lock,
+)
+from question_bank.services.source_question_link_service import (
+    SourceQuestionLinkService,
+    _normalize_question_number,
+)
+from question_bank.taxonomy.curriculum_catalog import (
+    curriculum_volume,
+    infer_curriculum_volume_from_text,
+)
+from question_bank.training_criteria import (
+    ConfigQuestionAnalysisSource,
+    DeferredAnalysisFailure,
+    DeferredCombinedAnalysisBundle,
+    DeferredCombinedAnalysisItem,
+    DeferredCombinedQuestionAnalysisModule,
+    OpenAICombinedAnalysisGateway,
+    QuestionAnalysisImage,
+    question_analysis_input_from_config_source,
+    reused_analysis_item,
+)
 
+from .manager import JobCancellationRequested, JobContext
+from .question_bank_sync import run_deferred_question_bank_intake
 
 if TYPE_CHECKING:
     from .store import JobStore
@@ -210,7 +210,7 @@ def discard_config_generation_input(upload_config_dir: Path, input_id: str) -> N
 
 def cleanup_consumed_config_retry_artifacts(
     upload_config_dir: Path,
-    store: "JobStore",
+    store: JobStore,
     *,
     session_id: int | None = None,
 ) -> None:
@@ -312,7 +312,7 @@ def run_config_generation_job(
 
 def preserve_interrupted_config_generation_checkpoints(
     upload_config_dir: Path,
-    store: "JobStore",
+    store: JobStore,
 ) -> set[str]:
     """Mark interrupted checkpointed jobs retryable before generic restart cleanup."""
     jobs, _total = store.list_jobs(
@@ -747,7 +747,7 @@ def _run_config_generation_job_impl(
             protocol_adapter=tagging_service._protocol_adapter(),
             model_name=str(tagging_service.model),
         )
-        analysis_module = InMemoryCombinedQuestionAnalysisModule(
+        analysis_module = DeferredCombinedQuestionAnalysisModule(
             gateway=gateway,
             taxonomy_governance=taxonomy_governance,
         )
@@ -2018,7 +2018,7 @@ def _reused_analysis_items(
                 fine_term_links=tuple(reused["fine_term_links"]),
                 operation_id=operation_id,
             )
-        except Exception:  # noqa: BLE001 - preserve a local pending item, never call the model
+        except Exception:
             local_id = hashlib.sha256(
                 f"{operation_id}:reuse:{reference}:{bank_id}".encode()
             ).hexdigest()
@@ -2037,7 +2037,7 @@ def _reused_analysis_items(
                 source.question,
                 data_root=data_root,
             )
-        except Exception:  # noqa: BLE001 - a failed lookup must not authorize a model call
+        except Exception:
             LOGGER.exception(
                 "exact-duplicate key failed for source %s",
                 source.source_question_ref,
@@ -2056,7 +2056,7 @@ def _reused_analysis_items(
             matches = content_index_lookup(conn, list(keys.values()))
             uncertain_images = uncertain_image_candidates(conn, tuple(source for source in matched_sources
                 if keys.get(source.source_question_ref) not in matches))
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.exception("exact-duplicate index lookup failed")
         raise ValueError("题库查重索引暂不可用；尚未调用模型") from None
     if not matches and not uncertain_images:
@@ -2086,7 +2086,7 @@ def _reused_analysis_items(
                 fine_term_links=tuple(reused["fine_term_links"]),
                 operation_id=operation_id,
             )
-        except Exception:  # noqa: BLE001 - preserve a local pending item, never call the model
+        except Exception:
             reference = source.source_question_ref
             local_id = hashlib.sha256(f"{operation_id}:reuse:{reference}:{bank_id}".encode()).hexdigest()
             result[reference] = DeferredAnalysisFailure(

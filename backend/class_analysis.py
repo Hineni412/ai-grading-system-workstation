@@ -22,11 +22,11 @@ import hashlib
 import json
 import logging
 import os
-import sqlite3
 import threading
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from analysis_report_prompts import CLASS_MAX_TOKENS, CLASS_SYSTEM_PROMPT
 from backend.jobs.manager import (
@@ -98,7 +98,10 @@ def _cause_text(record: Any) -> str:
 
 def assemble_cause_data(db: Any, session_id: int, *, data_root: Path | None = None) -> Any:
     """复用成绩快照、作答文字和已绑定题目，跳过报告图片与题库回填。"""
-    from backend.session_analysis import assemble_session_analysis, enrich_personal_questions
+    from backend.session_analysis import (
+        assemble_session_analysis,
+        enrich_personal_questions,
+    )
     repositories = as_grading_repositories(db)
     data = assemble_session_analysis(repositories, session_id, data_root=data_root,
                                      page_only=True, include_answer_evidence=True)
@@ -254,8 +257,8 @@ def known_cause_patterns(
     store: Any, question_bank_db_path: Path | None, session_id: int,
 ) -> dict[str, Any]:
     """整理时可复用的错法名：本场其他题已整理的（shared）+ 跨场次同题的（questions）。"""
-    from backend.session_analysis import parent_question_id
     from backend.error_causes import CAUSE_KIND_CATEGORIES
+    from backend.session_analysis import parent_question_id
 
     def usable_groups(state: Any) -> Iterable[dict[str, Any]]:
         stored = (((state or {}).get("cause_analysis") or {}).get("questions")) or {}
@@ -281,7 +284,9 @@ def known_cause_patterns(
             })
 
     from backend.error_patterns import (
-        answer_pattern_map, bank_confirmed_triggers, option_analysis_entries,
+        answer_pattern_map,
+        bank_confirmed_triggers,
+        option_analysis_entries,
         session_bank_context,
     )
 
@@ -522,9 +527,9 @@ def apply_cause_results(
     标记 causes_outdated 等待重新整理）；v1 文本归并走原 legacy 路径。
     传入 session_id + 题库路径时，额外标注每题题库关联。
     """
-    from backend.session_analysis import parent_question_id
     from backend.error_causes import CAUSE_CATEGORIES
     from backend.error_patterns import session_bank_context
+    from backend.session_analysis import parent_question_id
 
     stored = ((state or {}).get("cause_analysis") or {}).get("questions") or {}
     bank_map: dict[str, int] = {}
@@ -661,7 +666,9 @@ def _resolve_option_source(
 ) -> tuple[str, list[str], str]:
     """选项分析的题目来源：题干优先用整理输入，解析不出选项时退回题库正文。"""
     from backend.error_patterns import (
-        extract_canonical_option, normalize_option_answer, parse_option_letters,
+        extract_canonical_option,
+        normalize_option_answer,
+        parse_option_letters,
     )
 
     text = str(source.get("question_text") or "")
@@ -696,12 +703,16 @@ def plan_cause_question(
     - "skip"：选项诊断此前失败且输入未变、本次不重试。
     needs_call：本次是否会产生一次模型调用。
     """
-    from backend.session_analysis import parent_question_id
     from backend.error_patterns import (
-        CHOICE_TYPES, FILL_TYPES, bank_question_row, find_option_analysis,
-        merge_bank_triggers_into_patterns, question_fingerprint,
+        CHOICE_TYPES,
+        FILL_TYPES,
+        bank_question_row,
+        find_option_analysis,
+        merge_bank_triggers_into_patterns,
+        question_fingerprint,
         synthesize_answer_result,
     )
+    from backend.session_analysis import parent_question_id
 
     parent = parent_question_id(source["question_id"])
     if qtype in CHOICE_TYPES and option_scope and ctx.get("bank_id"):
@@ -766,9 +777,12 @@ def _run_option_plan(
 ) -> None:
     """执行选择题选项映射：patterns 缺失时调用一次模型做选项诊断。"""
     from backend.error_patterns import (
-        OPTION_ANALYSIS_PROMPT, OPTION_ANALYSIS_VERSION,
-        build_option_analysis_input, normalize_option_analysis,
-        save_option_analysis, synthesize_option_result,
+        OPTION_ANALYSIS_PROMPT,
+        OPTION_ANALYSIS_VERSION,
+        build_option_analysis_input,
+        normalize_option_analysis,
+        save_option_analysis,
+        synthesize_option_result,
     )
 
     patterns = plan.get("patterns")
@@ -827,7 +841,8 @@ def _fill_answer_library(
 ) -> dict[str, dict[str, Any]]:
     """填空错误答案库：本场次 + 关联场次候选 + 题库已确认（确认优先）。"""
     from backend.error_patterns import (
-        find_answer_patterns, merge_bank_triggers_into_patterns,
+        find_answer_patterns,
+        merge_bank_triggers_into_patterns,
     )
 
     linked_ids = {sid for sid, _ in ctx.get("linked") or set()}
@@ -848,8 +863,8 @@ def _organize_fill_question(
     ctx: dict[str, Any], confirmed_by_bank: dict[int, list[dict[str, Any]]],
 ) -> str:
     """填空题：错误答案库全覆盖时直接映射（0 次调用）；否则退回 v3 整理。"""
-    from backend.session_analysis import parent_question_id
     from backend.error_patterns import synthesize_answer_result
+    from backend.session_analysis import parent_question_id
 
     parent = parent_question_id(source["question_id"])
     library = _fill_answer_library(
@@ -879,14 +894,16 @@ def run_cause_analysis(
     已关联题库的选择题先复用题库选项预测，缺项才补做选项诊断；填空题先查错误答案库，全覆盖零调用，
     否则走 v3 整理并把新错法按规范化答案回写候选库。
     """
-    from backend.session_analysis import parent_question_id, question_bank_db_path
     from backend.error_causes import CAUSE_KIND_CATEGORIES
     from backend.error_patterns import (
-        CHOICE_TYPES, FILL_TYPES,
-        additions_from_v3_result, bank_confirmed_triggers,
-        record_answer_patterns, session_bank_context,
+        FILL_TYPES,
+        additions_from_v3_result,
+        bank_confirmed_triggers,
+        record_answer_patterns,
+        session_bank_context,
         sync_session_patterns_to_bank,
     )
+    from backend.session_analysis import parent_question_id, question_bank_db_path
 
     session_id = int(context.payload["session_id"])
     option_scope = True
@@ -1131,14 +1148,18 @@ def edit_cause_pattern(
     提示核对。未关联时仅改会话状态。会话内同步更新错因分组、物化记录、
     选项诊断与填空候选库中的同名条目，并标记 ``teacher_edited``。
     """
-    from backend.session_analysis import parent_question_id
     from backend.error_causes import CAUSE_KIND_CATEGORIES, normalize_cause_category
     from backend.error_patterns import (
-        answer_pattern_map, bank_confirmed_triggers, option_analysis_entries,
+        answer_pattern_map,
+        bank_confirmed_triggers,
+        option_analysis_entries,
         sync_session_patterns_to_bank,
     )
+    from backend.session_analysis import parent_question_id
     from question_bank.services.error_pattern_service import (
-        current_pattern_for_snapshot, preferred_active_patterns, rename_patterns,
+        current_pattern_for_snapshot,
+        preferred_active_patterns,
+        rename_patterns,
     )
 
     question_id = str(question_id)
@@ -1295,8 +1316,12 @@ def class_question_preview(
     db: GradingRepositoryAccess, session_id: int, question_id: str, *, source_service: Any,
 ) -> dict[str, Any]:
     """按需读取考试绑定的原题，复用配置页图文投影及图片读取入口。"""
-    from backend.session_analysis import infer_data_root, load_rubric, parent_question_id
     from backend.config_workspace.sources import _project_config_rich_blocks
+    from backend.session_analysis import (
+        infer_data_root,
+        load_rubric,
+        parent_question_id,
+    )
 
     repositories = as_grading_repositories(db)
     session = repositories.sessions.get_grading_session(session_id) or {}
@@ -1624,7 +1649,9 @@ def maybe_auto_generate_class_analysis(
     同 revision 已 ready 或已有进行中 job 时幂等跳过；未配置模型时记
     not_configured 状态（页面降级显示），不提交 job、不产生费用。
     """
-    from backend.model_profiles.content_generation import resolve_content_generation_settings
+    from backend.model_profiles.content_generation import (
+        resolve_content_generation_settings,
+    )
     from backend.report_exports import score_revision
 
     repositories = as_grading_repositories(db)

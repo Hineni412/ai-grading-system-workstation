@@ -19,7 +19,6 @@ from data_transfer_service import (
 )
 from update_tools.backup_core import preview_backup
 
-from .models import OpsOperation
 from .archive import OpsArchivePolicy, extract_validated_zip, inspect_zip
 from .database_validation import (
     DATABASE_MEMBERS,
@@ -29,6 +28,7 @@ from .database_validation import (
 )
 from .journal import OpsOperationJournal, OpsOperationManifest
 from .lock import OpsOperationLock
+from .models import OpsOperation
 from .plan_store import OpsPlanStore
 from .write_service import OpsWriteService
 

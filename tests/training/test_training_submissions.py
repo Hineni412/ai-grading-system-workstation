@@ -27,14 +27,14 @@ from question_bank.training_submissions import (
     SubmissionRevisionConflict,
     TrainingSubmissionModule,
 )
-from tests.phase4.test_personalized_papers import (
+from tests.training.test_personalized_papers import (
     SyntheticPdfConverter,
     _create_command,
     _diagnosis as _paper_diagnosis,
     paper_workspace,
 )
-from tests.phase4.test_part_assessment_mastery import refined_training_source
-from tests.phase4.test_personalized_recommendation import (
+from tests.training.test_part_assessment_mastery import refined_training_source
+from tests.training.test_personalized_recommendation import (
     NOW,
     _diagnosis,
 )
@@ -613,7 +613,7 @@ def test_blur_crop_and_invalid_signature_stay_in_manual_review(
     paper, draft, db_path, data_root = paper_workspace
     instance = _freeze(paper, draft, token="5")
     path, _ = paper.artifact_path(str(instance["paper_instance_id"]), "frozen-pdf")
-    first, second = _pdf_pages(path)
+    second = _pdf_pages(path)[1]
     module = TrainingSubmissionModule(db_path=db_path, data_root=data_root)
     batch = module.create_batch(
         CreateScanBatchCommand(
@@ -623,7 +623,7 @@ def test_blur_crop_and_invalid_signature_stay_in_manual_review(
         )
     )
     samples = (
-        ("7", _crop_png(first)),
+        ("7", _cropped_identity_png(db_path, str(instance["paper_instance_id"]))),
         ("8", _blur_png(second)),
         (
             "9",
@@ -724,8 +724,27 @@ def _rotate_png(content: bytes) -> bytes:
     return bytes(encoded)
 
 
-def _crop_png(content: bytes) -> bytes:
-    image = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
+def _cropped_identity_png(db_path: Path, paper_instance_id: str) -> bytes:
+    # A severely cropped page carrying a crisp re-rendered QR with the real
+    # page identity.  Decoding the stamped QR inside the cropped frozen-PDF
+    # render was marginal: the payload embeds per-run hashes, so the decode
+    # flickered between 'severe_crop' and 'identity_unreadable'.
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT page_identity FROM personalized_paper_pages
+            WHERE paper_instance_id = ? AND page_number = 1
+            """,
+            (paper_instance_id,),
+        ).fetchone()
+    identity = str(row["page_identity"])
+    qr = cv2.imdecode(
+        np.frombuffer(_qr_png(identity), dtype=np.uint8),
+        cv2.IMREAD_COLOR,
+    )
+    qr = cv2.resize(qr, (220, 220), interpolation=cv2.INTER_NEAREST)
+    image = np.full((1800, 1273, 3), 255, dtype=np.uint8)
+    image[-260:-40, -260:-40] = qr
     cropped = image[:, int(image.shape[1] * 0.22) :]
     success, encoded = cv2.imencode(".png", cropped)
     assert success

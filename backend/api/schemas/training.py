@@ -42,7 +42,7 @@ class TrainingScopeRequest(_TrainingModel):
         return text or None
 
     @model_validator(mode="after")
-    def validate_scope(self) -> "TrainingScopeRequest":
+    def validate_scope(self) -> TrainingScopeRequest:
         if self.score_rate_min is not None and self.score_rate_max is not None:
             if self.score_rate_min > self.score_rate_max:
                 raise ValueError("score rate range is invalid")
@@ -152,7 +152,7 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
     @model_validator(mode="after")
     def difficulty_range_is_ordered(
         self,
-    ) -> "PersonalizedRecommendationCreateRequest":
+    ) -> PersonalizedRecommendationCreateRequest:
         if self.target_keys and self.target_names:
             raise ValueError(
                 "target_keys and target_names cannot both be provided"
@@ -310,7 +310,7 @@ class TrainingScanPageResolveRequest(_TrainingModel):
     page_number: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
-    def validate_target(self) -> "TrainingScanPageResolveRequest":
+    def validate_target(self) -> TrainingScanPageResolveRequest:
         if self.action in {"match", "replace"} and (
             self.paper_instance_id is None or self.page_number is None
         ):

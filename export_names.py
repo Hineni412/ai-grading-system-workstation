@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 
-
 _WINDOWS_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 _SEPARATOR_TRIM = re.compile(r"\s+")
 

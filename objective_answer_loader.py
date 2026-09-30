@@ -1,6 +1,5 @@
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from path_manager import get_path_manager

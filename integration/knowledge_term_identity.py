@@ -4,7 +4,6 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-
 _WHITESPACE = re.compile(r"\s+")
 _LEADING_SEPARATORS = re.compile(r"^[\s·路:：|\-]+")
 

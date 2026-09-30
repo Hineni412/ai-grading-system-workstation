@@ -17,7 +17,6 @@ from backend.repositories.review import ReviewRepository
 from backend.repositories.templates import RegionRepository, TemplateRepository
 from backend.status_contracts import validate_status
 
-
 QUESTION_BANK_SYNC_STATES = {"not_started", "running", "ready", "partial", "failed"}
 
 

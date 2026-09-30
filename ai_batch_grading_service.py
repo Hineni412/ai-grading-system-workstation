@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from PIL import Image, ImageDraw
 
@@ -16,23 +17,27 @@ from ai_grader import (
 from answer_normalizer import SCORE_BAIT_REVIEW_REASON, grading_item_bait_status
 from backend.domain_models import ExamPaperGroup, GradingResult, QuestionGradingDetail
 from grading_completeness import audit_grading_details, details_require_review
-from objective_batch_recognition_service import OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE, run_objective_batch_recognition
+from objective_batch_recognition_service import (
+    OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE,
+    run_objective_batch_recognition,
+)
+from question_id_contract import canonical_parent_id, question_id_coordinates
 from scoring_prompt_rules import SHARED_GRADING_RULES
 from solution_answer_guard import (
     answer_only_correct_flag,
     apply_solution_substance_rules,
-    integer_business_score,
-    final_simplification_deduction,
-    normalize_candidate_scores,
-    uncertain_step_ids,
-    validate_step_assessments,
     extract_observed_text,
+    final_simplification_deduction,
+    integer_business_score,
+    normalize_candidate_scores,
     response_mode_requires_process,
     rubric_question_meta,
     rubric_response_mode,
+    uncertain_step_ids,
+    validate_step_assessments,
 )
 from usage_logger import extract_usage_fields
-from question_id_contract import canonical_parent_id, question_id_coordinates
+
 OBJECTIVE_TYPES = {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}
 
 
@@ -222,7 +227,7 @@ def run_ai_batch_grading(
                     question_tag_context=question_tag_context,
                     target_detail_question_ids_by_paper_key=targets_by_paper_key,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if progress_callback is not None:
                     progress_callback(
                         {
@@ -262,7 +267,7 @@ def run_ai_batch_grading(
                     }
                 )
             return result
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {
                 "usage": None,
                 "accepted": [],

@@ -12,7 +12,6 @@ from question_bank.services.taxonomy_review_suggestions import (
 
 from .manager import JobContext
 
-
 _RUN_ID = re.compile(r"^[0-9a-f]{32}$")
 _TERMINAL_RUN_STATUSES = frozenset(
     {"completed", "partial", "failed", "cancelled", "stale"}

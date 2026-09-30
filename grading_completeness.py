@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from question_id_contract import (
     QuestionIdCatalog,
     canonicalize_question_document,
 )
-
 
 REVIEW_CONFIDENCE_THRESHOLD = 80.0
 OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD = 70.0

@@ -5,7 +5,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-
 DIFFICULTY_SCALE_VERSION = "junior-full-range-2026-09-v2"
 DIFFICULTY_SCALE_GUIDANCE = (
     "难度使用统一教学标尺 junior-full-range-2026-09-v2，1—10覆盖初中从识别概念到中考压轴的完整跨度，"
@@ -171,7 +170,7 @@ class TagAnalysis:
     part_features: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "TagAnalysis":
+    def from_dict(cls, payload: dict[str, Any]) -> TagAnalysis:
         if not isinstance(payload, dict):
             payload = {}
         return cls(

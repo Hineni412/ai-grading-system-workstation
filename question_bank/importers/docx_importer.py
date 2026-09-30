@@ -4,9 +4,10 @@ import hashlib
 import html
 import io
 import re
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import BinaryIO
 
 from docx import Document
 from docx.oxml import parse_xml
@@ -17,7 +18,6 @@ from docx.text.run import Run
 
 from question_bank.database.paths import project_data_root
 from question_bank.importers.types import ExtractedDocument
-
 
 _IMAGE_REL_ATTR = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:.+?\]\]")
@@ -252,7 +252,7 @@ def _table_record(
                 continue
             seen_cells.add(cell._tc)
             cell_parts: list[str] = []
-            for child in list(cell._tc.iterchildren()):  # noqa: SLF001 - needed for document-order table traversal.
+            for child in list(cell._tc.iterchildren()):
                 if child.tag == qn("w:p"):
                     record = _paragraph_record(
                         Paragraph(child, cell),
@@ -295,7 +295,7 @@ def _table_record(
         rows_html.append("<tr>" + "".join(cells_html) + "</tr>")
     return {
         "text": "<table><tbody>" + "".join(rows_html) + "</tbody></table>" if rows_html else "",
-        "xml": table._element.xml,  # noqa: SLF001 - needed to preserve source table shape.
+        "xml": table._element.xml,
         "image_relationships": image_relationships,
         "parse_warnings": warnings,
         "images_in_text_order": True,
@@ -473,7 +473,7 @@ def _iter_paragraphs(document):
 def _iter_table_paragraphs(table: Table):
     for row in table.rows:
         for cell in row.cells:
-            for child in cell._tc.iterchildren():  # noqa: SLF001 - needed for document-order table traversal.
+            for child in cell._tc.iterchildren():
                 if child.tag == qn("w:p"):
                     yield Paragraph(child, cell)
                 elif child.tag == qn("w:tbl"):

@@ -7,18 +7,18 @@ import hashlib
 import html
 import io
 import json
-import tempfile
 import os
 import re
 import stat
+import tempfile
 import threading
 import uuid
 import zipfile
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Collection, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Literal
+from typing import Any, ContextManager, Literal
 from urllib.parse import unquote
 
 from PIL import Image
@@ -33,8 +33,8 @@ from backend.config_workspace.secure_fs import (
     SecureRootFilesystem,
 )
 from backend.document_parsing import (
-    extract_docx_text,
-    extract_pdf_text,
+    extract_docx_text,  # noqa: F401  (kept: tests monkeypatch this seam)
+    extract_pdf_text,  # noqa: F401  (kept: tests monkeypatch this seam)
     parse_docx_question_blocks,
     parse_plain_question_blocks,
 )
@@ -45,7 +45,6 @@ from backend.document_parsing.question_blocks import (
     has_visible_stem_fill_blank_mark,
     has_visible_subparts,
 )
-
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MAX_DOCX_MEMBER_BYTES = 256 * 1024 * 1024
@@ -1544,13 +1543,12 @@ class ConfigSourceService:
         if page_count <= 0:
             raise ConfigSourceInvalidError()
 
+        from question_bank.document_pipeline.pipeline import QuestionDocumentPipeline
+        from question_bank.importers.batch_importer import _extract_paper
         from rubric_auto_cropper import (
             extract_pdf_images,
             extract_pdf_question_images,
         )
-
-        from question_bank.importers.batch_importer import _extract_paper
-        from question_bank.document_pipeline.pipeline import QuestionDocumentPipeline
 
         # Reuse the bank's local PDF extraction, including layout coordinates.
         # Temporary OCR assets never become persistent source references.

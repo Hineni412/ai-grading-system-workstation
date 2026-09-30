@@ -5,7 +5,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-
 _REGISTRY_GUARD = threading.Lock()
 _SESSION_LOCKS: dict[tuple[Path, int], threading.Lock] = {}
 

@@ -17,12 +17,12 @@ import tempfile
 import threading
 import time
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from path_manager import get_path_manager
 from question_bank.database.paths import question_bank_db_path
@@ -37,7 +37,6 @@ from question_bank.taxonomy.curriculum_catalog import (
     curriculum_volume_contract,
     eligible_curriculum_knowledge_nodes,
 )
-
 
 ALLOWED_DIMENSIONS = (
     "curriculum",
@@ -1015,6 +1014,19 @@ def _file_signature(path: Path) -> tuple[bool, int, int, int, int]:
     )
 
 
+def _replace_with_retry(source: Path, destination: Path) -> None:
+    # Windows file scanners can hold a freshly written temporary file open
+    # briefly; retry the atomic rename a few times before giving up.
+    for attempt in range(12):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == 11:
+                raise
+            time.sleep(min(0.05 * (attempt + 1), 0.4))
+
+
 def _write_state_atomic(
     path: Path,
     state: Mapping[str, Any],
@@ -1041,7 +1053,7 @@ def _write_state_atomic(
                 pass
             else:
                 shutil.copy2(path, _backup_path(path))
-        os.replace(temporary, path)
+        _replace_with_retry(temporary, path)
     finally:
         if temporary.exists():
             temporary.unlink()

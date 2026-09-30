@@ -8,8 +8,8 @@ from question_bank.importers.batch_importer import (
     BatchImportResult,
     PaperMetadata,
     ScannedPaper,
-    infer_metadata_from_filename,
     import_scanned_papers,
+    infer_metadata_from_filename,
 )
 from question_bank.services.question_write_service import (
     QuestionBankWriteService,
@@ -18,7 +18,6 @@ from question_bank.services.question_write_service import (
 
 from .execution_locks import keyed_execution_locks
 from .manager import JobContext
-
 
 ImportRunner = Callable[..., BatchImportResult]
 

@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 from question_bank.solution_evidence.repository import (
     FineTermCoreMappingRepository,
 )
 from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE
-
 
 TermKind = Literal["core_knowledge", "fine_knowledge", "procedure"]
 BaselineStatus = Literal["resolved", "ambiguous", "unmapped"]

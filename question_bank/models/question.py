@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import re
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-
 
 ALLOWED_TAG_TYPES = {
     "knowledge_point",

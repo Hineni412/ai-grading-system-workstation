@@ -16,7 +16,6 @@ from backend.results_center.service import ResultsCenterService
 from backend.review.manual_context import current_manual_context
 from backend.scan_grading.workspace import ScanGradingWorkspace
 
-
 router = APIRouter(prefix="/api", tags=["results-center"])
 
 

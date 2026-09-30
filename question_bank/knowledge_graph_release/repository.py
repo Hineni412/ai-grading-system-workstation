@@ -4,9 +4,10 @@ import json
 import re
 import sqlite3
 import unicodedata
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from question_bank.database.schema import connect
 from question_bank.knowledge_graph_release.contracts import (

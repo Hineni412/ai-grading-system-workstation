@@ -550,7 +550,7 @@ def seed_workspace(workspace: Path, source_sha: str) -> dict[str, Any]:
 
     from backend.api.app import create_app
     from backend.repositories.grading_database import open_grading_repositories
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
     from question_bank.database.schema import initialize_database
     from tests.api_e2e.harness import (
         ApiE2EHarness,

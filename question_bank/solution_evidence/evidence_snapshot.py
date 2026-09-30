@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from question_bank.solution_evidence.knowledge_links import load_point_links
 from question_bank.solution_evidence.part_assessments import (

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from backend.config_workspace.deferred_analysis import (
     DeferredAnalysisArtifact,
@@ -13,23 +14,19 @@ from backend.config_workspace.deferred_analysis import (
 )
 from backend.config_workspace.publish import LoadedEditorConfig, load_editor_config
 from path_manager import resolve_stored_file_path
-from question_bank.database.schema import connect
 from question_bank.current_knowledge import CurrentFineTermResolver
+from question_bank.database.schema import connect
+from question_bank.parsers.type_detector import question_type_from_rubric
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
     _normalize_question_number,
     _source_question_id,
 )
-from question_bank.parsers.type_detector import question_type_from_rubric
-
-from .manager import JobCancellationRequested, JobContext
-from .question_import import run_question_import_job
-from .tagging_sync import run_tagging_sync_job
-from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 from question_bank.solution_evidence import (
     SolutionEvidenceRepository,
 )
+from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 from question_bank.training_criteria import (
     ConfirmedQuestionAdoptionLink,
     DeferredCombinedProjectionWriter,
@@ -41,6 +38,9 @@ from question_bank.training_criteria.adapters import (
     BankQuestionTypeSuggestionWriter,
 )
 
+from .manager import JobCancellationRequested, JobContext
+from .question_import import run_question_import_job
+from .tagging_sync import run_tagging_sync_job
 
 QuestionImportRunner = Callable[..., dict[str, object]]
 TaggingSyncRunner = Callable[..., dict[str, object]]
@@ -317,9 +317,6 @@ def run_session_question_bank_sync_job(
 
         # §7.2 hard rule: freeze the evidence/link snapshot after links are
         # confirmed and any adoption/tag retry has written evidence versions.
-        from question_bank.solution_evidence.evidence_snapshot import (
-            freeze_session_evidence_snapshot,
-        )
         # §7.2 hard rule: freeze the evidence/link snapshot after links are
         # confirmed and any adoption/tag retry has written evidence versions.
         # The rubric is annotated in place (§7.2 question-level records +

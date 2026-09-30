@@ -14,11 +14,11 @@ from backend.training_assessment.contracts import (
     TrainingPaperOutcome,
     stable_hash,
 )
-from question_bank.database.schema import connect
 from question_bank.current_knowledge import (
     CurrentKnowledgeResolver,
     CurrentKnowledgeUnavailable,
 )
+from question_bank.database.schema import connect
 from question_bank.mastery.current import CurrentMasteryCalculator
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,

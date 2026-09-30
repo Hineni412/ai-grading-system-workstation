@@ -16,7 +16,6 @@ from backend.schema_migrations import (
 )
 from path_manager import get_path_manager
 
-
 LOOPBACK_HOST = "127.0.0.1"
 
 

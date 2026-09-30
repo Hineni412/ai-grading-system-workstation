@@ -99,7 +99,7 @@ def _system(tmp_path, *, config_fingerprint_resolver=None):
 
 
 def _prepare_ready_scan_batch(client, db, tmp_path, session_id: int) -> dict:
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
 
     if not db.students.list_students():
         db.students.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
@@ -160,7 +160,7 @@ def _prepare_ready_scan_batch(client, db, tmp_path, session_id: int) -> dict:
 def test_cancelled_run_cannot_resume_and_legacy_run_retry_is_rejected(
     tmp_path,
 ) -> None:
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
     from grading_run_store import GradingRunStore
 
     client, db, manager = _system(tmp_path)
@@ -229,7 +229,7 @@ def test_cancelled_run_cannot_resume_and_legacy_run_retry_is_rejected(
 
 
 def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None:
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
 
     client, db, manager = _system(tmp_path)
     db.students.upsert_students([StudentRecord("S001", "学生甲", "测试班")])
@@ -455,7 +455,7 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
 def test_resume_rejects_changed_grading_configuration_before_submitting_job(
     tmp_path,
 ) -> None:
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
     from grading_run_store import GradingRunStore
 
     client, db, manager = _system(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 
-
 TEXT_CLEAN_PATTERN = re.compile(r"[\W_]+", re.UNICODE)
 
 

@@ -125,7 +125,7 @@ def test_scan_upload_routes_publish_safe_queue_and_freeze_it(tmp_path) -> None:
 def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(
     tmp_path,
 ) -> None:
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
 
     client, db, manager = _client(tmp_path)
     db.students.upsert_students(

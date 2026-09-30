@@ -38,7 +38,7 @@ def _connect_ro(path: Path) -> sqlite3.Connection:
 
 def _item_max_scores(rubric: Mapping[str, Any]) -> dict[str, float]:
     """item_ref -> max score, mirroring db_manager._load_rubric_maps_for_session."""
-    from session_manager import iter_effective_rubric_item_refs
+    from backend.config_generation.contract import iter_effective_rubric_item_refs
 
     scores: dict[str, float] = {}
     for item_ref, _parent, question, item in iter_effective_rubric_item_refs(rubric):

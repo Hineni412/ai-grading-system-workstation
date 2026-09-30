@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import shutil
 import subprocess
 import tempfile
@@ -197,6 +196,7 @@ def _render_via_matplotlib(latex_str: str, output_path: Path, dpi: int) -> bool:
 
 
 import re
+
 
 def parse_latex_runs(text: str) -> list[tuple[str, str]]:
     runs = []

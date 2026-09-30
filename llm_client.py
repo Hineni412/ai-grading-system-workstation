@@ -3,13 +3,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
-from itertools import count
 import json
 import math
 import os
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from itertools import count
+from typing import Any
+
+from openai import OpenAI
+from PIL import Image, ImageOps
 
 from backend.llm import (
     JsonlCallTraceSink,
@@ -20,18 +24,22 @@ from backend.llm import (
     looks_like_truncated_json_object,
     response_diagnostics,
 )
+from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.trace import (
-    safe_endpoint_host,
     TRACE_LOG_FILE as LLM_TRACE_LOG_FILE,
 )
-from backend.llm.json_repair import parse_json_object_locally
+from backend.llm.trace import (
+    safe_endpoint_host,
+)
 from backend.llm.transport import (
     create_openai_client as _shared_create_openai_client,
+)
+from backend.llm.transport import (
     gateway_config_key as _shared_gateway_config_key,
+)
+from backend.llm.transport import (
     normalize_openai_base_url as _shared_normalize_openai_base_url,
 )
-from openai import OpenAI
-from PIL import Image, ImageOps
 from usage_logger import LOG_FILE as LLM_USAGE_LOG_FILE
 
 

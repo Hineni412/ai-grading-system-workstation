@@ -14,7 +14,8 @@ from backend.students import (
     StudentDeleteFailed,
     StudentRosterModule,
 )
-from db_manager import DBManager, StudentRecord
+from backend.repositories.students import StudentRecord
+from db_manager import DBManager
 from backend.repositories.grading_database import open_grading_repositories
 
 

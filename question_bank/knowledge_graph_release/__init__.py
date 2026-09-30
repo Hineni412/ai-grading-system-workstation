@@ -13,13 +13,13 @@ from question_bank.knowledge_graph_release.loader import (
     load_taxonomy_catalog_for_release,
 )
 from question_bank.knowledge_graph_release.repository import (
+    HighImpactItem,
     InstallIssue,
     InstallPreview,
-    HighImpactItem,
     KnowledgeGraphReleaseConflict,
     KnowledgeGraphReleaseNotFound,
-    active_release_id,
     activate_release,
+    active_release_id,
     bootstrap_release,
     load_active_release,
     preview_install,

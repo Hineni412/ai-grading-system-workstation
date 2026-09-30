@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import html as _html
 import re
-from typing import Mapping
+from collections.abc import Mapping
 from xml.etree import ElementTree
 
 from question_bank.services.inline_math import omml_parts

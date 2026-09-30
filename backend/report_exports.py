@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import threading
 from pathlib import Path
-import sqlite3
 
 from backend.file_access import ControlledFileError
 from backend.files.service import JobFileService
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobRecord
 from backend.repositories.access import GradingRepositoryAccess
-
 
 _submit_lock = threading.RLock()
 _REPORT_RENDITION_VERSIONS = {

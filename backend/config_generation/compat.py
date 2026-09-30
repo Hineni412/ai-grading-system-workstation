@@ -1,26 +1,14 @@
 from __future__ import annotations
 
-import importlib
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from .orchestration import (
-    ConfigGenerationOrchestrator,
-    failed_grading_config_batches,
-    failed_grading_config_question_ids,
-)
+from .orchestration import ConfigGenerationOrchestrator
 from .policy import build_config_generation_policy
 
 
-def _session_manager() -> Any:
-    """Resolve P3-10 policy functions only when a workflow is constructed."""
-    return importlib.import_module("session_manager")
-
-
 def _policy():
-    module = _session_manager()
-    return build_config_generation_policy(
-        validate_image_inputs=module._validate_image_semantic_inputs,
-    )
+    return build_config_generation_policy()
 
 
 def allocate_grading_config_scores(

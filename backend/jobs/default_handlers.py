@@ -2,38 +2,39 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from analysis_report_exporter import (
     ANALYSIS_REPORT_TYPES,
     AnalysisReportGenerator,
 )
+from api_profiles import get_api_profile_store, resolve_profile_for_task
+from backend.llm.policy import policy_overrides_from_profile
 from backend.model_profiles.content_generation import (
     resolve_content_generation_settings,
 )
-from api_profiles import get_api_profile_store, resolve_profile_for_task
-from backend.llm.policy import policy_overrides_from_profile
 from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.grading_database import open_grading_repositories
 from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from original_paper_exporter import OriginalPaperExporter
-from report import ReportGenerator
 from question_bank.document_pipeline import QuestionDocumentPipeline
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.taxonomy.governance import get_taxonomy_governance
+from report import ReportGenerator
 
-from .manager import JobContext, JobManager
 from .answer_draft import run_answer_draft_job
+from .assembly_export import run_assembly_export_job
 from .config_generation import run_config_generation_job
 from .criterion_backfill import run_criterion_backfill_job
-from .knowledge_link_job import run_knowledge_link_job, build_knowledge_link_gateway
-from .assembly_export import run_assembly_export_job
 from .grading_run import run_grading_job
-from .question_import import run_question_import_job
+from .knowledge_link_job import build_knowledge_link_gateway, run_knowledge_link_job
+from .manager import JobContext, JobManager
 from .question_bank_sync import run_session_question_bank_sync_job
+from .question_import import run_question_import_job
 from .scan_analysis import run_scan_analysis
 from .tagging_sync import run_tagging_sync_job
 from .taxonomy_suggestions import run_taxonomy_suggestion_job

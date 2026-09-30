@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import logging
-import re
 import posixpath
+import re
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable
 from xml.etree import ElementTree
 
 from docx import Document as WordDocument
@@ -17,7 +16,6 @@ from docx.shared import Inches, Pt
 
 from .contracts import FormulaFallback, MathExpression, canonical_hash
 from .math_omml import build_math_expression
-
 
 _MATH_RUN = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.DOTALL)
 _LEADING_QUESTION_NUMBER = re.compile(
@@ -65,7 +63,7 @@ def natural_image_width_inches(
             if height_inches > height_cap:
                 width_inches *= height_cap / height_inches
             return min(width_inches, max_width_inches)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return max_width_inches
 
 
@@ -86,9 +84,9 @@ def add_floating_picture(
     run = paragraph.add_run()
     try:
         run.add_picture(str(image_path), width=Inches(width_inches))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
-    drawing = run._r.find(qn("w:drawing"))  # noqa: SLF001
+    drawing = run._r.find(qn("w:drawing"))
     inline = drawing.find(qn("wp:inline")) if drawing is not None else None
     if inline is None:
         return False
@@ -177,7 +175,7 @@ class WordStyleProfile:
         return canonical_hash(asdict(self))
 
     @classmethod
-    def from_export_config(cls, config: object | None) -> "WordStyleProfile":
+    def from_export_config(cls, config: object | None) -> WordStyleProfile:
         if config is None:
             return cls()
         page_width_cm = (
@@ -282,7 +280,7 @@ class SharedWordQuestionRenderer:
                 prepared.append((element, resolved_relationships))
             if not prepared or has_unrenderable_text_block:
                 return RichBlockRenderResult(appended=False)
-        except Exception:  # noqa: BLE001
+        except Exception:
             LOGGER.exception("Failed to preflight rich Word blocks")
             return RichBlockRenderResult(appended=False)
 
@@ -338,7 +336,7 @@ class SharedWordQuestionRenderer:
                         )
             for element, _relationships in prepared:
                 _append_to_document_body(document, element)
-        except Exception:  # noqa: BLE001
+        except Exception:
             LOGGER.exception("Failed to append rich Word blocks")
             return RichBlockRenderResult(appended=False)
         return RichBlockRenderResult(
@@ -476,7 +474,7 @@ class SharedWordQuestionRenderer:
     ) -> FormulaFallback | None:
         if expression.omml:
             try:
-                paragraph._p.append(parse_xml(expression.omml))  # noqa: SLF001
+                paragraph._p.append(parse_xml(expression.omml))
                 return None
             except Exception:
                 reason = "validated OMML could not be inserted"
@@ -604,7 +602,7 @@ def rich_block_text(
             if strip_leading_number and index == 0:
                 _strip_leading_question_number(element)
             elements.append(element)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     if not elements:
         return None
@@ -1126,7 +1124,7 @@ def _keep_text_with_following_picture(elements: Sequence[object]) -> None:
 
 
 def _append_to_document_body(document, element) -> None:
-    body = document._body._element  # noqa: SLF001
+    body = document._body._element
     if len(body) and str(body[-1].tag).endswith("}sectPr"):
         body.insert(len(body) - 1, element)
     else:

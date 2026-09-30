@@ -9,8 +9,7 @@ import tempfile
 import textwrap
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass, replace
-from dataclasses import field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from xml.etree import ElementTree
@@ -19,24 +18,8 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.document_pipeline.contracts import TextLayerState
 from question_bank.importers.docx_importer import import_docx
 from question_bank.importers.mineru_parse import parse_pdf_full
-from question_bank.importers.pdf_importer import import_pdf, embedded_text_usable
+from question_bank.importers.pdf_importer import embedded_text_usable, import_pdf
 from question_bank.importers.types import ExtractedDocument
-from question_bank.services.duplicate_analysis_copy_service import (
-    ensure_content_index,
-    content_index_lookup,
-    answers_conflict,
-    exact_question_key,
-    record_paper_occurrence,
-    upsert_content_index,
-)
-from question_bank.services.similarity_service import (
-    question_text_profile, profiled_text_similarity,
-    wording_similarity_upper_bound,
-    WordingCandidateIndex,
-    QuestionTextProfile,
-)
-from question_bank.services.source_paper_archive_service import archive_source_paper
-from question_bank.services.rich_content_service import save_question_rich_content
 from question_bank.parsers.type_detector import (
     detect_essay_subtype,
     detect_question_type,
@@ -44,7 +27,23 @@ from question_bank.parsers.type_detector import (
     split_legacy_question_type,
     validate_section_numbering,
 )
-
+from question_bank.services.duplicate_analysis_copy_service import (
+    answers_conflict,
+    content_index_lookup,
+    ensure_content_index,
+    exact_question_key,
+    record_paper_occurrence,
+    upsert_content_index,
+)
+from question_bank.services.rich_content_service import save_question_rich_content
+from question_bank.services.similarity_service import (
+    QuestionTextProfile,
+    WordingCandidateIndex,
+    profiled_text_similarity,
+    question_text_profile,
+    wording_similarity_upper_bound,
+)
+from question_bank.services.source_paper_archive_service import archive_source_paper
 
 if TYPE_CHECKING:
     from question_bank.document_pipeline.pipeline import QuestionDocumentPipeline
@@ -156,7 +155,7 @@ def _materialize_markdown_images(
             if alt:
                 return f"[[IMAGE:{output_path}|caption={alt}]]"
             return f"[[IMAGE:{output_path}]]"
-        except Exception:  # noqa: BLE001 - 单张图失败不阻塞整份试卷导入
+        except Exception:
             return match.group(0)
 
     return _MARKDOWN_IMAGE.sub(_replace, text), saved
@@ -171,7 +170,7 @@ def _stamped_image_blob(blob: bytes, ext: str) -> tuple[bytes, str] | None:
         import io
 
         from PIL import Image
-    except Exception:  # noqa: BLE001
+    except Exception:
         return blob, ext
     try:
         with Image.open(io.BytesIO(blob)) as image:
@@ -192,7 +191,7 @@ def _stamped_image_blob(blob: bytes, ext: str) -> tuple[bytes, str] | None:
                 image.save(buffer, format="PNG", dpi=(_MINERU_IMAGE_DPI, _MINERU_IMAGE_DPI))
                 ext = ".png"
             return buffer.getvalue(), ext
-    except Exception:  # noqa: BLE001
+    except Exception:
         return blob, ext
 
 
@@ -711,7 +710,7 @@ def import_scanned_papers(
     asset_overrides: list[dict[str, Any]] | None = None,
     type_overrides: Mapping[str, str] | None = None,
     confirmed_duplicates: Mapping[str, int] | None = None,
-    document_pipeline: "QuestionDocumentPipeline | None" = None,
+    document_pipeline: QuestionDocumentPipeline | None = None,
     full_parser: Callable[[Path], str | None] | None = None,
 ) -> BatchImportResult:
     database_path = Path(db_path)
@@ -766,7 +765,7 @@ def import_scanned_papers(
                     full_parser=full_parser,
                 )
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             LOGGER.exception("Failed to import local paper %s", original_path)
             file_results.append(
                 PaperImportFileResult(
@@ -827,7 +826,7 @@ def _import_scanned_paper(
     type_overrides: Mapping[str, str] | None = None,
     confirmed_duplicates: Mapping[str, int] | None = None,
     duplicate_index: _DuplicateIndex | None = None,
-    document_pipeline: "QuestionDocumentPipeline | None" = None,
+    document_pipeline: QuestionDocumentPipeline | None = None,
     full_parser: Callable[[Path], str | None] | None = None,
 ) -> PaperImportFileResult:
     initialize_database(db_path)
@@ -1195,7 +1194,7 @@ def _extract_paper(
     path: Path,
     *,
     asset_root: Path | None = None,
-    document_pipeline: "QuestionDocumentPipeline | None" = None,
+    document_pipeline: QuestionDocumentPipeline | None = None,
     full_parser: Callable[[Path], str | None] | None = None,
     operation_id: str | None = None,
 ):
@@ -1286,7 +1285,7 @@ def _extract_with_colored_layers(
     try:
         try:
             layers = split_colored_answer_layers(path, work_dir)
-        except Exception:  # noqa: BLE001
+        except Exception:
             LOGGER.warning("彩色答案层拆分失败，退回普通 MinerU 路径: %s", path, exc_info=True)
             return None, {}
         if layers is None:

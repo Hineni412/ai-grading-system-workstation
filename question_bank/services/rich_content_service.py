@@ -8,7 +8,6 @@ from pathlib import Path
 from question_bank.database.paths import project_data_root
 from question_bank.services.file_cache import cached_parsed_file
 
-
 LOGGER = logging.getLogger(__name__)
 RICH_CONTENT_VERSION = 3
 _QUESTION_SECTION_HEADING = re.compile(

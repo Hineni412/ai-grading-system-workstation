@@ -5,16 +5,16 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.models.tag_schema import TaggingContext
 from question_bank.services.ai_tagging_service import AITaggingService
-from question_bank.taxonomy.curriculum_catalog import (
-    infer_curriculum_volume_from_text,
-)
-from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.solution_evidence import (
     SolutionEvidenceProjectionWriter,
     SolutionEvidenceRepository,
+)
+from question_bank.taxonomy.curriculum_catalog import (
+    infer_curriculum_volume_from_text,
 )
 from question_bank.training_criteria import (
     BankQuestionTypeSuggestionWriter,

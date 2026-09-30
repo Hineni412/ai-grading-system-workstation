@@ -26,7 +26,7 @@ from question_bank.training_criteria import (
     ConfigQuestionAnalysisSource,
     DeferredCombinedAnalysisBundle,
     GatewayBatchResponse,
-    InMemoryCombinedQuestionAnalysisModule,
+    DeferredCombinedQuestionAnalysisModule,
     QuestionAnalysisInput,
     TaxonomyProjectionReviewRequired,
     question_analysis_input_from_config_source,
@@ -346,7 +346,7 @@ def test_targeted_repair_context_survives_uncertain_retry_and_restart() -> None:
         _question(11, source_ref="Q11"),
     )
     rejected = _repairable_identity_mismatch_payload(11)
-    initial = InMemoryCombinedQuestionAnalysisModule(
+    initial = DeferredCombinedQuestionAnalysisModule(
         gateway=QueueGateway([rejected]),
         resolver=Resolver(),
     ).analyze(
@@ -356,7 +356,7 @@ def test_targeted_repair_context_survives_uncertain_retry_and_restart() -> None:
     )
     original_failure = initial.failures[0]
 
-    uncertain = InMemoryCombinedQuestionAnalysisModule(
+    uncertain = DeferredCombinedQuestionAnalysisModule(
         gateway=QueueGateway([TimeoutError("synthetic timeout after send")]),
         resolver=Resolver(),
     ).retry_failed(
@@ -384,7 +384,7 @@ def test_targeted_repair_context_survives_uncertain_retry_and_restart() -> None:
             return super().analyze(batch, **kwargs)
 
     gateway = ConfirmedRepairGateway()
-    completed = InMemoryCombinedQuestionAnalysisModule(
+    completed = DeferredCombinedQuestionAnalysisModule(
         gateway=gateway,
         resolver=Resolver(),
     ).retry_failed(
@@ -404,13 +404,13 @@ def test_targeted_repair_context_survives_uncertain_retry_and_restart() -> None:
     )
 
 
-def test_in_memory_unknown_request_outcome_is_durable_and_never_normally_retried() -> (
+def test_deferred_unknown_request_outcome_is_durable_and_never_normally_retried() -> (
     None
 ):
     source = ConfigQuestionAnalysisSource("Q1", _question(1, source_ref="Q1"))
     timeout_gateway = QueueGateway([TimeoutError("synthetic timeout after send")])
 
-    uncertain = InMemoryCombinedQuestionAnalysisModule(
+    uncertain = DeferredCombinedQuestionAnalysisModule(
         gateway=timeout_gateway,
         resolver=Resolver(),
     ).analyze(
@@ -425,7 +425,7 @@ def test_in_memory_unknown_request_outcome_is_durable_and_never_normally_retried
     assert uncertain.requests[-1].status == "outcome_unknown"
 
     retry_gateway = QueueGateway([_combined_payload(1)])
-    unchanged = InMemoryCombinedQuestionAnalysisModule(
+    unchanged = DeferredCombinedQuestionAnalysisModule(
         gateway=retry_gateway,
         resolver=Resolver(),
     ).retry_failed(
@@ -440,7 +440,7 @@ def test_in_memory_unknown_request_outcome_is_durable_and_never_normally_retried
     assert retry_gateway.calls == []
 
     confirmed_gateway = QueueGateway([_combined_payload(1)])
-    confirmed = InMemoryCombinedQuestionAnalysisModule(
+    confirmed = DeferredCombinedQuestionAnalysisModule(
         gateway=confirmed_gateway,
         resolver=Resolver(),
     ).retry_failed(

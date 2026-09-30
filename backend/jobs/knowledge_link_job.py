@@ -79,6 +79,7 @@ def link_request_schema() -> dict[str, Any]:
 def build_knowledge_link_gateway(service: Any) -> Callable[[Mapping[str, Any]], Mapping[int, Any]]:
     """Reuse the configured tagging protocol; call only when a job has gaps."""
     from uuid import uuid4
+
     from backend.llm import LLMRequestKind
     from backend.llm.json_repair import parse_json_object_locally
     operation_id = f'knowledge_link:{uuid4().hex}'

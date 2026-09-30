@@ -6,13 +6,12 @@ import os
 import tempfile
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from backend.llm import policy_overrides_from_profile
-
 
 _DEPRECATED_OBJECTIVE_PROFILE_KEYS = {
     "objective_timeout",

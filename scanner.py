@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import inspect
+import io
 import json
 import math
 import os
 import re
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Callable, List
+from typing import Any, List
 
 from PIL import Image, ImageDraw
 
@@ -87,7 +88,7 @@ class ScanAnalysis:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ScanAnalysis":
+    def from_dict(cls, data: dict[str, Any]) -> ScanAnalysis:
         return cls(
             groups=[_group_from_dict(item) for item in data.get("groups", []) if isinstance(item, dict)],
             issues=[_issue_from_dict(item) for item in data.get("issues", []) if isinstance(item, dict)],
@@ -863,7 +864,7 @@ class Scanner:
                 page = future_map[future]
                 try:
                     page.detected_name = future.result()
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     print(f"[WARNING] PDF第 {page.page_number} 页姓名识别失败: {exc}")
                     page.detected_name = None
                 if on_page_processed is not None:
@@ -899,7 +900,7 @@ class Scanner:
         image_files: list[Path],
         all_pdf_page_sets: list[tuple[str, list[PageRecord]]],
         students: list[dict[str, Any]] | None,
-        progress: "_ScanProgressReporter",
+        progress: _ScanProgressReporter,
     ) -> dict[str, dict[str, Any]] | None:
         """Local roster-constrained identification; returns None when unavailable.
 
@@ -931,7 +932,7 @@ class Scanner:
             vocabulary = build_vocabulary(roster)
             # Loads the engine lazily; missing models raise and keep the legacy path.
             ocr.character_columns(vocabulary)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"[WARNING] 本机名单识别不可用，回退到原姓名识别流程: {exc}")
             return None
 
@@ -959,7 +960,7 @@ class Scanner:
                         file_key=file_key,
                         ocr=ocr,
                     )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 print(f"[WARNING] 本机姓名识别失败 {image_path.name}: {exc}")
             else:
                 evidence_list.append(evidence)
@@ -1039,11 +1040,11 @@ class Scanner:
                 )
                 for index, entry in enumerate(entries)
             ]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if len(entries) == 1:
                 try:
                     return [self._call_extract_student_name(entries[0][1], student_lookup)]
-                except Exception as single_exc:  # noqa: BLE001
+                except Exception as single_exc:
                     print(f"[WARNING] 单份姓名识别失败: {single_exc}")
                     return [entries[0][3]]
             midpoint = len(entries) // 2
@@ -1069,6 +1070,7 @@ class Scanner:
     def _do_local_ocr(self, image: Image.Image) -> str | None:
         try:
             import numpy as np
+
             from local_ocr import get_local_ocr
 
             img_cv = np.asarray(image.convert("RGB"))[:, :, ::-1].copy()
@@ -1179,7 +1181,7 @@ class Scanner:
             return image_path
         try:
             return enhance_image_file(image_path, self.enhanced_dir)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"[WARNING] 图像增强失败，改用原图: {image_path} ({exc})")
             return image_path
 

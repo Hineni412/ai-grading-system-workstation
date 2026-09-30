@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 TASK_CARDS: tuple[dict[str, Any], ...] = (
     {
         "id": "change_data",

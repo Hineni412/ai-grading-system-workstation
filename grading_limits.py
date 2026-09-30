@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 OBJECTIVE_BATCH_SIZE_MIN = 1
 OBJECTIVE_BATCH_SIZE_MAX = 15
 

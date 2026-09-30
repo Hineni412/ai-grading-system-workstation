@@ -4,8 +4,8 @@ import logging
 import math
 import time
 import uuid
+from collections.abc import Callable, Mapping
 from itertools import count
-from typing import Callable, Mapping
 
 from .diagnostics import JsonlDiagnosticJournal
 from .errors import LLMErrorCategory, classify_llm_error, is_retryable_error
@@ -17,11 +17,22 @@ from .execution import (
 from .pacing import LLMPacerRegistry
 from .policy import (
     EXECUTION_SCOPE_PROFILE_FIELD,
+    REQUEST_TIMEOUT_MAX,
     LLMPolicyError,
     LLMProtocol,
     LLMRequestKind,
-    REQUEST_TIMEOUT_MAX,
     policy_from_profile,
+)
+from .trace import (
+    LLMCallTraceEvent,
+    NullCallTraceSink,
+    actual_model_label,
+    error_diagnostics,
+    provider_request_id,
+    request_diagnostics,
+    safe_host_label,
+    safe_trace_label,
+    utc_timestamp,
 )
 from .usage import (
     LLMUsageEvent,
@@ -30,18 +41,6 @@ from .usage import (
     response_diagnostics,
     usage_fields,
 )
-from .trace import (
-    actual_model_label,
-    error_diagnostics,
-    LLMCallTraceEvent,
-    NullCallTraceSink,
-    provider_request_id,
-    request_diagnostics,
-    safe_host_label,
-    safe_trace_label,
-    utc_timestamp,
-)
-
 
 logger = logging.getLogger(__name__)
 _DEFAULT_PACERS = LLMPacerRegistry()

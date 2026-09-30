@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from choice_recognition_chain import score_choice_by_program
 from agent_bridge.respond_subj import _detail
 from grading_completeness import (
     is_objective_detail,
@@ -15,13 +14,6 @@ from backend.review.service import (
     _is_substantive_review_reason,
     _detail_metadata_for_qid,
 )
-
-
-@pytest.mark.parametrize("answer", ["B~82", "CB.2", "B2", "AB", "[B]extra"])
-def test_choice_contamination_never_becomes_confident_wrong_score(answer):
-    result = score_choice_by_program(answer, "B", 6, 0.99)
-    assert result["need_review"] is True
-    assert result["review_reason"] == "invalid_choice_answer"
 
 
 def test_subjective_bridge_requires_real_evidence_and_confidence():

@@ -11,10 +11,11 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any
 from uuid import uuid4
 
 from question_bank.authoring.task_cards import is_task_card_id

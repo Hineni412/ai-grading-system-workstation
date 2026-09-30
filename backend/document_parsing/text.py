@@ -11,8 +11,8 @@ def extract_docx_text(file_bytes: bytes) -> str:
     Headers/footers are page furniture, not extra questions appended to the paper.
     The image writer is intentionally a no-op: this function owns no asset files.
     """
-    from question_bank.importers.docx_importer import import_docx
     from backend.document_parsing.question_blocks import rich_blocks_plain_text
+    from question_bank.importers.docx_importer import import_docx
 
     extracted = import_docx(
         io.BytesIO(file_bytes),

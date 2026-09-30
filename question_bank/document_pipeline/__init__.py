@@ -1,9 +1,9 @@
 from .adapters import (
     ImagePreprocessor,
     LocalOcrAdapter,
+    MineruOcrAdapter,
     OcrLine,
     PreparedImage,
-    MineruOcrAdapter,
     SafeImagePreprocessor,
 )
 from .contracts import (
@@ -34,12 +34,6 @@ from .contracts import (
     SourceRegion,
     TextLayerState,
 )
-from .math_omml import (
-    RestrictedMathError,
-    build_math_expression,
-    restricted_latex_to_mathml,
-    restricted_latex_to_omml,
-)
 from .legacy_exports import (
     PublishedMathMetadata,
     data_root_for_database,
@@ -47,6 +41,12 @@ from .legacy_exports import (
     load_legacy_export_receipt,
     published_math_metadata,
     save_validated_legacy_export,
+)
+from .math_omml import (
+    RestrictedMathError,
+    build_math_expression,
+    restricted_latex_to_mathml,
+    restricted_latex_to_omml,
 )
 from .pipeline import (
     DocumentPipelineConflict,

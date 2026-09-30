@@ -8,7 +8,6 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-
 MODEL_DIRECTORY = (
     Path(__file__).resolve().parent / "runtime" / "models" / "mineru"
     / "MinerU-4_models_onnx" / "OCR" / "paddleocr"
@@ -87,9 +86,8 @@ class MineruOcr:
         to ``columns``). Column 0 of the recognizer output is the CTC blank.
         """
         import numpy as np
-
-        from mineru.model.ocr.image import get_rotate_crop_image_for_text_rec
         from mineru.model.ocr.geometry import sorted_boxes
+        from mineru.model.ocr.image import get_rotate_crop_image_for_text_rec
 
         with self._lock:
             rec = self._ensure_engine().text_recognizer

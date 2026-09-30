@@ -8,7 +8,6 @@ from PIL import Image
 
 from path_manager import resolve_stored_file_path
 
-
 _SOURCE_WIDTH_KEYS = ("source_image_width", "template_image_width", "image_width")
 _SOURCE_HEIGHT_KEYS = ("source_image_height", "template_image_height", "image_height")
 

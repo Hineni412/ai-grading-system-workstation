@@ -9,8 +9,8 @@ from fastapi.responses import FileResponse
 
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
-    get_job_manager,
     get_data_root,
+    get_job_manager,
     get_question_bank_db_path,
     get_question_bank_read_service,
     get_question_bank_write_service,
@@ -26,10 +26,13 @@ from backend.api.schemas.question_bank import (
     QuestionDetailResponse,
     QuestionErrorPatternEditRequest,
     QuestionFacetsResponse,
+    QuestionImportJobSubmitRequest,
+    QuestionImportRequestCreate,
+    QuestionImportRequestResponse,
+    QuestionImportUploadResponse,
+    QuestionJobRetryRequest,
     QuestionListItem,
     QuestionListResponse,
-    QuestionRefListItem,
-    QuestionRefListResponse,
     QuestionPaperListItem,
     QuestionPaperListResponse,
     QuestionPaperMetadataUpdateRequest,
@@ -40,15 +43,12 @@ from backend.api.schemas.question_bank import (
     QuestionPaperPermanentDeleteResponse,
     QuestionPaperStateChangeRequest,
     QuestionPaperStateWriteResponse,
+    QuestionRefListItem,
+    QuestionRefListResponse,
     QuestionSolutionEvidenceResponse,
-    QuestionImportRequestCreate,
-    QuestionImportJobSubmitRequest,
-    QuestionImportRequestResponse,
-    QuestionImportUploadResponse,
-    QuestionJobRetryRequest,
     QuestionStateChangeRequest,
-    QuestionTagWriteRequest,
     QuestionTaggingJobRequest,
+    QuestionTagWriteRequest,
     QuestionWriteResponse,
     SimilarQuestionItem,
     SimilarQuestionListResponse,
@@ -57,13 +57,13 @@ from backend.api.schemas.question_bank import (
     TaxonomyProposalListResponse,
     TaxonomyProposalReviewRequest,
     TaxonomyProposalReviewResponse,
-    TaxonomySuggestionCreateRequest,
+    TaxonomyReviewOperationResponse,
+    TaxonomyReviewOperationUndoRequest,
     TaxonomySuggestionBatchApplyRequest,
     TaxonomySuggestionBatchPreviewRequest,
     TaxonomySuggestionBatchPreviewResponse,
+    TaxonomySuggestionCreateRequest,
     TaxonomySuggestionRetryRequest,
-    TaxonomyReviewOperationResponse,
-    TaxonomyReviewOperationUndoRequest,
     TaxonomySuggestionRunResponse,
     TaxonomySuggestionStartResponse,
     TrainingCriterionBackfillCreateRequest,
@@ -74,33 +74,6 @@ from backend.api.schemas.question_bank import (
     TrainingCriterionReviewRequest,
     TrainingCriterionVersionResponse,
     TrainingCriterionWorkspaceResponse,
-)
-from question_bank.taxonomy.curriculum_catalog import (
-    CurriculumCatalogError,
-    curriculum_volume,
-    load_curriculum_catalog,
-)
-from question_bank.taxonomy.governance import (
-    TaxonomyProposalNotFound,
-    TaxonomyRevisionConflict,
-    TaxonomyReviewInvalid,
-    TaxonomyStorageError,
-    TaxonomyTargetTermNotFound,
-    get_taxonomy_governance,
-)
-from question_bank.services.taxonomy_review_service import (
-    TaxonomyReviewApplicationNotFound,
-    TaxonomyReviewRequestConflict,
-    TaxonomyReviewSelectionInvalid,
-    TaxonomyReviewService,
-    TaxonomyReviewUndoConflict,
-)
-from question_bank.services.taxonomy_review_suggestions import (
-    TaxonomySuggestionInvalid,
-    TaxonomySuggestionNotFound,
-    TaxonomySuggestionRequestConflict,
-    TaxonomySuggestionRevisionConflict,
-    TaxonomySuggestionService,
 )
 from backend.file_access import (
     ControlledFileExpired,
@@ -127,22 +100,52 @@ from question_bank.services.question_write_service import (
     PaperMetadataNotFound,
     PaperMetadataUpdate,
     PaperMetadataWriteResult,
+    PaperPermanentDeleteConfirmationMismatch,
+    PaperPermanentDeleteConflict,
+    PaperPermanentDeleteDependencyConflict,
+    PaperPermanentDeleteSelection,
+    PaperPermanentDeleteStorageIncomplete,
     PaperStateConflict,
     PaperStateNotFound,
     PaperStateWriteResult,
-    PaperPermanentDeleteConflict,
-    PaperPermanentDeleteDependencyConflict,
-    PaperPermanentDeleteConfirmationMismatch,
-    PaperPermanentDeleteSelection,
-    PaperPermanentDeleteStorageIncomplete,
     QuestionBankWriteService,
-    QuestionImportTypeNotSupported,
-    QuestionImportUploadNotFound,
     QuestionImportStorageForbidden,
     QuestionImportTooLarge,
+    QuestionImportTypeNotSupported,
+    QuestionImportUploadNotFound,
     QuestionWriteConflict,
     QuestionWriteNotFound,
     QuestionWriteResult,
+)
+from question_bank.services.taxonomy_review_service import (
+    TaxonomyReviewApplicationNotFound,
+    TaxonomyReviewRequestConflict,
+    TaxonomyReviewSelectionInvalid,
+    TaxonomyReviewService,
+    TaxonomyReviewUndoConflict,
+)
+from question_bank.services.taxonomy_review_suggestions import (
+    TaxonomySuggestionInvalid,
+    TaxonomySuggestionNotFound,
+    TaxonomySuggestionRequestConflict,
+    TaxonomySuggestionRevisionConflict,
+    TaxonomySuggestionService,
+)
+from question_bank.solution_evidence.repository import (
+    SolutionEvidenceRepository,
+)
+from question_bank.taxonomy.curriculum_catalog import (
+    CurriculumCatalogError,
+    curriculum_volume,
+    load_curriculum_catalog,
+)
+from question_bank.taxonomy.governance import (
+    TaxonomyProposalNotFound,
+    TaxonomyReviewInvalid,
+    TaxonomyRevisionConflict,
+    TaxonomyStorageError,
+    TaxonomyTargetTermNotFound,
+    get_taxonomy_governance,
 )
 from question_bank.training_criteria import (
     CriterionQualityError,
@@ -156,10 +159,6 @@ from question_bank.training_criteria import (
     TrainingCriterionModule,
     solution_evidence_source_content_hash,
 )
-from question_bank.solution_evidence.repository import (
-    SolutionEvidenceRepository,
-)
-
 
 router = APIRouter(prefix="/api/question-bank", tags=["question-bank"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
@@ -2312,7 +2311,10 @@ def edit_question_error_pattern(
 ) -> QuestionDetailResponse:
     from backend.error_causes import CAUSE_CATEGORIES
     from question_bank.database.schema import connect
-    from question_bank.services.error_pattern_service import reject_pattern, rename_patterns
+    from question_bank.services.error_pattern_service import (
+        reject_pattern,
+        rename_patterns,
+    )
 
     with connect(db_path) as conn:
         row = conn.execute(

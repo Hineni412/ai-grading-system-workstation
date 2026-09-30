@@ -5,10 +5,11 @@ import os
 import re
 import threading
 import time
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from api_profiles import get_api_profile_store, resolve_profile_for_task
 from backend.llm import (
@@ -41,7 +42,6 @@ from question_bank.services.taxonomy_review_suggestions import (
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
 from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
-
 
 DEFAULT_TAGGING_MODEL = "gpt-4o"
 _TAGGING_REASONING_INSTRUCTION = (
@@ -348,7 +348,7 @@ class AITaggingService:
                 governance=self.taxonomy_governance,
                 taxonomy_contract=taxonomy_contract,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return AITaggingResult(ok=False, mock_mode=False, error=str(exc), model_name=self.model, quality_status="invalid", quality_notes=[str(exc)])
 
     def suggest_taxonomy_reviews(
@@ -471,7 +471,7 @@ class AITaggingService:
                 governance=self.taxonomy_governance,
                 taxonomy_contract=taxonomy_contract,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return AITaggingResult(ok=False, mock_mode=False, error=str(exc), model_name=self.review_model or None, quality_status="invalid", quality_notes=[str(exc)])
 
     @property
@@ -1565,7 +1565,7 @@ def _json_from_text_once_compat(
         return method(prompt, **call_kwargs)
 
 
-def _analyze_one_question(service: AITaggingService, context: TaggingContext, rate_limiter: "_RateLimiter") -> AITaggingResult:
+def _analyze_one_question(service: AITaggingService, context: TaggingContext, rate_limiter: _RateLimiter) -> AITaggingResult:
     rate_limiter.acquire()
     return service.analyze_question(context)
 
@@ -1919,7 +1919,7 @@ def _mock_batch_analysis(batch_contexts: list[tuple[int, TaggingContext]]) -> di
 def _analyze_one_batch(
     service: AITaggingService,
     batch_items: list[tuple[int, TaggingContext]],
-    request_controller: "_TaggingRequestController",
+    request_controller: _TaggingRequestController,
     allow_batch_fallback: bool,
     quality_retry_limit: int,
     enable_review: bool,
@@ -2198,7 +2198,7 @@ def _finalize_batch_results(
     batch_items: list[tuple[int, TaggingContext]],
     raw_results: dict[int, AITaggingResult],
     *,
-    request_controller: "_TaggingRequestController | None" = None,
+    request_controller: _TaggingRequestController | None = None,
     quality_retry_limit: int = 1,
     enable_review: bool = True,
     taxonomy_contracts: Mapping[int, Mapping[str, Any]] | None = None,
@@ -2484,7 +2484,7 @@ def _review_low_confidence_result(
     context: TaggingContext,
     primary: AITaggingResult,
     *,
-    request_controller: "_TaggingRequestController | None" = None,
+    request_controller: _TaggingRequestController | None = None,
     question_id: int | None = None,
     taxonomy_contract: Mapping[str, Any] | None = None,
     images: Sequence[Any] = (),
@@ -2751,7 +2751,7 @@ class _TaggingRequestController:
         started = self.begin(request_kind, question_ids)
         try:
             result = operation()
-        except BaseException as exc:  # noqa: BLE001 - 分类后重新抛出
+        except BaseException as exc:
             self._emit(
                 TaggingRequestEvent(
                     request_number=started.request_number,

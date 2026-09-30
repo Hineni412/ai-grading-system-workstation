@@ -5,19 +5,18 @@ student practice eligibility. The experiment remains an independent oracle.
 """
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field
 import math
 import re
 import statistics
 import unicodedata
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from question_bank.recommendation.target_matching import part_facets, target_index
 from question_bank.solution_evidence.knowledge_links import load_point_links
 from question_bank.solution_evidence.part_assessments import load_profiles
-
 
 WEIGHTS = {"skill": .42, "knowledge": .15, "method": .12, "model": .08,
            "special_type": .07, "thought": .04, "ability": .03, "demand": .09}

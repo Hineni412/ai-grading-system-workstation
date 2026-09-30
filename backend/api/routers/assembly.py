@@ -12,26 +12,32 @@ from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
     get_assembly_workspace_service,
     get_job_manager,
-    get_question_bank_read_service,
-    get_question_bank_db_path,
-    get_request_diagnosis_profile_service,
     get_personalized_recommendation_module,
+    get_question_bank_db_path,
+    get_question_bank_read_service,
+    get_request_diagnosis_profile_service,
 )
+from backend.api.routers.jobs import _job_response
 from backend.api.schemas.assembly import (
+    AssemblyAssistantRequest,
+    AssemblyAssistantResponse,
     AssemblyDraftResponse,
     AssemblyDraftWriteRequest,
     AssemblyExportSubmitRequest,
     AssemblyQuestionListResponse,
     AssemblyRecordDeleteResponse,
     AssemblyRecordListResponse,
-    AssemblyRecordRestoreRequest,
     AssemblyRecordResponse,
-    AssemblyAssistantRequest,
-    AssemblyAssistantResponse,
+    AssemblyRecordRestoreRequest,
 )
 from backend.api.schemas.jobs import JobResponse
-from backend.api.routers.jobs import _job_response
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
+from integration.data_generation import commit_generation
+from integration.diagnosis_profile_service import DiagnosisProfileService
+from integration.result_cache import ResultCache
+from integration.training_prewarm import record_request
+from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+from question_bank.services.assembly_assistant import shortlist_candidates
 from question_bank.services.assembly_workspace_service import (
     AssemblyDraft,
     AssemblyDraftConflict,
@@ -45,13 +51,6 @@ from question_bank.services.question_read_service import (
     QuestionBankReadService,
     QuestionBankSnapshotError,
 )
-from integration.data_generation import commit_generation
-from integration.diagnosis_profile_service import DiagnosisProfileService
-from integration.result_cache import ResultCache
-from integration.training_prewarm import record_request
-from question_bank.recommendation.personalized import PersonalizedRecommendationModule
-from question_bank.services.assembly_assistant import shortlist_candidates
-
 
 router = APIRouter(prefix="/api/question-assembly", tags=["question-assembly"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}

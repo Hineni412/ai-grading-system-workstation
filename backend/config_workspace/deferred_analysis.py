@@ -4,19 +4,19 @@ import hashlib
 import json
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from backend.config_workspace.secure_fs import (
     SecureFilesystemError,
     SecureRootFilesystem,
 )
 from question_bank.solution_evidence.contracts import FineTermResolver
-from question_bank.training_criteria.in_memory import (
+from question_bank.training_criteria.combined_analysis import (
     DeferredCombinedAnalysisBundle,
 )
-
 
 _ARTIFACT_ID = re.compile(r"^[0-9a-f]{32}$")
 _SOURCE_ID = re.compile(r"^[0-9a-f]{32}$")

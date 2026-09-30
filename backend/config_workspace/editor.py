@@ -3,8 +3,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 from backend.config_generation.normalization import validate_generated_config
 from backend.config_generation.quality import (
@@ -15,7 +16,6 @@ from question_id_contract import (
     canonical_part_id,
     question_id_coordinates,
 )
-
 
 _OBJECTIVE_TYPES = {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}
 _SOLUTION_TYPES = {"proof", "calculation", "comprehensive"}

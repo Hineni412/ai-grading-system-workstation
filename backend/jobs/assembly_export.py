@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 from backend.jobs.manager import JobContext
 from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
@@ -38,7 +38,9 @@ def run_assembly_export_job(
     if not draft.order_ids:
         raise ValueError("assembly draft is empty")
     if draft.practice_rules:
-        from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+        from question_bank.recommendation.personalized import (
+            PersonalizedRecommendationModule,
+        )
         PersonalizedRecommendationModule(db_path=question_bank_db_path, data_root=data_root).validate_paper_questions(draft.order_ids)
     export_format = str(context.payload.get("format") or "").strip().casefold()
     if export_format not in {"docx", "markdown"}:

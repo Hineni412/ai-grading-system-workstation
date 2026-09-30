@@ -12,7 +12,6 @@ from uuid import uuid4
 
 from backend.schema_migrations import ensure_schema_current
 
-
 ITEM_STATUSES = (
     "pending",
     "grading",

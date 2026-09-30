@@ -17,8 +17,8 @@ from pydantic import BaseModel, Field
 
 from backend.api.frontend import mount_frontend
 from backend.performance.metrics import PerformanceSink, request_performance_scope
-from path_manager import PathManager, get_path_manager as get_default_path_manager
-
+from path_manager import PathManager
+from path_manager import get_path_manager as get_default_path_manager
 
 LOGGER = logging.getLogger("ai_grading.api")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

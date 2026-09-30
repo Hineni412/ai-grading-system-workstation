@@ -19,7 +19,6 @@ from backend.model_profiles import (
     ModelProfileService,
 )
 
-
 router = APIRouter(prefix="/api/model-profiles", tags=["model-profiles"])
 MODEL_PROFILE_ERROR_RESPONSES = {
     404: {"model": ErrorResponse, "description": "Model profile not found"},

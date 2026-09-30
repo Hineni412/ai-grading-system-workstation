@@ -3,17 +3,16 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from question_bank.current_knowledge import (
     CurrentKnowledgeResolver,
     CurrentKnowledgeUnavailable,
 )
 from question_bank.database.schema import connect, initialize_database
-
 
 FINGERPRINT_VERSION = 6
 FORMAL_EXAM_TYPES = ("期中", "期末", "中考")

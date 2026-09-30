@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from backend.review.service import ReviewApplicationService
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
+from backend.review.service import ReviewApplicationService
 from path_manager import resolve_stored_file_path
 from question_id_contract import (
     QuestionIdContractError,

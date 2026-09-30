@@ -194,6 +194,9 @@ def test_concurrent_ops_api_submissions_return_one_busy_conflict(tmp_path) -> No
     release.set()
     manager.shutdown()
 
-    assert sorted(response.status_code for response in responses) == [202, 409]
+    assert sorted(response.status_code for response in responses) == [
+        202,
+        409,
+    ], [response.json() for response in responses]
     conflict = next(response for response in responses if response.status_code == 409)
     assert conflict.json()["error"]["code"] == "ops_operation_busy"

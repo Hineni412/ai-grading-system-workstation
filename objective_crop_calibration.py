@@ -1,9 +1,11 @@
 import json
 import logging
 from pathlib import Path
-from path_manager import get_path_manager
+
 import cv2
 import numpy as np
+
+from path_manager import get_path_manager
 
 logger = logging.getLogger(__name__)
 

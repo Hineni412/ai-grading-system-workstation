@@ -15,7 +15,6 @@ from backend.file_access import (
 from backend.files.service import JobFileNotFound, JobFileService, JobFileUnavailable
 from backend.jobs.manager import JobManager
 
-
 router = APIRouter(prefix="/api", tags=["files"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

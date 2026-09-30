@@ -21,7 +21,6 @@ from answer_region_session_lock import get_answer_region_session_lock
 from path_manager import resolve_stored_file_path
 from question_id_contract import QuestionIdCatalog, QuestionIdContractError
 
-
 logger = logging.getLogger(__name__)
 _SAFE_TOKEN = re.compile(r"[A-Za-z0-9_-]+")
 _STUDENT_NAME_REGION_ID = "__student_name__"

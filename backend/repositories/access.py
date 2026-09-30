@@ -15,8 +15,8 @@ from backend.repositories.papers import PaperRepositoryGateway
 from backend.repositories.reporting import ReportRepositoryGateway
 from backend.repositories.results import ResultRepositoryGateway
 from backend.repositories.review import ReviewRepositoryGateway
-from backend.repositories.settings import SettingsRepositoryGateway
 from backend.repositories.sessions import SessionRepositoryGateway
+from backend.repositories.settings import SettingsRepositoryGateway
 from backend.repositories.students import StudentRepositoryGateway
 from backend.repositories.templates import TemplateRegionRepositoryGateway
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 class GradingRepositoryAccess:
     """Expose grading persistence through named repository gateways."""
 
-    def __init__(self, database: "DBManager") -> None:
+    def __init__(self, database: DBManager) -> None:
         self._database = database
         self.db_path = Path(database.db_path)
         self.students: StudentRepositoryGateway = database.student_repository

@@ -5,11 +5,13 @@ import os
 import queue
 import re
 import time
-from dataclasses import replace
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
+from ai_batch_grading_service import run_ai_batch_grading
 from ai_grader import AIGrader
 from backend.domain_models import (
     ExamPaperGroup,
@@ -18,9 +20,18 @@ from backend.domain_models import (
     SecondaryError,
     detail_ai_score,
 )
+from backend.grading_workflow import preflight_match_status, rubric_scoring_item_scores
 from backend.llm.execution import execution_snapshot_from_profile
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
-from backend.grading_workflow import preflight_match_status, rubric_scoring_item_scores
+from grading_completeness import (
+    audit_grading_details,
+    details_require_review,
+    is_objective_detail,
+    major_question_id,
+    major_question_ids_for_issues,
+    merge_detail_metadata,
+    review_confidence_threshold,
+)
 from grading_limits import (
     FULL_PAPER_WORKERS_MAX,
     FULL_PAPER_WORKERS_MIN,
@@ -32,14 +43,17 @@ from grading_limits import (
     OBJECTIVE_BATCH_SIZE_MIN,
     bounded_int,
 )
-from grading_completeness import audit_grading_details, is_objective_detail, major_question_id, major_question_ids_for_issues, merge_detail_metadata, details_require_review, review_confidence_threshold
 from image_preprocessor import enhance_image_file, is_standard_pdf_page
 from integration.question_tag_projection_service import QuestionTagProjectionService
 from llm_client import LLMClient
 from path_manager import get_path_manager
-from ai_batch_grading_service import run_ai_batch_grading
 from request_pacer import RequestPacer
-from scanner import STUDENT_NAME_REGION_ALIASES, ScanAnalysis, Scanner, student_name_region_from_regions
+from scanner import (
+    STUDENT_NAME_REGION_ALIASES,
+    ScanAnalysis,
+    Scanner,
+    student_name_region_from_regions,
+)
 
 
 def _detail_from_row(row: dict[str, Any]) -> QuestionGradingDetail:
@@ -239,8 +253,8 @@ class GradingService:
         from grading_run_store import GradingRunResumeMismatchError
 
         try:
-            from grading_run_store import GradingRunStore
             from grading_run_identity import grading_config_fingerprint
+            from grading_run_store import GradingRunStore
 
             config_fingerprint = grading_config_fingerprint(
                 rubric=grader.rubric,
@@ -773,7 +787,7 @@ class GradingService:
                 paper_id: entry.paper_key
                 for entry, (paper_id, _, _) in zip(batch_run.paper_entries, matched_records)
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if _cancel_requested():
                 for marked_paper_id in marked_paper_ids:
                     _restore_paper_after_cancel(
@@ -1000,7 +1014,7 @@ class GradingService:
                     "current": completed,
                     "total": total,
                 }
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if retry_existing and retry_existing.get("atomic_retry"):
                     self.results.record_result_retry_failure(
                         retry_existing["result_id"],
@@ -1541,8 +1555,8 @@ def _apply_manual_decisions(
 
 
 def _attach_enhanced_paths(analysis: ScanAnalysis, output_dir: Path) -> None:
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     import os
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     tasks = []
     
@@ -1582,7 +1596,7 @@ def _enhance_or_original(path: Path, output_dir: Path) -> Path:
         return path
     try:
         return enhance_image_file(path, output_dir)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return path
 
 

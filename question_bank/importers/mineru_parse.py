@@ -55,13 +55,13 @@ def _run_mineru(path: Path):
     try:
         import mineru
         from mineru.config import config
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.warning("MinerU full parse unavailable: mineru import failed", exc_info=True)
         return None
     try:
         if Path(config.model.base_dir).resolve() != MINERU_MODELS_DIR.parent.resolve():
             config.model.base_dir = str(MINERU_MODELS_DIR.parent)
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.warning(
             "MinerU full parse unavailable: cannot set model base_dir to %s",
             MINERU_MODELS_DIR.parent,
@@ -70,7 +70,7 @@ def _run_mineru(path: Path):
         return None
     try:
         return mineru.parse(str(path), tier="basic", ocr_mode="ocr")
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.warning("MinerU full parse failed for %s", path, exc_info=True)
         return None
 
@@ -86,7 +86,7 @@ def parse_pdf_full(path: Path, *, layout_out: dict | None = None) -> str | None:
         structured = _render_structured(result)
         if structured:
             return structured
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.warning(
             "MinerU structured render failed for %s; falling back to markdown",
             path,
@@ -95,7 +95,7 @@ def parse_pdf_full(path: Path, *, layout_out: dict | None = None) -> str | None:
     try:
         markdown = result.markdown()
         return str(markdown or "").strip() or None
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.warning("MinerU markdown fallback failed for %s", path, exc_info=True)
         return None
 
@@ -130,7 +130,7 @@ class _Record:
     text: str = ""
     image_data: str = ""
     captions: list[str] = field(default_factory=list)
-    fallback: "_Question | None" = None  # 阅读顺序归题兜底
+    fallback: _Question | None = None  # 阅读顺序归题兜底
 
 
 @dataclass
@@ -742,7 +742,7 @@ def _region_is_small(region: object) -> bool:
     )
 
 
-def _region_clip(page: object, region: object) -> "object":
+def _region_clip(page: object, region: object) -> object:
     import fitz
 
     rect = page.rect
@@ -759,7 +759,7 @@ def _region_clip(page: object, region: object) -> "object":
     return clip
 
 
-def _region_line_image(page: object, region: object) -> "object":
+def _region_line_image(page: object, region: object) -> object:
     """裁剪答案区域并渲染到约 64px 行高、16px 白边的 BGR numpy 图。"""
     import fitz
     import numpy as np
@@ -787,7 +787,7 @@ def _ocr_region_line(page: object, region: object) -> str:
 
         image = _region_line_image(page, region)
         rows, _elapsed = get_local_ocr()(image)
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.warning("local OCR failed for answer region %s", region, exc_info=True)
         return ""
     if not rows:
@@ -930,7 +930,7 @@ def _answers_from_regions(
                 _save_answer_crop(source[region.page_idx], region, crop_dir / name)
         finally:
             source.close()
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.warning("answer-crop dump failed for %s", answers_pdf, exc_info=True)
 
     texts = _ocr_answer_regions(answers_pdf, kept)
@@ -981,7 +981,10 @@ def _inject_inline_blanks(
     """
     if not inline_regions:
         return
-    from question_bank.importers.batch_importer import _BLANK_GROUP, _normalize_ocr_blanks
+    from question_bank.importers.batch_importer import (
+        _BLANK_GROUP,
+        _normalize_ocr_blanks,
+    )
 
     edits: dict[int, list[tuple[int, _Record]]] = {}
     for question in questions:
@@ -1103,7 +1106,7 @@ def parse_pdf_full_with_answers(
         _copy_layout(student_result, layout_out)
     try:
         preamble, questions = _analyze(student_result)
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOGGER.warning(
             "MinerU structured render failed for %s; falling back to markdown",
             student_pdf,
@@ -1114,7 +1117,7 @@ def parse_pdf_full_with_answers(
             questions = []
             answers: dict[int, str] = {}
             types: dict[int, str] = {}
-        except Exception:  # noqa: BLE001
+        except Exception:
             LOGGER.warning("MinerU markdown fallback failed for %s", student_pdf, exc_info=True)
             return None
     else:
@@ -1126,7 +1129,7 @@ def parse_pdf_full_with_answers(
                     answers_pdf, regions, questions
                 )
                 _inject_inline_blanks(questions, inline_regions, types)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 LOGGER.warning(
                     "answer-region OCR failed for %s", answers_pdf, exc_info=True
                 )
@@ -1134,7 +1137,7 @@ def parse_pdf_full_with_answers(
             if not markdown:
                 try:
                     markdown = str(student_result.markdown() or "").strip()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     LOGGER.warning(
                         "MinerU markdown fallback failed for %s",
                         student_pdf,
@@ -1148,7 +1151,7 @@ def parse_pdf_full_with_answers(
         if not markdown:
             try:
                 markdown = str(student_result.markdown() or "").strip()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 LOGGER.warning(
                     "MinerU markdown fallback failed for %s", student_pdf, exc_info=True
                 )

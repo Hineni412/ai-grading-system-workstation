@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from typing import Any
 
 from question_id_contract import (
     canonical_parent_id,
@@ -155,9 +156,51 @@ def is_simple_objective_question(question: Mapping[str, Any]) -> bool:
     return isinstance(steps, list) and len(steps) == 1
 
 
+def iter_effective_rubric_items(
+    payload: Mapping[str, object],
+) -> Iterator[tuple[str, Mapping[str, object], Mapping[str, object]]]:
+    for item_ref, _parent_ref, raw_question, raw_item in iter_effective_rubric_item_refs(payload):
+        yield item_ref, raw_question, raw_item
+
+
+def iter_effective_rubric_item_refs(
+    payload: Mapping[str, object],
+) -> Iterator[tuple[str, str, Mapping[str, object], Mapping[str, object]]]:
+    rubric = payload.get("rubric") if isinstance(payload.get("rubric"), Mapping) else payload
+    questions = rubric.get("questions") if isinstance(rubric, Mapping) else None
+    if not isinstance(questions, list):
+        return
+    for question_index, raw_question in enumerate(questions, start=1):
+        if not isinstance(raw_question, Mapping):
+            continue
+        question_ref = str(
+            raw_question.get("question_id")
+            or raw_question.get("id")
+            or raw_question.get("number")
+            or f"Q{question_index}"
+        ).strip()
+        parts = raw_question.get("parts")
+        emitted = False
+        if isinstance(parts, list) and parts:
+            for part_index, raw_part in enumerate(parts, start=1):
+                if not isinstance(raw_part, Mapping):
+                    continue
+                part_ref = str(
+                    raw_part.get("part_id")
+                    or raw_part.get("question_id")
+                    or f"{question_ref}.{part_index}"
+                ).strip()
+                emitted = True
+                yield part_ref, question_ref, raw_question, raw_part
+        if not emitted:
+            yield question_ref, question_ref, raw_question, raw_question
+
+
 __all__ = [
     "GeneratedOutputContractError",
     "attach_structure_repairs",
     "canonicalize_new_generated_structure_ids",
     "is_simple_objective_question",
+    "iter_effective_rubric_items",
+    "iter_effective_rubric_item_refs",
 ]

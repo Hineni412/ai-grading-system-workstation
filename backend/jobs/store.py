@@ -5,14 +5,13 @@ import json
 import re
 import secrets
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from backend.schema_migrations import ensure_schema_current
-
 
 JOB_STATUSES = ("queued", "running", "paused", "succeeded", "failed", "cancelled")
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}

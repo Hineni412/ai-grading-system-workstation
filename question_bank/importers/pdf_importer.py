@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,7 +30,7 @@ def embedded_text_usable(text: str) -> bool:
 def import_pdf(
     source_file: str | Path,
     *,
-    document_pipeline: "QuestionDocumentPipeline | None" = None,
+    document_pipeline: QuestionDocumentPipeline | None = None,
     operation_id: str | None = None,
     source_id: str | None = None,
     manual_questions: tuple[ManualQuestionRegion, ...] = (),

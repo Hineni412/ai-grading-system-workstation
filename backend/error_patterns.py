@@ -15,9 +15,10 @@ import hashlib
 import json
 import re
 import sqlite3
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from answer_normalizer import normalize_answer_text
 from backend.error_causes import (
@@ -179,7 +180,9 @@ def session_bank_context(
                     frontier.append(linked_id)
         identities = {}
         if graph:
-            from question_bank.services.duplicate_analysis_copy_service import exact_identity_map
+            from question_bank.services.duplicate_analysis_copy_service import (
+                exact_identity_map,
+            )
             # The existing connection stays read-only; no index repair here.
             connection.row_factory = sqlite3.Row
             identities = exact_identity_map(connection, data_root=path.parent.parent,
@@ -621,7 +624,8 @@ def merge_bank_triggers_into_patterns(
     """
     merged: dict[str, dict[str, Any]] = {}
     from question_bank.services.error_pattern_service import (
-        pattern_preference, preferred_active_patterns,
+        pattern_preference,
+        preferred_active_patterns,
     )
 
     ordered = sorted(

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.training_criteria.analysis import (
@@ -13,7 +14,6 @@ from question_bank.training_criteria.analysis import (
     _reject_score_fields,
     training_criteria_from_solution_evidence,
 )
-
 
 LEGACY_EVIDENCE_SCHEMAS = (
     "question-solution-evidence-v1",

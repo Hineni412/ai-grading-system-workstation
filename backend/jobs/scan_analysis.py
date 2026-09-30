@@ -4,11 +4,12 @@ import inspect
 import json
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
-from answer_region_session_lock import get_answer_region_session_lock
 from answer_region_geometry import answer_regions_with_template_source_sizes
+from answer_region_session_lock import get_answer_region_session_lock
 from backend.config_workspace.publish import load_editor_config
 from backend.repositories.access import GradingRepositoryAccess
 from scanner import ScanAnalysis, Scanner, student_name_region_from_regions
@@ -116,7 +117,7 @@ def run_scan_analysis(
     try:
         # 名单本机识别路径不需要远端模型；模型未配置时留空，旧路径再按原样报错。
         llm_client = llm_client_factory()
-    except Exception:  # noqa: BLE001
+    except Exception:
         llm_client = None
     scanner = scanner_factory(
         exams_dir=exams_dir,

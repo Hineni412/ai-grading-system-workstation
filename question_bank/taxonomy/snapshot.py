@@ -84,8 +84,8 @@ class QuestionTaxonomySnapshot(Mapping[str, Any]):
     def capture(
         cls,
         question_id: int,
-        contract: Mapping[str, Any] | "QuestionTaxonomySnapshot" | None,
-    ) -> "QuestionTaxonomySnapshot":
+        contract: Mapping[str, Any] | QuestionTaxonomySnapshot | None,
+    ) -> QuestionTaxonomySnapshot:
         if isinstance(contract, cls):
             if contract.question_id != int(question_id):
                 raise ValueError("taxonomy snapshot belongs to another question")

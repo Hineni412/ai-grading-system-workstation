@@ -89,7 +89,7 @@ def current_link_module(tmp_path):
     from question_bank.solution_evidence.knowledge_links import replace_point_links
     from question_bank.taxonomy.curriculum_catalog import curriculum_volume
     from tests.current_knowledge_support import install_current_knowledge
-    from tests.phase4.test_personalized_recommendation import (
+    from tests.training.test_personalized_recommendation import (
         _approve_synthetic_criteria,
     )
 
@@ -241,7 +241,7 @@ def test_new_skill_links_generate_and_persist_personal_and_shared_drafts(
     from question_bank.recommendation.personalized import (
         PersonalizedRecommendationConfig,
     )
-    from tests.phase4.test_personalized_recommendation import _direct_diagnosis
+    from tests.training.test_personalized_recommendation import _direct_diagnosis
 
     module = current_link_module
     diagnosis = _direct_diagnosis(

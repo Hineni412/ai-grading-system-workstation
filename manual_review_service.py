@@ -8,8 +8,8 @@ from typing import Any
 from uuid import uuid4
 
 from annotation_renderer import render_annotated_paper
-from answer_region_session_lock import get_answer_region_session_lock
 from answer_region_geometry import answer_regions_with_template_source_sizes
+from answer_region_session_lock import get_answer_region_session_lock
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.base import RepositoryError
 from path_manager import resolve_stored_file_path
@@ -18,7 +18,6 @@ from question_id_contract import (
     canonicalize_question_document,
     resolve_known_question_id,
 )
-
 
 ANNOTATION_RETRY_MESSAGE = "Annotation rendering failed; retry required."
 _ANNOTATED_IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})

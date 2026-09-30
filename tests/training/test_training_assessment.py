@@ -387,7 +387,7 @@ def test_restart_recovery_never_repeats_an_unknown_request(
 def test_published_training_changes_current_mastery_and_next_draft_only(
     assessment_workspace: tuple[Path, Path],
 ) -> None:
-    from tests.phase4.test_personalized_recommendation import (
+    from tests.training.test_personalized_recommendation import (
         _seed_recommendation_sources,
     )
 
@@ -578,7 +578,7 @@ def test_next_round_token_matches_legacy_frozen_request(
 ) -> None:
     from backend.training_assessment.contracts import stable_hash
     from backend.training_assessment.evidence import TrainingEvidencePublisher
-    from tests.phase4.test_personalized_recommendation import (
+    from tests.training.test_personalized_recommendation import (
         _seed_recommendation_sources,
     )
 

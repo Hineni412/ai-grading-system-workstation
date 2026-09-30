@@ -17,7 +17,7 @@ class QuestionGradingDetail:
     error_summary: str | None = None
     confidence_score: float | None = None
     knowledge_ids: list[str] = field(default_factory=list)
-    secondary_errors: list["SecondaryError"] = field(default_factory=list)
+    secondary_errors: list[SecondaryError] = field(default_factory=list)
     # Original AI score for this detail when a teacher lock overrode
     # score_awarded; None means "no separate AI score was preserved".
     ai_score_awarded: float | None = None

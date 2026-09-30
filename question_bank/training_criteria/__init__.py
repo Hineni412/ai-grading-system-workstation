@@ -1,10 +1,18 @@
+from question_bank.training_criteria.adapters import (
+    BankQuestionTypeSuggestionWriter,
+    ExistingTagProjectionWriter,
+    OpenAICombinedAnalysisGateway,
+    QuestionAnalysisInputLoader,
+    combined_analysis_retry_budget,
+    question_analysis_input_from_config_source,
+)
 from question_bank.training_criteria.analysis import (
+    JUDGMENT_POINTS_SCHEMA,
     AnalysisConflictError,
     CombinedQuestionAnalysisModule,
     GatewayBatchResponse,
     GatewayResponseParseError,
     GatewayUsage,
-    JUDGMENT_POINTS_SCHEMA,
     ProjectionValidationError,
     QuestionAnalysisImage,
     QuestionAnalysisInput,
@@ -14,9 +22,9 @@ from question_bank.training_criteria.analysis import (
     TaxonomyProjectionReviewRequired,
     TrainingCriteriaDraft,
     TrainingCriterionPoint,
+    answer_key_skeleton_from_solution_evidence,
     combined_response_format,
     criteria_from_confirmed_rubric,
-    answer_key_skeleton_from_solution_evidence,
     grading_config_skeleton_from_solution_evidence,
     plan_analysis_batches,
     rubric_skeleton_from_solution_evidence,
@@ -24,16 +32,22 @@ from question_bank.training_criteria.analysis import (
     training_criteria_from_solution_evidence,
     training_criterion_source_reference,
 )
+from question_bank.training_criteria.combined_analysis import (
+    AnalysisRequestCheckpoint,
+    ConfigQuestionAnalysisSource,
+    ConfirmedQuestionAdoptionLink,
+    DeferredAnalysisFailure,
+    DeferredCombinedAnalysisBundle,
+    DeferredCombinedAnalysisItem,
+    DeferredCombinedProjectionWriter,
+    DeferredCombinedQuestionAnalysisModule,
+    DeferredKnowledgeCandidate,
+    UnmappedFineTermResolver,
+    compose_generated_config_from_skeletons,
+    reused_analysis_item,
+)
 from question_bank.training_criteria.repository import (
     CombinedAnalysisRepository,
-)
-from question_bank.training_criteria.adapters import (
-    BankQuestionTypeSuggestionWriter,
-    ExistingTagProjectionWriter,
-    OpenAICombinedAnalysisGateway,
-    QuestionAnalysisInputLoader,
-    combined_analysis_retry_budget,
-    question_analysis_input_from_config_source,
 )
 from question_bank.training_criteria.versioning import (
     ApprovedCriterionMissing,
@@ -48,20 +62,6 @@ from question_bank.training_criteria.versioning import (
     blocking_quality_codes,
     evaluate_criterion_quality,
     usable_training_criterion,
-)
-from question_bank.training_criteria.in_memory import (
-    AnalysisRequestCheckpoint,
-    ConfirmedQuestionAdoptionLink,
-    ConfigQuestionAnalysisSource,
-    DeferredAnalysisFailure,
-    DeferredCombinedAnalysisBundle,
-    DeferredCombinedAnalysisItem,
-    DeferredCombinedProjectionWriter,
-    DeferredKnowledgeCandidate,
-    InMemoryCombinedQuestionAnalysisModule,
-    UnmappedFineTermResolver,
-    compose_generated_config_from_skeletons,
-    reused_analysis_item,
 )
 
 __all__ = [
@@ -89,7 +89,7 @@ __all__ = [
     "GatewayResponseParseError",
     "GatewayUsage",
     "JUDGMENT_POINTS_SCHEMA",
-    "InMemoryCombinedQuestionAnalysisModule",
+    "DeferredCombinedQuestionAnalysisModule",
     "ProjectionValidationError",
     "OpenAICombinedAnalysisGateway",
     "QuestionAnalysisImage",

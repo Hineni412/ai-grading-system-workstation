@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import os
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from io import BytesIO
@@ -23,6 +23,7 @@ from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
 from docx.text.paragraph import Paragraph
 from PIL import Image
+
 from question_bank.document_pipeline import (
     SharedWordQuestionRenderer,
     WordStyleProfile,
@@ -32,7 +33,6 @@ from question_bank.document_pipeline import (
     rich_block_text,
 )
 from question_bank.document_pipeline.contracts import math_expression_from_payload
-
 
 LAYOUT_VERSION = "personalized-paper-school-a4-v3"
 PAGE_IDENTITY_VERSION = "P4P2"
@@ -118,7 +118,7 @@ class OfficePdfConverter:
             produced = destination.parent / f"{source.stem}.pdf"
             if completed.returncode == 0 and produced.is_file():
                 if produced != destination:
-                    os.replace(produced, destination)
+                    _replace_with_retry(produced, destination)
                 if destination.stat().st_size > 0:
                     return
         raise PaperRenderError("no compatible DOCX to PDF converter is available")
@@ -509,12 +509,12 @@ def inspect_docx(
 ) -> None:
     try:
         document = Document(source)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise PaperRenderError("reviewed file is not a readable DOCX") from exc
     text_tags = {qn("w:t"), qn("m:t")}
     text = "".join(
         child.text or ""
-        for child in document._body._element.iter()  # noqa: SLF001
+        for child in document._body._element.iter()
         if child.tag in text_tags
     )
     normalized = _normalized_text(text)
@@ -543,7 +543,7 @@ def pdf_page_count(path: Path) -> int:
     try:
         with fitz.open(path) as document:
             return int(document.page_count)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise PaperRenderError("PDF output is invalid") from exc
 
 
@@ -760,13 +760,13 @@ def _add_hidden_run(paragraph, text: str) -> None:
 
 
 def _last_document_body_paragraph(document: Document) -> Paragraph | None:
-    for element in reversed(document._body._element):  # noqa: SLF001
+    for element in reversed(document._body._element):
         if element.tag == qn("w:p"):
-            return Paragraph(element, document._body)  # noqa: SLF001
+            return Paragraph(element, document._body)
         if element.tag == qn("w:tbl"):
             paragraphs = element.xpath(".//w:p")
             if paragraphs:
-                return Paragraph(paragraphs[-1], document._body)  # noqa: SLF001
+                return Paragraph(paragraphs[-1], document._body)
     return None
 
 
@@ -881,6 +881,19 @@ def _mappings(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
     return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _replace_with_retry(source: Path, destination: Path) -> None:
+    # Windows file scanners can hold a freshly written file open briefly;
+    # retry the atomic rename a few times before giving up.
+    for attempt in range(12):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == 11:
+                raise
+            time.sleep(min(0.05 * (attempt + 1), 0.4))
 
 
 def _file_sha256(path: Path) -> str:

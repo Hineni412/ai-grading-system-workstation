@@ -29,7 +29,7 @@ from question_bank.recommendation.personalized import (
     PersonalizedRecommendationModule,
 )
 from question_bank.training_submissions.module import _read_page_identity
-from tests.phase4.test_personalized_recommendation import (
+from tests.training.test_personalized_recommendation import (
     NOW,
     _diagnosis as _base_diagnosis,
     _seed_recommendation_sources,

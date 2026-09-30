@@ -11,10 +11,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from question_bank.solution_evidence.part_assessments import reading
 
@@ -673,7 +674,9 @@ def project_embedded_links(
         )
         inserted += int(cursor.rowcount > 0)
     refresh_question_scope_summary(connection, int(question_id))
-    from question_bank.services.question_write_service import refresh_derived_ownership_tags
+    from question_bank.services.question_write_service import (
+        refresh_derived_ownership_tags,
+    )
     refresh_derived_ownership_tags(connection, int(question_id))
     return inserted
 
@@ -753,7 +756,9 @@ def replace_point_links(
             )
             inserted += 1
     refresh_question_scope_summary(connection, int(question_id))
-    from question_bank.services.question_write_service import refresh_derived_ownership_tags
+    from question_bank.services.question_write_service import (
+        refresh_derived_ownership_tags,
+    )
     refresh_derived_ownership_tags(connection, int(question_id))
     return inserted
 

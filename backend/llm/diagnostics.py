@@ -13,13 +13,13 @@ import json
 import re
 import threading
 from collections import deque
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from .json_repair import parse_json_object_locally
 from .trace import safe_host_label, safe_trace_label, utc_timestamp
 from .usage import response_diagnostics
-
 
 DIAGNOSTIC_LOG_FILE = Path("logs/llm_diagnostics.jsonl")
 DIAGNOSTIC_SCHEMA_VERSION = 1
@@ -557,7 +557,7 @@ class NullDiagnosticSink:
 class _WorkspaceDiagnosticSink:
     def __init__(
         self,
-        journal: "JsonlDiagnosticJournal",
+        journal: JsonlDiagnosticJournal,
         *,
         workspace_module: object,
         workspace_task_kind: object,

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from collections.abc import Callable, Iterator, Sequence
-
 
 _REGISTRY_GUARD = threading.Lock()
 

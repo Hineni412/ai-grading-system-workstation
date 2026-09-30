@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
 from question_bank.database.schema import connect
 from question_bank.knowledge_graph_release.contracts import stable_record_hash
@@ -498,8 +499,8 @@ class SolutionEvidenceRepository:
         question_id: int,
         *,
         source_content_hash: str,
-        resolver: "FineTermResolver",
-    ) -> "QuestionSolutionEvidence | None":
+        resolver: FineTermResolver,
+    ) -> QuestionSolutionEvidence | None:
         """Decode the current saved evidence for a projection-only retry.
 
         A tag or training-point retry must be able to reuse an already saved
@@ -552,7 +553,7 @@ class SolutionEvidenceProjectionWriter:
 
     def load_current(
         self,
-        question: "QuestionAnalysisInput",
+        question: QuestionAnalysisInput,
     ) -> QuestionSolutionEvidence | None:
         """Load the evidence matching this exact analysis input."""
 
@@ -568,7 +569,7 @@ class SolutionEvidenceProjectionWriter:
 
     def write(
         self,
-        question: "QuestionAnalysisInput",
+        question: QuestionAnalysisInput,
         payload: Mapping[str, Any],
         *,
         model_name: str,

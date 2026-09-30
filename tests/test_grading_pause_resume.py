@@ -11,7 +11,8 @@ from PIL import Image
 
 import grading_service
 from ai_batch_grading_service import AIBatchRunResult, PaperEntry
-from db_manager import DBManager, StudentGradingActiveError
+from backend.repositories.students import StudentGradingActiveError
+from db_manager import DBManager
 from grading_run_store import GradingRunStore
 from scanner import ExamPaperGroup
 from backend.repositories.grading_database import open_grading_repositories

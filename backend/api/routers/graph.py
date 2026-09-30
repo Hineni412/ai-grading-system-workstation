@@ -28,7 +28,6 @@ from question_bank.relations.query_service import (
     CurrentKnowledgeGraphQueryService,
 )
 
-
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 GRAPH_DATABASE_RESPONSES = {
     503: {

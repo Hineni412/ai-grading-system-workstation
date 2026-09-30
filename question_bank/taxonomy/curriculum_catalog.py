@@ -6,7 +6,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-
 _CATALOG_PATH = (
     Path(__file__).resolve().parent / "catalogs" / "bnu_math_2024_v2.json"
 )
@@ -64,14 +63,14 @@ def _nullable_string(container: dict[str, Any], key: str) -> str | None:
 
 def _positive_integer(container: dict[str, Any], key: str) -> int:
     value = container.get(key)
-    if type(value) is not int or value <= 0:  # noqa: E721 - bool is invalid here
+    if type(value) is not int or value <= 0:
         raise CurriculumCatalogError("Bundled curriculum catalog is invalid")
     return value
 
 
 def _non_negative_integer(container: dict[str, Any], key: str) -> int:
     value = container.get(key)
-    if type(value) is not int or value < 0:  # noqa: E721 - bool is invalid here
+    if type(value) is not int or value < 0:
         raise CurriculumCatalogError("Bundled curriculum catalog is invalid")
     return value
 

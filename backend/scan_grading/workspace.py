@@ -7,9 +7,10 @@ import re
 import shutil
 import tempfile
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Any, Callable
+from typing import Any, BinaryIO
 from uuid import uuid4
 
 from backend.grading_workflow import effective_preflight_papers, preflight_match_status
@@ -479,14 +480,14 @@ class ScanGradingWorkspace:
                 summary["incomplete_result_count"] = int(
                     self.incomplete_result_counter(int(session_id))
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 summary["incomplete_result_count"] = 0
         if self.incomplete_item_counter is not None:
             try:
                 summary["incomplete_item_count"] = int(
                     self.incomplete_item_counter(int(session_id))
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 summary["incomplete_item_count"] = 0
         return summary
 
@@ -1331,7 +1332,9 @@ class ScanGradingWorkspace:
                 }
             students = analysis.get("students")
             if self.grading_db_path is not None:
-                from backend.repositories.grading_database import open_grading_repositories
+                from backend.repositories.grading_database import (
+                    open_grading_repositories,
+                )
                 students = open_grading_repositories(self.grading_db_path).students.list_students()
             status = preflight_match_status(payload, students)
             payload["summary"].update(status["summary"])

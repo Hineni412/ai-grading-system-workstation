@@ -5,11 +5,11 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Mapping
 from uuid import uuid4
 
 from question_bank.services.assembly_basket_state import normalize_question_ids
