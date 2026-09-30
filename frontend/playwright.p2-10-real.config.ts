@@ -14,7 +14,7 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
-      command: '..\\..\\..\\runtime\\python\\python.exe ../tools/p2_10_browser_server.py --data-root test-results/p2-10-real',
+      command: '..\\runtime\\python\\python.exe ../tools/p2_10_browser_server.py --data-root test-results/p2-10-real',
       url: 'http://127.0.0.1:8000/api/healthz',
       reuseExistingServer: false,
       timeout: 60_000,

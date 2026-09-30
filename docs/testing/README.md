@@ -41,11 +41,28 @@
 入口关系：
 
 - 这些入口复用同一批测试，不需要依次全部运行：`quick` 和 `review` 是按操作选择的子集；`serial` 只规定需要独立运行的环境，也包含少量发布工具测试；`release` 已包含 `full`。
-- 前端其他浏览器专项和演示服务测试仍通过 `frontend/package.json` 中各自的入口运行，不计入 `full` 的页面单元测试；统计全项目数量时应单独计入它们。
+- 前端其他浏览器专项和演示服务测试通过下表的业务命令运行，不计入 `full` 的页面单元测试；统计全项目数量时应单独计入它们。
 - 兼容入口 `tools/smoke_check.py` 的后端测试委托给 `run_test_suite.py full --skip-frontend`，使用同一分组、隔离环境和默认进程数；它自身仍负责文档、静态编译及数据库副本初始化检查；`--pytest-workers` 和 `--pytest-durations` 会传给统一入口，`--parallel-tests` 仅保留为旧命令兼容参数；需要前端验收时直接使用 `full`。
 - `review` 复用 `tests/api_e2e/harness.py` 的合成考试与模型替身，通过真实页面、API 和临时数据库保存分数，不拦截保存响应；浏览器环境使用独立动态端口与数据目录，直接运行当前前端源码，不重建共享 `frontend/dist`。
 - 需已安装前端依赖和 Playwright Chromium；截图、失败追踪和浏览器日志保存在本次新建的 `output/review_browser_*` 目录。
 - `full` 在前端检查通过后执行同一浏览器步骤；`review` 是只验证相关业务的较小入口，不能跳过前端；`full --skip-frontend` 与默认 `npm run e2e` 不包含这项真实保存验收。
+
+在 `frontend` 目录运行专项入口：
+
+| 要检查的操作 | 命令 | 前端来源 |
+|---|---|---|
+| 批量复核演示流程 | `npm run e2e:review-batch` | 普通入口先构建，再启动合成演示服务 |
+| 样卷题框编辑 | `npm run e2e:template-regions` | 使用当前源码的开发服务，不需要预构建 |
+| 扫描与批改 | `npm run e2e:scan-grading` | 普通入口先构建，后端使用隔离测试数据 |
+| 学生管理 | `npm run e2e:students` | 普通入口先构建，后端使用隔离测试数据 |
+| 题库操作 | `npm run e2e:question-bank` | 普通入口先构建，后端使用隔离测试数据 |
+| 训练推荐 | `npm run e2e:training-recommendations` | 普通入口先构建，后端使用隔离测试数据 |
+
+依赖前端成品的五组入口保留同名 `:prepared` 命令；已有当前且完整的构建产物时可直接运行，不重建共享 `frontend/dist`。题框编辑入口直接使用源码，没有单独的 prepared 命令。专项配置从项目 `runtime/python/python.exe` 启动后端，历史配置文件名保留，入口按业务操作命名。
+
+这些专项沿用固定端口和各自的 `frontend/test-results/` 合成数据目录；运行前确认没有其他任务共用服务、构建产物或该测试目录。
+
+`npm run demo:review-batch` 单独启动批量复核演示服务，`npm run demo:test` 检查该服务的合成数据行为。正式改分保存与下载验收仍使用上面的 `review` 或 `full` 入口。
 
 ## 隔离规则
 

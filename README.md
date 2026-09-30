@@ -34,3 +34,20 @@
 | [样式](docs/ui/STYLE.md) | 修改页面视觉与通用交互时 |
 
 产品文档记录业务规则，架构记录连接方式，代码与配置提供具体实现。发现不一致时核对实现和用户需求，修正文档；不能为迁就过期文字修改正常功能。文档检查入口为 `tools/check_documentation.py`。
+
+## 独立维护工具
+
+以下工具由维护人员按需运行，不由日常页面自动调用。没有代码引用不代表可以删除；运行前按工具参数和项目授权规则区分只读检查、生成文件与正式数据写入。
+
+| 用途 | 保留入口 | 使用边界 |
+|---|---|---|
+| 题库维护与标准修订预演 | `tools/maintain_question_bank.py` | 参数与正式执行条件见存储与备份文档 |
+| 知识标准初始发布文件重建 | `tools/build_knowledge_graph_release.py` | `--check` 只核对现有文件；不带参数会重写初始发布文件 |
+| 教学技能标准发布文件重建 | `tools/build_release_v5.py` | 必须提供 `--teaching-standard` JSON；默认预演，`--write` 生成发布文件；数据库应用是另行授权的操作 |
+| 词表修订发布文件重建 | `tools/build_release_v7.py` | 默认读取已有输入并验证，`--write` 生成对应发布包和词表；不会自动切换数据库中的活动标准 |
+| 难度校准与推荐有效性回看 | `tools/difficulty_calibration_report.py`、`tools/recommendation_validity_report.py` | 按显式数据库路径读取统计结果，不改写评分、难度或推荐规则 |
+| 历史数据导出 | `tools/export_legacy_cli_data.py`、`tools/export_legacy_skill_data.py` | 保留退役数据的读取与导出能力，源数据库不改写 |
+| 本机空间盘点、维护预览 | `tools/storage_audit.py`、`tools/storage_maintenance.py` | 产物位置、保留范围及执行授权见存储与备份文档 |
+| 代理后台启动 | `tools/start_service.py` | 按项目运行约束使用；教师日常入口仍为 `运行.bat` |
+
+知识标准构建脚本依赖的辅助脚本也应保留；生成候选发布文件与启用数据库中的活动标准是两个操作。前端专项浏览器测试的业务命令与构建要求见测试文档。
