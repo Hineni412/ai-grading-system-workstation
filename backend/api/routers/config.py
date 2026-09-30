@@ -23,14 +23,12 @@ from backend.api.dependencies import (
 from backend.api.routers.jobs import _job_response
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.config import (
-    ConfigGenerationRequest,
     ConfigGenerationRetryRequest,
     ConfigSourceGenerationRequest,
     ConfigSourceDuplicatesResponse,
     ConfigSourceResponse,
     ConfigSourceSubmissionResponse,
     ConfigGenerationQuestionStatesResponse,
-    ConfigEditorRefineRequest,
     ConfigEditorResponse,
     ConfigEditorSaveRequest,
     ConfigEditorSaveResponse,
@@ -56,8 +54,6 @@ from backend.config_workspace.sources import (
 from backend.api.schemas.jobs import JobResponse
 from backend.jobs.config_generation import (
     discard_config_generation_input,
-    stage_config_generation_input,
-    stage_config_refine_input,
     stage_config_source_generation_input,
     load_config_generation_input,
     read_config_generation_draft,
@@ -69,11 +65,6 @@ from backend.jobs.store import (
     ConfigRetryAlreadySubmittedError,
     ConfigSessionBusyError,
     JobStore,
-)
-from backend.public_data import (
-    contains_filesystem_reference,
-    contains_path_key,
-    contains_sensitive_key,
 )
 from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
@@ -89,7 +80,6 @@ from backend.config_workspace.editor import (
     SplitScoringUnitCommand,
     apply_config_editor_changes,
 )
-from backend.config_generation.quality import blocking_quality_question_ids
 from backend.config_workspace.publish import (
     ConfigRevisionConflict,
     editor_response,
@@ -725,65 +715,6 @@ def save_config_editor(
     return body
 
 
-@router.post(
-    "/sessions/{session_id}/config/editor/refine",
-    response_model=JobResponse,
-    status_code=202,
-    responses={**CONFIG_EDITOR_ERROR_RESPONSES, 503: {"model": ErrorResponse}},
-)
-def refine_config_editor(
-    session_id: int,
-    request: ConfigEditorRefineRequest,
-    db: GradingRepositoryAccess = Depends(get_grading_db),
-    manager: JobManager = Depends(get_job_manager),
-    upload_config_dir: Path = Depends(get_upload_config_dir),
-) -> JobResponse:
-    _require_active_session(db, session_id)
-    replay = _replay_config_request(manager, session_id, request)
-    if replay is not None:
-        return replay
-    try:
-        current = load_editor_config(db, session_id)
-    except (OSError, ValueError, json.JSONDecodeError):
-        raise ApiError(
-            500,
-            "stored_config_invalid",
-            "Stored configuration is invalid",
-        ) from None
-    if request.revision != current.revision:
-        raise _editor_api_error(ConfigRevisionConflict("stale revision"))
-    try:
-        commands = _editor_commands(request.commands)
-        candidate = apply_config_editor_changes(current.payload, edits=(), commands=commands)
-    except ConfigEditorValidationError as exc:
-        raise _editor_api_error(exc) from None
-    input_id = stage_config_refine_input(
-        upload_config_dir,
-        session_id=session_id,
-        expected_rubric_path=str(current.session.get("rubric_path") or ""),
-        expected_answer_key_path=str(current.session.get("answer_key_path") or ""),
-        expected_revision=current.revision,
-        existing_payload=current.payload,
-        commands=[item.model_dump() for item in request.commands],
-    )
-    try:
-        response, created = _submit_config_generation(
-            manager,
-            {
-                "session_id": session_id,
-                "mode": "refine",
-                "input_id": input_id,
-                **_request_identity(request),
-            },
-        )
-        if not created:
-            discard_config_generation_input(upload_config_dir, input_id)
-        return response
-    except Exception:
-        discard_config_generation_input(upload_config_dir, input_id)
-        raise
-
-
 def _require_active_session(
     db: GradingRepositoryAccess,
     session_id: int,
@@ -815,20 +746,6 @@ def _source_activation_guard(manager: JobManager, session_id: int):
             yield
     except ConfigSessionBusyError as exc:
         raise ConfigSourceActivationBusyError() from exc
-
-
-def _contains_embedded_image_reference(value: Any) -> bool:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if str(key) in {"question_html", "answer_html", "analysis_html"}:
-                text = str(item or "").casefold()
-                if "<img" in text or "[[image:" in text:
-                    return True
-            if _contains_embedded_image_reference(item):
-                return True
-    elif isinstance(value, (list, tuple)):
-        return any(_contains_embedded_image_reference(item) for item in value)
-    return False
 
 
 def _submit_config_generation(
@@ -1075,63 +992,6 @@ def abandon_config_generation_request(
 
 
 @router.post(
-    "/sessions/{session_id}/config/generate",
-    response_model=JobResponse,
-    status_code=202,
-    responses=CONFIG_GENERATION_ERROR_RESPONSES,
-)
-def generate_session_config(
-    session_id: int,
-    request: ConfigGenerationRequest,
-    db: GradingRepositoryAccess = Depends(get_grading_db),
-    manager: JobManager = Depends(get_job_manager),
-    upload_config_dir: Path = Depends(get_upload_config_dir),
-) -> JobResponse:
-    session = _require_active_session(db, session_id)
-    request_payload = request.model_dump()
-    if (
-        contains_sensitive_key(request_payload)
-        or contains_path_key(request_payload)
-        or contains_filesystem_reference(
-            {
-                "confirmed_blocks": request.confirmed_blocks,
-                "document_text": request.document_text,
-            }
-        )
-        or _contains_embedded_image_reference(request_payload)
-    ):
-        raise ApiError(
-            422,
-            "invalid_config_generation_request",
-            "Config generation request contains forbidden fields",
-        )
-    input_id = stage_config_generation_input(
-        upload_config_dir,
-        session_id=int(session_id),
-        expected_rubric_path=str(session.get("rubric_path") or ""),
-        expected_answer_key_path=str(session.get("answer_key_path") or ""),
-        **request_payload,
-    )
-    try:
-        response, _created = _submit_config_generation(
-            manager,
-            {
-                "session_id": int(session_id),
-                "mode": "generate",
-                "generation_mode": "batched",
-                "input_id": input_id,
-                "sync_to_question_bank": bool(
-                    request.sync_to_question_bank
-                ),
-            },
-        )
-        return response
-    except Exception:
-        discard_config_generation_input(upload_config_dir, input_id)
-        raise
-
-
-@router.post(
     "/sessions/{session_id}/config/generate-from-source",
     response_model=JobResponse,
     status_code=202,
@@ -1146,6 +1006,12 @@ def generate_session_config_from_source(
     source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> JobResponse:
     session = _require_active_session(db, session_id)
+    if request.generation_mode != "batched" or not request.sync_to_question_bank:
+        raise ApiError(
+            409,
+            "config_generation_mode_disabled",
+            "旧的评分依据生成方式已停用，请用“分析并入库”重新生成。",
+        )
     replay = _replay_config_request(manager, session_id, request)
     if replay is not None:
         return replay
@@ -1190,9 +1056,13 @@ def generate_session_config_from_source(
                 "config_revision_conflict",
                 "Configuration changed before regeneration started",
             )
-        blocked_ids = set(
-            blocking_quality_question_ids(loaded_regeneration.payload)
-        )
+        published_ids = {
+            str(question.get("question_id") or "").strip()
+            for question in (
+                (loaded_regeneration.payload or {}).get("questions") or []
+            )
+            if str(question.get("question_id") or "").strip()
+        }
         requested_ids = set(request.regenerate_question_ids)
         available_ids = {
             str(block.get("question_id") or "").strip()
@@ -1200,13 +1070,13 @@ def generate_session_config_from_source(
         }
         if (
             not requested_ids
-            or not requested_ids.issubset(blocked_ids)
+            or not requested_ids.issubset(published_ids)
             or not requested_ids.issubset(available_ids)
         ):
             raise ApiError(
                 409,
                 "config_question_regeneration_not_available",
-                "Requested questions are not current blocking questions",
+                "Requested questions are not in the current rubric",
             )
 
     input_id = stage_config_source_generation_input(
@@ -1327,6 +1197,17 @@ def retry_session_config_generation(
         and request.retry_question_ids is None
     )
     if (
+        source.job_type == "config_generation"
+        and str(source.payload.get("generation_mode") or "")
+        not in {"batched", "per_question"}
+    ):
+        raise ApiError(
+            409,
+            "config_generation_retry_not_available",
+            "旧的评分依据生成方式已停用，请用“分析并入库”重新生成。",
+            {"source_job_id": int(request.source_job_id)},
+        )
+    if (
         source.job_type != "config_generation"
         or str(source.payload.get("mode") or "") == "regenerate_questions"
         or source.status not in {"succeeded", "failed", "cancelled"}
@@ -1337,8 +1218,6 @@ def retry_session_config_generation(
             or resume_complete_draft
         )
         or int(source.payload.get("session_id") or 0) != int(session_id)
-        or str(source.payload.get("generation_mode") or "")
-        not in {"batched", "per_question"}
     ):
         raise ApiError(
             409,

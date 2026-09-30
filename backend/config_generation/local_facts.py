@@ -194,11 +194,6 @@ def _attach_reference_answer_images(
         if question_image and isinstance(rubric_item, dict):
             rubric_item["question_image_base64"] = question_image
 
-SESSION_MANAGER_COMPAT_EXPORTS = (
-    "_apply_local_question_facts",
-    "_attach_reference_answer_images",
-)
-
 apply_local_question_facts = _apply_local_question_facts
 attach_reference_answer_images = _attach_reference_answer_images
 

@@ -134,7 +134,7 @@ describe('AppShell', () => {
       ]
       sessionStore.selectSession(7)
       configStore.selectSession(7)
-      if (kind === 'generation') configStore.markJobSubmissionPending('1'.repeat(32), 'refine')
+      if (kind === 'generation') configStore.markJobSubmissionPending('1'.repeat(32), 'retry')
       else configStore.markUploadSubmissionPending('2'.repeat(32))
       const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
 

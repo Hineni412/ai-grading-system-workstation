@@ -55,13 +55,11 @@ def prepared_session_id(api_e2e: ApiE2EHarness) -> int:
     assert created.status_code == 201
     session_id = int(created.json()["id"])
 
-    submitted = api_e2e.client.post(
-        f"/api/sessions/{session_id}/config/generate",
-        json=api_e2e.config_request(),
+    configured = api_e2e.client.put(
+        f"/api/sessions/{session_id}/config",
+        json=api_e2e.config_payload(),
     )
-    assert submitted.status_code == 202
-    config_job = api_e2e.poll_job(submitted.json()["id"], "succeeded")
-    assert config_job["result"]["outcome"] == "complete", config_job["result"]
+    assert configured.status_code == 200, configured.json()
     api_e2e.bind_and_commit_template(session_id)
 
     upload_dir = (

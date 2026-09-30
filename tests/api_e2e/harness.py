@@ -542,13 +542,11 @@ class ApiE2EHarness:
         assert created.status_code == 201
         session_id = int(created.json()["id"])
 
-        submitted = self.client.post(
-            f"/api/sessions/{session_id}/config/generate",
-            json=self.config_request(),
+        configured = self.client.put(
+            f"/api/sessions/{session_id}/config",
+            json=self.config_payload(),
         )
-        assert submitted.status_code == 202
-        config_job = self.poll_job(submitted.json()["id"], "succeeded")
-        assert config_job["result"]["outcome"] == "complete"
+        assert configured.status_code == 200, configured.json()
 
         committed = self.bind_and_commit_template(session_id)
         snapshots = list(
@@ -632,20 +630,27 @@ class ApiE2EHarness:
             workbook.close()
 
     @staticmethod
-    def config_request() -> dict[str, Any]:
+    def config_payload() -> dict[str, Any]:
+        rubric_questions: list[dict[str, Any]] = []
+        answer_questions: list[dict[str, Any]] = []
+        for index, score in enumerate((17, 17, 17, 16, 16, 17), start=1):
+            question_id = f"Q{index}"
+            payload = _fake_single_question_payload(question_id)
+            question = payload["rubric"]["questions"][0]
+            question["max_score"] = score
+            part = question["parts"][0]
+            part["part_score"] = score
+            part["steps"][0]["step_score"] = score
+            rubric_questions.append(question)
+            answer_questions.append(payload["answer_key"]["questions"][0])
         return {
-            "confirmed_blocks": [
-                {
-                    "question_id": f"Q{index}",
-                    "question_type": "comprehensive",
-                    "text": f"synthetic prompt {index}",
-                    "answer_text": f"synthetic answer {index}",
-                    "canonical_answer": f"synthetic answer {index}",
-                }
-                for index in range(1, 7)
-            ],
-            "document_text": "synthetic exam text",
-            "question_images": {},
+            "rubric": {
+                "exam_title": "Synthetic E2E Exam",
+                "total_score": 100,
+                "questions": rubric_questions,
+            },
+            "answer_key": {"questions": answer_questions},
+            "meta": {"warnings": []},
         }
 
     def bind_and_commit_template(self, session_id: int) -> dict[str, Any]:

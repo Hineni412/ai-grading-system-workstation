@@ -12,7 +12,10 @@ from question_id_contract import canonicalize_grading_config_payload
 from score_policy import (
     MAX_QUESTION_SCORE,
     OBJECTIVE_TYPES,
+    _integerize_deductions,
+    _integerize_steps,
     _normalize_type,
+    apply_integer_question_score,
     enforce_integer_scores_by_type,
 )
 from question_id_contract import canonical_parent_id
@@ -571,6 +574,123 @@ def _seed_question_scores_from_steps(question: dict[str, Any]) -> None:
 def _scale_question_scores(question: dict[str, Any], ratio: float) -> None:
     new_score = round(_safe_float(question.get("max_score"), 0.0) * ratio, 2)
     _scale_question_to_score(question, new_score)
+
+
+def _strict_score_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _inherit_optional_score_field(
+    source: dict[str, Any],
+    target: dict[str, Any],
+    field: str,
+) -> None:
+    if _strict_score_number(source.get(field)) is not None:
+        target[field] = source[field]
+
+
+def preserve_regenerated_question_scores(
+    existing_question: dict[str, Any],
+    regenerated_question: dict[str, Any],
+) -> None:
+    """Rescale a regenerated question onto the published score contract.
+
+    The question total is copied verbatim. When the regenerated part set
+    matches the published part ids, each part keeps its total and the new
+    steps are allocated inside it with the same integer rules used for the
+    whole paper; a changed part set re-allocates the question total with
+    the local step-weighted rules. Any other alignment failure raises so
+    the caller can keep the published rubric unchanged.
+    """
+
+    label = (
+        str(existing_question.get("question_id") or "").strip()
+        or str(regenerated_question.get("question_id") or "").strip()
+        or "目标题"
+    )
+    old_total = _strict_score_number(existing_question.get("max_score"))
+    if old_total is None:
+        raise ValueError(f"{label} 缺少可保留的整题分值。")
+
+    new_parts = [
+        part
+        for part in regenerated_question.get("parts") or []
+        if isinstance(part, dict)
+    ]
+    old_parts = {
+        str(part.get("part_id") or "").strip(): part
+        for part in existing_question.get("parts") or []
+        if isinstance(part, dict)
+    }
+    new_part_ids = [
+        str(part.get("part_id") or "").strip()
+        for part in new_parts
+    ]
+    if len(set(new_part_ids)) != len(new_part_ids):
+        raise ValueError(f"{label} 重新生成的小问号重复。")
+
+    regenerated_question["max_score"] = existing_question["max_score"]
+    if set(new_part_ids) == set(old_parts):
+        _inherit_optional_score_field(
+            existing_question,
+            regenerated_question,
+            "answer_only_max_score",
+        )
+        for part in new_parts:
+            part_id = str(part.get("part_id") or "").strip()
+            old_part = old_parts[part_id]
+            part_total = _strict_score_number(old_part.get("part_score"))
+            if part_total is None:
+                raise ValueError(
+                    f"{label} 的小问 {part_id} 缺少可保留的分值。"
+                )
+            part["part_score"] = old_part["part_score"]
+            _inherit_optional_score_field(
+                old_part,
+                part,
+                "answer_only_max_score",
+            )
+            steps = [
+                step
+                for step in part.get("steps") or []
+                if isinstance(step, dict)
+            ]
+            for step in steps:
+                weight = _strict_score_number(step.get("step_score"))
+                if weight is None or weight <= 0:
+                    step["step_score"] = 1.0
+            if float(part_total).is_integer():
+                _integerize_steps(part, int(part_total))
+            elif steps:
+                total_weight = sum(
+                    float(step.get("step_score") or 0.0) for step in steps
+                ) or 1.0
+                for step in steps:
+                    step["step_score"] = round(
+                        float(step.get("step_score") or 0.0)
+                        / total_weight
+                        * float(part_total),
+                        2,
+                    )
+                _force_step_total(part)
+    else:
+        _seed_question_scores_from_steps(regenerated_question)
+        if float(old_total).is_integer():
+            apply_integer_question_score(regenerated_question, int(old_total))
+        else:
+            _scale_question_to_score(regenerated_question, float(old_total))
+        regenerated_question["max_score"] = existing_question["max_score"]
+        _ensure_solution_hard_rules(regenerated_question)
+        _inherit_optional_score_field(
+            existing_question,
+            regenerated_question,
+            "answer_only_max_score",
+        )
+    if float(old_total).is_integer():
+        _integerize_deductions(regenerated_question, int(old_total))
 
 def _scale_question_to_score(question: dict[str, Any], new_score: float) -> None:
     old_score = _safe_float(question.get("max_score"), 0.0)
@@ -1838,56 +1958,6 @@ def validate_generated_config(
 
     if "warnings" not in meta or not isinstance(meta["warnings"], list):
         raise ValueError("meta.warnings must exist and be a list")
-
-SESSION_MANAGER_COMPAT_EXPORTS = (
-    "_align_answer_parts_to_rubric_parts",
-    "_align_solution_parts_with_answer_parts",
-    "_align_step_required_elements_with_answer_values",
-    "_allocate_scores",
-    "_augment_answer_equivalences",
-    "_best_step_alias",
-    "_canonical_question_id",
-    "_coerce_answer_item_aliases",
-    "_coerce_answer_part_aliases",
-    "_default_core_goal",
-    "_default_required_elements",
-    "_enforce_objective_question_rules",
-    "_ensure_solution_hard_rules",
-    "_extract_direct_answer_values",
-    "_first_list_value",
-    "_fix_question_sum",
-    "_force_part_total",
-    "_force_step_total",
-    "_infer_part_response_mode",
-    "_looks_like_serialized_answer_list",
-    "_looks_like_serialized_knowledge_sequence",
-    "_method_variants",
-    "_normalize_answer_item",
-    "_normalize_question_knowledge_fields",
-    "_normalize_question_type",
-    "_normalize_rubric_question",
-    "_normalize_serialized_answer_list",
-    "_promote_nested_question_knowledge",
-    "_record_complete_answer_set_rule",
-    "_redundant_knowledge_fields_match_pairs",
-    "_remove_rule_by_id",
-    "_safe_float",
-    "_safe_knowledge_sequence",
-    "_sanitize_choice_answer_forms",
-    "_scale_deduction_policy",
-    "_scale_question_scores",
-    "_scale_question_to_score",
-    "_should_treat_as_direct_answer_question",
-    "_specific_step_goal",
-    "_string_list",
-    "_upsert_policy",
-    "force_payload_total_score",
-    "normalize_new_generated_config_payload",
-    "normalize_generated_config_knowledge_fields",
-    "normalize_generated_config_schema",
-    "strip_generated_config_knowledge_fields",
-    "validate_generated_config",
-)
 
 __all__ = [
     "force_payload_total_score",

@@ -106,6 +106,10 @@ describe('SessionConfigView source replacement guard', () => {
       selectedSessionId: 7,
       loadState: 'ready',
     })
+    useJobStore(pinia).track({
+      ...activeJob(), status: 'succeeded',
+      payload: { session_id: 7, mode: 'generate', curriculum_volume_id: 'junior-math' },
+    })
     const workspace = useConfigWorkspaceStore(pinia)
     workspace.selectSession(7)
     workspace.setSource({

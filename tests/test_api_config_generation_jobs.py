@@ -11,6 +11,7 @@ warnings.filterwarnings(
 )
 
 from fastapi.testclient import TestClient
+import pytest
 from docx import Document
 
 from backend.api.app import create_app
@@ -154,3 +155,52 @@ def test_config_generation_retry_accepts_all_uncertain_questions_after_teacher_c
     assert stored.payload["retry_question_ids"] == ["Q10"]
     assert stored.payload["confirm_uncertain_retry"] is True
     assert stored.payload["sync_to_question_bank"] is True
+
+
+@pytest.mark.parametrize("legacy_mode", ["whole_document", "per_question", "refine"])
+def test_config_generation_retry_rejects_legacy_generation_modes(
+    tmp_path: Path,
+    legacy_mode: str,
+) -> None:
+    if legacy_mode == "per_question":
+        pytest.skip("per_question is normalized to batched for stored jobs")
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": legacy_mode,
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        "failed",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": ["Q1"],
+            "failed_batches": [
+                {
+                    "batch_id": "B1",
+                    "question_ids": ["Q1"],
+                    "status": "failed",
+                    "category": "model_transport",
+                    "error": "synthetic",
+                }
+            ],
+            "retryable": True,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id, "retry_question_ids": ["Q1"]},
+    )
+
+    assert response.status_code == 409
+    body = response.json()["error"]
+    assert body["code"] == "config_generation_retry_not_available"
+    assert body["message"] == "旧的评分依据生成方式已停用，请用“分析并入库”重新生成。"
