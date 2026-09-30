@@ -9,6 +9,7 @@ import {
   commitRegions,
   discardRegionDraft,
   fetchRegionReadiness,
+  fetchRegionAutoProposal,
   fetchRegionWorkspace,
   fetchTemplateSubmission,
   retryRegionSnapshot,
@@ -73,6 +74,10 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
   const scoringConfigured = ref(false)
   const editorReady = ref(false)
   const editingConfirmed = ref(false)
+  const autoProposalState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const autoProposalMessage = ref('')
+  const editorEpoch = ref(0)
+  let autoProposalController: AbortController | null = null
   let generation = 0
   let savedRevision = 0
   let saveTimer: ReturnType<typeof setTimeout> | undefined
@@ -86,8 +91,71 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     || uploadState.value === 'unknown'
     || assignmentState.value === 'saving'
     || (editorReady.value && !readOnly.value && editorState.value.revision > savedRevision))
+  const missingQuestionIds = computed(() => {
+    const bound = new Set(editorState.value.regions.map((region) => region.mapped_question_id))
+    const missing = (workspace.value?.automatic_candidates ?? []).filter((id) =>
+      !bound.has(id) && !bound.has(id.match(/^Q\d+/)?.[0] ?? id))
+    if (!bound.has('__student_name__')) missing.push('__student_name__')
+    return missing
+  })
+  const canAutoPropose = computed(() => editorReady.value && !readOnly.value
+    && scoringConfigured.value && uploadState.value === 'idle' && assignmentState.value !== 'saving'
+    && !['conflict', 'error', 'saving'].includes(saveState.value))
+
+  function cancelAutoProposal(): void {
+    autoProposalController?.abort()
+    autoProposalController = null
+    if (autoProposalState.value === 'loading') {
+      autoProposalState.value = 'idle'
+      autoProposalMessage.value = '已取消自动框题，可继续手动框选。'
+    }
+  }
+
+  async function autoPropose(): Promise<void> {
+    const id = sessionId.value
+    const current = workspace.value
+    if (id === null || current === null || !canAutoPropose.value || autoProposalState.value === 'loading') return
+    const controller = new AbortController()
+    autoProposalController = controller
+    const requestGeneration = generation
+    const revision = editorState.value.revision
+    const fingerprint = current.template.template_fingerprint
+    autoProposalState.value = 'loading'
+    autoProposalMessage.value = ''
+    try {
+      const result = await fetchRegionAutoProposal(id, controller.signal)
+      if (controller.signal.aborted || requestGeneration !== generation || sessionId.value !== id
+        || editorState.value.revision !== revision) return
+      if (result.template_fingerprint !== fingerprint
+        || workspace.value?.template.template_fingerprint !== fingerprint) {
+        autoProposalState.value = 'error'
+        autoProposalMessage.value = '样卷已变化，已丢弃自动框题结果，请重新读取工作区。'
+        return
+      }
+      const questionIds = new Set(result.regions.map((region) => region.mapped_question_id)
+        .filter((value) => value !== null && value !== '__student_name__'))
+      if (questionIds.size === 0) throw new Error('No question anchors')
+      autoProposalState.value = 'ready'
+      const hasName = result.regions.some((region) => region.mapped_question_id === '__student_name__')
+      autoProposalMessage.value = `已自动框出 ${questionIds.size} 题${hasName ? '和姓名区' : ''}；自动框按整行范围，请检查后完成。`
+      // Reuse draft autosave; remount the established editor for this external replacement.
+      updateEditor({ revision: revision + 1, active_page: 'front', regions: result.regions })
+      editorEpoch.value += 1
+      workspace.value = { ...current, issues: [] }
+      await flushDraft()
+    } catch {
+      if (controller.signal.aborted || requestGeneration !== generation || sessionId.value !== id) return
+      autoProposalState.value = 'error'
+      autoProposalMessage.value = '未能自动框题，请手动框选，或点击“重新自动框题”重试。'
+    } finally {
+      if (autoProposalController === controller) autoProposalController = null
+    }
+  }
 
   function resetForSession(id: number): number {
+    cancelAutoProposal()
+    autoProposalState.value = 'idle'
+    autoProposalMessage.value = ''
     const restoredUploadToken = readPersistedUpload(id)
     clearTimeout(saveTimer)
     saveTimer = undefined
@@ -136,7 +204,11 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
         return
       }
       const response = await fetchRegionWorkspace(id)
-      if (requestGeneration === generation && sessionId.value === id) applyWorkspace(response)
+      if (requestGeneration === generation && sessionId.value === id) {
+        applyWorkspace(response)
+        if (response.draft.status === 'missing' && response.formal_regions.length === 0
+          && !response.template_ready) await autoPropose()
+      }
     } catch {
       if (requestGeneration === generation && sessionId.value === id) {
         loadState.value = 'error'
@@ -147,6 +219,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
 
   function updateEditor(value: EditorState): void {
     if (!editorReady.value || readOnly.value || saveState.value === 'conflict') return
+    if (autoProposalState.value === 'loading') cancelAutoProposal()
     editorState.value = structuredClone(value)
     saveState.value = 'idle'
     clearTimeout(saveTimer)
@@ -173,6 +246,11 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
       })
       if (requestGeneration !== generation || sessionId.value !== id) return
       savedRevision = response.draft?.revision ?? sent.revision
+      if (workspace.value !== null) {
+        workspace.value = { ...workspace.value, draft: {
+          status: 'compatible', revision: savedRevision, regions: response.draft?.regions ?? sent.regions as Region[],
+        } }
+      }
       saveState.value = 'saved'
     } catch (error) {
       if (requestGeneration !== generation || sessionId.value !== id) return
@@ -183,7 +261,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     } finally {
       saveInFlight = false
       if (requestGeneration === generation && editorState.value.revision > savedRevision
-        && saveState.value !== 'error') {
+        && !['error', 'conflict'].includes(saveState.value)) {
         saveTimer = setTimeout(() => { void flushDraft() }, 0)
       }
     }
@@ -194,6 +272,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     if (id === null || !scoringConfigured.value
       || uploadState.value === 'uploading' || uploadState.value === 'unknown') return
     const token = createClientRequestToken()
+    cancelAutoProposal()
     pendingUploadToken.value = token
     persistUpload({ sessionId: id, requestToken: token })
     uploadState.value = 'uploading'
@@ -230,6 +309,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
       return
     }
     const previousActivePage = editorState.value.active_page ?? 'front'
+    cancelAutoProposal()
     assignmentState.value = 'saving'
     errorMessage.value = ''
     try {
@@ -325,6 +405,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     editorState.value = { revision: savedRevision, active_page: 'front',
       regions: structuredClone(toRaw(current.draft.regions)) }
     editorReady.value = true
+    editingConfirmed.value = current.template_ready
     saveState.value = 'saved'
   }
 
@@ -354,6 +435,7 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
     const id = sessionId.value
     const current = workspace.value
     if (id === null || current === null || saveState.value === 'conflict') return null
+    cancelAutoProposal()
     await flushDraft()
     if (['error', 'conflict'].includes(saveState.value)) return null
     let result: RegionCommitResponse
@@ -389,6 +471,8 @@ export const useTemplateRegionStore = defineStore('template-regions', () => {
   }
 
   return { sessionId, workspace, editorState, loadState, saveState, uploadState,
+    autoProposalState, autoProposalMessage, editorEpoch, missingQuestionIds, canAutoPropose,
+    autoPropose, cancelAutoProposal,
     assignmentState,
     pendingUploadToken, errorMessage, scoringConfigured, editorReady, readOnly,
     snapshotPending, draftChoiceRequired, hasUnsavedWork, load, updateEditor,

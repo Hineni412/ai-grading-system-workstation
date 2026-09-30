@@ -20,6 +20,103 @@ def _controlled_synthetic_data_root(
     monkeypatch.setattr(path_manager.get_path_manager(), "_data_root", tmp_path)
 
 
+def test_auto_regions_supplement_commit_scan_and_complete_grading_plan(api_e2e, monkeypatch):
+    import hashlib
+    from PIL import Image, ImageDraw
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+    from grading_service import _target_question_ids_from_regions
+    from original_paper_exporter import detect_printed_question_anchors
+    from tests.test_original_paper_score_contract import _ocr_row
+
+    client = api_e2e.client
+    created = client.post('/api/sessions', json={
+        'name': 'Synthetic Auto Region Exam',
+        'rubric_path': str(api_e2e.paths.bootstrap_rubric),
+        'answer_key_path': str(api_e2e.paths.bootstrap_answer),
+    })
+    assert created.status_code == 201
+    sid = created.json()['id']
+    payload = api_e2e.config_payload()
+    assert client.put(f'/api/sessions/{sid}/config', json=payload).status_code == 200
+    paths = {'front': api_e2e.paths.template_front, 'back': api_e2e.paths.template_back}
+    for marker, (page, path) in enumerate(paths.items(), 1):
+        image = Image.new('RGB', (1000, 1400), 'white')
+        draw = ImageDraw.Draw(image)
+        for number, y in zip(range(1 if marker == 1 else 4, 4 if marker == 1 else 7), (200, 500, 800)):
+            draw.text((50, y), f'{number}. synthetic printed question', fill='black')
+        image.putpixel((0, 0), (marker, marker, marker))
+        image.save(path)
+    bound = client.put(f'/api/sessions/{sid}/template', json={
+        'front_template_path': str(paths['front']), 'back_template_path': str(paths['back']),
+    })
+    assert bound.status_code == 200
+
+    def ocr(image):
+        marker = int(image[0, 0, 0])
+        if image.shape[1] != 1000:
+            return [], 0.0
+        ids = (1, 2, 3) if marker == 1 else (4, 5)  # Teacher must supplement Q6.
+        rows = [_ocr_row(f'{number}. printed', 50, y, w=820)
+                for number, y in zip(ids, (200, 500, 800))]
+        if marker == 1:
+            rows.insert(0, _ocr_row('姓名：', 220, 70, w=50))
+        return rows, 0.0
+
+    monkeypatch.setattr('local_ocr.get_local_ocr', lambda: ocr)
+    anchors_before = detect_printed_question_anchors(paths, [f'Q{i}' for i in range(1, 7)])
+    proposed = client.get(f'/api/sessions/{sid}/regions/auto-proposal')
+    assert proposed.status_code == 200
+    proposal = proposed.json()
+    assert proposal['missing_question_ids'] == ['Q6']
+    regions = proposal['regions']
+    request = {'revision': 1, 'expected_revision': 0, 'regions': regions,
+               'expected_template_fingerprint': proposal['template_fingerprint']}
+    assert client.put(f'/api/sessions/{sid}/regions/draft', json=request).status_code == 200
+    q5 = next(region for region in regions if region['mapped_question_id'] == 'Q5')
+    q5['h'] = 300
+    regions.append({**q5, 'region_uuid': 'test-manual-Q6', 'mapped_question_id': 'Q6',
+                    'detected_question_id': None, 'confidence': 0.0, 'mapping_status': 'manual',
+                    'region_order': 7, 'y': 800, 'h': 580})
+    request.update(revision=2, expected_revision=1, regions=regions)
+    assert client.put(f'/api/sessions/{sid}/regions/draft', json=request).status_code == 200
+    committed = client.post(f'/api/sessions/{sid}/regions/commit', json={
+        'regions': regions, 'image_sizes': {'front': [1000, 1400], 'back': [1000, 1400]},
+        'expected_template_fingerprint': proposal['template_fingerprint'],
+    })
+    assert committed.status_code == 200 and committed.json()['committed']
+    assert not committed.json()['snapshot_pending']
+    formal = api_e2e.db.templates.list_answer_regions(sid)
+    assert _target_question_ids_from_regions(formal, rubric=payload['rubric']) == [f'Q{i}' for i in range(1, 7)]
+    assert detect_printed_question_anchors(paths, [f'Q{i}' for i in range(1, 7)]) == anchors_before
+
+    uploaded = {}
+    for marker, source in enumerate(sorted(api_e2e.paths.exams_dir.glob('SYN-*.png'))):
+        with Image.open(source) as image:
+            image.putpixel((0, 0), (marker, 0, 0))
+            image.save(source)
+        content = source.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        response = client.post(f'/api/sessions/{sid}/scan-uploads', content=content,
+                               headers={'content-type': 'image/png', 'x-upload-filename': source.name,
+                                        'x-content-sha256': digest})
+        assert response.status_code == 201, response.json()
+        uploaded[source.name] = digest
+    frozen = client.post(f'/api/sessions/{sid}/scan-uploads/freeze', json={'expected_revision': len(uploaded)})
+    assert frozen.status_code == 200
+    workspace = ScanGradingWorkspace(exams_root=api_e2e.paths.exams_dir,
+                                     templates_root=api_e2e.paths.templates_dir,
+                                     grading_db_path=api_e2e.paths.db_path)
+    api_e2e.controls.uploaded_scan_paths = {
+        name: workspace.frozen_scan_dir(sid) / f'{digest}.png' for name, digest in uploaded.items()
+    }
+    api_e2e.scan(sid)
+    plan = client.post(f'/api/sessions/{sid}/grading/plan', json={'grading_mode': 'ai'})
+    assert plan.status_code == 200, plan.json()
+    assert plan.json()['status'] == 'ready'
+    assert plan.json()['counts']['total_score_items'] == 12  # Two students, all six questions.
+    assert api_e2e.controls.fake_llm_calls == []
+
+
 def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
     api_e2e,
 ) -> None:

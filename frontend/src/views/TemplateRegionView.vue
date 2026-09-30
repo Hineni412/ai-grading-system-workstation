@@ -38,8 +38,19 @@ const pageCounts = computed(() => ({ front: pageStats('front'), back: pageStats(
 const commitSummary = computed(() => {
   const total = pageCounts.value.front.total + pageCounts.value.back.total
   const bound = pageCounts.value.front.bound + pageCounts.value.back.bound
-  return `正面 ${pageCounts.value.front.total} 框，反面 ${pageCounts.value.back.total} 框；已绑定 ${bound} 框，待处理 ${total - bound} 框，校验问题 ${store.workspace?.issues.length ?? 0} 项。确认保存为正式版本？`
+  const missing = store.missingQuestionIds.map((id) => id === '__student_name__' ? '姓名区' : id)
+  const missingSummary = missing.length ? `仍未框：${missing.join('、')}。未框题目不会被批改。` : ''
+  return `正面 ${pageCounts.value.front.total} 框，反面 ${pageCounts.value.back.total} 框；已绑定 ${bound} 框，待处理 ${total - bound} 框，校验问题 ${store.workspace?.issues.length ?? 0} 项。${missingSummary}确认保存为正式版本？`
 })
+const missingLabels = computed(() => store.missingQuestionIds
+  .map((id) => id === '__student_name__' ? '姓名区' : id).join('、'))
+
+function regenerate(): void {
+  if (store.editorState.regions.length > 0 || store.workspace?.draft.status === 'compatible') {
+    if (!window.confirm('将替换当前草稿中的全部题框。确认重新自动框题？')) return
+  }
+  void store.autoPropose()
+}
 
 function loadRoute(): void {
   if (Number.isSafeInteger(routeSessionId.value) && routeSessionId.value > 0) {
@@ -83,6 +94,7 @@ onMounted(() => {
   window.addEventListener('beforeunload', beforeUnload)
 })
 onBeforeUnmount(() => {
+  store.cancelAutoProposal()
   mainWorkspace?.classList.remove('main-workspace--template-focus')
   window.removeEventListener('beforeunload', beforeUnload)
 })
@@ -128,6 +140,17 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
         </div>
       </div>
       <div class="template-regions-view__messages">
+        <div v-if="store.editorReady && !store.readOnly" class="template-regions-view__auto" role="status">
+          <div>
+            <p v-if="store.autoProposalState === 'loading'">正在自动框题…扫描任务运行时需等待，可取消后手动框选。</p>
+            <p v-else-if="store.autoProposalMessage">{{ store.autoProposalMessage }}</p>
+            <p v-if="store.autoProposalState !== 'loading' && missingLabels" class="template-regions-view__missing" role="alert">
+              未框：{{ missingLabels }}，请补框。未框题目不会被批改。
+            </p>
+          </div>
+          <button v-if="store.autoProposalState === 'loading'" type="button" class="secondary" @click="store.cancelAutoProposal">取消自动框题</button>
+          <button v-else type="button" class="secondary" :disabled="!store.canAutoPropose" @click="regenerate">重新自动框题</button>
+        </div>
         <p v-if="store.errorMessage" class="template-regions-view__notice" role="alert">{{ store.errorMessage }}</p>
         <div v-if="store.saveState === 'error'" class="template-regions-view__notice" role="alert">
           <p>草稿仍保留在当前页面，可以再次尝试保存。</p>
@@ -159,6 +182,7 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
       />
       <TemplateRegionEditor
         v-if="store.editorReady"
+        :key="store.editorEpoch"
         :model-value="store.editorState"
         :images="store.workspace.template.pages"
         :manual-question-options="store.workspace.manual_question_options"

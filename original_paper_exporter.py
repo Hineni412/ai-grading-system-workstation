@@ -362,45 +362,15 @@ def detect_printed_question_anchors(
         try:
             with Image.open(path) as source:
                 rgb = source.convert("RGB")
-                width, height = rgb.size
                 import numpy as np
 
                 image_array = np.asarray(rgb)[:, :, ::-1]
-            raw_result = ocr_engine(image_array)
+            lines = read_ocr_lines(image_array, page=page, ocr_engine=ocr_engine)
         except Exception:
             continue
-        result = raw_result[0] if isinstance(raw_result, tuple) else raw_result
-        if not isinstance(result, list):
-            continue
-        for item in result:
-            if not isinstance(item, (list, tuple)) or len(item) < 3:
-                continue
-            box, text, raw_confidence = item[0], item[1], item[2]
-            match = _PRINTED_QUESTION_NUMBER.match(str(text or ""))
-            if match is None:
-                continue
-            question_id = f"Q{int(match.group(1))}"
-            if question_id not in expected_parents:
-                continue
-            confidence = _score_number(raw_confidence, default=0.0)
-            if confidence < 0.55:
-                continue
-            bounds = _ocr_box_bounds(box, width=width, height=height)
-            if bounds is None:
-                continue
-            x, y, box_width, box_height = bounds
-            candidates.setdefault(question_id, []).append(
-                {
-                    "page": page,
-                    "x": x,
-                    "y": y,
-                    "w": box_width,
-                    "h": box_height,
-                    "source_width": width,
-                    "source_height": height,
-                    "kind": "ocr",
-                    "confidence": confidence,
-                }
+        for candidate in printed_question_candidates(lines, expected_parents):
+            candidates.setdefault(candidate["question_id"], []).append(
+                {key: value for key, value in candidate.items() if key != "question_id"}
             )
 
     anchors: dict[str, dict[str, Any]] = {}
@@ -415,6 +385,56 @@ def detect_printed_question_anchors(
             ),
         )
     return anchors
+
+
+def read_ocr_lines(
+    image_array: Any,
+    *,
+    page: str,
+    ocr_engine: Any,
+    source_size: tuple[int, int] | None = None,
+    offset: tuple[int, int] = (0, 0),
+) -> list[dict[str, Any]]:
+    """Read all text lines, translating crop coordinates to the source page."""
+    height, width = image_array.shape[:2]
+    source_width, source_height = source_size or (width, height)
+    raw = ocr_engine(image_array)
+    rows = raw[0] if isinstance(raw, tuple) else raw
+    lines = []
+    for item in rows if isinstance(rows, list) else []:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        try:
+            bounds = _ocr_box_bounds(item[0], width=width, height=height)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if bounds is None:
+            continue
+        x, y, w, h = bounds
+        lines.append({
+            "page": page, "x": x + offset[0], "y": y + offset[1], "w": w, "h": h,
+            "text": str(item[1] or ""), "confidence": _score_number(item[2]),
+            "source_width": source_width, "source_height": source_height,
+        })
+    return lines
+
+
+def printed_question_candidates(
+    lines: list[dict[str, Any]], expected_parents: set[str],
+) -> list[dict[str, Any]]:
+    """Keep every plausible printed number; callers choose their own anchors."""
+    candidates = []
+    for line in lines:
+        match = _PRINTED_QUESTION_NUMBER.match(line["text"])
+        if match is None or not line["confidence"] >= 0.55:
+            continue
+        question_id = f"Q{int(match.group(1))}"
+        if question_id in expected_parents:
+            candidates.append({
+                **{key: value for key, value in line.items() if key != "text"},
+                "question_id": question_id, "kind": "ocr",
+            })
+    return candidates
 
 
 def _ocr_box_bounds(

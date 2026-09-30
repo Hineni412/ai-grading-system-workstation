@@ -136,6 +136,94 @@ def _bind_template(
     return response.json()
 
 
+def test_auto_proposal_is_read_only_and_metadata_survives_draft_and_commit(tmp_path, monkeypatch):
+    from PIL import Image
+    from tests.test_original_paper_score_contract import _ocr_row
+
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    (tmp_path / "templates").mkdir(exist_ok=True)
+    front, back = tmp_path / "templates" / "front.png", tmp_path / "templates" / "back.png"
+    for marker, path in ((1, front), (2, back)):
+        image = Image.new("RGB", (1000, 1400), "white")
+        image.putpixel((0, 0), (marker, marker, marker))
+        image.save(path)
+    _bind_template(client, session_id, front, back)
+
+    def ocr(image):
+        if int(image[0, 0, 0]) == 1 and image.shape[1] == 1000:
+            return [_ocr_row("姓名：", 220, 70, w=50), _ocr_row("1. printed", 50, 200, w=820)], 0.0
+        return [], 0.0
+
+    monkeypatch.setattr("local_ocr.get_local_ocr", lambda: ocr)
+    session_dir = tmp_path / "templates" / f"session_{session_id}"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    corrupt_draft = session_dir / "region_draft.json"
+    corrupt_draft.write_bytes(b"corrupt draft must remain untouched")
+    before = {str(path.relative_to(session_dir)): path.read_bytes()
+              for path in session_dir.rglob("*") if path.is_file()}
+    before_template = db.templates.get_session_template(session_id)
+    response = client.get(f"/api/sessions/{session_id}/regions/auto-proposal")
+    assert response.status_code == 200, response.json()
+    proposal = response.json()
+    assert proposal["missing_question_ids"] == []
+    assert len(proposal["regions"]) == 2
+    assert db.templates.list_answer_regions(session_id) == []
+    assert db.templates.get_session_template(session_id) == before_template
+    assert {str(path.relative_to(session_dir)): path.read_bytes()
+            for path in session_dir.rglob("*") if path.is_file()} == before
+    # Remove only this test's corrupt draft, then use the existing save/commit flow.
+    corrupt_draft.unlink()
+    saved = client.put(f"/api/sessions/{session_id}/regions/draft", json={
+        "revision": 1, "expected_revision": 0, "regions": proposal["regions"],
+        "expected_template_fingerprint": proposal["template_fingerprint"],
+    })
+    assert saved.status_code == 200, saved.json()
+    assert saved.json()["draft"]["regions"] == proposal["regions"]
+    committed = client.post(f"/api/sessions/{session_id}/regions/commit", json={
+        "regions": proposal["regions"], "image_sizes": {"front": [1000, 1400], "back": [1000, 1400]},
+        "expected_template_fingerprint": proposal["template_fingerprint"],
+    })
+    assert committed.status_code == 200 and committed.json()["committed"]
+    assert db.templates.is_template_ready(session_id)
+    workspace = client.get(f"/api/sessions/{session_id}/regions/workspace").json()
+    for region in workspace["formal_regions"]:
+        assert region["detected_question_id"] == region["mapped_question_id"]
+        assert region["confidence"] == 0.95
+        assert region["is_confirmed"]
+
+
+def test_auto_proposal_reports_empty_recognition_and_local_model_failure(tmp_path, monkeypatch):
+    from PIL import Image
+
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    (tmp_path / "templates").mkdir(exist_ok=True)
+    front, back = tmp_path / "templates" / "front.png", tmp_path / "templates" / "back.png"
+    Image.new("RGB", (1000, 1400), "white").save(front)
+    Image.new("RGB", (1000, 1400), "white").save(back)
+    assert client.get(f"/api/sessions/{session_id}/regions/auto-proposal").status_code == 404
+    _bind_template(client, session_id, front, back)
+    monkeypatch.setattr("local_ocr.get_local_ocr", lambda: lambda image: ([], 0.0))
+    response = client.get(f"/api/sessions/{session_id}/regions/auto-proposal")
+    assert response.status_code == 200
+    assert response.json()["regions"] == []
+    assert response.json()["missing_question_ids"] == ["Q1", "__student_name__"]
+
+    def missing_model(image):
+        raise FileNotFoundError("synthetic missing local model")
+
+    monkeypatch.setattr("local_ocr.get_local_ocr", lambda: missing_model)
+    response = client.get(f"/api/sessions/{session_id}/regions/auto-proposal")
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "answer_region_auto_unavailable"
+    assert db.templates.list_answer_regions(session_id) == []
+    monkeypatch.setattr("backend.api.routers.templates._scoring_configured", lambda *args: False)
+    response = client.get(f"/api/sessions/{session_id}/regions/auto-proposal")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "scoring_config_required"
+
+
 def test_current_template_page_assignment_swaps_regions_and_is_idempotent(
     tmp_path,
 ) -> None:
