@@ -26,7 +26,7 @@ from backend.jobs.config_generation import (
 from backend.jobs.manager import JobContext
 from backend.jobs.store import JobStore
 from db_manager import DBManager
-from session_manager import save_generated_config
+from backend.config_workspace.publish import save_generated_config
 from backend.repositories.grading_database import open_grading_repositories
 
 

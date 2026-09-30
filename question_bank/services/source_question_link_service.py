@@ -4,12 +4,12 @@ import json
 import re
 import sqlite3
 import unicodedata
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.similarity_service import text_similarity
-
 
 SUGGESTION_THRESHOLD = 0.82
 

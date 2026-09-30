@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from .normalization import (
     _infer_part_response_mode,
-    _looks_like_serialized_answer_list,
     _string_list,
 )
+
 
 def _quality_answer_texts(node: Any) -> list[str]:
     if not isinstance(node, dict):

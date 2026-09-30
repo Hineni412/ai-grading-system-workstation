@@ -7,23 +7,22 @@ import os
 import re
 import tempfile
 import threading
-import uuid
-from collections.abc import Sequence
+import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from question_bank.database.schema import connect
+from question_bank.services.question_revision import question_revision
 from question_bank.services.question_write_service import (
     ConfirmedQuestionTag,
     QuestionBankWriteService,
     QuestionWriteNotFound,
 )
-from question_bank.services.question_revision import question_revision
 from question_bank.taxonomy.governance import (
     TaxonomyGovernance,
     TaxonomyProposalNotFound,
 )
-
 
 _DIMENSION_TAG_TYPES = {
     "curriculum": "exam_scope",
@@ -685,7 +684,7 @@ class TaxonomyReviewService:
                 self._write_application_ledger(conn, operation_id, group)
             group["status"] = "applied"
             group["error"] = None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             group["status"] = "pending"
             group["error"] = type(exc).__name__
 
@@ -991,6 +990,19 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _replace_with_retry(source: Path, destination: Path) -> None:
+    # Windows file scanners can hold a freshly written temporary file open
+    # briefly; retry the atomic rename a few times before giving up.
+    for attempt in range(12):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == 11:
+                raise
+            time.sleep(min(0.05 * (attempt + 1), 0.4))
+
+
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -1005,6 +1017,6 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        _replace_with_retry(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

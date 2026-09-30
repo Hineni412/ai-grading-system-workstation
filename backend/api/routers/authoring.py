@@ -12,8 +12,8 @@ from backend.api.schemas.authoring import (
     AuthoringVersionCreateRequest,
     AuthoringVersionResponse,
     AuthoringWorkCreateRequest,
-    AuthoringWorkDetail,
     AuthoringWorkDeleteResponse,
+    AuthoringWorkDetail,
     AuthoringWorkListResponse,
     AuthoringWorkSummary,
 )
@@ -28,7 +28,6 @@ from question_bank.authoring import (
     task_card_catalog,
 )
 from question_bank.services.question_read_service import QuestionBankSnapshotError
-
 
 router = APIRouter(prefix="/api/authoring", tags=["authoring"])
 

@@ -7,20 +7,24 @@ request. Legacy copy helpers remain for callers with existing distinct rows.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-import hashlib
 import re
 import sqlite3
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
-
-from question_bank.models.question import duplicate_question_key, normalize_identity_text, EXACT_QUESTION_KEY_PREFIX
+from typing import Any
 
 from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.database.schema import connect
+from question_bank.models.question import (
+    EXACT_QUESTION_KEY_PREFIX,
+    duplicate_question_key,
+    normalize_identity_text,
+)
 from question_bank.services.file_cache import (
     cached_parsed_file,
     cached_processed_image_digest,
@@ -36,7 +40,6 @@ from question_bank.training_criteria.analysis import (
     solution_evidence_source_content_hash,
 )
 from question_bank.training_criteria.versioning import TrainingCriterionModule
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -154,7 +157,10 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
                           exam_printing: bool,
                           image_bytes: Sequence[bytes] = ()) -> str:
     from PIL import Image
-    from question_bank.services.asset_path_service import resolve_question_bank_asset_path
+
+    from question_bank.services.asset_path_service import (
+        resolve_question_bank_asset_path,
+    )
     from question_bank.services.rich_content_service import load_question_rich_content
     value = dict(question)
     if exam_printing:
@@ -285,8 +291,13 @@ def _normalize_formula_content(text: str, nodes: list) -> tuple[str, list[str]]:
     reorder operands, or discard unrecognised formula structures.
     """
     import xml.etree.ElementTree as ET
+
     from lxml import etree
-    from question_bank.document_pipeline.math_omml import restricted_latex_to_omml, RestrictedMathError
+
+    from question_bank.document_pipeline.math_omml import (
+        RestrictedMathError,
+        restricted_latex_to_omml,
+    )
     from question_bank.importers.docx_importer import _math_text
 
     def identity(node):
@@ -329,9 +340,10 @@ def _exact_resized_figure(picture):
     Non-exact resampling/compression stays a candidate for human checking;
     similarity alone is not permission to merge mathematical diagrams.
     """
+    from math import gcd
+
     import numpy as np
     from PIL import Image
-    from math import gcd
     pixels = np.asarray(picture.convert("RGBA"))
     rows = np.flatnonzero(np.any(pixels[1:] != pixels[:-1], axis=(1, 2))) + 1
     cols = np.flatnonzero(np.any(pixels[:, 1:] != pixels[:, :-1], axis=(0, 2))) + 1
@@ -363,7 +375,9 @@ def _file_stamps(paths: Sequence[Path]) -> tuple:
 
 def _content_revision(question: Mapping[str, Any], data_root: Path) -> str:
     """Cheap change detection; stat assets without decoding their pixels."""
-    from question_bank.services.asset_path_service import resolve_question_bank_asset_path
+    from question_bank.services.asset_path_service import (
+        resolve_question_bank_asset_path,
+    )
     from question_bank.services.rich_content_service import rich_content_path
     global _REVISION_CACHE_BYTES
     data_root = memoized_resolve(data_root)
@@ -938,7 +952,7 @@ def copy_duplicate_analysis(
                         ),
                         model_name=str(feature_rows[0]["model_name"] or "") or None,
                     )
-    except Exception:  # noqa: BLE001 - reuse must never break an import
+    except Exception:
         LOGGER.exception(
             "duplicate evidence copy failed: %s -> %s",
             source_question_id,
@@ -950,7 +964,7 @@ def copy_duplicate_analysis(
             source_input=source_input,
             target_input=target_input,
         )
-    except Exception:  # noqa: BLE001 - reuse must never break an import
+    except Exception:
         LOGGER.exception(
             "duplicate criteria copy failed: %s -> %s",
             source_question_id,

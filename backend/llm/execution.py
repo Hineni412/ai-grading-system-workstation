@@ -4,11 +4,10 @@ import hashlib
 import math
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 from .errors import LLMErrorCategory
-
 
 REQUEST_SPEED_MODES = frozenset({"automatic", "conservative", "custom"})
 MAX_CONCURRENT_REQUESTS_MIN = 1
@@ -128,7 +127,7 @@ def execution_scope_key(
 class LLMExecutionPermit:
     def __init__(
         self,
-        registry: "LLMExecutionGovernorRegistry",
+        registry: LLMExecutionGovernorRegistry,
         scope_key: str,
     ) -> None:
         self._registry = registry

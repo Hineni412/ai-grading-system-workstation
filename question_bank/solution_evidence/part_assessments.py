@@ -10,10 +10,11 @@ import hashlib
 import json
 import re
 import sqlite3
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any
 
 LEGACY_ESSAY_TYPES = ("解答题（画图）", "解答题（计算）", "解答题（证明）")
 
@@ -34,7 +35,9 @@ def reading(db_path: Path, connection: sqlite3.Connection | None = None) -> Iter
 
 
 def source_alias(question: Any, expected: str) -> str | None:
-    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+    from question_bank.training_criteria.analysis import (
+        solution_evidence_source_content_hash,
+    )
     if solution_evidence_source_content_hash(question) == expected:
         return ""
     if question.tagging_context.question_type != "解答题":
@@ -124,10 +127,14 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
                     f"SELECT * FROM questions WHERE id IN ({marks}) AND is_deleted = 0", list(ids),
                 ).fetchall()
             }
-        from question_bank.services.standard_difficulty import question_content_fingerprint
-        from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+        from question_bank.services.standard_difficulty import (
+            question_content_fingerprint,
+        )
         from question_bank.solution_evidence.repository import (
             _classification_from_evidence_payload,
+        )
+        from question_bank.training_criteria.analysis import (
+            solution_evidence_source_content_hash,
         )
         for row in rows:
             question_id = int(row["question_id"])
@@ -299,7 +306,10 @@ def historical_source_matches(db_path: Path, profile: Mapping[str, Any], rubric:
                 items = [i for i in payload["bundle"]["items"] if i.get("source_question_ref") == match[3]]
                 if len(items) != 1:
                     continue
-                from question_bank.training_criteria.in_memory import DeferredCombinedAnalysisItem, UnmappedFineTermResolver
+                from question_bank.training_criteria.combined_analysis import (
+                    DeferredCombinedAnalysisItem,
+                    UnmappedFineTermResolver,
+                )
                 original = DeferredCombinedAnalysisItem.from_checkpoint_dict(items[0], resolver=UnmappedFineTermResolver())
                 if original.operation_id != operation or original.solution_evidence.version_id != version_id:
                     continue
@@ -320,8 +330,8 @@ def training_part_observations(profile: Mapping[str, Any], criteria: Mapping[str
                                final_points: Sequence[Mapping[str, Any]],
                                links: Mapping[str, Sequence[Any]]) -> list[dict[str, Any]] | None:
     """Read frozen, final step facts without changing the publication or its locks."""
-    from question_bank.training_criteria.analysis import TrainingCriterionPoint
     from question_bank.solution_evidence.knowledge_links import direct_links_for_part
+    from question_bank.training_criteria.analysis import TrainingCriterionPoint
     if not profile.get("available"):
         return []
     try:

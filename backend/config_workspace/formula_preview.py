@@ -39,7 +39,7 @@ _LEADING_NUMBER_PREFIX = re.compile(
 _HTML_TOKEN = re.compile(r"<[^>]*>|[^<]+")
 
 _INDEX_CACHE_LIMIT = 16
-_INDEX_CACHE: "OrderedDict[tuple[str, str, str], dict[str, str]]" = OrderedDict()
+_INDEX_CACHE: OrderedDict[tuple[str, str, str], dict[str, str]] = OrderedDict()
 _INDEX_CACHE_LOCK = threading.Lock()
 
 

@@ -1,6 +1,6 @@
 """考试场次分析数据装配：数据库 → 报告/页面共用的数据模型。
 
-本模块只负责把评分库、评分依据与题库侧信息装配成 _SessionAnalysisData；
+本模块只负责把评分库、评分依据与题库侧信息装配成 SessionAnalysisData；
 HTML 渲染、AI 叙述与报告导出仍留在报告导出模块，
 内容生成模型配置解析在 backend/model_profiles/content_generation.py。
 """
@@ -87,16 +87,16 @@ _REASON_CODE_LABELS = {
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 
 
-def _has_cjk(text: str) -> bool:
+def has_cjk(text: str) -> bool:
     return bool(_CJK_RE.search(text))
 
 # 分数段按满分等比缩放（满分 100 时即方案 §3 的固定分段）。
-_BAND_CUTOFFS = (85, 70, 60, 40, 0)
+BAND_CUTOFFS = (85, 70, 60, 40, 0)
 _PASS_CUTOFF = 60
 
 
 @dataclass
-class _QuestionInfo:
+class QuestionInfo:
     question_id: str
     question_type: str
     max_score: float
@@ -124,7 +124,7 @@ class _QuestionInfo:
 
 
 @dataclass
-class _StudentQuestionRecord:
+class StudentQuestionRecord:
     question_id: str
     score: float
     max_score: float
@@ -148,7 +148,7 @@ class _StudentQuestionRecord:
 
 
 @dataclass
-class _StudentReportData:
+class StudentReportData:
     result_id: int
     student_id: int
     student_code: str
@@ -158,7 +158,7 @@ class _StudentReportData:
     needs_review: bool
     graded_at: str
     rank: int = 0
-    records: list[_StudentQuestionRecord] = field(default_factory=list)
+    records: list[StudentQuestionRecord] = field(default_factory=list)
     material_notes: list[str] = field(default_factory=list)
     knowledge_mastery: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -168,7 +168,7 @@ class _StudentReportData:
 
 
 @dataclass
-class _SessionAnalysisData:
+class SessionAnalysisData:
     session_id: int
     session_name: str
     subject: str
@@ -177,8 +177,8 @@ class _SessionAnalysisData:
     present: int
     roster_absent: int
     small_sample: bool
-    questions: list[_QuestionInfo]
-    students: list[_StudentReportData]
+    questions: list[QuestionInfo]
+    students: list[StudentReportData]
     skipped: list[dict[str, str]]
     stats: dict[str, Any]
     knowledge_backfill: dict[str, list[dict[str, str]]]
@@ -197,7 +197,7 @@ def assemble_session_analysis(
     page_only: bool = False,
     include_answer_evidence: bool = False,
     include_knowledge: bool = False,
-) -> _SessionAnalysisData:
+) -> SessionAnalysisData:
     """轻量页面按需读取标签或作答文字，不重新识别原卷。"""
     repositories = as_grading_repositories(db)
     resolved_data_root = data_root or infer_data_root(repositories.db_path)
@@ -238,7 +238,7 @@ def assemble_session_analysis(
             detail
         )
 
-    students: list[_StudentReportData] = []
+    students: list[StudentReportData] = []
     skipped: list[dict[str, str]] = []
     covered_identities: set[tuple[str, str]] = set()
     for result in snapshot.results:
@@ -292,7 +292,7 @@ def assemble_session_analysis(
             )
             continue
         students.append(
-            _StudentReportData(
+            StudentReportData(
                 result_id=result_id,
                 student_id=int(result.get("student_id") or 0),
                 student_code=identity[0],
@@ -376,10 +376,10 @@ def assemble_session_analysis(
         student.rank = previous_rank
     students = ordered
 
-    questions: list[_QuestionInfo] = []
+    questions: list[QuestionInfo] = []
     for qid in natural_question_order([str(qid) for qid in score_map]):
         questions.append(
-            _QuestionInfo(
+            QuestionInfo(
                 question_id=qid,
                 question_type=str(type_map.get(qid) or ""),
                 max_score=float(score_map.get(qid) or 0),
@@ -421,7 +421,7 @@ def assemble_session_analysis(
         str(session_row.get("session_name") or "").strip() or f"考试批改_{session_id}"
     )
     present = present_count if snapshot.attendance else len(students)
-    return _SessionAnalysisData(
+    return SessionAnalysisData(
         session_id=int(session_id),
         session_name=session_name,
         subject=str(rubric.get("subject") or "数学").strip() or "数学",
@@ -442,13 +442,13 @@ def assemble_session_analysis(
 
 
 def split_session_analysis_by_class(
-    data: _SessionAnalysisData,
-) -> dict[str, _SessionAnalysisData]:
+    data: SessionAnalysisData,
+) -> dict[str, SessionAnalysisData]:
     """个人报告、班级页面与班级导出共用的本班统计和同分名次。"""
     names = {student.class_name for student in data.students}
     names.update(item["class_name"] for item in data.skipped)
     names.update(data.attendance_by_class)
-    groups: dict[str, _SessionAnalysisData] = {}
+    groups: dict[str, SessionAnalysisData] = {}
     for name in sorted(names, key=lambda value: [
         (0, int(part)) if part.isdigit() else (1, part)
         for part in re.split(r"(\d+)", value)
@@ -650,16 +650,16 @@ def _score_distribution(scores: list[float], full_score: float) -> dict[str, Any
         }
     scale = full_score / 100 if full_score > 0 else 1.0
     bands: list[dict[str, Any]] = []
-    for index, cutoff in enumerate(_BAND_CUTOFFS):
+    for index, cutoff in enumerate(BAND_CUTOFFS):
         lower = cutoff * scale
-        upper = full_score if index == 0 else _BAND_CUTOFFS[index - 1] * scale
+        upper = full_score if index == 0 else BAND_CUTOFFS[index - 1] * scale
         members = [
             score for score in scores
             if lower <= score and (score <= upper if index == 0 else score < upper)
         ]
         bands.append(
             {
-                "label": f"{_fmt_num(lower)} – {'不足' if index else ''}{_fmt_num(upper)} 分",
+                "label": f"{fmt_num(lower)} – {'不足' if index else ''}{fmt_num(upper)} 分",
                 "count": len(members),
                 "ratio": len(members) / len(scores),
             }
@@ -672,7 +672,7 @@ def _score_distribution(scores: list[float], full_score: float) -> dict[str, Any
         "min": min(scores),
         "pass_rate": round(len(passing) / len(scores), 4),
         "excellent_count": len(
-            [score for score in scores if score >= _BAND_CUTOFFS[0] * scale]
+            [score for score in scores if score >= BAND_CUTOFFS[0] * scale]
         ),
         "bands": bands,
     }
@@ -697,7 +697,7 @@ def _sanitize_grading_text(value: object) -> str:
     for code, label in _REASON_CODE_LABELS.items():
         if code in lowered:
             return label
-    return text if _has_cjk(text) else ""
+    return text if has_cjk(text) else ""
 
 
 def _format_secondary_error(item: object) -> str:
@@ -770,7 +770,7 @@ def _merge_student_records(
     student_answers: dict[str, str] | None = None,
     grading_evidence: dict[str, dict[str, Any]] | None = None,
     include_secondary_errors: bool = True,
-) -> list[_StudentQuestionRecord]:
+) -> list[StudentQuestionRecord]:
     """把同一学生同一题的多条明细合并为一条（兼容小问拆行存储）。"""
     secondary_map: dict[str, list[str]] = {}
     try:
@@ -830,14 +830,14 @@ def _merge_student_records(
         resolve_known_question_id(qid, score_map) or qid: item
         for qid, item in (grading_evidence or {}).items()
     }
-    records: list[_StudentQuestionRecord] = []
+    records: list[StudentQuestionRecord] = []
     for qid in order:
         bucket = merged[qid]
         max_score = float(score_map.get(qid) or 0)
         score = min(bucket["score"], max_score) if max_score > 0 else bucket["score"]
         evidence = evidence_by_qid.get(qid, {})
         records.append(
-            _StudentQuestionRecord(
+            StudentQuestionRecord(
                 question_id=qid,
                 score=score,
                 max_score=max_score,
@@ -866,8 +866,10 @@ def _docx_question_figures(source: Any) -> dict[str, list[bytes]]:
     if getattr(source, "suffix", None) != ".docx":
         return {}
     from docx import Document
+
     from backend.document_parsing.question_blocks import (
-        _extract_question_marker_number, _looks_like_answer_section_heading,
+        _extract_question_marker_number,
+        _looks_like_answer_section_heading,
     )
     document = Document(io.BytesIO(source.private_source_bytes))
     stems = {
@@ -909,7 +911,7 @@ def _docx_question_figures(source: Any) -> dict[str, list[bytes]]:
 
 def enrich_personal_questions(
     repositories: GradingRepositoryAccess,
-    data: _SessionAnalysisData,
+    data: SessionAnalysisData,
     data_root: Path | None,
     *,
     include_images: bool = True,
@@ -1019,6 +1021,7 @@ def _source_formula_markup(source: Any) -> dict[str, str]:
     if getattr(source, 'suffix', None) != '.docx':
         return {}
     from docx import Document
+
     from question_bank.importers.docx_importer import _math_text
     from question_bank.services.inline_math import omml_parts
     try:
@@ -1029,19 +1032,22 @@ def _source_formula_markup(source: Any) -> dict[str, str]:
             original = _math_text(node)
             if formula and original and (len(original) > 2 or any(c in original for c in '√∛')):
                 variants.setdefault(original, set()).add(formula)
-        return {original: _report_math_span(*next(iter(values)))
+        return {original: report_math_span(*next(iter(values)))
                 for original, values in variants.items() if len(values) == 1}
     except (OSError, ValueError, zipfile.BadZipFile):
         return {}
 
 
 def enrich_personal_knowledge(
-    repositories: GradingRepositoryAccess, data: _SessionAnalysisData,
+    repositories: GradingRepositoryAccess, data: SessionAnalysisData,
     data_root: Path | None, *, student_ids: set[int] | None = None,
 ) -> None:
     """Freeze the existing semester diagnosis once for the whole export batch."""
     from integration.diagnosis_profile_service import DiagnosisProfileService
-    from question_bank.current_knowledge import CurrentKnowledgeResolver, CurrentKnowledgeUnavailable
+    from question_bank.current_knowledge import (
+        CurrentKnowledgeResolver,
+        CurrentKnowledgeUnavailable,
+    )
     from question_bank.solution_evidence.part_assessments import reading
     root = data_root or infer_data_root(repositories.db_path)
     path = root / 'databases' / 'question_bank.db'
@@ -1104,7 +1110,7 @@ def parent_question_id(question_id: str) -> str:
     return f"Q{coordinates[0]}"
 
 
-def _fmt_num(value: object) -> str:
+def fmt_num(value: object) -> str:
     try:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -1114,10 +1120,10 @@ def _fmt_num(value: object) -> str:
     return f"{number:g}"
 
 
-def _esc(value: object) -> str:
+def esc(value: object) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
-def _report_math_span(tex: str, fallback: str, *, display: bool = False) -> str:
-    return (f'<span class="qm{" qm-display" if display else ""}" data-latex="{_esc(tex)}"'
-            f'{" data-display=\"true\"" if display else ""}>{_esc(fallback)}</span>')
+def report_math_span(tex: str, fallback: str, *, display: bool = False) -> str:
+    return (f'<span class="qm{" qm-display" if display else ""}" data-latex="{esc(tex)}"'
+            f'{" data-display=\"true\"" if display else ""}>{esc(fallback)}</span>')

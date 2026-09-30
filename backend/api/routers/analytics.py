@@ -17,7 +17,6 @@ from backend.api.schemas.analytics import (
 )
 from backend.repositories.access import GradingRepositoryAccess
 
-
 router = APIRouter(prefix="/api", tags=["analytics"])
 
 OptionalTextQuery = Annotated[

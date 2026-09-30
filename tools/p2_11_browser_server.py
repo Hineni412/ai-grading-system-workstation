@@ -52,7 +52,7 @@ def _prepare_paths(data_root: Path):
 
 def _seed(paths) -> None:
     from PIL import Image, ImageDraw
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
 
     db = open_grading_repositories(paths.db_path)
     db.initialize()

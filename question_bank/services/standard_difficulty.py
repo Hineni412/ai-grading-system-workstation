@@ -18,12 +18,12 @@ import hashlib
 import json
 import math
 import sqlite3
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from question_bank.database.schema import connect
 from question_bank.models.tag_schema import PART_FEATURE_ORDER
-
 
 STANDARD_DIFFICULTY_FORMULA_VERSION = "std-difficulty-v1"
 

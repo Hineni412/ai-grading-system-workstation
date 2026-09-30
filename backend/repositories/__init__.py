@@ -4,7 +4,6 @@ from backend.repositories.access import (
     GradingRepositoryAccess,
     as_grading_repositories,
 )
-
 from backend.repositories.base import (
     ReadOnlyRepositoryError,
     Repository,

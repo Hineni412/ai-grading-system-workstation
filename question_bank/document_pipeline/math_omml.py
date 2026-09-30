@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from .contracts import MathExpression, ReviewState, SourceRegion
 
-
 OMML_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 _TOKEN = re.compile(
     r"\\[A-Za-z]+|[A-Za-z]+|[0-9]+(?:\.[0-9]+)?|[{}_^]|[+\-*/=<>(),.\[\]|:]|\S"
@@ -145,7 +144,7 @@ class RestrictedMathError(ValueError):
 class _MathNode:
     kind: str
     value: str = ""
-    children: tuple["_MathNode", ...] = ()
+    children: tuple[_MathNode, ...] = ()
 
 
 class _Parser:

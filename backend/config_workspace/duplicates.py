@@ -90,6 +90,7 @@ def source_duplicate_preview(
     """
     # Deferred imports keep the heavy matching pipeline out of the request
     # module's import graph.
+    from backend.jobs.config_generation import config_analysis_source_questions
     from question_bank.database.schema import connect, initialize_database
     from question_bank.importers.batch_importer import (
         ParsedQuestion,
@@ -106,7 +107,6 @@ def source_duplicate_preview(
         reusable_analysis,
         uncertain_image_candidates,
     )
-    from backend.jobs.config_generation import config_analysis_source_questions
 
     record = service.load_active_record(session_id=session_id)
     result: dict[str, Any] = {

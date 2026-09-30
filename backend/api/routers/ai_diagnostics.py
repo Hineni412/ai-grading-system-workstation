@@ -11,7 +11,6 @@ from backend.api.schemas.ai_diagnostics import (
 )
 from backend.llm.diagnostics import JsonlDiagnosticJournal
 
-
 router = APIRouter(
     prefix="/api/ai-diagnostics",
     tags=["ai-diagnostics"],

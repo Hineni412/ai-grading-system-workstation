@@ -884,7 +884,7 @@ def serve_browser_review() -> None:
     import path_manager
     import uvicorn
     from backend.api.app import create_app
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
     from backend.scan_grading.workspace import ScanGradingWorkspace
     from question_bank.database.schema import initialize_database
 

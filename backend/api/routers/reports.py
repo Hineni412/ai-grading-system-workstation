@@ -50,7 +50,6 @@ from backend.report_exports import (
 )
 from backend.repositories.access import GradingRepositoryAccess
 
-
 router = APIRouter(prefix="/api", tags=["reports"])
 
 _ANALYSIS_NARRATIVE_CACHE_DIRNAME = ".analysis_narrative_cache"
@@ -81,7 +80,9 @@ def export_session_report(
         )
     if request is not None and request.report_type in ANALYSIS_REPORT_TYPES:
         # 兜底校验：未配置内容生成模型时不得静默改用阅卷模型或空跑计费。
-        from backend.model_profiles.content_generation import resolve_content_generation_settings
+        from backend.model_profiles.content_generation import (
+            resolve_content_generation_settings,
+        )
 
         if resolve_content_generation_settings() is None:
             raise ApiError(
@@ -227,14 +228,14 @@ def get_class_analysis(
         build_class_page_data,
         class_narrative_with_student_names,
     )
-    from backend.session_analysis import split_session_analysis_by_class
     from backend.class_analysis import (
         CLASS_ANALYSIS_RENDITION_VERSION,
-        assemble_cause_data,
         apply_cause_results,
+        assemble_cause_data,
         build_cause_inputs,
         known_cause_patterns,
     )
+    from backend.session_analysis import split_session_analysis_by_class
 
     _require_session(db.sessions, session_id)
     store = ClassAnalysisStateStore(reports_dir)
@@ -323,11 +324,14 @@ def edit_cause_pattern(
     reports_dir: Path = Depends(get_reports_dir),
 ) -> CausePatternEditResponse:
     """教师可选修改错法名称/大类：已关联题库时同步改写题库行，未关联只改本场。"""
-    from backend.session_analysis import question_bank_db_path
     from backend.class_analysis import (
-        CausePatternEditError, edit_cause_pattern as apply_cause_edit,
+        CausePatternEditError,
+    )
+    from backend.class_analysis import (
+        edit_cause_pattern as apply_cause_edit,
     )
     from backend.error_patterns import session_bank_context
+    from backend.session_analysis import question_bank_db_path
 
     _require_session(db.sessions, session_id)
     question_bank_path = question_bank_db_path(Path(db.db_path))
@@ -375,12 +379,12 @@ def get_class_analysis_report(
 ) -> HTMLResponse:
     """内嵌班级报告页：按已生成的班级叙述渲染自包含 HTML，供系统内页面嵌套展示。"""
     from analysis_report_exporter import render_class_html
+    from backend.class_analysis import question_category_counts, session_error_records
     from backend.session_analysis import (
         assemble_session_analysis,
         enrich_personal_knowledge,
         split_session_analysis_by_class,
     )
-    from backend.class_analysis import question_category_counts, session_error_records
 
     _require_session(db.sessions, session_id)
     data = assemble_session_analysis(db, int(session_id), page_only=True, include_knowledge=True)
@@ -455,7 +459,9 @@ def regenerate_class_analysis(
 ) -> JobResponse:
     _require_session(db.sessions, session_id)
     # 兜底校验：未配置内容生成模型时不得静默改用阅卷模型或空跑计费。
-    from backend.model_profiles.content_generation import resolve_content_generation_settings
+    from backend.model_profiles.content_generation import (
+        resolve_content_generation_settings,
+    )
 
     if resolve_content_generation_settings() is None:
         raise ApiError(

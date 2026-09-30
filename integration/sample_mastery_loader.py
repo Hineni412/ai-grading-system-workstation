@@ -11,7 +11,6 @@ from question_bank.current_knowledge import (
     CurrentKnowledgeUnavailable,
 )
 
-
 DEFAULT_SAMPLE_PATH = (
     Path(__file__).resolve().parents[1]
     / "data_sample"

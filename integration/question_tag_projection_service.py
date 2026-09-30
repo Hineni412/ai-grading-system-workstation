@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
-from pathlib import Path
 import sqlite3
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
+from backend.config_generation.contract import iter_effective_rubric_item_refs
 from question_bank.database.schema import connect, initialize_database
-from question_bank.services.source_question_link_service import SourceQuestionLinkService
-from session_manager import iter_effective_rubric_item_refs
+from question_bank.services.source_question_link_service import (
+    SourceQuestionLinkService,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,8 +104,8 @@ class QuestionTagProjectionService:
         feature_difficulties = self._active_feature_difficulties(bank_question_ids)
         from question_bank.solution_evidence.evidence_snapshot import (
             load_snapshot,
-            resolved_direct_keys,
             resolve_evidence_part_id,
+            resolved_direct_keys,
         )
         snapshot = load_snapshot(
             self.data_root / "config" / "uploaded",

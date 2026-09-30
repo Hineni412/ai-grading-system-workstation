@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from statistics import median
-from typing import Any, Mapping, Sequence
+from typing import Any
 
-from question_bank.current_knowledge import CurrentKnowledgeResolver
+from question_bank.recommendation.personalized import (
+    PersonalizedRecommendationConfig,
+    PersonalizedRecommendationModule,
+    paper_similarity_allowed,
+    repeated_consolidation_only,
+    resolve_practice_scope,
+)
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
-from question_bank.recommendation.personalized import (
-    PersonalizedRecommendationModule, PersonalizedRecommendationConfig, paper_similarity_allowed, resolve_practice_scope,
-    repeated_consolidation_only,
-)
+
 
 def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id: str,
                     resolver: Any = None, scope_keys: Sequence[str] = ()) -> list[dict[str, Any]]:

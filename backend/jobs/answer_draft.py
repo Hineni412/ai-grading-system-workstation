@@ -16,7 +16,6 @@ from question_bank.services.answer_draft_service import AnswerDraftService
 from .execution_locks import keyed_execution_locks
 from .manager import JobContext
 
-
 LOGGER = logging.getLogger(__name__)
 
 _PUBLIC_FAILURE_MESSAGES = {

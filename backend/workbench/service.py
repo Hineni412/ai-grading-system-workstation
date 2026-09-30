@@ -5,8 +5,8 @@ from typing import Any
 
 from backend.jobs.manager import JobManager
 from backend.public_data import sanitize_public_diagnostic_text
-from backend.review.service import ReviewApplicationService
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
+from backend.review.service import ReviewApplicationService
 
 
 class WorkbenchService:

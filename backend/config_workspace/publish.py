@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import copy
-import json
 import hashlib
+import json
+import os
 import uuid
-from dataclasses import asdict
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from backend.config_workspace.secure_fs import (
-    SecureFilesystemError,
-    SecureRootFilesystem,
+from backend.config_generation.normalization import (
+    validate_generated_config,
 )
 from backend.config_workspace.drafts import (
     DRAFT_MARKER_KEY,
@@ -28,8 +28,9 @@ from backend.config_workspace.editor import (
     validate_config_editor_candidate,
 )
 from backend.config_workspace.locks import session_config_lock
-from backend.config_generation.normalization import (
-    validate_generated_config,
+from backend.config_workspace.secure_fs import (
+    SecureFilesystemError,
+    SecureRootFilesystem,
 )
 from path_manager import resolve_stored_file_path
 from question_id_contract import canonicalize_grading_config_payload
@@ -521,5 +522,33 @@ __all__ = [
     "remove_published_config",
     "save_editor_config",
     "save_editor_config_and_refresh_mapping",
+    "save_generated_config",
     "publish_legacy_config_and_refresh_mapping",
 ]
+
+
+def save_generated_config(upload_dir: Path, payload: dict[str, Any], ts: str) -> tuple[Path, Path]:
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    validate_generated_config(payload)
+    rubric_path = upload_dir / f"rubric_{ts}.json"
+    answer_key_path = upload_dir / f"answer_key_{ts}.json"
+
+    _write_generated_json_atomic(rubric_path, payload["rubric"])
+    _write_generated_json_atomic(answer_key_path, payload["answer_key"])
+
+    return rubric_path, answer_key_path
+
+
+def _write_generated_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.parent / f".{path.name}.{os.urandom(8).hex()}.tmp"
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass

@@ -1,27 +1,26 @@
 from __future__ import annotations
 
 import base64
-import io
 import json
 import math
 import re
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from PIL import Image, ImageDraw
 
-from backend.domain_models import ExamPaperGroup, QuestionGradingDetail
 from answer_key_utils import answer_forms_map
 from answer_normalizer import (
     SCORE_BAIT_REVIEW_REASON,
     grading_item_bait_status,
     normalize_answer_text,
 )
+from backend.domain_models import ExamPaperGroup, QuestionGradingDetail
 from backend.llm import LLMProtocolAdapter, LLMRequestKind
 from usage_logger import extract_usage_fields
-
 
 OBJECTIVE_BATCH_TYPES = {"choice", "fill_blank"}
 OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE = 0.7
@@ -173,7 +172,7 @@ def run_objective_batch_recognition(
                 target_question_ids=target_qids,
                 request_index=request_index,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             reason = str(exc) or "objective_paper_region_failed"
             return {
                 "usage": None,
@@ -247,7 +246,7 @@ def run_objective_batch_recognition(
                 model=recognition_model,
                 usage_callback=_usage_callback,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if progress_callback is not None:
                 progress_callback(
                     {
@@ -422,7 +421,10 @@ def build_objective_paper_entries(paper_groups: list[ExamPaperGroup]) -> list[Ob
 def build_objective_question_specs(session_id: str, rubric: dict[str, Any], answer_key: dict[str, Any]) -> list[ObjectiveQuestionSpec]:
     answer_map = answer_forms_map(answer_key)
     try:
-        from objective_answer_loader import load_objective_answer_sources, get_standard_answer_for_question
+        from objective_answer_loader import (
+            get_standard_answer_for_question,
+            load_objective_answer_sources,
+        )
 
         answer_sources = load_objective_answer_sources(session_id)
     except Exception:

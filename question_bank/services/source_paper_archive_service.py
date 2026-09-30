@@ -13,7 +13,6 @@ from pathlib import Path
 
 from question_bank.database.paths import project_data_root
 
-
 SUPPORTED_SUFFIXES = {".docx", ".pdf"}
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 _ARCHIVE_LOCKS_GUARD = threading.Lock()

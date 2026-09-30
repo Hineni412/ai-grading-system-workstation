@@ -25,7 +25,6 @@ from backend.scan_grading.workspace import (
     ScanGradingWorkspaceError,
 )
 
-
 router = APIRouter(prefix="/api", tags=["media"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 BINARY_SCHEMA = {"type": "string", "format": "binary"}

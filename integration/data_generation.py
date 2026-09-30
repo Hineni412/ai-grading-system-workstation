@@ -18,7 +18,7 @@ from typing import Union
 _PATH_TYPE = Union[str, Path]
 
 _LOCK = threading.Lock()
-_MONITORS: dict[str, "_GenerationMonitor"] = {}
+_MONITORS: dict[str, _GenerationMonitor] = {}
 _MONITOR_LIMIT = 64
 
 

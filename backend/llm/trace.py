@@ -5,12 +5,11 @@ import json
 import math
 import re
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping
 from urllib.parse import urlparse
-
 
 _SAFE_LABEL = re.compile(r"^[A-Za-z0-9._:/-]{1,160}$")
 _SAFE_HOST = re.compile(r"^(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]+$|^[0-9A-Fa-f:]+$")

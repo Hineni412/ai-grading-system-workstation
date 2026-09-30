@@ -3,9 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from typing import Any, Literal, Mapping, Protocol
-
+from typing import Any, Literal, Protocol
 
 POINT_STATES = frozenset({"met", "not_met", "uncertain", "unreadable"})
 
@@ -89,7 +89,7 @@ class ModelPointResult:
     evidence: str
 
     @classmethod
-    def from_mapping(cls, payload: Mapping[str, Any]) -> "ModelPointResult":
+    def from_mapping(cls, payload: Mapping[str, Any]) -> ModelPointResult:
         return cls(
             task_item_code=str(payload.get("task_item_code") or "").strip(),
             point_id=str(payload.get("point_id") or "").strip(),
@@ -113,7 +113,7 @@ class AssessmentGatewayResponse:
         model_name: str,
         usage: AssessmentUsage | None = None,
         latency_ms: int = 0,
-    ) -> "AssessmentGatewayResponse":
+    ) -> AssessmentGatewayResponse:
         raw_results = payload.get("results")
         if not isinstance(raw_results, list):
             raise ValueError("training assessment results must be an array")

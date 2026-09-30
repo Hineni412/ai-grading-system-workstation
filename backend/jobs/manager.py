@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .store import (
     GradingSessionBusyError,
@@ -13,7 +14,6 @@ from .store import (
     JobStore,
     QuestionBankSyncSessionBusyError,
 )
-
 
 JobHandler = Callable[["JobContext"], dict[str, Any] | None]
 
@@ -557,10 +557,10 @@ class JobManager:
             if not self.store.confirm_cancelled(job_id):
                 self.store.finish(job_id, "failed", error=str(exc))
             return
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.store.finish(job_id, "failed", error=str(exc) or type(exc).__name__)
             return
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             if self.store.is_cancel_requested(job_id):
                 if not self.store.confirm_cancelled(job_id):
                     self.store.finish(job_id, "failed", error=type(exc).__name__)
@@ -574,7 +574,7 @@ class JobManager:
                 result=result if isinstance(result, dict) else {},
             )
             self._cleanup_completed_config_retry(job_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             self.store.finish(
                 job_id,
                 "failed",

@@ -30,6 +30,8 @@ from backend.api.schemas.students import (
     StudentUpsertResponse,
     StudentWorkspaceResponse,
 )
+from backend.repositories.access import GradingRepositoryAccess
+from backend.repositories.students import StudentRecord, StudentRepositoryGateway
 from backend.students import (
     StudentBackupFailed,
     StudentCodeConflict,
@@ -40,13 +42,10 @@ from backend.students import (
     StudentRosterModule,
     StudentRosterNotFound,
 )
-from backend.repositories.students import StudentRecord, StudentRepositoryGateway
-from backend.repositories.access import GradingRepositoryAccess
-from question_id_contract import question_id_coordinates
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
 )
-
+from question_id_contract import question_id_coordinates
 
 router = APIRouter(prefix="/api", tags=["students"])
 

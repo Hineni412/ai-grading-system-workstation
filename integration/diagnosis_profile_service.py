@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
 import json
-from pathlib import Path
 import pickle
 import sqlite3
 import threading
-from typing import Any, Iterable, Mapping, TypedDict
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any, TypedDict
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.grading_database import open_grading_repositories
@@ -24,7 +25,6 @@ from question_bank.mastery.current import (
     CurrentMasteryCalculator,
     aggregate_current_mastery,
 )
-
 
 GENERIC_ERROR_REASONS = {
     "未作答",
@@ -501,7 +501,9 @@ class DiagnosisProfileService:
                 for node in resolver.nodes
             ]
             from question_bank.recommendation.target_matching import (
-                knowledge_skill_associations, load_question_facets, target_index,
+                knowledge_skill_associations,
+                load_question_facets,
+                target_index,
             )
             facets_index = target_index(resolver)
             for item in knowledge_catalog:
@@ -933,7 +935,9 @@ class DiagnosisProfileService:
                 continue
             enriched = dict(row)
             enriched["bank_question_id"] = projected.bank_question_id
-            from question_bank.solution_evidence.part_assessments import exam_assessment_state
+            from question_bank.solution_evidence.part_assessments import (
+                exam_assessment_state,
+            )
             enriched["assessment"] = exam_assessment_state(projected.assessment, row.get("assessment_state") or {},
                 teacher_final=row.get("teacher_final_revision") is not None,
                 teacher_score=float(row["score_awarded"]) if row.get("teacher_final_revision") is not None else None)

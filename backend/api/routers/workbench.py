@@ -15,11 +15,10 @@ from backend.api.schemas.workbench import (
     SessionAnomalyResponse,
     WorkbenchOverviewResponse,
 )
+from backend.repositories.access import GradingRepositoryAccess
 from backend.review.manual_context import current_manual_context
 from backend.scan_grading.workspace import ScanGradingWorkspace
 from backend.workbench.service import WorkbenchService
-from backend.repositories.access import GradingRepositoryAccess
-
 
 router = APIRouter(prefix="/api", tags=["workbench"])
 

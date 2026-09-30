@@ -25,7 +25,6 @@ from typing import Any
 from question_bank.document_pipeline.word_renderer import answer_space_lines
 from question_bank.personalized_papers.rendering import PaperRenderError
 
-
 EMU_PER_MM = 36000
 _IMAGE_BLOCK_MAX_WIDTH_MM = 90.0
 _IMAGE_BLOCK_OBJECTIVE_MAX_WIDTH_MM = 55.0
@@ -388,7 +387,7 @@ def _prepare_image(asset: Path, *, data_root: Path) -> Path:
                 target = cache_dir / f"{digest}.jpg"
                 image.save(target, format="JPEG", quality=85, optimize=True)
         return target
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise LatexRenderError("question image could not be recompressed") from exc
 
 

@@ -22,7 +22,6 @@ from backend.api.schemas.ops import (
     OpsSelfCheckResponse,
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
-from backend.ops.service import OpsSelfCheckService
 from backend.ops.archive import OpsArchiveInvalid, OpsArchiveTooLarge
 from backend.ops.journal import OpsOperationBusy
 from backend.ops.plan_store import (
@@ -30,13 +29,13 @@ from backend.ops.plan_store import (
     OpsConfirmationInvalid,
     OpsConfirmationUsed,
 )
+from backend.ops.service import OpsSelfCheckService
 from backend.ops.write_service import (
     OpsPreflightStale,
     OpsRequestInvalid,
     OpsResourceNotFound,
     OpsWriteService,
 )
-
 
 router = APIRouter(prefix="/api/ops", tags=["ops"])
 OPS_UNAVAILABLE_RESPONSE = {

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from difflib import SequenceMatcher
-from typing import Iterable
-
 
 _NON_WORD = re.compile(r"[\s\W_]+", re.UNICODE)
 

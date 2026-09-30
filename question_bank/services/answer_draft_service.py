@@ -14,7 +14,6 @@ from typing import Any
 from question_bank.database.schema import connect
 from question_bank.services.ai_tagging_service import classify_tagging_error
 
-
 LOGGER = logging.getLogger(__name__)
 
 AI_DRAFT_MARKER = "【AI 生成，待教师核对】"
@@ -170,7 +169,7 @@ class AnswerDraftService:
                     question_id,
                     format_draft_answer_text(draft),
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 failed.append(
                     {
                         "question_id": question_id,

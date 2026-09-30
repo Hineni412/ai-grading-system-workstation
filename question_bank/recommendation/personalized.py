@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -20,15 +20,24 @@ from question_bank.current_knowledge import (
     CurrentKnowledgeUnavailable,
 )
 from question_bank.database.schema import connect
-from question_bank.services import standard_difficulty
-from question_bank.services.duplicate_analysis_copy_service import exact_question_key, exact_identity_map, exam_original_key, exam_original_text_key
-from question_bank.recommendation.recommendation_engine import text_similarity
-from question_bank.recommendation.target_matching import (
-    MATCH_LABELS, match_target, part_facets, target_index, topic_keys, _question_evidence_metadata,
-)
 from question_bank.mastery.current import (
     CURRENT_MASTERY_PARAMETERS,
     CurrentMasteryCalculator,
+)
+from question_bank.recommendation.recommendation_engine import text_similarity
+from question_bank.recommendation.target_matching import (
+    MATCH_LABELS,
+    _question_evidence_metadata,
+    match_target,
+    part_facets,
+    target_index,
+    topic_keys,
+)
+from question_bank.services import standard_difficulty
+from question_bank.services.duplicate_analysis_copy_service import (
+    exact_question_key,
+    exam_original_key,
+    exam_original_text_key,
 )
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_volume,
@@ -40,7 +49,6 @@ from question_bank.training_criteria import (
     TrainingCriterionModule,
     usable_training_criterion,
 )
-
 
 ENGINE_VERSION = "personalized-recommendation-v17-evidence-priority"
 GROUPING_VERSION = "chapter-skill-coverage-v7-coverage"
@@ -1596,7 +1604,9 @@ class PersonalizedRecommendationModule:
                 features = conn.execute(f"SELECT * FROM question_part_difficulty_features WHERE is_active=1 AND question_id IN ({marks})", batch).fetchall()
             profiles = load_profiles(self.db_path, batch, data_root=self.data_root)
             from question_bank.solution_evidence import SolutionEvidenceRepository
-            from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+            from question_bank.training_criteria.analysis import (
+                solution_evidence_source_content_hash,
+            )
             evidence_repository = SolutionEvidenceRepository(self.db_path)
             source_inputs = {item.question_id: item for item in QuestionAnalysisInputLoader(
                 db_path=self.db_path, data_root=self.data_root).load([int(row["id"]) for row in rows])}
@@ -2081,8 +2091,11 @@ class PersonalizedRecommendationModule:
             ).fetchall()
         stable_by_question: dict[int, list[dict[str, str]]] = {}
         source_ids = {int(row["id"]) for row in rows}
-        from question_bank.solution_evidence.part_assessments import load_profiles, direct_targets
         from question_bank.solution_evidence.knowledge_links import load_point_links
+        from question_bank.solution_evidence.part_assessments import (
+            direct_targets,
+            load_profiles,
+        )
         profiles = {}
         profile_ids = sorted(source_ids)
         for start in range(0, len(profile_ids), 64):
@@ -2191,7 +2204,10 @@ class PersonalizedRecommendationModule:
                 continue
             candidate_rows[question_id] = row
         candidate_ids = list(candidate_rows)
-        from question_bank.services.error_pattern_service import list_patterns, preferred_active_patterns
+        from question_bank.services.error_pattern_service import (
+            list_patterns,
+            preferred_active_patterns,
+        )
         with connect(self.db_path) as connection:
             patterns = list_patterns(connection, candidate_ids, include_predicted=True, statuses=("candidate", "confirmed"))
         candidates: list[dict[str, Any]] = []

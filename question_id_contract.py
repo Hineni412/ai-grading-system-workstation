@@ -16,9 +16,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 
 class QuestionIdContractError(ValueError):
@@ -211,7 +212,7 @@ class QuestionIdCatalog:
     aliases: dict[str, str]
 
     @classmethod
-    def from_document(cls, document: Mapping[str, Any]) -> "QuestionIdCatalog":
+    def from_document(cls, document: Mapping[str, Any]) -> QuestionIdCatalog:
         return _build_catalog(document)
 
     def resolve(self, raw: object, parent_id: str | None = None) -> str | None:

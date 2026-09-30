@@ -35,7 +35,7 @@ from question_bank.training_criteria import (
     DeferredAnalysisFailure,
     DeferredCombinedAnalysisBundle,
     GatewayBatchResponse,
-    InMemoryCombinedQuestionAnalysisModule,
+    DeferredCombinedQuestionAnalysisModule,
     UnmappedFineTermResolver,
     question_analysis_input_from_config_source,
     reused_analysis_item,
@@ -439,7 +439,7 @@ def _run_deferred_adoption(
         invented_term=invented_term,
         empty_links=empty_links,
     )
-    bundle = InMemoryCombinedQuestionAnalysisModule(
+    bundle = DeferredCombinedQuestionAnalysisModule(
         gateway=gateway,
         taxonomy_governance=analysis_governance,
     ).analyze(

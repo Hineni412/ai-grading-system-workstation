@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from question_bank.recommendation.personalized import PersonalizedRecommendationModule
-from tests.phase4.test_personalized_recommendation import _approve_synthetic_criteria
+from tests.training.test_personalized_recommendation import _approve_synthetic_criteria
 
 import pytest
 from fastapi.testclient import TestClient

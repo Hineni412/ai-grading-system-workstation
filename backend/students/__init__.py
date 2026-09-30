@@ -1,8 +1,8 @@
 from .service import (
     StudentBackupFailed,
     StudentCodeConflict,
-    StudentDeleteResult,
     StudentDeleteFailed,
+    StudentDeleteResult,
     StudentDeletionImpact,
     StudentGradingActive,
     StudentImportPreview,

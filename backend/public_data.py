@@ -5,7 +5,6 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-
 _SENSITIVE_KEYS = frozenset(
     {
         "apikey",

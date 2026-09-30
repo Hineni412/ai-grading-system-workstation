@@ -8,7 +8,10 @@ from typing import Any
 
 from answer_normalizer import complete_answer_set_values
 from equivalence_engine import merge_equivalent_forms
-from question_id_contract import canonicalize_grading_config_payload
+from question_id_contract import (
+    canonical_parent_id,
+    canonicalize_grading_config_payload,
+)
 from score_policy import (
     MAX_QUESTION_SCORE,
     OBJECTIVE_TYPES,
@@ -18,7 +21,6 @@ from score_policy import (
     apply_integer_question_score,
     enforce_integer_scores_by_type,
 )
-from question_id_contract import canonical_parent_id
 
 from .contract import (
     attach_structure_repairs,
@@ -1959,6 +1961,43 @@ def validate_generated_config(
     if "warnings" not in meta or not isinstance(meta["warnings"], list):
         raise ValueError("meta.warnings must exist and be a list")
 
+def validate_image_semantic_inputs(
+    question_blocks: list[dict[str, Any]],
+    q_images: dict[str, Any] | None,
+) -> None:
+    image_qids = [
+        str(block.get("question_id") or "").strip()
+        for block in question_blocks
+        if isinstance(block, dict) and str(block.get("semantic_source") or "").strip() == "images"
+    ]
+    if not image_qids:
+        return
+    if not isinstance(q_images, dict) or not q_images:
+        raise ValueError("PDF 图片裁题状态已丢失，请重新点击“① 拆分试卷”后再生成评分标准。")
+
+    import base64
+
+    invalid_qids: list[str] = []
+    for qid in image_qids:
+        image_data = q_images.get(qid)
+        question_image = image_data.get("question") if isinstance(image_data, dict) else None
+        if not isinstance(question_image, str) or not question_image.strip():
+            invalid_qids.append(qid)
+            continue
+        try:
+            base64.b64decode(question_image, validate=True)
+            answer_image = image_data.get("answer")
+            if answer_image:
+                base64.b64decode(str(answer_image), validate=True)
+        except (ValueError, TypeError):
+            invalid_qids.append(qid)
+    if invalid_qids:
+        raise ValueError(
+            "PDF 图片裁题数据无效，未退回纯文本模式。请重新拆题："
+            + ", ".join(invalid_qids)
+        )
+
+
 __all__ = [
     "force_payload_total_score",
     "normalize_new_generated_config_payload",
@@ -1966,4 +2005,5 @@ __all__ = [
     "normalize_generated_config_schema",
     "strip_generated_config_knowledge_fields",
     "validate_generated_config",
+    "validate_image_semantic_inputs",
 ]

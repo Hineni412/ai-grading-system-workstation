@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import threading
-import json
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from question_bank.database.schema import connect as connect_question_bank
-
 
 SESSION_STORAGE_DIR_NAMES = ("templates", "exams", "annotated")
 SESSION_DELETE_STAGING_DIR_NAME = ".session-delete-staging"

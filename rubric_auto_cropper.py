@@ -1,9 +1,8 @@
 import io
 import os
-import tempfile
+
 import fitz  # PyMuPDF — module-level so helper functions can reference it
 from PIL import Image
-from backend.document_parsing import extract_pdf_text
 
 
 def convert_docx_to_pdf_images(docx_bytes: bytes) -> list[bytes]:

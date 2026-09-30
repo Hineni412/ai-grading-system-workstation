@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import re
 from typing import Any, Literal
 
@@ -219,7 +217,7 @@ class ConfigSourceQuestionDecisionRequest(BaseModel):
     bank_question_id: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
-    def _validate_answer_override(self) -> "ConfigSourceQuestionDecisionRequest":
+    def _validate_answer_override(self) -> ConfigSourceQuestionDecisionRequest:
         if self.answer_override is not None:
             self.answer_override = self.answer_override.strip()
             if not self.answer_override:
@@ -243,7 +241,7 @@ class ConfigAmbiguousAssetDecisionRequest(BaseModel):
     asset_kind: Literal["question", "answer"] | None = None
 
     @model_validator(mode="after")
-    def _validate_binding(self) -> "ConfigAmbiguousAssetDecisionRequest":
+    def _validate_binding(self) -> ConfigAmbiguousAssetDecisionRequest:
         if self.action == "ignore":
             if self.question_id is not None or self.asset_kind is not None:
                 raise ValueError("ignored asset cannot have a binding target")
@@ -322,7 +320,7 @@ class ConfigSourceGenerationRequest(BaseModel):
         return normalized
 
     @model_validator(mode="after")
-    def _validate_targeted_regeneration(self) -> "ConfigSourceGenerationRequest":
+    def _validate_targeted_regeneration(self) -> ConfigSourceGenerationRequest:
         targeted = self.regenerate_question_ids is not None
         if targeted != (self.base_revision is not None):
             raise ValueError(

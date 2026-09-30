@@ -19,8 +19,8 @@ from backend.repositories.papers import (
 )
 from grading_completeness import (
     audit_grading_details,
-    merge_detail_metadata,
     details_require_review,
+    merge_detail_metadata,
     resolve_grading_completeness,
 )
 from path_manager import resolve_stored_file_path

@@ -36,7 +36,6 @@ MARKDOWN_REPORT_NAME = f"{REPORT_STEM}.md"
 RELEASE_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 CORE_TARGETS = (
     "db_manager.py",
-    "session_manager.py",
     "grading_service.py",
     "manual_review_service.py",
     "backend/api/launcher.py",

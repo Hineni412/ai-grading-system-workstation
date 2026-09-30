@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from backend.status_contracts import validate_status
 
-
 MIN_REGION_SIZE = 12
 EDGE_SNAP_TOLERANCE = 8
 MappingStatus = Literal["auto", "manual", "unbound"]

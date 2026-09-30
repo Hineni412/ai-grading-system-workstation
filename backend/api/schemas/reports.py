@@ -30,7 +30,7 @@ class ScoreExcelOptions(BaseModel):
         return sorted(set(value))
 
     @model_validator(mode="after")
-    def _normalize_disabled_bottom_rule(self) -> "ScoreExcelOptions":
+    def _normalize_disabled_bottom_rule(self) -> ScoreExcelOptions:
         if not self.hide_bottom_enabled:
             self.hide_bottom_n = 0
         return self
@@ -48,7 +48,7 @@ class ReportExportRequest(BaseModel):
     excel_options: ScoreExcelOptions | None = None
 
     @model_validator(mode="after")
-    def _validate_report_options(self) -> "ReportExportRequest":
+    def _validate_report_options(self) -> ReportExportRequest:
         if self.report_type != "score_excel":
             if self.excel_options is not None:
                 raise ValueError("excel options are only valid for score_excel")

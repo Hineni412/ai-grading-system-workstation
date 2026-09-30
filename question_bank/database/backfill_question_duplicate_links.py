@@ -6,13 +6,15 @@ The default is a read-only audit. Similarity is never used for consolidation.
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import json
+import sqlite3
 from collections import defaultdict
 from pathlib import Path
+
 from question_bank.models.question import normalize_identity_text
 from question_bank.services.duplicate_analysis_copy_service import (
-    exact_identity_map, canonical_question_ranks,
+    canonical_question_ranks,
+    exact_identity_map,
 )
 
 

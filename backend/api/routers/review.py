@@ -13,6 +13,7 @@ from backend.api.dependencies import (
     get_scan_grading_workspace,
 )
 from backend.api.routers.sessions import _require_session
+from backend.api.schemas.media import ReviewMediaLinksResponse
 from backend.api.schemas.review import (
     ReviewConfirmRequest,
     ReviewConfirmResponse,
@@ -22,7 +23,8 @@ from backend.api.schemas.review import (
     ReviewQuestionSummary,
 )
 from backend.api.schemas.review_rubric import ReviewRubricSectionResponse
-from backend.api.schemas.media import ReviewMediaLinksResponse
+from backend.repositories.access import GradingRepositoryAccess
+from backend.review.manual_context import current_manual_context
 from backend.review.rubric import (
     ReviewRubricConfigError,
     ReviewRubricQuestionConflictError,
@@ -35,10 +37,7 @@ from backend.review.service import (
     ReviewRevisionConflictError,
     ReviewValidationError,
 )
-from backend.repositories.access import GradingRepositoryAccess
-from backend.review.manual_context import current_manual_context
 from backend.scan_grading.workspace import ScanGradingWorkspace
-
 
 router = APIRouter(prefix="/api", tags=["review"])
 

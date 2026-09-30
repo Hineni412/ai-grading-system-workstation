@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import math
 import json
+import math
 import sqlite3
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -18,7 +18,6 @@ from question_bank.mastery.v2 import (
     TrainingEvidence,
     compute_mastery_v2,
 )
-
 
 _CHINA_TIMEZONE = timezone(timedelta(hours=8))
 CURRENT_MASTERY_PARAMETERS = MasteryV2Parameters(formula_version="mastery-v2-formula-v2")
@@ -320,8 +319,11 @@ class CurrentMasteryCalculator:
                     if curriculum_volume_id and volumes_by_draft[draft_id] == curriculum_volume_id:
                         scoped_rows.append(row)
                 rows = scoped_rows
-            from question_bank.solution_evidence.part_assessments import load_profiles, training_part_observations
             from question_bank.solution_evidence.knowledge_links import load_point_links
+            from question_bank.solution_evidence.part_assessments import (
+                load_profiles,
+                training_part_observations,
+            )
             source_by_id = {str(row["evidence_id"]): json.loads(row["source_json"]) for row in rows
                             if "source_json" in row.keys()}
             profiles = load_profiles(self.db_path, sorted({int(source["bank_question_id"]) for source in source_by_id.values() if source.get("bank_question_id")}), connection=connection, data_root=self.data_root)

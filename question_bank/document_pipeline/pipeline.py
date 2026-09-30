@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
 import tempfile
-from dataclasses import asdict, replace
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Mapping
 
 import fitz
 from docx import Document
@@ -15,7 +14,6 @@ from docx import Document
 from .adapters import (
     ImagePreprocessor,
     LocalOcrAdapter,
-    OcrLine,
     MineruOcrAdapter,
     SafeImagePreprocessor,
 )
@@ -48,7 +46,6 @@ from .contracts import (
 )
 from .math_omml import build_math_expression
 from .word_renderer import SharedWordQuestionRenderer, WordStyleProfile, validate_docx
-
 
 _QUESTION_MARKER = re.compile(
     r"^\s*(?:第\s*)?(?P<number>\d{1,3})(?:\s*题|[.．、)）:]|\s)",

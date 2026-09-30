@@ -20,7 +20,6 @@ from backend.file_access import (
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from question_id_contract import question_id_coordinates
 
-
 IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
 _CROP_RENDER_VERSION = "review-crop-v1"
 _DEFAULT_CROP_CACHE_BYTES = 256 * 1024 * 1024

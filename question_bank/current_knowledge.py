@@ -26,7 +26,6 @@ from question_bank.knowledge_graph_release.validation import validate_release
 from question_bank.relations.bootstrap import normalize_knowledge_alias
 from question_bank.solution_evidence.contracts import CoreResolution
 
-
 _RESOLVER_CACHE_LIMIT = 4
 _RESOLVER_CACHE_LOCK = threading.Lock()
 
@@ -42,12 +41,12 @@ class CurrentKnowledgeUnavailable(RuntimeError):
 class CurrentFineTermResolver:
     """Adapt the one current standard to solution-evidence resolution."""
 
-    def __init__(self, resolver: "CurrentKnowledgeResolver") -> None:
+    def __init__(self, resolver: CurrentKnowledgeResolver) -> None:
         self.current = resolver
         self.release_id = resolver.release_id
 
     @classmethod
-    def from_active_database(cls, db_path: Path) -> "CurrentFineTermResolver":
+    def from_active_database(cls, db_path: Path) -> CurrentFineTermResolver:
         return cls(CurrentKnowledgeResolver.from_active_database(db_path))
 
     def resolve(self, fine_term_id: str) -> CoreResolution:

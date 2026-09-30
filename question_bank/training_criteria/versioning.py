@@ -3,16 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 from question_bank.database.schema import connect
 from question_bank.training_criteria.analysis import (
     QuestionAnalysisInput,
     TrainingCriteriaDraft,
 )
-
 
 CriterionVersionStatus = Literal[
     "proposed",
@@ -298,10 +298,14 @@ class TrainingCriterionModule:
             return
         if (workspace.get("current_version") or {}).get("status") == "rejected":
             return
-        from question_bank.solution_evidence.contracts import CoreResolution, QuestionSolutionEvidence
+        from question_bank.solution_evidence.contracts import (
+            CoreResolution,
+            QuestionSolutionEvidence,
+        )
         from question_bank.solution_evidence.repository import _model_evidence_payload
         from question_bank.training_criteria.analysis import (
-            solution_evidence_source_content_hash, training_criteria_from_solution_evidence,
+            solution_evidence_source_content_hash,
+            training_criteria_from_solution_evidence,
         )
         resolutions = {
             link["fine_term_id"]: CoreResolution(**link["core_resolution"])

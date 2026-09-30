@@ -6,8 +6,12 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-from question_bank.database.schema import connect
 from question_bank.current_knowledge import CurrentFineTermResolver
+from question_bank.database.schema import connect
+from question_bank.models.question import (
+    DERIVED_PENDING_STATUS,
+    analysis_ownership_satisfied,
+)
 from question_bank.models.tag_schema import TaggingContext
 from question_bank.services.ai_tagging_service import (
     AITaggingResult,
@@ -15,15 +19,12 @@ from question_bank.services.ai_tagging_service import (
     classify_tagging_error,
     is_auto_saveable_result,
 )
-from question_bank.models.question import (
-    DERIVED_PENDING_STATUS,
-    analysis_ownership_satisfied,
-)
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.solution_evidence import (
     SolutionEvidenceProjectionWriter,
     SolutionEvidenceRepository,
 )
+from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 from question_bank.training_criteria import (
     BankQuestionTypeSuggestionWriter,
     CombinedAnalysisRepository,
@@ -36,11 +37,9 @@ from question_bank.training_criteria import (
     combined_analysis_retry_budget,
     solution_evidence_source_content_hash,
 )
-from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
 from .execution_locks import keyed_execution_locks
 from .manager import JobContext
-
 
 TaggingFactory = Callable[[], AITaggingService]
 LOGGER = logging.getLogger(__name__)
@@ -118,7 +117,9 @@ def run_tagging_sync_job(
 def _run_tagging_sync_job_locked(**kwargs: Any) -> dict[str, object]:
     """Analyze each full-content identity once within the requested batch."""
     from question_bank.services.duplicate_analysis_copy_service import (
-        exact_identity_map, link_exact_duplicate, copy_duplicate_analysis,
+        copy_duplicate_analysis,
+        exact_identity_map,
+        link_exact_duplicate,
     )
     question_ids = kwargs["question_ids"]
     root = kwargs["data_root"]
@@ -400,7 +401,7 @@ def _run_distinct_tagging_sync_job_locked(
                     quality_retry_limit=1,
                     enable_review=False,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 context.raise_if_cancelled()
                 category = classify_tagging_error(exc)
                 failures.extend(
@@ -440,7 +441,7 @@ def _run_distinct_tagging_sync_job_locked(
                                 question_id, {}
                             ),
                         )
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         failures.append(_failure(question_id, "save"))
                         continue
                     for item in persisted_proposals:
@@ -462,7 +463,7 @@ def _run_distinct_tagging_sync_job_locked(
                         confidence=result.analysis.confidence,
                         taxonomy_governance=governance,
                     )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     saved = False
                 if not saved:
                     failures.append(_failure(question_id, "save"))
@@ -481,7 +482,7 @@ def _run_distinct_tagging_sync_job_locked(
                         graph_release_id=knowledge_graph_release_id,
                         allocated=observation_sequences,
                     )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     # Same rule as the combined path: the tag is already
                     # saved, so an audit-registration failure is logged but
                     # never marks the question as failed.
@@ -791,7 +792,7 @@ def _run_unified_tagging_analysis(
                         graph_release_id=knowledge_graph_release_id,
                         allocated=observation_sequences,
                     )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     # Observation registration is an audit projection. The tag
                     # itself is already persisted; the re-verification below
                     # re-reads the question-bank truth, so a registration

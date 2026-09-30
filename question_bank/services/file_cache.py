@@ -12,9 +12,9 @@ import os
 import stat as stat_module
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
-
+from typing import Any
 
 _BYTE_BUDGET = 256 * 1024 * 1024
 _MAX_CACHED_FILE_BYTES = 16 * 1024 * 1024

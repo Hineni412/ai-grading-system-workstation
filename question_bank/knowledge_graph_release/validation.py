@@ -5,13 +5,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from question_bank.knowledge_graph_release.contracts import (
-    KnowledgeGraphRelease,
     SCHEMA_VERSION,
+    KnowledgeGraphRelease,
     ValidationIssue,
     ValidationReport,
 )
 from question_bank.relations.contracts import normalize_stable_key
-
 
 _DISPOSITIONS = {
     "direct_core",

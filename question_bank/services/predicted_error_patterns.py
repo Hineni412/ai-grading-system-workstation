@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from question_bank.models.tag_schema import PREDICTED_TRIGGER_KINDS
-from question_bank.services.error_pattern_service import _content_fingerprint, _stale_prediction
+from question_bank.services.error_pattern_service import (
+    _content_fingerprint,
+    _stale_prediction,
+)
 
 _PATTERN_TABLE = "question_error_patterns"
 PREDICTED_SOURCE = "ai_predicted"
@@ -43,7 +47,9 @@ def record_predicted_patterns(
         question["question_text"], question["answer_text"]
     )
     from backend.error_patterns import (
-        extract_canonical_option, normalize_option_answer, parse_option_letters,
+        extract_canonical_option,
+        normalize_option_answer,
+        parse_option_letters,
     )
     is_choice = str(question["question_type"] or "").strip() in {
         "choice", "single_choice", "选择题", "单选题",

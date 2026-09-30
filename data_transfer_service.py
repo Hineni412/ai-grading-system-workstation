@@ -6,7 +6,6 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-
 EXPORT_SIZE_WARNING_MB = 200.0
 
 

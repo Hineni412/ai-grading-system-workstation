@@ -3,15 +3,13 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import os
 import shutil
 import subprocess
 import sys
 import urllib.request
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
-
 
 DEFAULT_VERSION = "v1.5.0"
 PYTHON_VERSION = "3.12.1"

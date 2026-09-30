@@ -16,42 +16,58 @@ from backend.api.dependencies import (
     get_personalized_paper_module,
     get_personalized_recommendation_module,
     get_request_diagnosis_profile_service,
-    get_training_submission_module,
     get_training_assessment_module,
+    get_training_submission_module,
 )
 from backend.api.schemas.training import (
-    PersonalizedPaperBatchCreateRequest,
     PersonalizedPaperBatchCancelRequest,
-    PersonalizedPaperBatchRetryRequest,
+    PersonalizedPaperBatchCreateRequest,
     PersonalizedPaperBatchListResponse,
     PersonalizedPaperBatchResponse,
+    PersonalizedPaperBatchRetryRequest,
     PersonalizedPaperCreateRequest,
     PersonalizedPaperInstanceListResponse,
     PersonalizedPaperInstanceResponse,
+    PersonalizedRecommendationCreateRequest,
+    PersonalizedRecommendationDraftResponse,
+    PersonalizedRecommendationEditRequest,
+    TrainingAssessmentActionRequest,
+    TrainingAssessmentOutcomeResponse,
+    TrainingAssessmentReviewRequest,
+    TrainingAssessmentStartRequest,
+    TrainingDiagnosisRequest,
+    TrainingDiagnosisResponse,
+    TrainingEvidenceReplayRequest,
+    TrainingEvidenceReplayResponse,
+    TrainingEvidenceSyncRequest,
+    TrainingFeedbackResponse,
+    TrainingOverviewRequest,
+    TrainingOverviewResponse,
     TrainingScanBatchCreateRequest,
     TrainingScanBatchListResponse,
     TrainingScanBatchResponse,
     TrainingScanPageResolveRequest,
     TrainingSubmissionCancelRequest,
-    TrainingAssessmentActionRequest,
-    TrainingAssessmentOutcomeResponse,
-    TrainingAssessmentReviewRequest,
-    TrainingAssessmentStartRequest,
-    TrainingEvidenceReplayRequest,
-    TrainingEvidenceReplayResponse,
-    TrainingEvidenceSyncRequest,
-    TrainingFeedbackResponse,
-    PersonalizedRecommendationCreateRequest,
-    PersonalizedRecommendationDraftResponse,
-    PersonalizedRecommendationEditRequest,
-    TrainingDiagnosisRequest,
-    TrainingDiagnosisResponse,
-    TrainingOverviewRequest,
-    TrainingOverviewResponse,
 )
 from backend.public_data import sanitize_public_mapping
-from integration.diagnosis_profile_service import DiagnosisProfileService
+from backend.training_assessment import (
+    AssessmentActionCommand,
+    AssessmentInputInvalid,
+    AssessmentOperationConflict,
+    AssessmentReviewConflict,
+    AssessmentRevisionConflict,
+    EvidenceReviewConflict,
+    EvidenceSourceInvalid,
+    EvidenceSyncCommand,
+    EvidenceSyncConflict,
+    ReviewPointCommand,
+    SubmissionAssessmentNotFound,
+    TrainingAssessmentError,
+    TrainingAssessmentModule,
+    TrainingEvidenceError,
+)
 from integration.data_generation import commit_generation
+from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.mastery_overview import build_mastery_overview, overview_payload
 from integration.result_cache import ResultCache
 from integration.training_prewarm import record_request
@@ -92,23 +108,6 @@ from question_bank.training_submissions import (
     TrainingSubmissionError,
     TrainingSubmissionModule,
 )
-from backend.training_assessment import (
-    AssessmentActionCommand,
-    AssessmentInputInvalid,
-    AssessmentOperationConflict,
-    AssessmentReviewConflict,
-    AssessmentRevisionConflict,
-    EvidenceReviewConflict,
-    EvidenceSourceInvalid,
-    EvidenceSyncCommand,
-    EvidenceSyncConflict,
-    ReviewPointCommand,
-    SubmissionAssessmentNotFound,
-    TrainingAssessmentError,
-    TrainingAssessmentModule,
-    TrainingEvidenceError,
-)
-
 
 router = APIRouter(prefix="/api/training", tags=["training"])
 TRAINING_DATABASE_RESPONSES = {

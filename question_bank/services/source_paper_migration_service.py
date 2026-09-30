@@ -11,7 +11,6 @@ from question_bank.database.schema import connect
 from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 from question_bank.services.source_paper_archive_service import archive_source_paper
 
-
 SOURCE_COLUMNS = (
     ("papers", "source_file"),
     ("questions", "source_file"),

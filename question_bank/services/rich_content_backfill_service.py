@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from question_bank.database.schema import connect, initialize_database
 from question_bank.importers.batch_importer import map_rich_content_by_number
 from question_bank.importers.docx_importer import import_docx
 from question_bank.services.asset_path_service import resolve_question_bank_asset_path
-from question_bank.services.rich_content_service import is_question_rich_content_current, save_question_rich_content
-
+from question_bank.services.rich_content_service import (
+    is_question_rich_content_current,
+    save_question_rich_content,
+)
 
 LOGGER = logging.getLogger(__name__)
 LEADING_QUESTION_NUMBER_PATTERN = re.compile(
@@ -72,7 +73,7 @@ def backfill_missing_rich_content(
         try:
             extracted = import_docx(source_path)
             rich_content = map_rich_content_by_number(getattr(extracted, "rich_paragraphs", []), source_file=str(source_path))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failed_sources += 1
             message = f"{source_path}: {exc}"
             errors.append(message)
@@ -104,7 +105,7 @@ def backfill_missing_rich_content(
                 try:
                     if _update_question_preview_text(database_path, row, question_blocks, answer_blocks):
                         updated_preview_texts += 1
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     errors.append(f"question {question_id}: {exc}")
                     LOGGER.exception("Failed to update backfilled preview text for question %s", question_id)
 

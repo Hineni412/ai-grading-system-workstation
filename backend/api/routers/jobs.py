@@ -24,7 +24,6 @@ from backend.public_data import (
     sanitize_public_mapping,
 )
 
-
 router = APIRouter(prefix="/api", tags=["jobs"])
 
 _SOURCE_CONFIG_PUBLIC_DETAILS = {

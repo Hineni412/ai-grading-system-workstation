@@ -2,21 +2,26 @@ from __future__ import annotations
 
 import io
 import re
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from backend.document_parsing.question_blocks import (
     _extract_choice_answer_sequence,
     _question_type_hints_from_section_headings,
     flatten_answer_blocks,
+    image_paths_from_rich_text,
     parse_plain_question_blocks,
     parse_rich_question_blocks,
     rich_blocks_plain_text,
     split_inline_main_question_paragraphs,
-    image_paths_from_rich_text,
 )
-from question_bank.parsers.type_detector import RepeatedQuestionNumberError, subq_mark_labels, validate_section_numbering
+from question_bank.parsers.type_detector import (
+    RepeatedQuestionNumberError,
+    subq_mark_labels,
+    validate_section_numbering,
+)
 
 
 class ControlledDocxWriteError(RuntimeError):

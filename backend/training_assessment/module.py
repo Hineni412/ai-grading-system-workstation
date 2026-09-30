@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import threading
 from collections import Counter, defaultdict
@@ -29,7 +28,6 @@ from backend.training_assessment.contracts import (
     stable_hash,
 )
 from question_bank.database.schema import connect, initialize_database
-
 
 MAX_PAGE_BYTES = 20 * 1024 * 1024
 MAX_SUBMISSION_BYTES = 80 * 1024 * 1024

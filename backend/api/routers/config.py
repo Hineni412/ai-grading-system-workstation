@@ -12,63 +12,31 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
+    get_config_mapping_output_dir,
     get_config_source_service,
     get_data_root,
     get_grading_db,
     get_job_manager,
     get_question_bank_db_path,
     get_upload_config_dir,
-    get_config_mapping_output_dir,
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.config import (
-    ConfigGenerationRetryRequest,
-    ConfigSourceGenerationRequest,
-    ConfigSourceDuplicatesResponse,
-    ConfigSourceResponse,
-    ConfigSourceSubmissionResponse,
-    ConfigGenerationQuestionStatesResponse,
     ConfigEditorResponse,
     ConfigEditorSaveRequest,
     ConfigEditorSaveResponse,
+    ConfigGenerationQuestionStatesResponse,
+    ConfigGenerationRetryRequest,
+    ConfigSourceDuplicatesResponse,
+    ConfigSourceGenerationRequest,
+    ConfigSourceResponse,
+    ConfigSourceSubmissionResponse,
     SessionConfigRequest,
     SessionConfigResponse,
 )
-from backend.config_workspace.sources import (
-    AmbiguousAssetDecision,
-    ConfigAssetNotFoundError,
-    ConfigSourceChangedError,
-    ConfigSourceActivationBusyError,
-    ConfigSourceError,
-    ConfigSourceInvalidError,
-    ConfigSourceParseError,
-    ConfigSourceNotFoundError,
-    ConfigSourceService,
-    ConfigSourceSubmissionConflictError,
-    ConfigSourceTooLargeError,
-    ConfigSourceTypeUnsupportedError,
-    QuestionDecision,
-    decode_upload_filename,
-)
 from backend.api.schemas.jobs import JobResponse
-from backend.jobs.config_generation import (
-    discard_config_generation_input,
-    stage_config_source_generation_input,
-    load_config_generation_input,
-    read_config_generation_draft,
-)
 from backend.config_generation.status_projection import project_question_states
-from backend.jobs.manager import JobManager, UnsupportedJobTypeError
-from backend.jobs.store import (
-    ConfigRequestTokenConflictError,
-    ConfigRetryAlreadySubmittedError,
-    ConfigSessionBusyError,
-    JobStore,
-)
-from backend.repositories.access import GradingRepositoryAccess
-from path_manager import resolve_stored_file_path
-from session_manager import save_generated_config
 from backend.config_workspace.editor import (
     ConfigEditorEdit,
     ConfigEditorValidationError,
@@ -78,8 +46,8 @@ from backend.config_workspace.editor import (
     ReplaceQuestionStructureCommand,
     ReplaceScoringUnitsCommand,
     SplitScoringUnitCommand,
-    apply_config_editor_changes,
 )
+from backend.config_workspace.locks import session_config_lock
 from backend.config_workspace.publish import (
     ConfigRevisionConflict,
     editor_response,
@@ -87,9 +55,39 @@ from backend.config_workspace.publish import (
     refresh_template_mapping_from_session,
     remove_published_config,
     save_editor_config_and_refresh_mapping,
+    save_generated_config,
 )
-from backend.config_workspace.locks import session_config_lock
-
+from backend.config_workspace.sources import (
+    AmbiguousAssetDecision,
+    ConfigAssetNotFoundError,
+    ConfigSourceActivationBusyError,
+    ConfigSourceChangedError,
+    ConfigSourceError,
+    ConfigSourceInvalidError,
+    ConfigSourceNotFoundError,
+    ConfigSourceParseError,
+    ConfigSourceService,
+    ConfigSourceSubmissionConflictError,
+    ConfigSourceTooLargeError,
+    ConfigSourceTypeUnsupportedError,
+    QuestionDecision,
+    decode_upload_filename,
+)
+from backend.jobs.config_generation import (
+    discard_config_generation_input,
+    load_config_generation_input,
+    read_config_generation_draft,
+    stage_config_source_generation_input,
+)
+from backend.jobs.manager import JobManager, UnsupportedJobTypeError
+from backend.jobs.store import (
+    ConfigRequestTokenConflictError,
+    ConfigRetryAlreadySubmittedError,
+    ConfigSessionBusyError,
+    JobStore,
+)
+from backend.repositories.access import GradingRepositoryAccess
+from path_manager import resolve_stored_file_path
 
 LOGGER = logging.getLogger(__name__)
 

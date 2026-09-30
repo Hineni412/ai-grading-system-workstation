@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from backend.file_access import ControlledFileExpired, ResolvedFile, resolve_controlled_file
+from backend.file_access import (
+    ControlledFileExpired,
+    ResolvedFile,
+    resolve_controlled_file,
+)
 from backend.jobs.store import JobRecord, JobStore
 
 

@@ -16,7 +16,7 @@ from question_bank.services.question_read_service import (
 )
 from question_bank.training_criteria import (
     ConfigQuestionAnalysisSource,
-    InMemoryCombinedQuestionAnalysisModule,
+    DeferredCombinedQuestionAnalysisModule,
 )
 from question_bank.training_criteria.adapters import QuestionAnalysisInputLoader
 from tests.test_question_import_duplicates import (
@@ -100,7 +100,7 @@ def test_duplicate_missing_analysis_never_enters_model_and_stays_pending_on_retr
     reused = _reused_analysis_items(
         db, data_root=tmp_path, sources=(source,), operation_id="synthetic-acceptance"
     )
-    module = InMemoryCombinedQuestionAnalysisModule(gateway=SimpleNamespace())
+    module = DeferredCombinedQuestionAnalysisModule(gateway=SimpleNamespace())
     with patch.object(module, "_run", side_effect=lambda **kwargs: kwargs):
         run = module.analyze(
             operation_id="synthetic-acceptance",
@@ -199,7 +199,7 @@ def test_format_variant_reuses_actual_stored_analysis_without_model_requests(
     reused = _reused_analysis_items(
         db, data_root=tmp_path, sources=(source,), operation_id="synthetic-reuse"
     )
-    bundle = InMemoryCombinedQuestionAnalysisModule(gateway=SimpleNamespace()).analyze(
+    bundle = DeferredCombinedQuestionAnalysisModule(gateway=SimpleNamespace()).analyze(
         operation_id="synthetic-reuse",
         curriculum_volume_id="pep-7-up",
         sources=(source,),
@@ -249,7 +249,7 @@ def test_uncertain_resampled_diagram_stays_local_pending_without_model(tmp_path)
     reused = _reused_analysis_items(
         db, data_root=tmp_path, sources=(source,), operation_id="synthetic-diagram"
     )
-    bundle = InMemoryCombinedQuestionAnalysisModule(gateway=SimpleNamespace()).analyze(
+    bundle = DeferredCombinedQuestionAnalysisModule(gateway=SimpleNamespace()).analyze(
         operation_id="synthetic-diagram",
         curriculum_volume_id="pep-7-up",
         sources=(source,),

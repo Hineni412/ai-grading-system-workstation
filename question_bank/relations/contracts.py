@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Iterable
-
 
 _CANONICAL_KEY = re.compile(r"^kp_[a-z0-9]+(?:_[a-z0-9]+)*$")
 _SKILL_KEY = re.compile(r"^sk_[a-z0-9]+(?:_[a-z0-9]+)*$")

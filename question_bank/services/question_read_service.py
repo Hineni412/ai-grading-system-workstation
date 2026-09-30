@@ -11,13 +11,13 @@ import threading
 import time
 import unicodedata
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, BinaryIO, Iterable, Iterator
+from typing import Any, BinaryIO
 
 from backend.file_access import (
     ControlledFileForbidden,
@@ -40,11 +40,18 @@ from question_bank.services.asset_path_service import (
     resolve_question_bank_asset_path,
 )
 from question_bank.services.preview_html import block_preview_html
-from question_bank.services.question_revision import question_revision, question_revisions
+from question_bank.services.question_revision import (
+    question_revision,
+    question_revisions,
+)
 from question_bank.services.rich_content_service import clean_question_blocks
 from question_bank.services.similar_question_ranker import (
     SimilarQuestionIndex,
+)
+from question_bank.services.similar_question_ranker import (
     build_index as build_similar_question_index,
+)
+from question_bank.services.similar_question_ranker import (
     dice as similarity_dice,
 )
 from question_bank.taxonomy.curriculum_catalog import (
@@ -58,7 +65,6 @@ from question_bank.taxonomy.curriculum_catalog import (
     teaching_progress_allowed_stable_keys,
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
-
 
 ANALYSIS_TAG_TYPES = (
     "knowledge_point",
@@ -1108,8 +1114,8 @@ class QuestionBankReadService:
 
     def standard_summary(self) -> dict[str, Any]:
         """Maintenance metadata, using the same current evidence and links as training."""
-        from question_bank.solution_evidence.part_assessments import load_profiles
         from question_bank.solution_evidence.knowledge_links import load_point_links
+        from question_bank.solution_evidence.part_assessments import load_profiles
 
         with _read_connection(self.db_path) as conn:
             versions = [dict(row) for row in conn.execute(
@@ -1437,7 +1443,10 @@ class QuestionBankReadService:
     def _read_filter_parts(self, filters: QuestionReadFilters, *, taxonomy_expansions: dict[str, tuple[str, ...]] | None = None):
         joins, where, params = _question_filter_parts(filters, current_knowledge=self.current_knowledge, taxonomy_expansions=taxonomy_expansions)
         if filters.collapse_duplicates:
-            from question_bank.services.duplicate_analysis_copy_service import exact_identity_map, canonical_question_ranks
+            from question_bank.services.duplicate_analysis_copy_service import (
+                canonical_question_ranks,
+                exact_identity_map,
+            )
             with _read_connection(self.db_path) as conn:
                 ids = [int(row[0]) for row in conn.execute(" ".join([
                     "SELECT DISTINCT q.id FROM questions q", *joins,
@@ -2085,7 +2094,8 @@ class QuestionBankReadService:
             revision = question_revision(conn, int(question_id))
             review_ids = _load_criteria_needs_review_ids(conn, [int(question_id)])
             from question_bank.services.error_pattern_service import (
-                list_patterns, preferred_active_patterns,
+                list_patterns,
+                preferred_active_patterns,
             )
 
             pattern_rows = preferred_active_patterns(list_patterns(
@@ -2113,7 +2123,9 @@ class QuestionBankReadService:
             for pattern in pattern_rows if pattern.get("id") is not None
         ]
         from backend.error_patterns import (
-            extract_canonical_option, normalize_option_answer, parse_option_letters,
+            extract_canonical_option,
+            normalize_option_answer,
+            parse_option_letters,
         )
 
         correct = normalize_option_answer(row["answer_text"]) or extract_canonical_option(
@@ -2151,7 +2163,9 @@ class QuestionBankReadService:
             ).fetchone()
             if target is None:
                 return None
-            from question_bank.services.duplicate_analysis_copy_service import exact_question_key
+            from question_bank.services.duplicate_analysis_copy_service import (
+                exact_question_key,
+            )
             target_key = exact_question_key(dict(target), data_root=self.data_root or self.db_path.parent.parent)
             if not target_key:
                 return None
@@ -2350,7 +2364,9 @@ class QuestionBankReadService:
                 WHERE link.question_id=? AND q.is_deleted=0 AND COALESCE(p.import_status,'')<>'deleted'""",
                 (question_id,)).fetchone()
             if source is not None:
-                from question_bank.services.duplicate_analysis_copy_service import exact_question_key
+                from question_bank.services.duplicate_analysis_copy_service import (
+                    exact_question_key,
+                )
                 target_key = exact_question_key(dict(row), data_root=self.data_root or self.db_path.parent.parent, rich_content=rich_payload)
                 if target_key and target_key == exact_question_key(dict(source), data_root=self.data_root or self.db_path.parent.parent):
                     item["duplicate_of_question_id"] = int(source["id"])
@@ -2472,11 +2488,11 @@ class QuestionBankReadService:
             return None
         if not isinstance(payload, dict):
             return None
-        if type(payload.get("version")) is not int:  # noqa: E721 - reject bool/float
+        if type(payload.get("version")) is not int:
             return None
         if payload["version"] != _RICH_CONTENT_VERSION:
             return None
-        if type(payload.get("question_id")) is not int:  # noqa: E721 - reject bool/float
+        if type(payload.get("question_id")) is not int:
             return None
         if payload["question_id"] != int(question_id):
             return None

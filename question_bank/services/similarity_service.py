@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, Iterable
-
+from typing import Any
 
 IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:.+?\]\]")
 PUNCTUATION_PATTERN = re.compile(r"[\s\u3000，。！？；：、,.!?;:（）()【】\[\]{}《》<>“”\"'`~·…—_\-]+")
@@ -27,7 +27,7 @@ class SimilarQuestionGroup:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "SimilarQuestionGroup":
+    def from_dict(cls, payload: dict[str, Any]) -> SimilarQuestionGroup:
         return cls(
             question_ids=[int(item) for item in payload.get("question_ids", [])],
             representative_id=int(payload.get("representative_id")),
@@ -54,7 +54,7 @@ class SimilarityPlan:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "SimilarityPlan":
+    def from_dict(cls, payload: dict[str, Any]) -> SimilarityPlan:
         return cls(
             upload_question_ids=[int(item) for item in payload.get("upload_question_ids", [])],
             high_duplicate_groups=[SimilarQuestionGroup.from_dict(item) for item in payload.get("high_duplicate_groups", [])],

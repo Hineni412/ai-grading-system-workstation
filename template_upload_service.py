@@ -27,7 +27,6 @@ from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
 from template_analyzer import create_template_mapping_package
 
-
 TemplatePageRole = Literal["front", "back"]
 LOGGER = logging.getLogger(__name__)
 _FRONT_PAGE_FILENAME = "template_front_from_pdf_page.jpg"

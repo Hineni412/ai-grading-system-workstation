@@ -14,24 +14,26 @@ from typing import Any
 from docx import Document
 from docx.shared import Inches
 
-from question_bank.services.question_frequency_service import (
-    FrequencyMetrics,
-    QuestionFrequencyService,
-    frequency_summary,
-)
-from question_bank.exporters.base_exporter import _resolve_image_path, apply_exporter_layout
-from question_bank.exporters.export_config import ExportConfig
-from question_bank.document_pipeline.word_renderer import (
-    SharedWordQuestionRenderer,
-    WordStyleProfile,
-)
 from question_bank.document_pipeline.contracts import FormulaFallback, MathExpression
 from question_bank.document_pipeline.legacy_exports import (
     data_root_for_database,
     published_math_metadata,
     save_validated_legacy_export,
 )
-
+from question_bank.document_pipeline.word_renderer import (
+    SharedWordQuestionRenderer,
+    WordStyleProfile,
+)
+from question_bank.exporters.base_exporter import (
+    _resolve_image_path,
+    apply_exporter_layout,
+)
+from question_bank.exporters.export_config import ExportConfig
+from question_bank.services.question_frequency_service import (
+    FrequencyMetrics,
+    QuestionFrequencyService,
+    frequency_summary,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -308,7 +310,7 @@ def _add_images(document: Document, image_paths: list[str]) -> None:
             continue
         try:
             document.add_picture(str(resolved), width=Inches(4.8))
-        except Exception:  # noqa: BLE001
+        except Exception:
             document.add_paragraph(f"图像：{image_path}（无法插入）")
 
 

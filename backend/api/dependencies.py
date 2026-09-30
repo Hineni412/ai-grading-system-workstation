@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-from collections.abc import Iterator
 import threading
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, Request
 
 from api_profiles import get_api_profile_store
-from backend.repositories.access import GradingRepositoryAccess
-from backend.repositories.grading_database import open_grading_repositories
 from backend.analytics import SessionAnalysisService
 from backend.api.read_connections import (
     RequestReadContext,
@@ -21,40 +19,43 @@ from backend.files.service import JobFileService
 from backend.jobs.default_handlers import register_default_job_handlers
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
-from backend.ops.jobs import register_ops_job_handlers
 from backend.media.service import ReviewMediaService
 from backend.model_profiles import ModelProfileService
-from backend.ops.service import OpsSelfCheckService
+from backend.ops.jobs import register_ops_job_handlers
 from backend.ops.plan_store import OpsPlanStore
+from backend.ops.service import OpsSelfCheckService
 from backend.ops.write_service import OpsWriteService
+from backend.repositories.access import GradingRepositoryAccess
+from backend.repositories.grading_database import open_grading_repositories
+from backend.repositories.sessions import SessionRepositoryGateway
+from backend.repositories.students import StudentRepositoryGateway
 from backend.results_center.service import ResultsCenterService
 from backend.review.service import ReviewApplicationService
+from backend.scan_grading.config_fingerprint import (
+    session_grading_config_fingerprint,
+)
+from backend.scan_grading.workspace import ScanGradingWorkspace
 from backend.students import StudentRosterModule
 from backend.training_assessment import (
     OpenAITrainingAssessmentGateway,
     TrainingAssessmentModule,
 )
-from backend.repositories.sessions import SessionRepositoryGateway
-from backend.repositories.students import StudentRepositoryGateway
-from backend.scan_grading.config_fingerprint import (
-    session_grading_config_fingerprint,
-)
-from backend.scan_grading.workspace import ScanGradingWorkspace
 from backend.workbench.service import WorkbenchService
-from template_upload_service import TemplateUploadService
+from integration.diagnosis_profile_service import DiagnosisProfileService
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
-from integration.diagnosis_profile_service import DiagnosisProfileService
+from question_bank.personalized_papers import PersonalizedPaperModule
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationModule,
 )
-from question_bank.personalized_papers import PersonalizedPaperModule
-from question_bank.training_submissions import TrainingSubmissionModule
-from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.services.ai_tagging_service import AITaggingService
+from question_bank.services.assembly_workspace_service import (
+    AssemblyWorkspaceService,
+)
 from question_bank.services.question_read_service import (
+    QuestionBankReadService,
     QuestionBankSnapshotError,
 )
-from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.taxonomy_review_service import TaxonomyReviewService
 from question_bank.services.taxonomy_review_suggestions import (
@@ -64,11 +65,9 @@ from question_bank.taxonomy.governance import (
     TaxonomyGovernance,
     get_taxonomy_governance,
 )
-from question_bank.services.assembly_workspace_service import (
-    AssemblyWorkspaceService,
-)
 from question_bank.training_criteria import TrainingCriterionModule
-
+from question_bank.training_submissions import TrainingSubmissionModule
+from template_upload_service import TemplateUploadService
 
 _TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
 
@@ -238,7 +237,7 @@ def get_training_criterion_module() -> TrainingCriterionModule:
     return TrainingCriterionModule(get_path_manager().qb_db_path)
 
 
-def get_authoring_service() -> "AuthoringService":
+def get_authoring_service() -> AuthoringService:
     from question_bank.authoring import AuthoringService
 
     paths = get_path_manager()

@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Mapping
+from collections.abc import Mapping
 from urllib.parse import urlparse
 
-import usage_logger
 from openai import OpenAI
+
+import usage_logger
 
 from .diagnostics import DIAGNOSTIC_LOG_FILE, JsonlDiagnosticJournal
 from .gateway import LLMGateway
 from .policy import LLMRequestKind
-from .usage import JsonlUsageSink
 from .trace import (
+    TRACE_LOG_FILE,
     JsonlCallTraceSink,
     safe_endpoint_host,
-    TRACE_LOG_FILE,
 )
-
+from .usage import JsonlUsageSink
 
 _GATEWAY_CONFIG_SALT = "ai-grading-llm-gateway-config-v1"
 

@@ -5,6 +5,13 @@ import re
 from typing import Any
 
 from equivalence_engine import merge_equivalent_forms
+from question_bank.importers.batch_importer import (
+    _extract_question_marker_number,
+    _looks_like_answer_section_heading,
+    _next_leading_main_question_number,
+    _split_consecutive_inline_main_questions,
+    split_inline_main_question_paragraphs,  # noqa: F401  (re-exported for document_parsing consumers)
+)
 from question_bank.parsers.type_detector import (
     detect_grading_question_type,
     explicit_choice_labels,
@@ -12,14 +19,6 @@ from question_bank.parsers.type_detector import (
     subq_mark_labels,
     validate_section_numbering,
 )
-from question_bank.importers.batch_importer import (
-    _extract_question_marker_number,
-    _looks_like_answer_section_heading,
-    _next_leading_main_question_number,
-    _split_consecutive_inline_main_questions,
-    split_inline_main_question_paragraphs,
-)
-
 
 _INLINE_IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
 _VISIBLE_FILL_BLANK_MARK = re.compile(
@@ -530,7 +529,7 @@ def _explicit_option_labels(value: str) -> set[str]:
 def _infer_local_question_type(
     question_text: str,
     answer_text: str,
-    number: str,  # noqa: ARG001
+    number: str,
     *,
     section_type: str = "",
 ) -> str:
@@ -541,7 +540,7 @@ def _extract_canonical_answer_for_local_question(
     *,
     number: str,
     qtype: str,
-    question_text: str,  # noqa: ARG001
+    question_text: str,
     answer_text: str,
     choice_answers: dict[str, str],
     explicitly_mapped: bool,

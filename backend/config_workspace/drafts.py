@@ -6,7 +6,6 @@ from pathlib import Path
 from backend.config_workspace.atomic import remove_exact_files, write_json_atomic
 from backend.repositories.sessions import SessionRepositoryGateway
 
-
 EMPTY_RUBRIC = {"draft": True, "total_score": 0, "questions": []}
 EMPTY_ANSWER_KEY = {"draft": True, "questions": []}
 DRAFT_MARKER_KEY = "_config_draft_id"

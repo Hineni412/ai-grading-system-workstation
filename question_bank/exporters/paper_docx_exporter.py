@@ -10,14 +10,12 @@ from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 
-from question_bank.services.question_read_service import QuestionBankReadService
-from question_bank.services.assembly_basket_state import SectionSpec
-from question_bank.exporters.base_exporter import (
-    _resolve_image_path,
-    _visible_length,
-    apply_exporter_layout,
-    extract_and_format_options,
-    add_noborder_table,
+from question_bank.document_pipeline.contracts import FormulaFallback, MathExpression
+from question_bank.document_pipeline.legacy_exports import (
+    PublishedMathMetadata,
+    data_root_for_database,
+    published_math_metadata,
+    save_validated_legacy_export,
 )
 from question_bank.document_pipeline.word_renderer import (
     SharedWordQuestionRenderer,
@@ -27,16 +25,16 @@ from question_bank.document_pipeline.word_renderer import (
     answer_space_lines,
     natural_image_width_inches,
 )
-from question_bank.document_pipeline.contracts import FormulaFallback, MathExpression
-from question_bank.document_pipeline.legacy_exports import (
-    PublishedMathMetadata,
-    data_root_for_database,
-    published_math_metadata,
-    save_validated_legacy_export,
+from question_bank.exporters.base_exporter import (
+    _resolve_image_path,
+    _visible_length,
+    add_noborder_table,
+    apply_exporter_layout,
+    extract_and_format_options,
 )
 from question_bank.exporters.export_config import ExportConfig
-
-
+from question_bank.services.assembly_basket_state import SectionSpec
+from question_bank.services.question_read_service import QuestionBankReadService
 
 LOGGER = logging.getLogger(__name__)
 IMAGE_MARKER_PATTERN = re.compile(
@@ -514,7 +512,7 @@ def _add_markdown_table(
         table = document.add_table(rows=len(rows), cols=cols)
         try:
             table.style = "Table Grid"
-        except Exception:  # noqa: BLE001 - 模板无该样式时退回无边框
+        except Exception:
             pass
     for row_index, row in enumerate(rows):
         for col_index in range(cols):
@@ -670,7 +668,7 @@ def _add_text_and_images(
                                     )
                                 ),
                             )
-                        except Exception:  # noqa: BLE001
+                        except Exception:
                             pass
                 cursor = match.end()
             tail = value[cursor:].strip()
@@ -883,7 +881,7 @@ def _add_images(
                 caption_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 caption_run = caption_paragraph.add_run(caption)
                 caption_run.font.size = Pt(9)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
 
 

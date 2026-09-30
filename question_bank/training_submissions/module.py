@@ -23,7 +23,6 @@ from question_bank.personalized_papers import (
     PersonalizedPaperModule,
 )
 
-
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_UPLOAD_PAGES = 100
 MAX_PAGE_PIXELS = 25_000_000
@@ -1280,7 +1279,7 @@ def _decode_upload(content: bytes, media_type: str) -> Iterator[np.ndarray]:
             yield image
     except InvalidSubmissionUpload:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise InvalidSubmissionUpload("scan file is unreadable") from exc
 
 

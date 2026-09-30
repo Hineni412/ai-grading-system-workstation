@@ -5,13 +5,13 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
+from collections.abc import Iterable, Mapping
 from contextlib import closing
 from pathlib import Path
-from typing import Iterable, Mapping
 
 from backend.schema_migrations import SchemaVersionError, inspect_schema_version
-from .archive import OpsArchiveInspection, OpsArchiveInvalid
 
+from .archive import OpsArchiveInspection, OpsArchiveInvalid
 
 DATABASE_MEMBERS = {
     "user_data/databases/grading_system.db": "grading",

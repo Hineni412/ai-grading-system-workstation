@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from backend.document_parsing.question_blocks import rich_text_for_model
-
 
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:[^\]]+\]\]", re.IGNORECASE)
 

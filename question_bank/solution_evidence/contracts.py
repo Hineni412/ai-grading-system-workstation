@@ -4,9 +4,9 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, Protocol, Sequence
-
+from typing import Any, Literal, Protocol
 
 FineTermRole = Literal["direct", "supporting_prerequisite"]
 CoreResolutionStatus = Literal["resolved", "ambiguous", "unmapped"]
@@ -28,7 +28,7 @@ _BANNED_SCORE_TOKENS = frozenset(
     re.sub(r"[^a-z0-9]+", "", key) for key in _BANNED_SCORE_KEYS
 )
 class FineTermResolver(Protocol):
-    def resolve(self, fine_term_id: str) -> "CoreResolution": ...
+    def resolve(self, fine_term_id: str) -> CoreResolution: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +73,7 @@ class FineTermLink:
         payload: Mapping[str, Any],
         *,
         resolver: FineTermResolver,
-    ) -> "FineTermLink":
+    ) -> FineTermLink:
         _require_exact_keys(
             payload,
             {"fine_term_id", "fine_term_name", "role"},
@@ -137,7 +137,7 @@ class SolutionEvidencePoint:
         resolver: FineTermResolver,
         schema_version: str,
         expected_step_index: int,
-    ) -> "SolutionEvidencePoint":
+    ) -> SolutionEvidencePoint:
         v2 = schema_version == "question-solution-evidence-v2"
         required_keys = {
             "evidence_point_id",
@@ -285,7 +285,7 @@ class QuestionPart:
         *,
         resolver: FineTermResolver,
         schema_version: str,
-    ) -> "QuestionPart":
+    ) -> QuestionPart:
         _require_exact_keys(
             payload,
             {
@@ -417,7 +417,7 @@ class QuestionSolutionEvidence:
         question_id: int,
         source_content_hash: str,
         resolver: FineTermResolver,
-    ) -> "QuestionSolutionEvidence":
+    ) -> QuestionSolutionEvidence:
         _reject_score_fields(payload)
         _require_exact_keys(
             payload,

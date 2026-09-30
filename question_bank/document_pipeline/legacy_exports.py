@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Mapping
 
 from question_bank.services.rich_content_service import load_question_rich_content
 

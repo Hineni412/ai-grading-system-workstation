@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 SHARED_GRADING_RULES = """
 适用于所有批改模式的共同评分规则：
 1. 客观评分单元（choice、fill_blank、judgement、true_false、direct_answer）实行全对全错。只有学生的有效答案与 canonical_answer 或 accepted_forms 等价时才给满分，否则给 0 分。

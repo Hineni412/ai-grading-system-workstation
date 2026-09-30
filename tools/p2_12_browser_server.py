@@ -54,7 +54,7 @@ def _prepare_paths(data_root: Path):
 
 
 def _seed_business_data(paths) -> int:
-    from db_manager import StudentRecord
+    from backend.repositories.students import StudentRecord
 
     db = open_grading_repositories(paths.db_path)
     db.initialize()

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -17,7 +16,6 @@ from question_bank.database.paths import project_data_root
 from question_bank.services.asset_path_service import resolve_question_bank_asset_path
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_write_service import QuestionBankWriteService
-
 
 LOGGER = logging.getLogger(__name__)
 ANSWER_HEADING_PATTERN = re.compile(r"(参考答案|答案与解析|试题答案|答案解析|解析|评分标准)")
@@ -56,7 +54,7 @@ def generate_question_previews(
             continue
         try:
             result = _generate_one(writer, question, output_dir)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             LOGGER.exception("Failed to generate preview for question %s", question_id)
             _save_failed(writer, int(question_id), question, "question", str(exc))
             _save_failed(writer, int(question_id), question, "answer", str(exc))
@@ -176,7 +174,7 @@ def _convert_docx_with_word(source_file: Path, pdf_path: Path) -> Path | None:
     try:
         import pythoncom  # type: ignore[import-not-found]
         import win32com.client  # type: ignore[import-not-found]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
     word = None
@@ -210,24 +208,24 @@ def _convert_docx_with_word(source_file: Path, pdf_path: Path) -> Path | None:
             UseISO19005_1=False,
         )
         return pdf_path if pdf_path.exists() else None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         LOGGER.warning("DOCX preview conversion with Microsoft Word failed: %s", exc)
         return None
     finally:
         if document is not None:
             try:
                 document.Close(False)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         if word is not None:
             try:
                 word.Quit()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         if initialized:
             try:
                 pythoncom.CoUninitialize()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
 

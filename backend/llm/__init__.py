@@ -25,6 +25,18 @@ from .policy import (
     policy_from_profile,
     policy_overrides_from_profile,
 )
+from .trace import (
+    TRACE_LOG_FILE,
+    JsonlCallTraceSink,
+    LLMCallTraceEvent,
+    NullCallTraceSink,
+)
+from .transport import (
+    LLMProtocolAdapter,
+    create_openai_client,
+    gateway_config_key,
+    normalize_openai_base_url,
+)
 from .usage import (
     JsonlUsageSink,
     LLMUsageEvent,
@@ -34,19 +46,6 @@ from .usage import (
     response_diagnostics,
     usage_fields,
 )
-from .transport import (
-    LLMProtocolAdapter,
-    create_openai_client,
-    gateway_config_key,
-    normalize_openai_base_url,
-)
-from .trace import (
-    JsonlCallTraceSink,
-    LLMCallTraceEvent,
-    NullCallTraceSink,
-    TRACE_LOG_FILE,
-)
-
 
 __all__ = [
     "JsonlUsageSink",

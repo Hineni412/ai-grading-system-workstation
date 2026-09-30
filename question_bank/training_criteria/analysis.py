@@ -6,10 +6,11 @@ import json
 import math
 import re
 import threading
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field, replace as dataclass_replace
-from collections.abc import Iterable
-from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
+from dataclasses import dataclass, field
+from dataclasses import replace as dataclass_replace
+from typing import Any, Literal, Protocol
 
 from question_bank.models.tag_schema import (
     MAX_ABILITY_TAGS,
@@ -30,7 +31,6 @@ from question_bank.parsers.type_detector import (
 )
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
-
 
 AnalysisProjection = Literal["both", "tag", "training_criteria"]
 CriterionSchemaVersion = Literal[
@@ -427,7 +427,7 @@ class QuestionTypeSuggestion:
     essay_subtype: str | None = None
 
     @classmethod
-    def from_dict(cls, payload: object) -> "QuestionTypeSuggestion":
+    def from_dict(cls, payload: object) -> QuestionTypeSuggestion:
         if not isinstance(payload, Mapping):
             raise ProjectionValidationError("question type suggestion is invalid")
         value = str(payload.get("question_type") or "").strip()
@@ -507,7 +507,7 @@ class TrainingCriterionPoint:
     depends_on: tuple[str, ...] = ()
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "TrainingCriterionPoint":
+    def from_dict(cls, payload: Mapping[str, Any]) -> TrainingCriterionPoint:
         _reject_score_fields(payload)
         point_id = str(payload.get("point_id") or "").strip().casefold()
         target = str(payload.get("target") or "").strip()
@@ -572,7 +572,7 @@ class TrainingCriteriaDraft:
         payload: Mapping[str, Any],
         *,
         question: QuestionAnalysisInput,
-    ) -> "TrainingCriteriaDraft":
+    ) -> TrainingCriteriaDraft:
         _reject_score_fields(payload)
         schema = str(payload.get("schema_version") or "")
         if schema not in {LEGACY_CRITERIA_SCHEMA, JUDGMENT_POINTS_SCHEMA}:
@@ -2026,7 +2026,7 @@ class CombinedQuestionAnalysisModule:
                 actor_ref="model:stored-analysis",
                 reason="从已保存解题证据发布训练判定点",
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {
                 "status": "failed",
                 "error_category": type(exc).__name__,
@@ -2094,7 +2094,7 @@ class CombinedQuestionAnalysisModule:
                     if active
                 ],
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {
                 "status": "failed",
                 "error_category": type(exc).__name__,

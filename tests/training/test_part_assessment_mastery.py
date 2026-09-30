@@ -52,7 +52,7 @@ def refined_training_source(tmp_path):
         training_criteria_from_solution_evidence,
     )
     from tests.current_knowledge_support import install_current_knowledge
-    from tests.phase4.test_solution_evidence_semantics import _evidence_payload
+    from tests.training.test_solution_evidence_semantics import _evidence_payload
 
     root = tmp_path / "data"
     path = root / "databases" / "question_bank.db"
@@ -225,7 +225,7 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
         ("kp_alg_linear_equation", 1, 2),
         ("kp_geo_triangle_congruence", 0, 8),
     ]
-    from tests.phase4.test_personalized_recommendation import _diagnosis
+    from tests.training.test_personalized_recommendation import _diagnosis
 
     # The source exam is older than the three latest graded activities.
     diagnosis = _diagnosis(student_ids=("SYN-S01",))
@@ -296,13 +296,13 @@ def test_new_analysis_survives_checkpoint_and_linked_adoption(tmp_path, monkeypa
         SolutionEvidenceRepository,
     )
     from question_bank.training_criteria import (
-        InMemoryCombinedQuestionAnalysisModule,
+        DeferredCombinedQuestionAnalysisModule,
         ConfigQuestionAnalysisSource,
         DeferredCombinedAnalysisBundle,
         DeferredCombinedProjectionWriter,
         ConfirmedQuestionAdoptionLink,
     )
-    from tests.phase4.test_solution_evidence_semantics import (
+    from tests.training.test_solution_evidence_semantics import (
         _question,
         _combined_payload,
         QueueGateway,
@@ -325,7 +325,7 @@ def test_new_analysis_survives_checkpoint_and_linked_adoption(tmp_path, monkeypa
         }
         for p in raw["solution_evidence"]["parts"]
     ]
-    bundle = InMemoryCombinedQuestionAnalysisModule(
+    bundle = DeferredCombinedQuestionAnalysisModule(
         gateway=QueueGateway([payload]), resolver=Resolver()
     ).analyze(
         operation_id="synthetic-parts",
@@ -341,7 +341,7 @@ def test_new_analysis_survives_checkpoint_and_linked_adoption(tmp_path, monkeypa
     restored = DeferredCombinedAnalysisBundle.from_dict(checkpoint, resolver=Resolver())
     assert restored.to_dict() == checkpoint
     # A stored v5 checkpoint that still carries part_assessments loads cleanly.
-    from question_bank.training_criteria.in_memory import _hash_payload
+    from question_bank.training_criteria.combined_analysis import _hash_payload
 
     legacy_item = {
         k: v for k, v in checkpoint["items"][0].items() if k != "content_hash"

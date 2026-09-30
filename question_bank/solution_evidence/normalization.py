@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-import re
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from question_bank.solution_evidence.contracts import _reject_score_fields
-
 
 _ROOT_FIELDS = {
     "schema_version",

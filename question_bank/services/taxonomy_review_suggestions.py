@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -18,7 +19,6 @@ from question_bank.taxonomy.curriculum_catalog import (
     eligible_curriculum_knowledge_nodes,
 )
 from question_bank.taxonomy.governance import TaxonomyGovernance
-
 
 _STATE_LOCK = threading.RLock()
 _ACTIVE_RUNS: set[str] = set()
@@ -1203,6 +1203,19 @@ def _safe_progress_callback(
         return
 
 
+def _replace_with_retry(source: Path, destination: Path) -> None:
+    # Windows file scanners can hold a freshly written temporary file open
+    # briefly; retry the atomic rename a few times before giving up.
+    for attempt in range(12):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == 11:
+                raise
+            time.sleep(min(0.05 * (attempt + 1), 0.4))
+
+
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -1217,6 +1230,6 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        _replace_with_retry(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

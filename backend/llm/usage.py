@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Mapping
 
 from usage_logger import log_llm_usage
-
 
 logger = logging.getLogger(__name__)
 _SAFE_FINISH_REASONS = frozenset(

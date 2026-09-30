@@ -7,10 +7,9 @@ rubric, and teacher locks; this module turns them into one user-visible plan.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import re
+from datetime import datetime, timezone
 from typing import Any, Literal
-
 
 GradingWorkflowMode = Literal["ai", "manual"]
 _OBJECTIVE_TYPES = frozenset({"choice", "fill_blank"})

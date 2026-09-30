@@ -4,9 +4,10 @@ import json
 import os
 import shutil
 import tempfile
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from path_manager import PathManager
 from question_bank.services.question_read_service import (
@@ -15,7 +16,6 @@ from question_bank.services.question_read_service import (
 )
 from update_tools.backup_core import list_backups as _list_zip_backups
 from update_tools.migrate_db import get_migration_status
-
 
 _TOOL_KEYS = ("microsoft_word", "libreoffice", "pdflatex")
 _SAFE_BACKUP_REASONS = {

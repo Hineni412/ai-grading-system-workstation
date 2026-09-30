@@ -5,11 +5,13 @@ import mimetypes
 import re
 import sqlite3
 import threading
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from backend.llm import LLMRequestKind, usage_fields
+from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.policy import policy_from_profile
 from question_bank.database.schema import connect
 from question_bank.models.tag_schema import (
@@ -18,7 +20,6 @@ from question_bank.models.tag_schema import (
     TaggingContext,
     predicted_pattern_categories,
 )
-from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
 from question_bank.services.ai_tagging_service import (
     AITaggingResult,
     AITaggingService,
@@ -36,7 +37,6 @@ from question_bank.services.rich_content_service import (
 from question_bank.solution_evidence.repository import (
     load_evidence_parts_for_tagging,
 )
-from backend.llm.json_repair import parse_json_object_locally
 from question_bank.training_criteria.analysis import (
     AnalysisProjection,
     GatewayBatchResponse,
@@ -50,7 +50,6 @@ from question_bank.training_criteria.analysis import (
     combined_response_format,
     controlled_term_ids_from_questions,
 )
-
 
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>[^\]|]+)(?:\|[^\]]*)?\]\]")
 _SOURCE_SECTION_HEADING = re.compile(

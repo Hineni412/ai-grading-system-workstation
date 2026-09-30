@@ -24,11 +24,12 @@ import math
 import re
 import statistics
 import zipfile
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from functools import lru_cache
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from PIL import Image
 
@@ -53,21 +54,21 @@ from backend.repositories.access import (
 from backend.repositories.grading_database import open_grading_repositories
 from backend.review.service import REVIEW_CONFIRMED_REASON
 from backend.session_analysis import (
-    _BAND_CUTOFFS,
-    _QuestionInfo,
-    _SessionAnalysisData,
-    _StudentQuestionRecord,
-    _StudentReportData,
-    _esc,
-    _fmt_num,
-    _has_cjk,
-    _report_math_span,
+    BAND_CUTOFFS,
+    QuestionInfo,
+    SessionAnalysisData,
+    StudentQuestionRecord,
+    StudentReportData,
     assemble_session_analysis,
     enrich_personal_knowledge,
     enrich_personal_questions,
+    esc,
+    fmt_num,
+    has_cjk,
     infer_data_root,
     parent_question_id,
     question_bank_db_path,
+    report_math_span,
     split_session_analysis_by_class,
 )
 from export_names import safe_filename_fragment, session_export_path_name
@@ -76,7 +77,6 @@ from question_id_contract import (
     question_id_coordinates,
     resolve_known_question_id,
 )
-
 
 PERSONAL_ANALYSIS_REPORT_TYPE = "personal_analysis_html"
 ANALYSIS_REPORT_TYPES = (PERSONAL_ANALYSIS_REPORT_TYPE,)
@@ -176,7 +176,7 @@ def _question_type_label(question_type: str) -> str:
     if label is not None:
         return label
     # 未收录的英文类型码不原样渲染给家长；已是中文的兼容输入照常显示。
-    return text if _has_cjk(text) else ""
+    return text if has_cjk(text) else ""
 
 
 def _question_display_label(question_id: str) -> str:
@@ -196,8 +196,8 @@ def _question_display_label(question_id: str) -> str:
 
 
 def build_personal_payload(
-    data: _SessionAnalysisData,
-    student: _StudentReportData,
+    data: SessionAnalysisData,
+    student: StudentReportData,
 ) -> dict[str, Any]:
     info_by_qid = {info.question_id: info for info in data.questions}
     questions: list[dict[str, Any]] = []
@@ -263,13 +263,13 @@ def build_personal_payload(
 
 
 def record_type_label(
-    record: _StudentQuestionRecord,
-    info: _QuestionInfo | None,
+    record: StudentQuestionRecord,
+    info: QuestionInfo | None,
 ) -> str:
     return str(info.question_type if info is not None else "") or ""
 
 
-def build_class_payload(data: _SessionAnalysisData) -> dict[str, Any]:
+def build_class_payload(data: SessionAnalysisData) -> dict[str, Any]:
     aliases = {
         student.student_id: f"{CLASS_ALIAS_PREFIX}{index}"
         for index, student in enumerate(data.students, start=1)
@@ -343,7 +343,7 @@ def build_class_payload(data: _SessionAnalysisData) -> dict[str, Any]:
     }
 
 
-def _record_brief_text(record: _StudentQuestionRecord) -> str:
+def _record_brief_text(record: StudentQuestionRecord) -> str:
     parts = [
         text
         for text in (
@@ -361,7 +361,7 @@ def _record_brief_text(record: _StudentQuestionRecord) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_class_page_data(data: _SessionAnalysisData, *, compact: bool = False) -> dict[str, Any]:
+def build_class_page_data(data: SessionAnalysisData, *, compact: bool = False) -> dict[str, Any]:
     """把班级版装配数据序列化为页面 JSON。
 
     出参形状与前端解码器 frontend/src/api/class-analysis.ts 冻结对齐：
@@ -380,7 +380,7 @@ def build_class_page_data(data: _SessionAnalysisData, *, compact: bool = False) 
         if str(item.get("reason") or "") in {"缺考", "扫描异常"}
         and (name := str(item.get("student_name") or "").strip())
     ]
-    records_by_question: dict[str, list[tuple[_StudentReportData, _StudentQuestionRecord]]] = {}
+    records_by_question: dict[str, list[tuple[StudentReportData, StudentQuestionRecord]]] = {}
     for student in data.students:
         for record in student.records:
             if record.lost:
@@ -503,7 +503,7 @@ def build_class_page_data(data: _SessionAnalysisData, *, compact: bool = False) 
 
 def class_narrative_with_student_names(
     narrative: dict[str, Any],
-    students: list[_StudentReportData],
+    students: list[StudentReportData],
 ) -> dict[str, Any]:
     """保留结构中的 alias 键，把正文里的学生代号映射回本班姓名。"""
     alias_to_student = {
@@ -617,8 +617,8 @@ def _crop_region_data_uri(
 
 def _student_paper_context(
     repositories: GradingRepositoryAccess,
-    data: _SessionAnalysisData,
-    student: _StudentReportData,
+    data: SessionAnalysisData,
+    student: StudentReportData,
 ) -> dict[str, Any] | None:
     if student.result_id > 0:
         context = repositories.results.get_result_context(student.result_id)
@@ -641,8 +641,8 @@ def _student_paper_context(
 
 def capture_lost_question_shots(
     repositories: GradingRepositoryAccess,
-    data: _SessionAnalysisData,
-    student: _StudentReportData,
+    data: SessionAnalysisData,
+    student: StudentReportData,
     *,
     regions: list[dict[str, Any]] | None,
     data_root: Path | None,
@@ -696,8 +696,8 @@ def capture_lost_question_shots(
 
 
 def _personal_image_inputs(
-    data: _SessionAnalysisData,
-    student: _StudentReportData,
+    data: SessionAnalysisData,
+    student: StudentReportData,
     shots: dict[str, dict[str, str]],
     paper_context: dict[str, Any] | None,
     data_root: Path | None,
@@ -1031,7 +1031,7 @@ def _narrative_text(value: object) -> str:
 
 def _knowledge_rows(
     backfill: dict[str, list[dict[str, str]]],
-    records: list[_StudentQuestionRecord],
+    records: list[StudentQuestionRecord],
 ) -> list[dict[str, Any]]:
     """按题库知识点标签聚合得分率；无标签数据时返回空，渲染层省略该板块。"""
     buckets: dict[str, dict[str, Any]] = {}
@@ -1068,7 +1068,7 @@ def _knowledge_rows(
     return rows
 
 
-def _personal_knowledge_view(data: _SessionAnalysisData, student: _StudentReportData) -> dict[str, Any]:
+def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportData) -> dict[str, Any]:
     snapshot = data.knowledge_structure
     catalog = {str(item['knowledge_key']): item for item in snapshot.get('catalog', [])}
     nodes: dict[str, dict[str, Any]] = {}
@@ -1121,7 +1121,7 @@ def _personal_knowledge_view(data: _SessionAnalysisData, student: _StudentReport
             'note': snapshot.get('note') or '当前掌握度暂不可用；以下保留本卷考查范围与得分，不以得分率代替掌握度。'}
 
 
-def _class_knowledge_view(data: _SessionAnalysisData) -> dict[str, Any]:
+def _class_knowledge_view(data: SessionAnalysisData) -> dict[str, Any]:
     """Aggregate students' independent mastery; missing evidence is not a zero."""
     nodes: dict[str, dict[str, Any]] = {}
     for student in data.students:
@@ -1181,9 +1181,9 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
         value = node['mastery']
         band = 'missing' if value is None else 'low' if value < .6 else 'mid' if value < .75 else 'good'
         counts[band] += 1
-        percent = '证据不足' if value is None else f'{_fmt_num(math.floor(value * 1000) / 10)}%'
+        percent = '证据不足' if value is None else f'{fmt_num(math.floor(value * 1000) / 10)}%'
         status = {'missing': '证据不足', 'low': '待补强', 'mid': '需巩固', 'good': '较稳定'}[band]
-        detail = f'本卷 {_fmt_num(node["score"])} / {_fmt_num(node["full"])} 分'
+        detail = f'本卷 {fmt_num(node["score"])} / {fmt_num(node["full"])} 分'
         distribution = ''
         if class_mode:
             detail = f'有证据 {node["coverage"]} / {node["student_count"]} 人'
@@ -1192,10 +1192,10 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
                 for key, label in [('low', '补强'), ('mid', '巩固'), ('good', '稳定'), ('missing', '无证据')]
             ) + '</span>'
         value_label = '有证据学生平均掌握度' if class_mode else f'当前掌握度：{status}'
-        return (f'<button type="button" class="kn-node kn-{band}" data-key="{_esc(node["key"])}" aria-pressed="false">'
-                f'<span class="kn-node-top"><span class="kn-name">{_esc(node["label"])}</span>'
+        return (f'<button type="button" class="kn-node kn-{band}" data-key="{esc(node["key"])}" aria-pressed="false">'
+                f'<span class="kn-node-top"><span class="kn-name">{esc(node["label"])}</span>'
                 f'<strong class="kn-value" title="{value_label}">{percent}</strong></span>'
-                f'<span class="kn-node-meta">{_esc(node["section"])}<span>{detail}</span></span>'
+                f'<span class="kn-node-meta">{esc(node["section"])}<span>{detail}</span></span>'
                 f'{distribution}</button>')
 
     for chapter, nodes in chapters.items():
@@ -1204,7 +1204,7 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
         for title, group, kind in [('知识点', topics, 'topics'), ('技能点', skills, 'skills')]:
             columns.append(f'<div class="kn-column kn-{kind}"><h4>{title}<span>{len(group)} 项</span></h4>'
                            + (''.join(node_html(node) for node in group) or '<p class="kn-empty">本卷暂无直接考查记录</p>') + '</div>')
-        boards.append(f'<div class="kn-chapter"><h3>{_esc(chapter)}</h3><div class="kn-board">'
+        boards.append(f'<div class="kn-chapter"><h3>{esc(chapter)}</h3><div class="kn-board">'
                       '<svg class="kn-lines" aria-hidden="true"></svg>' + ''.join(columns) + '</div></div>')
     data_json = json.dumps(view, ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c').replace('>', r'\u003e').replace('&', r'\u0026')
     title = '班级知识与技能掌握图' if class_mode else '知识与技能掌握图'
@@ -1214,8 +1214,8 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
                 '“本卷得分率”为相关小问整体得分率，不是技能独立得分。') if class_mode else (
                 '节点百分比为当前掌握度；“本卷”分数为相关小问的整体得分，不能直接归因到其中每一步。')
     return (f'<section class="knowledge-map" id="knowledge-map"><div class="kn-heading"><h2>{title}</h2>'
-            f'<span class="kn-date">截至 {_esc(view["as_of"])}</span></div>'
-            f'<p class="kn-intro">{_esc(view["note"])}</p>'
+            f'<span class="kn-date">截至 {esc(view["as_of"])}</span></div>'
+            f'<p class="kn-intro">{esc(view["note"])}</p>'
             + (f'<p class="kn-scope">{scope_note}</p>' if scope_note else '')
             + '<p class="kn-thresholds">待补强 &lt;60% · 需巩固 60%–不足75% · 较稳定 ≥75%</p>'
             + '<div class="kn-legend">'
@@ -1233,7 +1233,7 @@ def _ai_block(text: str, *, failed: bool) -> str:
     note = AI_FAILED_NOTE if failed else text
     return (
         '<div class="aidraft">'
-        f'<div class="cap">{_esc(AI_DISCLAIMER)}</div>{_report_paragraphs(note)}</div>'
+        f'<div class="cap">{esc(AI_DISCLAIMER)}</div>{_report_paragraphs(note)}</div>'
     )
 
 
@@ -1250,7 +1250,7 @@ def _report_inline_math(text: str) -> str:
     tokens = re.compile(r'[A-Za-z0-9∠△°√∛±(（][' + math_chars + r']*(?:[ \t]+[' + math_chars + r']+)*')
 
     def plain(value):
-        return _esc(value).replace('\n', '<br>')
+        return esc(value).replace('\n', '<br>')
 
     def linear(match):
         value = match.group(0)
@@ -1262,7 +1262,7 @@ def _report_inline_math(text: str) -> str:
         if not re.search(r'[√∛∠△°=＝÷×⊥∥²³≤≥≠±]', value):
             return plain(value + suffix)
         tex = _report_linear_tex(value)
-        return (_report_math_span(tex, value) if tex else plain(value)) + plain(suffix)
+        return (report_math_span(tex, value) if tex else plain(value)) + plain(suffix)
 
     result, end = [], 0
     for match in explicit.finditer(text):
@@ -1274,7 +1274,7 @@ def _report_inline_math(text: str) -> str:
         result.append(plain(preceding[cursor:]))
         authored = match.group(0)
         width = 1 if authored.startswith('$') and not authored.startswith('$$') else 2
-        result.append(_report_math_span(authored[width:-width], authored,
+        result.append(report_math_span(authored[width:-width], authored,
                                        display=authored.startswith(('$$', r'\['))))
         end = match.end()
     remaining, cursor = text[end:], 0
@@ -1405,11 +1405,12 @@ def _question_analysis_html(item: dict[str, Any] | None) -> str:
     )
 
 
-def _report_stem_html(info: _QuestionInfo | None, fallback: str) -> str:
+def _report_stem_html(info: QuestionInfo | None, fallback: str) -> str:
     """Render source table cells as cells, instead of model-input pipe text."""
     if info is None or not info.question_markup:
         return _report_paragraphs(fallback.replace("[图片]", ""))
     from html.parser import HTMLParser
+
     from backend.document_parsing.question_blocks import _INLINE_IMAGE_MARKER
 
     class StemMarkup(HTMLParser):
@@ -1427,7 +1428,7 @@ def _report_stem_html(info: _QuestionInfo | None, fallback: str) -> str:
                                 and value and value.isdigit())
                 latex = dict(attrs).get("data-latex")
                 if tag == "span" and latex:
-                    spans += f' class="qm" data-latex="{_esc(latex)}"'
+                    spans += f' class="qm" data-latex="{esc(latex)}"'
                 if tag != 'br':
                     self.math_stack.append(bool(latex))
                 self.parts.append(f"<{tag}{spans}>")
@@ -1441,7 +1442,7 @@ def _report_stem_html(info: _QuestionInfo | None, fallback: str) -> str:
         def handle_data(self, value):
             if value.strip():
                 value = value.replace("[图片]", "")
-                self.parts.append(_esc(value) if any(self.math_stack) else _report_inline_math(value))
+                self.parts.append(esc(value) if any(self.math_stack) else _report_inline_math(value))
 
     parser = StemMarkup()
     parser.feed(_INLINE_IMAGE_MARKER.sub("", info.question_markup))
@@ -1482,7 +1483,7 @@ def _report_class_label(class_name: str) -> str:
     return name if "班" in name else f"{name}班"
 
 
-def _personal_cell_status(record: _StudentQuestionRecord) -> str:
+def _personal_cell_status(record: StudentQuestionRecord) -> str:
     if record.score == 0 and (
         record.error_category == "未作答"
         or "未作答" in (record.deduction_reason or "")
@@ -1498,8 +1499,8 @@ def _personal_cell_status(record: _StudentQuestionRecord) -> str:
 
 def _lost_group_label(
     parent: str,
-    student: _StudentReportData,
-    info_by_qid: dict[str, _QuestionInfo],
+    student: StudentReportData,
+    info_by_qid: dict[str, QuestionInfo],
 ) -> str:
     """「第14题计算」形式：大题显示名 + 题型标签。"""
     info = info_by_qid.get(parent)
@@ -1517,8 +1518,8 @@ def _lost_group_label(
 
 
 def _score_card_conclusion(
-    student: _StudentReportData,
-    info_by_qid: dict[str, _QuestionInfo],
+    student: StudentReportData,
+    info_by_qid: dict[str, QuestionInfo],
 ) -> str:
     scored = [r for r in student.records if r.max_score > 0]
     n = len(scored)
@@ -1537,20 +1538,20 @@ def _score_card_conclusion(
     total_lost = sum(by_parent.values())
     if len(ordered) == 1:
         return (
-            f"{n} 个小题中 {full} 个满分，丢的 {_fmt_num(total_lost)} 分都在"
+            f"{n} 个小题中 {full} 个满分，丢的 {fmt_num(total_lost)} 分都在"
             f"{_lost_group_label(ordered[0][0], student, info_by_qid)}。"
         )
     (g1, x), (g2, y) = ordered[0], ordered[1]
     return (
         f"{n} 个小题中 {full} 个满分，丢分最多的是"
-        f"{_lost_group_label(g1, student, info_by_qid)}（{_fmt_num(x)}分）和"
-        f"{_lost_group_label(g2, student, info_by_qid)}（{_fmt_num(y)}分）。"
+        f"{_lost_group_label(g1, student, info_by_qid)}（{fmt_num(x)}分）和"
+        f"{_lost_group_label(g2, student, info_by_qid)}（{fmt_num(y)}分）。"
     )
 
 
 def _narrative_analysis_index(
     narrative: dict[str, Any] | None,
-    info_by_qid: dict[str, _QuestionInfo],
+    info_by_qid: dict[str, QuestionInfo],
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for item in _narrative_items(narrative, "question_analyses"):
@@ -1610,7 +1611,7 @@ def _history_chart_html(entries: list[dict[str, Any]], current_sid: int) -> str:
         cur = entries[i]["session_id"] == current_sid
         overlays.append(
             f'<span class="hdot{" cur" if cur else ""}" style="left:{x:.2f}%;top:{y:.2f}%"></span>'
-            f'<span class="hval{" cur" if cur else ""}" style="left:{x:.2f}%;top:{y:.2f}%">{_esc(_fmt_num(score))}</span>'
+            f'<span class="hval{" cur" if cur else ""}" style="left:{x:.2f}%;top:{y:.2f}%">{esc(fmt_num(score))}</span>'
         )
 
     cols = []
@@ -1624,7 +1625,7 @@ def _history_chart_html(entries: list[dict[str, Any]], current_sid: int) -> str:
         cur = e["session_id"] == current_sid
         cols.append(
             f'<div class="hcol{" cur" if cur else ""}">'
-            f'<div class="hn">{_esc(short)}</div><div>{_esc(rank_text)}</div></div>'
+            f'<div class="hn">{esc(short)}</div><div>{esc(rank_text)}</div></div>'
         )
     return (
         '<div class="hchart">'
@@ -1637,10 +1638,10 @@ def _history_chart_html(entries: list[dict[str, Any]], current_sid: int) -> str:
 
 
 def _point_question_result(
-    student: _StudentReportData,
+    student: StudentReportData,
     key: str,
     question: dict[str, Any],
-    info_by_qid: dict[str, _QuestionInfo],
+    info_by_qid: dict[str, QuestionInfo],
     session_id: int,
 ) -> str:
     """考查点单题结果：有本场判定点观测取 achieved 均值，否则用得分率。"""
@@ -1667,7 +1668,7 @@ def _point_question_result(
 
 
 def _point_recurrence_sessions(
-    student: _StudentReportData, key: str, session_id: int
+    student: StudentReportData, key: str, session_id: int
 ) -> list[str]:
     """「以前也有失分」徽章：返回命中过该点失分的历史场次名（去重）。"""
     names: list[str] = []
@@ -1693,8 +1694,8 @@ def _point_recurrence_sessions(
 
 def _personal_exam_points(
     view: dict[str, Any],
-    student: _StudentReportData,
-    info_by_qid: dict[str, _QuestionInfo],
+    student: StudentReportData,
+    info_by_qid: dict[str, QuestionInfo],
     session_id: int,
 ) -> list[dict[str, Any]]:
     """本次考查点集合：全部 skill 节点 + 有未覆盖小题的 topic 节点。"""
@@ -1779,8 +1780,8 @@ def _part_numbers(group_text: str) -> list[int]:
 def _follow_up_question_ids(
     problem: dict[str, Any],
     suggestion: dict[str, Any] | None,
-    student: _StudentReportData,
-    info_by_qid: dict[str, _QuestionInfo],
+    student: StudentReportData,
+    info_by_qid: dict[str, QuestionInfo],
 ) -> list[str]:
     """重点跟进卡片的关联题号：优先叙述里的 question_ids，否则按正文文字解析。
 
@@ -1848,8 +1849,8 @@ def _shots_for_parent(shots: dict[str, dict[str, str]], parent: str) -> list[dic
 
 def _shots_html(shots: dict[str, dict[str, str]], parent: str, title: str) -> str:
     return "".join(
-        f'<div class="shot"><img src="{shot["data_uri"]}" alt="{_esc(title)}作答截图">'
-        f'<div class="cap">{_esc(shot.get("caption") or "学生作答（原卷截图）")}</div></div>'
+        f'<div class="shot"><img src="{shot["data_uri"]}" alt="{esc(title)}作答截图">'
+        f'<div class="cap">{esc(shot.get("caption") or "学生作答（原卷截图）")}</div></div>'
         for shot in _shots_for_parent(shots, parent)
     )
 
@@ -1860,15 +1861,15 @@ _TEACHER_COMMENT_PLACEHOLDERS = frozenset(
 )
 
 
-def _real_teacher_comment(record: _StudentQuestionRecord) -> str:
+def _real_teacher_comment(record: StudentQuestionRecord) -> str:
     """真实老师批语；占位确认文案视为无批语。"""
     comment = (record.teacher_comment or "").strip()
     return "" if comment in _TEACHER_COMMENT_PLACEHOLDERS else comment
 
 
 def _grading_fallback_html(
-    record: _StudentQuestionRecord,
-    info: _QuestionInfo | None,
+    record: StudentQuestionRecord,
+    info: QuestionInfo | None,
     heading: str = "",
     show_answer: bool = True,
     show_comment: bool = True,
@@ -1882,7 +1883,7 @@ def _grading_fallback_html(
     answer = (info.canonical_answer if info is not None else "") or ""
     if not comment and not (show_answer and answer):
         return ""
-    head = f"<b>{_esc(heading)}</b>" if heading else ""
+    head = f"<b>{esc(heading)}</b>" if heading else ""
     body = ""
     if comment:
         body += f"<div>老师批语：{_report_inline_math(comment)}</div>"
@@ -1892,8 +1893,8 @@ def _grading_fallback_html(
 
 
 def _analysis_or_fallback_html(
-    record: _StudentQuestionRecord,
-    info: _QuestionInfo | None,
+    record: StudentQuestionRecord,
+    info: QuestionInfo | None,
     analysis: dict[str, Any] | None,
     *,
     show_answer: bool = True,
@@ -1909,11 +1910,11 @@ def _analysis_or_fallback_html(
     )
 
 
-def _stem_block_html(info: _QuestionInfo | None, fallback: str, title: str) -> str:
+def _stem_block_html(info: QuestionInfo | None, fallback: str, title: str) -> str:
     html_text = f'<div class="stem">{_report_stem_html(info, fallback)}</div>'
     if info is not None:
         figures = "".join(
-            f'<img src="data:image/png;base64,{base64.b64encode(blob).decode()}" alt="{_esc(title)}题图">'
+            f'<img src="data:image/png;base64,{base64.b64encode(blob).decode()}" alt="{esc(title)}题图">'
             for role, blob in info.reference_images
             if role == "question"
         )
@@ -1923,8 +1924,8 @@ def _stem_block_html(info: _QuestionInfo | None, fallback: str, title: str) -> s
 
 
 def _question_detail_template(
-    record: _StudentQuestionRecord,
-    info: _QuestionInfo | None,
+    record: StudentQuestionRecord,
+    info: QuestionInfo | None,
     points_labels: list[str],
     analysis: dict[str, Any] | None,
     shots: dict[str, dict[str, str]],
@@ -1938,11 +1939,11 @@ def _question_detail_template(
     head_parts = [title]
     if type_label:
         head_parts.append(type_label)
-    head_parts.append(f"得 {_fmt_num(record.score)}/{_fmt_num(record.max_score)}")
+    head_parts.append(f"得 {fmt_num(record.score)}/{fmt_num(record.max_score)}")
     if avg is not None:
-        head_parts.append(f"全班平均 {_fmt_num(round(avg, 1))}")
+        head_parts.append(f"全班平均 {fmt_num(round(avg, 1))}")
     head = " · ".join(head_parts)
-    body = [f'<div class="qdetail-box"><div class="qd-head">{_esc(head)}</div>']
+    body = [f'<div class="qdetail-box"><div class="qd-head">{esc(head)}</div>']
     if record.lost and errors:
         labels = "；".join(dict.fromkeys(
             " · ".join(
@@ -1953,10 +1954,10 @@ def _question_detail_template(
         ))
         if labels:
             body.append(
-                f'<div class="errline">错误归类（AI 辅助）：{_esc(labels)}</div>'
+                f'<div class="errline">错误归类（AI 辅助）：{esc(labels)}</div>'
             )
     if points_labels:
-        tags = "".join(f'<span class="pt-tag">{_esc(t)}</span>' for t in points_labels)
+        tags = "".join(f'<span class="pt-tag">{esc(t)}</span>' for t in points_labels)
         body.append(f'<div class="qd-points">考这些：{tags}</div>')
     if record.lost:
         feedback = _narrative_text((analysis or {}).get("feedback"))
@@ -1985,8 +1986,8 @@ def _question_detail_template(
 
 
 def _lost_appendix_html(
-    student: _StudentReportData,
-    info_by_qid: dict[str, _QuestionInfo],
+    student: StudentReportData,
+    info_by_qid: dict[str, QuestionInfo],
     analysis_by_qid: dict[str, dict[str, Any]],
     shots: dict[str, dict[str, str]],
     error_map: dict[str, list[dict[str, Any]]] | None = None,
@@ -1995,7 +1996,7 @@ def _lost_appendix_html(
     lost = [r for r in student.records if r.lost]
     if not lost:
         return ""
-    groups: dict[str, list[_StudentQuestionRecord]] = {}
+    groups: dict[str, list[StudentQuestionRecord]] = {}
     for r in lost:
         groups.setdefault(parent_question_id(r.question_id), []).append(r)
     ordered = sorted(
@@ -2015,9 +2016,9 @@ def _lost_appendix_html(
         type_label = _question_type_label(info.question_type if info is not None else "")
         fallback = ((info.question_text or info.stem_summary) if info is not None else "") or title
         parts = [
-            f'<div class="qcard"><div class="head"><b>{_esc(title)}'
-            f'{(" · " + _esc(type_label)) if type_label else ""}</b>'
-            f'<span class="score">得 {_fmt_num(gscore)} 分 / 满分 {_fmt_num(gmax)} 分</span></div>',
+            f'<div class="qcard"><div class="head"><b>{esc(title)}'
+            f'{(" · " + esc(type_label)) if type_label else ""}</b>'
+            f'<span class="score">得 {fmt_num(gscore)} 分 / 满分 {fmt_num(gmax)} 分</span></div>',
             _stem_block_html(info, fallback, title),
             _shots_html(shots, parent, title),
         ]
@@ -2050,10 +2051,10 @@ def _lost_appendix_html(
                 for row in error_rows
             ))
             if error_text:
-                kv.append(f"<dt>错误归类</dt><dd>{_esc(error_text)}（AI 辅助）</dd>")
+                kv.append(f"<dt>错误归类</dt><dd>{esc(error_text)}（AI 辅助）</dd>")
             heading = (
-                f'<h3>{_esc(_question_display_label(record.question_id))}'
-                f'<span>得 {_fmt_num(record.score)} / {_fmt_num(record.max_score)} 分</span></h3>'
+                f'<h3>{esc(_question_display_label(record.question_id))}'
+                f'<span>得 {fmt_num(record.score)} / {fmt_num(record.max_score)} 分</span></h3>'
                 if len(parent_records) > 1
                 else ""
             )
@@ -2078,7 +2079,7 @@ def _lost_appendix_html(
 
 def _load_student_histories(
     repositories: GradingRepositoryAccess,
-    data: _SessionAnalysisData,
+    data: SessionAnalysisData,
     data_root: Path | None,
 ) -> dict[int, list[dict[str, Any]]]:
     """同教学学期内、不晚于本场的历次成绩，每次导出只读取一轮。
@@ -2097,7 +2098,7 @@ def _load_student_histories(
             for row in repositories.sessions.list_grading_sessions()
             if str(row.get("curriculum_volume_id") or "").strip() == volume
         ]
-        assembled: list[tuple[int, _SessionAnalysisData, dict[int, tuple]]] = []
+        assembled: list[tuple[int, SessionAnalysisData, dict[int, tuple]]] = []
         for sid in candidate_ids:
             try:
                 session_data = assemble_session_analysis(
@@ -2149,8 +2150,8 @@ def _load_student_histories(
 
 
 def _render_personal_html(
-    data: _SessionAnalysisData,
-    student: _StudentReportData,
+    data: SessionAnalysisData,
+    student: StudentReportData,
     narrative: dict[str, Any] | None,
     shots: dict[str, dict[str, str]],
     history: list[dict[str, Any]] | None = None,
@@ -2193,8 +2194,8 @@ def _render_personal_html(
 
     # ---- A 成绩卡 ----
     meta = (
-        f"{_esc(data.session_name)} · {_esc(data.subject)} · "
-        f"{_esc(_report_class_label(student.class_name))} · {_esc(student.graded_at)}"
+        f"{esc(data.session_name)} · {esc(data.subject)} · "
+        f"{esc(_report_class_label(student.class_name))} · {esc(student.graded_at)}"
     )
     prev_v, prev_l = "首次记录", "上次"
     prior = [
@@ -2204,7 +2205,7 @@ def _render_personal_html(
     ]
     if prior:
         prev = prior[-1]
-        prev_v = f"{_fmt_num(prev['score'])}分"
+        prev_v = f"{fmt_num(prev['score'])}分"
         if prev.get("rank") and prev.get("present"):
             prev_l = f"上次 第{prev['rank']}/{prev['present']}名"
     avg = data.stats.get("avg")
@@ -2212,9 +2213,9 @@ def _render_personal_html(
     bands = list(data.stats.get("bands") or [])
     scale = (data.full_score / 100) if data.full_score > 0 else 1.0
     my_band = None
-    for i, cutoff in enumerate(_BAND_CUTOFFS):
+    for i, cutoff in enumerate(BAND_CUTOFFS):
         lower = cutoff * scale
-        upper = data.full_score if i == 0 else _BAND_CUTOFFS[i - 1] * scale
+        upper = data.full_score if i == 0 else BAND_CUTOFFS[i - 1] * scale
         if lower <= student.student_score <= upper if i == 0 else lower <= student.student_score < upper:
             my_band = len(bands) - 1 - i
             break
@@ -2224,7 +2225,7 @@ def _render_personal_html(
         width = band["count"] / max_count * 100
         me = disp_i == my_band
         band_rows.append(
-            f'<div class="band{" me" if me else ""}"><span>{_esc(band["label"].replace(" ", ""))}'
+            f'<div class="band{" me" if me else ""}"><span>{esc(band["label"].replace(" ", ""))}'
             f'{"<span class=me-tag>孩子在这里</span>" if me else ""}</span>'
             f'<div class="track"><i style="width:{width:.0f}%"></i></div>'
             f'<span class="cnt">{band["count"]}人</span></div>'
@@ -2251,16 +2252,16 @@ def _render_personal_html(
 <div class="card">
   {review}
   <div class="meta">{meta}</div>
-  <div class="name">{_esc(student.student_name)}</div>
-  <div class="score-line"><span class="big">{_fmt_num(student.student_score)}</span><span class="of">/ {_fmt_num(data.full_score)}</span></div>
+  <div class="name">{esc(student.student_name)}</div>
+  <div class="score-line"><span class="big">{fmt_num(student.student_score)}</span><span class="of">/ {fmt_num(data.full_score)}</span></div>
   <div class="stat3">
     <div class="cell"><div class="v">{student.rank}/{data.present}</div><div class="l">班级名次</div></div>
     <div class="cell"><div class="v">{avg_text}</div><div class="l">班级平均</div></div>
-    <div class="cell"><div class="v">{_esc(prev_v)}</div><div class="l">{_esc(prev_l)}</div></div>
+    <div class="cell"><div class="v">{esc(prev_v)}</div><div class="l">{esc(prev_l)}</div></div>
   </div>
   <div class="bands">{''.join(band_rows)}</div>
   {small_sample_note}
-  <div class="concl">{_esc(_score_card_conclusion(student, info_by_qid))}</div>
+  <div class="concl">{esc(_score_card_conclusion(student, info_by_qid))}</div>
   {strength}
 </div>"""
 
@@ -2286,16 +2287,16 @@ def _render_personal_html(
         sym = {"full": "✓", "part": "△", "zero": "✗", "blank": "—"}[status]
         hard = info is not None and info.class_rate is not None and info.class_rate < 0.5
         cells.append(
-            f'<button type="button" class="qcell {status}" data-q="{_esc(record.question_id)}" '
+            f'<button type="button" class="qcell {status}" data-q="{esc(record.question_id)}" '
             f'aria-expanded="false"><span class="sym">{sym}</span>'
             f'{"<span class=hard>▲</span>" if hard else ""}'
-            f'<span class="qn">{_esc(_question_cell_label(record.question_id))}</span>'
-            f'<span class="qs">{_fmt_num(record.score)}/{_fmt_num(record.max_score)}</span></button>'
+            f'<span class="qn">{esc(_question_cell_label(record.question_id))}</span>'
+            f'<span class="qs">{fmt_num(record.score)}/{fmt_num(record.max_score)}</span></button>'
         )
         analysis = analysis_by_qid.get(record.question_id)
         labels = _points_for_question(points, record.question_id)
         templates.append(
-            f'<template data-q="{_esc(record.question_id)}">'
+            f'<template data-q="{esc(record.question_id)}">'
             + _question_detail_template(
                 record, info, labels, analysis, shots, errors=question_errors(record.question_id),
             )
@@ -2306,7 +2307,7 @@ def _render_personal_html(
   <h2>本卷答题一览</h2>
   <div class="qgrid">{''.join(cells)}</div>
   <div class="legend">✓ 满分 {counts['full']}　△ 部分得分 {counts['part']}　✗ 零分 {counts['zero']}　— 未作答 {counts['blank']}　▲ 全班平均得分不到一半</div>
-  {''.join(f'<div class="note">{_esc(note)}</div>' for note in student.material_notes)}
+  {''.join(f'<div class="note">{esc(note)}</div>' for note in student.material_notes)}
   <div id="qpanel" hidden></div>
   {''.join(templates)}
 </div>"""
@@ -2339,7 +2340,7 @@ def _render_personal_html(
                     ]
                     if categories:
                         label += f"·{'+'.join(dict.fromkeys(categories))}"
-                    return f'<span class="qtag">{_esc(label)}</span>'
+                    return f'<span class="qtag">{esc(label)}</span>'
 
                 tags = "".join(
                     qtag(q)
@@ -2347,7 +2348,7 @@ def _render_personal_html(
                         qids, key=lambda q: question_id_coordinates(q) or (10**9, 0)
                     )
                 )
-                meta_line = f'<div class="meta2">丢 {_fmt_num(lost_sum)} 分{tags}</div>'
+                meta_line = f'<div class="meta2">丢 {fmt_num(lost_sum)} 分{tags}</div>'
             else:
                 meta_line = ""
             recur_names: list[str] = []
@@ -2359,10 +2360,10 @@ def _render_personal_html(
                             recur_names.append(nm)
             # 有本场错因归类时优先按同类错误/同错法提示复发；否则回退到考查点复发。
             badge = (
-                f'<span class="recur" title="{_esc("、".join(error_recur))}">同类错误以前出现过</span>'
+                f'<span class="recur" title="{esc("、".join(error_recur))}">同类错误以前出现过</span>'
                 if error_recur
                 else (
-                    f'<span class="recur" title="{_esc("、".join(recur_names))}">以前也有失分</span>'
+                    f'<span class="recur" title="{esc("、".join(recur_names))}">以前也有失分</span>'
                     if recur_names
                     else ""
                 )
@@ -2374,7 +2375,7 @@ def _render_personal_html(
                 fb = _narrative_text((item or {}).get("feedback"))
                 if fb:
                     why.append(
-                        f'<div class="qd-fb"><b>{_esc(_question_display_label(q))}</b>'
+                        f'<div class="qd-fb"><b>{esc(_question_display_label(q))}</b>'
                         f'{_report_paragraphs(fb)}</div>'
                     )
                 elif item is None:
@@ -2392,7 +2393,7 @@ def _render_personal_html(
                     if first:
                         why.append(
                             f'<div class="shot"><img src="{first["data_uri"]}" alt="作答截图">'
-                            f'<div class="cap">{_esc(first.get("caption") or "学生作答（原卷截图）")}</div></div>'
+                            f'<div class="cap">{esc(first.get("caption") or "学生作答（原卷截图）")}</div></div>'
                         )
             sugg_line = ""
             if suggestion and _narrative_text(suggestion.get("detail")):
@@ -2402,7 +2403,7 @@ def _render_personal_html(
                 )
             dcards.append(
                 f'<div class="dcard"><div class="dhead"><span class="no">{idx + 1}</span>'
-                f'<span class="ttl">{_esc(_report_display_text(_narrative_text(problem.get("title"))))}</span>{badge}</div>'
+                f'<span class="ttl">{esc(_report_display_text(_narrative_text(problem.get("title"))))}</span>{badge}</div>'
                 f'{meta_line}'
                 f'{sugg_line}'
                 f'<details><summary>为什么这样判断</summary>{"".join(why)}</details></div>'
@@ -2411,7 +2412,7 @@ def _render_personal_html(
             dcards.append('<div class="dgreen">这次没有失分，保持现在的做题习惯。</div>')
         card_d = f"""
 <div class="card">
-  <h2>这次重点跟进<span class="aitag">{_esc(AI_DISCLAIMER)}</span></h2>
+  <h2>这次重点跟进<span class="aitag">{esc(AI_DISCLAIMER)}</span></h2>
   {''.join(dcards)}
 </div>"""
     else:
@@ -2419,7 +2420,7 @@ def _render_personal_html(
         if not lost:
             inner = '<div class="dgreen">这次没有失分，保持现在的做题习惯。</div>'
         else:
-            by_parent: dict[str, list[_StudentQuestionRecord]] = {}
+            by_parent: dict[str, list[StudentQuestionRecord]] = {}
             for r in lost:
                 by_parent.setdefault(parent_question_id(r.question_id), []).append(r)
             ordered = sorted(
@@ -2442,21 +2443,21 @@ def _render_personal_html(
                 ]
                 recur_names = error_recurrence([r.question_id for r in recs])
                 badge = (
-                    f'<span class="recur" title="{_esc("、".join(recur_names))}">同类错误以前出现过</span>'
+                    f'<span class="recur" title="{esc("、".join(recur_names))}">同类错误以前出现过</span>'
                     if recur_names
                     else ""
                 )
                 cards.append(
                     f'<div class="dcard"><div class="dhead"><span class="ttl">'
-                    f'{_esc(_lost_group_label(parent, student, info_by_qid))}</span>{badge}</div>'
-                    f'<div class="meta2">丢 {_fmt_num(lost_sum)} 分</div>'
+                    f'{esc(_lost_group_label(parent, student, info_by_qid))}</span>{badge}</div>'
+                    f'<div class="meta2">丢 {fmt_num(lost_sum)} 分</div>'
                     + (
-                        f'<div class="errline">错误归类（AI 辅助）：{_esc("；".join(dict.fromkeys(error_labels)))}</div>'
+                        f'<div class="errline">错误归类（AI 辅助）：{esc("；".join(dict.fromkeys(error_labels)))}</div>'
                         if error_labels
                         else ""
                     )
                     + (
-                        f'<div class="help">老师批语：{_esc("；".join(comments[:2]))}</div>'
+                        f'<div class="help">老师批语：{esc("；".join(comments[:2]))}</div>'
                         if comments
                         else ""
                     )
@@ -2480,16 +2481,16 @@ def _render_personal_html(
         sym_map = {"full": "✓", "part": "△", "zero": "✗"}
         dots = "".join(
             f'<span class="dot"><i class="{r}">{sym_map[r]}</i>'
-            f'<s>{_esc(_question_cell_label(q["id"]))}</s></span>'
+            f'<s>{esc(_question_cell_label(q["id"]))}</s></span>'
             for q, r in p["results"]
         )
         badge = (
-            f'<span class="recur" title="{_esc("、".join(p["recur"]))}">以前也有失分</span>'
+            f'<span class="recur" title="{esc("、".join(p["recur"]))}">以前也有失分</span>'
             if p["recur"]
             else ""
         )
         rows_html.append(
-            f'<div class="pt-row"><span class="nm">{_esc(p["label"])}{badge}</span>'
+            f'<div class="pt-row"><span class="nm">{esc(p["label"])}{badge}</span>'
             f'<span class="dots">{dots}</span></div>'
         )
     good_sections: dict[str, list[str]] = {}
@@ -2497,8 +2498,8 @@ def _render_personal_html(
         if p["status"] == "good":
             good_sections.setdefault(p["section"] or "其他", []).append(p["label"])
     cloud = "".join(
-        f'<div class="sec">{_esc(sec)}</div><div>'
-        + "".join(f'<span class="tg">{_esc(label)}</span>' for label in labels)
+        f'<div class="sec">{esc(sec)}</div><div>'
+        + "".join(f'<span class="tg">{esc(label)}</span>' for label in labels)
         + "</div>"
         for sec, labels in good_sections.items()
     )
@@ -2525,7 +2526,7 @@ def _render_personal_html(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{_esc(student.student_name)} · 家长报告 · {_esc(data.session_name)}</title>
+<title>{esc(student.student_name)} · 家长报告 · {esc(data.session_name)}</title>
 <style>{_PERSONAL_CSS}</style>
 {_report_math_assets()}
 </head>
@@ -2538,7 +2539,7 @@ def _render_personal_html(
 {card_e}
 {card_f}
 <footer>
-<p>本报告根据阅卷记录自动生成；标“{_esc(AI_DISCLAIMER)}”的内容由人工智能辅助生成，仅供参考，如有疑问请联系任课老师。</p>
+<p>本报告根据阅卷记录自动生成；标“{esc(AI_DISCLAIMER)}”的内容由人工智能辅助生成，仅供参考，如有疑问请联系任课老师。</p>
 <p>班级对比只用匿名统计。报告生成时间：{generated_at}。</p>
 </footer>
 </div>
@@ -2554,7 +2555,7 @@ def _render_personal_html(
 
 
 def render_class_html(
-    data: _SessionAnalysisData,
+    data: SessionAnalysisData,
     narrative: dict[str, Any] | None,
     cause_counts: dict[str, list[tuple[str, int]]] | None = None,
 ) -> str:
@@ -2564,23 +2565,23 @@ def render_class_html(
     failed = narrative is None
     narrative = class_narrative_with_student_names(narrative, data.students) if narrative is not None else {}
     analyzed = len(data.students)
-    fmt = lambda value: _fmt_num(value) if value is not None else '—'
+    fmt = lambda value: fmt_num(value) if value is not None else '—'
     math_text = lambda value: _report_inline_math(str(value))
     aliases = {f'S{i}': student['student_name'] for i, student in enumerate(page['students'], 1)}
     stats = page['score_distribution']
     metrics = [('参考人数', page['present']), ('平均分', fmt(stats['avg'])),
                ('中位数', fmt(stats['median'])), ('最高 / 最低', fmt(stats['max'])+' / '+fmt(stats['min'])),
                ('及格率', f"{stats['pass_rate']*100:.1f}%")]
-    metric_html = ''.join(f'<div><small>{_esc(label)}</small><strong>{_esc(str(value))}</strong></div>'
+    metric_html = ''.join(f'<div><small>{esc(label)}</small><strong>{esc(str(value))}</strong></div>'
                           for label, value in metrics)
     findings = ''.join(f'<article><h3>{math_text(item["title"])}</h3>{_report_paragraphs(item["detail"])}</article>'
                        for item in narrative.get('key_findings', []))
     if failed:
-        findings = f'<p>{_esc(AI_FAILED_NOTE)}</p>'
+        findings = f'<p>{esc(AI_FAILED_NOTE)}</p>'
     issues = ''.join(f'<article><h3>{math_text(item["title"])}</h3>{_report_paragraphs(item["evidence"])}'
                      f'<div class="action">{_report_paragraphs(item["teaching_action"])}</div></article>'
                      for item in narrative.get('common_issues', []))
-    bands = ''.join(f'<div class="band"><span>{_esc(label)}</span><div class="track">'
+    bands = ''.join(f'<div class="band"><span>{esc(label)}</span><div class="track">'
                     f'<i style="width:{count/max(1,analyzed)*100:.2f}%"></i></div><b>{count}人</b></div>'
                     for label, count in stats['bands'].items())
     def _cause_text(question_id: str) -> str:
@@ -2588,19 +2589,19 @@ def render_class_html(
         return '；'.join(f'{category} {count}人' for category, count in counts[:3]) or '—'
 
     questions = ''.join(
-        f'<tr class="qrow" id="score-{_esc(q["question_id"])}"><td>{_question_display_label(q["question_id"])}</td>'
+        f'<tr class="qrow" id="score-{esc(q["question_id"])}"><td>{_question_display_label(q["question_id"])}</td>'
         f'<td>{fmt(q["max_score"])}</td><td>{fmt(q["class_avg"])}</td>'
         f'<td><div class="rate"><i style="width:{q["class_rate"]*100:.2f}%"></i>'
         f'<span>{q["class_rate"]*100:.1f}%</span></div></td><td>{len(q["records"])}人</td>'
-        f'<td>{_esc(_cause_text(q["question_id"]))}</td>'
+        f'<td>{esc(_cause_text(q["question_id"]))}</td>'
         + (f'<td class="answer"><details><summary>查看答案</summary><div>{math_text(q["canonical_answer"])}</div></details></td></tr>'
            if q['canonical_answer'] else '<td class="answer">—</td></tr>')
         for q in page['questions'] if q['class_avg'] is not None)
-    roster = ''.join(f'<tr><td>{student["rank"]}</td><td>{_esc(student["student_name"])}</td>'
+    roster = ''.join(f'<tr><td>{student["rank"]}</td><td>{esc(student["student_name"])}</td>'
                      f'<td>{fmt(student["total_score"])}</td>'
-                     f'<td>{_esc("、".join(_question_display_label(r["question_id"]) for r in student["lost"]) or "无")}</td></tr>'
+                     f'<td>{esc("、".join(_question_display_label(r["question_id"]) for r in student["lost"]) or "无")}</td></tr>'
                      for student in page['students'])
-    notes = ''.join(f'<article><h3>{_esc(aliases.get(item["alias"], item["alias"]))}</h3>'
+    notes = ''.join(f'<article><h3>{esc(aliases.get(item["alias"], item["alias"]))}</h3>'
                     f'{_report_paragraphs(item["note"])}<div class="action">{_report_paragraphs(item["suggestion"])}</div></article>'
                     for item in narrative.get('student_notes', []))
     knowledge_html = _knowledge_view_html(_class_knowledge_view(data))
@@ -2635,8 +2636,8 @@ def render_class_html(
     """
     return (
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<title>{_esc(class_label)} · 班级报告</title>{_report_math_assets()}<style>{styles}{knowledge_css}</style></head><body><main>'
-        f'<header><small>讲评课参考 · 教师版</small><h1>{math_text(page["exam"]["title"])}<br>{_esc(class_label)} · 班级报告</h1>'
+        f'<title>{esc(class_label)} · 班级报告</title>{_report_math_assets()}<style>{styles}{knowledge_css}</style></head><body><main>'
+        f'<header><small>讲评课参考 · 教师版</small><h1>{math_text(page["exam"]["title"])}<br>{esc(class_label)} · 班级报告</h1>'
         f'<p class="muted">按本班当前成绩统计，教师复核分优先 · 满分{fmt(page["exam"]["full_score"])}分</p></header>'
         f'<div class="metrics">{metric_html}</div><section><h2>本次最值得关注的结果</h2>{findings}</section>'
         f'<section><h2>分数分布</h2>{bands}<p class="muted">各分数段互不重叠，参与统计{analyzed}人。</p></section>'
@@ -2713,10 +2714,12 @@ class AnalysisReportGenerator:
         score_revision: str = "",
     ) -> list[Path]:
         """以班级页面相同的数据、提示词和缓存规则批量导出自包含 HTML。"""
-        from backend.class_analysis import (
-            _class_narrative, question_category_counts, session_error_records,
-        )
         from analysis_report_prompts import CLASS_SYSTEM_PROMPT
+        from backend.class_analysis import (
+            _class_narrative,
+            question_category_counts,
+            session_error_records,
+        )
 
         data = assemble_session_analysis(self.repositories, session_id, data_root=self.data_root)
         revision = score_revision or _compute_score_revision(self.repositories, session_id)
@@ -2846,7 +2849,7 @@ class AnalysisReportGenerator:
 
     def _export_personal(
         self,
-        data: _SessionAnalysisData,
+        data: SessionAnalysisData,
         revision: str,
         *,
         student_ids: set[int] | None = None,
@@ -3116,12 +3119,12 @@ def build_analysis_preflight(
             CAUSE_ANALYSIS_PROMPT,
             CAUSE_ANALYSIS_VERSION,
             ClassAnalysisStateStore,
+            _cause_input_fingerprint,
             assemble_cause_data,
             build_cause_inputs,
+            cause_input_matches,
             known_cause_patterns,
             plan_cause_question,
-            _cause_input_fingerprint,
-            cause_input_matches,
         )
         from backend.error_patterns import (
             OPTION_ANALYSIS_PROMPT,

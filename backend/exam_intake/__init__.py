@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
-
+from collections.abc import Mapping
+from typing import Any
 
 INTAKE_REQUIRED_KEY = "intake_required"
 INTAKE_COMPLETE_STATES = frozenset({"ready"})

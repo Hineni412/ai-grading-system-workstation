@@ -4,11 +4,11 @@ import hashlib
 import json
 import sqlite3
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from integration.skill_graph_projection import (
     build_question_tag_graph_evidence,

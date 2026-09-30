@@ -16,7 +16,7 @@ from question_bank.recommendation.personalized import (
 )
 from question_bank.services.assembly_assistant import shortlist_candidates
 from question_bank.services.question_read_service import QuestionBankReadService
-from tests.phase4.test_personalized_recommendation import (
+from tests.training.test_personalized_recommendation import (
     bnu24_difficulty_module, direct_module, _direct_diagnosis, BNU_TARGET, BNU_CHAPTER4,
 )
 
@@ -260,7 +260,7 @@ def test_skill_cap_counts_whole_questions_and_all_direct_skills(members):
 @pytest.mark.parametrize('replaced_qid,allowed', [(1, True), (3, False)])
 def test_replacement_releases_old_skill_slot_but_cannot_add_a_second(replaced_qid, allowed, monkeypatch):
     from question_bank.recommendation.personalized import RecommendationEditCommand, RecommendationEditInvalid
-    from tests.phase4.test_personalized_recommendation import _selection_candidate
+    from tests.training.test_personalized_recommendation import _selection_candidate
     candidates = [_selection_candidate(q, '', key='sk_a' if q in (1,4) else f'sk_{q}') for q in (1, 2, 3, 4)]
     target = {'stable_key': 'sk_a', 'source_question_refs': []}
     draft = {'revision': 1, 'students': [{'student_id': 'A', 'warnings': [], 'items': [

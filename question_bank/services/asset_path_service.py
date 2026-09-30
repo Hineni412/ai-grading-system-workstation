@@ -9,7 +9,6 @@ from question_bank.services.file_cache import (
     memoized_resolve,
 )
 
-
 DEFAULT_SEARCH_SUBDIRS = (
     "question_bank/raw_papers",
     "question_bank/extracted_images",

@@ -5,7 +5,6 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any
 
-
 _RELATION_RE = re.compile(r"^\s*([A-Za-z0-9_\u0370-\u03ff∠△]+)\s*=\s*([A-Za-z0-9_\u0370-\u03ff∠△]+)\s*$")
 _FRACTION_RE = re.compile(r"^\s*([+-]?\d+)\s*/\s*([+-]?\d+)\s*$")
 _DECIMAL_RE = re.compile(r"^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)%?\s*$")

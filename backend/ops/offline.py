@@ -16,7 +16,6 @@ from path_manager import get_path_manager
 from update_tools.migrate_db import run_migrations
 
 from .archive import OpsArchivePolicy, extract_validated_zip, inspect_zip
-from .jobs import create_safety_backup
 from .database_validation import (
     DATABASE_MEMBERS,
     migration_directories,
@@ -24,6 +23,7 @@ from .database_validation import (
     validate_live_databases,
     validate_staged_databases,
 )
+from .jobs import create_safety_backup
 from .journal import OpsJournalInvalid, OpsOperationJournal, OpsOperationManifest
 from .lock import OpsLockBusy, OpsOperationLock
 from .plan_store import OpsPlanStore

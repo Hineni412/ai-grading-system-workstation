@@ -27,6 +27,15 @@ from backend.api.schemas.scan import (
     ScanUploadResponse,
 )
 from backend.config_workspace.publish import load_editor_config
+from backend.jobs.manager import ActiveJobExistsError, UnsupportedJobTypeError
+from backend.name_pinyin import (
+    student_name_initials as _student_name_initials,
+)
+from backend.name_pinyin import (
+    student_name_pinyin as _student_name_pinyin,
+)
+from backend.repositories.access import GradingRepositoryAccess
+from backend.repositories.sessions import SessionDeletionActiveWork
 from backend.scan_grading.workspace import (
     ActiveScanAnalysisError,
     FrozenUploadBatchError,
@@ -38,16 +47,8 @@ from backend.scan_grading.workspace import (
     ScanUploadTooLargeError,
     UploadBatchRevisionError,
 )
-from backend.jobs.manager import ActiveJobExistsError, UnsupportedJobTypeError
-from backend.name_pinyin import (
-    student_name_initials as _student_name_initials,
-    student_name_pinyin as _student_name_pinyin,
-)
-from backend.repositories.access import GradingRepositoryAccess
-from backend.repositories.sessions import SessionDeletionActiveWork
 from session_cleanup import SessionDerivedTrainingDataExists
 from template_upload_service import TemplateUploadError, TemplateUploadService
-
 
 router = APIRouter(prefix="/api", tags=["scan"])
 

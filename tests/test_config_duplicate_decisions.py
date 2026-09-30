@@ -20,10 +20,10 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.solution_evidence import SolutionEvidenceRepository
 from question_bank.training_criteria import (
     ConfigQuestionAnalysisSource,
-    InMemoryCombinedQuestionAnalysisModule,
+    DeferredCombinedQuestionAnalysisModule,
     question_analysis_input_from_config_source,
 )
-from question_bank.training_criteria.in_memory import DeferredCombinedAnalysisItem
+from question_bank.training_criteria.combined_analysis import DeferredCombinedAnalysisItem
 
 from tests.current_knowledge_support import install_current_knowledge
 from tests.test_config_source_duplicates import (
@@ -276,7 +276,7 @@ def test_reanalyze_fresh_analysis_adopts_onto_canonical(
         taxonomy_contract=_deferred_sync_contract(),
     )
     gateway = _DeferredSyncGateway(empty_links=True)
-    bundle = InMemoryCombinedQuestionAnalysisModule(gateway=gateway).analyze(
+    bundle = DeferredCombinedQuestionAnalysisModule(gateway=gateway).analyze(
         operation_id="config:test:reanalyze",
         curriculum_volume_id="bnu24-math-g7-upper",
         sources=(ConfigQuestionAnalysisSource("Q3", source_question),),

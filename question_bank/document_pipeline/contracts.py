@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any, Mapping
-
+from typing import Any
 
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")

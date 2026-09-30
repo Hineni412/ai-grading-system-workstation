@@ -34,10 +34,13 @@ from backend.scan_grading.workspace import (
 )
 
 LEGACY_GRADING_MODE_MESSAGE = "旧批改方式已停用，请用 AI 批改重新开始未完成的部分"
-from backend.jobs.manager import ActiveJobExistsError, JobManager, UnsupportedJobTypeError
+from backend.jobs.manager import (
+    ActiveJobExistsError,
+    JobManager,
+    UnsupportedJobTypeError,
+)
 from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
-
 
 router = APIRouter(prefix="/api", tags=["grading"])
 

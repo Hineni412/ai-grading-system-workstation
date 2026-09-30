@@ -4,24 +4,24 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.ai_tagging_service import converge_tag_analysis
-from question_bank.solution_evidence.convergence import converge_evidence_terms
 from question_bank.solution_evidence.contracts import (
     CoreResolution,
     FineTermResolver,
     QuestionSolutionEvidence,
     validate_evidence_fine_terms,
 )
+from question_bank.solution_evidence.convergence import converge_evidence_terms
 from question_bank.solution_evidence.normalization import (
     normalize_model_solution_evidence,
 )
 from question_bank.solution_evidence.repository import (
-    FineTermCoreMappingRepository,
     SolutionEvidenceRepository,
 )
 from question_bank.training_criteria.analysis import (
@@ -41,7 +41,6 @@ from question_bank.training_criteria.analysis import (
     training_criteria_from_solution_evidence,
     training_criterion_source_reference,
 )
-
 
 _MAX_REJECTED_RESULT_CHARS = 50_000
 
@@ -114,7 +113,7 @@ class DeferredKnowledgeCandidate:
         return result
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "DeferredKnowledgeCandidate":
+    def from_dict(cls, payload: Mapping[str, Any]) -> DeferredKnowledgeCandidate:
         keys = {str(key) for key in payload}
         if not {"id", "name", "aliases"} <= keys <= {
             "id",
@@ -432,7 +431,7 @@ class DeferredCombinedAnalysisItem:
         payload: Mapping[str, Any],
         *,
         resolver: FineTermResolver,
-    ) -> "DeferredCombinedAnalysisItem":
+    ) -> DeferredCombinedAnalysisItem:
         version = str(payload.get("schema_version") or "")
         common_keys = {
             "schema_version",
@@ -585,7 +584,7 @@ class DeferredCombinedAnalysisItem:
         payload: Mapping[str, Any],
         *,
         resolver: FineTermResolver,
-    ) -> "DeferredCombinedAnalysisItem":
+    ) -> DeferredCombinedAnalysisItem:
         return cls.from_dict(payload, resolver=resolver)
 
 
@@ -803,7 +802,7 @@ class DeferredCombinedAnalysisBundle:
     def filtered(
         self,
         source_refs: Sequence[str],
-    ) -> "DeferredCombinedAnalysisBundle":
+    ) -> DeferredCombinedAnalysisBundle:
         """Return the sub-bundle covering only the selected source refs."""
         wanted = {
             str(reference or "").strip()
@@ -911,7 +910,7 @@ class DeferredCombinedAnalysisBundle:
             {"running", "outcome_unknown"}
         )
 
-    def mark_interrupted_requests_unknown(self) -> "DeferredCombinedAnalysisBundle":
+    def mark_interrupted_requests_unknown(self) -> DeferredCombinedAnalysisBundle:
         latest: dict[str, AnalysisRequestCheckpoint] = {}
         for request in self.requests:
             latest[request.request_id] = request
@@ -1023,7 +1022,7 @@ class DeferredCombinedAnalysisBundle:
         payload: Mapping[str, Any],
         *,
         resolver: FineTermResolver | None = None,
-    ) -> "DeferredCombinedAnalysisBundle":
+    ) -> DeferredCombinedAnalysisBundle:
         _require_exact_keys(
             payload,
             {
@@ -1174,11 +1173,11 @@ class DeferredCombinedAnalysisBundle:
         payload: Mapping[str, Any],
         *,
         resolver: FineTermResolver | None = None,
-    ) -> "DeferredCombinedAnalysisBundle":
+    ) -> DeferredCombinedAnalysisBundle:
         return cls.from_dict(payload, resolver=resolver)
 
 
-class InMemoryCombinedQuestionAnalysisModule:
+class DeferredCombinedQuestionAnalysisModule:
     """Analyze config-source questions once, with no database writes."""
 
     def __init__(
@@ -2214,7 +2213,7 @@ class DeferredCombinedProjectionWriter:
                     else []
                 ),
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {
                 "status": "failed",
                 "error_category": type(exc).__name__,
@@ -2275,7 +2274,7 @@ class DeferredCombinedProjectionWriter:
                     model_name=item.model_name,
                     operation_id=item.operation_id,
                 )
-            except Exception:  # noqa: BLE001 - 题型订正不阻断已验证的标签/证据
+            except Exception:
                 LOGGER.exception(
                     "deferred question-type suggestion apply failed: %s",
                     item.source_question_ref,
@@ -2404,7 +2403,7 @@ class DeferredCombinedProjectionWriter:
                     model_name=item.model_name,
                     operation_id=item.operation_id,
                 )
-            except Exception:  # noqa: BLE001 - 题型订正不阻断已验证的标签/证据
+            except Exception:
                 LOGGER.exception(
                     "deferred question-type suggestion apply failed: %s",
                     item.source_question_ref,
@@ -3704,7 +3703,7 @@ __all__ = [
     "DeferredCombinedAnalysisItem",
     "DeferredCombinedProjectionWriter",
     "DeferredKnowledgeCandidate",
-    "InMemoryCombinedQuestionAnalysisModule",
+    "DeferredCombinedQuestionAnalysisModule",
     "UnmappedFineTermResolver",
     "compose_generated_config_from_skeletons",
 ]

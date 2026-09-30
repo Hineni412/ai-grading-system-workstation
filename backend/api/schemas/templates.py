@@ -84,7 +84,7 @@ class RegionWorkspaceResponse(BaseModel):
     draft: RegionDraftStateResponse
     automatic_candidates: list[str]
     manual_question_options: list[QuestionBindingOptionResponse]
-    issues: list["RegionIssueResponse"]
+    issues: list[RegionIssueResponse]
     template_ready: bool
 
 
