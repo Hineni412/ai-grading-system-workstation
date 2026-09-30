@@ -42,7 +42,7 @@ class AnswerDraftService:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root) if data_root is not None else None
         if llm_client is None:
-            # 「内容生成」任务绑定的模型档案，与 ai_assembly / report 共用；
+            # 「内容生成」任务绑定的模型档案，与报告导出共用；
             # settings 为 None 表示教师还没在设置页配置模型。
             from backend.model_profiles.content_generation import (
                 resolve_content_generation_settings,

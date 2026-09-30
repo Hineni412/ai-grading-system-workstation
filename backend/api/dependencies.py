@@ -65,7 +65,6 @@ from question_bank.taxonomy.governance import (
     get_taxonomy_governance,
 )
 from question_bank.services.assembly_workspace_service import (
-    AiAssemblySessionService,
     AssemblyWorkspaceService,
 )
 from question_bank.training_criteria import TrainingCriterionModule
@@ -283,10 +282,6 @@ def _taxonomy_companion_state_path(base: Path, label: str) -> Path:
 
 def get_assembly_workspace_service() -> AssemblyWorkspaceService:
     return AssemblyWorkspaceService(get_path_manager().data_root)
-
-
-def get_ai_assembly_session_service() -> AiAssemblySessionService:
-    return AiAssemblySessionService(get_path_manager().data_root)
 
 
 def get_diagnosis_profile_service() -> DiagnosisProfileService:

@@ -263,7 +263,6 @@ def create_app(
         )
 
     from backend.api.routers import (
-        ai_assembly_router,
         ai_diagnostics_router,
         analytics_router,
         assembly_router,
@@ -288,7 +287,6 @@ def create_app(
         workbench_router,
     )
 
-    api.include_router(ai_assembly_router)
     api.include_router(ai_diagnostics_router)
     api.include_router(analytics_router)
     api.include_router(assembly_router)

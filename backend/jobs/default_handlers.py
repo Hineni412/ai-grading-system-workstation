@@ -26,7 +26,6 @@ from question_bank.services.question_write_service import QuestionBankWriteServi
 from question_bank.taxonomy.governance import get_taxonomy_governance
 
 from .manager import JobContext, JobManager
-from .ai_assembly import run_ai_assembly_spec_job
 from .answer_draft import run_answer_draft_job
 from .config_generation import run_config_generation_job
 from .criterion_backfill import run_criterion_backfill_job
@@ -107,9 +106,6 @@ def register_default_job_handlers(
         ..., dict[str, object]
     ] = run_taxonomy_suggestion_job,
     assembly_export_runner: Callable[..., dict[str, object]] = run_assembly_export_job,
-    ai_assembly_spec_runner: Callable[
-        ..., dict[str, object]
-    ] = run_ai_assembly_spec_job,
     criterion_backfill_runner: Callable[
         ..., dict[str, object]
     ] = run_criterion_backfill_job,
@@ -300,17 +296,6 @@ def register_default_job_handlers(
         ),
     )
     manager.register(
-        "ai_assembly_spec",
-        _build_ai_assembly_spec_handler(
-            question_bank_db_path=resolved_question_bank_db,
-            data_root=base_data_root,
-            ai_assembly_spec_runner=ai_assembly_spec_runner,
-            llm_client_factory=(
-                analysis_llm_client_factory or _content_generation_llm_client
-            ),
-        ),
-    )
-    manager.register(
         "answer_draft",
         _build_answer_draft_handler(
             question_bank_db_path=resolved_question_bank_db,
@@ -332,24 +317,6 @@ def _build_answer_draft_handler(
 ):
     def handler(context: JobContext) -> dict[str, object]:
         return answer_draft_runner(
-            context=context,
-            question_bank_db_path=question_bank_db_path,
-            data_root=data_root,
-            llm_client_factory=llm_client_factory,
-        )
-
-    return handler
-
-
-def _build_ai_assembly_spec_handler(
-    *,
-    question_bank_db_path: Path,
-    data_root: Path,
-    ai_assembly_spec_runner: Callable[..., dict[str, object]],
-    llm_client_factory: Callable[[], Any],
-):
-    def handler(context: JobContext) -> dict[str, object]:
-        return ai_assembly_spec_runner(
             context=context,
             question_bank_db_path=question_bank_db_path,
             data_root=data_root,

@@ -549,7 +549,6 @@ def submit_job(
         "tagging_sync",
         "taxonomy_suggestion",
         "assembly_export",
-        "ai_assembly_spec",
         "ops_backup",
         "ops_restore_prepare",
         "ops_migration_prepare",

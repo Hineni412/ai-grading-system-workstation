@@ -9,32 +9,20 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Mapping, TypeVar
+from typing import Iterator, Mapping
 from uuid import uuid4
 
 from question_bank.services.assembly_basket_state import normalize_question_ids
-
-
-_T = TypeVar("_T")
 
 MAX_ASSEMBLY_QUESTIONS = 500
 _LAYOUT_MODES = frozenset({"sequential", "grouped_by_type", "sections"})
 _PREVIEW_MODES = frozenset({"student", "teacher"})
 _SECTION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-# AI 组卷会话：解答题子类的封闭取值，与 question_bank.parsers.type_detector 一致。
-_ESSAY_SUBTYPES = frozenset({"画图", "计算", "证明"})
-_DIFFICULTY_RATIO_KEYS = ("easy", "medium", "hard")
 
 
 class AssemblyDraftConflict(RuntimeError):
     def __init__(self, current_revision: str) -> None:
         super().__init__("Assembly draft has changed")
-        self.current_revision = current_revision
-
-
-class AiAssemblySessionConflict(RuntimeError):
-    def __init__(self, current_revision: str) -> None:
-        super().__init__("AI assembly session has changed")
         self.current_revision = current_revision
 
 
@@ -158,14 +146,6 @@ class AssemblyRecordCreate:
 class ResolvedAssemblyFile:
     path: Path
     media_type: str
-
-
-@dataclass(frozen=True, slots=True)
-class AiAssemblySession:
-    # payload 为落盘的完整规范化内容（含 schema_version 与 updated_at）；
-    # revision 只由内容字段（不含 updated_at）派生，相同内容得到相同版本。
-    payload: Mapping[str, object]
-    revision: str
 
 
 class AssemblyWorkspaceService:
@@ -392,220 +372,6 @@ class AssemblyWorkspaceService:
         )
 
 
-class AiAssemblySessionService:
-    """AI 组卷会话持久化：与草稿同一工作区目录，单文件 + 乐观锁。"""
-
-    def __init__(self, data_root: str | Path) -> None:
-        self.data_root = Path(data_root)
-        self.workspace_root = self.data_root / "question_bank"
-        self.session_path = self.workspace_root / "ai_assembly_session.json"
-        self.lock_path = self.workspace_root / ".ai-assembly-session.lock"
-
-    def load_session(self) -> AiAssemblySession:
-        raw = self._read_session_payload()
-        content = _normalize_session_content(raw)
-        return AiAssemblySession(
-            payload={**content, "updated_at": _clean_text(raw.get("updated_at"), limit=40)},
-            revision=_payload_revision(content),
-        )
-
-    def save_session(
-        self,
-        *,
-        expected_revision: str,
-        session: Mapping[str, object],
-    ) -> AiAssemblySession:
-        content = _normalize_session_content(session)
-        normalized = AiAssemblySession(
-            payload={**content, "updated_at": _now_text()},
-            revision=_payload_revision(content),
-        )
-        self.workspace_root.mkdir(parents=True, exist_ok=True)
-        with _exclusive_file_lock(self.lock_path):
-            current = self.load_session()
-            if str(expected_revision) != current.revision:
-                raise AiAssemblySessionConflict(current.revision)
-            _atomic_write_json(self.session_path, dict(normalized.payload))
-        return normalized
-
-    def clear_session(self) -> AiAssemblySession:
-        content = _normalize_session_content({})
-        normalized = AiAssemblySession(
-            payload={**content, "updated_at": _now_text()},
-            revision=_payload_revision(content),
-        )
-        self.workspace_root.mkdir(parents=True, exist_ok=True)
-        with _exclusive_file_lock(self.lock_path):
-            _atomic_write_json(self.session_path, dict(normalized.payload))
-        return normalized
-
-    def _read_session_payload(self) -> Mapping[str, object]:
-        try:
-            payload = json.loads(self.session_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
-
-
-def _now_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _normalize_session_content(payload: Mapping[str, object]) -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "params": _normalize_session_params(payload.get("params")),
-        "spec": _json_clone_mapping(payload.get("spec")),
-        "spec_model_name": _clean_text(payload.get("spec_model_name"), limit=200),
-        "selections": _normalize_session_selections(payload.get("selections")),
-        "locked_question_ids": _normalize_positive_ids(payload.get("locked_question_ids")),
-        "locked_row_by_id": _normalize_session_locked_rows(payload.get("locked_row_by_id")),
-        "gaps": _json_clone_list(payload.get("gaps")),
-        "dedupe_enabled": bool(payload.get("dedupe_enabled", True)),
-        "title": _clean_text(payload.get("title"), limit=120),
-        "spec_job_id": _positive_int(payload.get("spec_job_id")),
-    }
-
-
-def _normalize_session_params(raw: object) -> dict[str, object]:
-    params = raw if isinstance(raw, Mapping) else {}
-    raw_ratio = params.get("difficulty_ratio")
-    ratio_source = raw_ratio if isinstance(raw_ratio, Mapping) else {}
-    ratio: dict[str, object] = {
-        key: _bounded_int(ratio_source.get(key), minimum=0, maximum=100)
-        for key in _DIFFICULTY_RATIO_KEYS
-    }
-    type_counts: dict[str, int] = {}
-    raw_counts = params.get("type_counts")
-    if isinstance(raw_counts, Mapping):
-        for raw_key, raw_count in list(raw_counts.items())[:40]:
-            key = _clean_text(raw_key, limit=40)
-            count = _bounded_int(raw_count, minimum=1, maximum=500)
-            if key and count is not None:
-                type_counts[key] = count
-    return {
-        "template_paper_id": _positive_int(params.get("template_paper_id")),
-        "scope_keys": _clean_string_list(params.get("scope_keys"), limit=200, item_limit=200),
-        "difficulty_ratio": ratio,
-        "type_counts": type_counts,
-        "exam_types": _clean_string_list(params.get("exam_types"), limit=20, item_limit=80),
-        "years": _normalize_years(params.get("years")),
-        "free_text": _clean_text(params.get("free_text"), limit=2000),
-        "essay_subtype": _essay_subtype(params.get("essay_subtype")),
-    }
-
-
-def _normalize_session_selections(raw: object) -> dict[str, list[int]]:
-    if not isinstance(raw, Mapping):
-        return {}
-    selections: dict[str, list[int]] = {}
-    for raw_row, raw_ids in list(raw.items())[:200]:
-        row = _bounded_int(raw_row, minimum=0, maximum=9999)
-        if row is None:
-            continue
-        selections[str(row)] = _normalize_positive_ids(raw_ids)
-    return selections
-
-
-def _normalize_session_locked_rows(raw: object) -> dict[str, int]:
-    if not isinstance(raw, Mapping):
-        return {}
-    locked: dict[str, int] = {}
-    for raw_id, raw_row in list(raw.items())[:500]:
-        question_id = _positive_int(raw_id)
-        row = _bounded_int(raw_row, minimum=0, maximum=9999)
-        if question_id is not None and row is not None:
-            locked[str(question_id)] = row
-    return locked
-
-
-def _normalize_positive_ids(raw: object, *, limit: int = 500) -> list[int]:
-    if not isinstance(raw, (list, tuple)):
-        return []
-    output: list[int] = []
-    for value in raw:
-        number = _positive_int(value)
-        if number is not None and number not in output:
-            output.append(number)
-        if len(output) >= limit:
-            break
-    return output
-
-
-def _clean_string_list(raw: object, *, limit: int, item_limit: int) -> list[str]:
-    if not isinstance(raw, (list, tuple)):
-        return []
-    output: list[str] = []
-    for value in raw:
-        text = _clean_text(value, limit=item_limit)
-        if text and text not in output:
-            output.append(text)
-        if len(output) >= limit:
-            break
-    return output
-
-
-def _normalize_years(raw: object) -> list[int]:
-    if not isinstance(raw, (list, tuple)):
-        return []
-    years: list[int] = []
-    for value in raw:
-        year = _bounded_int(value, minimum=1990, maximum=2100)
-        if year is not None and year not in years:
-            years.append(year)
-        if len(years) >= 50:
-            break
-    return years
-
-
-def _essay_subtype(value: object) -> str | None:
-    text = str(value or "").strip()
-    return text if text in _ESSAY_SUBTYPES else None
-
-
-def _positive_int(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return number if number > 0 else None
-
-
-def _bounded_int(value: object, *, minimum: int, maximum: int) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return number if minimum <= number <= maximum else None
-
-
-def _json_clone_mapping(value: object) -> dict[str, object] | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise ValueError("AI assembly session spec must be an object or null")
-    return _json_clone(dict(value))
-
-
-def _json_clone_list(value: object) -> list[object]:
-    if value is None:
-        return []
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("AI assembly session gaps must be a list")
-    return _json_clone(list(value))
-
-
-def _json_clone(value: _T) -> _T:
-    try:
-        return json.loads(json.dumps(value, ensure_ascii=False))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("AI assembly session payload is not JSON serializable") from exc
-
-
 def _normalize_draft(payload: Mapping[str, object]) -> AssemblyDraft:
     basket = normalize_question_ids(payload.get("basket_ids"))
     if len(basket) > MAX_ASSEMBLY_QUESTIONS:
@@ -808,9 +574,6 @@ def _exclusive_file_lock(path: Path) -> Iterator[None]:
 
 
 __all__ = [
-    "AiAssemblySession",
-    "AiAssemblySessionConflict",
-    "AiAssemblySessionService",
     "AssemblyDraft",
     "AssemblyDraftConflict",
     "AssemblyRecord",
