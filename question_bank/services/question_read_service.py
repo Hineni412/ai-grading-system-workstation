@@ -2095,12 +2095,20 @@ class QuestionBankReadService:
             review_ids = _load_criteria_needs_review_ids(conn, [int(question_id)])
             from question_bank.services.error_pattern_service import (
                 list_patterns,
+                pattern_skill_index,
                 preferred_active_patterns,
             )
 
             pattern_rows = preferred_active_patterns(list_patterns(
                 conn, [int(question_id)], statuses=("confirmed", "candidate")
             )[int(question_id)])
+            pattern_skills = pattern_skill_index(
+                conn, self.db_path, int(question_id), pattern_rows,
+                knowledge=self.current_knowledge,
+            )
+            selectable_skills = _question_skill_options(
+                tags, self.current_knowledge,
+            )
 
         item = self._public_question_with_rich_content(
             row,
@@ -2108,6 +2116,7 @@ class QuestionBankReadService:
             revision=revision,
         )
         item["criteria_needs_review"] = int(question_id) in review_ids
+        item["selectable_skills"] = selectable_skills
         item["error_patterns"] = [
             {
                 "id": int(pattern["id"]),
@@ -2119,6 +2128,9 @@ class QuestionBankReadService:
                 "status": pattern["status"],
                 "source": pattern["source"],
                 "has_evidence": bool(pattern["occurrences"]),
+                "skill_key": pattern_skills.get(int(pattern["id"]), {}).get("skill_key"),
+                "skill_label": pattern_skills.get(int(pattern["id"]), {}).get("skill_label"),
+                "skill_source": pattern_skills.get(int(pattern["id"]), {}).get("skill_source"),
             }
             for pattern in pattern_rows if pattern.get("id") is not None
         ]
@@ -2147,6 +2159,17 @@ class QuestionBankReadService:
         ]
         item["previews"] = previews
         return item
+
+    def question_skill_options(self, question_id: int) -> list[dict[str, str]]:
+        """本题可关联的技能 [{key, label}]；与题目详情 ``selectable_skills`` 同源。"""
+        with _read_connection(self.db_path) as conn:
+            knowledge = self.current_knowledge
+            if knowledge is None:
+                return []
+            tags = _load_page_tags(
+                conn, [int(question_id)], current_knowledge=knowledge,
+            ).get(int(question_id), [])
+            return _question_skill_options(tags, knowledge)
 
     def find_exact_duplicate_tag_analysis(
         self,
@@ -3493,6 +3516,26 @@ def _resolve_public_tag(
     if dimension:
         tag_value = identity_lookup[dimension].get(key, tag_value)
     return tag_type, tag_value
+
+
+def _question_skill_options(
+    tags: Iterable[dict[str, Any]],
+    knowledge: CurrentKnowledgeResolver | None,
+) -> list[dict[str, str]]:
+    """题目当前技能标签 → 可关联技能 [{key, label}]，key 为规范术语 id（sk_*）。"""
+    if knowledge is None:
+        return []
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for tag in tags:
+        if tag.get("tag_type") != "skill":
+            continue
+        term = knowledge.canonical_term(tag.get("tag_value"))
+        if term is None or not str(term[0]).startswith("sk_") or term[0] in seen:
+            continue
+        seen.add(term[0])
+        options.append({"key": term[0], "label": term[1]})
+    return options
 
 
 def _load_criteria_needs_review_ids(

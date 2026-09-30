@@ -775,7 +775,7 @@ describe('question bank workspace', () => {
     expect(document.body.textContent).toContain('取消请求未能同步，任务可能仍在继续。')
   })
 
-  it('surfaces exact duplicate links and near-duplicate hints on import completion', async () => {
+  it('surfaces grouped import match detail with preview links on completion', async () => {
     const host = document.createElement('div')
     document.body.append(host)
     const pinia = createPinia()
@@ -792,13 +792,42 @@ describe('question bank workspace', () => {
         outcome: 'complete',
         exact_duplicate_count: 2,
         analysis_reused_count: 1,
+        exact_duplicates: [
+          {
+            question_number: '1',
+            matched_question_id: 80,
+            matched_paper_title: '既有试卷',
+            matched_question_number: '3',
+          },
+          {
+            question_number: '2',
+            matched_question_id: 81,
+            matched_paper_title: '既有试卷',
+            matched_question_number: '4',
+          },
+        ],
         near_duplicate_hints: [
           {
             question_number: '5',
             matched_question_id: 88,
             matched_paper_title: '既有试卷',
+            matched_question_number: '7',
+            question_id: 201,
             similarity: 0.83,
             high: false,
+            match_kind: 'suspected',
+            reason: '题面相似，需核对条件、选项及图片',
+          },
+          {
+            question_number: '6',
+            matched_question_id: 90,
+            matched_paper_title: '既有试卷',
+            matched_question_number: '9',
+            question_id: 202,
+            similarity: 1.0,
+            high: true,
+            match_kind: 'answer_conflict',
+            reason: '题面相同但答案文本不同，保留两个来源并等待核对',
           },
         ],
       },
@@ -815,9 +844,58 @@ describe('question bank workspace', () => {
     })
     await nextTick()
 
-    expect(host.textContent).toContain('2 道题与题库已有题目完全相同，已自动关联并复用已有标签')
-    expect(host.textContent).toContain('其中 1 道同时复用了判定点与解题证据')
-    expect(host.textContent).toContain('1 道题与题库已有题目近似（第 5 题），已照常入库')
+    const detail = host.querySelector<HTMLDetailsElement>('.qb-import-detail')!
+    expect(detail).not.toBeNull()
+    expect(detail.querySelector('summary')!.textContent).toContain('完全相同已关联 2')
+    expect(detail.querySelector('summary')!.textContent).toContain('相似或变式 1')
+    expect(detail.querySelector('summary')!.textContent).toContain('答案不同 1')
+    expect(detail.textContent).toContain('完全相同，已关联')
+    expect(detail.textContent).toContain('相似或变式，供核对')
+    expect(detail.textContent).toContain('答案不同，需核对')
+    expect(detail.textContent).toContain('本卷第 1 题 ↔ 《既有试卷》第 3 题')
+    expect(detail.textContent).toContain('本卷第 6 题 ↔ 《既有试卷》第 9 题')
+    expect(detail.textContent).toContain('题面相似，需核对条件、选项及图片')
+    expect(detail.textContent).toContain('待复核')
+
+    const previewButtons = [...detail.querySelectorAll<HTMLButtonElement>('button')]
+      .filter((button) => button.textContent?.trim().startsWith('查看'))
+    expect(previewButtons.length).toBeGreaterThanOrEqual(5)
+    previewButtons[0]!.click()
+    await nextTick()
+    expect(document.body.querySelector('.question-preview')).not.toBeNull()
+  })
+
+  it('notes when a whole file was already in the bank', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(QuestionImportJobs)
+    app.use(pinia)
+    app.mount(host)
+    mounted.push(app)
+
+    useJobStore(pinia).track({
+      id: 44,
+      job_type: 'question_import',
+      payload: {},
+      result: {
+        outcome: 'complete',
+        duplicate_papers: [{ paper_id: 9, title: '历年真题汇编' }],
+      },
+      status: 'succeeded',
+      progress: 1,
+      stage: 'question_import',
+      detail: '',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-03T10:00:00Z',
+      started_at: '2026-08-03T10:00:01Z',
+      updated_at: '2026-08-03T10:00:02Z',
+      finished_at: '2026-08-03T10:00:02Z',
+    })
+    await nextTick()
+
+    expect(host.textContent).toContain('这份试卷已在题库中（《历年真题汇编》），本次未重复入库。')
   })
 
   it('lets the teacher pick a curriculum volume for import and submits it with the job', async () => {

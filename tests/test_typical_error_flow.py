@@ -25,6 +25,10 @@ from question_bank.services.error_pattern_service import (
 from question_bank.services.predicted_error_patterns import record_predicted_patterns
 from question_bank.services.question_read_service import QuestionBankReadService
 
+_SKILL_KEY = "sk_bnu24_math_g7_lower_1_1_01"
+_SKILL_KEY_2 = "sk_bnu24_math_g7_lower_1_1_02"
+_SKILL_EVIDENCE_ID = "e" * 64
+
 
 def _choice_question(tmp_path):
     path = tmp_path / "databases" / "question_bank.db"
@@ -586,3 +590,210 @@ def test_ai_grading_prompt_uses_actual_work_not_legacy_tag_as_constraint():
     assert "根据本次实际作答和扣分证据选择 error_category" in system_prompt
     assert "旧 error_type 标签仅作背景，不能限制本次判断" in system_prompt
     assert "优先从 QUESTION_TAG_CONTEXT 的 error_type 原值中选择" not in system_prompt
+
+
+def _skill_question(tmp_path):
+    """解答题 + 当前知识标准 + 两条技能标签 + 一个可用证据版本。"""
+    import json
+
+    from tests.current_knowledge_support import install_current_knowledge
+
+    path, qid = _choice_question(tmp_path)
+    release_id = install_current_knowledge(path, taxonomy_revision=9)
+    with connect(path) as conn:
+        conn.execute("UPDATE questions SET question_type='解答题' WHERE id=?", (qid,))
+        for key in (_SKILL_KEY, _SKILL_KEY_2):
+            conn.execute(
+                "INSERT INTO question_tags(question_id, tag_type, tag_value, source)"
+                " VALUES(?, 'knowledge_point', ?, 'derived')",
+                (qid, key),
+            )
+        conn.execute(
+            """
+            INSERT INTO question_solution_evidence_versions(
+                evidence_version_id, question_id, source_content_hash,
+                schema_version, content_hash, evidence_json, status,
+                source_kind, source_reference, created_by, graph_release_id
+            ) VALUES (?, ?, ?, 'question-solution-evidence-v2', ?, ?,
+                      'approved', 'backfill', 'synthetic', 'test', ?)
+            """,
+            (
+                _SKILL_EVIDENCE_ID,
+                qid,
+                "b" * 64,
+                "c" * 64,
+                json.dumps(
+                    {"parts": [{
+                        "part_id": "part-1",
+                        "evidence_points": [{
+                            "evidence_point_id": "ep-1",
+                            "target": "目标",
+                            "observable_evidence": "证据",
+                            "fine_term_links": [],
+                        }],
+                    }]},
+                    ensure_ascii=False,
+                ),
+                release_id,
+            ),
+        )
+    return path, qid, release_id
+
+
+def _insert_pattern(conn, qid, *, trigger_kind="step", trigger_value="ep-1"):
+    conn.execute(
+        "INSERT INTO question_error_patterns"
+        " (question_id, category, pattern, trigger_kind, trigger_value, status, source)"
+        " VALUES (?, '过程与依据', '漏写必要条件', ?, ?, 'confirmed', 'ai_auto')",
+        (qid, trigger_kind, trigger_value),
+    )
+    return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
+def _link_points(path, qid, release_id, links, extra_points=None):
+    from question_bank.solution_evidence.knowledge_links import replace_point_links
+
+    points = [{
+        "part_id": "part-1",
+        "evidence_point_id": "ep-1",
+        "links": links,
+    }]
+    points.extend(extra_points or [])
+    with connect(path) as conn:
+        replace_point_links(
+            conn,
+            evidence_version_id=_SKILL_EVIDENCE_ID,
+            question_id=qid,
+            graph_release_id=release_id,
+            points=points,
+        )
+
+
+def _detail_pattern(detail, pattern_id):
+    return next(item for item in detail["error_patterns"] if item["id"] == pattern_id)
+
+
+def test_step_pattern_derives_unique_skill_from_criterion(tmp_path):
+    path, qid, release_id = _skill_question(tmp_path)
+    with connect(path) as conn:
+        pid = _insert_pattern(conn, qid)
+    _link_points(path, qid, release_id, [
+        {"term_id": _SKILL_KEY, "stable_key": _SKILL_KEY, "role": "direct"},
+    ])
+    detail = QuestionBankReadService(path).get_question(qid)
+    row = _detail_pattern(detail, pid)
+    assert row["skill_key"] == _SKILL_KEY
+    assert row["skill_source"] == "criterion"
+    assert row["skill_label"]
+    assert _SKILL_KEY in [item["key"] for item in detail["selectable_skills"]]
+
+
+def test_ambiguous_criterion_links_do_not_derive_skill(tmp_path):
+    path, qid, release_id = _skill_question(tmp_path)
+    with connect(path) as conn:
+        pid = _insert_pattern(conn, qid)
+    _link_points(path, qid, release_id, [
+        {"term_id": _SKILL_KEY, "stable_key": _SKILL_KEY, "role": "direct"},
+        {"term_id": _SKILL_KEY_2, "stable_key": _SKILL_KEY_2, "role": "direct"},
+    ])
+    row = _detail_pattern(QuestionBankReadService(path).get_question(qid), pid)
+    assert row["skill_key"] is None and row["skill_source"] is None
+
+
+def test_teacher_skill_overrides_and_clears_to_criterion(tmp_path):
+    path, qid, release_id = _skill_question(tmp_path)
+    with connect(path) as conn:
+        pid = _insert_pattern(conn, qid)
+    _link_points(path, qid, release_id, [
+        {"term_id": _SKILL_KEY, "stable_key": _SKILL_KEY, "role": "direct"},
+    ])
+    assert rename_patterns(
+        path, question_ids=[qid], pattern_id=pid,
+        old_pattern="漏写必要条件", new_pattern="漏写必要条件",
+        skill_key=_SKILL_KEY_2, update_skill=True,
+    ) == 1
+    row = _detail_pattern(QuestionBankReadService(path).get_question(qid), pid)
+    assert (row["skill_key"], row["skill_source"]) == (_SKILL_KEY_2, "teacher")
+    assert rename_patterns(
+        path, question_ids=[qid], pattern_id=pid,
+        old_pattern="漏写必要条件", new_pattern="漏写必要条件",
+        skill_key=None, update_skill=True,
+    ) == 1
+    row = _detail_pattern(QuestionBankReadService(path).get_question(qid), pid)
+    assert (row["skill_key"], row["skill_source"]) == (_SKILL_KEY, "criterion")
+
+
+def test_rename_successor_carries_teacher_skill(tmp_path):
+    path, qid, _release_id = _skill_question(tmp_path)
+    with connect(path) as conn:
+        pid = _insert_pattern(conn, qid, trigger_kind="observation", trigger_value="")
+    assert rename_patterns(
+        path, question_ids=[qid], pattern_id=pid,
+        old_pattern="漏写必要条件", new_pattern="漏写必要条件",
+        skill_key=_SKILL_KEY, update_skill=True,
+    ) == 1
+    assert rename_patterns(
+        path, question_ids=[qid], pattern_id=pid,
+        old_pattern="漏写必要条件", new_pattern="漏写必要前提", category="过程与依据",
+    ) == 1
+    detail = QuestionBankReadService(path).get_question(qid)
+    row = next(item for item in detail["error_patterns"] if item["pattern"] == "漏写必要前提")
+    assert row["skill_key"] == _SKILL_KEY and row["skill_source"] == "teacher"
+
+
+def test_question_detail_skill_edit_endpoint(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from backend.api.app import create_app
+    from backend.api.dependencies import (
+        get_question_bank_db_path, get_question_bank_read_service,
+    )
+
+    path, qid, release_id = _skill_question(tmp_path)
+    with connect(path) as conn:
+        pid = _insert_pattern(conn, qid)
+    _link_points(
+        path,
+        qid,
+        release_id,
+        [{"term_id": _SKILL_KEY, "stable_key": _SKILL_KEY, "role": "direct"}],
+        extra_points=[{
+            "part_id": "part-1",
+            "evidence_point_id": "ep-2",
+            "links": [{"term_id": _SKILL_KEY_2, "stable_key": _SKILL_KEY_2, "role": "direct"}],
+        }],
+    )
+    app = create_app()
+    app.dependency_overrides[get_question_bank_db_path] = lambda: path
+    app.dependency_overrides[get_question_bank_read_service] = lambda: QuestionBankReadService(path)
+    client = TestClient(app)
+
+    detail = client.get(f"/api/question-bank/questions/{qid}").json()
+    assert _SKILL_KEY in [item["key"] for item in detail["selectable_skills"]]
+    row = _detail_pattern(detail, pid)
+    assert row["skill_source"] == "criterion"
+
+    # 仅改关联技能，不改名也不改大类
+    response = client.patch(
+        f"/api/question-bank/questions/{qid}/error-patterns/{pid}",
+        json={"action": "edit", "expected_pattern": "漏写必要条件", "skill_key": _SKILL_KEY_2},
+    )
+    assert response.status_code == 200, response.text
+    row = _detail_pattern(response.json(), pid)
+    assert (row["skill_key"], row["skill_source"]) == (_SKILL_KEY_2, "teacher")
+
+    # 题目技能列表之外的键被拒
+    response = client.patch(
+        f"/api/question-bank/questions/{qid}/error-patterns/{pid}",
+        json={"action": "edit", "expected_pattern": "漏写必要条件", "skill_key": "sk_bnu24_math_g8_upper_9_9_99"},
+    )
+    assert response.status_code == 422
+
+    # 显式 null 清除教师设定，判定点推导恢复生效
+    response = client.patch(
+        f"/api/question-bank/questions/{qid}/error-patterns/{pid}",
+        json={"action": "edit", "expected_pattern": "漏写必要条件", "skill_key": None},
+    )
+    assert response.status_code == 200, response.text
+    row = _detail_pattern(response.json(), pid)
+    assert (row["skill_key"], row["skill_source"]) == (_SKILL_KEY, "criterion")

@@ -400,6 +400,7 @@ class PaperImportFileResult:
     paper_id: int | None = None
     exact_duplicate_count: int = 0
     analysis_reused_count: int = 0
+    exact_duplicates: tuple[dict[str, Any], ...] = ()
     near_duplicate_hints: tuple[dict[str, Any], ...] = ()
 
 
@@ -414,6 +415,7 @@ class BatchImportResult:
     failed_files: int
     exact_duplicate_count: int = 0
     analysis_reused_count: int = 0
+    exact_duplicates: tuple[dict[str, Any], ...] = ()
     near_duplicate_hints: tuple[dict[str, Any], ...] = ()
 
 
@@ -474,6 +476,7 @@ class _DuplicateIndex:
                 "profile": question_text_profile(question_text),
                 "question_type": str(question_type or ""),
                 "paper_title": str(paper_title or ""),
+                "question_number": str(question_number or ""),
             }
         )
 
@@ -502,7 +505,7 @@ def _load_duplicate_index(db_path: Path, *, data_root: Path | None = None, conne
 def _load_near_duplicate_questions(conn: Any) -> list[dict[str, Any]]:
     """Read the wording profiles only; exact matching has its own persistent index."""
     rows = conn.execute(
-        """SELECT q.id, q.question_text, q.question_type, p.title AS paper_title
+        """SELECT q.id, q.question_text, q.question_type, q.question_number, p.title AS paper_title
            FROM questions q LEFT JOIN papers p ON p.id = q.paper_id
            WHERE COALESCE(q.is_deleted, 0) = 0
              AND COALESCE(p.import_status, '') <> 'deleted'
@@ -515,6 +518,7 @@ def _load_near_duplicate_questions(conn: Any) -> list[dict[str, Any]]:
             "profile": question_text_profile(row["question_text"]),
             "question_type": str(row["question_type"] or ""),
             "paper_title": str(row["paper_title"] or ""),
+            "question_number": str(row["question_number"] or ""),
         }
         for row in rows
     ]
@@ -552,6 +556,7 @@ def _near_duplicate_hint(
                 "question_number": question.question_number,
                 "matched_question_id": int(candidate["id"]),
                 "matched_paper_title": str(candidate["paper_title"]),
+                "matched_question_number": str(candidate.get("question_number") or ""),
                 "similarity": score,
                 "high": score >= 0.9,
                 "match_kind": "variant" if changed_conditions else "suspected",
@@ -785,6 +790,9 @@ def import_scanned_papers(
         failed_files=sum(1 for item in file_results if item.status == "failed"),
         exact_duplicate_count=sum(item.exact_duplicate_count for item in file_results),
         analysis_reused_count=sum(item.analysis_reused_count for item in file_results),
+        exact_duplicates=tuple(
+            entry for item in file_results for entry in item.exact_duplicates
+        ),
         near_duplicate_hints=tuple(
             hint for item in file_results for hint in item.near_duplicate_hints
         ),
@@ -1017,14 +1025,20 @@ def _import_scanned_paper(
             source_id = duplicate_index.exact.get(key) if key else None
             answer_conflict = False
             if source_id is not None and item.answer_text:
-                source_answer = conn.execute("SELECT answer_text FROM questions WHERE id=?", (source_id,)).fetchone()
-                if source_answer and answers_conflict(source_answer[0], item.answer_text, data_root=duplicate_index.data_root):
+                source_row = conn.execute(
+                    """SELECT q.answer_text, q.question_number, p.title AS paper_title
+                       FROM questions q LEFT JOIN papers p ON p.id = q.paper_id
+                       WHERE q.id=?""",
+                    (source_id,),
+                ).fetchone()
+                if source_row and answers_conflict(source_row[0], item.answer_text, data_root=duplicate_index.data_root):
                     answer_conflict = True
                     answer_conflict_review_count += int(not item.needs_review)
                     near_hints.append({
                         "question_number": item.question_number,
                         "matched_question_id": source_id,
-                        "matched_paper_title": "",
+                        "matched_paper_title": str(source_row["paper_title"] or ""),
+                        "matched_question_number": str(source_row["question_number"] or ""),
                         "similarity": 1.0, "high": True,
                         "match_kind": "answer_conflict", "requires_review": True,
                         "reason": "题面相同但答案文本不同，保留两个来源并等待核对",
@@ -1065,6 +1079,9 @@ def _import_scanned_paper(
                 ),
             )
             question_id = int(question_cursor.lastrowid)
+            for hint in near_hints:
+                if hint["question_number"] == item.question_number:
+                    hint["question_id"] = question_id
             if item.essay_subtype:
                 # 解答题子类标签与题目同事务写入；confidence 0.8 表示规则
                 # 猜测、低于人工确认，source 标注来自题型检测器。
@@ -1102,6 +1119,7 @@ def _import_scanned_paper(
     # Reused occurrences share the canonical question's analysis products
     # directly; count how many actually carry usable analysis.
     analysis_reused_count = 0
+    matched_lookup: dict[int, dict[str, str]] = {}
     if pending_analysis_reuse:
         source_ids = sorted({source_id for source_id, _ in pending_analysis_reuse})
         with connect(db_path) as conn:
@@ -1117,6 +1135,18 @@ def _import_scanned_paper(
                         SELECT DISTINCT question_id FROM question_solution_evidence_versions
                         WHERE question_id IN ({placeholders})""",
                     source_ids * 2,
+                ).fetchall()
+            }
+            matched_lookup = {
+                int(row["id"]): {
+                    "question_number": str(row["question_number"] or ""),
+                    "paper_title": str(row["paper_title"] or ""),
+                }
+                for row in conn.execute(
+                    f"""SELECT q.id, q.question_number, p.title AS paper_title
+                        FROM questions q LEFT JOIN papers p ON p.id = q.paper_id
+                        WHERE q.id IN ({placeholders})""",
+                    source_ids,
                 ).fetchall()
             }
         analysis_reused_count = sum(
@@ -1143,6 +1173,15 @@ def _import_scanned_paper(
         review_count=parsed.review_count + answer_conflict_review_count,
         exact_duplicate_count=len(pending_analysis_reuse),
         analysis_reused_count=analysis_reused_count,
+        exact_duplicates=tuple(
+            {
+                "question_number": number,
+                "matched_question_id": bank_id,
+                "matched_paper_title": matched_lookup.get(bank_id, {}).get("paper_title", ""),
+                "matched_question_number": matched_lookup.get(bank_id, {}).get("question_number", ""),
+            }
+            for bank_id, number in pending_analysis_reuse
+        ),
         near_duplicate_hints=tuple(near_hints),
         message="；".join(parsed.review_reasons) or None,
     )

@@ -235,22 +235,23 @@ def load_objective_answer_sources(session_id: str) -> dict:
                 try:
                     with open(p, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    
+
                     ans_map = _extract_answers_from_data(data, p.name)
-                    answers_by_file[p.name] = ans_map
-                    
-                    sources_loaded.append({
-                        "path": str(p),
-                        "name": p.name,
-                        "success": True
-                    })
-                except Exception as e:
-                    sources_loaded.append({
-                        "path": str(p),
-                        "name": p.name,
-                        "success": False,
-                        "error": str(e)
-                    })
+                except QuestionIdContractError:
+                    # 题号契约错误信息里已带文件名；原样上抛，不能悄悄丢掉部分答案。
+                    raise
+                except Exception as exc:
+                    # 答案文件损坏时绝不允许按“没有标准答案”继续识别。
+                    raise ValueError(
+                        f"客观题标准答案文件读取失败：{p.name}（{exc}），"
+                        "请修复或移除该文件后重新识别"
+                    ) from exc
+                answers_by_file[p.name] = ans_map
+                sources_loaded.append({
+                    "path": str(p),
+                    "name": p.name,
+                    "success": True
+                })
 
     # Merge answers according to priority
     # priority from lowest to highest:

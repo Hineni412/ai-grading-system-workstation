@@ -2333,15 +2333,31 @@ def edit_question_error_pattern(
                 connection=conn,
             )
         else:
-            name = str(body.pattern or "").strip()
-            category = str(body.category or "").strip()
-            if not name or len(name) > 80 or category not in CAUSE_CATEGORIES[:-1]:
+            name = str(body.pattern or "").strip() or str(body.expected_pattern)
+            category = str(body.category or "").strip() or None
+            if len(name) > 80 or (
+                category is not None and category not in CAUSE_CATEGORIES[:-1]
+            ):
                 raise ApiError(422, "error_pattern_invalid", "Typical error name or category is invalid")
+            update_skill = "skill_key" in body.model_fields_set
+            skill_key = str(body.skill_key).strip() if body.skill_key else None
+            if update_skill and skill_key is not None:
+                selectable = {
+                    item["key"]
+                    for item in service.question_skill_options(question_id)
+                }
+                if skill_key not in selectable:
+                    raise ApiError(
+                        422,
+                        "error_pattern_skill_invalid",
+                        "The linked skill is not one of this question's skills",
+                    )
             try:
                 changed = rename_patterns(
                     db_path, question_ids=[question_id], pattern_id=pattern_id,
                     old_pattern=body.expected_pattern, new_pattern=name,
                     category=category, connection=conn,
+                    skill_key=skill_key, update_skill=update_skill,
                 ) > 0
             except ValueError as exc:
                 raise ApiError(409, "error_pattern_conflict", str(exc)) from exc

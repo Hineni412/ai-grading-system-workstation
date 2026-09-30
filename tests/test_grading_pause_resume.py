@@ -137,7 +137,9 @@ def patched(monkeypatch, tmp_path):
         grading_service, "student_name_region_from_regions", lambda regions: None
     )
     monkeypatch.setattr(
-        grading_service, "_session_front_page_parity", lambda session_id: "odd"
+        grading_service,
+        "_session_front_page_parity",
+        lambda session_id, scan_analysis=None: "odd",
     )
 
     import answer_region_geometry
@@ -386,3 +388,191 @@ def test_legacy_run_cannot_be_resumed(patched, tmp_path, monkeypatch):
                 resume_run_id=legacy_run.id,
             )
         )
+
+
+def _templates_dir_paths(tmp_path: Path) -> Any:
+    """伪造的 path manager：只提供 _session_front_page_parity 需要的目录。"""
+    return type("_Paths", (), {"templates_dir": tmp_path / "templates"})()
+
+
+def test_front_page_parity_reads_scan_analysis_payload(tmp_path, monkeypatch):
+    """预检载荷里的配对状态优先于一切文件。"""
+    monkeypatch.setattr(
+        grading_service,
+        "get_path_manager",
+        lambda: _templates_dir_paths(tmp_path),
+    )
+    assert (
+        grading_service._session_front_page_parity(
+            7, scan_analysis={"front_page_parity": "even"}
+        )
+        == "even"
+    )
+    assert (
+        grading_service._session_front_page_parity(
+            7, scan_analysis={"template_first_page_role": "back"}
+        )
+        == "even"
+    )
+    assert (
+        grading_service._session_front_page_parity(
+            7, scan_analysis={"front_page_parity": "odd"}
+        )
+        == "odd"
+    )
+
+
+def test_front_page_parity_reads_scan_analysis_file(tmp_path, monkeypatch):
+    """载荷缺配对字段时回落到 scan_analysis_latest.json。"""
+    session_dir = tmp_path / "templates" / "session_7"
+    session_dir.mkdir(parents=True)
+    (session_dir / "scan_analysis_latest.json").write_text(
+        '{"groups": [], "front_page_parity": "even"}', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        grading_service,
+        "get_path_manager",
+        lambda: _templates_dir_paths(tmp_path),
+    )
+    assert grading_service._session_front_page_parity(7) == "even"
+
+
+def test_front_page_parity_uses_workflow_state_compat(tmp_path, monkeypatch):
+    """兼容入口：workflow_state.json 的 extra 曾承载配对状态。"""
+    session_dir = tmp_path / "templates" / "session_7"
+    session_dir.mkdir(parents=True)
+    (session_dir / "workflow_state.json").write_text(
+        '{"extra": {"front_page_parity": "even"}}', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        grading_service,
+        "get_path_manager",
+        lambda: _templates_dir_paths(tmp_path),
+    )
+    assert grading_service._session_front_page_parity(7) == "even"
+
+
+def test_front_page_parity_defaults_to_odd_only_when_unrecorded(
+    tmp_path, monkeypatch
+):
+    """没有任何状态记录时才沿用 odd 默认。"""
+    (tmp_path / "templates" / "session_7").mkdir(parents=True)
+    monkeypatch.setattr(
+        grading_service,
+        "get_path_manager",
+        lambda: _templates_dir_paths(tmp_path),
+    )
+    assert grading_service._session_front_page_parity(7) == "odd"
+
+
+def test_front_page_parity_rejects_corrupt_state_file(tmp_path, monkeypatch):
+    """状态文件读不出来必须报错，绝不能按奇数页猜测。"""
+    session_dir = tmp_path / "templates" / "session_7"
+    session_dir.mkdir(parents=True)
+    (session_dir / "scan_analysis_latest.json").write_text(
+        "{not json", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        grading_service,
+        "get_path_manager",
+        lambda: _templates_dir_paths(tmp_path),
+    )
+    with pytest.raises(ValueError, match="配对状态读取失败"):
+        grading_service._session_front_page_parity(7)
+
+
+def test_front_page_parity_rejects_invalid_recorded_value(
+    tmp_path, monkeypatch
+):
+    """已记录但取值无效同样属于损坏状态。"""
+    session_dir = tmp_path / "templates" / "session_7"
+    session_dir.mkdir(parents=True)
+    (session_dir / "scan_analysis_latest.json").write_text(
+        '{"front_page_parity": "sideways"}', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        grading_service,
+        "get_path_manager",
+        lambda: _templates_dir_paths(tmp_path),
+    )
+    with pytest.raises(ValueError, match="配对状态无效"):
+        grading_service._session_front_page_parity(7)
+
+
+def test_run_record_write_failure_keeps_grades_and_surfaces_warning(
+    patched,
+    tmp_path,
+    monkeypatch,
+):
+    """账本（附加层）写失败不丢成绩，但终态事件必须带 run_record_write_failed。"""
+    db, session_id = _seed(tmp_path, [(1, "stu1")])
+    group = _make_group(tmp_path, "stu1", 1, b"paper-one")
+    monkeypatch.setattr(
+        grading_service,
+        "_apply_manual_decisions",
+        lambda _analysis, _decisions, _students: [group],
+    )
+    monkeypatch.setattr(db.templates, "is_template_ready", lambda _session_id: True)
+
+    real_store_class = GradingRunStore
+
+    class _FailingRunStore:
+        """读写正常的账本，但所有写操作都抛错（模拟磁盘写失败）。"""
+
+        _failing_writes = {"finish", "set_item_status", "mark_grading", "add_item"}
+
+        def __init__(self, db_path: Any) -> None:
+            self._real = real_store_class(db_path)
+
+        def __getattr__(self, name: str) -> Any:
+            if name in self._failing_writes:
+                def _boom(*args: Any, **kwargs: Any) -> Any:
+                    raise RuntimeError(f"ledger write failed: {name}")
+
+                return _boom
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(
+        "grading_run_store.GradingRunStore",
+        lambda db_path: _FailingRunStore(db_path),
+    )
+
+    events = list(
+        _service(db).run_session_grading(
+            session_id=session_id,
+            exams_dir=tmp_path,
+            rubric_path=tmp_path / "rubric.json",
+            answer_key_path=tmp_path / "answer.json",
+            scan_analysis={"groups": [], "issues": []},
+            grading_mode="ai",
+            enhance_images=False,
+        )
+    )
+
+    terminal = events[-1]
+    assert terminal["event"] == "session_completed"
+    assert terminal["run_record_write_failed"] is True
+    # 成绩本身不受影响：结果行仍然写入。
+    with db._connect() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_results WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_rubric_preflight_raises_for_unreadable_file(tmp_path):
+    """评分依据读不出来必须中止批改预检，并点名文件。"""
+    rubric = tmp_path / "rubric.json"
+    rubric.write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError, match="rubric.json"):
+        grading_service._load_rubric_for_preflight(rubric)
+
+    rubric.write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(ValueError, match="不是 JSON 对象"):
+        grading_service._load_rubric_for_preflight(rubric)
+
+    with pytest.raises(ValueError, match="missing.json"):
+        grading_service._load_rubric_for_preflight(tmp_path / "missing.json")

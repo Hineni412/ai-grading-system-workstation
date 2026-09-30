@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -54,6 +55,8 @@ from scanner import (
     Scanner,
     student_name_region_from_regions,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _detail_from_row(row: dict[str, Any]) -> QuestionGradingDetail:
@@ -230,7 +233,10 @@ class GradingService:
             ocr_model=ocr_model,
             enhance_images=enhance_images,
             name_region=student_name_region_from_regions(answer_regions),
-            front_page_parity=_session_front_page_parity(session_id),
+            front_page_parity=_session_front_page_parity(
+                session_id,
+                scan_analysis=scan_analysis,
+            ),
         )
         students = self.db.students.list_students()
         target_question_ids = _target_question_ids_from_regions(answer_regions, rubric=rubric)
@@ -245,12 +251,30 @@ class GradingService:
         )
 
         # 批改运行账本（附加层）：支持安全暂停/恢复与跨运行三元幂等。
-        # 任何账本相关异常都回退到无账本行为，保证不影响既有批改主流程。
+        # 账本写入失败不丢弃成绩、不影响批改主流程，但会在日志留痕并在
+        # 任务结果中给出 run_record_write_failed 警告。
         run_store = None
         run = None
         config_fingerprint = ""
+        run_record_write_failed = False
         strict_existing_run = resume_run_id is not None or supplement_run_id is not None
         from grading_run_store import GradingRunResumeMismatchError
+
+        def _record_run_write_failure(action: str, exc: BaseException) -> None:
+            nonlocal run_record_write_failed
+            run_record_write_failed = True
+            logger.warning(
+                "批改运行记录写入失败（%s, session=%s）：%s",
+                action,
+                session_id,
+                exc,
+            )
+
+        def _try_run_record_write(action: str, write: Callable[[], Any]) -> None:
+            try:
+                write()
+            except Exception as exc:
+                _record_run_write_failure(action, exc)
 
         try:
             from grading_run_identity import grading_config_fingerprint
@@ -302,6 +326,7 @@ class GradingService:
                 raise GradingRunResumeMismatchError(
                     "grading run configuration could not be verified"
                 ) from exc
+            _record_run_write_failure("run_begin", exc)
             run_store = None
             run = None
 
@@ -323,19 +348,20 @@ class GradingService:
 
         def _finish_cancelled_run(*, release_session: bool) -> dict[str, Any]:
             if run_store is not None and run is not None:
-                try:
-                    # The ledger schema predates a dedicated cancelled state.
-                    # Store cancellation as terminal failed; the workspace
-                    # projects the persisted cancellation control as cancelled.
-                    run_store.finish(run.run_token, "failed")
-                except Exception:
-                    pass
+                # The ledger schema predates a dedicated cancelled state.
+                # Store cancellation as terminal failed; the workspace
+                # projects the persisted cancellation control as cancelled.
+                _try_run_record_write(
+                    "run_finish_cancelled",
+                    lambda: run_store.finish(run.run_token, "failed"),
+                )
             if release_session:
                 self.db.sessions.finish_session_run(session_id, "completed")
             return {
                 "event": "session_cancelled",
                 "run_id": run.id if run is not None else None,
                 "progress": self.db.papers.get_session_progress(session_id),
+                "run_record_write_failed": run_record_write_failed,
             }
 
         paper_cancel_restore_state: dict[int, tuple[str, str | None]] = {}
@@ -354,10 +380,10 @@ class GradingService:
                 restore_error,
             )
             if run_store is not None and run_item_id is not None:
-                try:
-                    run_store.set_item_status(run_item_id, "pending")
-                except Exception:
-                    pass
+                _try_run_record_write(
+                    "run_item_restore",
+                    lambda: run_store.set_item_status(run_item_id, "pending"),
+                )
 
         if _cancel_requested():
             yield _finish_cancelled_run(release_session=False)
@@ -568,6 +594,7 @@ class GradingService:
                 session_id=session_id,
                 config_fingerprint=config_fingerprint,
                 resume_run_id=resume_run_id or supplement_run_id,
+                on_write_failure=_record_run_write_failure,
             )
         )
         total = len(matched_records)
@@ -659,7 +686,10 @@ class GradingService:
                 return
             self.papers.update_exam_paper_status(paper_id, "grading")
             if paper_id in batch_run_item_by_paper:
-                run_store.mark_grading(batch_run_item_by_paper[paper_id])
+                _try_run_record_write(
+                    "run_item_mark_grading",
+                    lambda: run_store.mark_grading(batch_run_item_by_paper[paper_id]),
+                )
             marked_paper_ids.append(paper_id)
             yield {
                 "event": "grading_started",
@@ -822,10 +852,13 @@ class GradingService:
                     }
                     continue
                 if paper_id in batch_run_item_by_paper:
-                    run_store.set_item_status(
-                        batch_run_item_by_paper[paper_id],
-                        "failed",
-                        disposition_reason=str(exc),
+                    _try_run_record_write(
+                        "run_item_failed",
+                        lambda: run_store.set_item_status(
+                            batch_run_item_by_paper[paper_id],
+                            "failed",
+                            disposition_reason=str(exc),
+                        ),
                     )
                 yield {
                     "event": "grading_failed",
@@ -836,10 +869,17 @@ class GradingService:
                     "total": total,
                 }
             if run_store is not None and run is not None:
-                run_store.finish(run.run_token, "completed")
+                _try_run_record_write(
+                    "run_finish_completed",
+                    lambda: run_store.finish(run.run_token, "completed"),
+                )
             self.db.sessions.finish_session_run(session_id, "completed")
             progress = self.db.papers.get_session_progress(session_id)
-            yield {"event": "session_completed", "progress": progress}
+            yield {
+                "event": "session_completed",
+                "progress": progress,
+                "run_record_write_failed": run_record_write_failed,
+            }
             return
 
         for result_index, (paper_id, group, student_id) in enumerate(matched_records):
@@ -998,10 +1038,13 @@ class GradingService:
                     }
                     continue
                 if paper_id in batch_run_item_by_paper:
-                    run_store.set_item_status(
-                        batch_run_item_by_paper[paper_id],
-                        "graded",
-                        result_id=result_id,
+                    _try_run_record_write(
+                        "run_item_graded",
+                        lambda: run_store.set_item_status(
+                            batch_run_item_by_paper[paper_id],
+                            "graded",
+                            result_id=result_id,
+                        ),
                     )
                 yield {
                     "event": "graded",
@@ -1038,10 +1081,13 @@ class GradingService:
                     }
                     continue
                 if paper_id in batch_run_item_by_paper:
-                    run_store.set_item_status(
-                        batch_run_item_by_paper[paper_id],
-                        "failed",
-                        disposition_reason=str(exc),
+                    _try_run_record_write(
+                        "run_item_failed",
+                        lambda: run_store.set_item_status(
+                            batch_run_item_by_paper[paper_id],
+                            "failed",
+                            disposition_reason=str(exc),
+                        ),
                     )
                 yield {
                     "event": "grading_failed",
@@ -1054,10 +1100,13 @@ class GradingService:
 
         run_paused = bool(getattr(batch_run, "paused", False))
         if run_store is not None and run is not None:
-            try:
-                run_store.finish(run.run_token, "paused" if run_paused else "completed")
-            except Exception:
-                pass
+            _try_run_record_write(
+                "run_finish",
+                lambda: run_store.finish(
+                    run.run_token,
+                    "paused" if run_paused else "completed",
+                ),
+            )
         self.db.sessions.finish_session_run(session_id, "completed")
         progress = self.db.papers.get_session_progress(session_id)
         if run_paused:
@@ -1065,9 +1114,14 @@ class GradingService:
                 "event": "session_paused",
                 "run_id": run.id if run is not None else None,
                 "progress": progress,
+                "run_record_write_failed": run_record_write_failed,
             }
         else:
-            yield {"event": "session_completed", "progress": progress}
+            yield {
+                "event": "session_completed",
+                "progress": progress,
+                "run_record_write_failed": run_record_write_failed,
+            }
         return
 
     def _existing_supplement_identities(
@@ -1100,6 +1154,7 @@ class GradingService:
         session_id: int,
         config_fingerprint: str,
         resume_run_id: int | None,
+        on_write_failure: Callable[[str, BaseException], None] | None = None,
     ) -> Any:
         """判定候选答卷（去重/冲突/跳过已批），发出对应事件，返回待批改集合与账本项映射。
 
@@ -1166,8 +1221,9 @@ class GradingService:
                         status="pending",
                         paper_id=paper_id,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if on_write_failure is not None:
+                        on_write_failure("run_item_add", exc)
                 continue
 
             try:
@@ -1181,8 +1237,9 @@ class GradingService:
                     paper_id=paper_id,
                     disposition_reason=reason,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                if on_write_failure is not None:
+                    on_write_failure("run_item_add", exc)
 
             if action == "conflict":
                 self.papers.update_exam_paper_status(paper_id, "skipped", reason or "同学生多份不同答卷冲突")
@@ -1389,21 +1446,86 @@ def _fallback_items_by_paper_key(fallback_items: list[dict[str, Any]]) -> dict[s
     return result
 
 
-def _session_front_page_parity(session_id: int) -> str:
-    state_path = get_path_manager().templates_dir / f"session_{session_id}" / "workflow_state.json"
+def _read_pairing_state(path: Path) -> dict[str, Any] | None:
+    """Return a recorded pairing-state JSON object; raise when it cannot be read."""
+    if not path.exists():
+        return None
     try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except Exception:
-        return "odd"
-    extra = state.get("extra") if isinstance(state, dict) else {}
-    if not isinstance(extra, dict):
-        return "odd"
-    parity = str(extra.get("front_page_parity") or "").strip().lower()
-    if parity in {"odd", "even"}:
-        return parity
-    role = str(extra.get("template_first_page_role") or "").strip().lower()
-    if role == "back":
-        return "even"
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(
+            f"答卷正反面配对状态读取失败：{path.name}（{exc}），"
+            "请重新完成扫描预检后再批改"
+        ) from exc
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"答卷正反面配对状态读取失败：{path.name} 内容不是 JSON 对象，"
+            "请重新完成扫描预检后再批改"
+        )
+    return value
+
+
+def _parity_from_pairing_state(payload: dict[str, Any], extra_key: str | None = None) -> str | None:
+    source = payload
+    if extra_key is not None:
+        extra = payload.get(extra_key)
+        source = extra if isinstance(extra, dict) else {}
+    raw_parity = source.get("front_page_parity")
+    if raw_parity is not None:
+        parity = str(raw_parity).strip().lower()
+        if parity in {"odd", "even"}:
+            return parity
+        # 已记录但无效：按任意一面继续会把答卷页面配错，必须中止。
+        raise ValueError(
+            f"答卷正反面配对状态无效：front_page_parity={raw_parity!r}，"
+            "请重新完成扫描预检后再批改"
+        )
+    raw_role = source.get("template_first_page_role")
+    if raw_role is not None:
+        role = str(raw_role).strip().lower()
+        if role == "back":
+            return "even"
+        if role == "front":
+            return "odd"
+        raise ValueError(
+            f"答卷正反面配对状态无效：template_first_page_role={raw_role!r}，"
+            "请重新完成扫描预检后再批改"
+        )
+    # 预检接口响应的嵌套形态（page_assignment.first_page_role/front_page_parity）。
+    assignment = payload.get("page_assignment")
+    if isinstance(assignment, dict) and source is payload:
+        return _parity_from_pairing_state(
+            {
+                "front_page_parity": assignment.get("front_page_parity"),
+                "template_first_page_role": assignment.get("first_page_role"),
+            }
+            if ("front_page_parity" in assignment or "first_page_role" in assignment)
+            else {}
+        )
+    return None
+
+
+def _session_front_page_parity(session_id: int, scan_analysis: Any = None) -> str:
+    """Return the front-page parity recorded by the scan preflight.
+
+    配对状态以扫描预检结果（scan_analysis_latest.json）为准；状态文件
+    存在但读不出来时必须报错——在正反面位置未知时默认按奇数页配对，
+    会把答卷页面静默配错。两者都没有记录时沿用默认 odd。
+    """
+    session_dir = get_path_manager().templates_dir / f"session_{session_id}"
+    payload = scan_analysis if isinstance(scan_analysis, dict) else None
+    if payload is None:
+        payload = _read_pairing_state(session_dir / "scan_analysis_latest.json")
+    if isinstance(payload, dict):
+        parity = _parity_from_pairing_state(payload)
+        if parity is not None:
+            return parity
+    # 兼容入口：workflow_state.json 的 extra 曾用于承载配对状态。
+    state = _read_pairing_state(session_dir / "workflow_state.json")
+    if isinstance(state, dict):
+        parity = _parity_from_pairing_state(state, extra_key="extra")
+        if parity is not None:
+            return parity
     return "odd"
 
 
@@ -1411,10 +1533,18 @@ def _load_rubric_for_preflight(rubric_path: Path) -> dict:
     """读取评分依据并返回规范化题号的内存副本；磁盘文件保持不变。"""
     try:
         payload = json.loads(rubric_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    except Exception as exc:
+        # 评分依据读不出来时绝不能按空内容继续：空 rubric 会让
+        # 身份校验被跳过、教师最终分校验失真，必须中止并报出文件名。
+        raise ValueError(
+            f"评分依据文件读取失败：{rubric_path.name}（{exc}），"
+            "请修复该文件后重新发起批改"
+        ) from exc
     if not isinstance(payload, dict):
-        return {}
+        raise ValueError(
+            f"评分依据文件内容不是 JSON 对象：{rubric_path.name}，"
+            "请修复该文件后重新发起批改"
+        )
     from question_id_contract import canonicalize_question_document
 
     try:

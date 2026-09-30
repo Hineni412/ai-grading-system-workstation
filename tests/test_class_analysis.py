@@ -959,3 +959,148 @@ def test_session_error_records_and_category_counts(tmp_path: Path) -> None:
     assert q2["cause_category_counts"] == [
         {"category": "概念理解", "count": len(student_ids)}
     ]
+
+
+def test_class_narrative_payload_carries_organized_causes(
+    class_analysis_api_client, tmp_path: Path
+) -> None:
+    """已归类错因进入班级叙述入参：按大类/错法聚类，不再带旧 error_category。"""
+    import backend.jobs
+    from backend.class_analysis import (
+        ClassAnalysisStateStore,
+        assemble_cause_data,
+        save_cause_result,
+    )
+
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    store = ClassAnalysisStateStore(reports_dir)
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+    source = _cause_source(data, "Q2")
+    ids = [item["id"] for item in source["evidence"]]
+    save_cause_result(
+        store,
+        sid,
+        source,
+        {
+            "groups": [
+                {
+                    "kind": "error",
+                    "category": "概念理解",
+                    "reason": "垂直关系用错",
+                    "manifestation": "未证垂直",
+                    "evidence_ids": ids,
+                },
+            ]
+        },
+        data=data,
+    )
+    _patch_configured(monkeypatch, True)
+    job = _generate_via_api(client, sid)
+    manager.wait(job["id"], timeout=5)
+    fake = holder["client"]
+    assert fake.calls == 1
+    prompt = fake.requests[0]["prompt"]
+    payload = json.loads(prompt.split("输入 JSON：\n", 1)[1])
+    questions = {q["question_id"]: q for q in payload["questions"]}
+    q2 = questions["Q2"]
+    expected = {"category": "概念理解", "pattern": "垂直关系用错"}
+    assert q2["causes"] == [
+        {**expected, "students": sorted(r["alias"] for r in q2["records"])}
+    ]
+    assert all("error_category" not in r for r in q2["records"])
+    assert all(r["cause"] == [expected] for r in q2["records"])
+    # 未归类错因的题保留原有字段。
+    q1_records = questions["Q1"]["records"]
+    assert q1_records
+    assert all("error_category" in r for r in q1_records)
+    assert all("cause" not in r for r in q1_records)
+
+
+def test_old_rendition_marks_stale_without_model_call(
+    class_analysis_api_client,
+) -> None:
+    """叙述版本升级后：页面仅提示需重新生成，不因版本变化自动调用模型。"""
+    from backend.class_analysis import (
+        CLASS_ANALYSIS_JOB_TYPE,
+        CLASS_ANALYSIS_RENDITION_VERSION,
+        ClassAnalysisStateStore,
+    )
+
+    client, _db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    _patch_configured(monkeypatch, True)
+    job = _generate_via_api(client, sid)
+    manager.wait(job["id"], timeout=5)
+    fake = holder["client"]
+    assert fake.calls == 1
+
+    store = ClassAnalysisStateStore(reports_dir)
+    state = store.load(sid)
+    assert state["rendition_version"] == CLASS_ANALYSIS_RENDITION_VERSION
+    # 模拟版本升级前的线上状态：就绪叙述、旧 rendition_version。
+    store.save(sid, rendition_version="class_analysis_page_v3_class_scope")
+
+    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
+    assert page["stale"] is True
+    assert page["narrative"] is None
+    # 页面读取只标记过期，不提交生成任务、不调用模型。
+    assert fake.calls == 1
+    _jobs, total = manager.list(
+        session_id=sid, job_types=(CLASS_ANALYSIS_JOB_TYPE,), limit=10
+    )
+    assert total == 1
+
+    # 手动重新生成仍走缓存：同 (场次, 成绩版本, 叙述版本) 命中，不重复调用模型。
+    job = _generate_via_api(client, sid)
+    manager.wait(job["id"], timeout=5)
+    assert fake.calls == 1
+    assert (
+        store.load(sid)["rendition_version"] == CLASS_ANALYSIS_RENDITION_VERSION
+    )
+    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
+    assert page["stale"] is False
+    assert page["narrative"] is not None
+
+
+# ---------------------------------------------------------------------------
+# 复核确认占位词不得作为错因类别外显
+# ---------------------------------------------------------------------------
+
+
+def test_review_confirmed_marker_never_surfaces_as_error_type() -> None:
+    """已复核/教师已确认等确认占位词在所有错因类别出口一律剔除。"""
+    from types import SimpleNamespace
+
+    from backend.error_causes import display_error_category
+    from backend.repositories.results import _normalize_error_category
+    from integration.mastery_adapter import _normalize_error_types
+    from analysis_report_exporter import _record_brief_text
+    from report import _loss_entry_label
+
+    for marker in (
+        "已复核",
+        "人工复核",
+        "人工复核已确认",
+        "教师已确认",
+        "教师已确认最终分",
+        "manual_review_confirmed",
+        "teacher_score_locked",
+    ):
+        assert display_error_category(marker) == "", marker
+    assert display_error_category("概念理解错误") == "概念理解错误"
+    assert display_error_category(None) == ""
+
+    # 薄弱点聚合：占位词不当类别，退回按理由推断。
+    assert _normalize_error_category("已复核", "漏写计算过程") == "计算错误"
+    assert _normalize_error_category("教师已确认", "人工复核已确认") == "其他"
+    # 掌握度错因列表：占位词剔除，真实类别保留。
+    assert _normalize_error_types(["已复核", "答错"]) == ["答错"]
+    # 班级叙述记录摘要与成绩表「主要错因」回退。
+    record = SimpleNamespace(
+        deduction_reason="", error_category="已复核", error_summary=""
+    )
+    assert _record_brief_text(record) == "未作答或无批改记录"
+    assert _loss_entry_label({"error_category": "已复核"}) == "原因未记录"

@@ -273,31 +273,64 @@ def run_config_generation_job(
     except JobCancellationRequested:
         draft = _draft_path(upload_config_dir, context.job_id)
         if draft.is_file():
+            # 草稿概括失败不能挡住任务收尾：无摘要也要把任务标成 cancelled。
+            summary: dict[str, object] = {}
             try:
                 payload = _read_json_object(draft)
+                summary = _summary_from_batch_draft(
+                    int(context.payload.get("session_id") or 0), payload
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Cancelled config generation job %s draft could not be summarized",
+                    context.job_id,
+                )
+            try:
                 context.store.finish(
                     context.job_id,
                     "cancelled",
-                    result=_summary_from_batch_draft(
-                        int(context.payload.get("session_id") or 0), payload
-                    ),
+                    result=summary,
                 )
             except Exception:
-                pass
+                LOGGER.exception(
+                    "Failed to mark cancelled config generation job %s",
+                    context.job_id,
+                )
         elif input_id and mode != "retry":
-            discard_config_generation_input(upload_config_dir, input_id)
+            try:
+                discard_config_generation_input(upload_config_dir, input_id)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to discard input %s for cancelled config generation job %s",
+                    input_id,
+                    context.job_id,
+                )
         raise
     except BaseException as exc:
+        # 清理失败不能掩盖原始错误：任务必须带着真实原因进入终态。
         if input_id and mode != "retry":
-            discard_config_generation_input(upload_config_dir, input_id)
+            try:
+                discard_config_generation_input(upload_config_dir, input_id)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to discard input %s for failed config generation job %s",
+                    input_id,
+                    context.job_id,
+                )
         if mode == "retry":
             completed = context.store.get_job(context.job_id)
             if completed is not None and completed.status == "succeeded":
-                cleanup_consumed_config_retry_artifacts(
-                    upload_config_dir,
-                    context.store,
-                    session_id=int(context.payload.get("session_id") or 0),
-                )
+                try:
+                    cleanup_consumed_config_retry_artifacts(
+                        upload_config_dir,
+                        context.store,
+                        session_id=int(context.payload.get("session_id") or 0),
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "Failed to clean retry artifacts for config generation job %s",
+                        context.job_id,
+                    )
         raise
     if input_id and result.get("outcome") != "partial":
         discard_config_generation_input(upload_config_dir, input_id)
@@ -326,22 +359,34 @@ def preserve_interrupted_config_generation_checkpoints(
         draft = _draft_path(upload_config_dir, job.id)
         if not draft.is_file():
             continue
+        # 断点存在就必须保护上传输入；即使草稿无法概括、任务收尾失败，
+        # 也不能让任务停留在 running 或丢掉可重试的输入。
+        input_id = str(job.payload.get("input_id") or "").strip()
+        if input_id:
+            protected_inputs.add(input_id)
         try:
             payload = _read_json_object(draft)
             summary = _summary_from_batch_draft(
                 int(job.payload.get("session_id") or 0), payload
             )
         except Exception:
-            continue
-        store.finish(
-            job.id,
-            "failed",
-            error="interrupted by process restart; completed batches were preserved",
-            result=summary,
-        )
-        input_id = str(job.payload.get("input_id") or "").strip()
-        if input_id:
-            protected_inputs.add(input_id)
+            LOGGER.exception(
+                "Interrupted config generation job %s draft could not be summarized",
+                job.id,
+            )
+            summary = None
+        try:
+            store.finish(
+                job.id,
+                "failed",
+                error="interrupted by process restart; completed batches were preserved",
+                result=summary if isinstance(summary, dict) else {},
+            )
+        except Exception:
+            LOGGER.exception(
+                "Failed to mark interrupted config generation job %s as failed",
+                job.id,
+            )
     return protected_inputs
 
 

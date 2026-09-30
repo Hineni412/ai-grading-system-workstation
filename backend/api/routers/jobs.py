@@ -207,7 +207,9 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "restore_paper_id",
             "exact_duplicate_count",
             "analysis_reused_count",
+            "exact_duplicates",
             "near_duplicate_hints",
+            "duplicate_papers",
         )
         return sanitize_public_mapping(
             {key: job.result[key] for key in allowed if key in job.result}
@@ -310,7 +312,12 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
         and str(job.result.get("file_path") or "").strip()
     ):
         result: dict[str, Any] = {}
-        for key in ("session_id", "report_type", "score_revision"):
+        for key in (
+            "session_id",
+            "report_type",
+            "score_revision",
+            "review_note_count",
+        ):
             if job.result.get(key) is not None:
                 result[key] = job.result[key]
         filename = _safe_filename(

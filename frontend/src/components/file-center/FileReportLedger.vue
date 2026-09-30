@@ -11,6 +11,7 @@ import {
   reportDisplayStatus,
   reportFilename,
   reportLiveDetail,
+  reviewNoteCount,
   statusLabel,
   statusTone,
   type ReportRow,
@@ -27,6 +28,7 @@ const emit = defineEmits<{
   'download': [job: ReportHistoryJob]
   'delete-report': [job: ReportHistoryJob]
   'open-excel-settings': []
+  'open-review-notes': []
   'toggle-history': [type: ReportType]
 }>()
 
@@ -60,6 +62,18 @@ const fileCenter = useFileCenterStore()
           {{ formatShortTime(row.latest.finished_at ?? row.latest.created_at) }}
         </span>
       </div>
+      <p
+        v-if="row.latest !== null && reviewNoteCount(row.latest) > 0"
+        class="file-center__row-notes"
+      >
+        发现 {{ reviewNoteCount(row.latest) }} 条建议核对，
+        <button
+          type="button"
+          class="file-link-button"
+          data-testid="open-review-notes"
+          @click="emit('open-review-notes')"
+        >在成绩中心查看</button>
+      </p>
       <div class="file-center__row-actions">
         <AppButton variant="danger"
           v-if="row.liveJob && !TERMINAL_JOB_STATUSES.has(row.liveJob.status)"
@@ -167,6 +181,18 @@ const fileCenter = useFileCenterStore()
           <th scope="row" :title="row.description">
             {{ row.title }}<span class="file-report-table__kind">{{ row.kind }}</span>
             <span v-if="row.latest" class="file-report-table__filename">{{ reportFilename(row.latest) }}</span>
+            <p
+              v-if="row.latest !== null && reviewNoteCount(row.latest) > 0"
+              class="file-report-table__notes"
+            >
+              发现 {{ reviewNoteCount(row.latest) }} 条建议核对，
+              <button
+                type="button"
+                class="file-link-button"
+                data-testid="open-review-notes"
+                @click="emit('open-review-notes')"
+              >在成绩中心查看</button>
+            </p>
           </th>
           <td>
             <template v-if="row.liveJob">

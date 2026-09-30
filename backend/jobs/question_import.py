@@ -177,11 +177,22 @@ def _run_question_import_job_locked(
         "retryable": bool(failed_count) and not trash_collisions,
         "exact_duplicate_count": int(result.exact_duplicate_count),
         "analysis_reused_count": int(result.analysis_reused_count),
+        "exact_duplicates": [
+            {
+                "question_number": str(entry.get("question_number") or ""),
+                "matched_question_id": int(entry.get("matched_question_id") or 0),
+                "matched_paper_title": str(entry.get("matched_paper_title") or ""),
+                "matched_question_number": str(entry.get("matched_question_number") or ""),
+            }
+            for entry in result.exact_duplicates
+        ],
         "near_duplicate_hints": [
             {
                 "question_number": str(hint.get("question_number") or ""),
                 "matched_question_id": int(hint.get("matched_question_id") or 0),
                 "matched_paper_title": str(hint.get("matched_paper_title") or ""),
+                "matched_question_number": str(hint.get("matched_question_number") or ""),
+                "question_id": int(hint.get("question_id") or 0) or None,
                 "similarity": float(hint.get("similarity") or 0),
                 "high": bool(hint.get("high")),
                 "match_kind": str(hint.get("match_kind") or "suspected"),
@@ -190,6 +201,9 @@ def _run_question_import_job_locked(
             }
             for hint in result.near_duplicate_hints
         ],
+        "duplicate_papers": _duplicate_paper_summaries(
+            Path(question_bank_db_path), result.files,
+        ),
     }
     if trash_collisions:
         public_result.update(
@@ -197,6 +211,31 @@ def _run_question_import_job_locked(
             restore_paper_id=trash_collisions[0].paper_id,
         )
     return public_result
+
+
+def _duplicate_paper_summaries(db_path: Path, files: list[object]) -> list[dict[str, object]]:
+    paper_ids = sorted(
+        {
+            int(item.paper_id)
+            for item in files
+            if getattr(item, "status", None) == "duplicate"
+            and getattr(item, "paper_id", None) is not None
+            and int(item.paper_id) > 0
+        }
+    )
+    if not paper_ids or not db_path.exists():
+        return []
+    placeholders = ",".join("?" for _ in paper_ids)
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT id, title FROM papers WHERE id IN ({placeholders})",
+            paper_ids,
+        ).fetchall()
+    titles = {int(row["id"]): str(row["title"] or "") for row in rows}
+    return [
+        {"paper_id": paper_id, "title": titles.get(paper_id, "")}
+        for paper_id in paper_ids
+    ]
 
 
 def _active_question_ids(db_path: Path, source_files: list[str]) -> list[int]:

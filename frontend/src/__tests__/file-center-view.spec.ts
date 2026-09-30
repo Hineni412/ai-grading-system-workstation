@@ -302,4 +302,46 @@ describe('file center view', () => {
     ).toBeNull())
   })
 
+  it('links a finished personal report job to the review notes in results center', async () => {
+    apiMock.getReportContext.mockResolvedValueOnce({
+      score_revision: 'a'.repeat(64),
+      has_results: true,
+      jobs: [{
+        ...makeJob({
+          id: 55,
+          payload: {
+            session_id: 7,
+            report_type: 'personal_analysis_html',
+            score_revision: 'a'.repeat(64),
+          },
+          result: {
+            session_id: 7,
+            report_type: 'personal_analysis_html',
+            score_revision: 'a'.repeat(64),
+            filename: '个人分析报告.zip',
+            download_url: '/api/jobs/55/download',
+            review_note_count: 2,
+          },
+        }),
+        is_current_revision: true,
+        file_status: 'available',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 100,
+      total_pages: 1,
+    })
+
+    const { host, router } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('发现 2 条建议核对'))
+    host.querySelector<HTMLButtonElement>('[data-testid="open-review-notes"]')!.click()
+    await vi.waitFor(() => expect(
+      router.currentRoute.value.query.tab,
+    ).toBe('overview'))
+    expect(router.currentRoute.value.query).toMatchObject({
+      tab: 'overview',
+      session: '7',
+    })
+  })
+
 })

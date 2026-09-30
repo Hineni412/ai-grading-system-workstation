@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from backend.error_causes import display_error_category
 from integration.mastery_schema import StudentMasteryProfile, WeakPoint
 from path_manager import resolve_stored_file_path
 from question_bank.current_knowledge import CurrentKnowledgeResolver
@@ -239,8 +240,11 @@ def _normalize_error_types(values: Iterable[str]) -> list[str]:
     result: list[str] = []
     for value in values:
         normalized = _clean_string(value)
-        if normalized and normalized not in result:
-            result.append(normalized)
+        display = display_error_category(normalized)
+        if not display:
+            continue
+        if display not in result:
+            result.append(display)
     return result
 
 

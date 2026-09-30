@@ -420,16 +420,13 @@ def build_objective_paper_entries(paper_groups: list[ExamPaperGroup]) -> list[Ob
 
 def build_objective_question_specs(session_id: str, rubric: dict[str, Any], answer_key: dict[str, Any]) -> list[ObjectiveQuestionSpec]:
     answer_map = answer_forms_map(answer_key)
-    try:
-        from objective_answer_loader import (
-            get_standard_answer_for_question,
-            load_objective_answer_sources,
-        )
+    # 标准答案来源读取失败必须终止识别：按空答案继续会把客观题判成缺答。
+    from objective_answer_loader import (
+        get_standard_answer_for_question,
+        load_objective_answer_sources,
+    )
 
-        answer_sources = load_objective_answer_sources(session_id)
-    except Exception:
-        answer_sources = {}
-        get_standard_answer_for_question = None  # type: ignore[assignment]
+    answer_sources = load_objective_answer_sources(session_id)
 
     specs: list[ObjectiveQuestionSpec] = []
     for question in rubric.get("questions", []) if isinstance(rubric, dict) else []:
@@ -450,7 +447,7 @@ def build_objective_question_specs(session_id: str, rubric: dict[str, Any], answ
                 or question.get("answers")
                 or question.get("reference_answer")
             )
-        if not standard_answer and get_standard_answer_for_question is not None:
+        if not standard_answer:
             standard_answer = get_standard_answer_for_question(answer_sources, qid)[0]
         specs.append(
             ObjectiveQuestionSpec(

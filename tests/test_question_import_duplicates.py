@@ -270,7 +270,12 @@ def test_identical_stem_with_different_answer_preserves_both_sources_for_review(
 
     assert second.question_count == 1
     assert second.exact_duplicate_count == 0
-    assert second.near_duplicate_hints[0]["match_kind"] == "answer_conflict"
+    hint = second.near_duplicate_hints[0]
+    assert hint["match_kind"] == "answer_conflict"
+    assert hint["matched_paper_title"] == "a"
+    assert hint["matched_question_number"] == "1"
+    new_id = _single_question_id(bank["db"], "b")
+    assert hint["question_id"] == new_id
     with connect(bank["db"]) as conn:
         occurrence = conn.execute(
             """
@@ -298,6 +303,61 @@ def test_identical_stem_with_different_answer_preserves_both_sources_for_review(
             "SELECT q.answer_text,q.needs_review FROM questions q JOIN papers p ON q.paper_id=p.id WHERE p.title='b'"
         ).fetchone()
         assert tuple(imported) == ("43", 1)
+
+
+def test_exact_duplicate_entries_report_matched_paper_and_number(
+    bank: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(PAPER_TEXT))
+    _import_paper(
+        tmp_path, bank["db"], bank["data_root"], name="a.docx", text=PAPER_TEXT
+    )
+    source_id = _single_question_id(bank["db"], "a")
+
+    second = _import_paper(
+        tmp_path, bank["db"], bank["data_root"], name="b.docx", text=PAPER_TEXT
+    )
+
+    assert second.exact_duplicate_count == 1
+    assert list(second.exact_duplicates) == [
+        {
+            "question_number": "1",
+            "matched_question_id": source_id,
+            "matched_paper_title": "a",
+            "matched_question_number": "1",
+        }
+    ]
+
+
+def test_confirmed_duplicate_is_listed_as_exact_duplicate(
+    bank: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(PAPER_TEXT))
+    _import_paper(
+        tmp_path, bank["db"], bank["data_root"], name="a.docx", text=PAPER_TEXT
+    )
+    source_id = _single_question_id(bank["db"], "a")
+
+    different_text = "1. 另一份试卷中完全不同的题目内容\n答案：\n1. 7"
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(different_text))
+    source = tmp_path / "b.docx"
+    source.write_bytes(b"content-of-b.docx")
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="docx", title="b")],
+        bank["db"],
+        data_root=bank["data_root"],
+        archive_sources=False,
+        confirmed_duplicates={"1": source_id},
+    )
+
+    second = result.files[0]
+    assert second.exact_duplicate_count == 1
+    assert second.exact_duplicates[0]["matched_question_id"] == source_id
+    assert second.exact_duplicates[0]["matched_paper_title"] == "a"
 
 
 def test_exact_identity_checks_pixels_and_preserves_figure_positions(tmp_path):

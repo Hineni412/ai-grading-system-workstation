@@ -119,3 +119,72 @@ def test_incomplete_result_stays_visible_after_another_failed_retry(
     assert rows[0]["status"] == "incomplete"
     assert rows[0]["retry_attempt_count"] == 2
     assert rows[0]["last_failure_reason"] == "second failure"
+
+
+def test_unreadable_configured_rubric_raises_instead_of_empty_stats(tmp_path):
+    """评分依据已配置但损坏：薄弱点/完整性统计必须显式报错而不是按空内容继续。"""
+    import pytest
+
+    from backend.repositories.results import RubricUnreadableError
+
+    db, session_id, _rid = _seed_session(tmp_path)
+    broken = tmp_path / "broken_rubric.json"
+    broken.write_text("{not json", encoding="utf-8")
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE grading_sessions SET rubric_path = ? WHERE id = ?",
+            (str(broken), session_id),
+        )
+        conn.commit()
+
+    with pytest.raises(RubricUnreadableError, match="broken_rubric.json"):
+        db.results.list_incomplete_results(session_id)
+
+
+def test_missing_configured_rubric_file_raises(tmp_path):
+    """配置了评分依据但文件丢失同样显式报错。"""
+    import pytest
+
+    from backend.repositories.results import RubricUnreadableError
+
+    db, session_id, _rid = _seed_session(tmp_path)
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE grading_sessions SET rubric_path = ? WHERE id = ?",
+            ("gone_rubric.json", session_id),
+        )
+        conn.commit()
+
+    with pytest.raises(RubricUnreadableError, match="gone_rubric.json"):
+        db.results.list_incomplete_results(session_id)
+
+
+def test_missing_configured_rubric_surfaces_as_api_error(tmp_path):
+    """统计接口遇缺失评分依据返回 409 rubric_unreadable，报文只含文件名。"""
+    from fastapi.testclient import TestClient
+
+    from backend.api.app import create_app
+    from backend.api.dependencies import get_grading_db, get_workbench_service
+    from backend.workbench.service import WorkbenchService
+
+    db, session_id, _rid = _seed_session(tmp_path)
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE grading_sessions SET rubric_path = ? WHERE id = ?",
+            ("gone_rubric.json", session_id),
+        )
+        conn.commit()
+
+    app = create_app()
+    app.dependency_overrides[get_grading_db] = lambda: db
+    app.dependency_overrides[get_workbench_service] = (
+        lambda: WorkbenchService(db, None, None)
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get(f"/api/sessions/{session_id}/anomalies")
+    assert response.status_code == 409
+    payload = response.json()["error"]
+    assert payload["code"] == "rubric_unreadable"
+    assert "gone_rubric.json" in payload["message"]
+    assert str(tmp_path) not in payload["message"]

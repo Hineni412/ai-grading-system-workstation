@@ -148,10 +148,13 @@ class AIGrader:
     def _load_json_file(self, path: Path | None, label: str) -> dict[str, Any]:
         if path is None:
             return {}
-        if not path.exists():
+        if not path.exists() or not path.is_file():
             raise FileNotFoundError(f"{label}文件不存在: {path}")
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{label}文件无法读取: {path}（{exc}）") from exc
 
 def _clean_optional_text(value: Any) -> str | None:
     text = str(value or "").strip()

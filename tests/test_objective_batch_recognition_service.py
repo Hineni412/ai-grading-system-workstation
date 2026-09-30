@@ -565,3 +565,40 @@ def test_different_score_candidate_readings_still_need_review() -> None:
     assert metadata["need_review"] is True
     assert "review_waiver" not in metadata
     assert "candidate_readings" not in metadata
+
+
+def test_unreadable_answer_source_file_stops_objective_recognition(
+    tmp_path, monkeypatch
+) -> None:
+    """标准答案文件损坏时必须中止识别，不能按空答案把客观题判成缺答。"""
+    import objective_answer_loader
+    from objective_answer_loader import load_objective_answer_sources
+    from objective_batch_recognition_service import (
+        build_objective_question_specs,
+    )
+
+    session_dir = tmp_path / "templates" / "session_9"
+    session_dir.mkdir(parents=True)
+    (session_dir / "answer_key.json").write_text(
+        "{broken", encoding="utf-8"
+    )
+    fake_pm = type(
+        "_PM",
+        (),
+        {
+            "templates_dir": tmp_path / "templates",
+            "project_root": tmp_path / "missing_project_root",
+        },
+    )()
+    monkeypatch.setattr(
+        objective_answer_loader, "get_path_manager", lambda: fake_pm
+    )
+
+    with pytest.raises(ValueError, match="answer_key.json"):
+        load_objective_answer_sources("9")
+    with pytest.raises(ValueError, match="answer_key.json"):
+        build_objective_question_specs(
+            "9",
+            {"questions": [{"question_id": "Q1", "question_type": "choice"}]},
+            {"questions": []},
+        )

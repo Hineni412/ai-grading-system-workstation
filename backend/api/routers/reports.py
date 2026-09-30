@@ -8,18 +8,23 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
 
 from backend.api.app import ApiError
+from backend.analysis_review_notes import load_session_notes
 from backend.api.dependencies import (
     get_config_source_service,
     get_grading_db,
     get_job_file_service,
     get_job_manager,
     get_reports_dir,
+    get_review_application_service,
+    get_scan_grading_workspace,
 )
 from backend.api.routers.jobs import _job_response, _require_job
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.reports import (
     AnalysisPreflightResponse,
+    AnalysisReviewNoteItem,
+    AnalysisReviewNotesResponse,
     CausePatternEditRequest,
     CausePatternEditResponse,
     ClassAnalysisResponse,
@@ -49,6 +54,9 @@ from backend.report_exports import (
     submit_report_export,
 )
 from backend.repositories.access import GradingRepositoryAccess
+from backend.review.manual_context import current_manual_context
+from backend.review.service import ReviewApplicationService
+from backend.scan_grading.workspace import ScanGradingWorkspace
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -205,6 +213,82 @@ def _file_status(job, file_service: JobFileService) -> str:
     ):
         return "unavailable"
     return "available"
+
+
+@router.get(
+    "/sessions/{session_id}/reports/analysis-review-notes",
+    response_model=AnalysisReviewNotesResponse,
+)
+def get_analysis_review_notes(
+    session_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    review_service: ReviewApplicationService = Depends(
+        get_review_application_service
+    ),
+    reports_dir: Path = Depends(get_reports_dir),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+) -> AnalysisReviewNotesResponse:
+    """个人报告"建议核对"清单：教师复核（最终分锁修订号上升）后标为已核对。"""
+    session = _require_session(db.sessions, session_id)
+    payload = load_session_notes(Path(reports_dir), int(session_id))
+    if payload is None:
+        return AnalysisReviewNotesResponse(
+            session_id=int(session_id), generated_at=None, items=[]
+        )
+    lock_revisions: dict[tuple[int, str], int] = {}
+    for lock in db.reviews.list_teacher_score_locks(int(session_id)):
+        key = (
+            int(lock.get("student_id") or 0),
+            str(lock.get("question_id") or ""),
+        )
+        lock_revisions[key] = max(
+            lock_revisions.get(key, 0), int(lock.get("revision") or 0)
+        )
+    # 复核页按统一复核条目标识定位；此处回查真实条目，供"去核对"直接跳转。
+    review_item_ids: dict[tuple[int, str], str] = {}
+    for item in review_service.list_items(
+        int(session_id),
+        session,
+        scope="all",
+        manual_context=current_manual_context(int(session_id), workspace),
+    ):
+        review_item_ids.setdefault(
+            (int(item.student_id), str(item.question_id)),
+            item.review_item_id,
+        )
+    items = []
+    for item in payload["items"]:
+        student_id = int(item.get("student_id") or 0)
+        question_id = str(item.get("question_id") or "")
+        stored_revision = max(0, int(item.get("lock_revision") or 0))
+        current_revision = lock_revisions.get((student_id, question_id), 0)
+        items.append(
+            AnalysisReviewNoteItem(
+                student_id=student_id,
+                student_code=item.get("student_code") or None,
+                student_name=str(item.get("student_name") or ""),
+                class_name=item.get("class_name") or None,
+                question_id=question_id,
+                display_label=str(
+                    item.get("display_label") or question_id
+                ),
+                note=str(item.get("note") or ""),
+                lock_revision=stored_revision,
+                status=(
+                    "confirmed"
+                    if current_revision > stored_revision
+                    else "pending"
+                ),
+                review_item_id=review_item_ids.get(
+                    (student_id, question_id)
+                ),
+            )
+        )
+    return AnalysisReviewNotesResponse(
+        session_id=int(session_id),
+        generated_at=payload["generated_at"],
+        items=items,
+    )
 
 
 # ---------------------------------------------------------------------------

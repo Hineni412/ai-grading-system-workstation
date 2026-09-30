@@ -10,6 +10,10 @@ import {
   fetchResultsCenter,
   type ResultsCenterResponse,
 } from '../../api/results-center'
+import {
+  exportsApi,
+  type AnalysisReviewNoteItem,
+} from '../../api/exports'
 import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
 import { useSessionStore } from '../../stores/session'
@@ -84,6 +88,30 @@ let loadGeneration = 0
 let scopeController: AbortController | null = null
 let mergedController: AbortController | null = null
 let narrativeController: AbortController | null = null
+let notesController: AbortController | null = null
+
+const reviewNotes = ref<AnalysisReviewNoteItem[]>([])
+const reviewNotesExpanded = ref(false)
+const pendingReviewNotes = computed(() =>
+  reviewNotes.value.filter((item) => item.status === 'pending'))
+
+async function loadReviewNotes(sessionId: number): Promise<void> {
+  notesController?.abort()
+  const controller = new AbortController()
+  notesController = controller
+  try {
+    const result = await exportsApi.getAnalysisReviewNotes(
+      sessionId,
+      controller.signal,
+    )
+    if (controller.signal.aborted || props.sessionId !== sessionId) return
+    reviewNotes.value = result.items
+  } catch {
+    if (!controller.signal.aborted && props.sessionId === sessionId) {
+      reviewNotes.value = []
+    }
+  }
+}
 
 watch(
   [scope, () => props.sessionId, () => props.results],
@@ -92,6 +120,7 @@ watch(
       mergedController?.abort()
       mergedController = null
       mergedAnalysis.value = cachedClassAnalysis(sessionId, '')
+      void loadReviewNotes(sessionId)
     }
     void loadScope(scopeKey, sessionId)
     void loadNarrative(scopeKey, sessionId)
@@ -99,6 +128,21 @@ watch(
   },
   { immediate: true },
 )
+
+// 个人报告导出完成后提示清单会重写；跟踪中的导出任务结束时刷新一次。
+const succeededReportJobs = computed(() => Object.values(jobStore.jobs)
+  .filter((job) => job.job_type === 'report_export'
+    && job.status === 'succeeded'
+    && Number(job.result.session_id ?? job.payload.session_id ?? 0)
+      === props.sessionId)
+  .map((job) => job.id)
+  .sort((left, right) => left - right)
+  .join(','))
+
+watch(succeededReportJobs, (value, previous) => {
+  if (previous === undefined || value === previous) return
+  void loadReviewNotes(props.sessionId)
+})
 
 async function loadScope(
   scopeKey: string | null,
@@ -256,6 +300,7 @@ onBeforeUnmount(() => {
   mergedController?.abort()
   comparisonController?.abort()
   narrativeController?.abort()
+  notesController?.abort()
 })
 
 const studentsInScope = computed(() => (scope.value === null
@@ -454,7 +499,12 @@ const reviewBreakdown = computed(() => {
   return parts.join(' · ')
 })
 
-type MarkerTileId = 'review' | 'ai-report' | 'ranks' | 'cause-categories'
+type MarkerTileId =
+  | 'review'
+  | 'report-notes'
+  | 'ai-report'
+  | 'ranks'
+  | 'cause-categories'
 type DisplayTile = OverviewTile | { id: MarkerTileId }
 
 interface TileSlot {
@@ -465,11 +515,20 @@ interface TileSlot {
 
 const tileRows = computed<TileSlot[][]>(() => {
   const byId = new Map(tiles.value.map((tile) => [tile.id, tile]))
-  const row1: TileSlot[] = [{ tile: { id: 'review' }, span: 1 }]
+  const fillers: TileSlot[] = []
   for (const id of ['low-tail', 'weak-questions', 'zero-share'] as const) {
     const tile = byId.get(id)
-    if (tile) row1.push({ tile, span: 1 })
+    if (tile) fillers.push({ tile, span: 1 })
   }
+  // 报告提示磁贴紧邻「复核」出现；行宽超出时把其余磁贴顺延到第三行。
+  const row1: TileSlot[] = [
+    { tile: { id: 'review' }, span: 1 },
+    ...(pendingReviewNotes.value.length > 0
+      ? [{ tile: { id: 'report-notes' } as DisplayTile, span: 1 }]
+      : []),
+    ...fillers.slice(0, pendingReviewNotes.value.length > 0 ? 2 : 3),
+  ]
+  const overflow = fillers.slice(pendingReviewNotes.value.length > 0 ? 2 : 3)
   // 失分类型磁贴始终占位（加载/无数据/失败态都在格内展示），保证第二行恒为 1+3。
   const categories = byId.get('cause-categories')
   const row2: TileSlot[] = [
@@ -478,6 +537,7 @@ const tileRows = computed<TileSlot[][]>(() => {
   ]
   const classGap = byId.get('class-gap')
   const row3: TileSlot[] = [
+    ...overflow,
     ...(classGap ? [{ tile: classGap, span: 1 }] : []),
     { tile: { id: 'ai-report' }, span: 1 },
   ]
@@ -654,6 +714,21 @@ function categoryColor(index: number): string {
 function openQuestion(questionId: string): void {
   emit('open-question', questionId, scope.value)
 }
+
+// 与成绩明细的复核跳转一致：定位到该学生该题的复核条目。
+function openReviewNote(note: AnalysisReviewNoteItem): void {
+  void router.push({
+    path: '/grading',
+    query: {
+      session: String(props.sessionId),
+      scope: 'all',
+      question: note.question_id,
+      ...(note.review_item_id ? { item: note.review_item_id } : {}),
+      student: String(note.student_id),
+      entry: 'results',
+    },
+  })
+}
 </script>
 
 <template>
@@ -777,6 +852,23 @@ function openQuestion(questionId: string): void {
                 @click="emit('open-review', 'all')"
               >抽查复核</AppButton>
             </template>
+          </section>
+          <section
+            v-else-if="tile.id === 'report-notes'"
+            class="overview__tile overview__tile--notes"
+            :style="{ '--tile-span': span }"
+          >
+            <h3>报告提示</h3>
+            <strong class="overview__tile-num">
+              {{ pendingReviewNotes.length }} 条待核对
+            </strong>
+            <span class="overview__tile-sub">个人报告中的建议核对点</span>
+            <AppButton
+              variant="ghost"
+              class="overview__tile-action"
+              :aria-expanded="reviewNotesExpanded"
+              @click="reviewNotesExpanded = !reviewNotesExpanded"
+            >{{ reviewNotesExpanded ? '收起' : '查看明细' }}</AppButton>
           </section>
           <section
             v-else-if="tile.id === 'low-tail'"
@@ -1149,6 +1241,39 @@ function openQuestion(questionId: string): void {
           </section>
         </template>
         </div>
+      </div>
+      <div
+        v-if="reviewNotesExpanded && reviewNotes.length > 0"
+        class="overview__notes"
+        data-testid="report-review-notes"
+      >
+        <ul class="overview__notes-list">
+          <li
+            v-for="(note, index) in reviewNotes"
+            :key="`${note.student_id}:${note.question_id}:${index}`"
+            class="overview__notes-item"
+            :class="{ 'is-confirmed': note.status === 'confirmed' }"
+          >
+            <span class="overview__notes-student">
+              {{ note.student_name }}<small v-if="note.class_name">
+                {{ classDisplayLabel(note.class_name) }}
+              </small>
+            </span>
+            <span class="overview__notes-question">{{ note.display_label }}</span>
+            <span class="overview__notes-text">{{ note.note }}</span>
+            <span
+              v-if="note.status === 'confirmed'"
+              class="overview__notes-status"
+            >已核对</span>
+            <AppButton
+              v-else
+              variant="ghost"
+              size="sm"
+              class="overview__notes-action"
+              @click="openReviewNote(note)"
+            >去核对</AppButton>
+          </li>
+        </ul>
       </div>
     </section>
 

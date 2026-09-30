@@ -10,7 +10,9 @@ from typing import Any
 
 from backend.public_data import sanitize_public_mapping
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
+from backend.repositories.results import RubricUnreadableError
 from backend.repositories.review import ReviewAdjustmentOwnershipError
+from backend.review.rubric import ReviewRubricConfigError
 from grading_completeness import is_objective_detail, review_confidence_threshold
 from path_manager import resolve_stored_file_path
 from question_id_contract import (
@@ -363,6 +365,8 @@ class ReviewApplicationService:
         incomplete_keys: set[tuple[int, str]] = set()
         try:
             incomplete_results = self.db.results.list_incomplete_results(session_id) if needs_completeness_check else []
+        except RubricUnreadableError as exc:
+            raise ReviewRubricConfigError(str(exc)) from exc
         except Exception:
             incomplete_results = []
         for incomplete in incomplete_results:

@@ -123,6 +123,31 @@ class ClassAnalysisSettingsResponse(BaseModel):
     auto_generate: bool
 
 
+class AnalysisReviewNoteItem(BaseModel):
+    """个人报告"建议核对"条目；review_item_id 为复核页实际条目标识。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    student_id: int
+    student_code: str | None = None
+    student_name: str
+    class_name: str | None = None
+    question_id: str
+    display_label: str
+    note: str
+    lock_revision: int = Field(ge=0)
+    status: Literal["pending", "confirmed"]
+    review_item_id: str | None = None
+
+
+class AnalysisReviewNotesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: int
+    generated_at: str | None = None
+    items: list[AnalysisReviewNoteItem]
+
+
 class ReportFileDeleteResponse(BaseModel):
     """删除一份留存的本机报告文件的结果。"""
 

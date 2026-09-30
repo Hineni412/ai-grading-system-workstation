@@ -599,21 +599,25 @@ def _build_report_export_handler(
                         cause_summary = {"kind": "causes", "status": "error"}
                     context.report(0.5, "report_export", "generating_reports")
                 # AI 叙述缓存放在受控 reports 目录下，跨 job 命中不重复调用模型。
+                exporter = analysis_report_exporter_factory(
+                    open_grading_repositories(db_path),
+                    staging_dir,
+                    llm_client_factory=analysis_llm_client_factory,
+                    narrative_cache_dir=(
+                        reports_dir / ".analysis_narrative_cache"
+                    ),
+                    data_root=data_root,
+                    reports_dir=reports_dir,
+                )
                 staged_output = Path(
-                    analysis_report_exporter_factory(
-                        open_grading_repositories(db_path),
-                        staging_dir,
-                        llm_client_factory=analysis_llm_client_factory,
-                        narrative_cache_dir=(
-                            reports_dir / ".analysis_narrative_cache"
-                        ),
-                        data_root=data_root,
-                        reports_dir=reports_dir,
-                    ).export_session(
+                    exporter.export_session(
                         session_id,
                         report_type,
                         score_revision=score_revision,
                     )
+                )
+                review_note_count = int(
+                    getattr(exporter, "last_review_note_count", 0) or 0
                 )
             else:
                 staged_output = Path(
@@ -645,6 +649,8 @@ def _build_report_export_handler(
                 result["report_type"] = report_type
             if score_revision:
                 result["score_revision"] = score_revision
+            if report_type in ANALYSIS_REPORT_TYPES:
+                result["review_note_count"] = review_note_count
             return result
 
     return handler

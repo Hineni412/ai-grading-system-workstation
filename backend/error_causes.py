@@ -103,7 +103,7 @@ _INTERNAL_SUMMARY_LABELS: dict[str, str | None] = {
 
 # 教师确认流程写入的占位文案与英文码：不是真实批语，不作为错因证据。
 _PLACEHOLDER_REASONS = frozenset(
-    {"人工复核已确认", "教师已确认", "教师已确认最终分", "已复核"}
+    {"人工复核已确认", "人工复核", "教师已确认", "教师已确认最终分", "已复核"}
 )
 
 _ASCII_ONLY_RE = re.compile(r"^[\x20-\x7e]+$")
@@ -130,3 +130,9 @@ def clean_cause_text(value: Any) -> str:
         # 纯英文且不含数字（算式、选项等数据会带数字）：未登记的内部码不进入提示词与报告。
         return ""
     return text
+
+
+def display_error_category(value: Any) -> str:
+    """``error_category`` 的对外口径：复核确认占位词（已复核/教师已确认/人工复核
+    等）返回空串，真实错因类别原样返回。只用于展示与聚合，不回写数据。"""
+    return clean_cause_text(value)
