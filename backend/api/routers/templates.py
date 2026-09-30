@@ -13,6 +13,7 @@ from answer_region_commit_service import (
     AnswerRegionCommitResult,
     AnswerRegionCommitService,
 )
+from answer_region_auto_proposal import propose_answer_regions
 from answer_region_draft_service import (
     AnswerRegionDraftService,
     DraftLoadResult,
@@ -33,6 +34,7 @@ from backend.api.dependencies import (
 from backend.api.routers.sessions import _require_session, _template_response
 from backend.api.schemas.sessions import SessionTemplateResponse
 from backend.api.schemas.templates import (
+    RegionAutoProposalResponse,
     RegionCommitRequest,
     RegionCommitResponse,
     RegionDraftRequest,
@@ -147,7 +149,11 @@ def _public_regions(regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "is_confirmed",
         "multi_region_confirmed",
     )
-    return [{key: region.get(key) for key in keys} for region in normalize_regions(regions)]
+    return [
+        {**{key: region.get(key) for key in keys},
+         **{key: region[key] for key in ("detected_question_id", "confidence") if key in region}}
+        for region in normalize_regions(regions)
+    ]
 
 
 @router.post(
@@ -479,6 +485,40 @@ def get_region_workspace(
         ],
         template_ready=db.templates.is_template_ready(int(session_id)),
     )
+
+
+@router.get("/sessions/{session_id}/regions/auto-proposal", response_model=RegionAutoProposalResponse)
+def get_answer_region_auto_proposal(
+    session_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    templates_dir: Path = Depends(get_templates_dir),
+) -> RegionAutoProposalResponse:
+    session = _require_session(db.sessions, session_id)
+    if not _scoring_configured(db, session_id):
+        raise ApiError(409, "scoring_config_required", "Scoring configuration must be saved first")
+    template = _require_template(db, session_id)
+    # Do not use workspace loading here: draft recovery can quarantine files.
+    # This proposal has no filesystem/database writes, including lock files.
+    session_dir = Path(templates_dir) / f"session_{int(session_id)}"
+    front, back = _template_paths(template, session_dir)
+    draft_service = AnswerRegionDraftService(session_dir)
+    fingerprint = draft_service.compute_template_fingerprint(front, back)
+    rubric_path = resolve_stored_file_path(
+        session.get("rubric_path"),
+        search_roots=[session_dir, templates_dir, Path(db.db_path).parent],
+    )
+    try:
+        proposal = propose_answer_regions(
+            {"front": front, "back": back}, load_question_binding_catalog(rubric_path),
+        )
+    except Exception:
+        raise ApiError(503, "answer_region_auto_unavailable", "未能自动框题，请手动框选") from None
+    current = _require_template(db, session_id)
+    current_front, current_back = _template_paths(current, session_dir)
+    if (current["id"] != template["id"] or
+            draft_service.compute_template_fingerprint(current_front, current_back) != fingerprint):
+        raise ApiError(409, "region_draft_template_changed", "Session template changed during recognition")
+    return RegionAutoProposalResponse(**proposal, template_fingerprint=fingerprint)
 
 
 @router.get("/sessions/{session_id}/template/pages/{page}")

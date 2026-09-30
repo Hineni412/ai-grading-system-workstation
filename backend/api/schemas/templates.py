@@ -97,6 +97,12 @@ class RegionDraftRequest(BaseModel):
     expected_revision: int | None = Field(default=None, ge=0)
 
 
+class RegionAutoProposalResponse(BaseModel):
+    regions: list[dict[str, Any]]
+    missing_question_ids: list[str]
+    template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class RegionDraftResponse(BaseModel):
     status: str
     session_id: int

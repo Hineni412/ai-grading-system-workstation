@@ -14,6 +14,10 @@ export interface Region {
   x: number; y: number; w: number; h: number
   mapped_question_id: string | null; mapping_status: string
   is_confirmed: boolean; multi_region_confirmed: boolean
+  detected_question_id?: string | null; confidence?: number | null
+}
+export interface RegionAutoProposal {
+  regions: Region[]; missing_question_ids: string[]; template_fingerprint: string
 }
 export interface RegionIssue {
   code: string; message: string; region_uuid: string | null; question_id: string | null
@@ -79,13 +83,16 @@ function decodeTemplate(value: unknown): TemplateSummary {
   }
 }
 function region(value: unknown): value is Region {
+  const metadataKeys = ['detected_question_id', 'confidence'].filter((key) => isRecord(value) && key in value)
   return isRecord(value) && exact(value, ['region_uuid', 'page', 'region_order', 'x', 'y', 'w', 'h',
-    'mapped_question_id', 'mapping_status', 'is_confirmed', 'multi_region_confirmed'])
+    'mapped_question_id', 'mapping_status', 'is_confirmed', 'multi_region_confirmed', ...metadataKeys])
     && typeof value.region_uuid === 'string' && (value.page === 'front' || value.page === 'back')
     && Number.isSafeInteger(value.region_order) && ['x', 'y', 'w', 'h'].every((key) => Number.isFinite(value[key]))
     && (value.mapped_question_id === null || typeof value.mapped_question_id === 'string')
     && typeof value.mapping_status === 'string' && typeof value.is_confirmed === 'boolean'
     && typeof value.multi_region_confirmed === 'boolean'
+    && (value.detected_question_id == null || typeof value.detected_question_id === 'string')
+    && (value.confidence == null || (typeof value.confidence === 'number' && Number.isFinite(value.confidence)))
 }
 function issue(value: unknown): value is RegionIssue {
   return isRecord(value) && exact(value, ['code', 'message', 'region_uuid', 'question_id'])
@@ -152,6 +159,20 @@ async function fileSha256(file: File): Promise<string> {
 
 export function fetchRegionWorkspace(id: number, signal?: AbortSignal): Promise<RegionWorkspace> {
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/workspace`, { decode: decodeWorkspace, signal })
+}
+export function fetchRegionAutoProposal(id: number, signal?: AbortSignal): Promise<RegionAutoProposal> {
+  return apiClient.request(`/api/sessions/${sessionId(id)}/regions/auto-proposal`, {
+    signal, timeoutMs: 5 * 60_000,
+    decode(value) {
+      assertNoPathLikeKeys(value)
+      if (!isRecord(value) || !exact(value, ['regions', 'missing_question_ids', 'template_fingerprint'])
+        || !Array.isArray(value.regions) || !value.regions.every(region)
+        || !Array.isArray(value.missing_question_ids)
+        || !value.missing_question_ids.every((item) => typeof item === 'string')
+        || !hash(value.template_fingerprint)) throw new Error('Invalid region auto proposal')
+      return value as unknown as RegionAutoProposal
+    },
+  })
 }
 export function fetchRegionReadiness(id: number): Promise<RegionReadiness> {
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/readiness`, {

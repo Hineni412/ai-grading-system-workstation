@@ -4,7 +4,6 @@
 
 ## 已确认待实现的新功能
 
-- [样卷题框自动预框](auto-answer-regions.md)
 - [学生错题本导出](wrong-question-book.md)
 - [训练推荐规则面板与讲义模式](recommendation-rules-panel.md)
 

@@ -57,6 +57,18 @@
   white-space: nowrap;
 }
 .template-regions-view__messages { min-height: 0; }
+.template-regions-view__auto {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-bg-subtle);
+  font-size: var(--font-size-caption);
+}
+.template-regions-view__auto > div { min-width: 0; overflow-wrap: anywhere; }
+.template-regions-view__auto > button { flex: none; }
+.template-regions-view__missing { color: var(--color-warning); font-weight: var(--font-weight-medium); }
 .template-regions-view__state, .template-regions-view__notice, .template-regions-view__snapshot { padding: var(--space-4); border: var(--border-width) solid var(--border); border-radius: var(--radius); background: var(--color-bg-subtle); }
 .template-regions-view__notice { margin-block: var(--space-3); border-color: var(--color-warning); background: var(--color-warning-subtle); }
 .template-regions-view.is-focus-layout .template-regions-view__notice {
