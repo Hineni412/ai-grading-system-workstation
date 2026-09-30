@@ -434,7 +434,6 @@ export const assemblyApi = {
   submitExport(
     draftRevision: string,
     format: AssemblyExportSubmitFormat,
-    source?: 'ai',
     signal?: AbortSignal,
   ): Promise<JobResponse> {
     if (!isRevision(draftRevision) || !isExportFormat(format)) {
@@ -442,9 +441,7 @@ export const assemblyApi = {
     }
     return apiClient.request('/api/question-assembly/export', {
       method: 'POST',
-      body: source === 'ai'
-        ? { draft_revision: draftRevision, format, source }
-        : { draft_revision: draftRevision, format },
+      body: { draft_revision: draftRevision, format },
       decode: decodeJobResponse,
       signal,
     })
